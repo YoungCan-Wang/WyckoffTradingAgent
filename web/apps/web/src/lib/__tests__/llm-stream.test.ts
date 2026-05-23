@@ -83,4 +83,23 @@ describe('streamLLMResponse', () => {
     expect(body).toMatchObject({ model: 'claude-test', system: 'system prompt', stream: true })
     expect(body.messages).toEqual([{ role: 'user', content: 'hi' }])
   })
+
+  it('flushes the final SSE line when the stream has no trailing newline', async () => {
+    const config: LLMConfig = {
+      api_key: 'anthropic-key',
+      model: 'claude-test',
+      base_url: 'https://api.anthropic.com',
+      protocol: 'anthropic',
+    }
+    const onDelta = vi.fn()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse([
+      'event: content_block_delta',
+      'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"last chunk"}}',
+    ])))
+
+    const result = await streamLLMResponse(config, [{ role: 'user', content: 'hi' }], { onDelta })
+
+    expect(result).toBe('last chunk')
+    expect(onDelta).toHaveBeenCalledWith('last chunk')
+  })
 })

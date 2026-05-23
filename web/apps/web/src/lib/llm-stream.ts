@@ -46,15 +46,14 @@ export async function streamLLMResponse(
     const lines = buffer.split('\n')
     buffer = lines.pop()!
     for (const line of lines) {
-      const trimmed = line.trim()
-      if (!trimmed.startsWith('data: ')) continue
-      const payload = trimmed.slice(6)
-      if (payload === '[DONE]') break
-      try {
-        const delta = extractStreamDelta(JSON.parse(payload), protocol)
-        if (delta) { opts.onDelta?.(delta); result += delta }
-      } catch { /* skip malformed */ }
+      const delta = extractDataLineDelta(line, protocol)
+      if (delta) { opts.onDelta?.(delta); result += delta }
     }
+  }
+  buffer += decoder.decode()
+  for (const line of buffer.split('\n')) {
+    const delta = extractDataLineDelta(line, protocol)
+    if (delta) { opts.onDelta?.(delta); result += delta }
   }
   return result
 }
@@ -101,6 +100,18 @@ function buildStreamRequest(
       max_tokens: opts.maxTokens ?? 4096,
       stream: true,
     }),
+  }
+}
+
+function extractDataLineDelta(line: string, protocol: StreamProtocol): string | undefined {
+  const trimmed = line.trim()
+  if (!trimmed.startsWith('data: ')) return undefined
+  const payload = trimmed.slice(6)
+  if (payload === '[DONE]') return undefined
+  try {
+    return extractStreamDelta(JSON.parse(payload), protocol)
+  } catch {
+    return undefined
   }
 }
 
