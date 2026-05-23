@@ -309,7 +309,7 @@ def _run_layers(
     layer1 = layer1_filter(symbols, name_map, {}, df_map, funnel_cfg)
     layer2, channel_map, _ = layer2_strength_detailed(layer1, df_map, None, funnel_cfg, rps_universe=symbols)
     layer3, top_sectors = layer3_sector_resonance(layer2, {}, funnel_cfg, base_symbols=layer1, df_map=df_map)
-    triggers = layer4_triggers(layer3, df_map, funnel_cfg)
+    triggers = layer4_triggers(layer3, df_map, funnel_cfg, channel_map=channel_map)
     metrics = {
         "layer1": len(layer1),
         "layer2": len(layer2),

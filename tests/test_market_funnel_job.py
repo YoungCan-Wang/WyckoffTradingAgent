@@ -5,6 +5,7 @@ import json
 import pandas as pd
 import pytest
 
+import scripts.market_funnel_job as market_job
 from scripts.market_funnel_job import _candidate_rows, _upsert_funnel_to_tracking, run_market_funnel
 
 
@@ -27,6 +28,35 @@ def _daily_frame(rows: int = 230) -> pd.DataFrame:
             "pct_chg": close.pct_change().fillna(0.0) * 100.0,
         }
     )
+
+
+def test_run_layers_passes_l2_channel_map_to_l4(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_layer4(symbols, _df_map, _cfg, *, channel_map=None, **_kwargs):
+        captured["symbols"] = symbols
+        captured["channel_map"] = channel_map
+        return {"trend_pullback": [(symbols[0], 0.25)]}
+
+    monkeypatch.setattr(market_job, "layer1_filter", lambda symbols, *_args, **_kwargs: symbols)
+    monkeypatch.setattr(
+        market_job,
+        "layer2_strength_detailed",
+        lambda *_args, **_kwargs: (["AAPL.US"], {"AAPL.US": "趋势延续"}, []),
+    )
+    monkeypatch.setattr(market_job, "layer3_sector_resonance", lambda symbols, *_args, **_kwargs: (symbols, []))
+    monkeypatch.setattr(market_job, "layer4_triggers", fake_layer4)
+
+    triggers, metrics = market_job._run_layers(
+        ["AAPL.US"],
+        {"AAPL.US": "Apple"},
+        {"AAPL.US": _daily_frame()},
+        market_job.RuntimeConfig(spec=market_job.MARKET_SPECS["us"]),
+    )
+
+    assert captured == {"symbols": ["AAPL.US"], "channel_map": {"AAPL.US": "趋势延续"}}
+    assert triggers["trend_pullback"] == [("AAPL.US", 0.25)]
+    assert metrics["by_trigger"] == {"trend_pullback": 1}
 
 
 def test_candidate_rows_keep_raw_trigger_strength():

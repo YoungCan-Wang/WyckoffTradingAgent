@@ -828,7 +828,13 @@ def run_funnel_job(
 
     # Layer 4 (Wyckoff Triggers)
     # L4 需要 l2_df_map，这里直接用 all_df_map 即可，因为 key 都在里面
-    triggers = layer4_triggers(l3_passed, all_df_map, cfg, market_cap_map=market_cap_map)
+    triggers = layer4_triggers(
+        l3_passed,
+        all_df_map,
+        cfg,
+        channel_map=l2_channel_map,
+        market_cap_map=market_cap_map,
+    )
 
     # L2 旁路观察池：L1通过 + L2被拒 + 在热门板块 + 有L4原始触发
     l2_rejected = [s for s in l1_passed if s not in set(l2_passed)]
@@ -838,7 +844,13 @@ def run_funnel_job(
     bypass_triggers: dict[str, list[tuple[str, float]]] = {}
     l2_bypass_pool: list[str] = []
     if l2_bypass_in_sector:
-        bypass_triggers = layer4_triggers(l2_bypass_in_sector, all_df_map, cfg, market_cap_map=market_cap_map)
+        bypass_triggers = layer4_triggers(
+            l2_bypass_in_sector,
+            all_df_map,
+            cfg,
+            channel_map=l2_channel_map,
+            market_cap_map=market_cap_map,
+        )
         bypass_hit_set: set[str] = set()
         for hits in bypass_triggers.values():
             for code, _ in hits:
