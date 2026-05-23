@@ -3,6 +3,10 @@ name: Sector Continuity Report
 on:
   workflow_dispatch:
 
+concurrency:
+  group: sector-continuity-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   run:
     runs-on: ubuntu-latest

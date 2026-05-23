@@ -21,6 +21,10 @@ on:
         default: "320"
         type: string
 
+concurrency:
+  group: single-symbol-funnel-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   run:
     runs-on: ubuntu-latest

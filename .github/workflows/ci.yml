@@ -7,9 +7,11 @@ on:
       - "**.py"
       - "pyproject.toml"
       - "scripts/quality_gate.py"
+      - "scripts/check_pr_policy.py"
+      - "scripts/check_workflow_hygiene.py"
       - ".metrics/**"
       - "requirements.txt"
-      - ".github/workflows/ci.yml"
+      - ".github/workflows/**"
       - "web/**"
   pull_request:
     branches: [main, feature/visible]
@@ -17,58 +19,137 @@ on:
       - "**.py"
       - "pyproject.toml"
       - "scripts/quality_gate.py"
+      - "scripts/check_pr_policy.py"
+      - "scripts/check_workflow_hygiene.py"
       - ".metrics/**"
       - "requirements.txt"
-      - ".github/workflows/ci.yml"
+      - ".github/workflows/**"
       - "web/**"
 
-jobs:
-  python:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11"]
+permissions:
+  contents: read
 
+jobs:
+  lint:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
-          cache: "pip"
+          python-version: "3.11"
+      - name: Install ruff
+        run: python -m pip install ruff
+      - name: Ruff lint
+        run: ruff check .
+      - name: Ruff format
+        run: ruff format --check .
 
+  quality-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Function length and LOC trend
+        run: python scripts/quality_gate.py --ci
+
+  workflow-hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install workflow parser
+        run: python -m pip install pyyaml
+      - name: Check workflow hygiene
+        run: python scripts/check_workflow_hygiene.py
+
+  pr-policy:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Collect changed files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: gh pr view "$PR_NUMBER" --json files --jq '.files[].path' > /tmp/pr-changed-files.txt
+      - name: Validate PR body and file policy
+        run: python scripts/check_pr_policy.py --event-path "$GITHUB_EVENT_PATH" --changed-files-file /tmp/pr-changed-files.txt
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[streamlit,dev]"
-
-      - name: Lint (ruff check)
-        run: ruff check .
-
-      - name: Format check (ruff format)
-        run: ruff format --check .
-
-      - name: Quality gate (function length + LOC trend)
-        run: python scripts/quality_gate.py --ci
-
-      - name: Sanity check (import)
-        run: |
-          python -c "import streamlit; import akshare; import pandas; print('OK')"
-
       - name: Py compile all modules
-        run: |
-          python -m py_compile $(find agents app cli core integrations pages scripts tools utils -name "*.py")
-
+        run: python -m py_compile $(find agents app cli core integrations pages scripts tools utils -name "*.py")
       - name: Run tests
         run: python -m pytest tests/ -x -q
 
+  smoke-dry-run:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[streamlit,dev]"
+      - name: Sanity imports
+        run: python -c "import streamlit; import akshare; import pandas; print('OK')"
       - name: Daily job dry-run
         run: python scripts/daily_job.py --dry-run
         env:
           FEISHU_WEBHOOK_URL: "https://example.com"
           GEMINI_API_KEY: "fake-key-for-dry-run"
+
+  coverage-report:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[streamlit,dev]" coverage
+      - name: Run coverage report
+        run: |
+          python -m coverage erase
+          python -m coverage run -m pytest tests/ -x -q
+          python -m coverage report
+          python -m coverage json -o coverage.json
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report-${{ github.run_number }}
+          path: coverage.json
+          retention-days: 7
+          if-no-files-found: ignore
 
   web-check:
     runs-on: ubuntu-latest
@@ -88,6 +169,6 @@ jobs:
       - name: TypeScript check
         run: pnpm -r exec tsc --noEmit
         working-directory: web
-      - name: Run web tests (harness)
+      - name: Run web tests
         run: pnpm --filter @wyckoff/web test
         working-directory: web
