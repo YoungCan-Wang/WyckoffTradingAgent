@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -51,7 +52,20 @@ def test_run_layers_passes_l2_channel_map_to_l4(monkeypatch):
         ["AAPL.US"],
         {"AAPL.US": "Apple"},
         {"AAPL.US": _daily_frame()},
-        market_job.RuntimeConfig(spec=market_job.MARKET_SPECS["us"]),
+        market_job.RuntimeConfig(
+            spec=market_job.MARKET_SPECS["us"],
+            max_symbols=1,
+            quote_batch_size=1,
+            quote_batch_sleep=0.0,
+            kline_count=230,
+            kline_batch_size=1,
+            kline_batch_sleep=0.0,
+            min_quote_amount=0.0,
+            min_avg_amount=0.0,
+            min_history_rows=220,
+            output_path=None,
+            symbol_path=Path("symbols.txt"),
+        ),
     )
 
     assert captured == {"symbols": ["AAPL.US"], "channel_map": {"AAPL.US": "趋势延续"}}
