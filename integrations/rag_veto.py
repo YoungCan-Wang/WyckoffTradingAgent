@@ -52,6 +52,7 @@ RAG_SEMANTIC_TIMEOUT = int(os.getenv("RAG_SEMANTIC_TIMEOUT", "25"))
 RAG_SEMANTIC_API_KEY = os.getenv("RAG_SEMANTIC_API_KEY", "").strip()
 RAG_SEMANTIC_MODEL = os.getenv("RAG_SEMANTIC_MODEL", "").strip()
 RAG_SEMANTIC_BASE_URL = os.getenv("RAG_SEMANTIC_BASE_URL", "").strip()
+RAG_SEMANTIC_PROVIDER = os.getenv("RAG_SEMANTIC_PROVIDER", "").strip().lower()
 _STAR_ST_PATTERN = re.compile(r"(?<![a-z0-9])(?:\*|＊)st\s*[\u4e00-\u9fff]", re.IGNORECASE)
 _ST_PATTERN = re.compile(r"(?<![a-z0-9\*＊])st\s*[\u4e00-\u9fff]", re.IGNORECASE)
 
@@ -269,31 +270,50 @@ def _semantic_prompt(code: str, name: str, hits: list[str], content: str) -> tup
     return system_prompt, user_message
 
 
+def _semantic_llm_config() -> tuple[str, str, str, str, str | None]:
+    if RAG_SEMANTIC_API_KEY and RAG_SEMANTIC_MODEL and RAG_SEMANTIC_BASE_URL:
+        return ("openai_compatible", RAG_SEMANTIC_API_KEY, RAG_SEMANTIC_MODEL, RAG_SEMANTIC_BASE_URL, None)
+    if not RAG_SEMANTIC_PROVIDER:
+        return ("", "", "", "", "semantic_disabled:missing_RAG_SEMANTIC_*_config")
+
+    from integrations.llm_client import get_provider_credentials
+
+    api_key, model, base_url = get_provider_credentials(RAG_SEMANTIC_PROVIDER)
+    api_key = RAG_SEMANTIC_API_KEY or api_key
+    model = RAG_SEMANTIC_MODEL or model
+    base_url = RAG_SEMANTIC_BASE_URL or base_url
+    if not api_key or not model:
+        return ("", "", "", "", f"semantic_disabled:missing_{RAG_SEMANTIC_PROVIDER}_config")
+    return (RAG_SEMANTIC_PROVIDER, api_key, model, base_url, None)
+
+
 def _semantic_negative_via_llm(
     code: str,
     name: str,
     hits: list[str],
     snippets: list[str],
 ) -> tuple[bool | None, str | None]:
-    """关键词命中后的二次语义判定。直接走 RAG_SEMANTIC_* 三变量，不绑定任何 provider。"""
+    """关键词命中后的二次语义判定。"""
     if not RAG_SEMANTIC_VETO_ENABLED:
         return (None, None)
-    if not RAG_SEMANTIC_API_KEY or not RAG_SEMANTIC_MODEL or not RAG_SEMANTIC_BASE_URL:
-        return (None, "semantic_disabled:missing_RAG_SEMANTIC_*_config")
+    provider, api_key, model, base_url, config_err = _semantic_llm_config()
+    if config_err:
+        return (None, config_err)
 
-    from integrations.llm_client import _call_openai_compatible
+    from integrations.llm_client import call_llm
 
     content = _semantic_news_content(hits, snippets)
     if not content:
         return (None, "semantic_disabled:empty_snippets")
     system_prompt, user_message = _semantic_prompt(code, name, hits, content)
     try:
-        raw = _call_openai_compatible(
-            base_url=RAG_SEMANTIC_BASE_URL,
-            api_key=RAG_SEMANTIC_API_KEY,
-            model=RAG_SEMANTIC_MODEL,
+        raw = call_llm(
+            provider=provider,
+            api_key=api_key,
+            model=model,
             system_prompt=system_prompt,
             user_message=user_message,
+            base_url=base_url or None,
             timeout=max(RAG_SEMANTIC_TIMEOUT, 8),
             max_output_tokens=256,
         )

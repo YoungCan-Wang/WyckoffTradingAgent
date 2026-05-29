@@ -43,6 +43,7 @@ class TestScanOneFailClosed:
         monkeypatch.setattr(mod, "RAG_SEMANTIC_API_KEY", "")
         monkeypatch.setattr(mod, "RAG_SEMANTIC_MODEL", "")
         monkeypatch.setattr(mod, "RAG_SEMANTIC_BASE_URL", "")
+        monkeypatch.setattr(mod, "RAG_SEMANTIC_PROVIDER", "")
         monkeypatch.setattr(
             mod,
             "_fetch_news_akshare",
@@ -55,6 +56,44 @@ class TestScanOneFailClosed:
         assert {"立案", "调查", "证监会"}.issubset(set(result.hits))
         assert result.semantic_checked is False
         assert result.error == "semantic_disabled:missing_RAG_SEMANTIC_*_config"
+
+    def test_keyword_hit_uses_provider_fallback_for_semantic_check(self, monkeypatch):
+        from integrations import llm_client
+        from integrations import rag_veto as mod
+
+        captured: dict[str, str] = {}
+
+        def fake_call_llm(**kwargs):
+            captured.update({k: str(v) for k, v in kwargs.items() if k in {"provider", "api_key", "model", "base_url"}})
+            return '{"is_extreme_negative": false, "reason": "澄清公告"}'
+
+        monkeypatch.setattr(mod, "RAG_SEMANTIC_VETO_ENABLED", True)
+        monkeypatch.setattr(mod, "RAG_SEMANTIC_API_KEY", "")
+        monkeypatch.setattr(mod, "RAG_SEMANTIC_MODEL", "")
+        monkeypatch.setattr(mod, "RAG_SEMANTIC_BASE_URL", "")
+        monkeypatch.setattr(mod, "RAG_SEMANTIC_PROVIDER", "efficiency")
+        monkeypatch.setenv("EFFICIENCY_API_KEY", "eff-key")
+        monkeypatch.setenv("EFFICIENCY_MODEL", "eff-model")
+        monkeypatch.setenv("EFFICIENCY_BASE_URL", "https://llm.example/v1")
+        monkeypatch.setattr(
+            mod,
+            "_fetch_news_akshare",
+            lambda _code: [{"title": "澄清公告", "content": "公司澄清未被证监会立案调查"}],
+        )
+        monkeypatch.setattr(llm_client, "call_llm", fake_call_llm)
+
+        result = mod._scan_one("000001", "平安银行", KEYWORDS)
+
+        assert result.veto is False
+        assert result.semantic_checked is True
+        assert result.semantic_negative is False
+        assert result.error is None
+        assert captured == {
+            "provider": "efficiency",
+            "api_key": "eff-key",
+            "model": "eff-model",
+            "base_url": "https://llm.example/v1",
+        }
 
 
 class TestStMentionsThisStock:
