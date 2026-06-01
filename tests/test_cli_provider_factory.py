@@ -12,3 +12,10 @@ def test_openai_provider_accepts_minimax_compatible_endpoint():
 
     assert err is None
     assert isinstance(provider, OpenAIProvider)
+
+
+def test_minimax_provider_alias_uses_openai_compatible_client():
+    provider, err = _create_provider("minimax", "test-key", model="MiniMax-M3")
+
+    assert err is None
+    assert isinstance(provider, OpenAIProvider)

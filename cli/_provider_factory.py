@@ -8,12 +8,15 @@ def _create_provider(provider_name: str, api_key: str, model: str = "", base_url
 
     from cli.providers import PROVIDERS
 
+    if provider_name == "minimax" and not base_url:
+        base_url = "https://api.minimaxi.com/v1"
     cls = PROVIDERS.get(provider_name)
     if cls is None:
         install_hints = {
             "gemini": "pip install google-genai",
             "claude": "pip install anthropic",
             "openai": "pip install openai",
+            "minimax": "pip install openai",
         }
         hint = install_hints.get(provider_name, "")
         return None, f"Provider '{provider_name}' 不可用，请先安装依赖：{hint}"
