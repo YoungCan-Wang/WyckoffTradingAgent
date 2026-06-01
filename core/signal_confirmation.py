@@ -283,6 +283,21 @@ def build_today_ohlcv(df: pd.DataFrame) -> dict[str, float]:
     }
 
 
+def _missing_ohlcv_update(sig: dict, trade_date: str) -> dict[str, Any]:
+    days = int(sig.get("days_elapsed") or 0) + 1
+    ttl = int(sig.get("ttl_days") or SIGNAL_TTL_DAYS.get(str(sig.get("signal_type") or ""), 3))
+    expired = days >= ttl
+    update: dict[str, Any] = {
+        "id": sig["id"],
+        "status": "expired" if expired else "pending",
+        "days_elapsed": days,
+        "confirm_reason": f"OHLCV 缺失，TTL {ttl}天已到" if expired else "OHLCV 缺失，等待下次确认",
+    }
+    if expired:
+        update["expire_date"] = trade_date
+    return update
+
+
 def run_confirmation_cycle(
     pending_signals: list[dict],
     df_map: dict[str, pd.DataFrame],
@@ -300,6 +315,7 @@ def run_confirmation_cycle(
         code_str = f"{int(sig['code']):06d}"
         df = df_map.get(code_str)
         if df is None or df.empty:
+            updates.append(_missing_ohlcv_update(sig, trade_date))
             continue
 
         days = sig.get("days_elapsed", 0) + 1

@@ -130,7 +130,8 @@ def run_step2_5(
         return []
     updates, confirmed = run_confirmation_cycle(pending, df_map, signal_date)
     if updates and not dry_run:
-        batch_update_signals(updates)
+        if not batch_update_signals(updates):
+            return []
     elif updates:
         print(f"[signal_pending] dry-run: 跳过状态更新 {len(updates)} 条")
     return confirmed

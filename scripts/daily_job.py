@@ -363,18 +363,37 @@ def _run_springboard_scoring(
     symbols_info: list[dict],
     step2_details: dict,
 ) -> int:
-    """从 triggers 反查 code→signal_type，调用量化评分器。"""
+    """从候选自身的 signal_type 反查起跳板评分。"""
     springboard_map = _build_springboard_map(step2_details)
     step2_details["springboard_map"] = springboard_map
 
     scored = 0
     for item in symbols_info:
         code = str(item.get("code", "")).strip()
-        fields = springboard_map.get(code) or _empty_springboard_fields()
+        signal_type = str(item.get("primary_signal") or item.get("signal_type") or "").strip().lower()
+        fields = _springboard_fields_for_item(code, signal_type, springboard_map, step2_details)
         item.update(fields)
         if fields.get("springboard_scored"):
             scored += 1
     return scored
+
+
+def _springboard_fields_for_item(
+    code: str,
+    signal_type: str,
+    springboard_map: dict[str, dict],
+    step2_details: dict,
+) -> dict:
+    if signal_type:
+        fields = springboard_map.get(f"{signal_type}:{code}")
+        if fields is not None:
+            return fields
+        df = (step2_details.get("all_df_map", {}) or {}).get(code)
+        if df is not None and not df.empty:
+            from core.signal_confirmation import score_springboard_abc
+
+            return _springboard_fields(score_springboard_abc(df, signal_type))
+    return springboard_map.get(code) or _empty_springboard_fields()
 
 
 def _empty_springboard_fields() -> dict:
@@ -732,6 +751,7 @@ def main() -> int:
     step3_ok = True
     step3_err = None
     step3_springboard_codes: list[str] = []
+    step3_ai_codes_ready = False
     _regime_for_step3 = (benchmark_context.get("regime") or "").strip().upper() if benchmark_context else ""
     if symbols_info:
         t0 = datetime.now(TZ)
@@ -760,6 +780,7 @@ def main() -> int:
                     report=step3_report_text,
                     allowed_codes=allowed_codes,
                 )
+                step3_ai_codes_ready = True
             except Exception as e:
                 step3_springboard_codes = []
                 _log(f"Step3 批量研报: 起跳板解析失败，已降级为空。err={e}", logs_path)
@@ -779,13 +800,21 @@ def main() -> int:
             f"Step3 批量研报: 起跳板代码={len(step3_springboard_codes)} ({preview_codes})",
             logs_path,
         )
-        _mark_step3_recommendations(recommend_trade_date_int, step3_springboard_codes, logs_path, dry_run=preview_only)
+        if step3_ok and step3_ai_codes_ready:
+            _mark_step3_recommendations(
+                recommend_trade_date_int,
+                step3_springboard_codes,
+                logs_path,
+                dry_run=preview_only,
+            )
+        elif recommend_trade_date_int is not None:
+            _log("推荐记录AI标记: 跳过（Step3 未产出可信起跳板代码）", logs_path)
         if recommend_trade_date_int and recommendation_payload:
             _write_recommendation_backup(
                 recommend_trade_date_int,
                 recommendation_payload,
                 logs_path,
-                ai_codes=step3_springboard_codes,
+                ai_codes=step3_springboard_codes if step3_ai_codes_ready else None,
             )
     else:
         summary.append({"step": "批量研报", "ok": True, "err": None, "elapsed_s": 0, "output": "skipped (no symbols)"})
