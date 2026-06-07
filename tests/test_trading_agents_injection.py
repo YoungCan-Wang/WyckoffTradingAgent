@@ -7,16 +7,22 @@ from unittest.mock import patch
 
 # ── 测试 1: 环境变量解析 ──────────────────────────────────────────
 
+
 class TestEnvVarParsing:
     """测试 FUNNEL_EXTRA_* 环境变量解析。"""
 
     def test_not_set_defaults_disabled(self):
         """未设置时 FUNNEL_EXTRA_ENABLED=False。"""
-        for k in ["FUNNEL_EXTRA_SYMBOLS", "FUNNEL_EXTRA_BONUS_SCORE",
-                   "FUNNEL_EXTRA_TRACK_TTL_DAYS", "FUNNEL_EXTRA_MAX_WATCH"]:
+        for k in [
+            "FUNNEL_EXTRA_SYMBOLS",
+            "FUNNEL_EXTRA_BONUS_SCORE",
+            "FUNNEL_EXTRA_TRACK_TTL_DAYS",
+            "FUNNEL_EXTRA_MAX_WATCH",
+        ]:
             os.environ.pop(k, None)
 
         with patch("scripts.wyckoff_funnel.os.getenv") as mock_getenv:
+
             def _side_effect(key, default=""):
                 env = {
                     "FUNNEL_EXTRA_SYMBOLS": "",
@@ -25,11 +31,13 @@ class TestEnvVarParsing:
                     "FUNNEL_EXTRA_MAX_WATCH": "30",
                 }
                 return env.get(key, default)
+
             mock_getenv.side_effect = _side_effect
 
             import importlib
 
             import scripts.wyckoff_funnel as wf
+
             importlib.reload(wf)
 
             assert wf.FUNNEL_EXTRA_ENABLED is False
@@ -40,6 +48,7 @@ class TestEnvVarParsing:
     def test_comma_separated_enables(self):
         """逗号分隔代码 → FUNNEL_EXTRA_ENABLED=True。"""
         with patch("scripts.wyckoff_funnel.os.getenv") as mock_getenv:
+
             def _side_effect(key, default=""):
                 env = {
                     "FUNNEL_EXTRA_SYMBOLS": "000001,600519,300750",
@@ -48,11 +57,13 @@ class TestEnvVarParsing:
                     "FUNNEL_EXTRA_MAX_WATCH": "30",
                 }
                 return env.get(key, default)
+
             mock_getenv.side_effect = _side_effect
 
             import importlib
 
             import scripts.wyckoff_funnel as wf
+
             importlib.reload(wf)
 
             assert wf.FUNNEL_EXTRA_ENABLED is True
@@ -61,6 +72,7 @@ class TestEnvVarParsing:
     def test_semicolon_separated(self):
         """分号分隔代码也可解析。"""
         with patch("scripts.wyckoff_funnel.os.getenv") as mock_getenv:
+
             def _side_effect(key, default=""):
                 env = {
                     "FUNNEL_EXTRA_SYMBOLS": "000001;600519;300750",
@@ -69,11 +81,13 @@ class TestEnvVarParsing:
                     "FUNNEL_EXTRA_MAX_WATCH": "30",
                 }
                 return env.get(key, default)
+
             mock_getenv.side_effect = _side_effect
 
             import importlib
 
             import scripts.wyckoff_funnel as wf
+
             importlib.reload(wf)
 
             assert wf.FUNNEL_EXTRA_ENABLED is True
@@ -82,12 +96,13 @@ class TestEnvVarParsing:
 
 # ── 测试 2: 注入逻辑（mock _normalize_symbols + 简化函数） ─────────
 
+
 class TestInjectionLogic:
     """测试 TradingAgents 注入 run_funnel_job 的核心逻辑。"""
 
-    def _simulate_injection(self, extra_raw: str, l1_passed: list[str],
-                            l2_passed: list[str],
-                            bypass_triggers: dict | None = None):
+    def _simulate_injection(
+        self, extra_raw: str, l1_passed: list[str], l2_passed: list[str], bypass_triggers: dict | None = None
+    ):
         """模拟 run_funnel_job 中的注入逻辑，返回注入结果。"""
         parsed = [c.strip() for c in extra_raw.replace(";", ",").split(",") if c.strip()]
         l1_set = set(l1_passed)
@@ -195,13 +210,13 @@ class TestInjectionLogic:
         assert "600519" not in result["trading_agents_extra_watch"]
         assert "000001" in result["trading_agents_extra_watch"]
         assert "SOS" in result["trading_agents_extra_l4_triggers"]
-        codes_in_triggers = {c for v in result["trading_agents_extra_l4_triggers"].values()
-                             for c, _ in v}
+        codes_in_triggers = {c for v in result["trading_agents_extra_l4_triggers"].values() for c, _ in v}
         assert "600519" in codes_in_triggers
         assert "000001" not in codes_in_triggers
 
 
 # ── 测试 3: 评分加成逻辑 ──────────────────────────────────────────
+
 
 class TestScoreBonus:
     """测试 run() 中的 TradingAgents 评分加成。"""
@@ -252,6 +267,7 @@ class TestScoreBonus:
 
 
 # ── 测试 4: signal_pending 写入逻辑（daily_job）────────────────────
+
 
 class TestSignalPendingInjection:
     """测试 daily_job _run_signal_confirmation 中的 TA_WATCH 写入。"""

@@ -1536,9 +1536,7 @@ def run_funnel_job(
                 l2_bypass_pool.append(code)
                 l2_bypass_pool_set.add(code)
         # 未触发 L4 的精选标的 → 哨兵追踪池（留待 Step2.5 写 signal_pending）
-        trading_agents_extra_watch = [
-            c for c in trading_agents_extra_in_l1 if c not in ta_hit_set
-        ]
+        trading_agents_extra_watch = [c for c in trading_agents_extra_in_l1 if c not in ta_hit_set]
         if trading_agents_extra_watch:
             print(
                 f"[funnel] TradingAgents哨兵追踪: {len(trading_agents_extra_watch)} 只 "
