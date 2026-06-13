@@ -231,6 +231,13 @@ FUNNEL_LOSS_GUARD_RISK_ON_PRE5_RET = float(os.getenv("FUNNEL_LOSS_GUARD_RISK_ON_
 FUNNEL_LOSS_GUARD_RISK_ON_RANGE_POS = float(os.getenv("FUNNEL_LOSS_GUARD_RISK_ON_RANGE_POS", "85.0"))
 FUNNEL_LOSS_GUARD_RISK_ON_VOL_RATIO = float(os.getenv("FUNNEL_LOSS_GUARD_RISK_ON_VOL_RATIO", "1.8"))
 
+# TradingAgents 精选池注入：逗号/分号分隔的股票代码
+FUNNEL_EXTRA_SYMBOLS_RAW = os.getenv("FUNNEL_EXTRA_SYMBOLS", "").strip()
+FUNNEL_EXTRA_ENABLED = bool(FUNNEL_EXTRA_SYMBOLS_RAW)
+FUNNEL_EXTRA_BONUS_SCORE = float(os.getenv("FUNNEL_EXTRA_BONUS_SCORE", "15.0"))
+FUNNEL_EXTRA_TRACK_TTL_DAYS = int(os.getenv("FUNNEL_EXTRA_TRACK_TTL_DAYS", "5"))
+FUNNEL_EXTRA_MAX_WATCH = int(os.getenv("FUNNEL_EXTRA_MAX_WATCH", "30"))
+
 
 def _resolve_funnel_end_calendar_day() -> date:
     """Resolve the funnel end date, allowing replay jobs to pin a historical day."""
@@ -1748,11 +1755,36 @@ def run_funnel_job(
     )
     theme_candidate_map = _theme_candidate_map(theme_radar)
 
+    # TradingAgents 精选池注入：读 FUNNEL_EXTRA_SYMBOLS 环境变量
+    # 如果标的已通过 L1，强制注入 L4 触发信号检测管道
+    from tools.symbol_pool import _normalize_symbols as _normalize_extra_codes
+
+    trading_agents_extra_codes: list[str] = []
+    trading_agents_extra_in_l1: list[str] = []
+    if FUNNEL_EXTRA_ENABLED:
+        raw = FUNNEL_EXTRA_SYMBOLS_RAW
+        parsed = [c.strip() for c in raw.replace(";", ",").split(",") if c.strip()]
+        normalized = _normalize_extra_codes(parsed)
+        l1_set = set(l1_passed)
+        trading_agents_extra_codes = normalized
+        trading_agents_extra_in_l1 = [c for c in normalized if c in l1_set]
+        if trading_agents_extra_in_l1:
+            print(
+                f"[funnel] TradingAgents精选池: raw={len(parsed)}, "
+                f"normalized={len(normalized)}, L1通过={len(trading_agents_extra_in_l1)}"
+            )
+
     # L2 旁路观察池：L1通过 + L2被拒 + 在热门板块 + 有L4原始触发
     l2_rejected = [s for s in l1_passed if s not in set(l2_passed)]
     l2_bypass_in_sector = (
         [s for s in l2_rejected if str(sector_map.get(s, "")).strip() in set(top_sectors)] if top_sectors else []
     )
+    # 把 TradingAgents 精选也注入 L4 检测（不需要在热门板块）
+    if trading_agents_extra_in_l1:
+        already_in = set(l2_bypass_in_sector)
+        for c in trading_agents_extra_in_l1:
+            if c not in already_in and c in l2_rejected:
+                l2_bypass_in_sector.append(c)
     bypass_triggers: dict[str, list[tuple[str, float]]] = {}
     l2_bypass_pool: list[str] = []
     if l2_bypass_in_sector:
@@ -1789,6 +1821,33 @@ def run_funnel_job(
             f"stage={len(strategic_l2_bypass_reason_map)}, "
             f"rescue={len(strategic_l2_bypass_rescue_map)}"
         )
+
+    # TradingAgents 精选池：L4 触发的注入到 l2_bypass_pool，未触发的留作哨兵追踪
+    trading_agents_extra_l4_triggers: dict[str, list[tuple[str, float]]] = {}
+    trading_agents_extra_watch: list[str] = []
+    if trading_agents_extra_in_l1:
+        ta_hit_set = set()
+        for hits in bypass_triggers.values():
+            for code, _score in hits:
+                if str(code).strip() in set(trading_agents_extra_in_l1):
+                    normalized_code = str(code).strip()
+                    ta_hit_set.add(normalized_code)
+                    for key, key_hits in bypass_triggers.items():
+                        for hc, hs in key_hits:
+                            if str(hc).strip() == normalized_code:
+                                trading_agents_extra_l4_triggers.setdefault(key, []).append((normalized_code, hs))
+        l2_bypass_pool_set = set(l2_bypass_pool)
+        for code in sorted(ta_hit_set):
+            if code not in l2_bypass_pool_set:
+                l2_bypass_pool.append(code)
+                l2_bypass_pool_set.add(code)
+        # 未触发 L4 的精选标的 → 哨兵追踪池（留待 Step2.5 写 signal_pending）
+        trading_agents_extra_watch = [c for c in trading_agents_extra_in_l1 if c not in ta_hit_set]
+        if trading_agents_extra_watch:
+            print(
+                f"[funnel] TradingAgents哨兵追踪: {len(trading_agents_extra_watch)} 只 "
+                f"(已过L1，尚无L4触发信号，T+{FUNNEL_EXTRA_TRACK_TTL_DAYS}日内持续追踪)"
+            )
 
     # Markup 阶段、Accumulation ABC 细化、Exit 信号
     markup_symbols = sorted(
@@ -1878,6 +1937,11 @@ def run_funnel_job(
         "strategic_l2_bypass_rescue_map": strategic_l2_bypass_rescue_map,
         "strategic_l2_bypass_markup_symbols": strategic_l2_bypass_markup_symbols,
         "strategic_l2_bypass_reason_map": strategic_l2_bypass_reason_map,
+        # TradingAgents 精选池追踪
+        "trading_agents_extra_codes": trading_agents_extra_codes,
+        "trading_agents_extra_in_l1": trading_agents_extra_in_l1,
+        "trading_agents_extra_l4_triggers": trading_agents_extra_l4_triggers,
+        "trading_agents_extra_watch": trading_agents_extra_watch,
         # 阶段识别和退出信号
         "markup_symbols": markup_symbols,
         "accum_stage_map": accum_stage_map,
@@ -1950,6 +2014,7 @@ def run(
     strategic_l2_bypass_triggers = metrics.get("strategic_l2_bypass_triggers", {}) or {}
     strategic_l2_bypass_reason_map = metrics.get("strategic_l2_bypass_reason_map", {}) or {}
     strategic_l2_bypass_stage_map = metrics.get("strategic_l2_bypass_stage_map", {}) or {}
+    trading_agents_extra_codes = metrics.get("trading_agents_extra_codes", []) or []
     review_triggers = _merge_trigger_maps(triggers, bypass_triggers, strategic_l2_bypass_triggers)
     formal_hit_set = {str(code).strip() for hits in triggers.values() for code, _ in hits if str(code).strip()}
     l2_bypass_set = set(l2_bypass_pool)
@@ -1971,6 +2036,15 @@ def run(
         code_to_reasons.setdefault(code, [])
         code_to_trigger_keys.setdefault(code, [])
         code_to_total_score.setdefault(code, 0.0)
+    # TradingAgents 精选池：注入基础分数 + 标签
+    extra_bonus = float(os.getenv("FUNNEL_EXTRA_BONUS_SCORE", "15.0"))
+    for code in trading_agents_extra_codes:
+        code_to_reasons.setdefault(code, [])
+        code_to_trigger_keys.setdefault(code, [])
+        if code not in code_to_total_score or code_to_total_score[code] == 0.0:
+            code_to_total_score[code] = extra_bonus
+        if "TradingAgents" not in code_to_reasons[code]:
+            code_to_reasons[code].append("TradingAgents")
     _append_extra_reasons(code_to_reasons, strategic_l2_bypass_reason_map)
     _append_theme_reasons(code_to_reasons, theme_badge_map)
     _apply_theme_bonus_to_scores(code_to_total_score, theme_bonus_map)

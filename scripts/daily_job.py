@@ -406,8 +406,20 @@ def _run_signal_confirmation(
     try:
         from integrations.supabase_signal_pending import run_step2_5
 
-        triggers_raw = step2_details.get("triggers", {})
+        triggers_raw = dict(step2_details.get("triggers", {}))
         all_df_map = step2_details.get("all_df_map", {})
+        # 注入 TradingAgents 精选池哨兵追踪标的（无 L4 触发，但需要写 signal_pending 跨日跟踪）
+        _metrics = step2_details.get("metrics", {}) or {}
+        trading_agents_extra_watch = _metrics.get("trading_agents_extra_watch", []) or []
+        if trading_agents_extra_watch:
+            watch_scores = [(c, 0.0) for c in trading_agents_extra_watch]
+            triggers_raw.setdefault("TA_WATCH", [])
+            # 去重
+            existing_ta = {c for c, _ in triggers_raw["TA_WATCH"]}
+            for c, s in watch_scores:
+                if c not in existing_ta:
+                    triggers_raw["TA_WATCH"].append((c, s))
+                    existing_ta.add(c)
         if triggers_raw and all_df_map:
             confirmed_extra = run_step2_5(
                 signal_date=_latest_trade_date_str(),
