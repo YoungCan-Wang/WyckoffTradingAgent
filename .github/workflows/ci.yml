@@ -6,6 +6,7 @@ on:
     paths:
       - "**.py"
       - "pyproject.toml"
+      - "uv.lock"
       - "scripts/quality_gate.py"
       - "scripts/check_pr_policy.py"
       - "scripts/check_workflow_hygiene.py"
@@ -19,6 +20,7 @@ on:
     paths:
       - "**.py"
       - "pyproject.toml"
+      - "uv.lock"
       - "scripts/quality_gate.py"
       - "scripts/check_pr_policy.py"
       - "scripts/check_workflow_hygiene.py"
