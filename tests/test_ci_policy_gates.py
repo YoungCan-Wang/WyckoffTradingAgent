@@ -42,7 +42,7 @@ def test_pr_policy_still_blocks_dependabot_secret_body():
 
 
 def test_dependabot_relaxation_requires_dependency_files():
-    event = {"sender": {"login": "dependabot[bot]"}}
+    event = {"pull_request": {"user": {"login": "dependabot[bot]"}}, "sender": {"login": "YoungCan-Wang"}}
 
     assert _is_dependabot_event(event) is True
     assert _dependency_only_change(["web/package.json", "web/pnpm-lock.yaml"]) is True

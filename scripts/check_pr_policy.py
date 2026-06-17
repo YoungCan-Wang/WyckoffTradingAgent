@@ -151,9 +151,16 @@ def _load_event(args: argparse.Namespace) -> dict:
 
 
 def _is_dependabot_event(event: dict) -> bool:
-    sender = event.get("sender", {}) if isinstance(event, dict) else {}
-    login = sender.get("login") if isinstance(sender, dict) else ""
-    return str(login or "").lower() in DEPENDABOT_LOGINS
+    if not isinstance(event, dict):
+        return False
+    pull_request = event.get("pull_request", {})
+    pr_user = pull_request.get("user", {}) if isinstance(pull_request, dict) else {}
+    sender = event.get("sender", {})
+    logins = [
+        pr_user.get("login") if isinstance(pr_user, dict) else "",
+        sender.get("login") if isinstance(sender, dict) else "",
+    ]
+    return any(str(login or "").lower() in DEPENDABOT_LOGINS for login in logins)
 
 
 def _load_changed_files(args: argparse.Namespace) -> list[str]:
