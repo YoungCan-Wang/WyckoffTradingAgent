@@ -354,16 +354,16 @@ cd web/apps/web && npx vitest run -u
 
 ### Python 侧
 
-**位置**: `tests/test_holding_diagnostic.py`
+**位置**: `tests/core/test_holding_diagnostic.py`
 
 **运行**:
 ```bash
-pytest tests/test_holding_diagnostic.py -v
+pytest tests/core/test_holding_diagnostic.py -v
 ```
 
 **更新 golden file**:
 ```bash
-rm tests/golden/*.txt && pytest tests/test_holding_diagnostic.py -v
+rm tests/golden/*.txt && pytest tests/core/test_holding_diagnostic.py -v
 ```
 
 **辅助工具**:

@@ -19,7 +19,7 @@ from core.wyckoff_engine import FunnelResult
 from workflows.ai_candidate_allocation_config import ai_candidate_allocation_config_from_env
 from workflows.candidate_policy_config import candidate_policy_config_from_env
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 class TestAllocateAiCandidates:

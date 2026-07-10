@@ -61,6 +61,7 @@ pnpm -r exec tsc --noEmit                # typecheck
 - **No Streamlit in main** — Streamlit is no longer maintained on `main`; route product work through CF Pages, CLI, MCP, or GitHub Actions.
 - **Data isolation: Route A** — Signals are shared; portfolio and settings are per-user.
 - **Python ≥ 3.11**, **Node ≥ 20**, **pnpm** for web workspace.
+- The standalone `wiki_repo_new/` checkout is intentionally hidden and independently versioned; keep it ignored and do not merge it into `docs/`.
 
 ## Commit Messages
 

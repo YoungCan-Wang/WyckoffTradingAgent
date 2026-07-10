@@ -17,7 +17,6 @@ dependencies = ["{requirement}"]
 """,
         encoding="utf-8",
     )
-    (root / "requirements.txt").write_text(f"{requirement}\n", encoding="utf-8")
     (root / "web" / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n", encoding="utf-8")
     (root / "web" / "package.json").write_text(
         json.dumps({"dependencies": {"left-pad": npm_spec}}, indent=2),

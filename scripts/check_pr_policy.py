@@ -46,7 +46,6 @@ DEPENDENCY_FILE_NAMES = {
     "yarn.lock",
     "package-lock.json",
     "uv.lock",
-    "requirements.txt",
 }
 DEPENDABOT_LOGINS = {"dependabot[bot]", "dependabot-preview[bot]"}
 
