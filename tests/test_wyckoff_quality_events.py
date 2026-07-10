@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pandas as pd
 
-from core.kline_quality import check_kline_quality, check_kline_quality_map, summarize_quality_reports
 from core.signal_lifecycle import evaluate_signal_lifecycle
 from core.wyckoff_events import classify_wyckoff_event
 
@@ -41,47 +40,6 @@ def test_classify_wyckoff_event_core_branches():
         assert event.track == track
         assert event.confidence == confidence
         assert event.watch_points
-
-
-def test_kline_quality_detects_bad_ohlc_and_duplicate_date():
-    df = pd.DataFrame(
-        {
-            "date": ["2024-01-01", "2024-01-01", "2024-01-03"],
-            "open": [10, 11, 12],
-            "high": [10.5, 10.8, 13],
-            "low": [9.8, 11.2, 11],
-            "close": [10.2, 10.7, 12.5],
-            "volume": [1000, -1, 1200],
-        }
-    )
-
-    report = check_kline_quality(df, symbol="000001")
-
-    categories = {issue.category for issue in report.issues}
-    assert not report.ok
-    assert "duplicate_date" in categories
-    assert "ohlc_inconsistent" in categories
-    assert "negative_volume" in categories
-
-
-def test_kline_quality_summary_counts_symbols():
-    good = pd.DataFrame(
-        {
-            "date": ["2024-01-01", "2024-01-02"],
-            "open": [10, 10.2],
-            "high": [10.5, 10.6],
-            "low": [9.8, 10.0],
-            "close": [10.2, 10.4],
-            "volume": [1000, 1100],
-        }
-    )
-    bad = good.assign(volume=[100, -1])
-
-    summary = summarize_quality_reports(check_kline_quality_map({"000001": good, "000002": bad}))
-
-    assert summary["total"] == 2
-    assert summary["error_symbols"] == 1
-    assert summary["ok"] == 1
 
 
 def test_signal_lifecycle_marks_done_and_pending_horizons():

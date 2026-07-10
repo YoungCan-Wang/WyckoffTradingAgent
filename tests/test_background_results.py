@@ -453,7 +453,7 @@ def test_tool_registry_remembers_stock_diagnosis_handoff_without_status_poll():
 
 
 def test_local_db_chat_background_history_uses_shared_preview(tmp_path, monkeypatch):
-    from integrations import local_db, local_db_chat
+    from integrations import local_db
 
     _reset_local_db(local_db)
     monkeypatch.setattr("core.constants.LOCAL_DB_PATH", tmp_path / "background-chat.db")
@@ -461,7 +461,7 @@ def test_local_db_chat_background_history_uses_shared_preview(tmp_path, monkeypa
     try:
         local_db.init_db()
 
-        local_db_chat.save_background_task_result(
+        local_db.save_background_task_result(
             "bg_screen_chat",
             "screen_stocks",
             _screen_result(),

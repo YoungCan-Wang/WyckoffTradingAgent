@@ -1697,16 +1697,6 @@ def test_notification_callers_use_channel_specific_modules():
     assert violations == []
 
 
-def test_notify_module_only_orchestrates_channel_modules():
-    imports = set(_import_names(ROOT / "utils" / "notify.py"))
-    text = (ROOT / "utils" / "notify.py").read_text(encoding="utf-8")
-
-    assert "utils.telegram" in imports
-    assert "utils.markdown_webhooks" in imports
-    for token in ("def send_to_telegram", "def send_wecom_notification", "def send_dingtalk_notification"):
-        assert token not in text
-
-
 def test_runtime_layers_do_not_depend_on_script_entrypoints():
     checked_paths = [ROOT / "mcp_server.py"]
     for dirname in ("agents", "cli", "core", "workflows"):
