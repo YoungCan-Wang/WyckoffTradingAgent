@@ -11,6 +11,7 @@ from core.strategy_policy_display import (
     policy_governor_display,
 )
 from core.tail_buy.decision_semantics import tail_buy_execution_semantics
+from utils.json_text import parse_json_object as _json_map
 
 logger = logging.getLogger(__name__)
 
@@ -427,18 +428,6 @@ def _tail_buy_record(row: dict) -> dict:
 def _decision_display(decision: str, semantics: dict) -> str:
     label = str(semantics.get("execution_label") or "未知")
     return f"{decision}（{label}）" if decision else label
-
-
-def _json_map(raw: object) -> dict:
-    if isinstance(raw, dict):
-        return raw
-    if isinstance(raw, str) and raw.strip():
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError:
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
-    return {}
 
 
 def _json_list(raw: object) -> list:

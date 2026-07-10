@@ -57,7 +57,7 @@ export {
   checklistStatusLabel,
 } from './attribution-summary'
 export type { AttributionExecutionImpactInput, AttributionOperatorAction, AttributionOperatorSummaryInput } from './attribution-summary'
-export { formatPolicyWeightMetaText, policyExecutionModeLabel } from './policy-weight-meta'
+export { formatPolicyWeightMetaText, formatStrategyPolicyText, policyExecutionModeLabel } from './policy-weight-meta'
 export type { PolicyWeightMetaInput } from './policy-weight-meta'
 export { formatTailBuyPolicyWeightText, tailBuyPolicyWeightMultiplier } from './tail-buy-policy-weight'
 export type { TailBuyPolicyWeightFormatOptions, TailBuyPolicyWeightInput } from './tail-buy-policy-weight'

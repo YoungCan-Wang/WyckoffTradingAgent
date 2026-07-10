@@ -16,4 +16,4 @@ A-share **trading** defaults (quotas, hard stops, regime blocks) live mainly in:
 - `core/market_trade_mode.py` (NEUTRAL mainline_active, RISK_ON observe_only)
 - `.github/workflows/wyckoff_funnel.yml` and `tail_buy_1440.yml`
 
-Operator guide: [`docs/OPERATOR_PLAYBOOK.md`](../docs/OPERATOR_PLAYBOOK.md).
+Operator guide: [`docs/OPERATOR_PLAYBOOK.md`](../../docs/OPERATOR_PLAYBOOK.md).

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatPolicyWeightMetaText } from '@wyckoff/shared'
+import { formatPolicyWeightMetaText, formatStrategyPolicyText } from '@wyckoff/shared'
 
 describe('formatPolicyWeightMetaText', () => {
   it('formats snapshot policy metadata with active scope', () => {
@@ -94,5 +94,46 @@ describe('formatPolicyWeightMetaText', () => {
       execution_policy: 'shadow',
       execution_scope: 'tail_buy_and_funnel_shadow',
     })).toBe('（远端, 策略=shadow 对照(shadow), 范围=尾盘+漏斗shadow）')
+  })
+})
+
+describe('formatStrategyPolicyText', () => {
+  it('preserves token order and explicit label precedence', () => {
+    expect(formatStrategyPolicyText({
+      selection_action_summary: '候选源治理=降权 spring',
+      attribution_signal_weights: { spring: 0.8 },
+      policy_weight_active_scope: '尾盘+正式漏斗',
+      execution_policy: 'off',
+      execution_policy_label: '正式调权(on)',
+      dynamic_mode_label: '不应使用',
+      next_action: 'observe_only',
+      next_action_label: '人工复核后生效',
+    })).toBe('候选源治理=降权 spring / 归因调权 spring×0.80 / 正式调权(on) / 尾盘+正式漏斗 / 下一步=人工复核后生效')
+  })
+
+  it('suppresses the empty summary and default observe action', () => {
+    expect(formatStrategyPolicyText({
+      selection_action_summary: '候选源治理=无',
+      dynamic_mode: 'shadow',
+    })).toBe('shadow 对照(shadow)')
+  })
+
+  it('formats at most six finite attribution weights', () => {
+    expect(formatStrategyPolicyText({
+      attribution_signal_weights: {
+        spring: 1,
+        lps: 0.9,
+        sos: 0.8,
+        test: Number.NaN,
+        sc: 0.7,
+        ar: 0.6,
+        st: 0.5,
+        ut: 0.4,
+      },
+    })).toBe('归因调权 spring×1.00，lps×0.90，sos×0.80，sc×0.70，ar×0.60，st×0.50 / 未知模式')
+  })
+
+  it('returns empty text when policy data is absent', () => {
+    expect(formatStrategyPolicyText(null)).toBe('')
   })
 })

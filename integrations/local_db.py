@@ -1209,6 +1209,9 @@ def _prune_agent_memory(conn: sqlite3.Connection, *, fallback_keep_days: int) ->
     return deleted + cur.rowcount
 
 
+prune_agent_memory_for_connection = _prune_agent_memory
+
+
 def prune_memories(keep_days: int = 90) -> int:
     conn = get_db()
     with conn:

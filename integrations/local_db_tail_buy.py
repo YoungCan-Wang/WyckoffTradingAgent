@@ -1,14 +1,10 @@
-"""Local SQLite tail-buy history persistence."""
+"""Compatibility exports for local SQLite tail-buy history persistence."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from integrations.local_db import get_db
-
-# ---------------------------------------------------------------------------
-# Tail-buy history
-# ---------------------------------------------------------------------------
+from integrations.local_db import get_db, load_tail_buy_history
 
 
 def save_tail_buy_results(rows: list[dict]) -> int:
@@ -66,24 +62,4 @@ def _tail_buy_insert_values(r: dict) -> tuple[Any, ...]:
     )
 
 
-def load_tail_buy_history(
-    *,
-    run_date: str = "",
-    decision: str = "",
-    limit: int = 50,
-) -> list[dict]:
-    conn = get_db()
-    clauses: list[str] = []
-    params: list[Any] = []
-    if run_date:
-        clauses.append("run_date = ?")
-        params.append(run_date.strip())
-    if decision:
-        clauses.append("final_decision = ?")
-        params.append(decision.strip().upper())
-    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    cur = conn.execute(
-        f"SELECT * FROM tail_buy_history {where} ORDER BY run_date DESC, priority_score DESC LIMIT ?",
-        params + [min(max(limit, 1), 200)],
-    )
-    return [dict(r) for r in cur.fetchall()]
+__all__ = ["get_db", "save_tail_buy_results", "load_tail_buy_history"]

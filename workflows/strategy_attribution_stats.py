@@ -10,6 +10,7 @@ from datetime import date
 from typing import Any
 
 from core.strategy_policy_governor import build_strategy_policy_governor, governor_recommendation_rows
+from utils.json_text import parse_json_object as _json_map
 
 
 def build_strategy_attribution_payload(
@@ -258,18 +259,6 @@ _RANKED_KEYS = [
     "candidate_lane",
     "entry_type",
 ]
-
-
-def _json_map(raw: Any) -> dict[str, Any]:
-    if isinstance(raw, dict):
-        return raw
-    if isinstance(raw, str) and raw.strip():
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError:
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
-    return {}
 
 
 def _str_list(raw: Any) -> list[str]:

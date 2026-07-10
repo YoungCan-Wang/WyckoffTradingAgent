@@ -1,5 +1,5 @@
 import { BellPlus, Plus, ShieldAlert } from 'lucide-react'
-import { attributionNextActionLabel, policyExecutionModeLabel, type AnalyzeStockResult, type ScreenStockItem, type StrategyDecisionResult } from '@wyckoff/shared'
+import { formatStrategyPolicyText, type AnalyzeStockResult, type ScreenStockItem, type StrategyDecisionResult } from '@wyckoff/shared'
 import { MarkdownContent } from '@/components/markdown'
 import { ScreenResultCard } from '@/components/screen-result-card'
 import { asRecord, normalizeStockCode, sanitizeText } from './utils'
@@ -167,7 +167,7 @@ function StrategyResultCard({
 }
 
 function StrategyPolicyLine({ policy }: { policy?: StrategyDecisionResult['strategy_policy'] }) {
-  const text = strategyPolicyText(policy)
+  const text = formatStrategyPolicyText(policy)
   if (!text) return null
   return (
     <div className="rounded-md border border-amber-200/70 bg-amber-50/70 px-2 py-1.5 text-[11px] leading-relaxed text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100">
@@ -175,30 +175,6 @@ function StrategyPolicyLine({ policy }: { policy?: StrategyDecisionResult['strat
       <span className="break-words">{text}</span>
     </div>
   )
-}
-
-function strategyPolicyText(policy?: StrategyDecisionResult['strategy_policy']): string {
-  if (!policy) return ''
-  const parts: string[] = []
-  const summary = (policy.selection_action_summary || '').trim()
-  if (summary && summary !== '候选源治理=无') parts.push(summary)
-  const weights = policy.attribution_signal_weights || policy.signal_weights
-  if (weights && Object.keys(weights).length > 0) parts.push(`归因调权 ${formatPolicyWeights(weights)}`)
-  const scope = (policy.policy_weight_active_scope || '').trim()
-  const mode = policy.execution_policy_label || policy.dynamic_mode_label || policyExecutionModeLabel(policy.execution_policy || policy.dynamic_mode)
-  const action = policy.next_action_label || attributionNextActionLabel(policy.next_action)
-  if (mode) parts.push(mode)
-  if (scope) parts.push(scope)
-  if (action && action !== '保持观察') parts.push(`下一步=${action}`)
-  return parts.join(' / ')
-}
-
-function formatPolicyWeights(weights: Record<string, number>): string {
-  return Object.entries(weights)
-    .filter(([, value]) => Number.isFinite(value))
-    .slice(0, 6)
-    .map(([key, value]) => `${key}×${value.toFixed(2)}`)
-    .join('，')
 }
 
 function StrategyActionList({

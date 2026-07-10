@@ -29,6 +29,7 @@ from integrations.recommendation_performance import (
 )
 from integrations.recommendation_tracking_common import chunked, ohlc_map_from_tickflow_hist, recommend_date_to_yyyymmdd
 from integrations.supabase_base import create_admin_client, is_admin_configured
+from utils.json_text import parse_json_object as _json_map
 
 _RANKING_STRATEGIES = (
     "score_only",
@@ -888,18 +889,6 @@ def _merge_quality_features(base: dict[str, Any], overlay: dict[str, Any]) -> di
         if value:
             merged[key] = value
     return merged
-
-
-def _json_map(raw: Any) -> dict[str, Any]:
-    if isinstance(raw, dict):
-        return raw
-    if isinstance(raw, str) and raw.strip():
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError:
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
-    return {}
 
 
 def _grade(raw: Any) -> str:

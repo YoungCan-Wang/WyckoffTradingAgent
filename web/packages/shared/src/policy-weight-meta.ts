@@ -2,6 +2,19 @@ import { attributionFormalDynamicReasonLabel, attributionNextActionLabel } from 
 
 export type PolicyWeightMetaInput = Record<string, unknown> | null | undefined
 
+interface StrategyPolicyTextInput {
+  selection_action_summary?: string | null
+  attribution_signal_weights?: Record<string, number> | null
+  signal_weights?: Record<string, number> | null
+  policy_weight_active_scope?: string | null
+  execution_policy_label?: string | null
+  dynamic_mode_label?: string | null
+  execution_policy?: string | null
+  dynamic_mode?: string | null
+  next_action_label?: string | null
+  next_action?: string | null
+}
+
 export function formatPolicyWeightMetaText(meta: PolicyWeightMetaInput): string {
   if (!meta) return ''
   const tokens = policySourceTokens(meta)
@@ -12,6 +25,30 @@ export function formatPolicyWeightMetaText(meta: PolicyWeightMetaInput): string 
     tokens.push(`正式dynamic=${policyFormalDynamicLabel(meta)}`)
   }
   return tokens.length ? `（${tokens.join(', ')}）` : ''
+}
+
+export function formatStrategyPolicyText(policy?: StrategyPolicyTextInput | null): string {
+  if (!policy) return ''
+  const parts: string[] = []
+  const summary = (policy.selection_action_summary || '').trim()
+  if (summary && summary !== '候选源治理=无') parts.push(summary)
+  const weights = policy.attribution_signal_weights || policy.signal_weights
+  if (weights && Object.keys(weights).length > 0) parts.push(`归因调权 ${formatPolicyWeights(weights)}`)
+  const scope = (policy.policy_weight_active_scope || '').trim()
+  const mode = policy.execution_policy_label || policy.dynamic_mode_label || policyExecutionModeLabel(policy.execution_policy || policy.dynamic_mode)
+  const action = policy.next_action_label || attributionNextActionLabel(policy.next_action)
+  if (mode) parts.push(mode)
+  if (scope) parts.push(scope)
+  if (action && action !== '保持观察') parts.push(`下一步=${action}`)
+  return parts.join(' / ')
+}
+
+function formatPolicyWeights(weights: Record<string, number>): string {
+  return Object.entries(weights)
+    .filter(([, value]) => Number.isFinite(value))
+    .slice(0, 6)
+    .map(([key, value]) => `${key}×${value.toFixed(2)}`)
+    .join('，')
 }
 
 function policySourceTokens(meta: Record<string, unknown>): string[] {

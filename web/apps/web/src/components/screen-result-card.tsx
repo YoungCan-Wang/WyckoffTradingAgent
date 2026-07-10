@@ -1,7 +1,7 @@
 import { memo, useState } from 'react'
 import { Link } from 'react-router'
 import { BellPlus, ChevronRight } from 'lucide-react'
-import { attributionNextActionLabel, policyExecutionModeLabel, type ScreenResult, type ScreenStockItem } from '@wyckoff/shared'
+import { formatStrategyPolicyText, type ScreenResult, type ScreenStockItem } from '@wyckoff/shared'
 import { financialValueClass } from '@/lib/financial-colors'
 
 type ScreenStrategyPolicy = NonNullable<ScreenResult['strategy_policy']>
@@ -76,7 +76,7 @@ export const ScreenResultCard = memo(function ScreenResultCard({ data, onPinStoc
 })
 
 function StrategyPolicyLine({ policy }: { policy?: ScreenStrategyPolicy | null }) {
-  const text = strategyPolicyText(policy)
+  const text = formatStrategyPolicyText(policy)
   if (!text) return null
   return (
     <div className="mb-2 px-2 text-[11px] leading-relaxed text-amber-700 dark:text-amber-200">
@@ -84,28 +84,4 @@ function StrategyPolicyLine({ policy }: { policy?: ScreenStrategyPolicy | null }
       <span className="break-words">{text}</span>
     </div>
   )
-}
-
-function strategyPolicyText(policy?: ScreenStrategyPolicy | null): string {
-  if (!policy) return ''
-  const parts: string[] = []
-  const summary = (policy.selection_action_summary || '').trim()
-  if (summary && summary !== '候选源治理=无') parts.push(summary)
-  const weights = policy.attribution_signal_weights || policy.signal_weights
-  if (weights && Object.keys(weights).length > 0) parts.push(`归因调权 ${formatPolicyWeights(weights)}`)
-  const scope = (policy.policy_weight_active_scope || '').trim()
-  const mode = policy.execution_policy_label || policy.dynamic_mode_label || policyExecutionModeLabel(policy.execution_policy || policy.dynamic_mode)
-  const action = policy.next_action_label || attributionNextActionLabel(policy.next_action)
-  if (mode) parts.push(mode)
-  if (scope) parts.push(scope)
-  if (action && action !== '保持观察') parts.push(`下一步=${action}`)
-  return parts.join(' / ')
-}
-
-function formatPolicyWeights(weights: Record<string, number>): string {
-  return Object.entries(weights)
-    .filter(([, value]) => Number.isFinite(value))
-    .slice(0, 6)
-    .map(([key, value]) => `${key}×${value.toFixed(2)}`)
-    .join('，')
 }

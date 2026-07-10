@@ -36,6 +36,29 @@ def _benchmark_with_last_drop(drop_pct: float) -> pd.DataFrame:
     return _benchmark_df(closes)
 
 
+# ── utils.json_text ──
+
+
+class TestJsonText:
+    def test_parse_json_object_preserves_dict_identity(self):
+        from utils.json_text import parse_json_object
+
+        raw = {"key": {"nested": True}}
+
+        assert parse_json_object(raw) is raw
+
+    def test_parse_json_object_parses_object_string(self):
+        from utils.json_text import parse_json_object
+
+        assert parse_json_object('{"key": "value"}') == {"key": "value"}
+
+    def test_parse_json_object_rejects_invalid_or_non_object_values(self):
+        from utils.json_text import parse_json_object
+
+        for raw in ('["value"]', "not-json", "", "   ", None, 42, ["value"]):
+            assert parse_json_object(raw) == {}
+
+
 # ── utils.env ──
 
 
