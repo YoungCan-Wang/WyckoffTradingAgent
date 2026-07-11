@@ -7,6 +7,7 @@ import {
   normalizeTickFlowSymbol,
   PROVIDER_BASE_URLS,
   PROVIDER_DEFAULT_MODELS,
+  isAllowedModelBaseUrl,
   type Provider,
 } from '@wyckoff/shared'
 import { authMiddleware, type AuthContext } from '../middleware/auth'
@@ -91,16 +92,6 @@ const DATA_SOURCE_TEST_SCHEMA = z.object({
   tickflow_api_key: z.string().trim().min(1),
 })
 
-const ALLOWED_MODEL_ORIGINS = new Set([
-  'https://api.1route.dev',
-  'https://www.1route.dev',
-  'https://api.openai.com',
-  'https://generativelanguage.googleapis.com',
-  'https://api.deepseek.com',
-  'https://api.anthropic.com',
-  'http://token.thegun.cn:8317',
-])
-
 function normalizeModelConfig(config: ModelTestConfig): Required<ModelTestConfig> {
   const provider = config.provider
   return {
@@ -119,12 +110,7 @@ function providerDefaultBaseUrl(provider: Provider): string {
 
 function allowedProviderBaseUrl(provider: Provider, raw: string): string {
   const baseUrl = raw || providerDefaultBaseUrl(provider)
-  try {
-    const url = new URL(baseUrl)
-    return ALLOWED_MODEL_ORIGINS.has(url.origin) ? baseUrl : ''
-  } catch {
-    return ''
-  }
+  return isAllowedModelBaseUrl(baseUrl) ? baseUrl : ''
 }
 
 function providerModel(config: Required<ModelTestConfig>) {

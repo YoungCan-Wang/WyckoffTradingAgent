@@ -1,5 +1,14 @@
 export type { UserSettings, PortfolioState, Position, TradeOrder } from './types'
-export { PROVIDERS, PROVIDER_LABELS, PROVIDER_BASE_URLS, PROVIDER_DEFAULT_MODELS, TABLE_NAMES } from './constants'
+export {
+  ALLOWED_MODEL_BASE_URLS,
+  ALLOWED_PROXY_TARGET_ORIGINS,
+  PROVIDERS,
+  PROVIDER_LABELS,
+  PROVIDER_BASE_URLS,
+  PROVIDER_DEFAULT_MODELS,
+  TABLE_NAMES,
+  isAllowedModelBaseUrl,
+} from './constants'
 export type { Provider } from './constants'
 export {
   normalizeGeminiChunk,

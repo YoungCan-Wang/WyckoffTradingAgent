@@ -1,6 +1,7 @@
 import {
   normalizeGeminiStream,
 } from '../../../packages/shared/src/gemini-sse-normalize'
+import { ALLOWED_PROXY_TARGET_ORIGINS } from '../../../packages/shared/src/constants'
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -17,18 +18,7 @@ const FORWARD_HEADERS = new Set([
   'anthropic-version',
 ])
 
-const ALLOWED_TARGET_ORIGINS = new Set([
-  'https://api.1route.dev',
-  'https://www.1route.dev',
-  'https://api.openai.com',
-  'https://generativelanguage.googleapis.com',
-  'https://api.deepseek.com',
-  'https://api.anthropic.com',
-  'https://token-plan-sgp.xiaomimimo.com',
-  'http://token.thegun.cn:8317',
-  'https://api.tickflow.org',
-  'https://api.tushare.pro',
-])
+const ALLOWED_TARGET_ORIGINS: Set<string> = new Set(ALLOWED_PROXY_TARGET_ORIGINS)
 
 const JSON_CONTENT_RE = /\bapplication\/json\b/i
 const SSE_CONTENT_RE = /\btext\/event-stream\b/i

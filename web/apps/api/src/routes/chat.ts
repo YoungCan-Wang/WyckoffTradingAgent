@@ -18,6 +18,7 @@ import {
   execSearchStock,
   execStrategyDecision,
   execViewPortfolio,
+  ALLOWED_PROXY_TARGET_ORIGINS,
   normalizeGeminiStream,
   PROVIDER_BASE_URLS,
   PROVIDER_DEFAULT_MODELS,
@@ -87,18 +88,7 @@ type ChatRateResult = { ok: true } | { ok: false; message: string }
 
 const rateStates = new Map<string, ChatRateState>()
 const ALLOWED_URL_RE = /^https?:\/\//i
-const ALLOWED_TARGET_ORIGINS = new Set([
-  'https://api.1route.dev',
-  'https://www.1route.dev',
-  'https://api.openai.com',
-  'https://generativelanguage.googleapis.com',
-  'https://api.deepseek.com',
-  'https://api.anthropic.com',
-  'https://token-plan-sgp.xiaomimimo.com',
-  'http://token.thegun.cn:8317',
-  'https://api.tickflow.org',
-  'https://api.tushare.pro',
-])
+const ALLOWED_TARGET_ORIGINS: Set<string> = new Set(ALLOWED_PROXY_TARGET_ORIGINS)
 const ONE_ROUTE_ORIGINS = new Set(['https://api.1route.dev', 'https://www.1route.dev'])
 
 const WYCKOFF_CHAT_SYSTEM_PROMPT = `# 角色设定
