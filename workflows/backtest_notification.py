@@ -251,6 +251,7 @@ def build_card(cells: list[BacktestCell], *, market: Market, run_url: str, top_n
     return {
         "msg_type": "interactive",
         "card": {
+            "config": {"wide_screen_mode": True},
             "header": {
                 "title": {"tag": "plain_text", "content": _MARKET_TITLE[market]},
                 "template": template,

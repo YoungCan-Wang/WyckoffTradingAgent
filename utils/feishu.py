@@ -9,16 +9,33 @@ import time
 import requests
 
 import utils.feishu_backtest_card
+import utils.feishu_report_card
 import utils.feishu_tail_buy_card
 import utils.feishu_text
 from integrations.tickflow_notice import append_tickflow_limit_hint
 
 
 def _post_card(webhook_url: str, title: str, chunk: str) -> tuple[bool, str]:
+    elements = utils.feishu_report_card.build_report_card_elements(chunk)
     payload = {
         "msg_type": "interactive",
         "card": {
-            "header": {"title": {"tag": "plain_text", "content": title}},
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": title},
+                "template": utils.feishu_report_card.report_card_template(title, chunk),
+            },
+            "elements": elements,
+        },
+    }
+    return _post_interactive_payload(webhook_url, payload, timeout=10)
+
+
+def _post_legacy_card(webhook_url: str, title: str, chunk: str) -> tuple[bool, str]:
+    payload = {
+        "msg_type": "interactive",
+        "card": {
+            "header": {"title": {"tag": "plain_text", "content": title}, "template": "blue"},
             "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": chunk}}],
         },
     }
@@ -34,6 +51,7 @@ def _post_rich_card(
     payload = {
         "msg_type": "interactive",
         "card": {
+            "config": {"wide_screen_mode": True},
             "header": {
                 "title": {"tag": "plain_text", "content": title},
                 "template": template,
@@ -140,6 +158,11 @@ def _send_card_chunk(webhook_url: str, title: str, chunk: str, idx: int, total: 
             f"attempt={attempt}, err={err}, retry_in={sleep_s:.1f}s"
         )
         time.sleep(sleep_s)
+    fallback_ok, fallback_err = _post_legacy_card(webhook_url, part_title, chunk)
+    if fallback_ok:
+        print(f"[feishu] rich layout rejected; sent legacy part {idx}/{total}")
+        return True
+    last_err = f"{last_err}; fallback={fallback_err}"
     print(f"Feishu notification failed on part {idx}/{total}: {last_err}")
     return False
 

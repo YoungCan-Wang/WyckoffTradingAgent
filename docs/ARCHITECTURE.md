@@ -660,6 +660,10 @@ signal_pending (pending/confirmed)
 
 ## Pipeline（定时任务）
 
+### 飞书报告卡片
+
+所有调用 `send_feishu_notification()` 的 Markdown 报告统一经过 `utils/feishu_report_card.py`：自动选择语义标题色、提取摘要区、按标题拆分段落、突出风险提示，并使用宽屏卡片。尾盘与回测继续使用各自的专用指标卡片；新版通用布局若被飞书拒绝，会自动回退到原单块 Markdown 卡片，避免样式升级影响定时通知可靠性。
+
 ### GitHub Actions 主要工作流
 
 | 工作流 | 时间（北京） | 说明 |
