@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 
+from core.candidate_report_semantics import candidate_reason_payload, optional_candidate_score
 from core.constants import TABLE_RECOMMENDATION_TRACKING, TABLE_SIGNAL_PENDING
 from core.holding_time_policy import is_mainline_track
 from core.tail_buy.strategy import TailBuyCandidate, pick_tail_candidates
@@ -158,6 +159,7 @@ def _fetch_signal_pending_rows(cutoff_date: str, *, exact_date: str | None = Non
             .select(
                 "code,name,signal_type,signal_score,status,signal_date,regime,snap_support,snap_ma20,"
                 "snap_close,snap_ma50,strategy_version,candidate_lane,entry_type,signal_key,candidate_status,"
+                "candidate_reasons,candidate_theme,candidate_phase,candidate_role,"
                 "mainline_score,theme_score,stock_role_score,quality_score,timing_score"
             )
             .in_("status", ["pending", "confirmed"])
@@ -196,7 +198,8 @@ def _fetch_recommendation_review_rows(cutoff_recommend_date: int) -> list[dict]:
             .select(
                 "code,name,recommend_date,initial_price,current_price,change_pct,funnel_score,"
                 "recommend_count,is_ai_recommended,rag_vetoed,candidate_lane,entry_type,signal_key,"
-                "candidate_status,mainline_score,theme_score,stock_role_score,quality_score,timing_score,"
+                "candidate_status,candidate_reasons,candidate_theme,candidate_phase,candidate_role,"
+                "mainline_score,theme_score,stock_role_score,quality_score,timing_score,"
                 "mfe_pct,mae_pct"
             )
             .gte("recommend_date", cutoff_recommend_date)
@@ -273,6 +276,13 @@ def _recommendation_candidate(row: dict, target_signal_date: str, signal_type: s
         entry_type="deep_pullback" if signal_type == "rec_deep_pullback" else "momentum_continuation",
         signal_key=signal_type,
         candidate_status="推荐后深跌复核" if signal_type == "rec_deep_pullback" else "推荐后强趋势延续",
+        candidate_reasons=candidate_reason_payload(row.get("candidate_reasons")),
+        candidate_theme=str(row.get("candidate_theme", "") or "").strip(),
+        candidate_phase=str(row.get("candidate_phase", "") or "").strip(),
+        candidate_role=str(row.get("candidate_role", "") or "").strip(),
+        mainline_score=optional_candidate_score(row.get("mainline_score")),
+        theme_score=optional_candidate_score(row.get("theme_score")),
+        stock_role_score=optional_candidate_score(row.get("stock_role_score")),
         snap={
             "snap_support": current_price,
             "snap_close": current_price,

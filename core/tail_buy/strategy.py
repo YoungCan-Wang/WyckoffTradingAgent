@@ -15,6 +15,7 @@ from typing import Any
 import pandas as pd
 
 from core._price_math import ret_pct as _ret_pct
+from core.candidate_report_semantics import candidate_reason_payload, optional_candidate_score
 from core.cn_boards import cn_board
 from core.intraday_analysis import (
     compute_effort_vs_result,
@@ -163,6 +164,13 @@ def pick_tail_candidates(
             entry_type=str(row.get("entry_type", "") or "").strip(),
             signal_key=str(row.get("signal_key", "") or "").strip(),
             candidate_status=str(row.get("candidate_status", "") or "").strip(),
+            candidate_reasons=candidate_reason_payload(row.get("candidate_reasons")),
+            candidate_theme=str(row.get("candidate_theme", "") or "").strip(),
+            candidate_phase=str(row.get("candidate_phase", "") or "").strip(),
+            candidate_role=str(row.get("candidate_role", "") or "").strip(),
+            mainline_score=optional_candidate_score(row.get("mainline_score")),
+            theme_score=optional_candidate_score(row.get("theme_score")),
+            stock_role_score=optional_candidate_score(row.get("stock_role_score")),
             snap={k: v for k, v in row.items() if k.startswith("snap_")},
         )
         old = by_code.get(code)
@@ -911,6 +919,8 @@ def build_llm_prompt(
     system_prompt = (
         "你是A股尾盘买入策略二判助手。"
         "你只能在 BUY/WATCH/SKIP 中选择一个结论，且必须返回 JSON。"
+        "candidate_theme/candidate_phase/candidate_role 是程序确定字段，只能原样使用，不得重判或编造。"
+        "主线核心只提高同等条件下的优先级，不能覆盖规则硬闸；confirmed 也不自动等于 BUY。"
         "若 day_low_breached_support=true、tail_blowoff_reversal=true、缺少支撑锚点或防守水温单EVR，必须选择 SKIP。"
         "若 daily_trap_pressure=true，不能选择 BUY，只能 WATCH 或 SKIP。"
         "禁止输出投资建议免责声明，禁止输出 markdown。"
@@ -918,6 +928,10 @@ def build_llm_prompt(
     user_prompt = (
         f"策略风格: {style_desc}\n"
         f"股票: {candidate.code} {candidate.name}\n"
+        f"主线语义: theme={candidate.candidate_theme or '-'}, phase={candidate.candidate_phase or '-'}, "
+        f"role={candidate.candidate_role or '-'}\n"
+        f"主线评分: mainline={candidate.mainline_score}, theme={candidate.theme_score}, "
+        f"role={candidate.stock_role_score}\n"
         f"信号: status={candidate.status}, type={candidate.signal_type}, lane={candidate.candidate_lane or '-'}, "
         f"entry={candidate.entry_type or '-'}, regime={candidate.market_regime or '-'}, "
         f"signal_score={candidate.signal_score:.2f}\n"

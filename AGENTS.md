@@ -63,6 +63,14 @@ pnpm -r exec tsc --noEmit                # typecheck
 - **Python ≥ 3.11**, **Node ≥ 20**, **pnpm** for web workspace.
 - The standalone `wiki_repo_new/` checkout is intentionally hidden and independently versioned; keep it ignored and do not merge it into `docs/`.
 
+## Documentation Synchronization
+
+- Current code, workflow configuration, and live data contracts are the source of truth. Do not preserve documentation text that conflicts with implementation.
+- Every change to strategy semantics, report fields, prompts, scheduled workflows, environment variables, SQL tables, CLI/MCP/Web tools, or operational behavior must update the affected `README*`, `GLOSSARY.md`, and `docs/` pages in the same change.
+- The independent `wiki_repo_new/` repository must be reviewed for the same change and committed separately when affected. Keep its content aligned with code rather than copying stale prose from `docs/`.
+- Before submission, search documentation for renamed files, removed symbols, changed defaults, and old execution wording. In particular, keep research states (`pending`, `confirmed`, `起跳板`) distinct from executable decisions (`BUY` after market and OMS gates).
+- Do not commit one-off SQL migration files after the migration has been applied unless the repository explicitly adopts migration history as a maintained product artifact.
+
 ## Commit Messages
 
 Use conventional prefixes: `feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`.

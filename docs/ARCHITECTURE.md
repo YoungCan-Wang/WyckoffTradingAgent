@@ -113,7 +113,7 @@
 
 ### 三通道复用
 
-React Web、CLI、MCP 共享核心金融引擎、行情/存储集成和部分业务能力，但不强行共享同一套 runtime 或同一份 System Prompt。CLI / MCP 主要复用 `agents/chat_tools.py`；Web 读盘室由 `web/apps/api/src/routes/chat.ts` 承载 agent loop，工具实现集中在 `web/packages/shared/src/chat-tools.ts`，前端用 `@ai-sdk/react` 渲染 UIMessage parts。
+React Web、CLI、MCP 共享核心金融引擎、行情/存储集成和部分业务能力，但不强行共享同一套 runtime 或同一份 System Prompt。CLI / MCP 的 Python 工具按职责拆在 `agents/diagnosis_tools.py`、`agents/screen_tools.py`、`agents/report_tools.py`、`agents/strategy_tools.py` 等模块；Web 读盘室由 `web/apps/api/src/routes/chat.ts` 承载 agent loop，工具实现集中在 `web/packages/shared/src/chat-tools.ts`，前端用 `@ai-sdk/react` 渲染 UIMessage parts。
 
 | | React Web (CF Pages) | CLI（TUI） | MCP Server |
 |---|---|---|---|
@@ -542,15 +542,15 @@ CREATE TABLE chat_log (
 |---|------|
 | `schema_version` | 迁移版本管理（当前 v7） |
 | `agent_memory_fts` | FTS5 全文检索索引（自动同步） |
-| `recommendation_tracking` | 形态复盘镜像 |
-| `signal_pending` | 信号池镜像 |
+| `recommendation_tracking` | 形态复盘镜像；主线候选保存主题、阶段、角色与评分 |
+| `signal_pending` | 信号池镜像；跨日携带主线语义供 Step3/尾盘使用 |
 | `market_signal_daily` | 大盘信号镜像 |
 | `portfolio` | 持仓元数据镜像 |
 | `portfolio_position` | 持仓明细镜像 |
 | `agent_memory` | 跨会话 Agent 记忆 |
 | `sync_meta` | 同步元数据（每表最后同步时间） |
 | `chat_log` | 对话日志（用户输入 + LLM 输出 + token + metadata） |
-| `tail_buy_history` | 尾盘策略执行历史 |
+| `tail_buy_history` | 尾盘策略执行历史；保存决策时的主线语义与评分快照 |
 | `background_task_result` | 后台任务结果缓存 |
 
 ### Supabase → SQLite 同步
@@ -588,7 +588,7 @@ Supabase 不可达时静默跳过，使用本地陈旧数据。`wyckoff sync` �
 `core/signal_confirmation.py`，L4 信号经 1-3 天价格确认：
 
 ```
-pending ──(价格确认)──→ confirmed（可操作）
+pending ──(价格确认)──→ confirmed（研究确认，仍需尾盘 BUY 与市场闸门）
    └──(超时)──→ expired（失效）
 ```
 
@@ -644,12 +644,15 @@ signal_pending (pending/confirmed)
   │
   ├─→ 第二阶段：LLM 复判（Top N 候选）
   │   输入：规则特征 + 5 分钟摘要 + 信号上下文
+  │         + candidate_theme / candidate_phase / candidate_role
   │   输出：{"decision":"BUY|WATCH|SKIP","reason":"...","confidence":0.8}
   │
   ├─→ 规则 × LLM 合并 → 最终排序
   │
   └─→ 推送飞书 / Telegram
 ```
+
+主线主题、阶段和角色由程序确定，LLM 只能原样引用。`confirmed`、起跳板和主线核心均不自动等于 BUY；模型不计算金额、仓位比例或股数，执行规模由 OMS 决定。
 
 ### 持仓监控
 

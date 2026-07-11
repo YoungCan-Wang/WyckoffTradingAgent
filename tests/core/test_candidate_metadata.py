@@ -65,3 +65,22 @@ def test_candidate_metadata_signal_key_prefers_structured_signal_over_display_te
 
     assert metadata["300308"]["entry_type"] == "主线回踩MA20"
     assert metadata["300308"]["signal_key"] == "mainline"
+
+
+def test_candidate_metadata_materializes_report_semantics() -> None:
+    metadata = build_candidate_metadata_map(
+        [{"code": "300308", "entry_type": "mainline", "signal_key": "mainline", "score": 86.0}],
+        [
+            {
+                "code": "300308",
+                "theme": "光模块",
+                "status": "强主线分歧",
+                "stock_role_score": 0.82,
+                "mainline_score": 0.86,
+            }
+        ],
+    )
+
+    assert metadata["300308"]["candidate_theme"] == "光模块"
+    assert metadata["300308"]["candidate_phase"] == "分歧机会"
+    assert metadata["300308"]["candidate_role"] == "主线核心"

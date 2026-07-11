@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from core.candidate_report_semantics import candidate_semantic_parts
 from core.execution_playbook import tail_buy_playbook_lines
 from core.strategy_policy_display import format_policy_meta_text, format_policy_weight_text
 from core.tail_buy.decision_semantics import HIGH_RISK_MOMENTUM_SIGNALS, is_limit_up_candidate
@@ -67,9 +68,19 @@ def _item_line(item: TailBuyCandidate) -> str:
     llm_tag = f" | AI:{item.llm_decision}" if item.llm_decision else ""
     llm_reason = f" | {item.llm_reason}" if item.llm_reason else ""
     add_tag = "[加仓] " if item.signal_type == "holding" else ""
+    semantic = candidate_semantic_parts(
+        candidate_reasons=item.candidate_reasons,
+        candidate_status=item.candidate_status,
+        stock_role_score=item.stock_role_score,
+        candidate_lane=item.candidate_lane,
+        explicit_theme=item.candidate_theme,
+        explicit_phase=item.candidate_phase,
+        explicit_role=item.candidate_role,
+    )
+    semantic_text = f" | {' / '.join(semantic)}" if semantic else ""
     return (
         f"- {add_tag}{item.code} {item.name} | priority={item.priority_score:.1f} | "
-        f"rule={item.rule_decision}({item.rule_score:.1f}){llm_tag} | {reasons}{llm_reason}"
+        f"rule={item.rule_decision}({item.rule_score:.1f}){llm_tag}{semantic_text} | {reasons}{llm_reason}"
     )
 
 

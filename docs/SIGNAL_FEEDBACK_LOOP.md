@@ -117,6 +117,8 @@ uv run python scripts/signal_feedback_job.py
 
 主线引擎不复用 `external_seed_observations.watch_status` 表示状态；它通过 `candidate_lane=mainline`、`candidate_status=主线买点候选/主线观察/过热不追` 和 `mainline_score` 等字段进入推荐与信号元数据。
 
+为保证报告与收益归因可审计，主线候选还会把 `candidate_theme / candidate_phase / candidate_role` 显式写入 `recommendation_tracking` 和 `signal_pending`。尾盘 BUY 再把这三个字段及 `mainline_score / theme_score / stock_role_score` 固化到 `tail_buy_history`；这些字段由程序生成，模型只解释、不重判。
+
 当外部观察名单触发 L4 且没有进入正式候选时，系统会补写 `signal_observations`，`source=external_seed:<source>`，`selection_mode=external_seed_shadow`。这部分只用于后续 outcome 复盘，不影响真实推荐和 AI 候选池。
 
 ## L2 旁路 Shadow

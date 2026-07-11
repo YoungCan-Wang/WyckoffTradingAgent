@@ -42,10 +42,20 @@ def test_tail_buy_persist_row_serializes_reasons_and_features() -> None:
     started_at = datetime(2026, 6, 22, 14, 0, tzinfo=TZ)
     candidate = _candidate()
     candidate.features["daily_trap_reason"] = "日线放量上影(2.6x)"
+    candidate.candidate_theme = "光模块"
+    candidate.candidate_phase = "分歧机会"
+    candidate.candidate_role = "主线核心"
+    candidate.mainline_score = 0.86
+    candidate.theme_score = 0.8
+    candidate.stock_role_score = 0.82
 
     row = delivery.tail_buy_persist_row(candidate, started_at)
 
     assert row["initial_price"] == 12.34
+    assert row["candidate_theme"] == "光模块"
+    assert row["candidate_phase"] == "分歧机会"
+    assert row["candidate_role"] == "主线核心"
+    assert row["mainline_score"] == 0.86
     assert json.loads(row["rule_reasons"]) == ["站稳VWAP", "尾盘放量"]
     features = json.loads(row["features_json"])
     assert features["vwap"] == 12.1
@@ -53,6 +63,9 @@ def test_tail_buy_persist_row_serializes_reasons_and_features() -> None:
     assert features["execution_label"] == "可执行买入"
     assert features["execution_status"] == "executable_buy"
     assert features["orderable"] is True
+    assert features["candidate_theme"] == "光模块"
+    assert features["candidate_phase"] == "分歧机会"
+    assert features["candidate_role"] == "主线核心"
 
 
 def test_tail_buy_persist_row_downgrades_limit_up_candidate_to_watch_only() -> None:

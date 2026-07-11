@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from core.candidate_report_semantics import candidate_semantic_parts
 from core.candidate_tracks import normalize_candidate_track
 from tools.debug_io import dump_model_input
 from tools.report_builder import generate_stock_payload
@@ -164,6 +165,17 @@ def _track_key(row: pd.Series) -> str:
 
 def _policy_text(row: pd.Series) -> str | None:
     parts = []
+    semantic = candidate_semantic_parts(
+        candidate_reasons=row.get("candidate_reasons"),
+        candidate_status=row.get("candidate_status"),
+        stock_role_score=row.get("stock_role_score"),
+        candidate_lane=row.get("candidate_lane"),
+        explicit_theme=row.get("candidate_theme"),
+        explicit_phase=row.get("candidate_phase"),
+        explicit_role=row.get("candidate_role"),
+    )
+    if semantic:
+        parts.append("主线语义:" + "/".join(semantic))
     for value in (row.get("policy_tag"), entry_quality_policy_tag(row)):
         if isinstance(value, str) and value.strip():
             parts.append(value.strip())

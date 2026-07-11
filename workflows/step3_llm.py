@@ -210,6 +210,8 @@ def _repair_report_structure(
         "必须包含三个章节：1) 逻辑破产 2) 储备营地 3) 处于起跳板。"
         "如果输入原本是旧口径的继续观察/立刻建仓，也要将其重排到上述三阵营中。"
         "明显假突破、派发、放量失守归入逻辑破产；其余未到起跳点的非操作标的归入储备营地。"
+        "若原文包含 candidate_theme/candidate_phase/candidate_role 或对应的主线/阶段/角色，必须原样保留，"
+        "不得重新判断、改名或编造；confirmed 和处于起跳板仍不等于 BUY。"
         "不可新增未在输入中出现的股票代码。"
     )
     repair_user = "允许使用的股票代码：" + ", ".join(selected_codes) + "\n\n以下是待修复文本：\n\n" + report

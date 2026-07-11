@@ -14,6 +14,8 @@ from integrations.supabase_base import require_server_write_context
 
 logger = logging.getLogger(__name__)
 
+_OPTIONAL_REPORT_COLUMNS = {"candidate_theme", "candidate_phase", "candidate_role"}
+
 
 def insert_pending_signal_rows(rows: list[dict[str, Any]]) -> int:
     """Insert new pending signal rows, skipping already-pending duplicates."""
@@ -29,12 +31,26 @@ def insert_pending_signal_rows(rows: list[dict[str, Any]]) -> int:
         if not to_insert:
             logger.info("%s pending signals already exist; skipped", len(rows))
             return 0
-        client.table(TABLE_SIGNAL_PENDING).insert(to_insert).execute()
+        try:
+            client.table(TABLE_SIGNAL_PENDING).insert(to_insert).execute()
+        except Exception as exc:
+            if not _looks_like_schema_miss(exc):
+                raise
+            legacy_rows = [
+                {key: value for key, value in row.items() if key not in _OPTIONAL_REPORT_COLUMNS} for row in to_insert
+            ]
+            client.table(TABLE_SIGNAL_PENDING).insert(legacy_rows).execute()
+            logger.warning("signal_pending report columns missing; wrote compatible payload")
         logger.info("inserted %s pending signals; skipped %s existing", len(to_insert), len(rows) - len(to_insert))
         return len(to_insert)
     except Exception as e:
         logger.warning("write pending signals failed: %s", e)
         return 0
+
+
+def _looks_like_schema_miss(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "column" in text or "schema cache" in text or "could not find" in text
 
 
 def load_pending_signals() -> list[dict[str, Any]]:

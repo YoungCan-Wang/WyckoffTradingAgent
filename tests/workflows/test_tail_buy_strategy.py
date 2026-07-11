@@ -823,6 +823,31 @@ def test_llm_prompt_surfaces_daily_trap_pressure_gate():
     assert "日线" in user_prompt
 
 
+def test_llm_prompt_surfaces_mainline_semantics_without_overriding_gates():
+    candidate = TailBuyCandidate(
+        code="300308",
+        name="中际旭创",
+        signal_date="2026-04-20",
+        status="confirmed",
+        signal_type="mainline",
+        signal_score=86.0,
+        candidate_lane="mainline",
+        candidate_theme="光模块",
+        candidate_phase="分歧机会",
+        candidate_role="主线核心",
+        mainline_score=0.86,
+        theme_score=0.8,
+        stock_role_score=0.82,
+    )
+
+    system_prompt, user_prompt = build_llm_prompt(candidate, style="trend")
+
+    assert "只能原样使用" in system_prompt
+    assert "不能覆盖规则硬闸" in system_prompt
+    assert "theme=光模块, phase=分歧机会, role=主线核心" in user_prompt
+    assert "mainline=0.86, theme=0.8, role=0.82" in user_prompt
+
+
 def test_rule_scan_batch_applies_daily_trap_pressure_gate():
     class FakeTickFlow:
         def get_intraday_batch(self, symbols, *, period, count):
@@ -1181,6 +1206,38 @@ def test_build_tail_buy_markdown_can_append_extra_sections():
     )
     assert "持仓动作建议（硬止损/结构减仓/洗盘观察）" in md
     assert "持仓数量: 1" in md
+
+
+def test_build_tail_buy_markdown_surfaces_mainline_context():
+    candidate = TailBuyCandidate(
+        code="300308",
+        name="中际旭创",
+        signal_date="2026-04-20",
+        status="confirmed",
+        signal_type="mainline",
+        signal_score=88.0,
+        candidate_lane="mainline",
+        candidate_status="强主线分歧",
+        candidate_reasons={"theme": "光模块"},
+        stock_role_score=0.82,
+        rule_score=80.0,
+        rule_decision=DECISION_WATCH,
+        final_decision=DECISION_WATCH,
+        priority_score=85.0,
+    )
+
+    md = build_tail_buy_markdown(
+        now_text="2026-04-23 14:10:00",
+        target_signal_date="2026-04-22",
+        market_reminder="NORMAL/NORMAL",
+        candidates=[candidate],
+        llm_total=0,
+        llm_success=0,
+        elapsed_seconds=1.0,
+        buy_only=False,
+    )
+
+    assert "光模块 / 分歧机会 / 主线核心" in md
 
 
 def test_build_tail_buy_markdown_supports_custom_candidate_source():

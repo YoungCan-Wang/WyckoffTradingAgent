@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from core.candidate_metadata import code6 as normalize_cn_code  # noqa: F401 re-export
+from core.candidate_report_semantics import candidate_phase, candidate_role, candidate_theme
 from utils.safe import safe_float  # noqa: F401 re-export
 
 DECISION_BUY = "BUY"
@@ -25,6 +26,13 @@ class TailBuyCandidate:
     entry_type: str = ""
     signal_key: str = ""
     candidate_status: str = ""
+    candidate_reasons: dict[str, Any] = field(default_factory=dict)
+    candidate_theme: str = ""
+    candidate_phase: str = ""
+    candidate_role: str = ""
+    mainline_score: float | None = None
+    theme_score: float | None = None
+    stock_role_score: float | None = None
     snap: dict[str, Any] = field(default_factory=dict)
     rule_score: float = 0.0
     rule_decision: str = DECISION_SKIP
@@ -38,6 +46,11 @@ class TailBuyCandidate:
     fetch_error: str = ""
     features: dict[str, Any] = field(default_factory=dict)
     summary_5m: str = ""
+
+    def __post_init__(self) -> None:
+        self.candidate_theme = self.candidate_theme or candidate_theme(self.candidate_reasons)
+        self.candidate_phase = self.candidate_phase or candidate_phase(self.candidate_status)
+        self.candidate_role = self.candidate_role or candidate_role(self.stock_role_score, self.candidate_lane)
 
 
 def normalize_status(raw: Any) -> str:

@@ -23,6 +23,8 @@ SYSTEM_PROMPT = (
     "ADD=加仓, HOLD=不动, TRIM=减仓, EXIT=清仓。\n"
     "若规则理由包含疑似洗盘、回踩测试、未确认破位，默认保持 HOLD；"
     "只有硬风控跌破、放量收低、确认破位或派发特征明确时，才输出 TRIM/EXIT。\n"
+    "若输入包含主线、阶段或角色，它们只能用于解释持有优先级，不能覆盖硬止损、确认破位或派发证据。\n"
+    "不得自行改写或编造主线字段，不得因为属于主线核心就自动 ADD。\n"
     "禁止输出投资建议免责声明，禁止输出 markdown。"
 )
 
@@ -148,6 +150,8 @@ def _build_holding_llm_prompt(advice: Any, free_cash: float, total_equity: float
         f"账户: 可用现金={free_cash:.0f} ({cash_pct:.1f}%), 总权益={total_equity:.0f}\n"
         f"规则一判: action={advice.action}, rule_score={advice.rule_score:.1f}\n"
         f"规则理由: {'；'.join(advice.reasons[:3])}\n"
+        f"主线语义: theme={features.get('candidate_theme') or '-'}, "
+        f"phase={features.get('candidate_phase') or '-'}, role={features.get('candidate_role') or '-'}\n"
         f"分时特征:\n"
         f"- close_pos={_sf(features.get('close_pos')):.3f}\n"
         f"- dist_vwap_pct={_sf(features.get('dist_vwap_pct')):.3f}\n"

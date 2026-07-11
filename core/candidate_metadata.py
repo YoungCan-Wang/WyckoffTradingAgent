@@ -7,6 +7,7 @@ import math
 from typing import Any
 
 from core.candidate_policy import candidate_score_value
+from core.candidate_report_semantics import candidate_phase, candidate_role, candidate_theme
 from core.candidate_tracks import (
     candidate_entry_key,
     normalize_candidate_entry_key,
@@ -26,6 +27,9 @@ CANDIDATE_ATTRIBUTION_COLUMNS = (
     "candidate_risk",
     "candidate_reasons",
     "candidate_metrics",
+    "candidate_theme",
+    "candidate_phase",
+    "candidate_role",
     "mainline_score",
     "theme_score",
     "stock_role_score",
@@ -76,8 +80,11 @@ def candidate_entry_metadata(item: dict[str, Any], mainline: dict[str, Any] | No
     }
     if mainline:
         meta.update(_mainline_score_fields(mainline))
+        meta.update(_mainline_semantic_fields(mainline))
         if meta["candidate_lane"] == "mainline":
             meta["candidate_status"] = _text(mainline.get("status"))
+    else:
+        meta.update(_mainline_semantic_fields({**item, "candidate_lane": lane}))
     return _without_empty(meta)
 
 
@@ -94,6 +101,7 @@ def mainline_metadata(item: dict[str, Any]) -> dict[str, Any]:
         "candidate_reasons": _json_object(_candidate_reason_payload(item, item)),
         "candidate_metrics": _json_object(_mainline_metrics_payload(item)),
         **_mainline_score_fields(item),
+        **_mainline_semantic_fields(item),
     }
     return _without_empty(meta)
 
@@ -170,6 +178,14 @@ def _mainline_score_fields(item: dict[str, Any]) -> dict[str, Any]:
         "stock_role_score": _optional_float(item.get("stock_role_score")),
         "quality_score": _optional_float(item.get("quality_score")),
         "timing_score": _optional_float(item.get("timing_score")),
+    }
+
+
+def _mainline_semantic_fields(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "candidate_theme": candidate_theme(item.get("candidate_reasons") or {"theme": item.get("theme")}),
+        "candidate_phase": candidate_phase(item.get("candidate_status") or item.get("status")),
+        "candidate_role": candidate_role(item.get("stock_role_score"), item.get("candidate_lane") or "mainline"),
     }
 
 

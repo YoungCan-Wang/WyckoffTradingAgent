@@ -169,6 +169,12 @@ def test_tail_buy_payload_includes_entry_and_current_prices():
             "current_price": 10.8,
             "change_pct": 2.86,
             "price_updated_at": "2026-05-10T07:00:00+00:00",
+            "candidate_theme": "光模块",
+            "candidate_phase": "分歧机会",
+            "candidate_role": "主线核心",
+            "mainline_score": 0.86,
+            "theme_score": 0.8,
+            "stock_role_score": 0.82,
             "features_json": '{"last_close":10.5}',
         },
         "user-a",
@@ -178,6 +184,10 @@ def test_tail_buy_payload_includes_entry_and_current_prices():
     assert payload["current_price"] == 10.8
     assert payload["change_pct"] == 2.86
     assert payload["price_updated_at"] == "2026-05-10T07:00:00+00:00"
+    assert payload["candidate_theme"] == "光模块"
+    assert payload["candidate_phase"] == "分歧机会"
+    assert payload["candidate_role"] == "主线核心"
+    assert payload["mainline_score"] == 0.86
     assert payload["features_json"] == {"last_close": 10.5}
 
 

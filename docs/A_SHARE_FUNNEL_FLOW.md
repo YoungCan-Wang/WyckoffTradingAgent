@@ -307,6 +307,7 @@ flowchart TD
 | 入口 | `tail_buy_1440.yml` → `scripts/tail_buy_intraday_job.py` |
 | 候选 | 读 `signal_pending`；**confirmed 才可 BUY** |
 | 排序 | confirmed → 主线/趋势 → 信号分 |
+| 主线语义 | `candidate_theme / candidate_phase / candidate_role` 从推荐、信号贯穿到尾盘记录；LLM 只解释不重判 |
 | 禁新开 | `RISK_ON` 与弱市/修复期与 Step4 对齐，新票不买 |
 | 持仓 | 硬止损约 12%；非主线满 5 日建议时间止盈 |
 | 读法 | 只执行 **BUY（可执行）**；WATCH/SKIP 不下手 |

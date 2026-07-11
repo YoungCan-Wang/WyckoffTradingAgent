@@ -119,6 +119,16 @@ def tail_buy_persist_row(candidate: TailBuyCandidate, started_at: datetime) -> d
     initial_price = safe_float(candidate.features.get("last_close"), 0.0)
     features = dict(candidate.features or {})
     features.update(
+        {
+            "candidate_theme": candidate.candidate_theme,
+            "candidate_phase": candidate.candidate_phase,
+            "candidate_role": candidate.candidate_role,
+            "mainline_score": candidate.mainline_score,
+            "theme_score": candidate.theme_score,
+            "stock_role_score": candidate.stock_role_score,
+        }
+    )
+    features.update(
         tail_buy_execution_semantics(candidate.final_decision, candidate.signal_type, features=candidate.features)
     )
     return {
@@ -128,6 +138,12 @@ def tail_buy_persist_row(candidate: TailBuyCandidate, started_at: datetime) -> d
         "signal_date": candidate.signal_date,
         "signal_type": candidate.signal_type,
         "status": candidate.status,
+        "candidate_theme": candidate.candidate_theme,
+        "candidate_phase": candidate.candidate_phase,
+        "candidate_role": candidate.candidate_role,
+        "mainline_score": candidate.mainline_score,
+        "theme_score": candidate.theme_score,
+        "stock_role_score": candidate.stock_role_score,
         "final_decision": candidate.final_decision,
         "rule_decision": candidate.rule_decision,
         "rule_score": candidate.rule_score,

@@ -6,6 +6,7 @@ from datetime import date
 
 import pandas as pd
 
+from core.candidate_report_semantics import candidate_semantic_parts
 from core.compliance_report import generate_compliance_brief
 from core.x_social_summary import generate_x_social_summary
 from integrations.llm_client import call_llm
@@ -163,6 +164,7 @@ def _build_final_content(
 ) -> str:
     content = (
         f"{rag_veto_preview}{build_signal_confirmed_preview(selected_df)}"
+        f"{_mainline_preview(selected_df)}"
         f"{_ops_preview(ops_codes, code_name)}"
         f"{build_unconfirmed_ops_block(blocked_unconfirmed, code_name)}"
         f"{SPRINGBOARD_ABC_LEGEND}\n{report}"
@@ -172,6 +174,30 @@ def _build_final_content(
     if failed:
         content += f"\n\n**获取失败**: {', '.join(f'{s}({e})' for s, e in failed)}"
     return content
+
+
+def _mainline_preview(selected_df: pd.DataFrame) -> str:
+    if selected_df.empty:
+        return ""
+    rows: list[str] = []
+    for _, item in selected_df.iterrows():
+        parts = candidate_semantic_parts(
+            candidate_reasons=item.get("candidate_reasons"),
+            candidate_status=item.get("candidate_status"),
+            stock_role_score=item.get("stock_role_score"),
+            candidate_lane=item.get("candidate_lane"),
+            explicit_theme=item.get("candidate_theme"),
+            explicit_phase=item.get("candidate_phase"),
+            explicit_role=item.get("candidate_role"),
+        )
+        if not parts:
+            continue
+        code = str(item.get("code") or "").strip()
+        name = str(item.get("name") or code).strip()
+        rows.append(f"- {code} {name} | {' / '.join(parts)}")
+    if not rows:
+        return ""
+    return "## 🎯 主线定位（确定性字段）\n" + "\n".join(rows) + "\n\n---\n"
 
 
 def _ops_preview(ops_codes: list[str], code_name: dict[str, str]) -> str:
