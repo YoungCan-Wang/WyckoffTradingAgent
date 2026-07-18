@@ -1,5 +1,5 @@
 import { createMiddleware } from 'hono/factory'
-import type { Env } from '../index'
+import type { Env } from '../app'
 import { createUserSupabase, type AuthContext } from './auth'
 
 export const whitelistMiddleware = createMiddleware<{

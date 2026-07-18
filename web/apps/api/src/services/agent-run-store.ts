@@ -1,5 +1,5 @@
 import { Redis } from '@upstash/redis/cloudflare'
-import type { Env } from '../index'
+import type { Env } from '../app'
 
 export type AgentRunStatus = 'running' | 'completed' | 'failed'
 

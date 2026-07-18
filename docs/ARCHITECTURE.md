@@ -69,7 +69,7 @@
 
 **为什么需要 API 层与边缘代理？**
 
-读盘室主链路已经后端化到 `web/apps/api/src/routes/chat.ts`：独立 `wyckoff-api` Worker 负责读取用户模型配置、执行工具、限流、返回 UIMessage stream，并通过 Vercel AI SDK 的 approval parts 约束 `execute_portfolio_update`。生产 React 通过 `VITE_API_URL` 调用这个 Worker；`web/functions/api/{chat,portfolio,settings}/[[path]].ts` 保留为同源兼容入口，但不是生产前端的默认链路。
+读盘室主链路已经后端化到 `web/apps/api/src/routes/chat.ts`：独立 `wyckoff-api` Worker 负责读取用户模型配置、执行工具、限流、返回 UIMessage stream，并通过 Vercel AI SDK 的 approval parts 约束 `execute_portfolio_update`。生产 React 通过 `VITE_API_URL` 调用这个 Worker；`web/functions/api/{chat,portfolio,settings}/[[path]].ts` 保留为同源兼容入口，但不是生产前端的默认链路。Pages 兼容 app 明确不挂载 `/api/agent-runs`，避免把 Vercel Sandbox 的 Node.js SDK 打进遗留 Pages Functions；Agent 沙箱只由独立 Worker 提供。
 
 Hono app 的公共中间件按请求 ID、安全响应头、CORS、256 KiB 请求体上限的顺序执行；路由随后执行 Supabase JWT 鉴权与业务校验。聊天 POST 在鉴权后执行用户限流：同时配置 `UPSTASH_REDIS_REST_URL` 和 `UPSTASH_REDIS_REST_TOKEN` 时使用 Upstash Redis REST 共享额度，未配置时保留单 Worker 实例内的软限流，Redis 超时或不可用时返回 `X-RateLimit-Backend: local-fallback` 并启用本地保护。只配置一个 Upstash 变量属于部署错误，请求会失败而不会静默使用不完整连接。
 

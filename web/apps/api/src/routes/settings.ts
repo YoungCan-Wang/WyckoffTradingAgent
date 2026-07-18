@@ -11,7 +11,7 @@ import {
   type Provider,
 } from '@wyckoff/shared'
 import { authMiddleware, type AuthContext } from '../middleware/auth'
-import type { Env } from '../index'
+import type { Env } from '../app'
 
 type SettingsBindings = { Bindings: Env; Variables: { auth: AuthContext } }
 type ModelTestConfig = z.infer<typeof MODEL_TEST_SCHEMA>

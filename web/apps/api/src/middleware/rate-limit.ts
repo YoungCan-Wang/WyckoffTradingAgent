@@ -1,7 +1,7 @@
 import { Ratelimit, type Duration } from '@upstash/ratelimit'
 import { Redis } from '@upstash/redis/cloudflare'
 import { createMiddleware } from 'hono/factory'
-import type { Env } from '../index'
+import type { Env } from '../app'
 import type { AuthContext } from './auth'
 
 type RateLimitBindings = {

@@ -1,6 +1,6 @@
 import { createMiddleware } from 'hono/factory'
 import { createClient } from '@supabase/supabase-js'
-import type { Env } from '../index'
+import type { Env } from '../app'
 
 export type AuthContext = {
   userId: string

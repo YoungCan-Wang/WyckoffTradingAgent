@@ -1,4 +1,4 @@
-import type { Env } from '../index'
+import type { Env } from '../app'
 
 const DEFAULT_TIMEOUT_MS = 60_000
 const MAX_TIMEOUT_MS = 120_000

@@ -1,7 +1,7 @@
 import { env as workerEnv } from 'cloudflare:workers'
 import { Hono } from 'hono'
 import { describe, expect, it, vi } from 'vitest'
-import type { Env } from '../index'
+import type { Env } from '../app'
 import type { AuthContext } from './auth'
 import { createChatRateLimitMiddleware, type ChatRateLimitResult } from './rate-limit'
 

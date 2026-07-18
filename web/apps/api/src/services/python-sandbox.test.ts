@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { Env } from '../index'
+import type { Env } from '../app'
 import { executePythonSandbox, type SandboxHandle } from './python-sandbox'
 
 function sandbox(overrides: Partial<SandboxHandle> = {}): SandboxHandle {

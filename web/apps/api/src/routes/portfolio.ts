@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { authMiddleware, createUserSupabase, type AuthContext } from '../middleware/auth'
 import { isActiveWhitelistUser } from '../middleware/whitelist'
-import type { Env } from '../index'
+import type { Env } from '../app'
 
 type PortfolioBindings = { Bindings: Env; Variables: { auth: AuthContext } }
 

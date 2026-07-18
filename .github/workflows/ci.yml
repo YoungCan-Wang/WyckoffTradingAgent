@@ -190,3 +190,10 @@ jobs:
       - name: Run API tests
         run: pnpm --filter @wyckoff/api test
         working-directory: web
+      - name: Build Pages compatibility functions
+        run: >-
+          pnpm --filter @wyckoff/api exec wrangler pages functions build
+          "$GITHUB_WORKSPACE/web/functions"
+          --project-directory "$GITHUB_WORKSPACE/web"
+          --outdir "$RUNNER_TEMP/wyckoff-pages-functions"
+        working-directory: web

@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
-import type { Env } from '../index'
+import type { Env } from '../app'
 import { executePythonSandbox } from './python-sandbox'
 
 const integrationEnv = env as Env

@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import type { Env } from '../index'
+import type { Env } from '../app'
 import { authMiddleware, type AuthContext } from '../middleware/auth'
 import { whitelistMiddleware } from '../middleware/whitelist'
 import { createAgentRunStore, type AgentRunRecord } from '../services/agent-run-store'
