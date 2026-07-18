@@ -170,7 +170,10 @@ export function ChatPage() {
         onClearQueue={queue.clear}
         onInput={setInput}
         onSubmit={handleSubmit}
-        onStop={() => void chat.stop()}
+        onStop={() => {
+          void chat.stop()
+          handleClearRunCheckpoint()
+        }}
         modelStatus={modelStatus}
         runCheckpoint={runCheckpoint}
         onResumeRun={handleResumeRun}

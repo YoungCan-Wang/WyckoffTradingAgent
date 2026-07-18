@@ -37,6 +37,15 @@ import { z } from 'zod'
 import type { Env } from '../app'
 import { authMiddleware, type AuthContext } from '../middleware/auth'
 import { chatRateLimitMiddleware } from '../middleware/rate-limit'
+import {
+  CHAT_CONTINUATION_PROMPT,
+  CHAT_MAX_AUTO_CONTINUATIONS,
+  CHAT_MAX_OUTPUT_TOKENS,
+  CHAT_MAX_STEPS,
+  CHAT_MAX_TOTAL_STEPS,
+  continuationLimitMessage,
+  decideAgentLoop,
+} from '../services/chat-agent-loop'
 
 type ChatBindings = { Bindings: Env; Variables: { auth: AuthContext } }
 
@@ -87,9 +96,6 @@ type WatchlistRequestItem = { code: string; name: string }
 
 const ALLOWED_TARGET_ORIGINS: Set<string> = new Set(ALLOWED_PROXY_TARGET_ORIGINS)
 const ONE_ROUTE_ORIGINS = new Set(['https://api.1route.dev', 'https://www.1route.dev'])
-
-const CHAT_MAX_OUTPUT_TOKENS = 8192
-const CHAT_MAX_STEPS = 16
 
 const WYCKOFF_CHAT_SYSTEM_PROMPT = `# 角色设定
 
@@ -322,6 +328,70 @@ function recentUserQuery(messages: UIMessage[]): string {
     .join('\n')
 }
 
+async function runChatSegment(
+  args: ChatResilienceArgs,
+  config: ChatModelConfig,
+  system: string,
+  modelMessages: any[],
+  tools: any,
+  maxSteps: number,
+  segmentIndex: number
+) {
+  const provider = createProvider(config)
+  const result = streamText({
+    model: provider.chat(config.model),
+    system,
+    messages: modelMessages,
+    tools,
+    maxOutputTokens: CHAT_MAX_OUTPUT_TOKENS,
+    stopWhen: stepCountIs(maxSteps),
+    abortSignal: args.signal,
+    experimental_toolApprovalSecret: args.env.CHAT_TOOL_APPROVAL_SECRET || args.env.SUPABASE_SERVICE_ROLE_KEY,
+    providerOptions: { openai: { parallelToolCalls: false } },
+  })
+
+  const pending: UIMessageChunk[] = []
+  const openToolCalls = new Set<string>()
+  let hasToolApproval = false
+  let hasIncompleteToolCall = false
+  let outputStarted = false
+
+  for await (const chunk of result.toUIMessageStream({
+    onError: (error) => { throw error },
+    sendStart: segmentIndex === 0,
+    sendFinish: false,
+  })) {
+    if (chunk.type === 'error') throw new Error(chunk.errorText)
+    if (chunk.type === 'tool-input-start') openToolCalls.add(chunk.toolCallId)
+    if (chunk.type === 'tool-input-available' || chunk.type === 'tool-input-error') openToolCalls.delete(chunk.toolCallId)
+    if (chunk.type === 'tool-input-error') hasIncompleteToolCall = true
+    if (chunk.type === 'tool-approval-request') hasToolApproval = true
+    writeChunkRunEvent(args, chunk)
+    pending.push(chunk)
+    if (isVisibleChatChunk(chunk)) {
+      outputStarted = true
+      flushChunks(args.writer, pending)
+    }
+  }
+  flushChunks(args.writer, pending)
+  hasIncompleteToolCall ||= openToolCalls.size > 0
+
+  const [finishReason, steps, response] = await Promise.all([
+    result.finishReason,
+    result.steps,
+    result.response,
+  ])
+
+  return {
+    finishReason,
+    steps,
+    responseMessages: response.messages,
+    hasToolApproval,
+    hasIncompleteToolCall,
+    outputStarted,
+  }
+}
+
 async function runChatAttempt(args: ChatResilienceArgs, config: ChatModelConfig, marketWatchContext: string): Promise<void> {
   writeRunEvent(args, { type: 'model_started', label: `开始使用 ${config.model}` })
   writeStageProgress(args.writer, { stage: 'model', state: 'started', message: '正在分析', model: config.model })
@@ -330,36 +400,71 @@ async function runChatAttempt(args: ChatResilienceArgs, config: ChatModelConfig,
   try {
     const provider = createProvider(config)
     const tools = buildTools(args.deps, args.userId, config, provider.chat(config.model))
-    const modelMessages = await convertToModelMessages(args.messages.slice(-40), {
+    let modelMessages = await convertToModelMessages(args.messages.slice(-40), {
       tools,
       ignoreIncompleteToolCalls: true,
     })
-    const result = streamText({
-      model: provider.chat(config.model),
-      system: [WYCKOFF_CHAT_SYSTEM_PROMPT, marketWatchContext].filter(Boolean).join('\n\n'),
-      messages: modelMessages,
-      tools,
-      maxOutputTokens: CHAT_MAX_OUTPUT_TOKENS,
-      stopWhen: stepCountIs(CHAT_MAX_STEPS),
-      abortSignal: args.signal,
-      experimental_toolApprovalSecret: args.env.CHAT_TOOL_APPROVAL_SECRET || args.env.SUPABASE_SERVICE_ROLE_KEY,
-      providerOptions: { openai: { parallelToolCalls: false } },
-    })
-    const pending: UIMessageChunk[] = []
-    for await (const chunk of result.toUIMessageStream({ onError: (error) => { throw error } })) {
-      if (chunk.type === 'error') throw new Error(chunk.errorText)
-      writeChunkRunEvent(args, chunk)
-      pending.push(chunk)
-      if (isVisibleChatChunk(chunk)) {
+    let continuationCount = 0
+    let totalSteps = 0
+    let segmentIndex = 0
+    let finalFinishReason = 'stop'
+
+    const system = [WYCKOFF_CHAT_SYSTEM_PROMPT, marketWatchContext].filter(Boolean).join('\n\n')
+
+    while (true) {
+      const remainingSteps = CHAT_MAX_TOTAL_STEPS - totalSteps
+      if (remainingSteps <= 0) throw new Error(continuationLimitMessage('step-limit'))
+      const segmentMaxSteps = Math.min(CHAT_MAX_STEPS, remainingSteps)
+      
+      const segment = await runChatSegment(
+        args,
+        config,
+        system,
+        modelMessages,
+        tools,
+        segmentMaxSteps,
+        segmentIndex
+      )
+
+      if (segment.outputStarted) {
         outputStarted = true
-        flushChunks(args.writer, pending)
       }
+
+      totalSteps += segment.steps.length
+      finalFinishReason = segment.finishReason
+      
+      const lastStep = segment.steps.at(-1)
+      const decision = decideAgentLoop({
+        finishReason: segment.finishReason,
+        stepCount: segment.steps.length,
+        maxSteps: segmentMaxSteps,
+        hasToolCalls: Boolean(lastStep?.toolCalls.length),
+        hasToolApproval: segment.hasToolApproval,
+        hasIncompleteToolCall: segment.hasIncompleteToolCall,
+      })
+
+      if (decision.kind === 'error') throw new Error(decision.message)
+      if (decision.kind === 'continue') {
+        if (continuationCount >= CHAT_MAX_AUTO_CONTINUATIONS || totalSteps >= CHAT_MAX_TOTAL_STEPS) {
+          throw new Error(continuationLimitMessage(decision.reason))
+        }
+        if (!segment.responseMessages.length) throw new Error(continuationLimitMessage(decision.reason))
+        modelMessages = [
+          ...modelMessages,
+          ...(segment.responseMessages as typeof modelMessages),
+          { role: 'user', content: CHAT_CONTINUATION_PROMPT },
+        ]
+        continuationCount += 1
+        segmentIndex += 1
+        writeRunEvent(args, {
+          type: 'agent_continuation',
+          label: decision.reason === 'output-length' ? '回答达到单段上限，继续生成' : '工具步骤达到单段上限，继续执行',
+        })
+        continue
+      }
+      break
     }
-    const finishReason = await result.finishReason
-    if (finishReason === 'length') {
-      throw new Error(`模型输出达到 ${CHAT_MAX_OUTPUT_TOKENS} 个 token 上限，当前回答可能未完整结束。请点击“继续本轮”完成剩余分析。`)
-    }
-    flushChunks(args.writer, pending)
+    args.writer.write({ type: 'finish', finishReason: finalFinishReason } as never)
     succeeded = true
   } catch (error) {
     throw Object.assign(error instanceof Error ? error : new Error(String(error)), {
@@ -376,7 +481,7 @@ function flushChunks(writer: ChatResilienceArgs['writer'], chunks: UIMessageChun
 }
 
 function isVisibleChatChunk(chunk: UIMessageChunk): boolean {
-  return chunk.type === 'text-start' || chunk.type === 'text-delta' || chunk.type === 'reasoning-start' || chunk.type === 'tool-input-start' || chunk.type === 'tool-input-available' || chunk.type === 'tool-output-available' || chunk.type === 'tool-output-error' || chunk.type === 'tool-approval-request'
+  return chunk.type === 'text-start' || chunk.type === 'text-delta' || chunk.type === 'reasoning-start' || chunk.type === 'tool-input-start' || chunk.type === 'tool-input-available' || chunk.type === 'tool-input-error' || chunk.type === 'tool-output-available' || chunk.type === 'tool-output-error' || chunk.type === 'tool-approval-request'
 }
 
 function writeModelStatus(writer: ChatResilienceArgs['writer'], status: { phase: 'retrying' | 'fallback'; model: string; attempt: number; nextModel?: string }): void {

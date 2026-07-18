@@ -9,6 +9,8 @@ export function buildRunRecords(messages: UIMessage[], t: (key: TranslationKey) 
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index]
     if (!message || message.role !== 'user') continue
+    const text = messageText(message)
+    if (text.includes('请继续完成') || text.includes('继续完成当前分析')) continue
     const relatedAssistant = findRelatedAssistant(messages, index)
     const assistantParts = relatedAssistant?.parts || []
     const status = runRecordStatus(relatedAssistant)

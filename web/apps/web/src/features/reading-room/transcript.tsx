@@ -7,6 +7,7 @@ import type { ReadingRoomConversation } from './conversations'
 import { ReadingRoomDashboard } from './dashboard'
 import type { ReadingRoomChat } from './chat-state'
 import { MessageBubble, QueuedMessageBubble } from './tool-rendering'
+import { messageText } from './messages'
 import type { ChatRunStatus, MarketWatchSnapshot, PinStockInput, QueuedMessage, ReadingRoomTab, RunCheckpoint, RunRecord, WatchItem } from './types'
 import { WatchlistPanelView } from './watchlist'
 
@@ -181,16 +182,29 @@ function ChatTranscript({
       {!loading && runCheckpoint && runCheckpoint.status !== 'completed' && (
         <RunRecoveryBanner checkpoint={runCheckpoint} onResume={onResumeRun} onClear={onClearRunCheckpoint} />
       )}
-      {chat.messages.map((message) => (
-        <MessageBubble
-          key={message.id}
-          message={message}
-          isActive={message.id === activeAssistantId}
-          approve={(id) => void chat.addToolApprovalResponse({ id, approved: true })}
-          deny={(id) => void chat.addToolApprovalResponse({ id, approved: false })}
-          onPinStock={onPinStock}
-        />
-      ))}
+      {chat.messages.map((message) => {
+        const isContinuation = message.role === 'user' && (messageText(message).includes('请继续完成') || messageText(message).includes('继续完成当前分析'))
+        if (isContinuation) {
+          return (
+            <div key={message.id} className="flex justify-center my-2">
+              <div className="rounded-full bg-muted/60 px-3 py-1 text-xs text-muted-foreground border border-border/40 flex items-center gap-1.5 animate-fade-in">
+                <RotateCcw size={11} className="animate-spin-slow" />
+                正在继续生成上一轮分析...
+              </div>
+            </div>
+          )
+        }
+        return (
+          <MessageBubble
+            key={message.id}
+            message={message}
+            isActive={message.id === activeAssistantId}
+            approve={(id) => void chat.addToolApprovalResponse({ id, approved: true })}
+            deny={(id) => void chat.addToolApprovalResponse({ id, approved: false })}
+            onPinStock={onPinStock}
+          />
+        )
+      })}
       {queuedMessages.map((message, index) => <QueuedMessageBubble key={message.id} message={message} index={index + 1} />)}
       {loading && <ThinkingBubble />}
     </div>
