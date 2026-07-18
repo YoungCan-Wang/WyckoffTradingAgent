@@ -43,6 +43,9 @@ importers:
         specifier: ^3.25.76
         version: 3.25.76
     devDependencies:
+      '@cloudflare/vitest-pool-workers':
+        specifier: 0.16.18
+        version: 0.16.18(@cloudflare/workers-types@4.20260620.1)(@vitest/runner@4.1.5)(@vitest/snapshot@4.1.5)(vitest@4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(vite@6.4.3(@types/node@25.6.0)(jiti@2.6.1)(lightningcss@1.32.0)))
       '@cloudflare/workers-types':
         specifier: ^4.20260620.1
         version: 4.20260620.1
@@ -311,6 +314,13 @@ packages:
     peerDependenciesMeta:
       workerd:
         optional: true
+
+  '@cloudflare/vitest-pool-workers@0.16.18':
+    resolution: {integrity: sha512-TEktXyevK9lkTWouElbIcDPK3YEfV+Szqgnlq5sNk+KYZR3LiDdYDaGNmUYgiT2LiiFeGU2yzCrcgmN8mJhqWQ==}
+    peerDependencies:
+      '@vitest/runner': ^4.1.0
+      '@vitest/snapshot': ^4.1.0
+      vitest: ^4.1.0
 
   '@cloudflare/workerd-darwin-64@1.20260617.1':
     resolution: {integrity: sha512-jWwmgEVVWbsHNrLSNXzwjJaH90VzRxq1cWkQFUidxyeUPnMxemeNE8I9qFAfrpzGgE11e9sKDcE3ettJW08swQ==}
@@ -1278,6 +1288,9 @@ packages:
 
   character-reference-invalid@2.0.1:
     resolution: {integrity: sha512-iBZ4F4wRbyORVsu0jPV7gXkOsGYjGHPmAyv+HiHG8gi5PtC9KI2j1+v8/tlibRvjoWX027ypmG/n0HtO5t7unw==}
+
+  cjs-module-lexer@1.2.3:
+    resolution: {integrity: sha512-0TNiGstbQmCFwt4akjjBg5pLRTSyj/PkWQ1ZoO2zntmg9yLqSRxwEa4iCfQLGjqhiqBfOJa7W/E8wfGrTDmlZQ==}
 
   comma-separated-tokens@2.0.3:
     resolution: {integrity: sha512-Fu4hJdvzeylCfQPp9SGWidpzrMs7tTrlu6Vb8XGaRGck8QSNZJJp538Wrb60Lax4fPwR64ViY468OIUTbRlGZg==}
@@ -2437,6 +2450,21 @@ snapshots:
     optionalDependencies:
       workerd: 1.20260617.1
 
+  '@cloudflare/vitest-pool-workers@0.16.18(@cloudflare/workers-types@4.20260620.1)(@vitest/runner@4.1.5)(@vitest/snapshot@4.1.5)(vitest@4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(vite@6.4.3(@types/node@25.6.0)(jiti@2.6.1)(lightningcss@1.32.0)))':
+    dependencies:
+      '@vitest/runner': 4.1.5
+      '@vitest/snapshot': 4.1.5
+      cjs-module-lexer: 1.2.3
+      esbuild: 0.25.12
+      miniflare: 4.20260617.1
+      vitest: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(vite@6.4.3(@types/node@25.6.0)(jiti@2.6.1)(lightningcss@1.32.0))
+      wrangler: 4.103.0(@cloudflare/workers-types@4.20260620.1)
+      zod: 3.25.76
+    transitivePeerDependencies:
+      - '@cloudflare/workers-types'
+      - bufferutil
+      - utf-8-validate
+
   '@cloudflare/workerd-darwin-64@1.20260617.1':
     optional: true
 
@@ -3214,6 +3242,8 @@ snapshots:
   character-entities@2.0.2: {}
 
   character-reference-invalid@2.0.1: {}
+
+  cjs-module-lexer@1.2.3: {}
 
   comma-separated-tokens@2.0.3: {}
 

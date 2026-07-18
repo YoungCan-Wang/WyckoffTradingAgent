@@ -1,3 +1,4 @@
+import { env as workerEnv } from 'cloudflare:workers'
 import { Hono } from 'hono'
 import { describe, expect, it, vi } from 'vitest'
 import type { Env } from '../index'
@@ -76,15 +77,15 @@ describe('chat rate limit middleware', () => {
   })
 })
 
-const runtimeEnv = (globalThis as typeof globalThis & {
-  process?: { env: Record<string, string | undefined> }
-}).process?.env
-const describeUpstash = runtimeEnv?.RUN_UPSTASH_INTEGRATION === '1' ? describe : describe.skip
+type IntegrationEnv = Env & { RUN_UPSTASH_INTEGRATION?: string }
+
+const integrationEnv = workerEnv as IntegrationEnv
+const describeUpstash = integrationEnv.RUN_UPSTASH_INTEGRATION === '1' ? describe : describe.skip
 
 describeUpstash('Upstash Redis integration', () => {
   it('enforces the real distributed interval limit', async () => {
-    const url = runtimeEnv?.UPSTASH_REDIS_REST_URL
-    const token = runtimeEnv?.UPSTASH_REDIS_REST_TOKEN
+    const url = integrationEnv.UPSTASH_REDIS_REST_URL
+    const token = integrationEnv.UPSTASH_REDIS_REST_TOKEN
     expect(url).toBeTruthy()
     expect(token).toBeTruthy()
 

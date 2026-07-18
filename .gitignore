@@ -1,6 +1,9 @@
 .DS_Store
 .idea/
 .vscode/
+!.vscode/
+.vscode/*
+!.vscode/launch.json
 .pnpm-store/
 .codex/
 .agents/

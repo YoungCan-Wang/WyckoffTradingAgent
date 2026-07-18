@@ -314,3 +314,4 @@ flowchart LR
 | **Hono Middleware** | Cloudflare Worker API 的请求处理链。公共链负责请求 ID、安全响应头、CORS 和请求体限制，路由链再执行 JWT 鉴权、限流和业务校验。 |
 | **Redis 共享限流** | 使用 Upstash Redis REST 保存可过期的用户请求额度，使不同 Worker 实例看到同一计数；Redis 不保存持仓、订单或交易信号。 |
 | **本地软限流** | 未配置 Redis 或 Redis 临时故障时，单个 Worker 实例内的保护计数。实例回收或扩容后不保证全局一致，响应头通过 `local` / `local-fallback` 明确标识。 |
+| **观察篮临时行情** | 读盘室按当前问题选取观察篮标的后拉取的 TickFlow 快照；浏览器缓存有效期为 45 秒，只作本轮模型上下文，不写入 Redis、持仓或信号表。 |

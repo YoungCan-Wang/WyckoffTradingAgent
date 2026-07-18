@@ -183,7 +183,8 @@ wyckoff dashboard
 - **模型元数据与成本可见性** — `wyckoff model list/usage/cost` 展示上下文窗口、reasoning 能力和本地 token 成本估算
 - **会话分叉与导出** — `wyckoff session export/fork` 或 TUI `/fork` 把历史对话变成可复盘、可继续的新分支
 - **标准事件流** — `wyckoff trace --events <scratchpad.jsonl>` / `wyckoff diag` 产出统一 JSONL，方便复盘工具调用时间线
-- **独立边缘后端** — React 统一调用 Hono Worker；后端提供请求 ID、安全响应头、请求体上限和聊天限流，配置 Upstash Redis 后自动使用跨实例共享额度
+- **独立边缘后端** — React 统一调用 Hono Worker；后端提供请求 ID、安全响应头、请求体上限和 Redis 共享限流，本地支持 VS Code 断点与 `workerd` 集成测试
+- **观察篮临时行情** — 只为当前问题拉取相关 TickFlow 报价，浏览器快照 45 秒后失效，不写入 Redis 或业务数据库
 - **依赖卫生检查** — CI 运行 `scripts/check_dependency_hygiene.py`，提示 Python/Web 依赖锁定和 lockfile 风险
 - **MCP Server** — 18 个工具通过 MCP 协议对外暴露，Claude Code / Cursor 即插即用；包含研究假设与证据台账
 - **多通道推送** — 飞书 / 企微 / 钉钉 / Telegram
