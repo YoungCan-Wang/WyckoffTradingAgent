@@ -187,3 +187,6 @@ jobs:
       - name: Run web tests
         run: pnpm --filter @wyckoff/web test
         working-directory: web
+      - name: Run API tests
+        run: pnpm --filter @wyckoff/api test
+        working-directory: web

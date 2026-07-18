@@ -32,6 +32,7 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import type { Env } from '../index'
 import { authMiddleware, type AuthContext } from '../middleware/auth'
+import { chatRateLimitMiddleware } from '../middleware/rate-limit'
 
 type ChatBindings = { Bindings: Env; Variables: { auth: AuthContext } }
 
@@ -46,11 +47,8 @@ chatRoutes.get('/config', async (c) => {
   return c.json({ configured: Boolean(config), model: config?.model || null })
 })
 
-chatRoutes.post('/', async (c) => {
+chatRoutes.post('/', chatRateLimitMiddleware, async (c) => {
   const auth = c.get('auth')
-  const limited = checkRateLimit(c.env, auth.userId)
-  if (!limited.ok) return c.json({ error: limited.message }, 429)
-
   const body = await c.req.json<ChatRequestBody>().catch(() => null)
   const messages = body?.messages
   if (!Array.isArray(messages) || messages.length === 0) return c.json({ error: 'Missing messages' }, 400)
@@ -79,10 +77,7 @@ chatRoutes.post('/', async (c) => {
 })
 
 type ChatRequestBody = { messages?: UIMessage[] }
-type ChatRateState = { day: string; count: number; lastAt: number }
-type ChatRateResult = { ok: true } | { ok: false; message: string }
 
-const rateStates = new Map<string, ChatRateState>()
 const ALLOWED_TARGET_ORIGINS: Set<string> = new Set(ALLOWED_PROXY_TARGET_ORIGINS)
 const ONE_ROUTE_ORIGINS = new Set(['https://api.1route.dev', 'https://www.1route.dev'])
 
@@ -100,24 +95,6 @@ const WYCKOFF_CHAT_SYSTEM_PROMPT = `# 角色设定
 4. 风险声明：涉及具体操作建议时，附带风险提示。
 5. 技术面为主：价值面只用于质量、风险、置信度和仓位校准，不能替代 K 线事实。
 6. 策略归因问题必须调用 query_attribution，先确认返回结果是否来自远端表或提示本地 --no-write 报告，再优先读取 operator_summary / latest_operator_summary 作为运营结论，然后读取 latest_policy_display、latest_execution_summary、promotion_checklist 和 latest_operations 后判断信号升降权、是否能晋级 dynamic=on，以及 shadow 新增/移除样本；raw next_action/promotion_status 只作追证据，不直接复述给用户。`
-
-function checkRateLimit(env: Env, userId: string): ChatRateResult {
-  const limit = parsePositiveInt(env.CHAT_DAILY_LIMIT_PER_USER, 80)
-  const minInterval = parsePositiveInt(env.CHAT_MIN_INTERVAL_MS, 2500)
-  const now = Date.now()
-  const day = new Date(now).toISOString().slice(0, 10)
-  const state = rateStates.get(userId)
-  const current = state?.day === day ? state : { day, count: 0, lastAt: 0 }
-  if (now - current.lastAt < minInterval) return { ok: false, message: '请求太频繁，请稍后再试。' }
-  if (current.count >= limit) return { ok: false, message: '今日读盘室免费额度已用完，请明天再试。' }
-  rateStates.set(userId, { day, count: current.count + 1, lastAt: now })
-  return { ok: true }
-}
-
-function parsePositiveInt(raw: string | undefined, fallback: number): number {
-  const value = Number(raw)
-  return Number.isFinite(value) && value > 0 ? Math.trunc(value) : fallback
-}
 
 function estimateMessagesSize(messages: UIMessage[]): number {
   return messages.reduce((total, message) => total + JSON.stringify(message).length, 0)

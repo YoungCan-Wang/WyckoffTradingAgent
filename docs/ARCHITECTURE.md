@@ -71,6 +71,19 @@
 
 读盘室主链路已经后端化到 `web/apps/api/src/routes/chat.ts`：Worker 负责读取用户模型配置、执行工具、限流、返回 UIMessage stream，并通过 Vercel AI SDK 的 approval parts 约束 `execute_portfolio_update`。`web/functions/api/chat/[[path]].ts` 只是把同域 Pages 请求转给这套 Hono app。
 
+Hono app 的公共中间件按请求 ID、安全响应头、CORS、256 KiB 请求体上限的顺序执行；路由随后执行 Supabase JWT 鉴权与业务校验。聊天 POST 在鉴权后执行用户限流：同时配置 `UPSTASH_REDIS_REST_URL` 和 `UPSTASH_REDIS_REST_TOKEN` 时使用 Upstash Redis REST 共享额度，未配置时保留单 Worker 实例内的软限流，Redis 超时或不可用时返回 `X-RateLimit-Backend: local-fallback` 并启用本地保护。只配置一个 Upstash 变量属于部署错误，请求会失败而不会静默使用不完整连接。
+
+| Worker 变量 | 默认值 | 作用 |
+|---|---:|---|
+| `CHAT_DAILY_LIMIT_PER_USER` | `80` | 每个用户每天允许的聊天 POST 数 |
+| `CHAT_MIN_INTERVAL_MS` | `2500` | 同一用户两次聊天 POST 的最小间隔 |
+| `UPSTASH_REDIS_REST_URL` | 未设置 | Upstash Redis REST 地址；与 Token 同时存在时启用共享限流 |
+| `UPSTASH_REDIS_REST_TOKEN` | 未设置 | Upstash Redis REST Token，必须通过 Worker secret 注入 |
+
+`X-RateLimit-Backend` 明确返回 `redis`、`local` 或 `local-fallback`，便于区分共享额度、未配置 Redis 和 Redis 故障降级。Redis 只承载可过期的协调状态，不承载持仓、订单、交易信号或审计真相；这些数据仍由 Supabase/RLS 管理。
+
+本地开发可复制 `web/apps/api/.dev.vars.example` 为 `.dev.vars`。部署时不要把 Token 写入 `wrangler.toml`，应在 `web/apps/api/` 下分别执行 `pnpm exec wrangler secret put UPSTASH_REDIS_REST_URL` 和 `pnpm exec wrangler secret put UPSTASH_REDIS_REST_TOKEN`。
+
 `/api/llm-proxy/*` 继续保留为兼容代理：一部分 Web 工具和本地开发路径仍需要同域转发 TickFlow / Tushare / OpenAI-compatible 请求，避免浏览器 CORS 和供应商 SSE 差异。
 
 代理只接受受信 Web Origin（无 `Origin` 的 CLI 请求继续兼容）、`GET/POST`、2 MiB 以内请求，并限制到 HTTPS 白名单上游；服务端模型 `base_url` 同样拒绝凭据、非标准端口、loopback、私网和 link-local 地址，且不跟随重定向。
@@ -637,7 +650,7 @@ TTL：SOS 2 天、Spring 3 天、LPS 3 天、EVR 2 天、Compression 3 天。
 
 | 工作流 | 时间（北京） | 说明 |
 |-------|-------------|------|
-| **CI** (`ci.yml`) | push/PR | pytest + compile + dry-run |
+| **CI** (`ci.yml`) | push/PR | pytest + Python compile + TypeScript check + Web/API tests + dry-run |
 | **盘前风控** (`premarket_risk.yml`) | 周一-周五 08:20 | Codex Automation 调用 `workflow_dispatch`；A50 + VIX 预警，Actions 可手动补跑 |
 | **港股漏斗筛选** (`wyckoff_funnel_hk.yml`) | 周一-周五 16:35 | `market_funnel_job.py --market hk` |
 | **A 股漏斗筛选 + AI 研报 + 决策** (`wyckoff_funnel.yml`) | 周日-周四 17:17 | `daily_job.py` Step2→3→4；周日正常为周一实盘准备候选，若次日非 A 股交易日才跳过，日频写入 `theme_radar_snapshot` |
