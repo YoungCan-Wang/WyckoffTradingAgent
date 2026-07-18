@@ -30,6 +30,7 @@ describe('Python sandbox executor', () => {
       timeout: 45_000,
       networkPolicy: 'deny-all',
       persistent: false,
+      resources: { vcpus: 1 },
       tags: { app: 'wyckoff', kind: 'python-research' },
     })
     expect(handle.writeFiles).toHaveBeenCalledWith([{ path: 'main.py', content: 'print("ok")' }])

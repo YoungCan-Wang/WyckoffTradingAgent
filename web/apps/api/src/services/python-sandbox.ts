@@ -28,6 +28,7 @@ export type PythonSandboxOptions = {
   timeout: number
   networkPolicy: 'deny-all'
   persistent: false
+  resources: { vcpus: 1 }
   tags: { app: 'wyckoff'; kind: 'python-research' }
 }
 
@@ -57,9 +58,9 @@ export async function executePythonSandbox(
       exitCode: command.exitCode,
       stdout: limitOutput(stdout),
       stderr: limitOutput(stderr),
-      activeCpuUsageMs: usage.activeCpuUsageMs,
-      networkIngressBytes: usage.networkTransfer.ingress,
-      networkEgressBytes: usage.networkTransfer.egress,
+      activeCpuUsageMs: usage.activeCpuUsageMs ?? 0,
+      networkIngressBytes: usage.networkTransfer?.ingress ?? 0,
+      networkEgressBytes: usage.networkTransfer?.egress ?? 0,
     }
   } finally {
     await sandbox.delete().catch(() => undefined)
@@ -78,6 +79,7 @@ function sandboxOptions(env: Env): PythonSandboxOptions {
     timeout: sandboxTimeout(env.AGENT_SANDBOX_TIMEOUT_MS),
     networkPolicy: 'deny-all',
     persistent: false,
+    resources: { vcpus: 1 },
     tags: { app: 'wyckoff', kind: 'python-research' },
   }
 }
