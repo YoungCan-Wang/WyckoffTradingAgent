@@ -79,10 +79,7 @@ export function ChatPage() {
   const { marketWatch, requestItems, updateMarketWatch } = useMarketWatch(user?.id, watchlist.items)
   const chat = useReadingRoomChat(token, setLocalError, t, setModelStatus, requestItems, marketWatch, updateMarketWatch, onRunEvent, onRunFinish, onRunError)
   const loading = chat.status === 'submitted' || chat.status === 'streaming'
-  const changeActiveTab = useCallback((tab: ReadingRoomTab) => {
-    setActiveTab(tab)
-    writeActiveTab(tab)
-  }, [])
+  const changeActiveTab = useCallback((tab: ReadingRoomTab) => { setActiveTab(tab); writeActiveTab(tab) }, [])
   const queue = useMessageQueue(chat, loading, token, config.configured, setLocalError, t)
   const conversations = useReadingRoomConversations(user?.id, chat.messages, chat.setMessages)
   useEffect(() => {
@@ -128,10 +125,10 @@ export function ChatPage() {
     void chat.sendMessage({ text: '请继续完成上一轮分析。复用当前对话中已经完成的工具结果，不要重复已完成的数据读取；如果上一轮缺少关键数据，只补充缺失步骤，然后给出最终结论。' })
   }, [changeActiveTab, chat, loading])
   const handleClearRunCheckpoint = useCallback(() => {
-    const conversationId = activeConversationRef.current
-    if (!conversationId) return
-    clearRunCheckpoint(conversationId)
-    setRunCheckpoint(null)
+    if (activeConversationRef.current) {
+      clearRunCheckpoint(activeConversationRef.current)
+      setRunCheckpoint(null)
+    }
   }, [activeConversationRef, setRunCheckpoint])
 
   return (
@@ -170,10 +167,7 @@ export function ChatPage() {
         onClearQueue={queue.clear}
         onInput={setInput}
         onSubmit={handleSubmit}
-        onStop={() => {
-          void chat.stop()
-          handleClearRunCheckpoint()
-        }}
+        onStop={() => { void chat.stop(); handleClearRunCheckpoint() }}
         modelStatus={modelStatus}
         runCheckpoint={runCheckpoint}
         onResumeRun={handleResumeRun}
