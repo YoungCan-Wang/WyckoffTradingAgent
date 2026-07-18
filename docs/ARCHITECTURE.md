@@ -73,22 +73,30 @@
 
 Hono app 的公共中间件按请求 ID、安全响应头、CORS、256 KiB 请求体上限的顺序执行；路由随后执行 Supabase JWT 鉴权与业务校验。聊天 POST 在鉴权后执行用户限流：同时配置 `UPSTASH_REDIS_REST_URL` 和 `UPSTASH_REDIS_REST_TOKEN` 时使用 Upstash Redis REST 共享额度，未配置时保留单 Worker 实例内的软限流，Redis 超时或不可用时返回 `X-RateLimit-Backend: local-fallback` 并启用本地保护。只配置一个 Upstash 变量属于部署错误，请求会失败而不会静默使用不完整连接。
 
+`/api/agent-runs` 是第一阶段的云 Agent 执行边界：只接受已登录且在有效白名单内的用户，并且只有 `AGENT_SANDBOX_ENABLED=true` 时开放。POST 当前同步执行一个最多 12,000 字符的 `python_research` 脚本；Worker 负责控制面，Vercel Sandbox 负责执行面。每次任务使用 `python3.13`、`networkPolicy=deny-all`、`persistent=false`，不注入业务或用户密钥，并把 stdout/stderr 各限制在 32 KiB；命令结束后先收集 CPU/网络用量，再永久删除沙箱。结果按认证用户写入 Upstash Redis，默认一小时过期，GET/DELETE 也只能访问当前用户的键。该端点尚不是异步队列，不能把同步 MVP 描述为可恢复的长任务系统。
+
 | Worker 变量 | 默认值 | 作用 |
 |---|---:|---|
 | `CHAT_DAILY_LIMIT_PER_USER` | `80` | 每个用户每天允许的聊天 POST 数 |
 | `CHAT_MIN_INTERVAL_MS` | `2500` | 同一用户两次聊天 POST 的最小间隔 |
 | `UPSTASH_REDIS_REST_URL` | 未设置 | Upstash Redis REST 地址；与 Token 同时存在时启用共享限流 |
 | `UPSTASH_REDIS_REST_TOKEN` | 未设置 | Upstash Redis REST Token，必须通过 Worker secret 注入 |
+| `AGENT_SANDBOX_ENABLED` | `false` | 显式开启白名单 Agent 沙箱端点；凭据未就绪时必须保持关闭 |
+| `AGENT_SANDBOX_TIMEOUT_MS` | `60000` | 单次沙箱会话超时；代码硬上限为 120 秒 |
+| `AGENT_RUN_TTL_SECONDS` | `3600` | Redis 中短期任务结果的存活秒数，最长 24 小时 |
+| `VERCEL_TEAM_ID` | 未设置 | Vercel Sandbox 所属团队 ID |
+| `VERCEL_PROJECT_ID` | 未设置 | Vercel Sandbox 所属项目 ID |
+| `VERCEL_TOKEN` / `VERCEL_OIDC_TOKEN` | 未设置 | 非 Vercel 托管的 Worker 使用 Access Token；本地或 Vercel 环境可使用 OIDC |
 
-`X-RateLimit-Backend` 明确返回 `redis`、`local` 或 `local-fallback`，便于区分共享额度、未配置 Redis 和 Redis 故障降级。Redis 只承载可过期的协调状态，不承载持仓、订单、交易信号或审计真相；这些数据仍由 Supabase/RLS 管理。
+`X-RateLimit-Backend` 明确返回 `redis`、`local` 或 `local-fallback`，便于区分共享额度、未配置 Redis 和 Redis 故障降级。Redis 只承载可过期的协调状态与短期 Agent Run 结果，不承载持仓、订单、交易信号或审计真相；这些数据仍由 Supabase/RLS 管理。
 
 读盘室只在用户问题命中观察篮代码，或明确要求复盘观察篮时，从 TickFlow 拉取相关标的的最新可用行情。快照只在浏览器保存 45 秒，随请求传入 Worker 并校验代码集合、时间和数值类型；它不写入 Supabase 或 Redis，数据源不可用时模型必须明确说明缺失，不得估算价格。
 
 前端的 `web/apps/web/src/lib/api-url.ts` 统一生成 chat、portfolio 和 settings 的后端地址。本地开发默认连接 `http://127.0.0.1:8787`，生产默认连接 `https://wyckoff-api.yongkai-wang.workers.dev`；部署环境可用公开的构建变量 `VITE_API_URL` 覆盖地址。该变量只包含公开服务地址，不能放 Token。
 
-本地开发可复制 `web/apps/api/.dev.vars.example` 为 `.dev.vars`。部署时不要把 Token 写入 `wrangler.toml`，应在 `web/apps/api/` 下分别执行 `pnpm exec wrangler secret put UPSTASH_REDIS_REST_URL` 和 `pnpm exec wrangler secret put UPSTASH_REDIS_REST_TOKEN`。
+本地开发可复制 `web/apps/api/.dev.vars.example` 为 `.dev.vars`。部署时不要把 Token 写入 `wrangler.toml`，应在 `web/apps/api/` 下分别执行 `pnpm exec wrangler secret put UPSTASH_REDIS_REST_URL`、`pnpm exec wrangler secret put UPSTASH_REDIS_REST_TOKEN` 和 `pnpm exec wrangler secret put VERCEL_TOKEN`；团队与项目 ID 可作为普通 Worker 变量。所有 Vercel 配置和一次真实沙箱验证完成前，`AGENT_SANDBOX_ENABLED` 保持 `false`。
 
-服务端断点调试在 `web/apps/api/` 执行 `pnpm dev:debug`，再从 VS Code 选择 `Wyckoff API: Attach Wrangler`；Inspector 固定使用 9229，TypeScript source map 直接定位到 `src/**/*.ts`。API 的 `pnpm test` 通过 `@cloudflare/vitest-pool-workers` 在本地 `workerd` 中执行，测试配置使用隔离绑定而不读取 `.dev.vars`。真实 Upstash 用例只在显式导出 `UPSTASH_REDIS_REST_URL`、`UPSTASH_REDIS_REST_TOKEN` 后执行 `pnpm test:upstash`，默认测试不发起真实网络请求。
+服务端断点调试在 `web/apps/api/` 执行 `pnpm dev:debug`，再从 VS Code 选择 `Wyckoff API: Attach Wrangler`；Inspector 固定使用 9229，TypeScript source map 直接定位到 `src/**/*.ts`。API 的 `pnpm test` 通过 `@cloudflare/vitest-pool-workers` 在本地 `workerd` 中执行，测试配置使用隔离绑定而不读取 `.dev.vars`。真实 Upstash 用例只在显式导出 `UPSTASH_REDIS_REST_URL`、`UPSTASH_REDIS_REST_TOKEN` 后执行 `pnpm test:upstash`；真实 Vercel 用例同样需要显式导出团队、项目和 Token 后执行 `pnpm test:sandbox`。默认测试不发起真实网络请求，也不会创建沙箱。
 
 `/api/llm-proxy/*` 继续保留为兼容代理：一部分 Web 工具和本地开发路径仍需要同域转发 TickFlow / Tushare / OpenAI-compatible 请求，避免浏览器 CORS 和供应商 SSE 差异。
 
@@ -811,7 +819,7 @@ web/             React Web App（CF Pages 部署）
     src/lib/     supabase 客户端、行情/LLM 辅助工具
     src/features/reading-room/  useChat、消息队列、工具渲染、对话历史
     src/stores/  Zustand 状态管理（auth）
-  apps/api/      Hono Worker API（/api/chat、/api/portfolio、/api/settings）
+  apps/api/      Hono Worker API（/api/chat、/api/agent-runs、/api/portfolio、/api/settings）
   packages/shared/  Web/Worker 共享工具、schema 与 SSE 归一化
   functions/     CF Pages Functions（边缘代理）
     api/chat/       Pages 请求转发到 Hono app

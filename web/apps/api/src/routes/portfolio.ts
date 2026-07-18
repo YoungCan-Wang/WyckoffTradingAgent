@@ -1,7 +1,7 @@
-import { createClient } from '@supabase/supabase-js'
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { authMiddleware, type AuthContext } from '../middleware/auth'
+import { authMiddleware, createUserSupabase, type AuthContext } from '../middleware/auth'
+import { isActiveWhitelistUser } from '../middleware/whitelist'
 import type { Env } from '../index'
 
 type PortfolioBindings = { Bindings: Env; Variables: { auth: AuthContext } }
@@ -62,26 +62,6 @@ export function parsePortfolioInput(raw: unknown):
   const codes = parsed.data.positions.map((item) => item.code.toUpperCase())
   if (new Set(codes).size !== codes.length) return { error: 'Duplicate position code' }
   return { data: parsed.data }
-}
-
-function createUserSupabase(env: Env, accessToken: string) {
-  const url = env.SUPABASE_URL || env.VITE_SUPABASE_URL
-  const key = env.SUPABASE_ANON_KEY || env.VITE_SUPABASE_ANON_KEY
-  if (!url || !key) throw new Error('Supabase env is missing')
-  return createClient(url, key, { global: { headers: { Authorization: `Bearer ${accessToken}` } } })
-}
-
-function compactToday(): string {
-  return new Date().toISOString().slice(0, 10).replace(/-/g, '')
-}
-
-async function isActiveWhitelistUser(supabase: ReturnType<typeof createUserSupabase>, userId: string): Promise<boolean> {
-  const { data, error } = await supabase.from('whitelist').select('expire_date').eq('user_id', userId).limit(1)
-  if (error || !Array.isArray(data)) return false
-  return data.some((row) => {
-    const expiry = String(row.expire_date || '').trim()
-    return !expiry || (/^\d{8}$/.test(expiry) && expiry >= compactToday())
-  })
 }
 
 async function loadPortfolio(supabase: ReturnType<typeof createUserSupabase>, userId: string) {

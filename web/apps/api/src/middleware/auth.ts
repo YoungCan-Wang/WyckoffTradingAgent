@@ -7,6 +7,13 @@ export type AuthContext = {
   accessToken: string
 }
 
+export function createUserSupabase(env: Env, accessToken: string) {
+  const url = env.SUPABASE_URL || env.VITE_SUPABASE_URL
+  const key = env.SUPABASE_ANON_KEY || env.VITE_SUPABASE_ANON_KEY
+  if (!url || !key) throw new Error('Supabase env is missing')
+  return createClient(url, key, { global: { headers: { Authorization: `Bearer ${accessToken}` } } })
+}
+
 export const authMiddleware = createMiddleware<{
   Bindings: Env
   Variables: { auth: AuthContext }

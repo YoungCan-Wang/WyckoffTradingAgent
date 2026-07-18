@@ -1,8 +1,12 @@
 name = "wyckoff-api"
 main = "src/index.ts"
 compatibility_date = "2024-12-18"
+compatibility_flags = ["nodejs_compat"]
 
 [vars]
 ENVIRONMENT = "production"
 CHAT_DAILY_LIMIT_PER_USER = "80"
 CHAT_MIN_INTERVAL_MS = "2500"
+AGENT_SANDBOX_ENABLED = "false"
+AGENT_SANDBOX_TIMEOUT_MS = "60000"
+AGENT_RUN_TTL_SECONDS = "3600"

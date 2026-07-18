@@ -4,6 +4,7 @@ import { cors } from 'hono/cors'
 import { requestId } from 'hono/request-id'
 import { secureHeaders } from 'hono/secure-headers'
 import { chatRoutes } from './routes/chat'
+import { agentRunRoutes } from './routes/agent-runs'
 import { portfolioRoutes } from './routes/portfolio'
 import { settingsRoutes } from './routes/settings'
 
@@ -19,6 +20,14 @@ export type Env = {
   CHAT_TOOL_APPROVAL_SECRET?: string
   UPSTASH_REDIS_REST_URL?: string
   UPSTASH_REDIS_REST_TOKEN?: string
+  AGENT_SANDBOX_ENABLED?: string
+  AGENT_SANDBOX_TIMEOUT_MS?: string
+  AGENT_RUN_TTL_SECONDS?: string
+  VERCEL_TEAM_ID?: string
+  VERCEL_PROJECT_ID?: string
+  VERCEL_TOKEN?: string
+  VERCEL_OIDC_TOKEN?: string
+  RUN_VERCEL_SANDBOX_INTEGRATION?: string
 }
 
 const app = new Hono<{ Bindings: Env }>()
@@ -49,6 +58,7 @@ app.notFound((c) => c.json({ error: 'Not Found', requestId: c.get('requestId') }
 app.get('/api/health', (c) => c.json({ status: 'ok' }))
 
 app.route('/api/chat', chatRoutes)
+app.route('/api/agent-runs', agentRunRoutes)
 app.route('/api/portfolio', portfolioRoutes)
 app.route('/api/settings', settingsRoutes)
 

@@ -1,2 +1,8 @@
 UPSTASH_REDIS_REST_URL=https://your-instance.upstash.io
 UPSTASH_REDIS_REST_TOKEN=replace-with-local-development-token
+AGENT_SANDBOX_ENABLED=false
+AGENT_SANDBOX_TIMEOUT_MS=60000
+AGENT_RUN_TTL_SECONDS=3600
+VERCEL_TEAM_ID=team_xxx
+VERCEL_PROJECT_ID=prj_xxx
+VERCEL_TOKEN=replace-with-vercel-access-token
