@@ -13,7 +13,7 @@ describe('requestPortfolio', () => {
       free_cash: 1200,
       positions: [],
     })
-    expect(fetcher).toHaveBeenCalledWith('/api/portfolio', expect.objectContaining({
+    expect(fetcher).toHaveBeenCalledWith('http://127.0.0.1:8787/api/portfolio', expect.objectContaining({
       method: 'GET',
       headers: { Authorization: 'Bearer token' },
     }))

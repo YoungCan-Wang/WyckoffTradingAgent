@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { apiUrl } from './api-url'
 
 function normalizeBuyDate(value: unknown): unknown {
   if (value === '' || value == null) return null
@@ -36,7 +37,7 @@ export async function requestPortfolio(
   portfolio?: Portfolio,
   fetcher: typeof fetch = fetch,
 ): Promise<Portfolio> {
-  const response = await fetcher('/api/portfolio', {
+  const response = await fetcher(apiUrl('/api/portfolio'), {
     method,
     headers: {
       Authorization: `Bearer ${accessToken}`,

@@ -15,6 +15,7 @@ import {
   type UIMessage,
 } from 'ai'
 import { useChat } from '@ai-sdk/react'
+import { apiUrl } from '@/lib/api-url'
 import type { TranslationKey } from '@/lib/preferences'
 import type { ReadingRoomConversations } from './conversations'
 import { scrollToMessage } from './run-records'
@@ -272,9 +273,4 @@ async function fetchChatConfig(
   }
   if (!response.ok) return { configured: false, model: null, error: t('chat.configHttpError', { status: String(response.status) }) }
   return await response.json() as ChatConfig
-}
-
-function apiUrl(path: string): string {
-  const base = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://127.0.0.1:8787' : '')
-  return `${base.replace(/\/$/, '')}${path}`
 }

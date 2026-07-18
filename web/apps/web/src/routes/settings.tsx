@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { ExternalLink, User, ShieldCheck, Database, Brain, Bell, ChevronDown, Eye, EyeOff, PlugZap } from 'lucide-react'
+import { apiUrl } from '@/lib/api-url'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/auth'
 import { PROVIDERS, PROVIDER_LABELS, PROVIDER_BASE_URLS, PROVIDER_DEFAULT_MODELS } from '@wyckoff/shared'
@@ -223,7 +224,7 @@ function useConnectivityTests(args: {
   const [testing, setTesting] = useState<ConnectivityRunning>({ model: false, dataSource: false })
   const [testResults, setTestResults] = useState<ConnectivityState>({ model: null, dataSource: null })
 
-  const runConnectivityTest = useCallback(async (target: TestTarget, path: string, payload: object) => {
+  const runConnectivityTest = useCallback(async (target: TestTarget, path: `/api/${string}`, payload: object) => {
     setTesting((prev) => ({ ...prev, [target]: true }))
     setTestResults((prev) => ({ ...prev, [target]: null }))
     try {
@@ -684,11 +685,6 @@ function buildDefaultProviderConfigs(): Record<string, ProviderConfig> {
 async function currentAccessToken(): Promise<string> {
   const { data } = await supabase.auth.getSession()
   return data.session?.access_token || ''
-}
-
-function apiUrl(path: string): string {
-  const base = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://127.0.0.1:8787' : '')
-  return `${base.replace(/\/$/, '')}${path}`
 }
 
 function buildProviderConfigsFromSettings(data: SettingsRow): Record<string, ProviderConfig> {
