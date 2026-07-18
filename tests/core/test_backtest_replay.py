@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from core import backtest_replay as replay_mod
+from core.a_share_entry_research import AShareEntryResearchPolicy
 from core.backtest_execution import ExitSimulationConfig
 from core.backtest_replay import BacktestReplayConfig, build_signal_ledger, replay_backtest, replay_signal_ledger
 from core.mainline_engine import MainlineEngineConfig
@@ -346,6 +347,73 @@ def test_confirmed_signals_rank_codes_by_best_score() -> None:
     assert confirmed.codes == ["000001", "000003", "000002"]
 
 
+def test_confirmed_signals_apply_a_share_research_filter_and_score() -> None:
+    class Pending:
+        def write(self, *_args, **_kwargs):
+            return None
+
+        def tick(self, *_args, **_kwargs):
+            return [
+                {"code": "EVR", "score": 100.0, "signal_type": "evr"},
+                {"code": "SOS", "score": 90.0, "signal_type": "sos"},
+                {"code": "TREND", "score": 5.0, "signal_type": "trend_pullback"},
+            ]
+
+    ctx = replay_mod._DayContext(
+        idx=0,
+        signal_date=date(2026, 1, 1),
+        entry_target_date=date(2026, 1, 2),
+        day_df_map={"000001": _hist()},
+        name_map={},
+        day_cfg=FunnelConfig(trading_days=3),
+        result=_result(),
+        regime="CAUTION",
+    )
+    policy = AShareEntryResearchPolicy(blocked_confirmed_signals=("evr",), calibrate_confirmed_score=True)
+
+    confirmed = replay_mod._confirmed_signals(ctx, Pending(), {}, policy)
+
+    assert confirmed.codes == ["TREND", "SOS"]
+    assert "EVR" not in confirmed.score_map
+
+
+def test_confirmed_signals_require_breadth_for_neutral_research_variant() -> None:
+    class Pending:
+        def __init__(self):
+            self.written = False
+            self.ticked = False
+
+        def write(self, *_args, **_kwargs):
+            self.written = True
+
+        def tick(self, *_args, **_kwargs):
+            self.ticked = True
+            return [{"code": "000001", "score": 10.0, "signal_type": "spring"}]
+
+    ctx = replay_mod._DayContext(
+        idx=0,
+        signal_date=date(2026, 1, 1),
+        entry_target_date=date(2026, 1, 2),
+        day_df_map={"000001": _hist()},
+        name_map={},
+        day_cfg=FunnelConfig(trading_days=3),
+        result=_result(),
+        regime="NEUTRAL",
+    )
+
+    pending = Pending()
+    confirmed = replay_mod._confirmed_signals(
+        ctx,
+        pending,
+        {},
+        AShareEntryResearchPolicy(require_neutral_breadth_confirmation=True),
+    )
+
+    assert confirmed.codes == []
+    assert pending.written is True
+    assert pending.ticked is True
+
+
 def test_confirmed_signals_treats_invalid_scores_as_zero() -> None:
     class Pending:
         def write(self, *_args, **_kwargs):
@@ -405,7 +473,7 @@ def test_confirmed_signals_infer_track_from_signal_type_when_track_missing() -> 
     assert confirmed.trigger_map == {"000001": "spring"}
 
 
-def test_name_score_map_prefers_highest_scored_source_name() -> None:
+def test_name_score_map_prefers_higher_confirmed_source_name() -> None:
     result = _result()._replace(
         candidate_entries=[
             {"code": "000001", "entry_type": "launchpad", "score": 80.0},
@@ -423,6 +491,21 @@ def test_name_score_map_prefers_highest_scored_source_name() -> None:
 
     assert got["000001"] == (90.0, "spring(确认)")
     assert got["000002"] == (70.0, "tight_base")
+
+
+def test_name_score_map_keeps_higher_score_but_uses_confirmed_name() -> None:
+    result = _result()._replace(candidate_entries=[{"code": "000001", "entry_type": "launchpad", "score": 100.0}])
+    confirmed = replay_mod._ConfirmedSignals(
+        codes=["000001"],
+        score_map={"000001": 10.0},
+        track_map={"000001": "Accum"},
+        trigger_map={"000001": "spring"},
+    )
+
+    assert replay_mod._name_score_map(result, confirmed, prefer_confirmed=True)["000001"] == (
+        100.0,
+        "spring(确认)",
+    )
 
 
 def test_name_score_map_treats_invalid_candidate_scores_as_zero() -> None:

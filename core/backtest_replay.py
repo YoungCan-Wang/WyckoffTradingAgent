@@ -13,6 +13,12 @@ import pandas as pd
 from numpy.typing import NDArray
 
 from core._price_math import DATE_SORTED_ATTR
+from core.a_share_entry_research import (
+    AShareEntryResearchPolicy,
+    calibrated_confirmation_score,
+    confirmed_signal_allowed,
+    market_context_allows_entry,
+)
 from core.ai_candidate_allocation import AiCandidateAllocationConfig
 from core.backtest_crash_probe import (
     CrashProbeObservation,
@@ -89,6 +95,7 @@ class BacktestReplayConfig:
     signal_weight_meta: dict[str, object] = field(default_factory=dict)
     market_breadth_calculator: MarketBreadthCalculator | None = None
     market_regime_analyzer: MarketRegimeAnalyzer | None = None
+    a_share_entry_research: AShareEntryResearchPolicy = field(default_factory=AShareEntryResearchPolicy)
 
 
 @dataclass(frozen=True)
@@ -121,6 +128,7 @@ class _DayContext:
     day_cfg: FunnelConfig
     result: FunnelResult
     regime: str
+    breadth: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -432,7 +440,17 @@ def _build_day_context(
         mainline_config=config.mainline_config,
     )
     regime = bench_context.get("regime", "NEUTRAL") if bench_context else "NEUTRAL"
-    return _DayContext(idx, signal_date, trade_dates[idx + 1], day_df_map, name_map, day_cfg, result, str(regime))
+    return _DayContext(
+        idx,
+        signal_date,
+        trade_dates[idx + 1],
+        day_df_map,
+        name_map,
+        day_cfg,
+        result,
+        str(regime),
+        breadth,
+    )
 
 
 def _calculate_market_breadth(day_df_map: dict[str, pd.DataFrame], config: BacktestReplayConfig) -> dict:
@@ -500,7 +518,7 @@ def _select_ranked_codes(
     sector_map: dict[str, str],
     config: BacktestReplayConfig,
 ) -> tuple[_RankedSelection | None, int]:
-    confirmed = _confirmed_signals(ctx, pending_pool, sector_map)
+    confirmed = _confirmed_signals(ctx, pending_pool, sector_map, config.a_share_entry_research)
     selected_codes, score_map, track_map = select_ai_input_codes(
         result=ctx.result,
         day_df_map=ctx.day_df_map,
@@ -522,7 +540,7 @@ def _select_ranked_codes(
             ranked_codes,
             score_map,
             track_map,
-            _name_score_map(ctx.result, confirmed),
+            _name_score_map(ctx.result, confirmed, prefer_confirmed=config.pending_mode == "only"),
             frozenset(confirmed.codes),
         ),
         len(confirmed.codes),
@@ -530,29 +548,39 @@ def _select_ranked_codes(
 
 
 def _confirmed_signals(
-    ctx: _DayContext, pending_pool: PendingPool | None, sector_map: dict[str, str]
+    ctx: _DayContext,
+    pending_pool: PendingPool | None,
+    sector_map: dict[str, str],
+    policy: AShareEntryResearchPolicy | None = None,
 ) -> _ConfirmedSignals:
     if pending_pool is None:
         return _ConfirmedSignals([], {}, {}, {})
+    research = policy or AShareEntryResearchPolicy()
     signal_date_str = ctx.signal_date.isoformat()
     pending_pool.write(
         signal_date_str, ctx.result.triggers, ctx.day_df_map, ctx.regime, ctx.name_map, sector_map, ctx.day_cfg
     )
+    confirmed_items = pending_pool.tick(ctx.day_df_map, signal_date_str)
+    if not market_context_allows_entry(research, regime=ctx.regime, breadth=ctx.breadth):
+        return _ConfirmedSignals([], {}, {}, {})
     codes: list[str] = []
     score_map: dict[str, float] = {}
     track_map: dict[str, str] = {}
     trigger_map: dict[str, str] = {}
-    for item in pending_pool.tick(ctx.day_df_map, signal_date_str):
+    for item in confirmed_items:
+        signal_type = str(item.get("signal_type", "confirmed"))
+        if not confirmed_signal_allowed(research, signal_type):
+            continue
         code = str(item.get("code", "")).strip()
         if not code:
             continue
-        score = candidate_score_value(item.get("score"))
+        score = calibrated_confirmation_score(research, signal_type, item.get("score"))
         if code not in score_map:
             codes.append(code)
         if code not in score_map or score > score_map[code]:
             score_map[code] = score
             track_map[code] = candidate_entry_track(item, fields=("track", "signal_type"))
-            trigger_map[code] = str(item.get("signal_type", "confirmed"))
+            trigger_map[code] = signal_type
     codes.sort(key=lambda code: (-candidate_score_value(score_map.get(code)), code))
     return _ConfirmedSignals(codes, score_map, track_map, trigger_map)
 
@@ -589,7 +617,12 @@ def _apply_selection_guards(codes: list[str], ctx: _DayContext, config: Backtest
     return codes
 
 
-def _name_score_map(result: FunnelResult, confirmed: _ConfirmedSignals) -> dict[str, tuple[float, str]]:
+def _name_score_map(
+    result: FunnelResult,
+    confirmed: _ConfirmedSignals,
+    *,
+    prefer_confirmed: bool = False,
+) -> dict[str, tuple[float, str]]:
     out = combine_trigger_scores(result.triggers)
     for item in result.candidate_entries or []:
         code = str(item.get("code", "")).strip()
@@ -598,8 +631,16 @@ def _name_score_map(result: FunnelResult, confirmed: _ConfirmedSignals) -> dict[
                 out, code, candidate_score_value(item.get("score")), str(item.get("entry_type", "alpha"))
             )
     for code, signal_type in confirmed.trigger_map.items():
-        _set_best_trigger_name(out, code, confirmed.score_map.get(code, 0.0), f"{signal_type}(确认)")
+        if prefer_confirmed:
+            _set_confirmed_trigger_name(out, code, confirmed.score_map.get(code, 0.0), signal_type)
+        else:
+            _set_best_trigger_name(out, code, confirmed.score_map.get(code, 0.0), f"{signal_type}(确认)")
     return out
+
+
+def _set_confirmed_trigger_name(out: dict[str, tuple[float, str]], code: str, score: float, signal_type: str) -> None:
+    current_score = candidate_score_value((out.get(code) or (0.0, ""))[0])
+    out[code] = (max(current_score, candidate_score_value(score)), f"{signal_type}(确认)")
 
 
 def _set_best_trigger_name(out: dict[str, tuple[float, str]], code: str, score: float, name: str) -> None:

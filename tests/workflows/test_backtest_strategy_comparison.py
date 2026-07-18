@@ -40,7 +40,7 @@ def _write_summary(
 def test_strategy_comparison_builds_relative_and_walk_forward_results(tmp_path: Path) -> None:
     periods = ["bull_2020", "bear_2022", "recent_6m"]
     for period_index, period in enumerate(periods):
-        for variant_index, variant in enumerate("ABCDE"):
+        for variant_index, variant in enumerate(("A", "F", "G", "H", "I")):
             _write_summary(tmp_path, period, variant, 2.0 + variant_index + period_index, -4.0)
 
     rows = load_strategy_comparison_rows(tmp_path)
@@ -48,9 +48,9 @@ def test_strategy_comparison_builds_relative_and_walk_forward_results(tmp_path: 
 
     assert len(rows) == 15
     assert report["status"] == "ready"
-    assert report["evaluations"]["E"]["status"] == "pass"
-    assert report["evaluations"]["E"]["exposure_periods"] == 3
-    assert report["evaluations"]["E"]["changed_trades"] == 6
+    assert report["evaluations"]["I"]["status"] == "pass"
+    assert report["evaluations"]["I"]["exposure_periods"] == 3
+    assert report["evaluations"]["I"]["changed_trades"] == 6
     assert len(report["walk_forward"]["windows"]) == 2
     assert "相对 A 组结论" in render_strategy_comparison(report)
 

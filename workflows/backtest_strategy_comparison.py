@@ -1,4 +1,4 @@
-"""A/B/C/D/E strategy ablation report from backtest markdown artifacts."""
+"""Strategy ablation report from backtest markdown artifacts."""
 
 from __future__ import annotations
 
@@ -12,10 +12,10 @@ from pathlib import Path
 from statistics import mean
 from typing import Any
 
-from workflows.backtest_strategy_variants import VARIANT_LABELS
+from workflows.backtest_strategy_variants import DEFAULT_COMPARISON_VARIANTS, VARIANT_LABELS
 
 _DIR_PATTERN = re.compile(
-    r"backtest-strategy-(?P<period>recent_2m|recent_6m|bull_2020|bear_2022|custom)-(?P<variant>[A-E])"
+    r"backtest-strategy-(?P<period>recent_2m|recent_6m|bull_2020|bear_2022|custom)-(?P<variant>[A-I])"
     r"(?:-\d+)?$"
 )
 
@@ -68,23 +68,23 @@ def build_strategy_comparison(rows: list[StrategyComparisonRow]) -> dict[str, An
         variant: _evaluate_variant(variant, values, by_variant.get("A", [])) for variant, values in by_variant.items()
     }
     return {
-        "status": "ready" if {"A", "B", "C", "D", "E"}.issubset(by_variant) else "incomplete",
+        "status": "ready" if set(DEFAULT_COMPARISON_VARIANTS).issubset(by_variant) else "incomplete",
         "baseline": "A",
-        "variant_labels": {key: value for key, value in VARIANT_LABELS.items() if key != "live"},
+        "variant_labels": {key: VARIANT_LABELS[key] for key in by_variant if key in VARIANT_LABELS},
         "rows": [_row_payload(row) for row in sorted(rows, key=lambda row: (row.period, row.variant))],
         "evaluations": evaluations,
         "walk_forward": _walk_forward(rows),
-        "scope": "B 组验证 Upthrust 当日新开仓 veto；持仓期动态 L5 离场尚未接入本固定退出回放。",
+        "scope": "默认比较 A/F/G/H/I，只改变 confirmed-only 入场筛选或排序；持仓期统一使用固定退出。",
         "decision_rule": "至少两个周期真实改变入选交易、胜出周期过半、平均收益增量为正，且最大回撤恶化不超过2个百分点。",
     }
 
 
 def render_strategy_comparison(report: dict[str, Any]) -> str:
     lines = [
-        "# 策略 A/B/C/D/E 消融对比",
+        "# 策略 A/F/G/H/I A股实证消融对比",
         "",
-        "固定同一数据快照、入场、组合与退出参数，仅切换策略能力。A 为基线，B/C/D 为单项，E 为组合。",
-        "B 组只验证 Upthrust 当日禁止新开仓；持仓期仍使用统一的固定退出参数，避免把两类效果混在一起。",
+        "固定同一数据快照、确认口径、组合与退出参数，仅切换 confirmed-only 入场能力。A 为基线。",
+        "F/G 验证弱信号剔除，H 验证 NEUTRAL 广度闸门，I 验证跨触发器分数校准。",
         "",
         "| 周期 | 组别 | 现金收益 | 现金回撤 | 成交 | 胜率 | 平均单笔 | 夏普 |",
         "|---|---|---:|---:|---:|---:|---:|---:|",
@@ -99,7 +99,7 @@ def render_strategy_comparison(report: dict[str, Any]) -> str:
             "|---|---:|---:|---:|---:|---:|---:|---|",
         ]
     )
-    for variant in ("B", "C", "D", "E"):
+    for variant in sorted(key for key in (report.get("evaluations") or {}) if key != "A"):
         item = (report.get("evaluations") or {}).get(variant, {})
         lines.append(
             f"| {variant} | {item.get('common_periods', 0)} | {item.get('exposure_periods', 0)} | "

@@ -62,7 +62,11 @@ from workflows.backtest_defaults import (
     full_formal_l4_max,
 )
 from workflows.backtest_intraday import tickflow_entry_price_fetcher_from_env
-from workflows.backtest_strategy_variants import normalize_strategy_variant, strategy_variant_overrides
+from workflows.backtest_strategy_variants import (
+    normalize_strategy_variant,
+    strategy_variant_entry_policy,
+    strategy_variant_overrides,
+)
 from workflows.candidate_policy_config import candidate_policy_config_from_env
 from workflows.dynamic_policy_config import dynamic_policy_config_from_env
 from workflows.funnel_config_overrides import funnel_cfg_overrides_from_env
@@ -206,6 +210,7 @@ def _build_run_config(request: BacktestWorkflowRequest) -> BacktestRunConfig:
             regime_filter=request.regime_filter,
             execution_regime_gate=request.execution_regime_gate,
             strategy_variant=strategy_variant,
+            a_share_entry_research=strategy_variant_entry_policy(strategy_variant),
             pending_mode=request.pending_mode,
             pending_merge_order=request.pending_merge_order,
             metrics_engine=request.metrics_engine,

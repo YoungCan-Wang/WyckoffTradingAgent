@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime
 
 import pandas as pd
@@ -212,6 +212,7 @@ def _base_summary(
         "top_n": config.replay.top_n,
         "ai_selection_mode": config.replay.selection_mode,
         "strategy_variant": config.strategy_variant,
+        "a_share_entry_research": asdict(config.replay.a_share_entry_research),
         "ai_top_n_cap": None if config.replay.top_n <= 0 else config.replay.top_n,
         "board": context.board,
         "sample_size": context.sample_size,

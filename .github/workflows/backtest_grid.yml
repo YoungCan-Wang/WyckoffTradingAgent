@@ -74,7 +74,8 @@ env:
   BT_EXECUTION_REGIME_GATE: ${{ inputs.execution_regime_gate || 'live' }}
   BT_INITIAL_CASH: "100000"
   BT_MAX_POSITIONS: "4"
-  BT_PORTFOLIO_STYLES: "all_core"
+  # confirmed-only 下 confirmation_only 与 slot_equal_4 等价，默认网格不重复计算。
+  BT_PORTFOLIO_STYLES: "slot_equal_4,probe_add,trend_pyramid,concentrated_swap"
   BT_COMMISSION_RATE: "0.0002"
   BT_SMALL_TRADE_THRESHOLD: "10000"
   BT_SMALL_TRADE_FEE: "5"
@@ -365,7 +366,8 @@ jobs:
       max-parallel: 20
       matrix:
         period_key: [recent_2m, recent_6m, bull_2020, bear_2022]
-        variant: [A, B, C, D, E]
+        # 经典 B-E 已完成一次消融且未通过，默认算力转向 A 股实证入场实验。
+        variant: [A, F, G, H, I]
     steps:
       - name: Resolve period dates
         id: period

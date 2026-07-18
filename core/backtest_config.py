@@ -6,6 +6,7 @@ from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 
+from core.a_share_entry_research import AShareEntryResearchPolicy
 from core.ai_candidate_allocation import AiCandidateAllocationConfig
 from core.backtest_execution import ExitSimulationConfig, IntradayPriceFetcher
 from core.backtest_performance import BacktestPerformanceConfig
@@ -46,6 +47,7 @@ class BacktestRunInput:
     selection_mode: str
     max_atr_hold_days: int
     strategy_variant: str = "live"
+    a_share_entry_research: AShareEntryResearchPolicy = field(default_factory=AShareEntryResearchPolicy)
     intraday_entry_price_fetcher: IntradayPriceFetcher | None = None
     funnel_config_overrides: dict[str, object] = field(default_factory=dict)
     market_breadth_calculator: MarketBreadthCalculator | None = None
@@ -266,6 +268,7 @@ def _replay_config(
         mainline_config=params.mainline_config,
         signal_weight_map=dict(params.signal_weight_map),
         signal_weight_meta=dict(params.signal_weight_meta),
+        a_share_entry_research=params.a_share_entry_research,
     )
 
 

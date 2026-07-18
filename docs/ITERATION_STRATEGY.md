@@ -20,6 +20,7 @@
 | 短线事件 | 未来 5 日命中、MFE、MAE 与 Top-K lift | 只读评估，不回写生产推荐 |
 | 主题轮动 | `rotation_watch` 的短周期动量和宽度 | Shadow 提示，不改变主线确认或 OMS |
 | 基本面质量 Overlay | 公告日前可见财报的 point-in-time 历史回放 | 0/3 周期通过，保留研究脚本，不接入 Shadow/生产 |
+| A股实证入场 | confirmed 信号族、市场广度与跨触发器排序 | 默认回测 A/F/G/H/I，未验证前不改变生产漏斗 |
 
 ### 基本面质量 Overlay 本地结论（2026-07-18）
 
@@ -69,7 +70,17 @@ stateDiagram-v2
 
 Backtest Grid 输出跨周期确认、`parameter_stability.json` 和 `walk_forward_validation.json`。当前
 walk-forward 只验证持有期与退出参数；SOS、Spring、LPS 等触发阈值必须进入专项矩阵后，才能声称完成
-触发器样本外验证。A/B/C/D/E 消融用于规则贡献，不能与参数网格结论混为一谈。
+触发器样本外验证。经典形态 B/C/D/E 在 2026-07-18 的三周期消融中未达到晋级要求：B 无真实暴露，
+C/E 降低近期与牛市收益，D 没有经济改善。因此默认算力不再重复运行 B-E，只保留手动复验能力。
+
+新的默认消融固定为 `A/F/G/H/I`：A 是生产口径基线；F 剔除 EVR confirmed；G 同时剔除 EVR 与
+SOS confirmed；H 只在 NEUTRAL 同时满足 MA20 广度、广度增量和当日上涨家数确认时允许新入场；I 不再
+直接跨信号比较原始 Wyckoff 分数，而以历史 confirmed 命中率先验和封顶后的形态强度重排。F-I 都是
+回测研究策略，不会因单次胜出自动改写生产漏斗、Step3 或 OMS。
+
+`pending_mode=only` 的报告必须把成交触发器显示为实际 confirmed 信号族；同一股票当日还命中更高分的
+未确认形态时，可以保留更高数值供归因，但不能把标签降级成裸 `spring` / `sos`。`both` 研究模式仍按
+更强来源展示，避免把合流实验误报为 confirmed-only。
 
 ## Shadow 到生产的边界
 

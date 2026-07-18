@@ -6,6 +6,7 @@ from datetime import date
 
 import pytest
 
+from core.a_share_entry_research import AShareEntryResearchPolicy
 from core.backtest_config import BacktestRunInput, build_backtest_run_config
 from core.backtest_execution import ExitSimulationConfig
 from core.cash_portfolio import CashPortfolioConfig
@@ -104,6 +105,14 @@ def test_build_backtest_run_config_preserves_signal_weight_map() -> None:
 
     assert config.replay.signal_weight_map == {"lps": 0.5, "sos": 1.15}
     assert config.replay.signal_weight_meta == meta
+
+
+def test_build_backtest_run_config_preserves_a_share_entry_research_policy() -> None:
+    policy = AShareEntryResearchPolicy(blocked_confirmed_signals=("evr",))
+
+    config = _build_config(a_share_entry_research=policy)
+
+    assert config.replay.a_share_entry_research == policy
 
 
 @pytest.mark.parametrize(
