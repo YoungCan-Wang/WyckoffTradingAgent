@@ -18,7 +18,7 @@ export function AppUpdateGate() {
       checking = true
       try {
         const remoteVersion = await fetchRemoteVersion()
-        if (!disposed && shouldReload(remoteVersion)) reloadForVersion(remoteVersion)
+        if (!disposed && shouldReload(remoteVersion) && !isReadingRoomStreaming()) reloadForVersion(remoteVersion)
       } finally {
         checking = false
       }
@@ -57,6 +57,11 @@ async function fetchRemoteVersion(): Promise<string | null> {
 
 function shouldReload(remoteVersion: string | null): remoteVersion is string {
   return remoteVersion !== null && remoteVersion !== APP_VERSION
+}
+
+function isReadingRoomStreaming(): boolean {
+  return window.location.pathname === '/chat'
+    && document.querySelector('[data-reading-room-streaming="true"]') !== null
 }
 
 function reloadForVersion(remoteVersion: string): void {

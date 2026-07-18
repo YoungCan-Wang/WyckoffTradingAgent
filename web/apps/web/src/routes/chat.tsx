@@ -21,6 +21,8 @@ import { appendRunEvent, clearRunCheckpoint, finishRun, readRunCheckpoint } from
 import { readMarketWatchCache, writeMarketWatchCache } from '@/features/reading-room/market-watch-cache'
 import { useReadingRoomWatchlist } from '@/features/reading-room/watchlist-state'
 
+const ACTIVE_TAB_SESSION_KEY = 'wyckoff:reading-room-active-tab-v1'
+
 function useRunLedger() {
   const activeConversationRef = useRef('')
   const [runCheckpoint, setRunCheckpoint] = useState<RunCheckpoint | null>(null)
@@ -67,7 +69,7 @@ export function ChatPage() {
   const [input, setInput] = useState('')
   const [localError, setLocalError] = useState('')
   const [modelStatus, setModelStatus] = useState<ChatRunStatus | null>(null)
-  const [activeTab, setActiveTab] = useState<ReadingRoomTab>('desk')
+  const [activeTab, setActiveTab] = useState<ReadingRoomTab>(readActiveTab)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => readBooleanStorage(CONVERSATION_SIDEBAR_STORAGE_KEY, true))
   const scrollRef = useRef<HTMLDivElement>(null)
   const token = session?.access_token
@@ -77,6 +79,10 @@ export function ChatPage() {
   const { marketWatch, requestItems, updateMarketWatch } = useMarketWatch(user?.id, watchlist.items)
   const chat = useReadingRoomChat(token, setLocalError, t, setModelStatus, requestItems, marketWatch, updateMarketWatch, onRunEvent, onRunFinish, onRunError)
   const loading = chat.status === 'submitted' || chat.status === 'streaming'
+  const changeActiveTab = useCallback((tab: ReadingRoomTab) => {
+    setActiveTab(tab)
+    writeActiveTab(tab)
+  }, [])
   const queue = useMessageQueue(chat, loading, token, config.configured, setLocalError, t)
   const conversations = useReadingRoomConversations(user?.id, chat.messages, chat.setMessages)
   useEffect(() => {
@@ -94,7 +100,7 @@ export function ChatPage() {
     queue,
     token,
     t,
-    setActiveTab,
+    setActiveTab: changeActiveTab,
     setInput,
     setLocalError,
   })
@@ -107,7 +113,7 @@ export function ChatPage() {
     scrollRef,
     token,
     t,
-    setActiveTab,
+    setActiveTab: changeActiveTab,
     setInput,
     setLocalError,
     setSidebarCollapsed,
@@ -116,11 +122,11 @@ export function ChatPage() {
   useInitialPrompt(config.configured, token, startNewConversation)
   const handleResumeRun = useCallback(() => {
     if (loading) return
-    setActiveTab('chat')
+    changeActiveTab('chat')
     setLocalError('')
     chat.clearError()
     void chat.sendMessage({ text: '请继续完成上一轮分析。复用当前对话中已经完成的工具结果，不要重复已完成的数据读取；如果上一轮缺少关键数据，只补充缺失步骤，然后给出最终结论。' })
-  }, [chat, loading])
+  }, [changeActiveTab, chat, loading])
   const handleClearRunCheckpoint = useCallback(() => {
     const conversationId = activeConversationRef.current
     if (!conversationId) return
@@ -129,14 +135,14 @@ export function ChatPage() {
   }, [activeConversationRef, setRunCheckpoint])
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden" data-reading-room-streaming={loading ? 'true' : 'false'}>
       <ChatHeader
         config={config}
         hasUser={Boolean(user)}
         activeTab={activeTab}
         messageCount={chat.messages.length}
         watchCount={watchlist.items.length}
-        onTabChange={setActiveTab}
+        onTabChange={changeActiveTab}
       />
       <ChatMessages
         chat={chat}
@@ -173,4 +179,22 @@ export function ChatPage() {
       <ErrorBanner message={localError || chat.error?.message || ''} />
     </div>
   )
+}
+
+function readActiveTab(): ReadingRoomTab {
+  if (typeof window === 'undefined') return 'desk'
+  try {
+    const value = window.sessionStorage.getItem(ACTIVE_TAB_SESSION_KEY)
+    return value === 'chat' || value === 'watchlist' || value === 'desk' ? value : 'desk'
+  } catch {
+    return 'desk'
+  }
+}
+
+function writeActiveTab(value: ReadingRoomTab): void {
+  try {
+    window.sessionStorage.setItem(ACTIVE_TAB_SESSION_KEY, value)
+  } catch {
+    // Session storage may be unavailable; the in-memory tab state still works.
+  }
 }

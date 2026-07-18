@@ -42,7 +42,7 @@ interface SubmitHandlerArgs {
   queue: MessageQueue
   token: string | undefined
   t: (key: TranslationKey) => string
-  setActiveTab: Dispatch<SetStateAction<ReadingRoomTab>>
+  setActiveTab: (value: ReadingRoomTab) => void
   setInput: Dispatch<SetStateAction<string>>
   setLocalError: Dispatch<SetStateAction<string>>
 }
@@ -56,7 +56,7 @@ interface ReadingRoomActionArgs {
   scrollRef: RefObject<HTMLDivElement | null>
   token: string | undefined
   t: (key: TranslationKey) => string
-  setActiveTab: Dispatch<SetStateAction<ReadingRoomTab>>
+  setActiveTab: (value: ReadingRoomTab) => void
   setInput: Dispatch<SetStateAction<string>>
   setLocalError: Dispatch<SetStateAction<string>>
   setSidebarCollapsed: Dispatch<SetStateAction<boolean>>
