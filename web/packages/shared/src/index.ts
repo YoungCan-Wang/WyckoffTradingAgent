@@ -36,6 +36,15 @@ export {
 } from './agent-market'
 export type { FundamentalMetric, ValueSnapshot, ValueSnapshotReason } from './agent-market'
 export {
+  formatMarketWatchContext,
+  marketWatchSymbol,
+  normalizeMarketWatchCode,
+  readFreshMarketWatchSnapshot,
+  selectMarketWatchCodes,
+} from './market-watch'
+export { MARKET_WATCH_CACHE_TTL_MS } from './market-watch'
+export type { MarketWatchQuote, MarketWatchSnapshot, MarketWatchState } from './market-watch'
+export {
   buildValuePrompt,
   buildValueScore,
   evaluateValueRules,

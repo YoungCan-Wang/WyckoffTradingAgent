@@ -19,7 +19,7 @@ import { apiUrl } from '@/lib/api-url'
 import type { TranslationKey } from '@/lib/preferences'
 import type { ReadingRoomConversations } from './conversations'
 import { scrollToMessage } from './run-records'
-import type { ChatConfig, ChatRunEvent, ChatRunStatus, QueuedMessage, ReadingRoomTab, StageProgressStatus } from './types'
+import type { ChatConfig, ChatRunEvent, ChatRunStatus, MarketWatchSnapshot, QueuedMessage, ReadingRoomTab, StageProgressStatus, WatchItem } from './types'
 import { writeBooleanStorage } from './utils'
 
 export const CONVERSATION_SIDEBAR_STORAGE_KEY = 'wyckoff:reading-room-sidebar-collapsed-v1'
@@ -157,11 +157,18 @@ export function useReadingRoomChat(
   setLocalError: (value: string) => void,
   t: (key: TranslationKey) => string,
   setModelStatus: (value: ChatRunStatus | null) => void,
+  watchlist: Pick<WatchItem, 'code' | 'name'>[],
+  marketWatch: MarketWatchSnapshot | null,
+  setMarketWatch: (value: MarketWatchSnapshot) => void,
   onRunEvent?: (event: ChatRunEvent) => void,
   onRunFinish?: () => void,
   onRunError?: () => void,
 ) {
-  const transport = useMemo(() => buildChatTransport(token), [token])
+  const watchlistRef = useRef(watchlist)
+  const marketWatchRef = useRef(marketWatch)
+  useEffect(() => { watchlistRef.current = watchlist }, [watchlist])
+  useEffect(() => { marketWatchRef.current = marketWatch }, [marketWatch])
+  const transport = useMemo(() => buildChatTransport(token, watchlistRef, marketWatchRef), [token])
   return useChat({
     transport,
     experimental_throttle: 50,
@@ -169,6 +176,7 @@ export function useReadingRoomChat(
     onData: (part) => {
       if (part.type === 'data-run-event') onRunEvent?.(part.data as ChatRunEvent)
       if (part.type === 'data-model-status') setModelStatus(part.data as ChatRunStatus)
+      if (part.type === 'data-market-watch') setMarketWatch(part.data as MarketWatchSnapshot)
       if (part.type === 'data-stage-progress') {
         const progress = part.data as StageProgressStatus
         setModelStatus(progress.state === 'completed' ? null : progress)
@@ -252,10 +260,15 @@ function normalizeClientError(error: unknown, t: (key: TranslationKey) => string
   return error instanceof Error ? error.message : t('chat.requestFailed')
 }
 
-function buildChatTransport(token: string | undefined) {
+function buildChatTransport(
+  token: string | undefined,
+  watchlistRef: RefObject<Pick<WatchItem, 'code' | 'name'>[]>,
+  marketWatchRef: RefObject<MarketWatchSnapshot | null>,
+) {
   return new DefaultChatTransport({
     api: apiUrl('/api/chat'),
     headers: (): Record<string, string> => token ? { Authorization: `Bearer ${token}` } : {},
+    body: () => ({ watchlist: watchlistRef.current, marketWatch: marketWatchRef.current }),
   })
 }
 

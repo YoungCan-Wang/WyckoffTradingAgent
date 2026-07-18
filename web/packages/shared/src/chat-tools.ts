@@ -16,6 +16,7 @@ import {
 } from './attribution-summary'
 import { formatPatternReviewDigest, labelCandidateTerm, type PatternReviewRow } from './pattern-review'
 import { ANALYSIS_CONTEXT_PACK_SCHEMA, buildStockAnalysisContextPack } from './analysis-context'
+import { marketWatchSymbol, normalizeMarketWatchCode, readFreshMarketWatchSnapshot, type MarketWatchQuote, type MarketWatchSnapshot } from './market-watch'
 
 export interface KlineRow {
   date: string
@@ -174,6 +175,124 @@ export async function fetchUserDataKeys(deps: ToolDeps, userId: string): Promise
 export async function fetchTickFlowKey(deps: ToolDeps, userId: string): Promise<string | null> {
   const keys = await fetchUserDataKeys(deps, userId)
   return keys.tickflow
+}
+
+type RawMarketWatchQuote = Record<string, unknown>
+
+export async function fetchMarketWatchSnapshot(
+  deps: ToolDeps,
+  userId: string,
+  codes: string[],
+  cached: unknown = null,
+): Promise<MarketWatchSnapshot> {
+  const requestedCodes = Array.from(new Set(codes
+    .map((code) => normalizeMarketWatchCode(code))
+    .filter((code) => code.length > 0 && code.length <= 24))).slice(0, 18)
+  const fetchedAt = new Date().toISOString()
+  if (requestedCodes.length === 0) {
+    return { state: 'empty', source: 'none', requestedCodes, quotes: [], fetchedAt, fromCache: false }
+  }
+  const cachedSnapshot = readFreshMarketWatchSnapshot(cached, requestedCodes)
+  if (cachedSnapshot) return cachedSnapshot
+
+  const tickflowKey = await fetchTickFlowKey(deps, userId).catch(() => null)
+  if (!tickflowKey) {
+    return {
+      state: 'unavailable',
+      source: 'none',
+      requestedCodes,
+      quotes: [],
+      fetchedAt,
+      fromCache: false,
+      message: '未配置 TickFlow API Key',
+    }
+  }
+
+  try {
+    const symbols = requestedCodes.map(marketWatchSymbol).join(',')
+    const response = await deps.fetch(`/api/llm-proxy/v1/quotes?symbols=${encodeURIComponent(symbols)}`, {
+      headers: { 'x-api-key': tickflowKey, 'X-Target-URL': 'https://api.tickflow.org' },
+    })
+    if (!response.ok) {
+      return buildUnavailableMarketWatch(requestedCodes, fetchedAt, `TickFlow 返回 HTTP ${response.status}`)
+    }
+    const rows = parseMarketWatchRows(await response.json())
+    const quotes = requestedCodes.map((requestedCode) => {
+      const symbol = marketWatchSymbol(requestedCode)
+      const row = rows.find((candidate) => marketWatchRowMatches(candidate, symbol, requestedCode))
+      return normalizeMarketWatchQuote(requestedCode, symbol, row, fetchedAt)
+    })
+    const available = quotes.filter((quote) => quote.price != null || quote.changePct != null)
+    if (available.length === 0) return buildUnavailableMarketWatch(requestedCodes, fetchedAt, 'TickFlow 没有返回观察篮的可用报价')
+    return { state: 'ready', source: 'tickflow', requestedCodes, quotes, fetchedAt, fromCache: false }
+  } catch {
+    return buildUnavailableMarketWatch(requestedCodes, fetchedAt, 'TickFlow 行情请求失败')
+  }
+}
+
+function buildUnavailableMarketWatch(requestedCodes: string[], fetchedAt: string, message: string): MarketWatchSnapshot {
+  return { state: 'unavailable', source: 'none', requestedCodes, quotes: [], fetchedAt, fromCache: false, message }
+}
+
+function parseMarketWatchRows(payload: unknown): RawMarketWatchQuote[] {
+  if (!payload || typeof payload !== 'object') return []
+  const root = payload as Record<string, unknown>
+  const data = root.data
+  if (Array.isArray(data)) return data.filter(isRecord)
+  if (data && typeof data === 'object') return Object.values(data).flatMap((value) => Array.isArray(value) ? value.filter(isRecord) : isRecord(value) ? [value] : [])
+  if (Array.isArray(root.records)) return root.records.filter(isRecord)
+  return []
+}
+
+function isRecord(value: unknown): value is RawMarketWatchQuote {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
+}
+
+function marketWatchRowMatches(row: RawMarketWatchQuote, symbol: string, requestedCode: string): boolean {
+  const rowSymbol = String(row.symbol || row.code || row.ts_code || '').trim().toUpperCase()
+  return rowSymbol === symbol || rowSymbol === requestedCode || rowSymbol.split('.')[0] === requestedCode.split('.')[0]
+}
+
+function normalizeMarketWatchQuote(
+  requestedCode: string,
+  symbol: string,
+  row: RawMarketWatchQuote | undefined,
+  fallbackAsOf: string,
+): MarketWatchQuote {
+  const price = numberFrom(row, ['last', 'price', 'current', 'close'])
+  const previousClose = numberFrom(row, ['pre_close', 'previous_close', 'prev_close'])
+  const directChange = numberFrom(row, ['pct_chg', 'change_pct', 'percent_change', 'changePercent'])
+  const changePct = directChange ?? (price != null && previousClose ? ((price - previousClose) / previousClose) * 100 : null)
+  return {
+    requestedCode,
+    symbol,
+    price,
+    changePct,
+    previousClose,
+    volume: numberFrom(row, ['volume', 'vol']),
+    asOf: normalizeMarketWatchTimestamp(row?.timestamp || row?.time || row?.datetime || row?.date, fallbackAsOf),
+  }
+}
+
+function normalizeMarketWatchTimestamp(value: unknown, fallback: string): string {
+  if (value == null || value === '') return fallback
+  const numeric = Number(value)
+  if (Number.isFinite(numeric) && numeric > 0) {
+    const milliseconds = numeric < 10_000_000_000 ? numeric * 1000 : numeric
+    const date = new Date(milliseconds)
+    if (!Number.isNaN(date.getTime())) return date.toISOString()
+  }
+  const date = new Date(String(value))
+  return Number.isNaN(date.getTime()) ? String(value) : date.toISOString()
+}
+
+function numberFrom(row: RawMarketWatchQuote | undefined, keys: string[]): number | null {
+  if (!row) return null
+  for (const key of keys) {
+    const value = Number(row[key])
+    if (Number.isFinite(value)) return value
+  }
+  return null
 }
 
 async function tusharePost(deps: ToolDeps, token: string, api_name: string, params: Record<string, string>, fields: string) {

@@ -2,14 +2,16 @@ import { BellPlus, Pin, Trash2 } from 'lucide-react'
 
 import { formatSignedPercent } from '@/lib/format'
 
-import type { WatchItem } from './types'
+import type { MarketWatchSnapshot, MarketWatchQuote, WatchItem } from './types'
 
 export function WatchlistPanelView({
   watchlist,
+  marketWatch,
   onRemove,
   onStart,
 }: {
   watchlist: WatchItem[]
+  marketWatch: MarketWatchSnapshot | null
   onRemove: (code: string) => void
   onStart: (value: string) => void
 }) {
@@ -17,6 +19,7 @@ export function WatchlistPanelView({
     <div className="mx-auto w-full max-w-5xl pb-6">
       <WatchlistPanel
         watchlist={watchlist}
+        marketWatch={marketWatch}
         watchlistPrompt={buildWatchlistReviewPrompt(watchlist)}
         onRemove={onRemove}
         onStart={onStart}
@@ -27,11 +30,13 @@ export function WatchlistPanelView({
 
 function WatchlistPanel({
   watchlist,
+  marketWatch,
   watchlistPrompt,
   onRemove,
   onStart,
 }: {
   watchlist: WatchItem[]
+  marketWatch: MarketWatchSnapshot | null
   watchlistPrompt: string
   onRemove: (code: string) => void
   onStart: (value: string) => void
@@ -53,26 +58,31 @@ function WatchlistPanel({
           复盘观察篮
         </button>
       </div>
-      <WatchlistBody watchlist={watchlist} onRemove={onRemove} onStart={onStart} />
+      <WatchlistBody watchlist={watchlist} marketWatch={marketWatch} onRemove={onRemove} onStart={onStart} />
     </section>
   )
 }
 
 function WatchlistBody({
   watchlist,
+  marketWatch,
   onRemove,
   onStart,
 }: {
   watchlist: WatchItem[]
+  marketWatch: MarketWatchSnapshot | null
   onRemove: (code: string) => void
   onStart: (value: string) => void
 }) {
   if (watchlist.length === 0) return <EmptyWatchlist />
   return (
-    <div className="max-h-[360px] space-y-2 overflow-auto pr-1">
-      {watchlist.map((item) => (
-        <WatchItemCard key={item.id} item={item} onRemove={onRemove} onStart={onStart} />
-      ))}
+    <div className="space-y-3">
+      {marketWatch && <MarketWatchSummary snapshot={marketWatch} />}
+      <div className="max-h-[360px] space-y-2 overflow-auto pr-1">
+        {watchlist.map((item) => (
+          <WatchItemCard key={item.id} item={item} quote={findQuote(item.code, marketWatch)} onRemove={onRemove} onStart={onStart} />
+        ))}
+      </div>
     </div>
   )
 }
@@ -91,10 +101,12 @@ function EmptyWatchlist() {
 
 function WatchItemCard({
   item,
+  quote,
   onRemove,
   onStart,
 }: {
   item: WatchItem
+  quote: MarketWatchQuote | null
   onRemove: (code: string) => void
   onStart: (value: string) => void
 }) {
@@ -117,10 +129,58 @@ function WatchItemCard({
           <Trash2 size={13} />
         </button>
       </div>
+      <LiveQuote quote={quote} code={item.code} />
       <WatchItemBadges item={item} />
       <WatchItemRules item={item} />
     </div>
   )
+}
+
+function MarketWatchSummary({ snapshot }: { snapshot: MarketWatchSnapshot }) {
+  const readyCount = snapshot.quotes.filter((quote) => quote.price != null || quote.changePct != null).length
+  const tone = snapshot.state === 'ready'
+    ? 'border-emerald-200 bg-emerald-50/70 text-emerald-900 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-100'
+    : 'border-amber-200 bg-amber-50/70 text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100'
+  return (
+    <div className={`rounded-md border px-3 py-2 text-xs ${tone}`}>
+      <div className="flex items-center justify-between gap-3">
+        <span className="font-medium">临时行情 · {snapshot.state === 'ready' ? `${readyCount}/${snapshot.requestedCodes.length} 个已更新` : '暂不可用'}</span>
+        <span className="text-[11px] opacity-75">{formatWatchTime(snapshot.fetchedAt)}</span>
+      </div>
+      <p className="mt-1 opacity-80">{snapshot.state === 'ready' ? `${snapshot.fromCache ? '命中浏览器缓存' : '刚从 TickFlow 更新'}，本轮已带入模型，不写入数据库。` : snapshot.message || '发起一次读盘后刷新。'}</p>
+    </div>
+  )
+}
+
+function LiveQuote({ quote, code }: { quote: MarketWatchQuote | null; code: string }) {
+  if (!quote) return null
+  const hasPrice = quote.price != null
+  const hasChange = quote.changePct != null
+  return (
+    <div className="mt-2 flex items-center justify-between gap-2 rounded-md bg-primary/5 px-2 py-1.5 text-xs">
+      <span className="text-muted-foreground">最新可用行情</span>
+      <span className="flex items-center gap-2 font-medium">
+        <span>{hasPrice ? `${isCnCode(code) ? '¥' : ''}${quote.price!.toFixed(2)}` : '暂无报价'}</span>
+        {hasChange && <span className={quote.changePct! >= 0 ? 'text-up' : 'text-down'}>{formatSignedPercent(quote.changePct!)}</span>}
+        <span className="text-[10px] font-normal text-muted-foreground">{formatWatchTime(quote.asOf)}</span>
+      </span>
+    </div>
+  )
+}
+
+function findQuote(code: string, snapshot: MarketWatchSnapshot | null): MarketWatchQuote | null {
+  return snapshot?.quotes.find((quote) => quote.requestedCode === code) || null
+}
+
+function isCnCode(code: string): boolean {
+  return /^\d{6}(?:\.(?:SH|SZ|BJ))?$/.test(code)
+}
+
+function formatWatchTime(value: string | null): string {
+  if (!value) return '时间未知'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return `${date.getHours()}:${String(date.getMinutes()).padStart(2, '0')}`
 }
 
 function WatchItemBadges({ item }: { item: WatchItem }) {

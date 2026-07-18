@@ -17,6 +17,9 @@ import {
   execSearchStock,
   execStrategyDecision,
   execViewPortfolio,
+  fetchMarketWatchSnapshot,
+  formatMarketWatchContext,
+  selectMarketWatchCodes,
   ALLOWED_PROXY_TARGET_ORIGINS,
   normalizeGeminiStream,
   PROVIDER_BASE_URLS,
@@ -26,6 +29,7 @@ import {
   type LLMToolConfig,
   type Provider,
   type ToolDeps,
+  type MarketWatchSnapshot,
 } from '@wyckoff/shared'
 import { consumeStream, convertToModelMessages, createUIMessageStream, createUIMessageStreamResponse, generateText, stepCountIs, streamText, tool, type UIMessage, type UIMessageChunk } from 'ai'
 import { Hono } from 'hono'
@@ -70,13 +74,16 @@ chatRoutes.post('/', chatRateLimitMiddleware, async (c) => {
       env: c.env,
       runId,
       sequence: 0,
+      watchlist: sanitizeWatchlist(body?.watchlist),
+      marketWatchCache: body?.marketWatch,
     }),
     onError: normalizeStreamError,
   })
   return createUIMessageStreamResponse({ stream, consumeSseStream: consumeStream })
 })
 
-type ChatRequestBody = { messages?: UIMessage[] }
+type ChatRequestBody = { messages?: UIMessage[]; watchlist?: unknown; marketWatch?: unknown }
+type WatchlistRequestItem = { code: string; name: string }
 
 const ALLOWED_TARGET_ORIGINS: Set<string> = new Set(ALLOWED_PROXY_TARGET_ORIGINS)
 const ONE_ROUTE_ORIGINS = new Set(['https://api.1route.dev', 'https://www.1route.dev'])
@@ -98,6 +105,27 @@ const WYCKOFF_CHAT_SYSTEM_PROMPT = `# 角色设定
 
 function estimateMessagesSize(messages: UIMessage[]): number {
   return messages.reduce((total, message) => total + JSON.stringify(message).length, 0)
+}
+
+function sanitizeWatchlist(value: unknown): WatchlistRequestItem[] {
+  if (!Array.isArray(value)) return []
+  const items = value.flatMap((item): WatchlistRequestItem[] => {
+    if (typeof item === 'string') {
+      const code = item.trim().toUpperCase()
+      return code.length > 0 && code.length <= 24 ? [{ code, name: '' }] : []
+    }
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return []
+    const record = item as Record<string, unknown>
+    const code = typeof record.code === 'string' ? record.code.trim().toUpperCase() : ''
+    const name = typeof record.name === 'string' ? record.name.trim().slice(0, 80) : ''
+    return code.length > 0 && code.length <= 24 ? [{ code, name }] : []
+  })
+  const seen = new Set<string>()
+  return items.filter((item) => {
+    if (seen.has(item.code)) return false
+    seen.add(item.code)
+    return true
+  }).slice(0, 18)
 }
 
 function createUserSupabase(env: Env, accessToken: string): ToolDeps['supabase'] {
@@ -245,16 +273,22 @@ interface ChatResilienceArgs {
   env: Env
   runId: string
   sequence: number
+  watchlist: WatchlistRequestItem[]
+  marketWatchCache: unknown
 }
 
 async function runChatWithResilience(args: ChatResilienceArgs): Promise<void> {
+  const selectedCodes = selectMarketWatchCodes(args.watchlist, recentUserQuery(args.messages))
+  const marketWatch = await fetchMarketWatchSnapshot(args.deps, args.userId, selectedCodes, args.marketWatchCache)
+  if (marketWatch.state !== 'empty') writeMarketWatchStatus(args.writer, marketWatch)
+  const marketWatchContext = formatMarketWatchContext(marketWatch)
   let lastError: unknown = new Error('没有可用的模型配置')
   for (let index = 0; index < args.configs.length; index += 1) {
     const config = args.configs[index]
     if (!config) continue
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
-        await runChatAttempt(args, config)
+        await runChatAttempt(args, config, marketWatchContext)
         return
       } catch (error) {
         lastError = error
@@ -277,7 +311,15 @@ async function runChatWithResilience(args: ChatResilienceArgs): Promise<void> {
   throw lastError
 }
 
-async function runChatAttempt(args: ChatResilienceArgs, config: ChatModelConfig): Promise<void> {
+function recentUserQuery(messages: UIMessage[]): string {
+  return messages
+    .filter((message) => message.role === 'user')
+    .slice(-3)
+    .map((message) => JSON.stringify(message))
+    .join('\n')
+}
+
+async function runChatAttempt(args: ChatResilienceArgs, config: ChatModelConfig, marketWatchContext: string): Promise<void> {
   writeRunEvent(args, { type: 'model_started', label: `开始使用 ${config.model}` })
   writeStageProgress(args.writer, { stage: 'model', state: 'started', message: '正在分析', model: config.model })
   let succeeded = false
@@ -291,7 +333,7 @@ async function runChatAttempt(args: ChatResilienceArgs, config: ChatModelConfig)
     })
     const result = streamText({
       model: provider.chat(config.model),
-      system: WYCKOFF_CHAT_SYSTEM_PROMPT,
+      system: [WYCKOFF_CHAT_SYSTEM_PROMPT, marketWatchContext].filter(Boolean).join('\n\n'),
       messages: modelMessages,
       tools,
       stopWhen: stepCountIs(10),
@@ -338,6 +380,10 @@ function writeStageProgress(
   progress: { stage: 'model'; state: 'started' | 'completed'; message?: string; success?: boolean; model: string },
 ): void {
   writer.write({ type: 'data-stage-progress', data: { kind: 'stage', ...progress }, transient: true } as never)
+}
+
+function writeMarketWatchStatus(writer: ChatResilienceArgs['writer'], snapshot: MarketWatchSnapshot): void {
+  writer.write({ type: 'data-market-watch', data: snapshot, transient: true } as never)
 }
 
 function writeChunkRunEvent(args: ChatResilienceArgs, chunk: UIMessageChunk): void {

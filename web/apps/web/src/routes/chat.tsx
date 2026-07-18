@@ -15,9 +15,10 @@ import { useReadingRoomConversations } from '@/features/reading-room/conversatio
 import { ChatHeader } from '@/features/reading-room/header'
 import { buildRunRecords } from '@/features/reading-room/run-records'
 import { ChatMessages, ErrorBanner } from '@/features/reading-room/transcript'
-import type { ChatRunEvent, ChatRunStatus, ReadingRoomTab, RunCheckpoint } from '@/features/reading-room/types'
+import type { ChatRunEvent, ChatRunStatus, MarketWatchSnapshot, ReadingRoomTab, RunCheckpoint, WatchItem } from '@/features/reading-room/types'
 import { readBooleanStorage } from '@/features/reading-room/utils'
 import { appendRunEvent, clearRunCheckpoint, finishRun, readRunCheckpoint } from '@/features/reading-room/run-ledger'
+import { readMarketWatchCache, writeMarketWatchCache } from '@/features/reading-room/market-watch-cache'
 import { useReadingRoomWatchlist } from '@/features/reading-room/watchlist-state'
 
 function useRunLedger() {
@@ -36,12 +37,33 @@ function useRunLedger() {
   return { activeConversationRef, runCheckpoint, setRunCheckpoint, onRunEvent, onRunFinish, onRunError }
 }
 
+function useMarketWatch(userId: string | undefined, items: WatchItem[]) {
+  const [marketWatch, setMarketWatch] = useState<MarketWatchSnapshot | null>(null)
+  const codes = useMemo(() => items.map((item) => item.code), [items])
+  const requestItems = useMemo(() => items.map(({ code, name }) => ({ code, name })), [items])
+  const updateMarketWatch = useCallback((snapshot: MarketWatchSnapshot) => {
+    setMarketWatch(snapshot)
+    writeMarketWatchCache(userId, snapshot)
+  }, [userId])
+  useEffect(() => setMarketWatch(readMarketWatchCache(userId, codes)), [userId, codes])
+  return { marketWatch, requestItems, updateMarketWatch }
+}
+
+function useInitialPrompt(configured: boolean, token: string | undefined, start: (rawText?: string) => void) {
+  const location = useLocation()
+  const navigate = useNavigate()
+  useEffect(() => {
+    const prompt = (location.state as { initialPrompt?: unknown } | null)?.initialPrompt
+    if (typeof prompt !== 'string' || !prompt.trim() || !token || !configured) return
+    start(prompt)
+    navigate(location.pathname, { replace: true, state: null })
+  }, [configured, location.pathname, location.state, navigate, start, token])
+}
+
 export function ChatPage() {
   const session = useAuthStore((s) => s.session)
   const user = useAuthStore((s) => s.user)
   const { t } = usePreferences()
-  const location = useLocation()
-  const navigate = useNavigate()
   const [input, setInput] = useState('')
   const [localError, setLocalError] = useState('')
   const [modelStatus, setModelStatus] = useState<ChatRunStatus | null>(null)
@@ -51,7 +73,9 @@ export function ChatPage() {
   const token = session?.access_token
   const config = useChatConfig(token, t)
   const { activeConversationRef, runCheckpoint, setRunCheckpoint, onRunEvent, onRunFinish, onRunError } = useRunLedger()
-  const chat = useReadingRoomChat(token, setLocalError, t, setModelStatus, onRunEvent, onRunFinish, onRunError)
+  const watchlist = useReadingRoomWatchlist(user?.id)
+  const { marketWatch, requestItems, updateMarketWatch } = useMarketWatch(user?.id, watchlist.items)
+  const chat = useReadingRoomChat(token, setLocalError, t, setModelStatus, requestItems, marketWatch, updateMarketWatch, onRunEvent, onRunFinish, onRunError)
   const loading = chat.status === 'submitted' || chat.status === 'streaming'
   const queue = useMessageQueue(chat, loading, token, config.configured, setLocalError, t)
   const conversations = useReadingRoomConversations(user?.id, chat.messages, chat.setMessages)
@@ -59,7 +83,6 @@ export function ChatPage() {
     activeConversationRef.current = conversations.activeId
     setRunCheckpoint(readRunCheckpoint(conversations.activeId))
   }, [conversations.activeId, activeConversationRef, setRunCheckpoint])
-  const watchlist = useReadingRoomWatchlist(user?.id)
   const runRecords = useMemo(() => buildRunRecords(chat.messages, t), [chat.messages, t])
   useAutoScroll(scrollRef, activeTab === 'chat' ? chat.messages : [], activeTab === 'chat' && loading, activeTab === 'chat' ? queue.messages.length : 0)
 
@@ -90,6 +113,7 @@ export function ChatPage() {
     setSidebarCollapsed,
   })
   const { startNewConversation } = actions
+  useInitialPrompt(config.configured, token, startNewConversation)
   const handleResumeRun = useCallback(() => {
     if (loading) return
     setActiveTab('chat')
@@ -103,13 +127,6 @@ export function ChatPage() {
     clearRunCheckpoint(conversationId)
     setRunCheckpoint(null)
   }, [activeConversationRef, setRunCheckpoint])
-
-  useEffect(() => {
-    const prompt = (location.state as { initialPrompt?: unknown } | null)?.initialPrompt
-    if (typeof prompt !== 'string' || !prompt.trim() || !token || !config.configured) return
-    startNewConversation(prompt)
-    navigate(location.pathname, { replace: true, state: null })
-  }, [config.configured, location.pathname, location.state, navigate, startNewConversation, token])
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
@@ -131,6 +148,7 @@ export function ChatPage() {
         runRecords={runRecords}
         scrollRef={scrollRef}
         watchlist={watchlist.items}
+        marketWatch={marketWatch}
         onOpenRecord={actions.openRunRecord}
         onNewConversation={actions.startNewConversation}
         sidebarCollapsed={sidebarCollapsed}

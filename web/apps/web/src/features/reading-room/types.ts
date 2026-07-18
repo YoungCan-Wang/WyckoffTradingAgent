@@ -1,3 +1,5 @@
+import type { MarketWatchQuote, MarketWatchSnapshot } from '@wyckoff/shared'
+
 export interface WatchItem {
   id: string
   code: string
@@ -58,6 +60,8 @@ export interface StageProgressStatus {
 }
 
 export type ChatRunStatus = ModelRunStatus | StageProgressStatus
+
+export type { MarketWatchQuote, MarketWatchSnapshot }
 
 export interface ChatRunEvent {
   runId: string

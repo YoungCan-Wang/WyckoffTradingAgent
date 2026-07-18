@@ -1,5 +1,5 @@
 import { type FormEvent, type RefObject } from 'react'
-import { MessageSquareText, RotateCcw, X } from 'lucide-react'
+import { AlertTriangle, LoaderCircle, MessageSquareText, RotateCcw, X } from 'lucide-react'
 import type { UIMessage } from 'ai'
 import { ChatComposer, ThinkingBubble } from './composer'
 import { ConversationSidebar } from './conversation-sidebar'
@@ -7,7 +7,7 @@ import type { ReadingRoomConversation } from './conversations'
 import { ReadingRoomDashboard } from './dashboard'
 import type { ReadingRoomChat } from './chat-state'
 import { MessageBubble, QueuedMessageBubble } from './tool-rendering'
-import type { ChatRunStatus, PinStockInput, QueuedMessage, ReadingRoomTab, RunCheckpoint, RunRecord, WatchItem } from './types'
+import type { ChatRunStatus, MarketWatchSnapshot, PinStockInput, QueuedMessage, ReadingRoomTab, RunCheckpoint, RunRecord, WatchItem } from './types'
 import { WatchlistPanelView } from './watchlist'
 
 interface ChatMessagesProps {
@@ -20,6 +20,7 @@ interface ChatMessagesProps {
   runRecords: RunRecord[]
   scrollRef: RefObject<HTMLDivElement | null>
   watchlist: WatchItem[]
+  marketWatch: MarketWatchSnapshot | null
   onOpenRecord: (messageId: string) => void
   onNewConversation: () => void
   sidebarCollapsed: boolean
@@ -58,6 +59,7 @@ export function ChatMessages(props: ChatMessagesProps) {
               queuedMessages={props.queuedMessages}
               runRecords={props.runRecords}
               watchlist={props.watchlist}
+              marketWatch={props.marketWatch}
               onOpenRecord={props.onOpenRecord}
               onPinStock={props.onPinStock}
               onRemoveWatchItem={props.onRemoveWatchItem}
@@ -114,6 +116,7 @@ function ReadingRoomMainContent({
   queuedMessages,
   runRecords,
   watchlist,
+  marketWatch,
   onOpenRecord,
   onPinStock,
   onRemoveWatchItem,
@@ -122,7 +125,7 @@ function ReadingRoomMainContent({
   runCheckpoint,
   onResumeRun,
   onClearRunCheckpoint,
-}: Pick<ChatMessagesProps, 'activeTab' | 'chat' | 'loading' | 'queuedMessages' | 'runRecords' | 'watchlist' | 'onOpenRecord' | 'onPinStock' | 'onRemoveWatchItem' | 'onStart'> & {
+}: Pick<ChatMessagesProps, 'activeTab' | 'chat' | 'loading' | 'queuedMessages' | 'runRecords' | 'watchlist' | 'marketWatch' | 'onOpenRecord' | 'onPinStock' | 'onRemoveWatchItem' | 'onStart'> & {
   activeAssistantId: string | null
   modelStatus: ChatRunStatus | null
   runCheckpoint: RunCheckpoint | null
@@ -139,7 +142,7 @@ function ReadingRoomMainContent({
   if (activeTab === 'watchlist') {
     return (
       <div className="mx-auto w-full max-w-5xl px-2 py-1 animate-fade-in-up">
-        <WatchlistPanelView watchlist={watchlist} onRemove={onRemoveWatchItem} onStart={onStart} />
+        <WatchlistPanelView watchlist={watchlist} marketWatch={marketWatch} onRemove={onRemoveWatchItem} onStart={onStart} />
       </div>
     )
   }
@@ -211,15 +214,27 @@ function RunRecoveryBanner({ checkpoint, onResume, onClear }: { checkpoint: RunC
 }
 
 function ModelStatusBanner({ status }: { status: ChatRunStatus }) {
-  const label = status.kind === 'stage'
-    ? status.message || '正在分析'
-    : status.phase === 'fallback'
+  if (status.kind === 'stage') {
+    return (
+      <div className="flex items-center gap-2 border-l-2 border-primary px-3 py-1.5 text-xs text-muted-foreground" role="status" aria-live="polite">
+        <LoaderCircle size={14} className="shrink-0 animate-spin text-primary" />
+        <span className="font-medium text-foreground">{status.message || '正在分析'}</span>
+        <span className="h-1 w-1 shrink-0 rounded-full bg-border" aria-hidden="true" />
+        <span className="min-w-0 truncate">{status.model}</span>
+        <span className="ml-auto shrink-0 text-[11px] text-muted-foreground/70">执行中</span>
+      </div>
+    )
+  }
+
+  const label = status.phase === 'fallback'
     ? `当前模型 ${status.model} 暂时不可用，正在切换到 ${status.nextModel || '备用模型'}`
     : `当前模型响应异常，正在重试（第 ${status.attempt} 次）`
-  const tone = status.kind === 'stage'
-    ? 'border-border bg-muted/60 text-muted-foreground'
-    : 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100'
-  return <div className={`rounded-lg border px-3 py-2 text-xs ${tone}`}>{label}</div>
+  return (
+    <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100" role="status" aria-live="polite">
+      <AlertTriangle size={14} className="shrink-0" />
+      <span>{label}</span>
+    </div>
+  )
 }
 
 function lastAssistantId(messages: UIMessage[]): string | null {
