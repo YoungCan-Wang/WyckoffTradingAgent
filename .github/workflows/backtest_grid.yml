@@ -549,7 +549,7 @@ jobs:
           pattern: backtest-strategy-*
 
       - name: Install dependencies
-        run: python -m pip install requests python-dotenv
+        run: python -m pip install requests python-dotenv pandas
 
       - name: Update market backtest report
         env:
