@@ -9,7 +9,7 @@
     "deploy": "wrangler deploy",
     "lint": "tsc --noEmit",
     "test": "vitest run",
-    "test:sandbox": "RUN_VERCEL_SANDBOX_INTEGRATION=1 vitest --config vitest.sandbox.config.ts run",
+    "test:sandbox": "pnpm --dir ../sandbox-bridge test:integration",
     "test:upstash": "RUN_UPSTASH_INTEGRATION=1 vitest run src/middleware/rate-limit.test.ts",
     "test:watch": "vitest"
   },
@@ -19,7 +19,6 @@
     "@supabase/supabase-js": "^2.49.0",
     "@upstash/ratelimit": "^2.0.8",
     "@upstash/redis": "^1.38.0",
-    "@vercel/sandbox": "2.7.0",
     "@wyckoff/shared": "workspace:*",
     "ai": "^6.0.205",
     "hono": "^4.12.21",

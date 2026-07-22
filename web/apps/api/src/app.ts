@@ -19,11 +19,8 @@ export type Env = {
   AGENT_SANDBOX_ENABLED?: string
   AGENT_SANDBOX_TIMEOUT_MS?: string
   AGENT_RUN_TTL_SECONDS?: string
-  VERCEL_TEAM_ID?: string
-  VERCEL_PROJECT_ID?: string
-  VERCEL_TOKEN?: string
-  VERCEL_OIDC_TOKEN?: string
-  RUN_VERCEL_SANDBOX_INTEGRATION?: string
+  SANDBOX_BRIDGE_URL?: string
+  SANDBOX_BRIDGE_SECRET?: string
 }
 
 export function createApiApp() {

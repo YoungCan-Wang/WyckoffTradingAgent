@@ -1,0 +1,19 @@
+{
+  "name": "@wyckoff/sandbox-bridge",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:integration": "RUN_VERCEL_SANDBOX_INTEGRATION=1 vitest run src/sandbox.integration.test.ts",
+    "vercel-build": "pnpm typecheck"
+  },
+  "dependencies": {
+    "@vercel/sandbox": "2.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.5"
+  }
+}

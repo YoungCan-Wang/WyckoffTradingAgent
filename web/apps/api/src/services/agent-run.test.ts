@@ -41,7 +41,7 @@ describe('Agent run service', () => {
       'print(42)',
       {
         createStore: () => testStore(save),
-        executeSandbox: async () => { throw new Error('Vercel Sandbox env is incomplete') },
+        executeSandbox: async () => { throw new Error('Sandbox bridge configuration is incomplete') },
       },
     )).rejects.toMatchObject({
       message: 'Sandbox configuration is incomplete',

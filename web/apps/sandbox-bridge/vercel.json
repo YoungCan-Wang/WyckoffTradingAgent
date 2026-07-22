@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/sandbox-run.ts": {
+      "maxDuration": 120
+    }
+  }
+}

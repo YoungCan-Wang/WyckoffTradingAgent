@@ -1,62 +1,41 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Env } from '../app'
-import { executePythonSandbox, type SandboxHandle } from './python-sandbox'
+import { executePythonSandbox, type SandboxBridgeFetch } from './python-sandbox'
 
-function sandbox(overrides: Partial<SandboxHandle> = {}): SandboxHandle {
-  return {
-    writeFiles: vi.fn(async () => undefined),
-    runCommand: vi.fn(async () => ({
-      exitCode: 0,
-      stdout: async () => 'research ok\n',
-      stderr: async () => '',
-    })),
-    stop: vi.fn(async () => ({
-      activeCpuUsageMs: 42,
-      networkTransfer: { ingress: 0, egress: 0 },
-    })),
-    delete: vi.fn(async () => undefined),
-    ...overrides,
-  }
+const sandboxResult = {
+  exitCode: 0,
+  stdout: 'research ok\n',
+  stderr: '',
+  activeCpuUsageMs: 42,
+  networkIngressBytes: 0,
+  networkEgressBytes: 0,
 }
 
-describe('Python sandbox executor', () => {
-  it('runs a script without secrets and permanently deletes the sandbox', async () => {
-    const handle = sandbox()
-    const factory = vi.fn(async () => handle)
-    const result = await executePythonSandbox({ AGENT_SANDBOX_TIMEOUT_MS: '45000' }, 'print("ok")', factory)
+const sandboxEnv: Env = {
+  SANDBOX_BRIDGE_URL: 'https://sandbox-bridge.example.com/api/sandbox-run',
+  SANDBOX_BRIDGE_SECRET: 'test-bridge-secret',
+  AGENT_SANDBOX_TIMEOUT_MS: '45000',
+}
 
-    expect(factory).toHaveBeenCalledWith(expect.any(Object), {
-      runtime: 'python3.13',
-      timeout: 45_000,
-      networkPolicy: 'deny-all',
-      persistent: false,
-      resources: { vcpus: 1 },
-      tags: { app: 'wyckoff', kind: 'python-research' },
-    })
-    expect(handle.writeFiles).toHaveBeenCalledWith([{ path: 'main.py', content: 'print("ok")' }])
-    expect(handle.runCommand).toHaveBeenCalledWith('sh', ['-c', expect.stringContaining('ulimit -f 64')])
-    expect(handle.stop).toHaveBeenCalledOnce()
-    expect(handle.delete).toHaveBeenCalledOnce()
-    expect(result).toMatchObject({ exitCode: 0, stdout: 'research ok\n', activeCpuUsageMs: 42 })
+describe('Python sandbox bridge client', () => {
+  it('signs a bounded request and returns the bridge result', async () => {
+    const bridgeFetch: SandboxBridgeFetch = vi.fn(async () => Response.json(sandboxResult))
+    const result = await executePythonSandbox(sandboxEnv, 'print("ok")', bridgeFetch)
+
+    expect(result).toEqual(sandboxResult)
+    expect(bridgeFetch).toHaveBeenCalledOnce()
+    const [url, init] = vi.mocked(bridgeFetch).mock.calls[0]
+    expect(url).toBe(sandboxEnv.SANDBOX_BRIDGE_URL)
+    expect(init.method).toBe('POST')
+    expect(init.body).toBe(JSON.stringify({ script: 'print("ok")', timeout: 45_000 }))
+    const headers = new Headers(init.headers)
+    expect(headers.get('x-wyckoff-timestamp')).toMatch(/^\d{13}$/)
+    expect(headers.get('x-wyckoff-signature')).toMatch(/^[a-f0-9]{64}$/)
   })
 
-  it('deletes the sandbox when execution fails', async () => {
-    const handle = sandbox({ writeFiles: vi.fn(async () => { throw new Error('write failed') }) })
-    await expect(executePythonSandbox({} as Env, 'print(1)', async () => handle)).rejects.toThrow('write failed')
-    expect(handle.stop).not.toHaveBeenCalled()
-    expect(handle.delete).toHaveBeenCalledOnce()
-  })
-
-  it('caps command output returned to the API', async () => {
-    const handle = sandbox({
-      runCommand: vi.fn(async () => ({
-        exitCode: 0,
-        stdout: async () => 'x'.repeat(40_000),
-        stderr: async () => '',
-      })),
-    })
-    const result = await executePythonSandbox({} as Env, 'print(1)', async () => handle)
-    expect(result.stdout.length).toBeLessThan(40_000)
-    expect(result.stdout).toContain('...[truncated]')
+  it('fails closed for incomplete config and rejected bridge calls', async () => {
+    await expect(executePythonSandbox({} as Env, 'print(1)')).rejects.toThrow('Sandbox bridge configuration is incomplete')
+    const bridgeFetch: SandboxBridgeFetch = vi.fn(async () => new Response(null, { status: 401 }))
+    await expect(executePythonSandbox(sandboxEnv, 'print(1)', bridgeFetch)).rejects.toThrow('Sandbox bridge request failed')
   })
 })

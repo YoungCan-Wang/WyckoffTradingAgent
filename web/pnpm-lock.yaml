@@ -30,9 +30,6 @@ importers:
       '@upstash/redis':
         specifier: ^1.38.0
         version: 1.38.0
-      '@vercel/sandbox':
-        specifier: 2.7.0
-        version: 2.7.0
       '@wyckoff/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -61,6 +58,22 @@ importers:
       wrangler:
         specifier: ^4.103.0
         version: 4.103.0(@cloudflare/workers-types@4.20260620.1)
+
+  apps/sandbox-bridge:
+    dependencies:
+      '@vercel/sandbox':
+        specifier: 2.7.0
+        version: 2.7.0
+    devDependencies:
+      '@types/node':
+        specifier: ^25.6.0
+        version: 25.6.0
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.5
+        version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(vite@6.4.3(@types/node@25.6.0)(jiti@2.6.1)(lightningcss@1.32.0))
 
   apps/web:
     dependencies:

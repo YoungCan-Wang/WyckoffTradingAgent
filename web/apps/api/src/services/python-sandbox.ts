@@ -2,37 +2,6 @@ import type { Env } from '../app'
 
 const DEFAULT_TIMEOUT_MS = 60_000
 const MAX_TIMEOUT_MS = 120_000
-const MAX_OUTPUT_BYTES = 32 * 1024
-const RUN_PYTHON = 'ulimit -f 64; python3 main.py >stdout.txt 2>stderr.txt; code=$?; cat stdout.txt; cat stderr.txt >&2; exit $code'
-
-type CommandResult = {
-  exitCode: number
-  stdout: () => Promise<string>
-  stderr: () => Promise<string>
-}
-
-type SandboxUsage = {
-  activeCpuUsageMs: number
-  networkTransfer: { ingress: number; egress: number }
-}
-
-export type SandboxHandle = {
-  writeFiles: (files: Array<{ path: string; content: string }>) => Promise<void>
-  runCommand: (command: string, args: string[]) => Promise<CommandResult>
-  stop: () => Promise<SandboxUsage>
-  delete: () => Promise<void>
-}
-
-export type PythonSandboxOptions = {
-  runtime: 'python3.13'
-  timeout: number
-  networkPolicy: 'deny-all'
-  persistent: false
-  resources: { vcpus: 1 }
-  tags: { app: 'wyckoff'; kind: 'python-research' }
-}
-
-export type SandboxFactory = (env: Env, options: PythonSandboxOptions) => Promise<SandboxHandle>
 
 export type PythonSandboxResult = {
   exitCode: number
@@ -43,53 +12,54 @@ export type PythonSandboxResult = {
   networkEgressBytes: number
 }
 
+export type SandboxBridgeFetch = (input: string, init: RequestInit) => Promise<Response>
+
 export async function executePythonSandbox(
   env: Env,
   script: string,
-  createSandbox: SandboxFactory = createVercelSandbox,
+  bridgeFetch: SandboxBridgeFetch = fetch,
 ): Promise<PythonSandboxResult> {
-  const sandbox = await createSandbox(env, sandboxOptions(env))
+  const bridge = bridgeConfig(env)
+  const body = JSON.stringify({ script, timeout: sandboxTimeout(env.AGENT_SANDBOX_TIMEOUT_MS) })
+  const timestamp = String(Date.now())
+  const response = await bridgeFetch(bridge.url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Wyckoff-Timestamp': timestamp,
+      'X-Wyckoff-Signature': await bridgeSignature(bridge.secret, timestamp, body),
+    },
+    body,
+  })
+  if (!response.ok) throw new Error('Sandbox bridge request failed')
+  return parseResult(await response.json())
+}
+
+function bridgeConfig(env: Env): { url: string; secret: string } {
+  const url = env.SANDBOX_BRIDGE_URL?.trim()
+  const secret = env.SANDBOX_BRIDGE_SECRET?.trim()
+  if (!url || !secret || !isHttpsUrl(url)) throw new Error('Sandbox bridge configuration is incomplete')
+  return { url, secret }
+}
+
+function isHttpsUrl(value: string): boolean {
   try {
-    await sandbox.writeFiles([{ path: 'main.py', content: script }])
-    const command = await sandbox.runCommand('sh', ['-c', RUN_PYTHON])
-    const [stdout, stderr] = await Promise.all([command.stdout(), command.stderr()])
-    const usage = await sandbox.stop()
-    return {
-      exitCode: command.exitCode,
-      stdout: limitOutput(stdout),
-      stderr: limitOutput(stderr),
-      activeCpuUsageMs: usage.activeCpuUsageMs ?? 0,
-      networkIngressBytes: usage.networkTransfer?.ingress ?? 0,
-      networkEgressBytes: usage.networkTransfer?.egress ?? 0,
-    }
-  } finally {
-    await sandbox.delete().catch(() => undefined)
+    return new URL(value).protocol === 'https:'
+  } catch {
+    return false
   }
 }
 
-async function createVercelSandbox(env: Env, options: PythonSandboxOptions): Promise<SandboxHandle> {
-  const credentials = sandboxCredentials(env)
-  const { Sandbox } = await import('@vercel/sandbox')
-  return Sandbox.create({ ...credentials, ...options })
-}
-
-function sandboxOptions(env: Env): PythonSandboxOptions {
-  return {
-    runtime: 'python3.13',
-    timeout: sandboxTimeout(env.AGENT_SANDBOX_TIMEOUT_MS),
-    networkPolicy: 'deny-all',
-    persistent: false,
-    resources: { vcpus: 1 },
-    tags: { app: 'wyckoff', kind: 'python-research' },
-  }
-}
-
-function sandboxCredentials(env: Env) {
-  const token = env.VERCEL_OIDC_TOKEN?.trim() || env.VERCEL_TOKEN?.trim()
-  const teamId = env.VERCEL_TEAM_ID?.trim()
-  const projectId = env.VERCEL_PROJECT_ID?.trim()
-  if (!token || !teamId || !projectId) throw new Error('Vercel Sandbox env is incomplete')
-  return { token, teamId, projectId }
+async function bridgeSignature(secret: string, timestamp: string, body: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  )
+  const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${timestamp}.${body}`))
+  return [...new Uint8Array(signature)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
 function sandboxTimeout(raw: string | undefined): number {
@@ -98,8 +68,18 @@ function sandboxTimeout(raw: string | undefined): number {
   return Math.min(Math.trunc(parsed), MAX_TIMEOUT_MS)
 }
 
-function limitOutput(value: string): string {
-  const encoded = new TextEncoder().encode(value)
-  if (encoded.length <= MAX_OUTPUT_BYTES) return value
-  return `${new TextDecoder().decode(encoded.slice(0, MAX_OUTPUT_BYTES))}\n...[truncated]`
+function parseResult(value: unknown): PythonSandboxResult {
+  if (!isSandboxResult(value)) throw new Error('Sandbox bridge returned an invalid result')
+  return value
+}
+
+function isSandboxResult(value: unknown): value is PythonSandboxResult {
+  if (!value || typeof value !== 'object') return false
+  const result = value as Record<string, unknown>
+  return typeof result.exitCode === 'number'
+    && typeof result.stdout === 'string'
+    && typeof result.stderr === 'string'
+    && typeof result.activeCpuUsageMs === 'number'
+    && typeof result.networkIngressBytes === 'number'
+    && typeof result.networkEgressBytes === 'number'
 }

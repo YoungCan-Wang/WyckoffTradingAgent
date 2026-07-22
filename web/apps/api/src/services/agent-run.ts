@@ -100,12 +100,12 @@ function failRun(record: AgentRunRecord, error: string): AgentRunRecord {
 }
 
 function sandboxError(error: unknown): string {
-  if (error instanceof Error && error.message === 'Vercel Sandbox env is incomplete') {
+  if (error instanceof Error && error.message === 'Sandbox bridge configuration is incomplete') {
     return 'Sandbox configuration is incomplete'
   }
   return 'Sandbox execution failed'
 }
 
 function errorStatus(error: unknown): 502 | 503 {
-  return error instanceof Error && error.message === 'Vercel Sandbox env is incomplete' ? 503 : 502
+  return error instanceof Error && error.message === 'Sandbox bridge configuration is incomplete' ? 503 : 502
 }
