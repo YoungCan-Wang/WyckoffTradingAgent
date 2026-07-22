@@ -49,7 +49,7 @@ import {
 
 type ChatBindings = { Bindings: Env; Variables: { auth: AuthContext } }
 
-export type SandboxToolsBuilder = (env: Env, userId: string, accessToken: string) => ToolSet
+export type SandboxToolsBuilder = (env: Env, userId: string, accessToken: string, requestId: string) => ToolSet
 
 export function createChatRoutes(sandboxToolsBuilder: SandboxToolsBuilder = () => ({})) {
   const chatRoutes = new Hono<ChatBindings>()
@@ -84,6 +84,7 @@ export function createChatRoutes(sandboxToolsBuilder: SandboxToolsBuilder = () =
         messages,
         signal: c.req.raw.signal,
         env: c.env,
+        requestId: c.get('requestId'),
         runId,
         sequence: 0,
         sandboxToolsBuilder,
@@ -275,19 +276,15 @@ function parseCustomProviders(raw: unknown): Record<string, Record<string, strin
 }
 
 function buildTools(
-  deps: ToolDeps,
-  userId: string,
-  accessToken: string,
+  args: Pick<ChatResilienceArgs, 'deps' | 'userId' | 'accessToken' | 'env' | 'requestId' | 'sandboxToolsBuilder'>,
   config: LLMToolConfig,
   model: unknown,
-  env: Env,
-  sandboxToolsBuilder: SandboxToolsBuilder,
 ) {
   return {
-    ...buildReadTools(deps, userId, model),
-    ...buildPortfolioTools(deps, userId),
-    ...buildAnalysisTools(deps, userId, config, model),
-    ...sandboxToolsBuilder(env, userId, accessToken),
+    ...buildReadTools(args.deps, args.userId, model),
+    ...buildPortfolioTools(args.deps, args.userId),
+    ...buildAnalysisTools(args.deps, args.userId, config, model),
+    ...args.sandboxToolsBuilder(args.env, args.userId, args.accessToken, args.requestId),
   }
 }
 
@@ -300,6 +297,7 @@ interface ChatResilienceArgs {
   messages: UIMessage[]
   signal: AbortSignal
   env: Env
+  requestId: string
   runId: string
   sequence: number
   sandboxToolsBuilder: SandboxToolsBuilder
@@ -420,7 +418,7 @@ async function runChatAttempt(args: ChatResilienceArgs, config: ChatModelConfig,
   let outputStarted = false
   try {
     const provider = createProvider(config)
-    const tools = buildTools(args.deps, args.userId, args.accessToken, config, provider.chat(config.model), args.env, args.sandboxToolsBuilder)
+    const tools = buildTools(args, config, provider.chat(config.model))
     let modelMessages = await convertToModelMessages(args.messages.slice(-40), {
       tools,
       ignoreIncompleteToolCalls: true,

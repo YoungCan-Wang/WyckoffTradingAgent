@@ -23,7 +23,9 @@ agentRunRoutes.post('/', async (c) => {
   if ('error' in parsed) return c.json(parsed, 400)
 
   try {
-    const record = await runPythonResearch(c.env, c.get('auth').userId, parsed.data.script)
+    const record = await runPythonResearch(c.env, c.get('auth').userId, parsed.data.script, {
+      requestId: c.get('requestId'),
+    })
     return c.json(record, 201)
   } catch (error) {
     if (error instanceof AgentRunServiceError) {

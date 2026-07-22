@@ -7,7 +7,7 @@ import { createChatRoutes, createUserSupabase } from './chat'
 
 export const workerChatRoutes = createChatRoutes(buildSandboxTools)
 
-function buildSandboxTools(env: Env, userId: string, accessToken: string): ToolSet {
+function buildSandboxTools(env: Env, userId: string, accessToken: string, requestId: string): ToolSet {
   if (env.AGENT_SANDBOX_ENABLED !== 'true') return {}
   return {
     run_python_research: tool({
@@ -17,13 +17,13 @@ function buildSandboxTools(env: Env, userId: string, accessToken: string): ToolS
         script: PYTHON_RESEARCH_SCRIPT_SCHEMA,
       }),
       needsApproval: true,
-      execute: async ({ script }) => runApprovedPythonResearch(env, userId, accessToken, script),
+      execute: async ({ script }) => runApprovedPythonResearch(env, userId, accessToken, requestId, script),
     }),
   }
 }
 
-async function runApprovedPythonResearch(env: Env, userId: string, accessToken: string, script: string) {
+async function runApprovedPythonResearch(env: Env, userId: string, accessToken: string, requestId: string, script: string) {
   const supabase = createUserSupabase(env, accessToken)
   if (!(await isActiveWhitelistUser(supabase, userId))) throw new Error('Agent sandbox requires whitelist access')
-  return runPythonResearch(env, userId, script)
+  return runPythonResearch(env, userId, script, { requestId })
 }

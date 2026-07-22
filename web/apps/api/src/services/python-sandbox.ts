@@ -1,4 +1,5 @@
 import type { Env } from '../app'
+import type { SandboxExecutionContext } from './sandbox-observability'
 
 const DEFAULT_TIMEOUT_MS = 60_000
 const MAX_TIMEOUT_MS = 120_000
@@ -17,6 +18,7 @@ export type SandboxBridgeFetch = (input: string, init: RequestInit) => Promise<R
 export async function executePythonSandbox(
   env: Env,
   script: string,
+  context: SandboxExecutionContext = { runId: crypto.randomUUID() },
   bridgeFetch: SandboxBridgeFetch = fetch,
 ): Promise<PythonSandboxResult> {
   const bridge = bridgeConfig(env)
@@ -28,11 +30,18 @@ export async function executePythonSandbox(
       'Content-Type': 'application/json',
       'X-Wyckoff-Timestamp': timestamp,
       'X-Wyckoff-Signature': await bridgeSignature(bridge.secret, timestamp, body),
+      ...correlationHeaders(context),
     },
     body,
   })
   if (!response.ok) throw new Error('Sandbox bridge request failed')
   return parseResult(await response.json())
+}
+
+function correlationHeaders(context: SandboxExecutionContext): Record<string, string> {
+  const headers: Record<string, string> = { 'X-Wyckoff-Run-Id': context.runId }
+  if (context.requestId) headers['X-Wyckoff-Request-Id'] = context.requestId
+  return headers
 }
 
 function bridgeConfig(env: Env): { url: string; secret: string } {
