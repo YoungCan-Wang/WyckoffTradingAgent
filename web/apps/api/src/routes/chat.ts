@@ -31,7 +31,7 @@ import {
   type ToolDeps,
   type MarketWatchSnapshot,
 } from '@wyckoff/shared'
-import { consumeStream, convertToModelMessages, createUIMessageStream, createUIMessageStreamResponse, generateText, stepCountIs, streamText, tool, type UIMessage, type UIMessageChunk } from 'ai'
+import { consumeStream, convertToModelMessages, createUIMessageStream, createUIMessageStreamResponse, generateText, stepCountIs, streamText, tool, type ToolSet, type UIMessage, type UIMessageChunk } from 'ai'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import type { Env } from '../app'
@@ -49,47 +49,55 @@ import {
 
 type ChatBindings = { Bindings: Env; Variables: { auth: AuthContext } }
 
-export const chatRoutes = new Hono<ChatBindings>()
+export type SandboxToolsBuilder = (env: Env, userId: string, accessToken: string) => ToolSet
 
-chatRoutes.use('*', authMiddleware)
+export function createChatRoutes(sandboxToolsBuilder: SandboxToolsBuilder = () => ({})) {
+  const chatRoutes = new Hono<ChatBindings>()
+  chatRoutes.use('*', authMiddleware)
 
-chatRoutes.get('/config', async (c) => {
-  const auth = c.get('auth')
-  const supabase = createUserSupabase(c.env, auth.accessToken)
-  const config = await loadLLMConfig(supabase, auth.userId)
-  return c.json({ configured: Boolean(config), model: config?.model || null })
-})
-
-chatRoutes.post('/', chatRateLimitMiddleware, async (c) => {
-  const auth = c.get('auth')
-  const body = await c.req.json<ChatRequestBody>().catch(() => null)
-  const messages = body?.messages
-  if (!Array.isArray(messages) || messages.length === 0) return c.json({ error: 'Missing messages' }, 400)
-  if (estimateMessagesSize(messages) > 60_000) return c.json({ error: '本轮上下文过长，请开启新对话或缩短问题。' }, 413)
-
-  const supabase = createUserSupabase(c.env, auth.accessToken)
-  const configs = await loadLLMConfigs(supabase, auth.userId)
-  if (configs.length === 0) return c.json({ error: '请先在设置页配置 LLM API Key' }, 400)
-  const runId = crypto.randomUUID()
-
-  const stream = createUIMessageStream({
-    execute: ({ writer }) => runChatWithResilience({
-      writer,
-      configs,
-      deps: createToolDeps(supabase),
-      userId: auth.userId,
-      messages,
-      signal: c.req.raw.signal,
-      env: c.env,
-      runId,
-      sequence: 0,
-      watchlist: sanitizeWatchlist(body?.watchlist),
-      marketWatchCache: body?.marketWatch,
-    }),
-    onError: normalizeStreamError,
+  chatRoutes.get('/config', async (c) => {
+    const auth = c.get('auth')
+    const supabase = createUserSupabase(c.env, auth.accessToken)
+    const config = await loadLLMConfig(supabase, auth.userId)
+    return c.json({ configured: Boolean(config), model: config?.model || null })
   })
-  return createUIMessageStreamResponse({ stream, consumeSseStream: consumeStream })
-})
+
+  chatRoutes.post('/', chatRateLimitMiddleware, async (c) => {
+    const auth = c.get('auth')
+    const body = await c.req.json<ChatRequestBody>().catch(() => null)
+    const messages = body?.messages
+    if (!Array.isArray(messages) || messages.length === 0) return c.json({ error: 'Missing messages' }, 400)
+    if (estimateMessagesSize(messages) > 60_000) return c.json({ error: '本轮上下文过长，请开启新对话或缩短问题。' }, 413)
+
+    const supabase = createUserSupabase(c.env, auth.accessToken)
+    const configs = await loadLLMConfigs(supabase, auth.userId)
+    if (configs.length === 0) return c.json({ error: '请先在设置页配置 LLM API Key' }, 400)
+    const runId = crypto.randomUUID()
+
+    const stream = createUIMessageStream({
+      execute: ({ writer }) => runChatWithResilience({
+        writer,
+        configs,
+        deps: createToolDeps(supabase),
+        userId: auth.userId,
+        accessToken: auth.accessToken,
+        messages,
+        signal: c.req.raw.signal,
+        env: c.env,
+        runId,
+        sequence: 0,
+        sandboxToolsBuilder,
+        watchlist: sanitizeWatchlist(body?.watchlist),
+        marketWatchCache: body?.marketWatch,
+      }),
+      onError: normalizeStreamError,
+    })
+    return createUIMessageStreamResponse({ stream, consumeSseStream: consumeStream })
+  })
+  return chatRoutes
+}
+
+export const chatRoutes = createChatRoutes()
 
 type ChatRequestBody = { messages?: UIMessage[]; watchlist?: unknown; marketWatch?: unknown }
 type WatchlistRequestItem = { code: string; name: string }
@@ -111,7 +119,8 @@ const WYCKOFF_CHAT_SYSTEM_PROMPT = `# 角色设定
 3. 调仓两步走：涉及调仓时，先调用 plan_portfolio_update 展示方案；execute_portfolio_update 会在协议层要求用户确认。
 4. 风险声明：涉及具体操作建议时，附带风险提示。
 5. 技术面为主：价值面只用于质量、风险、置信度和仓位校准，不能替代 K 线事实。
-6. 策略归因问题必须调用 query_attribution，先确认返回结果是否来自远端表或提示本地 --no-write 报告，再优先读取 operator_summary / latest_operator_summary 作为运营结论，然后读取 latest_policy_display、latest_execution_summary、promotion_checklist 和 latest_operations 后判断信号升降权、是否能晋级 dynamic=on，以及 shadow 新增/移除样本；raw next_action/promotion_status 只作追证据，不直接复述给用户。`
+6. 策略归因问题必须调用 query_attribution，先确认返回结果是否来自远端表或提示本地 --no-write 报告，再优先读取 operator_summary / latest_operator_summary 作为运营结论，然后读取 latest_policy_display、latest_execution_summary、promotion_checklist 和 latest_operations 后判断信号升降权、是否能晋级 dynamic=on，以及 shadow 新增/移除样本；raw next_action/promotion_status 只作追证据，不直接复述给用户。
+7. 只有用户明确要求进行 Python 计算、回测或统计时，才可调用 run_python_research。先说明计算目的；该工具必须等待用户确认，脚本只处理已知、有限的数据，不能把猜测当作数据来源。`
 
 function estimateMessagesSize(messages: UIMessage[]): number {
   return messages.reduce((total, message) => total + JSON.stringify(message).length, 0)
@@ -138,7 +147,7 @@ function sanitizeWatchlist(value: unknown): WatchlistRequestItem[] {
   }).slice(0, 18)
 }
 
-function createUserSupabase(env: Env, accessToken: string): ToolDeps['supabase'] {
+export function createUserSupabase(env: Env, accessToken: string): ToolDeps['supabase'] {
   return createClient(getEnvValue(env, 'SUPABASE_URL'), getEnvValue(env, 'SUPABASE_ANON_KEY'), {
     global: { headers: { Authorization: `Bearer ${accessToken}` } },
   })
@@ -265,11 +274,20 @@ function parseCustomProviders(raw: unknown): Record<string, Record<string, strin
   }
 }
 
-function buildTools(deps: ToolDeps, userId: string, config: LLMToolConfig, model: unknown) {
+function buildTools(
+  deps: ToolDeps,
+  userId: string,
+  accessToken: string,
+  config: LLMToolConfig,
+  model: unknown,
+  env: Env,
+  sandboxToolsBuilder: SandboxToolsBuilder,
+) {
   return {
     ...buildReadTools(deps, userId, model),
     ...buildPortfolioTools(deps, userId),
     ...buildAnalysisTools(deps, userId, config, model),
+    ...sandboxToolsBuilder(env, userId, accessToken),
   }
 }
 
@@ -278,11 +296,13 @@ interface ChatResilienceArgs {
   configs: ChatModelConfig[]
   deps: ToolDeps
   userId: string
+  accessToken: string
   messages: UIMessage[]
   signal: AbortSignal
   env: Env
   runId: string
   sequence: number
+  sandboxToolsBuilder: SandboxToolsBuilder
   watchlist: WatchlistRequestItem[]
   marketWatchCache: unknown
 }
@@ -400,7 +420,7 @@ async function runChatAttempt(args: ChatResilienceArgs, config: ChatModelConfig,
   let outputStarted = false
   try {
     const provider = createProvider(config)
-    const tools = buildTools(args.deps, args.userId, config, provider.chat(config.model))
+    const tools = buildTools(args.deps, args.userId, args.accessToken, config, provider.chat(config.model), args.env, args.sandboxToolsBuilder)
     let modelMessages = await convertToModelMessages(args.messages.slice(-40), {
       tools,
       ignoreIncompleteToolCalls: true,

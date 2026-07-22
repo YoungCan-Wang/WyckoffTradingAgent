@@ -1,17 +1,16 @@
 import { Hono } from 'hono'
-import { z } from 'zod'
 import type { Env } from '../app'
 import { authMiddleware, type AuthContext } from '../middleware/auth'
 import { whitelistMiddleware } from '../middleware/whitelist'
-import { createAgentRunStore, type AgentRunRecord } from '../services/agent-run-store'
-import { executePythonSandbox } from '../services/python-sandbox'
+import {
+  AGENT_RUN_INPUT_SCHEMA,
+  AgentRunServiceError,
+  type AgentRunInput,
+  runPythonResearch,
+} from '../services/agent-run'
+import { createAgentRunStore } from '../services/agent-run-store'
 
 type AgentRunBindings = { Bindings: Env; Variables: { auth: AuthContext } }
-
-const AGENT_RUN_SCHEMA = z.object({
-  kind: z.literal('python_research'),
-  script: z.string().trim().min(1).max(12_000),
-})
 
 export const agentRunRoutes = new Hono<AgentRunBindings>()
 
@@ -23,28 +22,21 @@ agentRunRoutes.post('/', async (c) => {
   const parsed = parseAgentRunInput(await c.req.json().catch(() => null))
   if ('error' in parsed) return c.json(parsed, 400)
 
-  const store = createAgentRunStore(c.env)
-  if (!store) return c.json({ error: 'Agent run storage is unavailable' }, 503)
-  const userId = c.get('auth').userId
-  const record = newRunRecord()
-  await store.save(userId, record)
-
   try {
-    const result = await executePythonSandbox(c.env, parsed.data.script)
-    const completed = completeRun(record, result)
-    await store.save(userId, completed)
-    return c.json(completed, 201)
+    const record = await runPythonResearch(c.env, c.get('auth').userId, parsed.data.script)
+    return c.json(record, 201)
   } catch (error) {
-    const failed = failRun(record, sandboxError(error))
-    await store.save(userId, failed)
-    return c.json(failed, failed.error === 'Sandbox configuration is incomplete' ? 503 : 502)
+    if (error instanceof AgentRunServiceError) {
+      return c.json(error.record || { error: error.message }, error.status)
+    }
+    return c.json({ error: 'Sandbox execution failed' }, 502)
   }
 })
 
 export function parseAgentRunInput(raw: unknown):
-  | { data: z.infer<typeof AGENT_RUN_SCHEMA> }
+  | { data: AgentRunInput }
   | { error: string; details?: unknown } {
-  const parsed = AGENT_RUN_SCHEMA.safeParse(raw)
+  const parsed = AGENT_RUN_INPUT_SCHEMA.safeParse(raw)
   if (!parsed.success) return { error: 'Invalid agent run', details: parsed.error.flatten() }
   return { data: parsed.data }
 }
@@ -62,42 +54,3 @@ agentRunRoutes.delete('/:id', async (c) => {
   await store.remove(c.get('auth').userId, c.req.param('id'))
   return c.body(null, 204)
 })
-
-function newRunRecord(): AgentRunRecord {
-  return {
-    id: crypto.randomUUID(),
-    kind: 'python_research',
-    status: 'running',
-    createdAt: new Date().toISOString(),
-  }
-}
-
-function completeRun(
-  record: AgentRunRecord,
-  result: Awaited<ReturnType<typeof executePythonSandbox>>,
-): AgentRunRecord {
-  return {
-    ...record,
-    status: result.exitCode === 0 ? 'completed' : 'failed',
-    finishedAt: new Date().toISOString(),
-    exitCode: result.exitCode,
-    stdout: result.stdout,
-    stderr: result.stderr,
-    usage: {
-      activeCpuUsageMs: result.activeCpuUsageMs,
-      networkIngressBytes: result.networkIngressBytes,
-      networkEgressBytes: result.networkEgressBytes,
-    },
-  }
-}
-
-function failRun(record: AgentRunRecord, error: string): AgentRunRecord {
-  return { ...record, status: 'failed', finishedAt: new Date().toISOString(), error }
-}
-
-function sandboxError(error: unknown): string {
-  if (error instanceof Error && error.message === 'Vercel Sandbox env is incomplete') {
-    return 'Sandbox configuration is incomplete'
-  }
-  return 'Sandbox execution failed'
-}

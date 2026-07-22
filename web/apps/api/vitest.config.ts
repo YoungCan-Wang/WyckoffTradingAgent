@@ -30,6 +30,7 @@ export default defineConfig({
   })],
   test: {
     include: ['src/**/*.test.ts'],
+    exclude: ['src/services/python-sandbox.integration.test.ts'],
     restoreMocks: true,
   },
 })

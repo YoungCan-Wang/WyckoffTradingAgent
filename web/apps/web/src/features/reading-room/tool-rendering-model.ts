@@ -17,6 +17,7 @@ const TOOL_LABEL_KEYS: Record<string, TranslationKey> = {
   generate_ai_report: 'tool.generate_ai_report',
   generate_strategy_decision: 'tool.generate_strategy_decision',
   intraday_analysis: 'tool.intraday_analysis',
+  run_python_research: 'tool.run_python_research',
 }
 
 const TOOL_TONES: Record<string, string> = {
@@ -27,10 +28,11 @@ const TOOL_TONES: Record<string, string> = {
   generate_strategy_decision: 'border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-100',
   plan_portfolio_update: 'border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-100',
   execute_portfolio_update: 'border-red-200 bg-red-50 text-red-800 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-100',
+  run_python_research: 'border-indigo-200 bg-indigo-50 text-indigo-800 dark:border-indigo-500/30 dark:bg-indigo-500/10 dark:text-indigo-100',
 }
 
 export const STRUCTURED_TOOL_NAMES = new Set(['screen_stocks', 'analyze_stock', 'generate_strategy_decision'])
-const ACTION_TOOL_NAMES = new Set(['plan_portfolio_update', 'execute_portfolio_update'])
+const ACTION_TOOL_NAMES = new Set(['plan_portfolio_update', 'execute_portfolio_update', 'run_python_research'])
 const MARKET_INDEX_LABELS: Record<string, string> = {
   sse: '上证',
   csi300: '沪深300',
@@ -169,6 +171,8 @@ export function toolProgressDescription(toolName: string, input: unknown): strin
       return '生成调仓方案草稿，等待你确认是否执行。'
     case 'execute_portfolio_update':
       return '执行已确认的持仓变更。'
+    case 'run_python_research':
+      return `在隔离 Python 沙箱中执行：${sanitizeText(item?.purpose) || '已确认的研究计算'}。`
     default:
       return '读取读盘室相关数据，并把结果交给模型综合判断。'
   }
@@ -180,7 +184,16 @@ export function toolResultDigest(toolName: string, output: unknown): string {
   if (toolName === 'query_recommendations') return `形态复盘记录读取完成：${recordCountDigest(output)}`
   if (toolName === 'query_attribution') return `策略归因读取完成：${recordCountDigest(output)}`
   if (toolName === 'market_history') return `指数历史读取完成：${recordCountDigest(output)}`
+  if (toolName === 'run_python_research') return `沙箱计算完成：${sandboxResultDigest(output)}`
   return summarizeToolOutput(output)
+}
+
+function sandboxResultDigest(output: unknown): string {
+  const item = asRecord(output)
+  if (!item) return summarizeToolOutput(output)
+  const exitCode = typeof item.exitCode === 'number' ? item.exitCode : null
+  const stdout = sanitizeText(item.stdout).replace(/\s+/g, ' ').slice(0, 100)
+  return exitCode == null ? summarizeToolOutput(output) : `退出码 ${exitCode}${stdout ? ` · ${stdout}` : ''}`
 }
 
 function toolInputLabel(toolName: string, input: unknown): string {
