@@ -20,7 +20,7 @@
     "@upstash/ratelimit": "^2.0.8",
     "@upstash/redis": "^1.38.0",
     "@wyckoff/shared": "workspace:*",
-    "ai": "^6.0.205",
+    "ai": "^6.0.234",
     "hono": "^4.12.21",
     "zod": "^3.25.76"
   },

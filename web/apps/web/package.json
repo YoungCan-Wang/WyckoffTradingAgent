@@ -12,11 +12,11 @@
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.84",
     "@ai-sdk/openai": "^3.0.71",
-    "@ai-sdk/react": "^3.0.207",
+    "@ai-sdk/react": "^3.0.236",
     "@supabase/supabase-js": "^2.49.0",
     "@tanstack/react-query": "^5.62.0",
     "@wyckoff/shared": "workspace:*",
-    "ai": "^6.0.205",
+    "ai": "^6.0.234",
     "lightweight-charts": "^5.2.0",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
