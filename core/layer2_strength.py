@@ -758,7 +758,7 @@ def _diagnose_ambush(
     if not ambush_rs_ok:
         gaps.append(0.5)
         fail.append("RS强度未确认: 当前未通过")
-    thresh_rps = cfg.rps_ambush_min
+    thresh_rps = cfg.ambush_rps_slow_min
     val_rps = rps_slow or 0.0
     if val_rps < thresh_rps:
         gaps.append((thresh_rps - val_rps) / thresh_rps)
@@ -1029,6 +1029,28 @@ def _diagnose_breakout_accel(
     return max(gaps), fail
 
 
+def _diagnose_sos(
+    cfg: Any,
+    df_sorted: pd.DataFrame,
+    rps_ctx: RpsContext,
+    rps_slow: float | None,
+    detect_sos: Callable[[pd.DataFrame, Any], float | None],
+) -> tuple[float, list[str]]:
+    if not hasattr(cfg, "sos_vol_ratio"):
+        return 999.0, ["通道未启用"]
+    gaps = []
+    reasons = []
+    threshold = float(cfg.sos_bypass_rps_slow_min)
+    if rps_ctx.active and (rps_slow is None or rps_slow < threshold):
+        value = float(rps_slow or 0.0)
+        gaps.append((threshold - value) / max(threshold, 1.0))
+        reasons.append(f"RPS(slow)不足: 当前 {value:.1f}, 阈值 {threshold:.1f}, 差距 {threshold - value:.1f}")
+    if detect_sos(df_sorted, cfg) is None:
+        gaps.append(0.5)
+        reasons.append("未形成放量突破阻力的SOS结构")
+    return (max(gaps), reasons) if gaps else (0.0, [])
+
+
 def diagnose_layer2_symbol_failure(
     sym: str,
     df_sorted: pd.DataFrame,
@@ -1039,6 +1061,7 @@ def diagnose_layer2_symbol_failure(
     rps_state: Layer2RpsState,
     momentum_rs_ok: bool,
     ambush_rs_ok: bool,
+    detect_sos: Callable[[pd.DataFrame, Any], float | None],
 ) -> str:
     state = _symbol_state(df_sorted, cfg, bench_ctx)
     close_series = state.close
@@ -1055,7 +1078,8 @@ def diagnose_layer2_symbol_failure(
         "地量蓄势": _diagnose_dry_vol(cfg, df_sorted, close_series, last_close),
         "暗中护盘": _diagnose_rs_div(cfg, df_sorted, close_series, last_close, bench_ctx),
         "趋势延续": _diagnose_trend_cont(cfg, df_sorted, close_series, rps_slow, state),
-        "点火破局": _diagnose_breakout_accel(cfg, df_sorted, close_series, last_close, last_ma_short, rps_fast, state),
+        "加速突破": _diagnose_breakout_accel(cfg, df_sorted, close_series, last_close, last_ma_short, rps_fast, state),
+        "点火破局": _diagnose_sos(cfg, df_sorted, rps_ctx, rps_slow, detect_sos),
     }
 
     valid_channels = {k: v for k, v in channel_failures.items() if "通道未启用" not in v[1]}

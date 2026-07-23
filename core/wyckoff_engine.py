@@ -23,6 +23,8 @@ from core.candidate_lanes import build_l1_candidate_lane_entries, merge_candidat
 from core.candidate_tracks import candidate_entry_sort_key
 from core.cn_boards import cn_board, is_supported_cn_board
 from core.layer2_strength import (
+    BenchmarkContext,
+    RpsContext,
     build_benchmark_context,
     build_rps_context,
     evaluate_layer2_symbol,
@@ -399,6 +401,37 @@ class _FunnelStageState(NamedTuple):
     leader_radar_rows: list[dict[str, Any]]
 
 
+@dataclass(frozen=True)
+class Layer2EvaluationContext:
+    benchmark: BenchmarkContext
+    rps: RpsContext
+
+
+def build_layer2_evaluation_context(
+    symbols: list[str],
+    df_map: dict[str, pd.DataFrame],
+    bench_df: pd.DataFrame | None,
+    cfg: FunnelConfig,
+    *,
+    rps_universe: list[str] | None = None,
+) -> Layer2EvaluationContext:
+    return Layer2EvaluationContext(
+        benchmark=build_benchmark_context(
+            bench_df,
+            cfg,
+            sort_frame=sort_by_date_if_needed,
+            latest_trade_date=_latest_trade_date,
+        ),
+        rps=build_rps_context(
+            symbols,
+            df_map,
+            cfg,
+            rps_universe=rps_universe,
+            sort_frame=sort_by_date_if_needed,
+        ),
+    )
+
+
 # Layer 1: 剥离垃圾
 
 
@@ -540,6 +573,7 @@ def layer2_strength_detailed(
     rps_universe: list[str] | None = None,
     channel_hit_counter: dict[str, int] | None = None,
     rejections: dict[str, str] | None = None,
+    evaluation_context: Layer2EvaluationContext | None = None,
 ) -> tuple[list[str], dict[str, str], list[str]]:
     """
     Layer2 多通道强弱甄别。
@@ -552,19 +586,15 @@ def layer2_strength_detailed(
     channel_hit_counter（可选）: 传入空 dict 原地累加每个通道的原始命中次数
     （不受"是否已被其他通道命中"影响），用于诊断某通道是否长期 0 触发。
     """
-    bench_ctx = build_benchmark_context(
-        bench_df,
-        cfg,
-        sort_frame=sort_by_date_if_needed,
-        latest_trade_date=_latest_trade_date,
-    )
-    rps_ctx = build_rps_context(
+    context = evaluation_context or build_layer2_evaluation_context(
         symbols,
         df_map,
+        bench_df,
         cfg,
         rps_universe=rps_universe,
-        sort_frame=sort_by_date_if_needed,
     )
+    bench_ctx = context.benchmark
+    rps_ctx = context.rps
 
     passed: list[str] = []
     channel_map: dict[str, str] = {}
@@ -626,10 +656,11 @@ def _diagnose_symbol_rejection(
             rps_state=rps_state,
             momentum_rs_ok=momentum_rs_ok,
             ambush_rs_ok=ambush_rs_ok,
+            detect_sos=_detect_sos,
         )
     except Exception as exc:
         logger.warning("diagnose symbol %s L2 failure failed: %s", sym, exc)
-        rejections[sym] = "七通道均未通过（诊断异常）"
+        rejections[sym] = "八通道诊断失败"
 
 
 # Layer 3: 板块共振

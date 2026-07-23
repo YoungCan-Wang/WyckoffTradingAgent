@@ -15,7 +15,13 @@ from core.funnel_taxonomy import (
     REVIEW_STAGE_TRIGGER_MISS,
 )
 from core.wyckoff_engine import FunnelConfig
-from workflows.review_big_gainers import find_big_gainers, find_big_gainers_from_spot, load_today_review_codes
+from workflows.review_big_gainers import (
+    ReviewPool,
+    execution_snapshot,
+    find_big_gainers,
+    find_big_gainers_from_spot,
+    load_today_review_codes,
+)
 from workflows.review_list_replay import (
     ReplayContext,
     build_candidate_entry_map,
@@ -184,6 +190,28 @@ def test_find_big_gainers_does_not_filter_gap_up_open() -> None:
     assert find_big_gainers({"000001": frame}, {"000001": "平安银行"}) == ["000001"]
 
 
+def test_execution_snapshot_separates_raw_review_from_open_tradeability() -> None:
+    tradable = pd.DataFrame(
+        {
+            "date": ["2026-05-12", "2026-05-13"],
+            "open": [10.0, 10.3],
+            "high": [10.2, 11.0],
+            "low": [9.9, 10.2],
+            "close": [10.0, 10.9],
+        }
+    )
+    gap_up = tradable.copy()
+    gap_up.loc[1, "open"] = 10.5
+    one_price = tradable.copy()
+    one_price.loc[1, ["open", "high", "low", "close"]] = 11.0
+
+    assert execution_snapshot(tradable)["executable"] is True
+    assert execution_snapshot(gap_up)["executable"] is False
+    assert execution_snapshot(gap_up)["reason"] == "开盘跳空超过4%"
+    assert execution_snapshot(one_price)["executable"] is False
+    assert execution_snapshot(one_price)["reason"] == "一字板不可成交"
+
+
 def test_spot_prefilter_uses_strict_today_close_threshold() -> None:
     codes, usable = find_big_gainers_from_spot(
         {
@@ -209,9 +237,9 @@ def test_load_today_review_codes_falls_back_when_spot_candidates_empty(monkeypat
 
     def fake_fetch(codes, name_map, window, log=None):
         calls.append(list(codes))
-        return ["000001"]
+        return ReviewPool(["000001"], {})
 
-    monkeypatch.setattr("workflows.review_big_gainers.fetch_and_filter_review_codes", fake_fetch)
+    monkeypatch.setattr("workflows.review_big_gainers.fetch_review_pool", fake_fetch)
 
     codes = load_today_review_codes(["000001", "000002"], {"000001": "平安银行", "000002": "万科A"}, object())
 
@@ -269,7 +297,7 @@ def test_build_report_lines_appends_recommendation_note():
             "code": "000001",
             "name": "平安银行",
             "stage": REVIEW_STAGE_STRENGTH_MISS,
-            "reason": "六通道均未通过",
+            "reason": "八通道均未通过",
             "recommendation": "推荐记录: 2026-04-30 被推荐过；累计推荐1次",
         }
     ]
@@ -283,3 +311,28 @@ def test_build_report_lines_appends_recommendation_note():
     )
 
     assert "推荐记录: 2026-04-30 被推荐过；累计推荐1次" in "\n".join(lines)
+
+
+def test_build_report_lines_separates_raw_and_executable_capture_rates() -> None:
+    rows = [_row("000001", "平安银行", REVIEW_STAGE_CANDIDATE_HIT)]
+    lines = build_report_lines(
+        rows,
+        Counter({REVIEW_STAGE_CANDIDATE_HIT: 1}),
+        today=date(2026, 5, 13),
+        previous_trade_date=date(2026, 5, 12),
+        end_trade_date="2026-05-12",
+        stats={
+            "candidate": 1,
+            "recommended": 0,
+            "total": 3,
+            "l1_eligible": 2,
+            "open_executable": 1,
+            "candidate_open_executable": 1,
+            "execution_available": 3,
+        },
+    )
+
+    text = "\n".join(lines)
+    assert "前日基础准入 2/3" in text
+    assert "次日开盘≤+4%且非一字板 1/2" in text
+    assert "可交易样本前日候选 1/1" in text

@@ -2,7 +2,7 @@
 Wyckoff Funnel 定时任务：5 层漏斗筛选 → 多渠道推送
 
 Layer 1: 剥离垃圾（ST/非目标板块/市值/成交额）
-Layer 2: 七通道甄选（主升/潜伏/吸筹/地量/暗中护盘/趋势延续/点火破局）
+Layer 2: 八通道甄选（主升/潜伏/吸筹/地量/暗中护盘/趋势延续/加速突破/点火破局）
 Layer 2.5: Markup 加速检测
 Layer 3: 板块共振（行业 Top-N）
 Layer 4: 威科夫狙击（Spring / SOS / LPS / Effort vs Result）

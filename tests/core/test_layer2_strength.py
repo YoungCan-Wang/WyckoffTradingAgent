@@ -92,33 +92,40 @@ def test_channel_labels_preserve_order_and_return_empty_without_hits() -> None:
     assert channel_labels({}) == []
 
 
-def test_diagnose_layer2_symbol_failure() -> None:
+def test_diagnose_layer2_symbol_failure(monkeypatch) -> None:
     from core.layer2_strength import Layer2RpsState, diagnose_layer2_symbol_failure
-    from core.wyckoff_engine import FunnelConfig, build_benchmark_context, build_rps_context
+    from core.wyckoff_engine import (
+        FunnelConfig,
+        build_benchmark_context,
+        build_layer2_evaluation_context,
+        build_rps_context,
+        layer2_strength_detailed,
+    )
 
     cfg = FunnelConfig()
-    dates = pd.date_range("2024-01-01", periods=100)
+    row_count = 320
+    dates = pd.date_range("2024-01-01", periods=row_count)
     df = pd.DataFrame(
         {
             "date": dates,
-            "open": [10.0] * 100,
-            "high": [10.2] * 100,
-            "low": [9.8] * 100,
-            "close": [10.0] * 100,
-            "volume": [1000] * 100,
-            "pct_chg": [0.0] * 100,
+            "open": [10.0] * row_count,
+            "high": [10.2] * row_count,
+            "low": [9.8] * row_count,
+            "close": [10.0] * row_count,
+            "volume": [1000] * row_count,
+            "pct_chg": [0.0] * row_count,
         }
     )
 
     bench_df = pd.DataFrame(
         {
             "date": dates,
-            "open": [10.0] * 100,
-            "high": [10.2] * 100,
-            "low": [9.8] * 100,
-            "close": [10.0] * 100,
-            "volume": [1000] * 100,
-            "pct_chg": [0.0] * 100,
+            "open": [10.0] * row_count,
+            "high": [10.2] * row_count,
+            "low": [9.8] * row_count,
+            "close": [10.0] * row_count,
+            "volume": [1000] * row_count,
+            "pct_chg": [0.0] * row_count,
         }
     )
 
@@ -137,7 +144,35 @@ def test_diagnose_layer2_symbol_failure() -> None:
         rps_state=rps_state,
         momentum_rs_ok=False,
         ambush_rs_ok=False,
+        detect_sos=lambda _df, _cfg: None,
     )
 
     assert "最接近通道" in res
     assert "缺口" in res
+
+    cfg.enable_dry_vol_channel = False
+    evaluation_context = build_layer2_evaluation_context(
+        ["000001"],
+        {"000001": df},
+        bench_df,
+        cfg,
+        rps_universe=["000001"],
+    )
+
+    def fail_rebuild(*_args, **_kwargs):
+        raise AssertionError("Layer2 context should be reused")
+
+    monkeypatch.setattr("core.wyckoff_engine.build_benchmark_context", fail_rebuild)
+    monkeypatch.setattr("core.wyckoff_engine.build_rps_context", fail_rebuild)
+    rejections = {}
+    layer2_strength_detailed(
+        ["000001"],
+        {"000001": df},
+        bench_df,
+        cfg,
+        rejections=rejections,
+        evaluation_context=evaluation_context,
+    )
+
+    assert "000001" in rejections
+    assert "诊断失败" not in rejections["000001"]

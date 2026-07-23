@@ -689,7 +689,7 @@ TTL：SOS 2 天、Spring 3 天、LPS 3 天、EVR 2 天、Compression 3 天。
 | **港股漏斗筛选** (`wyckoff_funnel_hk.yml`) | 周一-周五 16:35 | `market_funnel_job.py --market hk` |
 | **A 股漏斗筛选 + AI 研报 + 决策** (`wyckoff_funnel.yml`) | 周日-周四 17:17 | `daily_job.py` Step2→3→4；周日正常为周一实盘准备候选，若次日非 A 股交易日才跳过，日频写入 `theme_radar_snapshot` |
 | **板块连续性报告** (`sector_continuity.yml`) | 周一-周五 16:10 | 刷新概念热度历史，辅助主线引擎判断延续性 |
-| **强势股复盘** (`review_list_replay.yml`) | 周一-周五 19:25 | 当日收盘涨幅 > 7% 且前一交易日收盘涨幅 < 3% 回溯 |
+| **强势股复盘** (`review_list_replay.yml`) | 周一-周五 19:25 | 回溯当日收盘涨幅 > 7% 且前一交易日收盘涨幅 < 3% 的完整样本；另列前日通过 L1、次日开盘 ≤ +4% 且非一字板的可交易样本，并复用全市场上下文完成 L2 八通道缺口诊断 |
 | **主线雷达周报** (`theme_radar.yml`) | 周五 21:10 | `theme_radar_job.py --with-news`，周频新闻增强复盘 |
 | **形态复盘重定价** (`recommendation_tracking_reprice.yml`) | 周一-周五 23:00 | 同步收盘价、计算收益 |
 | **信号反馈闭环** (`signal_feedback.yml`) | 周一-周五 23:30 | `signal_feedback_job.py` 刷新 outcomes / health / registry |

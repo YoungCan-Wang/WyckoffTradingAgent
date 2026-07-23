@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import pandas as pd
 
@@ -12,6 +13,13 @@ from core.wyckoff_engine import sort_by_date_if_needed
 
 TODAY_REVIEW_MIN_PCT = 7.0
 PREVIOUS_REVIEW_MAX_PCT = 3.0
+EXECUTABLE_OPEN_GAP_MAX_PCT = 4.0
+
+
+@dataclass(frozen=True)
+class ReviewPool:
+    codes: list[str]
+    frames: dict[str, pd.DataFrame]
 
 
 def is_target_cn_board(code: str) -> bool:
@@ -61,14 +69,23 @@ def load_today_review_codes(
     today_window,
     log: Callable[[str], None] | None = None,
 ) -> list[str]:
+    return load_today_review_pool(all_codes, name_map_today, today_window, log=log).codes
+
+
+def load_today_review_pool(
+    all_codes: list[str],
+    name_map_today: dict[str, str],
+    today_window,
+    log: Callable[[str], None] | None = None,
+) -> ReviewPool:
     logger = log or (lambda _msg: None)
     spot_codes, spot_usable = _load_spot_candidates(name_map_today, logger)
     spot_min_coverage = review_spot_min_coverage()
     spot_coverage = spot_usable / max(len(all_codes), 1)
     if spot_usable > 0 and spot_coverage >= spot_min_coverage:
-        return _load_from_sufficient_spot(spot_codes, all_codes, name_map_today, today_window, logger)
+        return _load_pool_from_sufficient_spot(spot_codes, all_codes, name_map_today, today_window, logger)
     _log_spot_fallback(spot_usable, spot_coverage, spot_min_coverage, logger)
-    return fetch_and_filter_review_codes(all_codes, name_map_today, today_window, logger)
+    return fetch_review_pool(all_codes, name_map_today, today_window, logger)
 
 
 def fetch_and_filter_review_codes(
@@ -77,6 +94,15 @@ def fetch_and_filter_review_codes(
     window,
     log: Callable[[str], None] | None = None,
 ) -> list[str]:
+    return fetch_review_pool(codes, name_map, window, log).codes
+
+
+def fetch_review_pool(
+    codes: list[str],
+    name_map: dict[str, str],
+    window,
+    log: Callable[[str], None] | None = None,
+) -> ReviewPool:
     from tools.data_fetcher import fetch_all_ohlcv
     from workflows.fetch_runtime_config import fetch_runtime_config_from_env
 
@@ -88,7 +114,7 @@ def fetch_and_filter_review_codes(
         runtime_config=fetch_runtime_config_from_env(),
     )
     _log_fetch_stats(stats, df_map, window, log or (lambda _msg: None))
-    return find_big_gainers(df_map, name_map)
+    return ReviewPool(find_big_gainers(df_map, name_map), df_map)
 
 
 def review_spot_min_coverage() -> float:
@@ -110,6 +136,25 @@ def latest_and_previous_pct(df: pd.DataFrame) -> tuple[float | None, float | Non
     if previous_pct is None and len(pct) >= 2 and pd.notna(pct.iloc[-2]):
         previous_pct = float(pct.iloc[-2])
     return latest_pct, previous_pct
+
+
+def execution_snapshot(frame: pd.DataFrame | None) -> dict[str, object]:
+    if frame is None or frame.empty:
+        return {"available": False, "executable": False, "reason": "缺少当日行情"}
+    rows = sort_by_date_if_needed(frame)
+    if len(rows) < 2:
+        return {"available": False, "executable": False, "reason": "当日行情长度不足"}
+    prev_close = _number(rows["close"].iloc[-2]) if "close" in rows.columns else None
+    today_open = _last_number(rows, "open")
+    today_high = _last_number(rows, "high")
+    today_low = _last_number(rows, "low")
+    if prev_close is None or prev_close <= 0 or today_open is None or today_open <= 0:
+        return {"available": False, "executable": False, "reason": "缺少前收盘或当日开盘"}
+    open_gap = (today_open / prev_close - 1.0) * 100.0
+    one_price = today_high is not None and today_low is not None and abs(today_high - today_low) <= 1e-8
+    executable = open_gap <= EXECUTABLE_OPEN_GAP_MAX_PCT and not one_price
+    reason = "开盘可交易" if executable else "一字板不可成交" if one_price else "开盘跳空超过4%"
+    return {"available": True, "executable": executable, "open_gap_pct": open_gap, "reason": reason}
 
 
 def _skip_daily_candidate(code: str, df: pd.DataFrame, name_map: dict[str, str]) -> bool:
@@ -159,6 +204,18 @@ def _previous_close_pct(close: pd.Series) -> float | None:
     return (float(close.iloc[-2]) / prev_prev_close - 1.0) * 100.0
 
 
+def _number(raw: object) -> float | None:
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if pd.notna(value) else None
+
+
+def _last_number(frame: pd.DataFrame, column: str) -> float | None:
+    return _number(frame[column].iloc[-1]) if column in frame.columns else None
+
+
 def _load_spot_candidates(name_map_today: dict[str, str], log: Callable[[str], None]) -> tuple[list[str], int]:
     try:
         from integrations.spot_snapshot import load_spot_snapshot_map
@@ -176,21 +233,21 @@ def _load_spot_candidates(name_map_today: dict[str, str], log: Callable[[str], N
         return [], 0
 
 
-def _load_from_sufficient_spot(
+def _load_pool_from_sufficient_spot(
     spot_codes: list[str],
     all_codes: list[str],
     name_map_today: dict[str, str],
     today_window,
     log: Callable[[str], None],
-) -> list[str]:
+) -> ReviewPool:
     if spot_codes:
-        review_codes = fetch_and_filter_review_codes(spot_codes, name_map_today, today_window, log)
-        if review_codes:
-            return review_codes
+        pool = fetch_review_pool(spot_codes, name_map_today, today_window, log)
+        if pool.codes:
+            return pool
         log("[review] 实时快照候选经三日校验为空，回退到全量 OHLCV 校验")
     else:
         log("[review] 实时快照未发现今日候选，回退到全量 OHLCV 校验")
-    return fetch_and_filter_review_codes(all_codes, name_map_today, today_window, log)
+    return fetch_review_pool(all_codes, name_map_today, today_window, log)
 
 
 def _log_spot_fallback(

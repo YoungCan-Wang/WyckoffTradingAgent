@@ -23,9 +23,14 @@ from core.funnel_taxonomy import (
     REVIEW_STAGE_TRIGGER_MISS,
     lane_label,
 )
-from core.wyckoff_engine import FunnelConfig, sort_by_date_if_needed
+from core.wyckoff_engine import (
+    FunnelConfig,
+    Layer2EvaluationContext,
+    build_layer2_evaluation_context,
+    sort_by_date_if_needed,
+)
 from utils.feishu import send_feishu_notification
-from workflows.review_big_gainers import is_target_cn_board, load_today_review_codes
+from workflows.review_big_gainers import execution_snapshot, is_target_cn_board, load_today_review_pool
 from workflows.review_recommendation_lookup import format_recommendation_history, load_recommendation_lookup
 from workflows.review_report_render import build_report_lines
 from workflows.wyckoff_funnel import run_funnel_job
@@ -50,7 +55,7 @@ class ReplayContext:
     l2_set: set[str]
     l3_set: set[str]
     end_trade_date: str
-    l2_ctx: dict
+    l2_ctx: Layer2EvaluationContext
     hit_map: dict[str, list[str]]
     blocked_exit_map: dict[str, dict]
     candidate_entry_map: dict[str, dict]
@@ -64,8 +69,9 @@ def run_review_list_replay(webhook: str, log=print) -> int:
     dates = resolve_review_dates()
     log(f"[review] 今日: {dates.today}, 前一交易日: {dates.previous_trade_date}")
     name_map_today, all_codes = load_today_pool()
-    review_codes = load_today_review_codes(all_codes, name_map_today, dates.today_window, log=log)
-    return _run_review_for_codes(webhook, review_codes, dates, log)
+    pool = load_today_review_pool(all_codes, name_map_today, dates.today_window, log=log)
+    execution_map = {code: execution_snapshot(pool.frames.get(code)) for code in pool.codes}
+    return _run_review_for_codes(webhook, pool.codes, dates, log, execution_map)
 
 
 def resolve_review_dates() -> ReviewDates:
@@ -121,7 +127,11 @@ def replay_context(triggers: dict, metrics: dict, log=print) -> ReplayContext | 
         l2_set=set(str(x) for x in (debug.get("layer2_symbols", []) or [])),
         l3_set=set(str(x) for x in (debug.get("layer3_symbols_raw", []) or [])),
         end_trade_date=str(debug.get("end_trade_date", "未知")),
-        l2_ctx=build_layer2_context(df_map=df_map, bench_df=debug.get("bench_df")),
+        l2_ctx=build_layer2_context(
+            df_map=df_map,
+            bench_df=debug.get("bench_df"),
+            cfg=debug.get("cfg"),
+        ),
         hit_map=build_hit_map(triggers),
         blocked_exit_map=blocked_exit_signal_map(metrics.get("exit_signals", {}) or {}),
         candidate_entry_map=build_candidate_entry_map(metrics.get("candidate_entries", []) or []),
@@ -153,8 +163,13 @@ def classify_review_code(code: str, ctx: ReplayContext) -> tuple[str, str, str]:
     return name, REVIEW_STAGE_TRIGGER_MISS, "未触发 Spring/LPS/EVR/SOS 等买点确认"
 
 
-def build_layer2_context(df_map: dict[str, pd.DataFrame], bench_df: pd.DataFrame | None) -> dict:
-    return {"bench_df_raw": bench_df, "rps_universe": list(df_map.keys())}
+def build_layer2_context(
+    df_map: dict[str, pd.DataFrame],
+    bench_df: pd.DataFrame | None,
+    cfg: FunnelConfig,
+) -> Layer2EvaluationContext:
+    symbols = list(df_map)
+    return build_layer2_evaluation_context(symbols, df_map, bench_df, cfg, rps_universe=symbols)
 
 
 def build_hit_map(triggers: dict[str, list[tuple[str, float]]]) -> dict[str, list[str]]:
@@ -209,7 +224,12 @@ def explain_l1_fail(
     return _amount_fail_reason(code, cfg, df_map)
 
 
-def explain_l2_fail(code: str, cfg: FunnelConfig, df_map: dict[str, pd.DataFrame], ctx: dict) -> str:
+def explain_l2_fail(
+    code: str,
+    cfg: FunnelConfig,
+    df_map: dict[str, pd.DataFrame],
+    ctx: Layer2EvaluationContext,
+) -> str:
     from core.wyckoff_engine import layer2_strength_detailed
 
     df = df_map.get(code)
@@ -219,14 +239,14 @@ def explain_l2_fail(code: str, cfg: FunnelConfig, df_map: dict[str, pd.DataFrame
     passed, channel_map, _ = layer2_strength_detailed(
         [code],
         df_map,
-        ctx.get("bench_df_raw"),
+        None,
         cfg,
-        rps_universe=ctx.get("rps_universe", [code]),
         rejections=rejections,
+        evaluation_context=ctx,
     )
     if passed:
         return f"结构强度通道已通过[{channel_map.get(code, '未知通道')}]，应在题材共振或买点确认阶段被拦截"
-    return f"结构强度不足：{rejections.get(code, '七通道均未通过')}"
+    return f"结构强度不足：{rejections.get(code, '八通道均未通过')}"
 
 
 def _build_replay_row(
@@ -236,6 +256,7 @@ def _build_replay_row(
     prev_date_str: str,
     recommendation_lookup: dict,
     recommendation_error: Any,
+    execution_map: dict[str, dict[str, object]],
 ) -> tuple[dict, str, bool, bool]:
     from workflows.review_recommendation_lookup import normalize_code6, normalize_recommend_date
 
@@ -246,6 +267,7 @@ def _build_replay_row(
     is_recommended = any(normalize_recommend_date(r.get("recommend_date")) == prev_date_str for r in rec_records)
 
     rec_text = format_recommendation_history(code, recommendation_lookup, recommendation_error, exclude_date=today)
+    execution = execution_map.get(code, {})
 
     row = {
         "code": code,
@@ -253,16 +275,26 @@ def _build_replay_row(
         "stage": stage,
         "reason": reason,
         "recommendation": rec_text,
+        "l1_eligible": code in ctx.l1_set,
+        "open_executable": bool(execution.get("executable")),
+        "execution_available": bool(execution.get("available")),
+        "open_gap_pct": execution.get("open_gap_pct"),
+        "execution_reason": str(execution.get("reason", "") or ""),
     }
     return row, stage, is_candidate, is_recommended
 
 
 def build_replay_rows(
-    review_codes: list[str], ctx: ReplayContext, today: date, previous_trade_date: date
-) -> tuple[list[dict[str, str]], Counter[str], dict[str, int]]:
+    review_codes: list[str],
+    ctx: ReplayContext,
+    today: date,
+    previous_trade_date: date,
+    execution_map: dict[str, dict[str, object]] | None = None,
+) -> tuple[list[dict[str, Any]], Counter[str], dict[str, int]]:
     recommendation_lookup, recommendation_error = load_recommendation_lookup(review_codes)
+    execution_map = execution_map or {}
 
-    rows: list[dict[str, str]] = []
+    rows: list[dict[str, Any]] = []
     stage_counter: Counter[str] = Counter()
 
     cand_count = 0
@@ -278,6 +310,7 @@ def build_replay_rows(
             prev_date_str=prev_date_str,
             recommendation_lookup=recommendation_lookup,
             recommendation_error=recommendation_error,
+            execution_map=execution_map,
         )
         rows.append(row)
         stage_counter[stage] += 1
@@ -290,6 +323,13 @@ def build_replay_rows(
         "candidate": cand_count,
         "recommended": rec_count,
         "total": len(review_codes),
+        "l1_eligible": sum(bool(row["l1_eligible"]) for row in rows),
+        "open_executable": sum(bool(row["l1_eligible"]) and bool(row["open_executable"]) for row in rows),
+        "candidate_open_executable": sum(
+            row["code"] in ctx.candidate_entry_map and bool(row["l1_eligible"]) and bool(row["open_executable"])
+            for row in rows
+        ),
+        "execution_available": sum(bool(row["execution_available"]) for row in rows),
     }
     return rows, stage_counter, stats
 
@@ -312,7 +352,7 @@ def explain_risk_reject(code: str, blocked_exit_map: dict[str, dict], hit_map: d
 
 def send_replay_report(
     webhook: str,
-    rows: list[dict[str, str]],
+    rows: list[dict[str, Any]],
     stage_counter: Counter[str],
     dates: ReviewDates,
     end_trade_date: str,
@@ -329,7 +369,13 @@ def send_replay_report(
     return send_feishu_notification(webhook, "🔍 强势股复盘：今日异动为何未在前一日漏斗捕获", "\n".join(lines))
 
 
-def _run_review_for_codes(webhook: str, review_codes: list[str], dates: ReviewDates, log) -> int:
+def _run_review_for_codes(
+    webhook: str,
+    review_codes: list[str],
+    dates: ReviewDates,
+    log,
+    execution_map: dict[str, dict[str, object]] | None = None,
+) -> int:
     if not review_codes:
         log("[review] 今日无满足收盘涨幅 > 7% 且前一交易日收盘涨幅 < 3% 的股票，跳过")
         send_empty_review(webhook, dates.today)
@@ -339,7 +385,13 @@ def _run_review_for_codes(webhook: str, review_codes: list[str], dates: ReviewDa
     ctx = replay_context(triggers, metrics, log=log)
     if ctx is None:
         return 3
-    rows, stage_counter, stats = build_replay_rows(review_codes, ctx, dates.today, dates.previous_trade_date)
+    rows, stage_counter, stats = build_replay_rows(
+        review_codes,
+        ctx,
+        dates.today,
+        dates.previous_trade_date,
+        execution_map,
+    )
     ok = send_replay_report(webhook, rows, stage_counter, dates, ctx.end_trade_date, stats)
     log(f"[review] feishu_sent={ok}")
     return 0 if ok else 4

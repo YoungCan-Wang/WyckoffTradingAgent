@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import date
+from typing import Any
 
 from core.funnel_taxonomy import (
     REVIEW_STAGE_BASE_REJECT,
@@ -16,14 +17,14 @@ from core.funnel_taxonomy import (
 )
 
 
-def short_code_list(rows: list[dict[str, str]], limit: int = 8) -> str:
+def short_code_list(rows: list[dict[str, Any]], limit: int = 8) -> str:
     shown = [f"{row['code']}{row['name']}" for row in rows[:limit]]
     if len(rows) > limit:
         shown.append(f"等{len(rows)}只")
     return "、".join(shown) if shown else "无"
 
 
-def build_focus_lines(rows: list[dict[str, str]], today: date, previous_trade_date: date) -> list[str]:
+def build_focus_lines(rows: list[dict[str, Any]], today: date, previous_trade_date: date) -> list[str]:
     total = max(len(rows), 1)
     stage_rows = _group_stage_rows(rows)
     lines = ["**重点归因**"]
@@ -33,7 +34,7 @@ def build_focus_lines(rows: list[dict[str, str]], today: date, previous_trade_da
 
 
 def build_report_lines(
-    rows: list[dict[str, str]],
+    rows: list[dict[str, Any]],
     stage_counter: Counter[str],
     today: date,
     previous_trade_date: date,
@@ -52,6 +53,9 @@ def build_report_lines(
             f"正式推荐 {stats['recommended']}/{stats['total']}"
         )
         lines.append(stats_line)
+        execution_line = _execution_scope_line(stats)
+        if execution_line:
+            lines.append(execution_line)
     lines.extend(
         [
             f"**结果汇总**: {summary}",
@@ -66,8 +70,20 @@ def build_report_lines(
     return lines
 
 
-def _group_stage_rows(rows: list[dict[str, str]]) -> dict[str, list[dict[str, str]]]:
-    stage_rows: dict[str, list[dict[str, str]]] = {}
+def _execution_scope_line(stats: dict[str, int]) -> str:
+    if stats.get("execution_available", 0) <= 0:
+        return ""
+    eligible = stats.get("l1_eligible", 0)
+    executable = stats.get("open_executable", 0)
+    captured = stats.get("candidate_open_executable", 0)
+    return (
+        f"**可交易复盘口径**: 前日基础准入 {eligible}/{stats.get('total', 0)} | "
+        f"次日开盘≤+4%且非一字板 {executable}/{eligible} | 可交易样本前日候选 {captured}/{executable}"
+    )
+
+
+def _group_stage_rows(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    stage_rows: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         stage_rows.setdefault(row["stage"], []).append(row)
     return stage_rows
@@ -82,7 +98,7 @@ def _date_gap_lines(today: date, previous_trade_date: date) -> list[str]:
     ]
 
 
-def _stage_focus_lines(stage_rows: dict[str, list[dict[str, str]]], total: int) -> list[str]:
+def _stage_focus_lines(stage_rows: dict[str, list[dict[str, Any]]], total: int) -> list[str]:
     lines: list[str] = []
     lines.extend(_candidate_hit_focus(stage_rows.get(REVIEW_STAGE_CANDIDATE_HIT, [])))
     lines.extend(_strength_miss_focus(stage_rows.get(REVIEW_STAGE_STRENGTH_MISS, []), total))
@@ -94,7 +110,7 @@ def _stage_focus_lines(stage_rows: dict[str, list[dict[str, str]]], total: int) 
     return lines
 
 
-def _candidate_hit_focus(rows: list[dict[str, str]]) -> list[str]:
+def _candidate_hit_focus(rows: list[dict[str, Any]]) -> list[str]:
     if not rows:
         return []
     return [
@@ -102,7 +118,7 @@ def _candidate_hit_focus(rows: list[dict[str, str]]) -> list[str]:
     ]
 
 
-def _strength_miss_focus(rows: list[dict[str, str]], total: int) -> list[str]:
+def _strength_miss_focus(rows: list[dict[str, Any]], total: int) -> list[str]:
     if not rows:
         return []
     pct = len(rows) / total * 100.0
@@ -111,7 +127,7 @@ def _strength_miss_focus(rows: list[dict[str, str]], total: int) -> list[str]:
     ]
 
 
-def _risk_focus(rows: list[dict[str, str]]) -> list[str]:
+def _risk_focus(rows: list[dict[str, Any]]) -> list[str]:
     if not rows:
         return []
     return [
@@ -119,7 +135,7 @@ def _risk_focus(rows: list[dict[str, str]]) -> list[str]:
     ]
 
 
-def _trigger_miss_focus(rows: list[dict[str, str]]) -> list[str]:
+def _trigger_miss_focus(rows: list[dict[str, Any]]) -> list[str]:
     if not rows:
         return []
     return [
@@ -127,25 +143,25 @@ def _trigger_miss_focus(rows: list[dict[str, str]]) -> list[str]:
     ]
 
 
-def _theme_miss_focus(rows: list[dict[str, str]]) -> list[str]:
+def _theme_miss_focus(rows: list[dict[str, Any]]) -> list[str]:
     if not rows:
         return []
     return [f"- **题材共振不足**：{short_code_list(rows)}。优先检查题材映射、主线热度和板块强势车道覆盖。"]
 
 
-def _base_reject_focus(rows: list[dict[str, str]]) -> list[str]:
+def _base_reject_focus(rows: list[dict[str, Any]]) -> list[str]:
     if not rows:
         return []
     return [f"- **基础准入淘汰**：{short_code_list(rows)}。主要是成交额/基础流动性，不建议为涨停复盘反向放宽。"]
 
 
-def _trigger_hit_focus(rows: list[dict[str, str]]) -> list[str]:
+def _trigger_hit_focus(rows: list[dict[str, Any]]) -> list[str]:
     if not rows:
         return []
     return [f"- **买点已确认**：{short_code_list(rows)}。这类不是形态漏检，后续应核对是否被 AI 配额或风控环节挡住。"]
 
 
-def _detail_lines(rows: list[dict[str, str]]) -> list[str]:
+def _detail_lines(rows: list[dict[str, Any]]) -> list[str]:
     lines: list[str] = []
     for row in rows:
         recommendation = str(row.get("recommendation", "")).strip()
