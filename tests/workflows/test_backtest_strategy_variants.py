@@ -18,12 +18,17 @@ def test_strategy_variants_isolate_each_research_switch() -> None:
         "signal_sequence_bonus_enabled": True,
     }
     assert all(strategy_variant_overrides("E").values())
-    assert DEFAULT_COMPARISON_VARIANTS == ("A", "F", "G", "H", "I")
+    assert DEFAULT_COMPARISON_VARIANTS == ("A", "M", "P")
     assert strategy_variant_overrides("F") == baseline
     assert strategy_variant_entry_policy("F").blocked_confirmed_signals == ("evr",)
     assert strategy_variant_entry_policy("G").blocked_confirmed_signals == ("evr", "sos")
     assert strategy_variant_entry_policy("H").require_neutral_breadth_confirmation is True
     assert strategy_variant_entry_policy("I").calibrate_confirmed_score is True
+    assert strategy_variant_entry_policy("M").entry_weight_multipliers
+    assert strategy_variant_entry_policy("P").max_hold_days_by_regime_signal == (
+        ("CAUTION", "spring", 10),
+        ("CAUTION", "sos", 10),
+    )
 
 
 def test_live_variant_preserves_production_configuration() -> None:

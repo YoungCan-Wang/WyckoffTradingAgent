@@ -38,6 +38,7 @@ class TradeRecord:
     mfe_pct: float | None = None
     mae_pct: float | None = None
     signal_confirmed: bool = False
+    entry_weight_multiplier: float = 1.0
 
 
 @dataclass(frozen=True)

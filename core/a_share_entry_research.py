@@ -11,6 +11,8 @@ from core.candidate_policy import candidate_score_value
 @dataclass(frozen=True)
 class AShareEntryResearchPolicy:
     blocked_confirmed_signals: tuple[str, ...] = ()
+    entry_weight_multipliers: tuple[tuple[str, str, float], ...] = ()
+    max_hold_days_by_regime_signal: tuple[tuple[str, str, int], ...] = ()
     require_neutral_breadth_confirmation: bool = False
     calibrate_confirmed_score: bool = False
     neutral_breadth_ratio_min: float = 50.0
@@ -42,6 +44,34 @@ def normalized_signal_type(raw: object) -> str:
 def confirmed_signal_allowed(policy: AShareEntryResearchPolicy, signal_type: object) -> bool:
     blocked = {normalized_signal_type(item) for item in policy.blocked_confirmed_signals}
     return normalized_signal_type(signal_type) not in blocked
+
+
+def entry_weight_multiplier(
+    policy: AShareEntryResearchPolicy,
+    signal_type: object,
+    regime: object,
+) -> float:
+    signal = normalized_signal_type(signal_type)
+    regime_key = str(regime or "").strip().upper()
+    for configured_regime, configured_signal, multiplier in policy.entry_weight_multipliers:
+        if regime_key == str(configured_regime).strip().upper() and signal == normalized_signal_type(configured_signal):
+            return min(max(float(multiplier), 0.0), 1.0)
+    return 1.0
+
+
+def research_max_hold_days(
+    policy: AShareEntryResearchPolicy,
+    signal_type: object,
+    regime: object,
+    default_days: int,
+) -> int:
+    default = max(int(default_days), 1)
+    signal = normalized_signal_type(signal_type)
+    regime_key = str(regime or "").strip().upper()
+    for configured_regime, configured_signal, hold_days in policy.max_hold_days_by_regime_signal:
+        if regime_key == str(configured_regime).strip().upper() and signal == normalized_signal_type(configured_signal):
+            return min(max(int(hold_days), 1), default)
+    return default
 
 
 def market_context_allows_entry(
