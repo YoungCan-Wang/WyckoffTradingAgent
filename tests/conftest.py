@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import socket
 from unittest.mock import MagicMock
 
 import pytest
@@ -11,13 +12,14 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _no_network(monkeypatch):
-    """防止测试意外发出真实网络请求（可按需在单个测试中移除）。"""
-    import socket
+    """防止测试通过标准库或 HTTP 客户端发出真实网络请求。"""
 
     def _guard(*args, **kwargs):
         raise RuntimeError("Tests must not make real network calls")
 
     monkeypatch.setattr(socket, "create_connection", _guard)
+    monkeypatch.setattr(socket.socket, "connect", _guard)
+    monkeypatch.setattr(socket.socket, "connect_ex", _guard)
 
 
 @pytest.fixture()

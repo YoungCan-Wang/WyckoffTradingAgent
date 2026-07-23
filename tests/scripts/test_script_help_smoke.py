@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
+import runpy
 import subprocess
 import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -36,19 +38,31 @@ HELP_SCRIPTS = [
 
 
 @pytest.mark.parametrize("script", HELP_SCRIPTS)
-def test_script_help_renders(script: str) -> None:
-    proc = subprocess.run(
-        [sys.executable, script, "--help"],
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        timeout=20,
-        check=False,
-    )
+def test_script_help_renders(script: str, capsys, monkeypatch) -> None:
+    monkeypatch.setattr(sys, "argv", [script, "--help"])
+    monkeypatch.setitem(sys.modules, "_bootstrap", ModuleType("_bootstrap"))
 
-    output = f"{proc.stdout}\n{proc.stderr}"
-    assert proc.returncode == 0, output
+    with pytest.raises(SystemExit) as exc_info:
+        runpy.run_path(str(ROOT / script), run_name="__main__")
+
+    captured = capsys.readouterr()
+    output = f"{captured.out}\n{captured.err}"
+    assert exc_info.value.code == 0, output
     assert "usage:" in output
+
+
+def test_script_bootstrap_loads_dotenv_only_for_direct_execution(monkeypatch) -> None:
+    import dotenv
+
+    calls: list[Path] = []
+    monkeypatch.setattr(dotenv, "load_dotenv", lambda path: calls.append(Path(path)))
+    bootstrap = str(ROOT / "scripts" / "_bootstrap.py")
+
+    runpy.run_path(bootstrap, run_name="scripts._bootstrap")
+    assert calls == []
+
+    runpy.run_path(bootstrap, run_name="_bootstrap")
+    assert calls == [ROOT / ".env"]
 
 
 def test_review_list_replay_entrypoint_imports() -> None:

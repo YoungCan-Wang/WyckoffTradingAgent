@@ -108,11 +108,23 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          pip install -e ".[dev]" coverage
       - name: Py compile all modules
         run: python -m py_compile $(find agents cli core integrations scripts tools utils -name "*.py")
-      - name: Run tests
-        run: python -m pytest tests/ -x -q
+      - name: Run tests with coverage
+        run: |
+          python -m coverage erase
+          python -m coverage run -m pytest tests/ -x -q
+          python -m coverage report
+          python -m coverage json -o coverage.json
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report-${{ github.run_number }}
+          path: coverage.json
+          retention-days: 7
+          if-no-files-found: ignore
 
   smoke-dry-run:
     runs-on: ubuntu-latest
@@ -137,34 +149,6 @@ jobs:
           EFFICIENCY_API_KEY: "fake-key-for-dry-run"
           EFFICIENCY_MODEL: "fake-model-for-dry-run"
           EFFICIENCY_BASE_URL: "https://example.com/v1"
-
-  coverage-report:
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: "pip"
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]" coverage
-      - name: Run coverage report
-        run: |
-          python -m coverage erase
-          python -m coverage run -m pytest tests/ -x -q
-          python -m coverage report
-          python -m coverage json -o coverage.json
-      - name: Upload coverage artifact
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: coverage-report-${{ github.run_number }}
-          path: coverage.json
-          retention-days: 7
-          if-no-files-found: ignore
 
   web-check:
     runs-on: ubuntu-latest
