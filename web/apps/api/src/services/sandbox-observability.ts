@@ -3,11 +3,12 @@ export type SandboxExecutionContext = {
   runId: string
 }
 
-export type SandboxRunLogEvent = 'started' | 'finished' | 'failed'
+export type SandboxRunLogEvent = 'queued' | 'started' | 'retrying' | 'finished' | 'failed' | 'cancelled'
 
 type SandboxRunLogFields = SandboxExecutionContext & {
   durationMs?: number
-  errorCode?: 'bridge_configuration_incomplete' | 'sandbox_execution_failed' | 'storage_unavailable'
+  attempts?: number
+  errorCode?: 'bridge_configuration_incomplete' | 'queue_delivery_failed' | 'queue_unavailable' | 'retry_exhausted' | 'sandbox_disabled' | 'sandbox_execution_failed' | 'storage_unavailable'
   exitCode?: number
   status?: 'completed' | 'failed'
   usage?: {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import app from './index'
+import { app } from './index'
 
 describe('API middleware', () => {
   it('adds request and security headers', async () => {

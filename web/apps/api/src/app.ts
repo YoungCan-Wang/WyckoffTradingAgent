@@ -3,6 +3,7 @@ import { bodyLimit } from 'hono/body-limit'
 import { cors } from 'hono/cors'
 import { requestId } from 'hono/request-id'
 import { secureHeaders } from 'hono/secure-headers'
+import type { AgentRunMessage } from './services/agent-run'
 
 export type Env = {
   SUPABASE_URL?: string
@@ -19,6 +20,7 @@ export type Env = {
   AGENT_SANDBOX_ENABLED?: string
   AGENT_SANDBOX_TIMEOUT_MS?: string
   AGENT_RUN_TTL_SECONDS?: string
+  AGENT_RUN_QUEUE?: Queue<AgentRunMessage>
   SANDBOX_BRIDGE_URL?: string
   SANDBOX_BRIDGE_SECRET?: string
 }

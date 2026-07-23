@@ -11,3 +11,21 @@ AGENT_SANDBOX_ENABLED = "true"
 AGENT_SANDBOX_TIMEOUT_MS = "60000"
 AGENT_RUN_TTL_SECONDS = "3600"
 SANDBOX_BRIDGE_URL = "https://wyckoff-agent-sandbox.vercel.app/api/sandbox-run"
+
+[[queues.producers]]
+queue = "wyckoff-agent-runs"
+binding = "AGENT_RUN_QUEUE"
+
+[[queues.consumers]]
+queue = "wyckoff-agent-runs"
+max_batch_size = 1
+max_batch_timeout = 1
+max_concurrency = 1
+max_retries = 3
+dead_letter_queue = "wyckoff-agent-runs-dlq"
+
+[[queues.consumers]]
+queue = "wyckoff-agent-runs-dlq"
+max_batch_size = 1
+max_batch_timeout = 1
+max_retries = 3

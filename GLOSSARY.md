@@ -316,5 +316,6 @@ flowchart LR
 | **Redis 临时协调状态** | 使用 Upstash Redis REST 保存可过期的用户请求额度和短期 Agent Run 结果，使不同 Worker 实例看到一致状态；Redis 不保存持仓、订单、交易信号或长期审计真相。 |
 | **本地软限流** | 未配置 Redis 或 Redis 临时故障时，单个 Worker 实例内的保护计数。实例回收或扩容后不保证全局一致，响应头通过 `local` / `local-fallback` 明确标识。 |
 | **观察篮临时行情** | 读盘室按当前问题选取观察篮标的后拉取的 TickFlow 快照；浏览器缓存有效期为 45 秒，只作本轮模型上下文，不写入 Redis、持仓或信号表。 |
-| **Agent Run** | 一个按 Supabase 用户隔离的短期执行记录。第一阶段只支持同步 `python_research`，结果在 Redis 中自动过期，不等同于可恢复的异步工作流；读盘室工具与 REST 端点复用同一记录。 |
+| **Agent Run** | 一个按 Supabase 用户隔离的短期执行记录。当前只支持 `python_research`：提交后先返回 `queued`，由 Cloudflare Queue 消费并转为 `running`、`completed`、`failed` 或 `cancelled`；结果在 Redis 中自动过期。读盘室工具与 REST 端点复用同一记录。 |
+| **Agent Run 队列** | `wyckoff-agent-runs` 是单并发、单消息批次的 Cloudflare Queue 消费者。瞬时基础设施故障最多自动重试三次，之后转入 `wyckoff-agent-runs-dlq` 并把对应记录标为失败；Python 脚本非零退出是业务失败，不自动重跑。 |
 | **执行沙箱** | 执行 Agent 生成代码的临时 Vercel Sandbox。当前固定禁用外网与持久化，不注入业务密钥，结束后永久删除；读盘室仅在用户确认后执行，并再次校验白名单；Cloudflare Worker 只承担鉴权、编排和结果返回。 |
