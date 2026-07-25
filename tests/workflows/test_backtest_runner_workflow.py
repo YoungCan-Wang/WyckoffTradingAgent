@@ -126,8 +126,9 @@ def _args(tmp_path: Path, **overrides) -> Namespace:
         "initial_cash": 100000.0,
         "max_positions": 4,
         "commission_rate": 0.0003,
-        "small_trade_threshold": 10000.0,
-        "small_trade_fee": 5.0,
+        "min_commission": 5.0,
+        "stamp_duty_rate": 0.0005,
+        "transfer_fee_rate": 0.00001,
         "lot_size": 100,
         "portfolio_styles": "slot_equal_4",
     }

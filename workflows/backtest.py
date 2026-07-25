@@ -43,9 +43,10 @@ from workflows.backtest_defaults import (
     DEFAULT_CASH_PORTFOLIO_INITIAL_CASH,
     DEFAULT_CASH_PORTFOLIO_LOT_SIZE,
     DEFAULT_CASH_PORTFOLIO_MAX_POSITIONS,
-    DEFAULT_CASH_PORTFOLIO_SMALL_TRADE_FEE,
-    DEFAULT_CASH_PORTFOLIO_SMALL_TRADE_THRESHOLD,
+    DEFAULT_CASH_PORTFOLIO_MIN_COMMISSION,
+    DEFAULT_CASH_PORTFOLIO_STAMP_DUTY_RATE,
     DEFAULT_CASH_PORTFOLIO_STYLES,
+    DEFAULT_CASH_PORTFOLIO_TRANSFER_FEE_RATE,
     DEFAULT_ENTRY_PRICE_FALLBACK,
     DEFAULT_ENTRY_PRICE_TIME,
     DEFAULT_EXIT_MODE,
@@ -117,8 +118,9 @@ class BacktestWorkflowRequest:
     initial_cash: float = DEFAULT_CASH_PORTFOLIO_INITIAL_CASH
     max_positions: int = DEFAULT_CASH_PORTFOLIO_MAX_POSITIONS
     commission_rate: float = DEFAULT_CASH_PORTFOLIO_COMMISSION_RATE
-    small_trade_threshold: float = DEFAULT_CASH_PORTFOLIO_SMALL_TRADE_THRESHOLD
-    small_trade_fee: float = DEFAULT_CASH_PORTFOLIO_SMALL_TRADE_FEE
+    min_commission: float = DEFAULT_CASH_PORTFOLIO_MIN_COMMISSION
+    stamp_duty_rate: float = DEFAULT_CASH_PORTFOLIO_STAMP_DUTY_RATE
+    transfer_fee_rate: float = DEFAULT_CASH_PORTFOLIO_TRANSFER_FEE_RATE
     lot_size: int = DEFAULT_CASH_PORTFOLIO_LOT_SIZE
     portfolio_styles: str | list[str] = DEFAULT_CASH_PORTFOLIO_STYLES
 
@@ -317,8 +319,9 @@ def _cash_config(request: BacktestWorkflowRequest) -> CashPortfolioConfig:
         initial_cash=request.initial_cash,
         max_positions=request.max_positions,
         commission_rate=request.commission_rate,
-        small_trade_threshold=request.small_trade_threshold,
-        small_trade_fee=request.small_trade_fee,
+        min_commission=request.min_commission,
+        stamp_duty_rate=request.stamp_duty_rate,
+        transfer_fee_rate=request.transfer_fee_rate,
         lot_size=request.lot_size,
         buy_friction_pct=request.buy_friction_pct,
         sell_friction_pct=request.sell_friction_pct,

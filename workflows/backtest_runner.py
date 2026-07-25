@@ -172,8 +172,9 @@ def request_from_args(args, start_dt, end_dt, hold_days: int) -> BacktestWorkflo
         initial_cash=args.initial_cash,
         max_positions=args.max_positions,
         commission_rate=args.commission_rate,
-        small_trade_threshold=args.small_trade_threshold,
-        small_trade_fee=args.small_trade_fee,
+        min_commission=args.min_commission,
+        stamp_duty_rate=args.stamp_duty_rate,
+        transfer_fee_rate=args.transfer_fee_rate,
         lot_size=args.lot_size,
         portfolio_styles=args.portfolio_styles,
     )

@@ -77,8 +77,9 @@ env:
   # confirmed-only 下 confirmation_only 与 slot_equal_4 等价，默认网格不重复计算。
   BT_PORTFOLIO_STYLES: "slot_equal_4,probe_add,trend_pyramid,concentrated_swap"
   BT_COMMISSION_RATE: "0.0002"
-  BT_SMALL_TRADE_THRESHOLD: "10000"
-  BT_SMALL_TRADE_FEE: "5"
+  BT_MIN_COMMISSION: "5"
+  BT_STAMP_DUTY_RATE: "0.0005"
+  BT_TRANSFER_FEE_RATE: "0.00001"
   # off=静态策略；shadow=应用归因调权做回测验证；on=仅正式批准后进入正式调权。
   FUNNEL_DYNAMIC_POLICY: ${{ vars.FUNNEL_DYNAMIC_POLICY || secrets.FUNNEL_DYNAMIC_POLICY || 'shadow' }}
   FUNNEL_DYNAMIC_POLICY_HORIZON: "5"
@@ -332,8 +333,9 @@ jobs:
             --max-positions "${BT_MAX_POSITIONS}" \
             --portfolio-styles "${BT_PORTFOLIO_STYLES}" \
             --commission-rate "${BT_COMMISSION_RATE}" \
-            --small-trade-threshold "${BT_SMALL_TRADE_THRESHOLD}" \
-            --small-trade-fee "${BT_SMALL_TRADE_FEE}" \
+            --min-commission "${BT_MIN_COMMISSION}" \
+            --stamp-duty-rate "${BT_STAMP_DUTY_RATE}" \
+            --transfer-fee-rate "${BT_TRANSFER_FEE_RATE}" \
             --exit-mode sltp \
             --stop-loss 0 \
             --take-profit 0 \
@@ -473,8 +475,9 @@ jobs:
             --max-positions "$BT_MAX_POSITIONS" \
             --portfolio-styles slot_equal_4 \
             --commission-rate "$BT_COMMISSION_RATE" \
-            --small-trade-threshold "$BT_SMALL_TRADE_THRESHOLD" \
-            --small-trade-fee "$BT_SMALL_TRADE_FEE" \
+            --min-commission "$BT_MIN_COMMISSION" \
+            --stamp-duty-rate "$BT_STAMP_DUTY_RATE" \
+            --transfer-fee-rate "$BT_TRANSFER_FEE_RATE" \
             --exit-mode sltp \
             --stop-loss -8 \
             --take-profit 18 \
