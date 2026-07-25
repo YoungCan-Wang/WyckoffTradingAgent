@@ -17,7 +17,9 @@ from core.a_share_entry_research import (
     AShareEntryResearchPolicy,
     calibrated_confirmation_score,
     confirmed_signal_allowed,
+    entry_weight_multiplier,
     market_context_allows_entry,
+    research_max_hold_days,
 )
 from core.ai_candidate_allocation import AiCandidateAllocationConfig
 from core.backtest_execution import (
@@ -147,6 +149,7 @@ class _ConfirmedSignals:
     score_map: dict[str, float]
     track_map: dict[str, str]
     trigger_map: dict[str, str]
+    entry_weight_map: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -156,6 +159,8 @@ class _RankedSelection:
     track_map: dict[str, str]
     trigger_name_map: dict[str, tuple[float, str]]
     confirmed_codes: frozenset[str] = field(default_factory=frozenset)
+    entry_weight_map: dict[str, float] = field(default_factory=dict)
+    signal_type_map: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -372,6 +377,8 @@ def _limit_probe_only_selection(
             {code: selected.track_map[code] for code in kept if code in selected.track_map},
             {code: selected.trigger_name_map[code] for code in kept if code in selected.trigger_name_map},
             frozenset(code for code in kept if code in selected.confirmed_codes),
+            {code: selected.entry_weight_map[code] for code in kept if code in selected.entry_weight_map},
+            {code: selected.signal_type_map[code] for code in kept if code in selected.signal_type_map},
         ),
         len(selected.codes) - 1,
     )
@@ -522,6 +529,8 @@ def _select_ranked_codes(
             track_map,
             _name_score_map(ctx.result, confirmed, prefer_confirmed=config.pending_mode == "only"),
             frozenset(confirmed.codes),
+            confirmed.entry_weight_map,
+            confirmed.trigger_map,
         ),
         len(confirmed.codes),
     )
@@ -547,9 +556,10 @@ def _confirmed_signals(
     score_map: dict[str, float] = {}
     track_map: dict[str, str] = {}
     trigger_map: dict[str, str] = {}
+    entry_weight_map: dict[str, float] = {}
     for item in confirmed_items:
         signal_type = str(item.get("signal_type", "confirmed"))
-        if not confirmed_signal_allowed(research, signal_type):
+        if not confirmed_signal_allowed(research, signal_type, ctx.regime):
             continue
         code = str(item.get("code", "")).strip()
         if not code:
@@ -561,8 +571,9 @@ def _confirmed_signals(
             score_map[code] = score
             track_map[code] = candidate_entry_track(item, fields=("track", "signal_type"))
             trigger_map[code] = signal_type
+            entry_weight_map[code] = entry_weight_multiplier(research, signal_type, ctx.regime)
     codes.sort(key=lambda code: (-candidate_score_value(score_map.get(code)), code))
-    return _ConfirmedSignals(codes, score_map, track_map, trigger_map)
+    return _ConfirmedSignals(codes, score_map, track_map, trigger_map, entry_weight_map)
 
 
 def _merge_confirmed_metadata(
@@ -666,7 +677,21 @@ def _trade_record_for_code(
     full_df = all_df_map.get(code)
     if full_df is None or full_df.empty:
         return None, False
-    plan, missing_skipped = _entry_plan(full_df, code, ctx, trade_dates, intraday_cache, config)
+    max_hold_days = research_max_hold_days(
+        config.a_share_entry_research,
+        selected.signal_type_map.get(code),
+        ctx.regime,
+        config.hold_days,
+    )
+    plan, missing_skipped = _entry_plan(
+        full_df,
+        code,
+        ctx,
+        trade_dates,
+        intraday_cache,
+        config,
+        max_hold_days=max_hold_days,
+    )
     if plan is None:
         return None, missing_skipped
     day_ohlc = _ohlc_for_code(code, full_df, ohlc_cache)
@@ -695,6 +720,8 @@ def _entry_plan(
     trade_dates: list[date],
     intraday_cache: dict,
     config: BacktestReplayConfig,
+    *,
+    max_hold_days: int | None = None,
 ) -> tuple[_EntryPlan | None, bool]:
     entry_close, actual_entry_date, source = entry_on_or_after(
         full_df,
@@ -710,7 +737,7 @@ def _entry_plan(
     if entry_close is None or entry_close <= 0 or actual_entry_date is None:
         return None, source == "tail_1455_missing_skip"
     entry_idx = _trade_date_index(trade_dates, actual_entry_date, ctx.idx + 1)
-    max_hold = config.max_atr_hold_days if config.exit.exit_mode == "atr" else config.hold_days
+    max_hold = config.max_atr_hold_days if config.exit.exit_mode == "atr" else max_hold_days or config.hold_days
     exit_idx = entry_idx + max_hold
     if exit_idx >= len(trade_dates) and config.exit.exit_mode != "atr":
         return None, False
@@ -773,6 +800,7 @@ def _make_trade_record(
         mfe_pct=mfe_pct,
         mae_pct=mae_pct,
         signal_confirmed=code in selected.confirmed_codes,
+        entry_weight_multiplier=selected.entry_weight_map.get(code, 1.0),
     )
 
 

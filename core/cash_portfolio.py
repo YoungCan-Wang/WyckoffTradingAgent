@@ -133,6 +133,14 @@ def _row_score(row: pd.Series) -> float:
     return candidate_score_value(row.get("score"))
 
 
+def _row_entry_weight_multiplier(row: pd.Series) -> float:
+    try:
+        value = float(row.get("entry_weight_multiplier", 1.0))
+    except (TypeError, ValueError):
+        return 1.0
+    return min(max(value, 0.0), 1.0)
+
+
 def _shares_for_budget(price: float, cash: float, budget: float, config: CashPortfolioConfig) -> int:
     lot_size = max(int(config.lot_size), 1)
     usable = max(min(float(cash), float(budget)), 0.0)
@@ -255,9 +263,11 @@ def _open_lot(
     execution_price = market_price * (1.0 + float(config.buy_friction_pct) / 100.0)
     day = row["entry_date"]
     equity = _portfolio_equity(cash, active, day, mark_price_fn)
-    budget = equity * float(weight)
+    multiplier = _row_entry_weight_multiplier(row)
+    budget = equity * float(weight) * multiplier
     if target_weight is not None:
-        budget = max(equity * float(target_weight) - _code_exposure(active, code, day, mark_price_fn), 0.0)
+        target = equity * float(target_weight) * multiplier
+        budget = max(target - _code_exposure(active, code, day, mark_price_fn), 0.0)
     shares = _shares_for_budget(execution_price, cash, budget, config)
     if shares <= 0:
         return cash, False
@@ -293,6 +303,7 @@ def _new_position(
         "score": _row_score(row),
         "track": str(row.get("track", "") or ""),
         "trigger": str(row.get("trigger", "") or ""),
+        "entry_weight_multiplier": _row_entry_weight_multiplier(row),
         "exit_reason": str(row.get("exit_reason", "") or ""),
         "buy_gross": buy_gross,
         "buy_friction_cost": shares * (execution_price - market_price),

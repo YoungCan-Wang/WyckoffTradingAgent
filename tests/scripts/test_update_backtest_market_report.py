@@ -407,9 +407,12 @@ def test_backtest_grid_exposes_portable_hypothesis_evidence():
     assert "parameter_stability.json" in workflow
     assert "walk_forward_validation.json" in workflow
     assert "strategy_compare:" in workflow
-    assert "variant: [A, F, G, H, I]" in workflow
+    assert "variant: [A, M, N]" in workflow
+    assert "sideways_2023" in workflow
+    assert "volatile_2024" in workflow
     assert '--strategy-variant "$VARIANT"' in workflow
     assert "strategy_ablation_report.json" in workflow
+    assert "EXTRA_ARGS+=(--require-complete)" in workflow
     assert "grid_cells:" in workflow
     assert '--grid-cells "${GRID_CELLS}"' in workflow
     assert "take_profit_values" not in workflow

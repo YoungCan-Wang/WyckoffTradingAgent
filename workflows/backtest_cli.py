@@ -31,6 +31,7 @@ from workflows.backtest_defaults import (
     DEFAULT_WBT_FEE_RATE,
     DEFAULT_WBT_N_JOBS,
 )
+from workflows.backtest_strategy_variants import VARIANT_LABELS
 
 
 def build_backtest_parser() -> argparse.ArgumentParser:
@@ -161,9 +162,9 @@ def _add_metadata_and_cost_args(parser: argparse.ArgumentParser) -> None:
 def _add_signal_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--strategy-variant",
-        choices=["live", "A", "B", "C", "D", "E", "F", "G", "H", "I"],
+        choices=tuple(VARIANT_LABELS),
         default="live",
-        help="策略消融组：live=生产配置；A=基线；B-E=经典形态研究；F-I=A股实证入场研究",
+        help="策略消融组：live=生产配置；A=基线；B-E=经典形态研究；F-P=A股实证研究",
     )
     parser.add_argument(
         "--regime-filter",

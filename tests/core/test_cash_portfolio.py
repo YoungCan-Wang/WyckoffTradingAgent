@@ -75,6 +75,31 @@ def test_cash_portfolio_preserves_trade_exit_reason() -> None:
     assert closed.iloc[0]["exit_reason"] == "take_profit"
 
 
+def test_cash_portfolio_applies_research_entry_weight_multiplier() -> None:
+    rows = [
+        {
+            "code": "000001",
+            "entry_date": "2026-01-05",
+            "exit_date": "2026-01-10",
+            "entry_close": 10.0,
+            "exit_close": 10.0,
+            "entry_weight_multiplier": 0.5,
+        }
+    ]
+    config = CashPortfolioConfig(
+        initial_cash=100_000,
+        max_positions=4,
+        commission_rate=0.0,
+        small_trade_threshold=0.0,
+        small_trade_fee=0.0,
+    )
+
+    closed, _nav, _summary = simulate_cash_portfolio(pd.DataFrame(rows), config)
+
+    assert closed.iloc[0]["shares"] == 1200
+    assert closed.iloc[0]["entry_weight_multiplier"] == 0.5
+
+
 def test_cash_portfolio_accepts_empty_trade_frame() -> None:
     closed, nav, summary = simulate_cash_portfolio(pd.DataFrame(), CashPortfolioConfig(initial_cash=100_000))
 

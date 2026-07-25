@@ -2,7 +2,9 @@ from core.a_share_entry_research import (
     AShareEntryResearchPolicy,
     calibrated_confirmation_score,
     confirmed_signal_allowed,
+    entry_weight_multiplier,
     market_context_allows_entry,
+    research_max_hold_days,
 )
 
 
@@ -21,6 +23,35 @@ def test_neutral_breadth_gate_fails_closed_but_does_not_replace_other_regimes() 
     assert market_context_allows_entry(policy, regime="NEUTRAL", breadth=strong)
     assert not market_context_allows_entry(policy, regime="NEUTRAL", breadth={})
     assert market_context_allows_entry(policy, regime="CAUTION", breadth={})
+
+
+def test_entry_weight_multiplier_only_changes_matching_regime_signal() -> None:
+    policy = AShareEntryResearchPolicy(
+        entry_weight_multipliers=(
+            ("NEUTRAL", "spring", 0.5),
+            ("CAUTION", "sos", 2.0),
+        )
+    )
+
+    assert entry_weight_multiplier(policy, "SPRING", "neutral") == 0.5
+    assert entry_weight_multiplier(policy, "sos", "CAUTION") == 1.0
+    assert entry_weight_multiplier(policy, "evr", "NEUTRAL") == 1.0
+
+
+def test_confirmed_signal_policy_can_block_one_regime_signal_pair() -> None:
+    policy = AShareEntryResearchPolicy(blocked_confirmed_regime_signals=(("NEUTRAL", "spring"),))
+
+    assert not confirmed_signal_allowed(policy, "spring", "neutral")
+    assert confirmed_signal_allowed(policy, "spring", "CAUTION")
+    assert confirmed_signal_allowed(policy, "sos", "NEUTRAL")
+
+
+def test_research_max_hold_days_only_shortens_matching_regime_signal() -> None:
+    policy = AShareEntryResearchPolicy(max_hold_days_by_regime_signal=(("CAUTION", "spring", 10),))
+
+    assert research_max_hold_days(policy, "SPRING", "caution", 15) == 10
+    assert research_max_hold_days(policy, "spring", "NEUTRAL", 15) == 15
+    assert research_max_hold_days(policy, "spring", "CAUTION", 5) == 5
 
 
 def test_empirical_score_caps_raw_strength_and_prioritizes_better_signal_families() -> None:
