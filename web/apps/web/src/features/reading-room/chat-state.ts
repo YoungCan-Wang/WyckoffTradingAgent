@@ -254,6 +254,27 @@ export function useAgentRunPolling(
   return useMemo(() => ({ records, cancel }), [cancel, records])
 }
 
+export function useAgentRunInterpretation(
+  chat: ReadingRoomChat,
+  queue: MessageQueue,
+  loading: boolean,
+  setLocalError: (value: string) => void,
+  t: (key: TranslationKey) => string,
+): (runId: string) => void {
+  return useCallback((runId: string) => {
+    const prompt = `请根据本轮已完成的隔离 Python 研究计算结果（runId: ${runId}）给出简明解读：说明结果、计算局限，以及它不构成投资建议。不要重新执行沙箱。`
+    if (loading) {
+      queue.enqueue(prompt)
+      return
+    }
+    setLocalError('')
+    chat.clearError()
+    void chat.sendMessage({ text: prompt }).catch((error: unknown) => {
+      setLocalError(normalizeClientError(error, t))
+    })
+  }, [chat, loading, queue, setLocalError, t])
+}
+
 export function useChatConfig(
   token: string | undefined,
   t: (key: TranslationKey, vars?: Record<string, string>) => string,
