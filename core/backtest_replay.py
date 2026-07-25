@@ -559,7 +559,7 @@ def _confirmed_signals(
     entry_weight_map: dict[str, float] = {}
     for item in confirmed_items:
         signal_type = str(item.get("signal_type", "confirmed"))
-        if not confirmed_signal_allowed(research, signal_type):
+        if not confirmed_signal_allowed(research, signal_type, ctx.regime):
             continue
         code = str(item.get("code", "")).strip()
         if not code:

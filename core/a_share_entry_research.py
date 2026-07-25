@@ -11,6 +11,7 @@ from core.candidate_policy import candidate_score_value
 @dataclass(frozen=True)
 class AShareEntryResearchPolicy:
     blocked_confirmed_signals: tuple[str, ...] = ()
+    blocked_confirmed_regime_signals: tuple[tuple[str, str], ...] = ()
     entry_weight_multipliers: tuple[tuple[str, str, float], ...] = ()
     max_hold_days_by_regime_signal: tuple[tuple[str, str, int], ...] = ()
     require_neutral_breadth_confirmation: bool = False
@@ -41,9 +42,14 @@ def normalized_signal_type(raw: object) -> str:
     return str(raw or "").strip().lower().replace("-", "_").replace(" ", "_")
 
 
-def confirmed_signal_allowed(policy: AShareEntryResearchPolicy, signal_type: object) -> bool:
+def confirmed_signal_allowed(policy: AShareEntryResearchPolicy, signal_type: object, regime: object = "") -> bool:
+    signal = normalized_signal_type(signal_type)
     blocked = {normalized_signal_type(item) for item in policy.blocked_confirmed_signals}
-    return normalized_signal_type(signal_type) not in blocked
+    blocked_pairs = {
+        (str(item_regime).strip().upper(), normalized_signal_type(item_signal))
+        for item_regime, item_signal in policy.blocked_confirmed_regime_signals
+    }
+    return signal not in blocked and (str(regime or "").strip().upper(), signal) not in blocked_pairs
 
 
 def entry_weight_multiplier(

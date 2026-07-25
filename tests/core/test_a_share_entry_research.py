@@ -38,6 +38,14 @@ def test_entry_weight_multiplier_only_changes_matching_regime_signal() -> None:
     assert entry_weight_multiplier(policy, "evr", "NEUTRAL") == 1.0
 
 
+def test_confirmed_signal_policy_can_block_one_regime_signal_pair() -> None:
+    policy = AShareEntryResearchPolicy(blocked_confirmed_regime_signals=(("NEUTRAL", "spring"),))
+
+    assert not confirmed_signal_allowed(policy, "spring", "neutral")
+    assert confirmed_signal_allowed(policy, "spring", "CAUTION")
+    assert confirmed_signal_allowed(policy, "sos", "NEUTRAL")
+
+
 def test_research_max_hold_days_only_shortens_matching_regime_signal() -> None:
     policy = AShareEntryResearchPolicy(max_hold_days_by_regime_signal=(("CAUTION", "spring", 10),))
 

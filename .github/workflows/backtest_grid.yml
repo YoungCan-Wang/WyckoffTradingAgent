@@ -373,8 +373,8 @@ jobs:
       max-parallel: 15
       matrix:
         period_key: [recent_2m, recent_6m, bull_2020, bear_2022, sideways_2023, volatile_2024]
-        # A 为基线；M 只缩小弱水温仓位；P 在 M 上缩短 CAUTION Spring/SOS 持有期。
-        variant: [A, M, P]
+        # A 为基线；M 缩小弱水温仓位；N 在 M 上禁止 NEUTRAL Spring。
+        variant: [A, M, N]
     steps:
       - name: Resolve period dates
         id: period

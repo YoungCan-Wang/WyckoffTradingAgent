@@ -698,7 +698,7 @@ TTL：SOS 2 天、Spring 3 天、LPS 3 天、EVR 2 天、Compression 3 天。
 | **美股推荐表现** (`us_recommendation_performance.yml`) | 周二-周六 06:15 | `us_recommendation_performance_job.py` |
 | **数据库维护** (`db_maintenance.yml`) | 周二-周六 06:20 | 清理过期行情、订单、信号、市场信号等滑动窗口数据 |
 | **回测网格** (`backtest_grid.yml`) | 手动触发 | 多周期 × 多交易风格回放，同时输出参数邻域稳定性与按时间前推的 walk-forward 样本外验证 |
-| **策略消融** (`backtest_grid.yml: strategy_compare`) | 随回测网格触发 | 复用同一快照并行运行 A/M/P；M 相对 A 验证弱水温缩仓，P 相对 M 验证 CAUTION Spring/SOS 快速退出，并覆盖五个时间窗口 |
+| **策略消融** (`backtest_grid.yml: strategy_compare`) | 随回测网格触发 | 复用同一快照并行运行 A/M/N；M 相对 A 验证弱水温缩仓，N 相对 M 验证禁止 NEUTRAL Spring，并覆盖五个时间窗口 |
 
 回测回放在每个历史区间开始时一次性预计算各股票在所有交易日的历史终点位置，日循环直接按整数位置切片；
 切片同时携带已按日期排序的内部标记，避免下游指标反复扫描日期单调性。该优化只替换数据访问方式，不改变

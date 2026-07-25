@@ -16,10 +16,10 @@ VARIANT_LABELS = {
     "H": "A股实证：NEUTRAL 入场需广度确认",
     "I": "A股实证：按历史命中先验重排确认信号",
     "M": "A股实证：弱水温信号缩仓",
-    "P": "A股实证：M + CAUTION Spring/SOS 最长持有 10 日",
+    "N": "A股实证：M + 禁止 NEUTRAL Spring",
 }
 
-DEFAULT_COMPARISON_VARIANTS = ("A", "M", "P")
+DEFAULT_COMPARISON_VARIANTS = ("A", "M", "N")
 
 _ALL_SWITCHES = {
     "dist_upthrust_enabled": False,
@@ -44,7 +44,7 @@ _VARIANT_SWITCHES = {
     "H": {},
     "I": {},
     "M": {},
-    "P": {},
+    "N": {},
 }
 
 _WEAK_REGIME_WEIGHTS = (
@@ -56,20 +56,15 @@ _WEAK_REGIME_WEIGHTS = (
     ("PANIC_REPAIR_INTRADAY", "sos", 0.25),
 )
 
-_CAUTION_FAST_EXITS = (
-    ("CAUTION", "spring", 10),
-    ("CAUTION", "sos", 10),
-)
-
 _ENTRY_POLICIES = {
     "F": AShareEntryResearchPolicy(blocked_confirmed_signals=("evr",)),
     "G": AShareEntryResearchPolicy(blocked_confirmed_signals=("evr", "sos")),
     "H": AShareEntryResearchPolicy(require_neutral_breadth_confirmation=True),
     "I": AShareEntryResearchPolicy(calibrate_confirmed_score=True),
     "M": AShareEntryResearchPolicy(entry_weight_multipliers=_WEAK_REGIME_WEIGHTS),
-    "P": AShareEntryResearchPolicy(
+    "N": AShareEntryResearchPolicy(
         entry_weight_multipliers=_WEAK_REGIME_WEIGHTS,
-        max_hold_days_by_regime_signal=_CAUTION_FAST_EXITS,
+        blocked_confirmed_regime_signals=(("NEUTRAL", "spring"),),
     ),
 }
 
@@ -78,7 +73,7 @@ def normalize_strategy_variant(raw: str) -> str:
     value = str(raw or "live").strip()
     normalized = value.upper() if value.lower() != "live" else "live"
     if normalized not in VARIANT_LABELS:
-        raise ValueError("strategy_variant 必须是 live / A / B / C / D / E / F / G / H / I / M / P")
+        raise ValueError("strategy_variant 必须是 live / A / B / C / D / E / F / G / H / I / M / N")
     return normalized
 
 
