@@ -100,8 +100,10 @@ C/E 降低近期与牛市收益，D 没有经济改善。因此默认算力不�
 ## 触发阈值标定
 
 `backtest_trigger_calibration.yml` 用 `--trigger-grid <param>=<v1,v2,...>` 逐取值完整重跑全市场漏斗，
-每个周期产出 `trigger_matrix_<param>.json`，再由 `scripts/build_backtest_trigger_report.py` 汇总成跨周期
-walk-forward 结论。三条口径必须保持，否则结论不成立：
+再由 `scripts/build_backtest_trigger_report.py` 汇总成跨周期 walk-forward 结论。全量股票池下单次重跑
+实测 80-95 分钟，因此流水线按"周期 × 取值"扇出成独立 job（四个取值串行会逼近 GitHub 的 6 小时 job
+上限），快照则按周期拉取一次供该周期各取值复用。汇总脚本按 `(param, period, value)` 去重合并，扇出
+产生的多份单行 `trigger_matrix_<param>.json` 会自动并成完整矩阵。三条口径必须保持，否则结论不成立：
 
 - **不复用信号台账**：阈值改变的是信号集合本身，只有整轮重跑才能得到对应的候选与成交。
 - **看目标触发器而非组合**：只改一个触发器的阈值时，组合收益会被其它触发器稀释；因此按

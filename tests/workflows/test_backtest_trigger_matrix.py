@@ -172,6 +172,20 @@ class TestMatrixArtifacts:
         assert len(rows) == 2
         assert {row["period_key"] for row in rows} == {"bear_2022", "sideways_2023"}
 
+    def test_fanned_out_single_value_artifacts_merge_into_one_period(self, tmp_path):
+        """CI 按 周期×取值 扇出，同周期的各取值写在不同目录下的同名文件里。"""
+        for value in (1.1, 1.5, 1.8):
+            target = tmp_path / f"backtest-trigger-bear_2022-{value:g}"
+            target.mkdir()
+            write_matrix_artifacts(
+                target,
+                parse_trigger_grid(f"spring_vol_ratio={value:g}"),
+                [_row(value, "bear_2022", 60, 1.0, end="2022-10-31")],
+            )
+        rows = load_trigger_matrix_rows(tmp_path)
+        assert sorted(row["value"] for row in rows) == [1.1, 1.5, 1.8]
+        assert {row["period_key"] for row in rows} == {"bear_2022"}
+
     def test_duplicate_period_value_pairs_are_deduplicated(self, tmp_path):
         grid = parse_trigger_grid("spring_vol_ratio=1.1")
         for name in ("run_a", "run_b"):

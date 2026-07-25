@@ -699,7 +699,7 @@ TTL：SOS 2 天、Spring 3 天、LPS 3 天、EVR 2 天、Compression 3 天。
 | **数据库维护** (`db_maintenance.yml`) | 周二-周六 06:20 | 清理过期行情、订单、信号、市场信号等滑动窗口数据 |
 | **回测网格** (`backtest_grid.yml`) | 手动触发 | 多周期 × 多交易风格回放，同时输出参数邻域稳定性与按时间前推的 walk-forward 样本外验证 |
 | **策略消融** (`backtest_grid.yml: strategy_compare`) | 随回测网格触发 | 复用同一快照并行运行 A/M/O；M 相对 A 验证弱水温缩仓，O 相对 M 验证 NEUTRAL Spring 被拦截后是否应保持空仓、不用其他候选补位，并覆盖五个时间窗口 |
-| **触发阈值标定** (`backtest_trigger_calibration.yml`) | 手动触发 | 逐取值完整重跑全市场漏斗，按目标触发器的单信号均收做跨周期 walk-forward 选值 |
+| **触发阈值标定** (`backtest_trigger_calibration.yml`) | 手动触发 | 按周期 × 取值扇出，每个 job 完整重跑一次全市场漏斗，按目标触发器的单信号均收做跨周期 walk-forward 选值 |
 
 回测回放在每个历史区间开始时一次性预计算各股票在所有交易日的历史终点位置，日循环直接按整数位置切片；
 切片同时携带已按日期排序的内部标记，避免下游指标反复扫描日期单调性。该优化只替换数据访问方式，不改变

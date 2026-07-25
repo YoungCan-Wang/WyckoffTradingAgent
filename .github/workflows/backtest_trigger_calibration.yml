@@ -1,7 +1,9 @@
 name: Backtest Trigger Calibration
 
 # 触发阈值（如 spring_vol_ratio）改变的是"有哪些信号"，无法复用 Backtest Grid 的共享信号台账，
-# 每个取值都要完整重跑全市场漏斗。因此独立成一条流水线：按周期并行、全量股票池、跨周期 walk-forward 选值。
+# 每个取值都要完整重跑全市场漏斗（全量股票池下单次约 80-95 分钟）。因此按"周期 × 取值"扇出成
+# 独立 job：串行跑完一个周期的四个取值会逼近 GitHub 的 6 小时 job 上限，扇出后每个 job 只做一次
+# 重跑。快照单独成一个阶段，既让同周期的各取值复用同一份数据，也避免并发拉取打爆 tushare 限流。
 
 on:
   workflow_dispatch:
@@ -40,25 +42,40 @@ env:
 
 jobs:
   plan:
-    name: Plan periods
+    name: Plan matrix
     runs-on: ubuntu-latest
     outputs:
       periods: ${{ steps.plan.outputs.periods }}
+      cells: ${{ steps.plan.outputs.cells }}
     steps:
-      - name: Build period matrix
+      - name: Build period × value matrix
         id: plan
         env:
           INPUT_PERIODS: ${{ inputs.periods }}
+          INPUT_TRIGGER_GRID: ${{ inputs.trigger_grid }}
         run: |
           set -euo pipefail
-          PERIODS=$(echo "$INPUT_PERIODS" | tr ',' '\n' | awk '{gsub(/[[:space:]]/, "")} NF' | jq -R . | jq -sc .)
+          split_csv() { echo "$1" | tr ',' '\n' | awk '{gsub(/[[:space:]]/, "")} NF' | jq -R . | jq -sc .; }
+          PARAM="${INPUT_TRIGGER_GRID%%=*}"
+          RAW_VALUES="${INPUT_TRIGGER_GRID#*=}"
+          if [ -z "$PARAM" ] || [ "$PARAM" = "$INPUT_TRIGGER_GRID" ]; then
+            echo "非法 trigger_grid: $INPUT_TRIGGER_GRID"; exit 1
+          fi
+          PERIODS=$(split_csv "$INPUT_PERIODS")
+          VALUES=$(split_csv "$RAW_VALUES")
+          CELLS=$(jq -nc --argjson p "$PERIODS" --argjson v "$VALUES" --arg param "$PARAM" \
+            '[$p[] as $period | $v[] as $value | {period: $period, value: $value, param: $param}]')
           echo "periods=${PERIODS}" >> "$GITHUB_OUTPUT"
+          echo "cells=${CELLS}" >> "$GITHUB_OUTPUT"
           echo "periods=${PERIODS}"
+          echo "cells=${CELLS}"
 
-  calibrate:
-    name: Calibrate ${{ matrix.period_key }}
+  # 同周期的各个取值共用一份快照：拉取只按周期做一次，并发也压到 2 以内避开 tushare 限流。
+  fetch:
+    name: Fetch snapshot (${{ matrix.period_key }})
     runs-on: ubuntu-latest
     needs: plan
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -71,38 +88,13 @@ jobs:
       TICKFLOW_BASE_URL: ${{ secrets.TICKFLOW_BASE_URL }}
       TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
       BACKTEST_SNAPSHOT_WORKERS: "6"
-      FUNNEL_AI_SELECTION_MODE: "tradeable_l4"
-      FUNNEL_AI_TOTAL_CAP: "8"
-      FUNNEL_AI_MAX_PER_SECTOR: "2"
-      FUNNEL_AI_RISK_ON_TREND: "5"
-      FUNNEL_AI_RISK_ON_ACCUM: "1"
-      FUNNEL_AI_BEAR_REBOUND_TREND: "0"
-      FUNNEL_AI_BEAR_REBOUND_ACCUM: "0"
-      FUNNEL_AI_RISK_OFF_TREND: "0"
-      FUNNEL_AI_RISK_OFF_ACCUM: "0"
-      FUNNEL_AI_NEUTRAL_TREND: "5"
-      FUNNEL_AI_NEUTRAL_ACCUM: "1"
     steps:
+      - uses: actions/checkout@v4
+
       - name: Resolve period dates
         env:
           PERIOD_KEY: ${{ matrix.period_key }}
-        run: |
-          set -euo pipefail
-          case "$PERIOD_KEY" in
-            bull_2020) START=2020-07-01; END=2021-02-18 ;;
-            bear_2022) START=2021-12-13; END=2022-10-31 ;;
-            sideways_2023) START=2023-01-03; END=2023-12-29 ;;
-            volatile_2024) START=2024-01-02; END=2024-12-31 ;;
-            recent_6m)
-              END=$(date -d '-1 day' +%Y-%m-%d)
-              START=$(date -d '-6 months -1 day' +%Y-%m-%d) ;;
-            *) echo "未知周期: ${PERIOD_KEY}"; exit 1 ;;
-          esac
-          echo "BT_START=${START}" >> "$GITHUB_ENV"
-          echo "BT_END=${END}" >> "$GITHUB_ENV"
-          echo "BT_PERIOD_KEY=${PERIOD_KEY}" >> "$GITHUB_ENV"
-
-      - uses: actions/checkout@v4
+        run: bash .github/scripts/resolve_backtest_period.sh "$PERIOD_KEY"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -113,7 +105,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[wbt]"
+          pip install -e .
 
       - name: Fetch data snapshot
         run: |
@@ -126,15 +118,76 @@ jobs:
             --trading-days "$BT_TRADING_DAYS" \
             --output-dir snapshot_data
 
-      - name: Run trigger threshold matrix
+      - name: Upload snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-snapshot-${{ matrix.period_key }}
+          path: snapshot_data/*
+          retention-days: 3
+
+  calibrate:
+    name: Calibrate ${{ matrix.cell.period }} @ ${{ matrix.cell.value }}
+    runs-on: ubuntu-latest
+    needs: [plan, fetch]
+    # 单次全量重跑实测 80-95 分钟；留足余量的同时，卡住的 job 不必烧满 6 小时才被回收。
+    timeout-minutes: 200
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        cell: ${{ fromJson(needs.plan.outputs.cells) }}
+    env:
+      PYTHONUNBUFFERED: "1"
+      TZ: Asia/Shanghai
+      TICKFLOW_API_KEY: ${{ secrets.TICKFLOW_API_KEY }}
+      TICKFLOW_BASE_URL: ${{ secrets.TICKFLOW_BASE_URL }}
+      FUNNEL_AI_SELECTION_MODE: "tradeable_l4"
+      FUNNEL_AI_TOTAL_CAP: "8"
+      FUNNEL_AI_MAX_PER_SECTOR: "2"
+      FUNNEL_AI_RISK_ON_TREND: "5"
+      FUNNEL_AI_RISK_ON_ACCUM: "1"
+      FUNNEL_AI_BEAR_REBOUND_TREND: "0"
+      FUNNEL_AI_BEAR_REBOUND_ACCUM: "0"
+      FUNNEL_AI_RISK_OFF_TREND: "0"
+      FUNNEL_AI_RISK_OFF_ACCUM: "0"
+      FUNNEL_AI_NEUTRAL_TREND: "5"
+      FUNNEL_AI_NEUTRAL_ACCUM: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve period dates
+        env:
+          PERIOD_KEY: ${{ matrix.cell.period }}
+        run: bash .github/scripts/resolve_backtest_period.sh "$PERIOD_KEY"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Download snapshot
+        uses: actions/download-artifact@v4
+        with:
+          name: backtest-snapshot-${{ matrix.cell.period }}
+          path: snapshot_data/
+
+      - name: Run single threshold backtest
         shell: bash
         env:
-          TRIGGER_GRID: ${{ inputs.trigger_grid }}
+          TRIGGER_PARAM: ${{ matrix.cell.param }}
+          TRIGGER_VALUE: ${{ matrix.cell.value }}
         run: |
           set -euo pipefail
-          OUT_ROOT="analysis/backtest_trigger_actions/${BT_PERIOD_KEY}"
+          OUT_ROOT="analysis/backtest_trigger_actions/${BT_PERIOD_KEY}-${TRIGGER_VALUE}"
           echo "OUT_ROOT=${OUT_ROOT}" >> "$GITHUB_ENV"
           mkdir -p "$OUT_ROOT"
+          # 标定只读取逐笔分层统计，wbt 合成 NAV 是纯浪费，固定用 legacy 引擎。
           python -u -m scripts.backtest_runner \
             --start "$BT_START" \
             --end "$BT_END" \
@@ -161,20 +214,19 @@ jobs:
             --execution-regime-gate live \
             --pending-merge-order confirmed_first \
             --trailing-stop 0 \
-            --metrics-engine auto \
-            --wbt-n-jobs 2 \
+            --metrics-engine legacy \
             --snapshot-dir snapshot_data \
-            --trigger-grid "$TRIGGER_GRID" \
+            --trigger-grid "${TRIGGER_PARAM}=${TRIGGER_VALUE}" \
             --grid-prefix "backtest-trigger-${BT_PERIOD_KEY}" \
             --period-key "$BT_PERIOD_KEY" \
             --output-dir "$OUT_ROOT" \
-            | tee "$OUT_ROOT/run.log"
+            2>&1 | tee "$OUT_ROOT/run.log"
 
       - name: Upload matrix artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: backtest-trigger-${{ matrix.period_key }}-${{ github.run_number }}
+          name: backtest-trigger-${{ matrix.cell.period }}-${{ matrix.cell.value }}-${{ github.run_number }}
           path: ${{ env.OUT_ROOT }}/**
           retention-days: 30
           if-no-files-found: error
