@@ -81,7 +81,7 @@ Worker 负责鉴权、输入校验、队列控制面和 HMAC 签名。Vercel Nod
 
 每个实际执行都会复用 API 的 `requestId` 并生成独立 `runId`；Worker 用两个 ID 调 bridge，bridge 在 Vercel Runtime Logs 中输出同一对 ID，因此两侧能按 ID 关联。Worker 日志事件为 `sandbox_run.queued|started|retrying|finished|failed|cancelled`，bridge 事件为 `sandbox_bridge.started|finished|rejected|failed`；只包含状态、尝试次数、耗时、退出码、脚本字节数和 CPU/网络用量，不记录 Python 源码、stdout/stderr、HMAC、Token 或原始用户 ID。实时排查可在 `web/apps/api/` 运行 `pnpm exec wrangler tail wyckoff-api --format pretty`，或在 `web/apps/sandbox-bridge/` 运行 `pnpm exec vercel logs https://wyckoff-agent-sandbox.vercel.app --json`；历史 Vercel 日志在项目 Deployment 的 Functions Logs 中查看。
 
-读盘室在沙箱显式开启时会向模型提供 `run_python_research` 工具，但仅在用户明确提出计算需求后使用，且 Vercel AI SDK 必须取得用户确认才会执行。执行时再次校验当前用户的白名单，复用与 REST 端点完全相同的 Redis 记录、超时和删除流程；未开启沙箱或未在白名单中的用户不能经聊天路径绕过这道边界。
+读盘室在沙箱显式开启时会向模型提供 `run_python_research` 工具，但仅在用户明确提出计算需求后使用，且 Vercel AI SDK 必须取得用户确认才会执行。确认后，聊天卡片以当前登录令牌轮询 Worker 的 `GET /api/agent-runs/:id`：它只读取该用户的记录，并在任务进入终态时把最终 stdout、stderr、退出码和用量回填到原工具调用。用户可在 `queued` 时取消，完成后点“解读结果”才向模型发送基于该终态输出的后续请求；这避免把尚未完成的队列确认误当作研究结论。执行时再次校验当前用户的白名单，复用与 REST 端点完全相同的 Redis 记录、超时和删除流程；未开启沙箱或未在白名单中的用户不能经聊天路径绕过这道边界。
 
 | Worker 变量 | 默认值 | 作用 |
 |---|---:|---|

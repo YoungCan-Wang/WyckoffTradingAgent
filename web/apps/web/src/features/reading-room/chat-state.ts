@@ -17,6 +17,13 @@ import {
 import { useChat } from '@ai-sdk/react'
 import { apiUrl } from '@/lib/api-url'
 import type { TranslationKey } from '@/lib/preferences'
+import {
+  cancelAgentRun,
+  collectSandboxRunTools,
+  fetchAgentRun,
+  isAgentRunTerminal,
+  type AgentRunRecord,
+} from './agent-runs'
 import type { ReadingRoomConversations } from './conversations'
 import { scrollToMessage } from './run-records'
 import type { ChatConfig, ChatRunEvent, ChatRunStatus, MarketWatchSnapshot, QueuedMessage, ReadingRoomTab, StageProgressStatus, WatchItem } from './types'
@@ -32,6 +39,11 @@ export interface MessageQueue {
   messages: QueuedMessage[]
   enqueue: (text: string) => void
   clear: () => void
+}
+
+export interface AgentRunController {
+  records: Record<string, AgentRunRecord>
+  cancel: (runId: string) => Promise<void>
 }
 
 interface SubmitHandlerArgs {
@@ -187,6 +199,61 @@ export function useReadingRoomChat(
   })
 }
 
+export function useAgentRunPolling(
+  chat: ReadingRoomChat,
+  token: string | undefined,
+  setLocalError: (value: string) => void,
+): AgentRunController {
+  const [records, setRecords] = useState<Record<string, AgentRunRecord>>({})
+  const tools = useMemo(() => collectSandboxRunTools(chat.messages), [chat.messages])
+  const activeTools = useMemo(() => tools.filter((tool) => !isAgentRunTerminal(records[tool.runId] || tool.record)), [records, tools])
+
+  useEffect(() => {
+    if (tools.length === 0) return
+    setRecords((current) => mergeAgentRunRecords(current, tools.map((tool) => tool.record)))
+  }, [tools])
+
+  useEffect(() => {
+    if (!token || activeTools.length === 0) return
+    let cancelled = false
+    const poll = async () => {
+      const results = await Promise.allSettled(activeTools.map(async (tool) => ({ tool, record: await fetchAgentRun(tool.runId, token) })))
+      if (cancelled) return
+      const next: AgentRunRecord[] = []
+      for (const result of results) {
+        if (result.status === 'fulfilled') next.push(result.value.record)
+      }
+      if (next.length > 0) setRecords((current) => mergeAgentRunRecords(current, next))
+      const failure = results.find((result) => result.status === 'rejected')
+      if (failure?.status === 'rejected') setLocalError(failure.reason instanceof Error ? failure.reason.message : '隔离任务状态读取失败')
+    }
+    void poll()
+    const interval = window.setInterval(() => { void poll() }, 2_000)
+    return () => { cancelled = true; window.clearInterval(interval) }
+  }, [activeTools, setLocalError, token])
+
+  useEffect(() => {
+    for (const tool of tools) {
+      const record = records[tool.runId]
+      if (record && isAgentRunTerminal(record) && !isAgentRunTerminal(tool.record)) {
+        void chat.addToolOutput({ tool: 'run_python_research', toolCallId: tool.toolCallId, output: record })
+      }
+    }
+  }, [chat, records, tools])
+
+  const cancel = useCallback(async (runId: string) => {
+    if (!token) return
+    try {
+      const record = await cancelAgentRun(runId, token)
+      setRecords((current) => ({ ...current, [runId]: record }))
+    } catch (error) {
+      setLocalError(error instanceof Error ? error.message : '隔离任务取消失败')
+    }
+  }, [setLocalError, token])
+
+  return useMemo(() => ({ records, cancel }), [cancel, records])
+}
+
 export function useChatConfig(
   token: string | undefined,
   t: (key: TranslationKey, vars?: Record<string, string>) => string,
@@ -254,6 +321,35 @@ export function useAutoScroll(
 
 function createQueuedMessageId(): string {
   return `queued-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+function mergeAgentRunRecords(
+  current: Record<string, AgentRunRecord>,
+  next: AgentRunRecord[],
+): Record<string, AgentRunRecord> {
+  let changed = false
+  const merged = { ...current }
+  for (const record of next) {
+    if (shouldReplaceAgentRunRecord(merged[record.id], record)) {
+      merged[record.id] = record
+      changed = true
+    }
+  }
+  return changed ? merged : current
+}
+
+function shouldReplaceAgentRunRecord(current: AgentRunRecord | undefined, next: AgentRunRecord): boolean {
+  if (!current) return true
+  const currentRank = agentRunStatusRank(current)
+  const nextRank = agentRunStatusRank(next)
+  if (currentRank !== nextRank) return nextRank > currentRank
+  if (current.status !== next.status) return false
+  return JSON.stringify(current) !== JSON.stringify(next)
+}
+
+function agentRunStatusRank(record: AgentRunRecord): number {
+  if (isAgentRunTerminal(record)) return 2
+  return record.status === 'running' ? 1 : 0
 }
 
 function normalizeClientError(error: unknown, t: (key: TranslationKey) => string): string {
