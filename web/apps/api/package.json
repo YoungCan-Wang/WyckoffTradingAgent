@@ -21,7 +21,7 @@
     "@upstash/redis": "^1.38.0",
     "@wyckoff/shared": "workspace:*",
     "ai": "^6.0.234",
-    "hono": "^4.12.21",
+    "hono": "^4.12.27",
     "zod": "^3.25.76"
   },
   "devDependencies": {
