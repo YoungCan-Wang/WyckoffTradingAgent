@@ -55,10 +55,11 @@ def save_step4_orders_and_nav(
 
 
 def update_step4_position_stops(portfolio_id: str, tickets: list[ExecutionTicket]) -> bool:
+    # NO_TRADE / 拒单不得改持仓状态；否则 T+1 拦截的 EXIT 仍会用模型止损覆写仓位。
     updates = [
         {"code": ticket.code, "stop_loss": ticket.effective_stop_loss}
         for ticket in tickets
-        if ticket.is_holding and ticket.effective_stop_loss is not None
+        if ticket.status == "APPROVED" and ticket.is_holding and ticket.effective_stop_loss is not None
     ]
     if not updates:
         return True

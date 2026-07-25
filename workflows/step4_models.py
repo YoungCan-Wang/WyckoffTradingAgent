@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
@@ -9,13 +10,25 @@ from core.market_trade_mode import EXECUTE_BLOCK_NEW_BUY_REGIMES
 from integrations.fetch_a_share_csv import TradingWindow
 
 _TRADE_DAY_FORMATS = ("%Y-%m-%d", "%Y%m%d", "%Y/%m/%d")
+_COMPACT_DAY_RE = re.compile(r"^(\d{8})(?:\D|$)")
+_SEPARATED_DAY_RE = re.compile(r"^(\d{4}[-/]\d{2}[-/]\d{2})")
 
 
 def parse_trade_day(raw: str) -> date | None:
-    text = str(raw or "").strip()[:10]
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    compact = _COMPACT_DAY_RE.match(text)
+    if compact:
+        try:
+            return datetime.strptime(compact.group(1), "%Y%m%d").date()
+        except ValueError:
+            return None
+    separated = _SEPARATED_DAY_RE.match(text)
+    candidate = separated.group(1) if separated else text[:10]
     for fmt in _TRADE_DAY_FORMATS:
         try:
-            return datetime.strptime(text, fmt).date()
+            return datetime.strptime(candidate, fmt).date()
         except ValueError:
             continue
     return None
