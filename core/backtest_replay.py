@@ -29,6 +29,7 @@ from core.backtest_execution import (
     build_daily_ohlc_lookup,
     calc_trade_excursion_pct,
     entry_on_or_after,
+    market_of_board,
     resolve_trade_exit,
 )
 from core.backtest_selection import combine_trigger_scores, select_ai_input_codes
@@ -705,6 +706,8 @@ def _trade_record_for_code(
         signal_date=ctx.signal_date,
         entry_close=plan.entry_close,
         config=config.exit,
+        code=code,
+        market=market_of_board(config.board),
     )
     if exit_close is None or exit_date is None:
         return None, False
@@ -732,7 +735,8 @@ def _entry_plan(
         fallback=config.entry_price_fallback,
         intraday_cache=intraday_cache,
         intraday_price_fetcher=config.intraday_entry_price_fetcher,
-        skip_limit_up=(config.board != "us"),
+        skip_limit_up=True,
+        market=market_of_board(config.board),
     )
     if entry_close is None or entry_close <= 0 or actual_entry_date is None:
         return None, source == "tail_1455_missing_skip"

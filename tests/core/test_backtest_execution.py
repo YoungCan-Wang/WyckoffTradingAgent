@@ -93,6 +93,67 @@ def test_resolve_trade_exit_sltp_zero_risk_controls_waits_for_time_exit() -> Non
     assert reason == "time_exit"
 
 
+def test_time_exit_rolls_forward_when_anchor_day_is_locked_at_limit_down() -> None:
+    d1, d2, d3 = (date(2026, 1, day) for day in (5, 6, 7))
+    full_df = _daily_ohlc_frame(
+        [
+            (d1, 10.0, 10.0, 10.0, 10.0),
+            (d2, 9.0, 9.0, 9.0, 9.0),
+            (d3, 8.6, 9.2, 8.5, 9.1),
+        ]
+    )
+
+    exit_close, exit_date, reason = resolve_trade_exit(
+        full_df=full_df,
+        day_ohlc={},
+        trade_dates=[d1, d2, d3],
+        actual_entry_idx=0,
+        actual_exit_idx=1,
+        actual_exit_anchor=d2,
+        signal_date=d1,
+        entry_close=10.0,
+        config=_exit_config(exit_mode="close_only"),
+        code="000001",
+    )
+
+    assert exit_close == pytest.approx(9.1)
+    assert exit_date == d3
+    assert reason == "time_exit"
+
+
+def test_stop_loss_skips_limit_down_locked_day_and_fills_next_session() -> None:
+    d1, d2, d3 = (date(2026, 1, day) for day in (5, 6, 7))
+    full_df = _daily_ohlc_frame(
+        [
+            (d1, 10.0, 10.0, 10.0, 10.0),
+            (d2, 9.0, 9.0, 9.0, 9.0),
+            (d3, 8.6, 9.2, 8.5, 9.1),
+        ]
+    )
+    day_ohlc = {
+        d1: (10.0, 10.0, 10.0, 10.0),
+        d2: (9.0, 9.0, 9.0, 9.0),
+        d3: (8.6, 9.2, 8.5, 9.1),
+    }
+
+    exit_close, exit_date, reason = resolve_trade_exit(
+        full_df=full_df,
+        day_ohlc=day_ohlc,
+        trade_dates=[d1, d2, d3],
+        actual_entry_idx=0,
+        actual_exit_idx=2,
+        actual_exit_anchor=d3,
+        signal_date=d1,
+        entry_close=10.0,
+        config=_exit_config(stop_loss_pct=-7.0),
+        code="000001",
+    )
+
+    assert exit_close == pytest.approx(8.6)
+    assert exit_date == d3
+    assert reason == "stop_loss"
+
+
 def _exit_config(**overrides) -> ExitSimulationConfig:
     values = {
         "exit_mode": "sltp",
@@ -111,3 +172,15 @@ def _exit_config(**overrides) -> ExitSimulationConfig:
 
 def _daily_close_frame(rows: list[tuple[date, float]]):
     return pd.DataFrame({"date": [row[0] for row in rows], "close": [row[1] for row in rows]})
+
+
+def _daily_ohlc_frame(rows: list[tuple[date, float, float, float, float]]):
+    return pd.DataFrame(
+        {
+            "date": [row[0] for row in rows],
+            "open": [row[1] for row in rows],
+            "high": [row[2] for row in rows],
+            "low": [row[3] for row in rows],
+            "close": [row[4] for row in rows],
+        }
+    )

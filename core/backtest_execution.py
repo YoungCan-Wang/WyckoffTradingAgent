@@ -11,8 +11,11 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from core.limit_move import limit_pct
+
 CN_ZONE = ZoneInfo("Asia/Shanghai")
 DEFAULT_ENTRY_PRICE_TIME = "14:55"
+LIMIT_TOUCH_TOLERANCE = 0.0015  # 相对涨跌停幅度的容差，吸收复权与挂单价四舍五入误差
 logger = logging.getLogger(__name__)
 IntradayPriceResult = tuple[float | None, str]
 IntradayPriceFetcher = Callable[[str, date, str, dict], IntradayPriceResult]
@@ -99,28 +102,62 @@ def close_on_or_after(df: pd.DataFrame, day: date) -> tuple[float | None, date |
     return float(close.iloc[0]), row.iloc[0]["date"]
 
 
-def is_limit_up_locked(row_s: pd.Series) -> bool:
+def market_of_board(board: str) -> str:
+    normalized = str(board or "").strip().lower()
+    return normalized if normalized in {"us", "hk"} else "cn"
+
+
+def _positive_float(value: object) -> float | None:
     try:
-        open_px = float(row_s.get("open", 0))
-        high = float(row_s.get("high", 0))
-        low = float(row_s.get("low", 0))
-        close = float(row_s.get("close", 0))
-        if open_px <= 0:
-            return False
-        tolerance = open_px * 1e-6
-        if abs(high - open_px) <= tolerance and abs(low - open_px) <= tolerance:
-            return close >= open_px
+        number = float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
-        pass
-    return False
+        return None
+    return number if pd.notna(number) and number > 0 else None
 
 
-def open_on_or_after(df: pd.DataFrame, day: date, *, skip_limit_up: bool = True) -> tuple[float | None, date | None]:
-    candidates = df[df["date"] >= day].head(5)
+def _with_prev_close(df: pd.DataFrame) -> pd.DataFrame:
+    """补一列前收盘价，供涨跌停判定使用。
+
+    前复权序列里同日价格与前收的比值等于原始比值（除权当日除外），所以涨跌停
+    走涨跌幅比较，而不是 limit_move 的绝对涨跌停价——后者在复权序列上对不上。
+    """
+    work = df.reset_index(drop=True).copy()
+    work["prev_close"] = pd.to_numeric(work["close"], errors="coerce").shift(1)
+    return work
+
+
+def _at_price_limit(row_s: pd.Series, code: str, *, price_field: str, market: str, upward: bool) -> bool:
+    pct = limit_pct(code, market=market)
+    if pct is None:
+        return False
+    prev_close = _positive_float(row_s.get("prev_close"))
+    price = _positive_float(row_s.get(price_field))
+    if prev_close is None or price is None:
+        return False
+    move_pct = (price / prev_close - 1.0) * 100.0
+    threshold = pct * (1.0 - LIMIT_TOUCH_TOLERANCE)
+    return move_pct >= threshold if upward else move_pct <= -threshold
+
+
+def entry_blocked_by_limit_up(row_s: pd.Series, code: str, *, mode: str, market: str) -> bool:
+    """该交易日能否按给定入场口径买到。
+
+    开盘即封涨停的票在竞价阶段挂不进单，即便盘中被砸开（T 字板/烂板）也已经
+    错过开盘价；收盘价口径则要看收盘是否封在涨停。
+    """
+    price_field = "open" if mode == "open" else "close"
+    return _at_price_limit(row_s, code, price_field=price_field, market=market, upward=True)
+
+
+def open_on_or_after(
+    df: pd.DataFrame, day: date, code: str = "", *, skip_limit_up: bool = True, market: str = "cn"
+) -> tuple[float | None, date | None]:
+    candidates = _with_prev_close(df)
+    candidates = candidates[candidates["date"] >= day].head(5)
     if candidates.empty:
         return None, None
     for _, row_s in candidates.iterrows():
-        if skip_limit_up and is_limit_up_locked(row_s):
+        if skip_limit_up and entry_blocked_by_limit_up(row_s, code, mode="open", market=market):
             continue
         if "open" in candidates.columns:
             open_px = pd.to_numeric(pd.Series([row_s["open"]]), errors="coerce").dropna()
@@ -196,10 +233,12 @@ def entry_on_or_after(
     intraday_cache: dict,
     intraday_price_fetcher: IntradayPriceFetcher | None = None,
     skip_limit_up: bool = True,
+    market: str = "cn",
 ) -> tuple[float | None, date | None, str]:
-    candidates = df[df["date"] >= day].head(5)
+    candidates = _with_prev_close(df)
+    candidates = candidates[candidates["date"] >= day].head(5)
     for _, row_s in candidates.iterrows():
-        if skip_limit_up and is_limit_up_locked(row_s):
+        if skip_limit_up and entry_blocked_by_limit_up(row_s, code, mode=mode, market=market):
             continue
         hit_date = row_s["date"]
         if mode == "tail_1455":
@@ -209,7 +248,7 @@ def entry_on_or_after(
         if mode == "close":
             price, entry_date = close_on_or_after(df, hit_date)
             return price, entry_date, "daily_close"
-        price, entry_date = open_on_or_after(df, hit_date, skip_limit_up=False)
+        price, entry_date = open_on_or_after(df, hit_date, code, skip_limit_up=False)
         return price, entry_date, "daily_open"
     return None, None, ""
 
@@ -336,47 +375,92 @@ def resolve_trade_exit(
     signal_date: date,
     entry_close: float,
     config: ExitSimulationConfig,
+    code: str = "",
+    market: str = "cn",
 ) -> tuple[float | None, date | None, str]:
+    exit_ctx = _ExitContext(full_df, actual_exit_anchor, signal_date, code, market)
     if config.exit_mode == "close_only":
-        exit_close, exit_date = close_on_or_after(full_df, actual_exit_anchor)
+        exit_close, exit_date = _sellable_close_on_or_after(full_df, actual_exit_anchor, code, market)
         return exit_close, exit_date, "time_exit"
     market_window = trade_dates[actual_entry_idx + 1 : actual_exit_idx + 1]
+    locked_days = _limit_down_locked_days(day_ohlc, market_window, entry_close, code, market)
     if config.exit_mode == "sltp":
-        return _resolve_sltp_exit(
-            full_df, day_ohlc, market_window, actual_exit_anchor, signal_date, entry_close, config
-        )
+        return _resolve_sltp_exit(day_ohlc, market_window, locked_days, entry_close, config, exit_ctx)
     if config.exit_mode == "atr":
-        sorted_dates = sorted(day_ohlc.keys())
-        return _resolve_atr_exit(
-            full_df, day_ohlc, sorted_dates, market_window, actual_exit_anchor, signal_date, entry_close, config
-        )
+        return _resolve_atr_exit(day_ohlc, market_window, locked_days, entry_close, config, exit_ctx)
     return None, None, "unknown"
 
 
-def _resolve_sltp_exit(
-    full_df: pd.DataFrame,
+@dataclass(frozen=True)
+class _ExitContext:
+    full_df: pd.DataFrame
+    actual_exit_anchor: date
+    signal_date: date
+    code: str
+    market: str
+
+
+def _limit_down_locked_days(
     day_ohlc: dict[date, tuple[float, float, float, float]],
     market_window: list[date],
-    actual_exit_anchor: date,
-    signal_date: date,
     entry_close: float,
-    config: ExitSimulationConfig,
-) -> tuple[float | None, date | None, str]:
-    sl_price = entry_close * (1.0 + config.stop_loss_pct / 100.0) if config.stop_loss_pct < 0 else None
-    tp_price = entry_close * (1.0 + config.take_profit_pct / 100.0) if config.take_profit_pct > 0 else None
-    trailing_active = config.trailing_activate_pct <= 0
-    activate_price = entry_close * (1.0 + config.trailing_activate_pct / 100.0) if not trailing_active else 0.0
-    peak_high = entry_close
+    code: str,
+    market: str,
+) -> set[date]:
+    locked: set[date] = set()
     prev_close = entry_close
     for market_day in market_window:
         candle = day_ohlc.get(market_day)
         if candle is None:
             continue
         open_px, high, low, close_px = candle
-        if _is_limit_down_locked(open_px, high, low, prev_close):
-            prev_close = close_px
-            continue
+        if _is_limit_down_locked(open_px, high, low, prev_close, code, market):
+            locked.add(market_day)
         prev_close = close_px
+    return locked
+
+
+def _sellable_close_on_or_after(
+    full_df: pd.DataFrame, day: date, code: str, market: str
+) -> tuple[float | None, date | None]:
+    """一字跌停当天挂不出卖单，平仓顺延到之后第一个能成交的交易日。"""
+    candidates = _with_prev_close(full_df)
+    candidates = candidates[candidates["date"] >= day].head(5)
+    for _, row_s in candidates.iterrows():
+        if _row_limit_down_locked(row_s, code, market):
+            continue
+        close = _positive_float(row_s.get("close"))
+        if close is not None:
+            return close, row_s["date"]
+    return None, None
+
+
+def _row_limit_down_locked(row_s: pd.Series, code: str, market: str) -> bool:
+    values = [_positive_float(row_s.get(field)) for field in ("open", "high", "low", "prev_close")]
+    if any(value is None for value in values):
+        return False
+    open_px, high, low, prev_close = values
+    return _is_limit_down_locked(open_px, high, low, prev_close, code, market)  # type: ignore[arg-type]
+
+
+def _resolve_sltp_exit(
+    day_ohlc: dict[date, tuple[float, float, float, float]],
+    market_window: list[date],
+    locked_days: set[date],
+    entry_close: float,
+    config: ExitSimulationConfig,
+    ctx: _ExitContext,
+) -> tuple[float | None, date | None, str]:
+    sl_price = entry_close * (1.0 + config.stop_loss_pct / 100.0) if config.stop_loss_pct < 0 else None
+    tp_price = entry_close * (1.0 + config.take_profit_pct / 100.0) if config.take_profit_pct > 0 else None
+    trailing_active = config.trailing_activate_pct <= 0
+    activate_price = entry_close * (1.0 + config.trailing_activate_pct / 100.0) if not trailing_active else 0.0
+    peak_high = entry_close
+    for market_day in market_window:
+        candle = day_ohlc.get(market_day)
+        if candle is None or market_day in locked_days:
+            continue
+        open_px, high, low, _close_px = candle
         if config.trailing_stop_pct < 0 and not trailing_active and high >= activate_price:
             trailing_active = True
         trailing_price = _trailing_price(peak_high, trailing_active, config.trailing_stop_pct)
@@ -385,34 +469,28 @@ def _resolve_sltp_exit(
             exit_close, reason = hit
             return exit_close, market_day, reason
         peak_high = max(peak_high, high)
-    return _time_exit(full_df, actual_exit_anchor, signal_date)
+    return _time_exit(ctx)
 
 
 def _resolve_atr_exit(
-    full_df: pd.DataFrame,
     day_ohlc: dict[date, tuple[float, float, float, float]],
-    sorted_dates: list[date],
     market_window: list[date],
-    actual_exit_anchor: date,
-    signal_date: date,
+    locked_days: set[date],
     entry_close: float,
     config: ExitSimulationConfig,
+    ctx: _ExitContext,
 ) -> tuple[float | None, date | None, str]:
+    sorted_dates = sorted(day_ohlc.keys())
     atr_stop: float | None = None
     hard_floor = entry_close * (1.0 + config.atr_hard_stop_pct / 100.0)
     trailing_active = config.trailing_activate_pct <= 0
     activate_price = entry_close * (1.0 + config.trailing_activate_pct / 100.0) if not trailing_active else 0.0
     peak_high = entry_close
-    prev_close = entry_close
     for market_day in market_window:
         candle = day_ohlc.get(market_day)
-        if candle is None:
+        if candle is None or market_day in locked_days:
             continue
-        open_px, high, low, close_px = candle
-        if _is_limit_down_locked(open_px, high, low, prev_close):
-            prev_close = close_px
-            continue
-        prev_close = close_px
+        open_px, high, low, _close_px = candle
         atr_stop = _updated_atr_stop(atr_stop, sorted_dates, day_ohlc, market_day, config)
         effective_stop = max(atr_stop or hard_floor, hard_floor)
         if config.trailing_stop_pct < 0 and not trailing_active and high >= activate_price:
@@ -423,12 +501,27 @@ def _resolve_atr_exit(
             exit_close, reason = hit
             return exit_close, market_day, reason
         peak_high = max(peak_high, high)
-    return _time_exit(full_df, actual_exit_anchor, signal_date)
+    return _time_exit(ctx)
 
 
-def _is_limit_down_locked(open_px: float, high: float, low: float, prev_close: float) -> bool:
+def _is_limit_down_locked(
+    open_px: float, high: float, low: float, prev_close: float, code: str = "", market: str = "cn"
+) -> bool:
+    """一字跌停：全天封死在跌停价，挂单卖不出去。
+
+    只看"全天无波动且下跌"会把窄幅横盘日也算进来，所以额外要求跌幅确实触及
+    该板块的跌停幅度；拿不到板块幅度（港美股）时退回纯几何判据。
+    """
+    if open_px <= 0 or prev_close <= 0:
+        return False
     tolerance = open_px * 1e-6
-    return open_px > 0 and abs(high - open_px) <= tolerance and abs(low - open_px) <= tolerance and open_px < prev_close
+    if abs(high - open_px) > tolerance or abs(low - open_px) > tolerance or open_px >= prev_close:
+        return False
+    pct = limit_pct(code, market=market)
+    if pct is None:
+        return True
+    drop_pct = (1.0 - open_px / prev_close) * 100.0
+    return drop_pct >= pct * (1.0 - LIMIT_TOUCH_TOLERANCE)
 
 
 def _trailing_price(peak_high: float, trailing_active: bool, trailing_stop_pct: float) -> float | None:
@@ -496,11 +589,15 @@ def _atr_exit_for_candle(
     return None
 
 
-def _time_exit(
-    full_df: pd.DataFrame, actual_exit_anchor: date, signal_date: date
-) -> tuple[float | None, date | None, str]:
-    exit_close, exit_date = close_on_or_before(full_df, actual_exit_anchor, lower_exclusive=signal_date)
-    return exit_close, exit_date, "time_exit"
+def _time_exit(ctx: _ExitContext) -> tuple[float | None, date | None, str]:
+    exit_close, exit_date = close_on_or_before(ctx.full_df, ctx.actual_exit_anchor, lower_exclusive=ctx.signal_date)
+    if exit_date is None:
+        return exit_close, exit_date, "time_exit"
+    sellable_close, sellable_date = _sellable_close_on_or_after(ctx.full_df, exit_date, ctx.code, ctx.market)
+    if sellable_date is None:
+        return exit_close, exit_date, "time_exit"
+    reason = "time_exit" if sellable_date == exit_date else "time_exit_limit_down_delayed"
+    return sellable_close, sellable_date, reason
 
 
 def build_daily_nav(
