@@ -72,7 +72,7 @@ def build_strategy_comparison(rows: list[StrategyComparisonRow]) -> dict[str, An
     required = {(period, variant) for period in DEFAULT_COMPARISON_PERIODS for variant in DEFAULT_COMPARISON_VARIANTS}
     evaluations = {}
     for variant, values in by_variant.items():
-        reference = "M" if variant == "N" else "A"
+        reference = "M" if variant == "O" else "A"
         evaluations[variant] = _evaluate_variant(variant, values, by_variant.get(reference, []), reference)
     return {
         "status": "ready" if required.issubset(available) else "incomplete",
@@ -82,17 +82,17 @@ def build_strategy_comparison(rows: list[StrategyComparisonRow]) -> dict[str, An
         "rows": [_row_payload(row) for row in sorted(rows, key=lambda row: (row.period, row.variant))],
         "evaluations": evaluations,
         "walk_forward": _walk_forward(rows),
-        "scope": "M 相对 A 评估弱水温缩仓；N 相对 M 评估禁止 NEUTRAL Spring。",
+        "scope": "M 相对 A 评估弱水温缩仓；O 相对 M 评估拦截 NEUTRAL Spring 后不补位。",
         "decision_rule": "全部周期现金收益为正、绝对回撤不超过20%，且真实改变交易、胜出过半、平均增量为正、回撤恶化不超过2个百分点。",
     }
 
 
 def render_strategy_comparison(report: dict[str, Any]) -> str:
     lines = [
-        "# 策略 A/M/N A股实证对比",
+        "# 策略 A/M/O A股实证对比",
         "",
-        "固定同一数据快照、确认口径和组合。A/M/N 共用固定退出。",
-        "M 验证弱水温信号缩仓；N 在 M 上验证禁止 NEUTRAL Spring；全部为研究策略。",
+        "固定同一数据快照、确认口径和组合。A/M/O 共用固定退出。",
+        "M 验证弱水温信号缩仓；O 在 M 上验证拦截 NEUTRAL Spring 后不补位；全部为研究策略。",
         "",
         "| 周期 | 组别 | 现金收益 | 现金回撤 | 成交 | 胜率 | 平均单笔 | 夏普 |",
         "|---|---|---:|---:|---:|---:|---:|---:|",

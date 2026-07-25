@@ -16,10 +16,10 @@ VARIANT_LABELS = {
     "H": "A股实证：NEUTRAL 入场需广度确认",
     "I": "A股实证：按历史命中先验重排确认信号",
     "M": "A股实证：弱水温信号缩仓",
-    "N": "A股实证：M + 禁止 NEUTRAL Spring",
+    "O": "A股实证：M + 禁止 NEUTRAL Spring 后不补位",
 }
 
-DEFAULT_COMPARISON_VARIANTS = ("A", "M", "N")
+DEFAULT_COMPARISON_VARIANTS = ("A", "M", "O")
 
 _ALL_SWITCHES = {
     "dist_upthrust_enabled": False,
@@ -44,7 +44,7 @@ _VARIANT_SWITCHES = {
     "H": {},
     "I": {},
     "M": {},
-    "N": {},
+    "O": {},
 }
 
 _WEAK_REGIME_WEIGHTS = (
@@ -62,9 +62,10 @@ _ENTRY_POLICIES = {
     "H": AShareEntryResearchPolicy(require_neutral_breadth_confirmation=True),
     "I": AShareEntryResearchPolicy(calibrate_confirmed_score=True),
     "M": AShareEntryResearchPolicy(entry_weight_multipliers=_WEAK_REGIME_WEIGHTS),
-    "N": AShareEntryResearchPolicy(
+    "O": AShareEntryResearchPolicy(
         entry_weight_multipliers=_WEAK_REGIME_WEIGHTS,
         blocked_confirmed_regime_signals=(("NEUTRAL", "spring"),),
+        no_backfill_on_blocked_confirmed=True,
     ),
 }
 
@@ -73,7 +74,7 @@ def normalize_strategy_variant(raw: str) -> str:
     value = str(raw or "live").strip()
     normalized = value.upper() if value.lower() != "live" else "live"
     if normalized not in VARIANT_LABELS:
-        raise ValueError("strategy_variant 必须是 live / A / B / C / D / E / F / G / H / I / M / N")
+        raise ValueError("strategy_variant 必须是 live / A / B / C / D / E / F / G / H / I / M / O")
     return normalized
 
 

@@ -506,7 +506,7 @@ def _select_ranked_codes(
     sector_map: dict[str, str],
     config: BacktestReplayConfig,
 ) -> tuple[_RankedSelection | None, int]:
-    confirmed = _confirmed_signals(ctx, pending_pool, sector_map, config.a_share_entry_research)
+    confirmed = _confirmed_signals(ctx, pending_pool, sector_map, config.a_share_entry_research, top_n=config.top_n)
     selected_codes, score_map, track_map = select_ai_input_codes(
         result=ctx.result,
         day_df_map=ctx.day_df_map,
@@ -542,6 +542,8 @@ def _confirmed_signals(
     pending_pool: PendingPool | None,
     sector_map: dict[str, str],
     policy: AShareEntryResearchPolicy | None = None,
+    *,
+    top_n: int = 0,
 ) -> _ConfirmedSignals:
     if pending_pool is None:
         return _ConfirmedSignals([], {}, {}, {})
@@ -553,6 +555,7 @@ def _confirmed_signals(
     confirmed_items = pending_pool.tick(ctx.day_df_map, signal_date_str)
     if not market_context_allows_entry(research, regime=ctx.regime, breadth=ctx.breadth):
         return _ConfirmedSignals([], {}, {}, {})
+    locked_codes = _locked_allowed_confirmed_codes(confirmed_items, research, ctx.regime, top_n)
     codes: list[str] = []
     score_map: dict[str, float] = {}
     track_map: dict[str, str] = {}
@@ -560,10 +563,10 @@ def _confirmed_signals(
     entry_weight_map: dict[str, float] = {}
     for item in confirmed_items:
         signal_type = str(item.get("signal_type", "confirmed"))
-        if not confirmed_signal_allowed(research, signal_type, ctx.regime):
-            continue
         code = str(item.get("code", "")).strip()
-        if not code:
+        if not code or (locked_codes is not None and code not in locked_codes):
+            continue
+        if not confirmed_signal_allowed(research, signal_type, ctx.regime):
             continue
         score = calibrated_confirmation_score(research, signal_type, item.get("score"))
         if code not in score_map:
@@ -575,6 +578,27 @@ def _confirmed_signals(
             entry_weight_map[code] = entry_weight_multiplier(research, signal_type, ctx.regime)
     codes.sort(key=lambda code: (-candidate_score_value(score_map.get(code)), code))
     return _ConfirmedSignals(codes, score_map, track_map, trigger_map, entry_weight_map)
+
+
+def _locked_allowed_confirmed_codes(
+    confirmed_items: list[dict],
+    policy: AShareEntryResearchPolicy,
+    regime: str,
+    top_n: int,
+) -> frozenset[str] | None:
+    if not policy.no_backfill_on_blocked_confirmed:
+        return None
+    best: dict[str, tuple[float, str]] = {}
+    for item in confirmed_items:
+        code = str(item.get("code", "")).strip()
+        signal_type = str(item.get("signal_type", "confirmed"))
+        score = calibrated_confirmation_score(policy, signal_type, item.get("score"))
+        if code and (code not in best or score > best[code][0]):
+            best[code] = (score, signal_type)
+    ranked = sorted(best, key=lambda code: (-best[code][0], code))
+    if top_n > 0:
+        ranked = ranked[:top_n]
+    return frozenset(code for code in ranked if confirmed_signal_allowed(policy, best[code][1], regime))
 
 
 def _merge_confirmed_metadata(

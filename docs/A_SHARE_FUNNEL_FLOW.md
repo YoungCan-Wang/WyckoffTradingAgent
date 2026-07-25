@@ -341,9 +341,9 @@ RISK -->|PANIC_REPAIR_CONFIRMED| REPAIR_PROBE["最多1只小额 PROBE<br/>禁止
 
 `entry_price_mode=open` 是当前生产候选默认口径；信号确认口径 `pending_mode=only`（仅用跨日 confirmed 信号）与实盘 Step4 `STEP4_REQUIRE_CONFIRMED_BUY_CANDIDATE` 严格对齐。`off`/`both` 仅作为跳过或放宽确认门槛的研究对照，不代表实盘可执行表现；`open`、`close` 和 `tail_1455` 也必须在相同 confirmed-only 门槛下完成对照后，才能宣称某种入场口径更优。最终 OMS 将 AI 结构区间、涨幅和 ATR 防追高约束收敛成唯一允许买入区间；区间缺失或无交集直接拒单，次日开盘价不在区间内也不执行。
 
-Backtest Grid 的默认策略消融为 `A/M/N`。M 相对 A 缩小弱水温下指定 confirmed 信号的研究仓位；
-N 相对 M 禁止 NEUTRAL 下的 Spring。默认 `all_defined` 除近期、牛市和熊市外，增加 2023 震荡与 2024
-剧烈波动窗口；报告必须收齐五个窗口的 A/M/N 单元才标记完整。
+Backtest Grid 的默认策略消融为 `A/M/O`。M 相对 A 缩小弱水温下指定 confirmed 信号的研究仓位；
+O 相对 M 拦截 NEUTRAL 下的 Spring 后保留原名额为空仓，不让低优先级候选补位。默认 `all_defined` 除近期、牛市和熊市外，增加 2023 震荡与 2024
+剧烈波动窗口；报告必须收齐五个窗口的 A/M/O 单元才标记完整。
 候选组还必须五个窗口现金收益全部为正且最大绝对回撤不超过 20%，不能只凭相对基线少亏获得 `pass`。
 这些能力只作用于回放，不改变生产漏斗、Step3 或 OMS。F-I 与经典 B-E 仍可手动复验，但已退出默认矩阵。
 
@@ -351,7 +351,7 @@ N 相对 M 禁止 NEUTRAL 下的 Spring。默认 `all_defined` 除近期、牛�
 |----|------|
 | 入口 | 漏斗候选行内联展示（`workflows/funnel_render.py`） |
 | 候选 | 读 `signal_pending`；**confirmed 才可执行** |
-| 排序 | 生产仍使用 confirmed → 主线/趋势 → 信号分；A/M/N 不改变生产排序 |
+| 排序 | 生产仍使用 confirmed → 主线/趋势 → 信号分；A/M/O 不改变生产排序 |
 | 主线语义 | `candidate_theme / candidate_phase / candidate_role` 从推荐、信号贯穿到执行记录；LLM 只解释不重判 |
 | 禁新开 | `RISK_ON` 与弱市/修复期与 Step4 对齐，新票不买 |
 | 持仓诊断 | `workflows/holding_diagnosis_core.py` + `core/holding_diagnostic.py`（日线为准），硬止损约 12%；非主线满 5 日建议时间止盈 |
