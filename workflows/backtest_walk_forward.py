@@ -27,7 +27,7 @@ def build_walk_forward_validation(
         "evaluated_window_count": len(evaluated),
         "positive_test_count": positive,
         "windows": windows,
-        "scope": "现阶段验证持有期和退出参数；触发器阈值需扩展参数网格后再纳入。",
+        "scope": "本网格验证持有期和退出参数；触发器阈值由 Backtest Trigger Calibration 单独标定。",
     }
 
 

@@ -77,9 +77,11 @@ stateDiagram-v2
 6. **Shadow 贡献可解释**：`diff_added` 应持续优于 `diff_removed`，且不是由单一信号、单一行情或少数右尾交易驱动。
 7. **人工复核通过**：数据口径、前视偏差、执行成本和回滚路径均明确后，才讨论生产开关。
 
-Backtest Grid 输出跨周期确认、`parameter_stability.json` 和 `walk_forward_validation.json`。当前
-walk-forward 只验证持有期与退出参数；SOS、Spring、LPS 等触发阈值必须进入专项矩阵后，才能声称完成
-触发器样本外验证。经典形态 B/C/D/E 在 2026-07-18 的三周期消融中未达到晋级要求：B 无真实暴露，
+Backtest Grid 输出跨周期确认、`parameter_stability.json` 和 `walk_forward_validation.json`，其
+walk-forward 只验证持有期与退出参数：这类参数不改变信号集合，可以复用同一份信号台账。SOS、Spring、
+LPS 等触发阈值改变的是"有哪些信号"，每个取值都要完整重跑漏斗，因此走独立的 Backtest Trigger
+Calibration 流水线（见下节），其 `trigger_calibration_report.json` 才是触发器样本外验证的证据。
+经典形态 B/C/D/E 在 2026-07-18 的三周期消融中未达到晋级要求：B 无真实暴露，
 C/E 降低近期与牛市收益，D 没有经济改善。因此默认算力不再重复运行 B-E，只保留手动复验能力。
 
 新的默认消融固定为 `A/M/N`：A 是生产口径基线；M 在 NEUTRAL 与恐慌修复阶段缩小指定 confirmed
@@ -92,6 +94,23 @@ C/E 降低近期与牛市收益，D 没有经济改善。因此默认算力不�
 `pending_mode=only` 的报告必须把成交触发器显示为实际 confirmed 信号族；同一股票当日还命中更高分的
 未确认形态时，可以保留更高数值供归因，但不能把标签降级成裸 `spring` / `sos`。`both` 研究模式仍按
 更强来源展示，避免把合流实验误报为 confirmed-only。
+
+## 触发阈值标定
+
+`backtest_trigger_calibration.yml` 用 `--trigger-grid <param>=<v1,v2,...>` 逐取值完整重跑全市场漏斗，
+每个周期产出 `trigger_matrix_<param>.json`，再由 `scripts/build_backtest_trigger_report.py` 汇总成跨周期
+walk-forward 结论。三条口径必须保持，否则结论不成立：
+
+- **不复用信号台账**：阈值改变的是信号集合本身，只有整轮重跑才能得到对应的候选与成交。
+- **看目标触发器而非组合**：只改一个触发器的阈值时，组合收益会被其它触发器稀释；因此按
+  `stratified.by_trigger` 取该触发器的合并笔数与均收作为选值依据。
+- **放开每日候选上限**：标定用 `top_n=0`。生产网格的 `top_n=1` 会把大部分受影响候选截断在成交之外，
+  阈值改动看起来"无效"其实只是没被选中。
+
+选值规则是训练期内该触发器均收最大，但先剔除样本低于 `MIN_TRIGGER_TRADES` 以及笔数不足同周期最高
+笔数 `TRADE_COLLAPSE_FLOOR` 的取值——放大阈值总能靠减少交易抬高均收，笔数约束就是防这一手。训练期
+选出的取值原样拿到下一周期检验，只有在样本外仍不劣于该周期最优取值时窗口才算通过；未过半的结论按
+`fail` 处理，窗口不足两个记 `review`，都不足以改写生产阈值。
 
 ## Shadow 到生产的边界
 

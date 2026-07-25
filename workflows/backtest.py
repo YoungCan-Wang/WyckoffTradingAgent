@@ -123,6 +123,8 @@ class BacktestWorkflowRequest:
     transfer_fee_rate: float = DEFAULT_CASH_PORTFOLIO_TRANSFER_FEE_RATE
     lot_size: int = DEFAULT_CASH_PORTFOLIO_LOT_SIZE
     portfolio_styles: str | list[str] = DEFAULT_CASH_PORTFOLIO_STYLES
+    # 触发阈值矩阵用的 FunnelConfig 覆盖；用元组而非 dict 以保持请求可哈希、可比较。
+    funnel_overrides: tuple[tuple[str, float], ...] = ()
 
 
 def run_backtest_request(
@@ -195,7 +197,11 @@ def _shared_request_key(request: BacktestWorkflowRequest) -> tuple:
 def _build_run_config(request: BacktestWorkflowRequest) -> BacktestRunConfig:
     signal_weight_map, signal_weight_meta = _signal_policy_from_env()
     strategy_variant = normalize_strategy_variant(request.strategy_variant)
-    funnel_overrides = {**funnel_cfg_overrides_from_env(), **strategy_variant_overrides(strategy_variant)}
+    funnel_overrides = {
+        **funnel_cfg_overrides_from_env(),
+        **strategy_variant_overrides(strategy_variant),
+        **dict(request.funnel_overrides),
+    }
     return build_backtest_run_config(
         BacktestRunInput(
             start_dt=request.start_dt,

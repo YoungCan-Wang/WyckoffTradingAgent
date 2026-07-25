@@ -50,6 +50,12 @@ def build_backtest_parser() -> argparse.ArgumentParser:
         help="共享一次信号计算的参数格，格式 hold:stop:take:trail，多个格用逗号分隔",
     )
     parser.add_argument("--grid-prefix", default="backtest-grid", help="参数格输出目录名前缀")
+    parser.add_argument(
+        "--trigger-grid",
+        default="",
+        help="触发阈值矩阵，格式 spring_vol_ratio=1.3,1.5,1.8；每个取值都会完整重跑漏斗",
+    )
+    parser.add_argument("--period-key", default="", help="触发阈值矩阵的周期标签，用于跨周期 walk-forward 聚合")
     return parser
 
 
