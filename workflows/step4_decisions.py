@@ -145,6 +145,7 @@ def execute_step4_decisions(
         atr_map=context.atr_map,
         market_regime=context.market_regime,
         config=order_config,
+        trade_date=context.trade_date,
     )
     return engine.process(decisions)
 

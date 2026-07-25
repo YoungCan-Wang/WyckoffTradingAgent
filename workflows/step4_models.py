@@ -3,9 +3,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date, datetime
 
 from core.market_trade_mode import EXECUTE_BLOCK_NEW_BUY_REGIMES
 from integrations.fetch_a_share_csv import TradingWindow
+
+_TRADE_DAY_FORMATS = ("%Y-%m-%d", "%Y%m%d", "%Y/%m/%d")
+
+
+def parse_trade_day(raw: str) -> date | None:
+    text = str(raw or "").strip()[:10]
+    for fmt in _TRADE_DAY_FORMATS:
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    return None
 
 
 @dataclass
@@ -16,6 +29,20 @@ class PositionItem:
     buy_dt: str
     shares: int
     stop_loss: float | None = None
+
+    def sellable_shares(self, trade_date: str) -> int:
+        """A 股 T+1：当日买入的股份当日不可卖出。
+
+        持仓表按代码聚合成一行、没有分笔明细，买入日期等于当前交易日时只能把整个
+        仓位视为冻结。买入日期缺失或无法解析时按可卖处理，否则历史脏数据会让持仓
+        永远卖不掉。
+        """
+        held = max(int(self.shares), 0)
+        buy_day = parse_trade_day(self.buy_dt)
+        today = parse_trade_day(trade_date)
+        if buy_day is None or today is None:
+            return held
+        return 0 if buy_day >= today else held
 
 
 @dataclass
@@ -83,6 +110,7 @@ class OrderContext:
     current_price: float
     pos: PositionItem | None
     held_shares: int
+    sellable_shares: int
     atr14: float | None
     original_stop_loss: float | None
     effective_stop_loss: float | None

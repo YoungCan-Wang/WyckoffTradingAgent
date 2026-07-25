@@ -187,6 +187,78 @@ def test_hold_is_kept_when_price_has_not_breached_stop_loss():
     assert cash == 50000
 
 
+def _exit_decision(action: str = "EXIT", *, trim_ratio: float | None = None) -> DecisionItem:
+    return DecisionItem(
+        code="000001",
+        name="平安银行",
+        action=action,
+        entry_zone_min=None,
+        entry_zone_max=None,
+        stop_loss=8.9,
+        trim_ratio=trim_ratio,
+        tape_condition="",
+        invalidate_condition="",
+        is_add_on=False,
+        reason="模型建议离场",
+        confidence=0.7,
+    )
+
+
+def _t1_engine(*, buy_dt: str, trade_date: str, price: float = 9.5) -> WyckoffOrderEngine:
+    return WyckoffOrderEngine(
+        total_equity=100000,
+        free_cash=50000,
+        position_map={
+            "000001": PositionItem(code="000001", name="平安银行", cost=10.0, buy_dt=buy_dt, shares=1000, stop_loss=8.9)
+        },
+        latest_price_map={"000001": price},
+        market_regime="NEUTRAL",
+        trade_date=trade_date,
+    )
+
+
+def test_exit_is_rejected_for_shares_bought_today() -> None:
+    engine = _t1_engine(buy_dt="2026-05-15", trade_date="2026-05-15")
+
+    tickets, cash = engine.process([_exit_decision()])
+
+    assert tickets[0].status == "NO_TRADE"
+    assert "T+1限制" in tickets[0].reason
+    assert cash == 50000
+
+
+def test_trim_is_rejected_for_shares_bought_today_in_compact_date_format() -> None:
+    engine = _t1_engine(buy_dt="20260515", trade_date="2026-05-15")
+
+    tickets, cash = engine.process([_exit_decision("TRIM", trim_ratio=0.5)])
+
+    assert tickets[0].status == "NO_TRADE"
+    assert "T+1限制" in tickets[0].reason
+    assert cash == 50000
+
+
+def test_exit_is_allowed_for_shares_bought_before_today() -> None:
+    engine = _t1_engine(buy_dt="2026-05-14", trade_date="2026-05-15")
+
+    tickets, cash = engine.process([_exit_decision()])
+
+    assert tickets[0].status == "APPROVED"
+    assert tickets[0].shares == 1000
+    assert cash > 50000
+
+
+def test_forced_stop_loss_exit_waits_for_t1_to_clear() -> None:
+    engine = _t1_engine(buy_dt="2026-05-15", trade_date="2026-05-15", price=8.8)
+
+    tickets, cash = engine.process([_hold_decision(stop_loss=8.9)])
+
+    assert tickets[0].action == "HOLD"
+    assert tickets[0].shares == 0
+    assert "T+1" in tickets[0].reason
+    assert "stop_breach_blocked_by_t1" in tickets[0].audit
+    assert cash == 50000
+
+
 def test_order_engine_uses_explicit_buy_block_config():
     engine = WyckoffOrderEngine(
         total_equity=100000,

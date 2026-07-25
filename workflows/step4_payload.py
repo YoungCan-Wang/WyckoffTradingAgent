@@ -548,6 +548,7 @@ def _position_base_meta(
     hold_trade_days: int | None,
     signal_info: dict | None,
     atr_period: int,
+    trade_date: str,
 ) -> str:
     pnl_pct = (latest_close - pos.cost) / pos.cost * 100.0 if pos.cost > 0 else 0.0
     stop_info = f"- 当前止损: {pos.stop_loss:.2f}\n" if pos.stop_loss is not None else "- 当前止损: 未设置\n"
@@ -560,6 +561,7 @@ def _position_base_meta(
         f"{stop_info}"
         f"- ATR{atr_period}: {(f'{atr14:.3f}' if atr14 is not None else '-')}\n"
         f"- 持仓股数: {pos.shares}\n"
+        f"{_sellable_meta_line(pos, trade_date)}"
         f"- 持仓交易日: {(hold_trade_days if hold_trade_days is not None else '-')}\n"
         f"{time_line}"
         f"- 买入日期: {pos.buy_dt or '-'}\n"
@@ -567,6 +569,12 @@ def _position_base_meta(
         f"- 信号状态: {signal_info.get('status', '未记录') if signal_info else '未记录'}\n"
         f"- 信号日期: {signal_info.get('signal_date', '-') if signal_info else '-'}\n"
     )
+
+
+def _sellable_meta_line(pos: PositionItem, trade_date: str) -> str:
+    if pos.sellable_shares(trade_date) >= max(int(pos.shares), 0):
+        return ""
+    return "- 可卖股数: 0（T+1，当日买入当日不可卖，EXIT/TRIM 会被 OMS 拒单）\n"
 
 
 def _holding_time_meta_line(hold_trade_days: int | None, signal_info: dict | None) -> str:
@@ -648,6 +656,7 @@ def _process_one_position(
             hold_trade_days=hold_days,
             signal_info=signal_info,
             atr_period=atr_period,
+            trade_date=window.end_trade_date.isoformat(),
         )
         diag_text, payload = _position_diagnostic_payload(pos, df_qfq)
         live_val = latest_close * max(pos.shares, 0)
