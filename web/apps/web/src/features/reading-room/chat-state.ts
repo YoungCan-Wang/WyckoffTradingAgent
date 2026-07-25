@@ -23,6 +23,7 @@ import {
   fetchAgentRun,
   isAgentRunTerminal,
   type AgentRunRecord,
+  type SandboxRunTool,
 } from './agent-runs'
 import type { ReadingRoomConversations } from './conversations'
 import { scrollToMessage } from './run-records'
@@ -45,6 +46,8 @@ export interface AgentRunController {
   records: Record<string, AgentRunRecord>
   cancel: (runId: string) => Promise<void>
 }
+
+type ConversationSandboxRunTool = SandboxRunTool & { conversationId: string }
 
 interface SubmitHandlerArgs {
   chat: ReadingRoomChat
@@ -201,11 +204,15 @@ export function useReadingRoomChat(
 
 export function useAgentRunPolling(
   chat: ReadingRoomChat,
+  conversations: ReadingRoomConversations,
   token: string | undefined,
   setLocalError: (value: string) => void,
 ): AgentRunController {
   const [records, setRecords] = useState<Record<string, AgentRunRecord>>({})
-  const tools = useMemo(() => collectSandboxRunTools(chat.messages), [chat.messages])
+  const tools = useMemo(
+    () => collectConversationSandboxRunTools(chat.messages, conversations),
+    [chat.messages, conversations],
+  )
   const activeTools = useMemo(() => tools.filter((tool) => !isAgentRunTerminal(records[tool.runId] || tool.record)), [records, tools])
 
   useEffect(() => {
@@ -236,10 +243,14 @@ export function useAgentRunPolling(
     for (const tool of tools) {
       const record = records[tool.runId]
       if (record && isAgentRunTerminal(record) && !isAgentRunTerminal(tool.record)) {
-        void chat.addToolOutput({ tool: 'run_python_research', toolCallId: tool.toolCallId, output: record })
+        if (tool.conversationId === conversations.activeId) {
+          void chat.addToolOutput({ tool: 'run_python_research', toolCallId: tool.toolCallId, output: record })
+        } else {
+          conversations.replaceToolOutput(tool.conversationId, tool.toolCallId, record)
+        }
       }
     }
-  }, [chat, records, tools])
+  }, [chat, conversations, records, tools])
 
   const cancel = useCallback(async (runId: string) => {
     if (!token) return
@@ -252,6 +263,26 @@ export function useAgentRunPolling(
   }, [setLocalError, token])
 
   return useMemo(() => ({ records, cancel }), [cancel, records])
+}
+
+function collectConversationSandboxRunTools(
+  messages: UIMessage[],
+  conversations: ReadingRoomConversations,
+): ConversationSandboxRunTool[] {
+  const activeTools = collectSandboxRunTools(messages).map((tool) => ({ ...tool, conversationId: conversations.activeId }))
+  const storedTools = conversations.items
+    .filter((conversation) => conversation.id !== conversations.activeId)
+    .flatMap((conversation) => collectSandboxRunTools(conversation.messages).map((tool) => ({ ...tool, conversationId: conversation.id })))
+  return deduplicateConversationSandboxRunTools([...activeTools, ...storedTools])
+}
+
+function deduplicateConversationSandboxRunTools(tools: ConversationSandboxRunTool[]): ConversationSandboxRunTool[] {
+  const runIds = new Set<string>()
+  return tools.filter((tool) => {
+    if (runIds.has(tool.runId)) return false
+    runIds.add(tool.runId)
+    return true
+  })
 }
 
 export function useAgentRunInterpretation(

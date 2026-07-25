@@ -81,10 +81,10 @@ export function ChatPage() {
   const { marketWatch, requestItems, updateMarketWatch } = useMarketWatch(user?.id, watchlist.items)
   const chat = useReadingRoomChat(token, setLocalError, t, setModelStatus, requestItems, marketWatch, updateMarketWatch, onRunEvent, onRunFinish, onRunError)
   const loading = chat.status === 'submitted' || chat.status === 'streaming'
-  const agentRuns = useAgentRunPolling(chat, token, setLocalError)
   const changeActiveTab = useCallback((tab: ReadingRoomTab) => { setActiveTab(tab); writeActiveTab(tab) }, [])
   const queue = useMessageQueue(chat, loading, token, config.configured, setLocalError, t)
   const conversations = useReadingRoomConversations(user?.id, chat.messages, chat.setMessages)
+  const agentRuns = useAgentRunPolling(chat, conversations, token, setLocalError)
   useEffect(() => {
     activeConversationRef.current = conversations.activeId
     setRunCheckpoint(readRunCheckpoint(conversations.activeId))

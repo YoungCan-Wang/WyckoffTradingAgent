@@ -24,6 +24,7 @@ export interface ReadingRoomConversations {
   select: (id: string) => void
   remove: (id: string) => void
   rename: (id: string, title: string) => void
+  replaceToolOutput: (conversationId: string, toolCallId: string, output: unknown) => void
 }
 
 type SetConversations = React.Dispatch<React.SetStateAction<ReadingRoomConversation[]>>
@@ -46,8 +47,9 @@ export function useReadingRoomConversations(
   const select = useSelectConversationAction(items, setActiveId, setMessages, skipNextSaveRef)
   const remove = useRemoveConversationAction(storageKey, activeId, setItems, setActiveId, setMessages, skipNextSaveRef)
   const rename = useRenameConversationAction(storageKey, setItems)
+  const replaceToolOutput = useReplaceToolOutput(storageKey, setItems)
 
-  return useMemo(() => ({ items, activeId, create, select, remove, rename }), [activeId, create, items, remove, rename, select])
+  return useMemo(() => ({ items, activeId, create, select, remove, rename, replaceToolOutput }), [activeId, create, items, remove, rename, replaceToolOutput, select])
 }
 
 function useConversationLoader(
@@ -151,6 +153,23 @@ function useRenameConversationAction(storageKey: string, setItems: SetConversati
   }, [setItems, storageKey])
 }
 
+function useReplaceToolOutput(storageKey: string, setItems: SetConversations) {
+  return useCallback((conversationId: string, toolCallId: string, output: unknown) => {
+    setItems((current) => {
+      let changed = false
+      const next = current.map((conversation) => {
+        if (conversation.id !== conversationId) return conversation
+        const messages = replaceConversationToolOutput(conversation.messages, toolCallId, output)
+        if (messages === conversation.messages) return conversation
+        changed = true
+        return updateConversationMessages(conversation, messages)
+      })
+      if (changed) writeConversations(storageKey, next)
+      return changed ? next : current
+    })
+  }, [setItems, storageKey])
+}
+
 function activateConversation(
   conversation: ReadingRoomConversation,
   setActiveId: (id: string) => void,
@@ -186,6 +205,27 @@ function updateConversationMessages(conversation: ReadingRoomConversation, messa
     updatedAt: savedMessages.length > 0 ? new Date().toISOString() : conversation.updatedAt,
     messages: savedMessages,
   }
+}
+
+export function replaceConversationToolOutput(
+  messages: UIMessage[],
+  toolCallId: string,
+  output: unknown,
+): UIMessage[] {
+  let changed = false
+  const next = messages.map((message) => {
+    if (message.role !== 'assistant') return message
+    let messageChanged = false
+    const parts = message.parts.map((part) => {
+      const tool = part as MessagePart
+      if (!isToolPart(tool) || tool.toolCallId !== toolCallId) return part
+      changed = true
+      messageChanged = true
+      return { ...tool, state: 'output-available' as const, output, errorText: undefined } as MessagePart
+    })
+    return messageChanged ? { ...message, parts } as UIMessage : message
+  })
+  return changed ? next : messages
 }
 
 function readConversations(key: string): ReadingRoomConversation[] {
