@@ -7,6 +7,7 @@ import {
   useAutoScroll,
   useChatConfig,
   useMessageQueue,
+  useAgentRunPolling,
   useReadingRoomActions,
   useReadingRoomChat,
   useSubmitHandler,
@@ -79,6 +80,7 @@ export function ChatPage() {
   const { marketWatch, requestItems, updateMarketWatch } = useMarketWatch(user?.id, watchlist.items)
   const chat = useReadingRoomChat(token, setLocalError, t, setModelStatus, requestItems, marketWatch, updateMarketWatch, onRunEvent, onRunFinish, onRunError)
   const loading = chat.status === 'submitted' || chat.status === 'streaming'
+  const agentRuns = useAgentRunPolling(chat, token, setLocalError)
   const changeActiveTab = useCallback((tab: ReadingRoomTab) => { setActiveTab(tab); writeActiveTab(tab) }, [])
   const queue = useMessageQueue(chat, loading, token, config.configured, setLocalError, t)
   const conversations = useReadingRoomConversations(user?.id, chat.messages, chat.setMessages)
@@ -130,6 +132,18 @@ export function ChatPage() {
       setRunCheckpoint(null)
     }
   }, [activeConversationRef, setRunCheckpoint])
+  const handleInterpretAgentRun = useCallback((runId: string) => {
+    const prompt = `请根据本轮已完成的隔离 Python 研究计算结果（runId: ${runId}）给出简明解读：说明结果、计算局限，以及它不构成投资建议。不要重新执行沙箱。`
+    if (loading) {
+      queue.enqueue(prompt)
+      return
+    }
+    setLocalError('')
+    chat.clearError()
+    void chat.sendMessage({ text: prompt }).catch((error: unknown) => {
+      setLocalError(error instanceof Error ? error.message : t('chat.requestFailed'))
+    })
+  }, [chat, loading, queue, setLocalError, t])
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden" data-reading-room-streaming={loading ? 'true' : 'false'}>
@@ -172,6 +186,9 @@ export function ChatPage() {
         runCheckpoint={runCheckpoint}
         onResumeRun={handleResumeRun}
         onClearRunCheckpoint={handleClearRunCheckpoint}
+        agentRunRecords={agentRuns.records}
+        onCancelAgentRun={agentRuns.cancel}
+        onInterpretAgentRun={handleInterpretAgentRun}
       />
       <ErrorBanner message={localError || chat.error?.message || ''} />
     </div>

@@ -6,6 +6,7 @@ import { ConversationSidebar } from './conversation-sidebar'
 import type { ReadingRoomConversation } from './conversations'
 import { ReadingRoomDashboard } from './dashboard'
 import type { ReadingRoomChat } from './chat-state'
+import type { AgentRunRecord } from './agent-runs'
 import { MessageBubble, QueuedMessageBubble } from './tool-rendering'
 import { messageText } from './messages'
 import type { ChatRunStatus, MarketWatchSnapshot, PinStockInput, QueuedMessage, ReadingRoomTab, RunCheckpoint, RunRecord, WatchItem } from './types'
@@ -42,6 +43,9 @@ interface ChatMessagesProps {
   runCheckpoint: RunCheckpoint | null
   onResumeRun: () => void
   onClearRunCheckpoint: () => void
+  agentRunRecords: Record<string, AgentRunRecord>
+  onCancelAgentRun: (runId: string) => Promise<void>
+  onInterpretAgentRun: (runId: string) => void
 }
 
 export function ChatMessages(props: ChatMessagesProps) {
@@ -69,6 +73,9 @@ export function ChatMessages(props: ChatMessagesProps) {
               runCheckpoint={props.runCheckpoint}
               onResumeRun={props.onResumeRun}
               onClearRunCheckpoint={props.onClearRunCheckpoint}
+              agentRunRecords={props.agentRunRecords}
+              onCancelAgentRun={props.onCancelAgentRun}
+              onInterpretAgentRun={props.onInterpretAgentRun}
             />
           </div>
           <ChatComposerSlot props={props} />
@@ -126,7 +133,10 @@ function ReadingRoomMainContent({
   runCheckpoint,
   onResumeRun,
   onClearRunCheckpoint,
-}: Pick<ChatMessagesProps, 'activeTab' | 'chat' | 'loading' | 'queuedMessages' | 'runRecords' | 'watchlist' | 'marketWatch' | 'onOpenRecord' | 'onPinStock' | 'onRemoveWatchItem' | 'onStart'> & {
+  agentRunRecords,
+  onCancelAgentRun,
+  onInterpretAgentRun,
+}: Pick<ChatMessagesProps, 'activeTab' | 'chat' | 'loading' | 'queuedMessages' | 'runRecords' | 'watchlist' | 'marketWatch' | 'onOpenRecord' | 'onPinStock' | 'onRemoveWatchItem' | 'onStart' | 'agentRunRecords' | 'onCancelAgentRun' | 'onInterpretAgentRun'> & {
   activeAssistantId: string | null
   modelStatus: ChatRunStatus | null
   runCheckpoint: RunCheckpoint | null
@@ -159,6 +169,9 @@ function ReadingRoomMainContent({
         runCheckpoint={runCheckpoint}
         onResumeRun={onResumeRun}
         onClearRunCheckpoint={onClearRunCheckpoint}
+        agentRunRecords={agentRunRecords}
+        onCancelAgentRun={onCancelAgentRun}
+        onInterpretAgentRun={onInterpretAgentRun}
       />
     </div>
   )
@@ -174,7 +187,10 @@ function ChatTranscript({
   runCheckpoint,
   onResumeRun,
   onClearRunCheckpoint,
-}: Pick<ChatMessagesProps, 'chat' | 'loading' | 'queuedMessages' | 'onPinStock'> & { activeAssistantId: string | null; modelStatus: ChatRunStatus | null; runCheckpoint: RunCheckpoint | null; onResumeRun: () => void; onClearRunCheckpoint: () => void }) {
+  agentRunRecords,
+  onCancelAgentRun,
+  onInterpretAgentRun,
+}: Pick<ChatMessagesProps, 'chat' | 'loading' | 'queuedMessages' | 'onPinStock' | 'agentRunRecords' | 'onCancelAgentRun' | 'onInterpretAgentRun'> & { activeAssistantId: string | null; modelStatus: ChatRunStatus | null; runCheckpoint: RunCheckpoint | null; onResumeRun: () => void; onClearRunCheckpoint: () => void }) {
   if (chat.messages.length === 0 && !loading && queuedMessages.length === 0 && !runCheckpoint) return <EmptyChatPanel />
   return (
     <div className="space-y-5 pb-4 animate-fade-in-up">
@@ -202,6 +218,9 @@ function ChatTranscript({
             approve={(id) => void chat.addToolApprovalResponse({ id, approved: true })}
             deny={(id) => void chat.addToolApprovalResponse({ id, approved: false })}
             onPinStock={onPinStock}
+            agentRunRecords={agentRunRecords}
+            onCancelAgentRun={onCancelAgentRun}
+            onInterpretAgentRun={onInterpretAgentRun}
           />
         )
       })}
