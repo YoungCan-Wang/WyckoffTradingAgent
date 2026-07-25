@@ -199,6 +199,7 @@ def test_fetch_funnel_ohlcv_reports_overall_progress(monkeypatch):
         return df_map, {"fetch_ok": 1, "fetch_fail": 0}
 
     monkeypatch.setattr(funnel_data, "fetch_all_ohlcv", fake_fetch_all_ohlcv)
+    monkeypatch.setattr(funnel_data, "fetch_float_share_map", lambda: {"000001": 1_000_000.0})
     set_reporter(lambda stage, detail, progress: events.append((stage, detail, progress)))
     try:
         out, stats = funnel_data._fetch_funnel_ohlcv(
@@ -212,7 +213,7 @@ def test_fetch_funnel_ohlcv_reports_overall_progress(monkeypatch):
         set_reporter(None)
 
     assert out == df_map
-    assert stats == {"fetch_ok": 1, "fetch_fail": 0}
+    assert stats == {"fetch_ok": 1, "fetch_fail": 0, "turnover_coverage": 1.0}
     assert captured["symbols"] == ["000001"]
     assert captured["enforce_target_trade_date"] is True
     assert captured["direct_source"] is True
