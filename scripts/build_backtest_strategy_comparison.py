@@ -1,4 +1,4 @@
-"""Build A/M/P backtest comparison artifacts."""
+"""Build A/M/P/Q backtest comparison artifacts."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from workflows.backtest_strategy_comparison import (
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="汇总策略 A/M/P 消融回测")
+    parser = argparse.ArgumentParser(description="汇总策略 A/M/P/Q 消融回测")
     parser.add_argument("--artifacts-dir", type=Path, required=True)
     parser.add_argument("--markdown-output", type=Path, required=True)
     parser.add_argument("--json-output", type=Path, required=True)
