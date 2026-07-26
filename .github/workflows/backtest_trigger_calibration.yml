@@ -1,7 +1,7 @@
 name: Backtest Trigger Calibration
 
-# 触发阈值（如 spring_vol_ratio）改变的是"有哪些信号"，无法复用 Backtest Grid 的共享信号台账，
-# 每个取值都要完整重跑全市场漏斗。因此独立成一条流水线：按周期并行、全量股票池、跨周期 walk-forward 选值。
+# 触发阈值改变信号集合，必须完整重跑漏斗。每个周期只抓一次快照；周期 × 单个阈值值
+# 并行回放，避免一个 job 串行跑完整阈值网格而超过 GitHub Actions 的 6 小时上限。
 
 on:
   workflow_dispatch:
@@ -23,8 +23,6 @@ permissions:
   contents: read
 
 env:
-  # 与 Backtest Grid 的 top_n=1 不同：截断到每日一只后，改 Spring 阈值大多只影响没被选中的候选，
-  # 触发器样本会小到无法统计。标定看的是该触发器自身的边际，因此放开候选上限取全部 L4 信号。
   BT_TOP_N: "0"
   BT_BOARD: "all"
   BT_SAMPLE_SIZE: "0"
@@ -35,30 +33,40 @@ env:
   BT_MIN_COMMISSION: "5"
   BT_STAMP_DUTY_RATE: "0.0005"
   BT_TRANSFER_FEE_RATE: "0.00001"
-  # 标定触发器阈值时固定策略治理调权，避免动态权重混入归因。
   FUNNEL_DYNAMIC_POLICY: "off"
 
 jobs:
   plan:
-    name: Plan periods
+    name: Plan periods and values
     runs-on: ubuntu-latest
     outputs:
       periods: ${{ steps.plan.outputs.periods }}
+      trigger_param: ${{ steps.plan.outputs.trigger_param }}
+      trigger_values: ${{ steps.plan.outputs.trigger_values }}
     steps:
-      - name: Build period matrix
+      - name: Build matrices
         id: plan
         env:
+          INPUT_GRID: ${{ inputs.trigger_grid }}
           INPUT_PERIODS: ${{ inputs.periods }}
         run: |
           set -euo pipefail
+          case "$INPUT_GRID" in *=*) ;; *) echo "非法 trigger_grid"; exit 1 ;; esac
+          PARAM="${INPUT_GRID%%=*}"
+          RAW_VALUES="${INPUT_GRID#*=}"
           PERIODS=$(echo "$INPUT_PERIODS" | tr ',' '\n' | awk '{gsub(/[[:space:]]/, "")} NF' | jq -R . | jq -sc .)
+          VALUES=$(echo "$RAW_VALUES" | tr ',' '\n' | awk '{gsub(/[[:space:]]/, "")} NF' | jq -R . | jq -sc .)
+          test "$PARAM" != "$RAW_VALUES"
+          test "$VALUES" != '[]'
           echo "periods=${PERIODS}" >> "$GITHUB_OUTPUT"
-          echo "periods=${PERIODS}"
+          echo "trigger_param=${PARAM}" >> "$GITHUB_OUTPUT"
+          echo "trigger_values=${VALUES}" >> "$GITHUB_OUTPUT"
 
-  calibrate:
-    name: Calibrate ${{ matrix.period_key }}
+  fetch:
+    name: Fetch snapshot (${{ matrix.period_key }})
     runs-on: ubuntu-latest
     needs: plan
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -71,6 +79,58 @@ jobs:
       TICKFLOW_BASE_URL: ${{ secrets.TICKFLOW_BASE_URL }}
       TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
       BACKTEST_SNAPSHOT_WORKERS: "6"
+    steps:
+      - name: Resolve period dates
+        run: |
+          set -euo pipefail
+          case "${{ matrix.period_key }}" in
+            bull_2020) echo "BT_START=2020-07-01" >> "$GITHUB_ENV"; echo "BT_END=2021-02-18" >> "$GITHUB_ENV" ;;
+            bear_2022) echo "BT_START=2021-12-13" >> "$GITHUB_ENV"; echo "BT_END=2022-10-31" >> "$GITHUB_ENV" ;;
+            sideways_2023) echo "BT_START=2023-01-03" >> "$GITHUB_ENV"; echo "BT_END=2023-12-29" >> "$GITHUB_ENV" ;;
+            volatile_2024) echo "BT_START=2024-01-02" >> "$GITHUB_ENV"; echo "BT_END=2024-12-31" >> "$GITHUB_ENV" ;;
+            recent_6m) echo "BT_END=$(date -d '-1 day' +%Y-%m-%d)" >> "$GITHUB_ENV"; echo "BT_START=$(date -d '-6 months -1 day' +%Y-%m-%d)" >> "$GITHUB_ENV" ;;
+            *) echo "未知周期: ${{ matrix.period_key }}"; exit 1 ;;
+          esac
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[wbt]"
+      - name: Fetch data snapshot
+        run: |
+          python -u scripts/backtest_snapshot_fetch.py \
+            --start "$BT_START" --end "$BT_END" --board "$BT_BOARD" \
+            --sample-size "$BT_SAMPLE_SIZE" --trading-days "$BT_TRADING_DAYS" \
+            --output-dir snapshot_data
+      - name: Upload snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-trigger-snapshot-${{ matrix.period_key }}
+          path: snapshot_data/*
+          retention-days: 3
+
+  calibrate:
+    name: Calibrate ${{ matrix.period_key }} / ${{ matrix.trigger_value }}
+    runs-on: ubuntu-latest
+    needs: [plan, fetch]
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        period_key: ${{ fromJson(needs.plan.outputs.periods) }}
+        trigger_value: ${{ fromJson(needs.plan.outputs.trigger_values) }}
+    env:
+      PYTHONUNBUFFERED: "1"
+      TZ: Asia/Shanghai
+      TICKFLOW_API_KEY: ${{ secrets.TICKFLOW_API_KEY }}
+      TICKFLOW_BASE_URL: ${{ secrets.TICKFLOW_BASE_URL }}
+      TRIGGER_PARAM: ${{ needs.plan.outputs.trigger_param }}
+      TRIGGER_VALUE: ${{ matrix.trigger_value }}
       FUNNEL_AI_SELECTION_MODE: "tradeable_l4"
       FUNNEL_AI_TOTAL_CAP: "8"
       FUNNEL_AI_MAX_PER_SECTOR: "2"
@@ -84,98 +144,54 @@ jobs:
       FUNNEL_AI_NEUTRAL_ACCUM: "1"
     steps:
       - name: Resolve period dates
-        env:
-          PERIOD_KEY: ${{ matrix.period_key }}
         run: |
           set -euo pipefail
-          case "$PERIOD_KEY" in
-            bull_2020) START=2020-07-01; END=2021-02-18 ;;
-            bear_2022) START=2021-12-13; END=2022-10-31 ;;
-            sideways_2023) START=2023-01-03; END=2023-12-29 ;;
-            volatile_2024) START=2024-01-02; END=2024-12-31 ;;
-            recent_6m)
-              END=$(date -d '-1 day' +%Y-%m-%d)
-              START=$(date -d '-6 months -1 day' +%Y-%m-%d) ;;
-            *) echo "未知周期: ${PERIOD_KEY}"; exit 1 ;;
+          case "${{ matrix.period_key }}" in
+            bull_2020) echo "BT_START=2020-07-01" >> "$GITHUB_ENV"; echo "BT_END=2021-02-18" >> "$GITHUB_ENV" ;;
+            bear_2022) echo "BT_START=2021-12-13" >> "$GITHUB_ENV"; echo "BT_END=2022-10-31" >> "$GITHUB_ENV" ;;
+            sideways_2023) echo "BT_START=2023-01-03" >> "$GITHUB_ENV"; echo "BT_END=2023-12-29" >> "$GITHUB_ENV" ;;
+            volatile_2024) echo "BT_START=2024-01-02" >> "$GITHUB_ENV"; echo "BT_END=2024-12-31" >> "$GITHUB_ENV" ;;
+            recent_6m) echo "BT_END=$(date -d '-1 day' +%Y-%m-%d)" >> "$GITHUB_ENV"; echo "BT_START=$(date -d '-6 months -1 day' +%Y-%m-%d)" >> "$GITHUB_ENV" ;;
+            *) echo "未知周期: ${{ matrix.period_key }}"; exit 1 ;;
           esac
-          echo "BT_START=${START}" >> "$GITHUB_ENV"
-          echo "BT_END=${END}" >> "$GITHUB_ENV"
-          echo "BT_PERIOD_KEY=${PERIOD_KEY}" >> "$GITHUB_ENV"
-
       - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[wbt]"
-
-      - name: Fetch data snapshot
+      - name: Download snapshot
+        uses: actions/download-artifact@v4
+        with:
+          name: backtest-trigger-snapshot-${{ matrix.period_key }}
+          path: snapshot_data/
+      - name: Run one trigger threshold
         run: |
           set -euo pipefail
-          python -u scripts/backtest_snapshot_fetch.py \
-            --start "$BT_START" \
-            --end "$BT_END" \
-            --board "$BT_BOARD" \
-            --sample-size "$BT_SAMPLE_SIZE" \
-            --trading-days "$BT_TRADING_DAYS" \
-            --output-dir snapshot_data
-
-      - name: Run trigger threshold matrix
-        shell: bash
-        env:
-          TRIGGER_GRID: ${{ inputs.trigger_grid }}
-        run: |
-          set -euo pipefail
-          OUT_ROOT="analysis/backtest_trigger_actions/${BT_PERIOD_KEY}"
-          echo "OUT_ROOT=${OUT_ROOT}" >> "$GITHUB_ENV"
+          OUT_ROOT="analysis/backtest_trigger_actions/${{ matrix.period_key }}-${TRIGGER_VALUE}"
           mkdir -p "$OUT_ROOT"
           python -u -m scripts.backtest_runner \
-            --start "$BT_START" \
-            --end "$BT_END" \
-            --hold-days 10 \
-            --top-n "$BT_TOP_N" \
-            --board "$BT_BOARD" \
-            --sample-size "$BT_SAMPLE_SIZE" \
-            --trading-days "$BT_TRADING_DAYS" \
-            --abc-filter \
-            --entry-price-mode open \
-            --cash-portfolio \
-            --initial-cash "$BT_INITIAL_CASH" \
-            --max-positions "$BT_MAX_POSITIONS" \
-            --portfolio-styles slot_equal_4 \
-            --commission-rate "$BT_COMMISSION_RATE" \
-            --min-commission "$BT_MIN_COMMISSION" \
-            --stamp-duty-rate "$BT_STAMP_DUTY_RATE" \
-            --transfer-fee-rate "$BT_TRANSFER_FEE_RATE" \
-            --exit-mode sltp \
-            --stop-loss -8 \
-            --take-profit 18 \
-            --sltp-priority stop_first \
-            --pending-mode only \
-            --execution-regime-gate live \
-            --pending-merge-order confirmed_first \
-            --trailing-stop 0 \
-            --metrics-engine auto \
-            --wbt-n-jobs 2 \
-            --snapshot-dir snapshot_data \
-            --trigger-grid "$TRIGGER_GRID" \
-            --grid-prefix "backtest-trigger-${BT_PERIOD_KEY}" \
-            --period-key "$BT_PERIOD_KEY" \
-            --output-dir "$OUT_ROOT" \
-            | tee "$OUT_ROOT/run.log"
-
+            --start "$BT_START" --end "$BT_END" --hold-days 10 --top-n "$BT_TOP_N" \
+            --board "$BT_BOARD" --sample-size "$BT_SAMPLE_SIZE" --trading-days "$BT_TRADING_DAYS" \
+            --abc-filter --entry-price-mode open --cash-portfolio --initial-cash "$BT_INITIAL_CASH" \
+            --max-positions "$BT_MAX_POSITIONS" --portfolio-styles slot_equal_4 \
+            --commission-rate "$BT_COMMISSION_RATE" --min-commission "$BT_MIN_COMMISSION" \
+            --stamp-duty-rate "$BT_STAMP_DUTY_RATE" --transfer-fee-rate "$BT_TRANSFER_FEE_RATE" \
+            --exit-mode sltp --stop-loss -8 --take-profit 18 --sltp-priority stop_first \
+            --pending-mode only --execution-regime-gate live --pending-merge-order confirmed_first \
+            --trailing-stop 0 --metrics-engine auto --wbt-n-jobs 2 --snapshot-dir snapshot_data \
+            --trigger-grid "${TRIGGER_PARAM}=${TRIGGER_VALUE}" \
+            --grid-prefix "backtest-trigger-${{ matrix.period_key }}" \
+            --period-key "${{ matrix.period_key }}" --output-dir "$OUT_ROOT" | tee "$OUT_ROOT/run.log"
       - name: Upload matrix artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: backtest-trigger-${{ matrix.period_key }}-${{ github.run_number }}
-          path: ${{ env.OUT_ROOT }}/**
+          name: backtest-trigger-matrix-${{ matrix.period_key }}-${{ matrix.trigger_value }}-${{ github.run_number }}
+          path: analysis/backtest_trigger_actions/**
           retention-days: 30
           if-no-files-found: error
 
@@ -186,32 +202,24 @@ jobs:
     if: always()
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - name: Download matrix artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts/
-          pattern: backtest-trigger-*
-
+          pattern: backtest-trigger-matrix-*
       - name: Install dependencies
         run: python -m pip install pandas
-
       - name: Build walk-forward report
         run: |
           python3 scripts/build_backtest_trigger_report.py \
-            --artifacts-dir artifacts \
-            --markdown-output trigger_calibration_report.md \
+            --artifacts-dir artifacts --markdown-output trigger_calibration_report.md \
             --json-output trigger_calibration_report.json
-
       - name: Publish to job summary
         if: always()
         run: cat trigger_calibration_report.md >> "$GITHUB_STEP_SUMMARY"
-
       - name: Upload report
         if: always()
         uses: actions/upload-artifact@v4

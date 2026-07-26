@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
+from pathlib import Path
 
 import pytest
 
@@ -203,3 +204,13 @@ class TestTriggerReport:
 
     def test_empty_rows_stay_in_review(self):
         assert build_trigger_report([])["status"] == "review"
+
+
+def test_calibration_workflow_reuses_snapshots_and_splits_threshold_values() -> None:
+    workflow = Path(".github/workflows/backtest_trigger_calibration.yml").read_text(encoding="utf-8")
+
+    assert "trigger_values: ${{ steps.plan.outputs.trigger_values }}" in workflow
+    assert "name: backtest-trigger-snapshot-${{ matrix.period_key }}" in workflow
+    assert "trigger_value: ${{ fromJson(needs.plan.outputs.trigger_values) }}" in workflow
+    assert '--trigger-grid "${TRIGGER_PARAM}=${TRIGGER_VALUE}"' in workflow
+    assert "name: backtest-trigger-matrix-${{ matrix.period_key }}-${{ matrix.trigger_value }}" in workflow
