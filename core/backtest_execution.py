@@ -383,7 +383,8 @@ def resolve_trade_exit(
         exit_close, exit_date = _sellable_close_on_or_after(full_df, actual_exit_anchor, code, market)
         return exit_close, exit_date, "time_exit"
     market_window = trade_dates[actual_entry_idx + 1 : actual_exit_idx + 1]
-    locked_days = _limit_down_locked_days(day_ohlc, market_window, entry_close, code, market)
+    entry_date = trade_dates[actual_entry_idx] if 0 <= actual_entry_idx < len(trade_dates) else None
+    locked_days = _limit_down_locked_days(day_ohlc, market_window, entry_date, code, market)
     if config.exit_mode == "sltp":
         return _resolve_sltp_exit(day_ohlc, market_window, locked_days, entry_close, config, exit_ctx)
     if config.exit_mode == "atr":
@@ -403,18 +404,24 @@ class _ExitContext:
 def _limit_down_locked_days(
     day_ohlc: dict[date, tuple[float, float, float, float]],
     market_window: list[date],
-    entry_close: float,
+    entry_date: date | None,
     code: str,
     market: str,
 ) -> set[date]:
+    """按前一交易日收盘价识别一字跌停锁死日。
+
+    入场价（尤其 open / tail_1455）不等于入场日收盘价，不能拿来当初收，否则
+    入场日收阳后再封跌停会被漏判，止损会在不可成交日成交。
+    """
     locked: set[date] = set()
-    prev_close = entry_close
+    entry_candle = day_ohlc.get(entry_date) if entry_date is not None else None
+    prev_close = entry_candle[3] if entry_candle is not None else None
     for market_day in market_window:
         candle = day_ohlc.get(market_day)
         if candle is None:
             continue
         open_px, high, low, close_px = candle
-        if _is_limit_down_locked(open_px, high, low, prev_close, code, market):
+        if prev_close is not None and _is_limit_down_locked(open_px, high, low, prev_close, code, market):
             locked.add(market_day)
         prev_close = close_px
     return locked
@@ -425,7 +432,7 @@ def _sellable_close_on_or_after(
 ) -> tuple[float | None, date | None]:
     """一字跌停当天挂不出卖单，平仓顺延到之后第一个能成交的交易日。"""
     candidates = _with_prev_close(full_df)
-    candidates = candidates[candidates["date"] >= day].head(5)
+    candidates = candidates[candidates["date"] >= day]
     for _, row_s in candidates.iterrows():
         if _row_limit_down_locked(row_s, code, market):
             continue
@@ -594,8 +601,9 @@ def _time_exit(ctx: _ExitContext) -> tuple[float | None, date | None, str]:
     if exit_date is None:
         return exit_close, exit_date, "time_exit"
     sellable_close, sellable_date = _sellable_close_on_or_after(ctx.full_df, exit_date, ctx.code, ctx.market)
+    # 样本内始终锁死则无法成交，不能回退到跌停日收盘冒充成交。
     if sellable_date is None:
-        return exit_close, exit_date, "time_exit"
+        return None, None, "time_exit"
     reason = "time_exit" if sellable_date == exit_date else "time_exit_limit_down_delayed"
     return sellable_close, sellable_date, reason
 

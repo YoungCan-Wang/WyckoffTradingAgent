@@ -237,6 +237,35 @@ def test_trim_is_rejected_for_shares_bought_today_in_compact_date_format() -> No
     assert cash == 50000
 
 
+def test_exit_is_rejected_for_compact_buy_dt_with_time_suffix() -> None:
+    engine = _t1_engine(buy_dt="20260515 09:30:00", trade_date="2026-05-15")
+
+    tickets, cash = engine.process([_exit_decision()])
+
+    assert tickets[0].status == "NO_TRADE"
+    assert "T+1限制" in tickets[0].reason
+    assert cash == 50000
+
+
+def test_rejected_t1_exit_does_not_persist_model_stop_loss(monkeypatch) -> None:
+    captured: list[tuple[str, list[dict]]] = []
+    monkeypatch.setattr(
+        step4_results,
+        "update_position_stops",
+        lambda portfolio_id, updates: captured.append((portfolio_id, updates)) or True,
+    )
+    engine = _t1_engine(buy_dt="2026-05-15", trade_date="2026-05-15")
+    decision = _exit_decision()
+    decision.stop_loss = 7.5
+
+    tickets, _cash = engine.process([decision])
+    ok = step4_results.update_step4_position_stops("P1", tickets)
+
+    assert tickets[0].status == "NO_TRADE"
+    assert ok is True
+    assert captured == []
+
+
 def test_exit_is_allowed_for_shares_bought_before_today() -> None:
     engine = _t1_engine(buy_dt="2026-05-14", trade_date="2026-05-15")
 

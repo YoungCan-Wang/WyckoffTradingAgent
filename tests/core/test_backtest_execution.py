@@ -154,6 +154,68 @@ def test_stop_loss_skips_limit_down_locked_day_and_fills_next_session() -> None:
     assert reason == "stop_loss"
 
 
+def test_stop_loss_uses_entry_day_close_not_entry_price_for_limit_down() -> None:
+    """开盘买入后收阳，次日相对前收一字跌停：不得用入场开盘价漏判锁死。"""
+    d1, d2, d3 = (date(2026, 1, day) for day in (5, 6, 7))
+    full_df = _daily_ohlc_frame(
+        [
+            (d1, 10.0, 10.5, 9.9, 10.2),
+            (d2, 9.18, 9.18, 9.18, 9.18),
+            (d3, 8.6, 9.0, 8.5, 8.8),
+        ]
+    )
+    day_ohlc = {
+        d1: (10.0, 10.5, 9.9, 10.2),
+        d2: (9.18, 9.18, 9.18, 9.18),
+        d3: (8.6, 9.0, 8.5, 8.8),
+    }
+
+    exit_close, exit_date, reason = resolve_trade_exit(
+        full_df=full_df,
+        day_ohlc=day_ohlc,
+        trade_dates=[d1, d2, d3],
+        actual_entry_idx=0,
+        actual_exit_idx=2,
+        actual_exit_anchor=d3,
+        signal_date=d1,
+        entry_close=10.0,
+        config=_exit_config(stop_loss_pct=-7.0),
+        code="000001",
+    )
+
+    assert exit_close == pytest.approx(8.6)
+    assert exit_date == d3
+    assert reason == "stop_loss"
+
+
+def test_time_exit_keeps_scanning_beyond_five_locked_limit_down_days() -> None:
+    days = [date(2026, 1, day) for day in range(5, 13)]
+    rows = [(days[0], 10.0, 10.0, 10.0, 10.0)]
+    close = 10.0
+    for day in days[1:-1]:
+        close = round(close * 0.9, 4)
+        rows.append((day, close, close, close, close))
+    rows.append((days[-1], 4.8, 5.2, 4.7, 5.0))
+    full_df = _daily_ohlc_frame(rows)
+
+    exit_close, exit_date, reason = resolve_trade_exit(
+        full_df=full_df,
+        day_ohlc={},
+        trade_dates=days,
+        actual_entry_idx=0,
+        actual_exit_idx=1,
+        actual_exit_anchor=days[1],
+        signal_date=days[0],
+        entry_close=10.0,
+        config=_exit_config(exit_mode="close_only"),
+        code="000001",
+    )
+
+    assert exit_close == pytest.approx(5.0)
+    assert exit_date == days[-1]
+    assert reason == "time_exit"
+
+
 def _exit_config(**overrides) -> ExitSimulationConfig:
     values = {
         "exit_mode": "sltp",
