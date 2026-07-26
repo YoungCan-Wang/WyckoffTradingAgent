@@ -242,12 +242,13 @@ export function useAgentRunPolling(
   useEffect(() => {
     for (const tool of tools) {
       const record = records[tool.runId]
-      if (record && isAgentRunTerminal(record) && !isAgentRunTerminal(tool.record)) {
-        if (tool.conversationId === conversations.activeId) {
-          void chat.addToolOutput({ tool: 'run_python_research', toolCallId: tool.toolCallId, output: record })
-        } else {
-          conversations.replaceToolOutput(tool.conversationId, tool.toolCallId, record)
-        }
+      if (!record || !isAgentRunTerminal(record) || isAgentRunTerminal(tool.record)) continue
+      // Always persist into the owning conversation first. If we only call addToolOutput while
+      // the conversation is active, a mid-flight switch drops the result before localStorage
+      // is updated, and Redis TTL expiry makes recovery impossible.
+      conversations.replaceToolOutput(tool.conversationId, tool.toolCallId, record)
+      if (tool.conversationId === conversations.activeId) {
+        void chat.addToolOutput({ tool: 'run_python_research', toolCallId: tool.toolCallId, output: record })
       }
     }
   }, [chat, conversations, records, tools])
