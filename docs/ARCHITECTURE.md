@@ -102,6 +102,8 @@ Worker 负责鉴权、输入校验、队列控制面和 HMAC 签名。Vercel Nod
 
 前端的 `web/apps/web/src/lib/api-url.ts` 统一生成 chat、portfolio 和 settings 的后端地址。本地开发默认连接 `http://127.0.0.1:8787`，生产默认连接 `https://wyckoff-api.yongkai-wang.workers.dev`；部署环境可用公开的构建变量 `VITE_API_URL` 覆盖地址。该变量只包含公开服务地址，不能放 Token。
 
+每次 `main` 上的 CI 成功后，`Web deployment health` 工作流会从 GitHub runner 轮询 Worker 的公开 `/api/health` 与 Pages 的 `/chat`，直到两者同时通过；也可在 Actions 页面手动运行。它只验证部署可达性，不会调用需要登录的聊天、持仓或沙箱端点，也不会创建沙箱。
+
 本地开发可复制 `web/apps/api/.dev.vars.example` 为 `.dev.vars`。首次部署异步 Agent 前，先在 `web/apps/api/` 创建两个队列，再部署 Worker：`pnpm exec wrangler queues create wyckoff-agent-runs`、`pnpm exec wrangler queues create wyckoff-agent-runs-dlq`、`pnpm run deploy`。部署时不要把密钥写入 `wrangler.toml`：在 Vercel 项目将 `SANDBOX_BRIDGE_SECRET` 写入 production 环境变量，并在 `web/apps/api/` 下分别执行 `pnpm exec wrangler secret put UPSTASH_REDIS_REST_URL`、`pnpm exec wrangler secret put UPSTASH_REDIS_REST_TOKEN` 和 `pnpm exec wrangler secret put SANDBOX_BRIDGE_SECRET`。Vercel bridge 在生产环境由平台 OIDC 自动获取短期 Sandbox 凭据，Cloudflare Worker 不再保留 Vercel Access Token。
 
 **零成本执行面（Hobby）**：系统控制面继续跑在 Cloudflare Workers/Pages + Upstash 免费额度；Vercel 只用于按需 microVM。Hobby 套餐每月包含 Sandbox 额度（约 5 小时 Active CPU、420 GB-hour 内存、5,000 次创建、20 GB 传输），超限后创建会被暂停而不是自动扣费。为压低用量，当前实现固定 `resources.vcpus=1`、`networkPolicy=deny-all`、`persistent=false`、60s 超时，并在结束后 `stop` + `delete`。
