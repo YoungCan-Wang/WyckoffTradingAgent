@@ -12,7 +12,6 @@ from core.candidate_policy import candidate_score_value
 class AShareEntryResearchPolicy:
     blocked_confirmed_signals: tuple[str, ...] = ()
     blocked_confirmed_regime_signals: tuple[tuple[str, str], ...] = ()
-    no_backfill_on_blocked_confirmed: bool = False
     entry_weight_multipliers: tuple[tuple[str, str, float], ...] = ()
     max_hold_days_by_regime_signal: tuple[tuple[str, str, int], ...] = ()
     require_neutral_breadth_confirmation: bool = False
