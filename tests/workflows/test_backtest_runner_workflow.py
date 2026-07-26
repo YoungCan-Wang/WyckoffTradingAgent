@@ -127,6 +127,34 @@ def test_trigger_grid_reruns_full_funnel_per_threshold(monkeypatch, tmp_path) ->
     assert {row["period_key"] for row in matrix["rows"]} == {"bear_2022"}
 
 
+def test_top_n_grid_sweeps_selection_instead_of_funnel_overrides(monkeypatch, tmp_path) -> None:
+    import workflows.backtest_runner as runner
+
+    requests: list = []
+    monkeypatch.setattr(
+        runner,
+        "run_backtest_request",
+        lambda request, **_kwargs: requests.append(request) or (pd.DataFrame(), {"trades": 900, "avg_ret_pct": -1.0}),
+    )
+    monkeypatch.setattr(
+        runner,
+        "write_backtest_artifacts",
+        lambda **_kwargs: _Artifact("summary", tmp_path / "summary.md", tmp_path / "trades.csv"),
+    )
+    monkeypatch.setattr(runner, "success_suite_row", lambda hold_days, summary: {"hold_days": hold_days})
+
+    result = run_backtest_runner(
+        _args(tmp_path, trigger_grid="top_n=0,1", period_key="bear_2022"),
+        progress=lambda *_args, **_kwargs: None,
+    )
+
+    assert result == 0
+    assert [request.top_n for request in requests] == [0, 1]
+    assert all(request.funnel_overrides == () for request in requests)
+    matrix = json.loads((tmp_path / "trigger_matrix_top_n.json").read_text(encoding="utf-8"))
+    assert [row["overall_avg_ret_pct"] for row in matrix["rows"]] == [-1.0, -1.0]
+
+
 def _args(tmp_path: Path, **overrides) -> Namespace:
     values = {
         "start": "2026-01-01",

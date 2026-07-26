@@ -1,4 +1,4 @@
-"""Aggregate per-period trigger-threshold matrices into a walk-forward verdict."""
+"""Aggregate per-period parameter-sweep matrices into a cross-period verdict."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from workflows.backtest_trigger_matrix import (
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="汇总触发阈值矩阵并做跨周期 walk-forward 选值")
+    parser = argparse.ArgumentParser(description="汇总参数矩阵：触发阈值做 walk-forward 选值，top_n 做选择层增益对比")
     parser.add_argument("--artifacts-dir", type=Path, required=True)
     parser.add_argument("--markdown-output", type=Path, required=True)
     parser.add_argument("--json-output", type=Path, required=True)

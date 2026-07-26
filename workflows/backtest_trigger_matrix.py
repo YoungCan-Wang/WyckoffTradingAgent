@@ -1,9 +1,13 @@
-"""Trigger-threshold matrix: sweep one detection parameter over a full funnel re-run.
+"""Sweep one candidate-generating parameter, re-running the full funnel per value.
 
-退出参数网格可以复用同一份信号台账，触发阈值不行：改变 spring_vol_ratio 这类检测参数会
-改变"有哪些信号"，每个取值都必须完整重跑漏斗。因此本模块逐取值独立回测，并以目标触发器
-的单信号统计（而非组合口径）作为选值依据——只改一个触发器的阈值时，组合指标会被其它
-触发器稀释，看不出该阈值本身的好坏。
+退出参数网格可以复用同一份信号台账，这里扫的参数不行：改变 spring_vol_ratio 这类检测参数
+会改变"有哪些信号"，改变 top_n 会改变"哪些信号被执行"，每个取值都必须完整重跑漏斗。
+
+两类扫描的读法不同，不能混：
+- 触发阈值（`<触发器>_*` 命名）：看目标触发器的单信号统计并做 walk-forward 选值。只改一个
+  触发器的阈值时，组合指标会被其它触发器稀释，看不出该阈值本身的好坏。
+- `top_n`：看全样本统计。它衡量的是排序/选择层相对原始信号池的增益，笔数本就随取值大幅
+  变化，套用触发阈值那套"笔数不得崩塌"的选值规则会直接判错。
 """
 
 from __future__ import annotations
@@ -22,6 +26,9 @@ logger = logging.getLogger(__name__)
 # 低于该笔数的样本不参与选值：均收会被个位数交易的噪音主导。
 MIN_TRIGGER_TRADES = 20
 
+# 选择层扫描维度：0 表示不截断（原始 L4 信号池），正整数为每日取前 N 名。
+SELECTION_PARAM = "top_n"
+
 
 @dataclass(frozen=True)
 class TriggerGrid:
@@ -30,12 +37,14 @@ class TriggerGrid:
 
     @property
     def focus_trigger(self) -> str:
-        """检测参数按 `<触发器>_*` 命名，取前缀即为它作用的触发器。"""
+        """检测参数按 `<触发器>_*` 命名，取前缀即为它作用的触发器；选择层扫描没有目标触发器。"""
+        if self.param == SELECTION_PARAM:
+            return ""
         return self.param.split("_", 1)[0]
 
 
 def parse_trigger_grid(raw: str) -> TriggerGrid | None:
-    """解析 `spring_vol_ratio=1.3,1.5,1.8`；空串表示不启用矩阵。"""
+    """解析 `spring_vol_ratio=1.3,1.5,1.8` 或 `top_n=0,1`；空串表示不启用矩阵。"""
     text = str(raw or "").strip()
     if not text:
         return None
@@ -46,6 +55,10 @@ def parse_trigger_grid(raw: str) -> TriggerGrid | None:
     values = tuple(float(item) for item in values_raw.split(",") if item.strip())
     if not param or not values:
         raise ValueError(f"非法 trigger grid: {raw}")
+    if param == SELECTION_PARAM:
+        if any(value < 0 or value != int(value) for value in values):
+            raise ValueError(f"top_n 必须为非负整数: {raw}")
+        return TriggerGrid(param=param, values=values)
     # 参数名拼错要在拉快照之前就报错，否则要等整轮全市场取数之后才失败。
     if not hasattr(FunnelConfig(), param):
         raise ValueError(f"未知 FunnelConfig 字段: {param}")
@@ -91,6 +104,7 @@ def build_matrix_row(
     end_dt: date,
     summary: dict,
 ) -> dict[str, Any]:
+    focus = focus_trigger_stats(summary, grid.focus_trigger) if grid.focus_trigger else {}
     return {
         "param": grid.param,
         "value": value,
@@ -98,8 +112,10 @@ def build_matrix_row(
         "period_key": period_key,
         "start": start_dt.isoformat(),
         "end": end_dt.isoformat(),
-        **focus_trigger_stats(summary, grid.focus_trigger),
+        **focus,
         "total_trades": summary.get("trades"),
+        "overall_avg_ret_pct": summary.get("avg_ret_pct"),
+        "overall_win_rate_pct": summary.get("win_rate_pct"),
         "cash_total_return_pct": summary.get("cash_portfolio_total_return_pct"),
         "sharpe_ratio": summary.get("sharpe_ratio"),
     }
@@ -120,14 +136,21 @@ def write_matrix_artifacts(out_dir: Path, grid: TriggerGrid, rows: list[dict[str
 
 
 def _matrix_markdown(grid: TriggerGrid, rows: list[dict[str, Any]]) -> str:
+    header = (
+        [
+            f"- 目标触发器: {grid.focus_trigger}",
+            f"- 选值口径: 该触发器单信号均收，笔数下限 {MIN_TRIGGER_TRADES}",
+        ]
+        if grid.focus_trigger
+        else ["- 读数口径: 全样本均收（选择层增益，不看单触发器）"]
+    )
     lines = [
-        f"# 触发阈值矩阵：{grid.param}",
+        f"# 参数矩阵：{grid.param}",
         "",
-        f"- 目标触发器: {grid.focus_trigger}",
-        f"- 选值口径: 该触发器单信号均收，笔数下限 {MIN_TRIGGER_TRADES}",
+        *header,
         "",
-        "| 取值 | 周期 | 该触发器笔数 | 该触发器胜率(%) | 该触发器均收(%) | 全部笔数 | 现金总收益(%) |",
-        "|---:|---|---:|---:|---:|---:|---:|",
+        "| 取值 | 周期 | 目标笔数 | 目标胜率(%) | 目标均收(%) | 全部笔数 | 全样本均收(%) | 现金总收益(%) |",
+        "|---:|---|---:|---:|---:|---:|---:|---:|",
     ]
     lines.extend(
         "| "
@@ -139,6 +162,7 @@ def _matrix_markdown(grid: TriggerGrid, rows: list[dict[str, Any]]) -> str:
                 _fmt(row.get("trigger_win_rate_pct"), 2),
                 _fmt(row.get("trigger_avg_ret_pct"), 3),
                 _fmt(row.get("total_trades"), 0),
+                _fmt(row.get("overall_avg_ret_pct"), 3),
                 _fmt(row.get("cash_total_return_pct"), 2),
             ]
         )
@@ -179,6 +203,56 @@ def build_trigger_walk_forward(rows: list[dict[str, Any]], *, param: str, focus_
         "recommended_value": _recommended_value(windows),
         "windows": windows,
     }
+
+
+def build_selection_lift(rows: list[dict[str, Any]], *, param: str) -> dict[str, Any]:
+    """选择层增益：以最小取值（top_n=0，即未截断的原始信号池）为基线比较全样本均收。
+
+    这里不做 walk-forward 选值。问题不是"选哪个 top_n"，而是"排序层相对随机取全池是否加分"，
+    每个周期都是一次独立检验，不需要用前一周期去预测后一周期。
+    """
+    values = sorted({float(row["value"]) for row in rows})
+    baseline_value = values[0] if values else 0.0
+    comparisons = [
+        comparison
+        for period in _ordered_periods(rows)
+        for comparison in _period_lift(rows, period, baseline_value, values[1:])
+    ]
+    improved = sum(comparison["lift_pct"] > 0 for comparison in comparisons)
+    status = "review" if len(comparisons) < 2 else ("pass" if improved == len(comparisons) else "fail")
+    return {
+        "status": status,
+        "param": param,
+        "focus_trigger": "",
+        "criterion": f"全样本均收高于 {param}={baseline_value:g} 的原始信号池",
+        "baseline_value": baseline_value,
+        "improved_count": improved,
+        "comparison_count": len(comparisons),
+        "comparisons": comparisons,
+    }
+
+
+def _period_lift(
+    rows: list[dict[str, Any]], period: str, baseline_value: float, values: list[float]
+) -> list[dict[str, Any]]:
+    by_value = {float(row["value"]): row for row in rows if row.get("period_key") == period}
+    baseline = by_value.get(baseline_value)
+    if baseline is None or baseline.get("overall_avg_ret_pct") is None:
+        return []
+    base_avg = float(baseline["overall_avg_ret_pct"])
+    return [
+        {
+            "period_key": period,
+            "value": value,
+            "baseline_avg_ret_pct": base_avg,
+            "baseline_trades": baseline.get("total_trades"),
+            "avg_ret_pct": float(row["overall_avg_ret_pct"]),
+            "trades": row.get("total_trades"),
+            "lift_pct": float(row["overall_avg_ret_pct"]) - base_avg,
+        }
+        for value in values
+        if (row := by_value.get(value)) is not None and row.get("overall_avg_ret_pct") is not None
+    ]
 
 
 def _ordered_periods(rows: list[dict[str, Any]]) -> list[str]:
@@ -256,14 +330,7 @@ def load_trigger_matrix_rows(artifacts_dir: Path) -> list[dict[str, Any]]:
 
 def build_trigger_report(rows: list[dict[str, Any]]) -> dict[str, Any]:
     params = sorted({str(row["param"]) for row in rows if row.get("param")})
-    reports = [
-        build_trigger_walk_forward(
-            [row for row in rows if row.get("param") == param],
-            param=param,
-            focus_trigger=next(str(row.get("focus_trigger") or "") for row in rows if row.get("param") == param),
-        )
-        for param in params
-    ]
+    reports = [_build_param_report(param, [row for row in rows if row.get("param") == param]) for param in params]
     statuses = {report["status"] for report in reports}
     return {
         "status": "review" if not reports or "review" in statuses else ("fail" if "fail" in statuses else "pass"),
@@ -272,11 +339,52 @@ def build_trigger_report(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _build_param_report(param: str, param_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    if param == SELECTION_PARAM:
+        return build_selection_lift(param_rows, param=param)
+    return build_trigger_walk_forward(
+        param_rows,
+        param=param,
+        focus_trigger=next(str(row.get("focus_trigger") or "") for row in param_rows),
+    )
+
+
 def render_trigger_report(report: dict[str, Any]) -> str:
-    lines = ["# 触发阈值 walk-forward 标定", "", f"- 总体状态: {report['status']}", ""]
+    lines = ["# 回测参数扫描", "", f"- 总体状态: {report['status']}", ""]
     for item in report["params"]:
-        lines.extend(_render_param_section(item))
+        renderer = _render_lift_section if item["param"] == SELECTION_PARAM else _render_param_section
+        lines.extend(renderer(item))
     return "\n".join(lines) + "\n"
+
+
+def _render_lift_section(item: dict[str, Any]) -> list[str]:
+    lines = [
+        f"## {item['param']}（选择层增益）",
+        "",
+        f"- 判定口径: {item['criterion']}",
+        f"- 增益为正的周期数: {item['improved_count']}/{item['comparison_count']}",
+        "",
+        "| 周期 | 取值 | 基线笔数 | 基线均收(%) | 笔数 | 均收(%) | 增益(pct) |",
+        "|---|---:|---:|---:|---:|---:|---:|",
+    ]
+    lines.extend(
+        "| "
+        + " | ".join(
+            [
+                comparison["period_key"],
+                f"{comparison['value']:g}",
+                _fmt(comparison.get("baseline_trades"), 0),
+                _fmt(comparison.get("baseline_avg_ret_pct"), 3),
+                _fmt(comparison.get("trades"), 0),
+                _fmt(comparison.get("avg_ret_pct"), 3),
+                _fmt(comparison.get("lift_pct"), 3),
+            ]
+        )
+        + " |"
+        for comparison in item["comparisons"]
+    )
+    lines.append("")
+    return lines
 
 
 def _render_param_section(item: dict[str, Any]) -> list[str]:

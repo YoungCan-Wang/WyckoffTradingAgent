@@ -1,15 +1,16 @@
 name: Backtest Trigger Calibration
 
-# 触发阈值（如 spring_vol_ratio）改变的是"有哪些信号"，无法复用 Backtest Grid 的共享信号台账，
-# 每个取值都要完整重跑全市场漏斗（全量股票池下单次约 80-95 分钟）。因此按"周期 × 取值"扇出成
-# 独立 job：串行跑完一个周期的四个取值会逼近 GitHub 的 6 小时 job 上限，扇出后每个 job 只做一次
-# 重跑。快照单独成一个阶段，既让同周期的各取值复用同一份数据，也避免并发拉取打爆 tushare 限流。
+# 这里扫的参数改变的是"有哪些信号"（触发阈值，如 spring_vol_ratio）或"哪些信号被执行"
+# （top_n），都无法复用 Backtest Grid 的共享信号台账，每个取值都要完整重跑全市场漏斗（全量
+# 股票池下单次约 80-95 分钟）。因此按"周期 × 取值"扇出成独立 job：串行跑完一个周期的四个取值
+# 会逼近 GitHub 的 6 小时 job 上限，扇出后每个 job 只做一次重跑。快照单独成一个阶段，既让同
+# 周期的各取值复用同一份数据，也避免并发拉取打爆 tushare 限流。
 
 on:
   workflow_dispatch:
     inputs:
       trigger_grid:
-        description: "触发阈值网格，格式 param=v1,v2,v3"
+        description: "参数网格，格式 param=v1,v2,v3（触发阈值或 top_n）"
         required: true
         default: "spring_vol_ratio=1.1,1.3,1.5,1.8"
       periods:
@@ -25,6 +26,7 @@ permissions:
   contents: read
 
 env:
+  # 触发阈值标定的默认值；扫 top_n 时由 --trigger-grid 逐取值覆盖。
   # 与 Backtest Grid 的 top_n=1 不同：截断到每日一只后，改 Spring 阈值大多只影响没被选中的候选，
   # 触发器样本会小到无法统计。标定看的是该触发器自身的边际，因此放开候选上限取全部 L4 信号。
   BT_TOP_N: "0"
@@ -178,7 +180,7 @@ jobs:
           name: backtest-snapshot-${{ matrix.cell.period }}
           path: snapshot_data/
 
-      - name: Run single threshold backtest
+      - name: Run single value backtest
         shell: bash
         env:
           TRIGGER_PARAM: ${{ matrix.cell.param }}
@@ -233,7 +235,7 @@ jobs:
           if-no-files-found: error
 
   report:
-    name: Walk-forward verdict
+    name: Sweep verdict
     runs-on: ubuntu-latest
     needs: calibrate
     if: always()
@@ -257,7 +259,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e .
 
-      - name: Build walk-forward report
+      - name: Build sweep report
         run: |
           python3 scripts/build_backtest_trigger_report.py \
             --artifacts-dir artifacts \

@@ -53,9 +53,9 @@ def build_backtest_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--trigger-grid",
         default="",
-        help="触发阈值矩阵，格式 spring_vol_ratio=1.3,1.5,1.8；每个取值都会完整重跑漏斗",
+        help="参数矩阵，格式 spring_vol_ratio=1.3,1.5,1.8 或 top_n=0,1；每个取值都会完整重跑漏斗",
     )
-    parser.add_argument("--period-key", default="", help="触发阈值矩阵的周期标签，用于跨周期 walk-forward 聚合")
+    parser.add_argument("--period-key", default="", help="参数矩阵的周期标签，用于跨周期聚合")
     return parser
 
 

@@ -1,4 +1,4 @@
-"""Tests for the trigger-threshold matrix and its walk-forward selection."""
+"""Tests for the parameter-sweep matrix: threshold walk-forward and top_n selection lift."""
 
 from __future__ import annotations
 
@@ -10,11 +10,13 @@ import pytest
 from workflows.backtest_trigger_matrix import (
     MIN_TRIGGER_TRADES,
     build_matrix_row,
+    build_selection_lift,
     build_trigger_report,
     build_trigger_walk_forward,
     focus_trigger_stats,
     load_trigger_matrix_rows,
     parse_trigger_grid,
+    render_trigger_report,
     select_trigger_value,
     write_matrix_artifacts,
 )
@@ -43,6 +45,16 @@ class TestParseTriggerGrid:
     def test_rejects_unknown_funnel_config_field(self):
         with pytest.raises(ValueError, match="未知 FunnelConfig 字段"):
             parse_trigger_grid("spring_vol_rateo=1.3")
+
+    def test_top_n_is_a_selection_sweep_without_focus_trigger(self):
+        grid = parse_trigger_grid("top_n=0,1")
+        assert grid.values == (0.0, 1.0)
+        assert grid.focus_trigger == ""
+
+    @pytest.mark.parametrize("raw", ["top_n=-1", "top_n=1.5"])
+    def test_rejects_non_integer_top_n(self, raw):
+        with pytest.raises(ValueError, match="top_n"):
+            parse_trigger_grid(raw)
 
 
 class TestFocusTriggerStats:
@@ -137,6 +149,63 @@ class TestWalkForward:
         ]
         window = build_trigger_walk_forward(rows, param="spring_vol_ratio", focus_trigger="spring")["windows"][0]
         assert (window["train_period"], window["test_period"]) == ("early", "late")
+
+
+def _selection_row(value: float, period: str, trades: int, avg: float | None, end: str = "2023-12-29") -> dict:
+    return {
+        "param": "top_n",
+        "focus_trigger": "",
+        "value": value,
+        "period_key": period,
+        "end": end,
+        "total_trades": trades,
+        "overall_avg_ret_pct": avg,
+    }
+
+
+class TestSelectionLift:
+    def test_measures_each_period_against_the_unfiltered_pool(self):
+        rows = [
+            _selection_row(0, "p1", 900, -1.0, end="2022-10-31"),
+            _selection_row(1, "p1", 120, 0.8, end="2022-10-31"),
+            _selection_row(0, "p2", 800, -0.5, end="2023-12-29"),
+            _selection_row(1, "p2", 110, 1.5, end="2023-12-29"),
+        ]
+        report = build_selection_lift(rows, param="top_n")
+        assert report["status"] == "pass"
+        assert report["baseline_value"] == 0
+        assert [item["lift_pct"] for item in report["comparisons"]] == [pytest.approx(1.8), pytest.approx(2.0)]
+
+    def test_any_period_without_lift_fails(self):
+        rows = [
+            _selection_row(0, "p1", 900, -1.0, end="2022-10-31"),
+            _selection_row(1, "p1", 120, 0.8, end="2022-10-31"),
+            _selection_row(0, "p2", 800, -0.5, end="2023-12-29"),
+            _selection_row(1, "p2", 110, -2.0, end="2023-12-29"),
+        ]
+        assert build_selection_lift(rows, param="top_n")["status"] == "fail"
+
+    def test_period_missing_its_baseline_is_skipped(self):
+        rows = [
+            _selection_row(0, "p1", 900, -1.0, end="2022-10-31"),
+            _selection_row(1, "p1", 120, 0.8, end="2022-10-31"),
+            _selection_row(1, "p2", 110, 1.5, end="2023-12-29"),
+        ]
+        report = build_selection_lift(rows, param="top_n")
+        assert [item["period_key"] for item in report["comparisons"]] == ["p1"]
+        assert report["status"] == "review"
+
+    def test_report_routes_top_n_to_lift_and_renders_it(self):
+        rows = [
+            _selection_row(0, "p1", 900, -1.0, end="2022-10-31"),
+            _selection_row(1, "p1", 120, 0.8, end="2022-10-31"),
+            _selection_row(0, "p2", 800, -0.5, end="2023-12-29"),
+            _selection_row(1, "p2", 110, 1.5, end="2023-12-29"),
+        ]
+        report = build_trigger_report(rows)
+        assert report["status"] == "pass"
+        assert "windows" not in report["params"][0]
+        assert "选择层增益" in render_trigger_report(report)
 
 
 class TestMatrixArtifacts:

@@ -19,6 +19,7 @@ from workflows.backtest_artifacts import (
 from workflows.backtest_cli import parse_hold_days_list
 from workflows.backtest_defaults import FUNNEL_AI_SELECTION_MODE
 from workflows.backtest_trigger_matrix import (
+    SELECTION_PARAM,
     TriggerGrid,
     build_matrix_row,
     parse_trigger_grid,
@@ -113,12 +114,16 @@ def _run_trigger_matrix(args, start_dt, end_dt, out_dir: Path, grid: TriggerGrid
     period_key = str(getattr(args, "period_key", "") or "").strip()
     rows: list[dict] = []
     for value in grid.values:
-        request = request_from_args(args, start_dt, end_dt, hold_days)
-        request = replace(request, funnel_overrides=((grid.param, value),))
+        # top_n 是执行层参数，不在 FunnelConfig 里；其余扫描项都是漏斗检测阈值。
+        selection_sweep = grid.param == SELECTION_PARAM
+        value_args = Namespace(**{**vars(args), "top_n": int(value)}) if selection_sweep else args
+        request = request_from_args(value_args, start_dt, end_dt, hold_days)
+        if not selection_sweep:
+            request = replace(request, funnel_overrides=((grid.param, value),))
         trades_df, summary = run_backtest_request(request, progress=progress)
         value_dir = out_dir / trigger_value_dir(getattr(args, "grid_prefix", "backtest-trigger"), grid.param, value)
         value_dir.mkdir(parents=True, exist_ok=True)
-        _write_result(args, start_dt, end_dt, value_dir, hold_days, trades_df, summary)
+        _write_result(value_args, start_dt, end_dt, value_dir, hold_days, trades_df, summary)
         rows.append(
             build_matrix_row(
                 grid=grid,
