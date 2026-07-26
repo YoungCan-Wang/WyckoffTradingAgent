@@ -3,6 +3,7 @@ import { Check, LoaderCircle, Wrench, X } from 'lucide-react'
 import type { UIMessage } from 'ai'
 import { MarkdownContent } from '@/components/markdown'
 import { usePreferences } from '@/lib/preferences'
+import { parseAgentRunRecord, type AgentRunRecord } from './agent-runs'
 import { type MessagePart, type ToolPart } from './messages'
 import type { PinStockInput } from './types'
 import { ToolStructuredOutput } from './tool-structured-cards'
@@ -30,18 +31,24 @@ export const MessageBubble = memo(function MessageBubble({
   approve,
   deny,
   onPinStock,
+  agentRunRecords,
+  onCancelAgentRun,
+  onInterpretAgentRun,
 }: {
   message: UIMessage
   isActive: boolean
   approve: (approvalId: string) => void
   deny: (approvalId: string) => void
   onPinStock: (item: PinStockInput) => void
+  agentRunRecords: Record<string, AgentRunRecord>
+  onCancelAgentRun: (runId: string) => Promise<void>
+  onInterpretAgentRun: (runId: string) => void
 }) {
   const isUser = message.role === 'user'
   return (
     <div data-message-id={message.id} className={`scroll-mt-4 flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div className={isUser ? 'max-w-[78%] rounded-2xl bg-primary px-4 py-2.5 text-sm text-primary-foreground whitespace-pre-wrap' : 'w-full text-sm leading-7 text-foreground'}>
-        {isUser ? <UserText message={message} /> : <AssistantParts message={message} isActive={isActive} approve={approve} deny={deny} onPinStock={onPinStock} />}
+        {isUser ? <UserText message={message} /> : <AssistantParts message={message} isActive={isActive} approve={approve} deny={deny} onPinStock={onPinStock} agentRunRecords={agentRunRecords} onCancelAgentRun={onCancelAgentRun} onInterpretAgentRun={onInterpretAgentRun} />}
       </div>
     </div>
   )
@@ -67,12 +74,18 @@ function AssistantParts({
   approve,
   deny,
   onPinStock,
+  agentRunRecords,
+  onCancelAgentRun,
+  onInterpretAgentRun,
 }: {
   message: UIMessage
   isActive: boolean
   approve: (id: string) => void
   deny: (id: string) => void
   onPinStock: (item: PinStockInput) => void
+  agentRunRecords: Record<string, AgentRunRecord>
+  onCancelAgentRun: (runId: string) => Promise<void>
+  onInterpretAgentRun: (runId: string) => void
 }) {
   const items = buildAssistantRenderItems(message.parts as MessagePart[])
   return (
@@ -80,7 +93,7 @@ function AssistantParts({
       {items.map((item) => {
         if (item.type === 'text') return <MarkdownContent key={item.key} content={item.content} />
         if (item.type === 'tool-group') return <ToolRunSummary key={item.key} parts={item.parts} isActive={isActive} />
-        if (item.type === 'tool') return <ToolPartCard key={item.key} part={item.part} approve={approve} deny={deny} onPinStock={onPinStock} />
+        if (item.type === 'tool') return <ToolPartCard key={item.key} part={item.part} approve={approve} deny={deny} onPinStock={onPinStock} agentRunRecords={agentRunRecords} onCancelAgentRun={onCancelAgentRun} onInterpretAgentRun={onInterpretAgentRun} />
         return null
       })}
     </>
@@ -99,15 +112,23 @@ function ToolPartCard({
   approve,
   deny,
   onPinStock,
+  agentRunRecords,
+  onCancelAgentRun,
+  onInterpretAgentRun,
 }: {
   part: ToolPart
   approve: (id: string) => void
   deny: (id: string) => void
   onPinStock: (item: PinStockInput) => void
+  agentRunRecords: Record<string, AgentRunRecord>
+  onCancelAgentRun: (runId: string) => Promise<void>
+  onInterpretAgentRun: (runId: string) => void
 }) {
   const { t } = usePreferences()
   const toolName = getToolName(part)
   const stateLabel = toolStateLabel(part, t)
+  const initialRun = toolName === 'run_python_research' ? parseAgentRunRecord(part.output) : null
+  const sandboxRun = initialRun ? agentRunRecords[initialRun.id] || initialRun : null
   return (
     <div className={`my-2 rounded-md border px-3 py-2 ${toolToneClass(toolName)}`}>
       <div className="flex items-center justify-between gap-3">
@@ -115,9 +136,13 @@ function ToolPartCard({
           <Wrench size={12} className="shrink-0" />
           <span className="truncate text-[12px] font-medium">{formatToolName(toolName, t)}</span>
         </span>
-        <span className="shrink-0 text-[10px] opacity-75">{stateLabel}</span>
+        <span className="shrink-0 text-[10px] opacity-75">{sandboxRun ? sandboxRunStatusLabel(sandboxRun, t) : stateLabel}</span>
       </div>
-      <ToolStructuredOutput toolName={toolName} input={part.input} output={part.output} onPinStock={onPinStock} />
+      {sandboxRun ? (
+        <SandboxRunDetails run={sandboxRun} onCancel={onCancelAgentRun} onInterpret={onInterpretAgentRun} />
+      ) : (
+        <ToolStructuredOutput toolName={toolName} input={part.input} output={part.output} onPinStock={onPinStock} />
+      )}
       {part.errorText && <p className="mt-2 text-xs text-red-700 dark:text-red-200">{part.errorText}</p>}
       {part.state === 'approval-requested' && part.approval?.id && (
         <div className="mt-3 flex items-center gap-2">
@@ -133,6 +158,55 @@ function ToolPartCard({
       )}
     </div>
   )
+}
+
+function SandboxRunDetails({
+  run,
+  onCancel,
+  onInterpret,
+}: {
+  run: AgentRunRecord
+  onCancel: (runId: string) => Promise<void>
+  onInterpret: (runId: string) => void
+}) {
+  const { t } = usePreferences()
+  const output = run.stdout?.trim()
+  const error = run.error || run.stderr?.trim()
+  return (
+    <div className="mt-2 space-y-2 text-xs leading-5">
+      <p>{sandboxRunHint(run, t)}</p>
+      {typeof run.exitCode === 'number' && <p className="text-[10px] opacity-75">{t('chat.sandboxExitCode').replace('{code}', String(run.exitCode))}</p>}
+      {output && <pre className="max-h-48 overflow-auto rounded bg-background/70 px-2 py-1.5 font-mono text-[11px] leading-4 text-foreground whitespace-pre-wrap">{output}</pre>}
+      {error && <pre className="max-h-32 overflow-auto rounded bg-red-950/5 px-2 py-1.5 font-mono text-[11px] leading-4 text-red-800 whitespace-pre-wrap dark:bg-red-500/10 dark:text-red-100">{error}</pre>}
+      {run.usage && <p className="text-[10px] opacity-75">{t('chat.sandboxUsage').replace('{cpu}', String(run.usage.activeCpuUsageMs)).replace('{network}', String(run.usage.networkIngressBytes + run.usage.networkEgressBytes))}</p>}
+      {run.status === 'queued' && (
+        <button type="button" onClick={() => void onCancel(run.id)} className="rounded-md border border-current/30 bg-background/60 px-2 py-1 text-[11px] font-medium hover:bg-background">
+          {t('chat.sandboxCancel')}
+        </button>
+      )}
+      {run.status === 'completed' && (
+        <button type="button" onClick={() => onInterpret(run.id)} className="rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground hover:bg-primary/90">
+          {t('chat.sandboxInterpret')}
+        </button>
+      )}
+    </div>
+  )
+}
+
+function sandboxRunStatusLabel(run: AgentRunRecord, t: ReturnType<typeof usePreferences>['t']): string {
+  if (run.status === 'queued') return t('chat.sandboxQueued')
+  if (run.status === 'running') return t('chat.sandboxRunning')
+  if (run.status === 'completed') return t('chat.sandboxCompleted')
+  if (run.status === 'cancelled') return t('chat.sandboxCancelled')
+  return t('chat.sandboxFailed')
+}
+
+function sandboxRunHint(run: AgentRunRecord, t: ReturnType<typeof usePreferences>['t']): string {
+  if (run.status === 'queued') return t('chat.sandboxQueuedHint')
+  if (run.status === 'running') return t('chat.sandboxRunningHint')
+  if (run.status === 'completed') return t('chat.sandboxCompletedHint')
+  if (run.status === 'cancelled') return t('chat.sandboxCancelledHint')
+  return t('chat.sandboxFailedHint')
 }
 
 function ToolRunSummary({ parts, isActive }: { parts: ToolPart[]; isActive: boolean }) {

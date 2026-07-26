@@ -14,9 +14,10 @@ from workflows.backtest_defaults import (
     DEFAULT_CASH_PORTFOLIO_INITIAL_CASH,
     DEFAULT_CASH_PORTFOLIO_LOT_SIZE,
     DEFAULT_CASH_PORTFOLIO_MAX_POSITIONS,
-    DEFAULT_CASH_PORTFOLIO_SMALL_TRADE_FEE,
-    DEFAULT_CASH_PORTFOLIO_SMALL_TRADE_THRESHOLD,
+    DEFAULT_CASH_PORTFOLIO_MIN_COMMISSION,
+    DEFAULT_CASH_PORTFOLIO_STAMP_DUTY_RATE,
     DEFAULT_CASH_PORTFOLIO_STYLES,
+    DEFAULT_CASH_PORTFOLIO_TRANSFER_FEE_RATE,
     DEFAULT_ENTRY_PRICE_FALLBACK,
     DEFAULT_ENTRY_PRICE_TIME,
     DEFAULT_EXIT_MODE,
@@ -31,6 +32,7 @@ from workflows.backtest_defaults import (
     DEFAULT_WBT_FEE_RATE,
     DEFAULT_WBT_N_JOBS,
 )
+from workflows.backtest_strategy_variants import VARIANT_LABELS
 
 
 def build_backtest_parser() -> argparse.ArgumentParser:
@@ -48,6 +50,12 @@ def build_backtest_parser() -> argparse.ArgumentParser:
         help="共享一次信号计算的参数格，格式 hold:stop:take:trail，多个格用逗号分隔",
     )
     parser.add_argument("--grid-prefix", default="backtest-grid", help="参数格输出目录名前缀")
+    parser.add_argument(
+        "--trigger-grid",
+        default="",
+        help="参数矩阵，格式 spring_vol_ratio=1.3,1.5,1.8 或 top_n=0,1；每个取值都会完整重跑漏斗",
+    )
+    parser.add_argument("--period-key", default="", help="参数矩阵的周期标签，用于跨周期聚合")
     return parser
 
 
@@ -161,9 +169,9 @@ def _add_metadata_and_cost_args(parser: argparse.ArgumentParser) -> None:
 def _add_signal_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--strategy-variant",
-        choices=["live", "A", "B", "C", "D", "E", "F", "G", "H", "I"],
+        choices=tuple(VARIANT_LABELS),
         default="live",
-        help="策略消融组：live=生产配置；A=基线；B-E=经典形态研究；F-I=A股实证入场研究",
+        help="策略消融组：live=生产配置；A=基线；B-E=经典形态研究；F-P=A股实证研究",
     )
     parser.add_argument(
         "--regime-filter",
@@ -227,12 +235,23 @@ def _add_cash_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-positions", type=int, default=DEFAULT_CASH_PORTFOLIO_MAX_POSITIONS)
     parser.add_argument("--commission-rate", type=float, default=DEFAULT_CASH_PORTFOLIO_COMMISSION_RATE)
     parser.add_argument(
-        "--small-trade-threshold",
+        "--min-commission",
         type=float,
-        default=DEFAULT_CASH_PORTFOLIO_SMALL_TRADE_THRESHOLD,
-        help="现金账户手续费小额成交阈值",
+        default=DEFAULT_CASH_PORTFOLIO_MIN_COMMISSION,
+        help="单笔佣金最低收费（元）",
     )
-    parser.add_argument("--small-trade-fee", type=float, default=DEFAULT_CASH_PORTFOLIO_SMALL_TRADE_FEE)
+    parser.add_argument(
+        "--stamp-duty-rate",
+        type=float,
+        default=DEFAULT_CASH_PORTFOLIO_STAMP_DUTY_RATE,
+        help="卖出印花税率，单边征收",
+    )
+    parser.add_argument(
+        "--transfer-fee-rate",
+        type=float,
+        default=DEFAULT_CASH_PORTFOLIO_TRANSFER_FEE_RATE,
+        help="过户费率，买卖双边征收",
+    )
     parser.add_argument("--lot-size", type=int, default=DEFAULT_CASH_PORTFOLIO_LOT_SIZE)
     parser.add_argument(
         "--portfolio-styles",

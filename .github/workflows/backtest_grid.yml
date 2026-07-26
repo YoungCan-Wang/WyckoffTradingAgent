@@ -77,8 +77,9 @@ env:
   # confirmed-only 下 confirmation_only 与 slot_equal_4 等价，默认网格不重复计算。
   BT_PORTFOLIO_STYLES: "slot_equal_4,probe_add,trend_pyramid,concentrated_swap"
   BT_COMMISSION_RATE: "0.0002"
-  BT_SMALL_TRADE_THRESHOLD: "10000"
-  BT_SMALL_TRADE_FEE: "5"
+  BT_MIN_COMMISSION: "5"
+  BT_STAMP_DUTY_RATE: "0.0005"
+  BT_TRANSFER_FEE_RATE: "0.00001"
   # off=静态策略；shadow=应用归因调权做回测验证；on=仅正式批准后进入正式调权。
   FUNNEL_DYNAMIC_POLICY: ${{ vars.FUNNEL_DYNAMIC_POLICY || secrets.FUNNEL_DYNAMIC_POLICY || 'shadow' }}
   FUNNEL_DYNAMIC_POLICY_HORIZON: "5"
@@ -94,8 +95,9 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
-        period_key: [recent_2m, recent_6m, bull_2020, bear_2022]
+        period_key: [recent_2m, recent_6m, bull_2020, bear_2022, sideways_2023, volatile_2024]
     env:
       PYTHONUNBUFFERED: "1"
       TICKFLOW_API_KEY: ${{ secrets.TICKFLOW_API_KEY }}
@@ -139,6 +141,12 @@ jobs:
           elif [ "$PERIOD" = "bear_2022" ]; then
             echo "BT_START=2021-12-13" >> "$GITHUB_ENV"
             echo "BT_END=2022-10-31" >> "$GITHUB_ENV"
+          elif [ "$PERIOD" = "sideways_2023" ]; then
+            echo "BT_START=2023-01-03" >> "$GITHUB_ENV"
+            echo "BT_END=2023-12-29" >> "$GITHUB_ENV"
+          elif [ "$PERIOD" = "volatile_2024" ]; then
+            echo "BT_START=2024-01-02" >> "$GITHUB_ENV"
+            echo "BT_END=2024-12-31" >> "$GITHUB_ENV"
           elif [ "$PERIOD" = "custom" ]; then
             if [ -z "$BT_END" ]; then
               echo "BT_END=$(TZ=Asia/Shanghai date -d '-1 day' +%Y-%m-%d)" >> "$GITHUB_ENV"
@@ -325,8 +333,9 @@ jobs:
             --max-positions "${BT_MAX_POSITIONS}" \
             --portfolio-styles "${BT_PORTFOLIO_STYLES}" \
             --commission-rate "${BT_COMMISSION_RATE}" \
-            --small-trade-threshold "${BT_SMALL_TRADE_THRESHOLD}" \
-            --small-trade-fee "${BT_SMALL_TRADE_FEE}" \
+            --min-commission "${BT_MIN_COMMISSION}" \
+            --stamp-duty-rate "${BT_STAMP_DUTY_RATE}" \
+            --transfer-fee-rate "${BT_TRANSFER_FEE_RATE}" \
             --exit-mode sltp \
             --stop-loss 0 \
             --take-profit 0 \
@@ -353,7 +362,7 @@ jobs:
           if-no-files-found: warn
 
   # ────────────────────────────────────────────────
-  # Phase 2b: 固定退出参数，仅切换 A/B/C/D/E 策略能力做消融对比
+  # Phase 2b: 固定退出参数，验证弱水温缩仓与 CAUTION 信号快速退出
   # ────────────────────────────────────────────────
   strategy_compare:
     name: Strategy ${{ matrix.period_key }} / ${{ matrix.variant }}
@@ -363,11 +372,11 @@ jobs:
       FUNNEL_DYNAMIC_POLICY: "off"
     strategy:
       fail-fast: false
-      max-parallel: 20
+      max-parallel: 15
       matrix:
-        period_key: [recent_2m, recent_6m, bull_2020, bear_2022]
-        # 经典 B-E 已完成一次消融且未通过，默认算力转向 A 股实证入场实验。
-        variant: [A, F, G, H, I]
+        period_key: [recent_2m, recent_6m, bull_2020, bear_2022, sideways_2023, volatile_2024]
+        # A 为基线；M 缩小弱水温仓位；O 拦截 NEUTRAL Spring 后保留空仓。
+        variant: [A, M, O]
     steps:
       - name: Resolve period dates
         id: period
@@ -400,6 +409,12 @@ jobs:
           elif [ "$PERIOD" = "bear_2022" ]; then
             echo "BT_START=2021-12-13" >> "$GITHUB_ENV"
             echo "BT_END=2022-10-31" >> "$GITHUB_ENV"
+          elif [ "$PERIOD" = "sideways_2023" ]; then
+            echo "BT_START=2023-01-03" >> "$GITHUB_ENV"
+            echo "BT_END=2023-12-29" >> "$GITHUB_ENV"
+          elif [ "$PERIOD" = "volatile_2024" ]; then
+            echo "BT_START=2024-01-02" >> "$GITHUB_ENV"
+            echo "BT_END=2024-12-31" >> "$GITHUB_ENV"
           elif [ "$PERIOD" = "custom" ]; then
             if [ -z "$BT_END" ]; then
               echo "BT_END=$(TZ=Asia/Shanghai date -d '-1 day' +%Y-%m-%d)" >> "$GITHUB_ENV"
@@ -460,8 +475,9 @@ jobs:
             --max-positions "$BT_MAX_POSITIONS" \
             --portfolio-styles slot_equal_4 \
             --commission-rate "$BT_COMMISSION_RATE" \
-            --small-trade-threshold "$BT_SMALL_TRADE_THRESHOLD" \
-            --small-trade-fee "$BT_SMALL_TRADE_FEE" \
+            --min-commission "$BT_MIN_COMMISSION" \
+            --stamp-duty-rate "$BT_STAMP_DUTY_RATE" \
+            --transfer-fee-rate "$BT_TRANSFER_FEE_RATE" \
             --exit-mode sltp \
             --stop-loss -8 \
             --take-profit 18 \
@@ -500,7 +516,7 @@ jobs:
           PERIOD: ${{ inputs.period || 'recent_6m' }}
         run: |
           if [ "$PERIOD" = "all_defined" ]; then
-            echo "BT_PERIOD_LABEL=recent_6m,bull_2020,bear_2022" >> "$GITHUB_ENV"
+            echo "BT_PERIOD_LABEL=recent_6m,bull_2020,bear_2022,sideways_2023,volatile_2024" >> "$GITHUB_ENV"
             echo "BT_START=multi" >> "$GITHUB_ENV"
             echo "BT_END=multi" >> "$GITHUB_ENV"
           elif [ "$PERIOD" = "recent_2m" ]; then
@@ -515,6 +531,14 @@ jobs:
             echo "BT_PERIOD_LABEL=bear_2022" >> "$GITHUB_ENV"
             echo "BT_START=2021-12-13" >> "$GITHUB_ENV"
             echo "BT_END=2022-10-31" >> "$GITHUB_ENV"
+          elif [ "$PERIOD" = "sideways_2023" ]; then
+            echo "BT_PERIOD_LABEL=sideways_2023" >> "$GITHUB_ENV"
+            echo "BT_START=2023-01-03" >> "$GITHUB_ENV"
+            echo "BT_END=2023-12-29" >> "$GITHUB_ENV"
+          elif [ "$PERIOD" = "volatile_2024" ]; then
+            echo "BT_PERIOD_LABEL=volatile_2024" >> "$GITHUB_ENV"
+            echo "BT_START=2024-01-02" >> "$GITHUB_ENV"
+            echo "BT_END=2024-12-31" >> "$GITHUB_ENV"
           elif [ "$PERIOD" = "custom" ]; then
             echo "BT_PERIOD_LABEL=custom" >> "$GITHUB_ENV"
             if [ -z "$BT_END" ]; then
@@ -569,13 +593,21 @@ jobs:
             --generated-at "$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S Asia/Shanghai')"
 
       - name: Build strategy comparison report
+        env:
+          INPUT_PERIOD: ${{ inputs.period || 'recent_6m' }}
         run: |
+          EXTRA_ARGS=()
+          if [ "$INPUT_PERIOD" = "all_defined" ]; then
+            EXTRA_ARGS+=(--require-complete)
+          fi
           python3 scripts/build_backtest_strategy_comparison.py \
             --artifacts-dir artifacts \
             --markdown-output strategy_ablation_report.md \
-            --json-output strategy_ablation_report.json
+            --json-output strategy_ablation_report.json \
+            "${EXTRA_ARGS[@]}"
 
       - name: Upload market backtest report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: backtest-market-report-${{ github.run_number }}

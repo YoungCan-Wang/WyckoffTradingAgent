@@ -81,7 +81,7 @@ Worker 负责鉴权、输入校验、队列控制面和 HMAC 签名。Vercel Nod
 
 每个实际执行都会复用 API 的 `requestId` 并生成独立 `runId`；Worker 用两个 ID 调 bridge，bridge 在 Vercel Runtime Logs 中输出同一对 ID，因此两侧能按 ID 关联。Worker 日志事件为 `sandbox_run.queued|started|retrying|finished|failed|cancelled`，bridge 事件为 `sandbox_bridge.started|finished|rejected|failed`；只包含状态、尝试次数、耗时、退出码、脚本字节数和 CPU/网络用量，不记录 Python 源码、stdout/stderr、HMAC、Token 或原始用户 ID。实时排查可在 `web/apps/api/` 运行 `pnpm exec wrangler tail wyckoff-api --format pretty`，或在 `web/apps/sandbox-bridge/` 运行 `pnpm exec vercel logs https://wyckoff-agent-sandbox.vercel.app --json`；历史 Vercel 日志在项目 Deployment 的 Functions Logs 中查看。
 
-读盘室在沙箱显式开启时会向模型提供 `run_python_research` 工具，但仅在用户明确提出计算需求后使用，且 Vercel AI SDK 必须取得用户确认才会执行。执行时再次校验当前用户的白名单，复用与 REST 端点完全相同的 Redis 记录、超时和删除流程；未开启沙箱或未在白名单中的用户不能经聊天路径绕过这道边界。
+读盘室在沙箱显式开启时会向模型提供 `run_python_research` 工具，但仅在用户明确提出计算需求后使用，且 Vercel AI SDK 必须取得用户确认才会执行。确认后，聊天卡片以当前登录令牌轮询 Worker 的 `GET /api/agent-runs/:id`：它只读取该用户的记录，并在任务进入终态时把最终 stdout、stderr、退出码和用量回填到原工具调用。轮询覆盖当前浏览器保存的各个对话；因此刷新或切走对话不会遗失未终态任务，终态会回写到其原来的对话。用户可在 `queued` 时取消，完成后点“解读结果”才向模型发送基于该终态输出的后续请求；这避免把尚未完成的队列确认误当作研究结论。执行时再次校验当前用户的白名单，复用与 REST 端点完全相同的 Redis 记录、超时和删除流程；未开启沙箱或未在白名单中的用户不能经聊天路径绕过这道边界。
 
 | Worker 变量 | 默认值 | 作用 |
 |---|---:|---|
@@ -698,7 +698,8 @@ TTL：SOS 2 天、Spring 3 天、LPS 3 天、EVR 2 天、Compression 3 天。
 | **美股推荐表现** (`us_recommendation_performance.yml`) | 周二-周六 06:15 | `us_recommendation_performance_job.py` |
 | **数据库维护** (`db_maintenance.yml`) | 周二-周六 06:20 | 清理过期行情、订单、信号、市场信号等滑动窗口数据 |
 | **回测网格** (`backtest_grid.yml`) | 手动触发 | 多周期 × 多交易风格回放，同时输出参数邻域稳定性与按时间前推的 walk-forward 样本外验证 |
-| **策略消融** (`backtest_grid.yml: strategy_compare`) | 随回测网格触发 | 复用同一快照和固定退出参数并行运行 A/B/C/D/E，输出逐周期差异、相对基线判定及规则组 walk-forward |
+| **策略消融** (`backtest_grid.yml: strategy_compare`) | 随回测网格触发 | 复用同一快照并行运行 A/M/O；M 相对 A 验证弱水温缩仓，O 相对 M 验证 NEUTRAL Spring 被拦截后是否应保持空仓、不用其他候选补位，并覆盖五个时间窗口 |
+| **触发阈值标定** (`backtest_trigger_calibration.yml`) | 手动触发 | 按周期 × 取值扇出，每个 job 完整重跑一次全市场漏斗；扫触发阈值时按目标触发器单信号均收做跨周期 walk-forward 选值，扫 `top_n` 时按全样本均收对比选择层增益 |
 
 回测回放在每个历史区间开始时一次性预计算各股票在所有交易日的历史终点位置，日循环直接按整数位置切片；
 切片同时携带已按日期排序的内部标记，避免下游指标反复扫描日期单调性。该优化只替换数据访问方式，不改变

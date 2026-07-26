@@ -281,8 +281,9 @@ def _cash_summary(config: BacktestRunConfig) -> dict:
         "cash_portfolio_enabled": bool(config.performance.cash_portfolio),
         "cash_portfolio_styles_requested": ",".join(config.portfolio_style_list),
         "cash_portfolio_commission_rate": float(cash_cfg.commission_rate),
-        "cash_portfolio_small_trade_threshold": float(cash_cfg.small_trade_threshold),
-        "cash_portfolio_small_trade_fee": float(cash_cfg.small_trade_fee),
+        "cash_portfolio_min_commission": float(cash_cfg.min_commission),
+        "cash_portfolio_stamp_duty_rate": float(cash_cfg.stamp_duty_rate),
+        "cash_portfolio_transfer_fee_rate": float(cash_cfg.transfer_fee_rate),
         "cash_portfolio_lot_size": int(cash_cfg.lot_size),
     }
 

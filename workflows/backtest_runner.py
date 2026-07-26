@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from argparse import Namespace
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from core.backtest_run import parse_date
@@ -18,6 +18,14 @@ from workflows.backtest_artifacts import (
 )
 from workflows.backtest_cli import parse_hold_days_list
 from workflows.backtest_defaults import FUNNEL_AI_SELECTION_MODE
+from workflows.backtest_trigger_matrix import (
+    SELECTION_PARAM,
+    TriggerGrid,
+    build_matrix_row,
+    parse_trigger_grid,
+    trigger_value_dir,
+    write_matrix_artifacts,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +39,9 @@ def run_backtest_runner(args, progress=None) -> int:
     end_dt = parse_date(args.end)
     out_dir = Path(args.output_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
+    trigger_grid = parse_trigger_grid(getattr(args, "trigger_grid", ""))
+    if trigger_grid:
+        return _run_trigger_matrix(args, start_dt, end_dt, out_dir, trigger_grid, progress)
     grid_cells = parse_grid_cells(getattr(args, "grid_cells", ""))
     if grid_cells:
         return _run_grid_suite(args, start_dt, end_dt, out_dir, grid_cells, progress)
@@ -95,6 +106,35 @@ def _run_grid_suite(args, start_dt, end_dt, out_dir: Path, cells: list[GridCell]
         cell_dir = out_dir / _grid_cell_dir(getattr(args, "grid_prefix", "backtest-grid"), cell)
         cell_dir.mkdir(parents=True, exist_ok=True)
         _write_result(item, start_dt, end_dt, cell_dir, cell.hold_days, trades_df, summary)
+    return 0
+
+
+def _run_trigger_matrix(args, start_dt, end_dt, out_dir: Path, grid: TriggerGrid, progress) -> int:
+    hold_days = int(args.hold_days)
+    period_key = str(getattr(args, "period_key", "") or "").strip()
+    rows: list[dict] = []
+    for value in grid.values:
+        # top_n 是执行层参数，不在 FunnelConfig 里；其余扫描项都是漏斗检测阈值。
+        selection_sweep = grid.param == SELECTION_PARAM
+        value_args = Namespace(**{**vars(args), "top_n": int(value)}) if selection_sweep else args
+        request = request_from_args(value_args, start_dt, end_dt, hold_days)
+        if not selection_sweep:
+            request = replace(request, funnel_overrides=((grid.param, value),))
+        trades_df, summary = run_backtest_request(request, progress=progress)
+        value_dir = out_dir / trigger_value_dir(getattr(args, "grid_prefix", "backtest-trigger"), grid.param, value)
+        value_dir.mkdir(parents=True, exist_ok=True)
+        _write_result(value_args, start_dt, end_dt, value_dir, hold_days, trades_df, summary)
+        rows.append(
+            build_matrix_row(
+                grid=grid,
+                value=value,
+                period_key=period_key,
+                start_dt=start_dt,
+                end_dt=end_dt,
+                summary=summary,
+            )
+        )
+    write_matrix_artifacts(out_dir, grid, rows)
     return 0
 
 
@@ -172,8 +212,9 @@ def request_from_args(args, start_dt, end_dt, hold_days: int) -> BacktestWorkflo
         initial_cash=args.initial_cash,
         max_positions=args.max_positions,
         commission_rate=args.commission_rate,
-        small_trade_threshold=args.small_trade_threshold,
-        small_trade_fee=args.small_trade_fee,
+        min_commission=args.min_commission,
+        stamp_duty_rate=args.stamp_duty_rate,
+        transfer_fee_rate=args.transfer_fee_rate,
         lot_size=args.lot_size,
         portfolio_styles=args.portfolio_styles,
     )

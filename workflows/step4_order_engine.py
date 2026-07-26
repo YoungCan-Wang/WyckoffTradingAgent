@@ -11,6 +11,7 @@ from workflows.step4_text import clean_text, contains_keyword, normalize_stage, 
 DEFAULT_STEP4_ORDER_CONFIG = Step4OrderConfig()
 
 _SENTINEL = object()
+_T_PLUS_ONE_REJECT = "T+1限制: 当日买入当日不可卖出"
 
 
 def _format_wyckoff_context(
@@ -141,12 +142,14 @@ class WyckoffOrderEngine:
         atr_map: dict[str, float] | None = None,
         market_regime: str | None = None,
         config: Step4OrderConfig | None = None,
+        trade_date: str = "",
     ) -> None:
         self.total_equity = float(max(total_equity, 0.0))
         self.free_cash = float(max(free_cash, 0.0))
         self.position_map = position_map
         self.latest_price_map = latest_price_map
         self.atr_map = atr_map or {}
+        self.trade_date = trade_date
         self.market_regime = normalize_regime(market_regime)
         self.config = config or DEFAULT_STEP4_ORDER_CONFIG
         probe_limit = self.config.probe_budget_limit
@@ -211,6 +214,7 @@ class WyckoffOrderEngine:
             current_price=current_price,
             pos=pos,
             held_shares=int(pos.shares) if pos else 0,
+            sellable_shares=pos.sellable_shares(self.trade_date) if pos else 0,
             atr14=self.atr_map.get(dec.code),
             original_stop_loss=dec.stop_loss,
             effective_stop_loss=dec.stop_loss,
@@ -336,15 +340,18 @@ class WyckoffOrderEngine:
         )
 
     def _process_exit(self, ctx: OrderContext) -> ExecutionTicket:
-        sell_shares = int(max(ctx.held_shares, 0))
-        if sell_shares <= 0:
+        if ctx.held_shares <= 0:
             return self._no_trade(ctx.dec, ctx.name, "无可卖持仓")
-        return self._sell_ticket(ctx, sell_shares, ctx.audit_parts + ["sell_with_slippage"])
+        if ctx.sellable_shares <= 0:
+            return self._no_trade(ctx.dec, ctx.name, _T_PLUS_ONE_REJECT)
+        return self._sell_ticket(ctx, ctx.sellable_shares, ctx.audit_parts + ["sell_with_slippage"])
 
     def _process_trim(self, ctx: OrderContext) -> ExecutionTicket:
+        if ctx.held_shares > 0 and ctx.sellable_shares <= 0:
+            return self._no_trade(ctx.dec, ctx.name, _T_PLUS_ONE_REJECT)
         ratio = ctx.dec.trim_ratio if ctx.dec.trim_ratio is not None else 0.5
         ratio = min(max(ratio, 0.1), 1.0)
-        sell_shares = int(math.floor(ctx.held_shares * ratio / 100.0) * 100)
+        sell_shares = int(math.floor(ctx.sellable_shares * ratio / 100.0) * 100)
         if sell_shares < 100:
             return self._no_trade(ctx.dec, ctx.name, "减仓股数不足100股")
         return self._sell_ticket(ctx, sell_shares, ctx.audit_parts + [f"trim_ratio={ratio:.2f}", "sell_with_slippage"])
@@ -593,15 +600,25 @@ class WyckoffOrderEngine:
         若只是记录而不强制执行，一旦模型误判给出 HOLD，系统就没有最后一道
         防线。这里在 HOLD 分支收口，将其降级为强制卖出。
         """
-        if ctx.held_shares >= 100 and ctx.effective_stop_loss and ctx.current_price <= ctx.effective_stop_loss:
-            ctx.dec.reason = (
-                f"系统强制止损: 现价{ctx.current_price:.2f}已跌破止损线{ctx.effective_stop_loss:.2f}，"
-                f"覆盖模型HOLD建议；原建议: {ctx.dec.reason}"
+        breached = ctx.effective_stop_loss and ctx.current_price <= ctx.effective_stop_loss
+        if not (ctx.held_shares >= 100 and breached):
+            return self._hold_from_context(ctx)
+        if ctx.sellable_shares < 100:
+            return self._hold_from_context(
+                ctx,
+                ctx.audit_parts + ["stop_breach_blocked_by_t1"],
+                reason=(
+                    f"已跌破止损线{ctx.effective_stop_loss:.2f}，但当日买入受 T+1 限制无法卖出，"
+                    f"顺延至下一交易日执行；原建议: {ctx.dec.reason}"
+                ),
             )
-            ctx.action = "EXIT"
-            ctx.audit_parts.append(f"system_stop_breach_override(price={ctx.current_price:.2f})")
-            return self._sell_ticket(ctx, int(ctx.held_shares), ctx.audit_parts + ["forced_exit_stop_breach"])
-        return self._hold_from_context(ctx)
+        ctx.dec.reason = (
+            f"系统强制止损: 现价{ctx.current_price:.2f}已跌破止损线{ctx.effective_stop_loss:.2f}，"
+            f"覆盖模型HOLD建议；原建议: {ctx.dec.reason}"
+        )
+        ctx.action = "EXIT"
+        ctx.audit_parts.append(f"system_stop_breach_override(price={ctx.current_price:.2f})")
+        return self._sell_ticket(ctx, ctx.sellable_shares, ctx.audit_parts + ["forced_exit_stop_breach"])
 
     def _no_trade(self, dec: DecisionItem, name: str, reason: str) -> ExecutionTicket:
         return ExecutionTicket(

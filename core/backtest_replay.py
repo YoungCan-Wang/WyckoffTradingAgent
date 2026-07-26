@@ -17,7 +17,9 @@ from core.a_share_entry_research import (
     AShareEntryResearchPolicy,
     calibrated_confirmation_score,
     confirmed_signal_allowed,
+    entry_weight_multiplier,
     market_context_allows_entry,
+    research_max_hold_days,
 )
 from core.ai_candidate_allocation import AiCandidateAllocationConfig
 from core.backtest_execution import (
@@ -27,6 +29,7 @@ from core.backtest_execution import (
     build_daily_ohlc_lookup,
     calc_trade_excursion_pct,
     entry_on_or_after,
+    market_of_board,
     resolve_trade_exit,
 )
 from core.backtest_selection import combine_trigger_scores, select_ai_input_codes
@@ -147,6 +150,7 @@ class _ConfirmedSignals:
     score_map: dict[str, float]
     track_map: dict[str, str]
     trigger_map: dict[str, str]
+    entry_weight_map: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -156,6 +160,8 @@ class _RankedSelection:
     track_map: dict[str, str]
     trigger_name_map: dict[str, tuple[float, str]]
     confirmed_codes: frozenset[str] = field(default_factory=frozenset)
+    entry_weight_map: dict[str, float] = field(default_factory=dict)
+    signal_type_map: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -372,6 +378,8 @@ def _limit_probe_only_selection(
             {code: selected.track_map[code] for code in kept if code in selected.track_map},
             {code: selected.trigger_name_map[code] for code in kept if code in selected.trigger_name_map},
             frozenset(code for code in kept if code in selected.confirmed_codes),
+            {code: selected.entry_weight_map[code] for code in kept if code in selected.entry_weight_map},
+            {code: selected.signal_type_map[code] for code in kept if code in selected.signal_type_map},
         ),
         len(selected.codes) - 1,
     )
@@ -498,7 +506,7 @@ def _select_ranked_codes(
     sector_map: dict[str, str],
     config: BacktestReplayConfig,
 ) -> tuple[_RankedSelection | None, int]:
-    confirmed = _confirmed_signals(ctx, pending_pool, sector_map, config.a_share_entry_research)
+    confirmed = _confirmed_signals(ctx, pending_pool, sector_map, config.a_share_entry_research, top_n=config.top_n)
     selected_codes, score_map, track_map = select_ai_input_codes(
         result=ctx.result,
         day_df_map=ctx.day_df_map,
@@ -522,6 +530,8 @@ def _select_ranked_codes(
             track_map,
             _name_score_map(ctx.result, confirmed, prefer_confirmed=config.pending_mode == "only"),
             frozenset(confirmed.codes),
+            confirmed.entry_weight_map,
+            confirmed.trigger_map,
         ),
         len(confirmed.codes),
     )
@@ -532,6 +542,8 @@ def _confirmed_signals(
     pending_pool: PendingPool | None,
     sector_map: dict[str, str],
     policy: AShareEntryResearchPolicy | None = None,
+    *,
+    top_n: int = 0,
 ) -> _ConfirmedSignals:
     if pending_pool is None:
         return _ConfirmedSignals([], {}, {}, {})
@@ -543,16 +555,18 @@ def _confirmed_signals(
     confirmed_items = pending_pool.tick(ctx.day_df_map, signal_date_str)
     if not market_context_allows_entry(research, regime=ctx.regime, breadth=ctx.breadth):
         return _ConfirmedSignals([], {}, {}, {})
+    locked_codes = _locked_allowed_confirmed_codes(confirmed_items, research, ctx.regime, top_n)
     codes: list[str] = []
     score_map: dict[str, float] = {}
     track_map: dict[str, str] = {}
     trigger_map: dict[str, str] = {}
+    entry_weight_map: dict[str, float] = {}
     for item in confirmed_items:
         signal_type = str(item.get("signal_type", "confirmed"))
-        if not confirmed_signal_allowed(research, signal_type):
-            continue
         code = str(item.get("code", "")).strip()
-        if not code:
+        if not code or (locked_codes is not None and code not in locked_codes):
+            continue
+        if not confirmed_signal_allowed(research, signal_type, ctx.regime):
             continue
         score = calibrated_confirmation_score(research, signal_type, item.get("score"))
         if code not in score_map:
@@ -561,8 +575,30 @@ def _confirmed_signals(
             score_map[code] = score
             track_map[code] = candidate_entry_track(item, fields=("track", "signal_type"))
             trigger_map[code] = signal_type
+            entry_weight_map[code] = entry_weight_multiplier(research, signal_type, ctx.regime)
     codes.sort(key=lambda code: (-candidate_score_value(score_map.get(code)), code))
-    return _ConfirmedSignals(codes, score_map, track_map, trigger_map)
+    return _ConfirmedSignals(codes, score_map, track_map, trigger_map, entry_weight_map)
+
+
+def _locked_allowed_confirmed_codes(
+    confirmed_items: list[dict],
+    policy: AShareEntryResearchPolicy,
+    regime: str,
+    top_n: int,
+) -> frozenset[str] | None:
+    if not policy.no_backfill_on_blocked_confirmed:
+        return None
+    best: dict[str, tuple[float, str]] = {}
+    for item in confirmed_items:
+        code = str(item.get("code", "")).strip()
+        signal_type = str(item.get("signal_type", "confirmed"))
+        score = calibrated_confirmation_score(policy, signal_type, item.get("score"))
+        if code and (code not in best or score > best[code][0]):
+            best[code] = (score, signal_type)
+    ranked = sorted(best, key=lambda code: (-best[code][0], code))
+    if top_n > 0:
+        ranked = ranked[:top_n]
+    return frozenset(code for code in ranked if confirmed_signal_allowed(policy, best[code][1], regime))
 
 
 def _merge_confirmed_metadata(
@@ -666,7 +702,21 @@ def _trade_record_for_code(
     full_df = all_df_map.get(code)
     if full_df is None or full_df.empty:
         return None, False
-    plan, missing_skipped = _entry_plan(full_df, code, ctx, trade_dates, intraday_cache, config)
+    max_hold_days = research_max_hold_days(
+        config.a_share_entry_research,
+        selected.signal_type_map.get(code),
+        ctx.regime,
+        config.hold_days,
+    )
+    plan, missing_skipped = _entry_plan(
+        full_df,
+        code,
+        ctx,
+        trade_dates,
+        intraday_cache,
+        config,
+        max_hold_days=max_hold_days,
+    )
     if plan is None:
         return None, missing_skipped
     day_ohlc = _ohlc_for_code(code, full_df, ohlc_cache)
@@ -680,6 +730,8 @@ def _trade_record_for_code(
         signal_date=ctx.signal_date,
         entry_close=plan.entry_close,
         config=config.exit,
+        code=code,
+        market=market_of_board(config.board),
     )
     if exit_close is None or exit_date is None:
         return None, False
@@ -695,6 +747,8 @@ def _entry_plan(
     trade_dates: list[date],
     intraday_cache: dict,
     config: BacktestReplayConfig,
+    *,
+    max_hold_days: int | None = None,
 ) -> tuple[_EntryPlan | None, bool]:
     entry_close, actual_entry_date, source = entry_on_or_after(
         full_df,
@@ -705,12 +759,13 @@ def _entry_plan(
         fallback=config.entry_price_fallback,
         intraday_cache=intraday_cache,
         intraday_price_fetcher=config.intraday_entry_price_fetcher,
-        skip_limit_up=(config.board != "us"),
+        skip_limit_up=True,
+        market=market_of_board(config.board),
     )
     if entry_close is None or entry_close <= 0 or actual_entry_date is None:
         return None, source == "tail_1455_missing_skip"
     entry_idx = _trade_date_index(trade_dates, actual_entry_date, ctx.idx + 1)
-    max_hold = config.max_atr_hold_days if config.exit.exit_mode == "atr" else config.hold_days
+    max_hold = config.max_atr_hold_days if config.exit.exit_mode == "atr" else max_hold_days or config.hold_days
     exit_idx = entry_idx + max_hold
     if exit_idx >= len(trade_dates) and config.exit.exit_mode != "atr":
         return None, False
@@ -773,6 +828,7 @@ def _make_trade_record(
         mfe_pct=mfe_pct,
         mae_pct=mae_pct,
         signal_confirmed=code in selected.confirmed_codes,
+        entry_weight_multiplier=selected.entry_weight_map.get(code, 1.0),
     )
 
 

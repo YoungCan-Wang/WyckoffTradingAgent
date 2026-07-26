@@ -21,6 +21,19 @@ def test_fetch_market_cap_map_normalizes_cached_values(tmp_path, monkeypatch) ->
     assert market_metadata.fetch_market_cap_map() == {"000001": 123.4}
 
 
+def test_fetch_float_share_map_converts_wan_shares_to_shares(tmp_path, monkeypatch) -> None:
+    import pandas as pd
+
+    class _FakePro:
+        def daily_basic(self, trade_date: str, fields: str):  # noqa: ARG002
+            return pd.DataFrame({"ts_code": ["000001.SZ"], "float_share": [1_940_000.0]})
+
+    monkeypatch.setattr(market_metadata, "FLOAT_SHARE_CACHE", tmp_path / "float_share_cache.json")
+    monkeypatch.setattr(market_metadata, "_tushare_pro", lambda: _FakePro())
+
+    assert market_metadata.fetch_float_share_map() == {"000001": 1.94e10}
+
+
 def test_detect_theme_lines_uses_consecutive_recent_history(tmp_path, monkeypatch) -> None:
     history = tmp_path / "concept_heat_history.json"
     history.write_text(

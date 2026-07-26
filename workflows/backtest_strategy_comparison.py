@@ -14,8 +14,12 @@ from typing import Any
 
 from workflows.backtest_strategy_variants import DEFAULT_COMPARISON_VARIANTS, VARIANT_LABELS
 
+DEFAULT_COMPARISON_PERIODS = ("bull_2020", "bear_2022", "sideways_2023", "volatile_2024", "recent_6m")
+MAX_CASH_DRAWDOWN_PCT = 20.0
 _DIR_PATTERN = re.compile(
-    r"backtest-strategy-(?P<period>recent_2m|recent_6m|bull_2020|bear_2022|custom)-(?P<variant>[A-I])"
+    r"backtest-strategy-"
+    r"(?P<period>recent_2m|recent_6m|bull_2020|bear_2022|sideways_2023|volatile_2024|custom)-"
+    r"(?P<variant>[A-P])"
     r"(?:-\d+)?$"
 )
 
@@ -54,7 +58,7 @@ def load_strategy_comparison_rows(artifacts_dir: Path) -> list[StrategyCompariso
                 cash_drawdown=_cash_metric(content, "现金最大回撤"),
                 cash_trades=_cash_int_metric(content, "成交笔数"),
                 win_rate=_cash_metric(content, "胜率"),
-                avg_return=_metric(content, "平均收益"),
+                avg_return=_cash_trade_average(path.parent),
                 sharpe=_metric(content, r"夏普比(?:\s*\(Sharpe Ratio\))?"),
                 trade_keys=_trade_keys(path.parent),
             )
@@ -64,47 +68,55 @@ def load_strategy_comparison_rows(artifacts_dir: Path) -> list[StrategyCompariso
 
 def build_strategy_comparison(rows: list[StrategyComparisonRow]) -> dict[str, Any]:
     by_variant = _by_variant(rows)
-    evaluations = {
-        variant: _evaluate_variant(variant, values, by_variant.get("A", [])) for variant, values in by_variant.items()
-    }
+    available = {(row.period, row.variant) for row in rows}
+    required = {(period, variant) for period in DEFAULT_COMPARISON_PERIODS for variant in DEFAULT_COMPARISON_VARIANTS}
+    evaluations = {}
+    for variant, values in by_variant.items():
+        reference = "M" if variant == "O" else "A"
+        evaluations[variant] = _evaluate_variant(variant, values, by_variant.get(reference, []), reference)
     return {
-        "status": "ready" if set(DEFAULT_COMPARISON_VARIANTS).issubset(by_variant) else "incomplete",
+        "status": "ready" if required.issubset(available) else "incomplete",
         "baseline": "A",
+        "missing_cells": [f"{period}/{variant}" for period, variant in sorted(required - available)],
         "variant_labels": {key: VARIANT_LABELS[key] for key in by_variant if key in VARIANT_LABELS},
         "rows": [_row_payload(row) for row in sorted(rows, key=lambda row: (row.period, row.variant))],
         "evaluations": evaluations,
         "walk_forward": _walk_forward(rows),
-        "scope": "默认比较 A/F/G/H/I，只改变 confirmed-only 入场筛选或排序；持仓期统一使用固定退出。",
-        "decision_rule": "至少两个周期真实改变入选交易、胜出周期过半、平均收益增量为正，且最大回撤恶化不超过2个百分点。",
+        "scope": "M 相对 A 评估弱水温缩仓；O 相对 M 评估拦截 NEUTRAL Spring 后不补位。",
+        "decision_rule": "全部周期现金收益为正、绝对回撤不超过20%，且真实改变交易、胜出过半、平均增量为正、回撤恶化不超过2个百分点。",
     }
 
 
 def render_strategy_comparison(report: dict[str, Any]) -> str:
     lines = [
-        "# 策略 A/F/G/H/I A股实证消融对比",
+        "# 策略 A/M/O A股实证对比",
         "",
-        "固定同一数据快照、确认口径、组合与退出参数，仅切换 confirmed-only 入场能力。A 为基线。",
-        "F/G 验证弱信号剔除，H 验证 NEUTRAL 广度闸门，I 验证跨触发器分数校准。",
+        "固定同一数据快照、确认口径和组合。A/M/O 共用固定退出。",
+        "M 验证弱水温信号缩仓；O 在 M 上验证拦截 NEUTRAL Spring 后不补位；全部为研究策略。",
         "",
         "| 周期 | 组别 | 现金收益 | 现金回撤 | 成交 | 胜率 | 平均单笔 | 夏普 |",
         "|---|---|---:|---:|---:|---:|---:|---:|",
     ]
     lines.extend(_row_line(row) for row in report.get("rows", []))
+    if report.get("missing_cells"):
+        lines.extend(["", f"- 证据不完整，缺少：{', '.join(report['missing_cells'])}。"])
     lines.extend(
         [
             "",
-            "## 相对 A 组结论",
+            "## 相对参照组结论",
             "",
-            "| 组别 | 共同周期 | 暴露周期 | 改变交易 | 胜出 | 平均收益差 | 最大回撤恶化 | 判定 |",
-            "|---|---:|---:|---:|---:|---:|---:|---|",
+            "| 组别 | 参照 | 共同周期 | 盈利周期 | 暴露周期 | 改变交易 | 胜出 | 平均收益差 | 最大绝对回撤 | 最大回撤恶化 | 判定 |",
+            "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
         ]
     )
     for variant in sorted(key for key in (report.get("evaluations") or {}) if key != "A"):
         item = (report.get("evaluations") or {}).get(variant, {})
         lines.append(
-            f"| {variant} | {item.get('common_periods', 0)} | {item.get('exposure_periods', 0)} | "
+            f"| {variant} | {item.get('reference_variant', 'A')} | {item.get('common_periods', 0)} | "
+            f"{item.get('positive_periods', 0)} | {item.get('exposure_periods', 0)} | "
             f"{item.get('changed_trades', 0)} | {item.get('wins', 0)} | "
-            f"{_fmt(item.get('mean_return_delta'), '%')} | {_fmt(item.get('max_drawdown_worsening'), 'pp')} | "
+            f"{_fmt(item.get('mean_return_delta'), '%')} | {_fmt(item.get('max_abs_drawdown'), '%')} | "
+            f"{_fmt(item.get('max_drawdown_worsening'), 'pp')} | "
             f"{item.get('status', 'missing')} |"
         )
     lines.extend(_walk_forward_lines(report.get("walk_forward") or {}))
@@ -119,10 +131,13 @@ def _by_variant(rows: list[StrategyComparisonRow]) -> dict[str, list[StrategyCom
 
 
 def _evaluate_variant(
-    variant: str, rows: list[StrategyComparisonRow], baseline_rows: list[StrategyComparisonRow]
+    variant: str,
+    rows: list[StrategyComparisonRow],
+    baseline_rows: list[StrategyComparisonRow],
+    reference_variant: str,
 ) -> dict[str, Any]:
     if variant == "A":
-        return {"status": "baseline", "common_periods": len(rows), "wins": 0}
+        return {"status": "baseline", "reference_variant": "A", "common_periods": len(rows), "wins": 0}
     baseline = {row.period: row for row in baseline_rows if row.cash_return is not None}
     pairs = [(baseline[row.period], row) for row in rows if row.period in baseline and row.cash_return is not None]
     deltas = [float(row.cash_return) - float(base.cash_return) for base, row in pairs]
@@ -130,6 +145,8 @@ def _evaluate_variant(
         max(abs(float(row.cash_drawdown or 0.0)) - abs(float(base.cash_drawdown or 0.0)), 0.0) for base, row in pairs
     ]
     wins = sum(delta > 0 for delta in deltas)
+    positive_periods = sum(float(row.cash_return or 0.0) > 0 for _, row in pairs)
+    max_abs_drawdown = max((abs(float(row.cash_drawdown or 0.0)) for _, row in pairs), default=None)
     exposure = [_trade_delta(base, row) for base, row in pairs]
     exposure_periods = sum(value > 0 for value in exposure)
     changed_trades = sum(exposure)
@@ -139,15 +156,21 @@ def _evaluate_variant(
         and exposure_periods >= 2
         and wins >= required_wins
         and mean(deltas) > 0
+        and positive_periods == len(pairs)
+        and max_abs_drawdown is not None
+        and max_abs_drawdown <= MAX_CASH_DRAWDOWN_PCT
         and max(drawdown_worsening, default=0) <= 2
     )
     status = "no_effect" if changed_trades == 0 else "pass" if passed else "review"
     return {
         "status": status if len(pairs) >= 2 else "insufficient",
+        "reference_variant": reference_variant,
         "common_periods": len(pairs),
         "exposure_periods": exposure_periods,
         "changed_trades": changed_trades,
         "wins": wins,
+        "positive_periods": positive_periods,
+        "max_abs_drawdown": max_abs_drawdown,
         "mean_return_delta": mean(deltas) if deltas else None,
         "max_drawdown_worsening": max(drawdown_worsening, default=None),
     }
@@ -156,7 +179,7 @@ def _evaluate_variant(
 def _walk_forward(rows: list[StrategyComparisonRow]) -> dict[str, Any]:
     grouped: dict[str, list[StrategyComparisonRow]] = defaultdict(list)
     for row in rows:
-        if row.cash_return is not None:
+        if row.cash_return is not None and row.period != "recent_2m":
             grouped[row.period].append(row)
     periods = sorted(grouped, key=lambda key: max((row.end for row in grouped[key]), default=""))
     windows = []
@@ -213,12 +236,39 @@ def _row_payload(row: StrategyComparisonRow) -> dict[str, Any]:
 
 
 def _trade_keys(directory: Path) -> tuple[str, ...]:
-    paths = sorted(directory.glob("trades_*.csv"))
+    paths = sorted(directory.glob("cash_trades_*.csv")) or sorted(directory.glob("trades_*.csv"))
     if not paths:
         return ()
     with paths[0].open(encoding="utf-8-sig", newline="") as handle:
         rows = csv.DictReader(handle)
-        return tuple(sorted(f"{row.get('signal_date', '')}:{row.get('code', '')}" for row in rows))
+        return tuple(
+            sorted(
+                f"{row.get('signal_date', '')}:{row.get('code', '')}:"
+                f"{_weight_key(row.get('entry_weight_multiplier'))}:{row.get('exit_date', '')}"
+                for row in rows
+            )
+        )
+
+
+def _weight_key(raw: object) -> str:
+    try:
+        return f"{float(raw):.4f}" if raw not in (None, "") else "1.0000"
+    except (TypeError, ValueError):
+        return "1.0000"
+
+
+def _cash_trade_average(directory: Path) -> float | None:
+    paths = sorted(directory.glob("cash_trades_*.csv"))
+    if not paths:
+        return None
+    values: list[float] = []
+    with paths[0].open(encoding="utf-8-sig", newline="") as handle:
+        for row in csv.DictReader(handle):
+            try:
+                values.append(float(row.get("ret_pct", "")))
+            except (TypeError, ValueError):
+                continue
+    return mean(values) if values else None
 
 
 def _trade_delta(base: StrategyComparisonRow, candidate: StrategyComparisonRow) -> int:

@@ -7,7 +7,7 @@ import pandas as pd
 from core.wyckoff_engine import (
     FunnelConfig,
     _attach_price_targets,
-    _board_vol_ratio_scale,
+    _board_volatility_scale,
     _build_sector_groups,
     _compute_stop_loss,
     _detect_compression,
@@ -721,23 +721,21 @@ def _append_board_row(df: pd.DataFrame, *, open_, high, low, close, volume, pct_
     return pd.concat([df, row], ignore_index=True)
 
 
-class TestBoardVolRatioScale:
-    """20% 涨跌停板块（创业板/科创板）的量能阈值应比 10% 主板/北交所更宽松。"""
+class TestBoardVolatilityScale:
+    """高波动板块的价格类阈值按实测日内波幅放宽，沪深主板为基准。"""
 
     def test_main_board_scale_is_one(self):
-        assert _board_vol_ratio_scale(MAIN_BOARD_CODE) == 1.0
+        assert _board_volatility_scale(MAIN_BOARD_CODE) == 1.0
 
-    def test_bse_scale_is_one(self):
-        assert _board_vol_ratio_scale("430001") == 1.0
+    def test_chinext_and_bse_are_moderately_widened(self):
+        assert _board_volatility_scale(CHINEXT_CODE) == 1.2
+        assert _board_volatility_scale("430001") == 1.2
 
-    def test_chinext_scale_is_amplified(self):
-        assert _board_vol_ratio_scale(CHINEXT_CODE) > 1.0
-
-    def test_star_scale_is_amplified(self):
-        assert _board_vol_ratio_scale(STAR_CODE) > 1.0
+    def test_star_is_widened_most(self):
+        assert _board_volatility_scale(STAR_CODE) > _board_volatility_scale(CHINEXT_CODE)
 
     def test_unknown_code_defaults_to_one(self):
-        assert _board_vol_ratio_scale("") == 1.0
+        assert _board_volatility_scale("") == 1.0
 
 
 def _spring_setup_by_board(base: float = 10.0) -> tuple[pd.DataFrame, float, float]:
@@ -757,12 +755,11 @@ def _spring_setup_by_board(base: float = 10.0) -> tuple[pd.DataFrame, float, flo
     return history, support_level, vol_avg
 
 
-class TestSpringVolScaleByBoard:
-    def test_volume_between_main_and_registration_threshold_only_passes_main_board(self):
-        """量能刚好越过主板门槛、但不足以越过创业板/科创板放大后门槛时，仅主板应判定为 Spring。"""
+class TestSpringVolThresholdIsBoardAgnostic:
+    def test_same_volume_ratio_passes_on_every_board(self):
+        """量比已按个股自身均量归一化，实测各板块分布重合，放量门槛不得因板块而异。"""
         cfg = FunnelConfig()
         history, support_level, vol_avg = _spring_setup_by_board()
-        # 主板门槛：vol_avg * spring_vol_ratio；放大后门槛：* _board_vol_ratio_scale (~1.41)
         borderline_volume = vol_avg * cfg.spring_vol_ratio * 1.15
         df = _append_board_row(
             history,
@@ -772,9 +769,8 @@ class TestSpringVolScaleByBoard:
             close=support_level * 1.05,
             volume=borderline_volume,
         )
-        assert _detect_spring(df, cfg, code=MAIN_BOARD_CODE) is not None
-        assert _detect_spring(df, cfg, code=CHINEXT_CODE) is None
-        assert _detect_spring(df, cfg, code=STAR_CODE) is None
+        for code in (MAIN_BOARD_CODE, CHINEXT_CODE, STAR_CODE, "430001"):
+            assert _detect_spring(df, cfg, code=code) is not None
 
 
 def test_spring_support_uses_swing_low_median_instead_of_extreme():
@@ -791,8 +787,8 @@ def test_spring_support_falls_back_when_swings_are_insufficient():
     assert _spring_support_level(zone) == 9.5
 
 
-class TestLpsVolScaleByBoard:
-    def test_vol_ratio_between_main_and_registration_threshold(self):
+class TestLpsVolThresholdIsBoardAgnostic:
+    def test_same_dry_ratio_decides_every_board_alike(self):
         cfg = FunnelConfig()
         n = max(cfg.lps_vol_ref_window, cfg.lps_ma) + cfg.lps_lookback + cfg.lps_ma_rising_window + 5
         dates = pd.date_range("2024-01-01", periods=n, freq="B")
@@ -800,9 +796,8 @@ class TestLpsVolScaleByBoard:
         # 缓慢上升的均线，制造 MA20 抬升 + 价格回踩 MA20 的场景。
         closes = [base + i * 0.01 for i in range(n)]
         volumes = [1_000_000.0] * (n - cfg.lps_lookback)
-        # 参考窗口最大量能为 1_000_000；近 lookback 日最大量能设为主板门槛和创业板门槛之间。
-        borderline_vol = 1_000_000.0 * (cfg.lps_vol_dry_ratio + 0.10)
-        volumes += [borderline_vol] * cfg.lps_lookback
+        # 参考窗口最大量能为 1_000_000；近 lookback 日最大量能刚好超过缩量阈值。
+        volumes += [1_000_000.0 * (cfg.lps_vol_dry_ratio + 0.10)] * cfg.lps_lookback
         df = pd.DataFrame(
             {
                 "date": dates,
@@ -819,14 +814,12 @@ class TestLpsVolScaleByBoard:
         for idx in df.index[-cfg.lps_lookback :]:
             df.loc[idx, "low"] = float(ma20.loc[idx])
 
-        # borderline_vol/1_000_000 = 0.6，介于主板阈值 0.5 与创业板放宽阈值 0.705 之间。
-        assert _detect_lps(df, cfg, code=MAIN_BOARD_CODE) is None
-        assert _detect_lps(df, cfg, code=CHINEXT_CODE) is not None
-        assert _detect_lps(df, cfg, code=STAR_CODE) is not None
+        for code in (MAIN_BOARD_CODE, CHINEXT_CODE, STAR_CODE, "430001"):
+            assert _detect_lps(df, cfg, code=code) is None
 
 
-class TestEvrVolScaleByBoard:
-    def test_day_pct_between_main_and_registration_threshold(self):
+class TestEvrVolatilityScaleByBoard:
+    def test_day_pct_between_main_and_high_volatility_board_threshold(self):
         cfg = FunnelConfig()
         n = cfg.evr_vol_window + 10
         dates = pd.date_range("2024-01-01", periods=n, freq="B")
@@ -834,7 +827,7 @@ class TestEvrVolScaleByBoard:
         # 事件日是候选索引 -2（confirm_days=1），随后一日（-1）需确认收盘不跌破事件日最低价。
         closes = [base] * (n - 2) + [base, base]
         volumes = [1_000_000.0] * (n - 2) + [1_000_000.0 * (cfg.evr_vol_ratio + 0.5), 1_000_000.0]
-        # 当日涨幅刚好越过主板 evr_max_rise，但小于放大后的科创板门槛。
+        # 当日涨幅刚好越过主板 evr_max_rise，但小于按波幅放宽后的科创板门槛。
         borderline_pct = cfg.evr_max_rise * 1.15
         pct_chg = [0.0] * (n - 2) + [borderline_pct, 0.0]
         highs = [c * 1.02 for c in closes]
@@ -1084,23 +1077,23 @@ class TestFrozenBoardMarketAwareness:
         assert _is_frozen_board_day(self._frozen_row(), market="us") is False
 
 
-class TestBoardVolRatioScaleMarketAwareness:
-    """vol_scale 只对 A 股创业板/科创板放大，港股/美股返回 1.0。"""
+class TestBoardVolatilityScaleMarketAwareness:
+    """波幅系数只对 A 股高波动板块放宽，港股/美股返回 1.0。"""
 
     def test_hk_returns_one(self):
-        assert _board_vol_ratio_scale(HK_CODE, market="hk") == 1.0
+        assert _board_volatility_scale(HK_CODE, market="hk") == 1.0
 
     def test_us_returns_one(self):
-        assert _board_vol_ratio_scale(US_CODE, market="us") == 1.0
+        assert _board_volatility_scale(US_CODE, market="us") == 1.0
 
     def test_cn_main_returns_one(self):
-        assert _board_vol_ratio_scale(MAIN_BOARD_CODE, market="cn") == 1.0
+        assert _board_volatility_scale(MAIN_BOARD_CODE, market="cn") == 1.0
 
     def test_cn_chinext_amplified(self):
-        assert _board_vol_ratio_scale(CHINEXT_CODE, market="cn") > 1.0
+        assert _board_volatility_scale(CHINEXT_CODE, market="cn") > 1.0
 
     def test_cn_star_amplified(self):
-        assert _board_vol_ratio_scale(STAR_CODE, market="cn") > 1.0
+        assert _board_volatility_scale(STAR_CODE, market="cn") > 1.0
 
 
 # ─── SOS frozen board exclusion tests ──────────────────────────────────────
@@ -1212,45 +1205,40 @@ class TestEvrFrozenBoardExcluded:
         assert _detect_evr(df, cfg, code=MAIN_BOARD_CODE) is not None
 
 
-# ─── Compression vol_scale tests ───────────────────────────────────────────
-class TestCompressionVolScaleByBoard:
-    """Compression 缩量阈值对创业板/科创板应放宽（vol_scale > 1）。"""
+# ─── Compression 缩量阈值与板块无关 ─────────────────────────────────────────
+class TestCompressionVolThresholdIsBoardAgnostic:
+    """缩量比是个股自比口径，各板块共用同一条阈值。"""
 
-    def test_main_board_rejected_but_registration_accepted(self):
-        """构造一个缩量比刚好超过主板阈值、但低于放大后阈值的场景。"""
-        cfg = FunnelConfig()
+    def _frame(self, cfg: FunnelConfig, ratio: float) -> pd.DataFrame:
         lookback = cfg.compression_lookback
         atr_w = cfg.compression_atr_window
         n = atr_w + lookback + 10
         dates = pd.date_range("2024-01-01", periods=n, freq="B")
-        base = 10.0
-        # 前段正常波动，后段 ATR 收窄
-        closes = [base] * n
-        hist_highs = [c * 1.03 for c in closes[:-lookback]]
-        recent_highs = [c * 1.001 for c in closes[-lookback:]]
-        highs = hist_highs + recent_highs
-        hist_lows = [c * 0.97 for c in closes[:-lookback]]
-        recent_lows = [c * 0.999 for c in closes[-lookback:]]
-        lows = hist_lows + recent_lows
-        # 缩量比刚好超过主板阈值但低于放大后
-        vol_scale = _board_vol_ratio_scale(CHINEXT_CODE, market="cn")
-        borderline_ratio = cfg.compression_vol_decline_ratio * 1.05  # 超过主板阈值
-        assert borderline_ratio < cfg.compression_vol_decline_ratio * vol_scale  # 但低于创业板阈值
+        closes = [10.0] * n
+        highs = [c * 1.03 for c in closes[:-lookback]] + [c * 1.001 for c in closes[-lookback:]]
+        lows = [c * 0.97 for c in closes[:-lookback]] + [c * 0.999 for c in closes[-lookback:]]
         hist_vol = 1_000_000.0
-        recent_vol = hist_vol * borderline_ratio
-        volumes = [hist_vol] * (n - lookback) + [recent_vol] * lookback
-        df = pd.DataFrame(
+        volumes = [hist_vol] * (n - lookback) + [hist_vol * ratio] * lookback
+        return pd.DataFrame(
             {"date": dates, "open": closes, "high": highs, "low": lows, "close": closes, "volume": volumes}
         )
-        assert _detect_compression(df, cfg, code=MAIN_BOARD_CODE) is None
-        assert _detect_compression(df, cfg, code=CHINEXT_CODE) is not None
+
+    def test_ratio_above_threshold_is_rejected_on_every_board(self):
+        cfg = FunnelConfig()
+        df = self._frame(cfg, cfg.compression_vol_decline_ratio * 1.05)
+        for code in (MAIN_BOARD_CODE, CHINEXT_CODE, STAR_CODE, "430001"):
+            assert _detect_compression(df, cfg, code=code) is None
+
+    def test_ratio_below_threshold_is_accepted_on_every_board(self):
+        cfg = FunnelConfig()
+        df = self._frame(cfg, cfg.compression_vol_decline_ratio * 0.95)
+        for code in (MAIN_BOARD_CODE, CHINEXT_CODE, STAR_CODE, "430001"):
+            assert _detect_compression(df, cfg, code=code) is not None
 
 
-# ─── TrendPullback vol_scale tests ─────────────────────────────────────────
-class TestTrendPullbackVolScaleByBoard:
-    """TrendPullback 缩量阈值对创业板/科创板应放宽。"""
-
-    def test_main_board_rejected_but_chinext_accepted(self):
+# ─── TrendPullback 缩量阈值与板块无关 ───────────────────────────────────────
+class TestTrendPullbackVolThresholdIsBoardAgnostic:
+    def test_same_shrink_ratio_decides_every_board_alike(self):
         cfg = FunnelConfig()
         lookback = cfg.trend_pb_lookback
         ma_w = cfg.trend_pb_ma_window
@@ -1272,17 +1260,16 @@ class TestTrendPullbackVolScaleByBoard:
         closes[-1] = closes[-2] + 0.05  # 最后一根收高（满足 last_close > close[-2]）
         highs = [c * 1.02 for c in closes]
         lows = [c * 0.98 for c in closes]
-        # 缩量比取主板/创业板阈值中点，远离两侧边界，避免浮点误差导致误判。
-        vol_scale = _board_vol_ratio_scale(CHINEXT_CODE, market="cn")
-        main_threshold = cfg.trend_pb_vol_shrink_ratio
-        chinext_threshold = cfg.trend_pb_vol_shrink_ratio * vol_scale
-        borderline_ratio = (main_threshold + chinext_threshold) / 2.0
-        assert main_threshold < borderline_ratio < chinext_threshold
         vol_up = 1_000_000.0
-        vol_down = vol_up * borderline_ratio
-        volumes = [vol_up] * (up_len + 1) + [vol_down] * (lookback - 1)
-        df = pd.DataFrame(
-            {"date": dates, "open": closes, "high": highs, "low": lows, "close": closes, "volume": volumes}
-        )
-        assert _detect_trend_pullback(df, cfg, code=MAIN_BOARD_CODE) is None
-        assert _detect_trend_pullback(df, cfg, code=CHINEXT_CODE) is not None
+        boards = (MAIN_BOARD_CODE, CHINEXT_CODE, STAR_CODE, "430001")
+
+        def _detect(ratio: float, code: str):
+            volumes = [vol_up] * (up_len + 1) + [vol_up * ratio] * (lookback - 1)
+            df = pd.DataFrame(
+                {"date": dates, "open": closes, "high": highs, "low": lows, "close": closes, "volume": volumes}
+            )
+            return _detect_trend_pullback(df, cfg, code=code)
+
+        for code in boards:
+            assert _detect(cfg.trend_pb_vol_shrink_ratio * 1.1, code) is None
+            assert _detect(cfg.trend_pb_vol_shrink_ratio * 0.9, code) is not None

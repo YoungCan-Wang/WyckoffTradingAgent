@@ -5,8 +5,10 @@ import { usePreferences } from '@/lib/preferences'
 import {
   CONVERSATION_SIDEBAR_STORAGE_KEY,
   useAutoScroll,
+  useAgentRunInterpretation,
   useChatConfig,
   useMessageQueue,
+  useAgentRunPolling,
   useReadingRoomActions,
   useReadingRoomChat,
   useSubmitHandler,
@@ -82,6 +84,7 @@ export function ChatPage() {
   const changeActiveTab = useCallback((tab: ReadingRoomTab) => { setActiveTab(tab); writeActiveTab(tab) }, [])
   const queue = useMessageQueue(chat, loading, token, config.configured, setLocalError, t)
   const conversations = useReadingRoomConversations(user?.id, chat.messages, chat.setMessages)
+  const agentRuns = useAgentRunPolling(chat, conversations, token, setLocalError)
   useEffect(() => {
     activeConversationRef.current = conversations.activeId
     setRunCheckpoint(readRunCheckpoint(conversations.activeId))
@@ -130,6 +133,7 @@ export function ChatPage() {
       setRunCheckpoint(null)
     }
   }, [activeConversationRef, setRunCheckpoint])
+  const handleInterpretAgentRun = useAgentRunInterpretation(chat, queue, loading, setLocalError, t)
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden" data-reading-room-streaming={loading ? 'true' : 'false'}>
@@ -172,6 +176,9 @@ export function ChatPage() {
         runCheckpoint={runCheckpoint}
         onResumeRun={handleResumeRun}
         onClearRunCheckpoint={handleClearRunCheckpoint}
+        agentRunRecords={agentRuns.records}
+        onCancelAgentRun={agentRuns.cancel}
+        onInterpretAgentRun={handleInterpretAgentRun}
       />
       <ErrorBanner message={localError || chat.error?.message || ''} />
     </div>
