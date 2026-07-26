@@ -1,0 +1,42 @@
+name: Web deployment health
+
+on:
+  workflow_run:
+    workflows: [CI]
+    branches: [main]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-deployment-health-${{ github.event.workflow_run.head_sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      API_HEALTH_URL: https://wyckoff-api.yongkai-wang.workers.dev/api/health
+      CHAT_URL: https://wyckoff-analysis.pages.dev/chat
+    steps:
+      - name: Wait for production endpoints
+        shell: bash
+        run: |
+          for attempt in {1..8}; do
+            api_body="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 15 "$API_HEALTH_URL" || true)"
+            chat_body="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 15 "$CHAT_URL" || true)"
+            if jq --exit-status '.status == "ok"' <<<"$api_body" >/dev/null && grep --quiet '<div id="root"' <<<"$chat_body"; then
+              echo "Production Worker and Pages chat entry are healthy."
+              exit 0
+            fi
+            echo "Attempt $attempt/8: production deployment is not ready yet."
+            sleep 15
+          done
+          echo "Production endpoints did not pass health checks within the retry window." >&2
+          exit 1
