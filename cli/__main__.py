@@ -34,15 +34,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
-
 _PACKAGE_ROOT = str(Path(__file__).resolve().parents[1])
 if _PACKAGE_ROOT in sys.path:
     sys.path.remove(_PACKAGE_ROOT)
 sys.path.insert(0, _PACKAGE_ROOT)
-
-# 加载 .env（项目根目录）
-load_dotenv()
 
 import logging as _logging
 
@@ -1782,6 +1777,9 @@ def _add_maintenance_parsers(sub) -> None:
 
 
 def main():
+    from dotenv import load_dotenv
+
+    load_dotenv()
     _set_terminal_title("Wyckoff-Analysis")
     parser = _build_parser()
     args = parser.parse_args()

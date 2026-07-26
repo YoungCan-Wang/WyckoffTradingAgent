@@ -12,6 +12,7 @@ def test_preview_only_skips_persistence_and_keeps_llm_input_path(monkeypatch, tm
     import workflows.daily_job_persistence as daily_persistence
     import workflows.daily_job_runtime as daily_runtime
     import workflows.daily_job_step2 as daily_step2
+    import workflows.daily_job_step3 as daily_step3
     import workflows.step2_signal_confirmation as signal_confirmation
     import workflows.step3_batch_report as step3_batch_report
     import workflows.wyckoff_funnel as wyckoff_funnel
@@ -66,6 +67,7 @@ def test_preview_only_skips_persistence_and_keeps_llm_input_path(monkeypatch, tm
     monkeypatch.setattr(daily_runtime, "resolve_end_calendar_day", lambda: date(2026, 5, 31))
     monkeypatch.setattr(daily_runtime, "is_a_share_trading_day", lambda d: d == date(2026, 6, 1))
     monkeypatch.setattr(daily_step2, "latest_trade_date_str", lambda: "2026-05-19")
+    monkeypatch.setattr(daily_step3, "latest_trade_date_str", lambda: "2026-05-19")
     monkeypatch.setattr(daily_persistence, "upsert_market_signal_daily", forbidden_write)
     monkeypatch.setattr(daily_persistence, "prepare_recommendation_payload", forbidden_write)
     monkeypatch.setattr(daily_persistence, "upsert_recommendation_payload", forbidden_write)
