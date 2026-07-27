@@ -71,11 +71,11 @@ export async function enqueuePythonResearch(
     await ensureAgentRunQuota(env, userId, dependencies)
     await store.save(userId, record)
     const queue = dependencies.queue || env.AGENT_RUN_QUEUE
-    if (!queue) return failQueueDelivery(store, userId, record, context, log)
+    if (!queue) return await failQueueDelivery(store, userId, record, context, log)
     try {
       await queue.send({ kind: 'python_research', runId: record.id, userId, script, requestId })
     } catch {
-      return failQueueDelivery(store, userId, record, context, log)
+      return await failQueueDelivery(store, userId, record, context, log)
     }
     log('queued', { ...context, attempts: record.attempts })
     return record
