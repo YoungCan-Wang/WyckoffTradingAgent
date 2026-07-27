@@ -60,31 +60,31 @@ export async function enqueuePythonResearch(
   dependencies: AgentRunDependencies = {},
 ): Promise<AgentRunRecord> {
   if (env.AGENT_SANDBOX_ENABLED !== 'true') throw new AgentRunServiceError('Agent sandbox is disabled', 503)
-  const quota = await (dependencies.checkQuota || checkAgentRunQuota)(env, userId)
-  if (quota && !quota.ok) throw new AgentRunServiceError(quota.message || '沙箱任务额度已用完，请稍后再试。', 429)
   const store = storeFor(env, dependencies)
   const record = newRunRecord()
   const requestId = safeRequestId(dependencies.requestId)
   const context = { requestId, runId: record.id }
   const log = dependencies.log || logSandboxRun
+  await reserveActiveRunSlot(store, userId, record.id)
 
   try {
+    await ensureAgentRunQuota(env, userId, dependencies)
     await store.save(userId, record)
-  } catch {
+    const queue = dependencies.queue || env.AGENT_RUN_QUEUE
+    if (!queue) return failQueueDelivery(store, userId, record, context, log)
+    try {
+      await queue.send({ kind: 'python_research', runId: record.id, userId, script, requestId })
+    } catch {
+      return failQueueDelivery(store, userId, record, context, log)
+    }
+    log('queued', { ...context, attempts: record.attempts })
+    return record
+  } catch (error) {
+    await releaseActiveRunSlot(store, userId, record.id)
+    if (error instanceof AgentRunServiceError) throw error
     log('failed', { ...context, errorCode: 'storage_unavailable', status: 'failed' })
     throw new AgentRunServiceError('Agent run storage is unavailable', 503, record)
   }
-
-  const queue = dependencies.queue || env.AGENT_RUN_QUEUE
-  if (!queue) return failQueueDelivery(store, userId, record, context, log)
-  try {
-    await queue.send({ kind: 'python_research', runId: record.id, userId, script, requestId })
-  } catch {
-    return failQueueDelivery(store, userId, record, context, log)
-  }
-
-  log('queued', { ...context, attempts: record.attempts })
-  return record
 }
 
 export async function consumePythonResearch(
@@ -123,6 +123,7 @@ export async function failDeadLetterAgentRun(
   const context = { requestId: safeRequestId(message.requestId), runId: message.runId }
   const failed = await store.fail(message.userId, record, 'Agent run exhausted retries')
   if (!failed) return
+  await releaseActiveRunSlot(store, message.userId, record.id)
   await (dependencies.notify || notifyAgentRun)(env, message.userId, failed)
   ;(dependencies.log || logSandboxRun)('failed', {
     ...context,
@@ -140,6 +141,38 @@ export function isAgentRunMessage(value: unknown): value is AgentRunMessage {
     && typeof message.userId === 'string'
     && typeof message.script === 'string'
     && (message.requestId === undefined || typeof message.requestId === 'string')
+}
+
+async function reserveActiveRunSlot(store: AgentRunStore, userId: string, runId: string): Promise<void> {
+  let acquired: boolean
+  try {
+    acquired = await store.acquireActiveSlot(userId, runId)
+  } catch {
+    throw new AgentRunServiceError('Agent run storage is unavailable', 503)
+  }
+  if (!acquired) {
+    throw new AgentRunServiceError('当前已有一个沙箱任务正在排队或执行，请等待它结束后再提交。', 429)
+  }
+}
+
+async function ensureAgentRunQuota(
+  env: Env,
+  userId: string,
+  dependencies: AgentRunDependencies,
+): Promise<void> {
+  let quota: RateLimitResult | null
+  try {
+    quota = await (dependencies.checkQuota || checkAgentRunQuota)(env, userId)
+  } catch {
+    throw new AgentRunServiceError('沙箱额度服务暂不可用，请稍后再试。', 503)
+  }
+  if (quota && !quota.ok) {
+    throw new AgentRunServiceError(quota.message || '沙箱任务额度已用完，请稍后再试。', 429)
+  }
+}
+
+async function releaseActiveRunSlot(store: AgentRunStore, userId: string, runId: string): Promise<void> {
+  await store.releaseActiveSlot(userId, runId).catch(() => undefined)
 }
 
 async function failQueueDelivery(
@@ -181,6 +214,7 @@ async function executeQueuedRun(
       status: completed.status === 'completed' ? 'completed' : 'failed',
       usage: completed.usage,
     })
+    await releaseActiveRunSlot(store, message.userId, record.id)
     return 'ack'
   } catch (error) {
     if (isConfigurationError(error)) {
@@ -220,6 +254,7 @@ async function failConfiguration(
     errorCode,
     status: 'failed',
   })
+  await releaseActiveRunSlot(store, userId, record.id)
   return failed
 }
 

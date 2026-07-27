@@ -87,6 +87,7 @@ agentRunRoutes.post('/:id/cancel', async (c) => {
   if (existing.status !== 'queued') return c.json({ error: 'Only queued agent runs can be cancelled' }, 409)
   const record = await store.cancel(userId, runId)
   if (!record) return c.json({ error: 'Agent run is no longer queued' }, 409)
+  await store.releaseActiveSlot(userId, runId).catch(() => undefined)
   await notifyAgentRun(c.env, userId, record)
   logSandboxRun('cancelled', {
     requestId: safeRequestId(c.get('requestId')),

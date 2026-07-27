@@ -30,6 +30,8 @@ function testStore(overrides: Partial<AgentRunStore> = {}): AgentRunStore {
     fail: vi.fn(async (_userId, record, error) => ({ ...record, status: 'failed' as const, error })),
     acquireLease: vi.fn(async () => true),
     releaseLease: vi.fn(async () => undefined),
+    acquireActiveSlot: vi.fn(async () => true),
+    releaseActiveSlot: vi.fn(async () => undefined),
     ...overrides,
   } as AgentRunStore
 }
@@ -91,6 +93,43 @@ describe('Agent run service', () => {
 
     expect(store.save).not.toHaveBeenCalled()
     expect(queue.send).not.toHaveBeenCalled()
+    expect(store.acquireActiveSlot).toHaveBeenCalledWith('user-1', expect.any(String))
+    expect(store.releaseActiveSlot).toHaveBeenCalledWith('user-1', expect.any(String))
+  })
+
+  it('fails closed when the sandbox quota service is unavailable', async () => {
+    const store = testStore()
+    const queue = { send: vi.fn(async () => ({})) }
+
+    await expect(enqueuePythonResearch(
+      { AGENT_SANDBOX_ENABLED: 'true' },
+      'user-1',
+      'print(42)',
+      { createStore: () => store, queue, checkQuota: async () => { throw new Error('offline') } },
+    )).rejects.toMatchObject({ status: 503, message: '沙箱额度服务暂不可用，请稍后再试。' })
+
+    expect(store.save).not.toHaveBeenCalled()
+    expect(queue.send).not.toHaveBeenCalled()
+    expect(store.releaseActiveSlot).toHaveBeenCalledWith('user-1', expect.any(String))
+  })
+
+  it('rejects a second queued or running sandbox task for the same user', async () => {
+    const store = testStore({ acquireActiveSlot: vi.fn(async () => false) })
+    const checkQuota = vi.fn(async () => ({ ok: true, mode: 'redis' as const, limit: 20, remaining: 19, reset: 0 }))
+
+    await expect(enqueuePythonResearch(
+      { AGENT_SANDBOX_ENABLED: 'true' },
+      'user-1',
+      'print(42)',
+      { createStore: () => store, queue: { send: vi.fn(async () => ({})) }, checkQuota },
+    )).rejects.toMatchObject({
+      status: 429,
+      message: '当前已有一个沙箱任务正在排队或执行，请等待它结束后再提交。',
+    })
+
+    expect(checkQuota).not.toHaveBeenCalled()
+    expect(store.save).not.toHaveBeenCalled()
+    expect(store.releaseActiveSlot).not.toHaveBeenCalled()
   })
 
   it('marks a run failed when Queue delivery cannot be confirmed', async () => {
@@ -113,6 +152,7 @@ describe('Agent run service', () => {
     } satisfies Partial<AgentRunServiceError>)
 
     expect(fail).toHaveBeenCalledWith('user-1', expect.objectContaining({ status: 'queued' }), 'Agent run queue is unavailable')
+    expect(store.releaseActiveSlot).toHaveBeenCalledWith('user-1', expect.any(String))
   })
 
   it('executes a claimed message once and stores its completed result', async () => {
@@ -134,6 +174,7 @@ describe('Agent run service', () => {
     )
     expect(save).toHaveBeenCalledWith('user-1', expect.objectContaining({ status: 'completed', stdout: '42\n' }))
     expect(store.releaseLease).toHaveBeenCalledWith('user-1', 'run-1')
+    expect(store.releaseActiveSlot).toHaveBeenCalledWith('user-1', 'run-1')
     expect(log).toHaveBeenNthCalledWith(1, 'started', expect.objectContaining({ attempts: 1 }))
     expect(log).toHaveBeenNthCalledWith(2, 'finished', expect.objectContaining({
       status: 'completed',
@@ -225,6 +266,7 @@ describe('Agent run service', () => {
     await failDeadLetterAgentRun({} as Env, runMessage(), { createStore: () => store, log, notify })
 
     expect(fail).toHaveBeenCalledWith('user-1', queuedRecord, 'Agent run exhausted retries')
+    expect(store.releaseActiveSlot).toHaveBeenCalledWith('user-1', 'run-1')
     expect(notify).toHaveBeenCalledWith(expect.anything(), 'user-1', expect.objectContaining({ status: 'failed' }))
     expect(log).toHaveBeenCalledWith('failed', expect.objectContaining({
       errorCode: 'retry_exhausted',
