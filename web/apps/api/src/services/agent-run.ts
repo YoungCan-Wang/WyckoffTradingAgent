@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { Env } from '../app'
+import { checkAgentRunQuota, type RateLimitResult } from '../middleware/rate-limit'
 import { createAgentRunStore, type AgentRunRecord, type AgentRunStore } from './agent-run-store'
 import { executePythonSandbox, type PythonSandboxResult } from './python-sandbox'
 import {
@@ -37,12 +38,13 @@ export type AgentRunDependencies = {
   log?: SandboxRunLogger
   queue?: AgentRunQueue
   requestId?: string
+  checkQuota?: (env: Env, userId: string) => Promise<RateLimitResult | null>
 }
 
 export class AgentRunServiceError extends Error {
   constructor(
     message: string,
-    readonly status: 503,
+    readonly status: 429 | 503,
     readonly record?: AgentRunRecord,
   ) {
     super(message)
@@ -56,6 +58,8 @@ export async function enqueuePythonResearch(
   dependencies: AgentRunDependencies = {},
 ): Promise<AgentRunRecord> {
   if (env.AGENT_SANDBOX_ENABLED !== 'true') throw new AgentRunServiceError('Agent sandbox is disabled', 503)
+  const quota = await (dependencies.checkQuota || checkAgentRunQuota)(env, userId)
+  if (quota && !quota.ok) throw new AgentRunServiceError(quota.message || '沙箱任务额度已用完，请稍后再试。', 429)
   const store = storeFor(env, dependencies)
   const record = newRunRecord()
   const requestId = safeRequestId(dependencies.requestId)

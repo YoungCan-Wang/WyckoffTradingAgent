@@ -74,6 +74,25 @@ describe('Agent run service', () => {
     expect(JSON.stringify(log.mock.calls)).not.toContain('print(42)')
   })
 
+  it('rejects a run before persisting anything when the sandbox quota is exhausted', async () => {
+    const store = testStore()
+    const queue = { send: vi.fn(async () => ({})) }
+
+    await expect(enqueuePythonResearch(
+      { AGENT_SANDBOX_ENABLED: 'true' },
+      'user-1',
+      'print(42)',
+      {
+        createStore: () => store,
+        queue,
+        checkQuota: async () => ({ ok: false, mode: 'redis', limit: 20, remaining: 0, reset: 0, message: '今日沙箱任务额度已用完，请明天再试。' }),
+      },
+    )).rejects.toMatchObject({ status: 429, message: '今日沙箱任务额度已用完，请明天再试。' })
+
+    expect(store.save).not.toHaveBeenCalled()
+    expect(queue.send).not.toHaveBeenCalled()
+  })
+
   it('marks a run failed when Queue delivery cannot be confirmed', async () => {
     const fail = vi.fn(async (_userId, record: AgentRunRecord, error: string) => ({
       ...record,

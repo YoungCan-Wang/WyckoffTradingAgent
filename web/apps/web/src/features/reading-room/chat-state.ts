@@ -19,6 +19,7 @@ import { apiUrl } from '@/lib/api-url'
 import type { TranslationKey } from '@/lib/preferences'
 import {
   cancelAgentRun,
+  expiredAgentRun,
   collectSandboxRunTools,
   fetchAgentRun,
   isAgentRunTerminal,
@@ -224,7 +225,10 @@ export function useAgentRunPolling(
     if (!token || activeTools.length === 0) return
     let cancelled = false
     const poll = async () => {
-      const results = await Promise.allSettled(activeTools.map(async (tool) => ({ tool, record: await fetchAgentRun(tool.runId, token) })))
+      const results = await Promise.allSettled(activeTools.map(async (tool) => {
+        const record = await fetchAgentRun(tool.runId, token)
+        return { tool, record: record ?? expiredAgentRun(tool.record) }
+      }))
       if (cancelled) return
       const next: AgentRunRecord[] = []
       for (const result of results) {

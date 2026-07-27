@@ -31,6 +31,7 @@ describe('Python sandbox bridge client', () => {
     expect(url).toBe(sandboxEnv.SANDBOX_BRIDGE_URL)
     expect(init.method).toBe('POST')
     expect(init.body).toBe(JSON.stringify({ script: 'print("ok")', timeout: 45_000 }))
+    expect(init.signal).toBeInstanceOf(AbortSignal)
     const headers = new Headers(init.headers)
     expect(headers.get('x-wyckoff-timestamp')).toMatch(/^\d{13}$/)
     expect(headers.get('x-wyckoff-signature')).toMatch(/^[a-f0-9]{64}$/)

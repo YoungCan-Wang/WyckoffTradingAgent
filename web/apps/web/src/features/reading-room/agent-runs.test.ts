@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   cancelAgentRun,
   collectSandboxRunTools,
+  expiredAgentRun,
   fetchAgentRun,
   isAgentRunTerminal,
   parseAgentRunRecord,
@@ -52,6 +53,17 @@ describe('agent run client', () => {
       method: 'GET',
       headers: { Authorization: 'Bearer access-token' },
     })
+  })
+
+  it('treats a 404 as an expired record instead of an error', async () => {
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({ error: 'Agent run not found' }, { status: 404 }))
+
+    await expect(fetchAgentRun('run-1', 'access-token', fetcher)).resolves.toBeNull()
+
+    const settled = expiredAgentRun(parseAgentRunRecord(queuedRun)!)
+    expect(settled.status).toBe('failed')
+    expect(isAgentRunTerminal(settled)).toBe(true)
+    expect(settled.error).toContain('过期')
   })
 
   it('cancels only through the Worker API and surfaces its errors', async () => {

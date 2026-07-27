@@ -73,15 +73,15 @@
 
 Hono app 的公共中间件按请求 ID、安全响应头、CORS、256 KiB 请求体上限的顺序执行；路由随后执行 Supabase JWT 鉴权与业务校验。聊天 POST 在鉴权后执行用户限流：同时配置 `UPSTASH_REDIS_REST_URL` 和 `UPSTASH_REDIS_REST_TOKEN` 时使用 Upstash Redis REST 共享额度，未配置时保留单 Worker 实例内的软限流，Redis 超时或不可用时返回 `X-RateLimit-Backend: local-fallback` 并启用本地保护。只配置一个 Upstash 变量属于部署错误，请求会失败而不会静默使用不完整连接。
 
-`/api/agent-runs` 是云 Agent 的异步执行边界：只接受已登录且在有效白名单内的用户，并且只有 `AGENT_SANDBOX_ENABLED=true` 时开放。POST 接受一个最多 12,000 字符的 `python_research` 脚本，先把 `queued` 记录写入按认证用户隔离的 Upstash Redis，再发送到 `wyckoff-agent-runs`，两步成功后返回 `202` 和 `runId`；脚本只在队列消息中传递，不写入 Redis 或结构化日志。GET 只能读取当前用户的记录；`POST /:id/cancel` 只允许取消尚未领取的 `queued` 任务；DELETE 只删除 `completed`、`failed` 或 `cancelled` 的短期记录，避免运行中的消费者重新写回已删除状态。
+`/api/agent-runs` 是云 Agent 的异步执行边界：只接受已登录且在有效白名单内的用户，并且只有 `AGENT_SANDBOX_ENABLED=true` 时开放。POST 接受一个最多 12,000 字符的 `python_research` 脚本，先把 `queued` 记录写入按认证用户隔离的 Upstash Redis，再发送到 `wyckoff-agent-runs`，两步成功后返回 `202` 和 `runId`；脚本只在队列消息中传递，不写入 Redis 或结构化日志。GET 只能读取当前用户的记录；`POST /:id/cancel` 只允许取消尚未领取的 `queued` 任务；DELETE 只删除 `completed`、`failed` 或 `cancelled` 的短期记录，避免运行中的消费者重新写回已删除状态。沙箱创建额度在入队边界统一执行：REST 与聊天工具共用同一份 Upstash 配额（默认每用户每天 20 次、两次提交至少间隔 10 秒），超限返回 `429`；该额度独立于聊天限流，目的是把 Vercel Hobby 的月度沙箱创建数锁在免费范围内。
 
-队列消费者固定 `max_batch_size=1`、`max_concurrency=1`，每次领取记录时用 Redis 租约防止重复交付并发执行。Cloudflare Queue 是至少一次投递而不是顺序工作流：bridge、Redis 等瞬时基础设施异常会以 10/20/40 秒退避重试，最多三次后进入 `wyckoff-agent-runs-dlq` 并把记录标为 `failed`；Python 返回非零退出码是用户计算的终态失败，不自动重跑。因而脚本必须是有限、无外部副作用的研究计算，不能在其中下单、写外部系统或依赖“恰好执行一次”。已进入 `running` 的沙箱不能被该控制面中断；需要再次执行时提交新的脚本请求。
+队列消费者固定 `max_batch_size=1`、`max_concurrency=1`，每次领取记录时用 Redis 租约防止重复交付并发执行；Worker 调 bridge 的请求会在“沙箱超时 + 30 秒”后主动中止，确保任何挂起的调用都先于 180 秒租约失效，不给重复投递留下并行执行的窗口。Cloudflare Queue 是至少一次投递而不是顺序工作流：bridge、Redis 等瞬时基础设施异常会以 10/20/40 秒退避重试，最多三次后进入 `wyckoff-agent-runs-dlq` 并把记录标为 `failed`；Python 返回非零退出码是用户计算的终态失败，不自动重跑。因而脚本必须是有限、无外部副作用的研究计算，不能在其中下单、写外部系统或依赖“恰好执行一次”。已进入 `running` 的沙箱不能被该控制面中断；需要再次执行时提交新的脚本请求。
 
 Worker 负责鉴权、输入校验、队列控制面和 HMAC 签名。Vercel Node bridge 只接受五分钟内的有效签名，随后以平台自动注入的短期 OIDC 凭据调用 Sandbox。每次任务使用 `python3.13`、`networkPolicy=deny-all`、`persistent=false`，不注入业务或用户密钥，并把 stdout/stderr 各限制在 32 KiB；命令结束后先收集 CPU/网络用量，再永久删除沙箱。结果按认证用户写入 Upstash Redis，默认一小时过期。
 
 每个实际执行都会复用 API 的 `requestId` 并生成独立 `runId`；Worker 用两个 ID 调 bridge，bridge 在 Vercel Runtime Logs 中输出同一对 ID，因此两侧能按 ID 关联。Worker 日志事件为 `sandbox_run.queued|started|retrying|finished|failed|cancelled`，bridge 事件为 `sandbox_bridge.started|finished|rejected|failed`；只包含状态、尝试次数、耗时、退出码、脚本字节数和 CPU/网络用量，不记录 Python 源码、stdout/stderr、HMAC、Token 或原始用户 ID。实时排查可在 `web/apps/api/` 运行 `pnpm exec wrangler tail wyckoff-api --format pretty`，或在 `web/apps/sandbox-bridge/` 运行 `pnpm exec vercel logs https://wyckoff-agent-sandbox.vercel.app --json`；历史 Vercel 日志在项目 Deployment 的 Functions Logs 中查看。
 
-读盘室在沙箱显式开启时会向模型提供 `run_python_research` 工具，但仅在用户明确提出计算需求后使用，且 Vercel AI SDK 必须取得用户确认才会执行。确认后，聊天卡片以当前登录令牌轮询 Worker 的 `GET /api/agent-runs/:id`：它只读取该用户的记录，并在任务进入终态时把最终 stdout、stderr、退出码和用量回填到原工具调用。轮询覆盖当前浏览器保存的各个对话；终态先写入所属对话的本地存储，再在该对话仍处于前台时同步 live chat，避免切走对话时只更新内存态而丢掉结果。因此刷新或切走对话不会遗失未终态任务，终态会回写到其原来的对话。用户可在 `queued` 时取消，完成后点“解读结果”才向模型发送基于该终态输出的后续请求；这避免把尚未完成的队列确认误当作研究结论。执行时再次校验当前用户的白名单，复用与 REST 端点完全相同的 Redis 记录、超时和删除流程；未开启沙箱或未在白名单中的用户不能经聊天路径绕过这道边界。
+读盘室仅在沙箱显式开启且当前用户在有效白名单内时，才向模型注册 `run_python_research` 工具；非白名单用户在模型侧看不到该能力，不会出现“审批后才失败”的体验。工具仅在用户明确提出计算需求后使用，且 Vercel AI SDK 必须取得用户确认才会执行。确认后，聊天卡片以当前登录令牌轮询 Worker 的 `GET /api/agent-runs/:id`：它只读取该用户的记录，并在任务进入终态时把最终 stdout、stderr、退出码和用量回填到原工具调用。轮询覆盖当前浏览器保存的各个对话；终态先写入所属对话的本地存储，再在该对话仍处于前台时同步 live chat，避免切走对话时只更新内存态而丢掉结果。因此刷新或切走对话不会遗失未终态任务，终态会回写到其原来的对话。若记录已超过 Redis 保存期（轮询收到 404），前端把该任务落定为“结果已过期”的失败终态并停止轮询，而不是无限重试。用户可在 `queued` 时取消，完成后点“解读结果”才向模型发送基于该终态输出的后续请求；这避免把尚未完成的队列确认误当作研究结论。执行时再次校验当前用户的白名单，复用与 REST 端点完全相同的 Redis 记录、超时和删除流程；未开启沙箱或未在白名单中的用户不能经聊天路径绕过这道边界。
 
 | Worker 变量 | 默认值 | 作用 |
 |---|---:|---|
@@ -92,6 +92,8 @@ Worker 负责鉴权、输入校验、队列控制面和 HMAC 签名。Vercel Nod
 | `AGENT_SANDBOX_ENABLED` | `false` | 显式开启白名单 Agent 沙箱端点；本地/生产凭据与一次真实调用验证通过后才打开 |
 | `AGENT_SANDBOX_TIMEOUT_MS` | `60000` | 单次沙箱会话超时；代码硬上限为 120 秒 |
 | `AGENT_RUN_TTL_SECONDS` | `3600` | Redis 中短期任务结果的存活秒数，最长 24 小时 |
+| `AGENT_RUN_DAILY_LIMIT_PER_USER` | `20` | 每个用户每天允许创建的沙箱任务数；REST 与聊天工具共用 |
+| `AGENT_RUN_MIN_INTERVAL_MS` | `10000` | 同一用户两次沙箱任务提交的最小间隔 |
 | `AGENT_RUN_QUEUE` | Cloudflare Queue binding | `wyckoff-agent-runs` 的生产者绑定；不是密钥，声明在 `wrangler.toml` |
 | `SANDBOX_BRIDGE_URL` | 未设置 | Vercel Node bridge 的 HTTPS `/api/sandbox-run` 地址；可作为普通 Worker 变量 |
 | `SANDBOX_BRIDGE_SECRET` | Worker secret | 与 Vercel 项目环境变量同值的 HMAC 密钥；不进 git、不回传浏览器或沙箱 |

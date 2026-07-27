@@ -3,6 +3,7 @@ import type { SandboxExecutionContext } from './sandbox-observability'
 
 const DEFAULT_TIMEOUT_MS = 60_000
 const MAX_TIMEOUT_MS = 120_000
+const BRIDGE_FETCH_BUFFER_MS = 30_000
 
 export type PythonSandboxResult = {
   exitCode: number
@@ -22,7 +23,8 @@ export async function executePythonSandbox(
   bridgeFetch: SandboxBridgeFetch = fetch,
 ): Promise<PythonSandboxResult> {
   const bridge = bridgeConfig(env)
-  const body = JSON.stringify({ script, timeout: sandboxTimeout(env.AGENT_SANDBOX_TIMEOUT_MS) })
+  const timeoutMs = sandboxTimeout(env.AGENT_SANDBOX_TIMEOUT_MS)
+  const body = JSON.stringify({ script, timeout: timeoutMs })
   const timestamp = String(Date.now())
   const response = await bridgeFetch(bridge.url, {
     method: 'POST',
@@ -33,6 +35,9 @@ export async function executePythonSandbox(
       ...correlationHeaders(context),
     },
     body,
+    // Must abort before the 180s consumer lease expires: a hung bridge request that
+    // outlives the lease lets a redelivered message claim and double-execute the run.
+    signal: AbortSignal.timeout(timeoutMs + BRIDGE_FETCH_BUFFER_MS),
   })
   if (!response.ok) throw new Error('Sandbox bridge request failed')
   return parseResult(await response.json())
