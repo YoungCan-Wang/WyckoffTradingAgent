@@ -199,6 +199,19 @@ describe('Agent run service', () => {
     }))
   })
 
+  it('pushes running and terminal status updates while consuming a message', async () => {
+    const notify = vi.fn(async () => undefined)
+
+    await expect(consumePythonResearch(
+      { AGENT_SANDBOX_ENABLED: 'true' },
+      runMessage(),
+      { createStore: () => testStore(), executeSandbox: async () => successfulResult, notify },
+    )).resolves.toBe('ack')
+
+    expect(notify).toHaveBeenNthCalledWith(1, expect.anything(), 'user-1', expect.objectContaining({ status: 'running' }))
+    expect(notify).toHaveBeenNthCalledWith(2, expect.anything(), 'user-1', expect.objectContaining({ status: 'completed' }))
+  })
+
   it('marks a dead-lettered run as a visible terminal failure', async () => {
     const fail = vi.fn(async (_userId, record: AgentRunRecord, error: string) => ({
       ...record,
@@ -206,11 +219,13 @@ describe('Agent run service', () => {
       error,
     }))
     const log = vi.fn()
+    const notify = vi.fn(async () => undefined)
     const store = testStore({ get: vi.fn(async () => queuedRecord), fail })
 
-    await failDeadLetterAgentRun({} as Env, runMessage(), { createStore: () => store, log })
+    await failDeadLetterAgentRun({} as Env, runMessage(), { createStore: () => store, log, notify })
 
     expect(fail).toHaveBeenCalledWith('user-1', queuedRecord, 'Agent run exhausted retries')
+    expect(notify).toHaveBeenCalledWith(expect.anything(), 'user-1', expect.objectContaining({ status: 'failed' }))
     expect(log).toHaveBeenCalledWith('failed', expect.objectContaining({
       errorCode: 'retry_exhausted',
       status: 'failed',

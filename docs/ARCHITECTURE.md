@@ -81,7 +81,7 @@ Worker 负责鉴权、输入校验、队列控制面和 HMAC 签名。Vercel Nod
 
 每个实际执行都会复用 API 的 `requestId` 并生成独立 `runId`；Worker 用两个 ID 调 bridge，bridge 在 Vercel Runtime Logs 中输出同一对 ID，因此两侧能按 ID 关联。Worker 日志事件为 `sandbox_run.queued|started|retrying|finished|failed|cancelled`，bridge 事件为 `sandbox_bridge.started|finished|rejected|failed`；只包含状态、尝试次数、耗时、退出码、脚本字节数和 CPU/网络用量，不记录 Python 源码、stdout/stderr、HMAC、Token 或原始用户 ID。实时排查可在 `web/apps/api/` 运行 `pnpm exec wrangler tail wyckoff-api --format pretty`，或在 `web/apps/sandbox-bridge/` 运行 `pnpm exec vercel logs https://wyckoff-agent-sandbox.vercel.app --json`；历史 Vercel 日志在项目 Deployment 的 Functions Logs 中查看。
 
-读盘室仅在沙箱显式开启且当前用户在有效白名单内时，才向模型注册 `run_python_research` 工具；非白名单用户在模型侧看不到该能力，不会出现“审批后才失败”的体验。工具仅在用户明确提出计算需求后使用，且 Vercel AI SDK 必须取得用户确认才会执行。确认后，聊天卡片以当前登录令牌轮询 Worker 的 `GET /api/agent-runs/:id`：它只读取该用户的记录，并在任务进入终态时把最终 stdout、stderr、退出码和用量回填到原工具调用。轮询覆盖当前浏览器保存的各个对话；终态先写入所属对话的本地存储，再在该对话仍处于前台时同步 live chat，避免切走对话时只更新内存态而丢掉结果。因此刷新或切走对话不会遗失未终态任务，终态会回写到其原来的对话。若记录已超过 Redis 保存期（轮询收到 404），前端把该任务落定为“结果已过期”的失败终态并停止轮询，而不是无限重试。用户可在 `queued` 时取消，完成后点“解读结果”才向模型发送基于该终态输出的后续请求；这避免把尚未完成的队列确认误当作研究结论。执行时再次校验当前用户的白名单，复用与 REST 端点完全相同的 Redis 记录、超时和删除流程；未开启沙箱或未在白名单中的用户不能经聊天路径绕过这道边界。
+读盘室仅在沙箱显式开启且当前用户在有效白名单内时，才向模型注册 `run_python_research` 工具；非白名单用户在模型侧看不到该能力，不会出现“审批后才失败”的体验。工具仅在用户明确提出计算需求后使用，且 Vercel AI SDK 必须取得用户确认才会执行。确认后，状态回传以推送为主、轮询兜底：前端在存在未终态任务时向 `GET /api/agent-runs/ws` 发起 WebSocket 连接（浏览器无法在升级请求上带 Authorization 头，登录令牌经 `Sec-WebSocket-Protocol` 子协议传递，Worker 验证令牌与白名单后才转交按用户命名的 `AgentRunNotifier` Durable Object），队列消费者在任务进入 `running` 或终态时把记录 POST 给该 DO 广播到用户所有打开的标签页。DO 使用 WebSocket Hibernation API，空闲连接不消耗免费套餐的 DO 时长；推送是尽力而为，投递失败不影响任务状态。推送通道在线时轮询间隔放宽到 15 秒，通道断开或不可用时回落到 2 秒轮询 `GET /api/agent-runs/:id`：它只读取该用户的记录，并在任务进入终态时把最终 stdout、stderr、退出码和用量回填到原工具调用。轮询覆盖当前浏览器保存的各个对话；终态先写入所属对话的本地存储，再在该对话仍处于前台时同步 live chat，避免切走对话时只更新内存态而丢掉结果。因此刷新或切走对话不会遗失未终态任务，终态会回写到其原来的对话。若记录已超过 Redis 保存期（轮询收到 404），前端把该任务落定为“结果已过期”的失败终态并停止轮询，而不是无限重试。用户可在 `queued` 时取消，完成后点“解读结果”才向模型发送基于该终态输出的后续请求；这避免把尚未完成的队列确认误当作研究结论。执行时再次校验当前用户的白名单，复用与 REST 端点完全相同的 Redis 记录、超时和删除流程；未开启沙箱或未在白名单中的用户不能经聊天路径绕过这道边界。
 
 | Worker 变量 | 默认值 | 作用 |
 |---|---:|---|
@@ -95,6 +95,7 @@ Worker 负责鉴权、输入校验、队列控制面和 HMAC 签名。Vercel Nod
 | `AGENT_RUN_DAILY_LIMIT_PER_USER` | `20` | 每个用户每天允许创建的沙箱任务数；REST 与聊天工具共用 |
 | `AGENT_RUN_MIN_INTERVAL_MS` | `10000` | 同一用户两次沙箱任务提交的最小间隔 |
 | `AGENT_RUN_QUEUE` | Cloudflare Queue binding | `wyckoff-agent-runs` 的生产者绑定；不是密钥，声明在 `wrangler.toml` |
+| `AGENT_RUN_NOTIFIER` | Durable Object binding | 按用户命名的 `AgentRunNotifier` 推送通道；SQLite-backed 类（免费套餐唯一可用形态），迁移声明在 `wrangler.toml` |
 | `SANDBOX_BRIDGE_URL` | 未设置 | Vercel Node bridge 的 HTTPS `/api/sandbox-run` 地址；可作为普通 Worker 变量 |
 | `SANDBOX_BRIDGE_SECRET` | Worker secret | 与 Vercel 项目环境变量同值的 HMAC 密钥；不进 git、不回传浏览器或沙箱 |
 
