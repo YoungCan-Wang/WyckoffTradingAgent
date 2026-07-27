@@ -32,6 +32,8 @@ function testStore(overrides: Partial<AgentRunStore> = {}): AgentRunStore {
     releaseLease: vi.fn(async () => undefined),
     acquireActiveSlot: vi.fn(async () => true),
     releaseActiveSlot: vi.fn(async () => undefined),
+    dailyCpuUsage: vi.fn(async () => 0),
+    addDailyCpuUsage: vi.fn(async () => 17),
     ...overrides,
   } as AgentRunStore
 }
@@ -132,6 +134,32 @@ describe('Agent run service', () => {
     expect(store.releaseActiveSlot).not.toHaveBeenCalled()
   })
 
+  it('rejects a run when the daily CPU budget is exhausted', async () => {
+    const store = testStore({ dailyCpuUsage: vi.fn(async () => 120_000) })
+
+    await expect(enqueuePythonResearch(
+      { AGENT_SANDBOX_ENABLED: 'true', AGENT_RUN_DAILY_CPU_LIMIT_MS: '120000' },
+      'user-1',
+      'print(42)',
+      { createStore: () => store, queue: { send: vi.fn(async () => ({})) } },
+    )).rejects.toMatchObject({ status: 429, message: '今日沙箱 CPU 额度已用完，请明天再试。' })
+
+    expect(store.acquireActiveSlot).not.toHaveBeenCalled()
+  })
+
+  it('fails closed when the daily CPU budget cannot be read', async () => {
+    const store = testStore({ dailyCpuUsage: vi.fn(async () => { throw new Error('offline') }) })
+
+    await expect(enqueuePythonResearch(
+      { AGENT_SANDBOX_ENABLED: 'true' },
+      'user-1',
+      'print(42)',
+      { createStore: () => store, queue: { send: vi.fn(async () => ({})) } },
+    )).rejects.toMatchObject({ status: 503, message: '沙箱 CPU 额度服务暂不可用，请稍后再试。' })
+
+    expect(store.acquireActiveSlot).not.toHaveBeenCalled()
+  })
+
   it('marks a run failed when Queue delivery cannot be confirmed', async () => {
     const fail = vi.fn(async (_userId, record: AgentRunRecord, error: string) => ({
       ...record,
@@ -175,6 +203,7 @@ describe('Agent run service', () => {
     expect(save).toHaveBeenCalledWith('user-1', expect.objectContaining({ status: 'completed', stdout: '42\n' }))
     expect(store.releaseLease).toHaveBeenCalledWith('user-1', 'run-1')
     expect(store.releaseActiveSlot).toHaveBeenCalledWith('user-1', 'run-1')
+    expect(store.addDailyCpuUsage).toHaveBeenCalledWith('user-1', 17)
     expect(log).toHaveBeenNthCalledWith(1, 'started', expect.objectContaining({ attempts: 1 }))
     expect(log).toHaveBeenNthCalledWith(2, 'finished', expect.objectContaining({
       status: 'completed',
@@ -194,6 +223,34 @@ describe('Agent run service', () => {
 
     expect(save).toHaveBeenCalledWith('user-1', expect.objectContaining({ status: 'failed', exitCode: 1 }))
     expect(store.requeue).not.toHaveBeenCalled()
+  })
+
+  it('does not retry a completed execution when CPU metering is unavailable', async () => {
+    const log = vi.fn()
+    const store = testStore({ addDailyCpuUsage: vi.fn(async () => { throw new Error('offline') }) })
+
+    await expect(consumePythonResearch(
+      { AGENT_SANDBOX_ENABLED: 'true' },
+      runMessage(),
+      { createStore: () => store, executeSandbox: async () => successfulResult, log },
+    )).resolves.toBe('ack')
+
+    expect(store.requeue).not.toHaveBeenCalled()
+    expect(store.releaseActiveSlot).toHaveBeenCalledWith('user-1', 'run-1')
+    expect(log).toHaveBeenCalledWith('metering_failed', expect.objectContaining({ status: 'completed' }))
+  })
+
+  it('does not retry a completed execution when its result cannot be persisted', async () => {
+    const store = testStore({ save: vi.fn(async () => { throw new Error('offline') }) })
+
+    await expect(consumePythonResearch(
+      { AGENT_SANDBOX_ENABLED: 'true' },
+      runMessage(),
+      { createStore: () => store, executeSandbox: async () => successfulResult },
+    )).resolves.toBe('ack')
+
+    expect(store.requeue).not.toHaveBeenCalled()
+    expect(store.releaseActiveSlot).toHaveBeenCalledWith('user-1', 'run-1')
   })
 
   it('requeues a transient bridge failure while preserving the attempt count', async () => {

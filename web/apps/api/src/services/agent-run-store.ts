@@ -33,6 +33,8 @@ type RedisClient = {
   }
   get: <T>(key: string) => Promise<T | null>
   del: (key: string) => Promise<number>
+  incrby: (key: string, increment: number) => Promise<number>
+  expireat: (key: string, timestamp: number) => Promise<number>
   createScript: <T>(script: string) => RedisScript<T>
 }
 
@@ -121,6 +123,20 @@ export class AgentRunStore {
     await script.eval([activeSlotKey(userId)], [runId])
   }
 
+  async dailyCpuUsage(userId: string, now = Date.now()): Promise<number> {
+    const value = await this.redis.get<unknown>(dailyCpuKey(userId, now))
+    return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.trunc(value) : 0
+  }
+
+  async addDailyCpuUsage(userId: string, cpuUsageMs: number, now = Date.now()): Promise<number> {
+    const amount = Math.max(Math.trunc(cpuUsageMs), 0)
+    if (!amount) return this.dailyCpuUsage(userId, now)
+    const key = dailyCpuKey(userId, now)
+    const total = await this.redis.incrby(key, amount)
+    await this.redis.expireat(key, nextUtcDay(now))
+    return total
+  }
+
   private async transition(
     userId: string,
     record: AgentRunRecord,
@@ -158,6 +174,15 @@ function leaseKey(userId: string, runId: string): string {
 
 function activeSlotKey(userId: string): string {
   return `wyckoff:agent-run-active:${encodeURIComponent(userId)}`
+}
+
+function dailyCpuKey(userId: string, now: number): string {
+  return `wyckoff:agent-run-cpu:${new Date(now).toISOString().slice(0, 10)}:${encodeURIComponent(userId)}`
+}
+
+function nextUtcDay(now: number): number {
+  const date = new Date(now)
+  return Math.floor(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + 1) / 1000)
 }
 
 function runTtl(raw: string | undefined): number {
