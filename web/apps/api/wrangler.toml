@@ -14,6 +14,15 @@ AGENT_RUN_DAILY_LIMIT_PER_USER = "20"
 AGENT_RUN_MIN_INTERVAL_MS = "10000"
 SANDBOX_BRIDGE_URL = "https://wyckoff-agent-sandbox.vercel.app/api/sandbox-run"
 
+[[durable_objects.bindings]]
+name = "AGENT_RUN_NOTIFIER"
+class_name = "AgentRunNotifier"
+
+# SQLite-backed classes are the only Durable Objects available on the free plan.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AgentRunNotifier"]
+
 [[queues.producers]]
 queue = "wyckoff-agent-runs"
 binding = "AGENT_RUN_QUEUE"

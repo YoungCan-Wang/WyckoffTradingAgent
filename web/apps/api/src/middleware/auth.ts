@@ -14,6 +14,15 @@ export function createUserSupabase(env: Env, accessToken: string) {
   return createClient(url, key, { global: { headers: { Authorization: `Bearer ${accessToken}` } } })
 }
 
+export async function resolveUserId(env: Env, accessToken: string): Promise<string | null> {
+  const url = env.SUPABASE_URL || env.VITE_SUPABASE_URL
+  const anonKey = env.SUPABASE_ANON_KEY || env.VITE_SUPABASE_ANON_KEY
+  if (!url || !anonKey) throw new Error('Supabase env is missing')
+  const supabase = createClient(url, anonKey)
+  const { data, error } = await supabase.auth.getUser(accessToken)
+  return error || !data.user ? null : data.user.id
+}
+
 export const authMiddleware = createMiddleware<{
   Bindings: Env
   Variables: { auth: AuthContext }
@@ -24,16 +33,14 @@ export const authMiddleware = createMiddleware<{
   }
 
   const token = authHeader.slice(7)
-  const url = c.env.SUPABASE_URL || c.env.VITE_SUPABASE_URL
-  const anonKey = c.env.SUPABASE_ANON_KEY || c.env.VITE_SUPABASE_ANON_KEY
-  if (!url || !anonKey) return c.json({ error: 'Supabase env is missing' }, 500)
-  const supabase = createClient(url, anonKey)
-
-  const { data: { user }, error } = await supabase.auth.getUser(token)
-  if (error || !user) {
-    return c.json({ error: 'Invalid token' }, 401)
+  let userId: string | null
+  try {
+    userId = await resolveUserId(c.env, token)
+  } catch {
+    return c.json({ error: 'Supabase env is missing' }, 500)
   }
+  if (!userId) return c.json({ error: 'Invalid token' }, 401)
 
-  c.set('auth', { userId: user.id, accessToken: token })
+  c.set('auth', { userId, accessToken: token })
   await next()
 })

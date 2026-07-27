@@ -8,6 +8,7 @@ import type { AgentRunMessage } from './services/agent-run'
 import type { Env } from './app'
 
 export type { Env } from './app'
+export { AgentRunNotifier } from './durable/agent-run-notifier'
 
 export const app = createApiApp()
 app.route('/api/chat', workerChatRoutes)

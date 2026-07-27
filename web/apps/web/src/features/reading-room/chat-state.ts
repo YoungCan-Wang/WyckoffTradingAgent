@@ -17,6 +17,7 @@ import {
 import { useChat } from '@ai-sdk/react'
 import { apiUrl } from '@/lib/api-url'
 import type { TranslationKey } from '@/lib/preferences'
+import { useAgentRunSocket } from './agent-run-socket'
 import {
   cancelAgentRun,
   expiredAgentRun,
@@ -221,6 +222,11 @@ export function useAgentRunPolling(
     setRecords((current) => mergeAgentRunRecords(current, tools.map((tool) => tool.record)))
   }, [tools])
 
+  const applyPushedRecord = useCallback((record: AgentRunRecord) => {
+    setRecords((current) => mergeAgentRunRecords(current, [record]))
+  }, [])
+  const pushConnected = useAgentRunSocket(token, activeTools.length > 0, applyPushedRecord)
+
   useEffect(() => {
     if (!token || activeTools.length === 0) return
     let cancelled = false
@@ -239,9 +245,10 @@ export function useAgentRunPolling(
       if (failure?.status === 'rejected') setLocalError(failure.reason instanceof Error ? failure.reason.message : '隔离任务状态读取失败')
     }
     void poll()
-    const interval = window.setInterval(() => { void poll() }, 2_000)
+    // With a live push channel, polling is only a safety net against missed messages.
+    const interval = window.setInterval(() => { void poll() }, pushConnected ? 15_000 : 2_000)
     return () => { cancelled = true; window.clearInterval(interval) }
-  }, [activeTools, setLocalError, token])
+  }, [activeTools, pushConnected, setLocalError, token])
 
   useEffect(() => {
     for (const tool of tools) {

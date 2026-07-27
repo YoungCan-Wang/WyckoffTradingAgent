@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import type { Env } from '../app'
 import { checkAgentRunQuota, type RateLimitResult } from '../middleware/rate-limit'
+import { notifyAgentRun, type AgentRunNotify } from './agent-run-notify'
 import { createAgentRunStore, type AgentRunRecord, type AgentRunStore } from './agent-run-store'
 import { executePythonSandbox, type PythonSandboxResult } from './python-sandbox'
 import {
@@ -39,6 +40,7 @@ export type AgentRunDependencies = {
   queue?: AgentRunQueue
   requestId?: string
   checkQuota?: (env: Env, userId: string) => Promise<RateLimitResult | null>
+  notify?: AgentRunNotify
 }
 
 export class AgentRunServiceError extends Error {
@@ -92,6 +94,7 @@ export async function consumePythonResearch(
 ): Promise<AgentRunOutcome> {
   const store = storeFor(env, dependencies)
   const log = dependencies.log || logSandboxRun
+  const notify = dependencies.notify || notifyAgentRun
   const context = { requestId: safeRequestId(message.requestId), runId: message.runId }
   if (!(await store.acquireLease(message.userId, message.runId))) return 'retry'
 
@@ -99,10 +102,11 @@ export async function consumePythonResearch(
     const record = await store.claim(message.userId, message.runId)
     if (!record) return 'ack'
     if (env.AGENT_SANDBOX_ENABLED !== 'true') {
-      await failConfiguration(store, message.userId, record, context, log, 'Agent sandbox is disabled', Date.now(), 'sandbox_disabled')
+      const failed = await failConfiguration(store, message.userId, record, context, log, 'Agent sandbox is disabled', Date.now(), 'sandbox_disabled')
+      await notify(env, message.userId, failed)
       return 'ack'
     }
-    return await executeQueuedRun(store, message, record, env, context, log, dependencies.executeSandbox || executePythonSandbox)
+    return await executeQueuedRun(store, message, record, env, context, log, dependencies.executeSandbox || executePythonSandbox, notify)
   } finally {
     await store.releaseLease(message.userId, message.runId)
   }
@@ -118,7 +122,9 @@ export async function failDeadLetterAgentRun(
   if (!record || isTerminal(record)) return
   const context = { requestId: safeRequestId(message.requestId), runId: message.runId }
   const failed = await store.fail(message.userId, record, 'Agent run exhausted retries')
-  if (failed) (dependencies.log || logSandboxRun)('failed', {
+  if (!failed) return
+  await (dependencies.notify || notifyAgentRun)(env, message.userId, failed)
+  ;(dependencies.log || logSandboxRun)('failed', {
     ...context,
     attempts: failed.attempts,
     errorCode: 'retry_exhausted',
@@ -157,13 +163,16 @@ async function executeQueuedRun(
   context: SandboxExecutionContext,
   log: SandboxRunLogger,
   executeSandbox: SandboxExecutor,
+  notify: AgentRunNotify,
 ): Promise<AgentRunOutcome> {
   const startedAt = Date.now()
   log('started', { ...context, attempts: record.attempts })
+  await notify(env, message.userId, record)
   try {
     const result = await executeSandbox(env, message.script, context)
     const completed = completeRun(record, result)
     await store.save(message.userId, completed)
+    await notify(env, message.userId, completed)
     log('finished', {
       ...context,
       durationMs: Date.now() - startedAt,
@@ -175,7 +184,8 @@ async function executeQueuedRun(
     return 'ack'
   } catch (error) {
     if (isConfigurationError(error)) {
-      await failConfiguration(store, message.userId, record, context, log, 'Sandbox configuration is incomplete', startedAt)
+      const failed = await failConfiguration(store, message.userId, record, context, log, 'Sandbox configuration is incomplete', startedAt)
+      await notify(env, message.userId, failed)
       return 'ack'
     }
     const requeued = await store.requeue(message.userId, record, 'Sandbox execution failed')
@@ -200,7 +210,7 @@ async function failConfiguration(
   error: string,
   startedAt = Date.now(),
   errorCode: 'bridge_configuration_incomplete' | 'sandbox_disabled' = 'bridge_configuration_incomplete',
-): Promise<void> {
+): Promise<AgentRunRecord> {
   const failed = await store.fail(userId, record, error)
   if (!failed) throw new Error('Agent run state transition failed')
   log('failed', {
@@ -210,6 +220,7 @@ async function failConfiguration(
     errorCode,
     status: 'failed',
   })
+  return failed
 }
 
 function storeFor(env: Env, dependencies: AgentRunDependencies): AgentRunStore {

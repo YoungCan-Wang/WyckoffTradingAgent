@@ -23,6 +23,7 @@ export type Env = {
   AGENT_RUN_DAILY_LIMIT_PER_USER?: string
   AGENT_RUN_MIN_INTERVAL_MS?: string
   AGENT_RUN_QUEUE?: Queue<AgentRunMessage>
+  AGENT_RUN_NOTIFIER?: DurableObjectNamespace
   SANDBOX_BRIDGE_URL?: string
   SANDBOX_BRIDGE_SECRET?: string
 }
