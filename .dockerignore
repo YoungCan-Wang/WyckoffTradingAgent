@@ -1,0 +1,109 @@
+# =============================================================================
+# Docker Ignore - 优化构建上下文
+# =============================================================================
+
+# Git
+.git
+.gitignore
+.github
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+pytest.ini
+
+# Documentation
+docs/
+*.md
+!README.md
+LICENSE
+
+# CI/CD
+.devcontainer/
+.pre-commit-config.yaml
+.github/
+
+# Web前端（不需要在Docker中构建）
+web/
+pnpm-lock.yaml
+package.json
+
+# 数据文件（可能很大）
+data/stock_list_cache.json
+data/market_universes/
+
+# 静态资源
+attach/
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.ico
+
+# 配置文件（通过环境变量或挂载提供）
+.env
+.env.local
+.env.production
+
+# 日志
+*.log
+logs/
+
+# 本地数据
+*.db
+*.sqlite
+*.sqlite3
+
+# 备份和临时文件
+*.bak
+*.tmp
+*.temp
+tmp/
+temp/
+
+# 质量报告
+.metrics/
+.quality_gate/
