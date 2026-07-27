@@ -11,7 +11,7 @@ name: Docker Build & Push
 
 on:
   push:
-    branches: [main]
+    branches: [main, docker-build]
     tags: ['v*']
   pull_request:
     branches: [main]
@@ -101,7 +101,7 @@ jobs:
         id: version
         run: |
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            VERSION=${{ github.ref#refs/tags/v }}
+            VERSION=${GITHUB_REF#refs/tags/v}
             echo "version=$VERSION" >> $GITHUB_OUTPUT
             echo "major=$(echo $VERSION | cut -d. -f1)" >> $GITHUB_OUTPUT
             echo "minor=$(echo $VERSION | cut -d. -f1,2)" >> $GITHUB_OUTPUT
