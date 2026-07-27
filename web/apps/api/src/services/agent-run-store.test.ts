@@ -20,9 +20,13 @@ class FakeRedis {
     return this.values.delete(key) ? 1 : 0
   }
 
-  createScript<T>(_script: string): { eval: (keys: string[], args: string[]) => Promise<T> } {
+  createScript<T>(script: string): { eval: (keys: string[], args: string[]) => Promise<T> } {
     return {
       eval: async ([key], [expected, next]) => {
+        if (!script.includes('cjson.decode')) {
+          if (this.values.get(key) !== expected) return 0 as T
+          return (this.values.delete(key) ? 1 : 0) as T
+        }
         const current = this.values.get(key) as AgentRunRecord | undefined
         if (!current || current.status !== expected) return null as T
         const record = JSON.parse(next) as AgentRunRecord
@@ -82,6 +86,17 @@ describe('Agent run store', () => {
     expect(await store.acquireLease('user-a', record.id)).toBe(true)
   })
 
+  it('reserves one active slot per user and cannot release a different run', async () => {
+    const store = new AgentRunStore(new FakeRedis())
+
+    expect(await store.acquireActiveSlot('user-a', 'run-1')).toBe(true)
+    expect(await store.acquireActiveSlot('user-a', 'run-2')).toBe(false)
+    await store.releaseActiveSlot('user-a', 'run-2')
+    expect(await store.acquireActiveSlot('user-a', 'run-2')).toBe(false)
+    await store.releaseActiveSlot('user-a', 'run-1')
+    expect(await store.acquireActiveSlot('user-a', 'run-2')).toBe(true)
+  })
+
   it('removes only a terminal record for the current user when asked by the route', async () => {
     const redis = new FakeRedis()
     const store = new AgentRunStore(redis)
@@ -112,6 +127,8 @@ describeUpstash('Upstash agent run store integration', () => {
       const requeued = await store.requeue(userId, claimed!, 'Sandbox execution failed')
       expect(requeued).toMatchObject({ status: 'queued', lastError: 'Sandbox execution failed' })
       expect(await store.cancel(userId, liveRecord.id)).toMatchObject({ status: 'cancelled' })
+      expect(await store.acquireActiveSlot(userId, liveRecord.id)).toBe(true)
+      await store.releaseActiveSlot(userId, liveRecord.id)
     } finally {
       await store.remove(userId, liveRecord.id)
     }

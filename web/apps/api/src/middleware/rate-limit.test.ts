@@ -101,8 +101,13 @@ describe('agent run quota', () => {
     expect(await exhausted.json()).toEqual({ error: '今日沙箱任务额度已用完，请明天再试。' })
   })
 
-  it('fails open when Redis is not configured', async () => {
+  it('allows the storage boundary to reject when Redis is not configured', async () => {
     await expect(checkAgentRunQuota({}, 'user-1')).resolves.toBeNull()
+  })
+
+  it('does not downgrade an incomplete Redis configuration into an unlimited quota', async () => {
+    await expect(checkAgentRunQuota({ UPSTASH_REDIS_REST_URL: 'https://redis.example' }, 'user-1'))
+      .rejects.toThrow('Upstash Redis env is incomplete')
   })
 })
 

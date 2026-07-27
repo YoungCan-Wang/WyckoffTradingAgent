@@ -76,16 +76,13 @@ export function createRateLimitMiddleware(policy: RateLimitPolicy, options: Rate
 export const chatRateLimitMiddleware = createRateLimitMiddleware(CHAT_RATE_LIMIT_POLICY)
 
 // Sandbox creation quota is enforced at the enqueue boundary (not as HTTP middleware)
-// so chat-tool and REST submissions consume one shared budget. Fails open without
-// Redis: the run store depends on the same Redis, so enqueue cannot proceed anyway.
+// so chat-tool and REST submissions consume one shared budget. A missing Redis
+// configuration returns null because the run store will reject the same request;
+// a configured limiter that fails must propagate so creation fails closed.
 export async function checkAgentRunQuota(env: Env, userId: string): Promise<RateLimitResult | null> {
-  try {
-    const limiter = createUpstashLimiter(env, AGENT_RUN_RATE_LIMIT_POLICY)
-    if (!limiter) return null
-    return { ...(await limiter.check(userId)), mode: 'redis' }
-  } catch {
-    return null
-  }
+  const limiter = createUpstashLimiter(env, AGENT_RUN_RATE_LIMIT_POLICY)
+  if (!limiter) return null
+  return { ...(await limiter.check(userId)), mode: 'redis' }
 }
 
 async function checkRateLimit(

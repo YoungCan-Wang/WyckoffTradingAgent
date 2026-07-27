@@ -45,6 +45,10 @@ if record.status ~= ARGV[1] then return nil end
 redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3])
 return ARGV[2]`
 
+const ACTIVE_SLOT_RELEASE_SCRIPT = `
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+return redis.call('DEL', KEYS[1])`
+
 export class AgentRunStore {
   constructor(private readonly redis: RedisClient, private readonly ttlSeconds = 3600) {}
 
@@ -108,6 +112,15 @@ export class AgentRunStore {
     await this.redis.del(leaseKey(userId, runId))
   }
 
+  async acquireActiveSlot(userId: string, runId: string): Promise<boolean> {
+    return Boolean(await this.redis.set(activeSlotKey(userId), runId, { ex: this.ttlSeconds, nx: true }))
+  }
+
+  async releaseActiveSlot(userId: string, runId: string): Promise<void> {
+    const script = this.redis.createScript<number>(ACTIVE_SLOT_RELEASE_SCRIPT)
+    await script.eval([activeSlotKey(userId)], [runId])
+  }
+
   private async transition(
     userId: string,
     record: AgentRunRecord,
@@ -141,6 +154,10 @@ function runKey(userId: string, runId: string): string {
 
 function leaseKey(userId: string, runId: string): string {
   return `${runKey(userId, runId)}:lease`
+}
+
+function activeSlotKey(userId: string): string {
+  return `wyckoff:agent-run-active:${encodeURIComponent(userId)}`
 }
 
 function runTtl(raw: string | undefined): number {
