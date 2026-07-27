@@ -5,6 +5,7 @@ import { AgentRunStore, createAgentRunStore, type AgentRunRecord } from './agent
 
 class FakeRedis {
   readonly values = new Map<string, unknown>()
+  readonly expirations = new Map<string, number>()
 
   async set(key: string, value: unknown, options: { ex: number; nx?: true }): Promise<unknown> {
     if (options.nx && this.values.has(key)) return null
@@ -18,6 +19,18 @@ class FakeRedis {
 
   async del(key: string): Promise<number> {
     return this.values.delete(key) ? 1 : 0
+  }
+
+  async incrby(key: string, increment: number): Promise<number> {
+    const next = Number(this.values.get(key) || 0) + increment
+    this.values.set(key, next)
+    return next
+  }
+
+  async expireat(key: string, timestamp: number): Promise<number> {
+    if (!this.values.has(key)) return 0
+    this.expirations.set(key, timestamp)
+    return 1
   }
 
   createScript<T>(script: string): { eval: (keys: string[], args: string[]) => Promise<T> } {
@@ -95,6 +108,23 @@ describe('Agent run store', () => {
     expect(await store.acquireActiveSlot('user-a', 'run-2')).toBe(false)
     await store.releaseActiveSlot('user-a', 'run-1')
     expect(await store.acquireActiveSlot('user-a', 'run-2')).toBe(true)
+  })
+
+  it('accumulates per-user daily CPU usage until the next UTC day', async () => {
+    const redis = new FakeRedis()
+    const store = new AgentRunStore(redis)
+    const now = Date.UTC(2026, 6, 28, 12)
+
+    await store.addDailyCpuUsage('user-a', 17, now)
+    await store.addDailyCpuUsage('user-a', 23, now)
+    await store.addDailyCpuUsage('user-b', 11, now)
+
+    expect(await store.dailyCpuUsage('user-a', now)).toBe(40)
+    expect(await store.dailyCpuUsage('user-b', now)).toBe(11)
+    expect([...redis.expirations.values()]).toEqual([
+      Date.UTC(2026, 6, 29) / 1000,
+      Date.UTC(2026, 6, 29) / 1000,
+    ])
   })
 
   it('removes only a terminal record for the current user when asked by the route', async () => {
