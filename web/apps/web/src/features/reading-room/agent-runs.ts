@@ -61,8 +61,8 @@ export async function fetchAgentRun(
   runId: string,
   accessToken: string,
   fetcher: typeof fetch = fetch,
-): Promise<AgentRunRecord> {
-  return requestAgentRun(`/api/agent-runs/${runId}`, 'GET', accessToken, fetcher)
+): Promise<AgentRunRecord | null> {
+  return requestAgentRun(`/api/agent-runs/${runId}`, 'GET', accessToken, fetcher, { notFoundAsNull: true })
 }
 
 export async function cancelAgentRun(
@@ -70,7 +70,15 @@ export async function cancelAgentRun(
   accessToken: string,
   fetcher: typeof fetch = fetch,
 ): Promise<AgentRunRecord> {
-  return requestAgentRun(`/api/agent-runs/${runId}/cancel`, 'POST', accessToken, fetcher)
+  const record = await requestAgentRun(`/api/agent-runs/${runId}/cancel`, 'POST', accessToken, fetcher, {})
+  if (!record) throw new Error('隔离任务服务返回数据不完整，请稍后重试')
+  return record
+}
+
+// Redis records expire after the run TTL (default 1h); a 404 during polling means the
+// result is gone for good, so callers must settle the run instead of retrying forever.
+export function expiredAgentRun(record: AgentRunRecord): AgentRunRecord {
+  return { ...record, status: 'failed', error: '沙箱结果已过期：任务记录超出保存期后被清除，无法再恢复。' }
 }
 
 async function requestAgentRun(
@@ -78,11 +86,13 @@ async function requestAgentRun(
   method: 'GET' | 'POST',
   accessToken: string,
   fetcher: typeof fetch,
-): Promise<AgentRunRecord> {
+  options: { notFoundAsNull?: boolean },
+): Promise<AgentRunRecord | null> {
   const response = await fetcher(apiUrl(path), {
     method,
     headers: { Authorization: `Bearer ${accessToken}` },
   })
+  if (options.notFoundAsNull && response.status === 404) return null
   const payload = await response.json().catch(() => null)
   if (!response.ok) {
     const error = apiErrorSchema.safeParse(payload)

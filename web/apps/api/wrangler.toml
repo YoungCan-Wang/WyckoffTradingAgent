@@ -10,6 +10,8 @@ CHAT_MIN_INTERVAL_MS = "2500"
 AGENT_SANDBOX_ENABLED = "true"
 AGENT_SANDBOX_TIMEOUT_MS = "60000"
 AGENT_RUN_TTL_SECONDS = "3600"
+AGENT_RUN_DAILY_LIMIT_PER_USER = "20"
+AGENT_RUN_MIN_INTERVAL_MS = "10000"
 SANDBOX_BRIDGE_URL = "https://wyckoff-agent-sandbox.vercel.app/api/sandbox-run"
 
 [[queues.producers]]

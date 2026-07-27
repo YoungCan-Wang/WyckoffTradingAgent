@@ -3,7 +3,13 @@ import { Hono } from 'hono'
 import { describe, expect, it, vi } from 'vitest'
 import type { Env } from '../app'
 import type { AuthContext } from './auth'
-import { createChatRateLimitMiddleware, type ChatRateLimitResult } from './rate-limit'
+import {
+  AGENT_RUN_RATE_LIMIT_POLICY,
+  CHAT_RATE_LIMIT_POLICY,
+  checkAgentRunQuota,
+  createRateLimitMiddleware,
+  type RateLimitResult,
+} from './rate-limit'
 
 type TestBindings = {
   Bindings: Env
@@ -11,7 +17,7 @@ type TestBindings = {
 }
 
 function testApp(
-  middleware: ReturnType<typeof createChatRateLimitMiddleware>,
+  middleware: ReturnType<typeof createRateLimitMiddleware>,
   userId = 'user-1',
 ) {
   const app = new Hono<TestBindings>()
@@ -26,7 +32,7 @@ function testApp(
 describe('chat rate limit middleware', () => {
   it('uses configured local limits when Redis is absent', async () => {
     let now = Date.UTC(2026, 6, 18, 0, 0, 0)
-    const app = testApp(createChatRateLimitMiddleware({ now: () => now }))
+    const app = testApp(createRateLimitMiddleware(CHAT_RATE_LIMIT_POLICY, { now: () => now }))
     const env = { CHAT_DAILY_LIMIT_PER_USER: '2', CHAT_MIN_INTERVAL_MS: '1000' }
 
     const first = await app.request('/', { method: 'POST' }, env)
@@ -46,14 +52,14 @@ describe('chat rate limit middleware', () => {
   })
 
   it('uses the distributed result and exposes quota headers', async () => {
-    const result: Omit<ChatRateLimitResult, 'mode'> = {
+    const result: Omit<RateLimitResult, 'mode'> = {
       ok: true,
       limit: 80,
       remaining: 79,
       reset: Date.UTC(2026, 6, 19),
     }
     const check = vi.fn(async () => result)
-    const app = testApp(createChatRateLimitMiddleware({
+    const app = testApp(createRateLimitMiddleware(CHAT_RATE_LIMIT_POLICY, {
       createDistributedLimiter: () => ({ check }),
     }))
 
@@ -66,7 +72,7 @@ describe('chat rate limit middleware', () => {
   })
 
   it('falls back to local protection when Redis is unavailable', async () => {
-    const app = testApp(createChatRateLimitMiddleware({
+    const app = testApp(createRateLimitMiddleware(CHAT_RATE_LIMIT_POLICY, {
       createDistributedLimiter: () => ({ check: async () => { throw new Error('offline') } }),
     }))
 
@@ -74,6 +80,29 @@ describe('chat rate limit middleware', () => {
 
     expect(response.status).toBe(200)
     expect(response.headers.get('X-RateLimit-Backend')).toBe('local-fallback')
+  })
+})
+
+describe('agent run quota', () => {
+  it('applies sandbox-specific defaults and messages', async () => {
+    let now = Date.UTC(2026, 6, 18, 0, 0, 0)
+    const app = testApp(createRateLimitMiddleware(AGENT_RUN_RATE_LIMIT_POLICY, { now: () => now }))
+    const env = { AGENT_RUN_DAILY_LIMIT_PER_USER: '1', AGENT_RUN_MIN_INTERVAL_MS: '1000' }
+
+    const first = await app.request('/', { method: 'POST' }, env)
+    const tooSoon = await app.request('/', { method: 'POST' }, env)
+    now += 1000
+    const exhausted = await app.request('/', { method: 'POST' }, env)
+
+    expect(first.status).toBe(200)
+    expect(tooSoon.status).toBe(429)
+    expect(await tooSoon.json()).toEqual({ error: '沙箱任务提交太频繁，请稍后再试。' })
+    expect(exhausted.status).toBe(429)
+    expect(await exhausted.json()).toEqual({ error: '今日沙箱任务额度已用完，请明天再试。' })
+  })
+
+  it('fails open when Redis is not configured', async () => {
+    await expect(checkAgentRunQuota({}, 'user-1')).resolves.toBeNull()
   })
 })
 
@@ -89,7 +118,7 @@ describeUpstash('Upstash Redis integration', () => {
     expect(url).toBeTruthy()
     expect(token).toBeTruthy()
 
-    const app = testApp(createChatRateLimitMiddleware(), `live-${crypto.randomUUID()}`)
+    const app = testApp(createRateLimitMiddleware(CHAT_RATE_LIMIT_POLICY), `live-${crypto.randomUUID()}`)
     const env: Env = {
       UPSTASH_REDIS_REST_URL: url,
       UPSTASH_REDIS_REST_TOKEN: token,

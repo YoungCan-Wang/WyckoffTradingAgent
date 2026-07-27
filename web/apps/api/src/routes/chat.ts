@@ -49,9 +49,9 @@ import {
 
 type ChatBindings = { Bindings: Env; Variables: { auth: AuthContext } }
 
-export type SandboxToolsBuilder = (env: Env, userId: string, accessToken: string, requestId: string) => ToolSet
+export type SandboxToolsBuilder = (env: Env, userId: string, accessToken: string, requestId: string) => Promise<ToolSet>
 
-export function createChatRoutes(sandboxToolsBuilder: SandboxToolsBuilder = () => ({})) {
+export function createChatRoutes(sandboxToolsBuilder: SandboxToolsBuilder = async () => ({})) {
   const chatRoutes = new Hono<ChatBindings>()
   chatRoutes.use('*', authMiddleware)
 
@@ -73,6 +73,7 @@ export function createChatRoutes(sandboxToolsBuilder: SandboxToolsBuilder = () =
     const configs = await loadLLMConfigs(supabase, auth.userId)
     if (configs.length === 0) return c.json({ error: '请先在设置页配置 LLM API Key' }, 400)
     const runId = crypto.randomUUID()
+    const sandboxTools = await sandboxToolsBuilder(c.env, auth.userId, auth.accessToken, c.get('requestId'))
 
     const stream = createUIMessageStream({
       execute: ({ writer }) => runChatWithResilience({
@@ -87,7 +88,7 @@ export function createChatRoutes(sandboxToolsBuilder: SandboxToolsBuilder = () =
         requestId: c.get('requestId'),
         runId,
         sequence: 0,
-        sandboxToolsBuilder,
+        sandboxTools,
         watchlist: sanitizeWatchlist(body?.watchlist),
         marketWatchCache: body?.marketWatch,
       }),
@@ -276,7 +277,7 @@ function parseCustomProviders(raw: unknown): Record<string, Record<string, strin
 }
 
 function buildTools(
-  args: Pick<ChatResilienceArgs, 'deps' | 'userId' | 'accessToken' | 'env' | 'requestId' | 'sandboxToolsBuilder'>,
+  args: Pick<ChatResilienceArgs, 'deps' | 'userId' | 'sandboxTools'>,
   config: LLMToolConfig,
   model: unknown,
 ) {
@@ -284,7 +285,7 @@ function buildTools(
     ...buildReadTools(args.deps, args.userId, model),
     ...buildPortfolioTools(args.deps, args.userId),
     ...buildAnalysisTools(args.deps, args.userId, config, model),
-    ...args.sandboxToolsBuilder(args.env, args.userId, args.accessToken, args.requestId),
+    ...args.sandboxTools,
   }
 }
 
@@ -300,7 +301,7 @@ interface ChatResilienceArgs {
   requestId: string
   runId: string
   sequence: number
-  sandboxToolsBuilder: SandboxToolsBuilder
+  sandboxTools: ToolSet
   watchlist: WatchlistRequestItem[]
   marketWatchCache: unknown
 }
