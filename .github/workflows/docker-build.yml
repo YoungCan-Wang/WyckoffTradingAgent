@@ -1,4 +1,4 @@
-name: "Docker Build & Push"
+name: Docker Build & Push
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAME: ${{ downcase(github.repository) }}
   DOCKERHUB_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/wyckoff-trading-agent
 
 jobs:
