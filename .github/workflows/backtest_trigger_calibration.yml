@@ -5,18 +5,26 @@ name: Backtest Trigger Calibration
 # 股票池下单次约 80-95 分钟）。因此按"周期 × 取值"扇出成独立 job：串行跑完一个周期的四个取值
 # 会逼近 GitHub 的 6 小时 job 上限，扇出后每个 job 只做一次重跑。快照单独成一个阶段，既让同
 # 周期的各取值复用同一份数据，也避免并发拉取打爆 tushare 限流。
+#
+# grid_cells 是例外通道：退出参数不改变信号集合，一次漏斗可以喂给多个退出格。它存在的意义是
+# 在 top_n=0 的原始信号池上取退出基准（Backtest Grid 固定 top_n=1，答不了这个问题），此时按
+# 周期扇出即可，不再按取值扇出。
 
 on:
   workflow_dispatch:
     inputs:
       trigger_grid:
-        description: "参数网格，格式 param=v1,v2,v3（触发阈值或 top_n）"
+        description: "参数网格，格式 param=v1,v2,v3（触发阈值或 top_n）；填了 grid_cells 时忽略"
         required: true
         default: "spring_vol_ratio=1.1,1.3,1.5,1.8"
       periods:
         description: "参与标定的周期（逗号分隔）"
         required: true
         default: "bull_2020,bear_2022,sideways_2023,volatile_2024,recent_6m"
+      grid_cells:
+        description: "退出参数格 hold:stop:take:trail（逗号分隔），共享同一份信号台账；留空则扫 trigger_grid"
+        required: false
+        default: ""
 
 concurrency:
   group: backtest-trigger-calibration-${{ github.ref }}
@@ -55,18 +63,24 @@ jobs:
         env:
           INPUT_PERIODS: ${{ inputs.periods }}
           INPUT_TRIGGER_GRID: ${{ inputs.trigger_grid }}
+          INPUT_GRID_CELLS: ${{ inputs.grid_cells }}
         run: |
           set -euo pipefail
           split_csv() { echo "$1" | tr ',' '\n' | awk '{gsub(/[[:space:]]/, "")} NF' | jq -R . | jq -sc .; }
-          PARAM="${INPUT_TRIGGER_GRID%%=*}"
-          RAW_VALUES="${INPUT_TRIGGER_GRID#*=}"
-          if [ -z "$PARAM" ] || [ "$PARAM" = "$INPUT_TRIGGER_GRID" ]; then
-            echo "非法 trigger_grid: $INPUT_TRIGGER_GRID"; exit 1
-          fi
           PERIODS=$(split_csv "$INPUT_PERIODS")
-          VALUES=$(split_csv "$RAW_VALUES")
-          CELLS=$(jq -nc --argjson p "$PERIODS" --argjson v "$VALUES" --arg param "$PARAM" \
-            '[$p[] as $period | $v[] as $value | {period: $period, value: $value, param: $param}]')
+          if [ -n "$INPUT_GRID_CELLS" ]; then
+            CELLS=$(jq -nc --argjson p "$PERIODS" \
+              '[$p[] as $period | {period: $period, value: "exit", param: "grid_cells"}]')
+          else
+            PARAM="${INPUT_TRIGGER_GRID%%=*}"
+            RAW_VALUES="${INPUT_TRIGGER_GRID#*=}"
+            if [ -z "$PARAM" ] || [ "$PARAM" = "$INPUT_TRIGGER_GRID" ]; then
+              echo "非法 trigger_grid: $INPUT_TRIGGER_GRID"; exit 1
+            fi
+            VALUES=$(split_csv "$RAW_VALUES")
+            CELLS=$(jq -nc --argjson p "$PERIODS" --argjson v "$VALUES" --arg param "$PARAM" \
+              '[$p[] as $period | $v[] as $value | {period: $period, value: $value, param: $param}]')
+          fi
           echo "periods=${PERIODS}" >> "$GITHUB_OUTPUT"
           echo "cells=${CELLS}" >> "$GITHUB_OUTPUT"
           echo "periods=${PERIODS}"
@@ -185,11 +199,21 @@ jobs:
         env:
           TRIGGER_PARAM: ${{ matrix.cell.param }}
           TRIGGER_VALUE: ${{ matrix.cell.value }}
+          GRID_CELLS: ${{ inputs.grid_cells }}
         run: |
           set -euo pipefail
           OUT_ROOT="analysis/backtest_trigger_actions/${BT_PERIOD_KEY}-${TRIGGER_VALUE}"
           echo "OUT_ROOT=${OUT_ROOT}" >> "$GITHUB_ENV"
           mkdir -p "$OUT_ROOT"
+          if [ -n "$GRID_CELLS" ]; then
+            SWEEP=(--grid-cells "$GRID_CELLS" --grid-prefix "backtest-exit-${BT_PERIOD_KEY}")
+          else
+            SWEEP=(
+              --trigger-grid "${TRIGGER_PARAM}=${TRIGGER_VALUE}"
+              --grid-prefix "backtest-trigger-${BT_PERIOD_KEY}"
+              --period-key "$BT_PERIOD_KEY"
+            )
+          fi
           # 标定只读取逐笔分层统计，wbt 合成 NAV 是纯浪费，固定用 legacy 引擎。
           python -u -m scripts.backtest_runner \
             --start "$BT_START" \
@@ -219,9 +243,7 @@ jobs:
             --trailing-stop 0 \
             --metrics-engine legacy \
             --snapshot-dir snapshot_data \
-            --trigger-grid "${TRIGGER_PARAM}=${TRIGGER_VALUE}" \
-            --grid-prefix "backtest-trigger-${BT_PERIOD_KEY}" \
-            --period-key "$BT_PERIOD_KEY" \
+            "${SWEEP[@]}" \
             --output-dir "$OUT_ROOT" \
             2>&1 | tee "$OUT_ROOT/run.log"
 
@@ -238,7 +260,8 @@ jobs:
     name: Sweep verdict
     runs-on: ubuntu-latest
     needs: calibrate
-    if: always()
+    # 退出参数格不产出 trigger matrix，汇总无从谈起，结果直接看各格 summary。
+    if: always() && inputs.grid_cells == ''
     steps:
       - uses: actions/checkout@v4
 
