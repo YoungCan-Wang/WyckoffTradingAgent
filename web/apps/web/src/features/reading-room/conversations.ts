@@ -84,9 +84,13 @@ function useConversationSaver(
       return
     }
     setItems((current) => {
-      const next = current.map((conversation) => (
-        conversation.id === activeId ? updateConversationMessages(conversation, messages) : conversation
-      ))
+      const next = current.map((conversation) => {
+        if (conversation.id !== activeId) return conversation
+        // Live chat can lag behind replaceToolOutput after a mid-flight switch; keep
+        // already-terminal sandbox outputs from the stored copy instead of clobbering them.
+        const merged = preferStoredTerminalToolOutputs(messages, conversation.messages)
+        return updateConversationMessages(conversation, merged)
+      })
       writeConversations(storageKey, next)
       return next
     })
@@ -226,6 +230,47 @@ export function replaceConversationToolOutput(
     return messageChanged ? { ...message, parts } as UIMessage : message
   })
   return changed ? next : messages
+}
+
+export function preferStoredTerminalToolOutputs(
+  liveMessages: UIMessage[],
+  storedMessages: UIMessage[],
+): UIMessage[] {
+  const terminalOutputs = terminalToolOutputs(storedMessages)
+  if (terminalOutputs.size === 0) return liveMessages
+  let changed = false
+  const next = liveMessages.map((message) => {
+    if (message.role !== 'assistant') return message
+    let messageChanged = false
+    const parts = message.parts.map((part) => {
+      const tool = part as MessagePart
+      if (!isToolPart(tool)) return part
+      const storedOutput = terminalOutputs.get(tool.toolCallId)
+      if (!storedOutput || isTerminalToolOutput(tool.output)) return part
+      changed = true
+      messageChanged = true
+      return { ...tool, state: 'output-available' as const, output: storedOutput, errorText: undefined } as MessagePart
+    })
+    return messageChanged ? { ...message, parts } as UIMessage : message
+  })
+  return changed ? next : liveMessages
+}
+
+function terminalToolOutputs(messages: UIMessage[]): Map<string, unknown> {
+  const outputs = new Map<string, unknown>()
+  for (const message of messages) {
+    if (message.role !== 'assistant') continue
+    for (const part of message.parts as MessagePart[]) {
+      if (!isToolPart(part) || !isTerminalToolOutput(part.output)) continue
+      outputs.set(part.toolCallId, part.output)
+    }
+  }
+  return outputs
+}
+
+function isTerminalToolOutput(output: unknown): boolean {
+  const status = asRecord(output)?.status
+  return status === 'completed' || status === 'failed' || status === 'cancelled'
 }
 
 function readConversations(key: string): ReadingRoomConversation[] {

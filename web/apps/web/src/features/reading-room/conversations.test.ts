@@ -1,6 +1,6 @@
 import type { UIMessage } from 'ai'
 import { describe, expect, it } from 'vitest'
-import { replaceConversationToolOutput } from './conversations'
+import { preferStoredTerminalToolOutputs, replaceConversationToolOutput } from './conversations'
 
 const queuedOutput = {
   id: 'run-1',
@@ -45,5 +45,24 @@ describe('conversation sandbox result recovery', () => {
 
   it('keeps the saved conversation unchanged when the tool call is absent', () => {
     expect(replaceConversationToolOutput(messages, 'missing-tool', completedOutput)).toBe(messages)
+  })
+
+  it('keeps stored terminal sandbox output when live chat still has the queued placeholder', () => {
+    const stored = replaceConversationToolOutput(messages, 'tool-1', completedOutput)
+    const merged = preferStoredTerminalToolOutputs(messages, stored)
+
+    expect(merged[0]?.parts[0]).toMatchObject({ state: 'output-available', output: completedOutput })
+    expect(merged[1]).toBe(messages[1])
+  })
+
+  it('does not overwrite a live terminal sandbox output with an older stored one', () => {
+    const live = replaceConversationToolOutput(messages, 'tool-1', completedOutput)
+    const storedFailed = replaceConversationToolOutput(messages, 'tool-1', {
+      ...queuedOutput,
+      status: 'failed',
+      error: 'old',
+    })
+
+    expect(preferStoredTerminalToolOutputs(live, storedFailed)).toBe(live)
   })
 })
