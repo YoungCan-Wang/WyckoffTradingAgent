@@ -108,3 +108,11 @@ def test_signal_feedback_manual_dynamic_approval_is_explicit():
     assert "formal_dynamic_approval_reason is required" in workflow
     assert '"approved_by": os.environ.get("GITHUB_ACTOR", "")' in workflow
     assert "--formal-dynamic-approval-json formal_dynamic_approval.json" in workflow
+
+
+def test_ci_runs_python_suite_once_and_reuses_it_for_coverage():
+    workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+    assert workflow.count("python -m coverage run -m pytest tests/ -x -q") == 1
+    assert "\n  coverage-report:" not in workflow
+    assert "name: coverage-report-${{ github.run_number }}" in workflow

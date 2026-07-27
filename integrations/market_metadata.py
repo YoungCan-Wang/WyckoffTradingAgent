@@ -21,10 +21,13 @@ logger = logging.getLogger(__name__)
 DATA_CACHE_DIR = Path(__file__).resolve().parent.parent / "data"
 SECTOR_CACHE = DATA_CACHE_DIR / "sector_map_cache.json"
 MARKET_CAP_CACHE = DATA_CACHE_DIR / "market_cap_cache.json"
+FLOAT_SHARE_CACHE = DATA_CACHE_DIR / "float_share_cache.json"
 CONCEPT_CACHE = DATA_CACHE_DIR / "concept_map_cache.json"
 CONCEPT_HEAT_CACHE = DATA_CACHE_DIR / "concept_heat_cache.json"
 CONCEPT_HEAT_HISTORY = DATA_CACHE_DIR / "concept_heat_history.json"
 CACHE_TTL = 24 * 60 * 60
+_WAN_YUAN_TO_YI = 1e-4
+_WAN_SHARES_TO_SHARES = 1e4
 CONCEPT_HEAT_TTL = 4 * 60 * 60
 CONCEPT_REQ_HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
 CONCEPT_REQ_TIMEOUT = 30
@@ -82,9 +85,26 @@ def fetch_market_cap_map() -> dict[str, float]:
     pro = _tushare_pro()
     if pro is None:
         return _stale_float_cache(MARKET_CAP_CACHE)
-    mapping = _fetch_recent_market_cap_map(pro)
+    mapping = _recent_daily_basic_map(pro, "total_mv", _WAN_YUAN_TO_YI)
     if mapping:
         write_json_cache(MARKET_CAP_CACHE, mapping, "market_cap_cache_write")
+    return mapping
+
+
+def fetch_float_share_map() -> dict[str, float]:
+    """全市场流通股本映射（单位：股）。
+
+    行情源的日线不返回换手率，漏斗用 成交量 / 流通股本 自行折算。
+    """
+    cached = read_json_cache(FLOAT_SHARE_CACHE, CACHE_TTL)
+    if isinstance(cached, dict):
+        return {k: float(v) for k, v in cached.items()}
+    pro = _tushare_pro()
+    if pro is None:
+        return _stale_float_cache(FLOAT_SHARE_CACHE)
+    mapping = _recent_daily_basic_map(pro, "float_share", _WAN_SHARES_TO_SHARES)
+    if mapping:
+        write_json_cache(FLOAT_SHARE_CACHE, mapping, "float_share_cache_write")
     return mapping
 
 
@@ -225,26 +245,27 @@ def debug_metadata_fail(source: str, err: Exception) -> None:
         logger.debug("%s failed: %s: %s", source, type(err).__name__, err)
 
 
-def _fetch_recent_market_cap_map(pro) -> dict[str, float]:
-    mapping: dict[str, float] = {}
+def _recent_daily_basic_map(pro, field: str, scale: float) -> dict[str, float]:
     for offset in range(5):
         trade_date = (date.today() - timedelta(days=1 + offset)).strftime("%Y%m%d")
         try:
-            df = pro.daily_basic(trade_date=trade_date, fields="ts_code,total_mv")
-            if df is not None and not df.empty:
-                _append_market_cap_rows(mapping, df)
-                break
+            df = pro.daily_basic(trade_date=trade_date, fields=f"ts_code,{field}")
         except Exception as exc:
             debug_metadata_fail(f"tushare_daily_basic[{trade_date}]", exc)
-    return mapping
+            continue
+        if df is not None and not df.empty:
+            return _daily_basic_field_map(df, field, scale)
+    return {}
 
 
-def _append_market_cap_rows(mapping: dict[str, float], df: pd.DataFrame) -> None:
+def _daily_basic_field_map(df: pd.DataFrame, field: str, scale: float) -> dict[str, float]:
+    mapping: dict[str, float] = {}
     for _, row in df.iterrows():
         sym = _ts_code_to_symbol(str(row["ts_code"]))
-        total_mv = row.get("total_mv")
-        if sym and pd.notna(total_mv):
-            mapping[sym] = float(total_mv) / 10000.0
+        value = row.get(field)
+        if sym and pd.notna(value):
+            mapping[sym] = float(value) * scale
+    return mapping
 
 
 def _append_concept_rows(mapping: dict[str, list[str]], rows: list[dict[str, Any]]) -> None:
@@ -314,9 +335,7 @@ def fetch_historical_market_cap_map(as_of_date: str) -> dict[str, float]:
     try:
         df = pro.daily_basic(trade_date=trade_date, fields="ts_code,total_mv")
         if df is not None and not df.empty:
-            mapping: dict[str, float] = {}
-            _append_market_cap_rows(mapping, df)
-            return mapping
+            return _daily_basic_field_map(df, "total_mv", _WAN_YUAN_TO_YI)
     except Exception as exc:
         debug_metadata_fail(f"tushare_historical_daily_basic[{trade_date}]", exc)
     return {}

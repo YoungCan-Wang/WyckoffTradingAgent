@@ -15,7 +15,7 @@
 │  L4  Harness 回归层  │  snapshot / golden-file 契约测试         │
 ├──────────────────────────────────────────────────────────────────┤
 │  L3  CI 门禁层       │  ruff + quality_gate + tsc + pytest +    │
-│                      │  vitest（PR/push 自动触发）               │
+│                      │  coverage + vitest（PR/push 自动触发）    │
 ├──────────────────────────────────────────────────────────────────┤
 │  L2  本地拦截层      │  pre-commit hooks（ruff + 函数长度）      │
 ├──────────────────────────────────────────────────────────────────┤
@@ -160,7 +160,9 @@ pre-commit run --all-files
 │  │  py_compile (编译检查)                        │          │
 │  │       │                                       │          │
 │  │       ▼                                       │          │
-│  │  pytest tests/ -x -q  ◀── 含 L4 harness      │          │
+│  │  coverage run -m pytest tests/ -x -q          │          │
+│  │       ├── 含 L4 harness                       │          │
+│  │       └── coverage.json artifact              │          │
 │  │       │                                       │          │
 │  │       ▼                                       │          │
 │  │  daily_job --dry-run                          │          │
@@ -480,7 +482,7 @@ L2-L4 自动化 ── "机器强制执行"
 | Fast gate | 日常本地开发、提交前快速确认 | `.venv/bin/ruff check .`、`.venv/bin/ruff format --check .`、`.venv/bin/python scripts/quality_gate.py --check-functions`、相关 pytest/tsx 测试 |
 | Full gate | CI、发布、跨模块大改 | Fast gate + 全量 `pytest`、workspace TypeScript、web test/build、必要 dry-run job |
 
-原则：本地开发优先 fast gate 保持反馈速度；CI 和发布用 full gate 守住端到端契约。不要为了省时间把 full gate 的责任转嫁给 review，也不要因为 full gate 很重就放松 hard gate。
+原则：本地开发优先 fast gate 保持反馈速度；CI 和发布用 full gate 守住端到端契约。Python 全量测试只执行一次，并由同一次 coverage-instrumented 运行生成覆盖率报告；不要为统计覆盖率重复跑相同套件。不要为了省时间把 full gate 的责任转嫁给 review，也不要因为 full gate 很重就放松 hard gate。
 
 ---
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from argparse import Namespace
 from dataclasses import dataclass
 from pathlib import Path
@@ -85,6 +86,75 @@ def test_parse_grid_cells_rejects_invalid_values() -> None:
         parse_grid_cells("10:7:18:0")
 
 
+def test_trigger_grid_reruns_full_funnel_per_threshold(monkeypatch, tmp_path) -> None:
+    import workflows.backtest_runner as runner
+
+    overrides: list[tuple] = []
+    output_dirs: list[str] = []
+    monkeypatch.setattr(
+        runner,
+        "run_backtest_request",
+        lambda request, **_kwargs: (
+            overrides.append(request.funnel_overrides)
+            or (pd.DataFrame(), {"stratified": {"by_trigger": {"spring(确认)": {"trades": 30, "avg_ret_pct": 1.0}}}})
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "write_backtest_artifacts",
+        lambda **kwargs: (
+            output_dirs.append(str(kwargs["out_dir"]))
+            or _Artifact("summary", tmp_path / "summary.md", tmp_path / "trades.csv")
+        ),
+    )
+    monkeypatch.setattr(runner, "success_suite_row", lambda hold_days, summary: {"hold_days": hold_days})
+
+    result = run_backtest_runner(
+        _args(
+            tmp_path,
+            trigger_grid="spring_vol_ratio=1.1,1.5",
+            grid_prefix="backtest-trigger-bear_2022",
+            period_key="bear_2022",
+        ),
+        progress=lambda *_args, **_kwargs: None,
+    )
+
+    assert result == 0
+    assert overrides == [(("spring_vol_ratio", 1.1),), (("spring_vol_ratio", 1.5),)]
+    assert output_dirs[0].endswith("backtest-trigger-bear_2022-spring_vol_ratio-1.1")
+    matrix = json.loads((tmp_path / "trigger_matrix_spring_vol_ratio.json").read_text(encoding="utf-8"))
+    assert [row["value"] for row in matrix["rows"]] == [1.1, 1.5]
+    assert {row["period_key"] for row in matrix["rows"]} == {"bear_2022"}
+
+
+def test_top_n_grid_sweeps_selection_instead_of_funnel_overrides(monkeypatch, tmp_path) -> None:
+    import workflows.backtest_runner as runner
+
+    requests: list = []
+    monkeypatch.setattr(
+        runner,
+        "run_backtest_request",
+        lambda request, **_kwargs: requests.append(request) or (pd.DataFrame(), {"trades": 900, "avg_ret_pct": -1.0}),
+    )
+    monkeypatch.setattr(
+        runner,
+        "write_backtest_artifacts",
+        lambda **_kwargs: _Artifact("summary", tmp_path / "summary.md", tmp_path / "trades.csv"),
+    )
+    monkeypatch.setattr(runner, "success_suite_row", lambda hold_days, summary: {"hold_days": hold_days})
+
+    result = run_backtest_runner(
+        _args(tmp_path, trigger_grid="top_n=0,1", period_key="bear_2022"),
+        progress=lambda *_args, **_kwargs: None,
+    )
+
+    assert result == 0
+    assert [request.top_n for request in requests] == [0, 1]
+    assert all(request.funnel_overrides == () for request in requests)
+    matrix = json.loads((tmp_path / "trigger_matrix_top_n.json").read_text(encoding="utf-8"))
+    assert [row["overall_avg_ret_pct"] for row in matrix["rows"]] == [-1.0, -1.0]
+
+
 def _args(tmp_path: Path, **overrides) -> Namespace:
     values = {
         "start": "2026-01-01",
@@ -126,10 +196,13 @@ def _args(tmp_path: Path, **overrides) -> Namespace:
         "initial_cash": 100000.0,
         "max_positions": 4,
         "commission_rate": 0.0003,
-        "small_trade_threshold": 10000.0,
-        "small_trade_fee": 5.0,
+        "min_commission": 5.0,
+        "stamp_duty_rate": 0.0005,
+        "transfer_fee_rate": 0.00001,
         "lot_size": 100,
         "portfolio_styles": "slot_equal_4",
+        "trigger_grid": "",
+        "period_key": "",
     }
     values.update(overrides)
     return Namespace(**values)

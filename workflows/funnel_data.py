@@ -20,6 +20,7 @@ from integrations.market_metadata import (
     detect_theme_lines,
     fetch_concept_heat,
     fetch_concept_map,
+    fetch_float_share_map,
     fetch_historical_market_cap_map,
     fetch_market_cap_map,
     fetch_sector_map,
@@ -203,7 +204,31 @@ def _fetch_funnel_ohlcv(
         runtime_config=fetch_runtime_config_from_env(),
     )
     _report_progress("日线拉取", _fetch_progress_summary(fetch_stats, all_df_map), 0.75)
+    fetch_stats["turnover_coverage"] = _attach_turnover(all_df_map)
     return all_df_map, fetch_stats
+
+
+def _attach_turnover(all_df_map: dict[str, pd.DataFrame]) -> float:
+    """用流通股本把成交量折算成换手率(%)，返回覆盖率。
+
+    TickFlow/Tushare/Baostock 的日线都不带换手率，缺了这一列时下游的换手率门槛
+    会因为 NaN 而恒真、静默失效，所以在数据装配阶段一次性补齐。
+    """
+    try:
+        float_share_map = fetch_float_share_map()
+    except Exception as exc:
+        logger.warning("流通股本映射加载失败，换手率门槛将失效: %s", exc)
+        float_share_map = {}
+    covered = 0
+    for symbol, df in all_df_map.items():
+        float_share = float_share_map.get(symbol, 0.0)
+        if df is None or df.empty or "volume" not in df.columns or float_share <= 0:
+            continue
+        df["turnover"] = pd.to_numeric(df["volume"], errors="coerce") / float_share * 100.0
+        covered += 1
+    coverage = covered / len(all_df_map) if all_df_map else 0.0
+    print(f"[funnel] 换手率折算覆盖: {covered}/{len(all_df_map)} ({coverage:.1%})")
+    return coverage
 
 
 def _fetch_progress_summary(fetch_stats: dict, all_df_map: dict[str, pd.DataFrame]) -> str:

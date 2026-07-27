@@ -20,12 +20,17 @@ class TestLimitPct:
     def test_star_board_20pct(self):
         assert limit_pct("688981", "中芯国际") == 20.0
 
-    def test_bse_20pct(self):
-        assert limit_pct("430047", "诺思兰德") == 20.0
+    def test_bse_30pct(self):
+        assert limit_pct("430047", "诺思兰德") == 30.0
 
-    def test_st_name_5pct_overrides_board(self):
-        assert limit_pct("300123", "ST某某") == 5.0
+    def test_st_narrows_main_board_only(self):
         assert limit_pct("600123", "*ST某某") == 5.0
+        assert limit_pct("000123", "ST某某") == 5.0
+
+    def test_st_keeps_registration_board_limit(self):
+        assert limit_pct("300123", "ST某某") == 20.0
+        assert limit_pct("688123", "*ST某某") == 20.0
+        assert limit_pct("430123", "ST某某") == 30.0
 
 
 class TestIsStName:

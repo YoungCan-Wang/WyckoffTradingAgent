@@ -38,8 +38,9 @@ class CashPortfolioConfig:
     initial_cash: float = 100_000.0
     max_positions: int = 4
     commission_rate: float = 0.0002
-    small_trade_threshold: float = 10_000.0
-    small_trade_fee: float = 5.0
+    min_commission: float = 5.0
+    stamp_duty_rate: float = 0.0005  # 印花税，仅卖出单边征收
+    transfer_fee_rate: float = 0.00001  # 沪深过户费，买卖双边
     lot_size: int = 100
     portfolio_style: str = "slot_equal_4"
     probe_weight: float = 0.125
@@ -68,13 +69,16 @@ def expand_portfolio_styles(raw: str | list[str] | tuple[str, ...] | None) -> li
     return out or ["slot_equal_4"]
 
 
-def calc_commission(amount: float, config: CashPortfolioConfig) -> float:
+def calc_trade_cost(amount: float, config: CashPortfolioConfig, *, side: str) -> float:
+    """A 股单边交易成本：佣金（含最低收费）+ 过户费，卖出侧另征印花税。"""
     gross = max(float(amount), 0.0)
     if gross <= 0:
         return 0.0
-    if gross < float(config.small_trade_threshold):
-        return float(config.small_trade_fee)
-    return gross * float(config.commission_rate)
+    cost = max(gross * float(config.commission_rate), float(config.min_commission))
+    cost += gross * float(config.transfer_fee_rate)
+    if side == "sell":
+        cost += gross * float(config.stamp_duty_rate)
+    return cost
 
 
 def _style(config: CashPortfolioConfig) -> str:
@@ -147,7 +151,7 @@ def _shares_for_budget(price: float, cash: float, budget: float, config: CashPor
     shares = int(usable // (float(price) * lot_size)) * lot_size
     while shares > 0:
         gross = shares * float(price)
-        if gross + calc_commission(gross, config) <= usable:
+        if gross + calc_trade_cost(gross, config, side="buy") <= usable:
             return shares
         shares -= lot_size
     return 0
@@ -191,7 +195,7 @@ def _close_position(
     config = pos["config"]
     execution_price = float(price) * (1.0 - float(config.sell_friction_pct) / 100.0)
     sell_gross = float(pos["shares"]) * execution_price
-    sell_fee = calc_commission(sell_gross, config)
+    sell_fee = calc_trade_cost(sell_gross, config, side="sell")
     sell_net = sell_gross - sell_fee
     pnl = sell_net - float(pos["cost_total"])
     cash += sell_net
@@ -272,7 +276,7 @@ def _open_lot(
     if shares <= 0:
         return cash, False
     buy_gross = shares * execution_price
-    buy_fee = calc_commission(buy_gross, config)
+    buy_fee = calc_trade_cost(buy_gross, config, side="buy")
     active.append(_new_position(row, config, kind, market_price, execution_price, shares, buy_gross, buy_fee))
     return cash - buy_gross - buy_fee, True
 
@@ -554,7 +558,7 @@ def _portfolio_summary(
         "cash_portfolio_sell_friction_pct": float(config.sell_friction_pct),
         "cash_portfolio_friction_total": float(_numeric_column(closed_df, "buy_friction_cost").sum())
         + float(_numeric_column(closed_df, "sell_friction_cost").sum()),
-        "cash_portfolio_commission_total": float(_numeric_column(closed_df, "buy_fee").sum())
+        "cash_portfolio_trade_cost_total": float(_numeric_column(closed_df, "buy_fee").sum())
         + float(_numeric_column(closed_df, "sell_fee").sum()),
         "cash_portfolio_probe_entries": int(entry_kind.isin({"probe"}).sum()),
         "cash_portfolio_add_entries": int(entry_kind.isin({"add", "pyramid_add"}).sum()),

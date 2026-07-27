@@ -150,7 +150,7 @@ def _cash_portfolio_lines(summary: dict) -> list[str]:
         f"{fmt_metric(summary.get('cash_portfolio_buy_friction_pct'), 3)}% / 卖出 "
         f"{fmt_metric(summary.get('cash_portfolio_sell_friction_pct'), 3)}%；"
         f"合计 {fmt_metric(summary.get('cash_portfolio_friction_total'), 2)}",
-        f"- 佣金合计: {fmt_metric(summary.get('cash_portfolio_commission_total'), 2)}",
+        f"- 佣金/税费合计: {fmt_metric(summary.get('cash_portfolio_trade_cost_total'), 2)}",
         "",
     ]
 
@@ -394,9 +394,10 @@ def _cost_note(summary: dict) -> str:
         "- 现金账户口径：成交价已纳入买入 "
         f"{fmt_metric(summary.get('cash_portfolio_buy_friction_pct'), 3)}% / 卖出 "
         f"{fmt_metric(summary.get('cash_portfolio_sell_friction_pct'), 3)}% 摩擦，另计双边佣金率 "
-        f"{fmt_metric(float(summary.get('cash_portfolio_commission_rate') or 0) * 10000, 2)} / 万，"
-        f"单笔成交额低于 {fmt_metric(summary.get('cash_portfolio_small_trade_threshold'), 2)} 元时收 "
-        f"{fmt_metric(summary.get('cash_portfolio_small_trade_fee'), 2)} 元。"
+        f"{fmt_metric(float(summary.get('cash_portfolio_commission_rate') or 0) * 10000, 2)} / 万"
+        f"（最低 {fmt_metric(summary.get('cash_portfolio_min_commission'), 2)} 元）、双边过户费 "
+        f"{fmt_metric(float(summary.get('cash_portfolio_transfer_fee_rate') or 0) * 10000, 3)} / 万，"
+        f"卖出单边印花税 {fmt_metric(float(summary.get('cash_portfolio_stamp_duty_rate') or 0) * 10000, 2)} / 万。"
     )
 
 

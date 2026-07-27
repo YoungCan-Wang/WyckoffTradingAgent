@@ -15,7 +15,6 @@ from dataclasses import dataclass
 
 from core.cn_boards import cn_board
 
-_REGISTRATION_BOARDS = {"chinext", "star", "bse"}
 _LIMIT_TOUCH_TOLERANCE_PCT = 0.15  # 价格与理论涨跌停价的容差（挂钩四舍五入误差）
 
 
@@ -28,16 +27,18 @@ def is_st_name(name: str) -> bool:
 def limit_pct(code: str, name: str = "", *, market: str = "cn") -> float | None:
     """返回该股票的涨跌停幅度（如 10.0 表示 ±10%）。
 
-    港股无涨跌停制度，market="hk" 时返回 None。
+    风险警示（ST）只收窄沪深主板的幅度到 ±5%；创业板、科创板、北交所的 ST 股
+    仍按各自板块的幅度执行，不叠加主板的 5% 规则。
+    港股和美股没有涨跌停制度，非 A 股市场一律返回 None。
     """
-    if market == "hk":
+    if market != "cn":
         return None
-    if is_st_name(name):
-        return 5.0
     board = cn_board(code)
-    if board in _REGISTRATION_BOARDS:
+    if board == "bse":
+        return 30.0
+    if board in {"chinext", "star"}:
         return 20.0
-    return 10.0
+    return 5.0 if is_st_name(name) else 10.0
 
 
 @dataclass(frozen=True)

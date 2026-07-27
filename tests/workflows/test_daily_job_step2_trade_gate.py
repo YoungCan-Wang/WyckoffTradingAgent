@@ -33,6 +33,7 @@ def test_persist_step2_outputs_tracks_candidates_when_trade_gate_blocks_recommen
     monkeypatch.setattr(step2_module, "persist_step2_observations", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(step2_module, "run_signal_confirmation", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(step2_module, "run_springboard_scoring", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(step2_module, "latest_trade_date_str", lambda: "2026-06-01")
     monkeypatch.setattr(step2_module.daily_persistence, "persist_benchmark_context", lambda *_args, **_kwargs: True)
 
     def fake_step3_review_symbols(symbols, **kwargs):

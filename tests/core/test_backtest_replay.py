@@ -414,6 +414,50 @@ def test_confirmed_signals_require_breadth_for_neutral_research_variant() -> Non
     assert pending.ticked is True
 
 
+def test_confirmed_signals_apply_breadth_only_to_neutral_spring() -> None:
+    class Pending:
+        def write(self, *_args, **_kwargs):
+            return None
+
+        def tick(self, *_args, **_kwargs):
+            return [
+                {"code": "SPRING", "score": 10.0, "signal_type": "spring"},
+                {"code": "EVR", "score": 9.0, "signal_type": "evr"},
+            ]
+
+    ctx = replay_mod._DayContext(
+        idx=0,
+        signal_date=date(2026, 1, 1),
+        entry_target_date=date(2026, 1, 2),
+        day_df_map={"000001": _hist()},
+        name_map={},
+        day_cfg=FunnelConfig(trading_days=3),
+        result=_result(),
+        regime="NEUTRAL",
+    )
+
+    confirmed = replay_mod._confirmed_signals(
+        ctx,
+        Pending(),
+        {},
+        AShareEntryResearchPolicy(require_neutral_spring_breadth_confirmation=True),
+    )
+
+    assert confirmed.codes == ["EVR"]
+    strong_ctx = replace(
+        ctx,
+        breadth={"ratio_pct": 55, "delta_pct": 2, "daily_up_ratio_pct": 60, "sample_size": 1000},
+    )
+    confirmed = replay_mod._confirmed_signals(
+        strong_ctx,
+        Pending(),
+        {},
+        AShareEntryResearchPolicy(require_neutral_spring_breadth_confirmation=True),
+    )
+
+    assert confirmed.codes == ["SPRING", "EVR"]
+
+
 def test_confirmed_signals_carry_research_entry_weight() -> None:
     class Pending:
         def write(self, *_args, **_kwargs):

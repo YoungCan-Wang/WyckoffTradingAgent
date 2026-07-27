@@ -224,8 +224,10 @@ def _validate_costs_and_cash(
         raise ValueError("initial_cash 必须 > 0")
     if cash_config.max_positions < 1:
         raise ValueError("max_positions 必须 >= 1")
-    if cash_config.commission_rate < 0 or cash_config.small_trade_threshold < 0 or cash_config.small_trade_fee < 0:
-        raise ValueError("commission_rate / small_trade_threshold / small_trade_fee 必须 >= 0")
+    if cash_config.commission_rate < 0 or cash_config.min_commission < 0:
+        raise ValueError("commission_rate / min_commission 必须 >= 0")
+    if cash_config.stamp_duty_rate < 0 or cash_config.transfer_fee_rate < 0:
+        raise ValueError("stamp_duty_rate / transfer_fee_rate 必须 >= 0")
     if cash_config.lot_size < 1:
         raise ValueError("lot_size 必须 >= 1")
 

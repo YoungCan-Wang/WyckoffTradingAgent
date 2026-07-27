@@ -5,19 +5,28 @@ from datetime import date
 import pandas as pd
 import pytest
 
-from core.cash_portfolio import CashPortfolioConfig, calc_commission, expand_portfolio_styles, simulate_cash_portfolio
+from core.cash_portfolio import CashPortfolioConfig, calc_trade_cost, expand_portfolio_styles, simulate_cash_portfolio
+
+FEE_FREE = {"commission_rate": 0.0, "min_commission": 0.0, "stamp_duty_rate": 0.0, "transfer_fee_rate": 0.0}
 
 
-def test_commission_uses_small_trade_fee() -> None:
+def test_commission_floors_at_min_commission() -> None:
+    cfg = CashPortfolioConfig(commission_rate=0.0002, min_commission=5, stamp_duty_rate=0.0, transfer_fee_rate=0.0)
+
+    # 万 2 费率下，佣金要到 25000 元成交额才追平 5 元下限。
+    assert calc_trade_cost(5_000, cfg, side="buy") == 5.0
+    assert calc_trade_cost(10_000, cfg, side="buy") == 5.0
+    assert calc_trade_cost(25_000, cfg, side="buy") == 5.0
+    assert calc_trade_cost(100_000, cfg, side="buy") == 20.0
+
+
+def test_sell_side_adds_stamp_duty_and_both_sides_pay_transfer_fee() -> None:
     cfg = CashPortfolioConfig(
-        commission_rate=0.0002,
-        small_trade_threshold=10_000,
-        small_trade_fee=5,
+        commission_rate=0.0002, min_commission=0.0, stamp_duty_rate=0.0005, transfer_fee_rate=0.00001
     )
 
-    assert calc_commission(5_000, cfg) == 5.0
-    assert calc_commission(10_000, cfg) == 2.0
-    assert calc_commission(100_000, cfg) == 20.0
+    assert calc_trade_cost(100_000, cfg, side="buy") == pytest.approx(20.0 + 1.0)
+    assert calc_trade_cost(100_000, cfg, side="sell") == pytest.approx(20.0 + 1.0 + 50.0)
 
 
 def test_cash_portfolio_limits_positions_and_lot_size() -> None:
@@ -41,8 +50,7 @@ def test_cash_portfolio_limits_positions_and_lot_size() -> None:
             initial_cash=100_000,
             max_positions=4,
             commission_rate=0.0002,
-            small_trade_threshold=10_000,
-            small_trade_fee=5,
+            min_commission=5,
             lot_size=100,
         ),
     )
@@ -89,9 +97,7 @@ def test_cash_portfolio_applies_research_entry_weight_multiplier() -> None:
     config = CashPortfolioConfig(
         initial_cash=100_000,
         max_positions=4,
-        commission_rate=0.0,
-        small_trade_threshold=0.0,
-        small_trade_fee=0.0,
+        **FEE_FREE,
     )
 
     closed, _nav, _summary = simulate_cash_portfolio(pd.DataFrame(rows), config)
@@ -126,11 +132,9 @@ def test_cash_portfolio_applies_execution_friction_once_to_cash_positions_and_na
     config = CashPortfolioConfig(
         initial_cash=100_000,
         max_positions=1,
-        commission_rate=0.0,
-        small_trade_threshold=0.0,
-        small_trade_fee=0.0,
         buy_friction_pct=1.0,
         sell_friction_pct=1.0,
+        **FEE_FREE,
     )
 
     closed, nav, summary = simulate_cash_portfolio(trades, config)
@@ -236,9 +240,7 @@ def test_portfolio_style_addon_uses_current_mark_for_target_weight() -> None:
     config = CashPortfolioConfig(
         initial_cash=100_000,
         portfolio_style="probe_add",
-        commission_rate=0.0,
-        small_trade_threshold=0.0,
-        small_trade_fee=0.0,
+        **FEE_FREE,
     )
 
     closed, _nav, _summary = simulate_cash_portfolio(

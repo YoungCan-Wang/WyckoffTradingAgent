@@ -1066,18 +1066,21 @@ def _is_frozen_board_day(row: pd.Series, *, market: str = "cn") -> bool:
     return day_range_pct <= 1.0 and abs(o - c) / c * 100.0 <= 1.0
 
 
-# 20% 涨跌停板块（创业板/科创板）相对 10% 主板/北交所的量能阈值放大系数。
-# 用 sqrt(20/10) 而非线性 2 倍：涨跌停幅度翻倍不代表"有效换手"的量能门槛也要翻倍，
-# 否则门槛会形同虚设；同一套绝对阈值（如放量3倍）套用在两类板块上，对20%板块
-# 明显过松——它们的日常波动率本就更高，"放量"更容易被正常噪音触发。
-_REGISTRATION_BOARD_VOL_SCALE = 1.41
+# 各板块日内波幅相对沪深主板的实测倍数（全市场 40 个交易日 |涨跌幅| 中位数：
+# 主板 2.02% / 创业板 2.45% / 科创板 2.78% / 北交所 2.52%）。价格类阈值（如 EVR
+# 判"滞涨"允许的日内波幅）必须按板块放宽，否则高波动板块的正常波动就会否掉信号。
+#
+# 量比类阈值刻意不做板块缩放：量比已按个股自身均量归一化，实测四个板块的分布几乎
+# 重合（当日量/前 4 日均量的 p90 都在 1.47±0.02，北交所反而更容易放量），按涨跌停
+# 幅度缩放量能门槛只会平白改变信号密度，并不对应任何真实的板块差异。
+_BOARD_VOLATILITY_SCALE = {"chinext": 1.2, "star": 1.4, "bse": 1.2}
 
 
-def _board_vol_ratio_scale(code: str, *, market: str = "cn") -> float:
-    """按涨跌停幅度返回量能阈值缩放系数：A股主板/北交所=1.0，创业板/科创板放大；港股/美股=1.0。"""
+def _board_volatility_scale(code: str, *, market: str = "cn") -> float:
+    """按板块日内波幅返回价格类阈值的放宽系数；沪深主板与非 A 股为 1.0。"""
     if market in ("hk", "us"):
         return 1.0
-    return _REGISTRATION_BOARD_VOL_SCALE if cn_board(code) in {"chinext", "star"} else 1.0
+    return _BOARD_VOLATILITY_SCALE.get(cn_board(code), 1.0)
 
 
 def _spring_support_level(support_zone: pd.DataFrame) -> float:
@@ -1119,9 +1122,8 @@ def _detect_spring(
         return None
     if last["close"] <= support_level:
         return None
-    vol_scale = _board_vol_ratio_scale(code, market=mkt)
     vol_avg = df_s["volume"].tail(5).iloc[:-1].mean()
-    if vol_avg <= 0 or last["volume"] < vol_avg * cfg.spring_vol_ratio * vol_scale:
+    if vol_avg <= 0 or last["volume"] < vol_avg * cfg.spring_vol_ratio:
         return None
 
     prev_vol = float(prev["volume"]) if pd.notna(prev["volume"]) else 0
@@ -1171,9 +1173,7 @@ def _detect_lps(df: pd.DataFrame, cfg: FunnelConfig, max_bias_200: float | None 
     if ref_max_vol <= 0:
         return None
     vol_ratio = recent_max_vol / ref_max_vol
-    # 20%涨跌停板块日常波动更大，缩量比的合格线相应放宽，避免正常噪音误杀有效信号。
-    mkt = _detect_market(code)
-    if vol_ratio > cfg.lps_vol_dry_ratio * _board_vol_ratio_scale(code, market=mkt):
+    if vol_ratio > cfg.lps_vol_dry_ratio:
         return None
     if cfg.lps_creek_confirmation_enabled and not _lps_creek_confirmed(df_s, cfg):
         return None
@@ -1322,11 +1322,11 @@ def _detect_evr(df: pd.DataFrame, cfg: FunnelConfig, max_bias_200: float | None 
     if vol_ref_avg is None:
         return None
 
-    # 20%涨跌停板块日常波动更大：量比门槛、"滞涨"允许的日内波幅都需同步放宽，
-    # 否则该信号在这些板块上几乎永远无法触发（正常波动就超过主板的滞涨阈值）。
-    vol_scale = _board_vol_ratio_scale(code, market=mkt)
-    max_drop = cfg.evr_max_drop * vol_scale
-    max_rise = cfg.evr_max_rise * vol_scale
+    # 高波动板块的"滞涨"波幅上限需按板块放宽，否则正常波动就会超过主板阈值，
+    # 该信号在这些板块上几乎永远无法触发。量比门槛不缩放。
+    volatility_scale = _board_volatility_scale(code, market=mkt)
+    max_drop = cfg.evr_max_drop * volatility_scale
+    max_rise = cfg.evr_max_rise * volatility_scale
     confirm_days = max(int(cfg.evr_confirm_days), 0)
     for idx in _evr_candidate_indexes(confirm_days):
         # 一字板当天量能失真，EVR 的"努力无结果"判断不成立。
@@ -1532,11 +1532,9 @@ def _detect_compression(
     close, high, low, volume = ohlcv
     if not _compression_direction_ok(close, cfg) or not _compression_bias_ok(close, cfg, max_bias_200):
         return None
-    mkt = _detect_market(code)
-    vol_scale = _board_vol_ratio_scale(code, market=mkt)
     vol_ref = float(volume.iloc[-(atr_w + lookback) : -lookback].mean())
     vol_recent = float(volume.tail(lookback).mean())
-    if vol_ref <= 0 or vol_recent / vol_ref > cfg.compression_vol_decline_ratio * vol_scale:
+    if vol_ref <= 0 or vol_recent / vol_ref > cfg.compression_vol_decline_ratio:
         return None
     return _compression_atr_ratio(close, high, low, volume, cfg)
 
@@ -1621,9 +1619,7 @@ def _detect_trend_pullback(
     vol_ratio = vol_down / vol_up
 
     # 大市值放宽 + 饥饿模式（趋势持续久无触发）
-    mkt = _detect_market(code)
-    vol_scale = _board_vol_ratio_scale(code, market=mkt)
-    threshold = _trend_pullback_vol_threshold(close, cfg, market_cap_yi) * vol_scale
+    threshold = _trend_pullback_vol_threshold(close, cfg, market_cap_yi)
     if vol_ratio > threshold:
         return None
     return float(1.0 - vol_ratio)
