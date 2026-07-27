@@ -131,7 +131,7 @@ CLI Agent 的本地命令工具只允许明确的只读命令；文件工具继�
 
 | 层 | 技术 |
 |---|---|
-| 框架 | React 19 + React Router 7 + TypeScript |
+| 框架 | React 19 + React Router 8 + TypeScript |
 | AI SDK | 前端 `@ai-sdk/react` + Worker 端 `ai` / `@ai-sdk/openai` / `@ai-sdk/anthropic` |
 | 样式 | Tailwind CSS 4 + shadcn/ui 组件 |
 | 构建 | Vite 6 → CF Pages 部署 |
