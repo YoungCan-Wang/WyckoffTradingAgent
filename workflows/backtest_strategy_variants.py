@@ -16,10 +16,11 @@ VARIANT_LABELS = {
     "H": "A股实证：NEUTRAL 入场需广度确认",
     "I": "A股实证：按历史命中先验重排确认信号",
     "M": "A股实证：弱水温信号缩仓",
-    "O": "A股实证：M + 禁止 NEUTRAL Spring 后不补位",
+    "P": "A股实证：M + NEUTRAL Spring 缩仓至 25%",
+    "Q": "A股实证：P + NEUTRAL Spring 需广度确认",
 }
 
-DEFAULT_COMPARISON_VARIANTS = ("A", "M", "O")
+DEFAULT_COMPARISON_VARIANTS = ("A", "M", "P", "Q")
 
 _ALL_SWITCHES = {
     "dist_upthrust_enabled": False,
@@ -44,11 +45,21 @@ _VARIANT_SWITCHES = {
     "H": {},
     "I": {},
     "M": {},
-    "O": {},
+    "P": {},
+    "Q": {},
 }
 
 _WEAK_REGIME_WEIGHTS = (
     ("NEUTRAL", "spring", 0.5),
+    ("NEUTRAL", "evr", 0.5),
+    ("PANIC_REPAIR_CONFIRMED", "spring", 0.25),
+    ("PANIC_REPAIR_CONFIRMED", "sos", 0.25),
+    ("PANIC_REPAIR_INTRADAY", "spring", 0.25),
+    ("PANIC_REPAIR_INTRADAY", "sos", 0.25),
+)
+
+_LOWER_NEUTRAL_SPRING_WEIGHTS = (
+    ("NEUTRAL", "spring", 0.25),
     ("NEUTRAL", "evr", 0.5),
     ("PANIC_REPAIR_CONFIRMED", "spring", 0.25),
     ("PANIC_REPAIR_CONFIRMED", "sos", 0.25),
@@ -62,10 +73,10 @@ _ENTRY_POLICIES = {
     "H": AShareEntryResearchPolicy(require_neutral_breadth_confirmation=True),
     "I": AShareEntryResearchPolicy(calibrate_confirmed_score=True),
     "M": AShareEntryResearchPolicy(entry_weight_multipliers=_WEAK_REGIME_WEIGHTS),
-    "O": AShareEntryResearchPolicy(
-        entry_weight_multipliers=_WEAK_REGIME_WEIGHTS,
-        blocked_confirmed_regime_signals=(("NEUTRAL", "spring"),),
-        no_backfill_on_blocked_confirmed=True,
+    "P": AShareEntryResearchPolicy(entry_weight_multipliers=_LOWER_NEUTRAL_SPRING_WEIGHTS),
+    "Q": AShareEntryResearchPolicy(
+        entry_weight_multipliers=_LOWER_NEUTRAL_SPRING_WEIGHTS,
+        require_neutral_spring_breadth_confirmation=True,
     ),
 }
 
@@ -74,7 +85,7 @@ def normalize_strategy_variant(raw: str) -> str:
     value = str(raw or "live").strip()
     normalized = value.upper() if value.lower() != "live" else "live"
     if normalized not in VARIANT_LABELS:
-        raise ValueError("strategy_variant 必须是 live / A / B / C / D / E / F / G / H / I / M / O")
+        raise ValueError("strategy_variant 必须是 live / A / B / C / D / E / F / G / H / I / M / P / Q")
     return normalized
 
 

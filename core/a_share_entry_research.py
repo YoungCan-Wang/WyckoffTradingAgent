@@ -12,10 +12,10 @@ from core.candidate_policy import candidate_score_value
 class AShareEntryResearchPolicy:
     blocked_confirmed_signals: tuple[str, ...] = ()
     blocked_confirmed_regime_signals: tuple[tuple[str, str], ...] = ()
-    no_backfill_on_blocked_confirmed: bool = False
     entry_weight_multipliers: tuple[tuple[str, str, float], ...] = ()
     max_hold_days_by_regime_signal: tuple[tuple[str, str, int], ...] = ()
     require_neutral_breadth_confirmation: bool = False
+    require_neutral_spring_breadth_confirmation: bool = False
     calibrate_confirmed_score: bool = False
     neutral_breadth_ratio_min: float = 50.0
     neutral_breadth_delta_min: float = 0.0
@@ -43,14 +43,23 @@ def normalized_signal_type(raw: object) -> str:
     return str(raw or "").strip().lower().replace("-", "_").replace(" ", "_")
 
 
-def confirmed_signal_allowed(policy: AShareEntryResearchPolicy, signal_type: object, regime: object = "") -> bool:
+def confirmed_signal_allowed(
+    policy: AShareEntryResearchPolicy,
+    signal_type: object,
+    regime: object = "",
+    *,
+    breadth: dict[str, Any] | None = None,
+) -> bool:
     signal = normalized_signal_type(signal_type)
+    regime_key = str(regime or "").strip().upper()
     blocked = {normalized_signal_type(item) for item in policy.blocked_confirmed_signals}
     blocked_pairs = {
         (str(item_regime).strip().upper(), normalized_signal_type(item_signal))
         for item_regime, item_signal in policy.blocked_confirmed_regime_signals
     }
-    return signal not in blocked and (str(regime or "").strip().upper(), signal) not in blocked_pairs
+    if signal in blocked or (regime_key, signal) in blocked_pairs:
+        return False
+    return not _neutral_spring_needs_breadth_confirmation(policy, signal, regime_key, breadth)
 
 
 def entry_weight_multiplier(
@@ -91,13 +100,7 @@ def market_context_allows_entry(
         return True
     if str(regime or "").strip().upper() != "NEUTRAL":
         return True
-    data = breadth or {}
-    return (
-        _number(data.get("ratio_pct")) >= policy.neutral_breadth_ratio_min
-        and _number(data.get("delta_pct")) >= policy.neutral_breadth_delta_min
-        and _number(data.get("daily_up_ratio_pct")) >= policy.neutral_daily_up_ratio_min
-        and int(data.get("sample_size") or 0) >= policy.neutral_breadth_sample_min
-    )
+    return _neutral_breadth_confirmed(policy, breadth)
 
 
 def calibrated_confirmation_score(policy: AShareEntryResearchPolicy, signal_type: object, raw_score: object) -> float:
@@ -116,3 +119,27 @@ def _number(raw: object) -> float:
     except (TypeError, ValueError):
         return float("-inf")
     return value if value == value else float("-inf")
+
+
+def _neutral_spring_needs_breadth_confirmation(
+    policy: AShareEntryResearchPolicy,
+    signal: str,
+    regime: str,
+    breadth: dict[str, Any] | None,
+) -> bool:
+    return (
+        policy.require_neutral_spring_breadth_confirmation
+        and regime == "NEUTRAL"
+        and signal == "spring"
+        and not _neutral_breadth_confirmed(policy, breadth)
+    )
+
+
+def _neutral_breadth_confirmed(policy: AShareEntryResearchPolicy, breadth: dict[str, Any] | None) -> bool:
+    data = breadth or {}
+    return (
+        _number(data.get("ratio_pct")) >= policy.neutral_breadth_ratio_min
+        and _number(data.get("delta_pct")) >= policy.neutral_breadth_delta_min
+        and _number(data.get("daily_up_ratio_pct")) >= policy.neutral_daily_up_ratio_min
+        and int(data.get("sample_size") or 0) >= policy.neutral_breadth_sample_min
+    )

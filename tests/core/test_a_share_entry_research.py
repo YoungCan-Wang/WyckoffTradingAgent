@@ -25,6 +25,16 @@ def test_neutral_breadth_gate_fails_closed_but_does_not_replace_other_regimes() 
     assert market_context_allows_entry(policy, regime="CAUTION", breadth={})
 
 
+def test_neutral_spring_breadth_gate_only_blocks_unconfirmed_spring() -> None:
+    policy = AShareEntryResearchPolicy(require_neutral_spring_breadth_confirmation=True)
+    strong = {"ratio_pct": 55, "delta_pct": 2, "daily_up_ratio_pct": 60, "sample_size": 1000}
+
+    assert not confirmed_signal_allowed(policy, "spring", "NEUTRAL", breadth={})
+    assert confirmed_signal_allowed(policy, "spring", "NEUTRAL", breadth=strong)
+    assert confirmed_signal_allowed(policy, "evr", "NEUTRAL", breadth={})
+    assert confirmed_signal_allowed(policy, "spring", "CAUTION", breadth={})
+
+
 def test_entry_weight_multiplier_only_changes_matching_regime_signal() -> None:
     policy = AShareEntryResearchPolicy(
         entry_weight_multipliers=(

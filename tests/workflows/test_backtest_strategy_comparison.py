@@ -47,13 +47,16 @@ def test_strategy_comparison_builds_relative_and_walk_forward_results(tmp_path: 
     rows = load_strategy_comparison_rows(tmp_path)
     report = build_strategy_comparison(rows)
 
-    assert len(rows) == 15
+    assert len(rows) == 20
     assert report["status"] == "ready"
     assert report["evaluations"]["M"]["reference_variant"] == "A"
-    assert report["evaluations"]["O"]["reference_variant"] == "M"
-    assert report["evaluations"]["O"]["status"] == "pass"
-    assert report["evaluations"]["O"]["exposure_periods"] == 5
-    assert report["evaluations"]["O"]["changed_trades"] == 10
+    assert report["evaluations"]["P"]["reference_variant"] == "M"
+    assert report["evaluations"]["Q"]["reference_variant"] == "P"
+    assert report["evaluations"]["P"]["status"] == "pass"
+    assert report["evaluations"]["Q"]["status"] == "pass"
+    assert report["evaluations"]["P"]["exposure_periods"] == 5
+    assert report["evaluations"]["P"]["changed_trades"] == 10
+    assert report["evaluations"]["Q"]["changed_trades"] == 10
     assert len(report["walk_forward"]["windows"]) == 4
     assert "相对参照组结论" in render_strategy_comparison(report)
 
@@ -70,7 +73,8 @@ def test_strategy_comparison_requires_every_period_variant_cell(tmp_path: Path) 
     assert set(report["missing_cells"]) == {
         "volatile_2024/A",
         "volatile_2024/M",
-        "volatile_2024/O",
+        "volatile_2024/P",
+        "volatile_2024/Q",
     }
 
 
@@ -144,22 +148,25 @@ def test_strategy_comparison_counts_position_weight_as_treatment_exposure(tmp_pa
     assert report["evaluations"]["M"]["changed_trades"] == 6
 
 
-def test_strategy_comparison_counts_removed_trade_as_treatment_exposure(tmp_path: Path) -> None:
+def test_strategy_comparison_counts_lower_weight_as_treatment_exposure(tmp_path: Path) -> None:
     for period in ("bull_2020", "bear_2022", "recent_6m"):
         _write_summary(tmp_path, period, "M", 2.0, -4.0)
-        _write_summary(tmp_path, period, "O", 3.0, -4.0)
+        _write_summary(tmp_path, period, "P", 3.0, -4.0)
         baseline = tmp_path / f"backtest-strategy-{period}-M" / "trades_fixture.csv"
-        candidate = tmp_path / f"backtest-strategy-{period}-O" / "trades_fixture.csv"
+        candidate = tmp_path / f"backtest-strategy-{period}-P" / "trades_fixture.csv"
         baseline.write_text(
             "signal_date,code,entry_weight_multiplier,exit_date\n2020-01-02,SAME,1.0,2020-01-20\n",
             encoding="utf-8",
         )
-        candidate.write_text("signal_date,code,entry_weight_multiplier,exit_date\n", encoding="utf-8")
+        candidate.write_text(
+            "signal_date,code,entry_weight_multiplier,exit_date\n2020-01-02,SAME,0.25,2020-01-20\n",
+            encoding="utf-8",
+        )
 
     report = build_strategy_comparison(load_strategy_comparison_rows(tmp_path))
 
-    assert report["evaluations"]["O"]["exposure_periods"] == 3
-    assert report["evaluations"]["O"]["changed_trades"] == 3
+    assert report["evaluations"]["P"]["exposure_periods"] == 3
+    assert report["evaluations"]["P"]["changed_trades"] == 6
 
 
 def test_strategy_comparison_rejects_profitable_delta_with_loss_or_excess_drawdown(tmp_path: Path) -> None:
@@ -167,10 +174,10 @@ def test_strategy_comparison_rejects_profitable_delta_with_loss_or_excess_drawdo
     for period in periods:
         _write_summary(tmp_path, period, "M", -5.0, -4.0)
         candidate_return, candidate_drawdown = (-1.0, -25.0) if period == "recent_6m" else (2.0, -4.0)
-        _write_summary(tmp_path, period, "O", candidate_return, candidate_drawdown)
+        _write_summary(tmp_path, period, "P", candidate_return, candidate_drawdown)
 
     report = build_strategy_comparison(load_strategy_comparison_rows(tmp_path))
-    result = report["evaluations"]["O"]
+    result = report["evaluations"]["P"]
 
     assert result["wins"] == 3
     assert result["mean_return_delta"] > 0

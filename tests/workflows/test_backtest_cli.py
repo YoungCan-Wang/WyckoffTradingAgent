@@ -37,7 +37,7 @@ def test_backtest_parser_accepts_close_entry_price_mode() -> None:
 def test_backtest_parser_accepts_all_declared_strategy_variants() -> None:
     parser = build_backtest_parser()
 
-    for variant in ("live", "A", "M", "O"):
+    for variant in ("live", "A", "M", "P", "Q"):
         assert parser.parse_args(["--strategy-variant", variant]).strategy_variant == variant
 
 
