@@ -10,7 +10,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ downcase(github.repository) }}
+  IMAGE_NAME: wyckoff-trading-agent
   DOCKERHUB_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/wyckoff-trading-agent
 
 jobs:
