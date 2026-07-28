@@ -33,6 +33,8 @@ type RedisClient = {
   }
   get: <T>(key: string) => Promise<T | null>
   del: (key: string) => Promise<number>
+  incrby: (key: string, increment: number) => Promise<number>
+  expireat: (key: string, timestamp: number) => Promise<number>
   createScript: <T>(script: string) => RedisScript<T>
 }
 
@@ -44,6 +46,10 @@ local record = cjson.decode(current)
 if record.status ~= ARGV[1] then return nil end
 redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3])
 return ARGV[2]`
+
+const ACTIVE_SLOT_RELEASE_SCRIPT = `
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+return redis.call('DEL', KEYS[1])`
 
 export class AgentRunStore {
   constructor(private readonly redis: RedisClient, private readonly ttlSeconds = 3600) {}
@@ -108,6 +114,29 @@ export class AgentRunStore {
     await this.redis.del(leaseKey(userId, runId))
   }
 
+  async acquireActiveSlot(userId: string, runId: string): Promise<boolean> {
+    return Boolean(await this.redis.set(activeSlotKey(userId), runId, { ex: this.ttlSeconds, nx: true }))
+  }
+
+  async releaseActiveSlot(userId: string, runId: string): Promise<void> {
+    const script = this.redis.createScript<number>(ACTIVE_SLOT_RELEASE_SCRIPT)
+    await script.eval([activeSlotKey(userId)], [runId])
+  }
+
+  async dailyCpuUsage(userId: string, now = Date.now()): Promise<number> {
+    const value = await this.redis.get<unknown>(dailyCpuKey(userId, now))
+    return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.trunc(value) : 0
+  }
+
+  async addDailyCpuUsage(userId: string, cpuUsageMs: number, now = Date.now()): Promise<number> {
+    const amount = Math.max(Math.trunc(cpuUsageMs), 0)
+    if (!amount) return this.dailyCpuUsage(userId, now)
+    const key = dailyCpuKey(userId, now)
+    const total = await this.redis.incrby(key, amount)
+    await this.redis.expireat(key, nextUtcDay(now))
+    return total
+  }
+
   private async transition(
     userId: string,
     record: AgentRunRecord,
@@ -141,6 +170,19 @@ function runKey(userId: string, runId: string): string {
 
 function leaseKey(userId: string, runId: string): string {
   return `${runKey(userId, runId)}:lease`
+}
+
+function activeSlotKey(userId: string): string {
+  return `wyckoff:agent-run-active:${encodeURIComponent(userId)}`
+}
+
+function dailyCpuKey(userId: string, now: number): string {
+  return `wyckoff:agent-run-cpu:${new Date(now).toISOString().slice(0, 10)}:${encodeURIComponent(userId)}`
+}
+
+function nextUtcDay(now: number): number {
+  const date = new Date(now)
+  return Math.floor(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + 1) / 1000)
 }
 
 function runTtl(raw: string | undefined): number {

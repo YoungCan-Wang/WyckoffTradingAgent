@@ -60,31 +60,32 @@ export async function enqueuePythonResearch(
   dependencies: AgentRunDependencies = {},
 ): Promise<AgentRunRecord> {
   if (env.AGENT_SANDBOX_ENABLED !== 'true') throw new AgentRunServiceError('Agent sandbox is disabled', 503)
-  const quota = await (dependencies.checkQuota || checkAgentRunQuota)(env, userId)
-  if (quota && !quota.ok) throw new AgentRunServiceError(quota.message || '沙箱任务额度已用完，请稍后再试。', 429)
   const store = storeFor(env, dependencies)
   const record = newRunRecord()
   const requestId = safeRequestId(dependencies.requestId)
   const context = { requestId, runId: record.id }
   const log = dependencies.log || logSandboxRun
+  await ensureDailyCpuBudget(env, store, userId)
+  await reserveActiveRunSlot(store, userId, record.id)
 
   try {
+    await ensureAgentRunQuota(env, userId, dependencies)
     await store.save(userId, record)
-  } catch {
+    const queue = dependencies.queue || env.AGENT_RUN_QUEUE
+    if (!queue) return await failQueueDelivery(store, userId, record, context, log)
+    try {
+      await queue.send({ kind: 'python_research', runId: record.id, userId, script, requestId })
+    } catch {
+      return await failQueueDelivery(store, userId, record, context, log)
+    }
+    log('queued', { ...context, attempts: record.attempts })
+    return record
+  } catch (error) {
+    await releaseActiveRunSlot(store, userId, record.id)
+    if (error instanceof AgentRunServiceError) throw error
     log('failed', { ...context, errorCode: 'storage_unavailable', status: 'failed' })
     throw new AgentRunServiceError('Agent run storage is unavailable', 503, record)
   }
-
-  const queue = dependencies.queue || env.AGENT_RUN_QUEUE
-  if (!queue) return failQueueDelivery(store, userId, record, context, log)
-  try {
-    await queue.send({ kind: 'python_research', runId: record.id, userId, script, requestId })
-  } catch {
-    return failQueueDelivery(store, userId, record, context, log)
-  }
-
-  log('queued', { ...context, attempts: record.attempts })
-  return record
 }
 
 export async function consumePythonResearch(
@@ -123,6 +124,7 @@ export async function failDeadLetterAgentRun(
   const context = { requestId: safeRequestId(message.requestId), runId: message.runId }
   const failed = await store.fail(message.userId, record, 'Agent run exhausted retries')
   if (!failed) return
+  await releaseActiveRunSlot(store, message.userId, record.id)
   await (dependencies.notify || notifyAgentRun)(env, message.userId, failed)
   ;(dependencies.log || logSandboxRun)('failed', {
     ...context,
@@ -140,6 +142,49 @@ export function isAgentRunMessage(value: unknown): value is AgentRunMessage {
     && typeof message.userId === 'string'
     && typeof message.script === 'string'
     && (message.requestId === undefined || typeof message.requestId === 'string')
+}
+
+async function reserveActiveRunSlot(store: AgentRunStore, userId: string, runId: string): Promise<void> {
+  let acquired: boolean
+  try {
+    acquired = await store.acquireActiveSlot(userId, runId)
+  } catch {
+    throw new AgentRunServiceError('Agent run storage is unavailable', 503)
+  }
+  if (!acquired) {
+    throw new AgentRunServiceError('当前已有一个沙箱任务正在排队或执行，请等待它结束后再提交。', 429)
+  }
+}
+
+async function ensureAgentRunQuota(
+  env: Env,
+  userId: string,
+  dependencies: AgentRunDependencies,
+): Promise<void> {
+  let quota: RateLimitResult | null
+  try {
+    quota = await (dependencies.checkQuota || checkAgentRunQuota)(env, userId)
+  } catch {
+    throw new AgentRunServiceError('沙箱额度服务暂不可用，请稍后再试。', 503)
+  }
+  if (quota && !quota.ok) {
+    throw new AgentRunServiceError(quota.message || '沙箱任务额度已用完，请稍后再试。', 429)
+  }
+}
+
+async function ensureDailyCpuBudget(env: Env, store: AgentRunStore, userId: string): Promise<void> {
+  const limit = positiveInt(env.AGENT_RUN_DAILY_CPU_LIMIT_MS, 120_000)
+  let used: number
+  try {
+    used = await store.dailyCpuUsage(userId)
+  } catch {
+    throw new AgentRunServiceError('沙箱 CPU 额度服务暂不可用，请稍后再试。', 503)
+  }
+  if (used >= limit) throw new AgentRunServiceError('今日沙箱 CPU 额度已用完，请明天再试。', 429)
+}
+
+async function releaseActiveRunSlot(store: AgentRunStore, userId: string, runId: string): Promise<void> {
+  await store.releaseActiveSlot(userId, runId).catch(() => undefined)
 }
 
 async function failQueueDelivery(
@@ -170,18 +215,7 @@ async function executeQueuedRun(
   await notify(env, message.userId, record)
   try {
     const result = await executeSandbox(env, message.script, context)
-    const completed = completeRun(record, result)
-    await store.save(message.userId, completed)
-    await notify(env, message.userId, completed)
-    log('finished', {
-      ...context,
-      durationMs: Date.now() - startedAt,
-      attempts: completed.attempts,
-      exitCode: completed.exitCode,
-      status: completed.status === 'completed' ? 'completed' : 'failed',
-      usage: completed.usage,
-    })
-    return 'ack'
+    return await finishExecutedRun(store, message, record, result, context, log, notify, env, startedAt)
   } catch (error) {
     if (isConfigurationError(error)) {
       const failed = await failConfiguration(store, message.userId, record, context, log, 'Sandbox configuration is incomplete', startedAt)
@@ -199,6 +233,43 @@ async function executeQueuedRun(
     })
     return 'retry'
   }
+}
+
+async function finishExecutedRun(
+  store: AgentRunStore,
+  message: AgentRunMessage,
+  record: AgentRunRecord,
+  result: PythonSandboxResult,
+  context: SandboxExecutionContext,
+  log: SandboxRunLogger,
+  notify: AgentRunNotify,
+  env: Env,
+  startedAt: number,
+): Promise<AgentRunOutcome> {
+  const completed = completeRun(record, result)
+  try {
+    await store.save(message.userId, completed)
+  } catch {
+    log('failed', { ...context, durationMs: Date.now() - startedAt, errorCode: 'storage_unavailable', status: 'failed' })
+    await releaseActiveRunSlot(store, message.userId, record.id)
+    return 'ack'
+  }
+  try {
+    await store.addDailyCpuUsage(message.userId, result.activeCpuUsageMs)
+  } catch {
+    log('metering_failed', { ...context, attempts: completed.attempts, status: 'completed', usage: completed.usage })
+  }
+  await notify(env, message.userId, completed).catch(() => undefined)
+  log('finished', {
+    ...context,
+    durationMs: Date.now() - startedAt,
+    attempts: completed.attempts,
+    exitCode: completed.exitCode,
+    status: completed.status === 'completed' ? 'completed' : 'failed',
+    usage: completed.usage,
+  })
+  await releaseActiveRunSlot(store, message.userId, record.id)
+  return 'ack'
 }
 
 async function failConfiguration(
@@ -220,6 +291,7 @@ async function failConfiguration(
     errorCode,
     status: 'failed',
   })
+  await releaseActiveRunSlot(store, userId, record.id)
   return failed
 }
 
@@ -261,6 +333,11 @@ function completeRun(record: AgentRunRecord, result: PythonSandboxResult): Agent
 
 function failRun(record: AgentRunRecord, error: string): AgentRunRecord {
   return { ...record, status: 'failed', finishedAt: new Date().toISOString(), error }
+}
+
+function positiveInt(raw: string | undefined, fallback: number): number {
+  const value = Number(raw)
+  return Number.isFinite(value) && value > 0 ? Math.trunc(value) : fallback
 }
 
 function isConfigurationError(error: unknown): boolean {

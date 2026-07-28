@@ -3,7 +3,7 @@ export type SandboxExecutionContext = {
   runId: string
 }
 
-export type SandboxRunLogEvent = 'queued' | 'started' | 'retrying' | 'finished' | 'failed' | 'cancelled'
+export type SandboxRunLogEvent = 'queued' | 'started' | 'retrying' | 'finished' | 'failed' | 'cancelled' | 'metering_failed'
 
 type SandboxRunLogFields = SandboxExecutionContext & {
   durationMs?: number
@@ -33,7 +33,7 @@ export const logSandboxRun: SandboxRunLogger = (event, fields) => {
     timestamp: new Date().toISOString(),
     ...fields,
   })
-  if (event === 'failed') {
+  if (event === 'failed' || event === 'metering_failed') {
     console.error(payload)
     return
   }
