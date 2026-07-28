@@ -27,6 +27,12 @@ def calc_max_drawdown_pct(ret: pd.Series) -> float | None:
     return None if drawdown.empty else float(drawdown.min() * 100.0)
 
 
+def calc_nav_max_drawdown_pct(nav: pd.Series) -> float | None:
+    """净值口径回撤。`calc_max_drawdown_pct` 走的是逐笔收益算术累加，长周期净值不能用那个。"""
+    drawdown = nav / nav.cummax() - 1.0
+    return float(drawdown.min()) * 100.0 if not drawdown.empty else None
+
+
 def calc_cvar95_pct(ret: pd.Series) -> tuple[float | None, float | None]:
     s = pd.to_numeric(ret, errors="coerce").dropna()
     if s.empty:

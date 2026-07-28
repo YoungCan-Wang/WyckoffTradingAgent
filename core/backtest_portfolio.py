@@ -7,7 +7,12 @@ from typing import Any
 
 import pandas as pd
 
-from core.backtest_metrics import calc_cvar95_pct, calc_information_ratio, calc_sharpe_ratio
+from core.backtest_metrics import (
+    calc_cvar95_pct,
+    calc_information_ratio,
+    calc_nav_max_drawdown_pct,
+    calc_sharpe_ratio,
+)
 from core.candidate_policy import candidate_score_value
 
 PORTFOLIO_NAV_COLUMNS = ["date", "nav", "daily_ret_pct", "cash", "positions_count"]
@@ -61,7 +66,7 @@ def calc_portfolio_metrics(
     total_ret_pct = (float(nav.iloc[-1]) / initial_capital - 1.0) * 100.0
     n_days = len(nav)
     ann_ret_pct = total_ret_pct * (250.0 / max(n_days, 1))
-    max_dd_pct = _max_drawdown_pct(nav)
+    max_dd_pct = calc_nav_max_drawdown_pct(nav)
     calmar = ann_ret_pct / abs(max_dd_pct) if max_dd_pct is not None and max_dd_pct < 0 else None
     var95, cvar95 = calc_cvar95_pct(daily_ret)
     pos_counts = pd.to_numeric(nav_df.get("positions_count"), errors="coerce").dropna()
@@ -179,8 +184,3 @@ def _nav_record(
         "cash": cash,
         "positions_count": len(active_positions),
     }
-
-
-def _max_drawdown_pct(nav: pd.Series) -> float | None:
-    drawdown = nav / nav.cummax() - 1.0
-    return float(drawdown.min()) * 100.0 if not drawdown.empty else None
