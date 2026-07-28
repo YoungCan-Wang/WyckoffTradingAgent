@@ -248,7 +248,7 @@ class _Handler(BaseHTTPRequestHandler):
         allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}", host}
         origin = self.headers.get("Origin", "")
         if origin:
-            allowed_origins = {f"http://{h}" for h in allowed_hosts}
+            allowed_origins = {f"http://{h}" for h in allowed_hosts} | {f"https://{h}" for h in allowed_hosts}
             if origin not in allowed_origins:
                 self._json({"error": "cross-origin request blocked"}, 403)
                 return False
