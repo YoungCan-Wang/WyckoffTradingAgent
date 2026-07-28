@@ -28,6 +28,8 @@ PANEL_COLUMNS = [
     "adj_factor", "pb", "pe_ttm", "ps_ttm", "dv_ttm", "circ_mv", "turnover_rate_f",
 ]  # fmt: skip
 TRADING_DAYS_PER_YEAR = 244.0
+# 引擎与基准只用得上这几列。八年全市场面板约一千万行，把因子原始列一路带到 pivot 会白占几个 GB。
+ENGINE_COLUMNS = ["date", "symbol", "close_adj", "open_adj", "score", "can_buy", "can_sell"]
 
 
 def _list_dates(panel_dir: Path) -> pd.DataFrame | None:
@@ -60,12 +62,13 @@ def load_prepared_panel(
     name_history = panel_dir / "name_history.parquet"
     st = st_flags(pd.read_parquet(name_history), panel["date"]) if name_history.exists() else None
     prepared = prepare_panel(panel, st, _list_dates(panel_dir))
-    return apply_universe_filters(
+    filtered = apply_universe_filters(
         prepared,
         exclude_st=exclude_st,
         min_amount_thousand=min_amount_thousand,
         min_listed_days=min_listed_days,
     )
+    return filtered[ENGINE_COLUMNS]
 
 
 def _annualised(nav: pd.Series) -> float:
