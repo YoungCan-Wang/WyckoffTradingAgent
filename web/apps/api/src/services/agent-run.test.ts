@@ -240,17 +240,22 @@ describe('Agent run service', () => {
     expect(log).toHaveBeenCalledWith('metering_failed', expect.objectContaining({ status: 'completed' }))
   })
 
-  it('does not retry a completed execution when its result cannot be persisted', async () => {
+  it('retries when a completed execution result cannot be persisted', async () => {
+    const log = vi.fn()
     const store = testStore({ save: vi.fn(async () => { throw new Error('offline') }) })
 
     await expect(consumePythonResearch(
       { AGENT_SANDBOX_ENABLED: 'true' },
       runMessage(),
-      { createStore: () => store, executeSandbox: async () => successfulResult },
-    )).resolves.toBe('ack')
+      { createStore: () => store, executeSandbox: async () => successfulResult, log },
+    )).resolves.toBe('retry')
 
     expect(store.requeue).not.toHaveBeenCalled()
-    expect(store.releaseActiveSlot).toHaveBeenCalledWith('user-1', 'run-1')
+    expect(store.releaseActiveSlot).not.toHaveBeenCalled()
+    expect(log).toHaveBeenCalledWith('retrying', expect.objectContaining({
+      errorCode: 'storage_unavailable',
+      status: 'failed',
+    }))
   })
 
   it('requeues a transient bridge failure while preserving the attempt count', async () => {
