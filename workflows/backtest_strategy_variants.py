@@ -20,7 +20,9 @@ VARIANT_LABELS = {
     "Q": "A股实证：P + NEUTRAL Spring 需广度确认",
 }
 
-DEFAULT_COMPARISON_VARIANTS = ("A", "M", "P", "Q")
+# Q remains callable only to reproduce the rejected breadth-gate experiment.
+# Default capacity stays with the two surviving research hypotheses.
+DEFAULT_COMPARISON_VARIANTS = ("A", "M", "P")
 
 _ALL_SWITCHES = {
     "dist_upthrust_enabled": False,
