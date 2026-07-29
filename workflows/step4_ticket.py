@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from datetime import datetime
 
+from core.execution_audit import StaleExit, render_stale_exit_alert
 from core.execution_playbook import oms_playbook_lines
 from utils.trading_clock import CN_TZ
 from workflows.step4_models import ExecutionTicket
@@ -18,6 +19,7 @@ def render_trade_ticket(
     tickets: list[ExecutionTicket],
     *,
     atr_period: int,
+    stale_exits: list[StaleExit] | None = None,
 ) -> str:
     now_str = datetime.now(CN_TZ).strftime("%Y-%m-%d")
     sells = [t for t in tickets if t.status == "APPROVED" and t.action in {"EXIT", "TRIM"}]
@@ -31,6 +33,8 @@ def render_trade_ticket(
     ]
     if market_view:
         lines.append(f"📌 市场视图：{market_view}")
+    # 拖延告警排在操作清单之前：读到一半就该知道昨天的单子还没落地。
+    lines.extend(render_stale_exit_alert(stale_exits or []))
     lines.append("")
     lines.extend(oms_playbook_lines())
     lines.extend(_render_sell_ticket_lines(sells, atr_period=atr_period))

@@ -22,6 +22,7 @@ from core.wyckoff_engine import FunnelConfig, normalize_hist_from_fetch
 from integrations.fetch_a_share_csv import fetch_hist, resolve_trading_window
 from integrations.index_data_source import fetch_index_hist
 from integrations.supabase_portfolio import load_portfolio_state
+from utils.trading_clock import resolve_end_calendar_day
 
 HOLDING_ACTION_ADD = "ADD"
 HOLDING_ACTION_HOLD = "HOLD"
@@ -254,7 +255,7 @@ def _action_from_diagnostic(
 
 def fetch_holding_daily_frame(code: str) -> pd.DataFrame | None:
     symbol = f"{code}.SH" if code.startswith("6") else f"{code}.SZ"
-    window = resolve_trading_window(trading_days=TRADING_DAYS)
+    window = resolve_trading_window(end_calendar_day=resolve_end_calendar_day(), trading_days=TRADING_DAYS)
     try:
         raw = fetch_hist(symbol, window, adjust="qfq")
         if raw is None or (hasattr(raw, "empty") and raw.empty):
@@ -269,7 +270,7 @@ def fetch_holding_daily_frames(positions: list[dict[str, Any]]) -> dict[str, pd.
 
 
 def fetch_holding_benchmark() -> pd.DataFrame | None:
-    window = resolve_trading_window(trading_days=TRADING_DAYS)
+    window = resolve_trading_window(end_calendar_day=resolve_end_calendar_day(), trading_days=TRADING_DAYS)
     try:
         bench_raw = fetch_index_hist("000001", window.start_trade_date, window.end_trade_date)
         if bench_raw is None or bench_raw.empty:

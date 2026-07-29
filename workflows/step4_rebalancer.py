@@ -8,12 +8,15 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from datetime import date
 
+from core.execution_audit import StaleExit, find_unexecuted_exits, stop_breached_codes, unsellable_dates
 from integrations.fetch_a_share_csv import TradingWindow, resolve_trading_window
-from integrations.supabase_portfolio import check_daily_run_exists
+from integrations.supabase_portfolio import check_daily_run_exists, load_recent_trade_orders
 from utils.telegram import send_to_telegram
 from utils.trading_clock import resolve_end_calendar_day
+from workflows.holding_diagnosis_core import fetch_holding_daily_frame
 from workflows.step4_decision_parser import (
     max_new_buy_names as _parser_max_new_buy_names,
 )
@@ -204,6 +207,57 @@ def _prepare_step4_input_context(
     )
 
 
+def _unsellable_by_code(codes: Iterable[str]) -> dict[str, set[str]]:
+    """各标的的一字跌停日。取数失败时按「可卖」处理，宁可多提醒也不要漏掉真实拖延。"""
+    out: dict[str, set[str]] = {}
+    for code in codes:
+        df = fetch_holding_daily_frame(code)
+        if df is None or df.empty:
+            continue
+        tail = df.tail(40)
+        prev = tail["close"].shift(1)
+        bars = [
+            (str(row.date)[:10], float(p), float(row.high), float(row.low))
+            for row, p in zip(tail.itertuples(), prev, strict=True)
+            if p == p  # 首行 shift 出来的 NaN
+        ]
+        sealed = unsellable_dates(bars)
+        if sealed:
+            out[code] = sealed
+    return out
+
+
+def _audit_unexecuted_exits(portfolio_id: str, context: Step4InputContext) -> tuple[list[StaleExit], frozenset[str]]:
+    """返回（告警用的全部拖延项，触发买入闸门的代码集）。
+
+    两者刻意不同：告警把所有连续未落地的离场都摆出来，闸门只认「现价已跌破止损」的，
+    没落袋的止盈不该冻结新仓。
+    """
+    positions = context.portfolio.positions
+    held = [pos.code for pos in positions]
+    stale = find_unexecuted_exits(load_recent_trade_orders(portfolio_id), held)
+    if not stale:
+        return ([], frozenset())
+
+    stale = find_unexecuted_exits(
+        load_recent_trade_orders(portfolio_id),
+        held,
+        unsellable_by_code=_unsellable_by_code(s.code for s in stale),
+    )
+    blocking = stop_breached_codes(
+        stale,
+        {pos.code: pos.stop_loss for pos in positions},
+        context.latest_price_map,
+    )
+    if stale:
+        logger.warning(
+            "存在未执行的离场工单: %s；其中已跌破止损、冻结 ATTACK 的: %s",
+            ", ".join(f"{s.code}×{s.days}日" for s in stale),
+            ", ".join(sorted(blocking)) or "无",
+        )
+    return (stale, blocking)
+
+
 def _send_and_persist_step4_results(
     *,
     options: Step4RunOptions,
@@ -212,6 +266,7 @@ def _send_and_persist_step4_results(
     tickets: list[ExecutionTicket],
     free_cash_after: float,
     rendered_market_view: str,
+    stale_exits: list[StaleExit],
     report_progress,
 ) -> tuple[bool, str]:
     result_record = prepare_step4_result_record(
@@ -225,6 +280,7 @@ def _send_and_persist_step4_results(
         free_cash_after=free_cash_after,
         tickets=tickets,
         atr_period=options.runtime_config.atr_period,
+        stale_exits=stale_exits,
     )
     persisted = save_step4_orders_and_nav(
         options=options,
@@ -233,7 +289,6 @@ def _send_and_persist_step4_results(
         rendered_market_view=rendered_market_view,
         tickets=tickets,
         ticket_rows=result_record.ticket_rows,
-        free_cash_after=free_cash_after,
     )
     if not persisted:
         return False, "persistence_failed"
@@ -321,7 +376,8 @@ def _run_step4_decision_flow(
         context.atr_map,
         options.runtime_config,
     )
-    tickets, free_cash_after = execute_step4_decisions(context, decisions, options.order_config)
+    stale_exits, blocking_codes = _audit_unexecuted_exits(options.portfolio_id, context)
+    tickets, free_cash_after = execute_step4_decisions(context, decisions, options.order_config, blocking_codes)
     return _send_and_persist_step4_results(
         options=options,
         context=context,
@@ -329,6 +385,7 @@ def _run_step4_decision_flow(
         tickets=tickets,
         free_cash_after=free_cash_after,
         rendered_market_view=rendered_market_view,
+        stale_exits=stale_exits,
         report_progress=report_progress,
     )
 

@@ -306,6 +306,65 @@ def test_order_engine_uses_explicit_buy_block_config():
     assert "regime=NEUTRAL" in tickets[0].reason
 
 
+def _stale_exit_engine(**overrides):
+    kwargs = {
+        "total_equity": 100000,
+        "free_cash": 50000,
+        "position_map": {},
+        "latest_price_map": {"000001": 9.5},
+        "atr_map": {"000001": 0.2},
+        "market_regime": "NEUTRAL",
+        "stale_exit_codes": frozenset({"603661"}),
+    }
+    kwargs.update(overrides)
+    return WyckoffOrderEngine(**kwargs)
+
+
+def test_unexecuted_exit_blocks_attack_sized_buys():
+    """止损没落地还上重仓，等于一边放任亏损扩大一边加码。"""
+    tickets, cash = _stale_exit_engine().process([_decision("ATTACK")])
+
+    assert cash == 50000
+    assert tickets[0].status == "NO_TRADE"
+    assert "禁止 ATTACK 重仓" in tickets[0].reason
+    assert "603661" in tickets[0].reason
+
+
+def test_unexecuted_exit_still_allows_small_probe():
+    """PROBE 自带硬止损且额度受限，一刀切会让闸门变成永久停摆。"""
+    tickets, cash = _stale_exit_engine().process([_decision("PROBE")])
+
+    assert tickets[0].status == "APPROVED"
+    assert cash < 50000
+
+
+def test_unexecuted_exit_does_not_block_selling_or_holding():
+    """闸门只拦重仓买入；离场和持有必须照常给出，否则会把仓位锁死。"""
+    position = PositionItem(code="000001", name="平安银行", cost=10.0, buy_dt="20260701", shares=1000, stop_loss=8.9)
+    engine = _stale_exit_engine(position_map={"000001": position})
+
+    tickets, _cash = engine.process([_decision("EXIT")])
+
+    assert tickets[0].status == "APPROVED"
+    assert tickets[0].action == "EXIT"
+
+
+def test_stale_exit_buy_block_can_be_switched_off():
+    engine = _stale_exit_engine(config=step4.Step4OrderConfig(block_buy_on_stale_exit=False))
+
+    tickets, _cash = engine.process([_decision("ATTACK")])
+
+    assert tickets[0].status == "APPROVED"
+
+
+def test_no_stale_exits_leaves_buys_alone():
+    engine = _stale_exit_engine(stale_exit_codes=frozenset())
+
+    tickets, _cash = engine.process([_decision("ATTACK")])
+
+    assert tickets[0].status == "APPROVED"
+
+
 def test_candidate_attribution_reaches_buy_ticket_and_persistence_row():
     decision = DecisionItem(
         code="000390",
@@ -974,7 +1033,12 @@ def test_step4_save_orders_and_nav_uses_persistence_boundaries(monkeypatch):
         lambda portfolio_id, updates: calls.setdefault("stops", (portfolio_id, updates)) is not None,
     )
     options = SimpleNamespace(portfolio_id="P1", model="model-x")
-    context = SimpleNamespace(trade_date="2026-05-15", total_equity=120000.0)
+    # 账户真实现金 50000、持仓 70000；OMS 若把清仓建议算进去会得到 120000 的模拟现金。
+    context = SimpleNamespace(
+        trade_date="2026-05-15",
+        total_equity=120000.0,
+        portfolio=SimpleNamespace(free_cash=50000.0),
+    )
 
     step4_results.save_step4_orders_and_nav(
         options=options,
@@ -983,7 +1047,6 @@ def test_step4_save_orders_and_nav_uses_persistence_boundaries(monkeypatch):
         rendered_market_view="市场视图",
         tickets=[_ticket()],
         ticket_rows=[{"code": "000001"}],
-        free_cash_after=50000.0,
     )
 
     assert calls["orders"] == {
@@ -1024,13 +1087,41 @@ def test_step4_order_write_failure_does_not_mutate_stops_or_nav(monkeypatch):
 
     ok = step4_results.save_step4_orders_and_nav(
         options=SimpleNamespace(portfolio_id="P1", model="model-x"),
-        context=SimpleNamespace(trade_date="2026-05-15", total_equity=120000.0),
+        context=SimpleNamespace(
+            trade_date="2026-05-15",
+            total_equity=120000.0,
+            portfolio=SimpleNamespace(free_cash=50000.0),
+        ),
         run_id="run-1",
         rendered_market_view="市场视图",
         tickets=[_ticket()],
         ticket_rows=[{"code": "000001"}],
-        free_cash_after=50000.0,
     )
 
     assert ok is False
     assert mutated == []
+
+
+def test_nav_snapshot_records_real_cash_not_the_post_execution_projection(monkeypatch):
+    """工单没被执行时，净值快照不能把「假设已清仓」的现金当成账户现金。"""
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(step4_results, "save_ai_trade_orders", lambda **_kwargs: True)
+    monkeypatch.setattr(step4_results, "cancel_trade_orders", lambda **_kwargs: 0)
+    monkeypatch.setattr(step4_results, "update_position_stops", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(step4_results, "upsert_daily_nav", lambda **kwargs: captured.update(kwargs) is None)
+
+    step4_results.save_step4_orders_and_nav(
+        options=SimpleNamespace(portfolio_id="P1", model="model-x"),
+        context=SimpleNamespace(
+            trade_date="2026-05-15",
+            total_equity=87000.0,
+            portfolio=SimpleNamespace(free_cash=71000.0),
+        ),
+        run_id="run-1",
+        rendered_market_view="市场视图",
+        tickets=[_ticket()],
+        ticket_rows=[{"code": "000001"}],
+    )
+
+    assert captured["free_cash"] == 71000.0
+    assert captured["positions_value"] == 16000.0

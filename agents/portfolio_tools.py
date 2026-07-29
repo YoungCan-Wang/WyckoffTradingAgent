@@ -71,6 +71,55 @@ def update_portfolio(
         return {"error": str(e)}
 
 
+def record_trade_fill(
+    code: str,
+    side: str,
+    shares: int,
+    price: float,
+    trade_date: str = "",
+    name: str = "",
+    tool_context: ToolContext | None = None,
+) -> dict:
+    """把一笔真实成交回填进持仓与现金。
+
+    与 update_portfolio 的区别：那个是覆盖式录入快照，这个是按成交增量算账，会自动
+    摊薄成本价、扣减佣金印花税、卖光时清仓，并给出已实现盈亏。
+    """
+    from datetime import datetime
+
+    from core.trade_fill import Fill
+    from utils.trading_clock import CN_TZ
+
+    try:
+        fill = Fill(
+            code=str(code).strip(),
+            side=str(side or "").strip().lower(),
+            shares=int(shares),
+            price=float(price),
+            trade_date=str(trade_date or "").strip() or datetime.now(CN_TZ).strftime("%Y%m%d"),
+            name=str(name or "").strip() or code_to_name(str(code).strip()),
+        )
+    except (ValueError, TypeError) as exc:
+        return {"error": str(exc)}
+
+    portfolio_id = _portfolio_id(tool_context)
+    if not has_cloud(tool_context):
+        return {"error": "成交回填需要登录云端账户"}
+    from integrations.supabase_portfolio import record_fill
+
+    ok, msg = with_auth_retry(
+        tool_context,
+        record_fill,
+        portfolio_id,
+        fill,
+        client=get_user_client(tool_context),
+    )
+    if not ok:
+        return {"error": msg}
+    _sync_remote_portfolio_to_local(portfolio_id, tool_context)
+    return {"message": msg}
+
+
 def _portfolio_id(tool_context: ToolContext | None) -> str:
     from integrations.supabase_portfolio import build_user_live_portfolio_id
 

@@ -273,7 +273,7 @@ ETF 行情重复进入全市场统计；ETF 候选仍可通过 L3 共振进入�
 
 ```mermaid
 flowchart LR
-    IN["selected_for_ai<br/>与漏斗报告送审清单一致"] --> FETCH["逐只拉 OHLCV<br/>320 日窗口"]
+    IN["selected_for_ai（当日 pending 触发）<br/>+ 跨日确认候选（STEP3_CONFIRMED_REVIEW_CAP）"] --> FETCH["逐只拉 OHLCV<br/>320 日窗口"]
     FETCH --> FEAT["特征工程<br/>generate_stock_payload<br/>均线/量价切片/高光事件"]
     FEAT --> RAG["RAG 语义防雷<br/>rag_veto 新闻否决"]
     RAG --> SPLIT["双轨分组<br/>Trend vs Accum"]
@@ -290,7 +290,8 @@ flowchart LR
 
 - Step3：`STEP3_LLM_PROVIDER=gemini`，fallback `efficiency`
 - 输入不是原始 K 线，而是压缩后的结构特征
-- 漏斗展示的送审数量与 Step3 实际输入保持一致；模型审判不等于执行放行，`confirmed` 仍是 Step4 硬门槛
+- 复核池 = 漏斗当日 `selected_for_ai` + 跨日确认候选（上限 `STEP3_CONFIRMED_REVIEW_CAP`，默认 12）。两者缺一不可：LLM 的起跳板硬门槛只放行 `confirmed`，而 `selected_for_ai` 装的是当日新触发信号，按状态机定义此刻只能是 `pending`。只送前者会让第三阵营在结构上恒为空
+- 模型审判不等于执行放行，`confirmed` 仍是 Step4 硬门槛
 - 空候选仍发送空集报告、合规摘要和明日执行结论，并明确区分上游空输入、RAG 全剔除和数据门槛过滤；主 provider 失败时按配置回退，不会在 daily-job 包装层静默跳过
 
 ---
@@ -476,10 +477,29 @@ efinance
 | `FUNNEL_AI_RISK_ON_TREND` / `FUNNEL_AI_RISK_ON_ACCUM` | `5` / `1` | 过热市 AI/shadow 研究配额；正式推荐与新开仓由市场闸门禁止 |
 | `FUNNEL_EXTERNAL_SEED_SYMBOLS` / `FUNNEL_EXTRA_SYMBOLS` | 空 | 临时追加外部观察名单；存在时自动启用 external seed shadow |
 | `STEP4_BUY_HARD_STOP_PCT` | `12.0` | 新开仓灾难止损地板；ATR/结构/时间管理优先 |
+| `STEP4_BLOCK_BUY_ON_STALE_EXIT` | `1` | 持仓已跌破止损却连续多日未离场时禁止 `ATTACK` 重仓；小额 `PROBE` 与离场减仓不受影响，一字跌停日不计入拖延 |
 | `STEP4_REPAIR_PROBE_BUDGET_LIMIT` | `0.05` | `PANIC_REPAIR_CONFIRMED` 单票试探仓上限；同时最多只开放一只 |
 | `STEP4_REQUIRE_CONFIRMED_BUY_CANDIDATE` | `1` | Step4 新开仓只允许显式跨日确认候选；否定/观察状态优先拦截，不做模糊字符串匹配 |
 | `STEP4_AI_CANDIDATE_POLICY` | `veto_only` | `veto_only` 只剔除逻辑破产；`shadow` 仅记录分类用于实验对照 |
 | `STEP4_BUY_BLOCK_REGIMES` | `UNKNOWN,RISK_ON,BEAR_REBOUND,PANIC_REPAIR,RISK_OFF,CRASH,BLACK_SWAN` | 市场数据未就绪、过热与弱市均冻结新开仓 |
+
+### 数据缺失导致的禁买要能被认出来
+
+生效状态 = 收盘态与盘前态取严，任何一边缺失都会落到 `UNKNOWN`，而 `UNKNOWN` 属于禁止开仓。
+这是有意的 fail-closed，但缺失和「行情确实不明」在状态上无法区分：生产 47 天样本里有 10 天
+是因为上游任务没产出而禁买，与真正放行的天数（10 天）持平。
+
+`build_market_guardrail` 因此额外做一次归因：只有在**补齐缺失项后本可放行**时，才在风控段和
+`trade_orders.market_view` 里写明「禁买源自数据缺失」，并给出缺失项。收盘态自身已经是 CRASH
+这类禁买态时不会这么标注——那时补数据也不会放行，误报只会让运维白跑一趟。风控语义不变，
+缺的只是可见性。
+
+排查顺序：看到 `⛑️ 禁买源自数据缺失` 就手动补跑 `premarket_risk`（或检查 `market_signal_daily`
+当日行的 `benchmark_regime`），再重跑 Step4。
+
+盘前那一半另有 `schedule` 兜底（UTC 02:20 工作日，带 `--backstop` 幂等短路）：外部
+`workflow_dispatch` 触发器实测连续 4 个周一周二未触发，而周一周二恰是 Step4 出单最多的两天。
+兜底只在当日盘前态缺失且当天是交易日时才干活，触发正常的日子秒退，不会多推一条飞书。
 
 ---
 

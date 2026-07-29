@@ -202,6 +202,7 @@ Web App: **[wyckoff-analysis.pages.dev](https://wyckoff-analysis.pages.dev/)**
 | `analyze_stock` | 와이코프 진단 / 최근 OHLCV 시세 / 펀더멘탈 품질 오버레이 (모드 전환) |
 | `portfolio` | 보유 목록 조회 / 일괄 포트폴리오 진단 (모드 전환) |
 | `update_portfolio` | 보유 추가 / 수정 / 삭제, 가용 현금 설정, 추적 기록 삭제 |
+| `record_trade_fill` | 체결 내역 반영: 평균 단가 재계산, 수수료 차감, 실현 손익 산출 |
 | `get_market_overview` | 시장 온도 개요 |
 | `screen_stocks` | 메인라인 퍼널 전체 시장 스크리닝 (⚡백그라운드) |
 | `generate_ai_report` | 3진영 AI 심층 리포트 (⚡백그라운드) |

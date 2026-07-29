@@ -201,7 +201,11 @@ def _build_performance_update(
     )
 
 
-STOP_LOSS_SIM_PCT = -9.0  # 与 Step4 港/美/A 股共用的硬止损口径（STEP4_BUY_HARD_STOP_PCT）对齐
+# 固定的复盘标尺，**不等于**生产止损：Step4 的 STEP4_BUY_HARD_STOP_PCT 是 -12% 灾难地板。
+# 两者回答不同问题，此处刻意不跟随环境变量，否则改一次参数就会让整列历史值失去可比性。
+# 阈值本身也不是调优结果——实盘样本上收益对止损松紧单调（越紧越好，一路到 -4%），
+# 说明信号本身是负漂移，没有可识别的最优点，取整到 -9% 只是一把固定尺子。
+STOP_LOSS_SIM_PCT = -9.0
 
 
 def _performance_row(

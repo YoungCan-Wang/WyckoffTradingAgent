@@ -281,6 +281,25 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "record_trade_fill",
+        "description": (
+            "回填一笔已经发生的成交，按增量更新持仓与现金：摊薄成本价、扣佣金印花税、卖光时清仓、"
+            "给出已实现盈亏。用户描述的是「已成交」就用这个，不要用 update_portfolio 覆盖快照。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "description": "6 位股票代码"},
+                "side": {"type": "string", "enum": ["buy", "sell"], "description": "成交方向"},
+                "shares": {"type": "integer", "description": "成交股数（正数）"},
+                "price": {"type": "number", "description": "成交价"},
+                "trade_date": {"type": "string", "description": "成交日期 YYYYMMDD，缺省为今天"},
+                "name": {"type": "string", "description": "股票名称（可选）"},
+            },
+            "required": ["code", "side", "shares", "price"],
+        },
+    },
+    {
         "name": "check_background_tasks",
         "description": "查询后台任务执行状态。completed 任务会带 result_summary，用于继续读取扫描、研报、回测等异步结果摘要。",
         "parameters": {
@@ -558,6 +577,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "evaluate_recommendation_events": ToolSpec("evaluate_recommendation_events", "推荐评估", background=True),
     "research_hypothesis": ToolSpec("research_hypothesis", "研究假设", concurrency_safe=True),
     "update_portfolio": ToolSpec("update_portfolio", "调仓操作", requires_approval=True),
+    "record_trade_fill": ToolSpec("record_trade_fill", "成交回填", requires_approval=True),
     "run_backtest": ToolSpec("run_backtest", "回测", background=True),
     "check_background_tasks": ToolSpec("check_background_tasks", "任务状态"),
     "exec_command": ToolSpec("exec_command", "执行命令", requires_approval=True),
@@ -715,7 +735,7 @@ class ToolRegistry:
         from agents.history_tools import query_history
         from agents.local_tools import exec_command, read_file, web_fetch, write_file
         from agents.market_tools import get_market_history, get_market_overview
-        from agents.portfolio_tools import portfolio, update_portfolio
+        from agents.portfolio_tools import portfolio, record_trade_fill, update_portfolio
         from agents.recommendation_tools import evaluate_recommendation_events
         from agents.report_tools import generate_ai_report
         from agents.research_tools import research_hypothesis
@@ -744,6 +764,7 @@ class ToolRegistry:
             "evaluate_recommendation_events": evaluate_recommendation_events,
             "research_hypothesis": research_hypothesis,
             "update_portfolio": update_portfolio,
+            "record_trade_fill": record_trade_fill,
             "run_backtest": run_backtest,
             "ask_user_question": ask_user_question,
             "execute_skill": execute_skill,

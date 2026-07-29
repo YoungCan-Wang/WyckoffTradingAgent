@@ -54,6 +54,9 @@ def _call(endpoint: Callable[..., pd.DataFrame | None], **kwargs) -> pd.DataFram
 
 
 def trade_dates(pro, start: str, end: str) -> list[str]:
+    # trade_cal 收到 2026-07-01 这种带横线的日期不会报错，而是静默返回残缺区间
+    # （实测 2018-01-01~2026-06-30 少 116 天，2026-07-01~2026-07-29 直接为空）。
+    start, end = start.replace("-", ""), end.replace("-", "")
     cal = _call(pro.trade_cal, exchange="SSE", start_date=start, end_date=end, is_open="1")
     if cal.empty:
         raise PanelFetchError(f"交易日历为空: {start}~{end}")
