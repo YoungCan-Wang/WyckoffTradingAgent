@@ -483,6 +483,20 @@ efinance
 | `STEP4_AI_CANDIDATE_POLICY` | `veto_only` | `veto_only` 只剔除逻辑破产；`shadow` 仅记录分类用于实验对照 |
 | `STEP4_BUY_BLOCK_REGIMES` | `UNKNOWN,RISK_ON,BEAR_REBOUND,PANIC_REPAIR,RISK_OFF,CRASH,BLACK_SWAN` | 市场数据未就绪、过热与弱市均冻结新开仓 |
 
+### 数据缺失导致的禁买要能被认出来
+
+生效状态 = 收盘态与盘前态取严，任何一边缺失都会落到 `UNKNOWN`，而 `UNKNOWN` 属于禁止开仓。
+这是有意的 fail-closed，但缺失和「行情确实不明」在状态上无法区分：生产 47 天样本里有 10 天
+是因为上游任务没产出而禁买，与真正放行的天数（10 天）持平。
+
+`build_market_guardrail` 因此额外做一次归因：只有在**补齐缺失项后本可放行**时，才在风控段和
+`trade_orders.market_view` 里写明「禁买源自数据缺失」，并给出缺失项。收盘态自身已经是 CRASH
+这类禁买态时不会这么标注——那时补数据也不会放行，误报只会让运维白跑一趟。风控语义不变，
+缺的只是可见性。
+
+排查顺序：看到 `⛑️ 禁买源自数据缺失` 就手动补跑 `premarket_risk`（或检查 `market_signal_daily`
+当日行的 `benchmark_regime`），再重跑 Step4。
+
 ---
 
 ## 相关文档
