@@ -78,6 +78,25 @@ def fetch_universe(pro) -> pd.DataFrame:
 
 NAME_PAGE_SIZE = 5000
 NAME_MAX_ROUNDS = 5
+OPEN_ENDED_NAME_DATE = "99999999"
+
+
+def canonicalize_name_intervals(names: pd.DataFrame) -> pd.DataFrame:
+    """同一 (ts_code, name, start_date) 只保留一条区间，优先有限 end_date。
+
+    多轮分页并集时，Tushare 可能先给出尚未填 end_date 的开区间，随后又给出已闭合的同起点
+    区间。若两者并存，开区间被填成 99999999 后会把摘帽日之后也标成 ST，永久剔除已康复标的。
+    """
+    if names.empty:
+        return names.reset_index(drop=True)
+    required = {"ts_code", "name", "start_date", "end_date"}
+    if not required.issubset(names.columns):
+        raise ValueError(f"name history 缺少列: {sorted(required - set(names.columns))}")
+    out = names.copy()
+    end = out["end_date"].fillna(OPEN_ENDED_NAME_DATE).replace("", OPEN_ENDED_NAME_DATE).astype(str)
+    out = out.assign(_end=end).sort_values(["ts_code", "name", "start_date", "_end"])
+    out = out.drop_duplicates(subset=["ts_code", "name", "start_date"], keep="first")
+    return out.drop(columns=["_end"]).reset_index(drop=True)
 
 
 def fetch_name_history(pro, *, progress: Callable[[str], None] = logger.info) -> pd.DataFrame:
@@ -103,13 +122,13 @@ def fetch_name_history(pro, *, progress: Callable[[str], None] = logger.info) ->
             offset += NAME_PAGE_SIZE
             if len(got) < NAME_PAGE_SIZE:
                 break
-        merged = pd.concat(frames, ignore_index=True).drop_duplicates()
+        merged = canonicalize_name_intervals(pd.concat(frames, ignore_index=True))
         gained = len(merged) - len(seen)
         seen = merged
         progress(f"namechange 第 {round_index + 1} 轮：累计 {len(seen)} 条（新增 {gained}）")
         if gained == 0:
             break
-    seen["end_date"] = seen["end_date"].fillna("99999999")
+    seen["end_date"] = seen["end_date"].fillna(OPEN_ENDED_NAME_DATE)
     return seen.reset_index(drop=True)
 
 
@@ -201,12 +220,17 @@ def st_flags(names: pd.DataFrame, panel_dates: pd.Series) -> pd.DataFrame:
     """展开成 (date, symbol) -> is_st 的 PIT 标记。"""
     if names.empty:
         return pd.DataFrame(columns=["date", "symbol", "is_st"])
+    names = canonicalize_name_intervals(names)
     st = names[names["name"].str.upper().str.contains("ST", na=False)].copy()
     if st.empty:
         return pd.DataFrame(columns=["date", "symbol", "is_st"])
     st["symbol"] = st["ts_code"].str.slice(0, 6).astype("int32")
     st["start"] = pd.to_datetime(st["start_date"], format="%Y%m%d", errors="coerce")
-    st["end"] = pd.to_datetime(st["end_date"].replace("99999999", "20991231"), format="%Y%m%d", errors="coerce")
+    st["end"] = pd.to_datetime(
+        st["end_date"].fillna(OPEN_ENDED_NAME_DATE).replace(OPEN_ENDED_NAME_DATE, "20991231"),
+        format="%Y%m%d",
+        errors="coerce",
+    )
     unique_dates = pd.Series(sorted(pd.unique(panel_dates)), name="date")
     spans = st.dropna(subset=["start"])
     rows = [
