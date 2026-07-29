@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pandas as pd
+
 from integrations.factor_panel import canonicalize_name_intervals, st_flags, trade_dates
 
 
