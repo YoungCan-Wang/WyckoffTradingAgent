@@ -497,6 +497,10 @@ efinance
 排查顺序：看到 `⛑️ 禁买源自数据缺失` 就手动补跑 `premarket_risk`（或检查 `market_signal_daily`
 当日行的 `benchmark_regime`），再重跑 Step4。
 
+盘前那一半另有 `schedule` 兜底（UTC 02:20 工作日，带 `--backstop` 幂等短路）：外部
+`workflow_dispatch` 触发器实测连续 4 个周一周二未触发，而周一周二恰是 Step4 出单最多的两天。
+兜底只在当日盘前态缺失且当天是交易日时才干活，触发正常的日子秒退，不会多推一条飞书。
+
 ---
 
 ## 相关文档

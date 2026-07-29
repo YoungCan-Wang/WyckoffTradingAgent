@@ -11,7 +11,11 @@ from zoneinfo import ZoneInfo
 
 from core.premarket_public_brief import generate_public_premarket_brief
 from integrations.llm_client import call_llm
-from integrations.supabase_market_signal import load_latest_market_signal_daily, upsert_market_signal_daily
+from integrations.supabase_market_signal import (
+    load_latest_market_signal_daily,
+    load_market_signal_daily,
+    upsert_market_signal_daily,
+)
 from utils.feishu import send_feishu_notification
 from utils.trading_clock import is_a_share_trading_day
 from workflows.premarket_public_brief_config import public_brief_llm_config_from_env
@@ -32,6 +36,7 @@ class PremarketRiskJobConfig:
     logs_path: str
     webhook: str = ""
     dry_run: bool = False
+    backstop: bool = False
 
 
 @dataclass(frozen=True)
@@ -53,6 +58,8 @@ def default_logs_path() -> str:
 
 def run_premarket_risk_job(config: PremarketRiskJobConfig) -> int:
     log_line("盘前风控任务开始", config.logs_path)
+    if config.backstop and backstop_should_skip(config.logs_path):
+        return 0
     snapshot = collect_premarket_snapshot(config.logs_path)
     content = build_premarket_content(snapshot)
     if config.dry_run:
@@ -125,6 +132,30 @@ def build_market_signal_patch(snapshot: PremarketSnapshot) -> dict:
         "banner_tone": public_brief.get("banner_tone"),
         "source_jobs": {"premarket_risk_job": _source_job_payload(public_brief)},
     }
+
+
+def backstop_should_skip(logs_path: str) -> bool:
+    """兜底补跑的短路判断：只在当日盘前态真的缺失时才干活。
+
+    兜底存在的唯一理由是别让 Step4 因为拿不到盘前态而降级成 UNKNOWN 禁买，所以非交易日
+    和已落库的日子都直接退出——盘前任务每次都会无条件推飞书，不短路就会天天多一条重复推送。
+    读库失败按缺失处理：重复推送只是噪音，漏掉盘前态要赔上一整天的开仓能力。
+    """
+    trade_date = premarket_session_trade_date_str()
+    if not is_a_share_trading_day(datetime.now(TZ).date()):
+        log_line(f"兜底模式: 非A股交易日({trade_date})，跳过", logs_path)
+        return True
+    try:
+        row = load_market_signal_daily(trade_date) or {}
+    except Exception as exc:
+        log_line(f"兜底模式: 读库失败({exc})，按缺失处理继续执行", logs_path)
+        return False
+    regime = str(row.get("premarket_regime") or "").strip()
+    if not regime:
+        log_line(f"兜底模式: {trade_date} 盘前态缺失，补跑", logs_path)
+        return False
+    log_line(f"兜底模式: {trade_date} 盘前态已存在({regime})，跳过", logs_path)
+    return True
 
 
 def persist_premarket_signal(snapshot: PremarketSnapshot, logs_path: str) -> None:
