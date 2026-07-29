@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -18,6 +19,13 @@ from workflows.factor_backtest import (
     write_artifacts,
     yearly_breakdown,
 )
+
+
+def test_factor_panel_cache_has_an_explicit_generation() -> None:
+    workflow = Path(".github/workflows/factor_backtest.yml").read_text(encoding="utf-8")
+
+    assert 'PANEL_CACHE_VERSION: "v2"' in workflow
+    assert "key: factor-panel-${{ inputs.start }}-${{ inputs.end }}-${{ env.PANEL_CACHE_VERSION }}" in workflow
 
 
 def _result(nav_values: list[float], trades: pd.DataFrame) -> dict:

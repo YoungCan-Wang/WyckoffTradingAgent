@@ -18,7 +18,7 @@ def test_strategy_variants_isolate_each_research_switch() -> None:
         "signal_sequence_bonus_enabled": True,
     }
     assert all(strategy_variant_overrides("E").values())
-    assert DEFAULT_COMPARISON_VARIANTS == ("A", "M", "P", "Q")
+    assert DEFAULT_COMPARISON_VARIANTS == ("A", "M", "P")
     assert strategy_variant_overrides("F") == baseline
     assert strategy_variant_entry_policy("F").blocked_confirmed_signals == ("evr",)
     assert strategy_variant_entry_policy("G").blocked_confirmed_signals == ("evr", "sos")

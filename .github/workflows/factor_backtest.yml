@@ -51,6 +51,9 @@ env:
   PYTHONUNBUFFERED: "1"
   TZ: Asia/Shanghai
   PANEL_DIR: factor_panel
+  # Bump this whenever PIT panel input semantics change. Do not restore an
+  # older generation: build_panel intentionally skips existing yearly files.
+  PANEL_CACHE_VERSION: "v2"
 
 jobs:
   panel:
@@ -80,7 +83,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.PANEL_DIR }}
-          key: factor-panel-${{ inputs.start }}-${{ inputs.end }}-v1
+          key: factor-panel-${{ inputs.start }}-${{ inputs.end }}-${{ env.PANEL_CACHE_VERSION }}
 
       - name: Fetch panel
         run: |

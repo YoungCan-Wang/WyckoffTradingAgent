@@ -82,17 +82,17 @@ def build_strategy_comparison(rows: list[StrategyComparisonRow]) -> dict[str, An
         "rows": [_row_payload(row) for row in sorted(rows, key=lambda row: (row.period, row.variant))],
         "evaluations": evaluations,
         "walk_forward": _walk_forward(rows),
-        "scope": "M 相对 A 评估弱水温缩仓；P 相对 M 评估 NEUTRAL Spring 再缩仓；Q 相对 P 评估其广度确认。",
+        "scope": "默认矩阵评估 M 相对 A 的弱水温缩仓，以及 P 相对 M 的 NEUTRAL Spring 再缩仓；Q 仅保留手工复现。",
         "decision_rule": "全部周期现金收益为正、绝对回撤不超过20%，且真实改变交易、胜出过半、平均增量为正、回撤恶化不超过2个百分点。",
     }
 
 
 def render_strategy_comparison(report: dict[str, Any]) -> str:
     lines = [
-        "# 策略 A/M/P/Q A股实证对比",
+        "# 策略 A/M/P A股实证对比",
         "",
-        "固定同一数据快照、确认口径和组合。A/M/P/Q 共用固定退出。",
-        "M 验证弱水温信号缩仓；P 在 M 上验证 NEUTRAL Spring 再缩仓；Q 只在 NEUTRAL Spring 上要求广度确认；全部为研究策略。",
+        "固定同一数据快照、确认口径和组合。A/M/P 共用固定退出。",
+        "M 验证弱水温信号缩仓；P 在 M 上验证 NEUTRAL Spring 再缩仓；全部为研究策略。Q 已退出默认矩阵，仅保留手工复现。",
         "",
         "| 周期 | 组别 | 现金收益 | 现金回撤 | 成交 | 胜率 | 平均单笔 | 夏普 |",
         "|---|---|---:|---:|---:|---:|---:|---:|",
