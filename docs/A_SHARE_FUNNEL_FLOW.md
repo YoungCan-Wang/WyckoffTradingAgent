@@ -273,7 +273,7 @@ ETF 行情重复进入全市场统计；ETF 候选仍可通过 L3 共振进入�
 
 ```mermaid
 flowchart LR
-    IN["selected_for_ai<br/>与漏斗报告送审清单一致"] --> FETCH["逐只拉 OHLCV<br/>320 日窗口"]
+    IN["selected_for_ai（当日 pending 触发）<br/>+ 跨日确认候选（STEP3_CONFIRMED_REVIEW_CAP）"] --> FETCH["逐只拉 OHLCV<br/>320 日窗口"]
     FETCH --> FEAT["特征工程<br/>generate_stock_payload<br/>均线/量价切片/高光事件"]
     FEAT --> RAG["RAG 语义防雷<br/>rag_veto 新闻否决"]
     RAG --> SPLIT["双轨分组<br/>Trend vs Accum"]
@@ -290,7 +290,8 @@ flowchart LR
 
 - Step3：`STEP3_LLM_PROVIDER=gemini`，fallback `efficiency`
 - 输入不是原始 K 线，而是压缩后的结构特征
-- 漏斗展示的送审数量与 Step3 实际输入保持一致；模型审判不等于执行放行，`confirmed` 仍是 Step4 硬门槛
+- 复核池 = 漏斗当日 `selected_for_ai` + 跨日确认候选（上限 `STEP3_CONFIRMED_REVIEW_CAP`，默认 12）。两者缺一不可：LLM 的起跳板硬门槛只放行 `confirmed`，而 `selected_for_ai` 装的是当日新触发信号，按状态机定义此刻只能是 `pending`。只送前者会让第三阵营在结构上恒为空
+- 模型审判不等于执行放行，`confirmed` 仍是 Step4 硬门槛
 - 空候选仍发送空集报告、合规摘要和明日执行结论，并明确区分上游空输入、RAG 全剔除和数据门槛过滤；主 provider 失败时按配置回退，不会在 daily-job 包装层静默跳过
 
 ---

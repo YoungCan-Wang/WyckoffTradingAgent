@@ -25,6 +25,14 @@ RECOMMENDATION_MAINLINE_STATUSES = TRADEABLE_MAINLINE_STATUSES
 RECOMMENDATION_STRATEGIC_MIN_THEME_SCORE = 0.45
 RECOMMENDATION_STRATEGIC_MIN_STOCK_SCORE = 0.55
 STEP3_REPAIR_REVIEW_SPRINGBOARD_CAP = "STEP3_REPAIR_REVIEW_SPRINGBOARD_CAP"
+STEP3_CONFIRMED_REVIEW_CAP = "STEP3_CONFIRMED_REVIEW_CAP"
+
+
+def _env_cap(name: str, default: int) -> int:
+    try:
+        return max(int(float(os.getenv(name, str(default)))), 0)
+    except (TypeError, ValueError):
+        return default
 
 
 def persist_benchmark_context(
@@ -125,16 +133,34 @@ def step3_review_symbols(
 
 
 def _selected_funnel_review_symbols(symbols_info: list[dict], step2_details: dict) -> list[dict]:
-    selected_codes = [code6(code) for code in step2_details.get("selected_for_ai", []) or []]
-    by_code = {code6(item.get("code")): item for item in symbols_info if isinstance(item, dict)}
+    """漏斗当日选中的候选，外加跨日确认候选。
+
+    两者缺一不可：LLM 的起跳板硬门槛只放行 `跨日确认=confirmed`，而 `selected_for_ai`
+    装的是当日新触发的信号——按状态机定义它们此刻只能是 pending，最快次日才可能转
+    confirmed。只送 `selected_for_ai` 会让第三阵营在结构上恒为空（生产实测连续 10 个
+    交易日零起跳板，期间确认候选最多的一天有 38 只，与送审名单零交集）。
+    """
     rows: list[dict] = []
-    for input_order, code in enumerate(selected_codes):
+    seen: set[str] = set()
+    by_code = {code6(item.get("code")): item for item in symbols_info if isinstance(item, dict)}
+    for code in [code6(code) for code in step2_details.get("selected_for_ai", []) or []]:
         item = by_code.get(code)
-        if not code or item is None:
+        if not code or item is None or code in seen:
             continue
-        row = dict(item)
-        row["input_order"] = input_order
-        rows.append(row)
+        seen.add(code)
+        rows.append({**item, "input_order": len(rows)})
+
+    confirmed_cap = _env_cap(STEP3_CONFIRMED_REVIEW_CAP, 12)
+    added = 0
+    for item in symbols_info:
+        if added >= confirmed_cap:
+            break
+        code = code6(item.get("code")) if isinstance(item, dict) else ""
+        if not code or code in seen or not is_confirmed_step4_candidate(item):
+            continue
+        seen.add(code)
+        rows.append({**item, "input_order": len(rows)})
+        added += 1
     return rows
 
 
@@ -184,10 +210,7 @@ def _step3_repair_springboard_row(row: dict) -> dict:
 
 
 def _repair_springboard_review_cap() -> int:
-    try:
-        return max(int(float(os.getenv(STEP3_REPAIR_REVIEW_SPRINGBOARD_CAP, "3"))), 0)
-    except (TypeError, ValueError):
-        return 3
+    return _env_cap(STEP3_REPAIR_REVIEW_SPRINGBOARD_CAP, 3)
 
 
 def is_recommendation_tracking_candidate(item: dict) -> bool:
