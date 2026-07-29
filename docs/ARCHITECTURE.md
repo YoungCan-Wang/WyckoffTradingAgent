@@ -812,6 +812,9 @@ Web 个股、持仓和股票对抗分析保存历史时写入 `meta`：输入快
   `portfolio add` 仍是覆盖式录快照，两者语义不同，不要混用。
 - `core/execution_audit.py` 检测「仍在持仓、却连续多个运行日被建议离场」的标的，
   结果渲染在 Step4 工单顶部。连续性按 OMS 实际运行日计算，漏跑一天不会把告警清零。
+- 检测结果同时喂给订单引擎作为**买入闸门**：存在未执行的离场工单时，所有 PROBE/ATTACK 直接
+  `NO_TRADE`（`STEP4_BLOCK_BUY_ON_STALE_EXIT`，默认开）。闸门只拦新仓，EXIT/TRIM/HOLD 照常下发，
+  否则会把仓位锁死在无法离场的状态。人工执行下通知可以被无视，但"不许开新仓"是能落地的约束。
 
 Web `/portfolio` 的数据库模式仅对白名单用户开放。浏览器把 Supabase JWT 发送给 `/api/portfolio`，API
 从已验证令牌取得 `user_id` 并固定映射到 `USER_LIVE:<user_id>`，请求体不能指定 `portfolio_id`。

@@ -306,6 +306,57 @@ def test_order_engine_uses_explicit_buy_block_config():
     assert "regime=NEUTRAL" in tickets[0].reason
 
 
+def _stale_exit_engine(**overrides):
+    kwargs = {
+        "total_equity": 100000,
+        "free_cash": 50000,
+        "position_map": {},
+        "latest_price_map": {"000001": 9.5},
+        "atr_map": {"000001": 0.2},
+        "market_regime": "NEUTRAL",
+        "stale_exit_codes": frozenset({"603661"}),
+    }
+    kwargs.update(overrides)
+    return WyckoffOrderEngine(**kwargs)
+
+
+def test_unexecuted_exit_blocks_new_buys():
+    """止损没落地就开新仓，等于一边放任亏损扩大一边加仓。"""
+    tickets, cash = _stale_exit_engine().process([_decision("PROBE")])
+
+    assert cash == 50000
+    assert tickets[0].status == "NO_TRADE"
+    assert "未执行的离场工单" in tickets[0].reason
+    assert "603661" in tickets[0].reason
+
+
+def test_unexecuted_exit_does_not_block_selling_or_holding():
+    """闸门只拦新仓；离场和持有必须照常给出，否则会把仓位锁死。"""
+    position = PositionItem(code="000001", name="平安银行", cost=10.0, buy_dt="20260701", shares=1000, stop_loss=8.9)
+    engine = _stale_exit_engine(position_map={"000001": position})
+
+    tickets, _cash = engine.process([_decision("EXIT")])
+
+    assert tickets[0].status == "APPROVED"
+    assert tickets[0].action == "EXIT"
+
+
+def test_stale_exit_buy_block_can_be_switched_off():
+    engine = _stale_exit_engine(config=step4.Step4OrderConfig(block_buy_on_stale_exit=False))
+
+    tickets, _cash = engine.process([_decision("PROBE")])
+
+    assert "未执行的离场工单" not in tickets[0].reason
+
+
+def test_no_stale_exits_leaves_buys_alone():
+    engine = _stale_exit_engine(stale_exit_codes=frozenset())
+
+    tickets, _cash = engine.process([_decision("PROBE")])
+
+    assert "未执行的离场工单" not in tickets[0].reason
+
+
 def test_candidate_attribution_reaches_buy_ticket_and_persistence_row():
     decision = DecisionItem(
         code="000390",

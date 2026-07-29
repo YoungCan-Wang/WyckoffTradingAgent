@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from datetime import date
 
-from core.execution_audit import find_unexecuted_exits
+from core.execution_audit import StaleExit, find_unexecuted_exits
 from integrations.fetch_a_share_csv import TradingWindow, resolve_trading_window
 from integrations.supabase_portfolio import check_daily_run_exists, load_recent_trade_orders
 from utils.telegram import send_to_telegram
@@ -213,21 +213,13 @@ def _send_and_persist_step4_results(
     tickets: list[ExecutionTicket],
     free_cash_after: float,
     rendered_market_view: str,
+    stale_exits: list[StaleExit],
     report_progress,
 ) -> tuple[bool, str]:
     result_record = prepare_step4_result_record(
         tickets=tickets,
         state_signature=context.state_signature,
     )
-    stale_exits = find_unexecuted_exits(
-        load_recent_trade_orders(options.portfolio_id),
-        [pos.code for pos in context.portfolio.positions],
-    )
-    if stale_exits:
-        logger.warning(
-            "存在未执行的离场工单: %s",
-            ", ".join(f"{s.code}×{s.days}日" for s in stale_exits),
-        )
     report = render_trade_ticket(
         market_view=rendered_market_view,
         total_equity=float(context.total_equity),
@@ -331,7 +323,18 @@ def _run_step4_decision_flow(
         context.atr_map,
         options.runtime_config,
     )
-    tickets, free_cash_after = execute_step4_decisions(context, decisions, options.order_config)
+    stale_exits = find_unexecuted_exits(
+        load_recent_trade_orders(options.portfolio_id),
+        [pos.code for pos in context.portfolio.positions],
+    )
+    if stale_exits:
+        logger.warning("存在未执行的离场工单: %s", ", ".join(f"{s.code}×{s.days}日" for s in stale_exits))
+    tickets, free_cash_after = execute_step4_decisions(
+        context,
+        decisions,
+        options.order_config,
+        frozenset(s.code for s in stale_exits),
+    )
     return _send_and_persist_step4_results(
         options=options,
         context=context,
@@ -339,6 +342,7 @@ def _run_step4_decision_flow(
         tickets=tickets,
         free_cash_after=free_cash_after,
         rendered_market_view=rendered_market_view,
+        stale_exits=stale_exits,
         report_progress=report_progress,
     )
 

@@ -143,6 +143,7 @@ class WyckoffOrderEngine:
         market_regime: str | None = None,
         config: Step4OrderConfig | None = None,
         trade_date: str = "",
+        stale_exit_codes: frozenset[str] = frozenset(),
     ) -> None:
         self.total_equity = float(max(total_equity, 0.0))
         self.free_cash = float(max(free_cash, 0.0))
@@ -150,6 +151,7 @@ class WyckoffOrderEngine:
         self.latest_price_map = latest_price_map
         self.atr_map = atr_map or {}
         self.trade_date = trade_date
+        self.stale_exit_codes = stale_exit_codes
         self.market_regime = normalize_regime(market_regime)
         self.config = config or DEFAULT_STEP4_ORDER_CONFIG
         probe_limit = self.config.probe_budget_limit
@@ -561,6 +563,10 @@ class WyckoffOrderEngine:
         )
 
     def _process_buy(self, ctx: OrderContext) -> ExecutionTicket:
+        if self.stale_exit_codes and self.config.block_buy_on_stale_exit:
+            # 止损只有成交才算数。旧仓位的离场建议还没落地就开新仓，等于一边放任亏损扩大一边加仓。
+            pending = "、".join(sorted(self.stale_exit_codes))
+            return self._no_trade(ctx.dec, ctx.name, f"存在未执行的离场工单（{pending}），清干净之前禁止开新仓")
         if ctx.action in {"PROBE", "ATTACK"} and self.market_regime in self.config.buy_block_regimes:
             return self._no_trade(ctx.dec, ctx.name, f"系统性风控拦截: regime={self.market_regime} 禁止买入")
         if ctx.action == "ATTACK" and self.market_regime in PROBE_ONLY_REGIMES:
