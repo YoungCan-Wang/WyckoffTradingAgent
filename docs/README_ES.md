@@ -202,6 +202,7 @@ Arsenal del agente — 10 herramientas cuantitativas + 5 capacidades generales:
 | `analyze_stock` | Diagnostico Wyckoff / cotizaciones OHLCV recientes / overlay de calidad fundamental (cambio de modo) |
 | `portfolio` | Ver posiciones / escaneo masivo de cartera (cambio de modo) |
 | `update_portfolio` | Agregar / modificar / eliminar posiciones, establecer efectivo, eliminar registros de seguimiento |
+| `record_trade_fill` | Registrar una ejecucion real: promedia el costo, descuenta comisiones, informa P&L realizado |
 | `get_market_overview` | Panorama general del mercado |
 | `screen_stocks` | Filtrado del mercado completo con embudo de linea principal (⚡segundo plano) |
 | `generate_ai_report` | Reporte IA profundo en 3 campamentos (⚡segundo plano) |

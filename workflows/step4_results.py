@@ -43,14 +43,13 @@ def save_step4_orders_and_nav(
     rendered_market_view: str,
     tickets: list[ExecutionTicket],
     ticket_rows: list[dict],
-    free_cash_after: float,
 ) -> bool:
     if not _save_step4_trade_orders(options, context, run_id, rendered_market_view, ticket_rows):
         logger.error("AI 订单记录写入失败 | portfolio_id=%s", options.portfolio_id)
         return False
     _cancel_previous_trade_orders(options, context, run_id)
     stops_ok = update_step4_position_stops(options.portfolio_id, tickets)
-    nav_ok = _save_step4_nav_snapshot(options, context, free_cash_after)
+    nav_ok = _save_step4_nav_snapshot(options, context)
     return stops_ok and nav_ok
 
 
@@ -160,16 +159,18 @@ def _cancel_previous_trade_orders(options: Step4RunOptions, context: Step4InputC
         logger.info("已作废同日旧 AI 订单: cancelled=%s, portfolio_id=%s", cancelled, options.portfolio_id)
 
 
-def _save_step4_nav_snapshot(
-    options: Step4RunOptions,
-    context: Step4InputContext,
-    free_cash_after: float,
-) -> bool:
-    positions_value = max(float(context.total_equity) - float(free_cash_after), 0.0)
+def _save_step4_nav_snapshot(options: Step4RunOptions, context: Step4InputContext) -> bool:
+    """净值快照必须记账户当前的真实状态，不能记 OMS「假设你照单执行后」的模拟现金。
+
+    工单未被执行时两者会持续背离：模拟现金把卖出所得算进来，残差算出的持仓市值就趋近 0，
+    于是净值表显示满仓现金、实际却还拿着正在下跌的票，账户从此无法自证盈亏。
+    """
+    real_cash = float(context.portfolio.free_cash)
+    positions_value = max(float(context.total_equity) - real_cash, 0.0)
     if upsert_daily_nav(
         portfolio_id=options.portfolio_id,
         trade_date=context.trade_date,
-        free_cash=float(free_cash_after),
+        free_cash=real_cash,
         total_equity=float(context.total_equity),
         positions_value=positions_value,
     ):

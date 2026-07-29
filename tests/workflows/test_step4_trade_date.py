@@ -974,7 +974,12 @@ def test_step4_save_orders_and_nav_uses_persistence_boundaries(monkeypatch):
         lambda portfolio_id, updates: calls.setdefault("stops", (portfolio_id, updates)) is not None,
     )
     options = SimpleNamespace(portfolio_id="P1", model="model-x")
-    context = SimpleNamespace(trade_date="2026-05-15", total_equity=120000.0)
+    # 账户真实现金 50000、持仓 70000；OMS 若把清仓建议算进去会得到 120000 的模拟现金。
+    context = SimpleNamespace(
+        trade_date="2026-05-15",
+        total_equity=120000.0,
+        portfolio=SimpleNamespace(free_cash=50000.0),
+    )
 
     step4_results.save_step4_orders_and_nav(
         options=options,
@@ -983,7 +988,6 @@ def test_step4_save_orders_and_nav_uses_persistence_boundaries(monkeypatch):
         rendered_market_view="市场视图",
         tickets=[_ticket()],
         ticket_rows=[{"code": "000001"}],
-        free_cash_after=50000.0,
     )
 
     assert calls["orders"] == {
@@ -1024,13 +1028,41 @@ def test_step4_order_write_failure_does_not_mutate_stops_or_nav(monkeypatch):
 
     ok = step4_results.save_step4_orders_and_nav(
         options=SimpleNamespace(portfolio_id="P1", model="model-x"),
-        context=SimpleNamespace(trade_date="2026-05-15", total_equity=120000.0),
+        context=SimpleNamespace(
+            trade_date="2026-05-15",
+            total_equity=120000.0,
+            portfolio=SimpleNamespace(free_cash=50000.0),
+        ),
         run_id="run-1",
         rendered_market_view="市场视图",
         tickets=[_ticket()],
         ticket_rows=[{"code": "000001"}],
-        free_cash_after=50000.0,
     )
 
     assert ok is False
     assert mutated == []
+
+
+def test_nav_snapshot_records_real_cash_not_the_post_execution_projection(monkeypatch):
+    """工单没被执行时，净值快照不能把「假设已清仓」的现金当成账户现金。"""
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(step4_results, "save_ai_trade_orders", lambda **_kwargs: True)
+    monkeypatch.setattr(step4_results, "cancel_trade_orders", lambda **_kwargs: 0)
+    monkeypatch.setattr(step4_results, "update_position_stops", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(step4_results, "upsert_daily_nav", lambda **kwargs: captured.update(kwargs) is None)
+
+    step4_results.save_step4_orders_and_nav(
+        options=SimpleNamespace(portfolio_id="P1", model="model-x"),
+        context=SimpleNamespace(
+            trade_date="2026-05-15",
+            total_equity=87000.0,
+            portfolio=SimpleNamespace(free_cash=71000.0),
+        ),
+        run_id="run-1",
+        rendered_market_view="市场视图",
+        tickets=[_ticket()],
+        ticket_rows=[{"code": "000001"}],
+    )
+
+    assert captured["free_cash"] == 71000.0
+    assert captured["positions_value"] == 16000.0

@@ -782,12 +782,12 @@ Web 个股、持仓和股票对抗分析保存历史时写入 `meta`：输入快
 |----|------|
 | `portfolios` | 投资组合元数据 |
 | `portfolio_positions` | 持仓明细 |
-| `trade_orders` | AI 交易建议 |
+| `trade_orders` | AI 交易建议（**建议单，不是成交流水**；状态只有 APPROVED / NO_TRADE / CANCELLED） |
 | `user_settings` | 用户配置（API Key / Webhook / provider base_url / custom_providers JSON） |
 | `recommendation_tracking` | 威科夫形态复盘 |
 | `signal_pending` | 信号确认池 |
 | `market_signal_daily` | 大盘信号 |
-| `daily_nav` | 每日净值 |
+| `daily_nav` | 每日净值（记账户真实现金与持仓市值，不记 OMS「假设照单执行后」的模拟值） |
 | `concept_heat_history` | 板块连续性与概念热度历史 |
 | `signal_observations` | L4 信号观察样本 |
 | `signal_outcomes` | 信号后续收益 / 回撤结果 |
@@ -799,6 +799,19 @@ Web 个股、持仓和股票对抗分析保存历史时写入 `meta`：输入快
 | `strategy_policy_candidates` | 待人工复盘的候选策略，不自动晋级生产 |
 
 数据隔离：Web JWT → RLS，CLI access_token → RLS，脚本 service_role_key → 绕过 RLS。
+
+### 成交回填与执行审计
+
+持仓账本 `portfolio_positions` 由人工维护：OMS 只产出建议单，任何代码路径都不会因为发过 EXIT
+就自动减少股数。这意味着**成交必须回填，否则系统状态会停在成交前**——止损会对着早该卖掉的仓位
+每天重发一次，`daily_nav` 也会长期偏离真实账户。
+
+- `core/trade_fill.py` 是纯计算：按成交增量摊薄成本价（含佣金）、扣双边费用、卖光时清仓、
+  给出已实现盈亏。`integrations.supabase_portfolio.record_fill` 负责落库，先读后写，需串行调用。
+- 入口：CLI `wyckoff portfolio fill`、MCP/Agent 工具 `record_trade_fill`。
+  `portfolio add` 仍是覆盖式录快照，两者语义不同，不要混用。
+- `core/execution_audit.py` 检测「仍在持仓、却连续多个运行日被建议离场」的标的，
+  结果渲染在 Step4 工单顶部。连续性按 OMS 实际运行日计算，漏跑一天不会把告警清零。
 
 Web `/portfolio` 的数据库模式仅对白名单用户开放。浏览器把 Supabase JWT 发送给 `/api/portfolio`，API
 从已验证令牌取得 `user_id` 并固定映射到 `USER_LIVE:<user_id>`，请求体不能指定 `portfolio_id`。
@@ -834,6 +847,7 @@ wyckoff portfolio list           # 查看持仓（别名 pf）
 wyckoff portfolio add <code>     # 添加持仓
 wyckoff portfolio rm <code>      # 删除持仓
 wyckoff portfolio cash [--amount]# 查看/设置可用资金
+wyckoff portfolio fill <code>    # 回填真实成交（--side/--shares/--price）
 wyckoff signal [status]          # 查看信号池
 wyckoff recommend                # 查看复盘记录（别名 rec）
 wyckoff dashboard [--port N]     # 启动可视化面板（别名 dash）

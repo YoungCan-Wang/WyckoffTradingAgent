@@ -10,8 +10,9 @@ from __future__ import annotations
 import logging
 from datetime import date
 
+from core.execution_audit import find_unexecuted_exits
 from integrations.fetch_a_share_csv import TradingWindow, resolve_trading_window
-from integrations.supabase_portfolio import check_daily_run_exists
+from integrations.supabase_portfolio import check_daily_run_exists, load_recent_trade_orders
 from utils.telegram import send_to_telegram
 from utils.trading_clock import resolve_end_calendar_day
 from workflows.step4_decision_parser import (
@@ -218,6 +219,15 @@ def _send_and_persist_step4_results(
         tickets=tickets,
         state_signature=context.state_signature,
     )
+    stale_exits = find_unexecuted_exits(
+        load_recent_trade_orders(options.portfolio_id),
+        [pos.code for pos in context.portfolio.positions],
+    )
+    if stale_exits:
+        logger.warning(
+            "存在未执行的离场工单: %s",
+            ", ".join(f"{s.code}×{s.days}日" for s in stale_exits),
+        )
     report = render_trade_ticket(
         market_view=rendered_market_view,
         total_equity=float(context.total_equity),
@@ -225,6 +235,7 @@ def _send_and_persist_step4_results(
         free_cash_after=free_cash_after,
         tickets=tickets,
         atr_period=options.runtime_config.atr_period,
+        stale_exits=stale_exits,
     )
     persisted = save_step4_orders_and_nav(
         options=options,
@@ -233,7 +244,6 @@ def _send_and_persist_step4_results(
         rendered_market_view=rendered_market_view,
         tickets=tickets,
         ticket_rows=result_record.ticket_rows,
-        free_cash_after=free_cash_after,
     )
     if not persisted:
         return False, "persistence_failed"

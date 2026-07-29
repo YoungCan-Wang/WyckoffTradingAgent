@@ -19,6 +19,7 @@
     wyckoff model list/add/rm       # 模型管理
     wyckoff config                  # 数据源配置
     wyckoff portfolio list/add/rm   # 持仓管理
+    wyckoff portfolio fill          # 回填真实成交
     wyckoff signal                  # 信号确认池
     wyckoff recommend               # 威科夫形态复盘
     wyckoff sync                    # 同步 Supabase → SQLite
@@ -498,9 +499,43 @@ def _cmd_portfolio(args):
         print(f"{'✓' if ok else '✗'} {msg}")
         return
 
+    if sub == "fill":
+        _cmd_portfolio_fill(args)
+        return
+
     print(f"未知子命令: {sub}")
-    print("用法: wyckoff portfolio [list|add|rm|cash]")
+    print("用法: wyckoff portfolio [list|add|rm|cash|fill]")
     sys.exit(1)
+
+
+def _cmd_portfolio_fill(args):
+    """回填一笔真实成交：按增量更新持仓与现金，而不是覆盖快照。"""
+    from datetime import datetime
+
+    from core.trade_fill import Fill
+    from integrations.supabase_portfolio import record_fill
+    from utils.trading_clock import CN_TZ
+
+    if not args.code or not args.side or not args.shares or not args.price:
+        print("用法: wyckoff portfolio fill <code> --side buy|sell --shares N --price P [--date YYYYMMDD] [--name X]")
+        sys.exit(1)
+    client, _uid, pid = _get_session_client()
+    try:
+        fill = Fill(
+            code=args.code,
+            side=str(args.side).lower(),
+            shares=int(args.shares),
+            price=float(args.price),
+            trade_date=args.date or datetime.now(CN_TZ).strftime("%Y%m%d"),
+            name=args.name or "",
+        )
+    except ValueError as exc:
+        print(f"✗ {exc}")
+        sys.exit(1)
+    ok, msg = record_fill(pid, fill, client=client)
+    print(f"{'✓' if ok else '✗'} {msg}")
+    if not ok:
+        sys.exit(1)
 
 
 def _cmd_signal(args):
@@ -1665,13 +1700,16 @@ def _add_auth_model_config_parsers(sub) -> None:
 
 def _add_portfolio_history_parsers(sub) -> None:
     p_port = sub.add_parser("portfolio", help="持仓管理", aliases=["pf"])
-    p_port.add_argument("portfolio_cmd", nargs="?", default="list", help="list/add/rm/cash")
-    p_port.add_argument("code", nargs="?", default="", help="股票代码 (add/rm 时)")
+    p_port.add_argument("portfolio_cmd", nargs="?", default="list", help="list/add/rm/cash/fill")
+    p_port.add_argument("code", nargs="?", default="", help="股票代码 (add/rm/fill 时)")
     p_port.add_argument("--name", default="", help="股票名称")
-    p_port.add_argument("--shares", type=int, default=0, help="持仓数量")
+    p_port.add_argument("--shares", type=int, default=0, help="持仓数量 / 成交股数")
     p_port.add_argument("--cost", type=float, default=0, help="成本价")
     p_port.add_argument("--buy-dt", dest="buy_dt", default="", help="买入日期 YYYYMMDD")
     p_port.add_argument("--amount", type=float, default=None, help="可用资金金额 (cash 时)")
+    p_port.add_argument("--side", default="", choices=["", "buy", "sell"], help="成交方向 (fill 时)")
+    p_port.add_argument("--price", type=float, default=0, help="成交价 (fill 时)")
+    p_port.add_argument("--date", default="", help="成交日期 YYYYMMDD，默认今天 (fill 时)")
 
     # wyckoff signal
     p_signal = sub.add_parser("signal", help="信号确认池")
