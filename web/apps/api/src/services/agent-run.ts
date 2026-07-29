@@ -250,9 +250,17 @@ async function finishExecutedRun(
   try {
     await store.save(message.userId, completed)
   } catch {
-    log('failed', { ...context, durationMs: Date.now() - startedAt, errorCode: 'storage_unavailable', status: 'failed' })
-    await releaseActiveRunSlot(store, message.userId, record.id)
-    return 'ack'
+    // Keep the active slot and ask the queue to redeliver. Acking here would leave the
+    // claim-time `running` record without stdout/stderr until TTL, and the sandbox output
+    // could never be recovered.
+    log('retrying', {
+      ...context,
+      durationMs: Date.now() - startedAt,
+      attempts: record.attempts,
+      errorCode: 'storage_unavailable',
+      status: 'failed',
+    })
+    return 'retry'
   }
   try {
     await store.addDailyCpuUsage(message.userId, result.activeCpuUsageMs)
