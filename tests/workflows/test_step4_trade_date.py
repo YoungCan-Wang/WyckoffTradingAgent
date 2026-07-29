@@ -320,18 +320,26 @@ def _stale_exit_engine(**overrides):
     return WyckoffOrderEngine(**kwargs)
 
 
-def test_unexecuted_exit_blocks_new_buys():
-    """止损没落地就开新仓，等于一边放任亏损扩大一边加仓。"""
-    tickets, cash = _stale_exit_engine().process([_decision("PROBE")])
+def test_unexecuted_exit_blocks_attack_sized_buys():
+    """止损没落地还上重仓，等于一边放任亏损扩大一边加码。"""
+    tickets, cash = _stale_exit_engine().process([_decision("ATTACK")])
 
     assert cash == 50000
     assert tickets[0].status == "NO_TRADE"
-    assert "未执行的离场工单" in tickets[0].reason
+    assert "禁止 ATTACK 重仓" in tickets[0].reason
     assert "603661" in tickets[0].reason
 
 
+def test_unexecuted_exit_still_allows_small_probe():
+    """PROBE 自带硬止损且额度受限，一刀切会让闸门变成永久停摆。"""
+    tickets, cash = _stale_exit_engine().process([_decision("PROBE")])
+
+    assert tickets[0].status == "APPROVED"
+    assert cash < 50000
+
+
 def test_unexecuted_exit_does_not_block_selling_or_holding():
-    """闸门只拦新仓；离场和持有必须照常给出，否则会把仓位锁死。"""
+    """闸门只拦重仓买入；离场和持有必须照常给出，否则会把仓位锁死。"""
     position = PositionItem(code="000001", name="平安银行", cost=10.0, buy_dt="20260701", shares=1000, stop_loss=8.9)
     engine = _stale_exit_engine(position_map={"000001": position})
 
@@ -344,17 +352,17 @@ def test_unexecuted_exit_does_not_block_selling_or_holding():
 def test_stale_exit_buy_block_can_be_switched_off():
     engine = _stale_exit_engine(config=step4.Step4OrderConfig(block_buy_on_stale_exit=False))
 
-    tickets, _cash = engine.process([_decision("PROBE")])
+    tickets, _cash = engine.process([_decision("ATTACK")])
 
-    assert "未执行的离场工单" not in tickets[0].reason
+    assert tickets[0].status == "APPROVED"
 
 
 def test_no_stale_exits_leaves_buys_alone():
     engine = _stale_exit_engine(stale_exit_codes=frozenset())
 
-    tickets, _cash = engine.process([_decision("PROBE")])
+    tickets, _cash = engine.process([_decision("ATTACK")])
 
-    assert "未执行的离场工单" not in tickets[0].reason
+    assert tickets[0].status == "APPROVED"
 
 
 def test_candidate_attribution_reaches_buy_ticket_and_persistence_row():

@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from core.execution_audit import find_unexecuted_exits, render_stale_exit_alert
+from core.execution_audit import (
+    find_unexecuted_exits,
+    render_stale_exit_alert,
+    stop_breached_codes,
+    unsellable_dates,
+)
 
 
 def _order(code: str, date: str, action: str = "EXIT", status: str = "APPROVED", name: str = "") -> dict:
@@ -26,6 +31,59 @@ def test_exit_for_a_code_no_longer_held_means_it_was_executed():
     orders = [_order("603661", d) for d in ("20260713", "20260714")]
 
     assert find_unexecuted_exits(orders, ["600000"]) == []
+
+
+def test_sealed_limit_down_days_do_not_count_as_procrastination():
+    """一字跌停当天卖不掉，不该记在执行纪律头上。"""
+    orders = [_order("603661", d) for d in ("20260713", "20260714", "20260715")]
+
+    stale = find_unexecuted_exits(orders, ["603661"], unsellable_by_code={"603661": {"20260714", "20260715"}})
+
+    assert stale == []
+
+
+def test_a_sealed_day_in_the_middle_does_not_wipe_out_earlier_delay():
+    orders = [_order("603661", d) for d in ("20260713", "20260714", "20260715")]
+
+    stale = find_unexecuted_exits(orders, ["603661"], unsellable_by_code={"603661": {"20260714"}})
+
+    assert [(s.code, s.days, s.since) for s in stale] == [("603661", 2, "20260713")]
+
+
+def test_closing_at_the_limit_is_sellable_if_it_traded_higher_intraday():
+    """生产实例：昊华 07-20 收于跌停 42.19，但盘中最高 48.65，全天有卖出窗口。"""
+    bars = [
+        ("2026-07-20", 46.88, 48.65, 42.19),  # 收跌停但盘中可卖
+        ("2026-07-21", 42.19, 37.97, 37.97),  # 一字跌停
+    ]
+
+    assert unsellable_dates(bars) == {"2026-07-21"}
+
+
+def test_normal_down_day_is_never_treated_as_unsellable():
+    assert unsellable_dates([("2026-07-17", 31.74, 30.50, 28.60)]) == set()
+
+
+def test_only_positions_below_their_stop_freeze_new_buys():
+    """没落袋的止盈拖着只是少赚，不该冻结新仓；跌破止损才是风控失效。"""
+    orders = [_order(code, d) for code in ("603661", "600611") for d in ("20260727", "20260728")]
+
+    stale = find_unexecuted_exits(orders, ["603661", "600611"])
+    blocking = stop_breached_codes(
+        stale,
+        {"603661": 36.73, "600611": 3.77},
+        {"603661": 27.83, "600611": 4.02},
+    )
+
+    assert {s.code for s in stale} == {"603661", "600611"}
+    assert blocking == frozenset({"603661"})
+
+
+def test_a_position_without_a_stop_cannot_be_judged_breached():
+    orders = [_order("603661", d) for d in ("20260727", "20260728")]
+    stale = find_unexecuted_exits(orders, ["603661"])
+
+    assert stop_breached_codes(stale, {"603661": None}, {"603661": 27.83}) == frozenset()
 
 
 def test_streak_only_counts_back_to_the_first_gap():
