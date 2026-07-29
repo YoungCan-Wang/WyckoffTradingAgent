@@ -147,6 +147,7 @@ class Step4OrderConfig:
     repair_probe_budget_limit: float = 0.05
     attack_budget_limit: float = 0.20
     buy_block_regimes: frozenset[str] = EXECUTE_BLOCK_NEW_BUY_REGIMES
+    block_buy_on_stale_exit: bool = True
     chase_gap_pct_min: float = 1.2
     chase_gap_pct_max: float = 5.5
     chase_atr_mult_min: float = 0.8

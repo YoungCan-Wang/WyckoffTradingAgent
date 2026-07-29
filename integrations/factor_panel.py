@@ -54,6 +54,9 @@ def _call(endpoint: Callable[..., pd.DataFrame | None], **kwargs) -> pd.DataFram
 
 
 def trade_dates(pro, start: str, end: str) -> list[str]:
+    # trade_cal 收到 2026-07-01 这种带横线的日期不会报错，而是静默返回残缺区间
+    # （实测 2018-01-01~2026-06-30 少 116 天，2026-07-01~2026-07-29 直接为空）。
+    start, end = start.replace("-", ""), end.replace("-", "")
     cal = _call(pro.trade_cal, exchange="SSE", start_date=start, end_date=end, is_open="1")
     if cal.empty:
         raise PanelFetchError(f"交易日历为空: {start}~{end}")
@@ -217,7 +220,6 @@ def st_flags(names: pd.DataFrame, panel_dates: pd.Series) -> pd.DataFrame:
     """展开成 (date, symbol) -> is_st 的 PIT 标记。"""
     if names.empty:
         return pd.DataFrame(columns=["date", "symbol", "is_st"])
-    # 缓存里的 name_history 也可能仍带着开/闭区间双胞胎，读盘时再收敛一次。
     names = canonicalize_name_intervals(names)
     st = names[names["name"].str.upper().str.contains("ST", na=False)].copy()
     if st.empty:

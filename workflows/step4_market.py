@@ -15,6 +15,8 @@ from workflows.step4_text import clean_text
 logger = logging.getLogger(__name__)
 
 PREMARKET_REGIMES = frozenset({"UNKNOWN", "NORMAL", "CAUTION", "RISK_OFF", "BLACK_SWAN"})
+PREMARKET_GAP = "premarket"
+BENCHMARK_GAP = "benchmark"
 
 
 def normalize_benchmark_regime(raw: object) -> str:
@@ -53,18 +55,97 @@ def _benchmark_regime_and_readiness(
     return regime, readiness
 
 
-def build_market_guardrail(
+def missing_market_inputs(
+    raw_benchmark: object,
+    raw_premarket: object,
+    readiness: dict[str, str],
+    benchmark_context: dict | None,
+) -> list[str]:
+    """列出「本该有却没拿到」的风控输入，返回稳定标识。
+
+    `normalize_*_regime` 会把缺失值和真实的 UNKNOWN 判定压成同一个 UNKNOWN，
+    而 UNKNOWN 属于禁止开仓状态。不单独识别缺失，运维就无法区分「行情不明」和
+    「上游任务没跑」——生产 47 天里有 11 天因后者被禁买，比 NEUTRAL 放行的天数还多。
+    """
+    missing: list[str] = []
+    if not clean_text(raw_premarket):
+        missing.append(PREMARKET_GAP)
+    benchmark_unusable = not clean_text(raw_benchmark) or readiness["status"] in {"missing", "stale"}
+    if benchmark_unusable and not (benchmark_context or {}).get("regime"):
+        missing.append(BENCHMARK_GAP)
+    return missing
+
+
+def describe_market_gaps(gaps: list[str]) -> list[str]:
+    labels = {
+        PREMARKET_GAP: "盘前风控未产出（premarket_risk 工作流当日未运行）",
+        BENCHMARK_GAP: "收盘基准未就绪（market_signal_daily 缺 benchmark_regime）",
+    }
+    return [labels[gap] for gap in gaps if gap in labels]
+
+
+def data_gap_blocks_buying(benchmark_regime: str, gaps: list[str], enforced_blocks: set[str]) -> bool:
+    """缺失项是否就是禁买的决定性原因。
+
+    收盘态自身已经禁买时（例如 CRASH），补齐盘前数据也不会放行，此时把禁买归因于
+    数据缺失会误导运维去补一个于事无补的任务。
+    """
+    if not gaps:
+        return False
+    if BENCHMARK_GAP in gaps:
+        return True
+    return resolve_effective_market_regime(benchmark_regime, "NORMAL") not in enforced_blocks
+
+
+def _guardrail_report_lines(
     *,
     trade_date: str,
+    effective_regime: str,
+    benchmark_regime: str,
+    premarket_regime: str,
+    readiness: dict[str, str],
     benchmark_context: dict | None,
-    market_signal_row: dict[str, object] | None,
-    buy_block_regimes: set[str],
-) -> tuple[str, str, str]:
-    row = dict(market_signal_row or {})
-    benchmark_regime, readiness = _benchmark_regime_and_readiness(row, benchmark_context, trade_date)
-    premarket_regime = normalize_premarket_regime(row.get("premarket_regime"))
-    effective_regime = resolve_effective_market_regime(benchmark_regime, premarket_regime)
+    missing_inputs: list[str],
+    enforced_blocks: set[str],
+    panic_reasons: list[str],
+    premarket_reasons: list[str],
+) -> list[str]:
+    lines = [
+        "[全局风控]",
+        f"trade_date={trade_date}, effective_regime={effective_regime}, "
+        f"benchmark_regime={benchmark_regime}, premarket_regime={premarket_regime}",
+        f"market_data_status={readiness['status']}, reason={readiness['reason']}",
+    ]
+    if benchmark_context:
+        lines.append(
+            f"benchmark_close={benchmark_context.get('close')}, ma50={benchmark_context.get('ma50')}, "
+            f"ma200={benchmark_context.get('ma200')}, recent3={benchmark_context.get('recent3_pct')}, "
+            f"cum3={benchmark_context.get('recent3_cum_pct')}, smallcap_today={benchmark_context.get('smallcap_today_pct')}"
+        )
+    if effective_regime in enforced_blocks:
+        lines.append("⚠️ 全局风控一票否决：OMS 将强制拦截全部买入动作（仅允许 HOLD/TRIM/EXIT）。")
+        if missing_inputs:
+            lines.append(
+                "⛑️ 本次禁买源自数据缺失而非行情判断，缺失项="
+                + "、".join(missing_inputs)
+                + "。补齐后重跑 Step4 即可恢复开仓能力。"
+            )
+    elif premarket_regime == "CAUTION":
+        lines.append("⚠️ 盘前情绪扰动已触发：OMS 会自动收紧追价阈值并优先防守。")
+    if panic_reasons:
+        lines.append("panic_reasons=" + " | ".join(panic_reasons))
+    if premarket_reasons:
+        lines.append("premarket_reasons=" + " | ".join(premarket_reasons))
+    lines.append("")
+    return lines
 
+
+def _merge_live_benchmark(
+    row: dict[str, object],
+    benchmark_context: dict | None,
+    benchmark_regime: str,
+    premarket_regime: str,
+) -> None:
     if benchmark_context:
         row.update(
             {
@@ -80,34 +161,50 @@ def build_market_guardrail(
         )
     row["premarket_regime"] = premarket_regime
 
+
+def build_market_guardrail(
+    *,
+    trade_date: str,
+    benchmark_context: dict | None,
+    market_signal_row: dict[str, object] | None,
+    buy_block_regimes: set[str],
+) -> tuple[str, str, str]:
+    row = dict(market_signal_row or {})
+    benchmark_regime, readiness = _benchmark_regime_and_readiness(row, benchmark_context, trade_date)
+    premarket_regime = normalize_premarket_regime(row.get("premarket_regime"))
+    effective_regime = resolve_effective_market_regime(benchmark_regime, premarket_regime)
+    enforced_blocks = set(buy_block_regimes) | set(EXECUTE_BLOCK_NEW_BUY_REGIMES)
+    gaps = missing_market_inputs(row.get("benchmark_regime"), row.get("premarket_regime"), readiness, benchmark_context)
+    missing_inputs = (
+        describe_market_gaps(gaps) if data_gap_blocks_buying(benchmark_regime, gaps, enforced_blocks) else []
+    )
+    if missing_inputs:
+        logger.warning(
+            "风控输入缺失导致降级为 %s（禁止新开仓）: trade_date=%s, 缺失=%s",
+            effective_regime,
+            trade_date,
+            "、".join(missing_inputs),
+        )
+
+    _merge_live_benchmark(row, benchmark_context, benchmark_regime, premarket_regime)
     banner = compose_market_banner(row)
     panic_reasons = [
         str(x).strip() for x in ((benchmark_context or {}).get("panic_reasons", []) or []) if str(x).strip()
     ]
     premarket_reasons = [str(x).strip() for x in (row.get("premarket_reasons", []) or []) if str(x).strip()]
 
-    lines = [
-        "[全局风控]",
-        f"trade_date={trade_date}, effective_regime={effective_regime}, "
-        f"benchmark_regime={benchmark_regime}, premarket_regime={premarket_regime}",
-        f"market_data_status={readiness['status']}, reason={readiness['reason']}",
-    ]
-    if benchmark_context:
-        lines.append(
-            f"benchmark_close={benchmark_context.get('close')}, ma50={benchmark_context.get('ma50')}, "
-            f"ma200={benchmark_context.get('ma200')}, recent3={benchmark_context.get('recent3_pct')}, "
-            f"cum3={benchmark_context.get('recent3_cum_pct')}, smallcap_today={benchmark_context.get('smallcap_today_pct')}"
-        )
-    enforced_blocks = set(buy_block_regimes) | set(EXECUTE_BLOCK_NEW_BUY_REGIMES)
-    if effective_regime in enforced_blocks:
-        lines.append("⚠️ 全局风控一票否决：OMS 将强制拦截全部买入动作（仅允许 HOLD/TRIM/EXIT）。")
-    elif premarket_regime == "CAUTION":
-        lines.append("⚠️ 盘前情绪扰动已触发：OMS 会自动收紧追价阈值并优先防守。")
-    if panic_reasons:
-        lines.append("panic_reasons=" + " | ".join(panic_reasons))
-    if premarket_reasons:
-        lines.append("premarket_reasons=" + " | ".join(premarket_reasons))
-    lines.append("")
+    lines = _guardrail_report_lines(
+        trade_date=trade_date,
+        effective_regime=effective_regime,
+        benchmark_regime=benchmark_regime,
+        premarket_regime=premarket_regime,
+        readiness=readiness,
+        benchmark_context=benchmark_context,
+        missing_inputs=missing_inputs,
+        enforced_blocks=enforced_blocks,
+        panic_reasons=panic_reasons,
+        premarket_reasons=premarket_reasons,
+    )
 
     posture_name = clean_text(banner.get("market_posture_name"))
     action_phrase = clean_text(banner.get("action_phrase"))
@@ -117,6 +214,8 @@ def build_market_guardrail(
     view_parts = [f"收盘={benchmark_regime}"]
     if premarket_regime != "NORMAL":
         view_parts.append(f"盘前={premarket_regime}")
+    if missing_inputs:
+        view_parts.append("⛑️ 禁买源自数据缺失：" + "、".join(missing_inputs))
     if action_phrase:
         view_parts.append(action_phrase)
     if view_parts:

@@ -136,6 +136,7 @@ def execute_step4_decisions(
     context: Step4InputContext,
     decisions: list[DecisionItem],
     order_config: Step4OrderConfig,
+    stale_exit_codes: frozenset[str] = frozenset(),
 ) -> tuple[list[ExecutionTicket], float]:
     engine = WyckoffOrderEngine(
         total_equity=float(context.total_equity),
@@ -146,6 +147,7 @@ def execute_step4_decisions(
         market_regime=context.market_regime,
         config=order_config,
         trade_date=context.trade_date,
+        stale_exit_codes=stale_exit_codes,
     )
     return engine.process(decisions)
 

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import math
+from datetime import date
+from types import SimpleNamespace
 
+from workflows import holding_diagnosis_core as hdc
 from workflows.holding_diagnosis_core import (
     _finite_number,
     _normalize_effective_positions,
@@ -89,3 +92,24 @@ def test_resolve_holding_portfolio_context_uses_requested_portfolio_directly(mon
     assert context.resolved_portfolio_id == "USER_LIVE:abc"
     assert len(context.positions) == 1
     assert not math.isnan(context.positions[0]["cost"])
+
+
+def test_fetch_helpers_pass_end_calendar_day_to_trading_window(monkeypatch) -> None:
+    """两个取数入口都曾漏传必填的 end_calendar_day，而调用方 catch-all 把 TypeError 吞成静默降级。"""
+    seen: list[dict] = []
+
+    def fake_window(**kwargs):
+        seen.append(kwargs)
+        return SimpleNamespace(start_trade_date=date(2026, 1, 2), end_trade_date=date(2026, 7, 28))
+
+    monkeypatch.setattr(hdc, "resolve_trading_window", fake_window)
+    monkeypatch.setattr(hdc, "fetch_hist", lambda *a, **k: None)
+    monkeypatch.setattr(hdc, "fetch_index_hist", lambda *a, **k: None)
+
+    assert hdc.fetch_holding_daily_frame("600378") is None
+    assert hdc.fetch_holding_benchmark() is None
+
+    assert len(seen) == 2
+    for kwargs in seen:
+        assert isinstance(kwargs.get("end_calendar_day"), date)
+        assert kwargs.get("trading_days") == hdc.TRADING_DAYS

@@ -692,7 +692,7 @@ TTL：SOS 2 天、Spring 3 天、LPS 3 天、EVR 2 天、Compression 3 天。
 |-------|-------------|------|
 | **CI** (`ci.yml`) | push/PR | 单次 coverage-instrumented pytest + Python compile + TypeScript check + Web/API tests + dry-run；同一次 Python 测试生成覆盖率 artifact，不重复执行全量套件 |
 | **Web 部署健康检查** (`web_deployment_health.yml`) | main CI 成功后 / 手动 | 从 GitHub runner 轮询 Worker `/api/health` 与 Pages `/chat`；不调用认证接口或创建沙箱 |
-| **盘前风控** (`premarket_risk.yml`) | 周一-周五 08:20 | Codex Automation 调用 `workflow_dispatch`；A50 + VIX 预警，Actions 可手动补跑 |
+| **盘前风控** (`premarket_risk.yml`) | 周一-周五 08:20 | Codex Automation 调用 `workflow_dispatch`；A50 + VIX 预警，Actions 可手动补跑。另有 UTC 02:20 的 `schedule` 兜底，带 `--backstop` 幂等短路，仅在当日盘前态缺失时补跑 |
 | **港股漏斗筛选** (`wyckoff_funnel_hk.yml`) | 周一-周五 16:35 | `market_funnel_job.py --market hk` |
 | **A 股漏斗筛选 + AI 研报 + 决策** (`wyckoff_funnel.yml`) | 周日-周四 17:17 | `daily_job.py` Step2→3→4；周日正常为周一实盘准备候选，若次日非 A 股交易日才跳过，日频写入 `theme_radar_snapshot` |
 | **板块连续性报告** (`sector_continuity.yml`) | 周一-周五 16:10 | 刷新概念热度历史，辅助主线引擎判断延续性 |
@@ -782,12 +782,12 @@ Web 个股、持仓和股票对抗分析保存历史时写入 `meta`：输入快
 |----|------|
 | `portfolios` | 投资组合元数据 |
 | `portfolio_positions` | 持仓明细 |
-| `trade_orders` | AI 交易建议 |
+| `trade_orders` | AI 交易建议（**建议单，不是成交流水**；状态只有 APPROVED / NO_TRADE / CANCELLED） |
 | `user_settings` | 用户配置（API Key / Webhook / provider base_url / custom_providers JSON） |
 | `recommendation_tracking` | 威科夫形态复盘 |
 | `signal_pending` | 信号确认池 |
 | `market_signal_daily` | 大盘信号 |
-| `daily_nav` | 每日净值 |
+| `daily_nav` | 每日净值（记账户真实现金与持仓市值，不记 OMS「假设照单执行后」的模拟值） |
 | `concept_heat_history` | 板块连续性与概念热度历史 |
 | `signal_observations` | L4 信号观察样本 |
 | `signal_outcomes` | 信号后续收益 / 回撤结果 |
@@ -799,6 +799,25 @@ Web 个股、持仓和股票对抗分析保存历史时写入 `meta`：输入快
 | `strategy_policy_candidates` | 待人工复盘的候选策略，不自动晋级生产 |
 
 数据隔离：Web JWT → RLS，CLI access_token → RLS，脚本 service_role_key → 绕过 RLS。
+
+### 成交回填与执行审计
+
+持仓账本 `portfolio_positions` 由人工维护：OMS 只产出建议单，任何代码路径都不会因为发过 EXIT
+就自动减少股数。这意味着**成交必须回填，否则系统状态会停在成交前**——止损会对着早该卖掉的仓位
+每天重发一次，`daily_nav` 也会长期偏离真实账户。
+
+- `core/trade_fill.py` 是纯计算：按成交增量摊薄成本价（含佣金）、扣双边费用、卖光时清仓、
+  给出已实现盈亏。`integrations.supabase_portfolio.record_fill` 负责落库，先读后写，需串行调用。
+- 入口：CLI `wyckoff portfolio fill`、MCP/Agent 工具 `record_trade_fill`。
+  `portfolio add` 仍是覆盖式录快照，两者语义不同，不要混用。
+- `core/execution_audit.py` 检测「仍在持仓、却连续多个运行日被建议离场」的标的，
+  结果渲染在 Step4 工单顶部。连续性按 OMS 实际运行日计算，漏跑一天不会把告警清零。
+- 检测结果经两道收窄后喂给订单引擎作为**买入闸门**（`STEP4_BLOCK_BUY_ON_STALE_EXIT`，默认开）：
+  只有**现价已跌破持仓止损**的标的才进闸门集合——没落袋的止盈拖着只是少赚，跌破止损还拿着
+  才是风控失效；命中后只拦 `ATTACK` 重仓，小额 `PROBE` 放行，它自带硬止损且额度受限，
+  一刀切会让闸门在长期深套下变成永久停摆。EXIT/TRIM/HOLD 始终照常下发。
+- 拖延天数按可卖日计算：一字跌停（全天最高价未离开跌停价）当日卖不掉，不计入天数，但也不打断
+  连续段，否则中间夹一个跌停板就能把前面的拖延洗掉。仅收在跌停不算——盘中高于跌停价即存在卖出窗口。
 
 Web `/portfolio` 的数据库模式仅对白名单用户开放。浏览器把 Supabase JWT 发送给 `/api/portfolio`，API
 从已验证令牌取得 `user_id` 并固定映射到 `USER_LIVE:<user_id>`，请求体不能指定 `portfolio_id`。
@@ -834,6 +853,7 @@ wyckoff portfolio list           # 查看持仓（别名 pf）
 wyckoff portfolio add <code>     # 添加持仓
 wyckoff portfolio rm <code>      # 删除持仓
 wyckoff portfolio cash [--amount]# 查看/设置可用资金
+wyckoff portfolio fill <code>    # 回填真实成交（--side/--shares/--price）
 wyckoff signal [status]          # 查看信号池
 wyckoff recommend                # 查看复盘记录（别名 rec）
 wyckoff dashboard [--port N]     # 启动可视化面板（别名 dash）

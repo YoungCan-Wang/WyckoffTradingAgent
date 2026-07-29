@@ -23,6 +23,7 @@ from core.constants import (
     TABLE_TRADE_ORDERS,
     TABLE_USER_SETTINGS,
 )
+from core.trade_fill import Fill, Holding, apply_fill
 from integrations.supabase_base import create_admin_client as _get_supabase_admin_client
 from integrations.supabase_base import is_admin_configured as is_supabase_configured
 from integrations.supabase_base import require_server_write_context
@@ -331,6 +332,58 @@ def delete_position(portfolio_id: str, code: str, client: Client | None = None) 
         return False, str(e)
 
 
+def record_fill(portfolio_id: str, fill: Fill, client: Client | None = None) -> tuple[bool, str]:
+    """把一笔真实成交写回持仓与现金。
+
+    先读当前状态再算，所以必须串行调用；同一账户并发回填会互相覆盖。人工录入的
+    使用场景下这个约束是成立的，换成自动对接券商前需要改成带版本号的乐观锁。
+    """
+    try:
+        client = _resolve_write_client(client, "record trade fill")
+        state = load_portfolio_state(portfolio_id, client=client)
+        if state is None:
+            return False, f"未找到组合 {portfolio_id}"
+        row = next((p for p in state["positions"] if str(p.get("code", "")).strip() == fill.code), None)
+        holding = (
+            Holding(
+                code=fill.code,
+                name=str(row.get("name", "") or ""),
+                shares=int(row.get("shares", 0) or 0),
+                cost_price=float(row.get("cost", 0) or 0),
+                buy_dt=str(row.get("buy_dt", "") or ""),
+            )
+            if row
+            else None
+        )
+        result = apply_fill(holding, float(state["free_cash"]), fill)
+    except ValueError as exc:
+        return False, str(exc)
+    except Exception as exc:
+        logger.warning("[supabase_portfolio] record_fill failed: %s", exc)
+        return False, str(exc)
+
+    if result.holding is None:
+        ok, msg = delete_position(portfolio_id, fill.code, client=client)
+    else:
+        ok, msg = upsert_position(
+            portfolio_id,
+            {
+                "code": result.holding.code,
+                "name": result.holding.name,
+                "shares": result.holding.shares,
+                "cost_price": result.holding.cost_price,
+                "buy_dt": result.holding.buy_dt,
+            },
+            client=client,
+        )
+    if not ok:
+        return False, f"持仓写入失败：{msg}"
+    ok, msg = update_free_cash(portfolio_id, result.cash, client=client)
+    if not ok:
+        return False, f"持仓已更新但现金写入失败，请手动核对：{msg}"
+    return True, f"{result.note}；可用现金 {result.cash:,.2f}"
+
+
 def update_free_cash(portfolio_id: str, free_cash: float, client: Client | None = None) -> tuple[bool, str]:
     """更新可用资金。"""
     try:
@@ -419,6 +472,26 @@ def cancel_trade_orders(
     except Exception as e:
         logger.warning("[supabase_portfolio] cancel_trade_orders failed: %s", e)
         return 0
+
+
+def load_recent_trade_orders(portfolio_id: str, *, limit: int = 200) -> list[dict]:
+    """近期工单，用于识别反复发出却没被执行的离场建议。"""
+    if not is_supabase_configured():
+        return []
+    try:
+        client = _get_supabase_admin_client()
+        resp = (
+            client.table(TABLE_TRADE_ORDERS)
+            .select("code,name,action,status,trade_date")
+            .eq("portfolio_id", portfolio_id)
+            .order("trade_date", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return list(resp.data or [])
+    except Exception as e:
+        logger.warning("[supabase_portfolio] load_recent_trade_orders failed: %s", e)
+        return []
 
 
 def upsert_daily_nav(

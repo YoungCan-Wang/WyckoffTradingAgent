@@ -453,6 +453,7 @@ def run_funnel_simulation(
 # ---------------------------------------------------------------------------
 
 from agents.portfolio_tools import portfolio as _portfolio
+from agents.portfolio_tools import record_trade_fill as _record_trade_fill
 from agents.portfolio_tools import update_portfolio as _update_portfolio
 from agents.report_tools import generate_ai_report as _generate_ai_report
 from agents.strategy_tools import generate_strategy_decision as _generate_strategy_decision
@@ -496,6 +497,33 @@ def update_portfolio(
         free_cash=free_cash,
         table=table,
         codes=codes,
+        tool_context=_ctx,
+    )
+
+
+@mcp.tool()
+def record_trade_fill(
+    code: str,
+    side: Literal["buy", "sell"],
+    shares: int,
+    price: float,
+    trade_date: str = "",
+    name: str = "",
+) -> dict:
+    """回填一笔真实成交，按增量更新持仓与现金。
+
+    **调用时机**：用户说"我今天卖了 X 股 Y"、"刚买入 Z"等已经发生的成交时调用。
+    **与 update_portfolio 的区别**：这个按成交算账（摊薄成本、扣费用、算已实现盈亏），
+    update_portfolio 是直接覆盖持仓快照。用户描述的是「成交」就用这个。
+    **危险操作**：会修改持仓与现金，确认股数、价格、方向后再调用。
+    """
+    return _record_trade_fill(
+        code=code,
+        side=side,
+        shares=shares,
+        price=price,
+        trade_date=trade_date,
+        name=name,
         tool_context=_ctx,
     )
 

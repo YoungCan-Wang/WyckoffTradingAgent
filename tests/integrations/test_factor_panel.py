@@ -1,10 +1,30 @@
-"""PIT name history / ST flag correctness for the factor panel path."""
+"""交易日历及 PIT ST 标记的边界。"""
 
 from __future__ import annotations
 
 import pandas as pd
+from integrations.factor_panel import canonicalize_name_intervals, st_flags, trade_dates
 
-from integrations.factor_panel import canonicalize_name_intervals, st_flags
+
+class _Pro:
+    """记录 trade_cal 实际收到的参数；只在无横线格式下返回数据，模仿 tushare 的行为。"""
+
+    def __init__(self) -> None:
+        self.seen: dict[str, str] = {}
+
+    def trade_cal(self, **kwargs) -> pd.DataFrame:
+        self.seen = kwargs
+        if "-" in kwargs["start_date"] or "-" in kwargs["end_date"]:
+            return pd.DataFrame()
+        return pd.DataFrame({"cal_date": ["20260102", "20260105"]})
+
+
+def test_dashed_dates_are_normalised_before_the_calendar_call():
+    pro = _Pro()
+
+    assert trade_dates(pro, "2026-01-01", "2026-01-05") == ["20260102", "20260105"]
+    assert pro.seen["start_date"] == "20260101"
+    assert pro.seen["end_date"] == "20260105"
 
 
 def test_canonicalize_prefers_closed_interval_over_open_twin() -> None:
@@ -22,7 +42,7 @@ def test_canonicalize_prefers_closed_interval_over_open_twin() -> None:
 
 
 def test_st_flags_stop_after_rehab_when_open_and_closed_twins_exist() -> None:
-    """多轮 namechange 并集留下的开区间双胞胎，不得把摘帽后的交易日继续标成 ST。"""
+    """开闭区间双胞胎不得把摘帽后的交易日继续标成 ST。"""
     names = pd.DataFrame(
         [
             {"ts_code": "002122.SZ", "name": "ST天马", "start_date": "20230110", "end_date": None},

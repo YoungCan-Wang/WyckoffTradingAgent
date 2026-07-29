@@ -67,7 +67,12 @@ A 股主漏斗使用本地股票池和行业映射；港股、美股、ETF 的�
 
 工作日 08:20（北京时间）由 Codex Automation 触发 `premarket_risk.yml` 的 `workflow_dispatch`，
 监测 A50 期指和 VIX 并判定四档风险；任一关键输入缺失且现有输入尚未触发硬拦截时，额外进入
-`UNKNOWN` 数据闸门。GitHub Actions 自带的 `schedule` 已停用，Actions 页面仅作为手动补跑入口：
+`UNKNOWN` 数据闸门。Actions 页面可手动补跑。
+
+外部触发器不可靠时另有一条 `schedule` 兜底（UTC 02:20，工作日），带 `--backstop` 幂等短路：
+当日盘前态已落库或当天非交易日就直接退出，不重算也不重复推飞书。它只服务于 Step4——
+免费额度下 `schedule` 实测延迟数小时，早已错过开盘窗口，但 Step4 北京 20:15 才跑，
+迟到无所谓，缺失才会让它降级成 `UNKNOWN` 禁买一整天。
 
 | 档位 | 含义 |
 |------|------|

@@ -26,6 +26,7 @@ def step4_order_config_from_env() -> Step4OrderConfig:
             "STEP4_BUY_BLOCK_REGIMES",
             "RISK_ON,BEAR_REBOUND,PANIC_REPAIR,RISK_OFF,CRASH,BLACK_SWAN",
         ),
+        block_buy_on_stale_exit=_env_bool("STEP4_BLOCK_BUY_ON_STALE_EXIT", True),
         chase_gap_pct_min=gap_min,
         chase_gap_pct_max=max(_env_float("STEP4_CHASE_GAP_PCT_MAX", 5.5), gap_min),
         chase_atr_mult_min=atr_min,

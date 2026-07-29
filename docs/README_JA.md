@@ -202,6 +202,7 @@ Web App：**[wyckoff-analysis.pages.dev](https://wyckoff-analysis.pages.dev/)**
 | `analyze_stock` | ワイコフ診断 / 直近 OHLCV 相場データ / ファンダメンタルズ品質オーバーレイ（mode 切替） |
 | `portfolio` | 保有一覧表示 / 一括ポートフォリオ診断（mode 切替） |
 | `update_portfolio` | 保有の追加/変更/削除、余剰資金設定、追跡記録削除 |
+| `record_trade_fill` | 約定の反映：平均取得単価の再計算、手数料控除、実現損益の算出 |
 | `get_market_overview` | 市場全体の温度感 |
 | `screen_stocks` | 主線ファネルによる全市場スクリーニング（⚡バックグラウンド） |
 | `generate_ai_report` | 3陣営 AI 詳細レポート（⚡バックグラウンド） |
