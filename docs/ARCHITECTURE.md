@@ -791,6 +791,8 @@ Web 个股、持仓和股票对抗分析保存历史时写入 `meta`：输入快
   给出已实现盈亏。`integrations.supabase_portfolio.record_fill` 负责落库，先读后写，需串行调用。
 - 入口：CLI `wyckoff portfolio fill`、MCP/Agent 工具 `record_trade_fill`。
   `portfolio add` 仍是覆盖式录快照，两者语义不同，不要混用。
+- 持仓写入后若现金写入失败，结果会显式标记 `position_committed`，Agent 不得因 JWT 文本重放整笔成交；
+  操作者必须先核对并修正现金，再决定是否重新回填。当前两次写入不具备数据库事务性。
 - `core/execution_audit.py` 检测「仍在持仓、却连续多个运行日被建议离场」的标的，
   结果渲染在 Step4 工单顶部。连续性按 OMS 实际运行日计算，漏跑一天不会把告警清零。
 - 检测结果经两道收窄后喂给订单引擎作为**买入闸门**（`STEP4_BLOCK_BUY_ON_STALE_EXIT`，默认开）：
