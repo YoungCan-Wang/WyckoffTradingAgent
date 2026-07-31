@@ -462,6 +462,8 @@ def cancel_trade_orders(
     portfolio_id: str,
     trade_date: str,
     exclude_run_id: str | None = None,
+    only_run_id: str | None = None,
+    raise_on_error: bool = False,
 ) -> int:
     if not is_supabase_configured():
         return 0
@@ -475,7 +477,9 @@ def cancel_trade_orders(
             .eq("trade_date", trade_date)
             .limit(500)
         )
-        if exclude_run_id:
+        if only_run_id:
+            query = query.eq("run_id", only_run_id)
+        elif exclude_run_id:
             query = query.neq("run_id", exclude_run_id)
         rows = query.execute().data or []
         active_ids = [row["id"] for row in rows if _is_active_trade_order_status(row.get("status"))]
@@ -484,6 +488,8 @@ def cancel_trade_orders(
         return len(active_ids)
     except Exception as e:
         logger.warning("[supabase_portfolio] cancel_trade_orders failed: %s", e)
+        if raise_on_error:
+            raise
         return 0
 
 

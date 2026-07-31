@@ -46,7 +46,7 @@ from workflows.step4_payload import (
     prepare_step4_payload_context as _prepare_step4_payload_context,
 )
 from workflows.step4_portfolio import load_step4_portfolio_state
-from workflows.step4_results import prepare_step4_result_record, save_step4_orders_and_nav
+from workflows.step4_results import prepare_step4_result_record, rollback_step4_run, save_step4_orders_and_nav
 from workflows.step4_runtime_config import step4_runtime_config_from_env
 from workflows.step4_ticket import render_trade_ticket
 
@@ -282,7 +282,7 @@ def _send_and_persist_step4_results(
         atr_period=options.runtime_config.atr_period,
         stale_exits=stale_exits,
     )
-    persisted = save_step4_orders_and_nav(
+    persistence = save_step4_orders_and_nav(
         options=options,
         context=context,
         run_id=result_record.run_id,
@@ -290,10 +290,21 @@ def _send_and_persist_step4_results(
         tickets=tickets,
         ticket_rows=result_record.ticket_rows,
     )
-    if not persisted:
+    if not persistence.ok:
+        if persistence.orders_written and not rollback_step4_run(
+            portfolio_id=options.portfolio_id,
+            trade_date=context.trade_date,
+            run_id=result_record.run_id,
+        ):
+            return False, "persistence_failed_rollback_failed"
         return False, "persistence_failed"
     if not _send_trade_ticket(report, options.tg_bot_token, options.tg_chat_id):
-        return False, "notification_failed"
+        logger.error(
+            "交易工单通知失败，已保留落库订单且禁止重跑 OMS: run_id=%s, portfolio_id=%s",
+            result_record.run_id,
+            options.portfolio_id,
+        )
+        return False, "notification_failed_orders_preserved"
     logger.info(
         "交易工单发送成功: decisions=%s, tickets=%s, model=%s, portfolio_id=%s",
         len(decisions),
