@@ -84,6 +84,7 @@ export type { AttributionExecutionImpactInput, AttributionOperatorAction, Attrib
 export { formatPolicyWeightMetaText, formatStrategyPolicyText, policyExecutionModeLabel } from './policy-weight-meta'
 export type { PolicyWeightMetaInput } from './policy-weight-meta'
 export * from './chat-tools'
+export * from './chat-message-history'
 export {
   ANALYSIS_CONTEXT_PACK_SCHEMA,
   CONTEXT_EVIDENCE_SCHEMA,

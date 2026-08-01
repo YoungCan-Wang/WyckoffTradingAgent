@@ -22,6 +22,7 @@ import {
   selectMarketWatchCodes,
   ALLOWED_PROXY_TARGET_ORIGINS,
   normalizeGeminiStream,
+  removeSupersededToolApprovals,
   PROVIDER_BASE_URLS,
   PROVIDER_DEFAULT_MODELS,
   isSafeProviderBaseUrl,
@@ -420,7 +421,8 @@ async function runChatAttempt(args: ChatResilienceArgs, config: ChatModelConfig,
   try {
     const provider = createProvider(config)
     const tools = buildTools(args, config, provider.chat(config.model))
-    let modelMessages = await convertToModelMessages(args.messages.slice(-40), {
+    const normalizedMessages = removeSupersededToolApprovals(args.messages.slice(-40))
+    let modelMessages = await convertToModelMessages(normalizedMessages, {
       tools,
       ignoreIncompleteToolCalls: true,
     })

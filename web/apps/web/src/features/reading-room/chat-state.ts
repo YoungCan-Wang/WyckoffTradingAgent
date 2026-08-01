@@ -27,7 +27,7 @@ import {
   type AgentRunRecord,
   type SandboxRunTool,
 } from './agent-runs'
-import type { ReadingRoomConversations } from './conversations'
+import { replaceConversationToolOutput, type ReadingRoomConversations } from './conversations'
 import { scrollToMessage } from './run-records'
 import type { ChatConfig, ChatRunEvent, ChatRunStatus, MarketWatchSnapshot, QueuedMessage, ReadingRoomTab, StageProgressStatus, WatchItem } from './types'
 import { writeBooleanStorage } from './utils'
@@ -252,14 +252,12 @@ export function useAgentRunPolling(
 
   useEffect(() => {
     for (const tool of tools) {
-      const record = records[tool.runId]
-      if (!record || !isAgentRunTerminal(record) || isAgentRunTerminal(tool.record)) continue
-      // Always persist into the owning conversation first. If we only call addToolOutput while
-      // the conversation is active, a mid-flight switch drops the result before localStorage
-      // is updated, and Redis TTL expiry makes recovery impossible.
+      const record = records[tool.runId] || tool.record
+      // Normalize the approval/output lifecycle as soon as the queued result exists, then
+      // keep replacing that same output as polling advances it to a terminal state.
       conversations.replaceToolOutput(tool.conversationId, tool.toolCallId, record)
       if (tool.conversationId === conversations.activeId) {
-        void chat.addToolOutput({ tool: 'run_python_research', toolCallId: tool.toolCallId, output: record })
+        chat.setMessages((messages) => replaceConversationToolOutput(messages, tool.toolCallId, record))
       }
     }
   }, [chat, conversations, records, tools])
