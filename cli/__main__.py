@@ -532,9 +532,9 @@ def _cmd_portfolio_fill(args):
     except ValueError as exc:
         print(f"✗ {exc}")
         sys.exit(1)
-    ok, msg = record_fill(pid, fill, client=client)
-    print(f"{'✓' if ok else '✗'} {msg}")
-    if not ok:
+    result = record_fill(pid, fill, client=client)
+    print(f"{'✓' if result.ok else '✗'} {result.message}")
+    if not result.ok:
         sys.exit(1)
 
 

@@ -17,6 +17,7 @@ from agents.tool_context import (
     get_user_client,
     get_user_id,
     has_cloud,
+    is_auth_failure_result,
     with_auth_retry,
 )
 
@@ -105,19 +106,32 @@ def record_trade_fill(
     portfolio_id = _portfolio_id(tool_context)
     if not has_cloud(tool_context):
         return {"error": "成交回填需要登录云端账户"}
-    from integrations.supabase_portfolio import record_fill
-
-    ok, msg = with_auth_retry(
-        tool_context,
-        record_fill,
-        portfolio_id,
-        fill,
-        client=get_user_client(tool_context),
-    )
-    if not ok:
-        return {"error": msg}
+    result = _record_fill_with_safe_auth_retry(portfolio_id, fill, tool_context)
+    if not result.ok:
+        return {"error": result.message}
     _sync_remote_portfolio_to_local(portfolio_id, tool_context)
-    return {"message": msg}
+    return {"message": result.message}
+
+
+def _record_fill_with_safe_auth_retry(portfolio_id: str, fill: Any, tool_context: ToolContext | None):
+    """Auth-retry only when the fill did not already mutate positions.
+
+    `record_fill` writes position then cash. If cash fails with a JWT-looking error,
+    blanket `with_auth_retry` would replay the buy/sell against the already-updated
+    holding and corrupt shares/cash.
+    """
+    from integrations.supabase_portfolio import FillWriteResult, record_fill
+
+    def _call(*, client):
+        return record_fill(portfolio_id, fill, client=client)
+
+    result = _call(client=get_user_client(tool_context))
+    if not isinstance(result, FillWriteResult):
+        return FillWriteResult(False, "成交回填失败")
+    if result.ok or result.position_committed or not is_auth_failure_result(result):
+        return result
+    retried = with_auth_retry(tool_context, _call, client=get_user_client(tool_context))
+    return retried if isinstance(retried, FillWriteResult) else result
 
 
 def _portfolio_id(tool_context: ToolContext | None) -> str:

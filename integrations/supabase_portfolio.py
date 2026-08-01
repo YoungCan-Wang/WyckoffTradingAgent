@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -29,6 +30,17 @@ from integrations.supabase_base import is_admin_configured as is_supabase_config
 from integrations.supabase_base import require_server_write_context
 
 logger = logging.getLogger(__name__)
+
+# Partial commit after position write. Must not embed upstream auth/JWT text — callers
+# that auth-retry on keyword match would otherwise re-apply the same fill.
+PARTIAL_FILL_WRITE_MSG = "持仓已更新但现金写入失败，请手动核对可用现金，勿重复回填同一笔成交"
+
+
+@dataclass(frozen=True)
+class FillWriteResult:
+    ok: bool
+    message: str
+    position_committed: bool = False
 
 
 def load_user_settings_admin(user_id: str) -> dict[str, Any] | None:
@@ -332,7 +344,7 @@ def delete_position(portfolio_id: str, code: str, client: Client | None = None) 
         return False, str(e)
 
 
-def record_fill(portfolio_id: str, fill: Fill, client: Client | None = None) -> tuple[bool, str]:
+def record_fill(portfolio_id: str, fill: Fill, client: Client | None = None) -> FillWriteResult:
     """把一笔真实成交写回持仓与现金。
 
     先读当前状态再算，所以必须串行调用；同一账户并发回填会互相覆盖。人工录入的
@@ -342,7 +354,7 @@ def record_fill(portfolio_id: str, fill: Fill, client: Client | None = None) -> 
         client = _resolve_write_client(client, "record trade fill")
         state = load_portfolio_state(portfolio_id, client=client)
         if state is None:
-            return False, f"未找到组合 {portfolio_id}"
+            return FillWriteResult(False, f"未找到组合 {portfolio_id}")
         row = next((p for p in state["positions"] if str(p.get("code", "")).strip() == fill.code), None)
         holding = (
             Holding(
@@ -357,10 +369,10 @@ def record_fill(portfolio_id: str, fill: Fill, client: Client | None = None) -> 
         )
         result = apply_fill(holding, float(state["free_cash"]), fill)
     except ValueError as exc:
-        return False, str(exc)
+        return FillWriteResult(False, str(exc))
     except Exception as exc:
         logger.warning("[supabase_portfolio] record_fill failed: %s", exc)
-        return False, str(exc)
+        return FillWriteResult(False, str(exc))
 
     if result.holding is None:
         ok, msg = delete_position(portfolio_id, fill.code, client=client)
@@ -377,11 +389,12 @@ def record_fill(portfolio_id: str, fill: Fill, client: Client | None = None) -> 
             client=client,
         )
     if not ok:
-        return False, f"持仓写入失败：{msg}"
+        return FillWriteResult(False, f"持仓写入失败：{msg}")
     ok, msg = update_free_cash(portfolio_id, result.cash, client=client)
     if not ok:
-        return False, f"持仓已更新但现金写入失败，请手动核对：{msg}"
-    return True, f"{result.note}；可用现金 {result.cash:,.2f}"
+        logger.warning("[supabase_portfolio] cash write failed after position update: %s", msg)
+        return FillWriteResult(False, PARTIAL_FILL_WRITE_MSG, position_committed=True)
+    return FillWriteResult(True, f"{result.note}；可用现金 {result.cash:,.2f}", position_committed=True)
 
 
 def update_free_cash(portfolio_id: str, free_cash: float, client: Client | None = None) -> tuple[bool, str]:

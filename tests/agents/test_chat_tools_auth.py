@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from agents import tool_context
+from integrations.supabase_portfolio import FillWriteResult
 
 
 class DummyToolContext:
@@ -60,3 +61,11 @@ def test_with_auth_retry_retries_tuple_auth_failure(monkeypatch):
 
     assert tool_context.with_auth_retry(ctx, fake_update, client=object()) == (True, "ok")
     assert calls[-1] is new_client
+
+
+def test_auth_failure_result_supports_structured_fill_result():
+    assert tool_context.is_auth_failure_result(FillWriteResult(False, "JWT expired")) is True
+    assert (
+        tool_context.is_auth_failure_result(FillWriteResult(False, "持仓已更新但现金写入失败", position_committed=True))
+        is False
+    )

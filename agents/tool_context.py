@@ -170,6 +170,10 @@ def with_auth_retry(tool_context: ToolContext | None, fn, *args, **kwargs):
     return fn(*args, **kwargs)
 
 
+def is_auth_failure_result(result: Any) -> bool:
+    return bool(_auth_failure_message(result))
+
+
 def close_cached_clients() -> None:
     from integrations.supabase_base import close_client
 
@@ -252,6 +256,9 @@ def _is_auth_error(e: Exception) -> bool:
 
 
 def _auth_failure_message(result: Any) -> str:
+    if getattr(result, "ok", None) is False and hasattr(result, "message"):
+        msg = str(result.message or "")
+        return msg if _is_auth_error(Exception(msg)) else ""
     if isinstance(result, tuple) and len(result) >= 2 and result[0] is False:
         msg = str(result[1] or "")
         return msg if _is_auth_error(Exception(msg)) else ""
