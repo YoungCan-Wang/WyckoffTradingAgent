@@ -67,6 +67,7 @@ from workflows.backtest_strategy_variants import (
     normalize_strategy_variant,
     strategy_variant_entry_policy,
     strategy_variant_overrides,
+    strategy_variants_share_signal_ledger,
 )
 from workflows.candidate_policy_config import candidate_policy_config_from_env
 from workflows.dynamic_policy_config import dynamic_policy_config_from_env
@@ -176,6 +177,9 @@ def _validate_shared_signal_suite(requests: list[BacktestWorkflowRequest]) -> No
     request_key = _shared_request_key(first_request)
     if any(_shared_request_key(request) != request_key for request in requests[1:]):
         raise ValueError("复用信号台账的回测组合只能改变持有期和退出参数")
+    variants = [request.strategy_variant for request in requests]
+    if not strategy_variants_share_signal_ledger(variants):
+        raise ValueError("复用信号台账的策略组只能改变入场仓位权重")
 
 
 def _shared_request_key(request: BacktestWorkflowRequest) -> tuple:
@@ -190,6 +194,7 @@ def _shared_request_key(request: BacktestWorkflowRequest) -> tuple:
         "atr_period",
         "atr_multiplier",
         "atr_hard_stop_pct",
+        "strategy_variant",
     }
     return tuple((name, value) for name, value in vars(request).items() if name not in ignored)
 

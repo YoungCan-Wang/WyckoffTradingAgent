@@ -3,6 +3,7 @@ from workflows.backtest_strategy_variants import (
     normalize_strategy_variant,
     strategy_variant_entry_policy,
     strategy_variant_overrides,
+    strategy_variants_share_signal_ledger,
 )
 
 
@@ -26,6 +27,8 @@ def test_strategy_variants_isolate_each_research_switch() -> None:
     assert strategy_variant_entry_policy("I").calibrate_confirmed_score is True
     assert strategy_variant_entry_policy("M").entry_weight_multipliers
     assert strategy_variant_entry_policy("P").entry_weight_multipliers[0] == ("NEUTRAL", "spring", 0.25)
+    assert strategy_variants_share_signal_ledger(["A", "M", "P"]) is True
+    assert strategy_variants_share_signal_ledger(["A", "F"]) is False
 
 
 def test_live_variant_preserves_production_configuration() -> None:

@@ -18,6 +18,7 @@ from workflows.backtest_artifacts import (
 )
 from workflows.backtest_cli import parse_hold_days_list
 from workflows.backtest_defaults import FUNNEL_AI_SELECTION_MODE
+from workflows.backtest_strategy_variants import normalize_strategy_variant
 from workflows.backtest_trigger_matrix import (
     SELECTION_PARAM,
     TriggerGrid,
@@ -45,6 +46,9 @@ def run_backtest_runner(args, progress=None) -> int:
     grid_cells = parse_grid_cells(getattr(args, "grid_cells", ""))
     if grid_cells:
         return _run_grid_suite(args, start_dt, end_dt, out_dir, grid_cells, progress)
+    strategy_variants = parse_strategy_variants(getattr(args, "strategy_variants", ""))
+    if strategy_variants:
+        return _run_strategy_suite(args, start_dt, end_dt, out_dir, strategy_variants, progress)
     hold_days_list = _hold_days_list(args)
 
     suite_rows: list[dict] = []
@@ -83,6 +87,15 @@ class GridCell:
     trailing_stop: float
 
 
+def parse_strategy_variants(raw: str) -> list[str]:
+    variants = list(
+        dict.fromkeys(normalize_strategy_variant(item) for item in str(raw or "").split(",") if item.strip())
+    )
+    if len(variants) == 1:
+        raise ValueError("strategy_variants 至少需要两个策略组")
+    return variants
+
+
 def parse_grid_cells(raw: str) -> list[GridCell]:
     cells: list[GridCell] = []
     for item in str(raw or "").split(","):
@@ -106,6 +119,18 @@ def _run_grid_suite(args, start_dt, end_dt, out_dir: Path, cells: list[GridCell]
         cell_dir = out_dir / _grid_cell_dir(getattr(args, "grid_prefix", "backtest-grid"), cell)
         cell_dir.mkdir(parents=True, exist_ok=True)
         _write_result(item, start_dt, end_dt, cell_dir, cell.hold_days, trades_df, summary)
+    return 0
+
+
+def _run_strategy_suite(args, start_dt, end_dt, out_dir: Path, variants: list[str], progress) -> int:
+    variant_args = [Namespace(**{**vars(args), "strategy_variant": variant}) for variant in variants]
+    requests = [request_from_args(item, start_dt, end_dt, item.hold_days) for item in variant_args]
+    results = run_backtest_request_suite(requests, progress=progress)
+    prefix = str(getattr(args, "strategy_prefix", "backtest-strategy"))
+    for item, variant, (trades_df, summary) in zip(variant_args, variants, results, strict=True):
+        variant_dir = out_dir / f"{prefix}-{variant}"
+        variant_dir.mkdir(parents=True, exist_ok=True)
+        _write_result(item, start_dt, end_dt, variant_dir, item.hold_days, trades_df, summary)
     return 0
 
 

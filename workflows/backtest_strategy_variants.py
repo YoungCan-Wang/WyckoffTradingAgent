@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from core.a_share_entry_research import AShareEntryResearchPolicy
 
 VARIANT_LABELS = {
@@ -96,3 +98,16 @@ def strategy_variant_label(raw: str) -> str:
 
 def strategy_variant_entry_policy(raw: str) -> AShareEntryResearchPolicy:
     return _ENTRY_POLICIES.get(normalize_strategy_variant(raw), AShareEntryResearchPolicy())
+
+
+def strategy_variants_share_signal_ledger(raw_variants: list[str]) -> bool:
+    variants = [normalize_strategy_variant(raw) for raw in raw_variants]
+    if not variants:
+        return False
+    first_overrides = strategy_variant_overrides(variants[0])
+    first_policy = replace(strategy_variant_entry_policy(variants[0]), entry_weight_multipliers=())
+    return all(
+        strategy_variant_overrides(variant) == first_overrides
+        and replace(strategy_variant_entry_policy(variant), entry_weight_multipliers=()) == first_policy
+        for variant in variants[1:]
+    )
