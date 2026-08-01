@@ -307,6 +307,7 @@ def _new_position(
         "score": _row_score(row),
         "track": str(row.get("track", "") or ""),
         "trigger": str(row.get("trigger", "") or ""),
+        "regime": str(row.get("regime", "") or ""),
         "entry_weight_multiplier": _row_entry_weight_multiplier(row),
         "exit_reason": str(row.get("exit_reason", "") or ""),
         "buy_gross": buy_gross,

@@ -75,12 +75,14 @@ def test_cash_portfolio_preserves_trade_exit_reason() -> None:
             "entry_close": 10.0,
             "exit_close": 11.8,
             "exit_reason": "take_profit",
+            "regime": "NEUTRAL",
         }
     ]
 
     closed, _nav, _summary = simulate_cash_portfolio(pd.DataFrame(rows), CashPortfolioConfig(initial_cash=100_000))
 
     assert closed.iloc[0]["exit_reason"] == "take_profit"
+    assert closed.iloc[0]["regime"] == "NEUTRAL"
 
 
 def test_cash_portfolio_applies_research_entry_weight_multiplier() -> None:
