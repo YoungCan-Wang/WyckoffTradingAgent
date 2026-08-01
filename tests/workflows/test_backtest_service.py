@@ -176,10 +176,16 @@ def test_validate_shared_signal_suite_allows_weight_only_strategy_variants() -> 
     backtest._validate_shared_signal_suite(requests)
 
 
-def test_validate_shared_signal_suite_rejects_signal_changing_strategy_variants() -> None:
+def test_validate_shared_signal_suite_allows_no_backfill_replay_gates() -> None:
     import workflows.backtest as backtest
 
-    with pytest.raises(ValueError, match="只能改变入场仓位权重"):
+    backtest._validate_shared_signal_suite([_base_request(strategy_variant="A"), _base_request(strategy_variant="F")])
+
+
+def test_validate_shared_signal_suite_rejects_signal_build_changes() -> None:
+    import workflows.backtest as backtest
+
+    with pytest.raises(ValueError, match="只能改变重放阶段"):
         backtest._validate_shared_signal_suite(
-            [_base_request(strategy_variant="A"), _base_request(strategy_variant="F")]
+            [_base_request(strategy_variant="A"), _base_request(strategy_variant="H")]
         )

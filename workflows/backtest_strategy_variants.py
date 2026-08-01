@@ -19,9 +19,13 @@ VARIANT_LABELS = {
     "I": "A股实证：按历史命中先验重排确认信号",
     "M": "A股实证：弱水温信号缩仓",
     "P": "A股实证：M + NEUTRAL Spring 缩仓至 25%",
+    "Q": "P + 禁止 NEUTRAL Spring（不补位）",
+    "R": "P + 禁止 LPS（不补位）",
+    "S": "P + 禁止 NEUTRAL EVR（不补位）",
+    "T": "P + 禁止 CAUTION SOS（不补位）",
 }
 
-DEFAULT_COMPARISON_VARIANTS = ("A", "M", "P")
+DEFAULT_COMPARISON_VARIANTS = ("P", "Q", "R", "S", "T")
 
 _ALL_SWITCHES = {
     "dist_upthrust_enabled": False,
@@ -47,6 +51,10 @@ _VARIANT_SWITCHES = {
     "I": {},
     "M": {},
     "P": {},
+    "Q": {},
+    "R": {},
+    "S": {},
+    "T": {},
 }
 
 _WEAK_REGIME_WEIGHTS = (
@@ -74,6 +82,22 @@ _ENTRY_POLICIES = {
     "I": AShareEntryResearchPolicy(calibrate_confirmed_score=True),
     "M": AShareEntryResearchPolicy(entry_weight_multipliers=_WEAK_REGIME_WEIGHTS),
     "P": AShareEntryResearchPolicy(entry_weight_multipliers=_LOWER_NEUTRAL_SPRING_WEIGHTS),
+    "Q": AShareEntryResearchPolicy(
+        blocked_confirmed_regime_signals=(("NEUTRAL", "spring"),),
+        entry_weight_multipliers=_LOWER_NEUTRAL_SPRING_WEIGHTS,
+    ),
+    "R": AShareEntryResearchPolicy(
+        blocked_confirmed_signals=("lps",),
+        entry_weight_multipliers=_LOWER_NEUTRAL_SPRING_WEIGHTS,
+    ),
+    "S": AShareEntryResearchPolicy(
+        blocked_confirmed_regime_signals=(("NEUTRAL", "evr"),),
+        entry_weight_multipliers=_LOWER_NEUTRAL_SPRING_WEIGHTS,
+    ),
+    "T": AShareEntryResearchPolicy(
+        blocked_confirmed_regime_signals=(("CAUTION", "sos"),),
+        entry_weight_multipliers=_LOWER_NEUTRAL_SPRING_WEIGHTS,
+    ),
 }
 
 
@@ -81,7 +105,7 @@ def normalize_strategy_variant(raw: str) -> str:
     value = str(raw or "live").strip()
     normalized = value.upper() if value.lower() != "live" else "live"
     if normalized not in VARIANT_LABELS:
-        raise ValueError("strategy_variant 必须是 live / A / B / C / D / E / F / G / H / I / M / P")
+        raise ValueError("strategy_variant 必须是 live 或已定义的 A-T 研究组")
     return normalized
 
 
@@ -105,9 +129,18 @@ def strategy_variants_share_signal_ledger(raw_variants: list[str]) -> bool:
     if not variants:
         return False
     first_overrides = strategy_variant_overrides(variants[0])
-    first_policy = replace(strategy_variant_entry_policy(variants[0]), entry_weight_multipliers=())
+    first_policy = _signal_build_policy(strategy_variant_entry_policy(variants[0]))
     return all(
         strategy_variant_overrides(variant) == first_overrides
-        and replace(strategy_variant_entry_policy(variant), entry_weight_multipliers=()) == first_policy
+        and _signal_build_policy(strategy_variant_entry_policy(variant)) == first_policy
         for variant in variants[1:]
+    )
+
+
+def _signal_build_policy(policy: AShareEntryResearchPolicy) -> AShareEntryResearchPolicy:
+    return replace(
+        policy,
+        blocked_confirmed_signals=(),
+        blocked_confirmed_regime_signals=(),
+        entry_weight_multipliers=(),
     )

@@ -47,13 +47,13 @@ def test_strategy_comparison_builds_relative_and_walk_forward_results(tmp_path: 
     rows = load_strategy_comparison_rows(tmp_path)
     report = build_strategy_comparison(rows)
 
-    assert len(rows) == 15
+    assert len(rows) == 25
     assert report["status"] == "ready"
-    assert report["evaluations"]["M"]["reference_variant"] == "A"
-    assert report["evaluations"]["P"]["reference_variant"] == "M"
-    assert report["evaluations"]["P"]["status"] == "pass"
-    assert report["evaluations"]["P"]["exposure_periods"] == 5
-    assert report["evaluations"]["P"]["changed_trades"] == 10
+    assert report["baseline"] == "P"
+    assert report["evaluations"]["Q"]["reference_variant"] == "P"
+    assert report["evaluations"]["Q"]["status"] == "pass"
+    assert report["evaluations"]["Q"]["exposure_periods"] == 5
+    assert report["evaluations"]["Q"]["changed_trades"] == 10
     assert len(report["walk_forward"]["windows"]) == 4
     assert "相对参照组结论" in render_strategy_comparison(report)
 
@@ -68,9 +68,11 @@ def test_strategy_comparison_requires_every_period_variant_cell(tmp_path: Path) 
 
     assert report["status"] == "incomplete"
     assert set(report["missing_cells"]) == {
-        "volatile_2024/A",
-        "volatile_2024/M",
         "volatile_2024/P",
+        "volatile_2024/Q",
+        "volatile_2024/R",
+        "volatile_2024/S",
+        "volatile_2024/T",
     }
 
 

@@ -81,7 +81,7 @@ def test_run_backtest_runner_reuses_signal_suite(monkeypatch, tmp_path) -> None:
     assert output_dirs[1].endswith("backtest-grid-recent_6m-h10-sl7-tp18-tr0")
 
 
-def test_run_backtest_runner_reuses_signal_ledger_across_weight_variants(monkeypatch, tmp_path) -> None:
+def test_run_backtest_runner_reuses_signal_ledger_across_replay_gate_variants(monkeypatch, tmp_path) -> None:
     import workflows.backtest_runner as runner
 
     requests = []
@@ -106,18 +106,20 @@ def test_run_backtest_runner_reuses_signal_ledger_across_weight_variants(monkeyp
     result = run_backtest_runner(
         _args(
             tmp_path,
-            strategy_variants="A,M,P",
+            strategy_variants="P,Q,R,S,T",
             strategy_prefix="backtest-strategy-recent_6m",
         ),
         progress=lambda *_args, **_kwargs: None,
     )
 
     assert result == 0
-    assert [request.strategy_variant for request in requests] == ["A", "M", "P"]
+    assert [request.strategy_variant for request in requests] == ["P", "Q", "R", "S", "T"]
     assert [Path(path).name for path in output_dirs] == [
-        "backtest-strategy-recent_6m-A",
-        "backtest-strategy-recent_6m-M",
         "backtest-strategy-recent_6m-P",
+        "backtest-strategy-recent_6m-Q",
+        "backtest-strategy-recent_6m-R",
+        "backtest-strategy-recent_6m-S",
+        "backtest-strategy-recent_6m-T",
     ]
 
 

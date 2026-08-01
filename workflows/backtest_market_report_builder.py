@@ -15,7 +15,7 @@ from core.backtest_grid_ranking import (
     weak_period_guardrails,
 )
 from workflows.backtest_market_report_artifacts import GridCell, read_trades
-from workflows.backtest_parameter_stability import build_parameter_stability
+from workflows.backtest_parameter_stability import REQUIRED_PERIODS, build_parameter_stability
 from workflows.backtest_walk_forward import build_walk_forward_validation
 
 REGIME_LABELS = {
@@ -36,10 +36,20 @@ PERIOD_LABELS = {
     "recent_6m": "最近6个月",
     "bull_2020": "牛市 2020-07~2021-02",
     "bear_2022": "熊市 2021-12~2022-10",
+    "sideways_2023": "震荡市 2023",
+    "volatile_2024": "高波动市 2024",
     "custom": "自定义周期",
 }
 
-PERIOD_ORDER = {"recent_2m": 0, "recent_6m": 1, "bull_2020": 2, "bear_2022": 3, "custom": 4}
+PERIOD_ORDER = {
+    "recent_2m": 0,
+    "recent_6m": 1,
+    "bull_2020": 2,
+    "bear_2022": 3,
+    "sideways_2023": 4,
+    "volatile_2024": 5,
+    "custom": 6,
+}
 STYLE_ORDER = {
     "slot_equal_4": 0,
     "probe_add": 1,
@@ -578,13 +588,19 @@ def _confirmation_weak_periods(cells: list[GridCell]) -> list[dict[str, object]]
     ]
 
 
-def _confirmation_status(score: RobustParamScore | None, weak_periods: list[dict[str, object]]) -> str:
+def _confirmation_status(
+    score: RobustParamScore | None,
+    weak_periods: list[dict[str, object]],
+    missing_periods: set[str],
+) -> str:
     if score is None:
         return "review"
     if weak_periods:
         return "fail"
+    if missing_periods:
+        return "review"
     if (
-        score.period_count >= 3
+        score.period_count >= len(REQUIRED_PERIODS)
         and score.positive_periods == score.period_count
         and score.min_cash_return is not None
         and score.min_cash_return > 0
@@ -599,6 +615,7 @@ def _confirmation_summary(
     status: str,
     score: RobustParamScore | None,
     weak_periods: list[dict[str, object]],
+    missing_periods: set[str],
     readiness_check: dict[str, object] | None = None,
 ) -> str:
     if score is None:
@@ -612,6 +629,8 @@ def _confirmation_summary(
     if status == "fail":
         labels = "、".join(str(item["period_label"]) for item in weak_periods) or "跨周期"
         return f"回测确认未通过：{labels} 未出现正现金收益组合，不能作为 dynamic=on 晋级依据。"
+    if missing_periods:
+        return f"回测结果仍需人工复核：缺少 {', '.join(sorted(missing_periods))} 周期证据。"
     if readiness_check and not readiness_check.get("ready"):
         return f"回测结果仍需人工复核：{readiness_check.get('reason') or '缺少生产对齐证据'}。"
     return f"回测结果仍需人工复核：尚未满足跨周期全正，正收益周期 {score.positive_periods}/{score.period_count}。"
@@ -662,9 +681,10 @@ def build_confirmation(cells: list[GridCell], run_url: str = "", generated_at: s
     robust_ranked = _rank_robust_params(cells)
     robust_best = robust_ranked[0] if robust_ranked else None
     weak_periods = _confirmation_weak_periods(cells)
+    missing_periods = REQUIRED_PERIODS - {cell.period_key for cell in cells}
     policy_check = _confirmation_policy_check(cells)
     entry_price_check = _confirmation_entry_price_check(cells)
-    status = _confirmation_status(robust_best, weak_periods)
+    status = _confirmation_status(robust_best, weak_periods, missing_periods)
     if status == "pass" and (not policy_check["ready"] or not entry_price_check["ready"]):
         status = "review"
     readiness_check = policy_check if not policy_check["ready"] else entry_price_check
@@ -675,7 +695,7 @@ def build_confirmation(cells: list[GridCell], run_url: str = "", generated_at: s
         "report_date": generated.split()[0],
         "generated_at": generated,
         "run_url": run_url,
-        "summary": _confirmation_summary(status, robust_best, weak_periods, readiness_check),
+        "summary": _confirmation_summary(status, robust_best, weak_periods, missing_periods, readiness_check),
         "cell_count": len(cells),
         "period_count": robust_best.period_count if robust_best else 0,
         "positive_periods": robust_best.positive_periods if robust_best else 0,
@@ -693,6 +713,8 @@ def build_confirmation(cells: list[GridCell], run_url: str = "", generated_at: s
         "entry_price_reason": str(entry_price_check["reason"]),
         "entry_price_values": entry_price_check["modes"],
         "weak_periods": weak_periods,
+        "required_periods": sorted(REQUIRED_PERIODS),
+        "missing_periods": sorted(missing_periods),
     }
 
 

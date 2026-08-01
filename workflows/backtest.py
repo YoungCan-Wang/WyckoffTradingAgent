@@ -179,7 +179,7 @@ def _validate_shared_signal_suite(requests: list[BacktestWorkflowRequest]) -> No
         raise ValueError("复用信号台账的回测组合只能改变持有期和退出参数")
     variants = [request.strategy_variant for request in requests]
     if not strategy_variants_share_signal_ledger(variants):
-        raise ValueError("复用信号台账的策略组只能改变入场仓位权重")
+        raise ValueError("复用信号台账的策略组只能改变重放阶段的入场门控或仓位权重")
 
 
 def _shared_request_key(request: BacktestWorkflowRequest) -> tuple:

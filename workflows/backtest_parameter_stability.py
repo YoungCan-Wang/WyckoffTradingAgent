@@ -8,7 +8,7 @@ from core.backtest_grid_ranking import RobustParamScore, rank_robust_params
 from workflows.backtest_market_report_artifacts import GridCell
 
 ParamKey = tuple[str, int, int, int, int]
-REQUIRED_PERIODS = frozenset({"recent_6m", "bull_2020", "bear_2022"})
+REQUIRED_PERIODS = frozenset({"recent_6m", "bull_2020", "bear_2022", "sideways_2023", "volatile_2024"})
 
 
 def build_parameter_stability(cells: list[GridCell], *, run_url: str = "", generated_at: str = "") -> dict[str, Any]:
@@ -34,7 +34,7 @@ def build_parameter_stability(cells: list[GridCell], *, run_url: str = "", gener
             "minimum_neighbors": 2,
             "minimum_stable_ratio": 0.5,
             "required_periods": sorted(REQUIRED_PERIODS),
-            "stable_definition": "相邻参数完整覆盖近期、牛市、熊市且现金收益全部为正",
+            "stable_definition": "相邻参数完整覆盖近期、牛市、熊市、震荡市和高波动市且现金收益全部为正",
         },
     }
 
@@ -63,7 +63,14 @@ def _representative(cells: list[GridCell]) -> GridCell:
 
 
 def _period_rank(period: str) -> int:
-    order = {"recent_2m": 0, "recent_6m": 1, "bull_2020": 2, "bear_2022": 3}
+    order = {
+        "recent_2m": 0,
+        "recent_6m": 1,
+        "bull_2020": 2,
+        "bear_2022": 3,
+        "sideways_2023": 4,
+        "volatile_2024": 5,
+    }
     return order.get(period, 9)
 
 

@@ -13,6 +13,8 @@ on:
           - "recent_6m"
           - "bull_2020"
           - "bear_2022"
+          - "sideways_2023"
+          - "volatile_2024"
           - "custom"
         default: "all_defined"
       start:
@@ -207,7 +209,7 @@ jobs:
     needs: fetch
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 5
       matrix:
         include:
           - period_key: recent_2m
@@ -217,6 +219,10 @@ jobs:
           - period_key: bull_2020
             grid_cells: "5:0:0:0,10:0:0:0,10:-7:0:0,10:-7:18:0,10:-8:0:0,10:-8:18:0,15:-7:0:0,15:-7:18:0,15:-8:0:0,15:-8:18:0"
           - period_key: bear_2022
+            grid_cells: "5:0:0:0,10:0:0:0,10:-7:0:0,10:-7:18:0,10:-8:0:0,10:-8:18:0,15:-7:0:0,15:-7:18:0,15:-8:0:0,15:-8:18:0"
+          - period_key: sideways_2023
+            grid_cells: "5:0:0:0,10:0:0:0,10:-7:0:0,10:-7:18:0,10:-8:0:0,10:-8:18:0,15:-7:0:0,15:-7:18:0,15:-8:0:0,15:-8:18:0"
+          - period_key: volatile_2024
             grid_cells: "5:0:0:0,10:0:0:0,10:-7:0:0,10:-7:18:0,10:-8:0:0,10:-8:18:0,15:-7:0:0,15:-7:18:0,15:-8:0:0,15:-8:18:0"
     env:
       PYTHONUNBUFFERED: "1"
@@ -272,6 +278,12 @@ jobs:
           elif [ "$PERIOD" = "bear_2022" ]; then
             echo "BT_START=2021-12-13" >> "$GITHUB_ENV"
             echo "BT_END=2022-10-31" >> "$GITHUB_ENV"
+          elif [ "$PERIOD" = "sideways_2023" ]; then
+            echo "BT_START=2023-01-03" >> "$GITHUB_ENV"
+            echo "BT_END=2023-12-29" >> "$GITHUB_ENV"
+          elif [ "$PERIOD" = "volatile_2024" ]; then
+            echo "BT_START=2024-01-02" >> "$GITHUB_ENV"
+            echo "BT_END=2024-12-31" >> "$GITHUB_ENV"
           elif [ "$PERIOD" = "custom" ]; then
             if [ -z "$BT_END" ]; then
               echo "BT_END=$(TZ=Asia/Shanghai date -d '-1 day' +%Y-%m-%d)" >> "$GITHUB_ENV"
@@ -362,10 +374,10 @@ jobs:
           if-no-files-found: warn
 
   # ────────────────────────────────────────────────
-  # Phase 2b: 固定退出参数，共享信号台账验证 A/M/P 仓位权重
+  # Phase 2b: 固定 P 的 Top-N，共享信号台账验证 Q/R/S/T 不补位门控
   # ────────────────────────────────────────────────
   strategy_compare:
-    name: Strategy ${{ matrix.period_key }} / A-M-P
+    name: Strategy ${{ matrix.period_key }} / P-Q-R-S-T
     runs-on: ubuntu-latest
     needs: fetch
     env:
@@ -383,7 +395,7 @@ jobs:
         run: |
           MATRIX_PERIOD="${{ matrix.period_key }}"
           ACTIVE="false"
-          if { [ "$INPUT_PERIOD" = "all_defined" ] && [ "$MATRIX_PERIOD" != "recent_2m" ]; } || [ "$INPUT_PERIOD" = "$MATRIX_PERIOD" ]; then
+          if [ "$INPUT_PERIOD" = "all_defined" ] || [ "$INPUT_PERIOD" = "$MATRIX_PERIOD" ]; then
             ACTIVE="true"
           elif [ "$INPUT_PERIOD" = "custom" ] && [ "$MATRIX_PERIOD" = "recent_6m" ]; then
             ACTIVE="true"
@@ -398,6 +410,11 @@ jobs:
           fi
           echo "BT_PERIOD_KEY=${PERIOD}" >> "$GITHUB_ENV"
           echo "period_key=${PERIOD}" >> "$GITHUB_OUTPUT"
+          SNAPSHOT_KEY="$PERIOD"
+          if [ "$INPUT_PERIOD" = "all_defined" ] && [ "$PERIOD" = "recent_2m" ]; then
+            SNAPSHOT_KEY="recent_6m"
+          fi
+          echo "snapshot_key=${SNAPSHOT_KEY}" >> "$GITHUB_OUTPUT"
           if [ "$PERIOD" = "recent_2m" ]; then
             echo "BT_END=$(TZ=Asia/Shanghai date -d '-1 day' +%Y-%m-%d)" >> "$GITHUB_ENV"
             echo "BT_START=$(TZ=Asia/Shanghai date -d '-2 months -1 day' +%Y-%m-%d)" >> "$GITHUB_ENV"
@@ -445,7 +462,7 @@ jobs:
         if: steps.period.outputs.active == 'true'
         uses: actions/download-artifact@v4
         with:
-          name: backtest-snapshot-${{ steps.period.outputs.period_key }}
+          name: backtest-snapshot-${{ steps.period.outputs.snapshot_key }}
           path: snapshot_data/
 
       - name: Run strategy ablation cell
@@ -464,7 +481,7 @@ jobs:
             --board "$BT_BOARD" \
             --sample-size "$BT_SAMPLE_SIZE" \
             --trading-days "$BT_TRADING_DAYS" \
-            --strategy-variants A,M,P \
+            --strategy-variants P,Q,R,S,T \
             --strategy-prefix "backtest-strategy-${BT_PERIOD_KEY}" \
             --abc-filter \
             --entry-price-mode "$BT_ENTRY_PRICE_MODE" \
@@ -514,7 +531,7 @@ jobs:
           PERIOD: ${{ inputs.period || 'recent_6m' }}
         run: |
           if [ "$PERIOD" = "all_defined" ]; then
-            echo "BT_PERIOD_LABEL=recent_6m,bull_2020,bear_2022,sideways_2023,volatile_2024" >> "$GITHUB_ENV"
+            echo "BT_PERIOD_LABEL=recent_2m(diagnostic),recent_6m,bull_2020,bear_2022,sideways_2023,volatile_2024" >> "$GITHUB_ENV"
             echo "BT_START=multi" >> "$GITHUB_ENV"
             echo "BT_END=multi" >> "$GITHUB_ENV"
           elif [ "$PERIOD" = "recent_2m" ]; then

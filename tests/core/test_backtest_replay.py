@@ -347,7 +347,7 @@ def test_confirmed_signals_rank_codes_by_best_score() -> None:
     assert confirmed.codes == ["000001", "000003", "000002"]
 
 
-def test_confirmed_signals_apply_a_share_research_filter_and_score() -> None:
+def test_confirmed_signals_calibrate_score_and_defer_filter_to_replay() -> None:
     class Pending:
         def write(self, *_args, **_kwargs):
             return None
@@ -372,9 +372,19 @@ def test_confirmed_signals_apply_a_share_research_filter_and_score() -> None:
     policy = AShareEntryResearchPolicy(blocked_confirmed_signals=("evr",), calibrate_confirmed_score=True)
 
     confirmed = replay_mod._confirmed_signals(ctx, Pending(), {}, policy)
+    selected = replay_mod._RankedSelection(
+        confirmed.codes,
+        confirmed.score_map,
+        confirmed.track_map,
+        {},
+        frozenset(confirmed.codes),
+        confirmed.trigger_map,
+    )
+    filtered = replay_mod._apply_replay_entry_policy(selected, "CAUTION", policy)
 
-    assert confirmed.codes == ["TREND", "SOS"]
-    assert "EVR" not in confirmed.score_map
+    assert confirmed.codes == ["TREND", "SOS", "EVR"]
+    assert filtered is not None
+    assert filtered.codes == ["TREND", "SOS"]
 
 
 def test_confirmed_signals_require_breadth_for_neutral_research_variant() -> None:
@@ -437,7 +447,7 @@ def test_confirmed_signals_preserve_signal_type_for_execution_weight() -> None:
     assert confirmed.trigger_map == {"000001": "spring"}
 
 
-def test_confirmed_signals_apply_regime_specific_research_filter() -> None:
+def test_replay_entry_policy_applies_regime_filter_without_backfill() -> None:
     class Pending:
         def write(self, *_args, **_kwargs):
             return None
@@ -461,8 +471,17 @@ def test_confirmed_signals_apply_regime_specific_research_filter() -> None:
     policy = AShareEntryResearchPolicy(blocked_confirmed_regime_signals=(("NEUTRAL", "spring"),))
 
     confirmed = replay_mod._confirmed_signals(ctx, Pending(), {}, policy)
+    selected = replay_mod._RankedSelection(
+        [confirmed.codes[0]],
+        confirmed.score_map,
+        confirmed.track_map,
+        {},
+        frozenset(confirmed.codes),
+        confirmed.trigger_map,
+    )
 
-    assert confirmed.codes == ["SOS"]
+    assert confirmed.codes == ["SPRING", "SOS"]
+    assert replay_mod._apply_replay_entry_policy(selected, "NEUTRAL", policy) is None
 
 
 def test_trade_record_applies_research_hold_limit_by_regime_and_signal() -> None:

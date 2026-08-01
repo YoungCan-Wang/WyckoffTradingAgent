@@ -203,6 +203,8 @@ def test_backtest_confirmation_passes_only_cross_period_positive(tmp_path):
         ("recent_6m", "2025-12-01", "2026-05-31", 6.0),
         ("bull_2020", "2020-07-01", "2021-02-18", 4.0),
         ("bear_2022", "2021-12-13", "2022-10-31", 3.0),
+        ("sideways_2023", "2023-01-03", "2023-12-29", 2.0),
+        ("volatile_2024", "2024-01-02", "2024-12-31", 1.0),
     ]:
         _write_grid_cell(tmp_path, period, start, end, 15, 8, cash_return)
 
@@ -214,8 +216,8 @@ def test_backtest_confirmation_passes_only_cross_period_positive(tmp_path):
 
     assert confirmation["status"] == "pass"
     assert confirmation["report_date"] == "2026-07-04"
-    assert confirmation["positive_periods"] == 3
-    assert confirmation["min_cash_return"] == 3.0
+    assert confirmation["positive_periods"] == 5
+    assert confirmation["min_cash_return"] == 1.0
     assert confirmation["best_param"]["label"] == "等额四仓 / 15天 / SL-8% / 无TP / 无Trail"
     assert confirmation["strategy_policy_ready"] is True
     assert confirmation["strategy_policy"].startswith("lps[regime=RISK_ON]×0.50↓")
@@ -230,6 +232,8 @@ def test_backtest_confirmation_requires_next_open_entry_price(tmp_path):
         ("recent_6m", "2025-12-01", "2026-05-31"),
         ("bull_2020", "2020-07-01", "2021-02-18"),
         ("bear_2022", "2021-12-13", "2022-10-31"),
+        ("sideways_2023", "2023-01-03", "2023-12-29"),
+        ("volatile_2024", "2024-01-02", "2024-12-31"),
     ]:
         _write_grid_cell(tmp_path, period, start, end, 15, 8, 3.0)
         summary = next((tmp_path / f"backtest-grid-{period}-h15-sl-8-tp0-tr0-37").glob("summary_*.md"))
@@ -250,6 +254,8 @@ def test_backtest_confirmation_requires_strategy_policy_evidence(tmp_path):
         ("recent_6m", "2025-12-01", "2026-05-31"),
         ("bull_2020", "2020-07-01", "2021-02-18"),
         ("bear_2022", "2021-12-13", "2022-10-31"),
+        ("sideways_2023", "2023-01-03", "2023-12-29"),
+        ("volatile_2024", "2024-01-02", "2024-12-31"),
     ]:
         artifact = tmp_path / f"backtest-grid-{period}-h15-sl-8-tp0-tr0-37"
         artifact.mkdir()
@@ -410,7 +416,7 @@ def test_backtest_grid_exposes_portable_hypothesis_evidence():
     assert "variant: [A, M, P]" not in workflow
     assert "sideways_2023" in workflow
     assert "volatile_2024" in workflow
-    assert "--strategy-variants A,M,P" in workflow
+    assert "--strategy-variants P,Q,R,S,T" in workflow
     assert "strategy_ablation_report.json" in workflow
     assert "EXTRA_ARGS+=(--require-complete)" in workflow
     assert "grid_cells:" in workflow

@@ -322,12 +322,13 @@ def replay_signal_ledger(
         pending_total += day.confirmed_count
         blocked_signal_days += int(day.blocked_signal_day)
         blocked_candidates += day.blocked_candidates
-        if day.selected is not None:
+        selected = _apply_replay_entry_policy(day.selected, regime, config.a_share_entry_research)
+        if selected is not None:
             signal_days += 1
             missing_skipped += _append_trade_records(
                 records,
                 day.context,
-                day.selected,
+                selected,
                 all_df_map,
                 trade_dates,
                 name_map,
@@ -346,6 +347,23 @@ def replay_signal_ledger(
         blocked_signal_days,
         blocked_candidates,
     )
+
+
+def _apply_replay_entry_policy(
+    selected: _RankedSelection | None,
+    regime: str,
+    policy: AShareEntryResearchPolicy,
+) -> _RankedSelection | None:
+    if selected is None:
+        return None
+    codes = [
+        code for code in selected.codes if confirmed_signal_allowed(policy, selected.signal_type_map.get(code), regime)
+    ]
+    if not codes:
+        return None
+    if len(codes) == len(selected.codes):
+        return selected
+    return replace(selected, codes=codes, confirmed_codes=selected.confirmed_codes.intersection(codes))
 
 
 def _trade_context(ctx: _DayContext) -> _TradeContext:
@@ -557,8 +575,6 @@ def _confirmed_signals(
         signal_type = str(item.get("signal_type", "confirmed"))
         code = str(item.get("code", "")).strip()
         if not code:
-            continue
-        if not confirmed_signal_allowed(research, signal_type, ctx.regime):
             continue
         score = calibrated_confirmation_score(research, signal_type, item.get("score"))
         if code not in score_map:

@@ -348,11 +348,10 @@ Step4 以 `trade_orders` 作为幂等事实源。Telegram 超时具有“可能�
 
 `entry_price_mode=open` 是当前生产候选默认口径；信号确认口径 `pending_mode=only`（仅用跨日 confirmed 信号）与实盘 Step4 `STEP4_REQUIRE_CONFIRMED_BUY_CANDIDATE` 严格对齐。`off`/`both` 仅作为跳过或放宽确认门槛的研究对照，不代表实盘可执行表现；`open`、`close` 和 `tail_1455` 也必须在相同 confirmed-only 门槛下完成对照后，才能宣称某种入场口径更优。最终 OMS 将 AI 结构区间、涨幅和 ATR 防追高约束收敛成唯一允许买入区间；区间缺失或无交集直接拒单，次日开盘价不在区间内也不执行。
 
-Backtest Grid 的默认策略消融为 `A/M/P`。M 相对 A 缩小弱水温下指定 confirmed 信号的研究仓位；
-P 相对 M 仅将 NEUTRAL Spring 仓位由 50% 降至 25%。默认 `all_defined` 除近期、牛市和熊市外，增加 2023 震荡与 2024
-剧烈波动窗口；报告必须收齐五个窗口的 A/M/P 单元才标记完整。Q 的广度确认在五窗口相对 P 仅 1/5 胜、平均收益差 −3.85pp，实验实现已删除；N（过滤后重排）与 O（拦截后不补位）也已被证伪。
-每个窗口的 A/M/P 共享一次信号台账，再分别应用仓位权重并重放现金组合；只有权重以外的策略配置完全
-一致时才允许复用，避免把真正改变选股或信号的实验误当成轻量仓位对照。
+Backtest Grid 的默认策略消融为 `P/Q/R/S/T`。P 是当前研究风控基线；Q 禁止 NEUTRAL Spring，R 禁止
+LPS，S 禁止 NEUTRAL EVR，T 禁止 CAUTION SOS。每个窗口先固定 P 的 Top-N，再在重放阶段拦截目标信号
+且不补位，因此五个策略共享一次信号台账，不会重复扫描全市场。默认 `all_defined` 的晋级判定覆盖近期六个月、
+牛市、熊市、2023 震荡和 2024 高波动五个窗口，并附加最近两个月诊断；最近两个月不参与晋级。
 候选组还必须五个窗口现金收益全部为正且最大绝对回撤不超过 20%，不能只凭相对基线少亏获得 `pass`。
 策略报告还会对 P 组实际现金成交按信号、水温和退出原因汇总亏损贡献，避免用未成交信号的纸面均收指导下一轮。
 这些能力只作用于回放，不改变生产漏斗、Step3 或 OMS。F-I 与经典 B-E 仍可手动复验，但已退出默认矩阵。
@@ -361,7 +360,7 @@ P 相对 M 仅将 NEUTRAL Spring 仓位由 50% 降至 25%。默认 `all_defined`
 |----|------|
 | 入口 | 漏斗候选行内联展示（`workflows/funnel_render.py`） |
 | 候选 | 读 `signal_pending`；**confirmed 才可执行** |
-| 排序 | 生产仍使用 confirmed → 主线/趋势 → 信号分；A/M/P 不改变生产排序 |
+| 排序 | 生产仍使用 confirmed → 主线/趋势 → 信号分；P/Q/R/S/T 固定 P 的 Top-N 后门控，不改变生产排序 |
 | 主线语义 | `candidate_theme / candidate_phase / candidate_role` 从推荐、信号贯穿到执行记录；LLM 只解释不重判 |
 | 禁新开 | `RISK_ON` 与弱市/修复期与 Step4 对齐，新票不买 |
 | 持仓诊断 | `workflows/holding_diagnosis_core.py` + `core/holding_diagnostic.py`（日线为准），硬止损约 12%；非主线满 5 日建议时间止盈 |

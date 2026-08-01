@@ -19,7 +19,7 @@ MAX_CASH_DRAWDOWN_PCT = 20.0
 _DIR_PATTERN = re.compile(
     r"backtest-strategy-"
     r"(?P<period>recent_2m|recent_6m|bull_2020|bear_2022|sideways_2023|volatile_2024|custom)-"
-    r"(?P<variant>[A-I]|M|P)"
+    r"(?P<variant>[A-T])"
     r"(?:-\d+)?$"
 )
 
@@ -79,33 +79,46 @@ def load_strategy_comparison_rows(artifacts_dir: Path) -> list[StrategyCompariso
 
 
 def build_strategy_comparison(rows: list[StrategyComparisonRow]) -> dict[str, Any]:
-    by_variant = _by_variant(rows)
+    evaluation_rows = [row for row in rows if row.period in DEFAULT_COMPARISON_PERIODS]
+    by_variant = _by_variant(evaluation_rows)
+    baseline = _comparison_baseline(by_variant)
     available = {(row.period, row.variant) for row in rows}
     required = {(period, variant) for period in DEFAULT_COMPARISON_PERIODS for variant in DEFAULT_COMPARISON_VARIANTS}
     evaluations = {}
     for variant, values in by_variant.items():
-        reference = {"M": "A", "P": "M"}.get(variant, "A")
+        reference = baseline
         evaluations[variant] = _evaluate_variant(variant, values, by_variant.get(reference, []), reference)
     return {
         "status": "ready" if required.issubset(available) else "incomplete",
-        "baseline": "A",
+        "baseline": baseline,
         "missing_cells": [f"{period}/{variant}" for period, variant in sorted(required - available)],
         "variant_labels": {key: VARIANT_LABELS[key] for key in by_variant if key in VARIANT_LABELS},
         "rows": [_row_payload(row) for row in sorted(rows, key=lambda row: (row.period, row.variant))],
         "evaluations": evaluations,
-        "walk_forward": _walk_forward(rows),
+        "walk_forward": _walk_forward(evaluation_rows),
         "loss_attribution": _loss_attribution(rows),
-        "scope": "默认矩阵评估 M 相对 A 的弱水温缩仓，以及 P 相对 M 的 NEUTRAL Spring 再缩仓。",
+        "scope": "以 P 为固定基线，分别验证四个不补位信号门控；recent_2m 仅作诊断，不参与晋级判定。",
         "decision_rule": "全部周期现金收益为正、绝对回撤不超过20%，且真实改变交易、胜出过半、平均增量为正、回撤恶化不超过2个百分点。",
     }
 
 
+def _comparison_baseline(by_variant: dict[str, list[StrategyComparisonRow]]) -> str:
+    variants = set(by_variant)
+    if set(DEFAULT_COMPARISON_VARIANTS).issubset(variants):
+        return "P"
+    if "A" in variants:
+        return "A"
+    if "M" in variants:
+        return "M"
+    return min(variants, default="P")
+
+
 def render_strategy_comparison(report: dict[str, Any]) -> str:
     lines = [
-        "# 策略 A/M/P A股实证对比",
+        "# 策略 P/Q/R/S/T A股信号门控对比",
         "",
-        "固定同一数据快照、确认口径和组合。A/M/P 共用固定退出。",
-        "M 验证弱水温信号缩仓；P 在 M 上验证 NEUTRAL Spring 再缩仓；全部为研究策略。",
+        "固定同一数据快照、P 组 Top-N、确认口径和组合，所有组共用固定退出。",
+        "Q/R/S/T 分别拦截一类 P 组信号且不补位；全部为研究策略。",
         "",
         "| 周期 | 组别 | 现金收益 | 现金回撤 | 成交 | 胜率 | 平均单笔 | 夏普 |",
         "|---|---|---:|---:|---:|---:|---:|---:|",
@@ -122,7 +135,8 @@ def render_strategy_comparison(report: dict[str, Any]) -> str:
             "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
         ]
     )
-    for variant in sorted(key for key in (report.get("evaluations") or {}) if key != "A"):
+    baseline = str(report.get("baseline") or "P")
+    for variant in sorted(key for key in (report.get("evaluations") or {}) if key != baseline):
         item = (report.get("evaluations") or {}).get(variant, {})
         lines.append(
             f"| {variant} | {item.get('reference_variant', 'A')} | {item.get('common_periods', 0)} | "
@@ -150,8 +164,8 @@ def _evaluate_variant(
     baseline_rows: list[StrategyComparisonRow],
     reference_variant: str,
 ) -> dict[str, Any]:
-    if variant == "A":
-        return {"status": "baseline", "reference_variant": "A", "common_periods": len(rows), "wins": 0}
+    if variant == reference_variant:
+        return {"status": "baseline", "reference_variant": reference_variant, "common_periods": len(rows), "wins": 0}
     baseline = {row.period: row for row in baseline_rows if row.cash_return is not None}
     pairs = [(baseline[row.period], row) for row in rows if row.period in baseline and row.cash_return is not None]
     deltas = [float(row.cash_return) - float(base.cash_return) for base, row in pairs]
