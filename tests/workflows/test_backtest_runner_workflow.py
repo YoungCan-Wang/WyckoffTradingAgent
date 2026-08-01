@@ -8,7 +8,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from workflows.backtest_runner import parse_grid_cells, run_backtest_runner
+from workflows.backtest_runner import parse_grid_cells, parse_strategy_variants, run_backtest_runner
 
 
 @dataclass(frozen=True)
@@ -79,6 +79,51 @@ def test_run_backtest_runner_reuses_signal_suite(monkeypatch, tmp_path) -> None:
     ]
     assert output_dirs[0].endswith("backtest-grid-recent_6m-h5-sl0-tp0-tr0")
     assert output_dirs[1].endswith("backtest-grid-recent_6m-h10-sl7-tp18-tr0")
+
+
+def test_run_backtest_runner_reuses_signal_ledger_across_weight_variants(monkeypatch, tmp_path) -> None:
+    import workflows.backtest_runner as runner
+
+    requests = []
+    output_dirs: list[str] = []
+    monkeypatch.setattr(
+        runner,
+        "run_backtest_request_suite",
+        lambda items, **_kwargs: (
+            requests.extend(items) or [(pd.DataFrame(), {"variant": item.strategy_variant}) for item in items]
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "write_backtest_artifacts",
+        lambda **kwargs: (
+            output_dirs.append(str(kwargs["out_dir"]))
+            or _Artifact("summary", tmp_path / "summary.md", tmp_path / "trades.csv")
+        ),
+    )
+    monkeypatch.setattr(runner, "success_suite_row", lambda hold_days, summary: {"hold_days": hold_days, **summary})
+
+    result = run_backtest_runner(
+        _args(
+            tmp_path,
+            strategy_variants="A,M,P",
+            strategy_prefix="backtest-strategy-recent_6m",
+        ),
+        progress=lambda *_args, **_kwargs: None,
+    )
+
+    assert result == 0
+    assert [request.strategy_variant for request in requests] == ["A", "M", "P"]
+    assert [Path(path).name for path in output_dirs] == [
+        "backtest-strategy-recent_6m-A",
+        "backtest-strategy-recent_6m-M",
+        "backtest-strategy-recent_6m-P",
+    ]
+
+
+def test_parse_strategy_variants_rejects_single_variant() -> None:
+    with pytest.raises(ValueError, match="至少需要两个"):
+        parse_strategy_variants("A")
 
 
 def test_parse_grid_cells_rejects_invalid_values() -> None:
@@ -203,6 +248,8 @@ def _args(tmp_path: Path, **overrides) -> Namespace:
         "portfolio_styles": "slot_equal_4",
         "trigger_grid": "",
         "period_key": "",
+        "strategy_variants": "",
+        "strategy_prefix": "backtest-strategy",
     }
     values.update(overrides)
     return Namespace(**values)

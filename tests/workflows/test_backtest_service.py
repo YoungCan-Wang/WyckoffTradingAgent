@@ -166,3 +166,20 @@ def test_validate_shared_signal_suite_rejects_non_exit_param_changes() -> None:
 
     with pytest.raises(ValueError, match="复用信号台账"):
         backtest._validate_shared_signal_suite([baseline, mismatched])
+
+
+def test_validate_shared_signal_suite_allows_weight_only_strategy_variants() -> None:
+    import workflows.backtest as backtest
+
+    requests = [_base_request(strategy_variant=variant) for variant in ("A", "M", "P")]
+
+    backtest._validate_shared_signal_suite(requests)
+
+
+def test_validate_shared_signal_suite_rejects_signal_changing_strategy_variants() -> None:
+    import workflows.backtest as backtest
+
+    with pytest.raises(ValueError, match="只能改变入场仓位权重"):
+        backtest._validate_shared_signal_suite(
+            [_base_request(strategy_variant="A"), _base_request(strategy_variant="F")]
+        )

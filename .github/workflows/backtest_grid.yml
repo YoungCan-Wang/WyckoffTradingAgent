@@ -362,21 +362,19 @@ jobs:
           if-no-files-found: warn
 
   # ────────────────────────────────────────────────
-  # Phase 2b: 固定退出参数，验证弱水温缩仓与 CAUTION 信号快速退出
+  # Phase 2b: 固定退出参数，共享信号台账验证 A/M/P 仓位权重
   # ────────────────────────────────────────────────
   strategy_compare:
-    name: Strategy ${{ matrix.period_key }} / ${{ matrix.variant }}
+    name: Strategy ${{ matrix.period_key }} / A-M-P
     runs-on: ubuntu-latest
     needs: fetch
     env:
       FUNNEL_DYNAMIC_POLICY: "off"
     strategy:
       fail-fast: false
-      max-parallel: 15
+      max-parallel: 5
       matrix:
         period_key: [recent_2m, recent_6m, bull_2020, bear_2022, sideways_2023, volatile_2024]
-        # A 为基线；M 缩小弱水温仓位；P 再缩小 NEUTRAL Spring。
-        variant: [A, M, P]
     steps:
       - name: Resolve period dates
         id: period
@@ -455,8 +453,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          VARIANT="${{ matrix.variant }}"
-          OUT_DIR="analysis/backtest_strategy_actions/backtest-strategy-${BT_PERIOD_KEY}-${VARIANT}"
+          OUT_DIR="analysis/backtest_strategy_actions"
           echo "OUT_DIR=${OUT_DIR}" >> "$GITHUB_ENV"
           mkdir -p "$OUT_DIR"
           python -u -m scripts.backtest_runner \
@@ -467,7 +464,8 @@ jobs:
             --board "$BT_BOARD" \
             --sample-size "$BT_SAMPLE_SIZE" \
             --trading-days "$BT_TRADING_DAYS" \
-            --strategy-variant "$VARIANT" \
+            --strategy-variants A,M,P \
+            --strategy-prefix "backtest-strategy-${BT_PERIOD_KEY}" \
             --abc-filter \
             --entry-price-mode "$BT_ENTRY_PRICE_MODE" \
             --cash-portfolio \
@@ -496,7 +494,7 @@ jobs:
         if: always() && steps.period.outputs.active == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: backtest-strategy-${{ steps.period.outputs.period_key }}-${{ matrix.variant }}-${{ github.run_number }}
+          name: backtest-strategy-${{ steps.period.outputs.period_key }}-suite-${{ github.run_number }}
           path: ${{ env.OUT_DIR }}/**
           retention-days: 30
           if-no-files-found: error

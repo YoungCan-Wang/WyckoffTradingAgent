@@ -150,7 +150,6 @@ class _ConfirmedSignals:
     score_map: dict[str, float]
     track_map: dict[str, str]
     trigger_map: dict[str, str]
-    entry_weight_map: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -160,7 +159,6 @@ class _RankedSelection:
     track_map: dict[str, str]
     trigger_name_map: dict[str, tuple[float, str]]
     confirmed_codes: frozenset[str] = field(default_factory=frozenset)
-    entry_weight_map: dict[str, float] = field(default_factory=dict)
     signal_type_map: dict[str, str] = field(default_factory=dict)
 
 
@@ -378,7 +376,6 @@ def _limit_probe_only_selection(
             {code: selected.track_map[code] for code in kept if code in selected.track_map},
             {code: selected.trigger_name_map[code] for code in kept if code in selected.trigger_name_map},
             frozenset(code for code in kept if code in selected.confirmed_codes),
-            {code: selected.entry_weight_map[code] for code in kept if code in selected.entry_weight_map},
             {code: selected.signal_type_map[code] for code in kept if code in selected.signal_type_map},
         ),
         len(selected.codes) - 1,
@@ -530,7 +527,6 @@ def _select_ranked_codes(
             track_map,
             _name_score_map(ctx.result, confirmed, prefer_confirmed=config.pending_mode == "only"),
             frozenset(confirmed.codes),
-            confirmed.entry_weight_map,
             confirmed.trigger_map,
         ),
         len(confirmed.codes),
@@ -557,7 +553,6 @@ def _confirmed_signals(
     score_map: dict[str, float] = {}
     track_map: dict[str, str] = {}
     trigger_map: dict[str, str] = {}
-    entry_weight_map: dict[str, float] = {}
     for item in confirmed_items:
         signal_type = str(item.get("signal_type", "confirmed"))
         code = str(item.get("code", "")).strip()
@@ -572,9 +567,8 @@ def _confirmed_signals(
             score_map[code] = score
             track_map[code] = candidate_entry_track(item, fields=("track", "signal_type"))
             trigger_map[code] = signal_type
-            entry_weight_map[code] = entry_weight_multiplier(research, signal_type, ctx.regime)
     codes.sort(key=lambda code: (-candidate_score_value(score_map.get(code)), code))
-    return _ConfirmedSignals(codes, score_map, track_map, trigger_map, entry_weight_map)
+    return _ConfirmedSignals(codes, score_map, track_map, trigger_map)
 
 
 def _merge_confirmed_metadata(
@@ -804,7 +798,11 @@ def _make_trade_record(
         mfe_pct=mfe_pct,
         mae_pct=mae_pct,
         signal_confirmed=code in selected.confirmed_codes,
-        entry_weight_multiplier=selected.entry_weight_map.get(code, 1.0),
+        entry_weight_multiplier=entry_weight_multiplier(
+            config.a_share_entry_research,
+            selected.signal_type_map.get(code),
+            ctx.regime,
+        ),
     )
 
 

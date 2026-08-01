@@ -414,7 +414,7 @@ def test_confirmed_signals_require_breadth_for_neutral_research_variant() -> Non
     assert pending.ticked is True
 
 
-def test_confirmed_signals_carry_research_entry_weight() -> None:
+def test_confirmed_signals_preserve_signal_type_for_execution_weight() -> None:
     class Pending:
         def write(self, *_args, **_kwargs):
             return None
@@ -432,11 +432,9 @@ def test_confirmed_signals_carry_research_entry_weight() -> None:
         result=_result(),
         regime="NEUTRAL",
     )
-    policy = AShareEntryResearchPolicy(entry_weight_multipliers=(("NEUTRAL", "spring", 0.5),))
+    confirmed = replay_mod._confirmed_signals(ctx, Pending(), {})
 
-    confirmed = replay_mod._confirmed_signals(ctx, Pending(), {}, policy)
-
-    assert confirmed.entry_weight_map == {"000001": 0.5}
+    assert confirmed.trigger_map == {"000001": "spring"}
 
 
 def test_confirmed_signals_apply_regime_specific_research_filter() -> None:
@@ -483,7 +481,10 @@ def test_trade_record_applies_research_hold_limit_by_regime_and_signal() -> None
         confirmed_codes=frozenset({"000001"}),
         signal_type_map={"000001": "spring"},
     )
-    policy = AShareEntryResearchPolicy(max_hold_days_by_regime_signal=(("CAUTION", "spring", 1),))
+    policy = AShareEntryResearchPolicy(
+        entry_weight_multipliers=(("CAUTION", "spring", 0.25),),
+        max_hold_days_by_regime_signal=(("CAUTION", "spring", 1),),
+    )
     config = replace(_config(), hold_days=3, a_share_entry_research=policy)
 
     record, skipped = replay_mod._trade_record_for_code(
@@ -501,6 +502,7 @@ def test_trade_record_applies_research_hold_limit_by_regime_and_signal() -> None
     assert skipped is False
     assert record is not None
     assert record.exit_date == date(2026, 1, 3)
+    assert record.entry_weight_multiplier == 0.25
 
 
 def test_confirmed_signals_treats_invalid_scores_as_zero() -> None:

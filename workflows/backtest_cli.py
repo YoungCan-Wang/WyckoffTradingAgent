@@ -51,6 +51,12 @@ def build_backtest_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--grid-prefix", default="backtest-grid", help="参数格输出目录名前缀")
     parser.add_argument(
+        "--strategy-variants",
+        default="",
+        help="共享一次信号台账的策略组，例如 A,M,P；仅允许入场仓位权重不同",
+    )
+    parser.add_argument("--strategy-prefix", default="backtest-strategy", help="策略组输出目录名前缀")
+    parser.add_argument(
         "--trigger-grid",
         default="",
         help="参数矩阵，格式 spring_vol_ratio=1.3,1.5,1.8 或 top_n=0,1；每个取值都会完整重跑漏斗",
