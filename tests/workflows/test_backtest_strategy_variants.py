@@ -26,7 +26,6 @@ def test_strategy_variants_isolate_each_research_switch() -> None:
     assert strategy_variant_entry_policy("I").calibrate_confirmed_score is True
     assert strategy_variant_entry_policy("M").entry_weight_multipliers
     assert strategy_variant_entry_policy("P").entry_weight_multipliers[0] == ("NEUTRAL", "spring", 0.25)
-    assert strategy_variant_entry_policy("Q").require_neutral_spring_breadth_confirmation is True
 
 
 def test_live_variant_preserves_production_configuration() -> None:

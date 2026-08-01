@@ -37,10 +37,7 @@ dependencies = [
 [project.optional-dependencies]
 mcp = ["mcp>=1.0.0", "starlette>=1.0.1"]
 wbt = ["wbt>=0.1.6"]
-# 截面因子面板按年落 parquet：千万行量级要按列读，csv.gz 读不动。只有研究路径需要，
-# 不进主依赖，避免给 CLI/MCP 安装多塞一个几十 MB 的 wheel。
-factor = ["pyarrow>=15.0"]
-dev = ["pytest>=7.0", "ruff>=0.4.0", "pre-commit>=3.7.0", "pyarrow>=15.0"]
+dev = ["pytest>=7.0", "ruff>=0.4.0", "pre-commit>=3.7.0"]
 
 [project.scripts]
 wyckoff = "cli.__main__:main"

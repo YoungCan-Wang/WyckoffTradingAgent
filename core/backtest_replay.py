@@ -563,7 +563,7 @@ def _confirmed_signals(
         code = str(item.get("code", "")).strip()
         if not code:
             continue
-        if not confirmed_signal_allowed(research, signal_type, ctx.regime, breadth=ctx.breadth):
+        if not confirmed_signal_allowed(research, signal_type, ctx.regime):
             continue
         score = calibrated_confirmation_score(research, signal_type, item.get("score"))
         if code not in score_map:

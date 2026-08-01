@@ -375,7 +375,7 @@ jobs:
       max-parallel: 15
       matrix:
         period_key: [recent_2m, recent_6m, bull_2020, bear_2022, sideways_2023, volatile_2024]
-        # A 为基线；M 缩小弱水温仓位；P 再缩小 NEUTRAL Spring。Q 已被否决，只保留手工复现。
+        # A 为基线；M 缩小弱水温仓位；P 再缩小 NEUTRAL Spring。
         variant: [A, M, P]
     steps:
       - name: Resolve period dates
