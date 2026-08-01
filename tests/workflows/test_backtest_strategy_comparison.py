@@ -180,3 +180,37 @@ def test_strategy_comparison_rejects_profitable_delta_with_loss_or_excess_drawdo
     assert result["positive_periods"] == 2
     assert result["max_abs_drawdown"] == 25.0
     assert result["status"] == "review"
+
+
+def test_strategy_comparison_attributes_executed_cash_losses_and_joins_legacy_regime(tmp_path: Path) -> None:
+    _write_summary(tmp_path, "recent_6m", "P", -2.0, -4.0)
+    target = tmp_path / "backtest-strategy-recent_6m-P"
+    (target / "trades_fixture.csv").write_text(
+        "signal_date,entry_date,exit_date,code,regime\n"
+        "2026-01-02,2026-01-05,2026-01-10,LOSS,NEUTRAL\n"
+        "2026-01-03,2026-01-06,2026-01-11,WIN,CAUTION\n",
+        encoding="utf-8",
+    )
+    (target / "cash_trades_fixture.csv").write_text(
+        "signal_date,entry_date,exit_date,code,trigger,regime,exit_reason,ret_pct,pnl,cost_total\n"
+        "2026-01-02,2026-01-05,2026-01-10,LOSS,spring(确认),,stop_loss,-10,-100,1000\n"
+        "2026-01-03,2026-01-06,2026-01-11,WIN,sos(确认),CAUTION,take_profit,20,200,1000\n",
+        encoding="utf-8",
+    )
+
+    report = build_strategy_comparison(load_strategy_comparison_rows(tmp_path))
+    attribution = report["loss_attribution"]["P"]
+
+    assert attribution["trade_count"] == 2
+    assert attribution["covered_periods"] == ["recent_6m"]
+    assert attribution["by_regime"][0] == {
+        "group": "NEUTRAL",
+        "trades": 1,
+        "win_rate": 0.0,
+        "avg_return": -10.0,
+        "pnl": -100.0,
+        "pnl_on_cost_pct": -10.0,
+    }
+    markdown = render_strategy_comparison(report)
+    assert "P 组实际成交亏损归因" in markdown
+    assert "| 水温 | NEUTRAL | 1 | +0.00% | -10.00% | -100.00 | -10.00% |" in markdown
