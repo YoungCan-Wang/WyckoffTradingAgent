@@ -25,6 +25,12 @@ class Step4ResultRecord:
     ticket_rows: list[dict]
 
 
+@dataclass(frozen=True)
+class Step4PersistenceResult:
+    ok: bool
+    orders_written: bool = False
+
+
 def prepare_step4_result_record(
     *,
     tickets: list[ExecutionTicket],
@@ -43,14 +49,47 @@ def save_step4_orders_and_nav(
     rendered_market_view: str,
     tickets: list[ExecutionTicket],
     ticket_rows: list[dict],
-) -> bool:
+) -> Step4PersistenceResult:
     if not _save_step4_trade_orders(options, context, run_id, rendered_market_view, ticket_rows):
         logger.error("AI 订单记录写入失败 | portfolio_id=%s", options.portfolio_id)
-        return False
-    _cancel_previous_trade_orders(options, context, run_id)
+        return Step4PersistenceResult(False)
     stops_ok = update_step4_position_stops(options.portfolio_id, tickets)
     nav_ok = _save_step4_nav_snapshot(options, context)
-    return stops_ok and nav_ok
+    if not (stops_ok and nav_ok):
+        return Step4PersistenceResult(False, orders_written=True)
+    try:
+        _cancel_previous_trade_orders(options, context, run_id)
+    except Exception:
+        logger.exception("同日旧 AI 订单作废失败 | portfolio_id=%s", options.portfolio_id)
+        return Step4PersistenceResult(False, orders_written=True)
+    return Step4PersistenceResult(True, orders_written=True)
+
+
+def rollback_step4_run(*, portfolio_id: str, trade_date: str, run_id: str) -> bool:
+    """作废本轮已写入的工单；回滚查询失败必须对调用方可见。"""
+    try:
+        cancelled = cancel_trade_orders(
+            portfolio_id=portfolio_id,
+            trade_date=trade_date,
+            only_run_id=run_id,
+            raise_on_error=True,
+        )
+    except Exception:
+        logger.exception(
+            "Step4 本轮订单回滚失败: run_id=%s, portfolio_id=%s, trade_date=%s",
+            run_id,
+            portfolio_id,
+            trade_date,
+        )
+        return False
+    logger.error(
+        "Step4 持久化失败，已作废本轮订单: cancelled=%s, run_id=%s, portfolio_id=%s, trade_date=%s",
+        cancelled,
+        run_id,
+        portfolio_id,
+        trade_date,
+    )
+    return True
 
 
 def update_step4_position_stops(portfolio_id: str, tickets: list[ExecutionTicket]) -> bool:
@@ -154,6 +193,7 @@ def _cancel_previous_trade_orders(options: Step4RunOptions, context: Step4InputC
         portfolio_id=options.portfolio_id,
         trade_date=context.trade_date,
         exclude_run_id=run_id,
+        raise_on_error=True,
     )
     if cancelled:
         logger.info("已作废同日旧 AI 订单: cancelled=%s, portfolio_id=%s", cancelled, options.portfolio_id)

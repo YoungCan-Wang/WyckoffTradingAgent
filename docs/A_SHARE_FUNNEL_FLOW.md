@@ -323,9 +323,15 @@ RISK -->|PANIC_REPAIR_CONFIRMED| REPAIR_PROBE["最多1只小额 PROBE<br/>禁止
     ALLOW --> OMS["灾难止损地板 -12%<br/>PROBE≤10% / ATTACK≤20%<br/>ATR/结构/时间管理优先"]
     REPAIR_PROBE --> OMS
     CAUTION_PROBE --> OMS
-    OMS --> TG["推送工单（含执行纪律）"]
     OMS --> DB["trade_orders 写库"]
+    DB --> AUX["更新止损 / 真实净值"]
+    AUX --> OLD["作废同日旧工单"]
+    OLD --> TG["推送工单（含执行纪律）"]
+    DB -->|后续持久化失败| RB["仅作废本轮 run_id<br/>保留旧工单"]
+    TG -->|推送失败| KEEP["保留本轮工单<br/>禁止重跑 OMS"]
 ```
+
+Step4 以 `trade_orders` 作为幂等事实源。Telegram 超时具有“可能已送达”的歧义，因此推送失败会让任务显式失败，但不会作废订单或重跑 LLM/OMS；否则可能重复发送或生成相互冲突的工单。只有订单已写入、后续数据库持久化失败时才精确作废本次 `run_id`，回滚自身失败会升级为独立错误。同日旧工单在本轮持久化全部成功后才作废。
 
 ### 回放与确认安全边界
 
