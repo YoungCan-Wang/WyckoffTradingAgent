@@ -19,7 +19,7 @@ MAX_CASH_DRAWDOWN_PCT = 20.0
 _DIR_PATTERN = re.compile(
     r"backtest-strategy-"
     r"(?P<period>recent_2m|recent_6m|bull_2020|bear_2022|sideways_2023|volatile_2024|custom)-"
-    r"(?P<variant>[A-Q])"
+    r"(?P<variant>[A-I]|M|P)"
     r"(?:-\d+)?$"
 )
 
@@ -72,7 +72,7 @@ def build_strategy_comparison(rows: list[StrategyComparisonRow]) -> dict[str, An
     required = {(period, variant) for period in DEFAULT_COMPARISON_PERIODS for variant in DEFAULT_COMPARISON_VARIANTS}
     evaluations = {}
     for variant, values in by_variant.items():
-        reference = {"M": "A", "P": "M", "Q": "P"}.get(variant, "A")
+        reference = {"M": "A", "P": "M"}.get(variant, "A")
         evaluations[variant] = _evaluate_variant(variant, values, by_variant.get(reference, []), reference)
     return {
         "status": "ready" if required.issubset(available) else "incomplete",
@@ -82,7 +82,7 @@ def build_strategy_comparison(rows: list[StrategyComparisonRow]) -> dict[str, An
         "rows": [_row_payload(row) for row in sorted(rows, key=lambda row: (row.period, row.variant))],
         "evaluations": evaluations,
         "walk_forward": _walk_forward(rows),
-        "scope": "默认矩阵评估 M 相对 A 的弱水温缩仓，以及 P 相对 M 的 NEUTRAL Spring 再缩仓；Q 仅保留手工复现。",
+        "scope": "默认矩阵评估 M 相对 A 的弱水温缩仓，以及 P 相对 M 的 NEUTRAL Spring 再缩仓。",
         "decision_rule": "全部周期现金收益为正、绝对回撤不超过20%，且真实改变交易、胜出过半、平均增量为正、回撤恶化不超过2个百分点。",
     }
 
@@ -92,7 +92,7 @@ def render_strategy_comparison(report: dict[str, Any]) -> str:
         "# 策略 A/M/P A股实证对比",
         "",
         "固定同一数据快照、确认口径和组合。A/M/P 共用固定退出。",
-        "M 验证弱水温信号缩仓；P 在 M 上验证 NEUTRAL Spring 再缩仓；全部为研究策略。Q 已退出默认矩阵，仅保留手工复现。",
+        "M 验证弱水温信号缩仓；P 在 M 上验证 NEUTRAL Spring 再缩仓；全部为研究策略。",
         "",
         "| 周期 | 组别 | 现金收益 | 现金回撤 | 成交 | 胜率 | 平均单笔 | 夏普 |",
         "|---|---|---:|---:|---:|---:|---:|---:|",

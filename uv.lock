@@ -3744,12 +3744,8 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "pre-commit" },
-    { name = "pyarrow" },
     { name = "pytest" },
     { name = "ruff" },
-]
-factor = [
-    { name = "pyarrow" },
 ]
 mcp = [
     { name = "mcp" },
@@ -3775,8 +3771,6 @@ requires-dist = [
     { name = "pandas", specifier = ">=2.2.0,<3.0" },
     { name = "pillow", specifier = ">=10.0.0" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.7.0" },
-    { name = "pyarrow", marker = "extra == 'dev'", specifier = ">=15.0" },
-    { name = "pyarrow", marker = "extra == 'factor'", specifier = ">=15.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "pyyaml", specifier = ">=6.0" },
@@ -3790,7 +3784,7 @@ requires-dist = [
     { name = "urllib3", specifier = ">=2.7.0" },
     { name = "wbt", marker = "extra == 'wbt'", specifier = ">=0.1.6" },
 ]
-provides-extras = ["mcp", "wbt", "factor", "dev"]
+provides-extras = ["mcp", "wbt", "dev"]
 
 [[package]]
 name = "zipp"
