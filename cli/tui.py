@@ -32,7 +32,7 @@ from textual.widgets import Input, OptionList, RichLog, Static
 from textual.widgets.option_list import Option
 
 from cli.workflows.pending_reply import classify_pending_workflow_reply, is_pending_workflow_revision
-from utils.tool_result_preview import tool_result_brief_lines
+from utils.tool_result_preview import serialize_tool_result, tool_result_brief_lines
 
 logger = logging.getLogger(__name__)
 
@@ -385,16 +385,21 @@ _PERSISTED_TOOL_RESULT_MAX_CHARS = 20_000
 
 
 def _persistable_tool_result(result: Any) -> tuple[Any, bool]:
-    """把工具结果压成可入库的形态，过大就截断并标记，避免 chat_log 被单条撑爆。"""
+    """把工具结果压成可入库的形态，过大就截断并标记，避免 chat_log 被单条撑爆。
+
+    必须走 serialize_tool_result 再 loads 回来：工具结果里会混进 date / Timestamp /
+    NaN / numpy 标量，直接塞进 summary 会让整轮 executed_tool_summaries 的 dumps 抛
+    TypeError，连带把这一轮全部 span 丢掉。
+    """
     if result is None:
         return None, False
     try:
-        rendered = json.dumps(result, ensure_ascii=False, default=str)
+        rendered = serialize_tool_result(result)
     except (TypeError, ValueError):
-        rendered = str(result)
-    if len(rendered) <= _PERSISTED_TOOL_RESULT_MAX_CHARS:
-        return result, False
-    return rendered[:_PERSISTED_TOOL_RESULT_MAX_CHARS], True
+        return str(result)[:_PERSISTED_TOOL_RESULT_MAX_CHARS], True
+    if len(rendered) > _PERSISTED_TOOL_RESULT_MAX_CHARS:
+        return rendered[:_PERSISTED_TOOL_RESULT_MAX_CHARS], True
+    return json.loads(rendered), False
 
 
 def _tool_result_view(event: dict[str, Any], tools) -> tuple[dict[str, object], Text]:

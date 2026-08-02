@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 from collections import deque
 from datetime import datetime
@@ -384,6 +385,7 @@ def test_display_workflow_plan_event_keeps_pending_plan_compact():
         },
         writes.append,
         lambda: scrolled.append(True),
+        verbose=True,
     )
 
     assert run_id == "wf_1"
@@ -442,6 +444,7 @@ def test_display_workflow_plan_event_uses_plan_route_for_saved_events():
         },
         writes.append,
         lambda: None,
+        verbose=True,
     )
 
     rendered = "\n".join(str(item) for item in writes)
@@ -467,6 +470,7 @@ def test_display_workflow_plan_event_hides_internal_model_router_matches():
         },
         writes.append,
         lambda: None,
+        verbose=True,
     )
 
     rendered = "\n".join(str(item) for item in writes)
@@ -492,6 +496,7 @@ def test_display_workflow_plan_event_omits_empty_internal_matches():
         },
         writes.append,
         lambda: None,
+        verbose=True,
     )
 
     rendered = "\n".join(str(item) for item in writes)
@@ -543,6 +548,7 @@ def test_display_workflow_plan_event_surfaces_planner_provenance():
         },
         writes.append,
         lambda: None,
+        verbose=True,
     )
 
     rendered = "\n".join(str(item) for item in writes)
@@ -582,6 +588,7 @@ def test_display_workflow_plan_update_surfaces_model_adaptation():
         writes.append,
         lambda: None,
         launch_state="adapted",
+        verbose=True,
     )
 
     rendered = "\n".join(str(item) for item in writes)
@@ -612,6 +619,7 @@ def test_display_workflow_plan_event_surfaces_model_contract_repair():
         },
         writes.append,
         lambda: None,
+        verbose=True,
     )
 
     rendered = "\n".join(str(item) for item in writes)
@@ -640,6 +648,7 @@ def test_display_workflow_plan_event_surfaces_fallback_reason():
         },
         writes.append,
         lambda: None,
+        verbose=True,
     )
 
     rendered = "\n".join(str(item) for item in writes)
@@ -672,6 +681,7 @@ def test_display_workflow_plan_event_labels_stock_selection_fallback():
         },
         writes.append,
         lambda: None,
+        verbose=True,
     )
 
     rendered = "\n".join(str(item) for item in writes)
@@ -708,6 +718,7 @@ def test_display_workflow_plan_event_surfaces_model_step_boundaries():
         },
         writes.append,
         lambda: None,
+        verbose=True,
     )
 
     rendered = "\n".join(str(item) for item in writes)
@@ -739,6 +750,7 @@ def test_display_workflow_plan_event_marks_semantic_tool_boundaries():
         },
         writes.append,
         lambda: None,
+        verbose=True,
     )
 
     rendered = "\n".join(str(item) for item in writes)
@@ -767,6 +779,7 @@ def test_display_workflow_plan_event_surfaces_effective_tool_scope():
         },
         writes.append,
         lambda: None,
+        verbose=True,
     )
 
     rendered = "\n".join(str(item) for item in writes)
@@ -797,6 +810,7 @@ def test_display_workflow_plan_event_does_not_warn_for_explicit_tool_scope():
         },
         writes.append,
         lambda: None,
+        verbose=True,
     )
 
     rendered = "\n".join(str(item) for item in writes)
@@ -822,6 +836,7 @@ def test_display_workflow_plan_event_previews_tool_only_model_steps():
         },
         writes.append,
         lambda: None,
+        verbose=True,
     )
 
     rendered = "\n".join(str(item) for item in writes)
@@ -1171,10 +1186,12 @@ def test_submit_workflow_background_auto_starts_model_plan():
     assert launched[0][2] == "system prompt"
     assert launched[0][5].startswith("wfbg_wf_auto_")
     rendered = "\n".join(str(item) for item in writes)
-    assert "脚本来源：模型生成" in rendered
+    assert "扫描候选" in rendered
     assert "已交给 agent 动态执行" in rendered
     assert "等待批准" not in rendered
     assert "/workflow show wf_auto" in rendered
+    # 脚本来源属于内部溯源信息，默认不渲染
+    assert "脚本来源" not in rendered
     assert scrolls
 
 
@@ -1649,6 +1666,239 @@ def test_tool_result_view_surfaces_recommendation_eval_pick_action():
     assert "最新候选的未来窗口标签尚未成熟" in rendered
 
 
+def test_tool_result_view_persists_full_result_and_call_metadata():
+    summary, _renderable = _tool_result_view(
+        {
+            "type": "tool_result",
+            "name": "portfolio",
+            "args": {"mode": "diagnose"},
+            "tool_call_id": "tc_1",
+            "elapsed_ms": 10500,
+            "result": {"free_cash": 40000.0, "diagnostics": [{"code": "002326", "shares": 200}]},
+        },
+        None,
+    )
+
+    assert summary["tool_call_id"] == "tc_1"
+    assert summary["args"] == {"mode": "diagnose"}
+    assert summary["elapsed_ms"] == 10500
+    assert summary["result"]["diagnostics"][0]["shares"] == 200
+    assert "result_truncated" not in summary
+
+
+def test_tool_result_view_truncates_oversized_result():
+    summary, _renderable = _tool_result_view(
+        {
+            "type": "tool_result",
+            "name": "screen_stocks",
+            "args": {},
+            "elapsed_ms": 1,
+            "result": {"blob": "x" * 40_000},
+        },
+        None,
+    )
+
+    assert summary["result_truncated"] is True
+    assert isinstance(summary["result"], str)
+    assert len(summary["result"]) == 20_000
+
+
+def test_tool_result_view_result_stays_json_serializable():
+    """持久化的 result 必须能过 json.dumps —— 否则整轮 span 会一起丢。
+
+    工具结果里常混进 date / NaN / numpy 标量，_tool_result_view 的返回值会被
+    整批 dumps 进 chat_log.tool_calls，任一脏值抛 TypeError 就是全轮丢失。
+    """
+    summary, _renderable = _tool_result_view(
+        {
+            "type": "tool_result",
+            "name": "portfolio",
+            "args": {},
+            "elapsed_ms": 1,
+            "result": {"latest_date": datetime(2026, 8, 2).date(), "pnl_pct": float("nan")},
+        },
+        None,
+    )
+
+    blob = json.dumps([summary], ensure_ascii=False, allow_nan=False)
+
+    assert "2026-08-02" in blob
+    assert "NaN" not in blob
+    assert summary["result"]["pnl_pct"] is None
+
+
+def test_tool_result_view_keeps_error_result_for_replay():
+    summary, _renderable = _tool_result_view(
+        {
+            "type": "tool_error",
+            "name": "generate_strategy_decision",
+            "args": {},
+            "elapsed_ms": 0,
+            "error": "未配置 LLM API Key",
+            "result": {"error": "未配置 LLM API Key"},
+        },
+        None,
+    )
+
+    assert summary["status"] == "error"
+    assert summary["result"] == {"error": "未配置 LLM API Key"}
+
+
+def test_workflow_spans_json_folds_steps_into_dashboard_spans():
+    from cli.tui import _workflow_spans_json
+
+    spans = json.loads(
+        _workflow_spans_json(
+            [
+                {"type": "workflow_plan", "step": {}},
+                {
+                    "type": "workflow_step_done",
+                    "step": {
+                        "title": "诊断持仓",
+                        "status": "completed",
+                        "tool_scope": ["portfolio"],
+                        "elapsed": 10.5,
+                        "result": "4 只持仓已诊断",
+                    },
+                },
+                {
+                    "type": "workflow_step_done",
+                    "step": {"title": "攻防决策", "status": "failed", "error": "未配置 LLM API Key"},
+                },
+            ]
+        )
+    )
+
+    assert [s["name"] for s in spans] == ["诊断持仓", "攻防决策"]
+    assert spans[0]["status"] == "ok"
+    assert spans[0]["elapsed_ms"] == 10500
+    assert spans[0]["result"] == "4 只持仓已诊断"
+    assert spans[1]["status"] == "error"
+    assert spans[1]["error"] == "未配置 LLM API Key"
+
+
+def test_workflow_spans_json_is_empty_without_step_events():
+    from cli.tui import _workflow_spans_json
+
+    assert _workflow_spans_json([{"type": "workflow_plan"}]) == ""
+
+
+def test_workflow_bg_event_summary_keeps_step_execution_detail():
+    from cli.tui import _workflow_bg_event_summary
+
+    payload = _workflow_bg_event_summary(
+        {
+            "type": "workflow_step_done",
+            "run_id": "wf_1",
+            "step": {"title": "诊断持仓", "agent": "analysis", "status": "completed", "step_id": "diag"},
+            "source": {
+                "agent_detail": {
+                    "elapsed": 10.5,
+                    "tool_calls": [{"name": "portfolio"}],
+                    "result": "4 只持仓已诊断",
+                }
+            },
+        }
+    )
+
+    assert payload["step"]["elapsed"] == 10.5
+    assert payload["step"]["tool_calls"] == [{"name": "portfolio"}]
+    assert payload["step"]["result"] == "4 只持仓已诊断"
+    assert payload["step"]["step_id"] == "diag"
+
+
+def test_build_rounds_detail_records_thinking_per_round():
+    from cli.tui import _build_rounds_detail
+
+    details = _build_rounds_detail(
+        2,
+        {1: {"input_tokens": 100, "stop_reason": "tool_use"}, 2: {"input_tokens": 50}},
+        {1: ["portfolio"]},
+        {},
+        0.0,
+        "gpt-test",
+        {1: "先看持仓再判断风险"},
+    )
+
+    assert details[0]["thinking"] == "先看持仓再判断风险"
+    assert details[0]["stop_reason"] == "tool_use"
+    assert "thinking" not in details[1]
+
+
+def test_display_workflow_plan_event_hides_internal_provenance_by_default():
+    writes = []
+
+    _display_workflow_plan_event(
+        {
+            "run_id": "wf_quiet",
+            "workflow": "dynamic_task",
+            "label": "持仓复盘",
+            "route": {"reason": "模型判断需要动态 workflow", "matches": ["持仓"], "confidence": 0.58},
+            "plan": {
+                "script": {"runtime": {"planner": "model_script"}},
+                "steps": [
+                    {"title": "读取并诊断持仓", "phase": "取数", "tool_scope": ["portfolio"]},
+                    {"title": "形成去留动作", "phase": "决策", "tool_scope": ["generate_strategy_decision"]},
+                ],
+            },
+        },
+        writes.append,
+        lambda: None,
+    )
+
+    rendered = "\n".join(str(item) for item in writes)
+    assert "识别原因" not in rendered
+    assert "置信度" not in rendered
+    assert "脚本来源" not in rendered
+    assert "执行接力" not in rendered
+    assert "工具边界" not in rendered
+    # 保留的是"要跑几步、每步做什么"
+    assert "2 个动态任务" in rendered
+    assert "1 读取并诊断持仓" in rendered
+    assert "2 形成去留动作" in rendered
+    assert "取数" in rendered and "决策" in rendered
+
+
+def test_workflow_plan_tree_lines_collapse_overlong_plans():
+    from cli.tui import _workflow_plan_tree_lines
+
+    steps = [{"title": f"任务{i}"} for i in range(1, 12)]
+
+    lines = _workflow_plan_tree_lines(steps, limit=3)
+
+    assert len(lines) == 4
+    assert "另有 8 个任务" in lines[-1]
+
+
+def test_display_workflow_step_event_shows_progress_position():
+    writes = []
+
+    _display_workflow_step_event(
+        {
+            "step": {"title": "诊断持仓", "status": "completed", "tool_scope": ["portfolio"]},
+            "step_index": 2,
+            "step_total": 3,
+        },
+        writes.append,
+        lambda: None,
+    )
+
+    assert "[2/3] 诊断持仓" in str(writes[0])
+
+
+def test_display_workflow_step_event_omits_position_when_unknown():
+    writes = []
+
+    _display_workflow_step_event(
+        {"step": {"title": "诊断持仓", "status": "running", "tool_scope": ["portfolio"]}},
+        writes.append,
+        lambda: None,
+    )
+
+    assert "诊断持仓" in str(writes[0])
+    assert "[" not in str(writes[0]).split("诊断持仓")[0]
+
+
 def test_workflow_detail_step_line_includes_tool_scope():
     line = _workflow_detail_step_line(
         {
@@ -1809,7 +2059,7 @@ def test_pending_workflow_feedback_revises_single_pending_workflow():
 
     assert handled is True
     assert feedbacks == ["别这么拆，直接先扫候选"]
-    assert any("改后脚本" in str(line) for line in log.lines)
+    assert any("扫描候选" in str(line) for line in log.lines)
     assert "已根据反馈更新 workflow" in str(log.lines[-1])
 
 

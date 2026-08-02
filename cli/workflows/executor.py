@@ -629,7 +629,12 @@ class WorkflowExecutor:
             "run_id": run.run_id,
             "step": run.step_payload(step),
             "source": _source_payload(source),
+            "step_total": len(run.steps),
         }
+        # 用身份比较：WorkflowStep 是值相等的 dataclass，index() 可能命中同构的另一步
+        step_index = next((idx for idx, item in enumerate(run.steps, 1) if item is step), 0)
+        if step_index:
+            payload["step_index"] = step_index
         append_workflow_event(run.run_id, event_type, payload)
         return payload
 
