@@ -188,7 +188,7 @@ export function useReadingRoomChat(
   const transport = useMemo(() => buildChatTransport(token, watchlistRef, marketWatchRef), [token])
   return useChat({
     transport,
-    experimental_throttle: 50,
+    experimental_throttle: 120,
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
     onData: (part) => {
       if (part.type === 'data-run-event') onRunEvent?.(part.data as ChatRunEvent)

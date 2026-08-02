@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState, type Dispatch, type FormEvent, type MutableRefObject, type ReactNode, type SetStateAction } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { CheckSquare, Loader2, Swords, XSquare } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
 import { usePreferences } from '@/lib/preferences'
 import { loadLLMConfigCandidates } from '@/lib/chat-agent'
 import { streamLLMResponseWithFallback } from '@/lib/llm-stream'
+import { clearStreamFlush, scheduleStreamFlush } from '@/lib/stream-render'
 import { MarkdownContent } from '@/components/markdown'
 import { KlineChart } from '@/components/kline-chart'
 import { MultiStockChart, type ComparisonSeries } from '@/components/multi-stock-chart'
@@ -103,12 +104,13 @@ function useBattleRunner() {
   const [report, setReport] = useState('')
   const [model, setModel] = useState('unknown')
   const abortRef = useRef<AbortController | null>(null)
-  const streamBuf = useRef(''), rafRef = useRef(0)
+  const streamBuf = useRef('')
+  const flushTimer = useRef<ReturnType<typeof setTimeout> | 0>(0)
   const [benchmark, setBenchmark] = useState<KlineRow[]>([])
 
   async function run(input: string) {
     if (!user) return
-    abortRef.current?.abort(); cancelAnimationFrame(rafRef.current)
+    abortRef.current?.abort(); clearStreamFlush(flushTimer)
     const abort = new AbortController()
     abortRef.current = abort
     streamBuf.current = ''
@@ -126,26 +128,21 @@ function useBattleRunner() {
       setStocks(fetched)
       setBenchmark(bench)
       setSelectedCodes(fetched.slice(0, Math.min(6, fetched.length)).map((item) => item.code))
-      const onDelta = (chunk: string) => { streamBuf.current += chunk; scheduleBattleReportFlush(streamBuf, rafRef, setReport) }
+      const onDelta = (chunk: string) => { streamBuf.current += chunk; scheduleStreamFlush(streamBuf, flushTimer, setReport) }
       const finalReport = await callBattleLLM(configs, fetched, abort.signal, onDelta, (nextModel) => setModel(nextModel))
-      cancelAnimationFrame(rafRef.current)
+      clearStreamFlush(flushTimer)
       if (abort.signal.aborted) return
       setReport(finalReport)
     } catch (err) {
       if (abort.signal.aborted) return
       setError(normalizeBattleError(err))
     } finally {
-      cancelAnimationFrame(rafRef.current)
+      clearStreamFlush(flushTimer)
       setLoading(false)
     }
   }
 
   return { loading, error, stocks, selectedCodes, mode, overlayLimit, report, benchmark, run, setSelectedCodes, setMode, setOverlayLimit, model }
-}
-
-function scheduleBattleReportFlush(buf: MutableRefObject<string>, raf: MutableRefObject<number>, set: Dispatch<SetStateAction<string>>) {
-  if (raf.current) return
-  raf.current = requestAnimationFrame(() => { raf.current = 0; set(buf.current) })
 }
 
 function useBattleHistory(
@@ -463,7 +460,7 @@ function ReportPanel({ report, loading }: { report: string; loading: boolean }) 
       {report ? (
         <>
           <AIDisclaimer />
-          <article className="mt-4 prose prose-sm max-w-none text-foreground"><MarkdownContent content={report} /></article>
+          <article className="mt-4 prose prose-sm max-w-none text-foreground"><MarkdownContent content={report} streaming={loading} /></article>
         </>
       ) : (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">

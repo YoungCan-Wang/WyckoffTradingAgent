@@ -110,12 +110,28 @@ const MD_COMPONENTS: Components = {
 export const MarkdownContent = memo(function MarkdownContent({
   content,
   className = '',
+  streaming = false,
 }: {
   content: string
   className?: string
+  /** While true, skip remark/GFM and append plain text only (cheap stream path). */
+  streaming?: boolean
 }) {
+  if (streaming) {
+    return (
+      <div className={className} data-stream-render="plain">
+        <div className="whitespace-pre-wrap break-words">
+          {content}
+          <span
+            className="ml-0.5 inline-block h-[1.05em] w-1.5 translate-y-[0.12em] animate-pulse bg-foreground/65 align-text-bottom"
+            aria-hidden
+          />
+        </div>
+      </div>
+    )
+  }
   return (
-    <div className={className}>
+    <div className={className} data-stream-render="markdown">
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{content}</ReactMarkdown>
     </div>
   )
