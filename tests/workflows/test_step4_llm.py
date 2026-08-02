@@ -4,6 +4,7 @@ from datetime import date
 
 import workflows.step4_llm as step4_llm
 from integrations.fetch_a_share_csv import TradingWindow
+from workflows.step4_decision_parser import parse_decisions
 from workflows.step4_models import (
     PortfolioState,
     Step4InputContext,
@@ -87,3 +88,32 @@ def test_call_step4_decision_model_reports_parse_failure(monkeypatch):
     ok, status, result = step4_llm.call_step4_decision_model(_options(), _context(), lambda *_args: None)
 
     assert (ok, status, result) == (False, "llm_failed", None)
+
+
+def test_parse_decisions_collapses_duplicate_codes_to_higher_priority_action() -> None:
+    raw = """
+    {
+      "market_view": "重复代码应折叠",
+      "decisions": [
+        {"code": "000001", "action": "HOLD", "reason": "先写 HOLD", "confidence": 0.5},
+        {"code": "000001", "action": "EXIT", "reason": "后写 EXIT", "confidence": 0.9},
+        {"code": "000002", "action": "PROBE", "entry_zone": [10, 11], "stop_loss": 9,
+         "tape_condition": "放量", "reason": "新仓", "confidence": 0.6},
+        {"code": "000002", "action": "PROBE", "entry_zone": [10.2, 11.2], "stop_loss": 9.1,
+         "tape_condition": "放量", "reason": "重复新仓", "confidence": 0.7}
+      ]
+    }
+    """
+
+    market_view, decisions, err = parse_decisions(
+        raw,
+        allowed_codes={"000001", "000002"},
+        name_map={"000001": "平安银行", "000002": "万科A"},
+    )
+
+    assert err is None
+    assert market_view == "重复代码应折叠"
+    assert [(item.code, item.action, item.reason) for item in decisions] == [
+        ("000001", "EXIT", "后写 EXIT"),
+        ("000002", "PROBE", "新仓"),
+    ]

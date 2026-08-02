@@ -318,6 +318,11 @@ class WyckoffOrderEngine:
         fill_price = ctx.current_price * (1.0 - self.SLIPPAGE_BPS)
         proceeds = sell_shares * fill_price
         self.free_cash += proceeds
+        # Keep remaining inventory in sync so a second EXIT/TRIM for the same code
+        # cannot oversell or double-count simulated cash.
+        pos = self.position_map.get(ctx.dec.code)
+        if pos is not None:
+            pos.shares = max(int(pos.shares) - int(sell_shares), 0)
         return ExecutionTicket(
             code=ctx.dec.code,
             name=ctx.name,
