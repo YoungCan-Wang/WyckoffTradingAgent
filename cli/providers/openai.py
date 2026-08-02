@@ -108,9 +108,25 @@ def _accumulate_tool_delta(tool_map: dict[int, dict[str, Any]], tc_delta: Any) -
             tool_map[idx]["args_json"] += tc_delta.function.arguments
 
 
+# 各家 OpenAI 兼容网关放思维链的字段名不统一，逐个试。
+_REASONING_DELTA_FIELDS = ("reasoning_content", "reasoning", "thinking", "thought")
+
+
+def _reasoning_delta_text(delta: Any) -> str:
+    for field_name in _REASONING_DELTA_FIELDS:
+        value = getattr(delta, field_name, None)
+        if isinstance(value, str) and value:
+            return value
+        # 有的网关给 {"reasoning": {"content": "..."}} 这种嵌套结构
+        if isinstance(value, dict):
+            nested = value.get("content") or value.get("text")
+            if isinstance(nested, str) and nested:
+                return nested
+    return ""
+
+
 def _consume_delta_events(state: OpenAIStreamState, delta: Any) -> Generator[dict[str, Any], None, None]:
-    reasoning = getattr(delta, "reasoning_content", None)
-    if reasoning:
+    if reasoning := _reasoning_delta_text(delta):
         yield {"type": "thinking_delta", "text": reasoning}
 
     if delta.content:

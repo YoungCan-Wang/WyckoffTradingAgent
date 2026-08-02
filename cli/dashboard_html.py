@@ -631,8 +631,9 @@ async function renderChatSession(c,sid){
   const logs=await API('/api/chat-log/'+sid);
   if(!Array.isArray(logs)||!logs.length){c.innerHTML=`<div class="empty">${t('no_messages')}</div>`;return}
   const traces=[];let cur=null;
+  // system 也是"这一轮的输入"（系统通知触发的轮次），否则 Input 面板会空
   for(const l of logs){
-    if(l.role==='user'){if(cur)traces.push(cur);cur={user:l,assistant:null,spans:[]};}
+    if(l.role==='user'||l.role==='system'){if(cur)traces.push(cur);cur={user:l,assistant:null,spans:[]};}
     else if(l.role==='assistant'&&cur){cur.assistant=l;traces.push(cur);cur=null;}
     else if(cur){cur.spans.push(l);}
     else{traces.push({user:null,assistant:l.role==='assistant'?l:null,spans:[l]});}
@@ -649,7 +650,8 @@ async function renderChatSession(c,sid){
   const fullMessages=meta.messages||[];
   const systemPrompt=meta.system_prompt||'';
   const toolSchemas=meta.tools||[];
-  const inputBrief={role:'user',content:selTrace?.user?.content||''};
+  const thinkingRounds=(meta.rounds_detail||[]).filter(r=>r&&r.thinking).map(r=>({round:r.round,thinking:r.thinking}));
+  const inputBrief={role:selTrace?.user?.role||'user',content:selTrace?.user?.content||''};
   const outputBrief={role:'assistant',content:(selTrace?.assistant?.content||'').slice(0,500),model:selLog?.model||'',tokens_in:selLog?.tokens_in||0,tokens_out:selLog?.tokens_out||0};
   c.innerHTML=`<div class="fade-in" style="display:flex;height:calc(100vh - 120px);gap:0;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--bg2)">
     <!-- Left: Traces + Spans Tree -->
@@ -723,14 +725,19 @@ async function renderChatSession(c,sid){
       </summary>
         <pre class="code-panel" style="max-height:none">${fmtContent(selTrace?.assistant?.content,{role:'assistant',content:selTrace?.assistant?.content||'',model:selLog?.model||'',provider:selLog?.provider||'',usage:{input:selLog?.tokens_in||0,output:selLog?.tokens_out||0,cache_read:meta.cache_read||0,cache_write:meta.cache_write||0,total:(selLog?.tokens_in||0)+(selLog?.tokens_out||0)+(meta.cache_read||0)},elapsed_s:selLog?.elapsed_s||0,stop_reason:meta.stop_reason||'stop',rounds:meta.rounds||1,tool_calls:toolSpans.length?toolSpans.map(s=>({name:s.name||s.tool||'tool',status:s.status||'ok',args:s.args||undefined,result:s.result||undefined})):undefined},_chatOutputMode)}</pre>
       </details>
+      ${thinkingRounds.length?`<details style="margin-bottom:12px"><summary class="summary-row"><span>Thinking (${thinkingRounds.length})</span></summary>
+        <div style="padding:12px 0">${thinkingRounds.map(r=>`<div style="margin-bottom:8px">
+          <div style="font-size:10px;color:var(--text-dim);margin-bottom:4px">round ${r.round}</div>
+          <pre class="code-panel" style="font-size:11px;color:var(--text2);max-height:240px;white-space:pre-wrap">${escHtml(r.thinking)}</pre>
+        </div>`).join('')}</div></details>`:''}
       ${toolSpans.length?`<details open style="margin-bottom:12px"><summary class="summary-row"><span>Spans (${toolSpans.length})</span></summary>
         <div style="padding:12px 0">${toolSpans.map(sp=>{
           const statusIcon=sp.status==='error'?'<span style="color:var(--red)">✗</span>':sp.status==='background'?'<span style="color:var(--blue)">↗</span>':'<span style="color:var(--accent)">✓</span>';
           return `<div style="padding:8px 10px;margin-bottom:6px;border-radius:6px;background:var(--card);border:1px solid var(--border)">
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">${statusIcon}<span class="pill pill-blue" style="font-size:10px">${escHtml(sp.name||sp.tool||'tool')}</span>${sp.status?`<span class="pill ${sp.status==='error'?'pill-red':sp.status==='background'?'pill-cyan':'pill-green'}" style="font-size:10px">${escHtml(sp.status)}</span>`:''}</div>
-          ${sp.args||sp.args_brief?`<pre class="code-panel" style="font-size:11px;color:var(--text2);margin-top:6px;max-height:100px">${escHtml(typeof sp.args==='string'?sp.args:sp.args?JSON.stringify(sp.args,null,2):sp.args_brief||'')}</pre>`:''}
-          ${sp.result?`<pre class="code-panel" style="font-size:11px;margin-top:6px;max-height:100px">${escHtml(typeof sp.result==='string'?sp.result:JSON.stringify(sp.result,null,2))}</pre>`:''}
-          ${sp.error?`<pre style="font-size:11px;color:var(--red);margin-top:4px">${escHtml(sp.error)}</pre>`:''}
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">${statusIcon}<span class="pill pill-blue" style="font-size:10px">${escHtml(sp.display_name||sp.name||sp.tool||'tool')}</span>${sp.status?`<span class="pill ${sp.status==='error'?'pill-red':sp.status==='background'?'pill-cyan':'pill-green'}" style="font-size:10px">${escHtml(sp.status)}</span>`:''}${sp.elapsed_ms?`<span style="font-size:10px;color:var(--text-dim)">${(sp.elapsed_ms/1000).toFixed(1)}s</span>`:''}</div>
+          ${sp.args||sp.args_brief?`<pre class="code-panel" style="font-size:11px;color:var(--text2);margin-top:6px;max-height:140px;white-space:pre-wrap">${escHtml(typeof sp.args==='string'?sp.args:sp.args?JSON.stringify(sp.args,null,2):sp.args_brief||'')}</pre>`:''}
+          ${sp.result?`<pre class="code-panel" style="font-size:11px;margin-top:6px;max-height:320px;white-space:pre-wrap">${escHtml(typeof sp.result==='string'?sp.result:JSON.stringify(sp.result,null,2))}${sp.result_truncated?'\n… (已截断)':''}</pre>`:''}
+          ${sp.error?`<pre style="font-size:11px;color:var(--red);margin-top:4px;white-space:pre-wrap">${escHtml(sp.error)}</pre>`:''}
         </div>`}).join('')}</div></details>`:''}
       ${selLog?.tokens_in||selLog?.tokens_out?`<details style="margin-bottom:12px"><summary class="summary-row"><span>Token Usage</span></summary>
         <div style="padding:12px 0;font-size:12px;font-family:monospace;line-height:2">

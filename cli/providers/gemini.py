@@ -120,6 +120,9 @@ class GeminiProvider(LLMProvider):
             for part in chunk.candidates[0].content.parts:
                 if part.function_call:
                     tool_calls.append(tool_call_dict_from_part(part))
+                elif getattr(part, "thought", False) and part.text:
+                    # thought part 的 text 是思维链，不能混进正文
+                    yield {"type": "thinking_delta", "text": part.text}
                 elif part.text:
                     text_buf += part.text
                     yield {"type": "text_delta", "text": part.text}
