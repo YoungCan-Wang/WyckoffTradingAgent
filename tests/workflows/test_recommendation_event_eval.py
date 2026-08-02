@@ -3,6 +3,7 @@ from __future__ import annotations
 from core.candidate_guards import policy_candidate_guard_summary
 from workflows.recommendation_event_eval import (
     _build_summary,
+    _context_markdown,
     _observation_feature_map,
     _policy_selection,
     _policy_selection_markdown,
@@ -318,6 +319,34 @@ def test_event_summary_groups_candidate_quality_grades() -> None:
     assert summary["entry_quality_grade"]["C"]["hit_rate_pct"] == 0.0
 
 
+def test_event_summary_groups_observation_context_without_dropping_multi_signal_events() -> None:
+    events = [
+        {
+            **_event(20260515, "A", ai=False, score=0.99, count=3, hit=True),
+            "observation_regimes": ["NEUTRAL"],
+            "observation_signal_types": ["spring", "sos"],
+            "observation_industries": ["电子"],
+        },
+        {
+            **_event(20260516, "B", ai=False, score=0.80, count=1, hit=False),
+            "observation_regimes": ["CAUTION"],
+            "observation_signal_types": ["sos"],
+            "observation_industries": ["医药生物"],
+        },
+    ]
+
+    context = _build_summary(events, (1,))["outcome_context"]
+
+    assert context["regime"]["NEUTRAL"]["hit_rate_pct"] == 100.0
+    assert context["signal_type"]["sos"]["rows_total"] == 2
+    assert context["signal_type"]["spring"]["rows_total"] == 1
+    assert context["industry"]["电子"]["hit_rate_pct"] == 100.0
+    assert context["track"]["unknown"]["rows_total"] == 2
+    markdown = "\n".join(_context_markdown(context))
+    assert "### Market regime" in markdown
+    assert "| sos | 2/2 | 50.0%" in markdown
+
+
 def test_quality_feature_fields_merge_observation_and_row_features() -> None:
     observed = {
         "candidate_shadow_score": {"score": 88.456, "grade": "S"},
@@ -344,11 +373,17 @@ def test_observation_feature_map_merges_same_day_features() -> None:
         {
             "trade_date": "2026-05-15",
             "code": 1,
+            "regime": "NEUTRAL",
+            "signal_type": "spring",
+            "industry": "银行",
             "features_json": '{"candidate_shadow_score":{"score":82,"grade":"S"}}',
         },
         {
             "trade_date": "20260515",
             "code": "000001",
+            "regime": "NEUTRAL",
+            "signal_type": "sos",
+            "track": "Trend",
             "features_json": {"entry_quality": {"score": 72, "grade": "A"}},
         },
     ]
@@ -357,6 +392,16 @@ def test_observation_feature_map_merges_same_day_features() -> None:
 
     assert features["candidate_shadow_score"]["grade"] == "S"
     assert features["entry_quality"]["score"] == 72
+    assert features["outcome_context"] == {
+        "observation_industries": ["银行"],
+        "observation_regimes": ["NEUTRAL"],
+        "observation_signal_types": ["sos", "spring"],
+        "observation_tracks": ["Trend"],
+    }
+
+    fields = _quality_feature_fields({}, features)
+    assert fields["observation_regimes"] == ["NEUTRAL"]
+    assert fields["observation_signal_types"] == ["sos", "spring"]
 
 
 def test_observation_feature_map_keeps_cross_market_code_shape() -> None:

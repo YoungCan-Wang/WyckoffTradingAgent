@@ -51,6 +51,12 @@ _DECISION_MIN_READY_ROWS = 10
 _DECISION_MIN_HIT_LIFT_PCT = 5.0
 _DECISION_MIN_MFE_LIFT_PCT = 0.0
 _DECISION_MAX_MAE_WORSE_PCT = -1.0
+_OBSERVATION_CONTEXT_FIELDS = {
+    "regime": "observation_regimes",
+    "signal_type": "observation_signal_types",
+    "industry": "observation_industries",
+    "track": "observation_tracks",
+}
 
 
 @dataclass(frozen=True)
@@ -144,7 +150,7 @@ def _fetch_observation_feature_map(
         for batch in chunked(dates, 100):
             resp = (
                 client.table(TABLE_SIGNAL_OBSERVATIONS)
-                .select("trade_date,code,features_json")
+                .select("trade_date,code,regime,signal_type,industry,track,features_json")
                 .eq("market", market)
                 .in_("trade_date", batch)
                 .execute()
@@ -160,9 +166,25 @@ def _observation_feature_map(rows: list[dict[str, Any]], market: str = "cn") -> 
     for row in rows:
         key = (_code_key(row.get("code"), market), _date_compact(row.get("trade_date")))
         features = _json_map(row.get("features_json"))
-        if key[0] and key[1] and features:
-            out[key] = _merge_quality_features(out.get(key, {}), features)
+        if key[0] and key[1]:
+            out[key] = _merge_observation_features(out.get(key, {}), features, row)
     return out
+
+
+def _merge_observation_features(
+    base: dict[str, Any],
+    features: dict[str, Any],
+    row: dict[str, Any],
+) -> dict[str, Any]:
+    merged = _merge_quality_features(base, features)
+    context = _json_map(merged.get("outcome_context"))
+    for source, target in _OBSERVATION_CONTEXT_FIELDS.items():
+        values = {*_str_list(context.get(target)), *_str_list(row.get(source))}
+        if values:
+            context[target] = sorted(values)
+    if context:
+        merged["outcome_context"] = context
+    return merged
 
 
 def _fetch_hist_by_code(
@@ -240,6 +262,15 @@ def _build_summary(
         "ranking_decision": _ranking_decision(lift_by_strategy),
         "candidate_shadow_grade": _grade_summary(events, "candidate_shadow_grade"),
         "entry_quality_grade": _grade_summary(events, "entry_quality_grade"),
+        "outcome_context": {
+            key: _context_summary(events, field)
+            for key, field in (
+                ("regime", "observation_regimes"),
+                ("signal_type", "observation_signal_types"),
+                ("industry", "observation_industries"),
+                ("track", "observation_tracks"),
+            )
+        },
     }
     return summary
 
@@ -250,6 +281,21 @@ def _grade_summary(events: list[dict[str, Any]], field: str) -> dict[str, Any]:
         groups[_grade(event.get(field))].append(event)
     order = ("S", "A", "B", "C", "D", "unknown")
     return {grade: summarize_horizon_events(groups[grade]) for grade in order if grade in groups}
+
+
+def _context_summary(events: list[dict[str, Any]], field: str) -> dict[str, Any]:
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for event in events:
+        labels = _str_list(event.get(field)) or ["unknown"]
+        for label in dict.fromkeys(labels):
+            groups[label].append(event)
+    summaries = {label: summarize_horizon_events(rows) for label, rows in groups.items()}
+    return dict(
+        sorted(
+            summaries.items(),
+            key=lambda item: (-int(item[1].get("rows_ready") or 0), -int(item[1].get("rows_total") or 0), item[0]),
+        )
+    )
 
 
 def _top_k_by_strategy(
@@ -677,6 +723,7 @@ def _write_markdown(path: Path, result: dict[str, Any]) -> None:
     lines.extend(_ranking_decision_markdown(result["summary"].get("ranking_decision") or {}))
     lines.extend(_policy_selection_markdown(result.get("policy_selection") or {}))
     lines.extend(_quality_markdown(result["summary"]))
+    lines.extend(_context_markdown(result["summary"].get("outcome_context") or {}))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -814,6 +861,37 @@ def _quality_markdown(summary: dict[str, Any]) -> list[str]:
     return rows
 
 
+def _context_markdown(context: dict[str, Any]) -> list[str]:
+    rows = [
+        "",
+        "## Outcome Context Slices",
+        "",
+        "同一候选可能对应多个信号标签；各切片用于归因，不直接产生交易许可。",
+    ]
+    for title, key, limit in (
+        ("Market regime", "regime", 0),
+        ("Signal type", "signal_type", 0),
+        ("Industry", "industry", 20),
+        ("Track", "track", 0),
+    ):
+        rows.extend(_context_table(title, context.get(key) or {}, limit))
+    return rows
+
+
+def _context_table(title: str, groups: dict[str, Any], limit: int) -> list[str]:
+    rows = [
+        "",
+        f"### {title}",
+        "",
+        "| Value | Ready | Hit rate | Close win | Avg close | Payoff | Avg MFE | Avg MAE |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    items = list(groups.items())[: limit or None]
+    if not items:
+        return [*rows, "| n/a | 0/0 | n/a | n/a | n/a | n/a | n/a | n/a |"]
+    return [*rows, *(_summary_row(label, item) for label, item in items)]
+
+
 def _quality_table(title: str, grade_rows: dict[str, Any]) -> list[str]:
     rows = [
         "",
@@ -870,12 +948,14 @@ def _quality_feature_fields(row: dict[str, Any], observed_features: dict[str, An
     features = _merge_quality_features(_json_map(observed_features), _json_map(row.get("features_json")))
     shadow = _json_map(features.get("candidate_shadow_score"))
     entry = _json_map(features.get("entry_quality"))
+    context = _json_map(features.get("outcome_context"))
     return {
         "candidate_shadow_score": _optional_number(shadow.get("score")),
         "candidate_shadow_grade": _grade(shadow.get("grade")),
         "entry_quality_score": _optional_number(entry.get("score")),
         "entry_quality_grade": _grade(entry.get("grade")),
         "entry_quality_risk_flags": _str_list(entry.get("risk_flags")),
+        **{target: _str_list(context.get(target)) for target in _OBSERVATION_CONTEXT_FIELDS.values()},
     }
 
 
