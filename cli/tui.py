@@ -192,6 +192,21 @@ def _refresh_log_layout(log_widget) -> None:
         log_widget.refresh()
 
 
+_MD_RENDER_HINT_RE = re.compile(
+    r"(?m)"
+    r"(^\s{0,3}#{1,6}\s)"  # headings
+    r"|(^\s*([-*+]|\d+\.)\s)"  # lists
+    r"|(\*\*[^*]|\[[^\]]+\]\([^)]+\))"  # bold / links
+    r"|(`{1,3})"  # code
+    r"|(^\|.+\|)"  # tables
+)
+
+
+def _needs_markdown_render(text: str) -> bool:
+    """Plain streamed strips are enough when Rich Markdown would not change layout."""
+    return bool(_MD_RENDER_HINT_RE.search(text))
+
+
 def _replace_streamed_response(log_widget, strip_count: int, final_text: str) -> int:
     _get_agent_logger().info("TUI_STREAM_REPLACE: strip_count=%d text_len=%d", strip_count, len(final_text))
     _pop_lines(log_widget, strip_count)
@@ -226,11 +241,14 @@ def _display_final_response(
     if not final_text:
         return False
     if streaming_started:
+        # Keep plain streamed lines when Markdown would not change visual structure.
+        if not _needs_markdown_render(final_text):
+            return True
         strip_count = stream_separator_strips + stream_text_strips
         call_from_thread(_replace_streamed_response, log_widget, strip_count, final_text)
     else:
         write(Text.from_markup("  [dim]───[/dim]"))
-        write(Markdown(final_text))
+        write(Markdown(final_text) if _needs_markdown_render(final_text) else Text(final_text))
     return True
 
 

@@ -5,6 +5,7 @@ import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/auth'
 import { loadLLMConfig, loadLLMConfigCandidates } from '@/lib/chat-agent'
 import { streamLLMResponseWithFallback, type LLMStreamStatus } from '@/lib/llm-stream'
+import { clearStreamFlush, scheduleStreamFlush } from '@/lib/stream-render'
 import { MarkdownContent } from '@/components/markdown'
 import { KlineChart } from '@/components/kline-chart'
 import { usePreferences } from '@/lib/preferences'
@@ -225,7 +226,7 @@ function useAnalysisRunner(search: SearchController, setHasModelConfig: Dispatch
   const [earlyKline, setEarlyKline] = useState<{ data: KlineRow[]; symbol: string; name: string; dataQuality: KlineDataQuality; valueSnapshot: ValueSnapshot; contextPack: AnalysisContextPack } | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const streamBuf = useRef('')
-  const rafRef = useRef(0)
+  const flushTimer = useRef<ReturnType<typeof setTimeout> | 0>(0)
 
   async function handleAnalyze() {
     const userId = user?.id
@@ -250,9 +251,9 @@ function useAnalysisRunner(search: SearchController, setHasModelConfig: Dispatch
       const contextPack = buildStockAnalysisContextPack({ symbol: resolved.code, name, kline: klineData.data, dataQuality: klineData.quality, valueSnapshot })
       setEarlyKline({ data: klineData.data, symbol: resolved.code, name, dataQuality: klineData.quality, valueSnapshot, contextPack })
       setStep('llm'); streamBuf.current = ''
-      const onDelta = (chunk: string) => { streamBuf.current += chunk; scheduleFlush(streamBuf, rafRef, setStreamingReport) }
+      const onDelta = (chunk: string) => { streamBuf.current += chunk; scheduleStreamFlush(streamBuf, flushTimer, setStreamingReport) }
       const report = await callLLM(configs, resolved.code, name, buildKlinePayload(klineData.data, klineData.quality, contextPack), valueSnapshot, abort.signal, onDelta, setModelStatus)
-      cancelAnimationFrame(rafRef.current)
+      clearStreamFlush(flushTimer)
       if (abort.signal.aborted) return
       setStreamingReport(report)
       const inputSnapshotHash = calculateInputSnapshotHash(resolved.code, klineData.data, valueSnapshot)
@@ -273,7 +274,7 @@ function useAnalysisRunner(search: SearchController, setHasModelConfig: Dispatch
     } catch (err) {
       if (abort.signal.aborted) return
       setError(err instanceof Error ? err.message : t('analysis.failed'))
-    } finally { cancelAnimationFrame(rafRef.current); setLoading(false); setStep(null) }
+    } finally { clearStreamFlush(flushTimer); setLoading(false); setStep(null) }
   }
 
   return { loading, result, error, step, streamingReport, modelStatus, earlyKline, setError, handleAnalyze }
@@ -300,11 +301,6 @@ function startAnalysisRequest(
 
 function analysisHistoryKey(result: AnalysisResult): string {
   return `${result.symbol}:${result.klineData.length}:${result.report.length}`
-}
-
-function scheduleFlush(buf: React.MutableRefObject<string>, raf: React.MutableRefObject<number>, set: Dispatch<SetStateAction<string>>) {
-  if (raf.current) return
-  raf.current = requestAnimationFrame(() => { raf.current = 0; set(buf.current) })
 }
 
 function MissingConfigBanner({ prerequisites }: { prerequisites: Prerequisites }) {
@@ -450,7 +446,7 @@ function AnalysisContent({ runner, onAskAboutRange }: { runner: AnalysisRunnerSt
           {kline && dataQuality && <KlineSection klineData={kline} dataQuality={dataQuality} onAskAboutRange={onAskAboutRange} />}
           {contextPack && <ContextPackSection pack={contextPack} />}
           {valueSnapshot && <ValueSection snapshot={valueSnapshot} />}
-          {report && <ReportSection report={report} />}
+          {report && <ReportSection report={report} streaming={loading && !result} />}
         </div>
       </div>
     </div>
@@ -603,7 +599,7 @@ function ValueSection({ snapshot, compact = false }: { snapshot: ValueSnapshot; 
   )
 }
 
-function ReportSection({ report }: { report: string }) {
+function ReportSection({ report, streaming }: { report: string; streaming: boolean }) {
   const { t } = usePreferences()
   return (
     <section className="min-w-0 rounded-lg border border-border bg-background">
@@ -612,7 +608,7 @@ function ReportSection({ report }: { report: string }) {
         <AIDisclaimer />
       </div>
       <article className="prose prose-base max-w-none px-6 py-5 text-foreground">
-        <MarkdownContent content={report} />
+        <MarkdownContent content={report} streaming={streaming} />
       </article>
     </section>
   )

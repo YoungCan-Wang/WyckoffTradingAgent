@@ -22,6 +22,7 @@ from cli.tui import (
     _display_workflow_step_event,
     _is_system_notification_message,
     _make_sub_agent_progress_handler,
+    _needs_markdown_render,
     _pending_user_question_answer,
     _pending_user_question_lines,
     _pending_workflow_reply_intent,
@@ -344,6 +345,29 @@ def test_display_final_response_replaces_streamed_raw_text():
     assert writes == []
     assert log.lines[0] == "kept"
     assert isinstance(log.lines[1], Markdown)
+
+
+def test_display_final_response_keeps_plain_stream_without_markdown():
+    assert _needs_markdown_render("普通结论，无格式") is False
+    assert _needs_markdown_render("## 标题\n\n- 条目") is True
+
+    log = _FakeLog()
+    log.lines.extend(["  ---", "plain answer"])
+    writes = []
+
+    displayed = _display_final_response(
+        log,
+        "plain answer",
+        streaming_started=True,
+        stream_separator_strips=1,
+        stream_text_strips=1,
+        write=writes.append,
+        call_from_thread=lambda func, *args: func(*args),
+    )
+
+    assert displayed is True
+    assert writes == []
+    assert log.lines == ["kept", "  ---", "plain answer"]
 
 
 def test_display_workflow_plan_event_keeps_pending_plan_compact():

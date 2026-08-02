@@ -7,6 +7,7 @@ import { WyckoffLoading } from '@/components/loading'
 import { usePreferences } from '@/lib/preferences'
 import { loadLLMConfigCandidates } from '@/lib/chat-agent'
 import { streamLLMResponseWithFallback } from '@/lib/llm-stream'
+import { clearStreamFlush, scheduleStreamFlush } from '@/lib/stream-render'
 import { MarkdownContent } from '@/components/markdown'
 import { UpgradeNotice } from '@/components/upgrade-notice'
 import { AIDisclaimer } from '@/components/ai-disclaimer'
@@ -159,12 +160,12 @@ function useFullDiagnosisRunner() {
   const [progress, setProgress] = useState<DiagProgress | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const streamBuf = useRef('')
-  const rafRef = useRef(0)
+  const flushTimer = useRef<ReturnType<typeof setTimeout> | 0>(0)
 
   async function run(portfolio: Portfolio) {
     if (!user || loading || portfolio.positions.length === 0) return
     const total = portfolio.positions.length
-    const abort = startDiagnosisRun(abortRef, streamBuf, rafRef)
+    const abort = startDiagnosisRun(abortRef, streamBuf, flushTimer)
     resetDiagnosisState(setError, setResult, setStreamingReport, setLoading, setProgress, total)
     try {
       const [configs, keys] = await Promise.all([loadLLMConfigCandidates(user.id), getUserDataKeys(user.id)])
@@ -180,10 +181,10 @@ function useFullDiagnosisRunner() {
       const prompt = buildFullPortfolioPrompt(entries, portfolio.free_cash)
       const onDelta = (chunk: string) => {
         streamBuf.current += chunk
-        scheduleStreamingReportFlush(streamBuf, rafRef, setStreamingReport)
+        scheduleStreamFlush(streamBuf, flushTimer, setStreamingReport)
       }
       const report = await callFullPortfolioLLM(configs, prompt, abort.signal, onDelta, (nextModel) => setModel(nextModel))
-      cancelAnimationFrame(rafRef.current)
+      clearStreamFlush(flushTimer)
       if (abort.signal.aborted) return
       setStreamingReport(report)
       setResult(buildDiagnosisResult(entries, report, portfolio.free_cash))
@@ -191,7 +192,7 @@ function useFullDiagnosisRunner() {
       if (abort.signal.aborted) return
       setError(err instanceof Error ? err.message : t('portfolio.failed'))
     } finally {
-      finishDiagnosisRun(rafRef, setLoading, setProgress)
+      finishDiagnosisRun(flushTimer, setLoading, setProgress)
     }
   }
 
@@ -252,10 +253,10 @@ function portfolioHistoryKey(payload: PortfolioHistoryPayload): string {
 function startDiagnosisRun(
   abortRef: MutableRefObject<AbortController | null>,
   streamBuf: MutableRefObject<string>,
-  rafRef: MutableRefObject<number>,
+  flushTimer: MutableRefObject<ReturnType<typeof setTimeout> | 0>,
 ) {
   abortRef.current?.abort()
-  cancelAnimationFrame(rafRef.current)
+  clearStreamFlush(flushTimer)
   const abort = new AbortController()
   abortRef.current = abort
   streamBuf.current = ''
@@ -278,21 +279,13 @@ function resetDiagnosisState(
 }
 
 function finishDiagnosisRun(
-  rafRef: MutableRefObject<number>,
+  flushTimer: MutableRefObject<ReturnType<typeof setTimeout> | 0>,
   setLoading: Dispatch<SetStateAction<boolean>>,
   setProgress: Dispatch<SetStateAction<DiagProgress | null>>,
 ) {
-  cancelAnimationFrame(rafRef.current)
+  clearStreamFlush(flushTimer)
   setLoading(false)
   setProgress(null)
-}
-
-function scheduleStreamingReportFlush(buf: MutableRefObject<string>, raf: MutableRefObject<number>, set: Dispatch<SetStateAction<string>>) {
-  if (raf.current) return
-  raf.current = requestAnimationFrame(() => {
-    raf.current = 0
-    set(buf.current)
-  })
 }
 
 type PositionEntry = { position: Position; kline: KlineRow[]; valueSnapshot: ValueSnapshot }
@@ -469,7 +462,7 @@ function FullDiagnosisPanel({ result, report, streaming }: { result: FullDiagnos
         </div>
         <AIDisclaimer />
         <article className="mt-4 prose prose-sm max-w-none text-foreground">
-          {report ? <MarkdownContent content={report} /> : <p className="text-sm text-muted-foreground">模型分析中...</p>}
+          {report ? <MarkdownContent content={report} streaming={streaming} /> : <p className="text-sm text-muted-foreground">模型分析中...</p>}
         </article>
       </div>
     </section>
