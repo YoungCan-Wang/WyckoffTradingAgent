@@ -51,7 +51,8 @@
 | **confirmed 分数校准** | 不再把不同 Wyckoff 触发器的原始分数直接横比；研究组 I 用信号族历史先验与封顶后的形态强度合成可比分数，避免极高原始分主导 Top1 |
 | **Treatment exposure** | 消融组相对参照组实际改变的交易键，包括 `(signal_date, code)`、仓位倍率和退出日期；零暴露表示规则没有改变真实成交，不能据此评价收益贡献 |
 | **实际成交亏损归因** | 只统计现金组合真正成交的记录，按信号、水温和退出原因汇总成交数、胜率、平均单笔、总盈亏与资本盈亏率；不把未成交信号的纸面收益混进策略结论 |
-| **结果上下文切片** | Outcome Context Slices | 推荐事件与同日 observation 对齐后，按水温、信号、行业和轨道拆分成熟样本的命中率、收盘收益、MFE/MAE；多信号候选可进入多个切片，只用于归因，不直接放行交易 |
+| **结果上下文切片** | Outcome Context Slices | 推荐事件优先与同日 observation 对齐，缺失时使用 recommendation tracking 自带的水温、信号、行业和轨道；同时输出单维度及“水温 × 信号/行业”成熟样本。多信号候选可进入多个切片，只用于归因，不直接放行交易 |
+| **上下文覆盖率** | Context Coverage | 推荐事件成功取得 observation 或 tracking 上下文的比例；报告区分 observation 命中、tracking fallback、当日有 observation 但候选不在观察宇宙、查询失败，并单列水温、信号、行业、轨道和交叉切片的全量/成熟样本覆盖率 |
 | **SOW (Sign of Weakness)** | 放量下跌，确认派发结束、下跌开始的信号 |
 
 ---

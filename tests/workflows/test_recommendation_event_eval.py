@@ -4,7 +4,11 @@ from core.candidate_guards import policy_candidate_guard_summary
 from workflows.recommendation_event_eval import (
     _build_summary,
     _context_markdown,
+    _fetch_observation_rows,
+    _observation_context_status,
+    _observation_coverage,
     _observation_feature_map,
+    _ObservationFeatureIndex,
     _policy_selection,
     _policy_selection_markdown,
     _quality_feature_fields,
@@ -342,9 +346,13 @@ def test_event_summary_groups_observation_context_without_dropping_multi_signal_
     assert context["signal_type"]["spring"]["rows_total"] == 1
     assert context["industry"]["电子"]["hit_rate_pct"] == 100.0
     assert context["track"]["unknown"]["rows_total"] == 2
+    assert context["regime_signal"]["NEUTRAL × spring"]["rows_total"] == 1
+    assert context["regime_signal"]["NEUTRAL × sos"]["evidence_status"] == "insufficient_sample"
+    assert context["regime_industry"]["CAUTION × 医药生物"]["rows_total"] == 1
     markdown = "\n".join(_context_markdown(context))
     assert "### Market regime" in markdown
     assert "| sos | 2/2 | 50.0%" in markdown
+    assert "### Regime × signal" in markdown
 
 
 def test_quality_feature_fields_merge_observation_and_row_features() -> None:
@@ -353,10 +361,15 @@ def test_quality_feature_fields_merge_observation_and_row_features() -> None:
         "entry_quality": {"score": 76, "grade": "A", "risk_flags": ["缩量不足"]},
     }
     row = {
+        "market_regime": "NEUTRAL",
+        "signal_types": ["lps"],
+        "primary_signal": "sos",
+        "industry": "电子",
+        "signal_track": "Accum",
         "features_json": (
             '{"candidate_shadow_score":{"score":42,"grade":"D"},'
             '"entry_quality":{"score":"nan","grade":"Z","risk_flags":"追高延展"}}'
-        )
+        ),
     }
 
     fields = _quality_feature_fields(row, observed)
@@ -366,6 +379,10 @@ def test_quality_feature_fields_merge_observation_and_row_features() -> None:
     assert fields["entry_quality_score"] is None
     assert fields["entry_quality_grade"] == "unknown"
     assert fields["entry_quality_risk_flags"] == ["追高延展"]
+    assert fields["observation_regimes"] == ["NEUTRAL"]
+    assert fields["observation_signal_types"] == ["lps", "sos"]
+    assert fields["observation_industries"] == ["电子"]
+    assert fields["observation_tracks"] == ["Accum"]
 
 
 def test_observation_feature_map_merges_same_day_features() -> None:
@@ -417,6 +434,93 @@ def test_observation_feature_map_keeps_cross_market_code_shape() -> None:
 
     assert ("00700", "20260515") in features
     assert ("000700", "20260515") not in features
+
+
+def test_fetch_observation_rows_paginates_past_postgrest_cap() -> None:
+    pages = {
+        0: [{"id": value, "trade_date": "2026-05-15", "code": str(value)} for value in range(1000)],
+        1000: [{"id": 1000, "trade_date": "2026-05-15", "code": "1000"}],
+    }
+
+    class Query:
+        start = 0
+
+        def table(self, _name):
+            return self
+
+        def select(self, _columns):
+            return self
+
+        def eq(self, _column, _value):
+            return self
+
+        def in_(self, _column, _values):
+            return self
+
+        def order(self, _column, *, desc=False):
+            return self
+
+        def range(self, start, _stop):
+            self.start = start
+            return self
+
+        def execute(self):
+            return type("Response", (), {"data": pages[self.start]})()
+
+    rows = _fetch_observation_rows(Query(), "cn", ["2026-05-15"])
+
+    assert len(rows) == 1001
+    assert rows[-1]["id"] == 1000
+
+
+def test_observation_coverage_separates_legacy_gap_from_unmatched_candidate() -> None:
+    index = _ObservationFeatureIndex(
+        {("000001", "20260515"): {"outcome_context": {"observation_regimes": ["NEUTRAL"]}}},
+        frozenset({"20260515"}),
+        "ok",
+    )
+    matched = _observation_context_status(("000001", "20260515"), index.features[("000001", "20260515")], {}, index)
+    fallback = _observation_context_status(("000002", "20260515"), {}, {"observation_signal_types": ["lps"]}, index)
+    unmatched = _observation_context_status(("000003", "20260515"), {}, {}, index)
+    legacy = _observation_context_status(("000004", "20260514"), {}, {}, index)
+    events = [
+        {
+            "recommend_date": 20260515,
+            "label_ready": True,
+            "observation_context_status": matched,
+            "observation_regimes": ["NEUTRAL"],
+            "observation_signal_types": ["sos"],
+            "observation_industries": ["电子"],
+            "observation_tracks": ["Trend"],
+        },
+        {
+            "recommend_date": 20260515,
+            "label_ready": True,
+            "observation_context_status": fallback,
+            "observation_signal_types": ["lps"],
+        },
+        {"recommend_date": 20260515, "label_ready": True, "observation_context_status": unmatched},
+        {"recommend_date": 20260514, "label_ready": True, "observation_context_status": legacy},
+    ]
+
+    coverage = _observation_coverage(events, index)
+
+    assert matched == "matched_observation"
+    assert fallback == "tracking_fallback"
+    assert unmatched == "not_in_observation_universe"
+    assert legacy == "no_observation_for_date"
+    assert coverage["coverage_pct"] == 50.0
+    assert coverage["observed_date_coverage_pct"] == 66.67
+    assert coverage["ready_observed_date_coverage_pct"] == 66.67
+    assert coverage["field_coverage"]["regime"]["coverage_pct"] == 25.0
+    assert coverage["field_coverage"]["signal_type"]["coverage_pct"] == 50.0
+    assert coverage["field_coverage"]["regime_signal"]["coverage_pct"] == 25.0
+    assert coverage["status_counts"] == {
+        "matched_observation": 1,
+        "no_observation_for_date": 1,
+        "not_in_observation_universe": 1,
+        "tracking_fallback": 1,
+    }
 
 
 def _event(
