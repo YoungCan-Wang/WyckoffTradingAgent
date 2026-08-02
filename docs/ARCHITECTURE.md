@@ -672,6 +672,10 @@ TTL：SOS 2 天、Spring 3 天、LPS 3 天、EVR 2 天、Compression 3 天。
 规则统一见 [`SIGNAL_FEEDBACK_LOOP.md`](SIGNAL_FEEDBACK_LOOP.md)，研究证据门槛见
 [`ITERATION_STRATEGY.md`](ITERATION_STRATEGY.md)。
 
+`workflows/recommendation_event_eval.py` 对 `signal_observations` 做稳定排序分页，避免 PostgREST 1000 行上限
+把已有上下文误报为 `unknown`。推荐事件优先使用 observation，缺失时降级到 tracking 行内的水温、信号、
+行业和轨道；覆盖状态与成熟样本覆盖率显式进入报告，查询失败不能伪装成历史缺口。
+
 ## 持仓诊断
 
 `core/holding_diagnostic.py` + `scripts/holding_diagnosis_job.py`

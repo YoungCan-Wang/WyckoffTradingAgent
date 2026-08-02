@@ -18,12 +18,32 @@ def recommendation_event_eval_result_summary(result: dict[str, Any]) -> str:
         f"推荐事件评估: ready={ready}, hit={_summary_pct(all_rows.get('hit_rate_pct'))}%, ranking_decision={status}",
         _ranking_decision_line(status, strategy, top_k),
     ]
+    if coverage_line := _context_coverage_line(summary.get("context_coverage")):
+        lines.append(coverage_line)
     if pick_line := _policy_selection_summary_line(selection):
         lines.append(pick_line)
     reason = str(decision.get("reason") or "").strip()
     if reason:
         lines.append(f"reason: {reason}")
     return "\n".join(line for line in lines if line)
+
+
+def _context_coverage_line(raw: Any) -> str:
+    coverage = raw if isinstance(raw, dict) else {}
+    total = int(coverage.get("rows_total") or 0)
+    if total <= 0:
+        return ""
+    matched = int(coverage.get("rows_matched") or 0)
+    ready_total = int(coverage.get("ready_rows_on_observed_dates") or 0)
+    ready_matched = int(coverage.get("ready_rows_matched_on_observed_dates") or 0)
+    counts = coverage.get("status_counts") if isinstance(coverage.get("status_counts"), dict) else {}
+    return (
+        f"上下文覆盖: {matched}/{total} ({_summary_pct(coverage.get('coverage_pct'))}%), "
+        f"成熟={ready_matched}/{ready_total} "
+        f"({_summary_pct(coverage.get('ready_observed_date_coverage_pct'))}%), "
+        f"observation={int(counts.get('matched_observation') or 0)}, "
+        f"tracking_fallback={int(counts.get('tracking_fallback') or 0)}"
+    )
 
 
 def _ranking_decision_line(status: str, strategy: str, top_k: Any) -> str:

@@ -51,6 +51,9 @@ _DECISION_MIN_READY_ROWS = 10
 _DECISION_MIN_HIT_LIFT_PCT = 5.0
 _DECISION_MIN_MFE_LIFT_PCT = 0.0
 _DECISION_MAX_MAE_WORSE_PCT = -1.0
+_CONTEXT_MIN_READY_ROWS = 30
+_CONTEXT_WATCH_READY_ROWS = 10
+_OBSERVATION_PAGE_SIZE = 1000
 _OBSERVATION_CONTEXT_FIELDS = {
     "regime": "observation_regimes",
     "signal_type": "observation_signal_types",
@@ -68,6 +71,14 @@ class RecommendationEventEvalRequest:
     kline_count: int = 160
     output_dir: str = "artifacts/recommendation_event_eval"
     top_k: tuple[int, ...] = (1, 3, 5)
+
+
+@dataclass(frozen=True)
+class _ObservationFeatureIndex:
+    features: dict[tuple[str, str], dict[str, Any]]
+    observed_dates: frozenset[str]
+    fetch_status: str
+    row_count: int = 0
 
 
 def run_recommendation_event_eval(request: RecommendationEventEvalRequest) -> int:
@@ -97,13 +108,15 @@ def build_recommendation_event_eval(request: RecommendationEventEvalRequest) -> 
 
     market = resolve_tracking_market(request.market)
     records = _fetch_records(market, request.max_dates)
-    feature_map = _fetch_observation_feature_map(market, records)
+    observation_index = _fetch_observation_feature_index(market, records)
     grouped = group_records_by_market_code(records, market)
     hist_by_code = _fetch_hist_by_code(api_key, sorted(grouped), market, request.kline_count)
-    events = _build_events(grouped, hist_by_code, request, feature_map)
+    events = _build_events(grouped, hist_by_code, request, observation_index)
     events_by_date = _events_by_date(events)
     ranked_by_strategy = _ranked_events_by_strategy(events_by_date)
     summary = _build_summary(events, request.top_k, events_by_date, ranked_by_strategy)
+    context_coverage = _observation_coverage(events, observation_index)
+    summary["context_coverage"] = context_coverage
     policy_selection = _policy_selection(
         events,
         summary.get("ranking_decision") or {},
@@ -111,7 +124,7 @@ def build_recommendation_event_eval(request: RecommendationEventEvalRequest) -> 
         ranked_by_strategy,
     )
     result = {
-        "metadata": _metadata(request, market, records, grouped),
+        "metadata": _metadata(request, market, records, grouped, context_coverage),
         "summary": summary,
         "daily": _daily_summary(events_by_date),
         "policy_selection": policy_selection,
@@ -136,29 +149,43 @@ def _fetch_records(market: str, max_dates: int) -> list[dict[str, Any]]:
         start += 1000
 
 
-def _fetch_observation_feature_map(
+def _fetch_observation_feature_index(
     market: str,
     records: list[dict[str, Any]],
-) -> dict[tuple[str, str], dict[str, Any]]:
+) -> _ObservationFeatureIndex:
     dates = sorted({_date_iso(recommend_date_to_yyyymmdd(row.get("recommend_date"))) for row in records})
     dates = [day for day in dates if day]
     if not dates:
-        return {}
+        return _ObservationFeatureIndex({}, frozenset(), "empty_input")
     client = create_admin_client()
-    rows: list[dict[str, Any]] = []
     try:
-        for batch in chunked(dates, 100):
-            resp = (
+        rows = _fetch_observation_rows(client, market, dates)
+    except Exception:
+        return _ObservationFeatureIndex({}, frozenset(), "query_failed")
+    observed_dates = frozenset(_date_compact(row.get("trade_date")) for row in rows if row.get("trade_date"))
+    return _ObservationFeatureIndex(_observation_feature_map(rows, market), observed_dates, "ok", len(rows))
+
+
+def _fetch_observation_rows(client: Any, market: str, dates: list[str]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for date_batch in chunked(dates, 100):
+        start = 0
+        while True:
+            response = (
                 client.table(TABLE_SIGNAL_OBSERVATIONS)
-                .select("trade_date,code,regime,signal_type,industry,track,features_json")
+                .select("id,trade_date,code,regime,signal_type,industry,track,features_json")
                 .eq("market", market)
-                .in_("trade_date", batch)
+                .in_("trade_date", date_batch)
+                .order("id", desc=False)
+                .range(start, start + _OBSERVATION_PAGE_SIZE - 1)
                 .execute()
             )
-            rows.extend(resp.data or [])
-    except Exception:
-        return {}
-    return _observation_feature_map(rows, market)
+            page = response.data or []
+            rows.extend(page)
+            if len(page) < _OBSERVATION_PAGE_SIZE:
+                break
+            start += _OBSERVATION_PAGE_SIZE
+    return rows
 
 
 def _observation_feature_map(rows: list[dict[str, Any]], market: str = "cn") -> dict[tuple[str, str], dict[str, Any]]:
@@ -220,13 +247,13 @@ def _build_events(
     grouped: dict[str, list[dict[str, Any]]],
     hist_by_code: dict[str, pd.DataFrame | None],
     request: RecommendationEventEvalRequest,
-    feature_map: dict[tuple[str, str], dict[str, Any]] | None = None,
+    observation_index: _ObservationFeatureIndex | None = None,
 ) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
-    feature_map = feature_map or {}
+    observation_index = observation_index or _ObservationFeatureIndex({}, frozenset(), "not_requested")
     for code, rows in sorted(grouped.items()):
         ohlc = ohlc_map_from_tickflow_hist(hist_by_code.get(code))
-        events.extend(_event_with_quality(row, code, ohlc, request, feature_map) for row in rows)
+        events.extend(_event_with_quality(row, code, ohlc, request, observation_index) for row in rows)
     return sorted(events, key=lambda item: (item.get("recommend_date") or 0, str(item.get("code") or "")))
 
 
@@ -235,11 +262,34 @@ def _event_with_quality(
     code: str,
     ohlc: dict[str, dict[str, float]],
     request: RecommendationEventEvalRequest,
-    feature_map: dict[tuple[str, str], dict[str, Any]],
+    observation_index: _ObservationFeatureIndex,
 ) -> dict[str, Any]:
     event = build_horizon_event(row, ohlc, horizon_days=request.horizon_days, target_pct=request.target_pct)
     key = (_code_key(code, resolve_tracking_market(request.market)), _date_compact(row.get("recommend_date")))
-    return {**event, **_quality_feature_fields(row, feature_map.get(key, {}))}
+    observed = observation_index.features.get(key, {})
+    quality_fields = _quality_feature_fields(row, observed)
+    return {
+        **event,
+        **quality_fields,
+        "observation_context_status": _observation_context_status(key, observed, quality_fields, observation_index),
+    }
+
+
+def _observation_context_status(
+    key: tuple[str, str],
+    observed: dict[str, Any],
+    quality_fields: dict[str, Any],
+    index: _ObservationFeatureIndex,
+) -> str:
+    if observed:
+        return "matched_observation"
+    if any(quality_fields.get(field) for field in _OBSERVATION_CONTEXT_FIELDS.values()):
+        return "tracking_fallback"
+    if index.fetch_status == "query_failed":
+        return "query_failed"
+    if key[1] in index.observed_dates:
+        return "not_in_observation_universe"
+    return "no_observation_for_date"
 
 
 def _build_summary(
@@ -272,6 +322,12 @@ def _build_summary(
             )
         },
     }
+    summary["outcome_context"]["regime_signal"] = _paired_context_summary(
+        events, "observation_regimes", "observation_signal_types"
+    )
+    summary["outcome_context"]["regime_industry"] = _paired_context_summary(
+        events, "observation_regimes", "observation_industries"
+    )
     return summary
 
 
@@ -289,13 +345,37 @@ def _context_summary(events: list[dict[str, Any]], field: str) -> dict[str, Any]
         labels = _str_list(event.get(field)) or ["unknown"]
         for label in dict.fromkeys(labels):
             groups[label].append(event)
-    summaries = {label: summarize_horizon_events(rows) for label, rows in groups.items()}
+    summaries = {label: _context_evidence_summary(rows) for label, rows in groups.items()}
     return dict(
         sorted(
             summaries.items(),
             key=lambda item: (-int(item[1].get("rows_ready") or 0), -int(item[1].get("rows_total") or 0), item[0]),
         )
     )
+
+
+def _paired_context_summary(events: list[dict[str, Any]], left_field: str, right_field: str) -> dict[str, Any]:
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for event in events:
+        left_values = _str_list(event.get(left_field))
+        right_values = _str_list(event.get(right_field))
+        for left in dict.fromkeys(left_values):
+            for right in dict.fromkeys(right_values):
+                groups[f"{left} × {right}"].append(event)
+    summaries = {label: _context_evidence_summary(rows) for label, rows in groups.items()}
+    return dict(sorted(summaries.items(), key=lambda item: (-int(item[1].get("rows_ready") or 0), item[0])))
+
+
+def _context_evidence_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
+    summary = summarize_horizon_events(events)
+    ready = int(summary.get("rows_ready") or 0)
+    if ready >= _CONTEXT_MIN_READY_ROWS:
+        status = "evaluable"
+    elif ready >= _CONTEXT_WATCH_READY_ROWS:
+        status = "watch"
+    else:
+        status = "insufficient_sample"
+    return {**summary, "evidence_status": status}
 
 
 def _top_k_by_strategy(
@@ -692,6 +772,7 @@ def _metadata(
     market: str,
     records: list[dict[str, Any]],
     grouped: dict[str, list[dict[str, Any]]],
+    context_coverage: dict[str, Any],
 ) -> dict[str, Any]:
     return {
         "generated_at": datetime.now(UTC).isoformat(),
@@ -702,7 +783,77 @@ def _metadata(
         "kline_count": request.kline_count,
         "records": len(records),
         "codes": len(grouped),
+        "observation_context": context_coverage,
     }
+
+
+def _observation_coverage(
+    events: list[dict[str, Any]],
+    index: _ObservationFeatureIndex,
+) -> dict[str, Any]:
+    status_counts: dict[str, int] = defaultdict(int)
+    ready_status_counts: dict[str, int] = defaultdict(int)
+    for event in events:
+        status = str(event.get("observation_context_status") or "unknown")
+        status_counts[status] += 1
+        if event.get("label_ready"):
+            ready_status_counts[status] += 1
+    matched_statuses = {"matched_observation", "tracking_fallback"}
+    matched = sum(count for status, count in status_counts.items() if status in matched_statuses)
+    ready_matched = sum(count for status, count in ready_status_counts.items() if status in matched_statuses)
+    observed_events = [event for event in events if _date_compact(event.get("recommend_date")) in index.observed_dates]
+    observed_matched = sum(
+        1 for event in observed_events if event.get("observation_context_status") in matched_statuses
+    )
+    ready_observed_events = [event for event in observed_events if event.get("label_ready")]
+    ready_observed_matched = sum(
+        1 for event in ready_observed_events if event.get("observation_context_status") in matched_statuses
+    )
+    dates = sorted(index.observed_dates)
+    return {
+        "fetch_status": index.fetch_status,
+        "observation_rows_fetched": index.row_count,
+        "observed_dates": len(dates),
+        "first_observation_date": dates[0] if dates else None,
+        "last_observation_date": dates[-1] if dates else None,
+        "rows_total": len(events),
+        "rows_matched": matched,
+        "coverage_pct": _percentage(matched, len(events)),
+        "rows_on_observed_dates": len(observed_events),
+        "rows_matched_on_observed_dates": observed_matched,
+        "observed_date_coverage_pct": _percentage(observed_matched, len(observed_events)),
+        "ready_rows_on_observed_dates": len(ready_observed_events),
+        "ready_rows_matched": ready_matched,
+        "ready_rows_matched_on_observed_dates": ready_observed_matched,
+        "ready_observed_date_coverage_pct": _percentage(ready_observed_matched, len(ready_observed_events)),
+        "field_coverage": _context_field_coverage(events),
+        "status_counts": dict(sorted(status_counts.items())),
+        "ready_status_counts": dict(sorted(ready_status_counts.items())),
+    }
+
+
+def _context_field_coverage(events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    fields = {
+        **{source: (target,) for source, target in _OBSERVATION_CONTEXT_FIELDS.items()},
+        "regime_signal": ("observation_regimes", "observation_signal_types"),
+        "regime_industry": ("observation_regimes", "observation_industries"),
+    }
+    ready_events = [event for event in events if event.get("label_ready")]
+    coverage: dict[str, dict[str, Any]] = {}
+    for name, required in fields.items():
+        matched = sum(1 for event in events if all(_str_list(event.get(field)) for field in required))
+        ready_matched = sum(1 for event in ready_events if all(_str_list(event.get(field)) for field in required))
+        coverage[name] = {
+            "rows_matched": matched,
+            "coverage_pct": _percentage(matched, len(events)),
+            "ready_rows_matched": ready_matched,
+            "ready_coverage_pct": _percentage(ready_matched, len(ready_events)),
+        }
+    return coverage
+
+
+def _percentage(numerator: int, denominator: int) -> float | None:
+    return round(numerator / denominator * 100.0, 2) if denominator > 0 else None
 
 
 def _write_markdown(path: Path, result: dict[str, Any]) -> None:
@@ -713,10 +864,15 @@ def _write_markdown(path: Path, result: dict[str, Any]) -> None:
         f"- Market: `{meta['market']}`",
         f"- Target: `{meta['target_pct']}%` within `{meta['horizon_days']}` future trading days",
         f"- Records: `{meta['records']}` rows / `{meta['codes']}` codes",
-        "",
-        "| Slice | Ready | Hit rate | Close win | Avg close | Payoff | Avg MFE | Avg MAE |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
+    lines.extend(_coverage_markdown(meta.get("observation_context") or {}))
+    lines.extend(
+        [
+            "",
+            "| Slice | Ready | Hit rate | Close win | Avg close | Payoff | Avg MFE | Avg MAE |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
     lines.extend(_summary_markdown_rows(result["summary"]))
     lines.extend(_strategy_markdown(result["summary"]["top_k_by_strategy"]))
     lines.extend(_strategy_lift_markdown(result["summary"].get("top_k_lift_vs_score_only") or {}))
@@ -725,6 +881,39 @@ def _write_markdown(path: Path, result: dict[str, Any]) -> None:
     lines.extend(_quality_markdown(result["summary"]))
     lines.extend(_context_markdown(result["summary"].get("outcome_context") or {}))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _coverage_markdown(coverage: dict[str, Any]) -> list[str]:
+    counts = coverage.get("status_counts") if isinstance(coverage.get("status_counts"), dict) else {}
+    rows = [
+        "",
+        "## Observation Context Coverage",
+        "",
+        f"- Fetch status: `{coverage.get('fetch_status', 'unknown')}`",
+        f"- Observation rows fetched: `{coverage.get('observation_rows_fetched', 0)}`",
+        f"- Observation dates: `{coverage.get('observed_dates', 0)}` "
+        f"(`{coverage.get('first_observation_date') or 'n/a'}` to `{coverage.get('last_observation_date') or 'n/a'}`)",
+        f"- Overall matched: `{coverage.get('rows_matched', 0)}/{coverage.get('rows_total', 0)}` "
+        f"(`{_fmt(coverage.get('coverage_pct'))}%`)",
+        f"- Matched on observed dates: `{coverage.get('rows_matched_on_observed_dates', 0)}/"
+        f"{coverage.get('rows_on_observed_dates', 0)}` "
+        f"(`{_fmt(coverage.get('observed_date_coverage_pct'))}%`)",
+        f"- Mature matched on observed dates: `{coverage.get('ready_rows_matched_on_observed_dates', 0)}/"
+        f"{coverage.get('ready_rows_on_observed_dates', 0)}` "
+        f"(`{_fmt(coverage.get('ready_observed_date_coverage_pct'))}%`)",
+        f"- Status counts: `{json.dumps(counts, ensure_ascii=False, sort_keys=True)}`",
+        "",
+        "| Context field | All coverage | Mature coverage |",
+        "|---|---:|---:|",
+    ]
+    for name, item in (coverage.get("field_coverage") or {}).items():
+        rows.append(
+            f"| {name} | {item.get('rows_matched', 0)}/{coverage.get('rows_total', 0)} "
+            f"({_fmt(item.get('coverage_pct'))}%) | "
+            f"{item.get('ready_rows_matched', 0)}/{coverage.get('ready_rows_on_observed_dates', 0)} "
+            f"({_fmt(item.get('ready_coverage_pct'))}%) |"
+        )
+    return rows
 
 
 def _summary_markdown_rows(summary: dict[str, Any]) -> list[str]:
@@ -873,6 +1062,8 @@ def _context_markdown(context: dict[str, Any]) -> list[str]:
         ("Signal type", "signal_type", 0),
         ("Industry", "industry", 20),
         ("Track", "track", 0),
+        ("Regime × signal", "regime_signal", 0),
+        ("Regime × industry", "regime_industry", 30),
     ):
         rows.extend(_context_table(title, context.get(key) or {}, limit))
     return rows
@@ -883,13 +1074,18 @@ def _context_table(title: str, groups: dict[str, Any], limit: int) -> list[str]:
         "",
         f"### {title}",
         "",
-        "| Value | Ready | Hit rate | Close win | Avg close | Payoff | Avg MFE | Avg MAE |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|",
+        "| Value | Ready | Hit rate | Close win | Avg close | Payoff | Avg MFE | Avg MAE | Evidence |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     items = list(groups.items())[: limit or None]
     if not items:
-        return [*rows, "| n/a | 0/0 | n/a | n/a | n/a | n/a | n/a | n/a |"]
-    return [*rows, *(_summary_row(label, item) for label, item in items)]
+        return [*rows, "| n/a | 0/0 | n/a | n/a | n/a | n/a | n/a | n/a | insufficient_sample |"]
+    return [*rows, *(_context_summary_row(label, item) for label, item in items)]
+
+
+def _context_summary_row(label: str, row: dict[str, Any]) -> str:
+    summary = _summary_row(label, row).removesuffix("|").rstrip()
+    return f"{summary} | {row.get('evidence_status', 'insufficient_sample')} |"
 
 
 def _quality_table(title: str, grade_rows: dict[str, Any]) -> list[str]:
@@ -948,7 +1144,7 @@ def _quality_feature_fields(row: dict[str, Any], observed_features: dict[str, An
     features = _merge_quality_features(_json_map(observed_features), _json_map(row.get("features_json")))
     shadow = _json_map(features.get("candidate_shadow_score"))
     entry = _json_map(features.get("entry_quality"))
-    context = _json_map(features.get("outcome_context"))
+    context = _tracking_outcome_context(row, _json_map(features.get("outcome_context")))
     return {
         "candidate_shadow_score": _optional_number(shadow.get("score")),
         "candidate_shadow_grade": _grade(shadow.get("grade")),
@@ -965,7 +1161,33 @@ def _merge_quality_features(base: dict[str, Any], overlay: dict[str, Any]) -> di
         value = _json_map(overlay.get(key))
         if value:
             merged[key] = value
+    base_context = _json_map(merged.get("outcome_context"))
+    overlay_context = _json_map(overlay.get("outcome_context"))
+    context = {
+        target: sorted({*_str_list(base_context.get(target)), *_str_list(overlay_context.get(target))})
+        for target in _OBSERVATION_CONTEXT_FIELDS.values()
+    }
+    if any(context.values()):
+        merged["outcome_context"] = context
     return merged
+
+
+def _tracking_outcome_context(row: dict[str, Any], base: dict[str, Any]) -> dict[str, Any]:
+    sources = {
+        "observation_regimes": _str_list(row.get("market_regime")),
+        "observation_signal_types": [
+            *_str_list(row.get("signal_types")),
+            *_str_list(row.get("primary_signal")),
+        ],
+        "observation_industries": _str_list(row.get("industry")),
+        "observation_tracks": _str_list(row.get("signal_track")),
+    }
+    context: dict[str, Any] = {}
+    for target, values in sources.items():
+        selected = _str_list(base.get(target)) or values
+        if selected:
+            context[target] = sorted(set(selected))
+    return context
 
 
 def _grade(raw: Any) -> str:

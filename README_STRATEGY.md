@@ -51,6 +51,10 @@ A 股主漏斗先写观察样本，盘后 feedback 再计算 outcomes，下一�
 [docs/ITERATION_STRATEGY.md](docs/ITERATION_STRATEGY.md) 维护。这里仅保留策略边界：Shadow 不改变真实推荐，
 `on` 也不能绕过 `formal_dynamic_allowed`、跨周期回测和人工复核。
 
+推荐事件 evaluator 会分页读取 `signal_observations`，并使用 `recommendation_tracking` 自带字段补足同日
+上下文；报告同时展示覆盖率和“水温 × 信号/行业”切片。切片达到 10 个成熟样本仅进入 watch，达到 30 个
+才可评价，仍不能直接改变正式候选、AI 排序或 OMS。
+
 ### 外部观察验证
 
 人工关注、社区反馈或其它系统给出的股票可以通过 `external_seeds` 加入观察池。它们不属于正式候选来源，不会进入 AI 推荐池，只记录在 `external_seed_observations`：

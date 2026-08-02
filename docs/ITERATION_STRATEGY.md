@@ -24,7 +24,7 @@ alpha，再谈怎么接。
 | 短线事件 | 未来 5 日命中、MFE、MAE 与 Top-K lift | 只读评估，不回写生产推荐 |
 | 主题轮动 | `rotation_watch` 的短周期动量和宽度 | Shadow 提示，不改变主线确认或 OMS |
 | 基本面质量 Overlay | 公告日前可见财报的 point-in-time 历史回放 | 0/3 周期通过，回测脚本已下线；仅作为读盘室按需查询工具（`analyze_stock mode=fundamental`），不接入 A股漏斗/Shadow/生产排序 |
-| A股实证入场 | 弱水温仓位与 NEUTRAL Spring 缩仓 | 默认回测 A/M/P，未验证前不改变生产漏斗；Q 广度确认实验实现已删除 |
+| A股实证入场 | 弱水温仓位与 NEUTRAL Spring 缩仓 | A/M/P 及 Q/R/S/T 均未晋级；默认网格不再复跑，只有 `run_strategy_compare=true` 时手动复现 |
 | L4 形态信号边际 | 五窗口约 9000 笔的无障碍毛漂移与日期配对 alpha | alpha≈0，四层已排除；停止形态参数迭代 |
 
 ### 基本面质量 Overlay 本地结论（2026-07-18）
@@ -111,12 +111,16 @@ LPS（7 笔、约 −4900）与 SOS（60 笔、约 −4863）。Spring 缩至四
 run [30704303455](https://github.com/YoungCan-Wang/WyckoffTradingAgent/actions/runs/30704303455) 进一步固定 P 的
 Top-N，用不补位方式分别禁止 NEUTRAL Spring、LPS、NEUTRAL EVR 和 CAUTION SOS。四组均未达到晋级门槛：
 Q/S/T 跨窗口不稳；R 虽在 4/5 窗口改善、平均相对 P 增益 +2.82pp 且未恶化最大回撤，但 P 组直接成交的
-LPS 只有 8 笔。独立的最近 90 个推荐日事件样本又显示 33 条已成熟 LPS 的 5 日平均收盘收益为 +0.79%，
-方向与小样本回测相反。因此不禁止生产 LPS，也不继续组合这些形态门控；实验 PR 关闭，证据保留在 Actions。
+LPS 只有 8 笔。修复 observation 分页与 tracking fallback 后，最近 90 个推荐日事件中成熟 LPS 扩为 67 条，
+5 日平均收盘收益 −2.79%，但仍好于全样本 −4.92%；NEUTRAL × LPS 的 40 条成熟样本为 −1.52%。因此证据
+仍不支持生产全局禁用 LPS，也不继续组合这些形态门控；实验 PR 关闭，证据保留在 Actions。
 
-同一批推荐事件共 637 条、492 条标签成熟。候选影子排序相对原漏斗分在 Top1/3/5 的命中率均无提升，
+同一批推荐事件共 703 条、492 条标签成熟。候选影子排序相对原漏斗分在 Top1/3/5 的命中率均无提升，
 平均收盘收益与 MAE 也未改善；AI 优先排序同样不增益。当前实现保持 `score_only`，后续 evaluator 改为从
-同日 observation 带回水温、信号、行业和轨道，先回答亏损集中在哪个上下文，不再把同一规则盲目套全市场。
+同日 observation 带回水温、信号、行业和轨道，并用 tracking 字段补缺。分页修复后总上下文覆盖率为
+654/703（93.03%），成熟样本覆盖率为 443/492（90.04%）。当前可评价的组合中 NEUTRAL × SOS 为 −4.40%、
+NEUTRAL × EVR 为 −4.45%、CRASH × crash_resilience_watch 为 −5.19%，都没有形成可晋级的正收益规则；
+NEUTRAL × wyckoff_structure 虽为 +1.29%，只有 12 条成熟样本，保持 watch，不新开生产消融。
 
 `pending_mode=only` 的报告必须把成交触发器显示为实际 confirmed 信号族；同一股票当日还命中更高分的
 未确认形态时，可以保留更高数值供归因，但不能把标签降级成裸 `spring` / `sos`。`both` 研究模式仍按
