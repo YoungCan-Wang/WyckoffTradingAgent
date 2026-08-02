@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -274,6 +275,7 @@ class _TurnRunState:
     round_usages: dict[int, dict[str, Any]] = field(default_factory=dict)
     round_tool_names: dict[int, list[str]] = field(default_factory=dict)
     round_starts: dict[int, float] = field(default_factory=dict)
+    round_thinking: dict[int, str] = field(default_factory=dict)
     final_usage: dict[str, int] = field(default_factory=lambda: {"input_tokens": 0, "output_tokens": 0})
     final_elapsed: float = 0.0
     final_rounds: int = 0
@@ -379,6 +381,22 @@ def _tool_display_name(tools, name: str) -> str:
     return tools.display_name(name) if tools else name
 
 
+_PERSISTED_TOOL_RESULT_MAX_CHARS = 20_000
+
+
+def _persistable_tool_result(result: Any) -> tuple[Any, bool]:
+    """把工具结果压成可入库的形态，过大就截断并标记，避免 chat_log 被单条撑爆。"""
+    if result is None:
+        return None, False
+    try:
+        rendered = json.dumps(result, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        rendered = str(result)
+    if len(rendered) <= _PERSISTED_TOOL_RESULT_MAX_CHARS:
+        return result, False
+    return rendered[:_PERSISTED_TOOL_RESULT_MAX_CHARS], True
+
+
 def _tool_result_view(event: dict[str, Any], tools) -> tuple[dict[str, object], Text]:
     name = event["name"]
     args = event.get("args", {})
@@ -387,7 +405,20 @@ def _tool_result_view(event: dict[str, Any], tools) -> tuple[dict[str, object], 
     if result is None and event.get("error"):
         result = {"error": event["error"]}
     elapsed_s = float(event.get("elapsed_ms", 0)) / 1000
-    summary: dict[str, object] = {"name": name, "args_brief": str(args)[:100]}
+    summary: dict[str, object] = {
+        "name": name,
+        "display_name": display,
+        "args_brief": str(args)[:100],
+        "args": args,
+        "elapsed_ms": event.get("elapsed_ms", 0),
+    }
+    if call_id := event.get("tool_call_id"):
+        summary["tool_call_id"] = call_id
+    persisted_result, truncated = _persistable_tool_result(result)
+    if persisted_result is not None:
+        summary["result"] = persisted_result
+        if truncated:
+            summary["result_truncated"] = True
 
     if isinstance(result, dict) and result.get("error"):
         summary.update({"status": "error", "error": str(result.get("error", ""))[:160]})
@@ -414,12 +445,18 @@ def _display_tool_result_event(event: dict[str, Any], tools, write, scroll) -> d
     return summary
 
 
+def _workflow_verbose_plan() -> bool:
+    """默认只渲染进度骨架；路由/脚本来源这些内部信息用 /workflow show 或本开关查看。"""
+    return os.getenv("WYCKOFF_WORKFLOW_VERBOSE", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _display_workflow_plan_event(
     event: dict[str, Any],
     write,
     scroll,
     *,
     launch_state: str = "running",
+    verbose: bool | None = None,
 ) -> tuple[str, str]:
     run_id = str(event.get("run_id", ""))
     workflow_name = str(event.get("workflow", ""))
@@ -427,17 +464,41 @@ def _display_workflow_plan_event(
     steps = event.get("plan", {}).get("steps", [])
     step_count = len(steps) if isinstance(steps, list) else 0
     count_text = _workflow_task_count_text(event.get("plan"), step_count)
-    lines = [f"  [bold cyan]workflow[/bold cyan] [bold]{escape(label)}[/bold] [dim]{escape(run_id)}{count_text}[/dim]"]
-    lines.extend(_workflow_plan_detail_lines(event, label, steps, step_count, launch_state))
+    header_mark = {"pending_approval": "◇", "adapted": "↻"}.get(launch_state, "⚡")
+    lines = [
+        f"  [bold cyan]{header_mark} workflow[/bold cyan] [bold]{escape(label)}[/bold]"
+        f" [dim]{escape(run_id)}{count_text}[/dim]"
+    ]
+    if verbose is None:
+        verbose = _workflow_verbose_plan()
+    lines.extend(_workflow_plan_detail_lines(event, label, steps, step_count, launch_state, verbose))
     write(Text.from_markup("\n".join(line for line in lines if line)))
     scroll()
     return run_id, workflow_name
 
 
 def _workflow_plan_detail_lines(
-    event: dict[str, Any], label: str, steps: Any, step_count: int, launch_state: str
+    event: dict[str, Any],
+    label: str,
+    steps: Any,
+    step_count: int,
+    launch_state: str,
+    verbose: bool = False,
 ) -> list[str]:
     plan = event.get("plan", {})
+    lines: list[str] = []
+    if verbose:
+        lines.extend(_workflow_plan_provenance_lines(event, plan, label))
+    if not step_count:
+        return lines
+    lines.extend(_workflow_plan_tree_lines(steps))
+    if verbose:
+        lines.extend(_workflow_plan_execution_lines(steps))
+    lines.append(_workflow_plan_footer_line(str(event.get("run_id", "")), launch_state))
+    return lines
+
+
+def _workflow_plan_provenance_lines(event: dict[str, Any], plan: Any, label: str) -> list[str]:
     lines: list[str] = []
     if route_line := _workflow_event_route_line(event):
         lines.append(route_line)
@@ -451,13 +512,35 @@ def _workflow_plan_detail_lines(
         lines.append(rationale_line)
     if contract_line := _workflow_plan_contract_line(plan):
         lines.append(contract_line)
-    if not step_count:
-        return lines
-    if launch_state == "pending_approval":
-        lines.extend(_workflow_plan_step_preview_lines(steps))
-    else:
-        lines.extend(_workflow_plan_execution_lines(steps))
-    lines.append(_workflow_plan_footer_line(str(event.get("run_id", "")), launch_state))
+    return lines
+
+
+def _workflow_plan_tree_lines(steps: Any, *, limit: int = 8) -> list[str]:
+    """把计划渲染成带序号的阶段树，让"要跑几步、跑到哪一步"一眼可见。"""
+    if not isinstance(steps, list):
+        return []
+    rows = [step for step in steps if isinstance(step, dict)]
+    if not rows:
+        return []
+    visible = rows[:limit]
+    lines: list[str] = []
+    last_phase = ""
+    for index, step in enumerate(visible, 1):
+        phase = str(step.get("phase") or "").strip()
+        if phase and phase != last_phase:
+            lines.append(f"    [dim]· {escape(phase[:40])}[/dim]")
+            last_phase = phase
+        is_last = index == len(visible) and len(rows) <= limit
+        glyph = "└" if is_last else "├"
+        title = escape(str(step.get("title") or step.get("step_id") or step.get("id") or "task")[:48])
+        tools, _label = _workflow_step_tool_values(step)
+        tool_text = "、".join(_workflow_tool_display_name(tool) for tool in tools[:3])
+        if len(tools) > 3:
+            tool_text += f"、+{len(tools) - 3}"
+        suffix = f" [dim]· {escape(tool_text)}[/dim]" if tool_text else ""
+        lines.append(f"    [dim]{glyph}[/dim] [dim]{index}[/dim] {title}{suffix}")
+    if len(rows) > limit:
+        lines.append(f"    [dim]└ 另有 {len(rows) - limit} 个任务，详情见 /workflow show[/dim]")
     return lines
 
 
@@ -711,6 +794,16 @@ def _is_visible_route_match(text: str) -> bool:
     return not text.startswith("model_router") and not text.endswith("_guard")
 
 
+def _workflow_step_position_text(event: dict[str, Any]) -> str:
+    """[2/3] 这种位置标记，让后台跑到第几步一眼可见。"""
+    try:
+        index = int(event.get("step_index", 0) or 0)
+        total = int(event.get("step_total", 0) or 0)
+    except (TypeError, ValueError):
+        return ""
+    return f"[{index}/{total}] " if index > 0 and total > 0 else ""
+
+
 def _display_workflow_step_event(event: dict[str, Any], write, scroll) -> None:
     step = event.get("step", {})
     status = step.get("status", "")
@@ -720,10 +813,11 @@ def _display_workflow_step_event(event: dict[str, Any], write, scroll) -> None:
     summary = _workflow_visible_summary(step)
     label = {"running": "运行中", "completed": "完成", "failed": "失败", "skipped": "跳过"}.get(status, status)
     meta = _workflow_step_live_meta(step, label)
+    position = _workflow_step_position_text(event)
     suffix = f" {summary}" if summary else ""
-    write(Text.from_markup(f"    [{color}]{mark} {title}[/{color}] [dim]{meta}{suffix}[/dim]"))
+    write(Text.from_markup(f"    [{color}]{mark} [dim]{position}[/dim]{title}[/{color}] [dim]{meta}{suffix}[/dim]"))
     for line in _workflow_step_handoff_lines(event):
-        write(Text.from_markup(f"      [dim]证据: {escape(line)}[/dim]"))
+        write(Text.from_markup(f"      [dim]└ 证据: {escape(line)}[/dim]"))
     scroll()
 
 
@@ -1181,15 +1275,62 @@ def _workflow_bg_event_summary(event: dict[str, Any]) -> dict[str, Any]:
             payload[key] = event.get(key)
     step = event.get("step")
     if isinstance(step, dict):
-        payload["step"] = {
+        step_payload: dict[str, Any] = {
             "title": step.get("title", ""),
             "agent": step.get("agent", ""),
             "status": step.get("status", ""),
             "summary": step.get("summary", ""),
         }
+        for key in ("step_id", "phase", "tool_scope"):
+            if step.get(key) not in (None, "", []):
+                step_payload[key] = step.get(key)
+        # 耗时/工具/结果在 source.agent_detail 里，不在 step.to_dict() 里；
+        # 不捞出来的话 workflow 轮次在库里查不到任何执行细节。
+        detail = event.get("source", {}).get("agent_detail") if isinstance(event.get("source"), dict) else None
+        if isinstance(detail, dict):
+            if detail.get("elapsed"):
+                step_payload["elapsed"] = detail["elapsed"]
+            if tool_calls := detail.get("tool_calls"):
+                step_payload["tool_calls"] = tool_calls
+            if step_result := detail.get("result"):
+                step_payload["result"] = str(step_result)[:4000]
+            if step_error := detail.get("error"):
+                step_payload["error"] = str(step_error)[:1000]
         if evidence := _workflow_step_handoff_lines(event):
-            payload["step"]["evidence"] = evidence
+            step_payload["evidence"] = evidence
+        payload["step"] = step_payload
     return payload
+
+
+def _tool_schemas_or_empty(tools: Any) -> list[dict[str, Any]]:
+    try:
+        return tools.schemas() if tools else []
+    except Exception:
+        return []
+
+
+def _workflow_spans_json(events: list[dict[str, Any]]) -> str:
+    """把 workflow 的每一步折成 dashboard 认得的 span，让后台轮次也能看到执行明细。"""
+    spans: list[dict[str, Any]] = []
+    for event in events:
+        if event.get("type") != "workflow_step_done":
+            continue
+        step = event.get("step")
+        if not isinstance(step, dict):
+            continue
+        status = str(step.get("status", ""))
+        span: dict[str, Any] = {
+            "name": step.get("title", "") or step.get("agent", "step"),
+            "display_name": step.get("title", ""),
+            "status": "error" if status not in {"completed", "ok"} else "ok",
+            "args_brief": ", ".join(str(name) for name in (step.get("tool_scope") or [])),
+            "elapsed_ms": int(float(step.get("elapsed", 0) or 0) * 1000),
+        }
+        for key in ("tool_calls", "result", "error", "phase", "step_id"):
+            if step.get(key):
+                span[key] = step[key]
+        spans.append(span)
+    return json.dumps(spans, ensure_ascii=False) if spans else ""
 
 
 def _background_task_summary(tool_name: str, task_id: str, result: Any, *, max_chars: int = 3000) -> str:
@@ -1253,6 +1394,9 @@ def _compaction_panel(event: dict[str, Any]):
     )
 
 
+_PERSISTED_THINKING_MAX_CHARS = 8_000
+
+
 def _build_rounds_detail(
     rounds: int,
     round_usages: dict[int, dict[str, Any]],
@@ -1260,24 +1404,27 @@ def _build_rounds_detail(
     round_starts: dict[int, float],
     t_start: float,
     model_name: str,
+    round_thinking: dict[int, str] | None = None,
 ) -> list[dict[str, object]]:
     details: list[dict[str, object]] = []
     for round_number in range(1, rounds + 1):
         usage = round_usages.get(round_number, {})
         started = round_starts.get(round_number, t_start)
-        details.append(
-            {
-                "round": round_number,
-                "model": model_name,
-                "tokens_in": usage.get("input_tokens", 0),
-                "tokens_out": usage.get("output_tokens", 0),
-                "cache_read": usage.get("cache_read_tokens", 0),
-                "cache_write": usage.get("cache_write_tokens", 0),
-                "duration": round(max(0.0, time.monotonic() - started), 2),
-                "has_tool_calls": bool(round_tool_names.get(round_number)),
-                "tool_names": round_tool_names.get(round_number, []),
-            }
-        )
+        detail: dict[str, object] = {
+            "round": round_number,
+            "model": model_name,
+            "tokens_in": usage.get("input_tokens", 0),
+            "tokens_out": usage.get("output_tokens", 0),
+            "cache_read": usage.get("cache_read_tokens", 0),
+            "cache_write": usage.get("cache_write_tokens", 0),
+            "stop_reason": usage.get("stop_reason", ""),
+            "duration": round(max(0.0, time.monotonic() - started), 2),
+            "has_tool_calls": bool(round_tool_names.get(round_number)),
+            "tool_names": round_tool_names.get(round_number, []),
+        }
+        if thinking := (round_thinking or {}).get(round_number, ""):
+            detail["thinking"] = thinking[:_PERSISTED_THINKING_MAX_CHARS]
+        details.append(detail)
     return details
 
 
@@ -1693,8 +1840,55 @@ def _should_force_exit_busy_cancel(cancel_requested: bool, last_interrupt_at: fl
 
 
 # ---------------------------------------------------------------------------
-# 主应用
+# 主应用与主题
 # ---------------------------------------------------------------------------
+
+SUPPORTED_TUI_THEMES: dict[str, str] = {
+    "transparent": "终端透出模式（继承终端 App 原生底色/亚克力透明度）",
+    "auto": "系统自适应模式（根据 Win/Mac 系统深浅外观自动调配）",
+    "dracula": "Dracula 炫酷暗紫",
+    "nord": "Nord 北欧极光",
+    "monokai": "Monokai 经典暗色",
+    "solarized-dark": "Solarized 深色",
+    "solarized-light": "Solarized 浅色",
+    "tokyo-night": "Tokyo Night 东京之夜",
+    "catppuccin-mocha": "Catppuccin 摩卡暗色",
+    "atom-one-dark": "Atom One Dark",
+    "atom-one-light": "Atom One Light",
+    "textual-dark": "Textual 默认暗色",
+    "textual-light": "Textual 默认亮色",
+}
+
+
+def detect_os_dark_mode() -> bool:
+    """感知 OS 系统的深浅色外观模式（支持 Windows 注册表和 macOS）。"""
+    import sys
+
+    if sys.platform == "win32":
+        try:
+            import winreg
+
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+            )
+            value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+            return value == 0
+        except Exception:
+            return True
+    elif sys.platform == "darwin":
+        try:
+            import subprocess
+
+            res = subprocess.run(
+                ["defaults", "read", "-g", "AppleInterfaceStyle"],
+                capture_output=True,
+                text=True,
+            )
+            return "Dark" in res.stdout
+        except Exception:
+            return True
+    return True
 
 
 class WyckoffTUI(App):
@@ -1706,12 +1900,18 @@ class WyckoffTUI(App):
         layout: vertical;
         background: $background;
     }
+    Screen.transparent {
+        background: ansi_default;
+    }
     #input-container {
         layout: horizontal;
         height: 3;
         border-top: solid $border;
         background: $background;
         align: left middle;
+    }
+    Screen.transparent #input-container {
+        background: ansi_default;
     }
     #input-container:focus-within {
         border-top: solid $primary;
@@ -1794,14 +1994,50 @@ class WyckoffTUI(App):
             )
         yield StatusBar(self._build_status_text(), id="status-bar")
 
+    def apply_theme_setting(self, name: str) -> str:
+        """根据主题名称生效对应的色彩与 CSS 类。"""
+        normalized = name.strip().lower()
+        self._active_theme_setting = normalized
+
+        def _add_cls(cls_name: str) -> None:
+            with contextlib.suppress(Exception):
+                self.screen.add_class(cls_name)
+
+        def _rm_cls(cls_name: str) -> None:
+            with contextlib.suppress(Exception):
+                self.screen.remove_class(cls_name)
+
+        if normalized in ("transparent", "terminal"):
+            self.theme = "textual-dark"
+            _add_cls("transparent")
+            return "transparent"
+        elif normalized == "auto":
+            is_dark = detect_os_dark_mode()
+            target = "transparent" if is_dark else "solarized-light"
+            return self.apply_theme_setting(target)
+        else:
+            _rm_cls("transparent")
+            if normalized in self.available_themes:
+                self.theme = normalized
+                return normalized
+            elif normalized in ("light", "github-light"):
+                self.theme = "solarized-light"
+                return "solarized-light"
+            elif normalized in ("dark", "black"):
+                self.theme = "textual-dark"
+                return "textual-dark"
+            else:
+                self.theme = "textual-dark"
+                return "textual-dark"
+
     def on_mount(self) -> None:
         # 加载保存的主题
         try:
             from cli.auth import load_config
 
-            saved_theme = load_config().get("theme", "")
-            if saved_theme and saved_theme in self.available_themes:
-                self.theme = saved_theme
+            saved_theme = load_config().get("theme", "transparent")
+            if saved_theme:
+                self.apply_theme_setting(saved_theme)
         except Exception:
             logger.debug("load saved theme failed", exc_info=True)
 
@@ -2102,8 +2338,9 @@ class WyckoffTUI(App):
         self._show_workflows()
 
     def action_switch_theme(self) -> None:
-        """打开主题切换器并保存选择。"""
-        self.action_change_theme()
+        """打开主题切换器并显示列表。"""
+        log = self.query_one("#chat-log", ChatLog)
+        self._handle_theme_cmd("/theme list", log)
 
     def watch_theme(self, new_theme: str) -> None:
         """主题变化时自动保存。"""
@@ -2248,8 +2485,37 @@ class WyckoffTUI(App):
             self._show_backend_doctor(log)
         elif cmd == "/news":
             self._handle_news_cmd(raw, log)
+        elif cmd == "/theme":
+            self._handle_theme_cmd(raw, log)
         else:
             self._try_skill(raw, log)
+
+    def _handle_theme_cmd(self, raw: str, log) -> None:
+        parts = raw.strip().split(maxsplit=1)
+        if len(parts) == 1 or parts[1].strip() in ("list", "show"):
+            current = getattr(self, "_active_theme_setting", self.theme)
+            lines = ["\n[bold]可用终端主题[/bold]"]
+            for key, desc in SUPPORTED_TUI_THEMES.items():
+                is_cur = key == current or (current == "transparent" and key == "transparent")
+                mark = " [green]✔ (当前)[/green]" if is_cur else ""
+                lines.append(f"  [cyan]{key:<16s}[/cyan] — {desc}{mark}")
+            lines.append(
+                "\n[dim]用法: /theme <名称> （例如: /theme transparent | /theme dracula | /theme auto）[/dim]\n"
+            )
+            log.write(Text.from_markup("\n".join(lines)))
+        else:
+            target = parts[1].strip()
+            applied = self.apply_theme_setting(target)
+            if applied:
+                try:
+                    from cli.auth import save_config_key
+
+                    save_config_key("theme", target)
+                except Exception:
+                    logger.debug("save theme config failed", exc_info=True)
+                log.write(Text.from_markup(f"[green]✓ 已设置主题为: {applied}[/green]"))
+            else:
+                log.write(Text.from_markup(f"[yellow]⚠ 未知主题: {target}，输入 /theme list 查看可用主题[/yellow]"))
 
     def _show_help(self, log) -> None:
         from cli.prompt_templates import load_prompt_templates
@@ -2263,6 +2529,7 @@ class WyckoffTUI(App):
             Text.from_markup(
                 "\n[bold]可用命令[/bold]\n"
                 "  /model   — 切换模型（list/add/rm/default）\n"
+                "  /theme   — 切换终端配色主题（transparent/auto/dracula/nord/monokai...）\n"
                 "  /config  — 数据源配置（tushare_token, tickflow_api_key）\n"
                 "  /login   — 登录\n"
                 "  /logout  — 退出登录\n"
@@ -3819,6 +4086,7 @@ class WyckoffTUI(App):
                 state.round_starts,
                 t_start,
                 state.model_name,
+                state.round_thinking,
             ),
             "messages": list(self._messages),
             "system_prompt": self._system_prompt,
@@ -4016,6 +4284,7 @@ class WyckoffTUI(App):
         self._session_tokens["output"] += tokens_out
         self._session_tokens["rounds"] += 1
         self._update_status()
+        events = result.get("events", [])
         self._chatlog_save(
             "assistant",
             final_text,
@@ -4024,12 +4293,16 @@ class WyckoffTUI(App):
             tokens_in=tokens_in,
             tokens_out=tokens_out,
             elapsed_s=float(result.get("elapsed", 0.0) or 0.0),
+            tool_calls_json=_workflow_spans_json(events),
             metadata_json=json.dumps(
                 {
                     "workflow": result.get("workflow", ""),
                     "workflow_run_id": run_id,
                     "background_task_id": task_id,
-                    "events": result.get("events", []),
+                    "events": events,
+                    "messages": list(self._messages),
+                    "system_prompt": getattr(self, "_system_prompt", ""),
+                    "tools": _tool_schemas_or_empty(getattr(self, "_tools", None)),
                 },
                 ensure_ascii=False,
             ),
@@ -4100,7 +4373,10 @@ class WyckoffTUI(App):
                 self._provider.last_fallback_msg = None
         elif event_type == "thinking":
             ui.spinner_stop()
-            preview = _build_thinking_preview(event.get("text", ""))
+            thinking_text = event.get("text", "")
+            if round_number := event.get("round"):
+                state.round_thinking[int(round_number)] = thinking_text
+            preview = _build_thinking_preview(thinking_text)
             if preview:
                 ui.write(preview)
         elif event_type == "model_start":
