@@ -16,16 +16,12 @@ from cli.screen_intent import (
     stock_screen_watch_hint,
 )
 from cli.workflows._shared import (
-    PORTFOLIO_REVIEW_CONTEXT_MARKERS,
-    PORTFOLIO_REVIEW_STRONG_MARKERS,
-    PORTFOLIO_REVIEW_SUBJECT_MARKERS,
     STOCK_STYLE_MARKERS,
     STOCK_STYLE_TARGETS,
     compact_text,
     decision_confidence,
     has_stock_style_target,
     loads_json,
-    looks_like_portfolio_review,
     provider_chat_response,
 )
 from cli.workflows.models import WorkflowContext
@@ -99,9 +95,6 @@ _SHORT_STOCK_SELECTION_RE = re.compile(
     r"(?:选出|挑出|筛出|找(?:几只|几个)?|给我找|帮我找).{0,10}(?:好股票|好票|好标的|值得复核的票|值得跟踪的票)"
 )
 _STOCK_SELECTION_METHOD_MARKERS = ("怎么", "如何", "方法", "是什么", "什么是", "是什么意思", "啥意思", "概念", "解释")
-_PORTFOLIO_REVIEW_SUBJECT_MARKERS = PORTFOLIO_REVIEW_SUBJECT_MARKERS
-_PORTFOLIO_REVIEW_STRONG_MARKERS = PORTFOLIO_REVIEW_STRONG_MARKERS
-_PORTFOLIO_REVIEW_CONTEXT_MARKERS = PORTFOLIO_REVIEW_CONTEXT_MARKERS
 _MODE_ALIASES = {
     "direct": {
         "answer",
@@ -175,8 +168,8 @@ def route_workflow_with_model(
         return _context_with_router_fallback(fallback_context, fallback_reason)
     if guarded := _stock_selection_fallback_context(user_text, fallback_reason):
         return guarded
-    if guarded := _portfolio_review_fallback_context(user_text, fallback_reason):
-        return guarded
+    # 组合复盘不再兜底升级 workflow：路由不可用时降级到 direct agent 更快也更稳，
+    # 单工具就能回答的持仓诊断没必要跑后台编排。
     return _context_with_router_fallback(fallback_context, fallback_reason)
 
 
@@ -199,13 +192,7 @@ def _guarded_context_for_model_decision(user_text: str, decision: dict[str, Any]
             route_confidence=0.68,
             route_matches=("model_router_guard", "stock_selection_guard"),
         )
-    if _needs_portfolio_review_workflow_fallback(user_text):
-        return replace(
-            WORKFLOWS["dynamic_task"],
-            route_reason=f"组合复盘请求需要动态 workflow；覆盖模型 direct 判断：{decision['reason']}",
-            route_confidence=0.64,
-            route_matches=("model_router_guard", "portfolio_review_guard"),
-        )
+    # 组合复盘不再覆盖模型的 direct 判断：模型看得到上下文，比关键词更清楚该不该编排。
     return None
 
 
@@ -233,7 +220,8 @@ def _model_decision(
             return None, "invalid_router_decision"
         return decision, ""
     except Exception:
-        logger.debug("model workflow router failed", exc_info=True)
+        # 路由失败会静默改变整轮的执行路径，必须留下可见记录。
+        logger.warning("model workflow router failed, falling back to keyword routing", exc_info=True)
         return None, "router_error"
 
 
@@ -331,22 +319,6 @@ def _has_stock_style_target(text: str) -> bool:
 
 def _has_theme_stock_selection_target(text: str) -> bool:
     return bool(stock_screen_theme_hint(text)) and any(marker in text for marker in _THEME_SELECTION_DELIVERY_MARKERS)
-
-
-def _portfolio_review_fallback_context(user_text: str, fallback_reason: str) -> WorkflowContext | None:
-    if not fallback_reason or not _needs_portfolio_review_workflow_fallback(user_text):
-        return None
-    label = _fallback_reason_label(fallback_reason)
-    return replace(
-        WORKFLOWS["dynamic_task"],
-        route_reason=f"模型路由不可用（{label}），组合复盘请求兜底进入动态 workflow",
-        route_confidence=0.58,
-        route_matches=("model_router_fallback", "portfolio_review_guard"),
-    )
-
-
-def _needs_portfolio_review_workflow_fallback(user_text: str) -> bool:
-    return looks_like_portfolio_review(user_text)
 
 
 def _compact_user_text(value: Any) -> str:
