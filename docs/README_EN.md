@@ -213,7 +213,7 @@ The agent's arsenal — 10 quant tools + 5 general capabilities:
 | `exec_command` | Execute local shell commands |
 | `read_file` | Read local files (CSV/Excel auto-parsed) |
 | `write_file` | Write files (export reports/data) |
-| `web_fetch` | Fetch web content (financial news/announcements) |
+| `browser_research` | Search via local Chrome CDP and extract cited pages (CLI only) |
 
 Tool call order and frequency are decided by the LLM at runtime — no pre-choreography needed. Send a CSV path and it reads it; say "install a package" and it executes.
 

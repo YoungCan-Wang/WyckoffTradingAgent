@@ -27,14 +27,13 @@ _DIRECT_TOOL_ORDER = (
     "update_portfolio",
     "run_backtest",
     "check_background_tasks",
-    "query_news_intelligence",
     "ask_user_question",
     "delegate_to_research",
     "delegate_to_analysis",
     "delegate_to_trading",
     "read_file",
     "write_file",
-    "web_fetch",
+    "browser_research",
     "exec_command",
 )
 

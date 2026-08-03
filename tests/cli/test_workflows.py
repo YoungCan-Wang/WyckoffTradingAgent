@@ -1478,21 +1478,25 @@ def test_direct_turn_exposes_bounded_tools_without_keyword_gate():
     assert "evaluate_recommendation_events" in runtime.allowed_tools
     assert "update_portfolio" in runtime.allowed_tools
     assert "read_file" in runtime.allowed_tools
-    assert "web_fetch" in runtime.allowed_tools
+    assert "browser_research" in runtime.allowed_tools
     assert "exec_command" in runtime.allowed_tools
     assert "write_file" in runtime.allowed_tools
     assert "execute_skill" not in runtime.allowed_tools
+    assert "web_fetch" not in runtime.allowed_tools
+    assert "query_news_intelligence" not in runtime.allowed_tools
 
 
 def test_direct_local_task_tools_are_not_keyword_gated():
     tools = infer_direct_allowed_tools("token 在 .env 里，帮我发 pypi patch 版")
 
     assert "read_file" in tools
-    assert "web_fetch" in tools
+    assert "browser_research" in tools
     assert "write_file" in tools
     assert "exec_command" in tools
     assert "evaluate_recommendation_events" in tools
     assert "execute_skill" not in tools
+    assert "web_fetch" not in tools
+    assert "query_news_intelligence" not in tools
 
 
 def test_planner_ignores_agent_role_and_keeps_exact_tools():

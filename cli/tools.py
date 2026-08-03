@@ -459,17 +459,6 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "web_fetch",
-        "description": "抓取指定 URL 的网页内容并返回纯文本。可用于查看财经新闻、公告、在线数据等。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "url": {"type": "string", "description": "要抓取的网页 URL"},
-            },
-            "required": ["url"],
-        },
-    },
-    {
         "name": "reassess_profile",
         "description": "基于已有的 AI 研报文本，重新评估并预览保守 (conservative)、均衡 (balanced) 或激进 (aggressive) 决策风格下的交易信号与参数调整。不写入数据库。",
         "parameters": {
@@ -497,15 +486,19 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "query_news_intelligence",
-        "description": "查询本地新闻情报池，并返回来源、发布时间和可打开的引用链接。需要刷新时可显式指定 refresh=true。",
+        "name": "browser_research",
+        "description": (
+            "通过本机 Chrome CDP 搜索公开网页并抽取正文，返回可引用的标题/链接/摘要。"
+            "适合未上市标的、IPO、舆情等公开信息检索。需先启动带 --remote-debugging-port 的 Chrome。"
+        ),
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "股票代码、名称或主题关键词"},
-                "limit": {"type": "integer", "description": "返回条数，默认 10，最大 50"},
-                "refresh": {"type": "boolean", "description": "是否强制刷新新闻池，默认 false"},
+                "query": {"type": "string", "description": "搜索关键词，如公司名、IPO、事件主题"},
+                "max_results": {"type": "integer", "description": "搜索结果条数，默认 5，最大 10"},
+                "max_pages": {"type": "integer", "description": "深入打开的页面数，默认 3，最大 5"},
             },
+            "required": ["query"],
         },
     },
     {
@@ -583,10 +576,9 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "exec_command": ToolSpec("exec_command", "执行命令", requires_approval=True),
     "read_file": ToolSpec("read_file", "读取文件"),
     "write_file": ToolSpec("write_file", "写入文件", requires_approval=True),
-    "web_fetch": ToolSpec("web_fetch", "抓取网页"),
+    "browser_research": ToolSpec("browser_research", "浏览器搜索"),
     "reassess_profile": ToolSpec("reassess_profile", "风控评估", concurrency_safe=True),
     "diagnose_backend": ToolSpec("diagnose_backend", "大模型诊疗", concurrency_safe=True),
-    "query_news_intelligence": ToolSpec("query_news_intelligence", "新闻情报", concurrency_safe=True),
     "ask_user_question": ToolSpec("ask_user_question", "提问用户", concurrency_safe=False),
     "execute_skill": ToolSpec("execute_skill", "执行技能", concurrency_safe=True),
     "delegate_to_research": ToolSpec("delegate_to_research", "委派研究员"),
@@ -745,9 +737,10 @@ class ToolRegistry:
     def _register_tools(self) -> dict[str, callable]:
         """注册所有工具函数。"""
         from agents.backtest_tools import run_backtest
+        from agents.browser_tools import browser_research
         from agents.diagnosis_tools import analyze_stock
         from agents.history_tools import query_history
-        from agents.local_tools import exec_command, read_file, web_fetch, write_file
+        from agents.local_tools import exec_command, read_file, write_file
         from agents.market_tools import get_market_history, get_market_overview
         from agents.portfolio_tools import portfolio, record_trade_fill, update_portfolio
         from agents.recommendation_tools import evaluate_recommendation_events
@@ -761,7 +754,6 @@ class ToolRegistry:
             delegate_to_research,
             delegate_to_trading,
         )
-        from integrations.news_intelligence import query_news_intelligence
         from tools.backend_doctor import diagnose_backend
         from workflows.reassess_profile import reassess_decision_profile
 
@@ -788,10 +780,9 @@ class ToolRegistry:
             "exec_command": exec_command,
             "read_file": read_file,
             "write_file": write_file,
-            "web_fetch": web_fetch,
+            "browser_research": browser_research,
             "reassess_profile": reassess_decision_profile,
             "diagnose_backend": diagnose_backend,
-            "query_news_intelligence": query_news_intelligence,
         }
 
     def schemas(self, allowed_tools: set[str] | tuple[str, ...] | None = None) -> list[dict[str, Any]]:

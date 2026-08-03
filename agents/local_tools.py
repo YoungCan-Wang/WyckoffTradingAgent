@@ -2,25 +2,19 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 from typing import Any
-from urllib.parse import urljoin
 
 from agents.tool_security import (
-    SAFE_WEB_CONTENT_TYPE_PREFIXES,
     redact_sensitive_columns,
     redact_sensitive_text,
     security_error,
     validate_agent_command,
     validate_agent_path,
-    validate_public_http_url,
 )
 
 MAX_AGENT_FILE_BYTES = 50 * 1024 * 1024
 MAX_AGENT_TEXT_WRITE_BYTES = 2 * 1024 * 1024
-MAX_AGENT_WEB_BYTES = 1024 * 1024
-MAX_AGENT_WEB_REDIRECTS = 5
 
 
 def exec_command(command: str, timeout: int = 30, cwd: str = "", tool_context: Any = None) -> dict:
@@ -132,75 +126,3 @@ def write_file(path: str, content: str, encoding: str = "utf-8", tool_context: A
         return {"path": str(resolved), "size": resolved.stat().st_size}
     except Exception as e:
         return {"error": f"写入失败: {e}"}
-
-
-def web_fetch(url: str, tool_context: Any = None) -> dict:
-    import requests
-
-    safe_url = validate_public_http_url(url)
-    if isinstance(safe_url, dict):
-        return safe_url
-
-    try:
-        resp, final_url = _get_public_response(requests, safe_url)
-        if isinstance(resp, dict):
-            return resp
-        resp.raise_for_status()
-        ctype = resp.headers.get("content-type", "").lower()
-        if ctype and not any(ctype.startswith(prefix) for prefix in SAFE_WEB_CONTENT_TYPE_PREFIXES):
-            return security_error(f"拒绝抓取非文本内容: {ctype}")
-
-        body = _read_response_body(resp)
-        if isinstance(body, dict):
-            return body
-        text = _extract_response_text(body, ctype)
-        return {"url": final_url, "status": resp.status_code, "content": redact_sensitive_text(text)}
-    except Exception as e:
-        return {"error": f"抓取失败: {e}"}
-
-
-def _get_public_response(requests_module, initial_url: str):
-    url = initial_url
-    for _ in range(MAX_AGENT_WEB_REDIRECTS + 1):
-        checked = validate_public_http_url(url)
-        if isinstance(checked, dict):
-            return checked, url
-        resp = requests_module.get(
-            checked,
-            timeout=(3, 15),
-            headers={"User-Agent": "Wyckoff-Agent/1.0"},
-            stream=True,
-            allow_redirects=False,
-        )
-        if resp.status_code not in {301, 302, 303, 307, 308}:
-            return resp, checked
-        location = resp.headers.get("location", "").strip()
-        resp.close()
-        if not location:
-            return security_error("重定向响应缺少 Location"), checked
-        url = urljoin(checked, location)
-    return security_error(f"网页重定向超过 {MAX_AGENT_WEB_REDIRECTS} 次"), url
-
-
-def _read_response_body(resp) -> str | dict:
-    chunks: list[bytes] = []
-    total = 0
-    for chunk in resp.iter_content(chunk_size=65536):
-        if not chunk:
-            continue
-        chunks.append(chunk)
-        total += len(chunk)
-        if total > MAX_AGENT_WEB_BYTES:
-            return security_error("网页响应过大，上限 1MB")
-    return b"".join(chunks).decode(resp.encoding or "utf-8", errors="replace")
-
-
-def _extract_response_text(body: str, ctype: str) -> str:
-    if "json" in ctype:
-        return body[:8000]
-    if "html" not in ctype:
-        return body[:8000]
-    text = re.sub(r"<script[^>]*>.*?</script>", "", body, flags=re.DOTALL | re.IGNORECASE)
-    text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL | re.IGNORECASE)
-    text = re.sub(r"<[^>]+>", " ", text)
-    return re.sub(r"\s+", " ", text).strip()[:8000]

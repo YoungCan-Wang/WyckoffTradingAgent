@@ -213,7 +213,7 @@ Arsenal del agente — 10 herramientas cuantitativas + 5 capacidades generales:
 | `exec_command` | Ejecutar comandos de shell locales |
 | `read_file` | Leer archivos locales (CSV/Excel auto-parseados) |
 | `write_file` | Escribir archivos (exportar reportes/datos) |
-| `web_fetch` | Obtener contenido web (noticias financieras/anuncios) |
+| `browser_research` | Buscar con Chrome CDP local y extraer páginas citadas (solo CLI) |
 
 El orden y la frecuencia de las llamadas los decide el LLM en tiempo real, sin orquestacion previa. Envia una ruta CSV y lo lee; di "instala un paquete" y lo ejecuta.
 

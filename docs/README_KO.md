@@ -213,7 +213,7 @@ Web App: **[wyckoff-analysis.pages.dev](https://wyckoff-analysis.pages.dev/)**
 | `exec_command` | 로컬 셸 명령 실행 |
 | `read_file` | 로컬 파일 읽기 (CSV/Excel 자동 파싱) |
 | `write_file` | 파일 쓰기 (리포트/데이터 내보내기) |
-| `web_fetch` | 웹 콘텐츠 가져오기 (금융 뉴스/공시) |
+| `browser_research` | 로컬 Chrome CDP로 검색 후 인용 본문 추출 (CLI 전용) |
 
 도구 호출 순서와 횟수는 LLM이 실시간으로 결정하며, 사전 편성이 필요 없습니다. CSV 경로를 보내면 읽고, "패키지 설치해줘"라고 하면 실행합니다.
 

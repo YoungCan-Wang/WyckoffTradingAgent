@@ -213,7 +213,7 @@ Web App：**[wyckoff-analysis.pages.dev](https://wyckoff-analysis.pages.dev/)**
 | `exec_command` | ローカルシェルコマンドの実行 |
 | `read_file` | ローカルファイルの読み取り（CSV/Excel自動解析） |
 | `write_file` | ファイルの書き込み（レポート/データのエクスポート） |
-| `web_fetch` | Webコンテンツの取得（金融ニュース/公告） |
+| `browser_research` | ローカル Chrome CDP で検索し引用付き本文を抽出（CLI 専用） |
 
 ツールの呼び出し順序と回数は LLM がリアルタイムに判断。事前編成は不要。CSV パスを送れば読み込み、「パッケージをインストールして」と言えば実行。
 

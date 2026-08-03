@@ -127,7 +127,7 @@ Worker 负责鉴权、输入校验、队列控制面和 HMAC 签名。Vercel Nod
 
 代理只接受受信 Web Origin（无 `Origin` 的 CLI 请求继续兼容）、`GET/POST`、2 MiB 以内请求，并限制到 HTTPS 白名单上游；服务端模型 `base_url` 同样拒绝凭据、非标准端口、loopback、私网和 link-local 地址，且不跟随重定向。
 
-CLI Agent 的本地命令工具只允许明确的只读命令；文件工具继续执行隐藏目录、凭据文件和系统目录阻断。`web_fetch` 每一跳重定向都重新验证 DNS/IP/端口。本地 Dashboard 使用进程级随机令牌及 Host/Origin 校验，不把绑定 `127.0.0.1` 当作唯一安全边界。云端用户凭据只从该用户上下文读取，不回退到运维者本机配置或环境变量。
+CLI Agent 的本地命令工具只允许明确的只读命令；文件工具继续执行隐藏目录、凭据文件和系统目录阻断。公开网页检索走 `browser_research`（本机 Chrome CDP），导航目标复用公网 URL 校验。本地 Dashboard 使用进程级随机令牌及 Host/Origin 校验，不把绑定 `127.0.0.1` 当作唯一安全边界。云端用户凭据只从该用户上下文读取，不回退到运维者本机配置或环境变量。
 
 ### 技术栈
 
@@ -190,7 +190,7 @@ Streamlit 框架在 MVP 阶段支撑了产品验证，但主分支已全面下�
 
 当前 CLI 主力 agent loop 收敛在 `cli/runtime.py::AgentRuntime`：它负责 provider 调用、工具执行、并发分批、上下文压缩、retry、doom-loop、scratchpad 和大结果落盘。React Web 读盘室则以 `web/apps/api` 的 Hono Worker + Vercel AI SDK 承载在线 agent loop。
 
-**CLI 专属工具**（Web / MCP 不可用）：`exec_command`、`read_file`、`write_file`、`web_fetch`、`check_background_tasks`、`ask_user`、`execute_skill`、`delegate_to_research`、`delegate_to_analysis`、`delegate_to_trading`
+**CLI 专属工具**（Web / MCP 不可用）：`exec_command`、`read_file`、`write_file`、`browser_research`、`check_background_tasks`、`ask_user`、`execute_skill`、`delegate_to_research`、`delegate_to_analysis`、`delegate_to_trading`
 
 **MCP 三层权限**：
 - Tier 1（无需凭证）：历史查询（`query_history`）— 形态复盘、信号池和策略归因只读摘要
@@ -233,7 +233,7 @@ Agent 采用 ReAct 范式：每一轮 LLM 先推理（Reason），再决定是�
 
 | 通道 | 当前工具 |
 |------|----------|
-| CLI / TUI（26） | 原有诊断、筛选、研报、组合、历史、后台、Skill 与委派工具，加 `evaluate_recommendation_events`、`research_hypothesis`、`reassess_profile`、`diagnose_backend`、`query_news_intelligence` |
+| CLI / TUI（26） | 原有诊断、筛选、研报、组合、历史、后台、Skill 与委派工具，加 `evaluate_recommendation_events`、`research_hypothesis`、`reassess_profile`、`diagnose_backend`、`browser_research`（本机 Chrome CDP） |
 | Web（13） | `search_stock`、`view_portfolio`、`market_overview`、`market_history`、`query_recommendations`、`query_attribution`、`plan_portfolio_update`、`execute_portfolio_update`、`analyze_stock`、`screen_stocks`、`generate_ai_report`、`generate_strategy_decision`、`intraday_analysis` |
 | MCP（18） | 原有行情、漏斗、诊断、组合、研报与决策工具，加 `research_hypothesis`、`reassess_profile`、`diagnose_backend` |
 
@@ -757,9 +757,9 @@ tickflow                                        （1 分钟盘中数据，供个
 
 日线行情通过统一仓库层 `integrations/stock_hist_repository.py` 直接从数据源拉取（TickFlow 优先，降级 tushare/akshare/baostock）。
 
-`integrations/rag_veto.py` — 新闻否决层：合并本地 `intelligence_items` 情报池与 AkShare/东方财富个股新闻，按 URL 或标准化标题去重后做相关性、关键词和语义检查。任一来源失败时保留另一来源，避免单点失败阻断 Step3。
+`integrations/rag_veto.py` — 新闻否决层：读取 AkShare/东方财富个股新闻，按 URL 或标准化标题去重后做相关性、关键词和语义检查；来源失败时 fail-open，不阻断 Step3。
 
-本地情报池由 `integrations/news_intelligence.py` 管理。`NEWS_INTEL_AUTO_FETCH_ENABLED=true` 时，RAG 批处理会按 60 分钟冷却刷新 NewsNow；`NEWSNOW_BASE_URL` 可覆盖默认服务地址。关闭自动刷新只停用 NewsNow 拉取，不停用本地已有数据或 AkShare 远程新闻。
+CLI 公开信息检索走 `browser_research`：Playwright 附着本机 Chrome CDP（默认 `http://127.0.0.1:9222`，可用 `WYCKOFF_BROWSER_CDP_URL` 覆盖），搜索后打开前几条结果并抽取正文；Web / MCP 不暴露该工具。安装：`pip install 'youngcan-wyckoff-analysis[browser]' && playwright install chromium`，并用 `/browser` 查看连接状态。
 
 ### ToolSurface 执行边界
 

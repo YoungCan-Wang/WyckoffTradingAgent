@@ -21,12 +21,6 @@ SECRET_ASSIGNMENT_RE = re.compile(
 )
 BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{12,}")
 COMMON_SECRET_VALUE_RE = re.compile(r"\b(?:sk|ak|pk|ghp|gho|github_pat|glpat|xoxb|xoxp|AIza)[A-Za-z0-9_\-]{12,}\b")
-SAFE_WEB_CONTENT_TYPE_PREFIXES = (
-    "application/json",
-    "application/xml",
-    "application/xhtml+xml",
-    "text/",
-)
 _PROXY_FAKE_IP_NETWORKS = (ipaddress.ip_network("198.18.0.0/15"),)
 
 _BLOCKED_PATH_PARTS = {

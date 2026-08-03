@@ -18,8 +18,8 @@ class _Scalar:
 def test_scratchpad_records_jsonl_and_redacts_secrets(tmp_path):
     scratchpad = AgentScratchpad("看看 000001", session_id="session_x", scratchpad_dir=tmp_path)
     scratchpad.record_tool_result(
-        "web_fetch",
-        {"url": "https://example.com", "api_key": "secret-value"},
+        "browser_research",
+        {"query": "example", "api_key": "secret-value"},
         {"ok": True, "token": "secret-token"},
         duration_ms=12,
     )

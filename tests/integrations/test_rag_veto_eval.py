@@ -218,14 +218,20 @@ def test_merge_news_combines_sources_and_deduplicates_urls():
     assert [item["url"] for item in merged] == ["https://example.com/b", "https://example.com/a"]
 
 
-def test_scan_one_fetches_local_and_remote_news(monkeypatch):
+def test_scan_one_fetches_remote_news(monkeypatch):
     from integrations import rag_veto as mod
 
-    monkeypatch.setattr(mod, "_fetch_local_news", lambda _code, _name: [{"title": "公司公告", "url": "local"}])
-    monkeypatch.setattr(mod, "_fetch_news_akshare", lambda _code: [{"title": "监管立案调查", "url": "remote"}])
+    monkeypatch.setattr(
+        mod,
+        "_fetch_news_akshare",
+        lambda _code: [
+            {"title": "公司公告", "url": "https://example.com/a"},
+            {"title": "监管立案调查", "url": "https://example.com/b"},
+        ],
+    )
     monkeypatch.setattr(mod, "_semantic_veto_decision", lambda *_args, **_kwargs: mod.SemanticDecision(veto=False))
 
     result = mod._scan_one("600000", "浦发银行", ["立案调查"])
 
-    assert result.search_source == "local_intelligence+akshare"
+    assert result.search_source == "akshare"
     assert result.raw_result_count == 2

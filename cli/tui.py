@@ -2668,8 +2668,8 @@ class WyckoffTUI(App):
             self._handle_schedule_cmd(raw, log)
         elif cmd == "/doctor":
             self._show_backend_doctor(log)
-        elif cmd == "/news":
-            self._handle_news_cmd(raw, log)
+        elif cmd == "/browser":
+            self._handle_browser_cmd(raw, log)
         elif cmd == "/theme":
             self._handle_theme_cmd(raw, log)
         else:
@@ -2724,7 +2724,7 @@ class WyckoffTUI(App):
                 "  /workflow— workflow（approve/reload/restart/pause/stop/save/run）\n"
                 "  /schedule— 定时任务（list/status/run/add/rm/on/off）\n"
                 "  /doctor  — 模型与数据源健康检查\n"
-                "  /news    — 新闻来源状态（status/refresh）\n"
+                "  /browser — 本机 Chrome CDP 状态与启动提示\n"
                 "  /resume  — 恢复历史对话\n"
                 "  /fork    — 分叉当前会话\n"
                 "  /new     — 新对话 (Ctrl+N)\n"
@@ -3950,25 +3950,22 @@ class WyckoffTUI(App):
                     Text.from_markup(f"  [{tone}]{escape(str(name))}[/{tone}] · {escape(status)}{escape(detail)}")
                 )
 
-    def _handle_news_cmd(self, raw: str, log) -> None:
-        from integrations.news_intelligence import intelligence_status, refresh_intelligence_pool
+    def _handle_browser_cmd(self, raw: str, log) -> None:
+        from integrations.browser_cdp import browser_cdp_status, chrome_cdp_launch_hint
 
         parts = raw.strip().split()
         sub = parts[1] if len(parts) > 1 else "status"
-        if sub not in {"status", "refresh"}:
-            log.write(Text.from_markup("[dim]/news 用法: status | refresh[/dim]"))
+        if sub not in {"status", "hint"}:
+            log.write(Text.from_markup("[dim]/browser 用法: status | hint[/dim]"))
             return
-        result = refresh_intelligence_pool(force=True) if sub == "refresh" else intelligence_status()
-        log.write(Text.from_markup("\n[bold]新闻情报来源[/bold]"))
-        if sub == "refresh":
-            log.write(Text.from_markup(f"  [cyan]刷新完成[/cyan] · 新增 {int(result.get('new_items') or 0)} 条"))
-        for item in result.get("sources") or []:
-            source = escape(str(item.get("source") or "unknown"))
-            success = str(item.get("last_success_at") or "-").replace("T", " ")
-            count = int(item.get("last_item_count") or 0)
-            log.write(Text.from_markup(f"  {source} · 最近成功 {escape(success)} · 本次 {count} 条"))
-            if error := item.get("last_error"):
-                log.write(Text.from_markup(f"    [yellow]{escape(str(error)[:160])}[/yellow]"))
+        status = browser_cdp_status()
+        log.write(Text.from_markup("\n[bold]本机 Chrome CDP[/bold]"))
+        log.write(Text.from_markup(f"  端点: {escape(str(status.get('cdp_url') or ''))}"))
+        if status.get("ok"):
+            log.write(Text.from_markup(f"  [green]已连接[/green] · {escape(str(status.get('browser') or 'Chrome'))}"))
+        else:
+            log.write(Text.from_markup(f"  [yellow]未连接[/yellow] · {escape(str(status.get('error') or 'unknown'))}"))
+            log.write(Text.from_markup(f"\n[dim]{escape(chrome_cdp_launch_hint())}[/dim]"))
 
     def _handle_sched_input(self, mode: str, text: str, log, inp) -> None:
         if mode == _InputState.SCHED_ID:
