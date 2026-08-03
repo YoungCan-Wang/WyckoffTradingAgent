@@ -88,17 +88,31 @@ def get_credential(tool_context: ToolContext | None, key: str, env_fallback: str
 
 
 def resolve_llm_config(tool_context: ToolContext | None) -> tuple[str, str, str, str]:
+    """解析可用的 LLM 配置。
+
+    云端登录用户优先用云端 user_settings，但云端没配 key 时必须回落本地
+    wyckoff.json —— 否则本地配好的模型对登录用户等于不存在。
+    """
     if not has_cloud(tool_context):
-        try:
-            local = _local_default_llm_config()
-            if local:
-                return local
-        except Exception:
-            logger.debug("failed to load LLM provider config from local config", exc_info=True)
+        local = _try_local_llm_config()
+        if local:
+            return local
     api_key = get_credential(tool_context, "gemini_api_key", "GEMINI_API_KEY")
+    if not api_key:
+        local = _try_local_llm_config()
+        if local:
+            return local
     model = get_credential(tool_context, "gemini_model", "GEMINI_MODEL") or "gemini-2.0-flash"
     base_url = get_credential(tool_context, "gemini_base_url", "")
     return "gemini", api_key, model, base_url
+
+
+def _try_local_llm_config() -> tuple[str, str, str, str] | None:
+    try:
+        return _local_default_llm_config()
+    except Exception:
+        logger.debug("failed to load LLM provider config from local config", exc_info=True)
+        return None
 
 
 def _local_default_llm_config() -> tuple[str, str, str, str] | None:

@@ -222,17 +222,37 @@ def _portfolio_diagnosis(portfolio_id: str, state: dict, tool_context: ToolConte
             failed += 1
         else:
             success += 1
+    free_cash = float(state.get("free_cash", 0) or 0)
+    total_market_value = _fill_position_weights(results)
     out = {
         "portfolio_id": portfolio_id,
         "free_cash": state.get("free_cash", 0),
         "position_count": len(state["positions"]),
         "successful_count": success,
         "failed_count": failed,
+        "total_market_value": round(total_market_value, 2),
+        "total_assets": round(total_market_value + free_cash, 2),
         "diagnostics": results,
     }
+    total_equity = state.get("total_equity")
+    if total_equity is not None:
+        out["total_equity"] = total_equity
+    if failed:
+        out["market_value_note"] = f"{failed} 只持仓行情缺失，总市值与仓位占比仅覆盖成功诊断的部分"
     if hints:
         out["tickflow_limit_hint"] = hints[0]
     return out
+
+
+def _fill_position_weights(results: list[dict]) -> float:
+    """按市值回填 weight_pct，返回可计算的总市值（行情缺失的持仓不计入）。"""
+    total = sum(float(item.get("market_value") or 0) for item in results)
+    if total > 0:
+        for item in results:
+            market_value = float(item.get("market_value") or 0)
+            if market_value > 0:
+                item["weight_pct"] = round(market_value / total * 100.0, 2)
+    return total
 
 
 _EXTREME_DAY_CHANGE_PCT = -5.0  # 与 core.holding_diagnostic 的阈值保持一致，避免无谓拉取分时线
@@ -245,19 +265,27 @@ def _diagnose_position(position: dict, start_date: date, end_date: date, hints: 
     code = position.get("code", "") or position.get("code", "")
     name = position.get("name", code)
     cost = float(position.get("cost", position.get("cost_price", 0)) or 0)
+    shares = _position_shares(position)
     try:
         df = get_stock_hist(code, start_date, end_date)
         if df is None or df.empty:
-            return {"code": code, "name": name, "error": "无行情数据"}
+            return {"code": code, "name": name, "shares": shares, "error": "无行情数据"}
         metadata = hist_metadata(df)
         _append_unique_hints(hints, collect_tickflow_limit_hints_from_df(df))
         normalized_df = normalize_hist_df(df)
         latest_date = latest_hist_date(df, "日期") or latest_hist_date(normalized_df)
         intraday_df = _fetch_intraday_if_extreme_day(code, normalized_df)
         diagnostic = diagnose_one_stock(code, name, cost, normalized_df, intraday_df=intraday_df)
-        return _diagnostic_payload(diagnostic, latest_date, metadata)
+        return _diagnostic_payload(diagnostic, latest_date, metadata, shares)
     except Exception as e:
-        return {"code": code, "name": name, "error": str(e)}
+        return {"code": code, "name": name, "shares": shares, "error": str(e)}
+
+
+def _position_shares(position: dict) -> int:
+    try:
+        return int(float(position.get("shares", 0) or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _fetch_intraday_if_extreme_day(code: str, normalized_df) -> Any:
@@ -291,15 +319,19 @@ def _append_unique_hints(target: list[str], hints: list[str]) -> None:
             target.append(hint)
 
 
-def _diagnostic_payload(diagnostic, latest_date: str, metadata: dict) -> dict:
+def _diagnostic_payload(diagnostic, latest_date: str, metadata: dict, shares: int = 0) -> dict:
     from agents.diagnosis_tools import diagnosis_brief_from_diagnostic
     from core.holding_diagnostic import format_diagnostic_text
 
     payload = {
         "code": diagnostic.code,
         "name": diagnostic.name,
+        "shares": shares,
+        "cost": round(diagnostic.cost, 3),
+        "market_value": round(shares * diagnostic.latest_close, 2) if shares else 0,
         "health": diagnostic.health,
         "pnl_pct": round(diagnostic.pnl_pct, 2),
+        "pnl_amount": round(shares * (diagnostic.latest_close - diagnostic.cost), 2) if shares else 0,
         "latest_close": diagnostic.latest_close,
         "ma_pattern": diagnostic.ma_pattern,
         "l2_channel": diagnostic.l2_channel,

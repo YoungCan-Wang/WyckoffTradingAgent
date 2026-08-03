@@ -293,3 +293,40 @@ def test_portfolio_diagnostic_payload_reuses_action_brief() -> None:
     assert brief["headline"] == "回避: 002081 金螳螂"
     assert brief["direct_buy_allowed"] is False
     assert brief["risks"] == ["结构止损（从高点回撤>10%）", "退出信号: stop_loss"]
+
+
+def test_portfolio_diagnostic_payload_carries_shares_and_market_value() -> None:
+    result = portfolio_tools._diagnostic_payload(
+        _diagnostic(code="002326", name="永太科技", cost=20.0, latest_close=25.0),
+        "2026-07-03",
+        {},
+        200,
+    )
+
+    assert result["shares"] == 200
+    assert result["cost"] == 20.0
+    assert result["market_value"] == 5000.0
+    assert result["pnl_amount"] == 1000.0
+
+
+def test_portfolio_diagnostic_payload_without_shares_reports_zero_market_value() -> None:
+    result = portfolio_tools._diagnostic_payload(_diagnostic(), "2026-07-03", {})
+
+    assert result["shares"] == 0
+    assert result["market_value"] == 0
+    assert result["pnl_amount"] == 0
+
+
+def test_fill_position_weights_uses_market_value_share() -> None:
+    results = [
+        {"code": "a", "market_value": 7500.0},
+        {"code": "b", "market_value": 2500.0},
+        {"code": "c", "error": "无行情数据"},
+    ]
+
+    total = portfolio_tools._fill_position_weights(results)
+
+    assert total == 10000.0
+    assert results[0]["weight_pct"] == 75.0
+    assert results[1]["weight_pct"] == 25.0
+    assert "weight_pct" not in results[2]

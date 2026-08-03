@@ -225,6 +225,83 @@ def test_portfolio_diagnosis_brief_lines_prioritize_risky_positions() -> None:
     ]
 
 
+def test_portfolio_diagnosis_preview_carries_size_for_trimming_decisions() -> None:
+    """减仓要按市值和仓位占比来定，preview/brief 都必须带上这些字段。
+
+    大结果会被 offload，模型只看到 preview + brief；两处任一漏了 shares/market_value，
+    模型就只能拿结构风险排序，答不出"该减多少"。
+    """
+    result = {
+        "portfolio_id": "USER_LIVE:test",
+        "free_cash": 11600.0,
+        "total_market_value": 100000.0,
+        "total_assets": 111600.0,
+        "position_count": 2,
+        "successful_count": 2,
+        "failed_count": 0,
+        "diagnostics": [
+            {
+                "code": "000001",
+                "name": "平安银行",
+                "shares": 2000,
+                "cost": 10.0,
+                "market_value": 20400.0,
+                "weight_pct": 20.4,
+                "health": "🟢健康",
+                "latest_close": 10.2,
+                "pnl_pct": 2.0,
+                "pnl_amount": 400.0,
+                "l2_channel": "主升通道",
+            },
+            {
+                "code": "002081",
+                "name": "金螳螂",
+                "shares": 20000,
+                "cost": 3.6,
+                "market_value": 79600.0,
+                "weight_pct": 79.6,
+                "health": "🟢健康",
+                "latest_close": 3.98,
+                "pnl_pct": 10.5,
+                "pnl_amount": 7600.0,
+                "l2_channel": "主升通道",
+            },
+        ],
+    }
+
+    preview = json.loads(tool_result_preview("portfolio", result))
+    lines = tool_result_brief_lines("portfolio", result)
+
+    assert preview["total_market_value"] == 100000.0
+    assert preview["total_assets"] == 111600.0
+    assert preview["diagnostics"][0]["shares"] == 2000
+    assert preview["diagnostics"][0]["market_value"] == 20400.0
+    assert preview["diagnostics"][0]["weight_pct"] == 20.4
+    assert preview["diagnostics"][0]["pnl_amount"] == 400.0
+    assert lines[0] == "持仓诊断: 2只 · 成功2，失败0 · 总市值100,000.00 · 现金11,600.00 · 总资产111,600.00"
+    # 同为健康档时重仓排前面，brief 被截断也不会先丢掉 79.6% 的那只
+    assert lines[1].startswith("002081 金螳螂 · 🟢健康 · 仓位79.6% · 市值79,600.00 · 现价3.98")
+    assert lines[2].startswith("000001 平安银行 · 🟢健康 · 仓位20.4% · 市值20,400.00")
+
+
+def test_portfolio_diagnosis_headline_omits_market_value_when_quotes_missing() -> None:
+    result = {
+        "free_cash": 11600.0,
+        "total_market_value": 0,
+        "total_assets": 11600.0,
+        "position_count": 1,
+        "successful_count": 0,
+        "failed_count": 1,
+        "market_value_note": "1 只持仓行情缺失，总市值与仓位占比仅覆盖成功诊断的部分",
+        "diagnostics": [{"code": "000001", "name": "平安银行", "shares": 2000, "error": "无行情数据"}],
+    }
+
+    lines = tool_result_brief_lines("portfolio", result)
+
+    assert lines[0] == "持仓诊断: 1只 · 成功0，失败1 · 现金11,600.00 · 总资产11,600.00"
+    assert "总市值" not in lines[0]
+
+
 def test_large_tool_result_is_persisted_with_preview(tmp_path, monkeypatch):
     monkeypatch.setenv("WYCKOFF_HOME", str(tmp_path))
     result = {"rows": ["x" * 1000 for _ in range(60)]}

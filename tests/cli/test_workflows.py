@@ -357,7 +357,8 @@ def test_dispatch_uses_direct_runtime_for_general_chat():
     assert isinstance(runtime, AgentRuntime)
 
 
-def test_dispatch_falls_back_to_workflow_for_portfolio_risk_turn():
+def test_dispatch_keeps_portfolio_risk_turn_direct_when_model_router_is_unavailable():
+    """路由不可用时组合复盘降级到 direct agent：单工具就能答，跑后台编排纯亏。"""
     runtime, workflow = build_turn_runtime(
         ScriptedProvider([]),
         StubToolRegistry(),
@@ -365,10 +366,9 @@ def test_dispatch_falls_back_to_workflow_for_portfolio_risk_turn():
         user_text="我的持仓有什么风险？",
     )
 
-    assert workflow.name == "dynamic_task"
-    assert isinstance(runtime, WorkflowExecutor)
-    assert workflow.route_reason == "模型路由不可用（无路由响应），组合复盘请求兜底进入动态 workflow"
-    assert workflow.route_matches == ("model_router_fallback", "portfolio_review_guard")
+    assert workflow.name == "general_chat"
+    assert isinstance(runtime, AgentRuntime)
+    assert "model_router_fallback" in workflow.route_matches
 
 
 def test_dispatch_direct_runtime_enforces_tool_expectations_by_default():
@@ -731,7 +731,8 @@ def test_dispatch_guards_stock_selection_delivery_from_direct_model_route():
     assert isinstance(runtime, WorkflowExecutor)
 
 
-def test_dispatch_guards_portfolio_review_from_direct_model_route():
+def test_dispatch_respects_direct_model_route_for_portfolio_review():
+    """模型看得到上下文，它判 direct 就走 direct，关键词不再覆盖。"""
     provider = RouterDecisionProvider('{"mode":"direct","confidence":0.89,"reason":"只是看看持仓"}')
 
     runtime, workflow = build_turn_runtime(
@@ -741,11 +742,10 @@ def test_dispatch_guards_portfolio_review_from_direct_model_route():
         user_text="我的持仓有没有要处理的？",
     )
 
-    assert workflow.name == "dynamic_task"
-    assert workflow.route_reason == "组合复盘请求需要动态 workflow；覆盖模型 direct 判断：只是看看持仓"
-    assert workflow.route_confidence == 0.64
-    assert workflow.route_matches == ("model_router_guard", "portfolio_review_guard")
-    assert isinstance(runtime, WorkflowExecutor)
+    assert workflow.name == "general_chat"
+    assert workflow.route_confidence == 0.89
+    assert workflow.route_matches == ("model_router",)
+    assert isinstance(runtime, AgentRuntime)
 
 
 def test_dispatch_model_can_override_explicit_workflow_marker_to_direct():
@@ -1074,7 +1074,8 @@ def test_dispatch_falls_back_to_workflow_for_theme_strength_stock_selection_when
     assert workflow.route_matches == ("model_router_fallback", "stock_selection_guard")
 
 
-def test_dispatch_falls_back_to_workflow_for_portfolio_review_when_model_router_is_unavailable():
+def test_dispatch_keeps_multi_stage_portfolio_review_direct_when_model_router_is_unavailable():
+    """连大盘+体检+明日策略这种多阶段请求，路由不可用时也降级 direct，不靠关键词升级。"""
     runtime, workflow = build_turn_runtime(
         ScriptedProvider([]),
         StubToolRegistry(),
@@ -1082,10 +1083,9 @@ def test_dispatch_falls_back_to_workflow_for_portfolio_review_when_model_router_
         user_text="大盘水温怎么样？持仓做个体检，给我今天总结和明天策略建议",
     )
 
-    assert workflow.name == "dynamic_task"
-    assert isinstance(runtime, WorkflowExecutor)
-    assert workflow.route_reason == "模型路由不可用（无路由响应），组合复盘请求兜底进入动态 workflow"
-    assert workflow.route_matches == ("model_router_fallback", "portfolio_review_guard")
+    assert workflow.name == "general_chat"
+    assert isinstance(runtime, AgentRuntime)
+    assert "model_router_fallback" in workflow.route_matches
 
 
 def test_dispatch_keeps_simple_portfolio_view_direct_when_model_router_is_unavailable():
@@ -1116,7 +1116,7 @@ def test_dispatch_keeps_portfolio_term_question_direct_when_router_unavailable()
 
 def test_portfolio_review_fallback_script_reads_market_and_holdings_before_decision():
     _runtime, workflow = build_turn_runtime(
-        ScriptedProvider([]),
+        RouterDecisionProvider('{"mode":"dynamic_workflow","confidence":0.9,"reason":"多阶段复盘"}'),
         StubToolRegistry(),
         session_id="s1",
         user_text="大盘水温怎么样？持仓做个体检，给我今天总结和明天策略建议",
@@ -1142,7 +1142,7 @@ def test_portfolio_review_fallback_script_reads_market_and_holdings_before_decis
 
 def test_portfolio_review_fallback_script_handles_risk_without_market_context():
     _runtime, workflow = build_turn_runtime(
-        ScriptedProvider([]),
+        RouterDecisionProvider('{"mode":"dynamic_workflow","confidence":0.9,"reason":"要动作建议"}'),
         StubToolRegistry(),
         session_id="s1",
         user_text="我的持仓有什么风险？",
