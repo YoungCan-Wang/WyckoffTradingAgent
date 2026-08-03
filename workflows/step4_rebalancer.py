@@ -295,6 +295,7 @@ def _send_and_persist_step4_results(
             portfolio_id=options.portfolio_id,
             trade_date=context.trade_date,
             run_id=result_record.run_id,
+            stop_rollback=persistence.stop_rollback,
         ):
             return False, "persistence_failed_rollback_failed"
         return False, "persistence_failed"

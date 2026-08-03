@@ -29,6 +29,7 @@ class Step4ResultRecord:
 class Step4PersistenceResult:
     ok: bool
     orders_written: bool = False
+    stop_rollback: tuple[dict, ...] = ()
 
 
 def prepare_step4_result_record(
@@ -53,20 +54,27 @@ def save_step4_orders_and_nav(
     if not _save_step4_trade_orders(options, context, run_id, rendered_market_view, ticket_rows):
         logger.error("AI 订单记录写入失败 | portfolio_id=%s", options.portfolio_id)
         return Step4PersistenceResult(False)
+    stop_rollback = _stop_rollback_updates(context, tickets)
     stops_ok = update_step4_position_stops(options.portfolio_id, tickets)
     nav_ok = _save_step4_nav_snapshot(options, context)
     if not (stops_ok and nav_ok):
-        return Step4PersistenceResult(False, orders_written=True)
+        return Step4PersistenceResult(False, orders_written=True, stop_rollback=stop_rollback)
     try:
         _cancel_previous_trade_orders(options, context, run_id)
     except Exception:
         logger.exception("同日旧 AI 订单作废失败 | portfolio_id=%s", options.portfolio_id)
-        return Step4PersistenceResult(False, orders_written=True)
+        return Step4PersistenceResult(False, orders_written=True, stop_rollback=stop_rollback)
     return Step4PersistenceResult(True, orders_written=True)
 
 
-def rollback_step4_run(*, portfolio_id: str, trade_date: str, run_id: str) -> bool:
-    """作废本轮已写入的工单；回滚查询失败必须对调用方可见。"""
+def rollback_step4_run(
+    *,
+    portfolio_id: str,
+    trade_date: str,
+    run_id: str,
+    stop_rollback: tuple[dict, ...] | list[dict] = (),
+) -> bool:
+    """作废本轮已写入的工单并恢复止损；回滚失败必须对调用方可见。"""
     try:
         cancelled = cancel_trade_orders(
             portfolio_id=portfolio_id,
@@ -82,9 +90,18 @@ def rollback_step4_run(*, portfolio_id: str, trade_date: str, run_id: str) -> bo
             trade_date,
         )
         return False
+    if stop_rollback and not update_position_stops(portfolio_id, list(stop_rollback)):
+        logger.error(
+            "Step4 止损回滚失败: count=%s, run_id=%s, portfolio_id=%s",
+            len(stop_rollback),
+            run_id,
+            portfolio_id,
+        )
+        return False
     logger.error(
-        "Step4 持久化失败，已作废本轮订单: cancelled=%s, run_id=%s, portfolio_id=%s, trade_date=%s",
+        "Step4 持久化失败，已作废本轮订单: cancelled=%s, stops_restored=%s, run_id=%s, portfolio_id=%s, trade_date=%s",
         cancelled,
+        len(stop_rollback),
         run_id,
         portfolio_id,
         trade_date,
@@ -107,6 +124,17 @@ def update_step4_position_stops(portfolio_id: str, tickets: list[ExecutionTicket
     else:
         logger.error("持仓止损价更新失败 | portfolio_id=%s", portfolio_id)
         return False
+
+
+def _stop_rollback_updates(context: Step4InputContext, tickets: list[ExecutionTicket]) -> tuple[dict, ...]:
+    """Snapshot pre-mutation stop losses so failed runs can restore portfolio state."""
+    positions = getattr(getattr(context, "portfolio", None), "positions", None) or []
+    previous = {str(pos.code): pos.stop_loss for pos in positions if getattr(pos, "code", None)}
+    return tuple(
+        {"code": ticket.code, "stop_loss": previous.get(ticket.code)}
+        for ticket in tickets
+        if ticket.status == "APPROVED" and ticket.is_holding and ticket.effective_stop_loss is not None
+    )
 
 
 def build_step4_ticket_rows(tickets: list[ExecutionTicket]) -> list[dict]:
