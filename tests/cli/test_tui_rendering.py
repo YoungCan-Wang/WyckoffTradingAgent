@@ -1823,6 +1823,26 @@ def test_build_rounds_detail_records_thinking_per_round():
     assert details[0]["thinking"] == "先看持仓再判断风险"
     assert details[0]["stop_reason"] == "tool_use"
     assert "thinking" not in details[1]
+    assert "thinking_truncated" not in details[0]
+
+
+def test_build_rounds_detail_marks_truncated_thinking():
+    """超长思维链必须标注截断——残句被当成模型的完整结论会误导复盘。"""
+    from cli.tui import _PERSISTED_THINKING_MAX_CHARS, _build_rounds_detail
+
+    long_thinking = "推" * (_PERSISTED_THINKING_MAX_CHARS + 500)
+    details = _build_rounds_detail(
+        1,
+        {1: {"input_tokens": 10}},
+        {},
+        {},
+        0.0,
+        "gpt-test",
+        {1: long_thinking},
+    )
+
+    assert len(details[0]["thinking"]) == _PERSISTED_THINKING_MAX_CHARS
+    assert details[0]["thinking_truncated"] is True
 
 
 def test_display_workflow_plan_event_hides_internal_provenance_by_default():

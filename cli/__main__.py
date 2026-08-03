@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -69,6 +70,21 @@ def _get_version() -> str:
         return "dev"
 
 
+def _version_sort_key(value: str) -> tuple[int, ...]:
+    """把版本号转成可比较的整数元组，无法解析时返回空元组。
+
+    原先直接对每一段做 int()，PyPI 一旦出现 1.0.0rc1 / 0.9.235.post1 这类非纯数字版本就抛
+    ValueError，被外层 except 吞掉——升级提示从此静默失效，且正好在最需要提示的大版本上失效。
+    """
+    parts: list[int] = []
+    for chunk in str(value).strip().split("."):
+        match = re.match(r"^\d+", chunk)
+        if not match:
+            break
+        parts.append(int(match.group()))
+    return tuple(parts)
+
+
 def _check_update_async() -> None:
     """后台检查 PyPI 最新版本，有新版则打印提示。"""
     import threading
@@ -87,8 +103,10 @@ def _check_update_async() -> None:
             latest = data.get("info", {}).get("version", "")
             if not latest or latest == local_ver:
                 return
-            local_parts = tuple(int(x) for x in local_ver.split("."))
-            latest_parts = tuple(int(x) for x in latest.split("."))
+            local_parts = _version_sort_key(local_ver)
+            latest_parts = _version_sort_key(latest)
+            if not local_parts or not latest_parts:
+                return
             if latest_parts > local_parts:
                 print(f"\033[33m⬆ 新版本可用: {latest}（当前 {local_ver}），运行 wyckoff update 升级\033[0m")
         except Exception:
