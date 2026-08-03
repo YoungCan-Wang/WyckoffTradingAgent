@@ -20,9 +20,12 @@ from cli.workflows._shared import (
     STOCK_STYLE_TARGETS,
     compact_text,
     decision_confidence,
+    dialogue_message_text,
     has_stock_style_target,
     loads_json,
+    parse_confidence,
     provider_chat_response,
+    recent_dialogue_context,
 )
 from cli.workflows.models import WorkflowContext
 from cli.workflows.router import WORKFLOWS, route_resume_workflow, route_workflow
@@ -95,6 +98,56 @@ _SHORT_STOCK_SELECTION_RE = re.compile(
     r"(?:选出|挑出|筛出|找(?:几只|几个)?|给我找|帮我找).{0,10}(?:好股票|好票|好标的|值得复核的票|值得跟踪的票)"
 )
 _STOCK_SELECTION_METHOD_MARKERS = ("怎么", "如何", "方法", "是什么", "什么是", "是什么意思", "啥意思", "概念", "解释")
+# 写入账户事实的工具；dynamic_task 白名单里刻意没有它们。
+_ACCOUNT_WRITE_TOOLS = ("update_portfolio", "record_trade_fill")
+_ACCOUNT_WRITE_MARKERS = (
+    "录入",
+    "登记",
+    "记一下",
+    "记下",
+    "加进持仓",
+    "加入持仓",
+    "计入持仓",
+    "写入持仓",
+    "更新持仓",
+    "改持仓",
+    "改一下持仓",
+    "建仓",
+    "补仓",
+    "加仓",
+    "减仓",
+    "清仓",
+    "调仓",
+    "买入了",
+    "卖出了",
+    "已买入",
+    "已卖出",
+    "成交回填",
+    "回填成交",
+    "删掉持仓",
+    "移除持仓",
+)
+_ACCOUNT_WRITE_METHOD_MARKERS = ("怎么", "如何", "方法", "是什么", "什么是", "啥意思", "概念", "解释", "能不能")
+# 进 workflow 的置信度门槛。低于它就落 direct：错判成 direct 只多花几秒，错判成 workflow 要几分钟。
+_WORKFLOW_CONFIDENCE_FLOOR = 0.7
+_LOCAL_WRITE_TOOLS = ("write_file", "exec_command")
+_LOCAL_WRITE_MARKERS = (
+    "写个文件",
+    "写入文件",
+    "改一下文件",
+    "保存到文件",
+    "存成文件",
+    "跑一下命令",
+    "执行命令",
+    "跑个脚本",
+    "执行脚本",
+)
+# 「这一轮需要什么能力」→「哪些工具提供它」。判据是能力集合的差，关键词只用来推断需要哪种能力；
+# 缺哪个工具由目标车道的实时白名单算出来，不写死。
+_CAPABILITY_GROUPS: tuple[tuple[str, tuple[str, ...], tuple[str, ...], tuple[str, ...]], ...] = (
+    ("账户写入", _ACCOUNT_WRITE_TOOLS, _ACCOUNT_WRITE_MARKERS, _ACCOUNT_WRITE_METHOD_MARKERS),
+    ("本地写入/执行", _LOCAL_WRITE_TOOLS, _LOCAL_WRITE_MARKERS, _ACCOUNT_WRITE_METHOD_MARKERS),
+)
 _MODE_ALIASES = {
     "direct": {
         "answer",
@@ -164,6 +217,9 @@ def route_workflow_with_model(
         if guarded := _guarded_context_for_model_decision(user_text, decision):
             return guarded
         return _context_from_model_decision(decision)
+    if _account_write_tools_missing_from_workflow(user_text):
+        # 兜底路径也要挡：显式 workflow 标记和选股兜底都可能把写入请求送进没有写入工具的通道。
+        return _account_write_fallback_context(user_text, fallback_reason)
     if not fallback_context.is_general:
         return _context_with_router_fallback(fallback_context, fallback_reason)
     if guarded := _stock_selection_fallback_context(user_text, fallback_reason):
@@ -184,7 +240,9 @@ def _context_from_model_decision(decision: dict[str, Any]) -> WorkflowContext:
 
 def _guarded_context_for_model_decision(user_text: str, decision: dict[str, Any]) -> WorkflowContext | None:
     if _should_use_workflow(decision):
-        return None
+        if downgrade := _account_write_downgrade_context(user_text, decision):
+            return downgrade
+        return _low_confidence_downgrade_context(decision)
     if _needs_stock_selection_workflow_fallback(user_text):
         return replace(
             WORKFLOWS["dynamic_task"],
@@ -194,6 +252,89 @@ def _guarded_context_for_model_decision(user_text: str, decision: dict[str, Any]
         )
     # 组合复盘不再覆盖模型的 direct 判断：模型看得到上下文，比关键词更清楚该不该编排。
     return None
+
+
+def _low_confidence_downgrade_context(decision: dict[str, Any]) -> WorkflowContext | None:
+    """Require real confidence to enter workflow, because the two misroutes cost very differently.
+
+    判错成 direct：模型多调一个工具，几秒。判错成 workflow：几分钟、后台执行、计划落库、
+    往对话里插好几个轮次、还可能零产出。confidence 以前算完就落库，dispatch 和 executor
+    一次都没读过——0.2 和 0.9 一样照跑。不确定的时候按便宜的那种错法走。
+    """
+
+    if not decision.get("confidence_reported"):
+        return None
+    confidence = float(decision.get("confidence") or 0.0)
+    if confidence >= _WORKFLOW_CONFIDENCE_FLOOR:
+        return None
+    return replace(
+        WORKFLOWS["general_chat"],
+        route_reason=(
+            f"模型 workflow 判断置信度 {confidence:.2f} 低于门槛 {_WORKFLOW_CONFIDENCE_FLOOR:.2f}，"
+            f"按直接对话处理：{decision['reason']}"
+        ),
+        route_confidence=confidence,
+        route_matches=("model_router_guard", "workflow_confidence_floor"),
+    )
+
+
+def _account_write_downgrade_context(user_text: str, decision: dict[str, Any]) -> WorkflowContext | None:
+    """Downgrade to direct chat when the request needs a tool the workflow does not have.
+
+    workflow 的工具白名单里没有 update_portfolio / record_trade_fill——写入类动作被刻意
+    挡在编排之外。所以「把这两只录进持仓」被判成 workflow 时，它不是跑得慢，是根本干不成：
+    最好的结果也只是核对完代码再让用户自己去录。这类请求必须留在 direct agent。
+    """
+    capability, missing = missing_workflow_capability(user_text)
+    if not missing:
+        return None
+    return replace(
+        WORKFLOWS["general_chat"],
+        route_reason=(f"{capability}请求需要 {', '.join(missing)}，动态 workflow 无此工具；覆盖模型 workflow 判断"),
+        route_confidence=0.7,
+        route_matches=("model_router_guard", "account_write_guard"),
+    )
+
+
+def _account_write_fallback_context(user_text: str, fallback_reason: str) -> WorkflowContext:
+    capability, missing_tools = missing_workflow_capability(user_text)
+    missing = ", ".join(missing_tools)
+    label = _fallback_reason_label(fallback_reason) if fallback_reason else "模型判断"
+    return replace(
+        WORKFLOWS["general_chat"],
+        route_reason=f"{capability}请求需要 {missing}，动态 workflow 无此工具（{label}），直接 agent 处理",
+        route_confidence=0.7,
+        route_matches=("model_router_fallback", "account_write_guard"),
+    )
+
+
+def missing_workflow_capability(user_text: str) -> tuple[str, tuple[str, ...]]:
+    """Return the capability this turn needs and the tools dynamic_task lacks for it.
+
+    模式决策必须发生在能力校验之后。路由只看语义、不看工具，就会把「录入持仓」这类请求分进一条
+    结构上就干不成的车道——白名单里没有写入工具，最好的结果也只是核对完让用户自己再来一遍。
+    """
+
+    text = _compact_user_text(user_text)
+    if not text:
+        return "", ()
+    allowed = set(WORKFLOWS["dynamic_task"].allowed_tools)
+    for label, tool_names, markers, method_markers in _CAPABILITY_GROUPS:
+        if any(marker in text for marker in method_markers):
+            continue
+        if not any(marker in text for marker in markers):
+            continue
+        if missing := tuple(name for name in tool_names if name not in allowed):
+            return label, missing
+    return "", ()
+
+
+def _account_write_tools_missing_from_workflow(user_text: str) -> tuple[str, ...]:
+    return missing_workflow_capability(user_text)[1]
+
+
+def _looks_like_account_write_request(user_text: str) -> bool:
+    return bool(_account_write_tools_missing_from_workflow(user_text))
 
 
 def _model_route_reason(decision: dict[str, Any]) -> str:
@@ -232,36 +373,16 @@ def _router_user_prompt(user_text: str, messages: list[dict[str, Any]] | None = 
 
 
 def _recent_dialogue_context(messages: list[dict[str, Any]] | None, current_user_text: str) -> str:
-    if not messages:
-        return ""
-    lines: list[str] = []
-    skipped_current = False
-    for message in reversed(messages):
-        role = str(message.get("role") or "").strip()
-        if role not in {"user", "assistant"}:
-            continue
-        text = _routing_message_text(message)
-        if not text:
-            continue
-        if not skipped_current and role == "user" and text == current_user_text:
-            skipped_current = True
-            continue
-        label = "用户" if role == "user" else "助手"
-        lines.append(f"{label}: {_clip_routing_context(text)}")
-        if len(lines) >= _MAX_ROUTING_CONTEXT_MESSAGES:
-            break
-    return "\n".join(reversed(lines))
+    return recent_dialogue_context(
+        messages,
+        current_user_text,
+        max_messages=_MAX_ROUTING_CONTEXT_MESSAGES,
+        max_chars=_MAX_ROUTING_CONTEXT_CHARS,
+    )
 
 
 def _routing_message_text(message: dict[str, Any]) -> str:
-    raw = message.get("_raw_content") or message.get("content") or ""
-    if isinstance(raw, list):
-        raw = " ".join(str(item) for item in raw)
-    return " ".join(str(raw).split())
-
-
-def _clip_routing_context(text: str) -> str:
-    return text[:_MAX_ROUTING_CONTEXT_CHARS] + ("..." if len(text) > _MAX_ROUTING_CONTEXT_CHARS else "")
+    return dialogue_message_text(message)
 
 
 def _context_with_router_fallback(context: WorkflowContext, fallback_reason: str) -> WorkflowContext:
@@ -362,8 +483,15 @@ def _parse_decision(response: Any) -> dict[str, Any] | None:
     return {
         "mode": mode,
         "confidence": confidence,
+        # 缺字段时 decision_confidence 也返回 0.0，和模型明确报 0.0 分不开。
+        # 置信度门槛只对「真的报了一个低值」生效，不能因为 provider 不输出这个字段就关掉 workflow。
+        "confidence_reported": _decision_reports_confidence(payload),
         "reason": _clean_reason(payload.get("reason")),
     }
+
+
+def _decision_reports_confidence(payload: dict[str, Any]) -> bool:
+    return any(parse_confidence(payload.get(key)) is not None for key in ("confidence", "score", "probability", "prob"))
 
 
 def _router_decision_payload(payload: dict[str, Any]) -> dict[str, Any]:

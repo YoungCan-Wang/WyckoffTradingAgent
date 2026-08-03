@@ -2235,7 +2235,10 @@ class WyckoffTUI(App):
             self.push_screen(ToolConfirmScreen(name, args, display), _on_dismiss)
 
         self.call_from_thread(_show)
-        event.wait(timeout=120)
+        if not event.wait(timeout=120):
+            # 沉默不是否决：超时必须和 deny 区分开，否则模型会告诉用户「你拒绝了」，
+            # 而用户只是没看见弹窗。
+            return {"action": "timeout"}
         return result[0] or {"action": "deny"}
 
     def _request_user_question(
@@ -2260,9 +2263,14 @@ class WyckoffTUI(App):
                 self.query_one("#chat-input", ChatInput).focus()
 
         self.call_from_thread(_show)
-        event.wait(timeout=300)  # 等待最长 5 分钟
+        answered = event.wait(timeout=300)  # 等待最长 5 分钟
         self.call_from_thread(self._clear_pending_user_question, pending)
-        return result[0] or default_answer or "已超时未作答"
+        if not answered and not default_answer:
+            from cli.tools import ASK_USER_TIMEOUT_SENTINEL
+
+            # 用哨兵而不是「已超时未作答」这类自然语言：后者会被当成用户真的这么回答了。
+            return ASK_USER_TIMEOUT_SENTINEL
+        return result[0] or default_answer
 
     def _clear_pending_user_question(self, pending: _PendingUserQuestion) -> None:
         if self._pending_user_question is pending:
@@ -4366,6 +4374,10 @@ class WyckoffTUI(App):
         self, task_id: str, result: dict[str, Any], status: str, notify_followup: bool
     ) -> None:
         if not notify_followup:
+            return
+        if status == "completed":
+            # 成功时不再追加一轮：final_text 已经显示、已经落库、也已经进了 _messages，
+            # 模型下一轮本来就看得到。再叫它就同一份结果说一次，只会得到一段和上一条重复的话。
             return
         summary = _background_task_summary("dynamic_workflow", task_id, result)
         self._queue.append(

@@ -22,12 +22,21 @@ from cli.workflows._shared import (
     compact_text,
     has_stock_style_target,
     looks_like_portfolio_review,
+    recent_dialogue_context,
 )
 from cli.workflows.models import WorkflowContext, WorkflowRun, WorkflowStep
 from cli.workflows.router import route_workflow
 
 MAX_WORKFLOW_STEPS = 24
 ASK_USER_TOOL = "ask_user_question"
+# planner 唯一的退出通道。没有它，planner 只能在「编不出计划」和「编一个替代任务」之间选后者：
+# 昊华科技那次它自己写明了「当前工具集中没有可写入或更新持仓的工具」，然后照样拆成只读复核跑了 324 秒。
+HANDOFF_FIELD = "handoff"
+HANDOFF_DIRECT = "direct"
+# 比 router 给得多：planner 要沿用上文里的代码、股数、成本价这类具体事实，
+# 而 router 只需要判断本轮是不是承接。
+_MAX_PLANNER_CONTEXT_MESSAGES = 8
+_MAX_PLANNER_CONTEXT_CHARS = 600
 TASK_LIST_FIELDS = ("tasks", "steps", "items", "subtasks", "jobs", "actions", "plan")
 PHASE_LIST_FIELDS = ("phases", "stages", "stage_groups", "sections", "groups", "milestones")
 SCRIPT_CONTAINER_FIELDS = ("workflow", "workflow_script", "script", "plan")
@@ -189,6 +198,16 @@ _PLAN_SYSTEM_PROMPT = """\
   "synthesis_prompt": "最终汇总时应该如何整合结果"
 }
 
+如果这一轮根本不该由 workflow 承接，输出交还 JSON，不要硬编一份计划:
+{"handoff":"direct","reason":"简短中文原因，说明为什么 workflow 办不成这件事"}
+
+什么时候交还:
+- 用户要的动作需要写入持仓、回填成交、改文件这类工具，而工具摘要里没有它们——编排拿不到这些工具，
+  拆成「只读复核」并不是用户要的事。
+- 单轮直接对话就能完成，不需要多阶段、并发或持久化计划。
+- 请求指向的对象/动作还不明确，需要先问用户一句，而不是先跑一串任务。
+交还比编一个替代任务好：交还只花几秒就回到直接对话，替代任务要跑几分钟、还交付了用户没要的东西。
+
 运行边界:
 - 只输出 JSON，不要 Markdown，不要代码块。
 - phases 总任务数 1-24 个；如果要处理很多股票或对象，用工具批量处理，不要为每个对象单独生成 task。
@@ -287,6 +306,7 @@ def plan_workflow(
     source_run_id: str = "",
     workflow_args: Any = None,
     only_step_id: str = "",
+    messages: list[dict[str, Any]] | None = None,
 ) -> WorkflowRun:
     """Create a model-authored workflow run for one user turn."""
 
@@ -294,8 +314,19 @@ def plan_workflow(
     raw_script = (
         _normalize_supplied_script(workflow_script, source_run_id, workflow_args, only_step_id)
         if workflow_script
-        else _generate_script(user_text, context, provider, tools)
+        else _generate_script(user_text, context, provider, tools, messages)
     )
+    if script_handoff_reason(raw_script):
+        # 交还必须绕开 _script_steps：那里对空 phases 的处理是兜底生成一个 task，
+        # 正好会把交还重新变成一份要跑的计划。
+        return WorkflowRun(
+            run_id=f"wf_{uuid.uuid4().hex[:12]}",
+            session_id=session_id,
+            user_text=user_text,
+            context=context,
+            steps=[],
+            script=raw_script,
+        )
     steps = _script_steps(raw_script, user_text, context)
     script = _script_with_step_tool_scopes(raw_script, steps)
     return WorkflowRun(
@@ -730,10 +761,11 @@ def _generate_script(
     context: WorkflowContext,
     provider: Any | None,
     tools: Any | None,
+    messages: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if provider is None:
         return _fallback_script(user_text, context, reason="provider unavailable")
-    prompt = _planner_user_prompt(user_text, context, tools)
+    prompt = _planner_user_prompt(user_text, context, tools, messages)
     try:
         text = _collect_planner_text(provider, prompt)
         script = _normalize_generated_script(_loads_script(text))
@@ -741,6 +773,9 @@ def _generate_script(
         return _fallback_script(user_text, context, reason=f"planner failed: {exc}")
     if not isinstance(script, dict):
         return _fallback_script(user_text, context, reason="planner returned non-object JSON")
+    if reason := script_handoff_reason(script):
+        # 交还不走 repair/limit：那两步是给「有任务的计划」补工具契约的，会把交还改回一份计划。
+        return _handoff_script(reason)
     script = _mark_model_script(_limit_generated_script(script))
     return _repair_model_tool_contract(user_text, context, provider, tools, script)
 
@@ -811,15 +846,38 @@ def _tool_contract_repair_prompt(
     )
 
 
-def _planner_user_prompt(user_text: str, context: WorkflowContext, tools: Any | None) -> str:
+def _planner_user_prompt(
+    user_text: str,
+    context: WorkflowContext,
+    tools: Any | None,
+    messages: list[dict[str, Any]] | None = None,
+) -> str:
     catalog = _tool_catalog(tools, context)
     return (
         f"用户请求:\n{user_text}\n\n"
+        f"{_planner_dialogue_block(messages, user_text)}"
         f"运行上下文: {context.label} ({context.name})\n"
         f"路由原因: {context.route_reason or '-'}\n\n"
         f"当前可用工具摘要（供你决定任务边界，不要直接调用）:\n{catalog}\n\n"
         "请生成 workflow JSON。"
     )
+
+
+def _planner_dialogue_block(messages: list[dict[str, Any]] | None, user_text: str) -> str:
+    """Give the planner the same dialogue tail the router already sees.
+
+    没有这段历史，「继续录入」这类承接性请求只能被规划成「先问用户要录入什么」——上一轮
+    刚说过的代码、股数、成本价对 planner 完全不可见，于是它去问用户已经给过的信息。
+    """
+    context = recent_dialogue_context(
+        messages,
+        user_text,
+        max_messages=_MAX_PLANNER_CONTEXT_MESSAGES,
+        max_chars=_MAX_PLANNER_CONTEXT_CHARS,
+    )
+    if not context:
+        return ""
+    return f"最近对话（本轮可能承接上文；上文已给出的事实要直接沿用，不要再问用户一遍）:\n{context}\n\n"
 
 
 def _tool_catalog(tools: Any | None, context: WorkflowContext) -> str:
@@ -904,6 +962,27 @@ def _loads_repair_script(text: str) -> Any:
         if not match:
             raise
         return json.loads(match.group(0))
+
+
+def script_handoff_reason(script: Any) -> str:
+    """Return the planner's handoff reason when it declined to orchestrate this turn."""
+
+    if not isinstance(script, dict):
+        return ""
+    if str(script.get(HANDOFF_FIELD) or "").strip().lower() != HANDOFF_DIRECT:
+        return ""
+    reason = " ".join(str(script.get("reason") or script.get("rationale") or "").split())
+    return reason or "planner 判断本轮不适合 workflow"
+
+
+def _handoff_script(reason: str) -> dict[str, Any]:
+    return {
+        HANDOFF_FIELD: HANDOFF_DIRECT,
+        "reason": reason,
+        "title": "交还直接对话",
+        "phases": [],
+        "runtime": {"planner": "model_handoff"},
+    }
 
 
 def _normalize_generated_script(script: Any) -> Any:

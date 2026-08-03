@@ -614,6 +614,9 @@ def is_concurrency_safe(name: str) -> bool:
     return bool(spec and spec.concurrency_safe)
 
 
+ASK_USER_TIMEOUT_SENTINEL = "__ask_user_question_timeout__"
+
+
 def ask_user_question(
     question: str,
     options: list[str] | None = None,
@@ -627,6 +630,17 @@ def ask_user_question(
     if registry and getattr(registry, "_ask_user_question_callback", None):
         try:
             answer = registry._ask_user_question_callback(question, options, allow_free_text, default_answer)
+            if answer == ASK_USER_TIMEOUT_SENTINEL:
+                # 超时不是答复：原先它会以 status="answered" 返回「已超时未作答」这句话本身，
+                # 模型只能把这句话当成用户的回答内容继续往下推理。
+                return {
+                    "status": "timeout",
+                    "error": (
+                        "提问等待超时，用户没有作答——这既不是答复也不是拒绝。"
+                        "不要把超时当成用户的回答内容，也不要重复追问同一个问题；"
+                        "请直接说明未收到答复以及需要用户补充什么。"
+                    ),
+                }
             return {"status": "answered", "answer": answer, "result": f"用户已答复: {answer}"}
         except Exception as e:
             logger.error("ask_user_question_callback failed", exc_info=True)
@@ -917,6 +931,16 @@ class ToolRegistry:
             }
         confirm = self._confirm_callback(name, args)
         action = confirm.get("action", "deny")
+        if action == "timeout":
+            # 超时和明确拒绝必须分开：说成「用户拒绝」等于伪造一件没发生的事，模型只能照着
+            # 这个措辞往下写，用户会在回复里读到自己从没做过的决定。
+            return args, {
+                "error": (
+                    f"操作 [{name}] 的确认弹窗等待超时，用户没有做出选择——这不是拒绝。"
+                    "不要声称用户拒绝或取消了操作。请说明确认超时、该操作尚未执行，"
+                    "并让用户确认后重试。"
+                )
+            }
         if action == "deny":
             return args, {"error": "用户拒绝执行此操作"}
         if action == "always":

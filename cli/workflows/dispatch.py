@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 from cli.runtime import AgentRuntime
@@ -10,6 +11,7 @@ from cli.scratchpad import AgentScratchpad
 from cli.workflows.executor import WorkflowExecutor
 from cli.workflows.model_router import route_workflow_with_model
 from cli.workflows.models import WorkflowContext
+from cli.workflows.router import WORKFLOWS
 
 _DIRECT_TOOL_ORDER = (
     "search_stock_by_name",
@@ -58,31 +60,75 @@ def build_turn_runtime(
 
     workflow = workflow_context or route_workflow_with_model(user_text, provider, routing_messages)
     if workflow.is_general and not workflow_script:
-        kwargs: dict[str, Any] = {
-            "scratchpad": scratchpad,
-            "cancel_check": cancel_check,
-            "allowed_tools": infer_direct_allowed_tools(user_text),
-            "enforce_turn_expectations": _direct_turn_expectations_default(enforce_turn_expectations),
-        }
-        if stream_chunk_timeout is not None:
-            kwargs["stream_chunk_timeout"] = stream_chunk_timeout
-        return AgentRuntime(provider, tools, **kwargs), workflow
-    return (
-        WorkflowExecutor(
+        return _direct_runtime(
             provider,
             tools,
-            session_id=session_id,
             user_text=user_text,
             scratchpad=scratchpad,
             cancel_check=cancel_check,
             stream_chunk_timeout=stream_chunk_timeout,
-            workflow_context=workflow,
-            workflow_script=workflow_script,
-            source_run_id=workflow_source_run_id,
-            workflow_args=workflow_args,
-            only_step_id=workflow_only_step_id,
-        ),
-        workflow,
+            enforce_turn_expectations=enforce_turn_expectations,
+        ), workflow
+    executor = WorkflowExecutor(
+        provider,
+        tools,
+        session_id=session_id,
+        user_text=user_text,
+        scratchpad=scratchpad,
+        cancel_check=cancel_check,
+        stream_chunk_timeout=stream_chunk_timeout,
+        workflow_context=workflow,
+        workflow_script=workflow_script,
+        source_run_id=workflow_source_run_id,
+        workflow_args=workflow_args,
+        only_step_id=workflow_only_step_id,
+        planning_messages=routing_messages,
+    )
+    if workflow_script or workflow_only_step_id:
+        # 用户显式重放/续跑某个 script 时不做交还：他要的就是这份计划。
+        return executor, workflow
+    if handoff := executor.plan_handoff_reason():
+        # planner 看过工具摘要后说这轮它办不成。这里落回 direct 只花一次规划调用，
+        # 继续跑要几分钟并交付用户没要的东西。
+        return _direct_runtime(
+            provider,
+            tools,
+            user_text=user_text,
+            scratchpad=scratchpad,
+            cancel_check=cancel_check,
+            stream_chunk_timeout=stream_chunk_timeout,
+            enforce_turn_expectations=enforce_turn_expectations,
+        ), _handoff_workflow_context(workflow, handoff)
+    return executor, workflow
+
+
+def _direct_runtime(
+    provider: Any,
+    tools: Any,
+    *,
+    user_text: str,
+    scratchpad: AgentScratchpad | None,
+    cancel_check: Callable[[], bool] | None,
+    stream_chunk_timeout: float | None,
+    enforce_turn_expectations: bool | None,
+) -> AgentRuntime:
+    kwargs: dict[str, Any] = {
+        "scratchpad": scratchpad,
+        "cancel_check": cancel_check,
+        "allowed_tools": infer_direct_allowed_tools(user_text),
+        "enforce_turn_expectations": _direct_turn_expectations_default(enforce_turn_expectations),
+    }
+    if stream_chunk_timeout is not None:
+        kwargs["stream_chunk_timeout"] = stream_chunk_timeout
+    return AgentRuntime(provider, tools, **kwargs)
+
+
+def _handoff_workflow_context(workflow: WorkflowContext, reason: str) -> WorkflowContext:
+    return replace(
+        WORKFLOWS["general_chat"],
+        route_reason=f"planner 交还直接对话：{reason}（原路由：{workflow.route_reason}）",
+        route_confidence=workflow.route_confidence,
+        route_matches=(*workflow.route_matches, "planner_handoff"),
     )
 
 
