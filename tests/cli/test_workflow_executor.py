@@ -16,6 +16,7 @@ from cli.workflows.executor import (
     _ensure_candidate_delivery,
     _fallback_handoff_lines,
     _fallback_summary,
+    _orchestration_waste_reason,
     _phase_batches,
     _step_context,
     _synthesis_handoff_summary,
@@ -5734,3 +5735,53 @@ def test_failure_lead_collapses_a_long_failure_list():
 
     assert "6 个步骤失败" in final_text
     assert "等 6 步" in final_text
+
+
+def _run_with_tool_scopes(*scopes: tuple[str, ...]) -> WorkflowRun:
+    return WorkflowRun(
+        run_id="wf_shape",
+        session_id="s_shape",
+        user_text="我的持仓有什么",
+        context=WORKFLOWS["dynamic_task"],
+        steps=[
+            WorkflowStep(step_id=f"s{index}", title=f"步骤{index}", tool_scope=scope)
+            for index, scope in enumerate(scopes)
+        ],
+    )
+
+
+def test_single_tool_single_step_plan_is_not_worth_orchestrating():
+    """「我的持仓有什么」拆出来就是 1 步 1 个 portfolio，和 direct 调一次工具等价。"""
+
+    run = _run_with_tool_scopes(("portfolio",))
+
+    reason = _orchestration_waste_reason(run)
+
+    assert "只有 1 个步骤" in reason
+    assert "portfolio" in reason
+
+
+def test_multi_step_plan_still_orchestrates():
+    run = _run_with_tool_scopes(("portfolio",), ("generate_strategy_decision",))
+
+    assert _orchestration_waste_reason(run) == ""
+
+
+def test_single_step_with_several_tools_still_orchestrates():
+    """声明了多个工具的单步还是一条链，不该按单工具读取降级。"""
+
+    run = _run_with_tool_scopes(("screen_stocks", "generate_strategy_decision"))
+
+    assert _orchestration_waste_reason(run) == ""
+
+
+def test_single_step_without_declared_tools_still_orchestrates():
+    """planner 兜底脚本的 scope 是空的；按空 scope 降级会让 planner 一故障就没有 workflow。"""
+
+    run = _run_with_tool_scopes(())
+
+    assert _orchestration_waste_reason(run) == ""
+
+
+def test_empty_plan_is_not_worth_orchestrating():
+    assert _orchestration_waste_reason(_run_with_tool_scopes()) == "计划里没有任何步骤"

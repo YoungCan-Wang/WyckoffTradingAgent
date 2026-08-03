@@ -88,8 +88,8 @@ def build_turn_runtime(
         # 用户显式重放/续跑某个 script 时不做交还：他要的就是这份计划。
         return executor, workflow
     if handoff := executor.plan_handoff_reason():
-        # planner 看过工具摘要后说这轮它办不成。这里落回 direct 只花一次规划调用，
-        # 继续跑要几分钟并交付用户没要的东西。
+        # planner 说这轮它办不成，或者计划成型后只剩单步、编排白付开销。这里落回 direct
+        # 只花一次规划调用，继续跑要几分钟并交付用户没要的东西。
         return _direct_runtime(
             provider,
             tools,
@@ -126,7 +126,7 @@ def _direct_runtime(
 def _handoff_workflow_context(workflow: WorkflowContext, reason: str) -> WorkflowContext:
     return replace(
         WORKFLOWS["general_chat"],
-        route_reason=f"planner 交还直接对话：{reason}（原路由：{workflow.route_reason}）",
+        route_reason=f"交还直接对话：{reason}（原路由：{workflow.route_reason}）",
         route_confidence=workflow.route_confidence,
         route_matches=(*workflow.route_matches, "planner_handoff"),
     )
