@@ -81,6 +81,7 @@ def build_turn_runtime(
             source_run_id=workflow_source_run_id,
             workflow_args=workflow_args,
             only_step_id=workflow_only_step_id,
+            planning_messages=routing_messages,
         ),
         workflow,
     )

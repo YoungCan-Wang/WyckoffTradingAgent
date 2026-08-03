@@ -22,12 +22,17 @@ from cli.workflows._shared import (
     compact_text,
     has_stock_style_target,
     looks_like_portfolio_review,
+    recent_dialogue_context,
 )
 from cli.workflows.models import WorkflowContext, WorkflowRun, WorkflowStep
 from cli.workflows.router import route_workflow
 
 MAX_WORKFLOW_STEPS = 24
 ASK_USER_TOOL = "ask_user_question"
+# 比 router 给得多：planner 要沿用上文里的代码、股数、成本价这类具体事实，
+# 而 router 只需要判断本轮是不是承接。
+_MAX_PLANNER_CONTEXT_MESSAGES = 8
+_MAX_PLANNER_CONTEXT_CHARS = 600
 TASK_LIST_FIELDS = ("tasks", "steps", "items", "subtasks", "jobs", "actions", "plan")
 PHASE_LIST_FIELDS = ("phases", "stages", "stage_groups", "sections", "groups", "milestones")
 SCRIPT_CONTAINER_FIELDS = ("workflow", "workflow_script", "script", "plan")
@@ -287,6 +292,7 @@ def plan_workflow(
     source_run_id: str = "",
     workflow_args: Any = None,
     only_step_id: str = "",
+    messages: list[dict[str, Any]] | None = None,
 ) -> WorkflowRun:
     """Create a model-authored workflow run for one user turn."""
 
@@ -294,7 +300,7 @@ def plan_workflow(
     raw_script = (
         _normalize_supplied_script(workflow_script, source_run_id, workflow_args, only_step_id)
         if workflow_script
-        else _generate_script(user_text, context, provider, tools)
+        else _generate_script(user_text, context, provider, tools, messages)
     )
     steps = _script_steps(raw_script, user_text, context)
     script = _script_with_step_tool_scopes(raw_script, steps)
@@ -730,10 +736,11 @@ def _generate_script(
     context: WorkflowContext,
     provider: Any | None,
     tools: Any | None,
+    messages: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if provider is None:
         return _fallback_script(user_text, context, reason="provider unavailable")
-    prompt = _planner_user_prompt(user_text, context, tools)
+    prompt = _planner_user_prompt(user_text, context, tools, messages)
     try:
         text = _collect_planner_text(provider, prompt)
         script = _normalize_generated_script(_loads_script(text))
@@ -811,15 +818,38 @@ def _tool_contract_repair_prompt(
     )
 
 
-def _planner_user_prompt(user_text: str, context: WorkflowContext, tools: Any | None) -> str:
+def _planner_user_prompt(
+    user_text: str,
+    context: WorkflowContext,
+    tools: Any | None,
+    messages: list[dict[str, Any]] | None = None,
+) -> str:
     catalog = _tool_catalog(tools, context)
     return (
         f"用户请求:\n{user_text}\n\n"
+        f"{_planner_dialogue_block(messages, user_text)}"
         f"运行上下文: {context.label} ({context.name})\n"
         f"路由原因: {context.route_reason or '-'}\n\n"
         f"当前可用工具摘要（供你决定任务边界，不要直接调用）:\n{catalog}\n\n"
         "请生成 workflow JSON。"
     )
+
+
+def _planner_dialogue_block(messages: list[dict[str, Any]] | None, user_text: str) -> str:
+    """Give the planner the same dialogue tail the router already sees.
+
+    没有这段历史，「继续录入」这类承接性请求只能被规划成「先问用户要录入什么」——上一轮
+    刚说过的代码、股数、成本价对 planner 完全不可见，于是它去问用户已经给过的信息。
+    """
+    context = recent_dialogue_context(
+        messages,
+        user_text,
+        max_messages=_MAX_PLANNER_CONTEXT_MESSAGES,
+        max_chars=_MAX_PLANNER_CONTEXT_CHARS,
+    )
+    if not context:
+        return ""
+    return f"最近对话（本轮可能承接上文；上文已给出的事实要直接沿用，不要再问用户一遍）:\n{context}\n\n"
 
 
 def _tool_catalog(tools: Any | None, context: WorkflowContext) -> str:

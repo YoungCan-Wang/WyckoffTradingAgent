@@ -856,6 +856,123 @@ def test_dispatch_falls_back_to_workflow_for_short_stock_selection_when_model_ro
     assert workflow.route_matches == ("model_router_fallback", "stock_selection_guard")
 
 
+def _planner_prompt_for(user_text: str, messages: list[dict] | None = None) -> str:
+    provider = ScriptedProvider([[{"type": "text_delta", "text": '{"title":"t","phases":[]}'}]])
+    plan_workflow(
+        user_text,
+        context=WORKFLOWS["dynamic_task"],
+        provider=provider,
+        tools=StubToolRegistry(),
+        messages=messages,
+    )
+    return provider.calls[0]["messages"][0]["content"]
+
+
+def test_plan_workflow_passes_recent_dialogue_to_the_planner():
+    """router 看得到历史、planner 看不到，承接性请求就会去问用户已经给过的信息。"""
+    prompt = _planner_prompt_for(
+        "继续录入",
+        [
+            {"role": "user", "content": "卫星化学 25.395 200股 2026-7-30买的"},
+            {"role": "assistant", "content": "002648 卫星化学 未写入：确认超时。"},
+            {"role": "user", "content": "继续录入"},
+        ],
+    )
+
+    assert "最近对话" in prompt
+    assert "卫星化学 25.395 200股" in prompt
+    assert "不要再问用户一遍" in prompt
+
+
+def test_plan_workflow_prompt_omits_dialogue_block_without_history():
+    assert "最近对话" not in _planner_prompt_for("帮我选出好股票")
+
+
+def test_dispatch_threads_planning_messages_into_the_executor():
+    provider = RouterDecisionProvider('{"mode":"dynamic_workflow","confidence":0.9,"reason":"需要多阶段复核"}')
+    messages = [{"role": "user", "content": "帮我找几只值得复核的票"}]
+
+    runtime, _workflow = build_turn_runtime(
+        provider,
+        StubToolRegistry(),
+        session_id="s1",
+        user_text="再带上风险边界和买卖计划",
+        routing_messages=messages,
+    )
+
+    assert isinstance(runtime, WorkflowExecutor)
+    assert runtime.planning_messages == messages
+
+
+def test_dynamic_task_scope_excludes_account_write_tools():
+    """写入类工具刻意不在 workflow 白名单里；下面的降级 guard 全靠这个前提成立。"""
+    allowed = WORKFLOWS["dynamic_task"].allowed_tools
+
+    assert "update_portfolio" not in allowed
+    assert "record_trade_fill" not in allowed
+    assert "update_portfolio" in infer_direct_allowed_tools("继续录入")
+
+
+def test_dispatch_keeps_account_write_request_direct_against_model_workflow_decision():
+    """录入持仓需要 update_portfolio，而 workflow 没有这个工具——送进去必然干不成。"""
+    provider = RouterDecisionProvider(
+        '{"mode":"dynamic_workflow","confidence":0.85,"reason":"承接上一轮继续录入持仓，需调用工具执行账户事实更新"}'
+    )
+
+    runtime, workflow = build_turn_runtime(
+        provider,
+        StubToolRegistry(),
+        session_id="s1",
+        user_text="继续录入",
+    )
+
+    assert workflow.name == "general_chat"
+    assert isinstance(runtime, AgentRuntime)
+    assert "update_portfolio" in workflow.route_reason
+    assert workflow.route_matches == ("model_router_guard", "account_write_guard")
+
+
+def test_dispatch_keeps_account_write_request_direct_when_router_unavailable():
+    runtime, workflow = build_turn_runtime(
+        ScriptedProvider([]),
+        StubToolRegistry(),
+        session_id="s1",
+        user_text="把这两只加进持仓",
+    )
+
+    assert workflow.name == "general_chat"
+    assert isinstance(runtime, AgentRuntime)
+    assert workflow.route_matches == ("model_router_fallback", "account_write_guard")
+
+
+def test_dispatch_keeps_account_write_direct_even_with_explicit_workflow_opt_in():
+    """显式 `用 workflow` 也要挡：照办等于保证失败，原因写进 route_reason 供用户看见。"""
+    runtime, workflow = build_turn_runtime(
+        ScriptedProvider([]),
+        StubToolRegistry(),
+        session_id="s1",
+        user_text="用 workflow 把茅台录入持仓",
+    )
+
+    assert workflow.name == "general_chat"
+    assert isinstance(runtime, AgentRuntime)
+    assert workflow.route_matches == ("model_router_fallback", "account_write_guard")
+
+
+def test_account_write_guard_ignores_how_to_and_review_questions():
+    """「持仓怎么录入」是问方法，「复盘持仓」是只读，都不该被 guard 拽走。"""
+    for text in ("持仓怎么录入", "能不能录入持仓", "复盘一下我的持仓"):
+        provider = RouterDecisionProvider('{"mode":"dynamic_workflow","confidence":0.8,"reason":"需要多阶段复核"}')
+        _runtime, workflow = build_turn_runtime(
+            provider,
+            StubToolRegistry(),
+            session_id="s1",
+            user_text=text,
+        )
+
+        assert workflow.route_matches == ("model_router",), text
+
+
 def test_stock_selection_fallback_script_always_forms_action_boundaries():
     _runtime, workflow = build_turn_runtime(
         ScriptedProvider([]),

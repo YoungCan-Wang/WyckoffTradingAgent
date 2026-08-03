@@ -20,9 +20,11 @@ from cli.workflows._shared import (
     STOCK_STYLE_TARGETS,
     compact_text,
     decision_confidence,
+    dialogue_message_text,
     has_stock_style_target,
     loads_json,
     provider_chat_response,
+    recent_dialogue_context,
 )
 from cli.workflows.models import WorkflowContext
 from cli.workflows.router import WORKFLOWS, route_resume_workflow, route_workflow
@@ -95,6 +97,36 @@ _SHORT_STOCK_SELECTION_RE = re.compile(
     r"(?:选出|挑出|筛出|找(?:几只|几个)?|给我找|帮我找).{0,10}(?:好股票|好票|好标的|值得复核的票|值得跟踪的票)"
 )
 _STOCK_SELECTION_METHOD_MARKERS = ("怎么", "如何", "方法", "是什么", "什么是", "是什么意思", "啥意思", "概念", "解释")
+# 写入账户事实的工具；dynamic_task 白名单里刻意没有它们。
+_ACCOUNT_WRITE_TOOLS = ("update_portfolio", "record_trade_fill")
+_ACCOUNT_WRITE_MARKERS = (
+    "录入",
+    "登记",
+    "记一下",
+    "记下",
+    "加进持仓",
+    "加入持仓",
+    "计入持仓",
+    "写入持仓",
+    "更新持仓",
+    "改持仓",
+    "改一下持仓",
+    "建仓",
+    "补仓",
+    "加仓",
+    "减仓",
+    "清仓",
+    "调仓",
+    "买入了",
+    "卖出了",
+    "已买入",
+    "已卖出",
+    "成交回填",
+    "回填成交",
+    "删掉持仓",
+    "移除持仓",
+)
+_ACCOUNT_WRITE_METHOD_MARKERS = ("怎么", "如何", "方法", "是什么", "什么是", "啥意思", "概念", "解释", "能不能")
 _MODE_ALIASES = {
     "direct": {
         "answer",
@@ -164,6 +196,9 @@ def route_workflow_with_model(
         if guarded := _guarded_context_for_model_decision(user_text, decision):
             return guarded
         return _context_from_model_decision(decision)
+    if _account_write_tools_missing_from_workflow(user_text):
+        # 兜底路径也要挡：显式 workflow 标记和选股兜底都可能把写入请求送进没有写入工具的通道。
+        return _account_write_fallback_context(user_text, fallback_reason)
     if not fallback_context.is_general:
         return _context_with_router_fallback(fallback_context, fallback_reason)
     if guarded := _stock_selection_fallback_context(user_text, fallback_reason):
@@ -184,7 +219,7 @@ def _context_from_model_decision(decision: dict[str, Any]) -> WorkflowContext:
 
 def _guarded_context_for_model_decision(user_text: str, decision: dict[str, Any]) -> WorkflowContext | None:
     if _should_use_workflow(decision):
-        return None
+        return _account_write_downgrade_context(user_text, decision)
     if _needs_stock_selection_workflow_fallback(user_text):
         return replace(
             WORKFLOWS["dynamic_task"],
@@ -194,6 +229,49 @@ def _guarded_context_for_model_decision(user_text: str, decision: dict[str, Any]
         )
     # 组合复盘不再覆盖模型的 direct 判断：模型看得到上下文，比关键词更清楚该不该编排。
     return None
+
+
+def _account_write_downgrade_context(user_text: str, decision: dict[str, Any]) -> WorkflowContext | None:
+    """Downgrade to direct chat when the request needs a tool the workflow does not have.
+
+    workflow 的工具白名单里没有 update_portfolio / record_trade_fill——写入类动作被刻意
+    挡在编排之外。所以「把这两只录进持仓」被判成 workflow 时，它不是跑得慢，是根本干不成：
+    最好的结果也只是核对完代码再让用户自己去录。这类请求必须留在 direct agent。
+    """
+    missing = _account_write_tools_missing_from_workflow(user_text)
+    if not missing:
+        return None
+    return replace(
+        WORKFLOWS["general_chat"],
+        route_reason=(f"账户写入请求需要 {', '.join(missing)}，动态 workflow 无此工具；覆盖模型 workflow 判断"),
+        route_confidence=0.7,
+        route_matches=("model_router_guard", "account_write_guard"),
+    )
+
+
+def _account_write_fallback_context(user_text: str, fallback_reason: str) -> WorkflowContext:
+    missing = ", ".join(_account_write_tools_missing_from_workflow(user_text))
+    label = _fallback_reason_label(fallback_reason) if fallback_reason else "模型判断"
+    return replace(
+        WORKFLOWS["general_chat"],
+        route_reason=f"账户写入请求需要 {missing}，动态 workflow 无此工具（{label}），直接 agent 处理",
+        route_confidence=0.7,
+        route_matches=("model_router_fallback", "account_write_guard"),
+    )
+
+
+def _account_write_tools_missing_from_workflow(user_text: str) -> tuple[str, ...]:
+    if not _looks_like_account_write_request(user_text):
+        return ()
+    allowed = set(WORKFLOWS["dynamic_task"].allowed_tools)
+    return tuple(name for name in _ACCOUNT_WRITE_TOOLS if name not in allowed)
+
+
+def _looks_like_account_write_request(user_text: str) -> bool:
+    text = _compact_user_text(user_text)
+    if not text or any(marker in text for marker in _ACCOUNT_WRITE_METHOD_MARKERS):
+        return False
+    return any(marker in text for marker in _ACCOUNT_WRITE_MARKERS)
 
 
 def _model_route_reason(decision: dict[str, Any]) -> str:
@@ -232,36 +310,16 @@ def _router_user_prompt(user_text: str, messages: list[dict[str, Any]] | None = 
 
 
 def _recent_dialogue_context(messages: list[dict[str, Any]] | None, current_user_text: str) -> str:
-    if not messages:
-        return ""
-    lines: list[str] = []
-    skipped_current = False
-    for message in reversed(messages):
-        role = str(message.get("role") or "").strip()
-        if role not in {"user", "assistant"}:
-            continue
-        text = _routing_message_text(message)
-        if not text:
-            continue
-        if not skipped_current and role == "user" and text == current_user_text:
-            skipped_current = True
-            continue
-        label = "用户" if role == "user" else "助手"
-        lines.append(f"{label}: {_clip_routing_context(text)}")
-        if len(lines) >= _MAX_ROUTING_CONTEXT_MESSAGES:
-            break
-    return "\n".join(reversed(lines))
+    return recent_dialogue_context(
+        messages,
+        current_user_text,
+        max_messages=_MAX_ROUTING_CONTEXT_MESSAGES,
+        max_chars=_MAX_ROUTING_CONTEXT_CHARS,
+    )
 
 
 def _routing_message_text(message: dict[str, Any]) -> str:
-    raw = message.get("_raw_content") or message.get("content") or ""
-    if isinstance(raw, list):
-        raw = " ".join(str(item) for item in raw)
-    return " ".join(str(raw).split())
-
-
-def _clip_routing_context(text: str) -> str:
-    return text[:_MAX_ROUTING_CONTEXT_CHARS] + ("..." if len(text) > _MAX_ROUTING_CONTEXT_CHARS else "")
+    return dialogue_message_text(message)
 
 
 def _context_with_router_fallback(context: WorkflowContext, fallback_reason: str) -> WorkflowContext:

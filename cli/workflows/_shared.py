@@ -64,6 +64,48 @@ def compact_text(value: Any) -> str:
     return re.sub(r"[\s。！!,.，、？?]+", "", str(value or "").lower())
 
 
+def recent_dialogue_context(
+    messages: list[dict[str, Any]] | None,
+    current_user_text: str,
+    *,
+    max_messages: int,
+    max_chars: int,
+) -> str:
+    """Render the tail of the dialogue for routing / planning prompts.
+
+    Router 和 planner 必须看同一份历史。两边各写一份实现，就会出现路由知道「继续录入」是
+    承接上一轮、而 planner 完全不知道上一轮说了什么的信息量断层。
+    """
+    if not messages:
+        return ""
+    lines: list[str] = []
+    skipped_current = False
+    for message in reversed(messages):
+        role = str(message.get("role") or "").strip()
+        if role not in {"user", "assistant"}:
+            continue
+        text = dialogue_message_text(message)
+        if not text:
+            continue
+        if not skipped_current and role == "user" and text == current_user_text:
+            skipped_current = True
+            continue
+        label = "用户" if role == "user" else "助手"
+        clipped = text[:max_chars] + ("..." if len(text) > max_chars else "")
+        lines.append(f"{label}: {clipped}")
+        if len(lines) >= max_messages:
+            break
+    return "\n".join(reversed(lines))
+
+
+def dialogue_message_text(message: dict[str, Any]) -> str:
+    """Flatten one message to a single whitespace-normalised line."""
+    raw = message.get("_raw_content") or message.get("content") or ""
+    if isinstance(raw, list):
+        raw = " ".join(str(item) for item in raw)
+    return " ".join(str(raw).split())
+
+
 def collect_stream_text(chunks: Any) -> str:
     """Concatenate text_delta chunks from a streaming provider response."""
     parts: list[str] = []

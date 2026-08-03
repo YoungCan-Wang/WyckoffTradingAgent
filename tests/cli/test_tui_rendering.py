@@ -5,6 +5,7 @@ import threading
 from collections import deque
 from datetime import datetime
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -2206,3 +2207,57 @@ def test_wyckoff_tui_spinner_start_stop_clears_label():
     WyckoffTUI._stop_spinner(app)
     assert app._spinner_label == ""
     assert updated == [True]
+
+
+def test_request_tool_confirm_reports_timeout_not_deny():
+    """弹窗等了两分钟没人理，不等于用户点了拒绝——把沉默当否决会伪造用户的决定。"""
+    app = object.__new__(WyckoffTUI)
+    app._tools = None
+    app.call_from_thread = lambda fn, *a: None
+
+    with patch("threading.Event.wait", return_value=False):
+        choice = WyckoffTUI._request_tool_confirm(app, "update_portfolio", {"code": "002648"})
+
+    assert choice == {"action": "timeout"}
+
+
+def test_request_tool_confirm_still_denies_on_explicit_choice():
+    app = object.__new__(WyckoffTUI)
+    app._tools = None
+
+    def _fake_call_from_thread(fn, *args):
+        return None
+
+    app.call_from_thread = _fake_call_from_thread
+
+    with patch("threading.Event.wait", return_value=True):
+        choice = WyckoffTUI._request_tool_confirm(app, "update_portfolio", {"code": "002648"})
+
+    # result[0] 仍是 None（没人真的 dismiss），保持原有的保守 deny 兜底。
+    assert choice == {"action": "deny"}
+
+
+def test_request_user_question_returns_timeout_sentinel():
+    """返回「已超时未作答」这句自然语言，会被模型当成用户真的这么回答了。"""
+    from cli.tools import ASK_USER_TIMEOUT_SENTINEL
+
+    app = object.__new__(WyckoffTUI)
+    app.call_from_thread = lambda fn, *a: None
+
+    with patch("threading.Event.wait", return_value=False):
+        answer = WyckoffTUI._request_user_question(app, "要录入哪一条？")
+
+    assert answer == ASK_USER_TIMEOUT_SENTINEL
+
+
+def test_request_user_question_prefers_default_answer_over_timeout_sentinel():
+    from cli.tools import ASK_USER_TIMEOUT_SENTINEL
+
+    app = object.__new__(WyckoffTUI)
+    app.call_from_thread = lambda fn, *a: None
+
+    with patch("threading.Event.wait", return_value=False):
+        answer = WyckoffTUI._request_user_question(app, "继续吗？", default_answer="继续")
+
+    assert answer == "继续"
+    assert answer != ASK_USER_TIMEOUT_SENTINEL

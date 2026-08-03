@@ -217,11 +217,13 @@ class WorkflowExecutor:
         workflow_args: Any = None,
         workflow_control: WorkflowControl | None = None,
         only_step_id: str = "",
+        planning_messages: list[dict[str, Any]] | None = None,
     ) -> None:
         self.provider = provider
         self.tools = tools
         self.session_id = session_id
         self.user_text = user_text
+        self.planning_messages = planning_messages
         self.scratchpad = scratchpad
         self.cancel_check = cancel_check
         self.stream_chunk_timeout = stream_chunk_timeout
@@ -269,6 +271,7 @@ class WorkflowExecutor:
             source_run_id=self.source_run_id,
             workflow_args=self.workflow_args,
             only_step_id=self.only_step_id,
+            messages=self.planning_messages,
         )
         self.run.run_id = old_run_id
         self.run.status = PENDING
@@ -351,6 +354,7 @@ class WorkflowExecutor:
             source_run_id=self.source_run_id,
             workflow_args=self.workflow_args,
             only_step_id=self.only_step_id,
+            messages=self.planning_messages,
         )
         self.run.status = status
         persist_workflow_script(self.run)
