@@ -14,7 +14,6 @@ import re
 import threading
 import time
 import uuid
-from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -31,6 +30,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList, RichLog, Static
 from textual.widgets.option_list import Option
 
+from cli.conversation import ConversationSession, QueuedInput, TurnPhase, UserIntent
 from cli.workflows.pending_reply import classify_pending_workflow_reply, is_pending_workflow_revision
 from utils.tool_result_preview import serialize_tool_result, tool_result_brief_lines
 
@@ -1962,13 +1962,13 @@ class WyckoffTUI(App):
         self._session_expired = session_expired
         self._messages: list[dict] = []
         self._session_tokens = {"input": 0, "output": 0, "rounds": 0}
-        self._busy = False
+        self._conversation = ConversationSession()
         self._cancel_event = threading.Event()
         self._last_ctrl_c: float = 0.0
-        self._queue: deque[Any] = deque()
         self._workflow_override: _WorkflowOverride | None = None
         self._pending_workflows: dict[str, _PendingWorkflowLaunch] = {}
         self._pending_user_question: _PendingUserQuestion | None = None
+        self._pending_resume_checkpoint = None
         self._session_id = uuid.uuid4().hex[:12]
         self._spinner_idx = 0
         self._spinner_label = ""
@@ -1990,6 +1990,49 @@ class WyckoffTUI(App):
 
         self._schedules = load_schedules()
         self._last_schedule_check_at: datetime | None = None
+
+    def _ensure_conversation(self) -> ConversationSession:
+        if not hasattr(self, "_conversation") or self._conversation is None:
+            self._conversation = ConversationSession()
+        return self._conversation
+
+    @property
+    def _busy(self) -> bool:
+        session = getattr(self, "_conversation", None)
+        return bool(session and session.is_busy)
+
+    @_busy.setter
+    def _busy(self, value: bool) -> None:
+        """Test/compat shim: map boolean busy onto ConversationSession phases."""
+
+        session = self._ensure_conversation()
+        if value:
+            if not session.is_busy:
+                session.begin_turn("")
+                session.mark_running()
+            return
+        if session.is_busy:
+            session.abandon_active_turn()
+
+    @property
+    def _queue(self):
+        """Compat view of Session.input_queue (deque of QueuedInput / legacy items)."""
+
+        return self._ensure_conversation().input_queue
+
+    @_queue.setter
+    def _queue(self, value) -> None:
+        session = self._ensure_conversation()
+        session.clear_queue()
+        for item in value or ():
+            if isinstance(item, QueuedInput):
+                session.input_queue.append(item)
+            elif isinstance(item, dict) and item.get("type") == "system_notification":
+                session.input_queue.append(
+                    QueuedInput(kind="system_notification", content=str(item.get("content", "")))
+                )
+            else:
+                session.input_queue.append(QueuedInput(kind="user", content=str(item)))
 
     def compose(self) -> ComposeResult:
         from textual.containers import Horizontal
@@ -2196,6 +2239,11 @@ class WyckoffTUI(App):
             )
         elif getattr(self, "_spinner_label", ""):
             parts.append(f"[bold cyan]{_SPINNER[self._spinner_idx]} {self._spinner_label}[/bold cyan]")
+        elif phase_label := self._conversation.status_label():
+            style = "yellow" if phase_label in {"failed", "cancelled", "cancelling"} else "dim"
+            parts.append(f"[{style}]turn:{phase_label}[/{style}]")
+        if queue_depth := len(self._conversation.input_queue):
+            parts.append(f"queued:{queue_depth}")
         parts.append(f"Wyckoff CLI v{ver}")
         prov = self._state.get("provider_name", "")
         model = self._state.get("model", "")
@@ -2355,6 +2403,7 @@ class WyckoffTUI(App):
                 return
             self._cancel_event.set()
             self._last_ctrl_c = now
+            self._apply_session_ui(self._conversation.request_cancel())
             self.notify("已中断，再按一次 Ctrl+C 强制退出", timeout=1)
             return
         if now - self._last_ctrl_c < 1.0:
@@ -2420,8 +2469,10 @@ class WyckoffTUI(App):
         self._update_status()
 
     def _stop_spinner(self) -> None:
+        had_label = bool(self._spinner_label)
         self._spinner_label = ""
-        self._update_status()
+        if had_label:
+            self._update_status()
 
     # ----- 输入处理 -----
 
@@ -2454,42 +2505,61 @@ class WyckoffTUI(App):
         if self._handle_workflow_control_text(text, log):
             return
 
-        text = self._expand_recent_workflow_followup(text)
-
         if not self._provider:
             log.write(Text.from_markup("[yellow]⚠ 未配置模型，请先输入 /model add[/yellow]"))
             return
 
-        if self._busy:
-            self._queue.append(text)
+        intent = self._conversation.resolve_text(
+            text,
+            has_pending_question=bool(self._pending_user_question),
+            has_pending_workflow=False,
+            resumable_workflow_exists=bool(self._latest_relevant_workflow_run()),
+        )
+        if intent.kind == UserIntent.RESUME_TURN:
+            self._resume_active_turn(log)
+            return
+        if intent.kind == UserIntent.RESUME_WORKFLOW:
+            self._resume_recent_workflow_followup(text, log)
+            return
+        if intent.kind == UserIntent.ENQUEUE_INPUT:
+            self._apply_session_ui(self._conversation.enqueue(text))
             log.write(Text.from_markup("  [dim]📋 已排队（等待当前回复完成后自动发送）[/dim]"))
             return
-
-        # 用户消息
+        self._conversation.abandon_active_turn()
         self._send_message(text)
 
-    def _send_message(self, text: str) -> None:
+    def _send_message(
+        self,
+        text: str,
+        *,
+        turn_user_text: str | None = None,
+        echo_user: bool = True,
+    ) -> None:
         log = self.query_one("#chat-log", ChatLog)
-        lines = text.splitlines()
-        if len(lines) > 3:
-            preview = "\n".join(lines[:3]) + f"\n... ({len(lines)} lines total)"
-            log.write(Text.from_markup(f"[bold cyan]❯[/bold cyan] {preview}"))
-        else:
-            log.write(Text.from_markup(f"[bold cyan]❯[/bold cyan] {text}"))
-        # 注入记忆上下文
+        display = turn_user_text or text
+        if echo_user:
+            lines = display.splitlines()
+            if len(lines) > 3:
+                preview = "\n".join(lines[:3]) + f"\n... ({len(lines)} lines total)"
+                log.write(Text.from_markup(f"[bold cyan]❯[/bold cyan] {preview}"))
+            else:
+                log.write(Text.from_markup(f"[bold cyan]❯[/bold cyan] {display}"))
         mem_ctx = ""
         try:
             from cli.memory import build_memory_context
 
-            mem_ctx = build_memory_context(text)
+            mem_ctx = build_memory_context(display)
         except Exception:
             logger.debug("memory context injection failed", exc_info=True)
-        if workflow_ctx := self._recent_workflow_context(text):
+        if workflow_ctx := self._recent_workflow_context(display):
             mem_ctx = "\n\n".join(item for item in (mem_ctx, workflow_ctx) if item)
         user_message = {"role": "user", "content": text}
         if mem_ctx:
             user_message["_memory_context"] = mem_ctx
         self._messages.append(user_message)
+        if hasattr(self, "_cancel_event") and self._cancel_event is not None:
+            self._cancel_event.clear()
+        self._ensure_conversation().begin_turn(turn_user_text or text)
         self._start_spinner("thinking")
         self._run_agent()
 
@@ -2497,14 +2567,68 @@ class WyckoffTUI(App):
         log = self.query_one("#chat-log", ChatLog)
         log.write(Text.from_markup("  [dim]↳ 后台结果已回传给 agent[/dim]"))
         self._messages.append({"role": "user", "content": text, "_system_notification": True})
+        if hasattr(self, "_cancel_event") and self._cancel_event is not None:
+            self._cancel_event.clear()
+        self._ensure_conversation().begin_turn(text, system_notification=True)
         self._start_spinner("处理后台结果")
         self._run_agent()
 
     def _dispatch_queued_item(self, item: Any) -> None:
+        if isinstance(item, QueuedInput):
+            if item.kind == "system_notification":
+                self._send_system_notification(item.content)
+                return
+            self._send_message(item.content)
+            return
         if isinstance(item, dict) and item.get("type") == "system_notification":
             self._send_system_notification(str(item.get("content", "")))
             return
         self._send_message(str(item))
+
+    def _apply_session_ui(self, events: list) -> None:
+        log = self.query_one("#chat-log", ChatLog)
+        for event in events:
+            etype = getattr(event, "type", "")
+            if etype == "spinner_stop":
+                self._stop_spinner()
+            elif etype == "status_refresh":
+                self._update_status()
+            elif etype == "resume_hint":
+                cancelled = bool((event.payload or {}).get("cancelled"))
+                if cancelled:
+                    log.write(Text.from_markup("  [dim]提示: 输入「继续」可接着刚才的问题[/dim]"))
+                else:
+                    log.write(Text.from_markup("  [dim]提示: 切换模型后输入「继续」可重试刚才的问题[/dim]"))
+            elif etype == "interrupted_banner":
+                payload = event.payload or {}
+                sid = escape(str(payload.get("session_id", "")))
+                query = escape(str(payload.get("query", "")))
+                log.write(Text.from_markup(f"[yellow]⚠ 检测到会话 [bold]#{sid}[/bold] 上次执行中途异常中断。[/yellow]"))
+                log.write(Text.from_markup(f'[yellow]输入「继续」可恢复任务: [bold]"{query}"[/bold][/yellow]'))
+
+    def _resume_active_turn(self, log) -> None:
+        original = self._conversation.resumable_user_text
+        soft = self._conversation.build_resume_user_text()
+        hard = self._conversation.take_hard_checkpoint()
+        self._conversation.abandon_active_turn()
+        if not original or not soft:
+            log.write(Text.from_markup("[yellow]没有可继续的对话轮次[/yellow]"))
+            return
+        if hard and hard.messages:
+            self._messages[:] = [dict(item) for item in hard.messages]
+            self._pending_resume_checkpoint = hard
+        log.write(Text.from_markup("  [dim]↻ 重试刚才未完成的问题[/dim]"))
+        self._send_message(soft, turn_user_text=original, echo_user=False)
+
+    def _resume_recent_workflow_followup(self, text: str, log) -> None:
+        from cli.workflows.resume import build_chat_resume_prompt
+
+        run = self._latest_relevant_workflow_run()
+        if not run:
+            log.write(Text.from_markup("[yellow]没有可继续的 workflow[/yellow]"))
+            return
+        self._conversation.abandon_active_turn()
+        self._send_message(build_chat_resume_prompt(_workflow_run_with_events(run), text))
 
     # ----- 斜杠命令 -----
 
@@ -2854,15 +2978,6 @@ class WyckoffTUI(App):
         except Exception:
             logger.debug("pending workflow model reply intent failed", exc_info=True)
             return ""
-
-    def _expand_recent_workflow_followup(self, text: str) -> str:
-        from cli.workflows.resume import build_chat_resume_prompt, is_recent_workflow_followup
-
-        if not is_recent_workflow_followup(text):
-            return text
-        if run := self._latest_relevant_workflow_run():
-            return build_chat_resume_prompt(_workflow_run_with_events(run), text)
-        return text
 
     def _latest_relevant_workflow_run(self) -> dict[str, Any] | None:
         from cli.workflows.store import list_workflow_runs
@@ -3968,21 +4083,16 @@ class WyckoffTUI(App):
 
     def _check_auto_resume(self) -> None:
         try:
+            from cli.conversation.events import SessionUiEvent
+
             res = self._find_interrupted_scratchpad()
             if not res:
                 return
             session_id, query = res
-            # 恢复该会话历史
             self._resume_session(session_id)
-            log = self.query_one("#chat-log", ChatLog)
-            log.write(
-                Text.from_markup(
-                    f"[yellow]⚠ 检测到会话 [bold]#{session_id}[/bold] 上次执行中途异常中断（可能由于网络超时或崩溃）。[/yellow]"
-                )
-            )
-            log.write(Text.from_markup(f'[yellow]正在自动恢复会话并重新提交任务: [bold]"{query}"[/bold][/yellow]'))
-            # 自动发送消息重新执行
-            self._send_message(query)
+            self._conversation.begin_turn(query)
+            self._conversation.on_turn_cancelled()
+            self._apply_session_ui([SessionUiEvent.interrupted_banner(session_id=session_id, query=query)])
         except Exception:
             logger.debug("auto resume check failed", exc_info=True)
 
@@ -4017,7 +4127,7 @@ class WyckoffTUI(App):
             self._handle_command(action)
         elif self._busy:
             sched.last_status = "queued"
-            self._queue.append(action)
+            self._apply_session_ui(self._conversation.enqueue(QueuedInput(kind="schedule", content=action)))
             log.write(Text.from_markup("  [dim]📋 Agent 忙碌中，已排队[/dim]"))
         else:
             sched.last_status = "triggered"
@@ -4107,14 +4217,30 @@ class WyckoffTUI(App):
         if self._messages:
             self._messages.pop()
 
-    def _handle_cancelled_agent_turn(self, stream: _StreamViewState, ui: _AgentUiOps) -> None:
+    def _handle_cancelled_agent_turn(
+        self,
+        stream: _StreamViewState,
+        ui: _AgentUiOps,
+        *,
+        user_text: str = "",
+        system_notification: bool = False,
+    ) -> None:
         ui.spinner_stop()
         _flush_stream_line(stream, ui.write_stream, ui.scroll)
         ui.write(Text.from_markup("[yellow]⏹ 已中断[/yellow]"))
         ui.scroll()
+        if self._conversation.phase == TurnPhase.CANCELLED:
+            return
+        checkpoint = [dict(item) for item in self._messages]
+        events = self._conversation.on_turn_cancelled(messages_checkpoint=checkpoint)
+        if system_notification:
+            self._conversation.abandon_active_turn()
+        else:
+            self.call_from_thread(self._apply_session_ui, events)
         self._drop_current_turn_messages()
 
     def _save_completed_agent_turn(self, state: _TurnRunState, final_text: str, t_start: float, chatlog_save) -> None:
+        self._conversation.on_turn_completed()
         total_input = state.final_usage.get("input_tokens", 0)
         total_output = state.final_usage.get("output_tokens", 0)
         self._session_tokens["input"] += total_input
@@ -4176,6 +4302,8 @@ class WyckoffTUI(App):
         )
 
     def _save_failed_agent_turn(self, e: Exception, state: _TurnRunState, t_start: float, chatlog_save, write) -> None:
+        from cli.conversation import classify_failure
+
         self._restore_turn_user_message(state.turn_user_index)
         err = _friendly_error(e)
         if state.scratchpad:
@@ -4189,8 +4317,27 @@ class WyckoffTUI(App):
             type(e).__name__,
             str(e)[:500],
         )
+        failure = classify_failure(e)
         turn_role = _chatlog_role_for_turn(state.system_notification)
-        turn_metadata = {"system_notification": True} if state.system_notification else {}
+        turn_metadata: dict[str, Any] = {"system_notification": True} if state.system_notification else {}
+        turn = self._conversation.active_turn
+        if turn:
+            turn_metadata.update({"turn_id": turn.turn_id, "failure_kind": failure.kind.value})
+            for summary in state.executed_tool_summaries:
+                name = str(summary.get("name") or "")
+                brief = ""
+                if lines := summary.get("brief"):
+                    brief = "; ".join(str(line) for line in lines[:3]) if isinstance(lines, list) else str(lines)[:200]
+                elif err := summary.get("error"):
+                    brief = f"error: {err}"[:200]
+                if name or brief:
+                    turn.tool_result_briefs.append(
+                        {
+                            "name": name,
+                            "brief": brief,
+                            "tool_call_id": str(summary.get("tool_call_id") or ""),
+                        }
+                    )
         chatlog_save(
             turn_role,
             state.user_text,
@@ -4205,7 +4352,17 @@ class WyckoffTUI(App):
             provider=state.provider_name,
             elapsed_s=round(elapsed, 2),
             error=f"{type(e).__name__}: {str(e)[:500]}",
+            metadata_json=json.dumps(
+                {"turn_id": turn.turn_id if turn else "", "failure_kind": failure.kind.value},
+                ensure_ascii=False,
+            ),
         )
+        checkpoint = [dict(item) for item in self._messages]
+        events = self._conversation.on_turn_failed(failure, messages_checkpoint=checkpoint)
+        if state.system_notification:
+            self._conversation.abandon_active_turn()
+        else:
+            self.call_from_thread(self._apply_session_ui, events)
         self._drop_current_turn_messages()
 
     def _submit_workflow_background(
@@ -4322,7 +4479,7 @@ class WyckoffTUI(App):
 
         log = self.query_one("#chat-log", ChatLog)
         is_error = bool(result.get("error"))
-        notify_followup = self._busy or bool(self._queue)
+        notify_followup = self._busy or bool(self._conversation.input_queue)
         run_id = str(result.get("workflow_run_id", ""))
         if run_id:
             unregister_workflow_control(run_id)
@@ -4380,11 +4537,11 @@ class WyckoffTUI(App):
             # 模型下一轮本来就看得到。再叫它就同一份结果说一次，只会得到一段和上一条重复的话。
             return
         summary = _background_task_summary("dynamic_workflow", task_id, result)
-        self._queue.append(
-            _system_notification_queue_item(_workflow_background_notification(task_id, result, status, summary))
-        )
+        item = _system_notification_queue_item(_workflow_background_notification(task_id, result, status, summary))
+        self._conversation.enqueue(QueuedInput(kind="system_notification", content=str(item.get("content", ""))))
         if not self._busy:
-            self._dispatch_queued_item(self._queue.popleft())
+            if next_item := self._conversation.dequeue_next():
+                self._dispatch_queued_item(next_item)
 
     def _handle_agent_event(
         self,
@@ -4487,8 +4644,10 @@ class WyckoffTUI(App):
 
     @work(thread=True, exclusive=True)
     def _run_agent(self) -> None:
-        self._busy = True
-        self._cancel_event.clear()
+        # cancel_event 在 begin_turn 时清；此处勿 clear，否则会丢掉 SUBMITTED 阶段的 Ctrl+C。
+        cancelled_before_start = self._cancel_event.is_set() or self._conversation.phase == TurnPhase.CANCELLING
+        if not cancelled_before_start:
+            self._conversation.mark_running()
         log = self.query_one("#chat-log", ChatLog)
 
         def _write(renderable):
@@ -4507,75 +4666,128 @@ class WyckoffTUI(App):
             self.call_from_thread(self._stop_spinner)
 
         t_start = time.monotonic()
-
         state = self._create_turn_run_state()
         self._agent_log.info("session=%s user: %s", self._session_id, state.user_text[:200])
-        _chatlog_save = self._chatlog_save  # bound method ref
-
         stream = _StreamViewState()
         ui = _AgentUiOps(log, _write, _write_stream, _scroll, _spinner_start, _spinner_stop)
 
         try:
-            if not self._provider or not self._tools:
-                raise RuntimeError("模型或工具未初始化")
-
-            # Sub-agent 实时进度回调
-            self._tools._tool_context.on_progress = _make_sub_agent_progress_handler(
-                self._tools,
-                _write,
-                _scroll,
-                _spinner_start,
-                _spinner_stop,
-            )
-            self._tools._tool_context.cancel_check = self._cancel_event.is_set
-
-            workflow_override = self._workflow_override
-            self._workflow_override = None
-            workflow_context = WORKFLOWS["general_chat"] if state.system_notification else None
-            runtime, workflow_context = build_turn_runtime(
-                self._provider,
-                self._tools,
-                session_id=self._session_id,
-                user_text=state.user_text,
-                scratchpad=state.scratchpad,
-                cancel_check=self._cancel_event.is_set,
-                workflow_context=workflow_context or (workflow_override.context if workflow_override else None),
-                workflow_script=workflow_override.script if workflow_override else None,
-                workflow_source_run_id=workflow_override.source_run_id if workflow_override else "",
-                workflow_args=workflow_override.args if workflow_override else None,
-                workflow_only_step_id=workflow_override.only_step_id if workflow_override else "",
-                routing_messages=self._messages,
-            )
-            state.workflow_name = "" if workflow_context.is_general else workflow_context.name
-            system_prompt = with_current_time(self._system_prompt)
-            if isinstance(runtime, WorkflowExecutor):
-                ui.spinner_stop()
-                if workflow_override:
-                    self._prepare_workflow_approval(runtime, state, system_prompt, _write, _scroll)
-                else:
-                    self._submit_workflow_background(runtime, state, system_prompt, _write, _scroll)
+            if cancelled_before_start:
+                self._handle_cancelled_agent_turn(
+                    stream,
+                    ui,
+                    user_text=state.user_text,
+                    system_notification=state.system_notification,
+                )
                 return
-            for event in runtime.run_stream(self._messages, with_current_time(self._system_prompt)):
-                if self._cancel_event.is_set():
-                    self._handle_cancelled_agent_turn(stream, ui)
-                    break
-                if self._handle_agent_event(event, state, stream, ui, t_start, _chatlog_save):
-                    break
-
+            self._run_agent_body(state, stream, ui, t_start)
         except AgentCancelled:
-            self._handle_cancelled_agent_turn(stream, ui)
-
+            self._handle_cancelled_agent_turn(
+                stream,
+                ui,
+                user_text=state.user_text,
+                system_notification=state.system_notification,
+            )
         except Exception as e:
             _spinner_stop()
-            self._save_failed_agent_turn(e, state, t_start, _chatlog_save, _write)
-
+            self._save_failed_agent_turn(e, state, t_start, self._chatlog_save, _write)
         finally:
-            self._busy = False
-            if self._tools:
-                self._tools._tool_context.on_progress = None
-            if self._queue:
-                next_msg = self._queue.popleft()
-                self.call_from_thread(self._dispatch_queued_item, next_msg)
+            self._finish_agent_turn()
+
+    def _run_agent_body(self, state, stream, ui, t_start) -> None:
+        if not self._provider or not self._tools:
+            raise RuntimeError("模型或工具未初始化")
+
+        self._tools._tool_context.on_progress = _make_sub_agent_progress_handler(
+            self._tools,
+            ui.write,
+            ui.scroll,
+            ui.spinner_start,
+            ui.spinner_stop,
+        )
+        self._tools._tool_context.cancel_check = self._cancel_event.is_set
+
+        workflow_override = self._workflow_override
+        self._workflow_override = None
+        workflow_context = WORKFLOWS["general_chat"] if state.system_notification else None
+        runtime, workflow_context = build_turn_runtime(
+            self._provider,
+            self._tools,
+            session_id=self._session_id,
+            user_text=state.user_text,
+            scratchpad=state.scratchpad,
+            cancel_check=self._cancel_event.is_set,
+            workflow_context=workflow_context or (workflow_override.context if workflow_override else None),
+            workflow_script=workflow_override.script if workflow_override else None,
+            workflow_source_run_id=workflow_override.source_run_id if workflow_override else "",
+            workflow_args=workflow_override.args if workflow_override else None,
+            workflow_only_step_id=workflow_override.only_step_id if workflow_override else "",
+            routing_messages=self._messages,
+        )
+        state.workflow_name = "" if workflow_context.is_general else workflow_context.name
+        system_prompt = with_current_time(self._system_prompt)
+        if isinstance(runtime, WorkflowExecutor):
+            ui.spinner_stop()
+            self._conversation.on_turn_completed()
+            if workflow_override:
+                self._prepare_workflow_approval(runtime, state, system_prompt, ui.write, ui.scroll)
+            else:
+                self._submit_workflow_background(runtime, state, system_prompt, ui.write, ui.scroll)
+            return
+        self._consume_agent_event_stream(runtime, state, stream, ui, t_start, self._chatlog_save)
+
+    def _consume_agent_event_stream(self, runtime, state, stream, ui, t_start, chatlog_save) -> None:
+        resume_from = self._pending_resume_checkpoint
+        self._pending_resume_checkpoint = None
+        for event in runtime.run_stream(
+            self._messages,
+            with_current_time(self._system_prompt),
+            resume_from=resume_from,
+        ):
+            etype = event.get("type")
+            if etype not in {"turn_cancelled", "turn_failed", "done"}:
+                self._conversation.on_runtime_event(event)
+            if etype == "turn_cancelled":
+                self._handle_cancelled_agent_turn(
+                    stream,
+                    ui,
+                    user_text=state.user_text,
+                    system_notification=state.system_notification,
+                )
+                return
+            if etype == "turn_failed":
+                continue
+            if self._cancel_event.is_set():
+                self._handle_cancelled_agent_turn(
+                    stream,
+                    ui,
+                    user_text=state.user_text,
+                    system_notification=state.system_notification,
+                )
+                return
+            if self._handle_agent_event(event, state, stream, ui, t_start, chatlog_save):
+                return
+
+    def _finish_agent_turn(self) -> None:
+        if self._conversation.phase in {
+            TurnPhase.SUBMITTED,
+            TurnPhase.RUNNING,
+            TurnPhase.STREAMING,
+            TurnPhase.TOOL_RUNNING,
+            TurnPhase.AWAITING_USER,
+            TurnPhase.CANCELLING,
+        }:
+            # Workflow/approval paths clear via on_turn_completed; leftover running → idle.
+            if self._conversation.phase != TurnPhase.CANCELLING:
+                self._conversation.abandon_active_turn()
+        try:
+            self.call_from_thread(self._stop_spinner)
+        except Exception:
+            logger.debug("stop spinner after agent turn failed", exc_info=True)
+        if self._tools:
+            self._tools._tool_context.on_progress = None
+        if next_msg := self._conversation.dequeue_next():
+            self.call_from_thread(self._dispatch_queued_item, next_msg)
 
     # ----- 后台任务回调 -----
 
@@ -4656,10 +4868,10 @@ class WyckoffTUI(App):
             "</task-notification>\n"
             "</system-reminder>"
         )
-        self._queue.append(_system_notification_queue_item(notification))
-        # 空闲时自动触发
+        self._conversation.enqueue(QueuedInput(kind="system_notification", content=notification))
         if not self._busy:
-            self.call_from_thread(self._dispatch_queued_item, self._queue.popleft())
+            if next_item := self._conversation.dequeue_next():
+                self.call_from_thread(self._dispatch_queued_item, next_item)
 
     # ----- Actions -----
 
@@ -4743,7 +4955,8 @@ class WyckoffTUI(App):
         self._save_memory_async()
 
         self._messages[:] = resumed.messages
-        self._queue.clear()
+        self._conversation.clear_queue()
+        self._conversation.abandon_active_turn()
         self._session_tokens = {"input": 0, "output": 0, "rounds": 0}
         self._session_id = session_id
         self._update_status()
@@ -4789,7 +5002,8 @@ class WyckoffTUI(App):
         # 保存会话记忆
         self._save_memory_async()
         self._messages.clear()
-        self._queue.clear()
+        self._conversation.clear_queue()
+        self._conversation.abandon_active_turn()
         self._session_tokens = {"input": 0, "output": 0, "rounds": 0}
         self._session_id = uuid.uuid4().hex[:12]
         log = self.query_one("#chat-log", ChatLog)

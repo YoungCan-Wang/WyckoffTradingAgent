@@ -89,6 +89,9 @@ def test_runtime_emits_failed_model_stage_before_provider_error():
 
     assert next(stream) == {"type": "stage_start", "stage": "model", "round": 1, "message": "正在分析"}
     assert next(stream) == {"type": "stage_done", "stage": "model", "round": 1, "success": False}
+    failed = next(stream)
+    assert failed["type"] == "turn_failed"
+    assert failed["failure"]["kind"] in {"provider", "unknown"}
     with pytest.raises(RuntimeError, match="provider unavailable"):
         next(stream)
 

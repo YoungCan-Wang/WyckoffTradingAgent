@@ -242,9 +242,33 @@ class AgentRuntime:
         self,
         messages: list[dict[str, Any]],
         system_prompt: str = "",
+        *,
+        resume_from: Any | None = None,
     ) -> Iterator[RuntimeEvent]:
-        """Run the agent loop and yield normalized runtime events."""
+        """Run the agent loop and yield normalized runtime events.
 
+        Always ends with a terminal event: ``done``, ``turn_cancelled``, or
+        ``turn_failed`` (failures are then re-raised). ``resume_from`` is a
+        ``TurnCheckpoint`` used to skip already-completed tool_call_ids.
+        """
+
+        self._resume_checkpoint = resume_from
+        try:
+            yield from self._run_stream_loop(messages, system_prompt)
+        except AgentCancelled:
+            yield self._turn_cancelled_event()
+            return
+        except Exception as exc:
+            yield self._turn_failed_event(exc)
+            raise
+        finally:
+            self._resume_checkpoint = None
+
+    def _run_stream_loop(
+        self,
+        messages: list[dict[str, Any]],
+        system_prompt: str,
+    ) -> Iterator[RuntimeEvent]:
         system_prompt = self._prepare_system_prompt(system_prompt)
         if self.tools and hasattr(self.tools, "_tool_context") and self.tools._tool_context:
             self.tools._tool_context.state["session_id"] = self._session_id()
@@ -256,6 +280,7 @@ class AgentRuntime:
             yield workflow_event
 
         for round_idx in range(self.max_tool_rounds):
+            self._ensure_not_cancelled()
             messages, event = self._compact_if_needed(messages, model_name, self._provider_context_window())
             if event:
                 yield event
@@ -309,6 +334,34 @@ class AgentRuntime:
             return
 
         yield self._finish_limit_turn(state)
+
+    def _ensure_not_cancelled(self) -> None:
+        if self.cancel_check and self.cancel_check():
+            raise AgentCancelled()
+
+    def _turn_cancelled_event(self) -> RuntimeEvent:
+        return stream_event("turn_cancelled", message="cancelled by user")
+
+    def _turn_failed_event(self, exc: BaseException) -> RuntimeEvent:
+        from cli.conversation.failures import classify_failure
+
+        info = classify_failure(exc)
+        return stream_event(
+            "turn_failed",
+            message=info.message,
+            failure={
+                "kind": info.kind.value,
+                "message": info.message,
+                "exception_type": info.exception_type,
+            },
+        )
+
+    def _resumed_tool_ids(self) -> set[str]:
+        checkpoint = getattr(self, "_resume_checkpoint", None)
+        if checkpoint is None:
+            return set()
+        ids = getattr(checkpoint, "completed_tool_call_ids", None) or []
+        return {str(item) for item in ids if item}
 
     def _compact_if_needed(
         self,
@@ -448,6 +501,7 @@ class AgentRuntime:
             yield from self._append_aborted_tool_results(messages, tool_calls, answered_call_ids, error=order_error)
             return False
         for batch in partition_tool_calls(tool_calls, self.tools.concurrency_safe):
+            self._ensure_not_cancelled()
             if batch["concurrent"] and len(batch["calls"]) > 1:
                 if (
                     yield from self._execute_concurrent_batch(
@@ -662,17 +716,30 @@ class AgentRuntime:
     ) -> Iterator[RuntimeEvent | bool]:
         """Execute a concurrent-safe batch. Returns True on doom-loop break."""
 
+        resumed_ids = self._resumed_tool_ids()
+        to_run: list[dict] = []
         for call in calls:
+            call_id = call["id"]
+            state.used_tools.append((call["name"], call["args"]))
+            if call_id in resumed_ids:
+                yield from self._append_skipped_resumed_tool(messages, call)
+                answered_call_ids.add(call_id)
+                continue
+            to_run.append(call)
+        if not to_run:
+            return False
+
+        for call in to_run:
             yield self._tool_start_event(call, concurrent=True)
 
-        with ThreadPoolExecutor(max_workers=min(len(calls), 5)) as pool:
-            futures = {pool.submit(self._execute_tool_call_raw, c, messages): c for c in calls}
+        with ThreadPoolExecutor(max_workers=min(len(to_run), 5)) as pool:
+            futures = {pool.submit(self._execute_tool_call_raw, c, messages): c for c in to_run}
             for future in as_completed(futures):
+                self._ensure_not_cancelled()
                 call = futures[future]
                 name = call["name"]
                 args = call["args"]
                 call_id = call["id"]
-                state.used_tools.append((name, args))
 
                 if self._is_doom_loop(name, args, state):
                     yield self._append_doom_loop_result(messages, name, args, call_id)
@@ -709,6 +776,7 @@ class AgentRuntime:
         answered_call_ids: set[str],
     ) -> Iterator[RuntimeEvent | bool]:
         for call in calls:
+            self._ensure_not_cancelled()
             tool_event = yield from self._execute_single_tool(
                 call,
                 messages,
@@ -730,6 +798,11 @@ class AgentRuntime:
         args = call["args"]
         call_id = call["id"]
         state.used_tools.append((name, args))
+
+        if call_id in self._resumed_tool_ids():
+            yield from self._append_skipped_resumed_tool(messages, call)
+            answered_call_ids.add(call_id)
+            return None
 
         if self._is_doom_loop(name, args, state):
             yield self._append_doom_loop_result(messages, name, args, call_id)
@@ -754,6 +827,24 @@ class AgentRuntime:
         )
         answered_call_ids.add(call_id)
         return None
+
+    def _append_skipped_resumed_tool(self, messages: list[dict[str, Any]], call: dict) -> Iterator[RuntimeEvent]:
+        """Skip re-executing a tool_call_id already completed before hard resume."""
+
+        result = {
+            "skipped": True,
+            "reason": "already_completed_before_resume",
+            "note": "写操作不可盲目 skip；若需重新确认请明确要求用户。",
+        }
+        yield from self._append_tool_result(
+            messages,
+            call["name"],
+            call.get("args") or {},
+            call["id"],
+            result,
+            elapsed_ms=0,
+            status="skipped",
+        )
 
     def _tool_start_event(self, call: dict[str, Any], *, concurrent: bool = False) -> RuntimeEvent:
         display = call["name"]

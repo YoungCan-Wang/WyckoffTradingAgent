@@ -313,18 +313,28 @@ CLI/TUI 队列：
 ```
 用户输入 → Agent 忙? ─No→ 立即处理
                       │
-                      Yes→ 入 deque 队列，显示 "⏳ 已排队 (N)"
+                      Yes→ 入 ConversationSession.input_queue，显示 queued:N
                               │
                               ▼ （当前任务完成后）
                          自动取队首消息 → 继续处理
 ```
 
-`/new` 清对话时同步清空队列。
+`/new` 清对话时同步清空队列。状态栏由 `TurnPhase` 驱动（如 `turn:streaming` / `turn:failed`）。
 
 Web 读盘室队列：
 - 前端 `useMessageQueue()` 在当前回复未完成时把新输入排队，最多保留 5 条。
 - 当前 assistant message 完成后自动发送队首消息，并复用同一套 `/api/chat` transport。
 - 用户可手动清空队列；页面刷新会丢弃未发送队列，避免误把临时输入写进数据库。
+
+### Conversation Turn 状态机
+
+`cli/conversation/` — CLI 会话层一等公民：Turn 生命周期、「继续」仲裁、Resume 分层与 `input_queue`。TUI 只负责渲染。
+
+设计机制与取舍见独立 Wiki 篇
+[Conversation Turn 会话状态机](https://github.com/YoungCan-Wang/WyckoffTradingAgent/wiki/11_11_Conversation_Turn)；
+术语见 [GLOSSARY.md](../GLOSSARY.md) §14。
+
+要点：短「继续」在 Failed/Cancelled 时优先 **ResumeTurn**（重试原问题），显式 `workflow`/`wf_*` 才走 workflow；Runtime 终态为 `done` / `turn_cancelled` / `turn_failed`；`FallbackProvider` 与 ResumeTurn 分层。
 
 ### CLI Provider 层
 

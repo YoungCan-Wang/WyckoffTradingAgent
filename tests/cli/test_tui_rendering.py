@@ -116,7 +116,7 @@ def test_pop_lines_removes_actual_added_strips():
     assert log.refreshed is True
 
 
-def test_expand_recent_workflow_followup_uses_current_session(monkeypatch):
+def test_latest_relevant_workflow_run_selection(monkeypatch):
     app = object.__new__(WyckoffTUI)
     app._session_id = "s1"
     monkeypatch.setattr(
@@ -140,15 +140,8 @@ def test_expand_recent_workflow_followup_uses_current_session(monkeypatch):
             },
         ],
     )
+    assert app._latest_relevant_workflow_run()["run_id"] == "wf_current"
 
-    expanded = app._expand_recent_workflow_followup("接着刚才那个")
-
-    assert "继续 workflow wf_current" in expanded
-    assert "wf_other" not in expanded
-
-
-def test_expand_recent_workflow_followup_falls_back_to_latest_run(monkeypatch):
-    app = object.__new__(WyckoffTUI)
     app._session_id = "new_session"
     monkeypatch.setattr(
         "cli.workflows.store.list_workflow_runs",
@@ -164,15 +157,8 @@ def test_expand_recent_workflow_followup_falls_back_to_latest_run(monkeypatch):
             }
         ],
     )
+    assert app._latest_relevant_workflow_run()["run_id"] == "wf_latest"
 
-    expanded = app._expand_recent_workflow_followup("接着刚才那个")
-
-    assert "继续 workflow wf_latest" in expanded
-
-
-def test_expand_recent_workflow_followup_ignores_stale_latest_run(monkeypatch):
-    app = object.__new__(WyckoffTUI)
-    app._session_id = "new_session"
     monkeypatch.setattr(
         "cli.workflows.store.list_workflow_runs",
         lambda limit=8: [
@@ -187,8 +173,7 @@ def test_expand_recent_workflow_followup_ignores_stale_latest_run(monkeypatch):
             }
         ],
     )
-
-    assert app._expand_recent_workflow_followup("接着刚才那个") == "接着刚才那个"
+    assert app._latest_relevant_workflow_run() is None
 
 
 def test_recent_workflow_context_skips_explicit_resume(monkeypatch):
@@ -1027,6 +1012,27 @@ def test_send_message_does_not_insert_blank_log_line(monkeypatch):
     assert app._messages == [{"role": "user", "content": "你看我持仓呀"}]
 
 
+def test_send_message_resume_keeps_original_turn_user_text(monkeypatch):
+    app = object.__new__(WyckoffTUI)
+    log = _FakeLog()
+    app._messages = []
+    app.query_one = lambda *_args, **_kwargs: log
+    app._recent_workflow_context = lambda _text: ""
+    app._start_spinner = lambda _label: None
+    app._run_agent = lambda: None
+
+    import cli.memory as memory
+
+    monkeypatch.setattr(memory, "build_memory_context", lambda _text: "")
+
+    soft = "<turn-resume-context>\n原问题: 分析宁德时代\n</turn-resume-context>\n\n分析宁德时代"
+    WyckoffTUI._send_message(app, soft, turn_user_text="分析宁德时代", echo_user=False)
+
+    assert app._messages[-1]["content"] == soft
+    assert app._conversation.active_turn.user_text == "分析宁德时代"
+    assert log.lines == ["kept"]
+
+
 def test_send_system_notification_does_not_insert_blank_log_line():
     app = object.__new__(WyckoffTUI)
     log = _FakeLog()
@@ -1043,10 +1049,13 @@ def test_send_system_notification_does_not_insert_blank_log_line():
 
 
 def test_auto_resume_notice_does_not_insert_blank_log_line():
+    from cli.conversation import ConversationSession, TurnPhase
+
     app = object.__new__(WyckoffTUI)
     log = _FakeLog()
     resumed = []
     sent = []
+    app._conversation = ConversationSession()
     app._find_interrupted_scratchpad = lambda: ("sess123", "帮我找机器人机会")
     app._resume_session = lambda session_id: resumed.append(session_id)
     app.query_one = lambda *_args, **_kwargs: log
@@ -1054,17 +1063,22 @@ def test_auto_resume_notice_does_not_insert_blank_log_line():
 
     WyckoffTUI._check_auto_resume(app)
 
-    rendered = [str(item) for item in log.lines[1:]]
+    rendered = [str(item) for item in log.lines if str(item) != "kept"]
     assert resumed == ["sess123"]
-    assert sent == ["帮我找机器人机会"]
-    assert len(rendered) == 2
+    assert sent == []
+    assert app._conversation.phase == TurnPhase.CANCELLED
+    assert any("sess123" in line for line in rendered)
+    assert any("继续" in line for line in rendered)
     assert all(line.strip() for line in rendered)
     assert all(not line.startswith("\n") and not line.endswith("\n") for line in rendered)
 
 
 def test_new_chat_notice_does_not_insert_blank_log_line():
+    from cli.conversation import ConversationSession
+
     app = object.__new__(WyckoffTUI)
     log = _FakeLog()
+    app._conversation = ConversationSession()
     app._save_memory_async = lambda: None
     app._messages = [{"role": "user", "content": "旧会话"}]
     app._queue = deque(["queued"])
@@ -1367,10 +1381,10 @@ def test_complete_workflow_background_queues_system_notification_on_failure():
 
     assert len(app._queue) == 1
     item = app._queue[0]
-    assert item["type"] == "system_notification"
-    assert "<run-id>wf_busy</run-id>" in item["content"]
-    assert "<status>failed</status>" in item["content"]
-    assert "dynamic-workflow event" in item["content"]
+    assert item.kind == "system_notification"
+    assert "<run-id>wf_busy</run-id>" in item.content
+    assert "<status>failed</status>" in item.content
+    assert "dynamic-workflow event" in item.content
 
 
 def test_display_retry_event_surfaces_required_tool_and_reason():
