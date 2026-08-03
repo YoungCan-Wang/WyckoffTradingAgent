@@ -13,6 +13,15 @@ from workflows.step4_text import clean_text
 
 logger = logging.getLogger(__name__)
 
+# Prefer risk-reducing actions when the model emits duplicate codes.
+_ACTION_PRIORITY = {
+    "EXIT": 1,
+    "TRIM": 2,
+    "HOLD": 3,
+    "PROBE": 4,
+    "ATTACK": 5,
+}
+
 
 def parse_decisions(
     raw_text: str,
@@ -40,7 +49,28 @@ def parse_decisions(
         )
         if decision:
             out.append(decision)
-    return (market_view, out, None)
+    return (market_view, _dedupe_decisions(out), None)
+
+
+def _dedupe_decisions(decisions: list[DecisionItem]) -> list[DecisionItem]:
+    selected: dict[str, DecisionItem] = {}
+    order: list[str] = []
+    for decision in decisions:
+        prev = selected.get(decision.code)
+        if prev is None:
+            selected[decision.code] = decision
+            order.append(decision.code)
+            continue
+        if _ACTION_PRIORITY.get(decision.action, 99) < _ACTION_PRIORITY.get(prev.action, 99):
+            selected[decision.code] = decision
+    if len(selected) < len(decisions):
+        logger.warning(
+            "dropped duplicate step4 decisions: before=%s after=%s codes=%s",
+            len(decisions),
+            len(selected),
+            ",".join(order),
+        )
+    return [selected[code] for code in order]
 
 
 def max_new_buy_names(market_regime: str, limits: NewBuyLimits) -> int:

@@ -217,6 +217,20 @@ def _t1_engine(*, buy_dt: str, trade_date: str, price: float = 9.5) -> WyckoffOr
     )
 
 
+def test_duplicate_exit_decisions_do_not_oversell_or_double_count_cash() -> None:
+    engine = _t1_engine(buy_dt="2026-05-14", trade_date="2026-05-15", price=9.5)
+
+    tickets, cash = engine.process([_exit_decision(), _exit_decision()])
+
+    approved = [ticket for ticket in tickets if ticket.status == "APPROVED" and ticket.action == "EXIT"]
+    rejected = [ticket for ticket in tickets if ticket.status != "APPROVED"]
+    assert len(approved) == 1
+    assert approved[0].shares == 1000
+    assert len(rejected) == 1
+    assert "无可卖持仓" in rejected[0].reason
+    assert cash == 50000 + 1000 * 9.5 * (1.0 - WyckoffOrderEngine.SLIPPAGE_BPS)
+
+
 def test_exit_is_rejected_for_shares_bought_today() -> None:
     engine = _t1_engine(buy_dt="2026-05-15", trade_date="2026-05-15")
 
