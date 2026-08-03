@@ -1429,6 +1429,9 @@ def _build_rounds_detail(
         }
         if thinking := (round_thinking or {}).get(round_number, ""):
             detail["thinking"] = thinking[:_PERSISTED_THINKING_MAX_CHARS]
+            # 与工具结果一致地标注截断：思维链被无声切断时，读者会把残句当成模型的真实结论。
+            if len(thinking) > _PERSISTED_THINKING_MAX_CHARS:
+                detail["thinking_truncated"] = True
         details.append(detail)
     return details
 
@@ -1885,10 +1888,12 @@ def detect_os_dark_mode() -> bool:
         try:
             import subprocess
 
+            # 必须带 timeout：这是启动路径上的同步调用，defaults 卡住会把整个 TUI 挂在黑屏上
             res = subprocess.run(
                 ["defaults", "read", "-g", "AppleInterfaceStyle"],
                 capture_output=True,
                 text=True,
+                timeout=2,
             )
             return "Dark" in res.stdout
         except Exception:
@@ -1999,6 +2004,65 @@ class WyckoffTUI(App):
             )
         yield StatusBar(self._build_status_text(), id="status-bar")
 
+    def _update_console_markdown_theme(self, name: str) -> None:
+        """动态适配 Markdown 渲染样式，绝不在透明/浅色模式下硬加纯黑底色框。"""
+        from rich.style import Style
+        from rich.theme import Theme
+
+        name_lower = name.strip().lower()
+
+        if name_lower in ("transparent", "terminal"):
+            md_styles = {
+                "markdown.h1": Style(color="cyan", bold=True),
+                "markdown.h2": Style(color="cyan", bold=True),
+                "markdown.h3": Style(color="cyan", bold=True),
+                "markdown.h4": Style(color="cyan", bold=True),
+                "markdown.h5": Style(color="cyan", bold=True),
+                "markdown.h6": Style(color="cyan", bold=True),
+                "markdown.link": Style(color="blue", underline=True),
+                "markdown.code": Style(color="magenta", bold=True),
+                "markdown.block_quote": Style(dim=True, italic=True),
+                "markdown.hr": Style(dim=True),
+                "markdown.item.bullet": Style(color="cyan"),
+            }
+        elif name_lower in ("solarized-light", "atom-one-light", "light", "github-light"):
+            md_styles = {
+                "markdown.h1": Style(color="#0550ae", bold=True),
+                "markdown.h2": Style(color="#0550ae", bold=True),
+                "markdown.h3": Style(color="#0550ae", bold=True),
+                "markdown.h4": Style(color="#0550ae", bold=True),
+                "markdown.h5": Style(color="#0550ae", bold=True),
+                "markdown.h6": Style(color="#0550ae", bold=True),
+                "markdown.link": Style(color="#0969da", underline=True),
+                "markdown.code": Style(color="#cf222e", bold=True),
+                "markdown.block_quote": Style(color="#57606a", italic=True),
+                "markdown.hr": Style(color="#d0d7de"),
+                "markdown.item.bullet": Style(color="#0550ae"),
+            }
+        else:
+            md_styles = {
+                "markdown.h1": Style(color="#8aa4ff", bold=True),
+                "markdown.h2": Style(color="#8aa4ff", bold=True),
+                "markdown.h3": Style(color="#8aa4ff", bold=True),
+                "markdown.h4": Style(color="#8aa4ff", bold=True),
+                "markdown.h5": Style(color="#8aa4ff", bold=True),
+                "markdown.h6": Style(color="#8aa4ff", bold=True),
+                "markdown.link": Style(color="#58a6ff", underline=True),
+                "markdown.code": Style(color="#e06c75", bold=True),
+                "markdown.block_quote": Style(color="#8b949e", italic=True),
+                "markdown.hr": Style(color="#30363d"),
+                "markdown.item.bullet": Style(color="#8aa4ff"),
+            }
+
+        with contextlib.suppress(Exception):
+            # 先弹掉上一次压入的：push_theme 是压栈而非替换，每切一次主题栈就长一层，
+            # 反复切主题会把这些字典一直留在 console 上。
+            if getattr(self, "_md_theme_pushed", False):
+                self.console.pop_theme()
+                self._md_theme_pushed = False
+            self.console.push_theme(Theme(md_styles))
+            self._md_theme_pushed = True
+
     def apply_theme_setting(self, name: str) -> str:
         """根据主题名称生效对应的色彩与 CSS 类。"""
         normalized = name.strip().lower()
@@ -2012,10 +2076,11 @@ class WyckoffTUI(App):
             with contextlib.suppress(Exception):
                 self.screen.remove_class(cls_name)
 
+        res = ""
         if normalized in ("transparent", "terminal"):
             self.theme = "textual-dark"
             _add_cls("transparent")
-            return "transparent"
+            res = "transparent"
         elif normalized == "auto":
             is_dark = detect_os_dark_mode()
             target = "transparent" if is_dark else "solarized-light"
@@ -2024,16 +2089,19 @@ class WyckoffTUI(App):
             _rm_cls("transparent")
             if normalized in self.available_themes:
                 self.theme = normalized
-                return normalized
+                res = normalized
             elif normalized in ("light", "github-light"):
                 self.theme = "solarized-light"
-                return "solarized-light"
+                res = "solarized-light"
             elif normalized in ("dark", "black"):
                 self.theme = "textual-dark"
-                return "textual-dark"
+                res = "textual-dark"
             else:
                 self.theme = "textual-dark"
-                return "textual-dark"
+                res = "textual-dark"
+
+        self._update_console_markdown_theme(res)
+        return res
 
     def on_mount(self) -> None:
         # 加载保存的主题
@@ -2046,26 +2114,6 @@ class WyckoffTUI(App):
         except Exception:
             logger.debug("load saved theme failed", exc_info=True)
 
-        # Override console theme to make Markdown clean and beautiful
-        from rich.style import Style
-        from rich.theme import Theme
-
-        custom_theme = Theme(
-            {
-                "markdown.h1": Style(color="#8aa4ff", bold=True),
-                "markdown.h2": Style(color="#8aa4ff", bold=True),
-                "markdown.h3": Style(color="#8aa4ff", bold=True),
-                "markdown.h4": Style(color="#8aa4ff", bold=True),
-                "markdown.h5": Style(color="#8aa4ff", bold=True),
-                "markdown.h6": Style(color="#8aa4ff", bold=True),
-                "markdown.link": Style(color="#58a6ff", underline=True),
-                "markdown.code": Style(color="#e06c75", bgcolor="#1e1e1e"),
-                "markdown.block_quote": Style(color="#8b949e", italic=True),
-                "markdown.hr": Style(color="#30363d"),
-                "markdown.item.bullet": Style(color="#8aa4ff"),
-            }
-        )
-        self.console.push_theme(custom_theme)
         self.set_interval(0.1, self._tick_global_spinner)
 
         log = self.query_one("#chat-log", ChatLog)

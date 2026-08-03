@@ -650,7 +650,7 @@ async function renderChatSession(c,sid){
   const fullMessages=meta.messages||[];
   const systemPrompt=meta.system_prompt||'';
   const toolSchemas=meta.tools||[];
-  const thinkingRounds=(meta.rounds_detail||[]).filter(r=>r&&r.thinking).map(r=>({round:r.round,thinking:r.thinking}));
+  const thinkingRounds=(meta.rounds_detail||[]).filter(r=>r&&r.thinking).map(r=>({round:r.round,thinking:r.thinking,truncated:!!r.thinking_truncated}));
   const inputBrief={role:selTrace?.user?.role||'user',content:selTrace?.user?.content||''};
   const outputBrief={role:'assistant',content:(selTrace?.assistant?.content||'').slice(0,500),model:selLog?.model||'',tokens_in:selLog?.tokens_in||0,tokens_out:selLog?.tokens_out||0};
   c.innerHTML=`<div class="fade-in" style="display:flex;height:calc(100vh - 120px);gap:0;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--bg2)">
@@ -728,7 +728,7 @@ async function renderChatSession(c,sid){
       ${thinkingRounds.length?`<details style="margin-bottom:12px"><summary class="summary-row"><span>Thinking (${thinkingRounds.length})</span></summary>
         <div style="padding:12px 0">${thinkingRounds.map(r=>`<div style="margin-bottom:8px">
           <div style="font-size:10px;color:var(--text-dim);margin-bottom:4px">round ${r.round}</div>
-          <pre class="code-panel" style="font-size:11px;color:var(--text2);max-height:240px;white-space:pre-wrap">${escHtml(r.thinking)}</pre>
+          <pre class="code-panel" style="font-size:11px;color:var(--text2);max-height:240px;white-space:pre-wrap">${escHtml(r.thinking)}${r.truncated?'\n… (已截断)':''}</pre>
         </div>`).join('')}</div></details>`:''}
       ${toolSpans.length?`<details open style="margin-bottom:12px"><summary class="summary-row"><span>Spans (${toolSpans.length})</span></summary>
         <div style="padding:12px 0">${toolSpans.map(sp=>{
