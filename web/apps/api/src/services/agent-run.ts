@@ -213,9 +213,14 @@ async function executeQueuedRun(
   const startedAt = Date.now()
   log('started', { ...context, attempts: record.attempts })
   await notify(env, message.userId, record)
+  const staged = stagedSandboxResult(record)
+  if (staged) {
+    // Prior delivery already ran the bridge; only the terminal Redis write remains.
+    return finishExecutedRun(store, message, record, staged, context, log, notify, env, startedAt, true)
+  }
   try {
     const result = await executeSandbox(env, message.script, context)
-    return await finishExecutedRun(store, message, record, result, context, log, notify, env, startedAt)
+    return await finishExecutedRun(store, message, record, result, context, log, notify, env, startedAt, false)
   } catch (error) {
     if (isConfigurationError(error)) {
       const failed = await failConfiguration(store, message.userId, record, context, log, 'Sandbox configuration is incomplete', startedAt)
@@ -245,14 +250,18 @@ async function finishExecutedRun(
   notify: AgentRunNotify,
   env: Env,
   startedAt: number,
+  alreadyStaged: boolean,
 ): Promise<AgentRunOutcome> {
   const completed = completeRun(record, result)
+  // Park stdout/stderr on the running record before the terminal write. Queue redelivery
+  // is at-least-once and only carries the script, so without this stage a storage blip
+  // would re-enter the bridge and burn sandbox CPU a second time.
+  if (!alreadyStaged) await stageRunningResult(store, message.userId, record, result)
   try {
     await store.save(message.userId, completed)
   } catch {
-    // Keep the active slot and ask the queue to redeliver. Acking here would leave the
-    // claim-time `running` record without stdout/stderr until TTL, and the sandbox output
-    // could never be recovered.
+    // Keep the active slot and ask the queue to redeliver. When staging succeeded, the
+    // next delivery finalizes from the parked output instead of re-executing.
     log('retrying', {
       ...context,
       durationMs: Date.now() - startedAt,
@@ -278,6 +287,50 @@ async function finishExecutedRun(
   })
   await releaseActiveRunSlot(store, message.userId, record.id)
   return 'ack'
+}
+
+async function stageRunningResult(
+  store: AgentRunStore,
+  userId: string,
+  record: AgentRunRecord,
+  result: PythonSandboxResult,
+): Promise<void> {
+  try {
+    await store.save(userId, {
+      ...record,
+      status: 'running',
+      exitCode: result.exitCode,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      usage: {
+        activeCpuUsageMs: result.activeCpuUsageMs,
+        networkIngressBytes: result.networkIngressBytes,
+        networkEgressBytes: result.networkEgressBytes,
+      },
+    })
+  } catch {
+    // Best-effort: terminal save may still succeed; if both fail, redelivery may re-execute.
+  }
+}
+
+function stagedSandboxResult(record: AgentRunRecord): PythonSandboxResult | null {
+  const usage = record.usage
+  if (
+    record.exitCode === undefined
+    || record.stdout === undefined
+    || record.stderr === undefined
+    || !usage
+  ) {
+    return null
+  }
+  return {
+    exitCode: record.exitCode,
+    stdout: record.stdout,
+    stderr: record.stderr,
+    activeCpuUsageMs: usage.activeCpuUsageMs,
+    networkIngressBytes: usage.networkIngressBytes,
+    networkEgressBytes: usage.networkEgressBytes,
+  }
 }
 
 async function failConfiguration(
