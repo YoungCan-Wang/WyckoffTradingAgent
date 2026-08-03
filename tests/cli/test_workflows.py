@@ -7,7 +7,7 @@ from cli.runtime import AgentRuntime
 from cli.tools import TOOL_SCHEMAS
 from cli.workflows.dispatch import build_turn_runtime, infer_direct_allowed_tools
 from cli.workflows.executor import WorkflowExecutor
-from cli.workflows.model_router import _ROUTER_SYSTEM_PROMPT
+from cli.workflows.model_router import _ROUTER_SYSTEM_PROMPT, missing_workflow_capability
 from cli.workflows.pending_reply import _PENDING_REPLY_SYSTEM_PROMPT, route_pending_workflow_reply
 from cli.workflows.planner import (
     _PLAN_SYSTEM_PROMPT,
@@ -16,6 +16,7 @@ from cli.workflows.planner import (
     _tool_catalog,
     adapt_workflow_script,
     plan_workflow,
+    script_handoff_reason,
 )
 from cli.workflows.router import WORKFLOWS, build_workflow_system_prompt, route_workflow
 from tests.helpers.agent_loop_harness import ScriptedProvider, StubToolRegistry
@@ -763,7 +764,9 @@ def test_dispatch_model_can_override_explicit_workflow_marker_to_direct():
     assert isinstance(runtime, AgentRuntime)
 
 
-def test_dispatch_respects_low_confidence_dynamic_decision():
+def test_dispatch_downgrades_low_confidence_dynamic_decision():
+    """两种错判代价不对称：错判 direct 多花几秒，错判 workflow 要几分钟且可能零产出。"""
+
     provider = RouterDecisionProvider('{"mode":"dynamic_workflow","confidence":0.51,"reason":"可能需要多阶段"}')
 
     runtime, workflow = build_turn_runtime(
@@ -773,9 +776,25 @@ def test_dispatch_respects_low_confidence_dynamic_decision():
         user_text="分阶段看看这个概念怎么理解",
     )
 
-    assert workflow.name == "dynamic_task"
-    assert workflow.route_reason == "模型判断需要动态 workflow：可能需要多阶段"
+    assert workflow.name == "general_chat"
     assert workflow.route_confidence == 0.51
+    assert "0.51" in workflow.route_reason
+    assert "workflow_confidence_floor" in workflow.route_matches
+    assert not isinstance(runtime, WorkflowExecutor)
+
+
+def test_dispatch_keeps_high_confidence_dynamic_decision():
+    provider = RouterDecisionProvider('{"mode":"dynamic_workflow","confidence":0.88,"reason":"需要多阶段交付"}')
+
+    runtime, workflow = build_turn_runtime(
+        provider,
+        StubToolRegistry(),
+        session_id="s1",
+        user_text="帮我完整选股，给候选、理由和攻防计划",
+    )
+
+    assert workflow.name == "dynamic_task"
+    assert workflow.route_confidence == 0.88
     assert isinstance(runtime, WorkflowExecutor)
 
 
@@ -3104,3 +3123,138 @@ def test_route_workflow_resume_without_label_stays_dynamic():
 
     assert workflow.name == "dynamic_task"
     assert workflow.route_reason == "用户明确要求继续已有 workflow"
+
+
+class HandoffRoutingProvider(RouterDecisionProvider):
+    """Route to workflow, then have the planner hand the turn back."""
+
+    def __init__(self, decision: str, planner_text: str):
+        super().__init__(decision)
+        self.planner_text = planner_text
+        self.stream_calls = 0
+
+    def chat_stream(self, messages, tools=None, system_prompt=""):
+        self.stream_calls += 1
+        yield {"type": "text_delta", "text": self.planner_text}
+
+
+def test_planner_prompt_offers_a_handoff_instead_of_a_substitute_plan():
+    assert '{"handoff":"direct"' in _PLAN_SYSTEM_PROMPT
+    assert "交还比编一个替代任务好" in _PLAN_SYSTEM_PROMPT
+
+
+def test_plan_workflow_returns_no_steps_for_a_handoff_script():
+    provider = ScriptedProvider(
+        [[{"type": "text_delta", "text": '{"handoff":"direct","reason":"缺少写入持仓的工具"}'}]]
+    )
+
+    run = plan_workflow(
+        "昊华科技清仓了",
+        context=WORKFLOWS["dynamic_task"],
+        provider=provider,
+        tools=StubToolRegistry(),
+    )
+
+    assert run.steps == []
+    assert script_handoff_reason(run.script) == "缺少写入持仓的工具"
+
+
+def test_dispatch_falls_back_to_direct_when_planner_hands_the_turn_back():
+    """planner 说它办不成时交还，而不是拆成一份用户没要的只读复核。"""
+
+    provider = HandoffRoutingProvider(
+        '{"mode":"dynamic_workflow","confidence":0.86,"reason":"承接持仓管理"}',
+        '{"handoff":"direct","reason":"当前工具集中没有可写入持仓的工具"}',
+    )
+
+    runtime, workflow = build_turn_runtime(
+        provider,
+        StubToolRegistry(),
+        session_id="s1",
+        user_text="帮我把这轮的结论整理成一句话",
+    )
+
+    assert not isinstance(runtime, WorkflowExecutor)
+    assert workflow.name == "general_chat"
+    assert "planner_handoff" in workflow.route_matches
+    assert "当前工具集中没有可写入持仓的工具" in workflow.route_reason
+    assert "update_portfolio" in runtime.allowed_tools
+
+
+def test_dispatch_ignores_handoff_when_user_replays_an_explicit_script():
+    provider = HandoffRoutingProvider(
+        '{"mode":"dynamic_workflow","confidence":0.9,"reason":"显式脚本"}',
+        '{"handoff":"direct","reason":"不该编排"}',
+    )
+    script = {
+        "title": "用户指定脚本",
+        "phases": [{"id": "p1", "title": "p1", "tasks": [{"id": "t1", "title": "看持仓", "tools": ["portfolio"]}]}],
+    }
+
+    runtime, workflow = build_turn_runtime(
+        provider,
+        StubToolRegistry(),
+        session_id="s1",
+        user_text="重跑这个脚本",
+        workflow_script=script,
+    )
+
+    assert isinstance(runtime, WorkflowExecutor)
+    assert workflow.name == "dynamic_task"
+
+
+def test_handoff_planning_is_reused_instead_of_planned_twice():
+    provider = HandoffRoutingProvider(
+        '{"mode":"dynamic_workflow","confidence":0.9,"reason":"需要多阶段"}',
+        json.dumps(
+            {
+                "title": "看持仓",
+                "phases": [
+                    {"id": "p1", "title": "p1", "tasks": [{"id": "t1", "title": "看持仓", "tools": ["portfolio"]}]}
+                ],
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    runtime, workflow = build_turn_runtime(
+        provider,
+        StubToolRegistry(),
+        session_id="s1",
+        user_text="完整复盘持仓，给候选、理由和攻防计划",
+    )
+
+    assert isinstance(runtime, WorkflowExecutor)
+    assert workflow.name == "dynamic_task"
+    planning_calls = provider.stream_calls
+    assert runtime.plan_handoff_reason() == ""
+    assert provider.stream_calls == planning_calls
+
+
+def test_missing_workflow_capability_reports_the_capability_and_tools():
+    capability, missing = missing_workflow_capability("昊华科技清仓了")
+
+    assert capability == "账户写入"
+    assert "update_portfolio" in missing
+
+
+def test_missing_workflow_capability_covers_local_write_requests():
+    capability, missing = missing_workflow_capability("把这份结论保存到文件")
+
+    assert capability == "本地写入/执行"
+    assert "write_file" in missing
+
+
+def test_missing_workflow_capability_is_derived_from_the_live_allowlist():
+    """判据是能力集合的差，不是硬编码的工具名。"""
+
+    allowed = set(WORKFLOWS["dynamic_task"].allowed_tools)
+    _, missing = missing_workflow_capability("帮我录入持仓")
+
+    assert missing
+    assert not set(missing) & allowed
+
+
+def test_missing_workflow_capability_ignores_how_to_questions():
+    assert missing_workflow_capability("清仓是什么意思")[1] == ()
+    assert missing_workflow_capability("怎么录入持仓")[1] == ()

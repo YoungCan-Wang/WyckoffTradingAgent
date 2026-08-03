@@ -4327,6 +4327,10 @@ class WyckoffTUI(App):
     ) -> None:
         if not notify_followup:
             return
+        if status == "completed":
+            # 成功时不再追加一轮：final_text 已经显示、已经落库、也已经进了 _messages，
+            # 模型下一轮本来就看得到。再叫它就同一份结果说一次，只会得到一段和上一条重复的话。
+            return
         summary = _background_task_summary("dynamic_workflow", task_id, result)
         self._queue.append(
             _system_notification_queue_item(_workflow_background_notification(task_id, result, status, summary))

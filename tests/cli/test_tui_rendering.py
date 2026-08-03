@@ -1315,7 +1315,7 @@ def test_complete_workflow_background_does_not_wake_idle_agent():
     assert "workflow 后台完成" in str(log.lines[-2])
 
 
-def test_complete_workflow_background_queues_system_notification_when_busy():
+def _busy_tui_for_workflow_completion() -> WyckoffTUI:
     app = object.__new__(WyckoffTUI)
     log = _FakeLog()
     app.query_one = lambda *_args, **_kwargs: log
@@ -1325,6 +1325,13 @@ def test_complete_workflow_background_queues_system_notification_when_busy():
     app._session_tokens = {"input": 0, "output": 0, "rounds": 0}
     app._update_status = lambda: None
     app._chatlog_save = lambda *_args, **_kwargs: None
+    return app
+
+
+def test_complete_workflow_background_does_not_queue_notification_on_success():
+    """成功结果已经显示、落库并进了 _messages，再叫模型说一遍只会得到重复的一轮。"""
+
+    app = _busy_tui_for_workflow_completion()
 
     WyckoffTUI._complete_workflow_background(
         app,
@@ -1337,13 +1344,33 @@ def test_complete_workflow_background_queues_system_notification_when_busy():
         },
     )
 
+    assert not app._queue
+    assert app._messages[-1]["role"] == "assistant"
+    assert "候选结论: 首选 300750 宁德时代" in app._messages[-1]["content"]
+
+
+def test_complete_workflow_background_queues_system_notification_on_failure():
+    """失败结果不会进 _messages，所以必须靠通知让模型知道这轮没跑成。"""
+
+    app = _busy_tui_for_workflow_completion()
+
+    WyckoffTUI._complete_workflow_background(
+        app,
+        "wfbg_busy",
+        {
+            "workflow_run_id": "wf_busy",
+            "workflow": "dynamic_task",
+            "error": "step 超时",
+            "events": [{"type": "workflow_step_done", "step": {"title": "扫描候选", "status": "failed"}}],
+        },
+    )
+
     assert len(app._queue) == 1
     item = app._queue[0]
     assert item["type"] == "system_notification"
     assert "<run-id>wf_busy</run-id>" in item["content"]
+    assert "<status>failed</status>" in item["content"]
     assert "dynamic-workflow event" in item["content"]
-    assert "候选结论: 首选 300750 宁德时代" in item["content"]
-    assert app._messages[-1]["role"] == "assistant"
 
 
 def test_display_retry_event_surfaces_required_tool_and_reason():
