@@ -126,6 +126,55 @@ function useSettingsForm(
   clearToast: () => void,
 ) {
   const { t } = usePreferences()
+  const draft = useSettingsDraftState()
+  const [saving, setSaving] = useState(false)
+  const [savedSnapshot, setSavedSnapshot] = useState<SettingsDraftSnapshot>(() => emptySettingsSnapshot())
+  const capability = useSettingsCapabilityView(draft.fields, savedSnapshot)
+
+  const loadSettings = useCallback(async (uid: string) => {
+    const { data } = await supabase.from('user_settings').select('*').eq('user_id', uid).single()
+    if (!data) return
+    const next = snapshotFromSettingsRow(data)
+    draft.applySnapshot(next)
+    setSavedSnapshot(next)
+  }, [draft.applySnapshot])
+
+  useEffect(() => {
+    if (userId) void loadSettings(userId)
+  }, [userId, loadSettings])
+
+  const handleSave = useCallback(async () => {
+    if (!userId) return
+    setSaving(true)
+    clearToast()
+    const snapshot = draft.toSnapshot()
+    const { error } = await supabase.from('user_settings').upsert(buildSettingsPayload({
+      userId,
+      chatProvider: snapshot.chatProvider,
+      configs: snapshot.configs,
+      tickflowKey: snapshot.tickflowKey,
+      feishuWebhook: snapshot.feishuWebhook,
+      wecomWebhook: snapshot.wecomWebhook,
+      dingtalkWebhook: snapshot.dingtalkWebhook,
+      tgBotToken: snapshot.tgBotToken,
+      tgChatId: snapshot.tgChatId,
+    }))
+    setSaving(false)
+    if (!error) setSavedSnapshot({ ...snapshot, configs: cloneProviderConfigs(snapshot.configs) })
+    showToast(error ? t('settings.saveFailed', { message: error.message }) : t('settings.saved'), error ? 'error' : 'success')
+  }, [clearToast, draft.toSnapshot, showToast, t, userId])
+
+  return {
+    ...draft.fields,
+    saving,
+    activeModelConfig: draft.fields.configs[draft.fields.chatProvider],
+    ...capability,
+    updateConfig: draft.updateConfig,
+    handleSave,
+  }
+}
+
+function useSettingsDraftState() {
   const [chatProvider, setChatProvider] = useState<Provider>('1route')
   const [configs, setConfigs] = useState<Record<string, ProviderConfig>>(() => buildDefaultProviderConfigs())
   const [tickflowKey, setTickflowKey] = useState('')
@@ -134,8 +183,43 @@ function useSettingsForm(
   const [dingtalkWebhook, setDingtalkWebhook] = useState('')
   const [tgBotToken, setTgBotToken] = useState('')
   const [tgChatId, setTgChatId] = useState('')
-  const [saving, setSaving] = useState(false)
-  const [savedSnapshot, setSavedSnapshot] = useState<SettingsDraftSnapshot>(() => emptySettingsSnapshot())
+
+  const fields = {
+    chatProvider, setChatProvider, configs, tickflowKey, setTickflowKey,
+    feishuWebhook, setFeishuWebhook, wecomWebhook, setWecomWebhook,
+    dingtalkWebhook, setDingtalkWebhook, tgBotToken, setTgBotToken, tgChatId, setTgChatId,
+  }
+
+  const toSnapshot = useCallback((): SettingsDraftSnapshot => ({
+    chatProvider, configs, tickflowKey, feishuWebhook, wecomWebhook, dingtalkWebhook, tgBotToken, tgChatId,
+  }), [chatProvider, configs, dingtalkWebhook, feishuWebhook, tgBotToken, tgChatId, tickflowKey, wecomWebhook])
+
+  const applySnapshot = useCallback((next: SettingsDraftSnapshot) => {
+    setChatProvider(next.chatProvider)
+    setConfigs(cloneProviderConfigs(next.configs))
+    setTickflowKey(next.tickflowKey)
+    setFeishuWebhook(next.feishuWebhook)
+    setWecomWebhook(next.wecomWebhook)
+    setDingtalkWebhook(next.dingtalkWebhook)
+    setTgBotToken(next.tgBotToken)
+    setTgChatId(next.tgChatId)
+  }, [])
+
+  const updateConfig = useCallback((provider: string, field: keyof ProviderConfig, value: string) => {
+    setConfigs((prev) => {
+      const current = prev[provider] || { api_key: '', model: '', base_url: '' }
+      return { ...prev, [provider]: { ...current, [field]: value } }
+    })
+  }, [])
+
+  return { fields, toSnapshot, applySnapshot, updateConfig }
+}
+
+function useSettingsCapabilityView(
+  fields: ReturnType<typeof useSettingsDraftState>['fields'],
+  savedSnapshot: SettingsDraftSnapshot,
+) {
+  const { chatProvider, configs, tickflowKey, feishuWebhook, wecomWebhook, dingtalkWebhook, tgBotToken, tgChatId } = fields
   const activeModelConfig = configs[chatProvider]
   const savedModelConfig = savedSnapshot.configs[savedSnapshot.chatProvider]
   const settingsCapabilities = useMemo(
@@ -155,124 +239,25 @@ function useSettingsForm(
   )
   const hasUnsavedDraft = useMemo(
     () => !sameSettingsSnapshot(savedSnapshot, {
-      chatProvider,
-      configs,
-      tickflowKey,
-      feishuWebhook,
-      wecomWebhook,
-      dingtalkWebhook,
-      tgBotToken,
-      tgChatId,
+      chatProvider, configs, tickflowKey, feishuWebhook, wecomWebhook, dingtalkWebhook, tgBotToken, tgChatId,
     }),
-    [
-      savedSnapshot,
-      chatProvider,
-      configs,
-      tickflowKey,
-      feishuWebhook,
-      wecomWebhook,
-      dingtalkWebhook,
-      tgBotToken,
-      tgChatId,
-    ],
+    [savedSnapshot, chatProvider, configs, tickflowKey, feishuWebhook, wecomWebhook, dingtalkWebhook, tgBotToken, tgChatId],
   )
+  return { settingsCapabilities, settingsCapabilitySummary, hasUnsavedDraft }
+}
 
-  const loadSettings = useCallback(async (uid: string) => {
-    const { data } = await supabase.from('user_settings').select('*').eq('user_id', uid).single()
-    if (!data) return
-    const provider = resolveProvider(data.chat_provider)
-    const nextConfigs = buildProviderConfigsFromSettings(data)
-    const nextTickflow = data.tickflow_api_key || ''
-    const nextFeishu = data.feishu_webhook || ''
-    const nextWecom = data.wecom_webhook || ''
-    const nextDingtalk = data.dingtalk_webhook || ''
-    const nextTgToken = data.tg_bot_token || ''
-    const nextTgChat = data.tg_chat_id || ''
-    setChatProvider(provider)
-    setTickflowKey(nextTickflow)
-    setFeishuWebhook(nextFeishu)
-    setWecomWebhook(nextWecom)
-    setDingtalkWebhook(nextDingtalk)
-    setTgBotToken(nextTgToken)
-    setTgChatId(nextTgChat)
-    setConfigs(nextConfigs)
-    setSavedSnapshot({
-      chatProvider: provider,
-      configs: cloneProviderConfigs(nextConfigs),
-      tickflowKey: nextTickflow,
-      feishuWebhook: nextFeishu,
-      wecomWebhook: nextWecom,
-      dingtalkWebhook: nextDingtalk,
-      tgBotToken: nextTgToken,
-      tgChatId: nextTgChat,
-    })
-  }, [])
-
-  useEffect(() => {
-    if (userId) void loadSettings(userId)
-  }, [userId, loadSettings])
-
-  const updateConfig = useCallback((provider: string, field: keyof ProviderConfig, value: string) => {
-    setConfigs((prev) => {
-      const current = prev[provider] || { api_key: '', model: '', base_url: '' }
-      return { ...prev, [provider]: { ...current, [field]: value } }
-    })
-  }, [])
-
-  const handleSave = useCallback(async () => {
-    if (!userId) return
-    setSaving(true)
-    clearToast()
-    const { error } = await supabase.from('user_settings').upsert(buildSettingsPayload({
-      userId,
-      chatProvider,
-      configs,
-      tickflowKey,
-      feishuWebhook,
-      wecomWebhook,
-      dingtalkWebhook,
-      tgBotToken,
-      tgChatId,
-    }))
-    setSaving(false)
-    if (!error) {
-      setSavedSnapshot({
-        chatProvider,
-        configs: cloneProviderConfigs(configs),
-        tickflowKey,
-        feishuWebhook,
-        wecomWebhook,
-        dingtalkWebhook,
-        tgBotToken,
-        tgChatId,
-      })
-    }
-    showToast(error ? t('settings.saveFailed', { message: error.message }) : t('settings.saved'), error ? 'error' : 'success')
-  }, [chatProvider, clearToast, configs, dingtalkWebhook, feishuWebhook, showToast, t, tgBotToken, tgChatId, tickflowKey, userId, wecomWebhook])
-
+function snapshotFromSettingsRow(data: SettingsRow): SettingsDraftSnapshot {
+  const provider = resolveProvider(data.chat_provider)
+  const configs = buildProviderConfigsFromSettings(data)
   return {
-    chatProvider,
-    setChatProvider,
-    configs,
-    tickflowKey,
-    setTickflowKey,
-    feishuWebhook,
-    setFeishuWebhook,
-    wecomWebhook,
-    setWecomWebhook,
-    dingtalkWebhook,
-    setDingtalkWebhook,
-    tgBotToken,
-    setTgBotToken,
-    tgChatId,
-    setTgChatId,
-    saving,
-    activeModelConfig,
-    settingsCapabilities,
-    settingsCapabilitySummary,
-    hasUnsavedDraft,
-    updateConfig,
-    handleSave,
+    chatProvider: provider,
+    configs: cloneProviderConfigs(configs),
+    tickflowKey: String(data.tickflow_api_key || ''),
+    feishuWebhook: String(data.feishu_webhook || ''),
+    wecomWebhook: String(data.wecom_webhook || ''),
+    dingtalkWebhook: String(data.dingtalk_webhook || ''),
+    tgBotToken: String(data.tg_bot_token || ''),
+    tgChatId: String(data.tg_chat_id || ''),
   }
 }
 
