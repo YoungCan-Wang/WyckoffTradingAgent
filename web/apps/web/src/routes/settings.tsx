@@ -43,7 +43,11 @@ export function SettingsPage() {
     activeModelConfig: form.activeModelConfig,
     tickflowKey: form.tickflowKey,
   })
-  const canSaveActiveTab = activeTab === 'sources' || activeTab === 'model' || activeTab === 'notifications'
+  const canSaveActiveTab =
+    activeTab === 'sources'
+    || activeTab === 'model'
+    || activeTab === 'notifications'
+    || (activeTab === 'capability' && form.hasUnsavedDraft)
 
   return (
     <div className="h-full overflow-auto p-4 sm:p-6 bg-background/50">
@@ -131,31 +135,77 @@ function useSettingsForm(
   const [tgBotToken, setTgBotToken] = useState('')
   const [tgChatId, setTgChatId] = useState('')
   const [saving, setSaving] = useState(false)
+  const [savedSnapshot, setSavedSnapshot] = useState<SettingsDraftSnapshot>(() => emptySettingsSnapshot())
   const activeModelConfig = configs[chatProvider]
+  const savedModelConfig = savedSnapshot.configs[savedSnapshot.chatProvider]
   const settingsCapabilities = useMemo(
     () => buildSettingsCapabilityRows({
       tickflow: tickflowKey,
+      savedTickflow: savedSnapshot.tickflowKey,
       modelProviderLabel: PROVIDER_LABELS[chatProvider],
       modelConfig: activeModelConfig,
+      savedModelConfig,
+      providerMatchesSaved: chatProvider === savedSnapshot.chatProvider,
     }),
-    [tickflowKey, chatProvider, activeModelConfig],
+    [tickflowKey, chatProvider, activeModelConfig, savedSnapshot, savedModelConfig],
   )
   const settingsCapabilitySummary = useMemo(
     () => summarizeSettingsCapabilities(settingsCapabilities),
     [settingsCapabilities],
   )
+  const hasUnsavedDraft = useMemo(
+    () => !sameSettingsSnapshot(savedSnapshot, {
+      chatProvider,
+      configs,
+      tickflowKey,
+      feishuWebhook,
+      wecomWebhook,
+      dingtalkWebhook,
+      tgBotToken,
+      tgChatId,
+    }),
+    [
+      savedSnapshot,
+      chatProvider,
+      configs,
+      tickflowKey,
+      feishuWebhook,
+      wecomWebhook,
+      dingtalkWebhook,
+      tgBotToken,
+      tgChatId,
+    ],
+  )
 
-  const loadSettings = useCallback(async (userId: string) => {
-    const { data } = await supabase.from('user_settings').select('*').eq('user_id', userId).single()
+  const loadSettings = useCallback(async (uid: string) => {
+    const { data } = await supabase.from('user_settings').select('*').eq('user_id', uid).single()
     if (!data) return
-    setChatProvider(resolveProvider(data.chat_provider))
-    setTickflowKey(data.tickflow_api_key || '')
-    setFeishuWebhook(data.feishu_webhook || '')
-    setWecomWebhook(data.wecom_webhook || '')
-    setDingtalkWebhook(data.dingtalk_webhook || '')
-    setTgBotToken(data.tg_bot_token || '')
-    setTgChatId(data.tg_chat_id || '')
-    setConfigs(buildProviderConfigsFromSettings(data))
+    const provider = resolveProvider(data.chat_provider)
+    const nextConfigs = buildProviderConfigsFromSettings(data)
+    const nextTickflow = data.tickflow_api_key || ''
+    const nextFeishu = data.feishu_webhook || ''
+    const nextWecom = data.wecom_webhook || ''
+    const nextDingtalk = data.dingtalk_webhook || ''
+    const nextTgToken = data.tg_bot_token || ''
+    const nextTgChat = data.tg_chat_id || ''
+    setChatProvider(provider)
+    setTickflowKey(nextTickflow)
+    setFeishuWebhook(nextFeishu)
+    setWecomWebhook(nextWecom)
+    setDingtalkWebhook(nextDingtalk)
+    setTgBotToken(nextTgToken)
+    setTgChatId(nextTgChat)
+    setConfigs(nextConfigs)
+    setSavedSnapshot({
+      chatProvider: provider,
+      configs: cloneProviderConfigs(nextConfigs),
+      tickflowKey: nextTickflow,
+      feishuWebhook: nextFeishu,
+      wecomWebhook: nextWecom,
+      dingtalkWebhook: nextDingtalk,
+      tgBotToken: nextTgToken,
+      tgChatId: nextTgChat,
+    })
   }, [])
 
   useEffect(() => {
@@ -185,6 +235,18 @@ function useSettingsForm(
       tgChatId,
     }))
     setSaving(false)
+    if (!error) {
+      setSavedSnapshot({
+        chatProvider,
+        configs: cloneProviderConfigs(configs),
+        tickflowKey,
+        feishuWebhook,
+        wecomWebhook,
+        dingtalkWebhook,
+        tgBotToken,
+        tgChatId,
+      })
+    }
     showToast(error ? t('settings.saveFailed', { message: error.message }) : t('settings.saved'), error ? 'error' : 'success')
   }, [chatProvider, clearToast, configs, dingtalkWebhook, feishuWebhook, showToast, t, tgBotToken, tgChatId, tickflowKey, userId, wecomWebhook])
 
@@ -208,6 +270,7 @@ function useSettingsForm(
     activeModelConfig,
     settingsCapabilities,
     settingsCapabilitySummary,
+    hasUnsavedDraft,
     updateConfig,
     handleSave,
   }
@@ -363,13 +426,25 @@ function CapabilityPanel({
             <p className="mt-1 text-xs text-muted-foreground">
               {t('settings.capabilitySummary', { ready: summary.readyCount, total: summary.totalCount })}
             </p>
+            {summary.hasUnsavedChanges && (
+              <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">{t('settings.capabilityUnsavedHint')}</p>
+            )}
           </div>
-          <span className={`shrink-0 rounded-full border px-2.5 py-0.5 text-xs font-semibold ${summaryPillClass(summary.missingCount)}`}>
+          <span
+            className={`shrink-0 rounded-full border px-2.5 py-0.5 text-xs font-semibold ${summaryPillClass(summary)}`}
+          >
             {summary.readyCount}/{summary.totalCount}
           </span>
         </div>
         <div className="mt-4 h-2 w-full rounded-full bg-muted overflow-hidden">
-          <div className="h-full bg-gradient-to-r from-primary to-indigo-500 transition-all duration-500 rounded-full" style={{ width: `${(summary.readyCount / summary.totalCount) * 100}%` }} />
+          <div
+            className={`h-full transition-all duration-500 rounded-full ${
+              summary.hasUnsavedChanges
+                ? 'bg-gradient-to-r from-amber-400 to-amber-500'
+                : 'bg-gradient-to-r from-primary to-indigo-500'
+            }`}
+            style={{ width: `${((summary.readyCount + summary.unsavedCount) / summary.totalCount) * 100}%` }}
+          />
         </div>
         <ConnectivityActions
           testing={testing}
@@ -463,8 +538,8 @@ function CapabilityRow({ row }: { row: ReturnType<typeof buildSettingsCapability
         <div className="mt-1 text-[11px] text-muted-foreground/80 leading-relaxed">{t(row.noteKey)}</div>
       </div>
       <div className="flex items-center gap-2 self-start sm:self-center shrink-0">
-        <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold ${statusPillClass(row.isReady)}`}>
-          <span className={`pulse-dot ${row.isReady ? 'text-emerald-500 bg-emerald-500' : 'text-amber-500 bg-amber-500'}`} />
+        <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold ${statusPillClass(row.status)}`}>
+          <span className={`pulse-dot ${statusDotClass(row.status)}`} />
           <span>{t(row.statusLabelKey)}</span>
         </span>
       </div>
@@ -780,14 +855,77 @@ function resolveProvider(raw: unknown): Provider {
   return PROVIDERS.includes(raw as Provider) ? raw as Provider : '1route'
 }
 
-function summaryPillClass(missingCount: number): string {
-  return missingCount === 0
-    ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300'
-    : 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300'
+function summaryPillClass(summary: ReturnType<typeof summarizeSettingsCapabilities>): string {
+  if (summary.isFullyConfigured) {
+    return 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300'
+  }
+  if (summary.hasUnsavedChanges) {
+    return 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300'
+  }
+  return 'border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-300'
 }
 
-function statusPillClass(isReady: boolean): string {
-  return isReady
-    ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300'
-    : 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300'
+function statusPillClass(status: ReturnType<typeof buildSettingsCapabilityRows>[number]['status']): string {
+  if (status === 'ready') {
+    return 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300'
+  }
+  if (status === 'unsaved') {
+    return 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300'
+  }
+  return 'border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-300'
+}
+
+function statusDotClass(status: ReturnType<typeof buildSettingsCapabilityRows>[number]['status']): string {
+  if (status === 'ready') return 'text-emerald-500 bg-emerald-500'
+  if (status === 'unsaved') return 'text-amber-500 bg-amber-500'
+  return 'text-rose-500 bg-rose-500'
+}
+
+interface SettingsDraftSnapshot {
+  chatProvider: Provider
+  configs: Record<string, ProviderConfig>
+  tickflowKey: string
+  feishuWebhook: string
+  wecomWebhook: string
+  dingtalkWebhook: string
+  tgBotToken: string
+  tgChatId: string
+}
+
+function emptySettingsSnapshot(): SettingsDraftSnapshot {
+  return {
+    chatProvider: '1route',
+    configs: buildDefaultProviderConfigs(),
+    tickflowKey: '',
+    feishuWebhook: '',
+    wecomWebhook: '',
+    dingtalkWebhook: '',
+    tgBotToken: '',
+    tgChatId: '',
+  }
+}
+
+function cloneProviderConfigs(configs: Record<string, ProviderConfig>): Record<string, ProviderConfig> {
+  return Object.fromEntries(
+    Object.entries(configs).map(([provider, config]) => [provider, { ...config }]),
+  )
+}
+
+function sameSettingsSnapshot(left: SettingsDraftSnapshot, right: SettingsDraftSnapshot): boolean {
+  if (left.chatProvider !== right.chatProvider) return false
+  if (left.tickflowKey.trim() !== right.tickflowKey.trim()) return false
+  if (left.feishuWebhook.trim() !== right.feishuWebhook.trim()) return false
+  if (left.wecomWebhook.trim() !== right.wecomWebhook.trim()) return false
+  if (left.dingtalkWebhook.trim() !== right.dingtalkWebhook.trim()) return false
+  if (left.tgBotToken.trim() !== right.tgBotToken.trim()) return false
+  if (left.tgChatId.trim() !== right.tgChatId.trim()) return false
+  const providers = new Set([...Object.keys(left.configs), ...Object.keys(right.configs)])
+  for (const provider of providers) {
+    const a = left.configs[provider] || { api_key: '', model: '', base_url: '' }
+    const b = right.configs[provider] || { api_key: '', model: '', base_url: '' }
+    if (a.api_key.trim() !== b.api_key.trim() || a.model.trim() !== b.model.trim() || a.base_url.trim() !== b.base_url.trim()) {
+      return false
+    }
+  }
+  return true
 }
