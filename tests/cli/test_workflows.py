@@ -502,6 +502,15 @@ def test_model_router_prompt_is_minimal_runtime_contract():
     assert "行动计划" in _ROUTER_SYSTEM_PROMPT
     assert "不需要可见进度" in _ROUTER_SYSTEM_PROMPT
     assert "一个清楚目标" not in _ROUTER_SYSTEM_PROMPT
+
+
+def test_model_router_prompt_keeps_single_read_turns_direct():
+    """「事实收集」这条判据太松，把「我的持仓有什么」也算进 workflow 了。"""
+
+    assert "一次工具读取就能答完的问题用 direct" in _ROUTER_SYSTEM_PROMPT
+    assert "查当前持仓" in _ROUTER_SYSTEM_PROMPT
+    assert "拆开来要几步" in _ROUTER_SYSTEM_PROMPT
+    assert "事实收集、交叉复核" not in _ROUTER_SYSTEM_PROMPT
     assert "用户表达不标准" not in _ROUTER_SYSTEM_PROMPT
     assert "语义恢复" not in _ROUTER_SYSTEM_PROMPT
     assert "措辞恢复" not in _ROUTER_SYSTEM_PROMPT
@@ -3208,9 +3217,16 @@ def test_handoff_planning_is_reused_instead_of_planned_twice():
         '{"mode":"dynamic_workflow","confidence":0.9,"reason":"需要多阶段"}',
         json.dumps(
             {
-                "title": "看持仓",
+                "title": "复盘持仓",
                 "phases": [
-                    {"id": "p1", "title": "p1", "tasks": [{"id": "t1", "title": "看持仓", "tools": ["portfolio"]}]}
+                    {
+                        "id": "p1",
+                        "title": "p1",
+                        "tasks": [
+                            {"id": "t1", "title": "看持仓", "tools": ["portfolio"]},
+                            {"id": "t2", "title": "给攻防计划", "tools": ["generate_strategy_decision"]},
+                        ],
+                    }
                 ],
             },
             ensure_ascii=False,
@@ -3229,6 +3245,40 @@ def test_handoff_planning_is_reused_instead_of_planned_twice():
     planning_calls = provider.stream_calls
     assert runtime.plan_handoff_reason() == ""
     assert provider.stream_calls == planning_calls
+
+
+def test_dispatch_downgrades_a_single_tool_plan_to_direct():
+    """wf_92921670d6c9：「我的持仓有什么」按 0.85 判进 workflow，拆出来只有 1 步 1 个 portfolio，跑了 25 秒。"""
+
+    provider = HandoffRoutingProvider(
+        '{"mode":"dynamic_workflow","confidence":0.85,"reason":"需要收集并汇总用户持仓事实"}',
+        json.dumps(
+            {
+                "title": "查看当前持仓",
+                "phases": [
+                    {
+                        "id": "phase_portfolio_view",
+                        "title": "phase_portfolio_view",
+                        "tasks": [{"id": "view_portfolio", "title": "查看持仓列表和资金", "tools": ["portfolio"]}],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    runtime, workflow = build_turn_runtime(
+        provider,
+        StubToolRegistry(),
+        session_id="s1",
+        user_text="我的持仓有什么",
+    )
+
+    assert not isinstance(runtime, WorkflowExecutor)
+    assert workflow.name == "general_chat"
+    assert "planner_handoff" in workflow.route_matches
+    assert "只有 1 个步骤" in workflow.route_reason
+    assert "portfolio" in runtime.allowed_tools
 
 
 def test_missing_workflow_capability_reports_the_capability_and_tools():
