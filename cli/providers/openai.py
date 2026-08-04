@@ -77,14 +77,19 @@ def _create_openai_stream(client: openai.OpenAI, kwargs: dict[str, Any]):
             return client.chat.completions.create(**kwargs)
 
 
-def _consume_usage_chunk(state: OpenAIStreamState, chunk: Any) -> bool:
-    if chunk.choices or not chunk.usage:
-        return False
-    state.input_tokens = chunk.usage.prompt_tokens or 0
-    state.output_tokens = chunk.usage.completion_tokens or 0
-    state.cache_read, state.cache_write = extract_openai_cache_tokens(chunk.usage)
-    state.cache_reported = openai_cache_reported(chunk.usage)
-    return True
+def _apply_usage_from_chunk(state: OpenAIStreamState, chunk: Any) -> None:
+    """Capture usage whenever present — MiniMax/OpenRouter may attach it on a choices chunk."""
+    usage = getattr(chunk, "usage", None)
+    if usage is None:
+        return
+    prompt = getattr(usage, "prompt_tokens", None)
+    completion = getattr(usage, "completion_tokens", None)
+    if prompt is not None:
+        state.input_tokens = int(prompt or 0)
+    if completion is not None:
+        state.output_tokens = int(completion or 0)
+    state.cache_read, state.cache_write = extract_openai_cache_tokens(usage)
+    state.cache_reported = state.cache_reported or openai_cache_reported(usage)
 
 
 def _accumulate_tool_delta(tool_map: dict[int, dict[str, Any]], tc_delta: Any) -> None:
@@ -259,8 +264,7 @@ class OpenAIProvider(LLMProvider):
 
         try:
             for chunk in stream:
-                if _consume_usage_chunk(state, chunk):
-                    continue
+                _apply_usage_from_chunk(state, chunk)
                 if not chunk.choices:
                     continue
                 choice = chunk.choices[0]

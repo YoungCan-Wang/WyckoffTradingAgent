@@ -44,6 +44,30 @@ def test_openai_cache_not_reported_without_fields():
     assert openai_cache_reported({"prompt_tokens": 100}) is False
 
 
+def test_openai_cache_from_model_dump_details():
+    """OpenRouter/MiniMax may only expose cache fields via model_dump."""
+
+    class Details:
+        def model_dump(self, exclude_none=False):
+            return {"cached_tokens": 640, "cache_write_tokens": 0}
+
+    class Usage:
+        prompt_tokens = 1000
+        completion_tokens = 20
+        prompt_tokens_details = None
+
+        def model_dump(self, exclude_none=False):
+            return {
+                "prompt_tokens": 1000,
+                "completion_tokens": 20,
+                "prompt_tokens_details": {"cached_tokens": 640, "cache_write_tokens": 0},
+            }
+
+    usage = Usage()
+    assert openai_cache_reported(usage) is True
+    assert extract_openai_cache_tokens(usage) == (640, 0)
+
+
 def test_normalize_anthropic_usage_folds_cache_into_input():
     usage = normalize_anthropic_usage(input_tokens=200, output_tokens=50, cache_read=800, cache_write=0)
     assert usage["input_tokens"] == 1000

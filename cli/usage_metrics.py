@@ -14,10 +14,36 @@ def as_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _usage_dump(usage: Any) -> dict[str, Any]:
+    """Best-effort dict view for OpenAI SDK / OpenRouter / MiniMax usage objects."""
+    if isinstance(usage, dict):
+        return usage
+    dump = getattr(usage, "model_dump", None)
+    if callable(dump):
+        try:
+            data = dump(exclude_none=False)
+            if isinstance(data, dict):
+                return data
+        except TypeError:
+            try:
+                data = dump()
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                pass
+        except Exception:
+            pass
+    extra = getattr(usage, "model_extra", None)
+    return extra if isinstance(extra, dict) else {}
+
+
 def _usage_field(usage: Any, name: str) -> Any:
     if isinstance(usage, dict):
         return usage.get(name)
-    return getattr(usage, name, None)
+    value = getattr(usage, name, None)
+    if value is not None:
+        return value
+    return _usage_dump(usage).get(name)
 
 
 def _details_field(details: Any, name: str) -> Any:
@@ -25,27 +51,56 @@ def _details_field(details: Any, name: str) -> Any:
         return None
     if isinstance(details, dict):
         return details.get(name)
-    return getattr(details, name, None)
+    value = getattr(details, name, None)
+    if value is not None:
+        return value
+    dump = getattr(details, "model_dump", None)
+    if callable(dump):
+        try:
+            data = dump(exclude_none=False)
+            if isinstance(data, dict):
+                return data.get(name)
+        except Exception:
+            pass
+    return None
+
+
+def _prompt_token_details(usage: Any) -> Any:
+    details = _usage_field(usage, "prompt_tokens_details")
+    if details is not None:
+        return details
+    return _usage_dump(usage).get("prompt_tokens_details")
 
 
 def openai_cache_reported(usage: Any) -> bool:
     """True only when the gateway actually returned cache-related fields."""
     if _usage_field(usage, "prompt_cache_hit_tokens") is not None:
         return True
-    details = _usage_field(usage, "prompt_tokens_details")
+    details = _prompt_token_details(usage)
     if details is None:
         return False
     if isinstance(details, dict):
         return "cached_tokens" in details or "cache_write_tokens" in details
-    return (
-        getattr(details, "cached_tokens", None) is not None or getattr(details, "cache_write_tokens", None) is not None
-    )
+    if getattr(details, "cached_tokens", None) is not None:
+        return True
+    if getattr(details, "cache_write_tokens", None) is not None:
+        return True
+    # Pydantic may expose the object even when fields are unset; require dump keys.
+    dump = getattr(details, "model_dump", None)
+    if callable(dump):
+        try:
+            data = dump(exclude_none=True)
+            if isinstance(data, dict):
+                return "cached_tokens" in data or "cache_write_tokens" in data
+        except Exception:
+            pass
+    return False
 
 
 def extract_openai_cache_tokens(usage: Any) -> tuple[int, int]:
     """Return (cache_read, cache_write) from an OpenAI-compatible usage object."""
     hit = _usage_field(usage, "prompt_cache_hit_tokens")
-    details = _usage_field(usage, "prompt_tokens_details")
+    details = _prompt_token_details(usage)
     if hit is not None:
         cache_read = as_int(hit)
     else:
