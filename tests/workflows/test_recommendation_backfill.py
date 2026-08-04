@@ -96,6 +96,7 @@ def test_day_env_forces_readonly_write_context(monkeypatch) -> None:
     with workflow._day_env(date(2026, 6, 1), skip_step3=True):
         assert os.environ["WYCKOFF_WRITE_CONTEXT"] == "cli"
         assert os.environ["FUNNEL_DYNAMIC_POLICY"] == "off"
+        assert os.environ["FUNNEL_REQUIRE_COMPLETE_REPLAY_DATA"] == "1"
         assert os.environ["STEP3_SKIP_LLM"] == "1"
 
     assert os.environ["WYCKOFF_WRITE_CONTEXT"] == "server_job"

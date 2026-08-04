@@ -592,6 +592,7 @@ def _day_env(trade_day: date, skip_step3: bool) -> Iterator[None]:
         "END_CALENDAR_DAY": trade_day.isoformat(),
         "FUNNEL_SKIP_FINANCIAL_METRICS": "1",
         "FUNNEL_DYNAMIC_POLICY": "off",
+        "FUNNEL_REQUIRE_COMPLETE_REPLAY_DATA": "1",
         WRITE_CONTEXT_ENV: CLI_WRITE_CONTEXT,
         "STEP3_ENFORCE_TARGET_TRADE_DATE": "1",
     }

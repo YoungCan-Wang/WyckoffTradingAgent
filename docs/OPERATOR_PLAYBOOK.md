@@ -140,6 +140,8 @@ LPS、确认状态或候选血缘发生语义变更时，先做 dry-run，检查
 
 实际范围应包含规则上线后受影响的全部交易日。`--apply` 会替换对应日期的 `recommendation_tracking`、`signal_pending` 和 `signal_observations`；删除 observation 会级联删除对应 outcome，因此应用后必须重跑 `scripts/signal_feedback_job.py`，再核对 `signal_health_daily` 与 `signal_registry`，不能只回刷推荐表。
 
+回刷会强制要求历史市值、沪指/小盘双基准完整，并在 TickFlow 任一批次最终失败时中止，不允许用降级数据覆盖生产表。指数和历史市值默认各重试 3 次，可通过 `INDEX_DATA_MAX_RETRIES`、`INDEX_DATA_RETRY_BACKOFF_SECONDS`、`MARKET_METADATA_MAX_RETRIES`、`MARKET_METADATA_RETRY_BACKOFF_SECONDS` 调整；维护任务还可提高 `TICKFLOW_MAX_RETRIES`。这些参数只改变容错，不改变策略口径。
+
 ---
 
 ## 8. 相关代码与配置

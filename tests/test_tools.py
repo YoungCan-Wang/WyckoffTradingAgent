@@ -2385,6 +2385,7 @@ class TestDataFetcher:
         assert list(df_map) == ["000001"]
         assert stats["fetch_ok"] == 1
         assert stats["fetch_fail"] == 1
+        assert stats["failed_batches"] == 0
 
     def test_fetch_hist_direct_source_bypasses_cached_repository(self, monkeypatch):
         import integrations.data_source as data_source
