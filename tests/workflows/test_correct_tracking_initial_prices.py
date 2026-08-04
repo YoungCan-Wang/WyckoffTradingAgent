@@ -67,6 +67,54 @@ def test_correct_initial_price_update_uses_first_date(monkeypatch):
     assert update["change_pct"] == round((10.5 - 9.0) / 9.0 * 100.0, 2)
 
 
+def test_correct_initial_price_update_ignores_sub_cent_noise(monkeypatch):
+    cache: dict = {}
+    first_dates = {"000001": date(2026, 5, 16)}
+    monkeypatch.setattr(
+        "workflows.recommendation_tracking_reprice._resolve_initial_price_from_history",
+        lambda code, day: 9.051433511,
+    )
+
+    update = _correct_initial_price_update(
+        {
+            "id": 8,
+            "code": 1,
+            "recommend_date": 20260518,
+            "initial_price": 9.05,
+            "current_price": 10.0,
+            "change_pct": 10.5,
+        },
+        cache,
+        first_dates,
+    )
+
+    assert update is None
+
+
+def test_correct_initial_price_update_skips_change_pct_only_drift(monkeypatch):
+    cache: dict = {}
+    first_dates = {"000001": date(2026, 5, 16)}
+    monkeypatch.setattr(
+        "workflows.recommendation_tracking_reprice._resolve_initial_price_from_history",
+        lambda code, day: 13.8,
+    )
+
+    update = _correct_initial_price_update(
+        {
+            "id": 9,
+            "code": 1,
+            "recommend_date": 20260518,
+            "initial_price": 13.8,
+            "current_price": 14.86,
+            "change_pct": 7.7,
+        },
+        cache,
+        first_dates,
+    )
+
+    assert update is None
+
+
 def test_correct_tracking_initial_prices_dry_run_does_not_write(monkeypatch):
     records = [
         {

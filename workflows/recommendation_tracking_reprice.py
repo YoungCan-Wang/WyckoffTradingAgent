@@ -370,13 +370,15 @@ def _correct_initial_price_update(
     key = (code, first_date)
     if key not in cache:
         cache[key] = _resolve_initial_price_from_history(code, first_date)
-    initial_price = cache[key]
-    if initial_price <= 0:
+    raw_price = cache[key]
+    if raw_price <= 0:
         return None
-    old_price = float(record.get("initial_price") or 0.0)
+    # PG numeric 展示/存储通常到分；与前复权浮点直接比会反复误判为脏数据。
+    initial_price = round(raw_price, 2)
+    old_price = round(float(record.get("initial_price") or 0.0), 2)
+    if abs(old_price - initial_price) < 1e-9:
+        return None
     change_pct = round((current_price - initial_price) / initial_price * 100.0, 2)
-    if abs(old_price - initial_price) < 1e-6 and abs(float(record.get("change_pct") or 0.0) - change_pct) < 1e-6:
-        return None
     return {
         "id": record["id"],
         "code": int(record["code"]),
