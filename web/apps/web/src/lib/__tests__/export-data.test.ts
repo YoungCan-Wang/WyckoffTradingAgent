@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { arrayToCSV, buildEnhancedRows, parseExportSymbols, parseTickFlowToRows } from '../export-data'
+import { arrayToCSV, buildEnhancedRows, exportSymbolFromStock, parseExportSymbols, parseTickFlowToRows } from '../export-data'
 
 describe('export-data', () => {
+  it('maps search hits to TickFlow export symbols', () => {
+    expect(exportSymbolFromStock({ symbol: '603296.SH', analysisCode: '603296' })).toBe('603296.SH')
+    expect(exportSymbolFromStock({ analysisCode: '000001' })).toBe('000001.SZ')
+    expect(exportSymbolFromStock({ symbol: 'AAPL.US', analysisCode: 'AAPL.US' })).toBe('AAPL.US')
+    expect(exportSymbolFromStock(null)).toBe('')
+  })
+
   it('normalizes mixed batch symbols', () => {
     expect(parseExportSymbols('601318; 510300 000001.SH AAPL.US 00700.HK 601318')).toEqual([
       '601318.SH',

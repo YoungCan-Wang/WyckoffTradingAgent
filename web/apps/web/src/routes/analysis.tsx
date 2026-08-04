@@ -1,6 +1,6 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState, type Dispatch, type FocusEvent, type KeyboardEvent, type SetStateAction } from 'react'
+import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { useNavigate, useSearchParams } from 'react-router'
-import { Loader2, Play, Search } from 'lucide-react'
+import { Loader2, Play } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/auth'
 import { loadLLMConfig, loadLLMConfigCandidates } from '@/lib/chat-agent'
@@ -8,6 +8,7 @@ import { streamLLMResponseWithFallback, type LLMStreamStatus } from '@/lib/llm-s
 import { clearStreamFlush, scheduleStreamFlush } from '@/lib/stream-render'
 import { MarkdownContent } from '@/components/markdown'
 import { KlineChart } from '@/components/kline-chart'
+import { StockSearchBox, matchesSelectedQuery, useStockSearch, type StockSearchController } from '@/components/stock-search-box'
 import { usePreferences } from '@/lib/preferences'
 import { AIDisclaimer } from '@/components/ai-disclaimer'
 import { detectWyckoffAnnotations } from '@/lib/wyckoff-detect'
@@ -16,7 +17,7 @@ import type { AnalysisContextPack, KlineDataQuality, KlineRow, ValueSnapshot } f
 import { fetchKlineWithQuality, getUserDataKeys } from '@/lib/kline'
 import { useWhitelistGate } from '@/lib/whitelist-gate'
 import { avg } from '@/lib/math'
-import { marketLabel, resolveStockQuery, searchStocks, type StockSearchResult } from '@/lib/market-search'
+import { resolveStockQuery, type StockSearchResult } from '@/lib/market-search'
 import { buildValuePrompt, sourceLabel, valueTraceMeta } from '@wyckoff/shared'
 import { buildValueScore, calculateInputSnapshotHash, formatValuePercent, metricToneClass, numberTone, reverseNumberTone, signalClass, valueDataQualityText, valueDataQualityTitle, valueScoreClass, valueUnavailableText, type ValueView } from '@/lib/value-analysis'
 import { saveAnalysisHistory } from '@/lib/local-history'
@@ -46,7 +47,7 @@ interface AnalysisResult {
 export function AnalysisPage() {
   const user = useAuthStore((s) => s.user)
   const { t } = usePreferences()
-  const search = useStockSearch()
+  const search = useAnalysisStockSearch()
   const prerequisites = usePrerequisites(user?.id)
   const runner = useAnalysisRunner(search, prerequisites.setHasModelConfig)
   useAnalysisHistory(user?.id, runner.result)
@@ -71,6 +72,12 @@ export function AnalysisPage() {
   )
 }
 
+function useAnalysisStockSearch(): StockSearchController {
+  const search = useStockSearch('analysis')
+  useUrlSymbol(search.setSymbol)
+  return search
+}
+
 function useAnalysisHistory(userId: string | undefined, result: AnalysisResult | null) {
   const savedKey = useRef('')
 
@@ -90,82 +97,12 @@ function useAnalysisHistory(userId: string | undefined, result: AnalysisResult |
   }, [result, userId])
 }
 
-interface SearchController {
-  symbol: string
-  selectedStock: StockSearchResult | null
-  suggestions: StockSearchResult[]
-  searchOpen: boolean
-  searching: boolean
-  activeIndex: number
-  setSymbol: Dispatch<SetStateAction<string>>
-  setSelectedStock: Dispatch<SetStateAction<StockSearchResult | null>>
-  setSearchOpen: Dispatch<SetStateAction<boolean>>
-  setActiveIndex: Dispatch<SetStateAction<number>>
-  updateSymbol: (value: string) => void
-  selectSuggestion: (item: StockSearchResult) => void
-}
-
-function useStockSearch(): SearchController {
-  const [symbol, setSymbol] = useState('')
-  const deferredSymbol = useDeferredValue(symbol)
-  const [selectedStock, setSelectedStock] = useState<StockSearchResult | null>(null)
-  const [searchOpen, setSearchOpen] = useState(false)
-  const suggestionState = useSuggestionSearch(deferredSymbol, selectedStock)
-  const { suggestions, searching, activeIndex } = suggestionState
-  useUrlSymbol(setSymbol)
-
-  function updateSymbol(value: string) {
-    setSymbol(value)
-    setSelectedStock(null)
-    setSearchOpen(true)
-  }
-
-  function selectSuggestion(item: StockSearchResult) {
-    setSelectedStock(item)
-    setSymbol(item.analysisCode)
-    setSearchOpen(false)
-  }
-
-  return {
-    symbol, selectedStock, suggestions, searchOpen, searching, activeIndex,
-    setSymbol, setSelectedStock, setSearchOpen, setActiveIndex: suggestionState.setActiveIndex, updateSymbol, selectSuggestion,
-  }
-}
-
 function useUrlSymbol(setSymbol: Dispatch<SetStateAction<string>>) {
   const [searchParams] = useSearchParams()
   useEffect(() => {
     const code = searchParams.get('code')?.trim().toUpperCase()
     if (code && isSupportedKlineCode(code)) setSymbol(code)
   }, [searchParams, setSymbol])
-}
-
-function useSuggestionSearch(queryValue: string, selectedStock: StockSearchResult | null) {
-  const [suggestions, setSuggestions] = useState<StockSearchResult[]>([])
-  const [searching, setSearching] = useState(false)
-  const [activeIndex, setActiveIndex] = useState(0)
-  const selectedCode = selectedStock?.analysisCode
-
-  useEffect(() => {
-    const query = queryValue.trim()
-    if (!query || selectedCode === query.toUpperCase()) {
-      setSuggestions([])
-      setSearching(false)
-      return
-    }
-    let cancelled = false
-    setSearching(true)
-    searchStocks(query, 8)
-      .then((rows) => {
-        if (cancelled) return
-        setSuggestions(rows)
-        setActiveIndex(0)
-      })
-      .finally(() => { if (!cancelled) setSearching(false) })
-    return () => { cancelled = true }
-  }, [queryValue, selectedCode])
-
-  return { suggestions, searching, activeIndex, setActiveIndex }
 }
 
 interface Prerequisites {
@@ -214,7 +151,7 @@ interface AnalysisRunnerState {
   handleAnalyze: () => void
 }
 
-function useAnalysisRunner(search: SearchController, setHasModelConfig: Dispatch<SetStateAction<boolean>>): AnalysisRunnerState {
+function useAnalysisRunner(search: StockSearchController, setHasModelConfig: Dispatch<SetStateAction<boolean>>): AnalysisRunnerState {
   const user = useAuthStore((s) => s.user)
   const { t } = usePreferences()
   const [loading, setLoading] = useState(false)
@@ -282,7 +219,7 @@ function useAnalysisRunner(search: SearchController, setHasModelConfig: Dispatch
 
 function startAnalysisRequest(
   abortRef: React.MutableRefObject<AbortController | null>,
-  search: SearchController,
+  search: StockSearchController,
   resolved: NonNullable<Awaited<ReturnType<typeof resolveAnalysisCode>>>,
   setError: Dispatch<SetStateAction<string>>,
   setLoading: Dispatch<SetStateAction<boolean>>,
@@ -328,7 +265,7 @@ function SearchForm({
   onAnalyze,
   onClearError,
 }: {
-  search: SearchController
+  search: StockSearchController
   loading: boolean
   disabled: boolean
   onAnalyze: () => void
@@ -338,7 +275,15 @@ function SearchForm({
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-end gap-3">
-        <StockSearchBox search={search} onAnalyze={onAnalyze} onClearError={onClearError} />
+        <div className="min-w-[240px] flex-1 lg:max-w-3xl">
+          <StockSearchBox
+            search={search}
+            onSubmit={onAnalyze}
+            onClearError={onClearError}
+            placeholder={t('analysis.searchPlaceholder')}
+            listboxId="analysis-stock-search"
+          />
+        </div>
         <button onClick={onAnalyze} disabled={disabled} className="flex h-10 shrink-0 items-center gap-2 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50">
           {loading ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
           {loading ? t('analysis.analyzing') : t('analysis.start')}
@@ -350,75 +295,6 @@ function SearchForm({
       </p>
     </div>
   )
-}
-
-function StockSearchBox({ search, onAnalyze, onClearError }: { search: SearchController; onAnalyze: () => void; onClearError: () => void }) {
-  const { t } = usePreferences()
-  function handleChange(value: string) {
-    search.updateSymbol(value)
-    onClearError()
-  }
-  return (
-    <div className="relative min-w-[240px] flex-1 lg:max-w-3xl" onBlur={(e) => closeSearchOnOuterBlur(e, search.setSearchOpen)}>
-      <label className="mb-1.5 block text-xs font-semibold text-muted-foreground">{t('common.stockCode')}</label>
-      <div className="relative">
-        <Search size={15} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-muted-foreground/60" />
-        <input
-          type="text"
-          value={search.symbol}
-          onChange={(e) => handleChange(e.target.value)}
-          onFocus={() => search.setSearchOpen(true)}
-          placeholder={t('analysis.searchPlaceholder')}
-          maxLength={28}
-          className="w-full rounded-xl border border-border bg-background/50 py-2.5 pl-10 pr-4 text-sm outline-none transition-all duration-200 focus:bg-background focus:ring-2 focus:ring-primary/20 focus:border-primary placeholder:text-muted-foreground/50 font-semibold"
-          onKeyDown={(e) => handleSearchKeyDown(e, search, onAnalyze)}
-          role="combobox"
-          aria-expanded={search.searchOpen && search.suggestions.length > 0}
-          aria-controls="analysis-stock-search"
-        />
-      </div>
-      <SearchSuggestions search={search} />
-    </div>
-  )
-}
-
-function SearchSuggestions({ search }: { search: SearchController }) {
-  const { t } = usePreferences()
-  if (!search.searchOpen || !search.symbol.trim()) return null
-  return (
-    <div id="analysis-stock-search" className="absolute z-20 mt-2 max-h-72 w-full overflow-auto rounded-xl border border-border/80 bg-popover/95 backdrop-blur-md py-1.5 shadow-xl animate-fade-in-up" role="listbox">
-      {search.searching && <LoadingSuggestion text={t('analysis.searching')} />}
-      {!search.searching && search.suggestions.length === 0 && <div className="px-3 py-2 text-sm text-muted-foreground">{t('analysis.noSearchResults')}</div>}
-      {!search.searching && search.suggestions.map((item, index) => (
-        <SuggestionRow key={`${item.market}:${item.analysisCode}`} item={item} active={index === search.activeIndex} onClick={() => search.selectSuggestion(item)} />
-      ))}
-    </div>
-  )
-}
-
-function SuggestionRow({ item, active, onClick }: { item: StockSearchResult; active: boolean; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      role="option"
-      aria-selected={active}
-      onMouseDown={(e) => e.preventDefault()}
-      onClick={onClick}
-      className={`flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm hover:bg-muted ${active ? 'bg-muted' : ''}`}
-    >
-      <span className="min-w-0">
-        <span className="block truncate font-medium">{item.name || item.analysisCode}</span>
-        <span className="block truncate text-xs text-muted-foreground">
-          {item.analysisCode} · {marketLabel(item.market)}{item.assetType === 'etf' ? ' · ETF' : ''}
-        </span>
-      </span>
-      <span className="shrink-0 rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">{item.market.toUpperCase()}</span>
-    </button>
-  )
-}
-
-function LoadingSuggestion({ text }: { text: string }) {
-  return <div className="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground"><Loader2 size={14} className="animate-spin" />{text}</div>
 }
 
 function AnalysisContent({ runner, onAskAboutRange }: { runner: AnalysisRunnerState; onAskAboutRange: (start: string, end: string) => void }) {
@@ -648,28 +524,9 @@ function EmptyAnalysisState() {
   )
 }
 
-function closeSearchOnOuterBlur(e: FocusEvent<HTMLDivElement>, setSearchOpen: Dispatch<SetStateAction<boolean>>) {
-  const next = e.relatedTarget as Node | null
-  if (!next || !e.currentTarget.contains(next)) setSearchOpen(false)
-}
-
-function handleSearchKeyDown(e: KeyboardEvent<HTMLInputElement>, search: SearchController, onAnalyze: () => void) {
-  if (!search.searchOpen || search.suggestions.length === 0) {
-    if (e.key === 'Enter') onAnalyze()
-    return
-  }
-  if (e.key === 'ArrowDown') { e.preventDefault(); search.setActiveIndex((idx) => Math.min(idx + 1, search.suggestions.length - 1)); return }
-  if (e.key === 'ArrowUp') { e.preventDefault(); search.setActiveIndex((idx) => Math.max(idx - 1, 0)); return }
-  if (e.key !== 'Enter') return
-  e.preventDefault()
-  const item = search.suggestions[search.activeIndex]
-  if (item) search.selectSuggestion(item)
-  else onAnalyze()
-}
-
 async function resolveAnalysisCode(rawInput: string, selected: StockSearchResult | null): Promise<{ code: string; stock: StockSearchResult | null } | null> {
   const raw = rawInput.trim()
-  const stock = selected?.analysisCode === raw.toUpperCase() ? selected : await resolveStockQuery(raw)
+  const stock = matchesSelectedQuery(raw, selected, 'analysis') ? selected : await resolveStockQuery(raw)
   const code = stock?.analysisCode || (/^\d+$/.test(raw) ? raw : raw.toUpperCase())
   return isSupportedKlineCode(code) ? { code, stock } : null
 }

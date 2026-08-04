@@ -1,14 +1,17 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import { Download, FileSpreadsheet, Loader2, Package } from 'lucide-react'
+import { StockSearchBox, matchesSelectedQuery, useStockSearch, type StockSearchController } from '@/components/stock-search-box'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/auth'
 import { usePreferences } from '@/lib/preferences'
+import { resolveStockQuery } from '@/lib/market-search'
 import {
   arrayToCSV,
   buildEnhancedRows,
   buildKlineParams,
   createZipBlob,
   downloadBlob,
+  exportSymbolFromStock,
   normalizeExportSymbol,
   parseExportSymbols,
   parseTickFlowToRows,
@@ -66,7 +69,7 @@ export function ExportPage() {
 function useExportState(userId: string | undefined) {
   const { t } = usePreferences()
   const [mode, setMode] = useState<ExportMode>('single')
-  const [symbol, setSymbol] = useState('')
+  const search = useStockSearch('export')
   const [batchText, setBatchText] = useState('')
   const [days, setDays] = useState(320)
   const [endOffset, setEndOffset] = useState(1)
@@ -97,10 +100,14 @@ function useExportState(userId: string | undefined) {
       setError(t('export.configureTickflow'))
       return
     }
-    const validation = resolveExportSymbols(mode, symbol, batchText, t)
+    const validation = await resolveExportSymbols(mode, search, batchText, t)
     if (validation.error) {
       setError(validation.error)
       return
+    }
+    if (mode === 'single' && validation.symbols[0]) {
+      search.setSymbol(validation.symbols[0])
+      search.setSearchOpen(false)
     }
     resetExportOutput(setError, setDatasets, setBatchResults, setActiveIndex, setSelectedColumns, setColumnFilter)
     setLoading(true)
@@ -136,8 +143,7 @@ function useExportState(userId: string | undefined) {
     control: {
       mode,
       setMode,
-      symbol,
-      setSymbol,
+      search,
       batchText,
       setBatchText,
       days,
@@ -148,6 +154,7 @@ function useExportState(userId: string | undefined) {
       setAdjust,
       loading,
       onExport: handleExport,
+      onClearError: () => setError(''),
     },
     preview: {
       datasets,
@@ -172,8 +179,7 @@ function useExportState(userId: string | undefined) {
 function ExportControlPanel(props: {
   mode: ExportMode
   setMode: (mode: ExportMode) => void
-  symbol: string
-  setSymbol: (value: string) => void
+  search: StockSearchController
   batchText: string
   setBatchText: (value: string) => void
   days: number
@@ -184,9 +190,10 @@ function ExportControlPanel(props: {
   setAdjust: (value: ExportAdjust) => void
   loading: boolean
   onExport: () => void
+  onClearError: () => void
 }) {
   const { t } = usePreferences()
-  const disabled = props.loading || (props.mode === 'single' ? !props.symbol.trim() : !props.batchText.trim())
+  const disabled = props.loading || (props.mode === 'single' ? !props.search.symbol.trim() : !props.batchText.trim())
   return (
     <section className="mb-5 rounded-lg border border-border p-4">
       <div className="mb-4 flex flex-wrap gap-2">
@@ -195,7 +202,13 @@ function ExportControlPanel(props: {
       </div>
       <div className="grid gap-3 lg:grid-cols-[minmax(240px,1fr)_120px_120px_150px_auto] lg:items-end">
         {props.mode === 'single' ? (
-          <TextField label={t('common.stockCode')} value={props.symbol} onChange={props.setSymbol} placeholder={t('export.symbolPlaceholder')} onEnter={props.onExport} />
+          <StockSearchBox
+            search={props.search}
+            onSubmit={props.onExport}
+            onClearError={props.onClearError}
+            placeholder={t('analysis.searchPlaceholder')}
+            listboxId="export-stock-search"
+          />
         ) : (
           <TextArea label={t('export.batchSymbols')} value={props.batchText} onChange={props.setBatchText} placeholder="601318; 000001; 510300; AAPL.US; 00700.HK" />
         )}
@@ -212,14 +225,35 @@ function ExportControlPanel(props: {
   )
 }
 
-function resolveExportSymbols(mode: ExportMode, symbol: string, batchText: string, t: Translate): { symbols: string[]; error: string } {
-  const symbols = mode === 'single' ? [normalizeExportSymbol(symbol)] : parseExportSymbols(batchText)
-  if (symbols.some((value) => !value)) return { symbols, error: t('export.invalidSymbol') }
-  if (symbols.length === 0) return { symbols, error: t('export.batchEmpty') }
-  if (mode === 'batch' && symbols.length > 6) {
-    return { symbols, error: t('export.batchTooMany', { count: symbols.length }) }
+async function resolveExportSymbols(
+  mode: ExportMode,
+  search: StockSearchController,
+  batchText: string,
+  t: Translate,
+): Promise<{ symbols: string[]; error: string }> {
+  if (mode === 'batch') {
+    const symbols = parseExportSymbols(batchText)
+    if (symbols.length === 0) return { symbols, error: t('export.batchEmpty') }
+    if (symbols.length > 6) return { symbols, error: t('export.batchTooMany', { count: symbols.length }) }
+    return { symbols, error: '' }
   }
-  return { symbols, error: '' }
+  const symbol = await resolveSingleExportSymbol(search.symbol, search.selectedStock)
+  if (!symbol) return { symbols: [], error: t('export.invalidSymbol') }
+  return { symbols: [symbol], error: '' }
+}
+
+async function resolveSingleExportSymbol(
+  rawInput: string,
+  selected: StockSearchController['selectedStock'],
+): Promise<string> {
+  const raw = rawInput.trim()
+  if (!raw) return ''
+  if (matchesSelectedQuery(raw, selected, 'export')) {
+    return exportSymbolFromStock(selected)
+  }
+  const direct = normalizeExportSymbol(raw)
+  if (direct) return direct
+  return exportSymbolFromStock(await resolveStockQuery(raw))
 }
 
 async function collectExportDatasets(apiKey: string, symbols: string[], params: ExportFetchParams) {
@@ -428,15 +462,6 @@ function DownloadButton({ onClick, icon, children }: { onClick: () => void; icon
       {icon}
       {children}
     </button>
-  )
-}
-
-function TextField({ label, value, onChange, placeholder, onEnter }: { label: string; value: string; onChange: (value: string) => void; placeholder: string; onEnter: () => void }) {
-  return (
-    <div>
-      <label className="mb-1.5 block text-sm font-medium">{label}</label>
-      <input value={value} onChange={(e) => onChange(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && onEnter()} placeholder={placeholder} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/20" />
-    </div>
   )
 }
 
