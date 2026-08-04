@@ -14,7 +14,12 @@ import {
   checklistKeyLabel,
   checklistStatusLabel,
 } from './attribution-summary'
-import { formatPatternReviewDigest, labelCandidateTerm, type PatternReviewRow } from './pattern-review'
+import {
+  dedupeTrackingRows,
+  formatPatternReviewDigest,
+  labelCandidateTerm,
+  type PatternReviewRow,
+} from './pattern-review'
 import { ANALYSIS_CONTEXT_PACK_SCHEMA, buildStockAnalysisContextPack } from './analysis-context'
 import { marketWatchSymbol, normalizeMarketWatchCode, readFreshMarketWatchSnapshot, type MarketWatchQuote, type MarketWatchSnapshot } from './market-watch'
 
@@ -691,7 +696,7 @@ export async function execQueryRecommendations(deps: ToolDeps, limit: number): P
     fetchRecommendationReviewRows(deps, limit),
     fetchSignalPendingReviewRows(deps, limit),
   ])
-  const data = recommendations.concat(signals)
+  const data = dedupeTrackingRows(recommendations.concat(signals))
     .sort((a, b) => reviewDateNumber(b.recommend_date) - reviewDateNumber(a.recommend_date))
     .slice(0, Math.max(limit, 0))
   return formatPatternReviewDigest(data)

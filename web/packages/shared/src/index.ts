@@ -60,14 +60,16 @@ export {
 } from './agent-value'
 export type { ValueDataQuality, ValueDataQualityLevel, ValueRule, ValueScore, ValueSignal, ValueTone, ValueTraceMeta } from './agent-value'
 export {
+  dedupeTrackingRows,
   formatPatternReviewDigest,
   formatPatternReviewLine,
   labelCandidateTerm,
   patternReviewRole,
+  preferTrackingRow,
   PATTERN_REVIEW_EMPTY_MESSAGE,
   PATTERN_REVIEW_SCOPE_NOTE,
 } from './pattern-review'
-export type { PatternReviewRow } from './pattern-review'
+export type { DedupeTrackingRow, PatternReviewRow } from './pattern-review'
 export {
   attributionExecutionImpactText,
   attributionFormalDynamicLabel,

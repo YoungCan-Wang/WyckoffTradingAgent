@@ -6,7 +6,7 @@ import { supabase } from '@/lib/supabase'
 import { watchChartResize } from '@/lib/chart-resize'
 import { useWhitelistGate, whitelistGateView } from '@/lib/whitelist-gate'
 import { SortableHeader, type SortOrder } from '@/components/sortable-header'
-import { labelCandidateTerm, normalizeCode } from '@wyckoff/shared'
+import { dedupeTrackingRows, labelCandidateTerm, normalizeCode } from '@wyckoff/shared'
 import { WyckoffLoading } from '@/components/loading'
 import { usePreferences, type TranslationKey } from '@/lib/preferences'
 import { financialValueClass } from '@/lib/financial-colors'
@@ -1000,45 +1000,7 @@ function getLatestRecommendDates(rows: Recommendation[], limit: number): number[
 }
 
 function dedupeRecommendations(rows: Recommendation[]): Recommendation[] {
-  const byCode = new Map<string, Recommendation>()
-  for (const row of rows) {
-    const key = trackingCodeKey(row.code)
-    const existing = byCode.get(key)
-    if (!existing) {
-      byCode.set(key, {
-        ...row,
-        recommend_count: recommendationCount(row.recommend_count),
-      })
-      continue
-    }
-    const preferred = preferTrackingRow(row, existing) ? row : existing
-    byCode.set(key, {
-      ...preferred,
-      is_ai_recommended: existing.is_ai_recommended || row.is_ai_recommended,
-      rag_vetoed: existing.rag_vetoed || row.rag_vetoed,
-      recommend_count: Math.max(
-        recommendationCount(existing.recommend_count),
-        recommendationCount(row.recommend_count),
-      ),
-    })
-  }
-  return [...byCode.values()]
-}
-
-function preferTrackingRow(next: Recommendation, current: Recommendation): boolean {
-  if (next.recommend_date !== current.recommend_date) return next.recommend_date > current.recommend_date
-  const sourceDelta = trackingSourcePriority(next) - trackingSourcePriority(current)
-  if (sourceDelta !== 0) return sourceDelta > 0
-  if (next.is_ai_recommended !== current.is_ai_recommended) return next.is_ai_recommended
-  return (next.funnel_score ?? -Infinity) > (current.funnel_score ?? -Infinity)
-}
-
-function trackingSourcePriority(row: Recommendation): number {
-  return row.source_type === 'signal_pending' ? 1 : 2
-}
-
-function trackingCodeKey(code: number | string): string {
-  return normalizeCode(code)
+  return dedupeTrackingRows(rows)
 }
 
 function buildSummaryStats(rows: Recommendation[]): SummaryStats | null {
