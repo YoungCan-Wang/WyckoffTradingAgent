@@ -72,6 +72,32 @@ def test_build_us_performance_updates_reprices_stale_initial_price():
     assert updates[0]["mfe_pct"] == 24.0
 
 
+def test_build_us_performance_updates_sticks_first_recommend_price():
+    hist = pd.DataFrame(
+        {
+            "date": ["2026-05-15", "2026-05-16", "2026-05-18"],
+            "high": [10.5, 12.0, 13.0],
+            "low": [9.5, 10.0, 11.0],
+            "close": [10.0, 11.0, 12.0],
+        }
+    )
+    grouped = {
+        "ABC.US": [
+            {"id": 1, "code": "ABC.US", "recommend_date": 20260515, "initial_price": 99.0},
+            {"id": 2, "code": "ABC.US", "recommend_date": 20260516, "initial_price": 99.0},
+        ]
+    }
+
+    updates, _, _ = build_us_performance_updates(grouped, {"ABC.US": hist}, "now")
+    by_id = {row["id"]: row for row in updates}
+
+    assert by_id[1]["initial_price"] == 10.0
+    assert by_id[2]["initial_price"] == 10.0
+    assert by_id[2]["change_pct"] == 20.0
+    # MFE for the later event still uses that event day's close as entry basis
+    assert by_id[2]["mfe_pct"] == round((13.0 / 11.0 - 1.0) * 100.0, 2)
+
+
 def test_refresh_us_tracking_performance_fetches_forward_adjusted_hist(monkeypatch):
     captured: dict[str, object] = {}
 

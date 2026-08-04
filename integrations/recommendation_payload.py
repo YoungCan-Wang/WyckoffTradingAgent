@@ -30,10 +30,16 @@ from integrations.supabase_base import require_server_write_context
 logger = logging.getLogger(__name__)
 
 
-def _load_existing_recommendation_history(client) -> tuple[dict[int, int], dict[int, set[int]]]:
+def _load_existing_recommendation_history(
+    client,
+) -> tuple[dict[int, int], dict[int, set[int]], dict[int, float]]:
     existing_counts: dict[int, int] = {}
     existing_code_dates: dict[int, set[int]] = {}
-    all_rows = fetch_records_from_table(client, TABLE_RECOMMENDATION_TRACKING, "code,recommend_count,recommend_date")
+    first_dates: dict[int, int] = {}
+    first_prices: dict[int, float] = {}
+    all_rows = fetch_records_from_table(
+        client, TABLE_RECOMMENDATION_TRACKING, "code,recommend_count,recommend_date,initial_price"
+    )
     for row in all_rows:
         try:
             code_int = int(row.get("code"))
@@ -43,10 +49,32 @@ def _load_existing_recommendation_history(client) -> tuple[dict[int, int], dict[
         existing_counts[code_int] = max(existing_counts.get(code_int, 0), cnt)
         try:
             d = int(row.get("recommend_date"))
-            existing_code_dates.setdefault(code_int, set()).add(d)
         except (TypeError, ValueError):
             logger.debug("invalid recommend_date for code %s", row.get("code"), exc_info=True)
-    return existing_counts, existing_code_dates
+            continue
+        existing_code_dates.setdefault(code_int, set()).add(d)
+        _remember_first_recommend_price(first_dates, first_prices, code_int, d, row.get("initial_price"))
+    return existing_counts, existing_code_dates, first_prices
+
+
+def _remember_first_recommend_price(
+    first_dates: dict[int, int],
+    first_prices: dict[int, float],
+    code_int: int,
+    recommend_date: int,
+    raw_price: Any,
+) -> None:
+    try:
+        price = float(raw_price or 0.0)
+    except (TypeError, ValueError):
+        price = 0.0
+    prev_date = first_dates.get(code_int)
+    if prev_date is None or recommend_date < prev_date:
+        first_dates[code_int] = recommend_date
+        first_prices[code_int] = price if price > 0 else 0.0
+        return
+    if recommend_date == prev_date and price > 0:
+        first_prices[code_int] = price
 
 
 def upsert_recommendation_payload_rows(client, payload: list[dict[str, Any]]) -> None:
@@ -79,12 +107,13 @@ def prepare_recommendation_payload(recommend_date: int, symbols_info: list[dict[
     if not is_supabase_configured() or not symbols_info:
         return []
     client = _get_supabase_admin_client()
-    existing_counts, existing_code_dates = _load_existing_recommendation_history(client)
+    existing_counts, existing_code_dates, first_prices = _load_existing_recommendation_history(client)
     return build_recommendation_payload(
         recommend_date,
         symbols_info,
         existing_counts,
         existing_code_dates,
+        first_prices,
     )
 
 
@@ -112,8 +141,8 @@ def upsert_recommendations(recommend_date: int, symbols_info: list[dict[str, Any
         payload = prepare_recommendation_payload(recommend_date, symbols_info)
 
         # 使用 upsert，基于 (code, recommend_date) 唯一约束：
-        # - 同一只股票在同一天重跑会覆盖更新；
-        # - 跨天会新增一条记录；
+        # - 同一只股票在同一天重跑会覆盖更新（initial_price 粘住首次推荐日收盘）；
+        # - 跨天会新增一条记录，推荐价仍用该 code 首次推荐日收盘；
         # - recommend_count 按 code 维度累计。
         return upsert_recommendation_payload(payload)
     except Exception as e:

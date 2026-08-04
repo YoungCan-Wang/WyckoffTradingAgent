@@ -90,13 +90,15 @@ def build_recommendation_payload(
     symbols_info: list[dict[str, Any]],
     existing_counts: dict[int, int],
     existing_code_dates: dict[int, set[int]],
+    existing_first_prices: dict[int, float] | None = None,
 ) -> list[dict[str, Any]]:
+    first_prices = existing_first_prices or {}
     payload_by_code: dict[int, dict[str, Any]] = {}
     for item in symbols_info:
         code_int = _extract_recommendation_code(item.get("code"))
         if code_int is None:
             continue
-        row = _recommendation_row(recommend_date, item, existing_counts, existing_code_dates, code_int)
+        row = _recommendation_row(recommend_date, item, existing_counts, existing_code_dates, code_int, first_prices)
         existing = payload_by_code.get(code_int)
         if existing:
             merge_recommendation_payload_row(existing, row)
@@ -120,6 +122,10 @@ def merge_recommendation_payload_row(existing: dict[str, Any], row: dict[str, An
     new_price = safe_float(row.get("initial_price"), 0.0)
     if old_price <= 0 < new_price:
         existing["initial_price"] = new_price
+    new_current = safe_float(row.get("current_price"), 0.0)
+    if new_current > 0:
+        existing["current_price"] = new_current
+    elif old_price <= 0 < new_price:
         existing["current_price"] = new_price
 
 
@@ -139,7 +145,9 @@ def recommendation_restore_sql(rows: list[dict[str, Any]], table: str = TABLE_RE
     if not rows or not columns:
         return "-- no recommendation rows to restore\n"
     values = ["  (" + ", ".join(_sql_literal(row.get(col)) for col in columns) + ")" for row in rows]
-    updates = ",\n  ".join(f"{col} = excluded.{col}" for col in columns if col not in {"code", "recommend_date"})
+    updates = ",\n  ".join(
+        _restore_conflict_assignment(col, table) for col in columns if col not in {"code", "recommend_date"}
+    )
     return "\n".join(
         [
             "begin;",
@@ -152,6 +160,13 @@ def recommendation_restore_sql(rows: list[dict[str, Any]], table: str = TABLE_RE
             "",
         ]
     )
+
+
+def _restore_conflict_assignment(column: str, table: str) -> str:
+    # 推荐价按 code 粘住首次值：备份恢复时不覆盖已有非零 initial_price。
+    if column == "initial_price":
+        return f"{column} = coalesce(nullif({table}.{column}, 0), excluded.{column})"
+    return f"{column} = excluded.{column}"
 
 
 def clean_backup_value(value: Any) -> Any:
@@ -199,18 +214,21 @@ def _recommendation_row(
     existing_counts: dict[int, int],
     existing_code_dates: dict[int, set[int]],
     code_int: int,
+    existing_first_prices: dict[int, float],
 ) -> dict[str, Any]:
     old_cnt = existing_counts.get(code_int, 0)
     seen_dates = existing_code_dates.get(code_int, set())
     new_cnt = old_cnt if recommend_date in seen_dates else max(old_cnt, 0) + 1
-    price = _extract_recommendation_price(item)
+    day_price = _extract_recommendation_price(item)
+    sticky = safe_float(existing_first_prices.get(code_int), 0.0)
+    initial_price = sticky if sticky > 0 else day_price
     return {
         "code": code_int,
         "name": str(item.get("name", "")).strip(),
         "recommend_reason": str(item.get("tag", "")).strip(),
         "recommend_date": recommend_date,
-        "initial_price": price,
-        "current_price": price,
+        "initial_price": initial_price,
+        "current_price": day_price if day_price > 0 else initial_price,
         "change_pct": 0.0,
         "recommend_count": new_cnt,
         "funnel_score": _extract_recommendation_score(item),

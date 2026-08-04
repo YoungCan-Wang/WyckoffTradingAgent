@@ -82,7 +82,7 @@ flowchart TD
     STEP2 --> S25
 
     S25["Step2.5: run_step2_5()<br/>signal_pending 确认"] --> S26
-    S26["Step2.6: prepare_recommendation_payload<br/>→ recommendation_tracking"] --> S27
+    S26["Step2.6: prepare_recommendation_payload<br/>→ recommendation_tracking<br/>推荐价=首次推荐日收盘"] --> S27
     S27["Step2.7: score_springboard_abc<br/>起跳板/候选影子评分"] --> S3
 
     S3["Step3: run_step3()<br/>批量 AI 研报"] --> MARK["mark_ai_recommendations<br/>标记起跳板"]
@@ -106,8 +106,11 @@ flowchart TD
 | 调度 | `wyckoff_funnel.yml` | GitHub Actions |
 | 编排 | `scripts/daily_job.py` | 主流程 |
 | Step2 | `workflows/wyckoff_funnel.py` | `core/wyckoff_engine.py` |
+| Step2.6 | `integrations/recommendation_payload.py` | `recommendation_tracking` 写库；`initial_price` 按 code 粘住首次推荐日收盘 |
 | Step3 | `workflows/step3_batch_report.py` | `tools/report_builder.py` |
 | Step4 | `workflows/step4_rebalancer.py` | `core/holding_diagnostic.py` / `core/wyckoff_engine.py` |
+
+**推荐价语义**：`recommendation_tracking.initial_price` = 该股票首次 `recommend_date` 的收盘价；同股再次推荐、同日重跑、晚间 reprice/performance 都不得改成新日价。`change_pct` 相对该粘住价；MFE/MAE 仍按该行事件日计算。线上脏数据可用 `scripts/correct_recommendation_initial_prices.py`（默认 dry-run，`--apply` 写库）回刷。
 
 ---
 
