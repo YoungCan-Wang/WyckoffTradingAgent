@@ -332,7 +332,7 @@ def _resolve_funnel_symbol_pool(
         chinext_count=chinext_count,
         star_count=star_count,
         bse_count=bse_count,
-        merged_count=len(pool_name_map),
+        merged_count=int(pool_stats.get("pool_merged", len(pool_name_map)) or len(pool_name_map)),
         st_excluded_count=st_excluded_count,
         total_batches=total_batches,
     )

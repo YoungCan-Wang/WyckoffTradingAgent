@@ -41,11 +41,11 @@
 |------|------|
 | **Spring（弹簧效应）** | 吸筹末期，股价突然跌破支撑位引发恐慌卖盘，随即快速拉回。正式检测优先使用近期 swing low 中位数作为抗噪支撑，摆动点不足时回退窗口最低收盘价 |
 | **SOS (Sign of Strength)** | 放量突破，确认吸筹结束、上涨开始的信号。需要伴随成交量大幅放大（>= 2 倍）和显著涨幅（>= 4.5%） |
-| **LPS (Last Point of Support)** | 缩量回踩。SOS 突破后的第一次回调，成交量极度萎缩（不足前期一半），说明市场已无抛压，是低风险上车点 |
+| **LPS (Last Point of Support)** | SOS 越过 Creek 后的缩量回踩。生产检测要求守住 Creek/MA20，并以近期量能中位数相对前 60 日中位数判断供应收缩；普通均线回踩归入 Trend Pullback，不再冒充 LPS |
 | **EVR (Effort vs Result)** | 放量抗跌。成交量巨幅放大（巨大 Effort），但股价没有相应大跌（Result 不差），意味着主力在底部大量承接 |
 | **Compression（压缩蓄势）** | 连续多日 ATR 收窄 + 成交量萎缩，表明供应枯竭、多空平衡即将被打破。对应 Wyckoff Phase B→C 的能量压缩状态，常出现在 Spring/SOS 之前 |
 | **UTAD (Upthrust After Distribution)** | 派发末期，股价放量突破近期阻力后迅速收回并留下长上影。系统以 `upthrust_warning` 作为 L5 风险信号阻断新候选 |
-| **Creek/LPS confirmation** | 用前序 swing high 构造可外推的 Creek 阻力线；只有先越过 Creek、随后缩量回踩仍守在线上，才把 LPS 视为结构确认。当前仅在 D/E 消融组启用 |
+| **Creek/LPS confirmation** | 用前序 swing high 构造可外推的 Creek 阻力线；只有先越过 Creek、随后缩量回踩仍守在线上，才把 LPS 视为结构命中。该约束已在生产启用，跨日需求确认仍是独立状态 |
 | **Strategy ablation A-E** | 同一数据与执行参数下的规则消融：A 基线，B=UTAD，C=regime 阈值，D=Creek/LPS+时序，E=全部组合；用于区分单项贡献和组合交互 |
 | **A股实证消融 A/M/P** | 已完成的 confirmed-only 实验：A 基线，M=弱水温信号缩仓，P=M + 将 NEUTRAL Spring 仓位由 50% 再降至 25%。三组只改变入场权重，手动复跑时每个窗口共享一次信号台账、分别重放现金组合；默认 Backtest Grid 已关闭该任务，仅 `run_strategy_compare=true` 时复现。Q/N/O 与后续 Q/R/S/T 门控均未晋级生产 |
 | **confirmed 分数校准** | 不再把不同 Wyckoff 触发器的原始分数直接横比；研究组 I 用信号族历史先验与封顶后的形态强度合成可比分数，避免极高原始分主导 Top1 |
@@ -226,7 +226,7 @@ watch_score = 0.25 × q20 + 0.20 × q5 + 0.05 × q3
 | **盈亏比** | Risk/Reward Ratio | 预期收益与预期风险的比值。如止损 -7% / 止盈 +18% 的盈亏比为 2.57:1 |
 | **熔断** | Circuit Breaker | 当市场进入 CRASH 或盘前检测到极端风险（RISK_OFF / BLACK_SWAN）时，OMS 直接冻结买入权限 |
 | **Springboard ABC** | 右侧信号三项确认 | 对 SOS / EVR 和趋势候选的成交量、价格与支撑确认。普通弱确认至少 2/3，纯 SOS 正式候选要求 3/3 |
-| **观察买入** | Watch Buy | 有买入逻辑但当前不可直接下单。包括未完成二次确认、高位动量或当日已触及/收于涨停的候选 |
+| **DETECTED / SURVIVED / VALIDATED / OMS_APPROVED** | 候选状态链 | 依次表示当日结构命中、跨日未失效、需求已经确认、OMS 最终核准。库内 `confirmed` 是 `VALIDATED` 的兼容值；前两层不可下单 |
 | **ATR 止损放宽** | ATR Stop Relaxation | 持仓诊断中，根据波动率在上限内降低固定止损线，避免正常洗盘误杀；它只放宽、不收紧，也不取消硬止损 |
 | **可卖股数** | Sellable Shares | A 股 T+1 下当日实际能卖出的股数。持仓无分笔明细，买入日期等于当前交易日时整个仓位记为 0，EXIT/TRIM 与强制止损离场都会被拒并顺延到下一交易日 |
 

@@ -64,6 +64,40 @@ def build_candidate_metadata_map(
     return result
 
 
+def build_candidate_signal_metadata_map(
+    candidate_entries: list[dict[str, Any]] | None,
+    mainline_candidates: list[dict[str, Any]] | None = None,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Keep attribution scoped to the signal that produced each observation."""
+    result: dict[tuple[str, str], dict[str, Any]] = {}
+    mainline_by_code = {code6(item.get("code")): item for item in mainline_candidates or [] if code6(item.get("code"))}
+    best_entries: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in candidate_entries or []:
+        code = code6(item.get("code"))
+        signal_key = candidate_entry_key(item, fields=("signal_key", "lane", "entry_type"))
+        if not code or not signal_key:
+            continue
+        key = (code, signal_key)
+        current = best_entries.get(key)
+        if current is None or stronger_candidate_entry(item, current):
+            best_entries[key] = item
+    for (code, signal_key), item in best_entries.items():
+        result[(code, signal_key)] = candidate_entry_metadata(item, mainline_by_code.get(code))
+    for code, item in mainline_by_code.items():
+        result.setdefault((code, "mainline"), mainline_metadata(item))
+    return result
+
+
+def candidate_metadata_for_signal(
+    metadata_map: dict[Any, dict[str, Any]],
+    code: Any,
+    signal_type: Any,
+) -> dict[str, Any]:
+    code_s = code6(code)
+    signal_key = normalize_candidate_entry_key(signal_type)
+    return metadata_map.get((code_s, signal_key), metadata_map.get(code_s, {}))
+
+
 def candidate_entry_metadata(item: dict[str, Any], mainline: dict[str, Any] | None = None) -> dict[str, Any]:
     lane = _text(item.get("lane")) or _text(item.get("signal_key")) or _text(item.get("entry_type"))
     meta = {

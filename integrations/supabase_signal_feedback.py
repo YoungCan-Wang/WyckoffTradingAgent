@@ -123,6 +123,59 @@ def upsert_signal_registry(rows: list[dict[str, Any]]) -> int:
     return _execute_upsert(TABLE_SIGNAL_REGISTRY, rows, "market,signal_type,regime")
 
 
+def replace_signal_health(
+    rows: list[dict[str, Any]],
+    *,
+    market: str,
+    as_of_date: str,
+    allow_empty: bool = False,
+) -> int:
+    return _replace_derived_rows(
+        TABLE_SIGNAL_HEALTH_DAILY,
+        rows,
+        {"market": market, "as_of_date": as_of_date},
+        "market,as_of_date,signal_type,regime,horizon_days",
+        allow_empty=allow_empty,
+    )
+
+
+def replace_signal_registry(rows: list[dict[str, Any]], *, market: str, allow_empty: bool = False) -> int:
+    return _replace_derived_rows(
+        TABLE_SIGNAL_REGISTRY,
+        rows,
+        {"market": market},
+        "market,signal_type,regime",
+        allow_empty=allow_empty,
+    )
+
+
+def _replace_derived_rows(
+    table: str,
+    rows: list[dict[str, Any]],
+    filters: dict[str, str],
+    conflict: str,
+    *,
+    allow_empty: bool,
+) -> int:
+    if not _configured():
+        return 0
+    if not rows and not allow_empty:
+        logger.warning("skip replacing %s with an empty snapshot", table)
+        return 0
+    require_server_write_context(f"replace {table}")
+    client = _admin()
+    try:
+        query = client.table(table).delete()
+        for column, value in filters.items():
+            query = query.eq(column, value)
+        query.execute()
+        if rows:
+            client.table(table).upsert(rows, on_conflict=conflict).execute()
+        return len(rows)
+    finally:
+        _close(client)
+
+
 def upsert_policy_shadow_run(row: dict[str, Any]) -> int:
     return _execute_upsert(TABLE_SIGNAL_POLICY_SHADOW_RUNS, [row], "market,trade_date", raise_on_error=False)
 
@@ -212,8 +265,16 @@ def load_signal_observations_by_ids(observation_ids: list[int], market: str = "c
             _close(client)
 
 
-def load_recent_signal_outcomes(days: int = 180, limit: int = 20000, market: str = "cn") -> list[dict[str, Any]]:
+def load_recent_signal_outcomes(
+    days: int = 180,
+    limit: int = 20000,
+    market: str = "cn",
+    *,
+    raise_on_error: bool = False,
+) -> list[dict[str, Any]]:
     if not _configured():
+        if raise_on_error:
+            raise RuntimeError("Supabase signal feedback is not configured")
         return []
     client = None
     try:
@@ -232,6 +293,8 @@ def load_recent_signal_outcomes(days: int = 180, limit: int = 20000, market: str
         return _fetch_paginated(_query, max(int(limit), 1))
     except Exception as exc:
         logger.warning("load outcomes failed: %s", exc)
+        if raise_on_error:
+            raise RuntimeError("failed to load signal outcomes") from exc
         return []
     finally:
         if client is not None:
@@ -275,8 +338,10 @@ def load_signal_health_snapshot(market: str = "cn", limit: int = 1000) -> list[d
             _close(client)
 
 
-def load_signal_registry(market: str = "cn") -> list[dict[str, Any]]:
+def load_signal_registry(market: str = "cn", *, raise_on_error: bool = False) -> list[dict[str, Any]]:
     if not _configured():
+        if raise_on_error:
+            raise RuntimeError("Supabase signal feedback is not configured")
         return []
     client = None
     try:
@@ -285,6 +350,8 @@ def load_signal_registry(market: str = "cn") -> list[dict[str, Any]]:
         return resp.data or []
     except Exception as exc:
         logger.warning("load registry failed: %s", exc)
+        if raise_on_error:
+            raise RuntimeError("failed to load signal registry") from exc
         return []
     finally:
         if client is not None:

@@ -41,7 +41,7 @@ def render_trade_ticket(
     lines.extend(_render_hold_ticket_lines(holds, atr_period=atr_period))
     lines.extend(_render_buy_ticket_lines(approved_buy, atr_period=atr_period))
     lines.extend(_render_blocked_ticket_lines(blocked))
-    lines.append(f"💰 执行后可用现金：{free_cash_after:.2f}")
+    lines.append(f"💰 若全部工单成交后的预计可用现金：{free_cash_after:.2f}")
     return "\n".join(lines)
 
 

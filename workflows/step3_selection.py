@@ -37,7 +37,8 @@ def normalize_step3_candidates(candidate_rows: list[dict]) -> pd.DataFrame:
     candidates_df["input_order"] = (
         candidates_df["input_order"].fillna(pd.Series(range(len(candidates_df)), index=candidates_df.index)).astype(int)
     )
-    candidates_df["track"] = candidates_df.get("track", "").map(normalize_candidate_track)
+    track_values = candidates_df.get("track", pd.Series("", index=candidates_df.index))
+    candidates_df["track"] = track_values.map(normalize_candidate_track)
     candidates_df["policy_tag"] = ""
     return annotate_entry_quality(candidates_df)
 

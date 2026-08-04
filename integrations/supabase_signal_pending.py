@@ -65,7 +65,9 @@ def _looks_like_schema_miss(exc: Exception) -> bool:
 
 def load_pending_signals() -> list[dict[str, Any]]:
     try:
-        return _read().table(TABLE_SIGNAL_PENDING).select("*").eq("status", "pending").execute().data or []
+        return (
+            _read().table(TABLE_SIGNAL_PENDING).select("*").in_("status", ["pending", "survived"]).execute().data or []
+        )
     except Exception as e:
         logger.warning("load pending signals failed: %s", e)
         return []

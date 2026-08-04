@@ -280,6 +280,38 @@ def test_rejected_t1_exit_does_not_persist_model_stop_loss(monkeypatch) -> None:
     assert captured == []
 
 
+def test_approved_exit_does_not_persist_stop_loss(monkeypatch) -> None:
+    captured: list[tuple[str, list[dict]]] = []
+    monkeypatch.setattr(
+        step4_results,
+        "update_position_stops",
+        lambda portfolio_id, updates: captured.append((portfolio_id, updates)) or True,
+    )
+    engine = _t1_engine(buy_dt="2026-05-14", trade_date="2026-05-15", price=8.8)
+
+    tickets, _cash = engine.process([_exit_decision()])
+    ok = step4_results.update_step4_position_stops("P1", tickets)
+
+    assert tickets[0].status == "APPROVED"
+    assert ok is True
+    assert captured == []
+
+
+def test_only_actionable_hold_stop_is_persisted(monkeypatch) -> None:
+    captured: list[tuple[str, list[dict]]] = []
+    monkeypatch.setattr(
+        step4_results,
+        "update_position_stops",
+        lambda portfolio_id, updates: captured.append((portfolio_id, updates)) or True,
+    )
+    ticket = _ticket(effective_stop_loss=8.8)
+
+    ok = step4_results.update_step4_position_stops("P1", [ticket])
+
+    assert ok is True
+    assert captured == [("P1", [{"code": "000001", "stop_loss": 8.8}])]
+
+
 def test_exit_is_allowed_for_shares_bought_before_today() -> None:
     engine = _t1_engine(buy_dt="2026-05-14", trade_date="2026-05-15")
 
@@ -288,6 +320,96 @@ def test_exit_is_allowed_for_shares_bought_before_today() -> None:
     assert tickets[0].status == "APPROVED"
     assert tickets[0].shares == 1000
     assert cash > 50000
+
+
+def test_recent_inverted_stop_exit_is_downgraded_to_hold() -> None:
+    engine = WyckoffOrderEngine(
+        total_equity=100000,
+        free_cash=50000,
+        position_map={
+            "000001": PositionItem(
+                code="000001", name="平安银行", cost=50.0, buy_dt="2026-05-14", shares=1000, stop_loss=None
+            )
+        },
+        latest_price_map={"000001": 50.3},
+        trade_date="2026-05-15",
+    )
+    decision = _exit_decision()
+    decision.stop_loss = 112.0
+
+    tickets, cash = engine.process([decision])
+
+    assert tickets[0].action == "HOLD"
+    assert tickets[0].effective_stop_loss is None
+    assert "新仓止损倒挂" in tickets[0].reason
+    assert "reject_inverted_recent_decision_stop" in tickets[0].audit
+    assert cash == 50000
+
+
+def test_recent_persisted_trailing_stop_is_authoritative_after_pullback() -> None:
+    engine = WyckoffOrderEngine(
+        total_equity=100000,
+        free_cash=50000,
+        position_map={
+            "000001": PositionItem(
+                code="000001", name="平安银行", cost=50.0, buy_dt="2026-05-14", shares=1000, stop_loss=52.0
+            )
+        },
+        latest_price_map={"000001": 51.0},
+        trade_date="2026-05-15",
+    )
+    decision = _hold_decision(stop_loss=None)
+
+    tickets, cash = engine.process([decision])
+
+    assert tickets[0].action == "EXIT"
+    assert tickets[0].status == "APPROVED"
+    assert tickets[0].effective_stop_loss == 52.0
+    assert "forced_exit_stop_breach" in tickets[0].audit
+    assert cash > 50000
+
+
+def test_recent_valid_breached_stop_still_allows_exit() -> None:
+    engine = WyckoffOrderEngine(
+        total_equity=100000,
+        free_cash=50000,
+        position_map={
+            "000001": PositionItem(
+                code="000001", name="平安银行", cost=50.0, buy_dt="2026-05-14", shares=1000, stop_loss=46.7
+            )
+        },
+        latest_price_map={"000001": 45.0},
+        trade_date="2026-05-15",
+    )
+    decision = _exit_decision()
+    decision.stop_loss = 46.7
+
+    tickets, cash = engine.process([decision])
+
+    assert tickets[0].action == "EXIT"
+    assert tickets[0].status == "APPROVED"
+    assert cash > 50000
+
+
+def test_old_profitable_trailing_stop_still_allows_exit() -> None:
+    engine = WyckoffOrderEngine(
+        total_equity=100000,
+        free_cash=50000,
+        position_map={
+            "000001": PositionItem(
+                code="000001", name="平安银行", cost=50.0, buy_dt="2026-04-01", shares=1000, stop_loss=90.0
+            )
+        },
+        latest_price_map={"000001": 80.0},
+        trade_date="2026-05-15",
+    )
+    decision = _exit_decision()
+    decision.stop_loss = 90.0
+
+    tickets, _cash = engine.process([decision])
+
+    assert tickets[0].action == "EXIT"
+    assert tickets[0].status == "APPROVED"
 
 
 def test_forced_stop_loss_exit_waits_for_t1_to_clear() -> None:

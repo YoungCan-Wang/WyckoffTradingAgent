@@ -236,15 +236,37 @@ class WyckoffOrderEngine:
             ctx.audit_parts.append(f"tighter_by_pos_stop({ctx.effective_stop_loss:.2f}->{merged:.2f})")
         ctx.effective_stop_loss = merged
 
+    def _is_invalid_recent_decision_stop(self, ctx: OrderContext, stop_loss: float) -> bool:
+        if not ctx.pos or not ctx.pos.is_recent(self.trade_date, self.config.new_position_stop_guard_days):
+            return False
+        return stop_loss >= max(ctx.pos.cost, ctx.current_price)
+
+    def _guard_recent_decision_stop(self, ctx: OrderContext) -> None:
+        stop_loss = ctx.effective_stop_loss
+        if stop_loss is None or not self._is_invalid_recent_decision_stop(ctx, stop_loss):
+            return
+        ctx.audit_parts.append(f"reject_inverted_recent_decision_stop({stop_loss:.2f})")
+        ctx.effective_stop_loss = None
+        if ctx.action not in {"EXIT", "TRIM"}:
+            return
+        original_action = ctx.action
+        ctx.action = "HOLD"
+        ctx.dec.reason = (
+            f"新仓止损倒挂：{stop_loss:.2f} 不低于成本/现价，{original_action} 已降级为 HOLD；原建议: {ctx.dec.reason}"
+        )
+
     def _raise_stop_from_atr(self, ctx: OrderContext) -> None:
         if ctx.atr14 is None or ctx.atr14 <= 0:
             return
         trailing_stop = ctx.current_price - self.config.atr_multiplier * ctx.atr14
         if ctx.action in {"HOLD", "TRIM", "EXIT"}:
-            if ctx.effective_stop_loss is None or trailing_stop > ctx.effective_stop_loss:
+            if ctx.effective_stop_loss is None:
                 ctx.effective_stop_loss = trailing_stop
-                original = ctx.original_stop_loss if ctx.original_stop_loss is not None else float("nan")
-                ctx.audit_parts.append(f"atr_trailing_raise({original:.2f}->{ctx.effective_stop_loss:.2f})")
+                ctx.audit_parts.append(f"atr_trailing_init({trailing_stop:.2f})")
+            elif trailing_stop > ctx.effective_stop_loss:
+                original = ctx.effective_stop_loss
+                ctx.effective_stop_loss = trailing_stop
+                ctx.audit_parts.append(f"atr_trailing_raise({original:.2f}->{trailing_stop:.2f})")
         elif ctx.action in {"PROBE", "ATTACK"}:
             self._raise_entry_stop_from_atr(ctx, trailing_stop)
 
@@ -291,6 +313,7 @@ class WyckoffOrderEngine:
         ctx = self._build_order_context(dec)
         if isinstance(ctx, ExecutionTicket):
             return ctx
+        self._guard_recent_decision_stop(ctx)
         self._raise_stop_from_position(ctx)
         self._raise_stop_from_atr(ctx)
         self._raise_buy_stop_floor(ctx)

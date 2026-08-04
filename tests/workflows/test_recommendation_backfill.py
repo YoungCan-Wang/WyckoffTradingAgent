@@ -162,6 +162,25 @@ def test_backfill_rejects_empty_generated_dates_without_explicit_allow() -> None
     workflow._validate_payloads({20260601: []}, allow_empty_date=True)
 
 
+def test_skip_step3_preserves_ai_mark_only_for_surviving_date_code() -> None:
+    payloads = {
+        20260601: [_payload_row(1, 20260601), _payload_row(2, 20260601)],
+        20260602: [_payload_row(1, 20260602)],
+    }
+
+    workflow._preserve_old_ai_marks(
+        payloads,
+        [
+            {"code": 1, "recommend_date": 20260601, "is_ai_recommended": True},
+            {"code": 2, "recommend_date": 20260602, "is_ai_recommended": True},
+        ],
+    )
+
+    assert payloads[20260601][0]["is_ai_recommended"] is True
+    assert "is_ai_recommended" not in payloads[20260601][1]
+    assert "is_ai_recommended" not in payloads[20260602][0]
+
+
 def test_replace_auxiliary_tables_replaces_date_scoped_rows(monkeypatch) -> None:
     client = _FakeClient()
     monkeypatch.setattr(workflow, "upsert_signal_observations", lambda rows: len(rows))

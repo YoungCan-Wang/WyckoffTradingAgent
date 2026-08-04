@@ -34,6 +34,7 @@ def candidate_policy_config_from_env() -> CandidatePolicyConfig:
         defensive_high_20d_ret=_env_float("FUNNEL_LOSS_GUARD_DEFENSIVE_HIGH_20D_RET", 18.0),
         neutral_high_range_pos=_env_float("FUNNEL_LOSS_GUARD_NEUTRAL_HIGH_RANGE_POS", 90.0),
         neutral_high_20d_ret=_env_float("FUNNEL_LOSS_GUARD_NEUTRAL_HIGH_20D_RET", 35.0),
+        max_structure_stop_pct=_env_float("FUNNEL_MAX_STRUCTURE_STOP_PCT", 12.0),
     )
 
 

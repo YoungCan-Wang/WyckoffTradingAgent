@@ -10,7 +10,7 @@ from core.candidate_ranker import TRIGGER_GROUP_ORDER, TRIGGER_GROUP_TITLES, TRI
 from core.candidate_tracks import candidate_entry_key
 from core.execution_playbook import funnel_playbook_lines
 from core.funnel_etf import append_etf_section
-from core.funnel_sections import append_formal_l4_sections, score_star
+from core.funnel_sections import score_star
 from core.market_trade_mode import resolve_market_trade_mode
 from core.signal_confirmation import compute_support_level, score_springboard_abc
 from core.strategy_policy_display import format_policy_meta_text, format_policy_weight_text
@@ -22,7 +22,6 @@ from workflows.funnel_report_payload import (
     legacy_symbol_rows,
     modern_symbol_rows,
     selected_track,
-    stage_name,
 )
 from workflows.funnel_settings import (
     FUNNEL_BYPASS_DISPLAY_LIMIT,
@@ -187,11 +186,11 @@ def _execution_decision_line(regime: str, selected_count: int, data_quality: dic
         if mode.mode == "overheat_shadow":
             return "禁止新仓；可送AI/shadow对照，不写正式推荐、不执行新买入；优先处理持仓风控。"
     if not mode.allow_recommendation_write:
-        return "观察买入；允许少量候选进入AI研报，但不写正式推荐，等待跨日确认。"
+        return "禁止新仓；候选仅用于研究，不写正式推荐、不生成买单。"
     if mode.mode == "repair_probe":
         return "修复成立；仅开放一只小额 PROBE 候选，禁止 ATTACK、追价和自动扩仓。"
     if selected_count <= 0:
-        return "观察买入；暂无可送审标的，不从本报告选择新买入，等待下一次跨日确认。"
+        return "允许新仓但暂无可送审标的；不硬找票，等待下一次有效信号。"
     return (
         f"市场闸门开放，Step3 待审候选 {selected_count} 只；"
         "仍需跨日确认、Step3 起跳板；confirmed 后按次日开盘价附近买入，OMS 核准后执行。"
@@ -205,14 +204,14 @@ def _today_conclusion_line(ctx: Any, selected_count: int) -> str:
     elif not mode.allow_ai_review or mode.mode == "overheat_shadow":
         conclusion = "禁止新仓"
     elif not mode.allow_recommendation_write:
-        conclusion = "观察买入"
+        conclusion = mode.label
     elif mode.mode == "repair_probe" and selected_count > 0:
         conclusion = "修复成立，小额试探候选"
     elif selected_count > 0:
         conclusion = "市场闸门开放，候选待审"
     else:
-        conclusion = "观察买入"
-    return f"**今日结论**: {conclusion} | {mode.label}"
+        conclusion = "暂无候选，继续观察"
+    return f"**今日结论**: {conclusion}"
 
 
 def _trigger_reason_line(ctx: Any, money_line: str) -> str:
@@ -244,17 +243,17 @@ def _tomorrow_action_line(ctx: Any, selected_count: int) -> str:
     elif mode.mode == "overheat_shadow":
         action = "禁止新仓；AI/shadow 可对照，不写推荐、不执行新买，只处理持仓风控。"
     elif not mode.allow_recommendation_write:
-        action = "观察买入；等待 Step3 研报与跨日确认，不自动写推荐，不自动开仓。"
+        action = "禁止新仓；仅复核修复强度，等待市场闸门重新开放。"
     elif selected_count > 0:
         action = "候选待审；通过跨日确认和 Step3 后，confirmed 的候选按次日开盘价附近买入，OMS 复核后执行。"
     else:
-        action = "观察买入；等待下一轮漏斗或跨日确认，不提前追。"
+        action = "允许新仓但暂无候选；等待下一轮漏斗或跨日确认，不提前追。"
     return f"**明日动作**: {action}"
 
 
 def _candidate_brief_line(ctx: Any, selected_count: int) -> str:
     return (
-        f"**候选摘要**: Step3送审{selected_count}只 / L4量价触发{ctx.unique_hit_count}只 / "
+        f"**候选摘要**: 当日AI预选{selected_count}只 / L4量价触发{ctx.unique_hit_count}只 / "
         f"主线买点候选{len(ctx.mainline_tradeable)}只 / 观察池{len(ctx.theme_candidate_map)}只"
     )
 
@@ -386,7 +385,7 @@ def _candidate_list_note(mode, *, data_quality_observe_only: bool = False) -> st
     if mode.mode == "overheat_shadow":
         return "过热市禁止新开：以下仅供 AI/shadow 对照，不可写正式推荐或下单。"
     if not mode.allow_recommendation_write:
-        return "观察买入：以下需 Step3 研报 + confirmed 确认，当前不可直接下单。"
+        return "市场闸门关闭：以下仅是研究预选，不是买入清单。"
     return "可送审清单：优先 [主线]；confirmed 后按次日开盘价附近买入，实际订单由 OMS 核准。"
 
 
@@ -406,7 +405,7 @@ def _entry_price_hint(ctx: Any, code: str) -> str:
     此处的候选仍是当日新增的 pending 信号，尚未完成跨日确认；提示必须显式带上
     "confirmed 后" 前提，避免让人误以为当前候选可以直接按次日开盘价下单。
     """
-    suffix = "，仅在 confirmed 后按次日开盘价附近买入"
+    suffix = "，仅在 VALIDATED 且 OMS 核准后执行"
     close = (getattr(ctx, "latest_close_map", {}) or {}).get(code)
     support = _reference_support_level(ctx, code)
     if close is None:
@@ -709,136 +708,34 @@ def _print_modern_selection_summary(ctx: Any, selection: FunnelAiSelection, coun
     )
 
 
-def _modern_header_lines(ctx: Any, selection: FunnelAiSelection, counts: dict[str, int]) -> list[str]:
-    bench_line, money_line, amount_line, pv_line, pv_shadow_line = _market_report_lines(ctx.benchmark_context)
-    policy = selection.ai_policy
-    lines = [
-        "**【📊 详细市场证据】**",
-        _pool_summary_line(ctx.metrics),
-        f"**筛选概览**: {ctx.metrics['total_symbols']}只 → 基础准入:{ctx.metrics['layer1']} "
-        f"→ 结构强度:{ctx.metrics['layer2']} → 题材共振:{ctx.metrics['layer3']} → L4量价触发:{ctx.unique_hit_count}",
-        f"**大盘水温**: {bench_line}",
-        f"**今日交易模式**: {_trade_mode_report_line(ctx.regime)}",
-        f"**明日执行结论**: {_execution_decision_line(ctx.regime, len(selection.selected_for_ai), ctx.metrics.get('data_quality'))}",
-        *_data_quality_report_lines(ctx.metrics),
-        f"**大盘资金趋势**: {money_line}",
-        *_capital_migration_report_lines(ctx.metrics),
-        _hot_events_report_line(ctx.metrics),
-        _theme_activity_report_line(ctx.metrics),
-        f"**成交额分布**: {amount_line}",
-        f"**大盘量价推演**: {pv_line}",
-        f"**推演策略 Shadow**: {pv_shadow_line or '无'}",
-        f"**中长线主线**: {summarize_theme_radar(ctx.metrics.get('theme_radar') or {})} ({ctx.theme_radar_source})",
-        f"**潜在大涨候选板**: {len(ctx.candidate_entries)}只 / 类型 {ctx.metrics.get('candidate_entry_types', {}) or {}}",
-        (
-            f"**战略主线联动**: 观察池{len(ctx.theme_candidate_map)}只 / L4量价触发{ctx.theme_l4_count}只 / "
-            f"战略主题观察{len(ctx.strategic_l2_bypass_pool)}只 / "
-            f"主线买点候选{len(ctx.mainline_tradeable)}只 / 主线送审{selection.mainline_promoted_count}只"
-        ),
-        f"**候选池**: L4量价触发{ctx.unique_hit_count}只 / 形态旁路{len(ctx.l2_bypass_pool)}只 "
-        f"-> AI输入{len(selection.selected_for_ai)}只 "
-        f"(配额 {policy['quota_family']}: Trend {len(selection.trend_selected)}/{policy['trend_quota']}, "
-        f"Accum {len(selection.accum_selected)}/{policy['accum_quota']}; L4量价触发 {counts['hit_selected']} / "
-        f"阶段补位{counts['l3_only']} / 形态旁路 {counts['bypass_selected']} / "
-        f"战略主题 {counts['strategic_selected']} / 主线 {counts['mainline_selected']}; "
-        f"旁路预算 {FUNNEL_L2_BYPASS_AI_CAP or 'unlimited'})",
-        f"**候选集中概念**: {', '.join(ctx.metrics['top_sectors']) if ctx.metrics['top_sectors'] else '无'}",
-        "",
-    ]
-    if ctx.external_seed_line:
-        lines.insert(-1, f"**外部观察 Shadow**: {ctx.external_seed_line}")
-    mix_line = _market_mix_policy_line(policy)
-    if mix_line:
-        lines.insert(-1, mix_line)
-    governance_line = _policy_governance_line(policy)
-    if governance_line:
-        lines.insert(-1, governance_line)
-    if policy.get("shadow_table"):
-        lines.insert(
-            -1,
-            f"**动态策略 Shadow**: `{policy['shadow_table']}` 写入{policy.get('shadow_written', 0)}行；"
-            f"shadow新增{policy.get('shadow_added_count', 0)}只，移除{policy.get('shadow_removed_count', 0)}只",
-        )
-    return lines
-
-
-def _append_modern_fill_section(lines: list[str], ctx: Any, selection: FunnelAiSelection) -> None:
-    fill_codes = [
-        c
-        for c in selection.selected_for_ai
-        if c not in ctx.formal_hit_set
-        and c not in ctx.l2_bypass_set
-        and c not in ctx.strategic_l2_bypass_set
-        and c not in ctx.mainline_candidate_set
-    ]
-    if not fill_codes:
-        return
-    lines.append(f"**【🧭 板块阶段补位】{len(fill_codes)} 只**")
-    for code in sorted(fill_codes, key=lambda c: -display_score(ctx, selection, c)):
-        name = ctx.name_map.get(code, code)
-        stage = stage_name(ctx, code)
-        channel = str(ctx.l2_channel_map.get(code, "")).strip()
-        suffix = " / ".join(x for x in [stage, channel] if x)
-        score = display_score(ctx, selection, code)
-        theme_badge = f"  {ctx.theme_badge_map[code]}" if code in ctx.theme_badge_map else ""
-        lines.append(
-            f"{score_star(score)} {code} {name}  {score:.2f}"
-            + (f"  {suffix}" if suffix else "")
-            + _confirmation_suffix(ctx, code)
-            + theme_badge
-        )
-    lines.append("")
-
-
-def _append_modern_strategic_bypass_section(lines: list[str], ctx: Any, selected_count: int) -> None:
-    if not ctx.strategic_l2_bypass_pool:
-        return
-    lines.append("")
-    lines.append(f"**【🧭 战略主题观察】{len(ctx.strategic_l2_bypass_pool)} 只**")
-    lines.append(f"基础准入通过但结构强度不足，需同时满足战略观察池与买点/阶段复核；送AI复核 {selected_count} 只")
-    display_pool = (
-        ctx.strategic_l2_bypass_ranked
-        if FUNNEL_BYPASS_DISPLAY_LIMIT <= 0
-        else ctx.strategic_l2_bypass_ranked[:FUNNEL_BYPASS_DISPLAY_LIMIT]
-    )
-    for code in display_pool:
-        name = ctx.name_map.get(code, code)
-        reasons = "+".join(_trigger_short_reasons(code, ctx.strategic_l2_bypass_triggers))
-        stage = str(ctx.strategic_l2_bypass_stage_map.get(code, "") or "").strip()
-        reason = " / ".join(x for x in [reasons, stage] if x) or "战略复核"
-        theme_badge = f"  {ctx.theme_badge_map[code]}" if code in ctx.theme_badge_map else ""
-        lines.append(f"  {code} {name}  {reason}{_confirmation_suffix(ctx, code)}{theme_badge}")
-    omitted = len(ctx.strategic_l2_bypass_pool) - len(display_pool)
-    if omitted > 0:
-        lines.append(f"  ... 另 {omitted} 只略")
-
-
 def _build_modern_card_lines(ctx: Any, selection: FunnelAiSelection) -> list[str]:
     counts = _modern_selection_counts(ctx, selection)
     _print_modern_selection_summary(ctx, selection, counts)
-    _bench_line, money_line, _amount_line, _pv_line, _pv_shadow_line = _market_report_lines(ctx.benchmark_context)
+    bench_line, money_line, _amount_line, _pv_line, _pv_shadow_line = _market_report_lines(ctx.benchmark_context)
     lines = _top_summary_lines(ctx, len(selection.selected_for_ai), money_line)
     lines.extend(_top_candidate_list_lines(ctx, selection))
-    lines.extend(_modern_header_lines(ctx, selection, counts))
-    append_etf_section(lines, ctx.etf_metrics, ctx.etf_candidates, display_limit=FUNNEL_ETF_DISPLAY_LIMIT)
-    if ctx.etf_metrics or ctx.etf_candidates:
-        lines.append("")
-    if ctx.formal_sorted_codes:
-        lines.append("**L4量价触发展开**: 以下列出全部 L4 触发候选；标记 →AI 的进入 Step3 研报")
-        append_formal_l4_sections(
-            lines,
-            ctx.formal_sorted_codes,
-            selection.selected_for_ai,
-            ctx.name_map,
-            ctx.code_to_trigger_keys,
-            lambda code: display_score(ctx, selection, code),
-            ctx.theme_badge_map,
-            lambda code: _confirmation_label(ctx, code),
-        )
-    _append_modern_fill_section(lines, ctx, selection)
-    if not selection.selected_for_ai:
-        lines.append("无")
-    _append_mainline_card_section(lines, ctx, counts["mainline_selected"])
-    _append_l2_bypass_card_section(lines, ctx, counts["bypass_selected"])
-    _append_modern_strategic_bypass_section(lines, ctx, counts["strategic_selected"])
+    rejection = ctx.metrics.get("layer_rejections") or {}
+    l3_rejected = int((rejection.get("layer3") or {}).get("rejected") or 0)
+    trigger_counts = ", ".join(
+        f"{TRIGGER_SHORT_LABELS.get(key, key)} {len(rows)}" for key, rows in ctx.formal_triggers.items() if rows
+    )
+    lines.extend(
+        [
+            "**【📊 审计摘要】**",
+            _pool_summary_line(ctx.metrics),
+            (
+                f"**漏斗**: {ctx.metrics['total_symbols']} → L1 {ctx.metrics['layer1']} → "
+                f"L2 {ctx.metrics['layer2']} → L3 {ctx.metrics['layer3']}"
+                + ("（本轮仅标注、未形成淘汰）" if l3_rejected == 0 else "")
+                + f" → L4 {ctx.unique_hit_count}"
+            ),
+            f"**市场**: {bench_line}",
+            f"**L4构成**: {trigger_counts or '无'}",
+            (
+                f"**候选血缘**: 正式L4 {counts['hit_selected']} / 阶段补位 {counts['l3_only']} / "
+                f"主线 {counts['mainline_selected']} / 旁路 {counts['bypass_selected'] + counts['strategic_selected']}"
+            ),
+            "完整 L4、主线池、ETF 与逐层淘汰明细保留在结构化运行数据中，不再展开推送。",
+        ]
+    )
     return lines

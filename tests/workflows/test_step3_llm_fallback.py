@@ -85,7 +85,7 @@ def test_step3_runtime_config_from_env_normalizes_values(monkeypatch):
     cfg = step3_runtime_config_from_env()
 
     assert cfg.trading_days == 1
-    assert cfg.max_output_tokens == 32768
+    assert cfg.max_output_tokens == 6000
     assert cfg.max_ai_input == 0
     assert cfg.empty_compression_fallback_cap == 0
     assert cfg.entry_quality_tie_bucket == 0.5

@@ -23,7 +23,7 @@ flowchart TB
 
     subgraph CORE["🔬 核心：daily_job.py"]
         S2["Step2 Wyckoff Funnel<br/>workflows/wyckoff_funnel.py"]
-        S25["Step2.5 信号确认<br/>pending → confirmed"]
+        S25["Step2.5 信号确认<br/>pending → survived / confirmed / expired"]
         S26["Step2.6 推荐写库<br/>recommendation_tracking"]
         S27["Step2.7 起跳板/候选影子评分"]
         S3["Step3 批量 AI 研报<br/>workflows/step3_batch_report.py"]
@@ -224,7 +224,7 @@ ETF 行情重复进入全市场统计；ETF 候选仍可通过 L3 共振进入�
 | 候选车道 | 趋势回踩、平台突破、强承接等结构接近 | 默认观察，质量足够才按配额送审 |
 | Shadow 旁路 | L2 未过但有复盘价值，或外部观察名单 | 不进入正式 AI，除非显式打开开关 |
 
-报告将三类状态分开命名：Spring/LPS/SOS/EVR 命中称为“L4 量价触发”；A/B/C 只表示“起跳板结构”完整度；`pending/confirmed/expired` 才是跨交易日确认状态。三者不能互相替代，OMS 也不会生成 `confirmed`。
+报告把状态拆成 `DETECTED → SURVIVED → VALIDATED → OMS_APPROVED`：Spring/LPS/SOS/EVR 与 A/B/C 只表示当日结构命中；`SURVIVED` 只表示跨日未失效；守住信号位并出现高收、缩量或转强需求后才记 `VALIDATED`（库内兼容值 `confirmed`）；最后仍需 OMS 核准。四层不能互相替代。
 
 正式候选在送入 Step3 前还会经过 `core/candidate_policy.py` 的统一损失护栏。纯 SOS 必须通过 Springboard ABC 3/3；单 EVR、单 LPS 与单 Trend Pullback 默认仅观察。状态已是可交易的主线候选可跳过这三类“仅观察”限制，但仍必须通过最低分、市场环境、弱确认、过热和高位追涨检查；“主线观察”与“过热不追”不享受豁免。L2 的八通道原始命中数会写入诊断日志，但不参与评分。
 
@@ -254,6 +254,8 @@ ETF 行情重复进入全市场统计；ETF 候选仍可通过 L3 共振进入�
 | Compression | 压缩蓄势 | 通用 |
 | Trend Pullback | 趋势回踩 | Trend / Mainline |
 
+生产 LPS 只识别“先越过 Creek、后缩量回踩守住 Creek/MA20”的序列，量能比较使用近期与前 60 日的中位数，默认阈值 65%。没有 Creek 前序的普通均线回踩归入 Trend Pullback。观察与待确认记录按 `(code, signal_type)` 绑定候选元数据，禁止把趋势回踩车道误写到 LPS 行。
+
 `core/wyckoff_structure.py` 会在同一批 L3 股票上额外识别动态交易区间，并对 Spring、LPS、SOS、EVR
 生成 `structure_shadow` 对照。该结果只记录区间覆盖率、正式/结构共同命中和各自独有命中，固定为
 `observation_only`，不合并进正式 `triggers`，不参与候选评分、二次确认、回测成交或 OMS。
@@ -276,7 +278,7 @@ ETF 行情重复进入全市场统计；ETF 候选仍可通过 L3 共振进入�
 
 ```mermaid
 flowchart LR
-    IN["selected_for_ai（当日 pending 触发）<br/>+ 跨日确认候选（STEP3_CONFIRMED_REVIEW_CAP）"] --> FETCH["逐只拉 OHLCV<br/>320 日窗口"]
+    IN["跨日 VALIDATED 优先保留最多3席<br/>剩余席位来自当日 selected_for_ai"] --> FETCH["逐只拉 OHLCV<br/>320 日窗口"]
     FETCH --> FEAT["特征工程<br/>generate_stock_payload<br/>均线/量价切片/高光事件"]
     FEAT --> RAG["RAG 语义防雷<br/>rag_veto 新闻否决"]
     RAG --> SPLIT["双轨分组<br/>Trend vs Accum"]
@@ -293,9 +295,9 @@ flowchart LR
 
 - Step3：`STEP3_LLM_PROVIDER=gemini`，fallback `efficiency`
 - 输入不是原始 K 线，而是压缩后的结构特征
-- 复核池 = 漏斗当日 `selected_for_ai` + 跨日确认候选（上限 `STEP3_CONFIRMED_REVIEW_CAP`，默认 12）。两者缺一不可：LLM 的起跳板硬门槛只放行 `confirmed`，而 `selected_for_ai` 装的是当日新触发信号，按状态机定义此刻只能是 `pending`。只送前者会让第三阵营在结构上恒为空
+- Step3 总输入默认最多 5 只：跨日 `VALIDATED` 候选优先保留最多 3 席，其余席位按漏斗顺序从当日 `selected_for_ai` 填充；当日不足时，未使用的保留席不会浪费。市场修复模式不再从另一条“起跳板补位”路径私自换名单
 - 模型审判不等于执行放行，`confirmed` 仍是 Step4 硬门槛
-- 空候选仍发送空集报告、合规摘要和明日执行结论，并明确区分上游空输入、RAG 全剔除和数据门槛过滤；主 provider 失败时按配置回退，不会在 daily-job 包装层静默跳过
+- 用户报告只保留执行摘要、实际送审清单与少量研究结论；完整 L4/主线池、逐层计数和证据保留在结构化运行数据中。空候选仍发送空集报告并明确区分上游空输入、RAG 全剔除和数据门槛过滤
 
 ---
 
@@ -327,14 +329,14 @@ RISK -->|PANIC_REPAIR_CONFIRMED| REPAIR_PROBE["最多1只小额 PROBE<br/>禁止
     REPAIR_PROBE --> OMS
     CAUTION_PROBE --> OMS
     OMS --> DB["trade_orders 写库"]
-    DB --> AUX["更新止损 / 真实净值"]
+    DB --> AUX["仅更新 HOLD / 剩余 TRIM 的有效止损<br/>保存真实净值"]
     AUX --> OLD["作废同日旧工单"]
     OLD --> TG["推送工单（含执行纪律）"]
     DB -->|后续持久化失败| RB["作废本轮 run_id<br/>并恢复止损快照<br/>保留旧工单"]
     TG -->|推送失败| KEEP["保留本轮工单<br/>禁止重跑 OMS"]
 ```
 
-Step4 以 `trade_orders` 作为幂等事实源。Telegram 超时具有“可能已送达”的歧义，因此推送失败会让任务显式失败，但不会作废订单或重跑 LLM/OMS；否则可能重复发送或生成相互冲突的工单。只有订单已写入、后续数据库持久化失败时才精确作废本次 `run_id`，并按写入前快照恢复已改动的持仓止损；回滚自身失败会升级为独立错误。同日旧工单在本轮持久化全部成功后才作废。LLM 若对同一代码输出多条决策，解析阶段按 `EXIT > TRIM > HOLD > PROBE > ATTACK` 折叠为一条；OMS 卖单通过后同步扣减内存持仓，避免重复 EXIT/TRIM 超卖。
+Step4 以 `trade_orders` 作为幂等事实源。Telegram 超时具有“可能已送达”的歧义，因此推送失败会让任务显式失败，但不会作废订单或重跑 LLM/OMS；否则可能重复发送或生成相互冲突的工单。只有订单已写入、后续数据库持久化失败时才精确作废本次 `run_id`，并按写入前快照恢复已改动的持仓止损；回滚自身失败会升级为独立错误。同日旧工单在本轮持久化全部成功后才作废。LLM 若对同一代码输出多条决策，解析阶段按 `EXIT > TRIM > HOLD > PROBE > ATTACK` 折叠为一条；OMS 卖单通过后同步扣减内存持仓，避免重复 EXIT/TRIM 超卖。持仓结构退出只看建仓后的价格路径；新仓保护期内，当轮模型给出的、同时高于成本和现价的倒挂止损会被拒绝，但已持久化的跟踪止损继续作为权威防线，未成交 `EXIT` 不再反写并污染持仓止损。
 
 ### 回放与确认安全边界
 
@@ -489,7 +491,9 @@ efinance
 | `FUNNEL_AI_RISK_ON_TREND` / `FUNNEL_AI_RISK_ON_ACCUM` | `5` / `1` | 过热市 AI/shadow 研究配额；正式推荐与新开仓由市场闸门禁止 |
 | `FUNNEL_EXTERNAL_SEED_SYMBOLS` / `FUNNEL_EXTRA_SYMBOLS` | 空 | 临时追加外部观察名单；存在时自动启用 external seed shadow |
 | `STEP4_BUY_HARD_STOP_PCT` | `12.0` | 新开仓灾难止损地板；ATR/结构/时间管理优先 |
+| `FUNNEL_MAX_STRUCTURE_STOP_PCT` | `12.0` | 漏斗送审前的结构止损距离上限；与 OMS 灾难地板独立配置 |
 | `STEP4_BLOCK_BUY_ON_STALE_EXIT` | `1` | 持仓已跌破止损却连续多日未离场时禁止 `ATTACK` 重仓；小额 `PROBE` 与离场减仓不受影响，一字跌停日不计入拖延 |
+| `STEP4_NEW_POSITION_STOP_GUARD_DAYS` | `4` | 新仓倒挂止损保护期（自然日）；保护期内同时高于成本和现价的止损不得触发 EXIT/TRIM |
 | `STEP4_REPAIR_PROBE_BUDGET_LIMIT` | `0.05` | `PANIC_REPAIR_CONFIRMED` 单票试探仓上限；同时最多只开放一只 |
 | `STEP4_REQUIRE_CONFIRMED_BUY_CANDIDATE` | `1` | Step4 新开仓只允许显式跨日确认候选；否定/观察状态优先拦截，不做模糊字符串匹配 |
 | `STEP4_AI_CANDIDATE_POLICY` | `veto_only` | `veto_only` 只剔除逻辑破产；`shadow` 仅记录分类用于实验对照 |

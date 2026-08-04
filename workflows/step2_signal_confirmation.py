@@ -8,7 +8,13 @@ from typing import Any
 
 import pandas as pd
 
-from core.candidate_metadata import build_candidate_metadata_map, candidate_signal_triggers, code6, merge_trigger_maps
+from core.candidate_metadata import (
+    build_candidate_signal_metadata_map,
+    candidate_metadata_for_signal,
+    candidate_signal_triggers,
+    code6,
+    merge_trigger_maps,
+)
 from core.signal_confirmation import SIGNAL_TTL_DAYS, build_snap, run_confirmation_cycle
 from integrations.supabase_signal_pending import batch_update_signals, insert_pending_signal_rows, load_pending_signals
 
@@ -51,7 +57,7 @@ def build_pending_signal_rows(
                     "created_at": now_iso,
                     "updated_at": now_iso,
                     **build_snap(signal_type, df, score, cfg),
-                    **candidate_metadata_map.get(code_s, {}),
+                    **candidate_metadata_for_signal(candidate_metadata_map, code_s, signal_type),
                 }
             )
     return rows
@@ -78,7 +84,7 @@ def run_step2_5(
 ) -> list[dict[str, Any]]:
     """Write fresh pending signals and confirm/expire existing pending signals."""
     triggers = _confirmation_trigger_map(triggers, candidate_entries)
-    metadata_map = build_candidate_metadata_map(candidate_entries, mainline_candidates)
+    metadata_map = build_candidate_signal_metadata_map(candidate_entries, mainline_candidates)
     if not dry_run:
         rows = build_pending_signal_rows(
             signal_date=signal_date,

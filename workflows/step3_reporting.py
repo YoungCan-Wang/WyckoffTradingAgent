@@ -6,7 +6,6 @@ from datetime import date
 
 import pandas as pd
 
-from core.candidate_report_semantics import candidate_semantic_parts
 from core.compliance_report import generate_compliance_brief
 from integrations.llm_client import call_llm
 from workflows.compliance_report_config import compliance_llm_config_from_env
@@ -21,14 +20,8 @@ from workflows.step3_operation_gate import (
 )
 
 SPRINGBOARD_ABC_LEGEND = (
-    "## 🧾 起跳板硬门槛释义（A/B/C）\n"
-    "- A：近5日出现缩量测试/拒绝下跌（量比 < 0.8x 且收位 > 60%）\n"
-    "- B：突破日量比 >= 1.5x 且收盘站稳突破位（收位 > 70%）\n"
-    "- C：支撑位至少经过 2 次测试且未被有效击穿\n"
-    "- A/B/C 只表示起跳板结构完整度，不等于跨日 confirmed\n"
-    "- 进入“处于起跳板”候选区通常需至少满足 2 条；若弱市（RISK_OFF/CRASH）执行更严格。\n"
-    "- 起跳板只是送 OMS 复核的候选，不等于买入订单；只有 OMS BUY-APPROVED 才可执行。\n\n"
-    "---\n"
+    "> A=缩量高收测试，B=放量高收突破，C=支撑多次测试；"
+    "SURVIVED 仅表示未失效，VALIDATED 才表示需求确认，最终仍需 OMS_APPROVED。\n\n"
 )
 
 
@@ -154,8 +147,7 @@ def _build_final_content(
     failed: list[tuple[str, str]],
 ) -> str:
     content = (
-        f"{rag_veto_preview}{build_signal_confirmed_preview(selected_df)}"
-        f"{_mainline_preview(selected_df)}"
+        f"{_compact_rag_preview(rag_veto_preview)}{build_signal_confirmed_preview(selected_df)}"
         f"{_ops_preview(ops_codes, code_name)}"
         f"{build_unconfirmed_ops_block(blocked_unconfirmed, code_name)}"
         f"{SPRINGBOARD_ABC_LEGEND}\n{report}"
@@ -167,28 +159,12 @@ def _build_final_content(
     return content
 
 
-def _mainline_preview(selected_df: pd.DataFrame) -> str:
-    if selected_df.empty:
+def _compact_rag_preview(preview: str) -> str:
+    if not preview:
         return ""
-    rows: list[str] = []
-    for _, item in selected_df.iterrows():
-        parts = candidate_semantic_parts(
-            candidate_reasons=item.get("candidate_reasons"),
-            candidate_status=item.get("candidate_status"),
-            stock_role_score=item.get("stock_role_score"),
-            candidate_lane=item.get("candidate_lane"),
-            explicit_theme=item.get("candidate_theme"),
-            explicit_phase=item.get("candidate_phase"),
-            explicit_role=item.get("candidate_role"),
-        )
-        if not parts:
-            continue
-        code = str(item.get("code") or "").strip()
-        name = str(item.get("name") or code).strip()
-        rows.append(f"- {code} {name} | {' / '.join(parts)}")
-    if not rows:
-        return ""
-    return "## 🎯 主线定位（确定性字段）\n" + "\n".join(rows) + "\n\n---\n"
+    keep = ("扫描股票", "新闻拉取成功", "veto 剔除", "拉取异常")
+    rows = [line for line in preview.splitlines() if line.startswith("## ") or any(key in line for key in keep)]
+    return "\n".join(rows).strip() + "\n\n---\n" if rows else ""
 
 
 def _ops_preview(ops_codes: list[str], code_name: dict[str, str]) -> str:

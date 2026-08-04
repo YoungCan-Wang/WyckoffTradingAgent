@@ -6,7 +6,7 @@ from workflows.daily_job_step3 import filter_confirmed_step3_codes
 from workflows.step3_reporting import _empty_step3_report, _step3_title
 
 
-def test_mainline_step3_shows_funnel_selection_first_then_confirmed() -> None:
+def test_mainline_step3_reserves_context_for_confirmed_before_fresh_signals() -> None:
     symbols = [
         {"code": "000003", "signal_status": "confirmed", "candidate_lane": "mainline"},
         {"code": "000001", "name": "候选一", "candidate_lane": "trend"},
@@ -20,7 +20,7 @@ def test_mainline_step3_shows_funnel_selection_first_then_confirmed() -> None:
         trade_mode=resolve_market_trade_mode("NEUTRAL"),
     )
 
-    assert [row["code"] for row in rows] == ["000002", "000001", "000003"]
+    assert [row["code"] for row in rows] == ["000003", "000002", "000001"]
     assert [row["input_order"] for row in rows] == [0, 1, 2]
 
 
@@ -52,6 +52,32 @@ def test_confirmed_review_additions_are_bounded(monkeypatch) -> None:
     )
 
     assert [row["code"] for row in rows] == ["000010", "000011"]
+
+
+def test_default_step3_cap_keeps_three_validated_and_two_fresh() -> None:
+    from workflows.step3_runtime_config import Step3RuntimeConfig
+    from workflows.step3_selection import normalize_step3_candidates, select_step3_candidates
+
+    symbols = [
+        *[
+            {"code": f"00000{i}", "signal_status": "confirmed", "track": "Accum", "priority_score": 10 - i}
+            for i in range(1, 4)
+        ],
+        *[
+            {"code": f"00000{i}", "signal_status": "pending", "track": "Trend", "priority_score": 100 - i}
+            for i in range(4, 9)
+        ],
+    ]
+    rows = step3_review_symbols(
+        symbols,
+        step2_details={"selected_for_ai": [f"00000{i}" for i in range(4, 9)]},
+        trade_mode=resolve_market_trade_mode("NEUTRAL"),
+    )
+    candidates = normalize_step3_candidates(rows)
+
+    selected = select_step3_candidates(candidates, "NEUTRAL", Step3RuntimeConfig(enable_compression=False))
+
+    assert selected["code"].tolist() == ["000001", "000002", "000003", "000004", "000005"]
 
 
 def test_unconfirmed_step3_verdict_still_cannot_reach_execution() -> None:

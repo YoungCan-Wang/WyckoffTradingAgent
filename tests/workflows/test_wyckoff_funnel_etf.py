@@ -771,6 +771,27 @@ def test_tradeable_l4_quality_pool_does_not_stop_at_old_trend_quota(monkeypatch)
     assert policy["quality_pool_before_guards"] == 7
 
 
+def test_tradeable_l4_quality_pool_respects_explicit_zero_quota(monkeypatch):
+    monkeypatch.setattr(funnel, "FUNNEL_AI_SELECTION_MODE", "tradeable_l4")
+    ctx = SimpleNamespace(
+        formal_sorted_codes=["000001", "000002"],
+        candidate_entry_map={},
+        code_to_trigger_keys={"000001": ["sos"], "000002": ["sos"]},
+        code_to_total_score={"000001": 90.0, "000002": 80.0},
+    )
+
+    selected, trend, accum = funnel._expand_quality_first_pool(
+        ctx,
+        [],
+        {},
+        {"total_cap": 8, "trend_quota": 0, "accum_quota": 0},
+    )
+
+    assert selected == []
+    assert trend == []
+    assert accum == []
+
+
 def test_loss_guard_risk_on_bans_pure_trend_pullback():
     kept, trend_kept, accum_kept, dropped = apply_loss_guard(
         ["000001"],

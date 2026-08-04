@@ -368,7 +368,10 @@ def _expand_quality_first_pool(
     score_map: dict[str, float],
     ai_policy: dict,
 ) -> tuple[list[str], list[str], list[str]]:
-    if FUNNEL_AI_SELECTION_MODE != "tradeable_l4" or int(ai_policy.get("total_cap") or 0) <= 0:
+    quota_is_explicit = "trend_quota" in ai_policy or "accum_quota" in ai_policy
+    active_quota = int(ai_policy.get("trend_quota") or 0) + int(ai_policy.get("accum_quota") or 0)
+    quota_closed = quota_is_explicit and active_quota <= 0
+    if FUNNEL_AI_SELECTION_MODE != "tradeable_l4" or int(ai_policy.get("total_cap") or 0) <= 0 or quota_closed:
         trend, accum = split_selected_tracks(selected_for_ai, ctx.code_to_trigger_keys)
         return selected_for_ai, trend, accum
     pool = list(selected_for_ai)
@@ -803,12 +806,20 @@ def _mainline_log_counts(candidates: list[dict]) -> str:
     counts = _mainline_status_counts(candidates)
     return (
         f"买点{counts['主线买点候选']}/分歧{counts['强主线分歧']}/"
-        f"修复{counts['事件主题修复候选']}/观察{counts['主线观察']}/鱼尾{counts['过热不追']}"
+        f"修复{counts['事件主题修复候选'] + counts['主题修复候选']}/"
+        f"观察{counts['主线观察']}/鱼尾{counts['过热不追']}"
     )
 
 
 def _mainline_status_counts(candidates: list[dict]) -> dict[str, int]:
-    counts = {"主线买点候选": 0, "强主线分歧": 0, "事件主题修复候选": 0, "主线观察": 0, "过热不追": 0}
+    counts = {
+        "主线买点候选": 0,
+        "强主线分歧": 0,
+        "事件主题修复候选": 0,
+        "主题修复候选": 0,
+        "主线观察": 0,
+        "过热不追": 0,
+    }
     for item in candidates or []:
         status = str(item.get("status") or "主线观察")
         counts[status] = counts.get(status, 0) + 1

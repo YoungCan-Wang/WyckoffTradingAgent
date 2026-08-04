@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from core.candidate_metadata import build_candidate_metadata_map, candidate_signal_triggers
+from core.candidate_metadata import (
+    build_candidate_metadata_map,
+    build_candidate_signal_metadata_map,
+    candidate_metadata_for_signal,
+    candidate_signal_triggers,
+)
 from core.candidate_tracks import best_candidate_entry_map
 
 
@@ -84,3 +89,34 @@ def test_candidate_metadata_materializes_report_semantics() -> None:
     assert metadata["300308"]["candidate_theme"] == "光模块"
     assert metadata["300308"]["candidate_phase"] == "分歧机会"
     assert metadata["300308"]["candidate_role"] == "主线核心"
+
+
+def test_signal_metadata_does_not_copy_trend_pullback_attribution_to_lps() -> None:
+    metadata = build_candidate_signal_metadata_map(
+        [{"code": "001872", "signal_key": "trend_pullback", "entry_type": "trend_pullback", "score": 68.0}]
+    )
+
+    assert candidate_metadata_for_signal(metadata, "001872", "trend_pullback")["signal_key"] == "trend_pullback"
+    assert candidate_metadata_for_signal(metadata, "001872", "lps") == {}
+
+
+def test_formal_signal_keeps_identity_and_inherits_mainline_context() -> None:
+    metadata = build_candidate_signal_metadata_map(
+        [{"code": "300308", "signal_key": "sos", "entry_type": "sos", "score": 91.0}],
+        [
+            {
+                "code": "300308",
+                "theme": "光模块",
+                "status": "强主线分歧",
+                "stock_role_score": 0.82,
+                "mainline_score": 0.86,
+            }
+        ],
+    )
+
+    row = candidate_metadata_for_signal(metadata, "300308", "sos")
+    assert row["signal_key"] == "sos"
+    assert row["candidate_lane"] == "sos"
+    assert row["candidate_theme"] == "光模块"
+    assert row["candidate_phase"] == "分歧机会"
+    assert row["candidate_role"] == "主线核心"
