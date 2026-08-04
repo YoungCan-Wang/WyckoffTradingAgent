@@ -32,6 +32,8 @@ from cli.tui import (
     _PendingUserQuestion,
     _pop_lines,
     _replace_streamed_response,
+    _run_workflow_background,
+    _session_avg_tok_per_s,
     _settle_markdown_render,
     _system_notification_queue_item,
     _tool_result_view,
@@ -1257,6 +1259,44 @@ def test_prepare_workflow_approval_keeps_plan_pending():
     assert scrolls == [True, True]
 
 
+def test_run_workflow_background_forwards_ui_progress_events():
+    class Runtime:
+        run = SimpleNamespace(run_id="wf_ui", workflow="dynamic_task")
+
+        def run_stream(self, messages, system_prompt):
+            yield {
+                "type": "workflow_step_start",
+                "step": {"title": "扫描候选", "agent": "scanner", "status": "running"},
+                "step_index": 1,
+                "step_total": 2,
+            }
+            yield {
+                "type": "workflow_step_done",
+                "step": {"title": "扫描候选", "agent": "scanner", "status": "completed", "summary": "ok"},
+            }
+            yield {"type": "done", "text": "done", "usage": {"input_tokens": 1, "output_tokens": 2}}
+
+    seen = []
+    result = _run_workflow_background(
+        Runtime(),
+        [{"role": "user", "content": "go"}],
+        "sys",
+        on_ui_event=seen.append,
+    )
+    assert [event["type"] for event in seen] == ["workflow_step_start", "workflow_step_done"]
+    assert result["final_text"] == "done"
+    assert result["usage"]["output_tokens"] == 2
+
+
+def test_session_avg_tok_per_s_ignores_unrated_workflow_output():
+    assert (
+        _session_avg_tok_per_s(
+            {"output": 100, "unrated_output": 80, "generation_ms": 1000}
+        )
+        == 20.0
+    )
+
+
 def test_workflow_background_event_summary_keeps_handoff_evidence():
     summary = _workflow_bg_event_summary(
         {
@@ -1306,7 +1346,15 @@ def test_complete_workflow_background_does_not_wake_idle_agent():
     app._busy = False
     app._queue = deque()
     app._messages = []
-    app._session_tokens = {"input": 0, "output": 0, "rounds": 0}
+    app._session_tokens = {
+        "input": 0,
+        "output": 0,
+        "unrated_output": 0,
+        "rounds": 0,
+        "cache_read": 0,
+        "generation_ms": 0,
+        "cache_reported": False,
+    }
     app._update_status = lambda: updates.append(True)
     app._chatlog_save = lambda role, content, **kwargs: chatlog_rows.append((role, content, kwargs))
 
@@ -1323,7 +1371,10 @@ def test_complete_workflow_background_does_not_wake_idle_agent():
 
     assert app._queue == deque()
     assert app._messages[-1]["content"] == "候选结论: 首选 300750 宁德时代"
-    assert app._session_tokens == {"input": 10, "output": 5, "rounds": 1}
+    assert app._session_tokens["input"] == 10
+    assert app._session_tokens["output"] == 5
+    assert app._session_tokens["rounds"] == 1
+    assert app._session_tokens["unrated_output"] == 5  # 无 generation_ms，不抬高均速
     assert chatlog_rows[0][0] == "assistant"
     assert updates == [True]
     assert "workflow 后台完成" in str(log.lines[-2])
@@ -1336,7 +1387,15 @@ def _busy_tui_for_workflow_completion() -> WyckoffTUI:
     app._busy = True
     app._queue = deque()
     app._messages = []
-    app._session_tokens = {"input": 0, "output": 0, "rounds": 0}
+    app._session_tokens = {
+        "input": 0,
+        "output": 0,
+        "unrated_output": 0,
+        "rounds": 0,
+        "cache_read": 0,
+        "generation_ms": 0,
+        "cache_reported": False,
+    }
     app._update_status = lambda: None
     app._chatlog_save = lambda *_args, **_kwargs: None
     return app

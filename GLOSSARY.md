@@ -332,6 +332,10 @@ flowchart LR
 | **Steering** | 忙时注入本轮新指令（`!…` / `/steer`），经 `steering_queue` 在下一跳 model 调用前写入 messages；与排队到下一 turn 的 `input_queue` 不同。安卓对标：改正在跑 Job 的参数，而不是再 enqueue 一个新 Work。 |
 | **Auto-continuation** | 模型停了但工作未完时由 `decide_agent_loop` 自动注入续跑 prompt（截断 / 轮次上限 / 未完成必需工具），最多 2 次；与用户「继续」ResumeTurn 分层。 |
 | **FallbackProvider** | Provider 层自动切换备用模型；与用户主动 ResumeTurn **分层**，不混为一个概念。 |
+| **output tok/s** | 输出生成速率：`output_tokens / generation_seconds`。`generation_seconds` 只累计模型生成窗口（首个 text/thinking delta → 该段 stream/step 结束），多步 tool 循环**不含**工具执行时间。Web 用量横幅末尾标为 `Xs gen`（模型窗口）；CLI footer 末尾 `elapsed` 仍是整轮墙钟。 |
+| **cache hit rate** | 提示缓存命中率：`cache_read_tokens / input_tokens`。仅当 provider/网关实际回报了 cache 字段时展示（含 0%）。Anthropic 原始 `input_tokens` 不含 cache，CLI 先归一化为 `input + cache_read + cache_write`。DeepSeek 优先用 `prompt_cache_hit_tokens`。与沙箱 CPU/网络 `usage` 无关。 |
+| **stream_chunk_timeout_seconds** | CLI 模型流式空闲超时（秒，默认 120，范围 10–600）：相邻 chunk 间隔（含 TTFT）超限则中断。写入 `~/.wyckoff/wyckoff.json`，控制面板可改。 |
+| **tool_timeout_seconds** | CLI 单工具执行超时（秒，默认 60，范围 5–300）。写入 `wyckoff.json`，控制面板可改。与模型空闲超时独立。 |
 
 ## 15. Web 运行边界
 

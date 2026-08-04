@@ -27,7 +27,13 @@ _DASHBOARD_TOKEN = secrets.token_urlsafe(32)
 
 def _get_config() -> dict:
     try:
-        from cli.auth import load_config, load_default_model_id, load_fallback_model_id, load_model_configs
+        from cli.auth import (
+            load_config,
+            load_default_model_id,
+            load_fallback_model_id,
+            load_model_configs,
+            timeout_config_defaults,
+        )
 
         cfg = load_config()
         models = load_model_configs()
@@ -41,6 +47,8 @@ def _get_config() -> dict:
                 safe[k] = (sv[:4] + "****" + sv[-4:]) if len(sv) > 8 else ("****" if sv else "")
             else:
                 safe[k] = v
+        for key, default in timeout_config_defaults().items():
+            safe.setdefault(key, default)
         safe_models = []
         for m in models:
             mc = dict(m)
@@ -329,10 +337,13 @@ class _Handler(BaseHTTPRequestHandler):
             key = path.split("/")[-1]
             try:
                 body = self._read_body()
-                from cli.auth import save_config_key
+                from cli.auth import TIMEOUT_CONFIG_SPECS, coerce_timeout_config_value, save_config_key
 
-                save_config_key(key, body.get("value", ""))
-                self._json({"ok": True})
+                value = body.get("value", "")
+                if key in TIMEOUT_CONFIG_SPECS:
+                    value = coerce_timeout_config_value(key, value)
+                save_config_key(key, value)
+                self._json({"ok": True, "value": value})
             except Exception as e:
                 self._json({"ok": False, "error": str(e)}, 400)
         else:

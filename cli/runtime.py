@@ -50,13 +50,15 @@ from cli.providers.base import LLMProvider
 from cli.scratchpad import AgentScratchpad
 from cli.tool_results import format_tool_result_for_context
 from cli.tools import ToolRegistry
+from cli.usage_metrics import as_int, enrich_usage, generation_seconds
 from cli.workflows.router import build_workflow_system_prompt
 
 logger = logging.getLogger(__name__)
 
 RuntimeEvent = dict[str, Any]
 
-STREAM_CHUNK_TIMEOUT = 60.0
+# 默认值；实际运行优先读 wyckoff.json 的 stream_chunk_timeout_seconds。
+STREAM_CHUNK_TIMEOUT = 120.0
 _INTERNAL_RETRY_MARKER = "_internal_retry"
 _CONTINUATION_PARTIAL_MARKER = "_continuation_partial"
 _STRICT_EXPECTATIONS_ENV = "WYCKOFF_STRICT_TOOL_EXPECTATIONS"
@@ -136,6 +138,8 @@ class RoundState:
     usage: dict[str, Any] = field(default_factory=dict)
     streamed: bool = False
     finish_reason: str = ""
+    stream_started: float | None = None
+    first_content_at: float | None = None
 
 
 @dataclass
@@ -143,6 +147,10 @@ class RunState:
     started_at: float
     total_input: int = 0
     total_output: int = 0
+    total_cache_read: int = 0
+    total_cache_write: int = 0
+    total_generation_ms: int = 0
+    cache_reported: bool = False
     streamed: bool = False
     incomplete_tool_retries: int = 0
     auto_continuations: int = 0
@@ -654,12 +662,13 @@ class AgentRuntime:
         system_prompt: str,
         round_number: int,
     ) -> Iterator[RuntimeEvent | RoundState]:
-        round_state = RoundState()
+        round_state = RoundState(stream_started=time.monotonic())
         stream = self.provider.chat_stream(messages, self._tool_schemas(), system_prompt)
         for chunk in _iter_with_timeout(stream, self.stream_chunk_timeout, self.cancel_check):
             event = self._consume_model_chunk(round_state, chunk, round_number)
             if event:
                 yield event
+        self._finalize_round_usage(round_state)
         return round_state
 
     def _consume_model_chunk(
@@ -671,10 +680,12 @@ class AgentRuntime:
         chunk_type = chunk["type"]
         if chunk_type == "thinking_delta":
             round_state.thinking += chunk["text"]
+            self._mark_first_content(round_state)
             return {"type": "thinking_delta", "text": chunk["text"], "round": round_number}
         if chunk_type == "text_delta":
             round_state.text += chunk["text"]
             round_state.streamed = True
+            self._mark_first_content(round_state)
             return {"type": "text_delta", "text": chunk["text"], "round": round_number}
         if chunk_type == "tool_calls":
             round_state.tool_calls = chunk["tool_calls"]
@@ -683,16 +694,43 @@ class AgentRuntime:
                 round_state.text = partial
             return {"type": "tool_calls", "tool_calls": round_state.tool_calls, "text": partial, "round": round_number}
         if chunk_type == "usage":
-            round_state.usage = chunk
+            round_state.usage = dict(chunk)
+            self._finalize_round_usage(round_state)
             return {"type": "usage", "usage": dict(round_state.usage), "round": round_number}
         if chunk_type == "finish":
             round_state.finish_reason = str(chunk.get("reason") or "")
             return None
         return None
 
+    @staticmethod
+    def _mark_first_content(round_state: RoundState) -> None:
+        if round_state.first_content_at is None:
+            round_state.first_content_at = time.monotonic()
+
+    def _finalize_round_usage(self, round_state: RoundState) -> None:
+        if not round_state.usage:
+            return
+        if "generation_ms" in round_state.usage and "output_tok_per_s" in round_state.usage:
+            return
+        gen_s = generation_seconds(
+            stream_started=round_state.stream_started,
+            first_content_at=round_state.first_content_at,
+            ended_at=time.monotonic(),
+        )
+        round_state.usage = enrich_usage(
+            round_state.usage,
+            generation_ms=int(round(gen_s * 1000)),
+            cache_reported="cache_read_tokens" in round_state.usage,
+        )
+
     def _accumulate_usage(self, state: RunState, round_state: RoundState) -> None:
-        state.total_input += round_state.usage.get("input_tokens", 0)
-        state.total_output += round_state.usage.get("output_tokens", 0)
+        usage = round_state.usage
+        state.total_input += as_int(usage.get("input_tokens"))
+        state.total_output += as_int(usage.get("output_tokens"))
+        state.total_cache_read += as_int(usage.get("cache_read_tokens"))
+        state.total_cache_write += as_int(usage.get("cache_write_tokens"))
+        state.total_generation_ms += as_int(usage.get("generation_ms"))
+        state.cache_reported = state.cache_reported or bool(usage.get("cache_reported"))
         state.streamed = state.streamed or round_state.streamed
 
     def _record_thinking_event(self, round_state: RoundState, round_number: int) -> RuntimeEvent:
@@ -919,11 +957,20 @@ class AgentRuntime:
                 provider=str(getattr(self.provider, "name", "")),
                 model=str(getattr(self.provider, "model", "")),
             )
+        usage_payload: dict[str, Any] = {
+            "input_tokens": state.total_input,
+            "output_tokens": state.total_output,
+            "generation_ms": state.total_generation_ms,
+        }
+        if state.cache_reported:
+            usage_payload["cache_read_tokens"] = state.total_cache_read
+            usage_payload["cache_write_tokens"] = state.total_cache_write
+        usage = enrich_usage(usage_payload, cache_reported=state.cache_reported)
         return {
             "type": "done",
             "text": text,
             "streamed": state.streamed,
-            "usage": {"input_tokens": state.total_input, "output_tokens": state.total_output},
+            "usage": usage,
             "elapsed": elapsed,
             "rounds": rounds,
         }

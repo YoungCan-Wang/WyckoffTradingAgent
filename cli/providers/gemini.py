@@ -38,6 +38,34 @@ def tool_call_dict_from_part(part: Any, *, call_id: str | None = None) -> dict[s
     return call
 
 
+def _gemini_usage_field(usage_meta: Any, name: str) -> int | None:
+    """Return an int only when the SDK actually set the field (not a default null/0 placeholder)."""
+    if usage_meta is None:
+        return None
+    fields_set = getattr(usage_meta, "model_fields_set", None)
+    if isinstance(fields_set, (set, frozenset)) and name not in fields_set:
+        return None
+    value = getattr(usage_meta, name, None)
+    if value is None:
+        return None
+    return int(value or 0)
+
+
+def _gemini_usage_event(usage_meta: Any) -> dict[str, Any]:
+    event: dict[str, Any] = {
+        "type": "usage",
+        "input_tokens": _gemini_usage_field(usage_meta, "prompt_token_count") or 0,
+        "output_tokens": _gemini_usage_field(usage_meta, "candidates_token_count") or 0,
+    }
+    cached = _gemini_usage_field(usage_meta, "cached_content_token_count")
+    if cached is not None:
+        event["cache_read_tokens"] = cached
+    written = _gemini_usage_field(usage_meta, "cache_tokens_input")
+    if written is not None:
+        event["cache_write_tokens"] = written
+    return event
+
+
 def function_call_part_from_tool_call(tc: dict[str, Any]) -> types.Part:
     """将统一 tool_call 转回 Gemini Part，回传 thought_signature。"""
     kwargs: dict[str, Any] = {
@@ -136,13 +164,7 @@ class GeminiProvider(LLMProvider):
         if tool_calls:
             yield {"type": "tool_calls", "tool_calls": tool_calls, "text": text_buf}
 
-        yield {
-            "type": "usage",
-            "input_tokens": getattr(usage_meta, "prompt_token_count", 0) or 0,
-            "output_tokens": getattr(usage_meta, "candidates_token_count", 0) or 0,
-            "cache_read_tokens": getattr(usage_meta, "cached_content_token_count", 0) or 0,
-            "cache_write_tokens": getattr(usage_meta, "cache_tokens_input", 0) or 0,
-        }
+        yield _gemini_usage_event(usage_meta)
         if finish_reason:
             reason = "length" if "MAX_TOKEN" in finish_reason.upper() else finish_reason
             yield {"type": "finish", "reason": reason}

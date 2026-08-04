@@ -877,10 +877,11 @@ class ToolRegistry:
                 logger.exception("Tool %s execution failed", name)
                 return {"error": f"工具执行失败: {e}"}
 
+        from cli.auth import get_tool_timeout_seconds
         from tools.tool_surface import ToolAccessContext
 
         ctx = ToolAccessContext(
-            timeout_seconds=30.0,
+            timeout_seconds=get_tool_timeout_seconds(),
             session_id=self._tool_context.state.get("session_id"),
         )
         res = self._tool_surface.execute_tool(name, call_args, ctx)

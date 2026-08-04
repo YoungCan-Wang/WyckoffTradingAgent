@@ -58,6 +58,11 @@ def build_turn_runtime(
 ) -> tuple[Any, WorkflowContext]:
     """Return direct runtime for general chat, workflow executor for task turns."""
 
+    if stream_chunk_timeout is None:
+        from cli.auth import get_stream_chunk_timeout_seconds
+
+        stream_chunk_timeout = get_stream_chunk_timeout_seconds()
+
     workflow = workflow_context or route_workflow_with_model(user_text, provider, routing_messages)
     if workflow.is_general and not workflow_script:
         return _direct_runtime(
@@ -122,8 +127,7 @@ def _direct_runtime(
         "enforce_turn_expectations": _direct_turn_expectations_default(enforce_turn_expectations),
         "steer_drain": steer_drain,
     }
-    if stream_chunk_timeout is not None:
-        kwargs["stream_chunk_timeout"] = stream_chunk_timeout
+    kwargs["stream_chunk_timeout"] = stream_chunk_timeout
     return AgentRuntime(provider, tools, **kwargs)
 
 

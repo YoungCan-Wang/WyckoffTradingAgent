@@ -17,7 +17,7 @@ import { useReadingRoomConversations } from '@/features/reading-room/conversatio
 import { ChatHeader } from '@/features/reading-room/header'
 import { buildRunRecords } from '@/features/reading-room/run-records'
 import { ChatMessages, ErrorBanner } from '@/features/reading-room/transcript'
-import type { ChatRunEvent, ChatRunStatus, MarketWatchSnapshot, ReadingRoomTab, RunCheckpoint, WatchItem } from '@/features/reading-room/types'
+import type { ChatRunEvent, ChatRunStatus, LlmUsageMetrics, MarketWatchSnapshot, ReadingRoomTab, RunCheckpoint, WatchItem } from '@/features/reading-room/types'
 import { readBooleanStorage } from '@/features/reading-room/utils'
 import { appendRunEvent, clearRunCheckpoint, finishRun, readRunCheckpoint } from '@/features/reading-room/run-ledger'
 import { readMarketWatchCache, writeMarketWatchCache } from '@/features/reading-room/market-watch-cache'
@@ -72,6 +72,7 @@ export function ChatPage() {
   const [input, setInput] = useState('')
   const [localError, setLocalError] = useState('')
   const [modelStatus, setModelStatus] = useState<ChatRunStatus | null>(null)
+  const [llmUsage, setLlmUsage] = useState<LlmUsageMetrics | null>(null)
   const [activeTab, setActiveTab] = useState<ReadingRoomTab>(readActiveTab)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => readBooleanStorage(CONVERSATION_SIDEBAR_STORAGE_KEY, true))
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -80,7 +81,8 @@ export function ChatPage() {
   const { activeConversationRef, runCheckpoint, setRunCheckpoint, onRunEvent, onRunFinish, onRunError, onRunInterrupted } = useRunLedger()
   const watchlist = useReadingRoomWatchlist(user?.id)
   const { marketWatch, requestItems, updateMarketWatch } = useMarketWatch(user?.id, watchlist.items)
-  const chat = useReadingRoomChat(token, setLocalError, t, setModelStatus, requestItems, marketWatch, updateMarketWatch, onRunEvent, onRunFinish, onRunError)
+  const chat = useReadingRoomChat(token, setLocalError, t, setModelStatus, setLlmUsage, requestItems, marketWatch, updateMarketWatch, onRunEvent, onRunFinish, onRunError)
+  const { clearLlmUsage } = chat
   const loading = chat.status === 'submitted' || chat.status === 'streaming'
   const changeActiveTab = useCallback((tab: ReadingRoomTab) => { setActiveTab(tab); writeActiveTab(tab) }, [])
   const queue = useMessageQueue(chat, loading, token, config.configured, setLocalError, t)
@@ -89,7 +91,9 @@ export function ChatPage() {
   useEffect(() => {
     activeConversationRef.current = conversations.activeId
     setRunCheckpoint(readRunCheckpoint(conversations.activeId))
-  }, [conversations.activeId, activeConversationRef, setRunCheckpoint])
+    clearLlmUsage()
+    setModelStatus(null)
+  }, [conversations.activeId, activeConversationRef, clearLlmUsage, setRunCheckpoint])
   const runRecords = useMemo(() => buildRunRecords(chat.messages, t), [chat.messages, t])
   useAutoScroll(scrollRef, activeTab === 'chat' ? chat.messages : [], activeTab === 'chat' && loading, activeTab === 'chat' ? queue.messages.length : 0)
 
@@ -121,19 +125,14 @@ export function ChatPage() {
   })
   const { startNewConversation } = actions
   useInitialPrompt(config.configured, token, startNewConversation)
-  const handleResumeRun = useCallback(() => {
-    if (loading) return
-    changeActiveTab('chat')
-    setLocalError('')
-    chat.clearError()
-    void chat.sendMessage({ text: '请继续完成上一轮分析。复用当前对话中已经完成的工具结果，不要重复已完成的数据读取；如果上一轮缺少关键数据，只补充缺失步骤，然后给出最终结论。' })
-  }, [changeActiveTab, chat, loading])
-  const handleClearRunCheckpoint = useCallback(() => {
-    if (activeConversationRef.current) {
-      clearRunCheckpoint(activeConversationRef.current)
-      setRunCheckpoint(null)
-    }
-  }, [activeConversationRef, setRunCheckpoint])
+  const { handleResumeRun, handleClearRunCheckpoint } = useRunRecoveryHandlers({
+    loading,
+    chat,
+    changeActiveTab,
+    setLocalError,
+    activeConversationRef,
+    setRunCheckpoint,
+  })
   const handleInterpretAgentRun = useAgentRunInterpretation(chat, queue, loading, setLocalError, t)
 
   return (
@@ -174,6 +173,7 @@ export function ChatPage() {
         onSubmit={handleSubmit}
         onStop={() => { void chat.stop(); onRunInterrupted() }}
         modelStatus={modelStatus}
+        llmUsage={llmUsage}
         runCheckpoint={runCheckpoint}
         onResumeRun={handleResumeRun}
         onClearRunCheckpoint={handleClearRunCheckpoint}
@@ -184,6 +184,39 @@ export function ChatPage() {
       <ErrorBanner message={localError || chat.error?.message || ''} />
     </div>
   )
+}
+
+function useRunRecoveryHandlers({
+  loading,
+  chat,
+  changeActiveTab,
+  setLocalError,
+  activeConversationRef,
+  setRunCheckpoint,
+}: {
+  loading: boolean
+  chat: ReturnType<typeof useReadingRoomChat>
+  changeActiveTab: (tab: ReadingRoomTab) => void
+  setLocalError: (value: string) => void
+  activeConversationRef: { current: string | null }
+  setRunCheckpoint: (value: RunCheckpoint | null) => void
+}) {
+  const handleResumeRun = useCallback(() => {
+    if (loading) return
+    changeActiveTab('chat')
+    setLocalError('')
+    chat.clearError()
+    void chat.sendMessage({
+      text: '请继续完成上一轮分析。复用当前对话中已经完成的工具结果，不要重复已完成的数据读取；如果上一轮缺少关键数据，只补充缺失步骤，然后给出最终结论。',
+    })
+  }, [changeActiveTab, chat, loading, setLocalError])
+  const handleClearRunCheckpoint = useCallback(() => {
+    if (activeConversationRef.current) {
+      clearRunCheckpoint(activeConversationRef.current)
+      setRunCheckpoint(null)
+    }
+  }, [activeConversationRef, setRunCheckpoint])
+  return { handleResumeRun, handleClearRunCheckpoint }
 }
 
 function readActiveTab(): ReadingRoomTab {

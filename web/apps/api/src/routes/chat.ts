@@ -27,6 +27,8 @@ import {
   PROVIDER_DEFAULT_MODELS,
   isSafeProviderBaseUrl,
   isAllowedModelBaseUrl,
+  buildLlmUsageMetrics,
+  createModelGenerationClock,
   type LLMToolConfig,
   type Provider,
   type ToolDeps,
@@ -376,6 +378,8 @@ async function runChatSegment(
   let hasToolApproval = false
   let hasIncompleteToolCall = false
   let outputStarted = false
+  const streamStartedAt = Date.now()
+  const generationClock = createModelGenerationClock(streamStartedAt)
 
   for await (const chunk of result.toUIMessageStream({
     onError: (error) => { throw error },
@@ -387,6 +391,7 @@ async function runChatSegment(
     if (chunk.type === 'tool-input-available' || chunk.type === 'tool-input-error') openToolCalls.delete(chunk.toolCallId)
     if (chunk.type === 'tool-input-error') hasIncompleteToolCall = true
     if (chunk.type === 'tool-approval-request') hasToolApproval = true
+    generationClock.onChunkType(chunk.type)
     writeChunkRunEvent(args, chunk)
     pending.push(chunk)
     if (isVisibleChatChunk(chunk)) {
@@ -397,11 +402,13 @@ async function runChatSegment(
   flushChunks(args.writer, pending)
   hasIncompleteToolCall ||= openToolCalls.size > 0
 
-  const [finishReason, steps, response] = await Promise.all([
+  const [finishReason, steps, response, totalUsage] = await Promise.all([
     result.finishReason,
     result.steps,
     result.response,
+    result.totalUsage,
   ])
+  writeLlmUsage(args.writer, totalUsage, generationClock.finalize(), segmentIndex)
 
   return {
     finishReason,
@@ -411,6 +418,44 @@ async function runChatSegment(
     hasIncompleteToolCall,
     outputStarted,
   }
+}
+
+
+function writeLlmUsage(
+  writer: ChatResilienceArgs['writer'],
+  totalUsage: {
+    inputTokens?: number | undefined
+    outputTokens?: number | undefined
+    cachedInputTokens?: number | undefined
+    inputTokenDetails?: {
+      cacheReadTokens?: number | undefined
+      cacheWriteTokens?: number | undefined
+    }
+  } | undefined,
+  generationMs: number,
+  segmentIndex: number,
+): void {
+  const inputTokens = totalUsage?.inputTokens ?? 0
+  const outputTokens = totalUsage?.outputTokens ?? 0
+  const cacheReadTokens = totalUsage?.inputTokenDetails?.cacheReadTokens
+    ?? totalUsage?.cachedInputTokens
+    ?? 0
+  const cacheWriteTokens = totalUsage?.inputTokenDetails?.cacheWriteTokens ?? 0
+  const cacheReported = totalUsage != null && (
+    totalUsage.inputTokenDetails?.cacheReadTokens != null
+    || totalUsage.inputTokenDetails?.cacheWriteTokens != null
+    || totalUsage.cachedInputTokens != null
+  )
+  const metrics = buildLlmUsageMetrics({
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+    generationMs,
+    cacheReported,
+    segmentIndex,
+  })
+  writer.write({ type: 'data-llm-usage', data: metrics, transient: true } as never)
 }
 
 async function runChatAttempt(args: ChatResilienceArgs, config: ChatModelConfig, marketWatchContext: string): Promise<void> {
@@ -503,7 +548,7 @@ function flushChunks(writer: ChatResilienceArgs['writer'], chunks: UIMessageChun
 }
 
 function isVisibleChatChunk(chunk: UIMessageChunk): boolean {
-  return chunk.type === 'text-start' || chunk.type === 'text-delta' || chunk.type === 'reasoning-start' || chunk.type === 'tool-input-start' || chunk.type === 'tool-input-available' || chunk.type === 'tool-input-error' || chunk.type === 'tool-output-available' || chunk.type === 'tool-output-error' || chunk.type === 'tool-approval-request'
+  return chunk.type === 'text-start' || chunk.type === 'text-delta' || chunk.type === 'reasoning-start' || chunk.type === 'reasoning-delta' || chunk.type === 'tool-input-start' || chunk.type === 'tool-input-available' || chunk.type === 'tool-input-error' || chunk.type === 'tool-output-available' || chunk.type === 'tool-output-error' || chunk.type === 'tool-approval-request'
 }
 
 function writeModelStatus(writer: ChatResilienceArgs['writer'], status: { phase: 'retrying' | 'fallback'; model: string; attempt: number; nextModel?: string }): void {

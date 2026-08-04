@@ -94,3 +94,16 @@ export {
   formatAnalysisContextPack,
 } from './analysis-context'
 export type { AnalysisContextPack, ContextEvidence } from './analysis-context'
+export {
+  buildLlmUsageMetrics,
+  cacheHitRatePct,
+  formatLlmUsageLine,
+  mergeLlmUsageMetrics,
+  outputTokPerS,
+} from './llm-usage'
+export type { LlmUsageMetrics } from './llm-usage'
+export {
+  createModelGenerationClock,
+  isModelContentChunkType,
+  isToolBoundaryChunkType,
+} from './model-generation-clock'

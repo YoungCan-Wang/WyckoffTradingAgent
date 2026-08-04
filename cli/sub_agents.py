@@ -22,6 +22,12 @@ from cli.sub_agent_prompts import (
 logger = logging.getLogger(__name__)
 
 
+def _sub_agent_stream_chunk_timeout(sub_timeout_seconds: float) -> float:
+    from cli.auth import get_stream_chunk_timeout_seconds
+
+    return min(get_stream_chunk_timeout_seconds(), float(sub_timeout_seconds))
+
+
 @dataclass(frozen=True)
 class SubAgent:
     name: str
@@ -242,7 +248,7 @@ def run_sub_agent(
         proxy,
         max_tool_rounds=sub.max_tool_rounds,
         cancel_check=cancelled,
-        stream_chunk_timeout=min(60.0, float(sub.timeout_seconds)),
+        stream_chunk_timeout=_sub_agent_stream_chunk_timeout(sub.timeout_seconds),
         allowed_tools=allowed_tools,
         required_tools=required_tool_names if enforce_turn_expectations else None,
         required_tool_args=required_tool_args if enforce_turn_expectations else None,

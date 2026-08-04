@@ -384,26 +384,41 @@ def _cmd_model(args):
 
 
 def _cmd_config(args):
-    from cli.auth import load_config, save_config_key
+    from cli.auth import (
+        get_stream_chunk_timeout_seconds,
+        get_tool_timeout_seconds,
+        load_config,
+        save_config_key,
+    )
 
     CONFIG_KEYS = {
-        "tushare": ("tushare_token", "Tushare Token", "TUSHARE_TOKEN"),
-        "tickflow": ("tickflow_api_key", "TickFlow API Key", "TICKFLOW_API_KEY"),
+        "tushare": ("tushare_token", "Tushare Token", "TUSHARE_TOKEN", "secret"),
+        "tickflow": ("tickflow_api_key", "TickFlow API Key", "TICKFLOW_API_KEY", "secret"),
+        "stream_timeout": ("stream_chunk_timeout_seconds", "模型空闲/首token超时(秒)", "", "timeout"),
+        "tool_timeout": ("tool_timeout_seconds", "工具执行超时(秒)", "", "timeout"),
     }
 
     sub = args.config_cmd
 
     if not sub:
-        # 显示所有配置
         cfg = load_config()
-        print("数据源配置 (~/.wyckoff/wyckoff.json)")
+        print("本地配置 (~/.wyckoff/wyckoff.json)")
         print()
-        for _alias, (key, label, _) in CONFIG_KEYS.items():
+        for _alias, (key, label, _, kind) in CONFIG_KEYS.items():
+            if kind == "timeout":
+                current = (
+                    get_stream_chunk_timeout_seconds(cfg)
+                    if key == "stream_chunk_timeout_seconds"
+                    else get_tool_timeout_seconds(cfg)
+                )
+                mark = "自定义" if key in cfg else "默认"
+                print(f"  {label}: \033[32m{int(current)}\033[0m ({mark})")
+                continue
             val = str(cfg.get(key, "") or "").strip()
             status = f"\033[32m{_mask(val)}\033[0m" if val else "\033[90m未配置\033[0m"
             print(f"  {label}: {status}")
         print()
-        print("使用 wyckoff config tushare <token> 或 wyckoff config tickflow <key> 配置")
+        print("用法: wyckoff config tushare|tickflow|stream_timeout|tool_timeout <value>")
         return
 
     if sub not in CONFIG_KEYS:
@@ -411,17 +426,23 @@ def _cmd_config(args):
         print(f"可选: {', '.join(CONFIG_KEYS)}")
         sys.exit(1)
 
-    key, label, env_key = CONFIG_KEYS[sub]
+    key, label, env_key, kind = CONFIG_KEYS[sub]
     value = args.value
     if not value:
         import getpass
 
-        value = getpass.getpass(f"{label}: ").strip()
+        prompt = f"{label}: "
+        value = getpass.getpass(prompt).strip() if kind == "secret" else input(prompt).strip()
     if not value:
         print("已取消")
         return
-    save_config_key(key, value)
-    os.environ[env_key] = value
+    try:
+        save_config_key(key, value)
+    except ValueError as exc:
+        print(f"✗ {exc}")
+        sys.exit(1)
+    if kind == "secret" and env_key:
+        os.environ[env_key] = value
     print(f"✓ {label} 已保存")
 
 
@@ -1711,8 +1732,13 @@ def _add_auth_model_config_parsers(sub) -> None:
     p_model.add_argument("--days", type=int, default=7, help="usage 统计天数")
 
     # wyckoff config
-    p_config = sub.add_parser("config", help="数据源配置")
-    p_config.add_argument("config_cmd", nargs="?", default="", help="tushare/tickflow")
+    p_config = sub.add_parser("config", help="本地配置（数据源/超时）")
+    p_config.add_argument(
+        "config_cmd",
+        nargs="?",
+        default="",
+        help="tushare/tickflow/stream_timeout/tool_timeout",
+    )
     p_config.add_argument("value", nargs="?", default="", help="值（可省略，交互输入）")
 
 

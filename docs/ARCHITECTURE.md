@@ -350,7 +350,11 @@ LLMProvider (abstract)              cli/providers/base.py
 
 统一接口：`chat_stream(messages, tools, system_prompt) → Generator[chunk]`
 
-chunk 类型：`thinking_delta` | `text_delta` | `tool_calls` | `usage`
+chunk 类型：`thinking_delta` | `text_delta` | `tool_calls` | `usage` | `finish`
+
+`usage` 含 `input_tokens` / `output_tokens`；`cache_read_tokens` / `cache_write_tokens` 仅在 provider/网关实际回报 cache 字段时附带。Runtime 再附带 `generation_ms`、`output_tok_per_s`、`cache_hit_rate`。  
+**输出 tok/s** = `output_tokens / generation_seconds`（首个 text/thinking delta → 该轮 stream 结束；多步 tool 循环只累计模型生成窗口，不含工具时间）。  
+**缓存命中率** = `cache_read_tokens / input_tokens`（有 cache 字段时展示，含 0%）。Anthropic 的 `input_tokens` 不含 cache，CLI 会先归一化为 `input + cache_read + cache_write`。OpenAI 兼容通道优先读 DeepSeek 的 `prompt_cache_hit_tokens`，其次 `prompt_tokens_details.cached_tokens`。
 
 OpenAI provider 兼容所有 OpenAI API 格式端点（DeepSeek / Qwen / Kimi / LongCat / Minimax 等），支持推理模型的 `reasoning_content` thinking 流，以及 `<tool_call>` XML 标签兜底解析。
 
@@ -392,8 +396,11 @@ claude mcp add wyckoff -- wyckoff-mcp
   ───                                ← 分隔线
   最终 Markdown 输出...              ← Markdown 渲染
 
-  ↑1,234 ↓567 · 2.3s               ← token 统计：dim
+  ↑1,234 ↓567 · 175tok/s · cache 87% · 2.3s
+                                     ← token：生成速率 + 缓存命中 + 整轮耗时（含工具）
 ```
+
+Web 读盘室在每段 `streamText` 结束后下发 transient `data-llm-usage`（字段同 CLI），前端合并多段续跑后展示。
 
 ## Agent 记忆系统
 
@@ -598,7 +605,7 @@ CREATE TABLE chat_log (
 
 | 文件 / 数据库 | 用途 |
 |-------------|------|
-| `wyckoff.json` | 模型配置（provider / api_key / model / base_url） |
+| `wyckoff.json` | 模型配置（provider / api_key / model / base_url）；可选超时：`stream_chunk_timeout_seconds`（默认 120，模型空闲/首 token）、`tool_timeout_seconds`（默认 60，单工具墙钟）。控制面板 Overview、TUI `/config set`、`wyckoff config` 均可改。 |
 | `session.json` | Supabase 登录态（access_token / refresh_token） |
 | `agent.log` | Agent 文件日志 |
 | `wyckoff.db` | SQLite 数据库（下方详述） |

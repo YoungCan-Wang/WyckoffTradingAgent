@@ -29,6 +29,7 @@ import {
 } from './agent-runs'
 import { replaceConversationToolOutput, type ReadingRoomConversations } from './conversations'
 import { scrollToMessage } from './run-records'
+import { mergeLlmUsageMetrics, type LlmUsageMetrics } from '@wyckoff/shared'
 import type { ChatConfig, ChatRunEvent, ChatRunStatus, MarketWatchSnapshot, QueuedMessage, ReadingRoomTab, StageProgressStatus, WatchItem } from './types'
 import { writeBooleanStorage } from './utils'
 
@@ -36,7 +37,9 @@ export const CONVERSATION_SIDEBAR_STORAGE_KEY = 'wyckoff:reading-room-sidebar-co
 
 const MAX_QUEUED_MESSAGES = 5
 
-export type ReadingRoomChat = ReturnType<typeof useChat<UIMessage>>
+export type ReadingRoomChat = ReturnType<typeof useChat<UIMessage>> & {
+  clearLlmUsage: () => void
+}
 
 export interface MessageQueue {
   messages: QueuedMessage[]
@@ -174,6 +177,7 @@ export function useReadingRoomChat(
   setLocalError: (value: string) => void,
   t: (key: TranslationKey) => string,
   setModelStatus: (value: ChatRunStatus | null) => void,
+  setLlmUsage: (value: LlmUsageMetrics | null) => void,
   watchlist: Pick<WatchItem, 'code' | 'name'>[],
   marketWatch: MarketWatchSnapshot | null,
   setMarketWatch: (value: MarketWatchSnapshot) => void,
@@ -183,10 +187,15 @@ export function useReadingRoomChat(
 ) {
   const watchlistRef = useRef(watchlist)
   const marketWatchRef = useRef(marketWatch)
+  const usagePartsRef = useRef<LlmUsageMetrics[]>([])
   useEffect(() => { watchlistRef.current = watchlist }, [watchlist])
   useEffect(() => { marketWatchRef.current = marketWatch }, [marketWatch])
+  const clearLlmUsage = useCallback(() => {
+    usagePartsRef.current = []
+    setLlmUsage(null)
+  }, [setLlmUsage])
   const transport = useMemo(() => buildChatTransport(token, watchlistRef, marketWatchRef), [token])
-  return useChat({
+  const chat = useChat({
     transport,
     experimental_throttle: 120,
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
@@ -194,14 +203,30 @@ export function useReadingRoomChat(
       if (part.type === 'data-run-event') onRunEvent?.(part.data as ChatRunEvent)
       if (part.type === 'data-model-status') setModelStatus(part.data as ChatRunStatus)
       if (part.type === 'data-market-watch') setMarketWatch(part.data as MarketWatchSnapshot)
+      if (part.type === 'data-llm-usage') {
+        const metrics = part.data as LlmUsageMetrics
+        if (metrics.segmentIndex === 0) usagePartsRef.current = [metrics]
+        else usagePartsRef.current = [...usagePartsRef.current, metrics]
+        setLlmUsage(mergeLlmUsageMetrics(usagePartsRef.current))
+      }
       if (part.type === 'data-stage-progress') {
         const progress = part.data as StageProgressStatus
         setModelStatus(progress.state === 'completed' ? null : progress)
       }
     },
-    onFinish: () => { setModelStatus(null); onRunFinish?.() },
-    onError: (err) => { setModelStatus(null); onRunError?.(); setLocalError(err.message || t('chat.requestFailed')) },
+    onFinish: () => {
+      setModelStatus(null)
+      usagePartsRef.current = []
+      onRunFinish?.()
+    },
+    onError: (err) => {
+      setModelStatus(null)
+      usagePartsRef.current = []
+      onRunError?.()
+      setLocalError(err.message || t('chat.requestFailed'))
+    },
   })
+  return { ...chat, clearLlmUsage }
 }
 
 export function useAgentRunPolling(

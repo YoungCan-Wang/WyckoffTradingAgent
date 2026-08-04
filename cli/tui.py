@@ -1239,12 +1239,25 @@ def _split_workflow_name_args(name_part: str, rest: str) -> tuple[str, str]:
     return pieces[0], pieces[1] if len(pieces) > 1 else ""
 
 
+_WORKFLOW_UI_EVENT_TYPES = frozenset(
+    {
+        "workflow_plan_update",
+        "workflow_phase_start",
+        "workflow_phase_done",
+        "workflow_step_start",
+        "workflow_step_done",
+        "workflow_disagreement_summary",
+    }
+)
+
+
 def _run_workflow_background(
     runtime: WorkflowExecutor,
     messages: list[dict[str, Any]],
     system_prompt: str,
     model_name: str = "",
     provider_name: str = "",
+    on_ui_event=None,
 ) -> dict[str, Any]:
     from utils.progress import report_progress
 
@@ -1273,6 +1286,11 @@ def _run_workflow_background(
             elif event_type == "done":
                 final_text = str(event.get("text", ""))
                 usage = event.get("usage", usage)
+            if on_ui_event and event_type in _WORKFLOW_UI_EVENT_TYPES:
+                try:
+                    on_ui_event(event)
+                except Exception:
+                    logger.debug("workflow background ui event failed", exc_info=True)
     except Exception as exc:
         run_id = run_id or (runtime.run.run_id if runtime.run else "")
         return {"workflow_run_id": run_id, "error": str(exc), "events": events[-40:]}
@@ -1454,12 +1472,34 @@ def _build_rounds_detail(
     return details
 
 
-def _usage_footer(total_input: int, total_output: int, elapsed_s: float) -> Text:
-    usage_parts = []
-    if total_input or total_output:
-        usage_parts.append(f"↑{total_input:,} ↓{total_output:,}")
-    usage_parts.append(f"{elapsed_s:.1f}s")
-    return Text.from_markup(f"  [dim]{' · '.join(usage_parts)}[/dim]")
+def _usage_footer(
+    total_input: int,
+    total_output: int,
+    elapsed_s: float,
+    *,
+    output_tok_per_s: float | None = None,
+    cache_hit_rate: int | None = None,
+    cache_reported: bool = False,
+) -> Text:
+    from cli.usage_metrics import format_usage_footer
+
+    line = format_usage_footer(
+        input_tokens=total_input,
+        output_tokens=total_output,
+        elapsed_s=elapsed_s,
+        output_tok_per_s=output_tok_per_s,
+        cache_hit_rate=cache_hit_rate,
+        cache_reported=cache_reported,
+    )
+    return Text.from_markup(f"  [dim]{line}[/dim]")
+
+
+def _session_avg_tok_per_s(session_tokens: dict) -> float | None:
+    from cli.usage_metrics import output_tok_per_s
+
+    # Workflow 等无 generation_ms 的轮次计入 unrated_output，避免会话均速虚高。
+    rated_output = max(0, int(session_tokens.get("output") or 0) - int(session_tokens.get("unrated_output") or 0))
+    return output_tok_per_s(rated_output, int(session_tokens.get("generation_ms") or 0) / 1000.0)
 
 
 def _make_sub_agent_progress_handler(tools, write, scroll, spinner_start, spinner_stop):
@@ -1847,7 +1887,8 @@ def _friendly_error(e: Exception) -> str:
 
     cls_name = type(e).__name__
     if isinstance(e, TimeoutError):
-        return "模型响应超时（60s 无数据），请检查网络"
+        detail = str(e).strip() or "模型响应超时"
+        return f"{detail}，请检查网络或调大 stream_chunk_timeout_seconds"
     if "RemoteProtocolError" in cls_name or "ReadError" in cls_name:
         return "连接已断开，请检查网络后重试"
     if "APIConnectionError" in cls_name or "ConnectError" in cls_name:
@@ -1979,7 +2020,15 @@ class WyckoffTUI(App):
         self._system_prompt = system_prompt
         self._session_expired = session_expired
         self._messages: list[dict] = []
-        self._session_tokens = {"input": 0, "output": 0, "rounds": 0}
+        self._session_tokens = {
+            "input": 0,
+            "output": 0,
+            "unrated_output": 0,
+            "rounds": 0,
+            "cache_read": 0,
+            "generation_ms": 0,
+            "cache_reported": False,
+        }
         self._conversation = ConversationSession()
         self._cancel_event = threading.Event()
         self._last_ctrl_c: float = 0.0
@@ -2274,7 +2323,17 @@ class WyckoffTUI(App):
         parts.append(f"#{self._session_id}")
         t = self._session_tokens
         if t["rounds"] > 0:
-            parts.append(f"Token: {t['input'] + t['output']:,}")
+            tok_bits = [f"Token: {t['input'] + t['output']:,}"]
+            avg = _session_avg_tok_per_s(t)
+            if avg is not None:
+                tok_bits.append(f"{avg:g}tok/s")
+            if t.get("cache_reported") and t["input"] > 0:
+                from cli.usage_metrics import cache_hit_rate_pct
+
+                hit = cache_hit_rate_pct(int(t.get("cache_read") or 0), int(t["input"]))
+                if hit is not None:
+                    tok_bits.append(f"cache {hit}%")
+            parts.append(" ".join(tok_bits))
         return " · ".join(parts)
 
     def _update_status(self) -> None:
@@ -2449,17 +2508,7 @@ class WyckoffTUI(App):
 
     def action_show_token(self) -> None:
         log = self.query_one("#chat-log", ChatLog)
-        t = self._session_tokens
-        if t["rounds"] == 0:
-            log.write(Text.from_markup("[dim]本次会话尚无 Token 记录[/dim]"))
-        else:
-            log.write(
-                Text.from_markup(
-                    f"\n[bold]Token 用量[/bold]  "
-                    f"输入: {t['input']:,}  输出: {t['output']:,}  "
-                    f"合计: {t['input'] + t['output']:,}  轮次: {t['rounds']}"
-                )
-            )
+        self._show_token_usage(log)
 
     def action_show_prompt_templates(self) -> None:
         self._show_prompt_templates()
@@ -2792,11 +2841,22 @@ class WyckoffTUI(App):
         if t["rounds"] == 0:
             log.write(Text.from_markup("[dim]本次会话尚无 Token 记录[/dim]"))
             return
+        extras = []
+        avg = _session_avg_tok_per_s(t)
+        if avg is not None:
+            extras.append(f"均速: {avg:g}tok/s")
+        if t.get("cache_reported") and t["input"] > 0:
+            from cli.usage_metrics import cache_hit_rate_pct
+
+            hit = cache_hit_rate_pct(int(t.get("cache_read") or 0), int(t["input"]))
+            if hit is not None:
+                extras.append(f"缓存命中: {hit}%（读 {int(t.get('cache_read') or 0):,}）")
+        extra_text = ("  " + "  ".join(extras)) if extras else ""
         log.write(
             Text.from_markup(
                 f"\n[bold]Token 用量[/bold]  "
                 f"输入: {t['input']:,}  输出: {t['output']:,}  "
-                f"合计: {t['input'] + t['output']:,}  轮次: {t['rounds']}"
+                f"合计: {t['input'] + t['output']:,}  轮次: {t['rounds']}{extra_text}"
             )
         )
 
@@ -2809,7 +2869,8 @@ class WyckoffTUI(App):
         else:
             log.write(
                 Text.from_markup(
-                    "[dim]/config 用法: /config (查看) | /config set tushare_token | /config set tickflow_api_key[/dim]"
+                    "[dim]/config 用法: /config | /config set tushare_token | tickflow_api_key | "
+                    "stream_chunk_timeout_seconds | tool_timeout_seconds[/dim]"
                 )
             )
 
@@ -3545,28 +3606,54 @@ class WyckoffTUI(App):
     # ----- /config 交互 -----
 
     _CONFIG_KEYS = {
-        "tushare_token": ("Tushare Token", "TUSHARE_TOKEN", ""),
+        "tushare_token": ("Tushare Token", "TUSHARE_TOKEN", "", "secret"),
         "tickflow_api_key": (
             "TickFlow API Key",
             "TICKFLOW_API_KEY",
             "购买: https://tickflow.org/auth/register?ref=5N4NKTCPL4",
+            "secret",
+        ),
+        "stream_chunk_timeout_seconds": (
+            "模型空闲/首token超时(秒)",
+            "",
+            "默认 120；相邻流式包间隔超过该值会中断（含首 token）",
+            "timeout",
+        ),
+        "tool_timeout_seconds": (
+            "工具执行超时(秒)",
+            "",
+            "默认 60；单个工具墙钟超时（搜索/行情慢请求）",
+            "timeout",
         ),
     }
 
     def _show_config(self) -> None:
         log = self.query_one("#chat-log", ChatLog)
-        from cli.auth import load_config
+        from cli.auth import get_stream_chunk_timeout_seconds, get_tool_timeout_seconds, load_config
 
         cfg = load_config()
-        log.write(Text.from_markup("\n[bold]数据源配置[/bold]"))
-        for key, (label, _, hint) in self._CONFIG_KEYS.items():
+        log.write(Text.from_markup("\n[bold]数据源与超时配置[/bold]"))
+        for key, (label, _, hint, kind) in self._CONFIG_KEYS.items():
+            if kind == "timeout":
+                current = (
+                    get_stream_chunk_timeout_seconds(cfg)
+                    if key == "stream_chunk_timeout_seconds"
+                    else get_tool_timeout_seconds(cfg)
+                )
+                stored = "已自定义" if key in cfg else "默认"
+                log.write(Text.from_markup(f"  {label}: [green]{int(current)}[/green] [dim]({stored})[/dim] — {hint}"))
+                continue
             val = str(cfg.get(key, "") or "").strip()
             if val:
                 masked = val[:4] + "****" + val[-4:] if len(val) > 8 else "****"
                 log.write(Text.from_markup(f"  {label}: [green]{masked}[/green]"))
             else:
                 log.write(Text.from_markup(f"  {label}: [dim]未配置[/dim] — {hint}"))
-        log.write(Text.from_markup("\n[dim]使用 /config set tushare_token 或 /config set tickflow_api_key 配置[/dim]"))
+        log.write(
+            Text.from_markup(
+                "\n[dim]使用 /config set <key>；超时 key: stream_chunk_timeout_seconds / tool_timeout_seconds[/dim]"
+            )
+        )
 
     def _start_config_set(self, key: str) -> None:
         log = self.query_one("#chat-log", ChatLog)
@@ -3575,12 +3662,12 @@ class WyckoffTUI(App):
         if key not in self._CONFIG_KEYS:
             log.write(Text.from_markup(f"[red]不支持的配置项: {key}[/red]，可选: {', '.join(self._CONFIG_KEYS)}"))
             return
-        label, _, hint = self._CONFIG_KEYS[key]
+        label, _, hint, kind = self._CONFIG_KEYS[key]
         log.write(Text.from_markup(f"\n[bold]配置 {label}[/bold]"))
         log.write(Text.from_markup(f"  {hint}"))
         log.write(Text.from_markup("  输入值（留空取消）："))
         inp.placeholder = f"{label}..."
-        inp.password = True
+        inp.password = kind == "secret"
         self._input_mode = _InputState.CONFIG_KEY
         self._input_buf = {"config_key": key}
 
@@ -3782,13 +3869,19 @@ class WyckoffTUI(App):
     def _handle_config_value(self, text: str, log, inp: Input) -> None:
         inp.password = False
         key = self._input_buf["config_key"]
-        label, env_key, _ = self._CONFIG_KEYS[key]
+        label, env_key, _, kind = self._CONFIG_KEYS[key]
         from cli.auth import save_config_key
 
-        save_config_key(key, text)
-        import os
+        try:
+            save_config_key(key, text)
+        except ValueError as exc:
+            log.write(Text.from_markup(f"  [red]✗ {exc}[/red]"))
+            self._reset_input_prompt(inp)
+            return
+        if kind == "secret" and env_key:
+            import os
 
-        os.environ[env_key] = text
+            os.environ[env_key] = text
         log.write(Text.from_markup(f"  [green]✓ {label} 已保存[/green]"))
         self._reset_input_prompt(inp)
 
@@ -4289,6 +4382,11 @@ class WyckoffTUI(App):
         self._session_tokens["input"] += total_input
         self._session_tokens["output"] += total_output
         self._session_tokens["rounds"] += 1
+        self._session_tokens["cache_read"] += int(state.final_usage.get("cache_read_tokens") or 0)
+        self._session_tokens["generation_ms"] += int(state.final_usage.get("generation_ms") or 0)
+        self._session_tokens["cache_reported"] = bool(
+            self._session_tokens.get("cache_reported") or state.final_usage.get("cache_reported")
+        )
         self.call_from_thread(self._update_status)
         self._restore_turn_user_message(state.turn_user_index)
 
@@ -4305,8 +4403,11 @@ class WyckoffTUI(App):
             json.dumps(state.executed_tool_summaries, ensure_ascii=False) if state.executed_tool_summaries else ""
         )
         metadata = {
-            "cache_read": state.last_usage.get("cache_read_tokens", 0),
-            "cache_write": state.last_usage.get("cache_write_tokens", 0),
+            "cache_read": state.final_usage.get("cache_read_tokens", state.last_usage.get("cache_read_tokens", 0)),
+            "cache_write": state.final_usage.get("cache_write_tokens", state.last_usage.get("cache_write_tokens", 0)),
+            "output_tok_per_s": state.final_usage.get("output_tok_per_s"),
+            "cache_hit_rate": state.final_usage.get("cache_hit_rate"),
+            "generation_ms": state.final_usage.get("generation_ms"),
             "stop_reason": state.last_usage.get("stop_reason", "stop"),
             "rounds": state.final_rounds,
             "rounds_detail": _build_rounds_detail(
@@ -4424,7 +4525,7 @@ class WyckoffTUI(App):
         _display_workflow_plan_event(event, write, scroll)
         messages_snapshot = [dict(item) for item in self._messages]
         workflow_label = f"workflow {run_id}" if run_id else "workflow"
-        ack = f"{workflow_label} 自动开始后台运行；可继续聊天，用 /workflow 查看进度。"
+        ack = f"{workflow_label} 自动开始后台运行；步骤进度会刷到本会话，也可继续聊天或用 /workflow 查看。"
         self._messages.append({"role": "assistant", "content": ack})
         self._chatlog_save(
             "assistant",
@@ -4501,6 +4602,10 @@ class WyckoffTUI(App):
             from cli.workflows.control import register_workflow_control
 
             runtime.set_control(register_workflow_control(run_id))
+
+        def on_ui_event(event: dict[str, Any]) -> None:
+            self.call_from_thread(self._display_workflow_background_event, event)
+
         self._bg_manager.submit(
             task_id,
             "dynamic_workflow",
@@ -4511,11 +4616,33 @@ class WyckoffTUI(App):
                 "system_prompt": system_prompt,
                 "model_name": model_name,
                 "provider_name": provider_name,
+                "on_ui_event": on_ui_event,
             },
             on_complete=self._on_bg_complete,
         )
         write(Text.from_markup(f"  [cyan]↗ dynamic workflow[/cyan] [dim]后台运行中，任务 {task_id}[/dim]"))
         scroll()
+
+    def _display_workflow_background_event(self, event: dict[str, Any]) -> None:
+        """从后台线程经 call_from_thread 刷阶段/步骤进度到聊天区。"""
+        log = self.query_one("#chat-log", ChatLog)
+
+        def write(renderable) -> None:
+            log.write(renderable)
+
+        def scroll() -> None:
+            with contextlib.suppress(Exception):
+                log.scroll_end(animate=False)
+
+        event_type = str(event.get("type", ""))
+        if event_type == "workflow_plan_update":
+            _display_workflow_plan_event(event, write, scroll, launch_state="adapted")
+        elif event_type in {"workflow_phase_start", "workflow_phase_done"}:
+            _display_workflow_phase_event(event, write, scroll)
+        elif event_type == "workflow_disagreement_summary":
+            _display_workflow_disagreement_event(event, write, scroll)
+        elif event_type in {"workflow_step_start", "workflow_step_done"}:
+            _display_workflow_step_event(event, write, scroll)
 
     def _complete_workflow_background(self, task_id: str, result: dict[str, Any]) -> None:
         from cli.workflows.control import unregister_workflow_control
@@ -4541,9 +4668,19 @@ class WyckoffTUI(App):
         usage = result.get("usage", {}) if isinstance(result.get("usage"), dict) else {}
         tokens_in = int(usage.get("input_tokens", 0) or 0)
         tokens_out = int(usage.get("output_tokens", 0) or 0)
+        gen_ms = int(usage.get("generation_ms") or 0)
         self._session_tokens["input"] += tokens_in
         self._session_tokens["output"] += tokens_out
         self._session_tokens["rounds"] += 1
+        self._session_tokens["cache_read"] += int(usage.get("cache_read_tokens") or 0)
+        if gen_ms > 0:
+            self._session_tokens["generation_ms"] += gen_ms
+        else:
+            # 合成轮常无 generation_ms；计入 unrated，避免会话均速虚高。
+            self._session_tokens["unrated_output"] = int(self._session_tokens.get("unrated_output") or 0) + tokens_out
+        self._session_tokens["cache_reported"] = bool(
+            self._session_tokens.get("cache_reported") or usage.get("cache_reported")
+        )
         self._update_status()
         events = result.get("events", [])
         self._chatlog_save(
@@ -4707,6 +4844,9 @@ class WyckoffTUI(App):
                 state.final_usage.get("input_tokens", 0),
                 state.final_usage.get("output_tokens", 0),
                 state.final_elapsed,
+                output_tok_per_s=state.final_usage.get("output_tok_per_s"),
+                cache_hit_rate=state.final_usage.get("cache_hit_rate"),
+                cache_reported=bool(state.final_usage.get("cache_reported")),
             )
         )
         ui.scroll()
@@ -5031,7 +5171,15 @@ class WyckoffTUI(App):
         self._messages[:] = resumed.messages
         self._conversation.clear_queue()
         self._conversation.abandon_active_turn()
-        self._session_tokens = {"input": 0, "output": 0, "rounds": 0}
+        self._session_tokens = {
+            "input": 0,
+            "output": 0,
+            "unrated_output": 0,
+            "rounds": 0,
+            "cache_read": 0,
+            "generation_ms": 0,
+            "cache_reported": False,
+        }
         self._session_id = session_id
         self._update_status()
         log.clear()
@@ -5078,7 +5226,15 @@ class WyckoffTUI(App):
         self._messages.clear()
         self._conversation.clear_queue()
         self._conversation.abandon_active_turn()
-        self._session_tokens = {"input": 0, "output": 0, "rounds": 0}
+        self._session_tokens = {
+            "input": 0,
+            "output": 0,
+            "unrated_output": 0,
+            "rounds": 0,
+            "cache_read": 0,
+            "generation_ms": 0,
+            "cache_reported": False,
+        }
         self._session_id = uuid.uuid4().hex[:12]
         log = self.query_one("#chat-log", ChatLog)
         log.clear()

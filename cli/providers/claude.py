@@ -9,6 +9,7 @@ from typing import Any
 import anthropic
 
 from cli.providers.base import LLMProvider
+from cli.usage_metrics import normalize_anthropic_usage
 
 
 class ClaudeProvider(LLMProvider):
@@ -134,13 +135,13 @@ class ClaudeProvider(LLMProvider):
         if tool_calls:
             yield {"type": "tool_calls", "tool_calls": tool_calls, "text": text_buf}
 
-        yield {
-            "type": "usage",
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "cache_read_tokens": cache_read,
-            "cache_write_tokens": cache_write,
-        }
+        usage = normalize_anthropic_usage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read=cache_read,
+            cache_write=cache_write,
+        )
+        yield {"type": "usage", **usage}
         if stop_reason:
             reason = "length" if stop_reason == "max_tokens" else stop_reason
             yield {"type": "finish", "reason": reason}

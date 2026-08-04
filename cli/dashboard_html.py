@@ -234,7 +234,7 @@ zh:{
   th_shares:'股数',th_cost:'成本',th_stop_loss:'止损',
   portfolio_id:'组合 ID',free_cash:'可用资金',no_portfolio:'暂无持仓数据',
   no_memory:'暂无记忆',del:'删除',confirm_del:'确认删除记忆 #',
-  ds_config:'数据源配置',model_config:'模型配置',not_set:'未配置',no_config:'暂无配置',no_models:'暂无模型',
+  ds_config:'数据源与超时配置',timeout_hint:'模型空闲/首token超时与工具超时（秒），影响 TUI 读盘与搜索慢请求',model_config:'模型配置',not_set:'未配置',no_config:'暂无配置',no_models:'暂无模型',
   add_model:'添加模型',edit:'编辑',save:'保存',cancel:'取消',set_default:'设为默认',confirm_del_model:'确认删除模型：',
   model_alias:'别名',provider:'供应商',api_key_label:'API Key',model_name:'模型名',base_url_label:'Base URL',
   th_id:'ID',th_provider:'供应商',th_model:'模型',th_apikey:'API Key',th_baseurl:'Base URL',th_actions:'操作',
@@ -262,7 +262,7 @@ en:{
   th_shares:'Shares',th_cost:'Cost',th_stop_loss:'Stop Loss',
   portfolio_id:'Portfolio ID',free_cash:'Free Cash',no_portfolio:'No portfolio data',
   no_memory:'No memories stored',del:'DEL',confirm_del:'Delete memory #',
-  ds_config:'Data Source Config',model_config:'Model Configs',not_set:'not set',no_config:'No config',no_models:'No models configured',
+  ds_config:'Data Source & Timeouts',timeout_hint:'Model idle/TTFT and tool timeouts in seconds for TUI/search',model_config:'Model Configs',not_set:'not set',no_config:'No config',no_models:'No models configured',
   add_model:'Add Model',edit:'Edit',save:'Save',cancel:'Cancel',set_default:'Set Default',confirm_del_model:'Delete model: ',
   model_alias:'Alias',provider:'Provider',api_key_label:'API Key',model_name:'Model',base_url_label:'Base URL',
   th_id:'ID',th_provider:'Provider',th_model:'Model',th_apikey:'API Key',th_baseurl:'Base URL',th_actions:'Actions',
@@ -347,13 +347,17 @@ async function renderOverview(c){
     <a href="https://tickflow.org/auth/register?ref=5N4NKTCPL4" target="_blank" rel="noopener" class="btn-accent" style="text-decoration:none">🔗 ${t('buy_tickflow')}</a>
     <a href="https://www.1route.dev/register?aff=359904261" target="_blank" rel="noopener" class="btn-accent" style="text-decoration:none;border-color:#a78bfa;color:#a78bfa">🔗 ${t('buy_llm')}</a>
   </div></div>`;
-  // --- data source config ---
-  const editableKeys=['tushare_token','tickflow_api_key'];
-  html+=`<div class="card fade-in" style="margin-top:12px;animation-delay:.1s"><div class="card-title">${t('ds_config')}</div>`;
-  const keys=Object.entries(cfg).filter(([k])=>k!=='models'&&k!=='default'&&k!=='fallback'&&k!=='light');
+  // --- data source + timeout config ---
+  const secretKeys=['tushare_token','tickflow_api_key'];
+  const timeoutKeys=['stream_chunk_timeout_seconds','tool_timeout_seconds'];
+  const editableKeys=[...secretKeys,...timeoutKeys];
+  html+=`<div class="card fade-in" style="margin-top:12px;animation-delay:.1s"><div class="card-title">${t('ds_config')}</div><div style="font-size:11px;color:var(--text-dim);margin-bottom:10px">${t('timeout_hint')}</div>`;
+  const keys=Object.entries(cfg).filter(([k])=>k!=='models'&&k!=='default'&&k!=='fallback'&&k!=='light'&&k!=='email'&&k!=='password'&&k!=='theme');
+  // Ensure timeout keys always appear even if somehow missing from API payload.
+  timeoutKeys.forEach(k=>{if(!keys.some(([kk])=>kk===k))keys.push([k,cfg[k]??''])});
   if(keys.length){keys.forEach(([k,v])=>{
     const isMasked=String(v||'').includes('****');const canEdit=editableKeys.includes(k);
-    html+=`<div class="cfg-row"><span class="cfg-key">${k}</span><span class="cfg-val${isMasked?' masked':''}" id="ds-val-${k}">${v||`<span style="color:var(--text-dim)">${t('not_set')}</span>`}</span>`;
+    html+=`<div class="cfg-row"><span class="cfg-key">${k}</span><span class="cfg-val${isMasked?' masked':''}" id="ds-val-${k}">${v===0||v?v:`<span style="color:var(--text-dim)">${t('not_set')}</span>`}</span>`;
     if(canEdit)html+=`<button class="btn-edit" onclick="_editDsKey('${k}')">${t('edit')}</button>`;
     html+=`</div>`})}
   else{html+=`<div class="empty">${t('no_config')}</div>`}
@@ -470,12 +474,17 @@ window._setDefault=async function(id){await fetch('/api/models/'+encodeURICompon
 window._setFallback=async function(id){await fetch('/api/models/'+encodeURIComponent(id)+'/fallback',{method:'PUT'});loadPage('overview')};
 window._editDsKey=function(key){
   const valEl=$('#ds-val-'+key);if(!valEl)return;
-  const cur=valEl.textContent.includes('****')?'':valEl.textContent;
-  valEl.innerHTML=`<input class="form-input" id="ds-input-${key}" type="password" value="${escHtml(cur)}" style="width:200px;display:inline-block" placeholder="enter new value"><button class="btn-accent" style="margin-left:8px" onclick="_saveDsKey('${key}')">${t('save')}</button><button class="btn-del" style="margin-left:4px" onclick="loadPage('overview')">${t('cancel')}</button>`;
+  const isTimeout=['stream_chunk_timeout_seconds','tool_timeout_seconds'].includes(key);
+  const cur=valEl.textContent.includes('****')?'':valEl.textContent.trim();
+  const inputType=isTimeout?'number':'password';
+  const attrs=isTimeout?' min="1" step="1"':'';
+  valEl.innerHTML=`<input class="form-input" id="ds-input-${key}" type="${inputType}" value="${escHtml(cur)}" style="width:200px;display:inline-block" placeholder="${isTimeout?'seconds':'enter new value'}"${attrs}><button class="btn-accent" style="margin-left:8px" onclick="_saveDsKey('${key}')">${t('save')}</button><button class="btn-del" style="margin-left:4px" onclick="loadPage('overview')">${t('cancel')}</button>`;
   $(`#ds-input-${key}`).focus()};
 window._saveDsKey=async function(key){
   const v=$(`#ds-input-${key}`).value.trim();if(!v)return;
-  await fetch('/api/config/'+encodeURIComponent(key),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:v})});
+  const resp=await fetch('/api/config/'+encodeURIComponent(key),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:v})});
+  const data=await resp.json().catch(()=>({}));
+  if(!resp.ok||data.ok===false){alert(data.error||('HTTP '+resp.status));return}
   loadPage('overview')}
 
 // ═══ Sync ═══

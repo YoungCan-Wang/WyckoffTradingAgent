@@ -12,6 +12,7 @@ import httpx
 import openai
 
 from cli.providers.base import LLMProvider
+from cli.usage_metrics import extract_openai_cache_tokens, openai_cache_reported
 
 _TIMEOUT = httpx.Timeout(300.0, connect=60.0)
 
@@ -24,6 +25,7 @@ class OpenAIStreamState:
     output_tokens: int = 0
     cache_read: int = 0
     cache_write: int = 0
+    cache_reported: bool = False
     finish_reason: str = ""
 
 
@@ -80,12 +82,8 @@ def _consume_usage_chunk(state: OpenAIStreamState, chunk: Any) -> bool:
         return False
     state.input_tokens = chunk.usage.prompt_tokens or 0
     state.output_tokens = chunk.usage.completion_tokens or 0
-    details = getattr(chunk.usage, "prompt_tokens_details", None)
-    if details:
-        state.cache_read = getattr(details, "cached_tokens", 0) or 0
-    comp_details = getattr(chunk.usage, "completion_tokens_details", None)
-    if comp_details:
-        state.cache_write = getattr(comp_details, "cached_tokens", 0) or 0
+    state.cache_read, state.cache_write = extract_openai_cache_tokens(chunk.usage)
+    state.cache_reported = openai_cache_reported(chunk.usage)
     return True
 
 
@@ -177,13 +175,15 @@ def _extract_text_tool_calls(text: str) -> tuple[dict[int, dict[str, Any]], str]
 
 
 def _usage_event(state: OpenAIStreamState) -> dict[str, Any]:
-    return {
+    event: dict[str, Any] = {
         "type": "usage",
         "input_tokens": state.input_tokens,
         "output_tokens": state.output_tokens,
-        "cache_read_tokens": state.cache_read,
-        "cache_write_tokens": state.cache_write,
     }
+    if state.cache_reported:
+        event["cache_read_tokens"] = state.cache_read
+        event["cache_write_tokens"] = state.cache_write
+    return event
 
 
 class OpenAIProvider(LLMProvider):
@@ -224,14 +224,15 @@ class OpenAIProvider(LLMProvider):
         response = self._client.chat.completions.create(**kwargs)
         result = self._parse_response(response)
         if hasattr(response, "usage") and response.usage:
-            p_details = getattr(response.usage, "prompt_tokens_details", None)
-            c_details = getattr(response.usage, "completion_tokens_details", None)
-            result["usage"] = {
+            usage: dict[str, Any] = {
                 "input_tokens": response.usage.prompt_tokens or 0,
                 "output_tokens": response.usage.completion_tokens or 0,
-                "cache_read_tokens": (getattr(p_details, "cached_tokens", 0) or 0) if p_details else 0,
-                "cache_write_tokens": (getattr(c_details, "cached_tokens", 0) or 0) if c_details else 0,
             }
+            if openai_cache_reported(response.usage):
+                cache_read, cache_write = extract_openai_cache_tokens(response.usage)
+                usage["cache_read_tokens"] = cache_read
+                usage["cache_write_tokens"] = cache_write
+            result["usage"] = usage
         return result
 
     def chat_stream(
