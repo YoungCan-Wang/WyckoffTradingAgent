@@ -1024,6 +1024,13 @@ def test_step4_result_record_defers_stop_updates_until_orders_are_saved(monkeypa
     assert record.ticket_rows[0]["reason"] == "系统风控 | audit=risk-ok"
 
 
+def _persist_portfolio(*, stop_loss: float | None = 8.1) -> SimpleNamespace:
+    return SimpleNamespace(
+        free_cash=50000.0,
+        positions=[SimpleNamespace(code="000001", stop_loss=stop_loss)],
+    )
+
+
 def test_step4_save_orders_and_nav_uses_persistence_boundaries(monkeypatch):
     calls: dict[str, object] = {}
     monkeypatch.setattr(
@@ -1051,7 +1058,7 @@ def test_step4_save_orders_and_nav_uses_persistence_boundaries(monkeypatch):
     context = SimpleNamespace(
         trade_date="2026-05-15",
         total_equity=120000.0,
-        portfolio=SimpleNamespace(free_cash=50000.0),
+        portfolio=_persist_portfolio(stop_loss=8.1),
     )
 
     result = step4_results.save_step4_orders_and_nav(
@@ -1106,7 +1113,7 @@ def test_step4_order_write_failure_does_not_mutate_stops_or_nav(monkeypatch):
         context=SimpleNamespace(
             trade_date="2026-05-15",
             total_equity=120000.0,
-            portfolio=SimpleNamespace(free_cash=50000.0),
+            portfolio=_persist_portfolio(),
         ),
         run_id="run-1",
         rendered_market_view="市场视图",
@@ -1134,7 +1141,7 @@ def test_step4_auxiliary_failure_keeps_previous_orders_active(monkeypatch):
         context=SimpleNamespace(
             trade_date="2026-05-15",
             total_equity=120000.0,
-            portfolio=SimpleNamespace(free_cash=50000.0),
+            portfolio=_persist_portfolio(stop_loss=8.1),
         ),
         run_id="run-1",
         rendered_market_view="市场视图",
@@ -1142,7 +1149,11 @@ def test_step4_auxiliary_failure_keeps_previous_orders_active(monkeypatch):
         ticket_rows=[{"code": "000001"}],
     )
 
-    assert result == step4_results.Step4PersistenceResult(False, orders_written=True)
+    assert result == step4_results.Step4PersistenceResult(
+        False,
+        orders_written=True,
+        stop_rollback=({"code": "000001", "stop_loss": 8.1},),
+    )
     assert cancelled == []
 
 
@@ -1161,7 +1172,7 @@ def test_step4_previous_order_cancel_failure_requires_new_order_rollback(monkeyp
         context=SimpleNamespace(
             trade_date="2026-05-15",
             total_equity=120000.0,
-            portfolio=SimpleNamespace(free_cash=50000.0),
+            portfolio=_persist_portfolio(stop_loss=8.1),
         ),
         run_id="run-1",
         rendered_market_view="市场视图",
@@ -1169,7 +1180,37 @@ def test_step4_previous_order_cancel_failure_requires_new_order_rollback(monkeyp
         ticket_rows=[{"code": "000001"}],
     )
 
-    assert result == step4_results.Step4PersistenceResult(False, orders_written=True)
+    assert result == step4_results.Step4PersistenceResult(
+        False,
+        orders_written=True,
+        stop_rollback=({"code": "000001", "stop_loss": 8.1},),
+    )
+
+
+def test_step4_nav_failure_after_stop_update_carries_stop_rollback(monkeypatch):
+    monkeypatch.setattr(step4_results, "save_ai_trade_orders", lambda **_kwargs: True)
+    monkeypatch.setattr(step4_results, "update_position_stops", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(step4_results, "upsert_daily_nav", lambda **_kwargs: False)
+    monkeypatch.setattr(step4_results, "cancel_trade_orders", lambda **_kwargs: 0)
+
+    result = step4_results.save_step4_orders_and_nav(
+        options=SimpleNamespace(portfolio_id="P1", model="model-x"),
+        context=SimpleNamespace(
+            trade_date="2026-05-15",
+            total_equity=120000.0,
+            portfolio=_persist_portfolio(stop_loss=7.5),
+        ),
+        run_id="run-1",
+        rendered_market_view="市场视图",
+        tickets=[_ticket(effective_stop_loss=9.2)],
+        ticket_rows=[{"code": "000001"}],
+    )
+
+    assert result == step4_results.Step4PersistenceResult(
+        False,
+        orders_written=True,
+        stop_rollback=({"code": "000001", "stop_loss": 7.5},),
+    )
 
 
 def test_nav_snapshot_records_real_cash_not_the_post_execution_projection(monkeypatch):
@@ -1185,7 +1226,7 @@ def test_nav_snapshot_records_real_cash_not_the_post_execution_projection(monkey
         context=SimpleNamespace(
             trade_date="2026-05-15",
             total_equity=87000.0,
-            portfolio=SimpleNamespace(free_cash=71000.0),
+            portfolio=SimpleNamespace(free_cash=71000.0, positions=[]),
         ),
         run_id="run-1",
         rendered_market_view="市场视图",
@@ -1202,7 +1243,7 @@ def _persist_context() -> SimpleNamespace:
         trade_date="2026-05-15",
         total_equity=120000.0,
         state_signature="abc123",
-        portfolio=SimpleNamespace(free_cash=50000.0),
+        portfolio=_persist_portfolio(stop_loss=8.1),
     )
 
 
@@ -1267,14 +1308,22 @@ def test_notification_failure_preserves_written_orders(monkeypatch):
 
 
 def test_persistence_failure_rolls_back_written_orders(monkeypatch):
+    stop_rollback = ({"code": "000001", "stop_loss": 8.1},)
     result, calls = _run_step4_result_flow(
         monkeypatch,
-        step4_results.Step4PersistenceResult(False, orders_written=True),
+        step4_results.Step4PersistenceResult(False, orders_written=True, stop_rollback=stop_rollback),
     )
 
     assert result == (False, "persistence_failed")
     assert calls["notifications"] == []
-    assert calls["rollbacks"] == [{"portfolio_id": "P1", "trade_date": "2026-05-15", "run_id": "run-new"}]
+    assert calls["rollbacks"] == [
+        {
+            "portfolio_id": "P1",
+            "trade_date": "2026-05-15",
+            "run_id": "run-new",
+            "stop_rollback": stop_rollback,
+        }
+    ]
 
 
 def test_order_write_failure_does_not_attempt_rollback(monkeypatch):
@@ -1304,6 +1353,7 @@ def test_rollback_step4_run_cancels_only_current_run_id(monkeypatch):
         "cancel_trade_orders",
         lambda **kwargs: captured.update(kwargs) or 2,
     )
+    monkeypatch.setattr(step4_results, "update_position_stops", lambda *_args, **_kwargs: True)
 
     rolled_back = step4_results.rollback_step4_run(
         portfolio_id="P1",
@@ -1318,6 +1368,59 @@ def test_rollback_step4_run_cancels_only_current_run_id(monkeypatch):
         "only_run_id": "run-new",
         "raise_on_error": True,
     }
+
+
+def test_rollback_step4_run_restores_previous_stop_losses(monkeypatch):
+    cancelled: list[dict] = []
+    restored: list[tuple[str, list[dict]]] = []
+    monkeypatch.setattr(
+        step4_results,
+        "cancel_trade_orders",
+        lambda **kwargs: cancelled.append(kwargs) or 1,
+    )
+    monkeypatch.setattr(
+        step4_results,
+        "update_position_stops",
+        lambda portfolio_id, updates: restored.append((portfolio_id, updates)) or True,
+    )
+
+    rolled_back = step4_results.rollback_step4_run(
+        portfolio_id="P1",
+        trade_date="2026-05-15",
+        run_id="run-new",
+        stop_rollback=({"code": "000001", "stop_loss": 8.1}, {"code": "600519", "stop_loss": None}),
+    )
+
+    assert rolled_back is True
+    assert cancelled == [
+        {
+            "portfolio_id": "P1",
+            "trade_date": "2026-05-15",
+            "only_run_id": "run-new",
+            "raise_on_error": True,
+        }
+    ]
+    assert restored == [
+        (
+            "P1",
+            [{"code": "000001", "stop_loss": 8.1}, {"code": "600519", "stop_loss": None}],
+        )
+    ]
+
+
+def test_rollback_step4_run_surfaces_stop_restore_failure(monkeypatch):
+    monkeypatch.setattr(step4_results, "cancel_trade_orders", lambda **_kwargs: 1)
+    monkeypatch.setattr(step4_results, "update_position_stops", lambda *_args, **_kwargs: False)
+
+    assert (
+        step4_results.rollback_step4_run(
+            portfolio_id="P1",
+            trade_date="2026-05-15",
+            run_id="run-new",
+            stop_rollback=({"code": "000001", "stop_loss": 8.1},),
+        )
+        is False
+    )
 
 
 def test_rollback_step4_run_surfaces_cancel_error(monkeypatch):

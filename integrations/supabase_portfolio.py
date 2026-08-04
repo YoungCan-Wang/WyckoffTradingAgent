@@ -270,12 +270,11 @@ def update_position_stops(portfolio_id: str, updates: list[dict[str, Any]]) -> b
         # 若量大可考虑其它方式，目前持仓数不多，循环即可
         for item in updates:
             code = item.get("code")
-            stop_loss = item.get("stop_loss")
-            if not code or stop_loss is None:
+            if not code or "stop_loss" not in item:
                 continue
             (
                 client.table(TABLE_PORTFOLIO_POSITIONS)
-                .update({"stop_loss": stop_loss})
+                .update({"stop_loss": item.get("stop_loss")})
                 .eq("portfolio_id", portfolio_id)
                 .eq("code", code)
                 .execute()
