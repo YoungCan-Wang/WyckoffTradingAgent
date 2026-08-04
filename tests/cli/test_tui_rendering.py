@@ -1289,12 +1289,7 @@ def test_run_workflow_background_forwards_ui_progress_events():
 
 
 def test_session_avg_tok_per_s_ignores_unrated_workflow_output():
-    assert (
-        _session_avg_tok_per_s(
-            {"output": 100, "unrated_output": 80, "generation_ms": 1000}
-        )
-        == 20.0
-    )
+    assert _session_avg_tok_per_s({"output": 100, "unrated_output": 80, "generation_ms": 1000}) == 20.0
 
 
 def test_workflow_background_event_summary_keeps_handoff_evidence():
