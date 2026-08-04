@@ -54,6 +54,7 @@ def build_turn_runtime(
     workflow_only_step_id: str = "",
     enforce_turn_expectations: bool | None = None,
     routing_messages: list[dict[str, Any]] | None = None,
+    steer_drain: Callable[[], list[str]] | None = None,
 ) -> tuple[Any, WorkflowContext]:
     """Return direct runtime for general chat, workflow executor for task turns."""
 
@@ -67,6 +68,7 @@ def build_turn_runtime(
             cancel_check=cancel_check,
             stream_chunk_timeout=stream_chunk_timeout,
             enforce_turn_expectations=enforce_turn_expectations,
+            steer_drain=steer_drain,
         ), workflow
     executor = WorkflowExecutor(
         provider,
@@ -97,6 +99,7 @@ def build_turn_runtime(
             cancel_check=cancel_check,
             stream_chunk_timeout=stream_chunk_timeout,
             enforce_turn_expectations=enforce_turn_expectations,
+            steer_drain=steer_drain,
         ), _handoff_workflow_context(workflow, handoff)
     return executor, workflow
 
@@ -110,12 +113,14 @@ def _direct_runtime(
     cancel_check: Callable[[], bool] | None,
     stream_chunk_timeout: float | None,
     enforce_turn_expectations: bool | None,
+    steer_drain: Callable[[], list[str]] | None = None,
 ) -> AgentRuntime:
     kwargs: dict[str, Any] = {
         "scratchpad": scratchpad,
         "cancel_check": cancel_check,
         "allowed_tools": infer_direct_allowed_tools(user_text),
         "enforce_turn_expectations": _direct_turn_expectations_default(enforce_turn_expectations),
+        "steer_drain": steer_drain,
     }
     if stream_chunk_timeout is not None:
         kwargs["stream_chunk_timeout"] = stream_chunk_timeout

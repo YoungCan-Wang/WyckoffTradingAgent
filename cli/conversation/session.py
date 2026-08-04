@@ -33,6 +33,7 @@ class ConversationSession:
     def __init__(self) -> None:
         self.active_turn: ActiveTurn | None = None
         self.input_queue: deque[QueuedInput] = deque()
+        self.steering_queue: deque[str] = deque()
 
     @property
     def phase(self) -> TurnPhase:
@@ -113,6 +114,7 @@ class ConversationSession:
         return []
 
     def on_turn_completed(self) -> list[SessionUiEvent]:
+        self.steering_queue.clear()
         events = self._set_phase(TurnPhase.COMPLETED)
         events.append(SessionUiEvent.spinner_stop())
         events.append(SessionUiEvent.status_refresh())
@@ -129,6 +131,7 @@ class ConversationSession:
             if messages_checkpoint is not None:
                 turn.messages_checkpoint = [dict(item) for item in messages_checkpoint]
             turn.failure = None
+        self.steering_queue.clear()
         events = self._set_phase(TurnPhase.CANCELLED)
         events.append(SessionUiEvent.spinner_stop())
         events.append(SessionUiEvent.resume_hint(cancelled=True))
@@ -147,6 +150,7 @@ class ConversationSession:
             turn.failure = info
             if messages_checkpoint is not None:
                 turn.messages_checkpoint = [dict(item) for item in messages_checkpoint]
+        self.steering_queue.clear()
         events = self._set_phase(TurnPhase.FAILED)
         events.append(SessionUiEvent.spinner_stop())
         events.append(SessionUiEvent.resume_hint(cancelled=False))
@@ -154,12 +158,25 @@ class ConversationSession:
         return events
 
     def abandon_active_turn(self) -> None:
+        self.steering_queue.clear()
         self.active_turn = None
 
     def enqueue(self, item: QueuedInput | str, *, kind: str = "user") -> list[SessionUiEvent]:
         queued = item if isinstance(item, QueuedInput) else QueuedInput(kind=kind, content=str(item))
         self.input_queue.append(queued)
         return [SessionUiEvent.queued(depth=len(self.input_queue)), SessionUiEvent.status_refresh()]
+
+    def enqueue_steer(self, text: str) -> list[SessionUiEvent]:
+        content = (text or "").strip()
+        if not content:
+            return []
+        self.steering_queue.append(content)
+        return [SessionUiEvent.steered(depth=len(self.steering_queue)), SessionUiEvent.status_refresh()]
+
+    def drain_steering(self) -> list[str]:
+        items = list(self.steering_queue)
+        self.steering_queue.clear()
+        return items
 
     def dequeue_next(self) -> QueuedInput | None:
         if not self.input_queue:
@@ -168,6 +185,7 @@ class ConversationSession:
 
     def clear_queue(self) -> None:
         self.input_queue.clear()
+        self.steering_queue.clear()
 
     def build_resume_user_text(self) -> str:
         """Soft checkpoint: inject completed tool briefs into resume prompt."""

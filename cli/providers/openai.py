@@ -24,6 +24,7 @@ class OpenAIStreamState:
     output_tokens: int = 0
     cache_read: int = 0
     cache_write: int = 0
+    finish_reason: str = ""
 
 
 def _openai_extra_content(obj: Any) -> dict[str, Any] | None:
@@ -261,7 +262,12 @@ class OpenAIProvider(LLMProvider):
                     continue
                 if not chunk.choices:
                     continue
-                yield from _consume_delta_events(state, chunk.choices[0].delta)
+                choice = chunk.choices[0]
+                if reason := getattr(choice, "finish_reason", None):
+                    state.finish_reason = str(reason)
+                delta = getattr(choice, "delta", None)
+                if delta is not None:
+                    yield from _consume_delta_events(state, delta)
         finally:
             if hasattr(stream, "close"):
                 stream.close()
@@ -271,6 +277,8 @@ class OpenAIProvider(LLMProvider):
         if state.tool_map:
             yield {"type": "tool_calls", "tool_calls": _tool_calls_from_map(state.tool_map), "text": state.text_buf}
         yield _usage_event(state)
+        if state.finish_reason:
+            yield {"type": "finish", "reason": state.finish_reason}
 
     def _build_messages(self, messages: list[dict], system_prompt: str) -> list[dict]:
         """将统一消息格式转为 OpenAI messages 格式。"""

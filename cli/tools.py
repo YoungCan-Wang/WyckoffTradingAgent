@@ -792,6 +792,30 @@ class ToolRegistry:
         allowed = set(allowed_tools)
         return [schema for schema in TOOL_SCHEMAS if schema["name"] in allowed]
 
+    def has_tool(self, name: str) -> bool:
+        return name in self._tools
+
+    def prepare(self, name: str, args: dict[str, Any]) -> Any:
+        """Pre-execution gates (exists + schema/scope). Approval stays in execute()."""
+
+        from cli.prepare_tool_call import accept, reject
+
+        if name == "check_background_tasks":
+            return accept(args)
+        if name not in self._tools:
+            return reject("tool_not_found", f"未知工具: {name}", args=args)
+        if self._tool_surface.resolve(name) is None:
+            return accept(args)
+        prepared = self._tool_surface.prepare_call(name, args)
+        if prepared.get("ok"):
+            return accept(prepared.get("args") or args)
+        return reject(
+            str(prepared.get("code") or "invalid_arguments"),
+            str(prepared.get("message") or "工具参数校验失败"),
+            args=args if isinstance(args, dict) else {},
+            details=prepared.get("details") if isinstance(prepared.get("details"), dict) else None,
+        )
+
     def _check_user_confirmed_in_history(self, messages: list[dict[str, Any]] | None) -> bool:
         if not messages:
             return False

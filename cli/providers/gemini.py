@@ -105,6 +105,7 @@ class GeminiProvider(LLMProvider):
         text_buf = ""
         tool_calls = []
         usage_meta = None
+        finish_reason = ""
 
         for chunk in self._client.models.generate_content_stream(
             model=self._model,
@@ -117,7 +118,12 @@ class GeminiProvider(LLMProvider):
                 usage_meta = um
             if not chunk.candidates:
                 continue
-            for part in chunk.candidates[0].content.parts:
+            candidate = chunk.candidates[0]
+            raw_finish = getattr(candidate, "finish_reason", None)
+            if raw_finish is not None:
+                finish_reason = str(getattr(raw_finish, "name", raw_finish))
+            parts = getattr(getattr(candidate, "content", None), "parts", None) or []
+            for part in parts:
                 if part.function_call:
                     tool_calls.append(tool_call_dict_from_part(part))
                 elif getattr(part, "thought", False) and part.text:
@@ -137,6 +143,9 @@ class GeminiProvider(LLMProvider):
             "cache_read_tokens": getattr(usage_meta, "cached_content_token_count", 0) or 0,
             "cache_write_tokens": getattr(usage_meta, "cache_tokens_input", 0) or 0,
         }
+        if finish_reason:
+            reason = "length" if "MAX_TOKEN" in finish_reason.upper() else finish_reason
+            yield {"type": "finish", "reason": reason}
 
     def _build_contents(self, messages: list[dict]) -> list[types.Content]:
         """将统一消息格式转为 Gemini Content 列表。"""

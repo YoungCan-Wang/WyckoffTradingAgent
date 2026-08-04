@@ -322,12 +322,15 @@ flowchart LR
 |------|------|
 | **Turn / ActiveTurn** | 一次用户提交触发的对话轮次，含 `user_text`、`TurnPhase`、失败信息与可选 checkpoint。安卓对标：带生命周期的 Job + SavedState。 |
 | **TurnPhase** | `idle` → `submitted` → `running` → `streaming` / `tool_running` / `awaiting_user` → `completed`；或 `cancelling` → `cancelled`；或 `failed`。 |
-| **ConversationSession** | CLI 会话控制器（≈ ViewModel）：拥有 `ActiveTurn`、`input_queue`，把用户文本仲裁为意图，并把 Runtime 事件映射为 phase。 |
+| **ConversationSession** | CLI 会话控制器（≈ ViewModel）：拥有 `ActiveTurn`、`input_queue`、`steering_queue`，把用户文本仲裁为意图，并把 Runtime 事件映射为 phase。 |
 | **ResumeTurn** | 在 `failed`/`cancelled` 后输入短「继续」：重试**同一句用户问题**（可带 soft/hard checkpoint），不是续 workflow。 |
 | **ResumeWorkflow** | 短「继续」且无 Failed turn handle、存在可续 workflow 时，展开为 `继续 workflow wf_…`。显式 `继续 workflow wf_xxx` 始终走 workflow。 |
 | **Soft checkpoint** | 失败前已完成工具的摘要，Resume 时注入 `<turn-resume-context>`，减少重复只读调用，**不是**断点续跑。 |
 | **Hard mid-tool resume** | `TurnCheckpoint`（messages 切片 + `completed_tool_call_ids`）；`AgentRuntime.run_stream(resume_from=...)` 跳过已完成 tool_call。写操作需重新确认，不可盲目 skip。 |
 | **TurnOutcome** | Runtime 终态事件：`done` / `turn_cancelled` / `turn_failed`（含 `failure.kind`）。Session 只认这些终态，不再靠 generator 静默结束。 |
+| **prepareToolCall** | 工具执行前的统一预检（存在 / schema / scope / 过早提问）；失败以结构化 `code` 回灌模型，不进入 handler。安卓对标：`PackageManager` resolve + permission 检查后再 `startService`。 |
+| **Steering** | 忙时注入本轮新指令（`!…` / `/steer`），经 `steering_queue` 在下一跳 model 调用前写入 messages；与排队到下一 turn 的 `input_queue` 不同。安卓对标：改正在跑 Job 的参数，而不是再 enqueue 一个新 Work。 |
+| **Auto-continuation** | 模型停了但工作未完时由 `decide_agent_loop` 自动注入续跑 prompt（截断 / 轮次上限 / 未完成必需工具），最多 2 次；与用户「继续」ResumeTurn 分层。 |
 | **FallbackProvider** | Provider 层自动切换备用模型；与用户主动 ResumeTurn **分层**，不混为一个概念。 |
 
 ## 15. Web 运行边界

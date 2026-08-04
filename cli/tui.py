@@ -836,6 +836,24 @@ def _display_retry_event(event: dict[str, Any], write, scroll) -> None:
     scroll()
 
 
+def _display_continuation_event(event: dict[str, Any], write, scroll) -> None:
+    reason = str(event.get("reason") or "")
+    label = {
+        "output-length": "回答达到上限，自动续写",
+        "step-limit": "工具轮次达上限，自动续跑",
+        "unfinished-work": "仍有未完成步骤，自动续跑",
+    }.get(reason, "自动续跑")
+    write(Text.from_markup(f"  [cyan]↻ {label}（{event.get('n', 1)}）[/cyan]"))
+    scroll()
+
+
+def _display_steered_event(event: dict[str, Any], write, scroll) -> None:
+    texts = event.get("texts") or []
+    preview = escape(str(texts[0])) if texts else ""
+    write(Text.from_markup(f"  [magenta]🧭 已注入转向: {preview}[/magenta]"))
+    scroll()
+
+
 def _workflow_detail_step_line(step: dict[str, Any], agent_detail: dict[str, Any] | None = None) -> str:
     step_id = escape(str(step.get("step_id") or step.get("id") or "task"))
     title = escape(str(step.get("title") or step_id))
@@ -2244,6 +2262,8 @@ class WyckoffTUI(App):
             parts.append(f"[{style}]turn:{phase_label}[/{style}]")
         if queue_depth := len(self._conversation.input_queue):
             parts.append(f"queued:{queue_depth}")
+        if steer_depth := len(self._conversation.steering_queue):
+            parts.append(f"steer:{steer_depth}")
         parts.append(f"Wyckoff CLI v{ver}")
         prov = self._state.get("provider_name", "")
         model = self._state.get("model", "")
@@ -2521,6 +2541,10 @@ class WyckoffTUI(App):
         if intent.kind == UserIntent.RESUME_WORKFLOW:
             self._resume_recent_workflow_followup(text, log)
             return
+        if intent.kind == UserIntent.STEER_TURN:
+            self._apply_session_ui(self._conversation.enqueue_steer(intent.text))
+            log.write(Text.from_markup("  [dim]🧭 已注入转向指令（本轮下一跳生效）[/dim]"))
+            return
         if intent.kind == UserIntent.ENQUEUE_INPUT:
             self._apply_session_ui(self._conversation.enqueue(text))
             log.write(Text.from_markup("  [dim]📋 已排队（等待当前回复完成后自动发送）[/dim]"))
@@ -2599,6 +2623,9 @@ class WyckoffTUI(App):
                     log.write(Text.from_markup("  [dim]提示: 输入「继续」可接着刚才的问题[/dim]"))
                 else:
                     log.write(Text.from_markup("  [dim]提示: 切换模型后输入「继续」可重试刚才的问题[/dim]"))
+            elif etype == "steered":
+                depth = int((event.payload or {}).get("depth") or 0)
+                log.write(Text.from_markup(f"  [dim]🧭 转向已入队（pending:{depth}）[/dim]"))
             elif etype == "interrupted_banner":
                 payload = event.payload or {}
                 sid = escape(str(payload.get("session_id", "")))
@@ -2636,6 +2663,9 @@ class WyckoffTUI(App):
         cmd = raw.lower().split()[0]
         log = self.query_one("#chat-log", ChatLog)
 
+        if cmd == "/steer":
+            self._handle_steer_command(raw, log)
+            return
         if cmd in ("/quit", "/exit", "/q"):
             self._save_and_exit()
         elif cmd == "/clear":
@@ -2725,6 +2755,7 @@ class WyckoffTUI(App):
                 "  /schedule— 定时任务（list/status/run/add/rm/on/off）\n"
                 "  /doctor  — 模型与数据源健康检查\n"
                 "  /browser — 本机 Chrome CDP 状态与启动提示\n"
+                "  /steer   — 忙时注入转向指令（本轮生效；也可用 !指令）\n"
                 "  /resume  — 恢复历史对话\n"
                 "  /fork    — 分叉当前会话\n"
                 "  /new     — 新对话 (Ctrl+N)\n"
@@ -2734,12 +2765,27 @@ class WyckoffTUI(App):
                 f"\n[bold]Prompt Templates[/bold]\n{template_lines}"
                 "\n[bold]快捷键[/bold]\n"
                 "  Ctrl+P   — 命令面板\n"
-                "  Ctrl+C   — 复制选中文本 / 退出\n"
+                "  Ctrl+C   — 复制选中文本 / 忙时中断\n"
                 "  Ctrl+N   — 新对话\n"
                 "  Ctrl+L   — 清屏\n"
+                "  忙时普通输入 — 排队到下一轮；`!指令` — 本轮转向\n"
                 "  鼠标拖选  — 选择文本\n"
             )
         )
+
+    def _handle_steer_command(self, raw: str, log) -> None:
+        from cli.conversation.intents import strip_steer_prefix
+
+        payload = strip_steer_prefix(raw)
+        if not payload:
+            log.write(Text.from_markup("[dim]用法: /steer <指令>  或忙时输入 !指令[/dim]"))
+            return
+        if self._busy:
+            self._apply_session_ui(self._conversation.enqueue_steer(payload))
+            log.write(Text.from_markup("  [dim]🧭 已注入转向指令（本轮下一跳生效）[/dim]"))
+            return
+        log.write(Text.from_markup("[dim]当前空闲，转向指令将作为普通消息发送[/dim]"))
+        self._send_message(payload)
 
     def _show_token_usage(self, log) -> None:
         t = self._session_tokens
@@ -4553,25 +4599,9 @@ class WyckoffTUI(App):
         round_number = int(event.get("round") or 0)
         if round_number > 0:
             state.round_starts.setdefault(round_number, time.monotonic())
-
-        if event_type == "workflow_plan":
-            state.workflow_run_id, state.workflow_name = _display_workflow_plan_event(event, ui.write, ui.scroll)
-        elif event_type == "workflow_plan_update":
-            state.workflow_run_id, state.workflow_name = _display_workflow_plan_event(
-                event,
-                ui.write,
-                ui.scroll,
-                launch_state="adapted",
-            )
-        elif event_type in {"workflow_phase_start", "workflow_phase_done"}:
-            _display_workflow_phase_event(event, ui.write, ui.scroll)
-        elif event_type == "workflow_disagreement_summary":
-            _display_workflow_disagreement_event(event, ui.write, ui.scroll)
-        elif event_type in {"workflow_step_start", "workflow_step_done"}:
-            _display_workflow_step_event(event, ui.write, ui.scroll)
-        elif event_type in {"workflow_done", "thinking_delta"}:
-            pass
-        elif event_type == "compaction":
+        if self._handle_workflow_agent_event(event_type, event, state, ui):
+            return False
+        if event_type == "compaction":
             ui.write(_compaction_panel(event))
             ui.scroll()
         elif event_type == "text_delta":
@@ -4582,22 +4612,9 @@ class WyckoffTUI(App):
             if round_number:
                 state.round_tool_names.setdefault(round_number, []).extend(names)
         elif event_type == "usage":
-            usage = event.get("usage", {})
-            if round_number:
-                state.round_usages[round_number] = usage
-            state.last_usage = usage
-            fb_msg = getattr(self._provider, "last_fallback_msg", None)
-            if fb_msg:
-                ui.write(Text.from_markup(f"  [yellow]⚡ {fb_msg}[/yellow]"))
-                self._provider.last_fallback_msg = None
+            self._handle_usage_agent_event(event, state, round_number, ui)
         elif event_type == "thinking":
-            ui.spinner_stop()
-            thinking_text = event.get("text", "")
-            if round_number := event.get("round"):
-                state.round_thinking[int(round_number)] = thinking_text
-            preview = _build_thinking_preview(thinking_text)
-            if preview:
-                ui.write(preview)
+            self._handle_thinking_agent_event(event, state, ui)
         elif event_type == "model_start":
             ui.spinner_start("思考中")
         elif event_type == "stage_start":
@@ -4611,7 +4628,53 @@ class WyckoffTUI(App):
         elif event_type in {"tool_result", "tool_error"}:
             ui.spinner_stop()
             state.executed_tool_summaries.append(_display_tool_result_event(event, self._tools, ui.write, ui.scroll))
-        elif event_type == "retry":
+        elif event_type in {"retry", "continuation", "steered"}:
+            self._handle_loop_control_event(event_type, event, stream, ui)
+        elif event_type == "done":
+            return self._finish_agent_event(event, state, stream, ui, t_start, chatlog_save)
+        return False
+
+    def _handle_workflow_agent_event(self, event_type, event, state, ui) -> bool:
+        if event_type == "workflow_plan":
+            state.workflow_run_id, state.workflow_name = _display_workflow_plan_event(event, ui.write, ui.scroll)
+            return True
+        if event_type == "workflow_plan_update":
+            state.workflow_run_id, state.workflow_name = _display_workflow_plan_event(
+                event, ui.write, ui.scroll, launch_state="adapted"
+            )
+            return True
+        if event_type in {"workflow_phase_start", "workflow_phase_done"}:
+            _display_workflow_phase_event(event, ui.write, ui.scroll)
+            return True
+        if event_type == "workflow_disagreement_summary":
+            _display_workflow_disagreement_event(event, ui.write, ui.scroll)
+            return True
+        if event_type in {"workflow_step_start", "workflow_step_done"}:
+            _display_workflow_step_event(event, ui.write, ui.scroll)
+            return True
+        return event_type in {"workflow_done", "thinking_delta"}
+
+    def _handle_usage_agent_event(self, event, state, round_number: int, ui) -> None:
+        usage = event.get("usage", {})
+        if round_number:
+            state.round_usages[round_number] = usage
+        state.last_usage = usage
+        fb_msg = getattr(self._provider, "last_fallback_msg", None)
+        if fb_msg:
+            ui.write(Text.from_markup(f"  [yellow]⚡ {fb_msg}[/yellow]"))
+            self._provider.last_fallback_msg = None
+
+    def _handle_thinking_agent_event(self, event, state, ui) -> None:
+        ui.spinner_stop()
+        thinking_text = event.get("text", "")
+        if round_number := event.get("round"):
+            state.round_thinking[int(round_number)] = thinking_text
+        if preview := _build_thinking_preview(thinking_text):
+            ui.write(preview)
+
+    def _handle_loop_control_event(self, event_type, event, stream, ui) -> None:
+        if event_type == "retry":
+            # retry 会改写未完成回合，清掉半截流式输出避免和下一跳叠在一起。
             _flush_and_clear_stream(self, ui, stream)
             self._agent_log.info(
                 "session=%s loop_guard retry=%d required_tool=%s",
@@ -4621,21 +4684,34 @@ class WyckoffTUI(App):
             )
             _display_retry_event(event, ui.write, ui.scroll)
             ui.spinner_start()
-        elif event_type == "done":
-            ui.spinner_stop()
-            _flush_stream_line(stream, ui.write_stream, ui.scroll)
-            final_text = event.get("text", "")
-            state.final_usage = event.get("usage", state.final_usage)
-            state.final_elapsed = float(event.get("elapsed", time.monotonic() - t_start))
-            state.final_rounds = int(event.get("rounds", 0))
-            _display_stream_final(self, ui.log, stream, final_text, ui.write, ui.scroll)
-            total_input = state.final_usage.get("input_tokens", 0)
-            total_output = state.final_usage.get("output_tokens", 0)
-            ui.write(_usage_footer(total_input, total_output, state.final_elapsed))
-            ui.scroll()
-            self._save_completed_agent_turn(state, final_text, t_start, chatlog_save)
-            return True
-        return False
+            return
+        # continuation / steered：已流出的正文要留在屏幕上，只冲掉行缓冲。
+        _flush_stream_line(stream, ui.write_stream, ui.scroll)
+        if event_type == "continuation":
+            _display_continuation_event(event, ui.write, ui.scroll)
+            ui.spinner_start("续跑中")
+            return
+        _display_steered_event(event, ui.write, ui.scroll)
+        ui.spinner_start("按转向继续")
+
+    def _finish_agent_event(self, event, state, stream, ui, t_start, chatlog_save) -> bool:
+        ui.spinner_stop()
+        _flush_stream_line(stream, ui.write_stream, ui.scroll)
+        final_text = event.get("text", "")
+        state.final_usage = event.get("usage", state.final_usage)
+        state.final_elapsed = float(event.get("elapsed", time.monotonic() - t_start))
+        state.final_rounds = int(event.get("rounds", 0))
+        _display_stream_final(self, ui.log, stream, final_text, ui.write, ui.scroll)
+        ui.write(
+            _usage_footer(
+                state.final_usage.get("input_tokens", 0),
+                state.final_usage.get("output_tokens", 0),
+                state.final_elapsed,
+            )
+        )
+        ui.scroll()
+        self._save_completed_agent_turn(state, final_text, t_start, chatlog_save)
+        return True
 
     # ----- Agent 执行（后台 Worker）-----
 
@@ -4720,6 +4796,7 @@ class WyckoffTUI(App):
             workflow_args=workflow_override.args if workflow_override else None,
             workflow_only_step_id=workflow_override.only_step_id if workflow_override else "",
             routing_messages=self._messages,
+            steer_drain=self._conversation.drain_steering,
         )
         state.workflow_name = "" if workflow_context.is_general else workflow_context.name
         system_prompt = with_current_time(self._system_prompt)

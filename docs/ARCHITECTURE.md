@@ -279,10 +279,12 @@ Agent 输出计划:
 最终综合结论
 ```
 
-当前 CLI 没有独立的 `/plan` 命令，也没有“先生成计划、等待用户确认、再执行工具”的交互式 Plan Mode（计划模式）状态机。运行时默认让模型负责自然语言理解、上下文恢复和任务拆分；代码只在两类场景做确定性治理：
+当前 CLI 没有独立的 `/plan` 命令，也没有“先生成计划、等待用户确认、再执行工具”的交互式 Plan Mode（计划模式）状态机。运行时默认让模型负责自然语言理解、上下文恢复和任务拆分；代码在工具边界与回合续跑上做确定性治理：
 
-- 设置 `WYCKOFF_STRICT_TOOL_EXPECTATIONS=1` 或测试显式开启时，`loop_guard` 才会按旧式 turn expectation 注入 retry message（重试消息），用于诊断模型漏调工具，不作为默认聊天路径。
-- 高风险工具（`update_portfolio`、`exec_command`、`write_file`）执行前由 TUI 弹窗确认，避免写操作直接落地。
+- **prepareToolCall**：工具真正执行前经 `cli/prepare_tool_call.py` + `ToolSurface.prepare_call` 做存在性 / schema / scope / 过早提问拦截；高风险工具（`update_portfolio`、`exec_command`、`write_file`）仍在 `ToolRegistry.execute` 里弹窗确认。
+- **auto-continuation**：`cli/agent_loop.py::decide_agent_loop` 与 Web `chat-agent-loop` 对齐——输出截断、单段工具轮次触顶、或必需工具仍未完成时，最多自动续跑 2 次。
+- **steering**：忙时 `!指令` 或 `/steer …` 注入本轮 `steering_queue`（下一跳 model 调用前生效）；普通输入仍进 `input_queue` 等本轮结束后再发。
+- 设置 `WYCKOFF_STRICT_TOOL_EXPECTATIONS=1` 或测试显式开启时，`loop_guard` 才会按旧式 turn expectation 注入 retry message（重试消息），用于诊断模型漏调工具；direct chat 默认也会开 expectation（见 `dispatch._direct_turn_expectations_default`）。
 
 ### 后台任务架构
 
@@ -306,20 +308,19 @@ Agent → "已提交后台，可继续提问"
 on_complete 回调 → TUI 显示通知 → 结果注入消息队列 → Agent 自动汇报
 ```
 
-### 消息排队
+### 消息排队与转向
 
 CLI/TUI 队列：
 
 ```
-用户输入 → Agent 忙? ─No→ 立即处理
-                      │
-                      Yes→ 入 ConversationSession.input_queue，显示 queued:N
-                              │
-                              ▼ （当前任务完成后）
-                         自动取队首消息 → 继续处理
+用户输入 → Agent 忙?
+            │
+            ├─ `!指令` / `/steer …` → steering_queue（本轮下一跳注入，不杀 turn）
+            ├─ 普通文本 → input_queue，显示 queued:N；当前任务完成后自动发送
+            └─ Ctrl+C → 硬取消 + checkpoint；可「继续」ResumeTurn
 ```
 
-`/new` 清对话时同步清空队列。状态栏由 `TurnPhase` 驱动（如 `turn:streaming` / `turn:failed`）。
+`/new` 清对话时同步清空 `input_queue` 与 `steering_queue`。状态栏由 `TurnPhase` 驱动（如 `turn:streaming` / `steer:1`）。
 
 Web 读盘室队列：
 - 前端 `useMessageQueue()` 在当前回复未完成时把新输入排队，最多保留 5 条。

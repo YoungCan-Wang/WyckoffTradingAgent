@@ -376,6 +376,54 @@ class ToolSurface:
             return [tool_def.to_mcp_descriptor() for tool_def in self._tools.values()]
         raise ValueError(f"Unsupported tool surface format: {format}")
 
+    def prepare_call(
+        self,
+        tool_name: str,
+        arguments: Any,
+        *,
+        stock_scope: Any = None,
+    ) -> dict[str, Any]:
+        """Validate a tool call without executing it.
+
+        Returns ``{"ok": True, "args": ...}`` or ``{"ok": False, "code", "message", ...}``.
+        """
+
+        name = tool_name if isinstance(tool_name, str) else str(tool_name)
+        tool_def = self.resolve(name)
+        if tool_def is None:
+            return {
+                "ok": False,
+                "code": "tool_not_found",
+                "message": f"Tool '{name}' not found.",
+                "arguments": arguments,
+            }
+        if not isinstance(arguments, dict):
+            return {
+                "ok": False,
+                "code": "invalid_arguments",
+                "message": "Tool arguments must be an object.",
+                "arguments": arguments,
+            }
+        coerced = _coerce_arguments(tool_def, arguments)
+        validation_error = _validate_arguments(tool_def, coerced)
+        if validation_error is not None:
+            return {
+                "ok": False,
+                "code": "invalid_arguments",
+                "message": validation_error,
+                "arguments": coerced,
+            }
+        guard_result = _guard_tool_stock_scope(tool_def, coerced, stock_scope)
+        if guard_result is not None:
+            return {
+                "ok": False,
+                "code": "stock_scope_violation",
+                "message": "Tool call is outside the allowed stock scope.",
+                "details": guard_result,
+                "arguments": coerced,
+            }
+        return {"ok": True, "args": coerced, "tool": name}
+
     def _validate_tool_call(
         self,
         tool_name: str,
@@ -395,6 +443,9 @@ class ToolSurface:
                 arguments=arguments,
             )
 
+        coerced = _coerce_arguments(tool_def, arguments if isinstance(arguments, dict) else {})
+        if isinstance(arguments, dict):
+            arguments = coerced
         validation_error = _validate_arguments(tool_def, arguments)
         if validation_error is not None:
             return self._error_result(
@@ -437,6 +488,8 @@ class ToolSurface:
         if isinstance(val_res, dict):
             return val_res
         tool_def = val_res
+        if isinstance(arguments, dict):
+            arguments = _coerce_arguments(tool_def, arguments)
 
         timeout = None if tool_name in _TIMEOUT_EXEMPT_TOOLS else ctx.timeout_seconds
         try:
@@ -577,6 +630,52 @@ def _execute_with_timeout(tool_def: ToolDefinition, arguments: dict[str, Any], t
         raise
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
+
+
+def _coerce_arguments(tool_def: ToolDefinition, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Mild TypeBox-style Convert: fix common model type slips before strict Check."""
+
+    params = {param.name: param for param in tool_def.parameters}
+    coerced = dict(arguments)
+    for key, value in list(coerced.items()):
+        if key == "tool_context":
+            continue
+        param = params.get(key)
+        if param is None:
+            continue
+        coerced[key] = _coerce_parameter_value(param, value)
+    return coerced
+
+
+def _coerce_parameter_value(param: ToolParameter, value: Any) -> Any:
+    if value is None or not isinstance(value, str):
+        return value
+    text = value.strip()
+    target = param.type
+    if param.accepted_types:
+        if bool in param.accepted_types and int not in param.accepted_types:
+            target = "boolean"
+        elif int in param.accepted_types and float not in param.accepted_types:
+            target = "integer"
+        elif float in param.accepted_types or int in param.accepted_types:
+            target = "number"
+    if target == "integer":
+        if text.isdigit() or (text.startswith("-") and text[1:].isdigit()):
+            return int(text)
+        return value
+    if target == "number":
+        try:
+            number = float(text)
+        except ValueError:
+            return value
+        return int(number) if number.is_integer() else number
+    if target == "boolean":
+        lowered = text.lower()
+        if lowered in {"true", "1", "yes", "y", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "n", "off"}:
+            return False
+    return value
 
 
 def _validate_arguments(tool_def: ToolDefinition, arguments: Any) -> str | None:

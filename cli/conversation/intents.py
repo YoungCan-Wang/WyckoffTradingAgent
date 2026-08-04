@@ -17,6 +17,7 @@ class UserIntent(StrEnum):
     PENDING_WORKFLOW_REPLY = "pending_workflow_reply"
     RESUME_TURN = "resume_turn"
     RESUME_WORKFLOW = "resume_workflow"
+    STEER_TURN = "steer_turn"
     ENQUEUE_INPUT = "enqueue_input"
     SUBMIT_NEW_TURN = "submit_new_turn"
 
@@ -37,6 +38,24 @@ def is_resume_phrase(text: str) -> bool:
     """Short continuation phrases that mean 'continue prior work'."""
 
     return is_recent_workflow_followup(text)
+
+
+def is_steer_text(text: str) -> bool:
+    """Busy-turn redirect: `!指令` or `/steer 指令` (slash handled in TUI too)."""
+
+    stripped = (text or "").strip()
+    if stripped.startswith("!") and len(stripped) > 1:
+        return True
+    return stripped.lower().startswith("/steer ")
+
+
+def strip_steer_prefix(text: str) -> str:
+    stripped = (text or "").strip()
+    if stripped.lower().startswith("/steer"):
+        return stripped[6:].strip()
+    if stripped.startswith("!"):
+        return stripped[1:].strip()
+    return stripped
 
 
 def resolve_user_intent(
@@ -69,5 +88,7 @@ def resolve_user_intent(
     if is_resume_phrase(stripped) and resumable_workflow_exists and not has_explicit_workflow_ref(stripped):
         return ResolvedIntent(UserIntent.RESUME_WORKFLOW, text=stripped)
     if phase in RUNNING_PHASES and phase != TurnPhase.AWAITING_USER:
+        if is_steer_text(stripped):
+            return ResolvedIntent(UserIntent.STEER_TURN, text=strip_steer_prefix(stripped))
         return ResolvedIntent(UserIntent.ENQUEUE_INPUT, text=stripped)
     return ResolvedIntent(UserIntent.SUBMIT_NEW_TURN, text=stripped)

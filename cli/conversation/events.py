@@ -33,6 +33,10 @@ class SessionUiEvent:
         return cls("queued", {"depth": depth})
 
     @classmethod
+    def steered(cls, *, depth: int) -> SessionUiEvent:
+        return cls("steered", {"depth": depth})
+
+    @classmethod
     def interrupted_banner(cls, *, session_id: str, query: str) -> SessionUiEvent:
         return cls("interrupted_banner", {"session_id": session_id, "query": query})
 

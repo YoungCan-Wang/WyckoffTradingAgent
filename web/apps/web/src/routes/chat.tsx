@@ -38,7 +38,8 @@ function useRunLedger() {
   }, [])
   const onRunFinish = useCallback(() => finish('completed'), [finish])
   const onRunError = useCallback(() => finish('interrupted'), [finish])
-  return { activeConversationRef, runCheckpoint, setRunCheckpoint, onRunEvent, onRunFinish, onRunError }
+  const onRunInterrupted = onRunError
+  return { activeConversationRef, runCheckpoint, setRunCheckpoint, onRunEvent, onRunFinish, onRunError, onRunInterrupted }
 }
 
 function useMarketWatch(userId: string | undefined, items: WatchItem[]) {
@@ -76,7 +77,7 @@ export function ChatPage() {
   const scrollRef = useRef<HTMLDivElement>(null)
   const token = session?.access_token
   const config = useChatConfig(token, t)
-  const { activeConversationRef, runCheckpoint, setRunCheckpoint, onRunEvent, onRunFinish, onRunError } = useRunLedger()
+  const { activeConversationRef, runCheckpoint, setRunCheckpoint, onRunEvent, onRunFinish, onRunError, onRunInterrupted } = useRunLedger()
   const watchlist = useReadingRoomWatchlist(user?.id)
   const { marketWatch, requestItems, updateMarketWatch } = useMarketWatch(user?.id, watchlist.items)
   const chat = useReadingRoomChat(token, setLocalError, t, setModelStatus, requestItems, marketWatch, updateMarketWatch, onRunEvent, onRunFinish, onRunError)
@@ -171,7 +172,7 @@ export function ChatPage() {
         onClearQueue={queue.clear}
         onInput={setInput}
         onSubmit={handleSubmit}
-        onStop={() => { void chat.stop(); handleClearRunCheckpoint() }}
+        onStop={() => { void chat.stop(); onRunInterrupted() }}
         modelStatus={modelStatus}
         runCheckpoint={runCheckpoint}
         onResumeRun={handleResumeRun}

@@ -95,6 +95,10 @@ class StubToolRegistry:
         allowed = set(allowed_tools)
         return [schema for schema in schemas if schema["name"] in allowed]
 
+    def has_tool(self, name: str) -> bool:
+        # Stub execute() accepts any name; mirror that for prepareToolCall.
+        return True
+
     def execute(self, name: str, args: dict[str, Any], messages: list[dict[str, Any]] | None = None) -> Any:
         self.calls.append({"name": name, "args": deepcopy(args)})
         result = self._tool_results.get(name, {"ok": True, "name": name, "args": deepcopy(args)})

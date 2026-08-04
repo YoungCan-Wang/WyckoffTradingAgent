@@ -334,6 +334,17 @@ export function useChatConfig(
   return config
 }
 
+export function hasPendingToolApproval(messages: UIMessage[]): boolean {
+  for (const message of messages) {
+    for (const part of message.parts ?? []) {
+      if (!part || typeof part !== 'object') continue
+      const state = 'state' in part ? String((part as { state?: unknown }).state ?? '') : ''
+      if (state === 'approval-requested') return true
+    }
+  }
+  return false
+}
+
 export function useMessageQueue(
   chat: ReadingRoomChat,
   loading: boolean,
@@ -357,7 +368,9 @@ export function useMessageQueue(
 
   useEffect(() => {
     const next = messages[0]
+    // 审批未完成时 loading 可能已 false，不能把队列消息抢发出去。
     if (!next || loading || !token || !configured || dispatchingRef.current) return
+    if (hasPendingToolApproval(chat.messages)) return
     dispatchingRef.current = next.id
     setMessages((items) => items[0]?.id === next.id ? items.slice(1) : items.filter((item) => item.id !== next.id))
     setLocalError('')
