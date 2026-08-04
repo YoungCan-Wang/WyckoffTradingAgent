@@ -163,6 +163,13 @@ class SubAgentToolProxy:
     def schemas(self) -> list[dict[str, Any]]:
         return [s for s in self._registry.schemas() if s["name"] in self._allowed]
 
+    def has_tool(self, name: str) -> bool:
+        if name not in self._allowed:
+            return False
+        if hasattr(self._registry, "has_tool"):
+            return bool(self._registry.has_tool(name))
+        return any(schema.get("name") == name for schema in self.schemas())
+
     def execute(self, name: str, args: dict[str, Any], messages: list[dict[str, Any]] | None = None) -> Any:
         if name not in self._allowed:
             return {"error": f"sub-agent 无权调用工具: {name}"}
