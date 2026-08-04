@@ -52,8 +52,10 @@ def refresh_tracking_performance(
 
     client = create_admin_client()
     table = TRACKING_TABLE_BY_MARKET[market_key]
-    records = fetch_records_from_table(client, table, "id,code,recommend_date,initial_price")
-    records = latest_market_records(records, max_dates)
+    all_records = fetch_records_from_table(client, table, "id,code,recommend_date,initial_price")
+    # max_dates 只限制「刷新哪些行」；首次推荐日必须用全量历史，否则会把 sticky 锚点算成窗口内最早日。
+    first_dates = first_recommend_dates_by_market_code(all_records, market_key)
+    records = latest_market_records(all_records, max_dates)
     if not records:
         return empty_performance_summary()
 
@@ -62,7 +64,13 @@ def refresh_tracking_performance(
     hist_map = _fetch_histories(api_key, sorted(set(symbol_map.values())), kline_count)
     hist_by_code = {code: hist_map.get(symbol) for code, symbol in symbol_map.items()}
     now_iso = datetime.now(UTC).isoformat()
-    updates, codes_no_data, latest_td = build_market_performance_updates(grouped, hist_by_code, now_iso, market_key)
+    updates, codes_no_data, latest_td = build_market_performance_updates(
+        grouped,
+        hist_by_code,
+        now_iso,
+        market_key,
+        first_dates=first_dates,
+    )
     written = upsert_to_table(client, table, updates, optional_columns=("stop_loss_sim_pct",))
     return performance_summary(records, grouped, written, codes_no_data, latest_td, updates)
 
@@ -90,8 +98,15 @@ def build_us_performance_updates(
     grouped: dict[str, list[dict[str, Any]]],
     hist_map: dict[str, pd.DataFrame],
     now_iso: str,
+    *,
+    first_dates: dict[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], int, str]:
-    return build_market_performance_updates(grouped, hist_map, now_iso, "us")
+    return build_market_performance_updates(grouped, hist_map, now_iso, "us", first_dates=first_dates)
+
+
+def first_recommend_dates_by_market_code(records: list[dict[str, Any]], market: str) -> dict[str, str]:
+    grouped = group_records_by_market_code(records, market)
+    return {code: first_recommend_date_yyyymmdd(rows) for code, rows in grouped.items() if rows}
 
 
 def build_market_performance_updates(
@@ -99,6 +114,8 @@ def build_market_performance_updates(
     hist_map: dict[str, pd.DataFrame | None],
     now_iso: str,
     market: str,
+    *,
+    first_dates: dict[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], int, str]:
     market_key = resolve_tracking_market(market)
     updates: list[dict[str, Any]] = []
@@ -111,7 +128,7 @@ def build_market_performance_updates(
             codes_no_data += 1
             continue
         latest_td = max(latest_td, trade_dates[-1])
-        first_date = first_recommend_date_yyyymmdd(rows)
+        first_date = (first_dates or {}).get(code) or first_recommend_date_yyyymmdd(rows)
         updates.extend(
             row
             for row in (_build_performance_update(row, code, ohlc, now_iso, market_key, first_date) for row in rows)
