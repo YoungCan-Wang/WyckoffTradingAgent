@@ -44,6 +44,9 @@ from workflows.step4_models import (
 )
 from workflows.step4_order_config import step4_order_config_from_env
 from workflows.step4_payload import (
+    extract_stock_codes,
+)
+from workflows.step4_payload import (
     prepare_step4_payload_context as _prepare_step4_payload_context,
 )
 from workflows.step4_portfolio import load_step4_portfolio_state
@@ -95,7 +98,11 @@ def _build_user_message(
     order_config: Step4OrderConfig,
     ai_candidate_policy: str,
 ) -> str:
-    doc_symbols = [position.code for position in portfolio.positions] + candidate_codes
+    doc_symbols = (
+        [position.code for position in portfolio.positions]
+        + list(candidate_codes)
+        + extract_stock_codes(external_report or "")
+    )
     llm_doc_context = build_llm_doc_context("step4", symbols=doc_symbols, as_of=date.fromisoformat(trade_date))
     msg = (
         benchmark_text

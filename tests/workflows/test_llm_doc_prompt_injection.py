@@ -58,12 +58,12 @@ def test_step4_prompt_injects_docs_for_positions_and_candidates(monkeypatch):
         position_failures=[],
         candidate_failures=[],
         holdings_intraday_report="",
-        external_report="",
+        external_report="外部参考: 000001 平安银行",
         trade_date="2026-08-05",
         order_config=Step4OrderConfig(),
         ai_candidate_policy="veto_only",
     )
 
-    assert calls[0][0:2] == ("step4", ["600611", "600000"])
+    assert calls[0][0:2] == ("step4", ["600611", "600000", "000001"])
     assert calls[0][2].isoformat() == "2026-08-05"
     assert "DOC-CONTEXT" in prompt

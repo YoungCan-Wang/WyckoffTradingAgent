@@ -27,6 +27,7 @@ def test_build_llm_doc_context_selects_global_and_symbol_document(tmp_path):
     assert "全局退出纪律" in context
     assert context.index("大众交通案例") < context.index("全局退出纪律")
     assert "不得覆盖实时数据、硬止损、市场闸门、OMS" in context
+    assert context.endswith("[LLM决策注释结束]")
 
 
 def test_build_llm_doc_context_skips_wrong_symbol_expired_and_unsafe_path(tmp_path):
@@ -68,10 +69,67 @@ def test_build_llm_doc_context_skips_wrong_symbol_expired_and_unsafe_path(tmp_pa
     assert context == ""
 
 
-def test_build_llm_doc_context_respects_character_budget(tmp_path):
-    (tmp_path / "long.md").write_text("甲" * 500, encoding="utf-8")
-    _write_index(tmp_path, [{"id": "long", "path": "long.md", "scopes": ["step4"], "symbols": []}])
+def test_build_llm_doc_context_keeps_expires_on_inclusive(tmp_path):
+    (tmp_path / "case.md").write_text("到期日仍注入", encoding="utf-8")
+    _write_index(
+        tmp_path,
+        [
+            {
+                "id": "edge",
+                "path": "case.md",
+                "scopes": ["step4"],
+                "symbols": [],
+                "expires_on": "2026-08-05",
+            }
+        ],
+    )
 
-    context = build_llm_doc_context("step4", root=tmp_path, max_chars=120)
+    context = build_llm_doc_context("step4", as_of=date(2026, 8, 5), root=tmp_path)
 
-    assert len(context) == 120
+    assert "到期日仍注入" in context
+
+
+def test_build_llm_doc_context_fail_closed_on_disabled_and_invalid_effective_from(tmp_path):
+    (tmp_path / "case.md").write_text("不应出现", encoding="utf-8")
+    _write_index(
+        tmp_path,
+        [
+            {
+                "id": "disabled",
+                "path": "case.md",
+                "scopes": ["step4"],
+                "symbols": [],
+                "enabled": False,
+            },
+            {
+                "id": "bad-date",
+                "path": "case.md",
+                "scopes": ["step4"],
+                "symbols": [],
+                "effective_from": "not-a-date",
+            },
+        ],
+    )
+
+    assert build_llm_doc_context("step4", root=tmp_path, as_of=date(2026, 8, 5)) == ""
+
+
+def test_build_llm_doc_context_drops_whole_docs_instead_of_mid_cut(tmp_path):
+    (tmp_path / "high.md").write_text("高优先级" + ("甲" * 400), encoding="utf-8")
+    (tmp_path / "low.md").write_text("低优先级短文", encoding="utf-8")
+    _write_index(
+        tmp_path,
+        [
+            {"id": "high", "path": "high.md", "scopes": ["step4"], "symbols": [], "priority": 2},
+            {"id": "low", "path": "low.md", "scopes": ["step4"], "symbols": [], "priority": 1},
+        ],
+    )
+
+    context = build_llm_doc_context("step4", root=tmp_path, max_chars=220)
+
+    assert "高优先级" not in context
+    assert "低优先级短文" in context
+    assert "不得覆盖实时数据、硬止损、市场闸门、OMS" in context
+    assert context.endswith("[LLM决策注释结束]")
+    assert "</document>" in context
+    assert len(context) <= 220
