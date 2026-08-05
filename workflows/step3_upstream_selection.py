@@ -36,9 +36,25 @@ def select_upstream_priority_candidates(
     if context_cap <= 0 or len(df) <= context_cap:
         selected_df = df
     else:
-        selected_df = _select_capped_upstream_candidates(df, runtime_config, context_cap)
+        selected_df = _select_with_validated_priority(df, runtime_config, context_cap)
     _log_upstream_selection(candidates_df, selected_df, context_cap)
     return selected_df.reset_index(drop=True)
+
+
+def _select_with_validated_priority(
+    df: pd.DataFrame,
+    runtime_config: Step3RuntimeConfig,
+    context_cap: int,
+) -> pd.DataFrame:
+    status = df.get("signal_status", pd.Series("", index=df.index)).astype(str).str.strip().str.lower()
+    validated_df = df[status.eq("confirmed")].head(context_cap)
+    remaining_cap = max(context_cap - len(validated_df), 0)
+    if remaining_cap <= 0:
+        return validated_df
+    validated_codes = set(validated_df["code"].astype(str))
+    remainder = df[~df["code"].astype(str).isin(validated_codes)]
+    selected_remainder = _select_capped_upstream_candidates(remainder, runtime_config, remaining_cap)
+    return pd.concat([validated_df, selected_remainder], ignore_index=False)
 
 
 def _select_capped_upstream_candidates(

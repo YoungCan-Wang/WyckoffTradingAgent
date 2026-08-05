@@ -23,10 +23,16 @@ from utils.safe import safe_float as _safe_float
 MAINLINE_BUY_STATUS = "主线买点候选"
 MAINLINE_DIVERGENCE_STATUS = "强主线分歧"
 MAINLINE_EVENT_REVERSAL_STATUS = "事件主题修复候选"
+MAINLINE_THEME_REVERSAL_STATUS = "主题修复候选"
 MAINLINE_OBSERVE_STATUS = "主线观察"
 MAINLINE_AVOID_STATUS = "过热不追"
 TRADEABLE_MAINLINE_STATUSES = frozenset(
-    {MAINLINE_BUY_STATUS, MAINLINE_DIVERGENCE_STATUS, MAINLINE_EVENT_REVERSAL_STATUS}
+    {
+        MAINLINE_BUY_STATUS,
+        MAINLINE_DIVERGENCE_STATUS,
+        MAINLINE_EVENT_REVERSAL_STATUS,
+        MAINLINE_THEME_REVERSAL_STATUS,
+    }
 )
 BLOCKING_TIMING_FLAGS = {"鱼尾加速", "放量长上影", "跌破确认支撑", "主题缩量阴跌"}
 
@@ -217,7 +223,7 @@ def _candidate_from_seed(
     theme_score = _seed_theme_score(seed, theme, theme_scores, radar)
     role_score = _stock_role_score(metrics, radar, seed.get("source") == "core_basket", _is_hot_event_seed(seed))
     quality_score = _quality_score(_lookup_financial(financial_map, code))
-    timing_score, entry_type, risk_flags = _timing_result(metrics)
+    timing_score, entry_type, risk_flags = _timing_result(metrics, has_event=_is_hot_event_seed(seed))
     mainline_score = _score(theme_score, role_score, quality_score, timing_score)
     status = _status(theme_score, role_score, timing_score, entry_type, risk_flags, cfg)
     return MainlineCandidate(
@@ -250,6 +256,7 @@ def _rank_candidates(candidates: list[MainlineCandidate], cfg: MainlineEngineCon
         MAINLINE_BUY_STATUS: 0,
         MAINLINE_DIVERGENCE_STATUS: 1,
         MAINLINE_EVENT_REVERSAL_STATUS: 2,
+        MAINLINE_THEME_REVERSAL_STATUS: 2,
         MAINLINE_OBSERVE_STATUS: 3,
         MAINLINE_AVOID_STATUS: 4,
     }
@@ -363,10 +370,10 @@ def _price_metrics(df: pd.DataFrame | None, main_force: MainForceSignal | None =
     }
 
 
-def _timing_result(metrics: dict[str, float]) -> tuple[float, str, list[str]]:
+def _timing_result(metrics: dict[str, float], *, has_event: bool = False) -> tuple[float, str, list[str]]:
     risk_flags = _timing_risks(metrics)
     score = _timing_score(metrics, risk_flags)
-    entries = _entry_types(metrics, risk_flags)
+    entries = _entry_types(metrics, risk_flags, has_event=has_event)
     return score, " + ".join(entries), risk_flags
 
 
@@ -387,10 +394,10 @@ def _timing_risks(metrics: dict[str, float]) -> list[str]:
     return risks
 
 
-def _entry_types(metrics: dict[str, float], risk_flags: list[str]) -> list[str]:
+def _entry_types(metrics: dict[str, float], risk_flags: list[str], *, has_event: bool = False) -> list[str]:
     entries: list[str] = []
     if _event_reversal_entry_ok(metrics, risk_flags):
-        entries.append("事件主题低位修复")
+        entries.append("事件主题低位修复" if has_event else "主题低位修复")
     if any(flag in risk_flags for flag in BLOCKING_TIMING_FLAGS if flag != "跌破确认支撑"):
         return entries
     if "跌破确认支撑" in risk_flags and not entries:
@@ -615,7 +622,9 @@ def _status(
     if _high_divergence_is_tradeable(theme_score, role_score, timing_score, entry_type, risk_flags, cfg):
         return MAINLINE_DIVERGENCE_STATUS
     if _event_reversal_is_tradeable(theme_score, timing_score, entry_type, risk_flags, cfg):
-        return MAINLINE_EVENT_REVERSAL_STATUS
+        if "事件主题低位修复" in entry_type:
+            return MAINLINE_EVENT_REVERSAL_STATUS
+        return MAINLINE_THEME_REVERSAL_STATUS
     if (
         theme_score >= cfg.min_theme_score
         and role_score >= cfg.min_stock_score
@@ -634,7 +643,7 @@ def _event_reversal_is_tradeable(
     cfg: MainlineEngineConfig,
 ) -> bool:
     return (
-        "事件主题低位修复" in entry_type
+        ("事件主题低位修复" in entry_type or "主题低位修复" in entry_type)
         and theme_score >= max(cfg.min_theme_score - 0.05, 0.45)
         and timing_score >= max(cfg.min_timing_score * 0.45, 0.24)
         and not {"鱼尾加速", "放量长上影"} & set(risk_flags)

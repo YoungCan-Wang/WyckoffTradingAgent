@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 from datetime import date, timedelta
@@ -332,10 +333,15 @@ def fetch_historical_market_cap_map(as_of_date: str) -> dict[str, float]:
     pro = _tushare_pro()
     if pro is None:
         return {}
-    try:
-        df = pro.daily_basic(trade_date=trade_date, fields="ts_code,total_mv")
-        if df is not None and not df.empty:
-            return _daily_basic_field_map(df, "total_mv", _WAN_YUAN_TO_YI)
-    except Exception as exc:
-        debug_metadata_fail(f"tushare_historical_daily_basic[{trade_date}]", exc)
+    attempts = max(int(os.getenv("MARKET_METADATA_MAX_RETRIES", "3")), 1)
+    backoff = max(float(os.getenv("MARKET_METADATA_RETRY_BACKOFF_SECONDS", "1")), 0.0)
+    for attempt in range(1, attempts + 1):
+        try:
+            df = pro.daily_basic(trade_date=trade_date, fields="ts_code,total_mv")
+            if df is not None and not df.empty:
+                return _daily_basic_field_map(df, "total_mv", _WAN_YUAN_TO_YI)
+        except Exception as exc:
+            debug_metadata_fail(f"tushare_historical_daily_basic[{trade_date}]", exc)
+        if attempt < attempts and backoff > 0:
+            time.sleep(backoff * attempt)
     return {}

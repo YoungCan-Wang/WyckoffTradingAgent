@@ -24,7 +24,6 @@ from workflows.step4_text import clean_text as _clean_text
 RECOMMENDATION_MAINLINE_STATUSES = TRADEABLE_MAINLINE_STATUSES
 RECOMMENDATION_STRATEGIC_MIN_THEME_SCORE = 0.45
 RECOMMENDATION_STRATEGIC_MIN_STOCK_SCORE = 0.55
-STEP3_REPAIR_REVIEW_SPRINGBOARD_CAP = "STEP3_REPAIR_REVIEW_SPRINGBOARD_CAP"
 STEP3_CONFIRMED_REVIEW_CAP = "STEP3_CONFIRMED_REVIEW_CAP"
 
 
@@ -120,37 +119,17 @@ def step3_review_symbols(
     step2_details: dict | None = None,
     trade_mode: MarketTradeMode | None = None,
 ) -> list[dict]:
-    mode = trade_mode or resolve_market_trade_mode(None)
-    if step2_details is not None and "selected_for_ai" in step2_details and mode.mode != "repair_review":
+    if step2_details is not None and "selected_for_ai" in step2_details:
         return _selected_funnel_review_symbols(symbols_info, step2_details)
-    strict = [item for item in symbols_info if is_recommendation_review_candidate(item)]
-    extras = repair_review_springboard_symbols(
-        step2_details,
-        mode,
-        exclude_codes={code6(item.get("code")) for item in strict},
-    )
-    return strict + extras
+    return [item for item in symbols_info if is_recommendation_review_candidate(item)]
 
 
 def _selected_funnel_review_symbols(symbols_info: list[dict], step2_details: dict) -> list[dict]:
-    """漏斗当日选中的候选，外加跨日确认候选。
-
-    两者缺一不可：LLM 的起跳板硬门槛只放行 `跨日确认=confirmed`，而 `selected_for_ai`
-    装的是当日新触发的信号——按状态机定义它们此刻只能是 pending，最快次日才可能转
-    confirmed。只送 `selected_for_ai` 会让第三阵营在结构上恒为空（生产实测连续 10 个
-    交易日零起跳板，期间确认候选最多的一天有 38 只，与送审名单零交集）。
-    """
+    """Reserve the front of the Step3 context for validated carry-over signals."""
     rows: list[dict] = []
     seen: set[str] = set()
     by_code = {code6(item.get("code")): item for item in symbols_info if isinstance(item, dict)}
-    for code in [code6(code) for code in step2_details.get("selected_for_ai", []) or []]:
-        item = by_code.get(code)
-        if not code or item is None or code in seen:
-            continue
-        seen.add(code)
-        rows.append({**item, "input_order": len(rows)})
-
-    confirmed_cap = _env_cap(STEP3_CONFIRMED_REVIEW_CAP, 12)
+    confirmed_cap = _env_cap(STEP3_CONFIRMED_REVIEW_CAP, 3)
     added = 0
     for item in symbols_info:
         if added >= confirmed_cap:
@@ -161,56 +140,13 @@ def _selected_funnel_review_symbols(symbols_info: list[dict], step2_details: dic
         seen.add(code)
         rows.append({**item, "input_order": len(rows)})
         added += 1
-    return rows
-
-
-def repair_review_springboard_symbols(
-    step2_details: dict | None,
-    trade_mode: MarketTradeMode | None,
-    *,
-    exclude_codes: set[str] | None = None,
-) -> list[dict]:
-    if not _allow_repair_springboard_review(step2_details, trade_mode):
-        return []
-    mode = trade_mode or resolve_market_trade_mode(None)
-    excluded = exclude_codes or set()
-    rows = _dedupe_tracking_symbols(_springboard_tracking_symbols(step2_details or {}, mode))
-    rows.sort(key=_tracking_rank, reverse=True)
-    out: list[dict] = []
-    for row in rows:
-        code = code6(row.get("code"))
-        if not code or code in excluded:
+    for code in [code6(code) for code in step2_details.get("selected_for_ai", []) or []]:
+        item = by_code.get(code)
+        if not code or item is None or code in seen:
             continue
-        out.append(_step3_repair_springboard_row(row))
-        if len(out) >= _repair_springboard_review_cap():
-            break
-    return out
-
-
-def _allow_repair_springboard_review(step2_details: dict | None, trade_mode: MarketTradeMode | None) -> bool:
-    if not step2_details or _repair_springboard_review_cap() <= 0:
-        return False
-    mode = trade_mode or resolve_market_trade_mode(None)
-    return mode.mode == "repair_review" and not mode.allow_recommendation_write
-
-
-def _step3_repair_springboard_row(row: dict) -> dict:
-    out = dict(row)
-    confirmed = is_confirmed_step4_candidate(out)
-    out["selection_source"] = "l4_springboard"
-    out["source_type"] = "repair_springboard_review"
-    out["signal_status"] = "confirmed" if confirmed else "pending"
-    out["candidate_status"] = "修复复核候选"
-    out["selection_is_fill"] = False
-    out.setdefault("structure_reason", out.get("tag") or "修复期起跳板结构复核")
-    if not confirmed:
-        out.pop("confirm_reason", None)
-        out.pop("confirm_date", None)
-    return out
-
-
-def _repair_springboard_review_cap() -> int:
-    return _env_cap(STEP3_REPAIR_REVIEW_SPRINGBOARD_CAP, 3)
+        seen.add(code)
+        rows.append({**item, "selection_source": "step2_selected_for_ai", "input_order": len(rows)})
+    return rows
 
 
 def is_recommendation_tracking_candidate(item: dict) -> bool:

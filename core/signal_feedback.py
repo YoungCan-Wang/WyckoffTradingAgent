@@ -335,7 +335,7 @@ def _observation_feature_inputs(
     springboard = _springboard_observation_fields(signal_type, code, ctx["springboard_map"])
     footprint = _footprint_fields(signal_type, code, ctx["footprint_map"])
     source_context = _source_context_fields(signal_type, code, ctx["source_context_map"])
-    candidate_metadata = ctx["candidate_metadata_map"].get(code6(code), {})
+    candidate_metadata = _candidate_metadata_for_signal(ctx["candidate_metadata_map"], code, signal_type)
     entry_quality = _entry_quality_fields(
         ctx["entry_quality_map"].get(code6(code)) or ctx["entry_quality_map"].get(code)
     )
@@ -381,7 +381,7 @@ def _signal_observation_row(
     stage = ctx["stage_map"].get(code, "")
     channel = ctx["channel_map"].get(code, "")
     priority_score, feature_fields = _observation_feature_inputs(signal_type, code, trigger_score, ctx)
-    candidate_metadata = ctx["candidate_metadata_map"].get(code6(code), {})
+    candidate_metadata = _candidate_metadata_for_signal(ctx["candidate_metadata_map"], code, signal_type)
     return {
         "market": market,
         "trade_date": trade_date,
@@ -414,6 +414,14 @@ def _signal_observation_row(
         "updated_at": now_iso,
         **feature_fields,
     }
+
+
+def _candidate_metadata_for_signal(
+    metadata_map: dict[Any, dict[str, Any]], code: str, signal_type: str
+) -> dict[str, Any]:
+    from core.candidate_metadata import candidate_metadata_for_signal
+
+    return candidate_metadata_for_signal(metadata_map, code, signal_type)
 
 
 def _derived_rank_map(selected_for_ai: list[str] | None, rank_map: dict[str, int] | None) -> dict[str, int]:

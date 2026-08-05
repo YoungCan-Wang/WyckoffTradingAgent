@@ -287,7 +287,7 @@ def build_holding_advices(
     cfg: FunnelConfig | None = None,
     intraday_df_map: dict[str, pd.DataFrame] | None = None,
 ) -> list[HoldingActionAdvice]:
-    holdings_tuple = [(p["code"], p["name"], p["cost"]) for p in positions]
+    holdings_tuple = [(p["code"], p["name"], p["cost"], p.get("buy_dt", "")) for p in positions]
     diagnostics = diagnose_holdings(holdings_tuple, df_map, bench_df, cfg, intraday_df_map)
     by_code = {p["code"]: p for p in positions}
     advices = [_action_from_diagnostic(by_code[d.code], d, df_map.get(d.code)) for d in diagnostics]

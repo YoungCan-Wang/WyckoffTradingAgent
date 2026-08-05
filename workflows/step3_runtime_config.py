@@ -22,10 +22,10 @@ _LEGACY_REPORT_STYLES = {
 class Step3RuntimeConfig:
     trading_days: int = 320
     report_style: str = "v3_three_camp"
-    max_output_tokens: int = 32768
+    max_output_tokens: int = 6000
     gemini_model_fallback: str = ""
-    max_ai_input: int = 0
-    default_context_cap: int = 0
+    max_ai_input: int = 5
+    default_context_cap: int = 5
     max_per_industry: int = 0
     empty_compression_fallback_cap: int = 8
     max_upstream_fill: int = 0
@@ -34,7 +34,7 @@ class Step3RuntimeConfig:
     enable_rag_veto: bool = True
     skip_llm: bool = False
     respect_upstream_priority: bool = True
-    send_compliance_brief: bool = True
+    send_compliance_brief: bool = False
     require_confirmed_operation: bool = True
     enforce_target_trade_date: bool = False
     llm_fallback_providers: tuple[str, ...] = ()
@@ -50,10 +50,10 @@ def step3_runtime_config_from_env() -> Step3RuntimeConfig:
     return Step3RuntimeConfig(
         trading_days=max(_env_int("STEP3_TRADING_DAYS", 320), 1),
         report_style=report_style or "v3_three_camp",
-        max_output_tokens=max(_env_int("STEP3_MAX_OUTPUT_TOKENS", 32768), 1),
+        max_output_tokens=max(_env_int("STEP3_MAX_OUTPUT_TOKENS", 6000), 1),
         gemini_model_fallback=os.getenv("STEP3_GEMINI_MODEL_FALLBACK", "").strip(),
-        max_ai_input=max(_env_int("STEP3_MAX_AI_INPUT", 0), 0),
-        default_context_cap=max(_env_int("STEP3_DEFAULT_CONTEXT_CAP", 0), 0),
+        max_ai_input=max(_env_int("STEP3_MAX_AI_INPUT", 5), 0),
+        default_context_cap=max(_env_int("STEP3_DEFAULT_CONTEXT_CAP", 5), 0),
         max_per_industry=max(_env_int("STEP3_MAX_PER_INDUSTRY", 0), 0),
         empty_compression_fallback_cap=max(_env_int("STEP3_EMPTY_COMPRESSION_FALLBACK_CAP", 8), 0),
         max_upstream_fill=max(_env_int("STEP3_MAX_UPSTREAM_FILL", 0), 0),
@@ -62,7 +62,7 @@ def step3_runtime_config_from_env() -> Step3RuntimeConfig:
         enable_rag_veto=_env_bool("STEP3_ENABLE_RAG_VETO", True),
         skip_llm=_env_bool("STEP3_SKIP_LLM", False),
         respect_upstream_priority=_env_bool("STEP3_RESPECT_UPSTREAM_PRIORITY", True),
-        send_compliance_brief=_env_bool("STEP3_SEND_COMPLIANCE_BRIEF", True),
+        send_compliance_brief=_env_bool("STEP3_SEND_COMPLIANCE_BRIEF", False),
         require_confirmed_operation=_env_bool("STEP3_REQUIRE_CONFIRMED_OPERATION", True),
         enforce_target_trade_date=_env_bool("STEP3_ENFORCE_TARGET_TRADE_DATE", False),
         llm_fallback_providers=_env_csv("STEP3_LLM_FALLBACK_PROVIDERS"),

@@ -6,13 +6,13 @@
 
 ## 1. 一句话原则
 
-**日漏斗定候选与环境；跨日确认定今天能不能买。**
+**日漏斗定候选与环境；跨日需求确认定今天能不能买。**
 两者串联，不是二选一。
 
 ```text
 日漏斗（盘后）→ 主线候选名单
   → Step3 起跳板（建议）
-  → confirmed 二次确认
+  → SURVIVED / VALIDATED 跨日验证
   → OMS 生成唯一允许买入区间
   → 次日开盘价位于区间内才下单
 ```
@@ -56,8 +56,8 @@ Trend/Accum 配额只用于 dynamic shadow 对照；RISK_ON 市场闸门仍禁�
 
 ### 次日：跨日确认 + 开盘买入
 
-1. 只对昨日名单里的票看信号是否已 `confirmed`
-2. **只有 confirmed 才买**；`pending`/`未确认`/`观察` = 不买
+1. 只对昨日名单里的票看信号是否已 `VALIDATED`（数据库兼容字段为 `confirmed`）
+2. **只有 VALIDATED 才能继续送 OMS**；`pending`/`survived`/`未确认`/`观察` = 不买
 3. 仅当开盘价位于 OMS 的“明日允许买入区间”内才执行；高于上界不追，低于下界不抄底，无支撑、破支撑或禁新开水温同样不买
 
 ### 持仓
@@ -83,6 +83,10 @@ wyckoff portfolio fill 600519 --side buy  --shares 100 --price 1680 --date 20260
 工单顶部若出现「未执行的离场工单」，说明某只票的 EXIT 已连发多日仍未落地——
 要么去券商补掉这一笔，要么回填你实际已经成交的记录。
 
+工单底部的现金是“若全部工单成交后的预计可用现金”，不是券商实时余额。未成交 `EXIT`
+不会再把模型给出的历史破位价写回持仓；若新仓工单出现同时高于成本和现价的止损，OMS 会将
+该离场动作降级为 `HOLD`。此时应先核对买入日期和原始入场失效位，不要把倒挂价当保护止损。
+
 如果这只票的**现价还在止损线下方**，系统会拒绝 ATTACK 重仓（变成 `NO_TRADE`，理由里列出欠着的代码）；
 小额 PROBE 试探仓、离场、减仓都不受影响。想临时解除，设 `STEP4_BLOCK_BUY_ON_STALE_EXIT=0`。
 
@@ -96,7 +100,7 @@ wyckoff portfolio fill 600519 --side buy  --shares 100 --price 1680 --date 20260
 - [ ] 水温允许新开（不是 RISK_ON / 弱市）
 - [ ] 来自主线书（或明确轻仓的结构票）
 - [ ] Step3 为起跳板（若有研报）
-- [ ] 信号 **confirmed**（未确认候选只做观察，不按开盘价提示买入）
+- [ ] 信号 **VALIDATED**（库内 `confirmed`；`pending`/`survived` 只观察）
 - [ ] 次日开盘价位于 OMS 的唯一允许买入区间内
 
 ---
@@ -116,12 +120,27 @@ wyckoff portfolio fill 600519 --side buy  --shares 100 --price 1680 --date 20260
 ## 7. 常见错误
 
 1. 日漏斗出票就开盘追 → 买早
-2. 未 `confirmed` 的候选当可买 → 未确认硬上
+2. 把 `survived` 当成 `confirmed`/`VALIDATED` → 为了跨日而跨日
 3. RISK_ON 仍新开 → 与闸门对着干
 4. 用 -7% 当日常止损砍主升 → 被洗盘打掉
 5. 把观察池 / 旁路当主仓 → 负期望堆仓
 6. 成交后不回填 → 止损只出现在推送里、从不落地；生产上出现过同一只票连发 12 天 EXIT、
    期间又跌 19% 的情况，而净值表当时显示的是「已清仓」
+
+### 策略语义变更后的历史回刷
+
+LPS、确认状态或候选血缘发生语义变更时，先做 dry-run，检查 `old_rows.json`、新 payload 和每日计数；未经人工验收不得直接写生产库：
+
+```bash
+.venv/bin/python scripts/backfill_recommendation_tracking.py \
+  --dates 2026-07-01,2026-07-02 \
+  --output-dir artifacts/recommendation_backfill/lps-v2 \
+  --skip-step3
+```
+
+实际范围应包含规则上线后受影响的全部交易日。`--apply` 会替换对应日期的 `recommendation_tracking`、`signal_pending` 和 `signal_observations`；删除 observation 会级联删除对应 outcome，因此应用后必须重跑 `scripts/signal_feedback_job.py`，再核对 `signal_health_daily` 与 `signal_registry`，不能只回刷推荐表。
+
+回刷会强制要求历史市值、沪指/小盘双基准完整，并在 TickFlow 任一批次最终失败时中止，不允许用降级数据覆盖生产表。指数和历史市值默认各重试 3 次，可通过 `INDEX_DATA_MAX_RETRIES`、`INDEX_DATA_RETRY_BACKOFF_SECONDS`、`MARKET_METADATA_MAX_RETRIES`、`MARKET_METADATA_RETRY_BACKOFF_SECONDS` 调整；维护任务还可提高 `TICKFLOW_MAX_RETRIES`。这些参数只改变容错，不改变策略口径。
 
 ---
 

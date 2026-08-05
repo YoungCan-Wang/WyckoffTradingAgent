@@ -43,6 +43,14 @@ class PositionItem:
     shares: int
     stop_loss: float | None = None
 
+    def is_recent(self, trade_date: str, max_calendar_days: int) -> bool:
+        buy_day = parse_trade_day(self.buy_dt)
+        today = parse_trade_day(trade_date)
+        if buy_day is None or today is None:
+            return False
+        age = (today - buy_day).days
+        return 0 <= age <= max(int(max_calendar_days), 0)
+
     def sellable_shares(self, trade_date: str) -> int:
         """A 股 T+1：当日买入的股份当日不可卖出。
 
@@ -148,6 +156,7 @@ class Step4OrderConfig:
     attack_budget_limit: float = 0.20
     buy_block_regimes: frozenset[str] = EXECUTE_BLOCK_NEW_BUY_REGIMES
     block_buy_on_stale_exit: bool = True
+    new_position_stop_guard_days: int = 4
     chase_gap_pct_min: float = 1.2
     chase_gap_pct_max: float = 5.5
     chase_atr_mult_min: float = 0.8

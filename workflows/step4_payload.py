@@ -593,7 +593,13 @@ def _holding_time_meta_line(hold_trade_days: int | None, signal_info: dict | Non
 def _position_diagnostic_payload(pos: PositionItem, df_qfq: pd.DataFrame) -> tuple[str, str]:
     try:
         diag = diagnose_one_stock(
-            code=pos.code, name=pos.name, cost=pos.cost, df=df_qfq, bench_df=None, cfg=FunnelConfig()
+            code=pos.code,
+            name=pos.name,
+            cost=pos.cost,
+            df=df_qfq,
+            bench_df=None,
+            cfg=FunnelConfig(),
+            buy_dt=pos.buy_dt,
         )
         payload = generate_stock_payload(
             stock_code=pos.code,

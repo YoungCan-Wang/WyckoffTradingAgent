@@ -1757,7 +1757,7 @@ def _add_portfolio_history_parsers(sub) -> None:
 
     # wyckoff signal
     p_signal = sub.add_parser("signal", help="信号确认池")
-    p_signal.add_argument("status", nargs="?", default="all", help="all/pending/confirmed/expired")
+    p_signal.add_argument("status", nargs="?", default="all", help="all/pending/survived/confirmed/expired")
     p_signal.add_argument("-n", "--limit", type=int, default=30, help="返回条数")
 
     # wyckoff recommend

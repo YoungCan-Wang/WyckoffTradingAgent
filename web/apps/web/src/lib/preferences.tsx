@@ -872,7 +872,7 @@ const EN: Record<keyof typeof ZH, string> = {
   'guide.tool.tracking': 'Pattern review',
   'guide.tool.tracking.detail': 'Allowlisted users can view the latest 30 review trading dates with selection count, initial/current price, MFE/MAE, and performance stats.',
   'guide.tool.signal': 'Signal pool',
-  'guide.tool.signal.detail': 'Collects pending, confirmed, expired, and rejected signals; lifecycle maintenance and repricing run in background jobs.',
+  'guide.tool.signal.detail': 'Collects pending, survived, confirmed, expired, and rejected signals; lifecycle maintenance and repricing run in background jobs.',
   'guide.tool.export': 'Data export',
   'guide.tool.export.detail': 'Supports single-symbol and up to 6-symbol batch export with enhanced OHLCV, raw quotes, field filtering, and ZIP packaging.',
   'guide.tool.history': 'Local analysis history',

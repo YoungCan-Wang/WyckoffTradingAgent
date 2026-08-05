@@ -172,7 +172,7 @@ async function fetchSignalPendingTracking(): Promise<Recommendation[]> {
     .select(
       'code,name,signal_type,signal_date,status,signal_score,snap_close,strategy_version,candidate_lane,entry_type,signal_key,candidate_status,mainline_score,theme_score,stock_role_score,quality_score,timing_score',
     )
-    .in('status', ['pending', 'confirmed'])
+    .in('status', ['pending', 'survived', 'confirmed'])
     .order('signal_date', { ascending: false })
     .limit(2000)
   if (error) throw new Error(`signal_pending: ${error.message}`)
@@ -760,12 +760,15 @@ function SignalPendingBadge({ row }: { row: Recommendation }) {
   const { t } = usePreferences()
   if (row.source_type !== 'signal_pending') return null
   const confirmed = cleanText(row.signal_status) === 'confirmed'
+  const survived = cleanText(row.signal_status) === 'survived'
   const cls = confirmed
     ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-    : 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+    : survived
+      ? 'border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300'
+      : 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300'
   return (
     <span className={`whitespace-nowrap rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${cls}`}>
-      {confirmed ? t('tracking.confirmedSignal') : t('tracking.pendingSignal')}
+      {confirmed ? t('tracking.confirmedSignal') : survived ? '跨日存活' : t('tracking.pendingSignal')}
     </span>
   )
 }
@@ -855,6 +858,7 @@ function actionStatusLabel(status: string, row: Recommendation): string {
     blocked_by_quality_gate: '质量门槛阻断',
     blocked_by_watch_only: '仅观察阻断',
     pending: '待确认',
+    survived: '跨日存活',
     confirmed: '信号确认',
   }
   if (labels[status]) return labels[status]
@@ -866,7 +870,7 @@ function actionStatusLabel(status: string, row: Recommendation): string {
 function actionStatusLevel(status: string, row: Recommendation): string {
   if (status.startsWith('blocked_') || status === 'avoid') return 'blocked'
   if (status === 'ready_for_ai_review' || row.is_ai_recommended) return 'ai_review'
-  if (status === 'confirmation_required' || status === 'pending' || status === 'confirmed') return 'confirmation'
+  if (status === 'confirmation_required' || status === 'pending' || status === 'survived' || status === 'confirmed') return 'confirmation'
   if (status === 'repair_review_only') return 'review_only'
   if (status === 'watch_only' || status.endsWith('_watch') || status === 'watch') return 'watch'
   return ''
