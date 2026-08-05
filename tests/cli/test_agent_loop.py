@@ -274,6 +274,7 @@ def test_agent_loop_does_not_retry_non_mandatory_plain_text_turn():
 
 
 def test_agent_loop_warns_after_retry_budget_is_exhausted():
+    # incomplete-tool retries (2) then unfinished-work auto-continuations (2).
     harness = AgentLoopHarness(
         rounds=[
             [
@@ -288,6 +289,14 @@ def test_agent_loop_warns_after_retry_budget_is_exhausted():
                 {"type": "text_delta", "text": "还是先说计划，不着急执行。"},
                 {"type": "usage", "input_tokens": 14, "output_tokens": 5},
             ],
+            [
+                {"type": "text_delta", "text": "续跑后仍不调用工具。"},
+                {"type": "usage", "input_tokens": 15, "output_tokens": 5},
+            ],
+            [
+                {"type": "text_delta", "text": "最后仍只给文本。"},
+                {"type": "usage", "input_tokens": 16, "output_tokens": 5},
+            ],
         ],
         enforce_turn_expectations=True,
     )
@@ -301,8 +310,9 @@ def test_agent_loop_warns_after_retry_budget_is_exhausted():
     )
 
     assert "连续 2 次没有调用必需工具" in outcome["result"]["text"]
+    assert "自动续跑次数已用尽" in outcome["result"]["text"]
     assert outcome["tool_calls"] == []
-    assert len(outcome["provider_calls"]) == 3
+    assert len(outcome["provider_calls"]) == 5
 
 
 # ---------------------------------------------------------------------------

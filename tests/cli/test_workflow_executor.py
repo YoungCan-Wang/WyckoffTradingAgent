@@ -4475,7 +4475,9 @@ def test_workflow_executor_filters_disallowed_explicit_tool_scope_without_wideni
     def _after_block_round(messages, tools, _system_prompt):
         assert tools == []
         assert any(
-            message.get("role") == "tool" and "不在当前 workflow 允许范围内" in message.get("content", "")
+            message.get("role") == "tool"
+            and "不在当前 workflow" in message.get("content", "")
+            and "允许范围内" in message.get("content", "")
             for message in messages
         )
         return [{"type": "text_delta", "text": "已阻止越权工具。"}]
