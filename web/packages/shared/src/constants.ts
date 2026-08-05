@@ -87,7 +87,7 @@ export const PROVIDER_DEFAULT_MODELS: Record<Provider, string> = {
   '1route': 'gpt-5.5',
   gemini: 'gemini-2.0-flash',
   openai: 'gpt-4o',
-  deepseek: 'deepseek-chat',
+  deepseek: 'deepseek-v4-flash',
   anthropic: 'claude-sonnet-4-20250514',
 }
 

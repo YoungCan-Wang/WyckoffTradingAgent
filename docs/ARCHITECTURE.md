@@ -234,7 +234,7 @@ Agent 采用 ReAct 范式：每一轮 LLM 先推理（Reason），再决定是�
 | 通道 | 当前工具 |
 |------|----------|
 | CLI / TUI（26） | 原有诊断、筛选、研报、组合、历史、后台、Skill 与委派工具，加 `evaluate_recommendation_events`、`research_hypothesis`、`reassess_profile`、`diagnose_backend`、`browser_research`（本机 Chrome CDP） |
-| Web（13） | `search_stock`、`view_portfolio`、`market_overview`、`market_history`、`query_recommendations`、`query_attribution`、`plan_portfolio_update`、`execute_portfolio_update`、`analyze_stock`、`screen_stocks`、`generate_ai_report`、`generate_strategy_decision`、`intraday_analysis` |
+| Web（13+） | `search_stock`、`view_portfolio`、`market_overview`、`market_history`、`query_recommendations`、`query_attribution`、`plan_portfolio_update`、`execute_portfolio_update`、`analyze_stock`、`screen_stocks`、`generate_ai_report`、`generate_strategy_decision`、`intraday_analysis`；DeepSeek `deepseek-v4-flash` 另挂服务端 `web_search`（Responses API，非本机 CDP） |
 | MCP（18） | 原有行情、漏斗、诊断、组合、研报与决策工具，加 `research_hypothesis`、`reassess_profile`、`diagnose_backend` |
 
 CLI 中 `screen_stocks`、`generate_ai_report`、`generate_strategy_decision`、`run_backtest` 会提交到 `BackgroundTaskManager`（daemon Thread），不阻塞对话。Web 的 `screen_stocks` 读取最新漏斗结果，不在浏览器会话里启动本地后台漏斗。MCP 只返回单次工具调用结果。
@@ -768,6 +768,8 @@ tickflow                                        （1 分钟盘中数据，供个
 `integrations/rag_veto.py` — 新闻否决层：读取 AkShare/东方财富个股新闻，按 URL 或标准化标题去重后做相关性、关键词和语义检查；来源失败时 fail-open，不阻断 Step3。
 
 CLI 公开信息检索走 `browser_research`：Playwright 附着本机 Chrome CDP（默认 `http://127.0.0.1:9222`，可用 `WYCKOFF_BROWSER_CDP_URL` 覆盖），搜索后打开前几条结果并抽取正文；Web / MCP 不暴露该工具。安装：`pip install 'youngcan-wyckoff-analysis[browser]' && playwright install chromium`，并用 `/browser` 查看连接状态。
+
+Web 读盘室在用户选择 DeepSeek、模型为 `deepseek-v4-flash`、且 `base_url` origin 为 `https://api.deepseek.com` 时，改走 Responses API（`https://api.deepseek.com/responses`），并注入服务端执行的 `web_search`，用于 IPO/舆情/公告等公开网页检索；行情、持仓、形态复盘仍走本地工具。搜索结果仅当轮有效（SDK/无状态 API 不会跨轮回传完整 `web_search_call`）；切到 Chat Completions 模型或跨供应商 fallback 前会把历史中的 provider-executed `web_search` 部件折叠成短文本，避免悬空 `tool_calls` 导致 400。其它 DeepSeek 模型、非官方 origin（如 ark 代理）与其它供应商继续使用 Chat Completions；嵌套研报/诊断 LLM 调用始终保持 `/v1/chat/completions`。
 
 ### ToolSurface 执行边界
 

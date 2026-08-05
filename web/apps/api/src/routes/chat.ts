@@ -1,5 +1,3 @@
-import { createAnthropic } from '@ai-sdk/anthropic'
-import { createOpenAI } from '@ai-sdk/openai'
 import { createClient } from '@supabase/supabase-js'
 import {
   ANALYZE_STOCK_OUTPUT_SCHEMA,
@@ -23,6 +21,7 @@ import {
   ALLOWED_PROXY_TARGET_ORIGINS,
   normalizeGeminiStream,
   removeSupersededToolApprovals,
+  sanitizeMessagesForChatTransport,
   PROVIDER_BASE_URLS,
   PROVIDER_DEFAULT_MODELS,
   isSafeProviderBaseUrl,
@@ -49,6 +48,7 @@ import {
   continuationLimitMessage,
   decideAgentLoop,
 } from '../services/chat-agent-loop'
+import { resolveChatLanguageModel } from '../services/chat-language-model'
 
 type ChatBindings = { Bindings: Env; Variables: { auth: AuthContext } }
 
@@ -127,6 +127,12 @@ const WYCKOFF_CHAT_SYSTEM_PROMPT = `# 角色设定
 6. 策略归因问题必须调用 query_attribution，先确认返回结果是否来自远端表或提示本地 --no-write 报告，再优先读取 operator_summary / latest_operator_summary 作为运营结论，然后读取 latest_policy_display、latest_execution_summary、promotion_checklist 和 latest_operations 后判断信号升降权、是否能晋级 dynamic=on，以及 shadow 新增/移除样本；raw next_action/promotion_status 只作追证据，不直接复述给用户。
 7. 只有用户明确要求进行 Python 计算、回测或统计时，才可调用 run_python_research。先说明计算目的；该工具必须等待用户确认，脚本只处理已知、有限的数据，不能把猜测当作数据来源。`
 
+const WEB_SEARCH_GUIDANCE = `# 联网搜索
+
+公开网页信息、未上市/IPO、舆情、公告或本地库查不到时，优先调用 web_search 做服务端联网检索。
+行情、持仓、形态复盘和归因仍必须用对应本地工具，不得用网页搜索替代 K 线事实。
+搜索结果仅当轮有效；跨轮追问时如需最新网页证据应再次搜索。`
+
 function estimateMessagesSize(messages: UIMessage[]): number {
   return messages.reduce((total, message) => total + JSON.stringify(message).length, 0)
 }
@@ -166,14 +172,6 @@ function getEnvValue(env: Env, key: 'SUPABASE_URL' | 'SUPABASE_ANON_KEY'): strin
 
 function createToolDeps(supabase: ToolDeps['supabase']): ToolDeps {
   return { supabase, fetch: createToolFetch(), generateText }
-}
-
-function createProvider(config: LLMToolConfig & { protocol?: 'openai' | 'anthropic' }) {
-  const fetch = createProviderFetch()
-  if (config.protocol === 'anthropic') {
-    return createAnthropic({ apiKey: config.api_key, baseURL: config.base_url, fetch })
-  }
-  return createOpenAI({ apiKey: config.api_key, baseURL: config.base_url, fetch })
 }
 
 function createProviderFetch(): typeof globalThis.fetch {
@@ -283,12 +281,14 @@ function buildTools(
   args: Pick<ChatResilienceArgs, 'deps' | 'userId' | 'sandboxTools'>,
   config: LLMToolConfig,
   model: unknown,
-) {
+  providerTools: ToolSet = {},
+): ToolSet {
   return {
     ...buildReadTools(args.deps, args.userId, model),
     ...buildPortfolioTools(args.deps, args.userId),
     ...buildAnalysisTools(args.deps, args.userId, config, model),
     ...args.sandboxTools,
+    ...providerTools,
   }
 }
 
@@ -353,16 +353,15 @@ function recentUserQuery(messages: UIMessage[]): string {
 
 async function runChatSegment(
   args: ChatResilienceArgs,
-  config: ChatModelConfig,
   system: string,
   modelMessages: any[],
   tools: any,
   maxSteps: number,
-  segmentIndex: number
+  segmentIndex: number,
+  resolved: ReturnType<typeof resolveChatLanguageModel>,
 ) {
-  const provider = createProvider(config)
   const result = streamText({
-    model: provider.chat(config.model),
+    model: resolved.model,
     system,
     messages: modelMessages,
     tools,
@@ -370,7 +369,13 @@ async function runChatSegment(
     stopWhen: stepCountIs(maxSteps),
     abortSignal: args.signal,
     experimental_toolApprovalSecret: args.env.CHAT_TOOL_APPROVAL_SECRET || args.env.SUPABASE_SERVICE_ROLE_KEY,
-    providerOptions: { openai: { parallelToolCalls: false } },
+    providerOptions: {
+      openai: {
+        parallelToolCalls: false,
+        // DeepSeek Responses is stateless; avoid item_reference round-trips for web_search.
+        ...(resolved.transport === 'responses' ? { store: false } : {}),
+      },
+    },
   })
 
   const pending: UIMessageChunk[] = []
@@ -464,9 +469,12 @@ async function runChatAttempt(args: ChatResilienceArgs, config: ChatModelConfig,
   let succeeded = false
   let outputStarted = false
   try {
-    const provider = createProvider(config)
-    const tools = buildTools(args, config, provider.chat(config.model))
-    const normalizedMessages = removeSupersededToolApprovals(args.messages.slice(-40))
+    const resolved = resolveChatLanguageModel(config, createProviderFetch())
+    const tools = buildTools(args, config, resolved.nestedModel, resolved.providerTools)
+    const recentMessages = removeSupersededToolApprovals(args.messages.slice(-40))
+    const normalizedMessages = resolved.transport === 'chat'
+      ? sanitizeMessagesForChatTransport(recentMessages)
+      : recentMessages
     let modelMessages = await convertToModelMessages(normalizedMessages, {
       tools,
       ignoreIncompleteToolCalls: true,
@@ -476,7 +484,11 @@ async function runChatAttempt(args: ChatResilienceArgs, config: ChatModelConfig,
     let segmentIndex = 0
     let finalFinishReason = 'stop'
 
-    const system = [WYCKOFF_CHAT_SYSTEM_PROMPT, marketWatchContext].filter(Boolean).join('\n\n')
+    const system = [
+      WYCKOFF_CHAT_SYSTEM_PROMPT,
+      resolved.transport === 'responses' ? WEB_SEARCH_GUIDANCE : '',
+      marketWatchContext,
+    ].filter(Boolean).join('\n\n')
 
     while (true) {
       const remainingSteps = CHAT_MAX_TOTAL_STEPS - totalSteps
@@ -485,12 +497,12 @@ async function runChatAttempt(args: ChatResilienceArgs, config: ChatModelConfig,
       
       const segment = await runChatSegment(
         args,
-        config,
         system,
         modelMessages,
         tools,
         segmentMaxSteps,
-        segmentIndex
+        segmentIndex,
+        resolved,
       )
 
       if (segment.outputStarted) {
