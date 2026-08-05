@@ -149,6 +149,35 @@ def replace_signal_registry(rows: list[dict[str, Any]], *, market: str, allow_em
     )
 
 
+def _conflict_columns(conflict: str) -> list[str]:
+    return [part.strip() for part in conflict.split(",") if part.strip()]
+
+
+def _conflict_key(row: dict[str, Any], conflict: str) -> tuple[Any, ...]:
+    return tuple(row.get(column) for column in _conflict_columns(conflict))
+
+
+def _apply_filters(query: Any, filters: dict[str, str]) -> Any:
+    for column, value in filters.items():
+        query = query.eq(column, value)
+    return query
+
+
+def _delete_orphaned_rows(client: Any, table: str, filters: dict[str, str], conflict: str, rows: list[dict]) -> None:
+    """Remove filter-scoped rows whose conflict keys are absent from the new snapshot."""
+    keep_keys = {_conflict_key(row, conflict) for row in rows}
+    columns = ",".join(_conflict_columns(conflict))
+    existing = _apply_filters(client.table(table).select(columns or "*"), filters).execute().data or []
+    for old in existing:
+        if _conflict_key(old, conflict) in keep_keys:
+            continue
+        query = client.table(table).delete()
+        query = _apply_filters(query, filters)
+        for column in _conflict_columns(conflict):
+            query = query.eq(column, old.get(column))
+        query.execute()
+
+
 def _replace_derived_rows(
     table: str,
     rows: list[dict[str, Any]],
@@ -165,12 +194,11 @@ def _replace_derived_rows(
     require_server_write_context(f"replace {table}")
     client = _admin()
     try:
-        query = client.table(table).delete()
-        for column, value in filters.items():
-            query = query.eq(column, value)
-        query.execute()
+        # Upsert before orphan delete: if the write fails, previous rows remain
+        # (empty registry fail-opens dynamic policy to admit all triggers).
         if rows:
             client.table(table).upsert(rows, on_conflict=conflict).execute()
+        _delete_orphaned_rows(client, table, filters, conflict, rows)
         return len(rows)
     finally:
         _close(client)
