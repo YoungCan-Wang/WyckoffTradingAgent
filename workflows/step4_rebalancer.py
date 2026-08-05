@@ -12,6 +12,7 @@ from collections.abc import Iterable
 from datetime import date
 
 from core.execution_audit import StaleExit, find_unexecuted_exits, stop_breached_codes, unsellable_dates
+from core.llm_docs import build_llm_doc_context
 from integrations.fetch_a_share_csv import TradingWindow, resolve_trading_window
 from integrations.supabase_portfolio import check_daily_run_exists, load_recent_trade_orders
 from utils.telegram import send_to_telegram
@@ -90,9 +91,12 @@ def _build_user_message(
     candidate_failures: list[str],
     holdings_intraday_report: str,
     external_report: str,
+    trade_date: str,
     order_config: Step4OrderConfig,
     ai_candidate_policy: str,
 ) -> str:
+    doc_symbols = [position.code for position in portfolio.positions] + candidate_codes
+    llm_doc_context = build_llm_doc_context("step4", symbols=doc_symbols, as_of=date.fromisoformat(trade_date))
     msg = (
         benchmark_text
         + "[账户状态]\n"
@@ -118,6 +122,7 @@ def _build_user_message(
         + "PROBE/ATTACK加仓: 只允许已有持仓浮盈、止损已上移、且当前结构明显强于原买点时使用；禁止亏损补仓。\n"
         + "新开仓: 输入候选已通过确定性准入；AI只能否决或保留，不能把候选升级为无条件买入。\n"
         + "外部新仓最多给 PROBE，禁止由AI升级为 ATTACK。\n\n"
+        + (llm_doc_context + "\n\n" if llm_doc_context else "")
         + "[内部持仓量价切片]\n"
         + (positions_payload if positions_payload else "当前无持仓，仅现金。")
         + "\n\n[漏斗候选量价切片]\n"
@@ -133,6 +138,20 @@ def _build_user_message(
     if (not candidate_payload) and external_report and external_report.strip():
         msg += "\n\n[Step3参考摘要-仅在候选切片缺失时启用]\n" + external_report.strip()
     return msg
+
+
+def _market_signal_context(trade_date: str) -> dict | None:
+    row = _load_market_signal_for_trade_date(trade_date)
+    if row:
+        logger.info(
+            "读取全局风控: trade_date=%s, benchmark=%s, premarket=%s",
+            trade_date,
+            row.get("benchmark_regime") or "-",
+            row.get("premarket_regime") or "-",
+        )
+    else:
+        logger.info("未读取到当日全局风控: trade_date=%s", trade_date)
+    return row
 
 
 def _prepare_step4_input_context(
@@ -158,16 +177,7 @@ def _prepare_step4_input_context(
         enforce_target_trade_date=runtime_config.enforce_target_trade_date,
         max_external_report_candidates=runtime_config.max_external_report_candidates,
     )
-    market_signal_row = _load_market_signal_for_trade_date(trade_date)
-    if market_signal_row:
-        logger.info(
-            "读取全局风控: trade_date=%s, benchmark=%s, premarket=%s",
-            trade_date,
-            market_signal_row.get("benchmark_regime") or "-",
-            market_signal_row.get("premarket_regime") or "-",
-        )
-    else:
-        logger.info("未读取到当日全局风控: trade_date=%s", trade_date)
+    market_signal_row = _market_signal_context(trade_date)
     market_regime, benchmark_text, system_market_view = _build_market_guardrail(
         trade_date=trade_date,
         benchmark_context=benchmark_context,
@@ -187,6 +197,7 @@ def _prepare_step4_input_context(
         candidate_failures=payloads.candidate_failures,
         holdings_intraday_report=holdings_intraday_report,
         external_report=external_report,
+        trade_date=trade_date,
         order_config=order_config,
         ai_candidate_policy=runtime_config.ai_candidate_policy,
     )

@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "documents": [
+    {
+      "id": "portfolio-exit-discipline",
+      "path": "portfolio_exit_discipline.md",
+      "scopes": ["step4", "holding_diagnosis"],
+      "symbols": [],
+      "priority": 100,
+      "enabled": true,
+      "effective_from": "2026-08-05"
+    },
+    {
+      "id": "case-2026-08-05-600611-exit-miss",
+      "path": "cases/2026-08-05-600611-exit-miss.md",
+      "scopes": ["step4", "holding_diagnosis"],
+      "symbols": ["600611"],
+      "priority": 200,
+      "enabled": true,
+      "effective_from": "2026-08-05",
+      "expires_on": "2026-11-05"
+    }
+  ]
+}

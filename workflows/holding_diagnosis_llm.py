@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from core.llm_docs import build_llm_doc_context
 from integrations.llm_client import call_llm, provider_fallbacks, provider_route_chain, resolve_provider_name
 from integrations.supabase_portfolio import load_portfolio_state
 
@@ -144,6 +145,7 @@ def _try_holding_route(holding: Any, prompt: str, route: dict[str, str], seconds
 def _build_holding_llm_prompt(advice: Any, free_cash: float, total_equity: float) -> str:
     features = advice.features or {}
     cash_pct = (free_cash / total_equity * 100) if total_equity > 0 else 0
+    llm_doc_context = build_llm_doc_context("holding_diagnosis", symbols=[advice.code], as_of=datetime.now(TZ).date())
     return (
         f"股票: {advice.code} {advice.name}\n"
         f"持仓: {advice.shares}股, 成本={advice.cost:.2f}, 现价={advice.current_price:.2f}, 浮盈={advice.pnl_pct:+.1f}%\n"
@@ -158,7 +160,8 @@ def _build_holding_llm_prompt(advice: Any, free_cash: float, total_equity: float
         f"- vol_ratio_20_60={_sf(features.get('vol_ratio_20_60')):.3f}\n"
         f"- ret_10d_pct={_sf(features.get('ret_10d_pct')):.3f}\n"
         f"- risk_tag={getattr(advice, 'risk_tag', '')}\n"
-        '\n请输出严格 JSON：{"action":"ADD|HOLD|TRIM|EXIT","reason":"<=80字","confidence":0.0}'
+        + (f"\n{llm_doc_context}\n" if llm_doc_context else "")
+        + '\n请输出严格 JSON：{"action":"ADD|HOLD|TRIM|EXIT","reason":"<=80字","confidence":0.0}'
     )
 
 

@@ -801,6 +801,8 @@ Web 个股、持仓和股票对抗分析保存历史时写入 `meta`：输入快
 | `strategy_reflections` | Actions 生成的策略反思快照，仅 shadow/review |
 | `strategy_policy_candidates` | 待人工复盘的候选策略，不自动晋级生产 |
 
+`llmdoc/` 与数据库记忆承担不同职责：前者保存经过代码审查的长期决策纪律和带有效期的案例注释，并在 Step4/持仓诊断中按股票代码选择性注入；后者保存用户对话中提取的偏好与决策。`llmdoc` 不存实时行情、持仓或用户私有设置，也没有权限覆盖确定性风控与 OMS。
+
 数据隔离：Web JWT → RLS，CLI access_token → RLS，脚本 service_role_key → 绕过 RLS。
 
 ### 成交回填与执行审计

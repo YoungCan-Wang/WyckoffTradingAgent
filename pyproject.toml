@@ -52,7 +52,10 @@ build-backend = "setuptools.build_meta"
 py-modules = ["mcp_server"]
 
 [tool.setuptools.packages.find]
-include = ["agents*", "cli*", "core*", "integrations*", "tools*", "utils*", "scripts*", "workflows*"]
+include = ["agents*", "cli*", "core*", "integrations*", "llmdoc*", "tools*", "utils*", "scripts*", "workflows*"]
+
+[tool.setuptools.package-data]
+llmdoc = ["*.json", "*.md", "cases/*.md"]
 
 [tool.setuptools.data-files]
 "share/youngcan-wyckoff-analysis" = ["CHANGELOG.md"]
