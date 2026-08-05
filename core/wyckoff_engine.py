@@ -230,10 +230,10 @@ class FunnelConfig:
     lps_lookback: int = 3
     lps_ma: int = 20
     lps_ma_tolerance: float = 0.02
-    lps_vol_dry_ratio: float = 0.50
+    lps_vol_dry_ratio: float = 0.65
     lps_vol_ref_window: int = 60
     lps_ma_rising_window: int = 5
-    lps_creek_confirmation_enabled: bool = False
+    lps_creek_confirmation_enabled: bool = True
     lps_creek_lookback: int = 60
     lps_creek_breakout_lookback: int = 15
     lps_creek_swing_window: int = 3
@@ -1167,12 +1167,12 @@ def _detect_lps(df: pd.DataFrame, cfg: FunnelConfig, max_bias_200: float | None 
     if abs(low_near_ma - last_ma) / last_ma > cfg.lps_ma_tolerance:
         return None
 
-    recent_max_vol = recent["volume"].max()
+    recent_typical_vol = pd.to_numeric(recent["volume"], errors="coerce").median()
     ref_window_df = df_s.tail(cfg.lps_vol_ref_window + cfg.lps_lookback).iloc[: -cfg.lps_lookback]
-    ref_max_vol = ref_window_df["volume"].max() if not ref_window_df.empty else 0
-    if ref_max_vol <= 0:
+    ref_typical_vol = pd.to_numeric(ref_window_df["volume"], errors="coerce").median() if not ref_window_df.empty else 0
+    if ref_typical_vol <= 0:
         return None
-    vol_ratio = recent_max_vol / ref_max_vol
+    vol_ratio = recent_typical_vol / ref_typical_vol
     if vol_ratio > cfg.lps_vol_dry_ratio:
         return None
     if cfg.lps_creek_confirmation_enabled and not _lps_creek_confirmed(df_s, cfg):

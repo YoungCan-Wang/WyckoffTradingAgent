@@ -31,3 +31,11 @@ class TestCandidatePolicyConfigFromEnv:
         monkeypatch.setenv("FUNNEL_LOSS_GUARD_PURE_SOS_MIN_ABC", "not-a-number")
         cfg = candidate_policy_config_from_env()
         assert cfg.pure_sos_min_abc == 3
+
+    def test_structure_stop_limit_is_independent_from_oms_hard_stop(self, monkeypatch):
+        monkeypatch.setenv("STEP4_BUY_HARD_STOP_PCT", "7")
+        monkeypatch.setenv("FUNNEL_MAX_STRUCTURE_STOP_PCT", "11")
+
+        cfg = candidate_policy_config_from_env()
+
+        assert cfg.max_structure_stop_pct == 11

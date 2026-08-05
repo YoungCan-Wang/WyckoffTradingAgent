@@ -27,9 +27,12 @@ _PV_OUTLOOK_FALLBACK: dict[str, str] = {
 }
 
 _PV_SYSTEM_PROMPT = (
-    "你是 Wyckoff 量价分析师。根据以下大盘结构化数据，给出次日操作推演。\n"
-    "要求：1-2句话，不超过80字，纯操作指引（若X则Y格式），不要废话和客套。"
+    "你是分析 A 股现货多头账户的 Wyckoff 量价分析师。根据以下大盘结构化数据，给出次日操作推演。\n"
+    "要求：1-2句话，不超过80字；同时给出转强确认和转弱失效条件；只能使用观察、持有、减仓、回避或试探，"
+    "禁止建议做空、卖空、融券或任何空头交易。"
 )
+
+_PV_FORBIDDEN_ACTIONS = ("做空", "卖空", "融券", "空头开仓", "反手空")
 
 
 @dataclass(frozen=True)
@@ -177,13 +180,18 @@ def _generate_pv_outlook(
             timeout=30,
             max_output_tokens=200,
         ).strip()
-        if not raw or len(raw) < 5:
-            return fallback
-        if not raw.startswith("次日推演"):
-            raw = f"次日推演：{raw}"
-        return raw
+        return _sanitize_pv_outlook(raw, fallback)
     except Exception:
         return fallback
+
+
+def _sanitize_pv_outlook(raw: str, fallback: str) -> str:
+    text = str(raw or "").strip()
+    if len(text) < 5 or any(action in text for action in _PV_FORBIDDEN_ACTIONS):
+        return fallback
+    if len(text) > 120:
+        return fallback
+    return text if text.startswith("次日推演") else f"次日推演：{text}"
 
 
 def calc_market_breadth(

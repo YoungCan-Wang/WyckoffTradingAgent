@@ -719,7 +719,7 @@ async function fetchSignalPendingReviewRows(deps: ToolDeps, limit: number): Prom
     .select(
       'code,name,signal_type,signal_date,status,signal_score,snap_close,candidate_lane,entry_type,signal_key,candidate_status,mainline_score',
     )
-    .in('status', ['pending', 'confirmed'])
+    .in('status', ['pending', 'survived', 'confirmed'])
     .order('signal_date', { ascending: false })
     .limit(limit)
   return (data ?? []).map(mapSignalPendingReviewRow).filter((row): row is PatternReviewRow => row !== null)

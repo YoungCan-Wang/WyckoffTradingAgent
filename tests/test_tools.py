@@ -1989,6 +1989,20 @@ class TestMarketRegime:
         assert result["ratio_pct"] is None
         assert result["sample_size"] == 0
 
+    def test_pv_outlook_rejects_short_selling_advice(self):
+        from tools.market_regime import _sanitize_pv_outlook
+
+        fallback = "次日推演：防守优先，等待转强确认。"
+
+        assert _sanitize_pv_outlook("若跌破低点则顺势做空", fallback) == fallback
+
+    def test_pv_outlook_accepts_long_only_two_sided_conditions(self):
+        from tools.market_regime import _sanitize_pv_outlook
+
+        raw = "若放量站稳MA200则小额试探；若失守近三日低点则继续回避"
+
+        assert _sanitize_pv_outlook(raw, "fallback").startswith("次日推演：若放量")
+
     def test_calc_market_breadth_includes_daily_cross_section(self):
         from tools.market_regime import calc_market_breadth
 
@@ -2371,6 +2385,7 @@ class TestDataFetcher:
         assert list(df_map) == ["000001"]
         assert stats["fetch_ok"] == 1
         assert stats["fetch_fail"] == 1
+        assert stats["failed_batches"] == 0
 
     def test_fetch_hist_direct_source_bypasses_cached_repository(self, monkeypatch):
         import integrations.data_source as data_source

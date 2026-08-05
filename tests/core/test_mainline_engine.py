@@ -71,8 +71,8 @@ def test_mainline_event_reversal_theme_can_bypass_l2_with_liquidity() -> None:
     )
 
     assert candidates[0]["theme"] == "创新药医药"
-    assert candidates[0]["status"] == "事件主题修复候选"
-    assert "事件主题低位修复" in candidates[0]["entry_type"]
+    assert candidates[0]["status"] == "主题修复候选"
+    assert "主题低位修复" in candidates[0]["entry_type"]
     assert mainline_candidate_entries(candidates, max_count=3)
 
 
@@ -203,8 +203,8 @@ def test_mainline_event_reversal_enters_tradeable_pool_before_observe() -> None:
     )
 
     assert candidates[0]["code"] == "000006"
-    assert candidates[0]["status"] == "事件主题修复候选"
-    assert "事件主题低位修复" in candidates[0]["entry_type"]
+    assert candidates[0]["status"] == "主题修复候选"
+    assert "主题低位修复" in candidates[0]["entry_type"]
     assert mainline_candidate_entries(candidates, max_count=3)[0]["code"] == "000006"
 
 

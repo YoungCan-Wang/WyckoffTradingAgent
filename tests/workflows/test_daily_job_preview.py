@@ -219,12 +219,12 @@ def test_step3_review_symbols_keeps_only_strict_trade_candidates():
     assert [row["code"] for row in got] == ["000003", "000004", "000006"]
 
 
-def test_step3_review_symbols_adds_capped_repair_springboards(monkeypatch):
+def test_step3_review_symbols_follows_selected_for_ai_lineage_in_repair_mode():
     from core.market_trade_mode import resolve_market_trade_mode
     from workflows.daily_job_persistence import step3_review_symbols
 
-    monkeypatch.setenv("STEP3_REPAIR_REVIEW_SPRINGBOARD_CAP", "1")
     details = {
+        "selected_for_ai": ["000008"],
         "formal_triggers": {"sos": [("000007", 9.0), ("000008", 8.0)]},
         "springboard_map": {
             "sos:000007": {
@@ -246,34 +246,14 @@ def test_step3_review_symbols_adds_capped_repair_springboards(monkeypatch):
         "sector_map": {"000007": "测试行业", "000008": "测试行业"},
     }
 
-    got = step3_review_symbols([], step2_details=details, trade_mode=resolve_market_trade_mode("PANIC_REPAIR"))
-
-    assert len(got) == 1
-    assert got[0]["code"] == "000007"
-    assert got[0]["selection_source"] == "l4_springboard"
-    assert got[0]["source_type"] == "repair_springboard_review"
-    assert got[0]["signal_status"] == "pending"
-    assert got[0]["candidate_status"] == "修复复核候选"
-    assert got[0]["springboard_grade"] == "A+C"
-    assert got[0]["structure_reason"] == "SOS起跳板结构(A+C)"
-
-
-def test_repair_springboard_preserves_real_cross_day_confirmation():
-    from workflows.daily_job_persistence import _step3_repair_springboard_row
-
-    got = _step3_repair_springboard_row(
-        {
-            "code": "000007",
-            "tag": "SOS起跳板结构(A+C)",
-            "signal_status": "confirmed",
-            "confirm_date": "2026-07-15",
-            "confirm_reason": "跨日守住支撑",
-        }
+    got = step3_review_symbols(
+        [{"code": "000007"}, {"code": "000008"}],
+        step2_details=details,
+        trade_mode=resolve_market_trade_mode("PANIC_REPAIR"),
     )
 
-    assert got["signal_status"] == "confirmed"
-    assert got["confirm_date"] == "2026-07-15"
-    assert got["confirm_reason"] == "跨日守住支撑"
+    assert [row["code"] for row in got] == ["000008"]
+    assert got[0]["selection_source"] == "step2_selected_for_ai"
 
 
 def test_recommendation_write_symbols_tracks_market_blocked_springboard_candidates():

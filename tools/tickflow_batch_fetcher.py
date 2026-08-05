@@ -99,6 +99,7 @@ def _tickflow_fetch_stats(
     df_map: dict[str, pd.DataFrame],
     fetch_spot_patched: int,
     started: float,
+    failed_batches: int = 0,
 ) -> dict[str, int]:
     elapsed = time.monotonic() - started
     return {
@@ -106,6 +107,7 @@ def _tickflow_fetch_stats(
         "fetch_fail": max(symbol_count - len(df_map), 0),
         "fetch_date_mismatch": 0,
         "fetch_spot_patched": fetch_spot_patched,
+        "failed_batches": failed_batches,
         "fetch_elapsed_s": int(elapsed),
         "fetch_qps": int(len(df_map) / elapsed) if elapsed > 0 else 0,
     }
@@ -148,7 +150,7 @@ def fetch_tickflow_daily_batch(
             time.sleep(batch_sleep)
     if not df_map:
         return None
-    stats = _tickflow_fetch_stats(len(symbols), df_map, fetch_spot_patched, started)
+    stats = _tickflow_fetch_stats(len(symbols), df_map, fetch_spot_patched, started, failed_batches)
     _log_tickflow_batch_result(symbols, df_map, failed_batches, stats)
     return df_map, stats
 

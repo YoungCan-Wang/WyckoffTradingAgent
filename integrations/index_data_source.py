@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from datetime import date
 
 import pandas as pd
@@ -17,6 +18,18 @@ logger = logging.getLogger(__name__)
 def fetch_index_hist(code: str, start: str | date, end: str | date) -> pd.DataFrame:
     start_s = start.strftime("%Y%m%d") if isinstance(start, date) else str(start).replace("-", "")
     end_s = end.strftime("%Y%m%d") if isinstance(end, date) else str(end).replace("-", "")
+    attempts = max(int(os.getenv("INDEX_DATA_MAX_RETRIES", "3")), 1)
+    backoff = max(float(os.getenv("INDEX_DATA_RETRY_BACKOFF_SECONDS", "1")), 0.0)
+    for attempt in range(1, attempts + 1):
+        result = _fetch_index_hist_once(code, start_s, end_s)
+        if result is not None:
+            return result
+        if attempt < attempts and backoff > 0:
+            time.sleep(backoff * attempt)
+    raise RuntimeError(f"大盘指数 {code} 拉取全部失败（tushare + akshare）。{_index_failure_suffix()}")
+
+
+def _fetch_index_hist_once(code: str, start_s: str, end_s: str) -> pd.DataFrame | None:
     try:
         return _fetch_index_tushare(code, start_s, end_s)
     except Exception as exc:
@@ -25,7 +38,7 @@ def fetch_index_hist(code: str, start: str | date, end: str | date) -> pd.DataFr
         return fetch_index_akshare(code, start_s, end_s)
     except Exception as exc:
         _debug_index_fail("akshare(index)", exc)
-    raise RuntimeError(f"大盘指数 {code} 拉取全部失败（tushare + akshare）。{_index_failure_suffix()}")
+    return None
 
 
 def fetch_index_akshare(code: str, start: str, end: str) -> pd.DataFrame:

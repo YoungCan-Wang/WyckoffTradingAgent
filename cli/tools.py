@@ -198,7 +198,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                         "'archive' 历史上下文归档"
                     ),
                 },
-                "status": {"type": "string", "description": "仅 signal：'all'/'pending'/'confirmed'/'expired'"},
+                "status": {
+                    "type": "string",
+                    "description": "仅 signal：'all'/'pending'/'survived'/'confirmed'/'expired'",
+                },
                 "limit": {"type": "integer", "description": "返回记录数上限，默认 20"},
                 "query": {"type": "string", "description": "仅 archive：搜索归档的关键词或股票代码"},
                 "archive_ref": {

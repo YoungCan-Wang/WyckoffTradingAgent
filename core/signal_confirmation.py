@@ -1,4 +1,4 @@
-"""信号确认逻辑：pending → confirmed / expired。纯业务，不依赖 DB。"""
+"""信号确认逻辑：pending → survived / confirmed / expired。纯业务，不依赖 DB。"""
 
 from __future__ import annotations
 
@@ -38,14 +38,30 @@ def check_confirmation(
     today_ohlcv: dict[str, float],
     days_elapsed: int,
 ) -> tuple[str, str]:
-    """返回 (new_status, reason)，status ∈ {'pending', 'confirmed', 'expired'}。"""
+    """返回 (new_status, reason)，区分“未失效”和“正向确认”。"""
     ttl = SIGNAL_TTL_DAYS.get(signal_type, 3)
     if days_elapsed >= ttl:
         return "expired", f"TTL {ttl}天已到，未满足确认条件"
     fn = _CONFIRM_DISPATCH.get(signal_type)
     if fn is None:
         return "expired", f"未知信号类型: {signal_type}"
-    return fn(snap, today_ohlcv, days_elapsed)
+    status, reason = fn(snap, today_ohlcv, days_elapsed)
+    if status == "pending" and days_elapsed > 0:
+        return "survived", reason
+    return status, reason
+
+
+def _close_position(today: dict[str, float], reference_close: float = 0.0) -> float:
+    high = float(today.get("high", 0) or 0)
+    low = float(today.get("low", 0) or 0)
+    close = float(today.get("close", 0) or 0)
+    if high > low:
+        return (close - low) / (high - low)
+    if reference_close > 0 and close > reference_close:
+        return 1.0
+    if reference_close > 0 and close < reference_close:
+        return 0.0
+    return 0.5
 
 
 def _confirm_sos(snap: dict, today: dict, days_elapsed: int) -> tuple[str, str]:
@@ -80,14 +96,24 @@ def _confirm_spring(snap: dict, today: dict, days_elapsed: int) -> tuple[str, st
 
 
 def _confirm_lps(snap: dict, today: dict, days_elapsed: int) -> tuple[str, str]:
-    snap_ma20, snap_vol = snap.get("snap_ma20", 0), snap.get("snap_volume", 0)
+    snap_ma20 = float(snap.get("snap_ma20", 0) or 0)
+    snap_close = float(snap.get("snap_close", 0) or 0)
+    snap_vol = float(snap.get("snap_volume", 0) or 0)
+    today_ma20 = float(today.get("ma20", 0) or 0)
     if today["low"] < snap_ma20 * 0.98:
         return "expired", f"跌破 MA20 {snap_ma20:.2f}"
     if snap_vol > 0 and today["volume"] > snap_vol * 1.5:
         return "expired", "异常放量，LPS 逻辑失效"
-    if today["close"] >= snap_ma20 and (snap_vol <= 0 or today["volume"] <= snap_vol * 1.2):
-        return "confirmed", f"站稳 MA20 {snap_ma20:.2f}，缩量确认"
-    return "pending", "等待站稳 MA20"
+    holds_support = today["close"] >= max(snap_ma20, today_ma20 * 0.995)
+    holds_signal_close = snap_close <= 0 or today["close"] >= snap_close * 0.995
+    dry = snap_vol <= 0 or today["volume"] <= snap_vol * 0.90
+    bullish = today["close"] >= today.get("open", today["close"])
+    strong_close = _close_position(today, snap_close) >= 0.60
+    if holds_support and holds_signal_close and strong_close and (dry or bullish):
+        return "confirmed", f"需求确认：高收守住信号区与当日MA20，收盘 {today['close']:.2f}"
+    if holds_support and (snap_vol <= 0 or today["volume"] <= snap_vol * 1.2):
+        return "pending", "结构未失效但缺少高收/需求证据"
+    return "pending", "等待守住当日MA20并出现高收需求确认"
 
 
 def _confirm_evr(snap: dict, today: dict, days_elapsed: int) -> tuple[str, str]:
@@ -495,6 +521,8 @@ class PendingPool:
             else:
                 for sig in self._pool.values():
                     if sig["id"] == upd["id"]:
+                        sig["status"] = upd["status"]
                         sig["days_elapsed"] = upd["days_elapsed"]
+                        sig["confirm_reason"] = upd.get("confirm_reason", "")
                         break
         return confirmed

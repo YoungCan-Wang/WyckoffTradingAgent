@@ -111,3 +111,85 @@ def test_load_recent_signal_observations_fetches_beyond_single_page_cap(monkeypa
     rows = mod.load_recent_signal_observations(days=90, limit=5000, market="cn")
 
     assert len(rows) == 2177
+
+
+class _MutationQuery:
+    def __init__(self, calls: list[tuple]):
+        self.calls = calls
+
+    def delete(self):
+        self.calls.append(("delete",))
+        return self
+
+    def eq(self, column, value):
+        self.calls.append(("eq", column, value))
+        return self
+
+    def upsert(self, rows, on_conflict):
+        self.calls.append(("upsert", rows, on_conflict))
+        return self
+
+    def execute(self):
+        self.calls.append(("execute",))
+        return _Response()
+
+
+class _MutationClient:
+    def __init__(self):
+        self.calls: list[tuple] = []
+
+    def table(self, table):
+        self.calls.append(("table", table))
+        return _MutationQuery(self.calls)
+
+
+def test_replace_signal_health_removes_stale_snapshot_rows(monkeypatch):
+    client = _MutationClient()
+    monkeypatch.setattr(mod, "_configured", lambda: True)
+    monkeypatch.setattr(mod, "_admin", lambda: client)
+    monkeypatch.setattr(mod, "_close", lambda _client: None)
+    monkeypatch.setattr(mod, "require_server_write_context", lambda _operation: None)
+    rows = [{"market": "cn", "as_of_date": "2026-08-04", "signal_type": "sos"}]
+
+    written = mod.replace_signal_health(rows, market="cn", as_of_date="2026-08-04")
+
+    assert written == 1
+    assert ("eq", "market", "cn") in client.calls
+    assert ("eq", "as_of_date", "2026-08-04") in client.calls
+    assert any(call[0] == "upsert" for call in client.calls)
+
+
+def test_replace_signal_registry_refuses_untrusted_empty_snapshot(monkeypatch):
+    client = _MutationClient()
+    monkeypatch.setattr(mod, "_configured", lambda: True)
+    monkeypatch.setattr(mod, "_admin", lambda: client)
+    monkeypatch.setattr(mod, "_close", lambda _client: None)
+    monkeypatch.setattr(mod, "require_server_write_context", lambda _operation: None)
+
+    written = mod.replace_signal_registry([], market="cn")
+
+    assert written == 0
+    assert client.calls == []
+
+
+def test_replace_signal_registry_can_clear_only_with_explicit_override(monkeypatch):
+    client = _MutationClient()
+    monkeypatch.setattr(mod, "_configured", lambda: True)
+    monkeypatch.setattr(mod, "_admin", lambda: client)
+    monkeypatch.setattr(mod, "_close", lambda _client: None)
+    monkeypatch.setattr(mod, "require_server_write_context", lambda _operation: None)
+
+    written = mod.replace_signal_registry([], market="cn", allow_empty=True)
+
+    assert written == 0
+    assert ("eq", "market", "cn") in client.calls
+
+
+def test_strict_outcome_load_raises_instead_of_returning_empty(monkeypatch):
+    monkeypatch.setattr(mod, "_configured", lambda: True)
+    monkeypatch.setattr(mod, "_admin", lambda: (_ for _ in ()).throw(OSError("temporary outage")))
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="failed to load signal outcomes"):
+        mod.load_recent_signal_outcomes(raise_on_error=True)

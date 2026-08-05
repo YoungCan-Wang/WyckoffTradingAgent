@@ -250,11 +250,16 @@ def _l4_triggers(code: str, df: pd.DataFrame, cfg: FunnelConfig) -> list[str]:
 
 
 def _exit_snapshot(
-    code: str, df: pd.DataFrame, accum_stage: str | None, cfg: FunnelConfig
+    code: str,
+    df: pd.DataFrame,
+    accum_stage: str | None,
+    cfg: FunnelConfig,
+    buy_dt: str = "",
 ) -> tuple[str | None, float | None, str]:
     try:
+        exit_df = _exit_history_since_entry(df, buy_dt)
         accum_map = {code: accum_stage} if accum_stage else {}
-        sig = layer5_exit_signals([code], {code: df}, accum_map, cfg).get(code, {})
+        sig = layer5_exit_signals([code], {code: exit_df}, accum_map, cfg).get(code, {})
         if not sig:
             return None, None, ""
         return sig.get("signal"), sig.get("price"), sig.get("reason", "")
@@ -263,15 +268,26 @@ def _exit_snapshot(
         return None, None, ""
 
 
+def _exit_history_since_entry(df: pd.DataFrame, buy_dt: str) -> pd.DataFrame:
+    """退出结构只能使用建仓后的价格路径，避免历史高点反杀新仓。"""
+    entry = pd.to_datetime(str(buy_dt or "").strip(), errors="coerce")
+    if pd.isna(entry) or "date" not in df.columns:
+        return df
+    dates = pd.to_datetime(df["date"], errors="coerce")
+    sliced = df.loc[dates >= entry].copy()
+    return sliced if not sliced.empty else df
+
+
 def _wyckoff_snapshot(
     code: str,
     series: _SeriesSnapshot,
     bench_df: pd.DataFrame | None,
     cfg: FunnelConfig,
+    buy_dt: str = "",
 ) -> _WyckoffSnapshot:
     l2_channel = _l2_channel(code, series.df, bench_df, cfg)
     accum_stage = _accum_stage(series.df, cfg)
-    exit_signal, exit_price, exit_reason = _exit_snapshot(code, series.df, accum_stage, cfg)
+    exit_signal, exit_price, exit_reason = _exit_snapshot(code, series.df, accum_stage, cfg, buy_dt)
     return _WyckoffSnapshot(
         l2_channel=l2_channel,
         track=_classify_track(l2_channel),
@@ -453,6 +469,7 @@ def diagnose_one_stock(
     bench_df: pd.DataFrame | None = None,
     cfg: FunnelConfig | None = None,
     intraday_df: pd.DataFrame | None = None,
+    buy_dt: str = "",
 ) -> HoldingDiagnostic:
     """
     对单只股票执行全面 Wyckoff 健康诊断。
@@ -473,7 +490,7 @@ def diagnose_one_stock(
 
     series = _series_snapshot(df, cost)
     ma = _ma_snapshot(series.close, series.latest_close)
-    wyckoff = _wyckoff_snapshot(code, series, bench_df, cfg)
+    wyckoff = _wyckoff_snapshot(code, series, bench_df, cfg, buy_dt)
     candidate_entry = _candidate_lane_entry(code, series, wyckoff)
     risk = _risk_snapshot(series, cost)
     targets = compute_price_targets(series.close, series.high, series.low)
@@ -543,7 +560,7 @@ def _build_diagnostic(
 
 
 def diagnose_holdings(
-    holdings: list[tuple[str, str, float]],
+    holdings: list[tuple[str, str, float] | tuple[str, str, float, str]],
     df_map: dict[str, pd.DataFrame],
     bench_df: pd.DataFrame | None = None,
     cfg: FunnelConfig | None = None,
@@ -554,7 +571,7 @@ def diagnose_holdings(
 
     Parameters
     ----------
-    holdings : [(code, name, cost), ...]
+    holdings : [(code, name, cost), ...] 或 [(code, name, cost, buy_dt), ...]
     df_map   : {code: DataFrame} 每只股票的 OHLCV 数据
     bench_df : 大盘基准 OHLCV
     cfg      : FunnelConfig
@@ -562,7 +579,9 @@ def diagnose_holdings(
     """
     results = []
     intraday_map = intraday_df_map or {}
-    for code, name, cost in holdings:
+    for holding in holdings:
+        code, name, cost = holding[:3]
+        buy_dt = str(holding[3]) if len(holding) > 3 else ""
         df = df_map.get(code)
         if df is None or df.empty:
             # 无数据时返回最小诊断
@@ -578,7 +597,7 @@ def diagnose_holdings(
                 )
             )
             continue
-        results.append(diagnose_one_stock(code, name, cost, df, bench_df, cfg, intraday_map.get(code)))
+        results.append(diagnose_one_stock(code, name, cost, df, bench_df, cfg, intraday_map.get(code), buy_dt=buy_dt))
     return results
 
 

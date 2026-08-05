@@ -182,10 +182,10 @@ def test_build_signal_observations_marks_selection_and_source():
     assert lineage["sources"]["external_capital"]["providers"] == ["lhb", "margin"]
     assert lineage["sources"]["selection"]["candidate_rank"] == 1
     shadow_score = first["features_json"]["candidate_shadow_score"]
-    assert shadow_score["version"] == "candidate_shadow_score_v1"
+    assert shadow_score["version"] == "candidate_shadow_score_v2"
     assert shadow_score["components"]["funnel"] == 26.4
     assert shadow_score["components"]["springboard"] == 12.0
-    assert "springboard_confirmed" in shadow_score["positive_tags"]
+    assert "springboard_structure_ready" in shadow_score["positive_tags"]
     assert second["track"] == "Accum"
     assert second["source"] == "l2_bypass"
     assert second["selection_mode"] == "l2_bypass_shadow"

@@ -17,7 +17,8 @@ def build_signal_confirmed_preview(selected_df: pd.DataFrame) -> str:
         return ""
 
     lines = ["## ✅ 跨日确认已通过（前置）"]
-    for _, row in confirmed_df.sort_values("input_order", kind="stable").iterrows():
+    ordered = confirmed_df.sort_values("input_order", kind="stable")
+    for _, row in ordered.head(5).iterrows():
         code = clean_text(row.get("code"))
         name = clean_text(row.get("name")) or code
         signal_type = clean_text(row.get("signal_type")) or clean_text(row.get("tag")) or "-"
@@ -25,6 +26,8 @@ def build_signal_confirmed_preview(selected_df: pd.DataFrame) -> str:
         confirm_date = clean_text(row.get("confirm_date")) or "-"
         reason = clean_text(row.get("confirm_reason")) or "确认条件已满足"
         lines.append(f"- {code} {name} | {signal_type} | {signal_date} → {confirm_date} | {reason}")
+    if len(ordered) > 5:
+        lines.append(f"- 另 {len(ordered) - 5} 只详见结构化审计数据")
     return "\n".join(lines) + "\n\n---\n"
 
 

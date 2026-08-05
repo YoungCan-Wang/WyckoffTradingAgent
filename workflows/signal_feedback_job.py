@@ -19,9 +19,9 @@ from integrations.supabase_signal_feedback import (
     load_recent_signal_outcomes,
     load_signal_observations_by_ids,
     load_signal_registry,
-    upsert_signal_health,
+    replace_signal_health,
+    replace_signal_registry,
     upsert_signal_outcomes,
-    upsert_signal_registry,
 )
 
 _logger = logging.getLogger(__name__)
@@ -99,21 +99,33 @@ def _observations_to_settle(config: SignalFeedbackConfig) -> list[dict[str, Any]
 
 
 def refresh_health(config: SignalFeedbackConfig, log_fn: LogFn = print) -> int:
-    outcomes = load_recent_signal_outcomes(config.outcome_days, config.outcome_limit, config.market)
+    outcomes = load_recent_signal_outcomes(
+        config.outcome_days,
+        config.outcome_limit,
+        config.market,
+        raise_on_error=True,
+    )
+    if not outcomes:
+        log_fn("[signal_feedback] health: no trusted outcomes; keep previous health and registry snapshots")
+        return 0
+    current_registry = load_signal_registry(config.market, raise_on_error=True)
     health_rows = summarize_signal_health(
         outcomes,
         as_of_date=config.as_of_date,
         market=config.market,
         min_samples=config.min_samples,
     )
-    health_written = upsert_signal_health(health_rows)
     registry_rows = build_signal_registry_updates(
         health_rows,
         market=config.market,
         horizon_days=config.registry_horizon,
-        registry_rows=load_signal_registry(config.market),
+        registry_rows=current_registry,
     )
-    registry_written = upsert_signal_registry(registry_rows)
+    if not health_rows or not registry_rows:
+        log_fn("[signal_feedback] health: derived snapshot empty; keep previous health and registry snapshots")
+        return 0
+    health_written = replace_signal_health(health_rows, market=config.market, as_of_date=config.as_of_date)
+    registry_written = replace_signal_registry(registry_rows, market=config.market)
     log_fn(f"[signal_feedback] health: outcomes={len(outcomes)}, health={health_written}, registry={registry_written}")
     return health_written
 

@@ -110,11 +110,10 @@ def rollback_step4_run(
 
 
 def update_step4_position_stops(portfolio_id: str, tickets: list[ExecutionTicket]) -> bool:
-    # NO_TRADE / 拒单不得改持仓状态；否则 T+1 拦截的 EXIT 仍会用模型止损覆写仓位。
     updates = [
         {"code": ticket.code, "stop_loss": ticket.effective_stop_loss}
         for ticket in tickets
-        if ticket.status == "APPROVED" and ticket.is_holding and ticket.effective_stop_loss is not None
+        if _should_persist_stop(ticket)
     ]
     if not updates:
         return True
@@ -124,6 +123,20 @@ def update_step4_position_stops(portfolio_id: str, tickets: list[ExecutionTicket
     else:
         logger.error("持仓止损价更新失败 | portfolio_id=%s", portfolio_id)
         return False
+
+
+def _should_persist_stop(ticket: ExecutionTicket) -> bool:
+    """未成交卖单不改持仓；倒挂参考价也不能成为下一轮保护止损。"""
+    stop = ticket.effective_stop_loss
+    price = ticket.price_hint
+    return bool(
+        ticket.status == "APPROVED"
+        and ticket.is_holding
+        and ticket.action in {"HOLD", "TRIM"}
+        and stop is not None
+        and price is not None
+        and 0 < stop < price
+    )
 
 
 def _stop_rollback_updates(context: Step4InputContext, tickets: list[ExecutionTicket]) -> tuple[dict, ...]:

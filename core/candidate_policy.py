@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from core.signal_confirmation import score_springboard_abc
+from core.signal_confirmation import compute_support_level, score_springboard_abc
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,7 @@ class CandidatePolicyConfig:
     # NEUTRAL 放宽高位中继误杀，主升段常见 20 日涨幅 >35%。
     neutral_high_range_pos: float = 95.0
     neutral_high_20d_ret: float = 45.0
+    max_structure_stop_pct: float = 12.0
 
 
 DEFAULT_CANDIDATE_POLICY_CONFIG = CandidatePolicyConfig()
@@ -238,6 +239,9 @@ def loss_guard_reason(
     weak_reason = _weak_confirmation_reason(keys, df_map.get(code), policy)
     if weak_reason:
         return weak_reason
+    stop_reason = _structure_stop_reason(regime_norm, keys, df_map.get(code), policy)
+    if stop_reason:
+        return stop_reason
     is_mainline = bool(mainline_codes and code in mainline_codes)
     if "lps" in keys and not (keys & {"sos", "evr", "spring"}):
         return _pure_lps_reason(regime_norm, trigger_score, policy, is_mainline)
@@ -253,6 +257,36 @@ def loss_guard_reason(
         if reason:
             return reason
     return ""
+
+
+def _structure_stop_reason(
+    regime: str,
+    keys: set[str],
+    df: pd.DataFrame | None,
+    config: CandidatePolicyConfig,
+) -> str:
+    if regime in {"RISK_ON", "RISK_OFF", "BEAR_REBOUND", "PANIC_REPAIR", "CRASH", "BLACK_SWAN"}:
+        return ""
+    if not keys or df is None or df.empty or config.max_structure_stop_pct <= 0:
+        return ""
+    if "close" not in df.columns:
+        return ""
+    close_series = pd.to_numeric(df["close"], errors="coerce").dropna()
+    close = candidate_score_value(close_series.iloc[-1]) if not close_series.empty else 0.0
+    if close <= 0:
+        return ""
+    levels = []
+    for signal_type in sorted(keys):
+        try:
+            support = candidate_score_value(compute_support_level(df, signal_type))
+        except Exception:
+            continue
+        if 0 < support < close:
+            levels.append(support)
+    if not levels:
+        return ""
+    risk_pct = (close - max(levels)) / close * 100.0
+    return "结构止损超出风险上限" if risk_pct > config.max_structure_stop_pct else ""
 
 
 def _weak_confirmation_reason(keys: set[str], df: pd.DataFrame | None, config: CandidatePolicyConfig) -> str:

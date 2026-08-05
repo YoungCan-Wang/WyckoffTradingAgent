@@ -64,10 +64,12 @@ def run_recommendation_backfill(request: RecommendationBackfillRequest) -> int:
 
     print(f"[recommendation-backfill] target_dates={','.join(d.isoformat() for d in target_dates)}")
     day_results = [_build_day_result(day, request.skip_step3) for day in target_dates]
-    payloads = _build_payloads(target_dates, day_results)
     table_rows = _build_table_rows(day_results)
     client = create_admin_client()
     old_rows = _fetch_target_rows(client, target_dates)
+    payloads = _build_payloads(target_dates, day_results)
+    if request.skip_step3:
+        _preserve_old_ai_marks(payloads, old_rows)
     _write_artifacts(output_dir, target_dates, day_results, payloads, old_rows, table_rows)
     _validate_payloads(payloads, allow_empty_date=request.allow_empty_date)
     if not request.apply:
@@ -107,7 +109,11 @@ def _build_day_result(trade_day: date, skip_step3: bool) -> dict[str, Any]:
             benchmark_context=benchmark_context,
             trade_mode=trade_mode,
         )
-        review_symbols = step3_review_symbols(symbols_info) if trade_mode.allow_ai_review else []
+        review_symbols = (
+            step3_review_symbols(symbols_info, step2_details=details, trade_mode=trade_mode)
+            if trade_mode.allow_ai_review
+            else []
+        )
         ai_codes, springboard_updates = _run_step3_if_needed(
             trade_day,
             review_symbols,
@@ -239,6 +245,18 @@ def _apply_ai_marks(rows: list[dict], ai_codes: list[str], springboard_updates: 
         row.update(springboard_ai_payload(springboard_updates.get(int_to_code6[code])))
 
 
+def _preserve_old_ai_marks(payloads: dict[int, list[dict]], old_rows: list[dict[str, Any]]) -> None:
+    old_ai_keys = {
+        (_int_date(row.get("recommend_date")), _int_code(row.get("code")))
+        for row in old_rows
+        if row.get("is_ai_recommended") is True
+    }
+    for recommend_date, rows in payloads.items():
+        for row in rows:
+            if (recommend_date, _int_code(row.get("code"))) in old_ai_keys:
+                row["is_ai_recommended"] = True
+
+
 def _build_table_rows(day_results: list[dict[str, Any]]) -> dict[str, list[dict]]:
     signal_pending_rows = _simulate_signal_pending_rows(day_results)
     signal_observation_rows: list[dict] = []
@@ -285,7 +303,11 @@ def _simulate_signal_pending_rows(day_results: list[dict[str, Any]]) -> list[dic
 
 
 def _pending_rows_for_day(result: dict[str, Any]) -> list[dict]:
-    from core.candidate_metadata import build_candidate_metadata_map, candidate_signal_triggers, merge_trigger_maps
+    from core.candidate_metadata import (
+        build_candidate_signal_metadata_map,
+        candidate_signal_triggers,
+        merge_trigger_maps,
+    )
     from workflows.step2_signal_confirmation import build_pending_signal_rows
 
     details = result.get("step2_details") or {}
@@ -299,7 +321,7 @@ def _pending_rows_for_day(result: dict[str, Any]) -> list[dict]:
         regime=str((result.get("benchmark_context") or {}).get("regime") or "NEUTRAL"),
         name_map=details.get("name_map") or {},
         sector_map=details.get("sector_map") or {},
-        candidate_metadata_map=build_candidate_metadata_map(
+        candidate_metadata_map=build_candidate_signal_metadata_map(
             candidate_entries, metrics.get("mainline_candidates") or []
         ),
     )
@@ -570,6 +592,7 @@ def _day_env(trade_day: date, skip_step3: bool) -> Iterator[None]:
         "END_CALENDAR_DAY": trade_day.isoformat(),
         "FUNNEL_SKIP_FINANCIAL_METRICS": "1",
         "FUNNEL_DYNAMIC_POLICY": "off",
+        "FUNNEL_REQUIRE_COMPLETE_REPLAY_DATA": "1",
         WRITE_CONTEXT_ENV: CLI_WRITE_CONTEXT,
         "STEP3_ENFORCE_TARGET_TRADE_DATE": "1",
     }

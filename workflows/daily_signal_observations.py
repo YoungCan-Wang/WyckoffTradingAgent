@@ -6,7 +6,7 @@ import os
 from collections.abc import Callable
 from typing import Any
 
-from core.candidate_metadata import build_candidate_metadata_map, candidate_signal_triggers, merge_trigger_maps
+from core.candidate_metadata import build_candidate_signal_metadata_map, candidate_signal_triggers, merge_trigger_maps
 from core.candidate_metadata import code6 as _last_six_digits
 from core.candidate_policy import candidate_score_value
 from utils.env import env_flag as _env_flag
@@ -355,7 +355,7 @@ def _candidate_trigger_map(step2_details: dict) -> dict[str, list[tuple[str, flo
 
 
 def _candidate_metadata_map(step2_details: dict) -> dict[str, dict[str, Any]]:
-    return build_candidate_metadata_map(
+    return build_candidate_signal_metadata_map(
         step2_details.get("candidate_entries") or [],
         step2_details.get("mainline_candidates") or [],
     )

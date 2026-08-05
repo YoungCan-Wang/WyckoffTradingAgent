@@ -326,7 +326,7 @@ function escHtml(s){const d=document.createElement('div');d.textContent=s||'';re
 // ═══ Overview ═══
 async function renderOverview(c){
   const [recs,sigs,port,sync,mem,cfgData]=await Promise.all([API('/api/recommendations'),API('/api/signals'),API('/api/portfolio'),API('/api/sync'),API('/api/memory'),API('/api/config')]);
-  const pendingSigs=Array.isArray(sigs)?sigs.filter(s=>s.status==='pending').length:0;
+  const pendingSigs=Array.isArray(sigs)?sigs.filter(s=>s.status==='pending'||s.status==='survived').length:0;
   const totalSigs=Array.isArray(sigs)?sigs.length:0;
   const posCount=port?.positions?.length||0;const cash=port?.free_cash||0;
   const memCount=Array.isArray(mem)?mem.length:0;
@@ -397,7 +397,7 @@ window.delRec=async function(code){if(!confirm(t('confirm_del_rec')+code+'?'))re
 async function renderSignals(c){
   const sigs=await API('/api/signals');
   if(!Array.isArray(sigs)||!sigs.length){c.innerHTML=`<div class="empty">${t('no_signals')}</div>`;return}
-  const statusPill=s=>{const m={pending:'pill-amber',confirmed:'pill-green',expired:'pill-red',rejected:'pill-red'};return `<span class="pill ${m[s]||'pill-dim'}">${s}</span>`};
+  const statusPill=s=>{const m={pending:'pill-amber',survived:'pill-blue',confirmed:'pill-green',expired:'pill-red',rejected:'pill-red'};return `<span class="pill ${m[s]||'pill-dim'}">${s}</span>`};
   c.innerHTML=`<div class="tbl-wrap fade-in"><table class="tbl"><thead><tr><th>${t('th_code')}</th><th>${t('th_name')}</th><th>${t('th_type')}</th><th>${t('th_status')}</th><th>${t('th_date')}</th><th>${t('th_score')}</th><th>${t('th_days')}</th><th>${t('th_regime')}</th><th>${t('th_industry')}</th><th></th></tr></thead><tbody>${sigs.map(s=>{
     const code=String(s.code||'').padStart(6,'0');
     return `<tr><td>${code}</td><td>${s.name||''}</td><td>${s.signal_type||''}</td><td>${statusPill(s.status||'')}</td><td>${localTime(s.signal_date)}</td><td>${(s.signal_score||0).toFixed(2)}</td><td>${s.days_elapsed||0}</td><td>${s.regime||''}</td><td>${s.industry||''}</td><td><button class="btn-del" onclick="delSig('${code}')">${t('del')}</button></td></tr>`}).join('')}</tbody></table></div>`}

@@ -46,7 +46,9 @@ function formatCount(value: number | null | undefined): number {
 
 export function patternReviewRole(row: PatternReviewRow): string {
   if (row.source_type === 'signal_pending') {
-    return row.signal_status === 'confirmed' ? '已确认信号' : '待确认信号'
+    if (row.signal_status === 'confirmed') return '已确认信号'
+    if (row.signal_status === 'survived') return '跨日存活信号'
+    return '待确认信号'
   }
   return isAiRecommended(row.is_ai_recommended) ? 'AI推荐' : '观察/信号复盘'
 }

@@ -677,7 +677,7 @@ shadow 输出进入漏斗 metrics 供归因使用，但不写入正式 `triggers
 `core/signal_confirmation.py`，L4 信号经 1-3 天价格确认：
 
 ```
-pending ──(价格确认)──→ confirmed（研究确认，仍需次日开盘价买入与市场闸门）
+pending ──(跨日未失效)──→ survived ──(需求确认)──→ confirmed（VALIDATED，仍需市场与 OMS 闸门）
    └──(超时)──→ expired（失效）
 ```
 

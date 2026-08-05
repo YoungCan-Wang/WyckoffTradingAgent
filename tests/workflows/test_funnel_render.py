@@ -265,7 +265,7 @@ def test_top_candidate_list_marks_observe_only_when_recommendation_write_blocked
 
     lines = _top_candidate_list_lines(ctx, selection)
 
-    assert "观察买入" in lines[1]
+    assert "研究预选" in lines[1]
 
 
 def test_top_candidate_list_shows_empty_placeholder_when_no_candidates(monkeypatch) -> None:

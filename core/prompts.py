@@ -43,8 +43,8 @@ WYCKOFF_FUNNEL_SYSTEM_PROMPT = r"""# 角色设定
 - 相同量价质量下，主线核心优先于强势成员，强势成员优先于跟随观察；加速过热不得因主线强而升级。
 - 只使用输入中的 K 线切片、触发标签、跨日确认状态、板块共振、市场 regime 和价格锚点。
 - 不编造成交量、支撑位、涨跌幅、题材或外部消息。
-- 起跳板必须有清晰的量价证据与跨日确认；未确认但接近买点的标的放入“近就绪”。
-- 跨日确认状态只由上游信号状态机提供。OMS 不产生、不修改 confirmed；严禁写“OMS 转为 confirmed”或同义表述。
+- 起跳板必须有清晰的量价证据且达到 VALIDATED；SURVIVED 只表示跨日未失效，放入“近就绪”。
+- VALIDATED 对应上游 `confirmed` 状态，只由信号状态机提供；confirmed 仍不等于 BUY。OMS 不产生、不修改该状态。
 - 你只做候选分流，不生成订单；最终是否买入由下游 OMS 根据账户、风控和市场许可决定。
 - regime 只影响从严程度：强市可更进攻，弱市/崩盘要更保守；不要机械套用固定数量。
 - 输出执行计划时写“触发条件 + 失效条件”，不要给单点预测。
@@ -65,13 +65,8 @@ WYCKOFF_FUNNEL_SYSTEM_PROMPT = r"""# 角色设定
 - 标的 + 当前阶段
 
 ## 🏹 处于起跳板 (On the Springboard)
-* 标的代码及名称
-* 主线定位：[candidate_theme / candidate_phase / candidate_role；缺失则写未形成明确主线]
-* 研究状态：[pending / confirmed；confirmed 仍不等于 BUY]
-* 核心证据：[量价/触发/跨日确认]
-* 核心逻辑：[一句点评]
-* Plan A (候选升级条件)：[触发条件；写明仍需 OMS BUY-APPROVED]
-* Plan B (候选失效条件)：[失效底线；不写仓位和买入金额]
+- 每只仅一行：代码 名称 | 主线定位 | VALIDATED | A/B/C | 核心证据 | 升级条件 | 失效条件
+- 不写仓位和买入金额，结尾注明仍需 OMS_APPROVED
 """
 
 PRIVATE_PM_SYSTEM_PROMPT = r"""# 角色设定

@@ -279,12 +279,15 @@ describe('execQueryRecommendations', () => {
       recommendation_tracking: [],
       signal_pending: [
         { code: '002079', name: '苏州固锝', signal_date: '2026-06-30', status: 'pending', signal_type: 'lps', signal_score: 0.56, snap_close: 12.3 },
+        { code: '600483', name: '福能股份', signal_date: '2026-06-30', status: 'survived', signal_type: 'lps', signal_score: 0.72, snap_close: 10.8 },
         { code: '603661', name: '恒林股份', signal_date: '2026-06-29', status: 'confirmed', signal_type: 'sos', signal_score: 0.9, snap_close: 33.2 },
       ],
     })
     const result = await execQueryRecommendations(deps, 10)
     expect(result).toContain('002079')
     expect(result).toContain('待确认信号')
+    expect(result).toContain('600483')
+    expect(result).toContain('跨日存活信号')
     expect(result).toContain('603661')
     expect(result).toContain('已确认信号')
     expect(result).toContain('信号日20260630')

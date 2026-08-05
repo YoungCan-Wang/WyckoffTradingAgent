@@ -8,11 +8,13 @@ import pandas as pd
 
 from core.holding_diagnostic import (
     HoldingDiagnostic,
+    _exit_snapshot,
     diagnose_holdings,
     diagnose_one_stock,
     format_diagnostic_text,
 )
 from core.intraday_shakeout import PATH_DISTRIBUTION, PATH_WASHOUT
+from core.wyckoff_engine import FunnelConfig
 from tests.helpers.golden import assert_golden
 from tests.helpers.synthetic_data import make_ohlcv
 
@@ -105,6 +107,17 @@ class TestDiagnoseOneStock:
         assert result.ma200 is None
         assert result.ma_pattern == "数据不足"
 
+    def test_exit_signal_ignores_price_history_before_entry(self):
+        df = make_ohlcv(n=100, trend="flat", base=100.0, volatility=0.002, seed=8)
+        df.loc[df.index[-3:], ["open", "high", "low", "close"]] = [50.0, 51.0, 49.0, 50.0]
+        cfg = FunnelConfig()
+
+        legacy_signal = _exit_snapshot("000001", df, None, cfg)
+        entry_signal = _exit_snapshot("000001", df, None, cfg, str(df["date"].iloc[-3]))
+
+        assert legacy_signal[0] == "stop_loss"
+        assert entry_signal[0] is None
+
 
 class TestDiagnoseHoldings:
     def test_empty_dataframe_returns_danger(self):
@@ -123,6 +136,17 @@ class TestDiagnoseHoldings:
         )
         assert len(results) == 1
         assert results[0].health == "🔴危险"
+
+    def test_batch_diagnosis_accepts_buy_date(self):
+        df = make_ohlcv(n=100, trend="flat", base=100.0, volatility=0.002, seed=9)
+        df.loc[df.index[-3:], ["open", "high", "low", "close"]] = [50.0, 51.0, 49.0, 50.0]
+
+        results = diagnose_holdings(
+            holdings=[("000001", "平安银行", 50.0, str(df["date"].iloc[-3]))],
+            df_map={"000001": df},
+        )
+
+        assert results[0].exit_signal is None
 
 
 class TestExtremeDayIntradayPath:

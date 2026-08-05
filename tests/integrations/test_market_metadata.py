@@ -34,6 +34,27 @@ def test_fetch_float_share_map_converts_wan_shares_to_shares(tmp_path, monkeypat
     assert market_metadata.fetch_float_share_map() == {"000001": 1.94e10}
 
 
+def test_fetch_historical_market_cap_map_retries(monkeypatch) -> None:
+    import pandas as pd
+
+    class _FlakyPro:
+        calls = 0
+
+        def daily_basic(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise OSError("temporary")
+            return pd.DataFrame({"ts_code": ["000001.SZ"], "total_mv": [1_234_000.0]})
+
+    pro = _FlakyPro()
+    monkeypatch.setenv("MARKET_METADATA_MAX_RETRIES", "2")
+    monkeypatch.setenv("MARKET_METADATA_RETRY_BACKOFF_SECONDS", "0")
+    monkeypatch.setattr(market_metadata, "_tushare_pro", lambda: pro)
+
+    assert market_metadata.fetch_historical_market_cap_map("2026-07-15") == {"000001": 123.4}
+    assert pro.calls == 2
+
+
 def test_detect_theme_lines_uses_consecutive_recent_history(tmp_path, monkeypatch) -> None:
     history = tmp_path / "concept_heat_history.json"
     history.write_text(
