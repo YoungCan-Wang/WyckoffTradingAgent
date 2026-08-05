@@ -9,5 +9,10 @@
   "engines": {
     "node": ">=20"
   },
-  "packageManager": "pnpm@10.33.2"
+  "packageManager": "pnpm@10.33.2",
+  "pnpm": {
+    "overrides": {
+      "undici": "7.29.0"
+    }
+  }
 }
