@@ -7,6 +7,7 @@ import pandas as pd
 from integrations.recommendation_performance import (
     build_market_performance_updates,
     build_us_performance_updates,
+    first_recommend_dates_by_market_code,
     group_records_by_market_code,
     latest_market_records,
     refresh_tracking_performance,
@@ -98,6 +99,39 @@ def test_build_us_performance_updates_sticks_first_recommend_price():
     assert by_id[2]["mfe_pct"] == round((13.0 / 11.0 - 1.0) * 100.0, 2)
 
 
+def test_build_us_performance_updates_uses_full_history_first_date_outside_window():
+    """max_dates 截断后，仍须用窗口外首次推荐日锚定 sticky initial_price。"""
+    hist = pd.DataFrame(
+        {
+            "date": ["2026-01-02", "2026-07-30", "2026-07-31"],
+            "high": [10.5, 21.0, 22.0],
+            "low": [9.5, 19.0, 20.0],
+            "close": [10.0, 20.0, 21.0],
+        }
+    )
+    window_rows = [{"id": 2, "code": "ABC.US", "recommend_date": 20260730, "initial_price": 10.0}]
+    grouped = {"ABC.US": window_rows}
+    first_dates = first_recommend_dates_by_market_code(
+        [
+            {"id": 1, "code": "ABC.US", "recommend_date": 20260102, "initial_price": 10.0},
+            *window_rows,
+        ],
+        "us",
+    )
+
+    updates, _, _ = build_us_performance_updates(
+        grouped,
+        {"ABC.US": hist},
+        "now",
+        first_dates=first_dates,
+    )
+
+    assert first_dates["ABC.US"] == "20260102"
+    assert updates[0]["initial_price"] == 10.0
+    assert updates[0]["change_pct"] == 110.0
+    assert updates[0]["mfe_pct"] == 10.0
+
+
 def test_refresh_us_tracking_performance_fetches_forward_adjusted_hist(monkeypatch):
     captured: dict[str, object] = {}
 
@@ -127,6 +161,53 @@ def test_refresh_us_tracking_performance_fetches_forward_adjusted_hist(monkeypat
 
     assert captured["adjust"] == "forward"
     assert summary["rows_updated"] == 1
+
+
+def test_refresh_tracking_performance_keeps_sticky_price_outside_max_dates(monkeypatch):
+    written: list[list[dict]] = []
+
+    class FakeTickFlowClient:
+        def __init__(self, api_key):
+            assert api_key == "key"
+
+        def get_klines_batch(self, symbols, *, period, count, adjust):
+            assert symbols == ["ABC.US"]
+            return {
+                "ABC.US": pd.DataFrame(
+                    {
+                        "date": ["2026-01-02", "2026-07-30", "2026-07-31"],
+                        "high": [10.5, 21.0, 22.0],
+                        "low": [9.5, 19.0, 20.0],
+                        "close": [10.0, 20.0, 21.0],
+                    }
+                )
+            }
+
+    monkeypatch.setenv("TICKFLOW_API_KEY", "key")
+    monkeypatch.setenv("WYCKOFF_WRITE_CONTEXT", "server_job")
+    monkeypatch.setattr("integrations.recommendation_performance.is_admin_configured", lambda: True)
+    monkeypatch.setattr("integrations.recommendation_performance.create_admin_client", lambda: object())
+    monkeypatch.setattr(
+        "integrations.recommendation_performance.fetch_records_from_table",
+        lambda *_args: [
+            {"id": 1, "code": "ABC.US", "recommend_date": 20260102, "initial_price": 10.0},
+            {"id": 2, "code": "ABC.US", "recommend_date": 20260730, "initial_price": 10.0},
+        ],
+    )
+    monkeypatch.setattr(
+        "integrations.recommendation_performance.upsert_to_table",
+        lambda _client, _table, updates, **_kwargs: written.append(list(updates)) or len(updates),
+    )
+    monkeypatch.setattr("integrations.tickflow_client.TickFlowClient", FakeTickFlowClient)
+
+    summary = refresh_tracking_performance("us", max_dates=1, kline_count=5)
+
+    assert summary["rows_updated"] == 1
+    assert len(written) == 1
+    assert written[0][0]["code"] == "ABC.US"
+    assert written[0][0]["recommend_date"] == 20260730
+    assert written[0][0]["initial_price"] == 10.0
+    assert written[0][0]["change_pct"] == 110.0
 
 
 def test_build_market_performance_updates_keeps_cn_code_numeric():
