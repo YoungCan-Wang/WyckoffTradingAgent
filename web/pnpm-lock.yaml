@@ -37,8 +37,8 @@ importers:
         specifier: ^6.0.234
         version: 6.0.234(zod@3.25.76)
       hono:
-        specifier: ^4.12.27
-        version: 4.12.27
+        specifier: ^4.12.34
+        version: 4.12.34
       zod:
         specifier: ^3.25.76
         version: 3.25.76
@@ -1567,8 +1567,8 @@ packages:
   hermes-parser@0.25.1:
     resolution: {integrity: sha512-6pEjquH3rqaI6cYAXYPcz9MS4rY6R4ngRgrgfDshRptUZIc3lw0MCIJIGDj9++mfySOuPTHB4nrSW99BCvOPIA==}
 
-  hono@4.12.27:
-    resolution: {integrity: sha512-1yrb/+w6HWQJrUCLkJ2IF5jNIPvvFkblV5RNOYl6bV+OA6p9GLcMpHFFGTosSvHvcAUibuUukRqhlYI4z32C7Q==}
+  hono@4.12.34:
+    resolution: {integrity: sha512-GqXJqY/xJkJmuloTrnV1ZEXG3fqte+VjkUqoRNZXcrUidiUOP4fMSIHHY4tsqZBK++kVyWmt/AAfSUuy57/eSA==}
     engines: {node: '>=16.9.0'}
 
   html-url-attributes@3.0.1:
@@ -3641,7 +3641,7 @@ snapshots:
     dependencies:
       hermes-estree: 0.25.1
 
-  hono@4.12.27: {}
+  hono@4.12.34: {}
 
   html-url-attributes@3.0.1: {}
 
