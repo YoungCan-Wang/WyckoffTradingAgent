@@ -16,7 +16,7 @@ from typing import Any
 
 import pandas as pd
 
-from core.holding_diagnostic import HoldingDiagnostic, diagnose_holdings
+from core.holding_diagnostic import HoldingDiagnostic, HoldingInput, diagnose_holdings
 from core.holding_time_policy import holding_time_action, is_mainline_track
 from core.wyckoff_engine import FunnelConfig, normalize_hist_from_fetch
 from integrations.fetch_a_share_csv import fetch_hist, resolve_trading_window
@@ -287,8 +287,8 @@ def build_holding_advices(
     cfg: FunnelConfig | None = None,
     intraday_df_map: dict[str, pd.DataFrame] | None = None,
 ) -> list[HoldingActionAdvice]:
-    holdings_tuple = [(p["code"], p["name"], p["cost"], p.get("buy_dt", "")) for p in positions]
-    diagnostics = diagnose_holdings(holdings_tuple, df_map, bench_df, cfg, intraday_df_map)
+    holding_inputs = [HoldingInput.from_position(p) for p in positions]
+    diagnostics = diagnose_holdings(holding_inputs, df_map, bench_df, cfg, intraday_df_map)
     by_code = {p["code"]: p for p in positions}
     advices = [_action_from_diagnostic(by_code[d.code], d, df_map.get(d.code)) for d in diagnostics]
     advices.sort(key=lambda a: (_holding_rank(a), -a.diagnostic.pnl_pct, a.code))

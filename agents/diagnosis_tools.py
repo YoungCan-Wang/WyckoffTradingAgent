@@ -20,9 +20,17 @@ logger = logging.getLogger(__name__)
 
 
 def analyze_stock(
-    code: str, mode: str = "diagnose", cost: float = 0.0, days: int = 30, tool_context: ToolContext | None = None
+    code: str,
+    mode: str = "diagnose",
+    cost: float = 0.0,
+    days: int = 30,
+    tool_context: ToolContext | None = None,
+    buy_dt: str = "",
 ) -> dict:
-    """分析单只 A 股股票：Wyckoff 健康诊断、近期行情或基本面质量查询。"""
+    """分析单只 A 股股票：Wyckoff 健康诊断、近期行情或基本面质量查询。
+
+    传入 buy_dt 时，退出信号只看建仓后的价格路径，避免建仓前的暴跌被误判为破位。
+    """
     try:
         mode = (mode or "diagnose").strip().lower()
         if mode not in ("diagnose", "price", "fundamental"):
@@ -33,7 +41,7 @@ def analyze_stock(
         end_date = date.today()
         if mode == "price":
             return _price_result(code, days, end_date)
-        result = _diagnosis_result(code, cost, end_date)
+        result = _diagnosis_result(code, cost, end_date, buy_dt)
         remember_stock_diagnosis(tool_context, result)
         return result
     except Exception as e:
@@ -96,7 +104,7 @@ def _price_records(df) -> list[dict]:
     ]
 
 
-def _diagnosis_result(code: str, cost: float, end_date: date) -> dict:
+def _diagnosis_result(code: str, cost: float, end_date: date, buy_dt: str = "") -> dict:
     from core.holding_diagnostic import diagnose_one_stock, format_diagnostic_text
     from integrations.stock_hist_repository import get_stock_hist, normalize_hist_df
 
@@ -107,7 +115,7 @@ def _diagnosis_result(code: str, cost: float, end_date: date) -> dict:
     hist_meta = hist_metadata(df)
     latest_date = latest_hist_date(df, "日期")
     df = normalize_hist_df(df)
-    diagnostic = diagnose_one_stock(code, code_to_name(code), cost, df)
+    diagnostic = diagnose_one_stock(code, code_to_name(code), cost, df, buy_dt=buy_dt)
     payload = _diagnostic_payload(
         diagnostic,
         format_diagnostic_text(diagnostic),

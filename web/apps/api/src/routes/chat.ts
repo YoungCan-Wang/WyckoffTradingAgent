@@ -463,6 +463,14 @@ function writeLlmUsage(
   writer.write({ type: 'data-llm-usage', data: metrics, transient: true } as never)
 }
 
+function buildChatSystemPrompt(transport: 'chat' | 'responses', marketWatchContext: string): string {
+  return [
+    WYCKOFF_CHAT_SYSTEM_PROMPT,
+    transport === 'responses' ? WEB_SEARCH_GUIDANCE : '',
+    marketWatchContext,
+  ].filter(Boolean).join('\n\n')
+}
+
 async function runChatAttempt(args: ChatResilienceArgs, config: ChatModelConfig, marketWatchContext: string): Promise<void> {
   writeRunEvent(args, { type: 'model_started', label: `开始使用 ${config.model}` })
   writeStageProgress(args.writer, { stage: 'model', state: 'started', message: '正在分析', model: config.model })
@@ -484,11 +492,7 @@ async function runChatAttempt(args: ChatResilienceArgs, config: ChatModelConfig,
     let segmentIndex = 0
     let finalFinishReason = 'stop'
 
-    const system = [
-      WYCKOFF_CHAT_SYSTEM_PROMPT,
-      resolved.transport === 'responses' ? WEB_SEARCH_GUIDANCE : '',
-      marketWatchContext,
-    ].filter(Boolean).join('\n\n')
+    const system = buildChatSystemPrompt(resolved.transport, marketWatchContext)
 
     while (true) {
       const remainingSteps = CHAT_MAX_TOTAL_STEPS - totalSteps

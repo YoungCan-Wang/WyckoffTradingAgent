@@ -11,6 +11,7 @@ import pandas as pd
 
 from core.holding_diagnostic import (
     HoldingDiagnostic,
+    HoldingInput,
     diagnose_holdings,
     format_diagnostic_text,
 )
@@ -51,8 +52,8 @@ def _fetch_benchmark(window) -> pd.DataFrame | None:
         return None
 
 
-def _load_from_supabase(portfolio_id: str) -> list[tuple[str, str, float]]:
-    """从 Supabase 读取实盘持仓，返回 [(code, name, cost), ...]。"""
+def _load_from_supabase(portfolio_id: str) -> list[HoldingInput]:
+    """从 Supabase 读取实盘持仓。"""
     try:
         from integrations.supabase_portfolio import is_supabase_configured, load_portfolio_state
 
@@ -72,11 +73,9 @@ def _load_from_supabase(portfolio_id: str) -> list[tuple[str, str, float]]:
 
         holdings = []
         for pos in positions:
-            code = pos.get("code", "").strip()
-            name = pos.get("name", "--").strip()
-            cost = float(pos.get("cost", 0.0))
-            if code and cost > 0:
-                holdings.append((code, name, cost))
+            holding = HoldingInput.from_position(pos)
+            if holding.code and holding.cost > 0:
+                holdings.append(holding)
         return holdings
     except ImportError as e:
         print(f"  ✘ 依赖缺失: {e}", file=sys.stderr)
@@ -148,51 +147,75 @@ def _format_text(diagnostics: list[HoldingDiagnostic]) -> str:
     return "\n".join(parts)
 
 
-def _parse_inline_holdings(codes_text: str, costs_text: str, names_text: str = "") -> list[tuple[str, str, float]]:
+def _parse_inline_holdings(
+    codes_text: str, costs_text: str, names_text: str = "", buy_dts_text: str = ""
+) -> list[HoldingInput]:
     codes = [c.strip() for c in codes_text.split(",") if c.strip()]
     costs_raw = [c.strip() for c in costs_text.split(",") if c.strip()]
     names_raw = [n.strip() for n in names_text.split(",") if n.strip()] if names_text else []
+    buy_dts_raw = [d.strip() for d in buy_dts_text.split(",") if d.strip()] if buy_dts_text else []
     if len(codes) != len(costs_raw):
         print(f"  ✘ --codes ({len(codes)}个) 与 --costs ({len(costs_raw)}个) 数量不匹配", file=sys.stderr)
         sys.exit(1)
+    if buy_dts_raw and len(buy_dts_raw) != len(codes):
+        print(f"  ✘ --codes ({len(codes)}个) 与 --buy-dts ({len(buy_dts_raw)}个) 数量不匹配", file=sys.stderr)
+        sys.exit(1)
 
-    holdings: list[tuple[str, str, float]] = []
+    holdings: list[HoldingInput] = []
     for idx, (code, cost_str) in enumerate(zip(codes, costs_raw)):
         try:
             cost = float(cost_str)
         except ValueError:
             print(f"  ✘ 成本价格式错误: {cost_str}", file=sys.stderr)
             sys.exit(1)
-        name = names_raw[idx] if idx < len(names_raw) else "--"
-        holdings.append((code, name, cost))
+        holdings.append(
+            HoldingInput(
+                code=code,
+                name=names_raw[idx] if idx < len(names_raw) else "--",
+                cost=cost,
+                buy_dt=buy_dts_raw[idx] if idx < len(buy_dts_raw) else "",
+            )
+        )
     return holdings
 
 
-def _resolve_holdings(args) -> list[tuple[str, str, float]]:
+def _resolve_holdings(args) -> list[HoldingInput]:
     if args.from_portfolio:
         print(f"📂 从 Supabase 读取持仓: {args.from_portfolio}")
         return _load_from_supabase(args.from_portfolio)
     if args.codes:
-        return _parse_inline_holdings(args.codes, args.costs, args.names)
+        return _parse_inline_holdings(args.codes, args.costs, args.names, args.buy_dts)
     raise ValueError("请提供 --codes 或 --from-portfolio")
 
 
-def _fetch_holding_frames(holdings: list[tuple[str, str, float]], window) -> dict[str, pd.DataFrame]:
+def _fetch_holding_frames(holdings: list[HoldingInput], window) -> dict[str, pd.DataFrame]:
     df_map: dict[str, pd.DataFrame] = {}
-    for code, name, _cost in holdings:
-        print(f"  拉取 {code} {name}...")
-        _, df = _fetch_stock_data(code, window)
+    for holding in holdings:
+        print(f"  拉取 {holding.code} {holding.name}...")
+        _, df = _fetch_stock_data(holding.code, window)
         if df is not None:
-            df_map[code] = df
+            df_map[holding.code] = df
     return df_map
 
 
-def _diagnose(holdings: list[tuple[str, str, float]]) -> list[HoldingDiagnostic]:
+def _warn_missing_buy_dt(holdings: list[HoldingInput]) -> None:
+    missing = [f"{h.code} {h.name}" for h in holdings if not h.buy_dt]
+    if not missing:
+        return
+    print(
+        f"  ⚠ {len(missing)} 只持仓缺少建仓日，其退出信号基于全历史，建仓前的暴跌可能被误判为破位: "
+        f"{'、'.join(missing)}",
+        file=sys.stderr,
+    )
+
+
+def _diagnose(holdings: list[HoldingInput]) -> list[HoldingDiagnostic]:
     if not holdings:
         print("  ✘ 无有效持仓可诊断", file=sys.stderr)
         sys.exit(1)
 
     print(f"\n🔍 开始诊断 {len(holdings)} 只持仓...")
+    _warn_missing_buy_dt(holdings)
 
     # ── 准备数据窗口 ──
     end_day = resolve_end_calendar_day()
