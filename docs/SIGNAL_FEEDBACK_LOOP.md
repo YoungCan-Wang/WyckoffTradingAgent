@@ -186,7 +186,7 @@ registry 只负责控制动态策略是否使用信号；原始 observations 仍
 
 这部分只做 shadow 复盘，不新增候选表，也不改变正式候选、AI 候选池或 Step4。只有当后续 `signal_outcomes` 证明它能提高胜率或降低回撤时，才考虑把总分升成结构化列或用于真实排序。
 
-候选影子评分版本为 `candidate_shadow_score_v2`。观察血缘按 `(code, signal_type)` 绑定，避免同一股票的 LPS、趋势回踩或主线候选互相覆盖元数据。历史规则发生语义变化时，必须先用 `scripts/backfill_recommendation_tracking.py` 做只读 dry-run；替换 observation 会级联删除对应 outcome，随后必须重跑 signal feedback。反馈任务按当前 `as_of_date` 整体替换 health 快照，并整体替换该市场 registry，避免已消失的旧信号权重残留。
+候选影子评分版本为 `candidate_shadow_score_v2`。观察血缘按 `(code, signal_type)` 绑定，避免同一股票的 LPS、趋势回踩或主线候选互相覆盖元数据。历史规则发生语义变化时，必须先用 `scripts/backfill_recommendation_tracking.py` 做只读 dry-run；替换 observation 会级联删除对应 outcome，随后必须重跑 signal feedback。反馈任务按当前 `as_of_date` 整体替换 health 快照；registry 先 upsert 再删除孤儿行，并把健康窗口未覆盖的既有生命周期行（如 `RETIRED` / `EXPERIMENTAL` 与 regime 降权）合并进快照，避免全量替换把屏蔽信号默认回 `ACTIVE`。
 
 `strategy_attribution_report.py` 会把 `candidate_shadow_score.grade` 聚合进 `score_bucket_stats_json._candidate_shadow_grade`，Web 端策略归因页展示 S/A/B/C/D 各档在不同持有周期下的胜率、平均收益、大涨率、大跌率和平均回撤。`evaluate_recommendation_events.py` 也会只读 join 同日 observation，把候选影子分档输出到 `summary.candidate_shadow_grade`，并在 `summary.top_k_by_strategy.candidate_shadow_then_score` 对照“按候选影子分排序”的 5 日冲刺命中率、MFE 和 MAE；`summary.top_k_lift_vs_score_only.candidate_shadow_then_score` 会直接给出相对原漏斗分排序的差值，`summary.ranking_decision` 进一步用样本量、命中率 lift、MFE lift 和 MAE 恶化门槛判断它是否只是观察项，还是可以进入下一步排序接入候选。2026-08-02 的 90 个推荐日复核中，候选影子 Top1/3/5 均未产生正 lift，因此继续使用 `score_only`，不得把影子分升级为正式排序。
 

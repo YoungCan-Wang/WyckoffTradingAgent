@@ -114,10 +114,18 @@ def test_load_recent_signal_observations_fetches_beyond_single_page_cap(monkeypa
 
 
 class _MutationQuery:
-    def __init__(self, calls: list[tuple]):
+    def __init__(self, calls: list[tuple], existing: list[dict] | None = None):
         self.calls = calls
+        self._existing = existing or []
+        self._mode = "none"
+
+    def select(self, *_args, **_kwargs):
+        self._mode = "select"
+        self.calls.append(("select",))
+        return self
 
     def delete(self):
+        self._mode = "delete"
         self.calls.append(("delete",))
         return self
 
@@ -126,30 +134,50 @@ class _MutationQuery:
         return self
 
     def upsert(self, rows, on_conflict):
+        self._mode = "upsert"
         self.calls.append(("upsert", rows, on_conflict))
         return self
 
     def execute(self):
-        self.calls.append(("execute",))
+        self.calls.append(("execute", self._mode))
+        if self._mode == "select":
+            return _Response(self._existing)
         return _Response()
 
 
 class _MutationClient:
-    def __init__(self):
+    def __init__(self, existing: list[dict] | None = None):
         self.calls: list[tuple] = []
+        self._existing = existing or []
 
     def table(self, table):
         self.calls.append(("table", table))
-        return _MutationQuery(self.calls)
+        return _MutationQuery(self.calls, self._existing)
 
 
-def test_replace_signal_health_removes_stale_snapshot_rows(monkeypatch):
-    client = _MutationClient()
+def _patch_mutation_client(monkeypatch, client: _MutationClient) -> None:
     monkeypatch.setattr(mod, "_configured", lambda: True)
     monkeypatch.setattr(mod, "_admin", lambda: client)
     monkeypatch.setattr(mod, "_close", lambda _client: None)
     monkeypatch.setattr(mod, "require_server_write_context", lambda _operation: None)
-    rows = [{"market": "cn", "as_of_date": "2026-08-04", "signal_type": "sos"}]
+
+
+def test_replace_signal_health_removes_stale_snapshot_rows(monkeypatch):
+    existing = [
+        {"market": "cn", "as_of_date": "2026-08-04", "signal_type": "sos", "regime": "", "horizon_days": 5},
+        {"market": "cn", "as_of_date": "2026-08-04", "signal_type": "spring", "regime": "", "horizon_days": 5},
+    ]
+    client = _MutationClient(existing)
+    _patch_mutation_client(monkeypatch, client)
+    rows = [
+        {
+            "market": "cn",
+            "as_of_date": "2026-08-04",
+            "signal_type": "sos",
+            "regime": "",
+            "horizon_days": 5,
+        }
+    ]
 
     written = mod.replace_signal_health(rows, market="cn", as_of_date="2026-08-04")
 
@@ -157,14 +185,15 @@ def test_replace_signal_health_removes_stale_snapshot_rows(monkeypatch):
     assert ("eq", "market", "cn") in client.calls
     assert ("eq", "as_of_date", "2026-08-04") in client.calls
     assert any(call[0] == "upsert" for call in client.calls)
+    upsert_at = next(i for i, call in enumerate(client.calls) if call[0] == "upsert")
+    delete_at = next(i for i, call in enumerate(client.calls) if call[0] == "delete")
+    assert upsert_at < delete_at
+    assert ("eq", "signal_type", "spring") in client.calls
 
 
 def test_replace_signal_registry_refuses_untrusted_empty_snapshot(monkeypatch):
     client = _MutationClient()
-    monkeypatch.setattr(mod, "_configured", lambda: True)
-    monkeypatch.setattr(mod, "_admin", lambda: client)
-    monkeypatch.setattr(mod, "_close", lambda _client: None)
-    monkeypatch.setattr(mod, "require_server_write_context", lambda _operation: None)
+    _patch_mutation_client(monkeypatch, client)
 
     written = mod.replace_signal_registry([], market="cn")
 
@@ -173,16 +202,35 @@ def test_replace_signal_registry_refuses_untrusted_empty_snapshot(monkeypatch):
 
 
 def test_replace_signal_registry_can_clear_only_with_explicit_override(monkeypatch):
-    client = _MutationClient()
-    monkeypatch.setattr(mod, "_configured", lambda: True)
-    monkeypatch.setattr(mod, "_admin", lambda: client)
-    monkeypatch.setattr(mod, "_close", lambda _client: None)
-    monkeypatch.setattr(mod, "require_server_write_context", lambda _operation: None)
+    existing = [{"market": "cn", "signal_type": "sos", "regime": ""}]
+    client = _MutationClient(existing)
+    _patch_mutation_client(monkeypatch, client)
 
     written = mod.replace_signal_registry([], market="cn", allow_empty=True)
 
     assert written == 0
     assert ("eq", "market", "cn") in client.calls
+    assert ("eq", "signal_type", "sos") in client.calls
+    assert any(call[0] == "delete" for call in client.calls)
+    assert not any(call[0] == "upsert" for call in client.calls)
+
+
+def test_replace_signal_registry_upserts_before_deleting_orphans(monkeypatch):
+    existing = [
+        {"market": "cn", "signal_type": "sos", "regime": ""},
+        {"market": "cn", "signal_type": "spring", "regime": ""},
+    ]
+    client = _MutationClient(existing)
+    _patch_mutation_client(monkeypatch, client)
+    rows = [{"market": "cn", "signal_type": "sos", "regime": "", "status": "ACTIVE"}]
+
+    written = mod.replace_signal_registry(rows, market="cn")
+
+    assert written == 1
+    upsert_at = next(i for i, call in enumerate(client.calls) if call[0] == "upsert")
+    delete_at = next(i for i, call in enumerate(client.calls) if call[0] == "delete")
+    assert upsert_at < delete_at
+    assert ("eq", "signal_type", "spring") in client.calls
 
 
 def test_strict_outcome_load_raises_instead_of_returning_empty(monkeypatch):

@@ -589,6 +589,50 @@ def summarize_signal_health(
     return [_health_row(as_of_date, market, key, rows, min_samples) for key, rows in sorted(groups.items())]
 
 
+def _registry_row_key(signal_type: str, regime: Any) -> tuple[str, str]:
+    regime_norm = str(regime or "").strip().upper()
+    if regime_norm in {"", "ALL"}:
+        return signal_type, ""
+    return signal_type, regime_norm
+
+
+def _preserved_registry_rows(
+    registry_rows: list[dict[str, Any]] | None,
+    *,
+    market: str,
+    horizon_days: int,
+    covered_keys: set[tuple[str, str]],
+) -> list[dict[str, Any]]:
+    """Keep lifecycle rows absent from this health window.
+
+    Full registry replace only emits keys present in health at registry_horizon.
+    Without this merge, RETIRED/EXPERIMENTAL rows (and regime downweights) with no
+    recent outcomes disappear; dynamic policy then defaults missing signals to ACTIVE.
+    """
+    preserved: list[dict[str, Any]] = []
+    now = datetime.now(UTC).isoformat()
+    for row in registry_rows or []:
+        signal_type = normalize_signal_type(row.get("signal_type"))
+        if not signal_type:
+            continue
+        key = _registry_row_key(signal_type, row.get("regime"))
+        if key in covered_keys:
+            continue
+        kept = dict(row)
+        kept.update(
+            {
+                "market": market,
+                "signal_type": signal_type,
+                "regime": key[1],
+                "track": kept.get("track") or signal_track(signal_type),
+                "horizon_days": int(kept.get("horizon_days") or horizon_days),
+                "updated_at": now,
+            }
+        )
+        preserved.append(kept)
+    return preserved
+
+
 def build_signal_registry_updates(
     health_rows: list[dict[str, Any]],
     *,
@@ -602,6 +646,7 @@ def build_signal_registry_updates(
     # resolve_signal_weight_multiplier 会优先命中带regime的精确行，
     # 避免像 launchpad 这样"允许买入市况下正期望、但被全局统计拖累"的信号被误降权。
     updates = []
+    covered_keys: set[tuple[str, str]] = set()
     for row in health_rows:
         if int(row.get("horizon_days") or 0) != target_horizon:
             continue
@@ -618,12 +663,14 @@ def build_signal_registry_updates(
             if regime == "ALL"
             else status_by_signal.get(signal_type, "ACTIVE")
         )
+        key = _registry_row_key(signal_type, regime)
+        covered_keys.add(key)
         updates.append(
             {
                 "market": market,
                 "signal_type": signal_type,
                 "track": row.get("track") or signal_track(signal_type),
-                "regime": "" if regime == "ALL" else regime,
+                "regime": key[1],
                 "status": status,
                 "weight_multiplier": row.get("weight_multiplier") or 1.0,
                 "sample_count": row.get("sample_count") or 0,
@@ -634,4 +681,12 @@ def build_signal_registry_updates(
                 "updated_at": datetime.now(UTC).isoformat(),
             }
         )
+    updates.extend(
+        _preserved_registry_rows(
+            registry_rows,
+            market=market,
+            horizon_days=target_horizon,
+            covered_keys=covered_keys,
+        )
+    )
     return updates

@@ -633,6 +633,50 @@ def test_registry_retires_after_repeated_decay():
     assert updates[0]["status"] == "RETIRED"
 
 
+def test_registry_updates_preserve_retired_rows_missing_from_health_window():
+    updates = build_signal_registry_updates(
+        [
+            {
+                "signal_type": "sos",
+                "track": "Trend",
+                "regime": "ALL",
+                "horizon_days": 5,
+                "health_state": "HEALTHY",
+                "weight_multiplier": 1.0,
+            }
+        ],
+        market="cn",
+        horizon_days=5,
+        registry_rows=[
+            {"signal_type": "sos", "regime": "", "status": "ACTIVE", "weight_multiplier": 1.0},
+            {
+                "signal_type": "spring",
+                "regime": "",
+                "status": "RETIRED",
+                "weight_multiplier": 0.0,
+                "track": "Accum",
+                "reason": "repeated decay",
+            },
+            {
+                "signal_type": "launchpad",
+                "regime": "RISK_ON",
+                "status": "ACTIVE",
+                "weight_multiplier": 0.3,
+                "track": "Accum",
+            },
+        ],
+    )
+
+    by_key = {(row["signal_type"], row.get("regime") or ""): row for row in updates}
+    assert by_key[("sos", "")]["status"] == "ACTIVE"
+    assert by_key[("spring", "")]["status"] == "RETIRED"
+    assert by_key[("launchpad", "RISK_ON")]["weight_multiplier"] == 0.3
+    assert filter_triggers_by_registry(
+        {"sos": [("000001", 1.0)], "spring": [("000002", 1.0)]},
+        updates,
+    ) == {"sos": [("000001", 1.0)]}
+
+
 def test_filter_triggers_by_registry_blocks_experimental_signal():
     filtered = filter_triggers_by_registry(
         {"sos": [("000001", 1.0)], "spring": [("000002", 1.0)]},
