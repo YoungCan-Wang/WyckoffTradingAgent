@@ -70,7 +70,7 @@
 | **L3** | 板块/概念共振 | 使用行业和概念强度过滤噪音，同时允许强个股和主线主题绕过固定 Top-N 行业限制 | ~50% |
 | **L4** | Wyckoff 触发 | 检测 Spring / SOS / LPS / EVR / Compression / Trend Pullback 等量价信号 | ~90% |
 | **Structure Shadow** | 动态区间观察对照 | 在 L3 候选上比较正式 L4 与动态交易区间的 Spring/LPS/SOS/EVR 命中；区间质量使用测试次数、ATR 归一化宽度和漂移，只写诊断 metrics，不进入正式候选或 BUY |
-| **L5** | 退出信号 | 持有期间监控是否出现派发信号（SOW / UTAD），决定是否提前退出 | — |
+| **L5** | 退出信号 | 持有期间监控是否出现派发信号（SOW / UTAD），决定是否提前退出。持仓诊断只喂入建仓日之后的价格路径，建仓前的高点与暴跌不参与破位判定 | — |
 | **评分排名** | watch_score | 对通过 L4 的候选股综合打分排序，选 TopN 输出给 AI 研报 | 取 Top3~15 |
 | **强势股复盘可交易样本** | Executable Review Cohort | 完整复盘样本中，前一日已通过 L1、次日开盘涨幅不超过 4% 且非一字板的子集；只用于评价候选捕获能力，不改变“当日 >7%、前日 <3%”原始复盘池 | — |
 
@@ -262,6 +262,7 @@ flowchart LR
 | **Shadow Run** | 动态策略旁路演练：真实推荐不变，只记录动态策略会新增或移除哪些候选。 |
 | **Dynamic Policy** | 根据信号健康度、registry 和市场广度，动态调整 Trend / Accum 候选配额。 |
 | **推荐价 / initial_price** | `recommendation_tracking` 中展示用的入场价：按股票 code 粘住首次 `recommend_date` 收盘价；再次推荐只增加 `recommend_count` 与新事件行，不改推荐价。涨跌幅相对该价；MFE/MAE 仍按事件日独立计算。performance 刷新的 `max_dates` 只裁剪待更新行，不算改锚点历史。 |
+| **形态入表观察** | 当日 L4 中 Springboard A/B/C 至少满足 2 项、并写入 `recommendation_tracking` 的跟踪样本。它用于后续复盘，不等于 Step3 送审、`VALIDATED` 或 OMS 买入核准。 |
 
 ---
 
