@@ -106,6 +106,64 @@ def test_confirmation_label_names_abc_as_springboard_structure(monkeypatch) -> N
     assert funnel_render._confirmation_label(ctx, "000001") == "起跳板结构:A+B+C(3/3)"
 
 
+def test_tracking_shape_section_lists_only_abc_rows_written_for_tracking(monkeypatch) -> None:
+    from workflows import funnel_render
+
+    def fake_score(df: pd.DataFrame, _signal_type: str) -> dict:
+        return {"grade": df.attrs["grade"], "met_count": df.attrs["met_count"]}
+
+    monkeypatch.setattr(funnel_render, "score_springboard_abc", fake_score)
+    frames = {code: pd.DataFrame({"close": [close]}) for code, close in [("000001", 10.0), ("000002", 20.0)]}
+    frames["000001"].attrs.update(grade="A+C", met_count=2)
+    frames["000002"].attrs.update(grade="C", met_count=1)
+    ctx = SimpleNamespace(
+        formal_triggers={"sos": [("000001", 92.0)], "lps": [("000002", 61.0)]},
+        all_df_map=frames,
+        name_map={"000001": "形态通过", "000002": "形态不足"},
+        latest_close_map={"000001": 10.0, "000002": 20.0},
+        code_to_total_score={"000001": 92.0, "000002": 61.0},
+    )
+
+    lines = funnel_render._tracking_shape_section_lines(ctx, _make_selection([]))
+    report = "\n".join(lines)
+
+    assert lines[0] == "**【🧾 今日形态入表观察】1 只**"
+    assert "000001 形态通过  A+C  分92.00  现价10.00" in report
+    assert "000002" not in report
+    assert "不是买入清单" in report
+
+
+def test_tracking_shape_section_deduplicates_and_reports_display_limit(monkeypatch) -> None:
+    from workflows import funnel_render
+
+    def fake_score(_df: pd.DataFrame, signal_type: str) -> dict:
+        return {"grade": "A+B+C", "met_count": 3} if signal_type == "sos" else {"grade": "A+C", "met_count": 2}
+
+    monkeypatch.setattr(funnel_render, "score_springboard_abc", fake_score)
+    monkeypatch.setattr(funnel_render, "FUNNEL_TRACKING_SHAPE_DISPLAY_LIMIT", 1)
+    ctx = SimpleNamespace(
+        formal_triggers={
+            "sos": [("000001", 90.0)],
+            "lps": [("000001", 90.0), ("000002", 80.0)],
+        },
+        all_df_map={
+            "000001": pd.DataFrame({"close": [10.0]}),
+            "000002": pd.DataFrame({"close": [20.0]}),
+        },
+        name_map={"000001": "三项通过", "000002": "两项通过"},
+        latest_close_map={},
+        code_to_total_score={"000001": 90.0, "000002": 80.0},
+    )
+
+    lines = funnel_render._tracking_shape_section_lines(ctx, _make_selection([]))
+    report = "\n".join(lines)
+
+    assert lines[0] == "**【🧾 今日形态入表观察】2 只**"
+    assert "000001 三项通过  A+B+C" in report
+    assert "000002" not in report
+    assert "另 1 只已入表" in report
+
+
 def test_execution_decision_line_blocks_risk_on_new_buys() -> None:
     from workflows.funnel_render import _execution_decision_line
 
