@@ -121,8 +121,8 @@ class TestDiagnoseOneStock:
 
     def test_exit_signal_fails_closed_when_entry_after_available_bars(self):
         """当日建仓但日线尚未入库时，不得回退全历史把建仓前暴跌判成破位。"""
-        df = make_ohlcv(n=80, trend="flat", base=100.0, volatility=0.002, seed=12)
-        df.loc[df.index[-8:-3], ["open", "high", "low", "close"]] = [55.0, 56.0, 34.0, 35.0]
+        df = make_ohlcv(n=100, trend="flat", base=100.0, volatility=0.002, seed=8)
+        df.loc[df.index[-3:], ["open", "high", "low", "close"]] = [50.0, 51.0, 49.0, 50.0]
         last_bar = pd.to_datetime(df["date"].iloc[-1])
         future_entry = (last_bar + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
         cfg = FunnelConfig()
