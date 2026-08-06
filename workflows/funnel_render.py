@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
+from core.candidate_metadata import code6
 from core.candidate_ranker import TRIGGER_GROUP_ORDER, TRIGGER_GROUP_TITLES, TRIGGER_LABELS, TRIGGER_SHORT_LABELS
 from core.candidate_tracks import candidate_entry_key
 from core.execution_playbook import funnel_playbook_lines
@@ -28,6 +29,7 @@ from workflows.funnel_settings import (
     FUNNEL_ETF_DISPLAY_LIMIT,
     FUNNEL_L2_BYPASS_AI_CAP,
     FUNNEL_MAINLINE_DISPLAY_LIMIT,
+    FUNNEL_TRACKING_SHAPE_DISPLAY_LIMIT,
 )
 
 
@@ -582,6 +584,63 @@ def _confirmation_signal_keys(ctx: Any, code: str) -> list[str]:
     return out
 
 
+def _tracking_shape_rows(ctx: Any, selection: FunnelAiSelection) -> list[dict]:
+    best: dict[str, dict] = {}
+    for signal_type, hits in (getattr(ctx, "formal_triggers", {}) or {}).items():
+        for raw_code, _raw_score in hits or []:
+            code = code6(raw_code)
+            df = (getattr(ctx, "all_df_map", {}) or {}).get(code)
+            if not code or df is None or df.empty:
+                continue
+            try:
+                springboard = score_springboard_abc(df, signal_type)
+            except Exception:
+                continue
+            met_count = int(springboard.get("met_count") or 0)
+            if met_count < 2:
+                continue
+            row = {
+                "code": code,
+                "name": (getattr(ctx, "name_map", {}) or {}).get(code, code),
+                "signal_type": str(signal_type),
+                "grade": str(springboard.get("grade") or "2/3+"),
+                "met_count": met_count,
+                "score": display_score(ctx, selection, code),
+                "close": (getattr(ctx, "latest_close_map", {}) or {}).get(code),
+            }
+            old = best.get(code)
+            if old is None or (row["met_count"], row["score"]) > (old["met_count"], old["score"]):
+                best[code] = row
+    return sorted(best.values(), key=lambda row: (-row["score"], -row["met_count"], row["code"]))
+
+
+def _tracking_shape_section_lines(ctx: Any, selection: FunnelAiSelection) -> list[str]:
+    rows = _tracking_shape_rows(ctx, selection)
+    lines = [
+        f"**【🧾 今日形态入表观察】{len(rows)} 只**",
+        "仅列 A/B/C≥2、当日写入 recommendation_tracking 的形态跟踪样本；不是买入清单。",
+    ]
+    displayed = rows if FUNNEL_TRACKING_SHAPE_DISPLAY_LIMIT <= 0 else rows[:FUNNEL_TRACKING_SHAPE_DISPLAY_LIMIT]
+    groups = [*TRIGGER_GROUP_ORDER, *sorted({row["signal_type"] for row in displayed} - set(TRIGGER_GROUP_ORDER))]
+    for signal_type in groups:
+        grouped = [row for row in displayed if row["signal_type"] == signal_type]
+        if not grouped:
+            continue
+        lines.append(f"**{TRIGGER_GROUP_TITLES.get(signal_type, signal_type)}（{len(grouped)}）**")
+        lines.extend(_tracking_shape_row_text(row) for row in grouped)
+    omitted = len(rows) - len(displayed)
+    if omitted > 0:
+        lines.append(f"  ... 另 {omitted} 只已入表，详见结构化运行数据")
+    lines.append("")
+    return lines
+
+
+def _tracking_shape_row_text(row: dict) -> str:
+    close = row.get("close")
+    close_text = f"  现价{float(close):.2f}" if close not in (None, "") else ""
+    return f"  {row['code']} {row['name']}  {row['grade']}  分{row['score']:.2f}{close_text}"
+
+
 def _append_legacy_selected_sections(lines: list[str], ctx: Any, selected_for_ai: list[str]) -> None:
     multi_signal = [
         c
@@ -623,6 +682,7 @@ def _build_legacy_card_lines(ctx: Any, selection: FunnelAiSelection) -> list[str
     selected_for_ai = selection.selected_for_ai
     lines = _top_summary_lines(ctx, len(selected_for_ai), money_line)
     lines.extend(_top_candidate_list_lines(ctx, selection))
+    lines.extend(_tracking_shape_section_lines(ctx, selection))
     lines += [
         "**【📊 详细市场证据】**",
         _pool_summary_line(ctx.metrics),
@@ -714,6 +774,7 @@ def _build_modern_card_lines(ctx: Any, selection: FunnelAiSelection) -> list[str
     bench_line, money_line, _amount_line, _pv_line, _pv_shadow_line = _market_report_lines(ctx.benchmark_context)
     lines = _top_summary_lines(ctx, len(selection.selected_for_ai), money_line)
     lines.extend(_top_candidate_list_lines(ctx, selection))
+    lines.extend(_tracking_shape_section_lines(ctx, selection))
     rejection = ctx.metrics.get("layer_rejections") or {}
     l3_rejected = int((rejection.get("layer3") or {}).get("rejected") or 0)
     trigger_counts = ", ".join(
@@ -735,7 +796,7 @@ def _build_modern_card_lines(ctx: Any, selection: FunnelAiSelection) -> list[str
                 f"**候选血缘**: 正式L4 {counts['hit_selected']} / 阶段补位 {counts['l3_only']} / "
                 f"主线 {counts['mainline_selected']} / 旁路 {counts['bypass_selected'] + counts['strategic_selected']}"
             ),
-            "完整 L4、主线池、ETF 与逐层淘汰明细保留在结构化运行数据中，不再展开推送。",
+            "完整 L4、主线池、ETF 与逐层淘汰明细保留在结构化运行数据中；推送仅展开入表形态。",
         ]
     )
     return lines

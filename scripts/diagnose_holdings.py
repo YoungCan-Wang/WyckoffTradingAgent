@@ -17,6 +17,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--codes", type=str, default="", help="逗号分隔的股票代码，如 300813,600703,300014")
     parser.add_argument("--costs", type=str, default="", help="逗号分隔的持仓成本，与 --codes 一一对应")
     parser.add_argument("--names", type=str, default="", help="逗号分隔的股票名称（可选），与 --codes 一一对应")
+    parser.add_argument(
+        "--buy-dts",
+        dest="buy_dts",
+        type=str,
+        default="",
+        help="逗号分隔的建仓日（YYYY-MM-DD，可选），与 --codes 一一对应。"
+        "缺失时退出信号基于全历史，建仓前的暴跌可能被误判为破位",
+    )
     parser.add_argument("--from-portfolio", type=str, default="", help="从 Supabase 读取持仓，格式 USER_LIVE:<user_id>")
     parser.add_argument("--format", type=str, choices=["text", "markdown", "json"], default="text")
     parser.add_argument("--output", "-o", type=str, default="", help="输出到文件（不指定则输出到终端）")

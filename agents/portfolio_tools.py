@@ -275,7 +275,14 @@ def _diagnose_position(position: dict, start_date: date, end_date: date, hints: 
         normalized_df = normalize_hist_df(df)
         latest_date = latest_hist_date(df, "日期") or latest_hist_date(normalized_df)
         intraday_df = _fetch_intraday_if_extreme_day(code, normalized_df)
-        diagnostic = diagnose_one_stock(code, name, cost, normalized_df, intraday_df=intraday_df)
+        diagnostic = diagnose_one_stock(
+            code,
+            name,
+            cost,
+            normalized_df,
+            intraday_df=intraday_df,
+            buy_dt=str(position.get("buy_dt", "") or "").strip(),
+        )
         return _diagnostic_payload(diagnostic, latest_date, metadata, shares)
     except Exception as e:
         return {"code": code, "name": name, "shares": shares, "error": str(e)}

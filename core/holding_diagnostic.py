@@ -5,10 +5,10 @@
 吸筹阶段分析、派发识别等能力，对任意持仓个股做结构化健康诊断。
 
 用法:
-    from core.holding_diagnostic import diagnose_holdings, format_diagnostic_text
+    from core.holding_diagnostic import HoldingInput, diagnose_holdings, format_diagnostic_text
 
     diagnostics = diagnose_holdings(
-        holdings=[(code, name, cost), ...],
+        holdings=[HoldingInput(code, name, cost, buy_dt), ...],
         df_map=df_map,
         bench_df=bench_df,
     )
@@ -47,6 +47,31 @@ from core.wyckoff_engine import (
 logger = logging.getLogger(__name__)
 
 _LIMIT_MOVE_DAY_CHANGE_PCT = -5.0  # 当日跌幅达到此阈值才触发涨跌停/日内路径核查
+
+
+@dataclass(frozen=True)
+class HoldingInput:
+    """诊断输入的持仓标识。
+
+    ``buy_dt`` 必须显式给出：退出结构只能看建仓后的价格路径，缺失时会静默退化成
+    全历史，让建仓前的暴跌反杀新仓。留空是"确实无建仓日"的显式声明，不是默认值。
+    """
+
+    code: str
+    name: str
+    cost: float
+    buy_dt: str
+
+    @classmethod
+    def from_position(cls, position: dict) -> HoldingInput:
+        code = str(position.get("code", "") or "").strip()
+        cost = position.get("cost", position.get("cost_price", 0.0))
+        return cls(
+            code=code,
+            name=str(position.get("name", "") or code).strip() or code,
+            cost=float(cost or 0.0),
+            buy_dt=str(position.get("buy_dt", position.get("buy_date", "")) or "").strip(),
+        )
 
 
 @dataclass
@@ -560,7 +585,7 @@ def _build_diagnostic(
 
 
 def diagnose_holdings(
-    holdings: list[tuple[str, str, float] | tuple[str, str, float, str]],
+    holdings: list[HoldingInput],
     df_map: dict[str, pd.DataFrame],
     bench_df: pd.DataFrame | None = None,
     cfg: FunnelConfig | None = None,
@@ -571,7 +596,7 @@ def diagnose_holdings(
 
     Parameters
     ----------
-    holdings : [(code, name, cost), ...] 或 [(code, name, cost, buy_dt), ...]
+    holdings : [HoldingInput, ...]，buy_dt 必填（无建仓日时显式传空串）
     df_map   : {code: DataFrame} 每只股票的 OHLCV 数据
     bench_df : 大盘基准 OHLCV
     cfg      : FunnelConfig
@@ -580,16 +605,14 @@ def diagnose_holdings(
     results = []
     intraday_map = intraday_df_map or {}
     for holding in holdings:
-        code, name, cost = holding[:3]
-        buy_dt = str(holding[3]) if len(holding) > 3 else ""
-        df = df_map.get(code)
+        df = df_map.get(holding.code)
         if df is None or df.empty:
             # 无数据时返回最小诊断
             results.append(
                 HoldingDiagnostic(
-                    code=code,
-                    name=name,
-                    cost=cost,
+                    code=holding.code,
+                    name=holding.name,
+                    cost=holding.cost,
                     latest_close=0.0,
                     pnl_pct=0.0,
                     health="🔴危险",
@@ -597,7 +620,18 @@ def diagnose_holdings(
                 )
             )
             continue
-        results.append(diagnose_one_stock(code, name, cost, df, bench_df, cfg, intraday_map.get(code), buy_dt=buy_dt))
+        results.append(
+            diagnose_one_stock(
+                holding.code,
+                holding.name,
+                holding.cost,
+                df,
+                bench_df,
+                cfg,
+                intraday_map.get(holding.code),
+                buy_dt=holding.buy_dt,
+            )
+        )
     return results
 
 
