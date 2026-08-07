@@ -294,13 +294,16 @@ def _exit_snapshot(
 
 
 def _exit_history_since_entry(df: pd.DataFrame, buy_dt: str) -> pd.DataFrame:
-    """退出结构只能使用建仓后的价格路径，避免历史高点反杀新仓。"""
+    """退出结构只能使用建仓后的价格路径，避免历史高点反杀新仓。
+
+    已声明 buy_dt 但切不出建仓后 K 线时（例如当日建仓、日线尚未入库），
+    返回空表 fail-closed，禁止回退全历史让建仓前暴跌冒充破位。
+    """
     entry = pd.to_datetime(str(buy_dt or "").strip(), errors="coerce")
     if pd.isna(entry) or "date" not in df.columns:
         return df
     dates = pd.to_datetime(df["date"], errors="coerce")
-    sliced = df.loc[dates >= entry].copy()
-    return sliced if not sliced.empty else df
+    return df.loc[dates >= entry].copy()
 
 
 def _wyckoff_snapshot(
