@@ -42,11 +42,20 @@ def dynamic_policy_horizon(config: DynamicPolicyConfig | None = None) -> int:
 
 
 def _registry_status_map(registry_rows: list[dict[str, Any]]) -> dict[str, str]:
+    """Resolve lifecycle status from global registry rows only.
+
+    Regime-scoped rows are weight carriers. Including them here lets a stale
+    ACTIVE/WATCH regime row overwrite global RETIRED and re-admit blocked signals.
+    """
     out: dict[str, str] = {}
     for row in registry_rows or []:
         signal_type = normalize_signal_type(row.get("signal_type"))
-        if signal_type:
-            out[signal_type] = str(row.get("status") or "ACTIVE").strip().upper()
+        if not signal_type:
+            continue
+        regime = str(row.get("regime") or "").strip().upper()
+        if regime not in {"", "ALL"}:
+            continue
+        out[signal_type] = str(row.get("status") or "ACTIVE").strip().upper()
     return out
 
 
