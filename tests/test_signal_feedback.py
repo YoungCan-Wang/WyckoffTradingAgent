@@ -677,6 +677,87 @@ def test_registry_updates_preserve_retired_rows_missing_from_health_window():
     ) == {"sos": [("000001", 1.0)]}
 
 
+def test_registry_regime_rows_follow_global_retired_status():
+    updates = build_signal_registry_updates(
+        [
+            {
+                "signal_type": "spring",
+                "track": "Accum",
+                "regime": "ALL",
+                "horizon_days": 5,
+                "health_state": "DECAYED",
+                "weight_multiplier": 0.4,
+            },
+            {
+                "signal_type": "spring",
+                "track": "Accum",
+                "regime": "RISK_ON",
+                "horizon_days": 5,
+                "health_state": "HEALTHY",
+                "weight_multiplier": 1.0,
+            },
+        ],
+        horizon_days=5,
+        registry_rows=[{"signal_type": "spring", "regime": "", "status": "WATCH"}],
+    )
+
+    by_key = {(row["signal_type"], row.get("regime") or ""): row for row in updates}
+    assert by_key[("spring", "")]["status"] == "RETIRED"
+    assert by_key[("spring", "RISK_ON")]["status"] == "RETIRED"
+    assert filter_triggers_by_registry({"spring": [("000001", 1.0)]}, updates) == {}
+
+
+def test_registry_ignores_stale_regime_status_when_global_retired():
+    updates = build_signal_registry_updates(
+        [
+            {
+                "signal_type": "spring",
+                "track": "Accum",
+                "regime": "ALL",
+                "horizon_days": 5,
+                "health_state": "DECAYED",
+                "weight_multiplier": 0.4,
+            }
+        ],
+        horizon_days=5,
+        registry_rows=[
+            {"signal_type": "spring", "regime": "", "status": "RETIRED", "weight_multiplier": 0.0},
+            {
+                "signal_type": "spring",
+                "regime": "RISK_ON",
+                "status": "ACTIVE",
+                "weight_multiplier": 0.5,
+                "track": "Accum",
+            },
+        ],
+    )
+
+    by_key = {(row["signal_type"], row.get("regime") or ""): row for row in updates}
+    assert by_key[("spring", "")]["status"] == "RETIRED"
+    assert by_key[("spring", "RISK_ON")]["status"] == "RETIRED"
+    assert filter_triggers_by_registry({"spring": [("000001", 1.0)]}, updates) == {}
+
+
+def test_registry_keeps_retired_on_insufficient_health():
+    updates = build_signal_registry_updates(
+        [
+            {
+                "signal_type": "spring",
+                "track": "Accum",
+                "regime": "ALL",
+                "horizon_days": 5,
+                "health_state": "INSUFFICIENT",
+                "weight_multiplier": 0.6,
+            }
+        ],
+        horizon_days=5,
+        registry_rows=[{"signal_type": "spring", "regime": "", "status": "RETIRED"}],
+    )
+
+    assert updates[0]["status"] == "RETIRED"
+    assert filter_triggers_by_registry({"spring": [("000001", 1.0)]}, updates) == {}
+
+
 def test_filter_triggers_by_registry_blocks_experimental_signal():
     filtered = filter_triggers_by_registry(
         {"sos": [("000001", 1.0)], "spring": [("000002", 1.0)]},

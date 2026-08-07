@@ -145,7 +145,7 @@ stateDiagram-v2
   RETIRED --> RETIRED: 保持下线
 ```
 
-registry 只负责控制动态策略是否使用信号；原始 observations 仍会记录，避免因为下线后失去后续观测能力。
+registry 只负责控制动态策略是否使用信号；原始 observations 仍会记录，避免因为下线后失去后续观测能力。信号级 `status` 只由全局行（`regime=""` / `ALL`）决定；regime 拆分行只承载精确权重，写入与过滤时必须跟随全局生命周期，避免陈旧的 regime `ACTIVE`/`WATCH` 把已 `RETIRED` 的信号重新放进漏斗。
 
 ## Price-Action Footprint
 
