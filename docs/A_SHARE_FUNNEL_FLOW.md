@@ -226,7 +226,25 @@ ETF 行情重复进入全市场统计；ETF 候选仍可通过 L3 共振进入�
 
 报告把状态拆成 `DETECTED → SURVIVED → VALIDATED → OMS_APPROVED`：Spring/LPS/SOS/EVR 与 A/B/C 只表示当日结构命中；`SURVIVED` 只表示跨日未失效；守住信号位并出现高收、缩量或转强需求后才记 `VALIDATED`（库内兼容值 `confirmed`）；最后仍需 OMS 核准。四层不能互相替代。
 
-正式候选在送入 Step3 前还会经过 `core/candidate_policy.py` 的统一损失护栏。纯 SOS 必须通过 Springboard ABC 3/3；单 EVR、单 LPS 与单 Trend Pullback 默认仅观察。状态已是可交易的主线候选可跳过这三类“仅观察”限制，但仍必须通过最低分、市场环境、弱确认、过热和高位追涨检查；“主线观察”与“过热不追”不享受豁免。L2 的八通道原始命中数会写入诊断日志，但不参与评分。
+正式候选在送入 Step3 前还会经过 `core/candidate_policy.py` 的统一损失护栏。单 SOS、单 EVR、单 LPS 与单 Trend Pullback 默认仅观察。状态已是可交易的主线候选可跳过这三类“仅观察”限制，但仍必须通过最低分、市场环境、弱确认、过热、高位追涨和结构止损距离检查；结构止损上限适用于全部市场状态，弱市与主线身份都不豁免。“主线观察”与“过热不追”不享受豁免。主题雷达候选还必须由当日概念或行业元数据再次证明其主题归属，旧快照标签不能单独形成主线种子。L2 的八通道原始命中数会写入诊断日志，但不参与评分。
+
+结构止损上限是**风险敞口约束，不是收益筛选**。2026-08-07 直接调用 `_structure_stop_reason` 与 `compute_support_level` 验证：被拦候选的止损距离中位数 19.42%，放行候选 6.14%；按风险归一化后每承担 1% 止损距离换得的 10 日收益为放行 +0.150% vs 被拦 +0.051%，相差约 3 倍。收益维度本身不显著（Welch t 均 < 2，10 日方向反转），所以不要把它当作 alpha 来源；它的作用是阻止在任何市况下买入需要下跌约 20% 才触及结构止损的标的。
+
+主题归属复检同日验证：全市场 34,440 个真实主题归属零误杀，抽样 3000 只中 2720 只只能靠 `sector_map` 兜底自证，因此 `sector_map` 必须与 `concept_map` 一并传入，否则会误杀这批标的。
+
+**单 SOS 降级为仅观察的依据。** 2026-08-07 走 `scripts/backtest_snapshot_fetch.py` + `core/backtest_replay.build_signal_ledger()` 标准路径回放 2025-11-03..2026-07-20 共 162 个交易日，并额外跑一次 `pure_sos_min_abc=0` 的对照 ledger 拿到未被门槛筛掉的全集，两次去重后共 493 条纯 SOS：
+
+| 口径 | 纯 SOS | 非纯 SOS |
+|---|---|---|
+| 10 日中位 | -3.20% | -1.27% |
+| 10 日胜率 | 40.0% | 44.3% |
+| 5 日中位 | -1.68% | -0.44% |
+
+均值受少数极端日主导（剔除最差 5 日即由负转正），但该脆弱性是 A 股共性、保留组同样存在，因此以中位数与胜率两个抗尾部口径为准；两者在 5/10 日、两次独立 ledger 上方向一致。提高 `score` 门槛无法改善（score≥75 时 10 日中位反而降到 -4.18%）。
+
+ABC 门槛松紧不是问题所在：met=2 与 met=3 的差异在 1/3/5/10 日全部 |t|<0.5，无显著差异。原注释声称 met=2 负期望（-1.46%）、met=3 正期望（+3.98%/胜率 53.8%），标准回放中方向相反且无法复现，已作废。`FUNNEL_LOSS_GUARD_PURE_SOS_MIN_ABC` 保留为 3 只是 `pure_sos_observe_only=False` 时的保守回退值。
+
+所有 Welch t 均在 ±1.4 以内，未达显著；结论强度仅支持"单 SOS 不足以单独支撑买入决策"，不支持"SOS 信号无效"——SOS 与其他形态共振时不受此限，主线候选亦豁免。若后续样本改变结论，可用 `FUNNEL_LOSS_GUARD_PURE_SOS_OBSERVE_ONLY=0` 一键放开。
 
 ### 数据质量与诊断口径
 
@@ -296,6 +314,9 @@ flowchart LR
 - Step3：`STEP3_LLM_PROVIDER=gemini`，fallback `efficiency`
 - 输入不是原始 K 线，而是压缩后的结构特征
 - Step3 总输入默认最多 5 只：跨日 `VALIDATED` 候选优先保留最多 3 席，其余席位按漏斗顺序从当日 `selected_for_ai` 填充；当日不足时，未使用的保留席不会浪费。市场修复模式不再从另一条“起跳板补位”路径私自换名单
+- 合规版市场观察简报默认发送；只有显式设置 `STEP3_SEND_COMPLIANCE_BRIEF=0` 才关闭
+- 精简形态观察按股票聚合；两种及以上 A/B/C≥2 的正式 L4 信号显示为“双/多 Wyckoff 形态共振”，入表时保留完整 `signal_types`
+- `STEP3_SKIP_LLM=1` 的输入预演在空候选时静默返回，不发送空研报或合规简报
 - 模型审判不等于执行放行，`confirmed` 仍是 Step4 硬门槛
 - 用户报告保留执行摘要、实际送审清单，以及 A/B/C≥2 且当日写入 `recommendation_tracking` 的精简形态观察（默认最多 20 只）；完整 L4/主线池、逐层计数和证据仍保留在结构化运行数据中。空候选仍发送空集报告并明确区分上游空输入、RAG 全剔除和数据门槛过滤
 
@@ -492,6 +513,8 @@ efinance
 | `FUNNEL_EXTERNAL_SEED_SYMBOLS` / `FUNNEL_EXTRA_SYMBOLS` | 空 | 临时追加外部观察名单；存在时自动启用 external seed shadow |
 | `STEP4_BUY_HARD_STOP_PCT` | `12.0` | 新开仓灾难止损地板；ATR/结构/时间管理优先 |
 | `FUNNEL_MAX_STRUCTURE_STOP_PCT` | `12.0` | 漏斗送审前的结构止损距离上限；与 OMS 灾难地板独立配置 |
+| `FUNNEL_LOSS_GUARD_PURE_SOS_OBSERVE_ONLY` | `1` | 单 SOS 仅观察；设为 `0` 放开后由 `PURE_SOS_MIN_ABC` 兜底 |
+| `STEP3_SEND_COMPLIANCE_BRIEF` | `1` | 默认发送脱敏市场观察简报；设为 `0` 才显式关闭 |
 | `STEP4_BLOCK_BUY_ON_STALE_EXIT` | `1` | 持仓已跌破止损却连续多日未离场时禁止 `ATTACK` 重仓；小额 `PROBE` 与离场减仓不受影响，一字跌停日不计入拖延 |
 | `STEP4_NEW_POSITION_STOP_GUARD_DAYS` | `4` | 新仓倒挂止损保护期（自然日）；保护期内同时高于成本和现价的止损不得触发 EXIT/TRIM |
 | `STEP4_REPAIR_PROBE_BUDGET_LIMIT` | `0.05` | `PANIC_REPAIR_CONFIRMED` 单票试探仓上限；同时最多只开放一只 |

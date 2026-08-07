@@ -159,7 +159,8 @@ def test_tracking_shape_section_deduplicates_and_reports_display_limit(monkeypat
     report = "\n".join(lines)
 
     assert lines[0] == "**【🧾 今日形态入表观察】2 只**"
-    assert "000001 三项通过  A+B+C" in report
+    assert "双/多 Wyckoff 形态共振（1）" in report
+    assert "000001 三项通过  SOS(A+B+C)+LPS(A+C)" in report
     assert "000002" not in report
     assert "另 1 只已入表" in report
 

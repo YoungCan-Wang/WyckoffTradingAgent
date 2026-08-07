@@ -567,7 +567,11 @@ def test_loss_guard_keeps_risk_on_pure_momentum_after_confirmation_gate():
         trend,
         accum,
         regime="RISK_ON",
-        code_to_trigger_keys={"000001": ["lps"], "000002": ["sos"], "000003": ["sos"]},
+        code_to_trigger_keys={
+            "000001": ["lps"],
+            "000002": ["sos", "spring"],
+            "000003": ["sos", "spring"],
+        },
         code_to_total_score={"000001": 0.4, "000002": 6.0, "000003": 6.0},
         channel_map={"000002": "主升通道", "000003": "点火破局"},
         df_map={},
@@ -603,7 +607,7 @@ def test_loss_guard_keeps_neutral_point_ignition():
         ["000001"],
         [],
         regime="NEUTRAL",
-        code_to_trigger_keys={"000001": ["sos"]},
+        code_to_trigger_keys={"000001": ["sos", "spring"]},
         code_to_total_score={"000001": 6.0},
         channel_map={"000001": "加速突破+点火破局"},
         df_map={},
@@ -611,6 +615,41 @@ def test_loss_guard_keeps_neutral_point_ignition():
 
     assert kept == ["000001"]
     assert trend_kept == ["000001"]
+    assert dropped == {}
+
+
+def test_loss_guard_demotes_pure_sos_to_observe_only():
+    """单 SOS 不足以支撑买入：标准回放显示 10 日中位 -3.20%、胜率 40.0%。"""
+    kept, trend_kept, _accum_kept, dropped = apply_loss_guard(
+        ["000001"],
+        ["000001"],
+        [],
+        regime="NEUTRAL",
+        code_to_trigger_keys={"000001": ["sos"]},
+        code_to_total_score={"000001": 90.0},
+        channel_map={"000001": "加速突破+点火破局"},
+        df_map={},
+    )
+
+    assert kept == []
+    assert trend_kept == []
+    assert dropped == {"单SOS仅观察": 1}
+
+
+def test_loss_guard_keeps_sos_when_confirmed_by_second_signal():
+    """SOS 与其他形态共振时不受"仅观察"限制。"""
+    kept, _trend_kept, _accum_kept, dropped = apply_loss_guard(
+        ["000001"],
+        ["000001"],
+        [],
+        regime="NEUTRAL",
+        code_to_trigger_keys={"000001": ["sos", "spring"]},
+        code_to_total_score={"000001": 8.0},
+        channel_map={"000001": "主升通道"},
+        df_map={},
+    )
+
+    assert kept == ["000001"]
     assert dropped == {}
 
 

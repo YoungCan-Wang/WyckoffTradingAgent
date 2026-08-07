@@ -284,9 +284,28 @@ def _dedupe_tracking_symbols(rows: list[dict]) -> list[dict]:
             continue
         row["code"] = code
         old = best.get(code)
-        if old is None or _tracking_rank(row) > _tracking_rank(old):
+        if old is None:
             best[code] = row
+            continue
+        preferred, other = (row, old) if _tracking_rank(row) > _tracking_rank(old) else (old, row)
+        best[code] = _merge_tracking_signals(preferred, other)
     return list(best.values())
+
+
+def _merge_tracking_signals(preferred: dict, other: dict) -> dict:
+    merged = dict(preferred)
+    signals: list[str] = []
+    for row in (preferred, other):
+        values = row.get("signal_types") or [row.get("primary_signal")]
+        for value in values:
+            signal = _clean_text(value).lower()
+            if signal and signal not in signals:
+                signals.append(signal)
+    merged["signal_types"] = signals
+    if len(signals) > 1 and _clean_text(merged.get("selection_source")).startswith("l4_springboard"):
+        prefix = "双形态共振" if len(signals) == 2 else "多形态共振"
+        merged["tag"] = f"{prefix}({'+'.join(signal.upper() for signal in signals)})"
+    return merged
 
 
 def _tracking_rank(row: dict) -> tuple[int, float]:

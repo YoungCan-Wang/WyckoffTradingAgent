@@ -2989,6 +2989,7 @@ def _mainline_entries_for_result(
         l1_passed=l1,
         l2_passed=l2,
         concept_map=concept_map or {},
+        sector_map=sector_map or {},
         concept_heat=concept_heat or [],
         theme_radar=theme_radar or {},
         theme_activity=theme_activity,
