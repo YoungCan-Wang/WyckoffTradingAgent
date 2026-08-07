@@ -239,7 +239,7 @@ def loss_guard_reason(
     weak_reason = _weak_confirmation_reason(keys, df_map.get(code), policy)
     if weak_reason:
         return weak_reason
-    stop_reason = _structure_stop_reason(regime_norm, keys, df_map.get(code), policy)
+    stop_reason = _structure_stop_reason(keys, df_map.get(code), policy)
     if stop_reason:
         return stop_reason
     is_mainline = bool(mainline_codes and code in mainline_codes)
@@ -260,13 +260,10 @@ def loss_guard_reason(
 
 
 def _structure_stop_reason(
-    regime: str,
     keys: set[str],
     df: pd.DataFrame | None,
     config: CandidatePolicyConfig,
 ) -> str:
-    if regime in {"RISK_ON", "RISK_OFF", "BEAR_REBOUND", "PANIC_REPAIR", "CRASH", "BLACK_SWAN"}:
-        return ""
     if not keys or df is None or df.empty or config.max_structure_stop_pct <= 0:
         return ""
     if "close" not in df.columns:
@@ -363,8 +360,9 @@ def _naked_right_side_reason(
     if "sos" in keys and trigger_score < config.pure_sos_min_score:
         return "低分SOS"
     if keys == {"sos"} and df is not None and _springboard_met_count(df, keys) < config.pure_sos_min_abc:
-        # 回刷数据显示：纯SOS只有ABC三项全部满足(met_count=3)才是正期望(胜率53.8%/+3.98%)，
-        # met_count=2 依然是负期望(-1.46%)，弱确认门槛(>=2)对纯SOS不够严。
+        # 待重验（2026-08-07）：原注释称 met=3 正期望(胜率53.8%/+3.98%)、met=2 负期望(-1.46%)，
+        # 但未记录样本期、持有期与口径，无法复现。保持 3 是保守选择，不代表已验证。
+        # 重验须走 scripts/backtest_snapshot_fetch.py + core/backtest_replay.py 标准路径。
         return "纯SOS确认强度不足"
     evr_min_score = (
         config.pure_evr_min_score_hot
