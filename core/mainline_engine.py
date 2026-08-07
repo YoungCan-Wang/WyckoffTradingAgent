@@ -81,6 +81,7 @@ def build_mainline_candidates(
     l1_passed: list[str],
     l2_passed: list[str],
     concept_map: dict[str, list[str]],
+    sector_map: dict[str, str] | None = None,
     concept_heat: list[dict[str, Any]],
     theme_radar: dict[str, Any],
     theme_activity: dict[str, Any] | None = None,
@@ -97,7 +98,15 @@ def build_mainline_candidates(
     l1_set = {str(code).strip() for code in l1_passed if str(code).strip()}
     l2_set = {str(code).strip() for code in l2_passed if str(code).strip()}
     theme_scores = _theme_scores(concept_heat, theme_radar, theme_activity or {}, hot_events or {}, cfg)
-    seeds = _mainline_seed_map(l1_set, concept_map, theme_scores, theme_radar, hot_events or {}, cfg)
+    seeds = _mainline_seed_map(
+        l1_set,
+        concept_map,
+        sector_map or {},
+        theme_scores,
+        theme_radar,
+        hot_events or {},
+        cfg,
+    )
     candidates = [
         _candidate_from_seed(
             code, seed, l2_set, df_map, financial_map, name_map, theme_scores, cfg, (main_force_map or {}).get(code)
@@ -118,6 +127,7 @@ def mainline_candidate_entries(candidates: list[dict[str, Any]], *, max_count: i
 def _mainline_seed_map(
     l1_set: set[str],
     concept_map: dict[str, list[str]],
+    sector_map: dict[str, str],
     theme_scores: dict[str, float],
     theme_radar: dict[str, Any],
     hot_events: dict[str, Any],
@@ -125,7 +135,7 @@ def _mainline_seed_map(
 ) -> dict[str, dict[str, Any]]:
     seeds: dict[str, dict[str, Any]] = {}
     _add_core_basket_seeds(seeds, l1_set, cfg)
-    _add_radar_seeds(seeds, l1_set, theme_radar, cfg)
+    _add_radar_seeds(seeds, l1_set, concept_map, sector_map, theme_radar, cfg)
     _add_hot_event_seeds(seeds, l1_set, hot_events, cfg)
     _add_concept_seeds(seeds, l1_set, concept_map, theme_scores, cfg)
     return seeds
@@ -140,14 +150,33 @@ def _add_core_basket_seeds(seeds: dict[str, dict[str, Any]], l1_set: set[str], c
 def _add_radar_seeds(
     seeds: dict[str, dict[str, Any]],
     l1_set: set[str],
+    concept_map: dict[str, list[str]],
+    sector_map: dict[str, str],
     theme_radar: dict[str, Any],
     cfg: MainlineEngineConfig,
 ) -> None:
     for item in theme_radar.get("strategic_candidates") or []:
         code = str(item.get("code", "")).strip()
         theme = _mainline_theme(item.get("theme"), cfg)
-        if code in l1_set and theme:
-            seeds[code] = {"theme": theme, "source": "theme_radar", "radar": item}
+        evidence = _current_theme_evidence(code, theme, concept_map, sector_map, cfg)
+        if code in l1_set and theme and evidence:
+            seeds[code] = {
+                "theme": theme,
+                "source": "theme_radar",
+                "radar": item,
+                "theme_membership_evidence": evidence,
+            }
+
+
+def _current_theme_evidence(
+    code: str,
+    theme: str,
+    concept_map: dict[str, list[str]],
+    sector_map: dict[str, str],
+    cfg: MainlineEngineConfig,
+) -> list[str]:
+    labels = [*(concept_map.get(code) or []), sector_map.get(code, "")]
+    return [str(label) for label in labels if label and _mainline_theme(label, cfg) == theme]
 
 
 def _add_concept_seeds(
@@ -606,6 +635,8 @@ def _reasons(
     if _is_hot_event_seed(seed):
         event = seed.get("event") or {}
         rows.insert(1, f"事件:{event.get('title') or event.get('theme')}")
+    elif seed.get("theme_membership_evidence"):
+        rows.insert(1, "主题依据:" + "/".join(seed["theme_membership_evidence"][:3]))
     return rows
 
 

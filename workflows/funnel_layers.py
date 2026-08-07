@@ -396,6 +396,7 @@ def _build_mainline_candidates_helper(
         l1_passed=l1_passed,
         l2_passed=l2_passed,
         concept_map=ref_data.concept_map,
+        sector_map=ref_data.sector_map,
         concept_heat=_effective_concept_heat(ref_data),
         theme_radar=theme_current,
         theme_activity=theme_activity,
