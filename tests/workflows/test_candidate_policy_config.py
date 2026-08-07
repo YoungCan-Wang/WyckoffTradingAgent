@@ -10,11 +10,19 @@ class TestCandidatePolicyConfigFromEnv:
         for key in (
             "FUNNEL_LOSS_GUARD_WEAK_CONFIRMATION_MIN_ABC",
             "FUNNEL_LOSS_GUARD_PURE_SOS_MIN_ABC",
+            "FUNNEL_LOSS_GUARD_PURE_SOS_OBSERVE_ONLY",
         ):
             monkeypatch.delenv(key, raising=False)
         cfg = candidate_policy_config_from_env()
         assert cfg.weak_confirmation_min_abc == 2
         assert cfg.pure_sos_min_abc == 3
+        assert cfg.pure_sos_observe_only is True
+
+    def test_pure_sos_observe_only_can_be_disabled_via_env(self, monkeypatch):
+        """若后续样本证明单 SOS 可交易，运维可一键放开而无需改代码重新部署。"""
+        monkeypatch.setenv("FUNNEL_LOSS_GUARD_PURE_SOS_OBSERVE_ONLY", "0")
+        cfg = candidate_policy_config_from_env()
+        assert cfg.pure_sos_observe_only is False
 
     def test_pure_sos_min_abc_can_be_rolled_back_via_env(self, monkeypatch):
         """实盘出现误拦截时，运维应能通过环境变量一键回退到旧门槛(2)而无需改代码重新部署。"""

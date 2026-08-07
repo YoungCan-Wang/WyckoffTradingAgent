@@ -288,6 +288,32 @@ def test_recommendation_write_symbols_tracks_market_blocked_springboard_candidat
     assert got[0]["tag"] == "SOS起跳板结构(A+C)"
 
 
+def test_recommendation_write_symbols_merges_multiple_tracking_signals():
+    from core.market_trade_mode import resolve_market_trade_mode
+    from workflows.daily_job_persistence import recommendation_write_symbols
+
+    details = {
+        "formal_triggers": {"sos": [("000007", 9.0)], "lps": [("000007", 8.0)]},
+        "springboard_map": {
+            "sos:000007": {"springboard_met_count": 3, "springboard_grade": "A+B+C"},
+            "lps:000007": {"springboard_met_count": 2, "springboard_grade": "A+C"},
+        },
+        "metrics": {"latest_close_map": {"000007": 12.3}},
+        "name_map": {"000007": "全新好"},
+    }
+
+    got = recommendation_write_symbols(
+        [],
+        step2_details=details,
+        trade_mode=resolve_market_trade_mode("PANIC_REPAIR"),
+    )
+
+    assert len(got) == 1
+    assert got[0]["primary_signal"] == "sos"
+    assert got[0]["signal_types"] == ["sos", "lps"]
+    assert got[0]["tag"] == "双形态共振(SOS+LPS)"
+
+
 def test_step3_springboard_updates_patch_recommendation_payload():
     from workflows.daily_signal_observations import apply_step3_springboard_updates
 

@@ -34,7 +34,7 @@ class Step3RuntimeConfig:
     enable_rag_veto: bool = True
     skip_llm: bool = False
     respect_upstream_priority: bool = True
-    send_compliance_brief: bool = False
+    send_compliance_brief: bool = True
     require_confirmed_operation: bool = True
     enforce_target_trade_date: bool = False
     llm_fallback_providers: tuple[str, ...] = ()
@@ -62,7 +62,7 @@ def step3_runtime_config_from_env() -> Step3RuntimeConfig:
         enable_rag_veto=_env_bool("STEP3_ENABLE_RAG_VETO", True),
         skip_llm=_env_bool("STEP3_SKIP_LLM", False),
         respect_upstream_priority=_env_bool("STEP3_RESPECT_UPSTREAM_PRIORITY", True),
-        send_compliance_brief=_env_bool("STEP3_SEND_COMPLIANCE_BRIEF", False),
+        send_compliance_brief=_env_bool("STEP3_SEND_COMPLIANCE_BRIEF", True),
         require_confirmed_operation=_env_bool("STEP3_REQUIRE_CONFIRMED_OPERATION", True),
         enforce_target_trade_date=_env_bool("STEP3_ENFORCE_TARGET_TRADE_DATE", False),
         llm_fallback_providers=_env_csv("STEP3_LLM_FALLBACK_PROVIDERS"),

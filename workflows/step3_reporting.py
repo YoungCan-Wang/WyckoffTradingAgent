@@ -34,6 +34,8 @@ def send_empty_step3_report(
     rag_veto_lines: list[str],
 ) -> tuple[bool, str, str]:
     report = _empty_step3_report(rag_veto_preview, rag_veto_lines, input_count=len(items))
+    if options.runtime_config.skip_llm:
+        return (True, "ok_preview", report)
     if not options.notify:
         return (True, "ok", report)
     if not notify_step3_channels(options, _step3_title(benchmark_context), report):

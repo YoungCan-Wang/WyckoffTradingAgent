@@ -19,6 +19,16 @@
       "enabled": true,
       "effective_from": "2026-08-05",
       "expires_on": "2026-11-05"
+    },
+    {
+      "id": "case-2026-08-07-portfolio-exits",
+      "path": "cases/2026-08-07-portfolio-exits.md",
+      "scopes": ["step4", "holding_diagnosis"],
+      "symbols": ["603661", "300119"],
+      "priority": 190,
+      "enabled": true,
+      "effective_from": "2026-08-07",
+      "expires_on": "2027-02-07"
     }
   ]
 }

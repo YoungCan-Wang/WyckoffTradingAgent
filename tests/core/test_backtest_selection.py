@@ -820,7 +820,7 @@ def test_loss_guard_blocks_defensive_high_position_chase() -> None:
     assert reason == "RISK_OFF20日高位追涨"
 
 
-def test_loss_guard_keeps_defensive_spring_even_near_range_high() -> None:
+def test_loss_guard_blocks_defensive_spring_with_distant_structure_stop() -> None:
     df = _daily_position_df([10.0 + idx * 0.2 for idx in range(21)])
 
     reason = loss_guard_reason(
@@ -832,7 +832,7 @@ def test_loss_guard_keeps_defensive_spring_even_near_range_high() -> None:
         {"000001": df},
     )
 
-    assert reason == ""
+    assert reason == "结构止损超出风险上限"
 
 
 def test_loss_guard_blocks_weak_right_side_without_abc_confirmation() -> None:
@@ -872,6 +872,26 @@ def test_loss_guard_blocks_weak_main_force_entry_without_abc_confirmation() -> N
     )
 
     assert reason == "趋势候选ABC不足"
+
+
+def test_loss_guard_enforces_structure_stop_limit_in_bear_rebound(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "core.candidate_policy.score_springboard_abc",
+        lambda _df, _signal_type: {"met_count": 2},
+    )
+    df = _daily_position_df([100.0] * 60)
+    df["low"] = 50.0
+
+    reason = loss_guard_reason(
+        "000001",
+        "BEAR_REBOUND",
+        ["main_force_entry"],
+        100.0,
+        "趋势延续",
+        {"000001": df},
+    )
+
+    assert reason == "结构止损超出风险上限"
 
 
 def test_stratified_stats_include_exit_and_excursion_diagnostics() -> None:
