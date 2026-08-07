@@ -104,6 +104,47 @@ def test_snapshot_meta_loaders(tmp_path) -> None:
     assert metadata.financial_map == {"688001": {"roe": 12}}
 
 
+def _write_snapshot_meta(tmp_path) -> None:
+    (tmp_path / "sector_map.json").write_text(json.dumps({"688001": "半导体"}), encoding="utf-8")
+    (tmp_path / "market_cap_map.json").write_text(json.dumps({"688001": "123.4"}), encoding="utf-8")
+    (tmp_path / "concept_map.json").write_text(json.dumps({"688001": ["CPO"]}, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "concept_heat.json").write_text(
+        json.dumps([{"name": "CPO", "pct": 3.2}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def test_allow_static_meta_keeps_mappings_but_drops_concept_heat(tmp_path) -> None:
+    """concept_heat 是抓取当日快照，喂给历史决策即前瞻偏差；市值/行业是缓变属性可保留。"""
+    _write_snapshot_meta(tmp_path)
+
+    metadata = load_backtest_metadata(use_current_meta=False, snapshot_dir=tmp_path, allow_static_meta=True)
+
+    assert metadata.concept_heat == []
+    assert metadata.sector_map == {"688001": "半导体"}
+    assert metadata.market_cap_map == {"688001": 123.4}
+    assert metadata.concept_map == {"688001": ["CPO"]}
+    assert metadata.source == "snapshot_no_heat"
+
+
+def test_default_bias_suppression_still_drops_everything(tmp_path) -> None:
+    _write_snapshot_meta(tmp_path)
+
+    metadata = load_backtest_metadata(use_current_meta=False, snapshot_dir=tmp_path)
+
+    assert metadata.source == "disabled"
+    assert metadata.sector_map == {}
+    assert metadata.concept_heat == []
+
+
+def test_allow_static_meta_without_snapshot_falls_back_to_disabled() -> None:
+    metadata = load_backtest_metadata(use_current_meta=False, snapshot_dir=None, allow_static_meta=True)
+
+    assert metadata.source == "disabled"
+    assert metadata.sector_map == {}
+    assert metadata.concept_heat == []
+
+
 def test_backtest_metadata_disabled_ignores_current_snapshot_maps(tmp_path) -> None:
     (tmp_path / "sector_map.json").write_text(json.dumps({"688001": "半导体"}), encoding="utf-8")
     (tmp_path / "market_cap_map.json").write_text(json.dumps({"688001": 123.4}), encoding="utf-8")
