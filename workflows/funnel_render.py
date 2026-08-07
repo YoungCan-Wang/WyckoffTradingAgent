@@ -607,11 +607,25 @@ def _tracking_shape_rows(ctx: Any, selection: FunnelAiSelection) -> list[dict]:
                 "met_count": met_count,
                 "score": display_score(ctx, selection, code),
                 "close": (getattr(ctx, "latest_close_map", {}) or {}).get(code),
+                "signals": [
+                    {
+                        "signal_type": str(signal_type),
+                        "grade": str(springboard.get("grade") or "2/3+"),
+                        "met_count": met_count,
+                    }
+                ],
             }
             old = best.get(code)
-            if old is None or (row["met_count"], row["score"]) > (old["met_count"], old["score"]):
+            if old is None:
                 best[code] = row
-    return sorted(best.values(), key=lambda row: (-row["score"], -row["met_count"], row["code"]))
+                continue
+            old["signals"].extend(row["signals"])
+            if (row["met_count"], row["score"]) > (old["met_count"], old["score"]):
+                old.update({key: value for key, value in row.items() if key != "signals"})
+    return sorted(
+        best.values(),
+        key=lambda row: (-len(row["signals"]), -row["score"], -row["met_count"], row["code"]),
+    )
 
 
 def _tracking_shape_section_lines(ctx: Any, selection: FunnelAiSelection) -> list[str]:
@@ -621,9 +635,17 @@ def _tracking_shape_section_lines(ctx: Any, selection: FunnelAiSelection) -> lis
         "仅列 A/B/C≥2、当日写入 recommendation_tracking 的形态跟踪样本；不是买入清单。",
     ]
     displayed = rows if FUNNEL_TRACKING_SHAPE_DISPLAY_LIMIT <= 0 else rows[:FUNNEL_TRACKING_SHAPE_DISPLAY_LIMIT]
-    groups = [*TRIGGER_GROUP_ORDER, *sorted({row["signal_type"] for row in displayed} - set(TRIGGER_GROUP_ORDER))]
+    multi_signal = [row for row in displayed if len(row["signals"]) > 1]
+    if multi_signal:
+        lines.append(f"**▎ 🔥 双/多 Wyckoff 形态共振（{len(multi_signal)}）**")
+        lines.extend(_tracking_shape_row_text(row) for row in multi_signal)
+    single_signal = [row for row in displayed if len(row["signals"]) == 1]
+    groups = [
+        *TRIGGER_GROUP_ORDER,
+        *sorted({row["signal_type"] for row in single_signal} - set(TRIGGER_GROUP_ORDER)),
+    ]
     for signal_type in groups:
-        grouped = [row for row in displayed if row["signal_type"] == signal_type]
+        grouped = [row for row in single_signal if row["signal_type"] == signal_type]
         if not grouped:
             continue
         lines.append(f"**{TRIGGER_GROUP_TITLES.get(signal_type, signal_type)}（{len(grouped)}）**")
@@ -638,6 +660,12 @@ def _tracking_shape_section_lines(ctx: Any, selection: FunnelAiSelection) -> lis
 def _tracking_shape_row_text(row: dict) -> str:
     close = row.get("close")
     close_text = f"  现价{float(close):.2f}" if close not in (None, "") else ""
+    if len(row.get("signals") or []) > 1:
+        labels = "+".join(
+            f"{TRIGGER_SHORT_LABELS.get(item['signal_type'], item['signal_type'])}({item['grade']})"
+            for item in row["signals"]
+        )
+        return f"  {row['code']} {row['name']}  {labels}  分{row['score']:.2f}{close_text}"
     return f"  {row['code']} {row['name']}  {row['grade']}  分{row['score']:.2f}{close_text}"
 
 
