@@ -450,13 +450,21 @@ def _meta_mode(summary: dict) -> str:
         return "current_snapshot (⚠️ look-ahead bias)"
     if source == "current":
         return "current_network (⚠️ look-ahead bias)"
+    if source.endswith("_no_heat"):
+        return "static_meta_no_concept_heat (bias-reduced)"
     return "disabled_current_snapshot_filters (bias-reduced)"
 
 
 def _meta_note(summary: dict) -> str:
-    if _metadata_source(summary) in {"snapshot", "current"}:
+    source = _metadata_source(summary)
+    if source in {"snapshot", "current"}:
         return (
             "- ⚠️ 市值/行业映射采用当前截面，会引入 look-ahead bias （市值穿越与行业漂移）；该结果仅用于参数方向验证。"
+        )
+    if source.endswith("_no_heat"):
+        return (
+            "- 保留市值/行业/概念归属（缓变属性，轻微偏差）但已剔除 concept_heat 题材热度快照，"
+            "避免主线引擎预知未来热点；仍存在当前股票池幸存者偏差。"
         )
     return "- 本次按正式回测默认口径关闭当前截面市值/行业/概念映射，降低前视偏差；仍存在当前股票池幸存者偏差。"
 
