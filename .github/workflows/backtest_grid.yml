@@ -352,6 +352,7 @@ jobs:
             --metrics-engine auto \
             --wbt-n-jobs 2 \
             --snapshot-dir snapshot_data \
+            --allow-static-meta \
             --grid-cells "${GRID_CELLS}" \
             --grid-prefix "backtest-grid-${BT_PERIOD_KEY}" \
             --output-dir "${OUT_ROOT}" \
@@ -493,6 +494,7 @@ jobs:
             --metrics-engine auto \
             --wbt-n-jobs 2 \
             --snapshot-dir snapshot_data \
+            --allow-static-meta \
             --output-dir "$OUT_DIR" \
             | tee "$OUT_DIR/run.log"
 
