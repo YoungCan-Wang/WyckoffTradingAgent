@@ -18,6 +18,9 @@ DEFAULT_ATR_MULTIPLIER = 2.0
 DEFAULT_ATR_HARD_STOP_PCT = 0.0
 DEFAULT_ATR_MAX_HOLD_DAYS = 120
 DEFAULT_USE_CURRENT_META = False
+# 保留缓变的市值/行业/概念归属，只剔除 concept_heat 题材热度快照。
+# 默认关闭以保持既有回测口径不变；基线回测建议显式打开 --allow-static-meta。
+DEFAULT_ALLOW_STATIC_META = os.getenv("BACKTEST_ALLOW_STATIC_META", "0").strip().lower() in {"1", "true", "yes", "on"}
 DEFAULT_BUY_FRICTION_PCT = float(os.getenv("BACKTEST_BUY_FRICTION_PCT", "0.5"))
 DEFAULT_SELL_FRICTION_PCT = float(os.getenv("BACKTEST_SELL_FRICTION_PCT", "0.5"))
 DEFAULT_METRICS_ENGINE = os.getenv("BACKTEST_METRICS_ENGINE", "legacy").strip().lower() or "legacy"

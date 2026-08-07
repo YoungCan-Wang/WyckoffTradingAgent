@@ -216,6 +216,7 @@ def request_from_args(args, start_dt, end_dt, hold_days: int) -> BacktestWorkflo
         trailing_activate_pct=args.trailing_activate,
         sltp_priority=args.sltp_priority,
         use_current_meta=args.use_current_meta,
+        allow_static_meta=getattr(args, "allow_static_meta", False),
         buy_friction_pct=args.buy_friction_pct,
         sell_friction_pct=args.sell_friction_pct,
         regime_filter=args.regime_filter,

@@ -6,7 +6,7 @@ import json
 import logging
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
 
@@ -209,14 +209,31 @@ def load_snapshot_financial_map(snapshot_dir: Path | None) -> dict[str, dict] | 
     return {str(k): v for k, v in data.items() if isinstance(v, dict)} if data else None
 
 
-def load_backtest_metadata(use_current_meta: bool, snapshot_dir: Path | None) -> BacktestMetadata:
-    if not use_current_meta:
+def load_backtest_metadata(
+    use_current_meta: bool,
+    snapshot_dir: Path | None,
+    *,
+    allow_static_meta: bool = False,
+) -> BacktestMetadata:
+    """装配回测元数据。
+
+    元数据分两类：市值/行业/概念归属是缓变的静态属性，用当前截面近似历史只带来
+    轻微偏差；``concept_heat`` 是抓取当日的题材热度快照，把它喂给 N 天前的决策
+    等于让回测预知哪个题材会火，是真正的前瞻偏差。
+
+    ``allow_static_meta=True`` 时保留静态映射、单独剔除 ``concept_heat``，让
+    L1 市值过滤与 L3 板块共振仍可工作，同时不引入题材前瞻。
+    """
+    if not use_current_meta and not allow_static_meta:
         logger.info("偏差抑制口径：关闭当前截面市值/行业/概念/财务元数据")
         return BacktestMetadata({}, {}, {}, [], {}, "disabled")
 
     snap = _snapshot_metadata(snapshot_dir)
     if snap is not None:
-        return snap
+        return snap if use_current_meta else _without_concept_heat(snap)
+    if not use_current_meta:
+        logger.info("偏差抑制口径：无快照可用，退回全空元数据")
+        return BacktestMetadata({}, {}, {}, [], {}, "disabled")
 
     market_cap_map = fetch_market_cap_map()
     sector_map = fetch_sector_map()
@@ -226,6 +243,17 @@ def load_backtest_metadata(use_current_meta: bool, snapshot_dir: Path | None) ->
     if not market_cap_map:
         logger.warning("当前市值映射为空，Layer1 市值过滤将被跳过")
     return BacktestMetadata(market_cap_map, sector_map, concept_map, concept_heat, {}, "current")
+
+
+def _without_concept_heat(metadata: BacktestMetadata) -> BacktestMetadata:
+    """剔除题材热度，保留静态映射。
+
+    concept_heat 是抓取当日快照，喂给历史决策会让主线引擎预知未来热点。
+    """
+    if not metadata.concept_heat:
+        return metadata
+    logger.info("偏差抑制口径：保留市值/行业/概念归属，剔除 concept_heat(%d 条)", len(metadata.concept_heat))
+    return replace(metadata, concept_heat=[], source=f"{metadata.source}_no_heat")
 
 
 def _snapshot_metadata(snapshot_dir: Path | None) -> BacktestMetadata | None:

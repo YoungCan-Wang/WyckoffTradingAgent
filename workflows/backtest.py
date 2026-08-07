@@ -34,6 +34,7 @@ from workflows.backtest_data import (
     resolve_backtest_universe,
 )
 from workflows.backtest_defaults import (
+    DEFAULT_ALLOW_STATIC_META,
     DEFAULT_ATR_HARD_STOP_PCT,
     DEFAULT_ATR_MAX_HOLD_DAYS,
     DEFAULT_ATR_MULTIPLIER,
@@ -98,6 +99,7 @@ class BacktestWorkflowRequest:
     trailing_activate_pct: float = DEFAULT_TRAILING_ACTIVATE_PCT
     sltp_priority: str = "stop_first"
     use_current_meta: bool = DEFAULT_USE_CURRENT_META
+    allow_static_meta: bool = DEFAULT_ALLOW_STATIC_META
     buy_friction_pct: float = DEFAULT_BUY_FRICTION_PCT
     sell_friction_pct: float = DEFAULT_SELL_FRICTION_PCT
     regime_filter: bool = False
@@ -293,7 +295,11 @@ def _load_prepared_data(
         max_workers=request.max_workers,
         progress=progress,
     )
-    metadata = load_backtest_metadata(request.use_current_meta, config.snapshot_dir)
+    metadata = load_backtest_metadata(
+        request.use_current_meta,
+        config.snapshot_dir,
+        allow_static_meta=request.allow_static_meta,
+    )
     return BacktestPreparedData(
         all_df_map=history.all_df_map,
         bench_df=history.bench_df,
