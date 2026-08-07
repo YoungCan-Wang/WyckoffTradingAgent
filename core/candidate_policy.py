@@ -44,6 +44,7 @@ class CandidatePolicyConfig:
     pure_trendpb_observe_only: bool = True
     pure_trendpb_min_score: float = 10.0
     pure_sos_min_score: float = 6.0
+    pure_sos_observe_only: bool = True
     pure_evr_observe_only: bool = True
     pure_evr_min_score_default: float = 3.0
     pure_evr_min_score_hot: float = 5.0
@@ -357,12 +358,18 @@ def _naked_right_side_reason(
         return f"{regime_norm}纯趋势追涨"
     if keys == {"evr"} and config.pure_evr_observe_only and not is_mainline:
         return "单EVR仅观察"
+    if keys == {"sos"} and config.pure_sos_observe_only and not is_mainline:
+        # 标准回放（2026-08-07，snapshot 2025-11-03..2026-07-20，162 交易日，两次独立
+        # ledger 去重后 493 条纯 SOS）：10 日中位 -3.20%、胜率 40.0%，对照非纯 SOS
+        # 中位 -1.27%、胜率 44.3%。均值受少数极端日主导（剔最差 5 日即转正），但中位
+        # 与胜率两个抗尾部口径在 5/10 日、两次 ledger 上方向一致。
+        # ABC 门槛松紧无法改善：met=2 与 met=3 的差异在所有周期 |t|<0.5。
+        return "单SOS仅观察"
     if "sos" in keys and trigger_score < config.pure_sos_min_score:
         return "低分SOS"
     if keys == {"sos"} and df is not None and _springboard_met_count(df, keys) < config.pure_sos_min_abc:
-        # 待重验（2026-08-07）：原注释称 met=3 正期望(胜率53.8%/+3.98%)、met=2 负期望(-1.46%)，
-        # 但未记录样本期、持有期与口径，无法复现。保持 3 是保守选择，不代表已验证。
-        # 重验须走 scripts/backtest_snapshot_fetch.py + core/backtest_replay.py 标准路径。
+        # pure_sos_observe_only=False 时才会走到这里。met=3 未被证明优于 met=2
+        # （标准回放 |t|<0.5），保留 3 只是保守默认值，不代表已验证。
         return "纯SOS确认强度不足"
     evr_min_score = (
         config.pure_evr_min_score_hot
