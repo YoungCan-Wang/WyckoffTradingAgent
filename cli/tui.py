@@ -276,6 +276,7 @@ class _TurnRunState:
     round_tool_names: dict[int, list[str]] = field(default_factory=dict)
     round_starts: dict[int, float] = field(default_factory=dict)
     round_thinking: dict[int, str] = field(default_factory=dict)
+    thinking_preview_rounds: set[int] = field(default_factory=set)
     final_usage: dict[str, int] = field(default_factory=lambda: {"input_tokens": 0, "output_tokens": 0})
     final_elapsed: float = 0.0
     final_rounds: int = 0
@@ -403,6 +404,13 @@ def _persistable_tool_result(result: Any) -> tuple[Any, bool]:
 
 
 def _tool_result_view(event: dict[str, Any], tools) -> tuple[dict[str, object], Text]:
+    from cli.tui_station import (
+        is_confirm_timeout_error,
+        timeout_footnote,
+        tool_branch_lines,
+        tool_done_header,
+    )
+
     name = event["name"]
     args = event.get("args", {})
     display = _tool_display_name(tools, name)
@@ -426,21 +434,38 @@ def _tool_result_view(event: dict[str, Any], tools) -> tuple[dict[str, object], 
             summary["result_truncated"] = True
 
     if isinstance(result, dict) and result.get("error"):
-        summary.update({"status": "error", "error": str(result.get("error", ""))[:160]})
-        renderable = Text.from_markup(
-            f"  [red]✗ {display}[/red] [dim]{elapsed_s:.1f}s {str(result['error'])[:80]}[/dim]"
-        )
+        err_text = str(result.get("error", ""))
+        summary.update({"status": "error", "error": err_text[:160]})
+        if is_confirm_timeout_error(err_text):
+            renderable = Text.from_markup(f"  [dim]{timeout_footnote()}[/dim]")
+        else:
+            header = tool_done_header(display, elapsed_s, status="error")
+            renderable = Text.from_markup(f"  [red]{escape(header)}[/red]")
+            if err_text:
+                renderable.append(f"\n  └ {err_text[:80]}", style="dim")
     elif isinstance(result, dict) and result.get("status") == "background":
         summary["status"] = "background"
-        renderable = Text.from_markup(f"  [cyan]↗ {display}[/cyan] [dim]已提交后台[/dim]")
+        header = tool_done_header(display, elapsed_s, status="background")
+        renderable = Text.from_markup(f"  [cyan]{escape(header)}[/cyan]")
     else:
         summary["status"] = event.get("status", "ok")
-        renderable = Text.from_markup(f"  [green]✓ {display}[/green] [dim]{elapsed_s:.1f}s[/dim]")
-        if brief_lines := tool_result_brief_lines(name, result):
+        header = tool_done_header(display, elapsed_s, status="ok")
+        renderable = Text.from_markup(f"  {escape(header)}")
+        brief_lines = _station_brief_lines(name, result)
+        if brief_lines:
             summary["brief"] = brief_lines
-            for line in brief_lines:
-                renderable.append(f"\n    {line}", style="dim")
+            for line in tool_branch_lines(brief_lines):
+                renderable.append(f"\n{line}", style="dim")
     return summary, renderable
+
+
+def _station_brief_lines(name: str, result: Any) -> list[str]:
+    """持仓体检用结构化卡；其它工具仍走紧凑 brief。"""
+    if name == "portfolio" and isinstance(result, dict) and isinstance(result.get("diagnostics"), list):
+        from cli.tui_station import portfolio_diagnosis_station_lines
+
+        return portfolio_diagnosis_station_lines(result)
+    return tool_result_brief_lines(name, result)
 
 
 def _display_tool_result_event(event: dict[str, Any], tools, write, scroll) -> dict[str, object]:
@@ -1574,12 +1599,12 @@ def _pending_user_question_lines(pending: _PendingUserQuestion) -> list[str]:
 
 
 def _build_thinking_preview(text: str) -> Text | None:
-    preview = text.strip().replace("\n", " ")
-    if len(preview) > 80:
-        preview = preview[:80] + "…"
+    from cli.tui_station import thinking_preview_line
+
+    preview = thinking_preview_line(text)
     if not preview:
         return None
-    return Text.from_markup(f"  [italic magenta]💭 {preview}[/italic magenta]  [dim]({len(text)} 字)[/dim]")
+    return Text.from_markup(f"  [dim]{escape(preview)}[/dim]")
 
 
 class ChatLog(RichLog):
@@ -1602,7 +1627,7 @@ class StatusBar(Static):
         background: $background;
         color: $text-muted;
         padding: 0 2;
-        text-align: right;
+        text-align: left;
     }
     """
 
@@ -1759,22 +1784,29 @@ class _InputState:
 
 
 class ToolConfirmScreen(ModalScreen[dict]):
-    """高风险工具执行前的确认弹窗。"""
+    """高风险工具执行前的 Station 决策卡（主操作高亮 + 快捷键）。"""
 
     DEFAULT_CSS = """
     ToolConfirmScreen {
         align: center middle;
     }
     #confirm-box {
-        width: 64;
-        max-height: 20;
+        width: 62;
+        max-height: 22;
         background: $surface;
-        border: thick $accent;
+        border: tall $warning;
         padding: 1 2;
+    }
+    #confirm-box.confirm-danger {
+        border: tall $error;
     }
     #confirm-title {
         text-style: bold;
+        color: $warning;
         margin-bottom: 1;
+    }
+    #confirm-box.confirm-danger #confirm-title {
+        color: $error;
     }
     #confirm-summary {
         color: $text-muted;
@@ -1790,83 +1822,79 @@ class ToolConfirmScreen(ModalScreen[dict]):
     }
     """
 
-    BINDINGS = [Binding("escape", "cancel", show=False)]
+    BINDINGS = [
+        Binding("escape", "cancel", show=False),
+        Binding("a", "allow_always", show=False),
+        Binding("e", "start_edit", show=False),
+    ]
 
     def __init__(self, tool_name: str, args: dict, display_name: str):
         super().__init__()
         self.tool_name = tool_name
-        self.tool_args = args
+        self.tool_args = dict(args or {})
         self.display_name = display_name
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="confirm-box"):
-            yield Static(
-                f"⚠ [bold]{self.display_name}[/bold] 需要确认",
-                id="confirm-title",
-            )
-            yield Static(self._format_summary(), id="confirm-summary")
+        from cli.tui_station import (
+            confirm_option_labels,
+            format_confirm_summary,
+            portfolio_action_title,
+            portfolio_edit_initial,
+            portfolio_edit_placeholder,
+        )
+
+        action = str(self.tool_args.get("action") or "").strip().lower()
+        danger = self.tool_name == "update_portfolio" and action == "remove"
+        title = (
+            portfolio_action_title(self.tool_args, self.display_name)
+            if self.tool_name == "update_portfolio"
+            else f"{self.display_name} · 需要确认"
+        )
+        box_class = "confirm-danger" if danger else ""
+        with Vertical(id="confirm-box", classes=box_class):
+            yield Static(f"⚠ {title}", id="confirm-title")
+            yield Static(format_confirm_summary(self.tool_name, self.tool_args), id="confirm-summary")
             yield OptionList(
-                Option("允许一次", id="once"),
-                Option("本次会话总是允许", id="always"),
-                Option("修改后执行", id="edit"),
-                Option("不允许", id="deny"),
+                *[Option(label, id=opt_id) for opt_id, label in confirm_option_labels()],
                 id="confirm-options",
             )
-            yield Input(
-                value=self._editable_value(),
-                placeholder="修改后按 Enter 执行",
-                id="confirm-edit",
+            edit_value = (
+                portfolio_edit_initial(self.tool_args)
+                if self.tool_name == "update_portfolio"
+                else self._editable_value()
             )
-
-    def _format_summary(self) -> str:
-        if self.tool_name == "exec_command":
-            return f"  命令: {self.tool_args.get('command', '')}"
-        if self.tool_name == "write_file":
-            path = self.tool_args.get("path", "")
-            size = len(self.tool_args.get("content", ""))
-            return f"  路径: {path}\n  内容: {size} 字符"
-        if self.tool_name == "update_portfolio":
-            action = self.tool_args.get("action", "")
-            code = self.tool_args.get("code", "")
-            parts = [f"操作: {action}"]
-            if code:
-                parts.append(f"代码: {code}")
-            shares = self.tool_args.get("shares")
-            if shares:
-                parts.append(f"股数: {shares}")
-            cost = self.tool_args.get("cost_price")
-            if cost:
-                parts.append(f"成本: {cost}")
-            cash = self.tool_args.get("free_cash")
-            if cash is not None:
-                parts.append(f"现金: {cash}")
-            return "  " + "  ".join(parts)
-        return f"  {json.dumps(self.tool_args, ensure_ascii=False)}"
+            edit_placeholder = (
+                portfolio_edit_placeholder(self.tool_args)
+                if self.tool_name == "update_portfolio"
+                else "修改后按 Enter 执行"
+            )
+            yield Input(value=edit_value, placeholder=edit_placeholder, id="confirm-edit")
 
     def _editable_value(self) -> str:
         if self.tool_name == "exec_command":
-            return self.tool_args.get("command", "")
+            return str(self.tool_args.get("command", ""))
         if self.tool_name == "write_file":
-            return self.tool_args.get("path", "")
+            return str(self.tool_args.get("path", ""))
         return json.dumps(self.tool_args, ensure_ascii=False)
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         if event.option_id == "edit":
-            self.query_one("#confirm-options").display = False
-            edit_input = self.query_one("#confirm-edit", Input)
-            edit_input.display = True
-            edit_input.focus()
+            self.action_start_edit()
         else:
             self.dismiss({"action": event.option_id})
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "confirm-edit":
             return
+        from cli.tui_station import parse_portfolio_edit_line
+
         modified = dict(self.tool_args)
         if self.tool_name == "exec_command":
             modified["command"] = event.value
         elif self.tool_name == "write_file":
             modified["path"] = event.value
+        elif self.tool_name == "update_portfolio":
+            modified = parse_portfolio_edit_line(event.value, self.tool_args)
         else:
             with contextlib.suppress(json.JSONDecodeError):
                 modified = json.loads(event.value)
@@ -1874,6 +1902,17 @@ class ToolConfirmScreen(ModalScreen[dict]):
 
     def action_cancel(self) -> None:
         self.dismiss({"action": "deny"})
+
+    def action_allow_always(self) -> None:
+        if self.query_one("#confirm-edit").display:
+            return
+        self.dismiss({"action": "always"})
+
+    def action_start_edit(self) -> None:
+        self.query_one("#confirm-options").display = False
+        edit_input = self.query_one("#confirm-edit", Input)
+        edit_input.display = True
+        edit_input.focus()
 
 
 # ---------------------------------------------------------------------------
@@ -2108,7 +2147,7 @@ class WyckoffTUI(App):
         with Horizontal(id="input-container"):
             yield Static("❯", id="prompt-prefix")
             yield ChatInput(
-                placeholder="问我关于股票的任何问题... (/help 查看命令)",
+                placeholder="代码 · 指令 · /help",
                 id="chat-input",
                 highlighter=_PasteHighlighter(),
             )
@@ -2234,41 +2273,33 @@ class WyckoffTUI(App):
         except Exception:
             ver = "dev"
 
-        from rich.panel import Panel
-        from rich.table import Table
+        from cli.tui_station import short_model_label, status_hotkey_legend, welcome_brief_lines
 
-        layout_table = Table.grid(expand=True)
-        layout_table.add_column(ratio=2)
-        layout_table.add_column(ratio=3)
-
-        left_text = Text.from_markup(
-            "\n"
-            " [bold white]Welcome back![/bold white]\n\n"
-            "    [bold #58a6ff]⚡ WYCKOFF QUANT[/bold #58a6ff]\n\n"
-            " [dim]Market Workstation[/dim]\n"
+        position_count, free_cash = self._welcome_portfolio_snapshot()
+        model_label = short_model_label(
+            str(self._state.get("provider_name", "") or ""),
+            str(self._state.get("model", "") or ""),
         )
-
-        right_text = Text.from_markup(
-            "\n"
-            " [bold #ff7b72]Tips for getting started[/bold #ff7b72]\n"
-            " 输入股票代码 (如 [cyan]600519[/cyan]) 开始量化分析。\n"
-            " 输入 [cyan]/help[/cyan] 查看所有支持的交互式命令。\n\n"
-            " [bold #ff7b72]Quick Shortcuts[/bold #ff7b72]\n"
-            " [cyan]Ctrl+N[/cyan] 新会话  ·  [cyan]Ctrl+L[/cyan] 清理屏幕\n"
-            " [cyan]Ctrl+P[/cyan] 命令面板 · [cyan]Ctrl+Q[/cyan] 退出系统\n"
+        brief = welcome_brief_lines(
+            version=ver,
+            position_count=position_count,
+            free_cash=free_cash,
+            model_label=model_label,
         )
-
-        layout_table.add_row(left_text, right_text)
-
-        welcome_panel = Panel(
-            layout_table,
-            title=f"[bold #58a6ff]Wyckoff Station v{ver}[/bold #58a6ff]",
-            title_align="left",
-            border_style="#30363d",
-            padding=(0, 1),
-            expand=True,
+        # 无粗边框 Panel：主区靠缩进与 dim 分层，贴近 cc 工作区语法。
+        log.write(
+            Text.from_markup(
+                "\n".join(
+                    [
+                        f"[bold]{escape(brief[0])}[/bold]",
+                        f"[dim]{escape(brief[1])}[/dim]",
+                        escape(brief[2]),
+                        f"[dim]{escape(brief[3])}[/dim]",
+                        f"[dim]{escape(status_hotkey_legend())}[/dim]",
+                    ]
+                )
+            )
         )
-        log.write(welcome_panel)
         log.write("")
         if not self._provider:
             log.write(Text.from_markup("[yellow]⚠ 未配置模型，请输入 /model add 添加[/yellow]\n"))
@@ -2282,11 +2313,13 @@ class WyckoffTUI(App):
     def _build_status_text(self) -> str:
         from importlib.metadata import version as _ver
 
+        from cli.tui_station import short_model_label, status_hotkey_legend
+
         try:
             ver = _ver("youngcan-wyckoff-analysis")
         except Exception:
             ver = "?"
-        parts = []
+        parts = [f"[dim]{status_hotkey_legend()}[/dim]"]
         active_tasks = self._bg_manager.active_tasks()
         if active_tasks:
             task = active_tasks[0]
@@ -2302,31 +2335,30 @@ class WyckoffTUI(App):
             )
             extra = f" (+{len(active_tasks) - 1})" if len(active_tasks) > 1 else ""
             parts.append(
-                f"[bold cyan]{_SPINNER[self._spinner_idx]} 后台任务: {display_name}{extra} ({stage} · {elapsed}s)[/bold cyan]"
+                f"[bold cyan]{_SPINNER[self._spinner_idx]} 后台: {display_name}{extra} ({stage} · {elapsed}s)[/bold cyan]"
             )
         elif getattr(self, "_spinner_label", ""):
             parts.append(f"[bold cyan]{_SPINNER[self._spinner_idx]} {self._spinner_label}[/bold cyan]")
         elif phase_label := self._conversation.status_label():
             style = "yellow" if phase_label in {"failed", "cancelled", "cancelling"} else "dim"
-            parts.append(f"[{style}]turn:{phase_label}[/{style}]")
+            parts.append(f"[{style}]{phase_label}[/{style}]")
         if queue_depth := len(self._conversation.input_queue):
             parts.append(f"queued:{queue_depth}")
         if steer_depth := len(self._conversation.steering_queue):
             parts.append(f"steer:{steer_depth}")
-        parts.append(f"Wyckoff CLI v{ver}")
-        prov = self._state.get("provider_name", "")
-        model = self._state.get("model", "")
-        if prov and model:
-            parts.append(f"{prov}:{model}")
-        email = self._tools.state.get("email", "") if self._tools else ""
-        parts.append(email or "未登录")
-        parts.append(f"#{self._session_id}")
+        parts.append(f"v{ver}")
+        model_label = short_model_label(
+            str(self._state.get("provider_name", "") or ""),
+            str(self._state.get("model", "") or ""),
+        )
+        if model_label and model_label != "—":
+            parts.append(model_label)
         t = self._session_tokens
         if t["rounds"] > 0:
-            tok_bits = [f"Token: {t['input'] + t['output']:,}"]
+            tok_bits = [f"{t['input'] + t['output']:,}tok"]
             avg = _session_avg_tok_per_s(t)
             if avg is not None:
-                tok_bits.append(f"{avg:g}tok/s")
+                tok_bits.append(f"{avg:g}/s")
             if t.get("cache_reported") and t["input"] > 0:
                 from cli.usage_metrics import cache_hit_rate_pct
 
@@ -2334,7 +2366,24 @@ class WyckoffTUI(App):
                 if hit is not None:
                     tok_bits.append(f"cache {hit}%")
             parts.append(" ".join(tok_bits))
-        return " · ".join(parts)
+        return "  ·  ".join(parts)
+
+    def _welcome_portfolio_snapshot(self) -> tuple[int | None, float | None]:
+        """启动欢迎屏轻量读持仓；失败返回 (None, None)，不阻塞启动。"""
+        try:
+            from agents.portfolio_tools import portfolio
+
+            state = portfolio(mode="view", tool_context=getattr(self._tools, "_tool_context", None))
+            if not isinstance(state, dict) or state.get("error"):
+                return None, None
+            positions = state.get("positions") or []
+            count = len(positions) if isinstance(positions, list) else None
+            cash_raw = state.get("free_cash")
+            cash = float(cash_raw) if cash_raw is not None else None
+            return count, cash
+        except Exception:
+            logger.debug("welcome portfolio snapshot failed", exc_info=True)
+            return None, None
 
     def _update_status(self) -> None:
         self.query_one("#status-bar", StatusBar).update(self._build_status_text())
@@ -2359,12 +2408,20 @@ class WyckoffTUI(App):
             event.set()
 
         def _show() -> None:
+            from cli.tui_station import tool_running_line
+
+            self._start_spinner(tool_running_line(display, pending_confirm=True))
             self.push_screen(ToolConfirmScreen(name, args, display), _on_dismiss)
 
         self.call_from_thread(_show)
         if not event.wait(timeout=120):
-            # 沉默不是否决：超时必须和 deny 区分开，否则模型会告诉用户「你拒绝了」，
-            # 而用户只是没看见弹窗。
+            # 沉默不是否决：超时必须和 deny 区分开；同时关掉残留弹窗避免挡住后续输入。
+            def _close_stale_confirm() -> None:
+                with contextlib.suppress(Exception):
+                    if isinstance(self.screen, ToolConfirmScreen):
+                        self.pop_screen()
+
+            self.call_from_thread(_close_stale_confirm)
             return {"action": "timeout"}
         return result[0] or {"action": "deny"}
 
@@ -2611,12 +2668,16 @@ class WyckoffTUI(App):
         log = self.query_one("#chat-log", ChatLog)
         display = turn_user_text or text
         if echo_user:
+            from cli.tui_station import user_echo_prefix
+
+            prefix = user_echo_prefix()
             lines = display.splitlines()
             if len(lines) > 3:
                 preview = "\n".join(lines[:3]) + f"\n... ({len(lines)} lines total)"
-                log.write(Text.from_markup(f"[bold cyan]❯[/bold cyan] {preview}"))
+                body = preview
             else:
-                log.write(Text.from_markup(f"[bold cyan]❯[/bold cyan] {display}"))
+                body = display
+            log.write(Text.from_markup(f"[dim]{escape(prefix)}[/dim]  {escape(body)}"))
         mem_ctx = ""
         try:
             from cli.memory import build_memory_context
@@ -2633,7 +2694,7 @@ class WyckoffTUI(App):
         if hasattr(self, "_cancel_event") and self._cancel_event is not None:
             self._cancel_event.clear()
         self._ensure_conversation().begin_turn(turn_user_text or text)
-        self._start_spinner("thinking")
+        self._start_spinner("思考中")
         self._run_agent()
 
     def _send_system_notification(self, text: str) -> None:
@@ -3780,7 +3841,7 @@ class WyckoffTUI(App):
         if value is None:
             log.write(Text.from_markup("[dim]已取消[/dim]"))
             self._input_mode = _InputState.NONE
-            inp.placeholder = "问我关于股票的任何问题... (/help 查看命令)"
+            inp.placeholder = "代码 · 指令 · /help"
             return
 
         if callback_id == "model_switch":
@@ -3860,7 +3921,7 @@ class WyckoffTUI(App):
 
     def _reset_input_prompt(self, inp: Input) -> None:
         self._input_mode = _InputState.NONE
-        inp.placeholder = "问我关于股票的任何问题... (/help 查看命令)"
+        inp.placeholder = "代码 · 指令 · /help"
 
     def _cancel_interactive_input(self, log, inp: Input) -> None:
         log.write(Text.from_markup("[dim]已取消[/dim]"))
@@ -4124,7 +4185,7 @@ class WyckoffTUI(App):
             self._input_mode = _InputState.SCHED_ACTION
         elif mode == _InputState.SCHED_ACTION:
             self._input_mode = _InputState.NONE
-            inp.placeholder = "问我关于股票的任何问题... (/help 查看命令)"
+            inp.placeholder = "代码 · 指令 · /help"
             self._finish_schedule_add(text, log)
 
     def _schedule_add_start(self, log) -> None:
@@ -4759,9 +4820,14 @@ class WyckoffTUI(App):
         elif event_type == "stage_done":
             ui.spinner_stop()
         elif event_type == "tool_start":
+            from cli.tui_station import tool_running_line
+
             _flush_and_clear_stream(self, ui, stream)
             display = self._tools.display_name(event["name"]) if self._tools else event["name"]
-            ui.spinner_start(display)
+            running = tool_running_line(display)
+            ui.write(Text.from_markup(f"  [dim]{escape(running)}[/dim]"))
+            ui.scroll()
+            ui.spinner_start(running)
         elif event_type in {"tool_result", "tool_error"}:
             ui.spinner_stop()
             state.executed_tool_summaries.append(_display_tool_result_event(event, self._tools, ui.write, ui.scroll))
@@ -4804,9 +4870,15 @@ class WyckoffTUI(App):
     def _handle_thinking_agent_event(self, event, state, ui) -> None:
         ui.spinner_stop()
         thinking_text = event.get("text", "")
-        if round_number := event.get("round"):
+        round_number = event.get("round")
+        if round_number:
             state.round_thinking[int(round_number)] = thinking_text
+        # 每个 round 只刷一行预览，避免 delta 把聊天区刷成思考瀑布。
+        key = int(round_number) if round_number else 0
+        if key in state.thinking_preview_rounds:
+            return
         if preview := _build_thinking_preview(thinking_text):
+            state.thinking_preview_rounds.add(key)
             ui.write(preview)
 
     def _handle_loop_control_event(self, event_type, event, stream, ui) -> None:
@@ -5202,7 +5274,9 @@ class WyckoffTUI(App):
                 continue
 
             if role == "user":
-                log.write(Text.from_markup(f"[bold cyan]❯ {escape(content)}[/bold cyan]"))
+                from cli.tui_station import user_echo_prefix
+
+                log.write(Text.from_markup(f"[dim]{escape(user_echo_prefix())}[/dim]  {escape(content)}"))
 
             elif role == "assistant":
                 tc = row.get("tool_calls", "")

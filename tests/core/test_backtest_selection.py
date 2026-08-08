@@ -461,7 +461,7 @@ def test_tradeable_l4_candidate_board_prioritizes_confirmed_score_and_caps_launc
         leader_radar_symbols=[],
         leader_radar_rows=[],
         candidate_entries=[
-            {"code": "000001", "track": "accumulation", "entry_type": "spring", "score": 100.0},
+            {"code": "000001", "track": "accumulation", "entry_type": "compression", "score": 100.0},
             {"code": "000002", "track": "future_leader", "entry_type": "launchpad", "score": 80.0},
         ],
     )
@@ -492,7 +492,7 @@ def test_tradeable_l4_candidate_board_excludes_unconfirmed_launchpad_in_caution(
         leader_radar_symbols=[],
         leader_radar_rows=[],
         candidate_entries=[
-            {"code": "000001", "track": "accumulation", "entry_type": "spring", "score": 75.0},
+            {"code": "000001", "track": "accumulation", "entry_type": "compression", "score": 75.0},
             {"code": "000002", "track": "future_leader", "entry_type": "launchpad", "score": 90.0},
         ],
     )
@@ -553,7 +553,7 @@ def test_tradeable_l4_candidate_board_keeps_best_duplicate_score_and_track() -> 
         leader_radar_rows=[],
         candidate_entries=[
             {"code": "000001", "track": "future_leader", "entry_type": "launchpad", "score": 80.0},
-            {"code": "000001", "track": "accumulation", "entry_type": "spring", "score": 100.0},
+            {"code": "000001", "track": "accumulation", "entry_type": "compression", "score": 100.0},
         ],
     )
 
@@ -585,7 +585,7 @@ def test_tradeable_l4_candidate_board_ranks_by_best_duplicate_entry() -> None:
         leader_radar_rows=[],
         candidate_entries=[
             {"code": "000001", "track": "future_leader", "entry_type": "launchpad", "score": 80.0},
-            {"code": "000001", "track": "accumulation", "entry_type": "spring", "score": 100.0},
+            {"code": "000001", "track": "accumulation", "entry_type": "compression", "score": 100.0},
             {"code": "000002", "track": "future_leader", "entry_type": "tight_base", "score": 90.0},
         ],
     )
@@ -679,7 +679,7 @@ def test_tradeable_l4_candidate_board_accepts_accum_track_alias() -> None:
         leader_radar_symbols=[],
         leader_radar_rows=[],
         candidate_entries=[
-            {"code": "000001", "track": "Accum", "entry_type": "spring", "score": 100.0},
+            {"code": "000001", "track": "Accum", "entry_type": "compression", "score": 100.0},
         ],
     )
 
@@ -710,7 +710,7 @@ def test_tradeable_l4_candidate_board_infers_accum_track_from_entry_type() -> No
         leader_radar_symbols=[],
         leader_radar_rows=[],
         candidate_entries=[
-            {"code": "000001", "entry_type": "spring", "score": 100.0},
+            {"code": "000001", "entry_type": "compression", "score": 100.0},
         ],
     )
 

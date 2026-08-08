@@ -884,3 +884,60 @@ def test_signal_report_fields_fallback_empty_without_track_or_source():
     fields = signal_report_fields("000001", {}, "", "crash", 0.0)
 
     assert fields["primary_signal"] == ""
+
+
+def test_loss_guard_demotes_pure_spring_to_observe_only():
+    """单 Spring 不足以支撑买入：三周期回测均为负，是唯一跨周期一致为负的信号。
+
+    run 31237549718：696 条 spring 成交，均收 -3.93%／胜率 22.4%，对照非 spring
+    -0.24%／33.4%，合并 Welch t=-6.70；bear_2022 t=-4.82、bull_2020 t=-6.57 显著。
+    """
+    kept, trend_kept, accum_kept, dropped = apply_loss_guard(
+        ["000001"],
+        [],
+        ["000001"],
+        regime="NEUTRAL",
+        code_to_trigger_keys={"000001": ["spring"]},
+        code_to_total_score={"000001": 95.0},
+        channel_map={},
+        df_map={},
+    )
+
+    assert kept == []
+    assert trend_kept == []
+    assert accum_kept == []
+    assert dropped == {"单Spring仅观察": 1}
+
+
+def test_loss_guard_keeps_spring_when_confirmed_by_second_signal():
+    """Spring 与其他形态共振时不受"仅观察"限制。"""
+    kept, _trend_kept, _accum_kept, dropped = apply_loss_guard(
+        ["000001"],
+        [],
+        ["000001"],
+        regime="NEUTRAL",
+        code_to_trigger_keys={"000001": ["spring", "evr"]},
+        code_to_total_score={"000001": 8.0},
+        channel_map={},
+        df_map={},
+    )
+
+    assert kept == ["000001"]
+    assert dropped == {}
+
+
+def test_loss_guard_spring_exempt_for_mainline():
+    kept, _t, _a, dropped = apply_loss_guard(
+        ["000001"],
+        [],
+        ["000001"],
+        regime="NEUTRAL",
+        code_to_trigger_keys={"000001": ["spring"]},
+        code_to_total_score={"000001": 95.0},
+        channel_map={},
+        df_map={},
+        mainline_codes=["000001"],
+    )
+
+    assert kept == ["000001"]
+    assert dropped == {}

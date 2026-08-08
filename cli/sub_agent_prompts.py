@@ -62,8 +62,10 @@ ANALYSIS_AGENT_PROMPT = (
 - 主线标签不能覆盖量价破位、过热、二次确认或市场闸门
 - 每只股票给出明确的健康判定
 - 中文输出，用 Markdown 格式
+- 持仓体检：禁止输出宽 Markdown 表（多列表格）；工具结果区已展示结构化卡，你只需写总览结论 + 明日动作清单，逐只点评每只最多 1 句
 """
 )
+
 
 TRADING_AGENT_PROMPT = (
     _PLAN_PREFIX

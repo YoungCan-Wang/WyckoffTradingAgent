@@ -81,7 +81,18 @@ class TestDiagnoseOneStock:
         assert result.health in ("🟡警戒", "🔴危险")
         assert len(result.health_reasons) > 0
 
-    def test_take_profit_target_reached(self):
+    def test_take_profit_disabled_by_default(self):
+        """固定止盈默认关闭：跨周期回测显示 +18% 止盈在 12 个配对中 11 个损害夏普。"""
+        df = make_ohlcv(n=250, trend="up", base=10.0, volatility=0.008, seed=1)
+        latest = float(df["close"].iloc[-1])
+        result = diagnose_one_stock("600519", "贵州茅台", cost=latest / 1.20, df=df)
+
+        assert result.take_profit_status == "未启用"
+        assert result.take_profit_18pct == 0.0
+        assert not any("TP+" in r for r in result.health_reasons)
+
+    def test_take_profit_target_reached(self, monkeypatch):
+        monkeypatch.setenv("HOLDING_TAKE_PROFIT_PCT", "18")
         df = make_ohlcv(n=250, trend="up", base=10.0, volatility=0.008, seed=1)
         latest = float(df["close"].iloc[-1])
         cost = latest / 1.20  # pnl comfortably clears the +18% take-profit target
@@ -91,7 +102,8 @@ class TestDiagnoseOneStock:
         assert result.take_profit_18pct == cost * 1.18
         assert any("TP+18%" in r for r in result.health_reasons)
 
-    def test_take_profit_not_reached_for_small_gain(self):
+    def test_take_profit_not_reached_for_small_gain(self, monkeypatch):
+        monkeypatch.setenv("HOLDING_TAKE_PROFIT_PCT", "18")
         df = make_ohlcv(n=250, trend="up", base=10.0, volatility=0.008, seed=1)
         latest = float(df["close"].iloc[-1])
         cost = latest / 1.02  # small gain, well below +18% target

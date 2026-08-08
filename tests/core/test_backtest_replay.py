@@ -625,7 +625,7 @@ def test_candidate_entry_duplicate_metadata_stays_consistent_in_replay(monkeypat
             triggers={},
             candidate_entries=[
                 {"code": "000001", "track": "future_leader", "entry_type": "launchpad", "score": 80.0},
-                {"code": "000001", "track": "accumulation", "entry_type": "spring", "score": 100.0},
+                {"code": "000001", "track": "accumulation", "entry_type": "compression", "score": 100.0},
             ],
         )
 
@@ -647,7 +647,7 @@ def test_candidate_entry_duplicate_metadata_stays_consistent_in_replay(monkeypat
 
     assert replay.records[0].score == 100.0
     assert replay.records[0].track == "Accum"
-    assert replay.records[0].trigger == "spring"
+    assert replay.records[0].trigger == "compression"
 
 
 def test_low_score_confirmed_signal_does_not_downgrade_funnel_candidate(monkeypatch) -> None:
@@ -670,7 +670,7 @@ def test_low_score_confirmed_signal_does_not_downgrade_funnel_candidate(monkeypa
         lambda **_kwargs: _result()._replace(
             triggers={},
             candidate_entries=[
-                {"code": "000001", "track": "accumulation", "entry_type": "spring", "score": 100.0},
+                {"code": "000001", "track": "accumulation", "entry_type": "compression", "score": 100.0},
             ],
         ),
     )
@@ -692,7 +692,7 @@ def test_low_score_confirmed_signal_does_not_downgrade_funnel_candidate(monkeypa
 
     assert replay.records[0].score == 100.0
     assert replay.records[0].track == "Accum"
-    assert replay.records[0].trigger == "spring"
+    assert replay.records[0].trigger == "compression"
     assert replay.records[0].signal_confirmed is True
 
 

@@ -23,6 +23,7 @@ def candidate_policy_config_from_env() -> CandidatePolicyConfig:
         pure_trendpb_min_score=_env_float("FUNNEL_LOSS_GUARD_PURE_TRENDPB_MIN_SCORE", 14.0),
         pure_sos_min_score=_env_float("FUNNEL_LOSS_GUARD_PURE_SOS_MIN_SCORE", 6.0),
         pure_sos_observe_only=_env_bool("FUNNEL_LOSS_GUARD_PURE_SOS_OBSERVE_ONLY", True),
+        pure_spring_observe_only=_env_bool("FUNNEL_LOSS_GUARD_PURE_SPRING_OBSERVE_ONLY", True),
         pure_evr_observe_only=_env_bool("FUNNEL_LOSS_GUARD_PURE_EVR_OBSERVE_ONLY", True),
         pure_evr_min_score_default=evr_min_score if evr_min_score is not None else 3.0,
         pure_evr_min_score_hot=evr_min_score if evr_min_score is not None else 5.0,

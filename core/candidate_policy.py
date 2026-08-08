@@ -45,6 +45,7 @@ class CandidatePolicyConfig:
     pure_trendpb_min_score: float = 10.0
     pure_sos_min_score: float = 6.0
     pure_sos_observe_only: bool = True
+    pure_spring_observe_only: bool = True
     pure_evr_observe_only: bool = True
     pure_evr_min_score_default: float = 3.0
     pure_evr_min_score_hot: float = 5.0
@@ -244,6 +245,13 @@ def loss_guard_reason(
     if stop_reason:
         return stop_reason
     is_mainline = bool(mainline_codes and code in mainline_codes)
+    if keys == {"spring"} and policy.pure_spring_observe_only and not is_mainline:
+        # 跨周期回测（2026-08-08，run 31237549718：bear_2022 / bull_2020 /
+        # recent_6m 三周期、696 条 spring 成交）：spring 均收 -3.93%、胜率 22.4%，
+        # 对照非 spring -0.24%／33.4%，Welch t=-6.70（合并）；分周期 bear_2022
+        # t=-4.82、bull_2020 t=-6.57 均显著。三个周期方向一致为负，是唯一在全部
+        # 周期都一致为负的信号，与市场环境无关。
+        return "单Spring仅观察"
     if "lps" in keys and not (keys & {"sos", "evr", "spring"}):
         return _pure_lps_reason(regime_norm, trigger_score, policy, is_mainline)
     if keys == {"trend_pullback"}:
