@@ -659,7 +659,10 @@ def test_low_score_confirmed_signal_does_not_downgrade_funnel_candidate(monkeypa
             self.written = True
 
         def tick(self, *_args, **_kwargs):
-            return [{"code": "000001", "score": 20.0, "track": "Trend", "signal_type": "evr"}]
+            # 单 EVR 会被 pure_evr_observe_only 正确拦掉；本用例要测的是
+            # "低分 confirmed 不得覆盖漏斗候选元数据"，故改用能通过护栏的
+            # compression，以隔离该行为。
+            return [{"code": "000001", "score": 20.0, "track": "Trend", "signal_type": "compression"}]
 
     monkeypatch.setattr("core.backtest_replay.calc_market_breadth", lambda _df_map: {})
     monkeypatch.setattr(
@@ -747,3 +750,49 @@ def test_watch_score_map_degrades_to_empty_on_failure(monkeypatch):
     )
 
     assert replay_mod._watch_score_map(ctx, {}) == {}
+
+
+def test_confirmed_codes_pass_through_loss_guard(monkeypatch) -> None:
+    """跨日确认信号必须补跑损失护栏，与实盘 apply_loss_guard 对齐。
+
+    pending_mode="only" 时 _merge_codes 原本直接返回未经护栏的 confirmed，
+    导致「单 EVR/单 SOS/单 Spring 仅观察」「结构止损上限」等护栏在回测中全部
+    失效——护栏类改动因此无法被验证，且回测系统性高估这些标的的入选量。
+    """
+
+    class Pending:
+        def write(self, *_args, **_kwargs):
+            return None
+
+        def tick(self, *_args, **_kwargs):
+            # 单 EVR：pure_evr_observe_only 默认 True，应被护栏拦掉
+            return [{"code": "000001", "score": 20.0, "track": "Trend", "signal_type": "evr"}]
+
+    monkeypatch.setattr("core.backtest_replay.calc_market_breadth", lambda _df_map: {})
+    monkeypatch.setattr(
+        "core.backtest_replay.analyze_benchmark_and_tune_cfg", lambda *_args, **_kwargs: {"regime": "NEUTRAL"}
+    )
+    monkeypatch.setattr(
+        "core.backtest_replay.run_funnel", lambda **_kwargs: _result()._replace(triggers={}, candidate_entries=[])
+    )
+    monkeypatch.setattr("core.backtest_replay.PendingPool", Pending)
+
+    cfg = FunnelConfig(trading_days=3)
+    cfg.ma_long = 2
+    kwargs = dict(
+        all_df_map={"000001": _hist()},
+        bench_df=_hist(),
+        trade_dates=[date(2026, 1, day) for day in range(1, 6)],
+        name_map={"000001": "平安银行"},
+        market_cap_map={},
+        sector_map={},
+        base_cfg=cfg,
+    )
+
+    guarded = replay_backtest(config=replace(_config(), pending_mode="only"), **kwargs)
+    assert guarded.records == [], "单 EVR 应被护栏拦掉，不得成交"
+
+    legacy = replay_backtest(
+        config=replace(_config(), pending_mode="only", enforce_confirmed_loss_guard=False), **kwargs
+    )
+    assert legacy.records, "关闭开关应能复现旧口径（confirmed 绕过护栏）"

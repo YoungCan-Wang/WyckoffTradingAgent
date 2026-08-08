@@ -32,7 +32,7 @@ from core.backtest_execution import (
     market_of_board,
     resolve_trade_exit,
 )
-from core.backtest_selection import combine_trigger_scores, select_ai_input_codes
+from core.backtest_selection import candidate_entry_loss_guard, combine_trigger_scores, select_ai_input_codes
 from core.candidate_policy import CandidatePolicyConfig, candidate_score_value
 from core.candidate_ranker import rank_l3_candidates
 from core.candidate_tracks import candidate_entry_track
@@ -92,6 +92,9 @@ class BacktestReplayConfig:
     mainline_config: MainlineEngineConfig | None = None
     signal_weight_map: dict[str, float] = field(default_factory=dict)
     signal_weight_meta: dict[str, object] = field(default_factory=dict)
+    # 对跨日确认信号补跑损失护栏，与实盘 apply_loss_guard 对齐。
+    # 默认开启；设 False 可复现历史上"confirmed 绕过护栏"的旧口径做对照。
+    enforce_confirmed_loss_guard: bool = True
     market_breadth_calculator: MarketBreadthCalculator | None = None
     market_regime_analyzer: MarketRegimeAnalyzer | None = None
     a_share_entry_research: AShareEntryResearchPolicy = field(default_factory=AShareEntryResearchPolicy)
@@ -507,6 +510,11 @@ def _select_ranked_codes(
     config: BacktestReplayConfig,
 ) -> tuple[_RankedSelection | None, int]:
     confirmed = _confirmed_signals(ctx, pending_pool, sector_map, config.a_share_entry_research)
+    if config.enforce_confirmed_loss_guard:
+        guarded_codes, guard_dropped = _guarded_confirmed_codes(confirmed, ctx, config)
+        if guard_dropped:
+            logger.debug("confirmed 护栏拦截 %d 只: %s", len(guard_dropped), guard_dropped)
+        confirmed = replace(confirmed, codes=guarded_codes)
     selected_codes, score_map, track_map = select_ai_input_codes(
         result=ctx.result,
         day_df_map=ctx.day_df_map,
@@ -607,6 +615,43 @@ def _merge_confirmed_metadata(
         if code not in score_map or score > candidate_score_value(score_map.get(code)):
             score_map[code] = score
             track_map[code] = confirmed.track_map.get(code, track_map.get(code, ""))
+
+
+def _guarded_confirmed_codes(
+    confirmed: _ConfirmedSignals,
+    ctx: _DayContext,
+    config: BacktestReplayConfig,
+) -> tuple[list[str], dict[str, str]]:
+    """对跨日确认信号补跑损失护栏。
+
+    实盘 (workflows/wyckoff_funnel.py) 对漏斗输出统一调用 apply_loss_guard，
+    但回测的 confirmed 路径此前直接绕过 candidate_policy：pending_mode="only"
+    时 _merge_codes 返回未经护栏的 confirmed，导致「单 SOS/单 Spring 仅观察」
+    「结构止损距离上限」等护栏在回测中全部失效——护栏类改动因此无法被验证，
+    且回测会系统性高估这些标的的入选量。
+
+    确认状态由信号状态机提供，不代表通过护栏：两者约束的是不同维度
+    （前者是"结构是否跨日存活"，后者是"该结构值不值得买"）。
+    """
+    if not confirmed.codes:
+        return [], {}
+    kept: list[str] = []
+    dropped: dict[str, str] = {}
+    for code in confirmed.codes:
+        item = {"code": code, "entry_type": confirmed.trigger_map.get(code, ""), "score": confirmed.score_map.get(code)}
+        reason = candidate_entry_loss_guard(
+            item,
+            result=ctx.result,
+            day_df_map=ctx.day_df_map,
+            regime=ctx.regime,
+            candidate_policy=config.candidate_policy,
+            signal_weight_map=config.signal_weight_map,
+        )
+        if reason:
+            dropped[code] = reason
+        else:
+            kept.append(code)
+    return kept, dropped
 
 
 def _merge_codes(selected: list[str], confirmed: list[str], pending_mode: str, merge_order: str) -> list[str]:
