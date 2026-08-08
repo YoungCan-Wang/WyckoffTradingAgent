@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections import Counter
 from datetime import datetime
 from typing import Any
 
@@ -348,6 +349,7 @@ def mark_step3_recommendations(
     *,
     dry_run: bool,
     log_fn,
+    step3_verdicts: dict[str, str] | None = None,
 ) -> None:
     if dry_run:
         log_fn("预演模式: 跳过推荐记录AI标记", logs_path)
@@ -359,10 +361,13 @@ def mark_step3_recommendations(
             recommend_date=recommend_trade_date_int,
             ai_codes=step3_springboard_codes,
             springboard_updates=step3_springboard_updates,
+            step3_verdicts=step3_verdicts,
         )
+        verdict_counts = Counter((step3_verdicts or {}).values())
         log_fn(
             "推荐记录AI标记: "
-            f"ok={ai_mark_ok}, date={recommend_trade_date_int}, ai_count={len(step3_springboard_codes)}",
+            f"ok={ai_mark_ok}, date={recommend_trade_date_int}, ai_count={len(step3_springboard_codes)}, "
+            f"verdicts={dict(verdict_counts) or '无'}",
             logs_path,
         )
     except Exception as e:

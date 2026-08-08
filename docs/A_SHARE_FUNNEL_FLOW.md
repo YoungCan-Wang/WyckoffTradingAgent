@@ -177,12 +177,13 @@ flowchart TD
         R4C["Mainline 轨：主线买点候选"]
         R5{"FUNNEL_AI_SELECTION_MODE"}
         R5 -->|all_formal_l4| R6["正式 L4 全量送 AI<br/>不含 L3 补位"]
-        R5 -->|quota 当前默认| R7["按 regime 静态配额<br/>FUNNEL_AI_*_TREND/ACCUM"]
+        R5 -->|tradeable_l4 生产默认| R7["可交易结构进入统一质量池<br/>总数≤8 / 单行业≤2"]
+        R5 -->|quota 研究兼容| R7A["按 regime Trend / Accum 配额"]
         R8{"FUNNEL_DYNAMIC_POLICY"}
-        R8 -->|off| R9["静态配额"]
-        R8 -->|shadow| R10["静态出结果 + shadow 差异写库"]
-        R8 -->|on| R11["读 signal_health/registry 动态配额"]
-        R12["候选车道 / 主线候选<br/>按配额加权送审"]
+        R8 -->|off| R9["不计算动态策略对照"]
+        R8 -->|shadow 生产默认| R10["正式质量池不变<br/>动态差异写库"]
+        R8 -->|on 实验| R11["读取 signal_health / registry<br/>参与初始分配"]
+        R12["候选车道 / 主线候选<br/>进入统一质量池竞争"]
         R15["统一损失护栏<br/>纯SOS ABC=3/3<br/>单EVR/LPS/TrendPB默认观察"]
         R14["Shadow 观察<br/>只验证不入 AI"]
         R16{"数据质量门禁<br/>OHLCV/市值≥95%<br/>财务≥90%（请求时）"}
@@ -221,7 +222,7 @@ ETF 行情重复进入全市场统计；ETF 候选仍可通过 L3 共振进入�
 |------|----------|--------------|
 | 传统 Wyckoff | L1/L2/L3 后出现 L4 信号 | 不直接买，先进入 AI/二次确认 |
 | 主线候选 | `mainline_score` 达标，且 timing gate 过关 | 不直接买，仍需 AI/跨日确认 |
-| 候选车道 | 趋势回踩、平台突破、强承接等结构接近 | 默认观察，质量足够才按配额送审 |
+| 候选车道 | 趋势回踩、平台突破、强承接等结构接近 | 默认观察，形成可交易结构后进入统一质量池 |
 | Shadow 旁路 | L2 未过但有复盘价值，或外部观察名单 | 不进入正式 AI，除非显式打开开关 |
 
 报告把状态拆成 `DETECTED → SURVIVED → VALIDATED → OMS_APPROVED`：Spring/LPS/SOS/EVR 与 A/B/C 只表示当日结构命中；`SURVIVED` 只表示跨日未失效；守住信号位并出现高收、缩量或转强需求后才记 `VALIDATED`（库内兼容值 `confirmed`）；最后仍需 OMS 核准。四层不能互相替代。
@@ -505,11 +506,11 @@ efinance
 | `FUNNEL_AI_SELECTION_MODE` | `tradeable_l4` | 只把可交易 L4 结构送入 Step3，减少裸 SOS/EVR 追高噪声 |
 | `FUNNEL_AI_TOTAL_CAP` | `8` | 质量达标候选的最终统一硬上限；主线、战略和主题补位共同竞争 |
 | `FUNNEL_AI_MAX_PER_SECTOR` | `2` | 最终送审清单的单行业上限，避免同一板块占满上下文 |
-| `FUNNEL_DYNAMIC_POLICY` | `shadow` | 主流程用静态配额，同时记录动态策略差异 |
+| `FUNNEL_DYNAMIC_POLICY` | `shadow` | 正式输出仍用 `tradeable_l4` 统一质量池，同时记录动态配额与信号权重的对照差异 |
 | `FUNNEL_DAILY_BREADTH_REPAIR_PCT` / `FUNNEL_DAILY_BREADTH_WEAK_PCT` | `60` / `35` | 修复候选日上涨家数占比阈值 / 强结构转弱阈值 |
 | `FUNNEL_PANIC_REPAIR_CONFIRM_MAIN_PCT` / `FUNNEL_PANIC_REPAIR_CONFIRM_BREADTH_PCT` | `0` / `50` | 修复候选次日的指数价格与上涨家数占比确认阈值 |
-| `FUNNEL_AI_NEUTRAL_TREND` / `FUNNEL_AI_NEUTRAL_ACCUM` | `5` / `1` | 中性市主线/趋势主导，Accum 仅残量 |
-| `FUNNEL_AI_RISK_ON_TREND` / `FUNNEL_AI_RISK_ON_ACCUM` | `5` / `1` | 过热市 AI/shadow 研究配额；正式推荐与新开仓由市场闸门禁止 |
+| `FUNNEL_AI_NEUTRAL_TREND` / `FUNNEL_AI_NEUTRAL_ACCUM` | `5` / `1` | dynamic shadow 与 quota 兼容模式的研究基线；不截断生产质量池 |
+| `FUNNEL_AI_RISK_ON_TREND` / `FUNNEL_AI_RISK_ON_ACCUM` | `5` / `1` | AI/shadow 研究基线；正式推荐与新开仓由市场闸门禁止 |
 | `FUNNEL_EXTERNAL_SEED_SYMBOLS` / `FUNNEL_EXTRA_SYMBOLS` | 空 | 临时追加外部观察名单；存在时自动启用 external seed shadow |
 | `STEP4_BUY_HARD_STOP_PCT` | `12.0` | 新开仓灾难止损地板；ATR/结构/时间管理优先 |
 | `FUNNEL_MAX_STRUCTURE_STOP_PCT` | `12.0` | 漏斗送审前的结构止损距离上限；与 OMS 灾难地板独立配置 |

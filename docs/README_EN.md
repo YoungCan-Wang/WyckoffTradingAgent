@@ -10,7 +10,7 @@
 [![Web App](https://img.shields.io/badge/Web-React%20App-0ea5e9.svg)](https://wyckoff-analysis.pages.dev/)
 [![Homepage](https://img.shields.io/badge/homepage-Wyckoff%20Homepage-0ea5e9.svg)](https://youngcan-wang.github.io/wyckoff-homepage/)
 
-[中文](../README.md) | [日本語](README_JA.md) | [Español](README_ES.md) | [한국어](README_KO.md) | [Architecture](ARCHITECTURE.md)
+[中文](../README.md) | [Architecture](ARCHITECTURE.md)
 
 </div>
 
@@ -221,7 +221,7 @@ Tool call order and frequency are decided by the LLM at runtime — no pre-chore
 
 | Layer | Name | What It Does |
 |---|---|---|
-| L1 | Garbage Filter | Remove ST / BSE / STAR Market; market cap >= 3.5 B CNY; avg daily turnover >= 50 M CNY |
+| L1 | Garbage Filter | Remove ST; include Main Board, ChiNext, STAR Market, and BSE by default. Price >= CNY 2, market cap normally >= CNY 2.5 B, and 20-day average turnover >= CNY 40 M; CNY 1-2.5 B names require average turnover >= CNY 80 M |
 | L2 | Eight-Channel Strength | Rally / Ignition / Stealth / Accumulation / Dry Volume / Support / Trend Continuation / Breakout Acceleration |
 | Mainline | Theme Engine | Dynamic concept heat, theme radar, financial quality, and timing gates identify tradable mainline candidates |
 | L3 | Sector & Concept Resonance | Filter weak sectors while allowing strong individual stocks and verified themes to bypass fixed Top-N sector limits |
@@ -229,7 +229,7 @@ Tool call order and frequency are decided by the LLM at runtime — no pre-chore
 | L5 | AI + OMS Verdict | LLM review, cross-day signal confirmation, and OMS risk gates before action |
 
 **How to trade:** Daily funnel = candidates + market gate; only **confirmed** candidates whose next-day open falls inside the single OMS entry range may be bought.
-NEUTRAL is the main battleground (mainline-first quotas); **RISK_ON blocks new buys**. See [OPERATOR_PLAYBOOK.md](OPERATOR_PLAYBOOK.md).
+NEUTRAL is the main battleground. Tradable structures compete in a quality-first pool capped at 8 names and 2 per sector; **RISK_ON blocks new buys**. See [OPERATOR_PLAYBOOK.md](OPERATOR_PLAYBOOK.md).
 
 ## Daily Automation
 

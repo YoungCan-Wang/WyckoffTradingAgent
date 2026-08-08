@@ -10,7 +10,7 @@ from workflows.backtest_notification import BacktestNotifyRequest, run_backtest_
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Aggregate US backtest summary artifacts and notify Feishu.")
     parser.add_argument("--artifacts-dir", default="artifacts")
-    parser.add_argument("--output", default="docs/BACKTEST_US_REPORT.md")
+    parser.add_argument("--output", default="artifacts/BACKTEST_US_REPORT.md")
     parser.add_argument("--run-url", default="")
     parser.add_argument("--top-n", default="2")
     return parser.parse_args()

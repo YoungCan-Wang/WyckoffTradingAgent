@@ -17,7 +17,7 @@ Streamlit MVP 的目标是快速验证“读盘室 + 单股诊断 + 选股复盘
 | 沙里淘金 | `pages/WyckoffScreeners.py` | 漏斗选股、候选池查看 | CF Pages `/chat`、CLI `wyckoff screen` |
 | 持仓管理 | `pages/Portfolio.py` | 持仓录入、收益查看、诊断 | CF Pages `/portfolio`、CLI `wyckoff portfolio` |
 | 形态复盘 | `pages/RecommendationTracking.py` | 推荐记录、后续涨跌跟踪 | CF Pages `/tracking`、CLI `wyckoff recommend` |
-| 尾盘记录 | `pages/TailBuyHistory.py` | 尾盘策略执行历史 | CF Pages `/tail-buy`、Dashboard |
+| 尾盘记录 | `pages/TailBuyHistory.py` | 尾盘策略执行历史 | Dashboard 任务记录；无独立 CF Pages 路由 |
 | 数据导出 | `pages/Export.py`、`pages/CustomExport.py` | 历史行情 CSV、批量导出 | CF Pages `/export` 保留单票导出；批量导出下线 |
 | 设置 | `pages/Settings.py` | API Key、数据源、通知配置 | CF Pages `/settings`、CLI `wyckoff config` |
 

@@ -21,6 +21,15 @@ OPERATION_POOL_KEYS = (
     "springboard_pool",
 )
 INVALIDATED_POOL_KEYS = ("\u903b\u8f91\u7834\u4ea7", "invalidated")
+BUILDING_POOL_KEYS = ("\u50a8\u5907\u8425\u5730", "building cause")
+SPRINGBOARD_POOL_KEYS = ("\u8d77\u8df3\u677f", "springboard")
+
+# LLM \u4e09\u5206\u7c7b\u5224\u5b9a\uff0c\u7528\u4e8e\u4e8b\u540e\u8bc4\u4f30 LLM \u662f\u5426\u771f\u7684\u6709\u533a\u5206\u5ea6\u3002
+# \u53ea\u6709\u628a\u300c\u88ab\u5426\u51b3\u7684\u300d\u4e5f\u8bb0\u5f55\u4e0b\u6765\uff0c\u624d\u80fd\u56de\u7b54"\u62e6\u5bf9\u4e86\u5417"\u2014\u2014\u6b64\u524d\u4ec5\u6807\u8bb0\u653e\u884c\u7684
+# springboard \u7801\uff0c\u88ab LLM \u5426\u51b3\u7684\u5019\u9009\u4e0d\u8fdb\u8ddf\u8e2a\u8868\uff0c\u5bfc\u81f4 LLM \u4ef7\u503c\u65e0\u6cd5\u8bc4\u4f30\u3002
+STEP3_VERDICT_INVALIDATED = "invalidated"
+STEP3_VERDICT_BUILDING = "building"
+STEP3_VERDICT_SPRINGBOARD = "springboard"
 
 
 def extract_invalidated_codes(
@@ -41,6 +50,37 @@ def extract_invalidated_codes(
     return codes
 
 
+def extract_step3_verdicts(
+    report: str,
+    allowed_codes: list[str] | set[str] | tuple[str, ...],
+) -> dict[str, str]:
+    """把研报的三个分组解析成 code -> 判定，用于事后评估 LLM 的区分度。
+
+    优先级：逻辑破产 > 起跳板 > 储备营地。同一代码若出现在多个分组（模型偶发
+    自相矛盾），按最保守的判定归类，避免把被否决的标的记成放行。
+
+    未在任何分组出现的候选不会出现在返回值里——那既可能是模型漏写，也可能是
+    研报生成失败，两者都不应被当作"通过"。
+    """
+    allowed_set = {str(code).strip() for code in allowed_codes if re.fullmatch(r"\d{6}", str(code).strip())}
+    if not allowed_set:
+        return {}
+    buckets = (
+        (STEP3_VERDICT_BUILDING, ("储备营地", "Building Cause"), BUILDING_POOL_KEYS),
+        (STEP3_VERDICT_SPRINGBOARD, ("起跳板", "Springboard"), SPRINGBOARD_POOL_KEYS),
+        (STEP3_VERDICT_INVALIDATED, ("逻辑破产", "Invalidated"), INVALIDATED_POOL_KEYS),
+    )
+    verdicts: dict[str, str] = {}
+    for verdict, md_tokens, struct_keys in buckets:
+        codes = _extract_markdown_section_codes(report, allowed_set, start_tokens=md_tokens)
+        for code in _extract_structured_section_codes(report, allowed_set, struct_keys):
+            if code not in codes:
+                codes.append(code)
+        for code in codes:
+            verdicts[code] = verdict
+    return verdicts
+
+
 def _extract_markdown_section_codes(
     report: str,
     allowed_codes: set[str],
@@ -48,14 +88,19 @@ def _extract_markdown_section_codes(
     start_tokens: tuple[str, ...],
 ) -> list[str]:
     in_section = False
+    section_level = 0
     codes: list[str] = []
     for raw_line in str(report or "").splitlines():
         line = str(raw_line or "").strip()
         if line.startswith("#"):
+            level = len(line) - len(line.lstrip("#"))
             if any(token.lower() in line.lower() for token in start_tokens):
                 in_section = True
+                section_level = level
                 continue
-            if in_section:
+            # 更深层级的子标题（如储备营地下的「近就绪 / 早期」）不结束当前分组，
+            # 否则子标题里的代码会全部漏掉。只有同级或更浅的标题才切出分组。
+            if in_section and level <= section_level:
                 in_section = False
             continue
         if not in_section:

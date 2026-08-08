@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime
 
 import workflows.daily_job_persistence as daily_persistence
 import workflows.daily_signal_observations as signal_observations
+from tools.report_parser import extract_step3_verdicts
 from workflows.daily_job_common import Step2StageResult, Step3StageResult, log_line, run_with_stdout_tee
 from workflows.daily_job_runtime import DailyJobConfig
 from workflows.step4_pipeline import TZ, is_confirmed_step4_candidate, latest_trade_date_str
@@ -57,8 +59,13 @@ def run_step3_stage(
     t0 = datetime.now(TZ)
     step3_ok, step3_err, report_text = _call_step3_report(run_step3, symbols_info, benchmark_context, cfg)
     springboard_codes, springboard_updates = ([], {})
+    verdicts: dict[str, str] = {}
     if step3_ok and report_text:
         springboard_codes, springboard_updates = parse_step3_springboards(report_text, symbols_info, cfg.logs_path)
+        verdicts = extract_step3_verdicts(
+            report_text,
+            [str(item.get("code", "")).strip() for item in symbols_info or []],
+        )
     elapsed = (datetime.now(TZ) - t0).total_seconds()
     summary_item = {
         "step": "批量研报",
@@ -70,7 +77,8 @@ def run_step3_stage(
     log_line(f"Step3 批量研报: ok={step3_ok}, elapsed={elapsed:.1f}s, err={step3_err}", cfg.logs_path)
     preview_codes = ", ".join(springboard_codes[:8]) if springboard_codes else "无"
     log_line(f"Step3 批量研报: 起跳板代码={len(springboard_codes)} ({preview_codes})", cfg.logs_path)
-    return Step3StageResult(report_text, springboard_codes, springboard_updates, summary_item)
+    log_line(f"Step3 LLM 判定: {dict(Counter(verdicts.values())) or '无'}", cfg.logs_path)
+    return Step3StageResult(report_text, springboard_codes, springboard_updates, summary_item, verdicts)
 
 
 def mark_step3_outputs(
@@ -86,6 +94,7 @@ def mark_step3_outputs(
         cfg.logs_path,
         dry_run=cfg.preview_only,
         log_fn=log_line,
+        step3_verdicts=step3.verdicts,
     )
     if recommend_trade_date_int and recommendation_payload:
         signal_observations.apply_step3_springboard_updates(recommendation_payload, step3.springboard_updates)
