@@ -240,7 +240,7 @@ Daily automations (GitHub Actions plus Codex Automation):
 | Funnel + AI Report + Rebalance | Sun–Thu 17:17 | Fully automated; results pushed to Feishu / Telegram |
 | Holding Diagnosis | Manual trigger (`workflow_dispatch`) | Daily-bar based portfolio health check; RISK_ON/weak regimes block new entries; holding time management |
 | Pre-Market Risk | Mon–Fri 08:20 | Codex Automation dispatches the GitHub workflow; A50 + VIX alert |
-| Strong-Move Review | Mon–Fri 19:25 | Review stocks with today's close return > 7% and previous-session close return < 3% |
+| Strong-Move Review | Mon–Fri 19:25 | Discover >7% / prior <3% movers from two Tushare cross-sections and attribute them against the previous production funnel's compact as-run artifact |
 | Recommendation Reprice | Mon–Fri 23:00 | Sync closing prices |
 | Backtest Grid | 1st & 15th monthly 04:00 | 8 focused parameter combos → aggregated report |
 | DB Maintenance | Tue–Sat 06:20 | Purge stale quotes, orders, signals, market signals, and other rolling-window data |

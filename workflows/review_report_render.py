@@ -39,7 +39,7 @@ def build_report_lines(
     today: date,
     previous_trade_date: date,
     end_trade_date: str,
-    stats: dict[str, int] | None = None,
+    stats: dict[str, Any] | None = None,
 ) -> list[str]:
     summary = " | ".join([f"{key}{value}" for key, value in stage_counter.items()]) or "无"
     lines = [
@@ -48,6 +48,8 @@ def build_report_lines(
         f"**今日收盘涨幅>+7%且前一交易日收盘涨幅<+3%股票数**: {len(rows)}",
     ]
     if stats:
+        if stats.get("context_source"):
+            lines.append(f"**归因数据源**: {stats['context_source']}")
         stats_line = (
             f"**漏斗全链路追踪**: 前一日候选 {stats['candidate']}/{stats['total']} | "
             f"正式推荐 {stats['recommended']}/{stats['total']}"
@@ -70,7 +72,7 @@ def build_report_lines(
     return lines
 
 
-def _execution_scope_line(stats: dict[str, int]) -> str:
+def _execution_scope_line(stats: dict[str, Any]) -> str:
     if stats.get("execution_available", 0) <= 0:
         return ""
     eligible = stats.get("l1_eligible", 0)

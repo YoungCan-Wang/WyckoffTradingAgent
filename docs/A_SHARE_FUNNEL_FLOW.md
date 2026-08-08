@@ -112,6 +112,8 @@ flowchart TD
 
 **推荐价语义**：`recommendation_tracking.initial_price` = 该股票首次 `recommend_date` 的收盘价；同股再次推荐、同日重跑、晚间 reprice/performance 都不得改成新日价。`change_pct` 相对该粘住价；MFE/MAE 仍按该行事件日计算。performance 的 `max_dates` 只限制刷新哪些行，首次推荐日锚点仍按该 code 全量历史计算。存量纠偏入口为 `workflows.recommendation_tracking_reprice.correct_tracking_initial_prices`。
 
+**强势股复盘证据**：生产漏斗在同轮 L1-L4 计算结束后，将逐股阶段、淘汰原因、候选车道、配置摘要和代码版本写入压缩 `review_trace_YYYYMMDD.json.gz`。该文件不含 OHLCV，随现有 Daily Job artifact 上传；19:25 Review 按前一交易日精确匹配成功运行的 trace，因此归因反映当时真实代码与配置，不依赖 Supabase，也不会被后来改动的策略重写历史。
+
 ---
 
 ## 三、Step2 漏斗内部：主线发现 + 多车道详细流程
