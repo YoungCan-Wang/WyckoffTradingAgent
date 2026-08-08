@@ -127,8 +127,19 @@ def is_confirmed_step4_candidate(item: dict) -> bool:
 
 
 def step4_ai_candidate_policy() -> str:
-    policy = os.getenv("STEP4_AI_CANDIDATE_POLICY", "veto_only").strip().lower()
-    return policy if policy in _AI_CANDIDATE_POLICIES else "veto_only"
+    """LLM 研报对买入候选的权限。
+
+    默认 ``shadow``：研报只供人读，不参与拦截。改为 ``veto_only`` 才允许 LLM
+    从已通过规则护栏的候选里否决标的。
+
+    2026-08-08 起默认从 ``veto_only`` 改为 ``shadow``：LLM 输出受模型选型漂移与
+    采样随机性影响，无法回测复现；且 recommendation_tracking 42 天内
+    is_ai_recommended 仅 4 条、rag_vetoed 全为 0，说明该拦截既极少生效也未留下
+    可评估记录。规则护栏（confirmed）始终是真正的硬门槛，关闭否决权不放开任何
+    风险闸门。待否决记录落库并积累样本后再决定是否恢复或彻底移除。
+    """
+    policy = os.getenv("STEP4_AI_CANDIDATE_POLICY", "shadow").strip().lower()
+    return policy if policy in _AI_CANDIDATE_POLICIES else "shadow"
 
 
 def _is_false_like(value: object) -> bool:

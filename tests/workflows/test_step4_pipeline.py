@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from workflows.step4_pipeline import _step4_candidate_meta, is_confirmed_step4_candidate
+from workflows.step4_pipeline import (
+    _step4_candidate_meta,
+    is_confirmed_step4_candidate,
+    step4_ai_candidate_policy,
+)
 
 
 @pytest.mark.parametrize(
@@ -41,7 +45,7 @@ def test_step4_confirmation_accepts_explicit_confirmed_states(item):
 
 
 def test_step4_candidate_meta_veto_only_uses_rules_and_ai_invalidations(monkeypatch):
-    monkeypatch.delenv("STEP4_AI_CANDIDATE_POLICY", raising=False)
+    monkeypatch.setenv("STEP4_AI_CANDIDATE_POLICY", "veto_only")
     symbols_info = [
         {"code": "000001", "confirm_status": "confirmed", "priority_score": 95},
         {"code": "000002", "confirm_status": "confirmed", "priority_score": 90},
@@ -56,7 +60,8 @@ def test_step4_candidate_meta_veto_only_uses_rules_and_ai_invalidations(monkeypa
     assert blocked == 2
 
 
-def test_step4_candidate_meta_invalid_policy_falls_back_to_veto_only(monkeypatch):
+def test_step4_candidate_meta_invalid_policy_falls_back_to_shadow(monkeypatch):
+    """非法取值回退到 shadow：LLM 无拦截权是更安全的默认，配错不应静默恢复否决权。"""
     monkeypatch.setenv("STEP4_AI_CANDIDATE_POLICY", "legacy")
     symbols_info = [
         {"code": "000001", "confirm_status": "confirmed"},
@@ -66,8 +71,14 @@ def test_step4_candidate_meta_invalid_policy_falls_back_to_veto_only(monkeypatch
 
     selected, blocked = _step4_candidate_meta(symbols_info, [], report)
 
-    assert [item["code"] for item in selected] == ["000001"]
+    assert [item["code"] for item in selected] == ["000001", "000002"]
     assert blocked == 0
+
+
+def test_step4_ai_candidate_policy_defaults_to_shadow(monkeypatch):
+    monkeypatch.delenv("STEP4_AI_CANDIDATE_POLICY", raising=False)
+
+    assert step4_ai_candidate_policy() == "shadow"
 
 
 def test_step4_candidate_meta_shadow_ignores_ai_classification(monkeypatch):
