@@ -59,46 +59,6 @@ def market_signal_readiness(row: dict[str, Any] | None, expected_trade_date: dat
     return {"status": "ready", "reason": "当日 benchmark 与盘前风险均已就绪"}
 
 
-def _format_signed_pct(raw: Any) -> str:
-    value = _safe_float(raw)
-    if value is None:
-        return "--"
-    return f"{value:+.2f}%"
-
-
-def _format_plain(raw: Any, digits: int = 2) -> str:
-    value = _safe_float(raw)
-    if value is None:
-        return "--"
-    return f"{value:.{digits}f}"
-
-
-def _benchmark_regime_desc(regime: str) -> str:
-    mapping = {
-        "RISK_ON": "过热禁追",
-        "NEUTRAL": "中性",
-        "CAUTION": "谨慎确认",
-        "RISK_OFF": "偏弱",
-        "CRASH": "极弱",
-        "PANIC_REPAIR": "修复候选",
-        "PANIC_REPAIR_CONFIRMED": "修复成立",
-        "BLACK_SWAN": "极端恶劣",
-        "UNKNOWN": "待确认",
-    }
-    return mapping.get(str(regime or "").strip().upper(), "待确认")
-
-
-def _premarket_regime_desc(regime: str) -> str:
-    mapping = {
-        "UNKNOWN": "待确认",
-        "NORMAL": "平稳",
-        "CAUTION": "情绪冲击",
-        "RISK_OFF": "转冷",
-        "BLACK_SWAN": "急剧恶化",
-    }
-    return mapping.get(str(regime or "").strip().upper(), "待确认")
-
-
 def _normalize_benchmark_slot(regime: str) -> str:
     normalized = str(regime or "").strip().upper()
     if not normalized:

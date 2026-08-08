@@ -107,26 +107,6 @@ def _normalize_keywords() -> list[str]:
     return parts or DEFAULT_NEGATIVE_KEYWORDS
 
 
-def _normalize_match_text(s: str) -> str:
-    return re.sub(r"\s+", "", str(s or "")).lower()
-
-
-def _extract_hits(text: str, keywords: list[str]) -> list[str]:
-    hits: list[str] = []
-    for kw in keywords:
-        k = str(kw or "").strip().lower()
-        if not k or k in {"st", "*st"}:
-            continue
-        if k in text and k not in hits:
-            hits.append(k)
-
-    if _STAR_ST_PATTERN.search(text):
-        hits.append("*st")
-    if _ST_PATTERN.search(text):
-        hits.append("st")
-    return hits
-
-
 def _is_about_this_stock(sentence: str, code: str, name: str) -> bool:
     """判断一段文本是否在讨论该股本身（而非泛泛提及其他股票）。"""
     s = sentence.lower()

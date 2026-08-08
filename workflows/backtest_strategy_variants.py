@@ -92,10 +92,6 @@ def strategy_variant_overrides(raw: str) -> dict[str, object]:
     return {**_ALL_SWITCHES, **_VARIANT_SWITCHES[variant]}
 
 
-def strategy_variant_label(raw: str) -> str:
-    return VARIANT_LABELS[normalize_strategy_variant(raw)]
-
-
 def strategy_variant_entry_policy(raw: str) -> AShareEntryResearchPolicy:
     return _ENTRY_POLICIES.get(normalize_strategy_variant(raw), AShareEntryResearchPolicy())
 

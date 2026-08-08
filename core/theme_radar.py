@@ -459,10 +459,6 @@ def _rotation_state(score: float) -> str:
     return "quiet"
 
 
-def _theme_members(theme: str, concept_map: dict[str, list[str]], sector_map: dict[str, str]) -> list[str]:
-    return _theme_member_index(concept_map, sector_map).get(theme, [])
-
-
 def _theme_member_index(concept_map: dict[str, list[str]], sector_map: dict[str, str]) -> dict[str, list[str]]:
     index: dict[str, set[str]] = {}
     for code, concepts in concept_map.items():

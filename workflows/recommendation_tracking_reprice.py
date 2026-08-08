@@ -6,7 +6,6 @@ import logging
 import os
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -449,29 +448,6 @@ def _build_tushare_tracking_updates(
             if update is not None:
                 updates.append(update)
     return updates, codes_no_data, latest_trade_date
-
-
-def refresh_tracking_prices_with_tushare_unadjusted() -> dict[str, Any]:
-    from integrations.tushare_client import get_pro
-
-    if not is_admin_configured():
-        raise ValueError("SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY 未配置")
-    require_server_write_context("refresh CN tracking prices with Tushare")
-    pro = get_pro()
-    if pro is None:
-        raise ValueError("TUSHARE_TOKEN 未配置或 tushare 不可用")
-    client = create_admin_client()
-    records = fetch_recommendation_tracking_records(client, "id,code,recommend_date")
-    if not records:
-        return empty_tracking_refresh_summary()
-    grouped = _group_records_by_code6(records)
-    updates, codes_no_data, latest_trade_date = _build_tushare_tracking_updates(
-        pro,
-        grouped,
-        datetime.now(ZoneInfo("Asia/Shanghai")).date().strftime("%Y%m%d"),
-        datetime.now(UTC).isoformat(),
-    )
-    return _refresh_summary(records, grouped, updates, codes_no_data, latest_trade_date, client)
 
 
 def refresh_tracking_prices_with_tickflow_realtime() -> dict[str, Any]:

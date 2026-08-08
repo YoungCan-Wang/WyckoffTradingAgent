@@ -90,14 +90,6 @@ def calc_trade_excursion_pct(
     return (max_high / entry_price - 1.0) * 100.0, (min_low / entry_price - 1.0) * 100.0
 
 
-def close_on_date(df: pd.DataFrame, day: date) -> float | None:
-    row = df[df["date"] == day]
-    if row.empty:
-        return None
-    close = pd.to_numeric(row["close"], errors="coerce").dropna()
-    return None if close.empty else float(close.iloc[-1])
-
-
 def close_on_or_after(df: pd.DataFrame, day: date) -> tuple[float | None, date | None]:
     row = df[df["date"] >= day].head(1)
     if row.empty:
