@@ -705,7 +705,12 @@ def _trend_volume_ok(df_sorted: pd.DataFrame, min_ratio: float) -> bool:
     return vol20 <= 0 or float(vol.tail(5).mean()) / vol20 >= min_ratio
 
 
-def _diagnose_momentum(cfg: Any, rps_slow: float | None, momentum_rs_ok: bool) -> tuple[float, list[str]]:
+def _diagnose_momentum(
+    cfg: Any,
+    rps_slow: float | None,
+    momentum_rs_ok: bool,
+    state: Layer2SymbolState | None = None,
+) -> tuple[float, list[str]]:
     if not getattr(cfg, "enable_momentum_channel", True):
         return 999.0, ["通道未启用"]
     gaps = []
@@ -718,9 +723,36 @@ def _diagnose_momentum(cfg: Any, rps_slow: float | None, momentum_rs_ok: bool) -
     if val < thresh:
         gaps.append((thresh - val) / thresh)
         fail.append(f"RPS(slow)不足: 当前 {val:.1f}, 阈值 {thresh:.1f}, 差距 {thresh - val:.1f}")
+    gaps, fail = _momentum_structure_gaps(cfg, state, gaps, fail)
     if not gaps:
         return 0.0, []
     return max(gaps), fail
+
+
+def _momentum_structure_gaps(
+    cfg: Any,
+    state: Layer2SymbolState | None,
+    gaps: list[float],
+    fail: list[str],
+) -> tuple[list[float], list[str]]:
+    """补齐 `_momentum_channel_ok` 的均线排列与 MA200 乖离检查。
+
+    缺这两项时，被“涨太多”拦下的票会显示缺口 0.0% 且原因为空。
+    """
+    if state is None:
+        return gaps, fail
+    if not (state.bullish_alignment or state.holding_ma20):
+        gaps.append(0.5)
+        fail.append("均线结构未确认: 既非多头排列也未站上MA20")
+    last_close, last_ma_long = state.last_close, state.last_ma_long
+    if pd.isna(last_ma_long) or float(last_ma_long) <= 0 or pd.isna(last_close):
+        return gaps, fail
+    bias_max = float(getattr(cfg, "momentum_bias_200_max", 0.25))
+    bias_200 = (float(last_close) - float(last_ma_long)) / float(last_ma_long)
+    if bias_200 > bias_max:
+        gaps.append((bias_200 - bias_max) / max(bias_max, 1e-9))
+        fail.append(f"偏离MA200过高: 当前 {bias_200 * 100:.1f}%, 上限 {bias_max * 100:.1f}%")
+    return gaps, fail
 
 
 def _diagnose_ambush(
@@ -1072,7 +1104,7 @@ def diagnose_layer2_symbol_failure(
     rps_fast = rps_state.fast
 
     channel_failures = {
-        "主升": _diagnose_momentum(cfg, rps_slow, momentum_rs_ok),
+        "主升": _diagnose_momentum(cfg, rps_slow, momentum_rs_ok, state),
         "潜伏": _diagnose_ambush(cfg, last_ma_long, last_close, close_series, ambush_rs_ok, rps_slow),
         "吸筹": _diagnose_accum(cfg, df_sorted, close_series, last_close, last_ma_short, last_ma_long),
         "地量蓄势": _diagnose_dry_vol(cfg, df_sorted, close_series, last_close),
