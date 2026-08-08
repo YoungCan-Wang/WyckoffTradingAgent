@@ -1010,7 +1010,7 @@ def test_send_message_does_not_insert_blank_log_line(monkeypatch):
     WyckoffTUI._send_message(app, "你看我持仓呀")
 
     assert len(log.lines) == 2
-    assert str(log.lines[-1]) == "❯ 你看我持仓呀"
+    assert str(log.lines[-1]) == "▌ 你看我持仓呀"
     assert app._messages == [{"role": "user", "content": "你看我持仓呀"}]
 
 

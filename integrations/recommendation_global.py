@@ -31,10 +31,13 @@ def upsert_global_recommendations(
         return False
     require_server_write_context(f"upsert global recommendations {market}")
     try:
-        payload = [_global_recommendation_payload(row, recommend_date) for row in candidates]
+        client = create_admin_client()
+        history = fetch_records_from_table(client, table, "code,recommend_date,initial_price")
+        first_prices = _first_prices_by_code(history)
+        payload = [_global_recommendation_payload(row, recommend_date, first_prices) for row in candidates]
         payload = [row for row in payload if row]
         if payload:
-            create_admin_client().table(table).upsert(payload, on_conflict="code,recommend_date").execute()
+            client.table(table).upsert(payload, on_conflict="code,recommend_date").execute()
         return True
     except Exception as exc:
         logger.warning("upsert_global(%s) failed: %s", market, exc)
@@ -68,23 +71,52 @@ def resolve_global_table(market: str) -> str:
     return table
 
 
-def _global_recommendation_payload(candidate: dict[str, Any], recommend_date: int) -> dict[str, Any] | None:
+def _global_recommendation_payload(
+    candidate: dict[str, Any],
+    recommend_date: int,
+    first_prices: dict[str, float] | None = None,
+) -> dict[str, Any] | None:
     code = str(candidate.get("code") or candidate.get("symbol") or "").strip()
     if not code:
         return None
-    price = _extract_price(candidate)
+    current_price = _extract_price(candidate)
+    sticky_price = float((first_prices or {}).get(code, 0.0) or 0.0)
+    initial_price = sticky_price if sticky_price > 0 else current_price
     return {
         "code": code,
         "name": str(candidate.get("name", "")).strip(),
         "recommend_reason": str(candidate.get("tag") or candidate.get("recommend_reason") or "").strip(),
         "recommend_date": recommend_date,
-        "initial_price": price,
-        "current_price": price,
-        "change_pct": 0.0,
+        "initial_price": initial_price,
+        "current_price": current_price,
+        "change_pct": _change_pct(initial_price, current_price),
         "funnel_score": _extract_score(candidate),
         "is_ai_recommended": False,
         "updated_at": datetime.now(UTC).isoformat(),
     }
+
+
+def _first_prices_by_code(rows: list[dict[str, Any]]) -> dict[str, float]:
+    earliest: dict[str, tuple[int, float]] = {}
+    for row in rows:
+        code = str(row.get("code") or "").strip()
+        try:
+            recommend_date = int(row.get("recommend_date"))
+            price = float(row.get("initial_price") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        previous = earliest.get(code)
+        if code and (previous is None or recommend_date < previous[0]):
+            earliest[code] = (recommend_date, price if price > 0 else 0.0)
+        elif code and previous and recommend_date == previous[0] and price > 0:
+            earliest[code] = (recommend_date, price)
+    return {code: price for code, (_, price) in earliest.items() if price > 0}
+
+
+def _change_pct(initial_price: float, current_price: float) -> float:
+    if initial_price <= 0 or current_price <= 0:
+        return 0.0
+    return round((current_price - initial_price) / initial_price * 100.0, 2)
 
 
 def _extract_price(candidate: dict[str, Any]) -> float:

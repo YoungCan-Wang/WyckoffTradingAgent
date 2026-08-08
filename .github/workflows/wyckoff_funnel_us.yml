@@ -31,6 +31,10 @@ jobs:
       MARKET_FUNNEL_KLINE_BATCH_SIZE: "100"
       MARKET_FUNNEL_KLINE_BATCH_SLEEP: "2.1"
       MARKET_FUNNEL_MIN_QUOTE_AMOUNT: "5000000"
+      US_TRACKING_PERFORMANCE_MAX_DATES: "60"
+      US_TRACKING_PERFORMANCE_KLINE_COUNT: "180"
+      TICKFLOW_KLINE_BATCH_SIZE: "100"
+      TICKFLOW_KLINE_BATCH_SLEEP: "2.1"
       TZ: Asia/Shanghai
 
     steps:
@@ -57,6 +61,13 @@ jobs:
             --market us \
             --output "${{ github.workspace }}/logs/us_funnel_result.json" \
             2>&1 | tee -a "${{ github.workspace }}/logs/us_funnel.console.log"
+
+      - name: Refresh US recommendation performance
+        run: |
+          set -o pipefail
+          python -u scripts/us_recommendation_performance_job.py \
+            --logs "${{ github.workspace }}/logs/us_recommendation_performance.log" \
+            2>&1 | tee -a "${{ github.workspace }}/logs/us_recommendation_performance.console.log"
 
       - name: Upload artifacts
         if: always()

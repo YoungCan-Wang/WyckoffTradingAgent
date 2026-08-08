@@ -289,6 +289,52 @@ def load_signal_observations_by_ids(observation_ids: list[int], market: str = "c
             _close(client)
 
 
+def load_signal_outcome_states(
+    observation_ids: list[int],
+    market: str = "cn",
+    *,
+    raise_on_error: bool = False,
+) -> dict[int, dict[int, str]]:
+    """Load settlement state without reading full outcome payloads."""
+    if not _configured():
+        if raise_on_error:
+            raise RuntimeError("Supabase signal feedback is not configured")
+        return {}
+    if not observation_ids:
+        return {}
+    client = None
+    try:
+        client = _admin()
+        states: dict[int, dict[int, str]] = {}
+        for chunk_start in range(0, len(observation_ids), 100):
+            chunk = observation_ids[chunk_start : chunk_start + 100]
+            rows = (
+                client.table(TABLE_SIGNAL_OUTCOMES)
+                .select("observation_id,horizon_days,status")
+                .eq("market", market)
+                .in_("observation_id", chunk)
+                .execute()
+                .data
+                or []
+            )
+            for row in rows:
+                try:
+                    observation_id = int(row.get("observation_id"))
+                    horizon = int(row.get("horizon_days"))
+                except (TypeError, ValueError):
+                    continue
+                states.setdefault(observation_id, {})[horizon] = str(row.get("status") or "")
+        return states
+    except Exception as exc:
+        logger.warning("load outcome states failed: %s", exc)
+        if raise_on_error:
+            raise RuntimeError("failed to load signal outcome states") from exc
+        return {}
+    finally:
+        if client is not None:
+            _close(client)
+
+
 def load_recent_signal_outcomes(
     days: int = 180,
     limit: int = 20000,

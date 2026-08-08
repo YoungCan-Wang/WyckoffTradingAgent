@@ -386,7 +386,7 @@ claude mcp add wyckoff -- wyckoff-mcp
 ### TUI 视觉层次
 
 ```
-❯ 用户问题                           ← cyan 粗体
+▌ 用户问题                           ← 品牌琥珀色竖条 + 粗体
 
   … 推理摘要  (1234 字)               ← thinking：一行，dim italic
   ✓ 搜索股票  0.3s                   ← tool 完成：绿色（执行中的 spinner 显示在状态栏）
@@ -730,12 +730,10 @@ TTL：SOS 2 天、Spring 3 天、LPS 3 天、EVR 2 天、Compression 3 天。
 | **板块连续性报告** (`sector_continuity.yml`) | 周一-周五 16:10 | 刷新概念热度历史，辅助主线引擎判断延续性 |
 | **强势股复盘** (`review_list_replay.yml`) | 周一-周五 19:25 | 用 Tushare 双日截面发现当日涨幅 > 7% 且前日 < 3% 的完整样本；下载前一交易日生产漏斗的压缩 as-run trace，另列前日通过 L1、次日开盘 ≤ +4% 且非一字板的可交易样本。快照缺失默认不重跑，手动触发可显式允许全市场 fallback |
 | **主线雷达周报** (`theme_radar.yml`) | 周五 21:10 | `theme_radar_job.py --with-news`，周频新闻增强复盘 |
-| **形态复盘重定价** (`recommendation_tracking_reprice.yml`) | 周一-周五 23:00 | 同步收盘价、计算收益 |
-| **信号反馈闭环** (`signal_feedback.yml`) | 周一-周五 23:30 | `signal_feedback_job.py` 刷新 outcomes / health / registry |
-| **策略反思 Shadow** (`strategy_reflection.yml`) | 周二-周六 00:10 | 读取 feedback / shadow 结果，写策略反思和候选策略 |
-| **美股漏斗筛选** (`wyckoff_funnel_us.yml`) | 周二-周六 05:35 | `market_funnel_job.py --market us` |
-| **美股推荐表现** (`us_recommendation_performance.yml`) | 周二-周六 06:15 | `us_recommendation_performance_job.py` |
-| **数据库维护** (`db_maintenance.yml`) | 周二-周六 06:20 | 清理过期行情、订单、信号、市场信号等滑动窗口数据 |
+| **形态复盘重定价** (`recommendation_tracking_reprice.yml`) | 周一-周五 23:00 | 同步 A 股、港股收盘价并计算收益；美股由美股漏斗收盘后续步处理 |
+| **信号反馈闭环** (`signal_feedback.yml`) | 周一-周五 23:30 | 只结算缺失/`pending` outcomes，同股共享一次 K 线；刷新 health / registry，周五续跑策略反思 Shadow |
+| **美股漏斗筛选 + 推荐表现** (`wyckoff_funnel_us.yml`) | 周二-周六 05:35 | `market_funnel_job.py --market us` 后续跑 `us_recommendation_performance_job.py` |
+| **数据库维护** (`db_maintenance.yml`) | 每周六 06:20 | 清理过期行情、订单、信号、市场信号等滑动窗口数据 |
 | **回测网格** (`backtest_grid.yml`) | 手动触发 | 多周期 × 多交易风格回放，同时输出参数邻域稳定性与按时间前推的 walk-forward 样本外验证 |
 | **策略消融** (`backtest_grid.yml: strategy_compare`) | 手动显式开启 | A/M/P 五窗口结论已稳定为不晋级，默认网格不再重复消耗五个全市场任务；仅在 `run_strategy_compare=true` 时复现历史证据。手动复跑仍按窗口共用一次信号台账、分别重放权重与现金组合；候选/触发规则不同的策略禁止共享。Q/N/O 与本轮 Q/R/S/T 形态门控均已否决，不改变生产漏斗 |
 | **触发阈值标定** (`backtest_trigger_calibration.yml`) | 手动触发 | 按周期 × 取值扇出，每个 job 完整重跑一次全市场漏斗；扫触发阈值时按目标触发器单信号均收做跨周期 walk-forward 选值，扫 `top_n` 时按全样本均收对比选择层增益；填 `grid_cells` 则改走共享台账的退出网格，在 `top_n=0` 原始池上取退出基准 |
@@ -854,7 +852,7 @@ Cloudflare Pages 通过 `web/functions/api/portfolio/[[path]].ts` 将同域请�
 “保存并诊断”；普通用户只使用浏览器内临时录入，不写 Supabase。
 写入边界：GitHub Actions / server job 必须设置 `WYCKOFF_WRITE_CONTEXT=server_job` 才能写共享信号、推荐、策略表。CLI 默认只能读取云端表；除持仓增删改和现金更新外，其它 CLI 结果只写本地 SQLite。
 
-`scripts/db_maintenance.py` 负责清理过期数据：形态复盘按表内最新 30 个入选日期保留，订单/信号/净值等短周期表保留 10-30 日区间，`external_seed_observations` 默认保留 180 日，避免数据库行数无限增长。
+`scripts/db_maintenance.py` 每周运行一次，负责清理过期数据：形态复盘按表内最新 30 个入选日期保留，订单/信号/净值等短周期表保留 10-30 日区间，`external_seed_observations` 默认保留 180 日，避免数据库行数无限增长。
 
 ## CLI 命令
 

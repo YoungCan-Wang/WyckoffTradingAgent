@@ -46,11 +46,13 @@ flowchart TD
 
   subgraph R["T 日 23:30：信号反馈"]
     L["signal_feedback.yml<br/>定时或手动触发"] --> M["scripts/signal_feedback_job.py"]
-    M --> N["读最近 signal_observations"]
-    N --> O["补行情并计算 1/3/5/10/20 日 outcomes"]
+    M --> N["读最近 observation<br/>并补入窗口外 pending"]
+    N --> O["仅保留缺失 / pending horizon<br/>同股共享一次 K 线"]
     O --> P["写 signal_outcomes"]
     P --> Q["聚合 signal_health_daily"]
     Q --> S["更新 signal_registry"]
+    S --> T{"周五或手动触发?"}
+    T -- "是" --> U["strategy_reflection_job<br/>Shadow 反思"]
   end
 
   J -. "同日稍后被读取；若还没完成则下次读取" .-> N
@@ -92,6 +94,10 @@ GitHub Actions 中建议用 Repository Variables 配置：
 FUNNEL_DYNAMIC_POLICY=shadow uv run python scripts/daily_job.py
 uv run python scripts/signal_feedback_job.py
 ```
+
+Feedback 不再逐日重算已经完成的 horizon。每次先读取现有 outcome 状态，只处理缺失或仍为
+`pending` 的部分；同一股票即使跨多个观察日，也只拉一次覆盖最早观察日的 K 线。周五在同一
+workflow 的归因报告之后运行策略反思，手动触发则允许立即补跑，不再单独占用一套 Actions runner。
 
 ## 核心数据表
 
