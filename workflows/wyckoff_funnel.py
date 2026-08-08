@@ -11,6 +11,7 @@ Layer 4: 威科夫狙击（Spring / SOS / LPS / Effort vs Result）
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, replace
 
 import pandas as pd
@@ -755,6 +756,17 @@ def _attach_funnel_debug_context(metrics: dict, inputs: FunnelMetricsInputs, inc
     }
 
 
+def _write_review_trace(inputs: FunnelMetricsInputs, triggers: dict, metrics: dict) -> None:
+    output_dir = os.getenv("DAILY_JOB_ARTIFACTS_DIR", "").strip()
+    if not output_dir:
+        return
+    from workflows.review_trace import write_review_trace_artifact
+
+    path = write_review_trace_artifact(inputs, triggers, metrics, output_dir)
+    if path is not None:
+        print(f"[funnel] Review trace artifact: {path}")
+
+
 def _log_funnel_summary(metrics: dict, inputs: FunnelMetricsInputs) -> None:
     counts = inputs.layers.l2_counts
     print(
@@ -899,6 +911,7 @@ def run_funnel_job(
         financial_metrics_requested=include_financial_metrics,
     )
     metrics = _build_funnel_metrics(metrics_inputs)
+    _write_review_trace(metrics_inputs, artifacts.layers.triggers, metrics)
     _attach_funnel_debug_context(metrics, metrics_inputs, include_debug_context)
     _log_funnel_summary(metrics, metrics_inputs)
     return artifacts.layers.triggers, metrics

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import date
+from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
 from core.funnel_taxonomy import (
     REVIEW_STAGE_BASE_REJECT,
@@ -21,11 +23,14 @@ from workflows.review_big_gainers import (
     find_big_gainers,
     find_big_gainers_from_spot,
     load_today_review_codes,
+    load_today_review_pool,
 )
 from workflows.review_list_replay import (
     ReplayContext,
     build_candidate_entry_map,
     classify_review_code,
+    load_previous_context,
+    replay_context_from_trace,
 )
 from workflows.review_recommendation_lookup import format_recommendation_history, normalize_code6
 from workflows.review_report_render import (
@@ -33,6 +38,7 @@ from workflows.review_report_render import (
     build_report_lines,
     short_code_list,
 )
+from workflows.review_trace import build_review_trace, load_review_trace_artifact, write_review_trace_artifact
 
 
 def _row(code: str, name: str, stage: str) -> dict[str, str]:
@@ -336,3 +342,154 @@ def test_build_report_lines_separates_raw_and_executable_capture_rates() -> None
     assert "前日基础准入 2/3" in text
     assert "次日开盘≤+4%且非一字板 1/2" in text
     assert "可交易样本前日候选 1/1" in text
+
+
+def test_tushare_cross_sections_avoid_full_market_history_fetch(monkeypatch):
+    from integrations import tushare_client
+
+    class FakePro:
+        def __init__(self):
+            self.calls: list[str] = []
+
+        def daily(self, *, trade_date: str):
+            self.calls.append(trade_date)
+            if trade_date == "20260513":
+                return pd.DataFrame(
+                    [
+                        {
+                            "ts_code": "000001.SZ",
+                            "pct_chg": 8.0,
+                            "pre_close": 10.0,
+                            "open": 10.3,
+                            "high": 11.0,
+                            "low": 10.2,
+                            "close": 10.8,
+                        },
+                        {
+                            "ts_code": "000002.SZ",
+                            "pct_chg": 9.0,
+                            "pre_close": 8.0,
+                            "open": 8.1,
+                            "high": 8.8,
+                            "low": 8.0,
+                            "close": 8.7,
+                        },
+                    ]
+                )
+            return pd.DataFrame(
+                [
+                    {"ts_code": "000001.SZ", "pct_chg": 2.0, "close": 10.0},
+                    {"ts_code": "000002.SZ", "pct_chg": 4.0, "close": 8.0},
+                ]
+            )
+
+    pro = FakePro()
+    monkeypatch.setattr(tushare_client, "has_tushare_token", lambda: True)
+    monkeypatch.setattr(tushare_client, "get_pro", lambda: pro)
+    monkeypatch.setattr(
+        "workflows.review_big_gainers.fetch_review_pool",
+        lambda *_args, **_kwargs: pytest.fail("full OHLCV fallback should not run"),
+    )
+
+    pool = load_today_review_pool(
+        ["000001", "000002"],
+        {"000001": "平安银行", "000002": "万科A"},
+        SimpleNamespace(end_trade_date=date(2026, 5, 13)),
+        previous_trade_date=date(2026, 5, 12),
+    )
+
+    assert pro.calls == ["20260513", "20260512"]
+    assert pool.codes == ["000001"]
+    assert execution_snapshot(pool.frames["000001"])["executable"] is True
+
+
+def test_review_trace_records_as_run_stages_without_ohlcv(tmp_path):
+    cfg = FunnelConfig()
+    frame = pd.DataFrame(
+        {
+            "date": pd.bdate_range("2025-08-01", periods=220),
+            "close": [10.0] * 220,
+            "amount": [100_000_000.0] * 220,
+        }
+    )
+    inputs = SimpleNamespace(
+        cfg=cfg,
+        window=SimpleNamespace(end_trade_date=date(2026, 5, 12)),
+        pool=SimpleNamespace(symbols=["000001", "000002", "000003"]),
+        ref_data=SimpleNamespace(
+            name_map={"000001": "平安银行", "000002": "万科A", "000003": "低市值"},
+            sector_map={"000001": "银行", "000002": "地产", "000003": "其它"},
+            market_cap_map={"000001": 100.0, "000002": 100.0, "000003": 5.0},
+            financial_map={},
+        ),
+        all_df_map={"000001": frame, "000002": frame, "000003": frame},
+        layers=SimpleNamespace(
+            l1_passed=["000001", "000002"],
+            l2_passed=["000001"],
+            l3_passed=["000001"],
+            l2_channel_map={"000001": "点火破局"},
+            l2_rejections={"000002": "最接近趋势延续(缺口5.0%)"},
+        ),
+        candidates=SimpleNamespace(
+            candidate_entries=[
+                {
+                    "code": "000001",
+                    "entry_type": "trend_breakout",
+                    "score": 82.0,
+                    "opportunity": "平台突破",
+                }
+            ],
+            exit_signals={},
+        ),
+    )
+    payload = build_review_trace(inputs, {"sos": [("000001", 5.0)]}, {"data_quality": {"status": "normal"}})
+
+    assert payload["symbols"]["000001"]["stage"] == REVIEW_STAGE_CANDIDATE_HIT
+    assert payload["symbols"]["000002"]["stage"] == REVIEW_STAGE_STRENGTH_MISS
+    assert payload["symbols"]["000003"]["stage"] == REVIEW_STAGE_BASE_REJECT
+    assert "all_df_map" not in payload
+    assert "close" not in payload["symbols"]["000001"]
+
+    path = write_review_trace_artifact(inputs, {"sos": [("000001", 5.0)]}, {}, str(tmp_path))
+    loaded = load_review_trace_artifact(path, date(2026, 5, 12))
+    assert loaded["config_digest"] == payload["config_digest"]
+    with pytest.raises(ValueError, match="date mismatch"):
+        load_review_trace_artifact(path, date(2026, 5, 11))
+
+
+def test_replay_context_from_trace_uses_recorded_decision_reason():
+    payload = {
+        "trade_date": "2026-05-12",
+        "run": {"git_sha": "abcdef1234567890"},
+        "symbols": {
+            "000001": {
+                "name": "平安银行",
+                "sector": "银行",
+                "stage": REVIEW_STAGE_STRENGTH_MISS,
+                "reason": "生产时八通道未通过",
+                "l1_eligible": True,
+                "l2_eligible": False,
+                "l3_eligible": False,
+            }
+        },
+    }
+
+    ctx = replay_context_from_trace(payload)
+
+    assert classify_review_code("000001", ctx) == (
+        "平安银行",
+        REVIEW_STAGE_STRENGTH_MISS,
+        "生产时八通道未通过",
+    )
+    assert ctx.source == "production_artifact:abcdef123456"
+
+
+def test_previous_context_does_not_full_replay_without_explicit_fallback(monkeypatch):
+    monkeypatch.delenv("REVIEW_TRACE_PATH", raising=False)
+    monkeypatch.delenv("REVIEW_ALLOW_FULL_FUNNEL_FALLBACK", raising=False)
+    monkeypatch.setattr(
+        "workflows.review_list_replay.run_previous_funnel",
+        lambda *_args, **_kwargs: pytest.fail("full replay must be explicit"),
+    )
+
+    assert load_previous_context(date(2026, 5, 12), log=lambda _line: None) is None

@@ -29,6 +29,7 @@ from core.wyckoff_engine import (
     build_layer2_evaluation_context,
     sort_by_date_if_needed,
 )
+from utils.env import env_flag
 from utils.feishu import send_feishu_notification
 from workflows.review_big_gainers import execution_snapshot, is_target_cn_board, load_today_review_pool
 from workflows.review_recommendation_lookup import format_recommendation_history, load_recommendation_lookup
@@ -59,6 +60,8 @@ class ReplayContext:
     hit_map: dict[str, list[str]]
     blocked_exit_map: dict[str, dict]
     candidate_entry_map: dict[str, dict]
+    decision_rows: dict[str, dict[str, Any]] | None = None
+    source: str = "full_funnel_replay"
 
 
 def run_review_list_replay(webhook: str, log=print) -> int:
@@ -69,7 +72,13 @@ def run_review_list_replay(webhook: str, log=print) -> int:
     dates = resolve_review_dates()
     log(f"[review] 今日: {dates.today}, 前一交易日: {dates.previous_trade_date}")
     name_map_today, all_codes = load_today_pool()
-    pool = load_today_review_pool(all_codes, name_map_today, dates.today_window, log=log)
+    pool = load_today_review_pool(
+        all_codes,
+        name_map_today,
+        dates.today_window,
+        log=log,
+        previous_trade_date=dates.previous_trade_date,
+    )
     execution_map = {code: execution_snapshot(pool.frames.get(code)) for code in pool.codes}
     return _run_review_for_codes(webhook, pool.codes, dates, log, execution_map)
 
@@ -139,6 +148,15 @@ def replay_context(triggers: dict, metrics: dict, log=print) -> ReplayContext | 
 
 
 def classify_review_code(code: str, ctx: ReplayContext) -> tuple[str, str, str]:
+    if ctx.decision_rows is not None:
+        row = ctx.decision_rows.get(code)
+        if row is None:
+            return code, "池外", "不在当日全市场去ST股票池"
+        return (
+            str(row.get("name") or code),
+            str(row.get("stage") or "未知阶段"),
+            str(row.get("reason") or "快照未记录淘汰原因"),
+        )
     name = str(ctx.name_map.get(code, code)).strip() or code
     if code not in ctx.all_symbol_set:
         return name, "池外", "不在当日全市场去ST股票池"
@@ -290,7 +308,7 @@ def build_replay_rows(
     today: date,
     previous_trade_date: date,
     execution_map: dict[str, dict[str, object]] | None = None,
-) -> tuple[list[dict[str, Any]], Counter[str], dict[str, int]]:
+) -> tuple[list[dict[str, Any]], Counter[str], dict[str, Any]]:
     recommendation_lookup, recommendation_error = load_recommendation_lookup(review_codes)
     execution_map = execution_map or {}
 
@@ -330,6 +348,7 @@ def build_replay_rows(
             for row in rows
         ),
         "execution_available": sum(bool(row["execution_available"]) for row in rows),
+        "context_source": ctx.source,
     }
     return rows, stage_counter, stats
 
@@ -356,7 +375,7 @@ def send_replay_report(
     stage_counter: Counter[str],
     dates: ReviewDates,
     end_trade_date: str,
-    stats: dict[str, int] | None = None,
+    stats: dict[str, Any] | None = None,
 ) -> bool:
     lines = build_report_lines(
         rows=rows,
@@ -381,8 +400,7 @@ def _run_review_for_codes(
         send_empty_review(webhook, dates.today)
         return 0
     log(f"[review] 今日发现满足强势复盘池股票 {len(review_codes)} 只: {', '.join(review_codes)}")
-    triggers, metrics = run_previous_funnel(dates.previous_trade_date, log=log)
-    ctx = replay_context(triggers, metrics, log=log)
+    ctx = load_previous_context(dates.previous_trade_date, log=log)
     if ctx is None:
         return 3
     rows, stage_counter, stats = build_replay_rows(
@@ -395,6 +413,52 @@ def _run_review_for_codes(
     ok = send_replay_report(webhook, rows, stage_counter, dates, ctx.end_trade_date, stats)
     log(f"[review] feishu_sent={ok}")
     return 0 if ok else 4
+
+
+def load_previous_context(previous_trade_date: date, log=print) -> ReplayContext | None:
+    trace_path = os.getenv("REVIEW_TRACE_PATH", "").strip()
+    if trace_path:
+        try:
+            from workflows.review_trace import load_review_trace_artifact
+
+            payload = load_review_trace_artifact(trace_path, previous_trade_date)
+            ctx = replay_context_from_trace(payload)
+            log(f"[review] 使用生产漏斗 as-run 快照: date={ctx.end_trade_date}, source={ctx.source}")
+            return ctx
+        except Exception as exc:
+            log(f"[review] 生产漏斗快照不可用: {exc}")
+    if not env_flag("REVIEW_ALLOW_FULL_FUNNEL_FALLBACK"):
+        log("[review] 未找到匹配的生产漏斗快照；自动全市场重跑已关闭，可手动显式开启 fallback")
+        return None
+    log("[review] 已显式允许 fallback，开始完整回放前一交易日漏斗")
+    triggers, metrics = run_previous_funnel(previous_trade_date, log=log)
+    return replay_context(triggers, metrics, log=log)
+
+
+def replay_context_from_trace(payload: dict[str, Any]) -> ReplayContext:
+    rows = {str(code): dict(row or {}) for code, row in (payload.get("symbols") or {}).items()}
+    entries = [dict(row.get("entry") or {}) for row in rows.values() if row.get("entry")]
+    name_map = {code: str(row.get("name") or code) for code, row in rows.items()}
+    source_run = payload.get("run") or {}
+    source_id = str(source_run.get("git_sha") or source_run.get("github_run_id") or "unknown")[:12]
+    return ReplayContext(
+        cfg=FunnelConfig(),
+        all_symbol_set=set(rows),
+        name_map=name_map,
+        market_cap_map={},
+        sector_map={code: str(row.get("sector") or "") for code, row in rows.items()},
+        df_map={},
+        l1_set={code for code, row in rows.items() if row.get("l1_eligible")},
+        l2_set={code for code, row in rows.items() if row.get("l2_eligible")},
+        l3_set={code for code, row in rows.items() if row.get("l3_eligible")},
+        end_trade_date=str(payload.get("trade_date") or "未知"),
+        l2_ctx={},
+        hit_map={},
+        blocked_exit_map={},
+        candidate_entry_map=build_candidate_entry_map(entries),
+        decision_rows=rows,
+        source=f"production_artifact:{source_id}",
+    )
 
 
 def send_empty_review(webhook: str, today: date) -> None:
