@@ -476,20 +476,18 @@ def _load_financial_metrics(all_symbols: list[str]) -> dict[str, dict]:
         _report_progress("财务指标", "未配置 TickFlow，跳过", 0.20)
         return {}
     try:
-        from integrations.tickflow_client import TickFlowClient
+        from integrations.tickflow_client import fetch_financial_metric_map
 
-        client = TickFlowClient(api_key=api_key)
         print(f"[funnel] TickFlow 财务指标请求: symbols={len(all_symbols)}")
         _report_progress("财务指标", f"请求{len(all_symbols)}只", 0.20)
-        raw_fin = client.get_financial_metrics(all_symbols, latest=True)
-        financial_map = {sym: records[0] for sym, records in raw_fin.items() if records}
-        missing = max(len(all_symbols) - len(financial_map), 0)
-        sample_missing = ",".join(sorted([s for s in all_symbols if s not in financial_map])[:8])
+        financial_map = fetch_financial_metric_map(api_key, all_symbols)
+        missing_codes = sorted(set(all_symbols) - set(financial_map))
+        covered = len(all_symbols) - len(missing_codes)
         print(
-            f"[funnel] TickFlow 财务指标加载成功: {len(financial_map)}/{len(all_symbols)}, "
-            f"missing={missing}, sample_missing={sample_missing or '-'}"
+            f"[funnel] TickFlow 财务指标加载成功: {covered}/{len(all_symbols)}, "
+            f"missing={len(missing_codes)}, sample_missing={','.join(missing_codes[:8]) or '-'}"
         )
-        _report_progress("财务指标", f"成功{len(financial_map)}/{len(all_symbols)}", 0.24)
+        _report_progress("财务指标", f"成功{covered}/{len(all_symbols)}", 0.24)
         return financial_map
     except Exception as e:
         logger.warning("TickFlow 财务指标加载失败，跳过财务过滤: %s", e)
