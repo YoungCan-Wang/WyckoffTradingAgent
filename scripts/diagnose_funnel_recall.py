@@ -45,8 +45,30 @@ def _stage_rows(codes: list[str], ctx) -> list[dict[str, str]]:
     rows = []
     for code in codes:
         name, stage, reason = classify_review_code(code, ctx)
-        rows.append({"code": code, "name": name, "stage": stage, "reason": reason})
+        rows.append(
+            {
+                "code": code,
+                "name": name,
+                "stage": stage,
+                "reason": reason,
+                # classify 在 exit_signal 之前返回，单看 stage 无法区分
+                # 「有买点但被风控拦下」与「本就没有买点」。
+                "layers": _layer_flags(code, ctx),
+            }
+        )
     return rows
+
+
+def _layer_flags(code: str, ctx) -> dict[str, object]:
+    return {
+        "in_universe": code in ctx.all_symbol_set,
+        "l1": code in ctx.l1_set,
+        "l2": code in ctx.l2_set,
+        "l3": code in ctx.l3_set,
+        "buy_triggers": ctx.hit_map.get(code, []),
+        "exit_signal": str((ctx.blocked_exit_map.get(code) or {}).get("signal", "")),
+        "candidate_entry": code in ctx.candidate_entry_map,
+    }
 
 
 def _print_report(signal_date: date, end_trade_date: str, rows: list[dict[str, str]]) -> None:
@@ -54,9 +76,16 @@ def _print_report(signal_date: date, end_trade_date: str, rows: list[dict[str, s
     print(f"漏斗召回归因  信号日={signal_date}  漏斗数据截止={end_trade_date}")
     print(f"{'=' * 78}")
     for row in rows:
+        layers = row.get("layers") or {}
         print(f"\n{row['code']} {row['name']}")
         print(f"  阶段: {row['stage']}")
         print(f"  原因: {row['reason']}")
+        print(
+            f"  逐层: 池内={layers.get('in_universe')} L1={layers.get('l1')} "
+            f"L2={layers.get('l2')} L3={layers.get('l3')} "
+            f"买点={layers.get('buy_triggers') or '无'} "
+            f"离场信号={layers.get('exit_signal') or '无'}"
+        )
     print(f"\n{'-' * 78}")
     counter: dict[str, int] = {}
     for row in rows:
