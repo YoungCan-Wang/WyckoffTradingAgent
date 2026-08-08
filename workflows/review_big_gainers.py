@@ -88,15 +88,6 @@ def load_today_review_pool(
     return fetch_review_pool(all_codes, name_map_today, today_window, logger)
 
 
-def fetch_and_filter_review_codes(
-    codes: list[str],
-    name_map: dict[str, str],
-    window,
-    log: Callable[[str], None] | None = None,
-) -> list[str]:
-    return fetch_review_pool(codes, name_map, window, log).codes
-
-
 def fetch_review_pool(
     codes: list[str],
     name_map: dict[str, str],

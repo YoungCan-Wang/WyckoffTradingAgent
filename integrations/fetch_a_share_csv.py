@@ -181,14 +181,6 @@ def resolve_trading_window(end_calendar_day: date, trading_days: int) -> Trading
     return TradingWindow(start_trade_date=start_trade, end_trade_date=end_trade)
 
 
-def _stock_name_from_code(symbol: str) -> str:
-    info = ak.stock_info_a_code_name()
-    row = info.loc[info["code"] == symbol, "name"]
-    if row.empty:
-        raise RuntimeError(f"symbol not found in stock list: {symbol}")
-    return str(row.iloc[0])
-
-
 def _read_stock_list_cache(cache_path: Path) -> list[dict[str, str]]:
     try:
         with open(cache_path, encoding="utf-8") as f:

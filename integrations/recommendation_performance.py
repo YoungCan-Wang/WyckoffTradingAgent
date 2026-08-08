@@ -137,10 +137,6 @@ def build_market_performance_updates(
     return updates, codes_no_data, latest_td
 
 
-def empty_us_performance_summary() -> dict[str, Any]:
-    return empty_performance_summary()
-
-
 def empty_performance_summary() -> dict[str, Any]:
     return {
         "rows_total": 0,
@@ -153,17 +149,6 @@ def empty_performance_summary() -> dict[str, Any]:
         "mfe_ge_10": 0,
         "mae_le_neg5": 0,
     }
-
-
-def us_performance_summary(
-    records: list[dict[str, Any]],
-    grouped: dict[str, list[dict[str, Any]]],
-    written: int,
-    codes_no_data: int,
-    latest_trade_date: str,
-    updates: list[dict[str, Any]],
-) -> dict[str, Any]:
-    return performance_summary(records, grouped, written, codes_no_data, latest_trade_date, updates)
 
 
 def performance_summary(

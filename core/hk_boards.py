@@ -65,10 +65,6 @@ def is_hk_main_board(code: object) -> bool:
     return hk_board(code) == "main"
 
 
-def is_hk_gem(code: object) -> bool:
-    return hk_board(code) == "gem"
-
-
 # 2026-07 复盘 `recommendation_tracking_hk` 近 30 个交易日 312 条真实候选：整体胜率
 # 42.6%、均收 -3.45%（系统性亏损）。分信号归因：SOS 胜率 21.6%／均收 -8.96%（曹操
 # 出行 -57.8%、中国建材 -44.8%、嘀嗒出行反复 -43%+ 均由此触发）；EVR 胜率 35.8%／

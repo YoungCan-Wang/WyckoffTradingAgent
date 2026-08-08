@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from importlib.util import find_spec
 from typing import Any
 
 import pandas as pd
@@ -31,12 +30,6 @@ class WbtEvaluation:
     daily_return: pd.DataFrame | None = None
     dailys: pd.DataFrame | None = None
     pairs: pd.DataFrame | None = None
-
-
-def is_wbt_installed() -> bool:
-    """Return True when the optional ``wbt`` Python package is importable."""
-
-    return find_spec("wbt") is not None
 
 
 def _record_get(record: Any, key: str, default: Any = None) -> Any:

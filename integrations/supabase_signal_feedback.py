@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, timedelta
 from typing import Any
 
 from core.constants import (
@@ -113,10 +113,6 @@ def upsert_signal_observations(rows: list[dict[str, Any]]) -> int:
 
 def upsert_signal_outcomes(rows: list[dict[str, Any]]) -> int:
     return _execute_upsert(TABLE_SIGNAL_OUTCOMES, rows, "observation_id,horizon_days")
-
-
-def upsert_signal_health(rows: list[dict[str, Any]]) -> int:
-    return _execute_upsert(TABLE_SIGNAL_HEALTH_DAILY, rows, "market,as_of_date,signal_type,regime,horizon_days")
 
 
 def upsert_signal_registry(rows: list[dict[str, Any]]) -> int:
@@ -408,20 +404,3 @@ def load_policy_shadow_runs(days: int = 30, limit: int = 1000, market: str = "cn
     finally:
         if client is not None:
             _close(client)
-
-
-def touch_registry_defaults(market: str, signal_types: list[str]) -> int:
-    now_iso = datetime.now(UTC).isoformat()
-    rows = [
-        {
-            "market": market,
-            "signal_type": signal_type,
-            "track": "Accum" if signal_type in {"spring", "lps", "compression"} else "Trend",
-            "status": "ACTIVE",
-            "weight_multiplier": 1.0,
-            "reason": "default active",
-            "updated_at": now_iso,
-        }
-        for signal_type in signal_types
-    ]
-    return upsert_signal_registry(rows)

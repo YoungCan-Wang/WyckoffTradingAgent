@@ -710,18 +710,6 @@ def save_market_signal(trade_date: str, data: dict) -> None:
         )
 
 
-def load_latest_market_signal() -> dict | None:
-    conn = get_db()
-    cur = conn.execute("SELECT data_json FROM market_signal_daily ORDER BY trade_date DESC LIMIT 1")
-    row = cur.fetchone()
-    if not row:
-        return None
-    try:
-        return json.loads(row["data_json"])
-    except (json.JSONDecodeError, TypeError):
-        return None
-
-
 # ---------------------------------------------------------------------------
 # Theme radar snapshot
 # ---------------------------------------------------------------------------
