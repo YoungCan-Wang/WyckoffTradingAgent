@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from datetime import date, datetime, timedelta
 
 import _bootstrap  # noqa: F401
@@ -65,7 +64,7 @@ def check_market_signal(client, days: int) -> bool:
     cutoff = (date.today() - timedelta(days=days)).isoformat()
     rows = (
         client.table("market_signal_daily")
-        .select("trade_date,premarket_regime,benchmark_regime,source_jobs")
+        .select("trade_date,premarket_regime,benchmark_regime")
         .gte("trade_date", cutoff)
         .order("trade_date")
         .execute()
@@ -76,7 +75,7 @@ def check_market_signal(client, days: int) -> bool:
         return False
 
     weekdays = "一二三四五六日"
-    print(f"{'trade_date':12s}{'周':>4s}{'premarket':>12s}{'benchmark':>14s}{'daily_job写入日':>18s}{'判定':>8s}")
+    print(f"{'trade_date':12s}{'周':>4s}{'premarket':>12s}{'benchmark':>14s}{'判定':>8s}")
     streak = 0
     for row in data:
         day = date.fromisoformat(str(row.get("trade_date"))[:10])
@@ -85,37 +84,30 @@ def check_market_signal(client, days: int) -> bool:
         ready = market_signal_row_ready(row)
         streak = streak + 1 if ready else 0
         print(
-            f"{day.isoformat():12s}{weekdays[day.weekday()]:>4s}{pre or '-':>12s}{bench or '-':>14s}"
-            f"{_daily_job_day(row) or '-':>18s}{'OK' if ready else '未就绪':>8s}"
+            f"{day.isoformat():12s}{weekdays[day.weekday()]:>4s}{pre or '-':>12s}"
+            f"{bench or '-':>14s}{'OK' if ready else '未就绪':>8s}"
         )
 
     print(f"\n当前连续就绪 = {streak} 个交易日（门槛 {REQUIRED_STREAK}）")
     print("判定口径：benchmark_regime 非空，且 premarket_regime 非空且不为 UNKNOWN")
-    _report_friday_gap(data)
+    _report_latest_gap(data)
     return streak >= REQUIRED_STREAK
 
 
-def _daily_job_day(row: dict) -> str:
-    payload = row.get("source_jobs")
-    if isinstance(payload, str):
-        try:
-            payload = json.loads(payload)
-        except ValueError:
-            return ""
-    updated = ((payload or {}).get("daily_job") or {}).get("updated_at")
-    return str(updated)[:10] if updated else ""
+def _report_latest_gap(data: list[dict]) -> None:
+    """最后一行未就绪时，区分「排期未到点」与「真实缺失」。
 
-
-def _report_friday_gap(data: list[dict]) -> None:
-    """周五的 trade_date 没有对应排期：漏斗 cron 是周日到周四，各自写当天的行。"""
-    fridays = [r for r in data if date.fromisoformat(str(r.get("trade_date"))[:10]).weekday() == 4]
-    if not fridays:
+    漏斗 cron 为 '17 9 * * 0-4'（周日至周四，北京 17:17），而 resolve_trading_window 取
+    ≤ 触发日的最近交易日——周日触发写的是上一个周五。五个交易日都有对应运行，不存在
+    按周几的结构性缺口；最新一行为空通常只是写它的那次运行还没跑。
+    """
+    latest = data[-1]
+    if market_signal_row_ready(latest):
         return
-    same_day = sum(1 for r in fridays if _daily_job_day(r) == str(r.get("trade_date"))[:10])
-    print(f"周五行 {len(fridays)} 个，其中 daily_job 当日写入 {same_day} 个")
-    if same_day < len(fridays):
-        print("  提示：wyckoff_funnel.yml 的 cron 为 '17 9 * * 0-4'（周日至周四），")
-        print("  周五 trade_date 只能靠事后补写获得 benchmark_regime。")
+    day = date.fromisoformat(str(latest.get("trade_date"))[:10])
+    writer = "当日" if day.weekday() != 4 else "随后那个周日"
+    print(f"最新一行 {day.isoformat()} 未就绪；写入它的是{writer} 17:17（北京）的漏斗运行。")
+    print("  先确认该次运行是否已到点或已成功，再判定为故障。")
 
 
 def check_execution_loop(client, portfolio_id: str) -> bool:
