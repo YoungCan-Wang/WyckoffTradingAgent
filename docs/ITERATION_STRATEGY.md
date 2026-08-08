@@ -452,6 +452,46 @@ fail-closed 本身要保留，缺的是可见性：缺失与「行情确实不�
 方法论上这两条同源：**不要用「工作流成功」当验收标准**，要盯产出分布。零产出、恒定产出、
 产出与输入无交集，都是要当故障排查的信号。
 
+## 两条运维验收项的判据修正（2026-08-09）
+
+第一次直接读库体检上面两条 P0，结论是**两条都比记录的更健康，但我原先写下的判据本身有缺陷**。
+体检入口固化为只读脚本 `scripts/check_execution_loop.py`（不写库、不发通知）。
+
+**盘前风控：`schedule` 兜底确实生效。** `premarket_regime` 按周几的非空率为周一 9/11、周二 8/11、
+周三 11/11、周四 11/11、周五 10/10；07-29 兜底上线之前周一周二有 5 天空，上线之后 2/2 均已填上。
+`benchmark_regime` 全窗口（05-25 ~ 08-07，54 行）只缺 5 天，其中 4 天正是本文档上一节记录的
+`PANIC_REPAIR` 撞 CHECK 约束那次，之后未复发。
+
+**但「两字段均非空」这个判据放得过松。** `premarket_regime = UNKNOWN` 是非空的，能通过该检查，
+而 `UNKNOWN` 本身就是禁买状态——`normalize_premarket_regime` 会把缺失值和真实判定压成同一个值。
+生产 2026-08-07 即此形态：A50 数据缺失，盘前写入 `UNKNOWN`、`premarket_reasons` 为
+「A50 数据缺失，盘前风险无法完整确认」。判据已改为「`benchmark_regime` 非空，且 `premarket_regime`
+非空且不为 `UNKNOWN`」，与 `market_signal_readiness` 的 `ready` 条件对齐，并由测试锁定两者同口径。
+生产代码本身没有这个问题：`market_signal_readiness` 早已把 `UNKNOWN` 判为 `partial`。
+
+**周五的 `trade_date` 结构性拿不到当日 `benchmark_regime`。** `wyckoff_funnel.yml` 的 cron 是
+`17 9 * * 0-4`（周日至周四），各次运行写自己那天的行。窗口内 10 个周五行只有 1 个的
+`daily_job.updated_at` 落在当日，其余都来自 08-05 01:03 的一次批量补写。这不是故障，但意味着
+「连续 10 个交易日就绪」的门槛在只靠排期的情况下无法达成——每周五都会断一次。要么接受按
+「周一至周四」计数，要么给周五补一次盘后运行。这一条尚未决定，先记录。
+
+**执行环当前无告警，且告警逻辑没有盲区。** 11 个运行日（07-23 ~ 08-06）内 `find_unexecuted_exits`
+返回空。体检中一度怀疑存在盲区：603661 恒林股份连续 11 个运行日全是 EXIT、工单写
+`source=holding shares=600`，但它不在 `portfolio_positions` 里，而 `find_unexecuted_exits` 的第一步
+`if code in held` 会把它整个跳过。核查后否决了这个怀疑——600378、600611 呈同样形态且离场单都停在
+07-31，最合理的解释是这些仓位已在 07-31 至 08-03 之间卖出，「不在持仓即视为已执行」正是
+`test_exit_for_a_code_no_longer_held_means_it_was_executed` 明确的设计契约。
+
+**该怀疑源自一处口径错误，值得单独记下来：用 `daily_nav.positions_value` 反推持仓。** 当时的推理是
+08-06 的 `positions_value` 68,439 减去 6 只现存 A 股市值 49,864，缺口 18,575 接近 603661 的
+600 股 × 31.55 = 18,930，故判断它仍在持仓。但 `total_equity 93,866.47 − free_cash 25,427.47`
+恰好等于 68,439.00——**`positions_value` 是残差，不是市值合计**，本文档「实盘反馈验收」一节记的
+`daily_nav` 口径问题就是这件事。拿一个已知为残差的字段去反推持仓，等于用结论证明结论。
+
+三处一并固化进脚本，避免重踩：`trade_orders`/`portfolio_positions` 的主键是 `USER_LIVE:<uuid>`
+而非裸 `USER_LIVE`（后者是另一条早期遗留记录）；`market_signal_daily` 没有 `market` 列；
+`positions_value` 不可当账本。
+
 ## 产业基本面召回通道：立论前提未成立（2026-08-08）
 
 [`FUNDAMENTAL_THEME_LANE_TECHNICAL_DESIGN.md`](FUNDAMENTAL_THEME_LANE_TECHNICAL_DESIGN.md) 提出新建一条
@@ -577,8 +617,8 @@ Newey-West `|t| >= 2`、五分位单调 `rho >= 0.7`、Top-Bottom spread 跨窗�
 |--------|------|----------|
 | P0 | 修复数据泄漏、标签污染、候选与回测口径不一致 | 同一输入在实盘与回放得到同一候选语义 |
 | P0 | **停止**在 OHLCV 形态阈值 / 排序 / 退出参数上迭代 | 见「L4 形态信号四层归因结论」；再开此类实验须先说明为何结论不适用 |
-| P0 | 闭合执行环 | 见「实盘反馈验收」；成交回填与拖延告警已上线，需连续两周无「未执行离场工单」告警才算闭合 |
-| P0 | 恢复盘前风控的按时产出 | 见「漏斗体检」；`schedule` 兜底已上线，需连续两周 `market_signal_daily` 当日行的 `premarket_regime` 与 `benchmark_regime` 均非空 |
+| P0 | 闭合执行环 | 见「实盘反馈验收」；成交回填与拖延告警已上线，需连续两周无「未执行离场工单」告警才算闭合。用 `scripts/check_execution_loop.py` 体检 |
+| P0 | 恢复盘前风控的按时产出 | 见「漏斗体检」与「两条运维验收项的判据修正」；需连续两周 `market_signal_daily` 当日行 `benchmark_regime` 非空、且 `premarket_regime` 非空**且不为 `UNKNOWN`**。仅「非空」会假通过 |
 | P0 | **停止**在合成价值分及其变体上迭代 | 见「连续历史证伪」；全周期八格全负、加宽度 t 值衰减到负，再开须先给出与 beta 分离的新证据 |
 | P0 | 任何新因子结论先过连续历史 | 挑窗一律不作数；须同时给出 beta 调整后 alpha 的 t 值与宽度扫描 |
 | P0 | 「某只票没进漏斗」先做逐层归因，再谈新建通道 | 用 `scripts/diagnose_funnel_recall.py` 给出 L1/L2/L3/买点/离场的真实拒绝层；见「产业基本面召回通道」 |
