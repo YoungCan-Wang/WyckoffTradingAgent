@@ -694,3 +694,56 @@ def test_low_score_confirmed_signal_does_not_downgrade_funnel_candidate(monkeypa
     assert replay.records[0].track == "Accum"
     assert replay.records[0].trigger == "spring"
     assert replay.records[0].signal_confirmed is True
+
+
+def test_trade_record_carries_alloc_and_watch_scores_separately():
+    """排序诊断需要分列记录两种分数。
+
+    score/alloc_score 是 allocate_ai_candidates 的排序分（含主升 +100、触发分等）；
+    watch_score 是 candidate_ranker 的 L3 质量分，在最终排序里只贡献 *8（上限 9.6）。
+    合成一列会让"排序主体无效"与"质量分无效"无法区分——此前 trades.csv 只有 score
+    一列且实为触发分，导致相关性分析口径错误。
+    """
+    import dataclasses
+
+    from core.backtest_execution import TradeRecord
+
+    fields = {f.name for f in dataclasses.fields(TradeRecord)}
+    assert {"alloc_score", "watch_score"} <= fields
+
+    record = TradeRecord(
+        signal_date=date(2026, 1, 2),
+        entry_date=date(2026, 1, 3),
+        exit_date=date(2026, 1, 5),
+        code="000001",
+        name="平安银行",
+        trigger="sos",
+        score=42.0,
+        entry_close=10.0,
+        exit_close=11.0,
+        ret_pct=10.0,
+        alloc_score=42.0,
+        watch_score=0.87,
+    )
+    row = dataclasses.asdict(record)
+    assert row["alloc_score"] == 42.0
+    assert row["watch_score"] == 0.87
+    assert row["watch_score"] != row["alloc_score"]
+
+
+def test_watch_score_map_degrades_to_empty_on_failure(monkeypatch):
+    """诊断字段不得影响回测主流程：排名失败时返回空表而非抛出。"""
+    monkeypatch.setattr(replay_mod, "rank_l3_candidates", lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+    ctx = replay_mod._DayContext(
+        0,
+        date(2026, 1, 2),
+        date(2026, 1, 3),
+        {},
+        {},
+        FunnelConfig(),
+        _result(),
+        "NEUTRAL",
+        {},
+    )
+
+    assert replay_mod._watch_score_map(ctx, {}) == {}

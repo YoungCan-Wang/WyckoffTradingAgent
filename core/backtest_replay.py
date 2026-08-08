@@ -34,6 +34,7 @@ from core.backtest_execution import (
 )
 from core.backtest_selection import combine_trigger_scores, select_ai_input_codes
 from core.candidate_policy import CandidatePolicyConfig, candidate_score_value
+from core.candidate_ranker import rank_l3_candidates
 from core.candidate_tracks import candidate_entry_track
 from core.mainline_engine import MainlineEngineConfig
 from core.market_breadth import calc_market_breadth
@@ -160,6 +161,7 @@ class _RankedSelection:
     trigger_name_map: dict[str, tuple[float, str]]
     confirmed_codes: frozenset[str] = field(default_factory=frozenset)
     signal_type_map: dict[str, str] = field(default_factory=dict)
+    watch_score_map: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -377,6 +379,7 @@ def _limit_probe_only_selection(
             {code: selected.trigger_name_map[code] for code in kept if code in selected.trigger_name_map},
             frozenset(code for code in kept if code in selected.confirmed_codes),
             {code: selected.signal_type_map[code] for code in kept if code in selected.signal_type_map},
+            {code: selected.watch_score_map[code] for code in kept if code in selected.watch_score_map},
         ),
         len(selected.codes) - 1,
     )
@@ -520,6 +523,7 @@ def _select_ranked_codes(
     ranked_codes = _apply_selection_guards(ranked_codes, ctx, config)
     if not ranked_codes:
         return None, len(confirmed.codes)
+    watch_score_map = _watch_score_map(ctx, sector_map)
     return (
         _RankedSelection(
             ranked_codes,
@@ -528,9 +532,31 @@ def _select_ranked_codes(
             _name_score_map(ctx.result, confirmed, prefer_confirmed=config.pending_mode == "only"),
             frozenset(confirmed.codes),
             confirmed.trigger_map,
+            watch_score_map,
         ),
         len(confirmed.codes),
     )
+
+
+def _watch_score_map(ctx: _DayContext, sector_map: dict[str, str]) -> dict[str, float]:
+    """L3 质量分（candidate_ranker.watch_score），仅用于排序有效性诊断。
+
+    它不参与回测决策：最终排序由 allocate_ai_candidates 决定，watch_score 在那里
+    只贡献 watch_score*8（上限 9.6），相对主升 +100 与触发分是小量。分列记录才能
+    区分"排序主体无效"与"质量分无效"。
+    """
+    try:
+        _, score_map = rank_l3_candidates(
+            l3_symbols=ctx.result.layer3_symbols,
+            df_map=ctx.day_df_map,
+            sector_map=sector_map,
+            triggers=ctx.result.triggers,
+            top_sectors=ctx.result.top_sectors,
+            l2_channel_map=ctx.result.channel_map,
+        )
+    except Exception:
+        return {}
+    return {str(k): float(v) for k, v in (score_map or {}).items()}
 
 
 def _confirmed_signals(
@@ -787,6 +813,8 @@ def _make_trade_record(
         name=name_map.get(code, code),
         trigger=trigger_name,
         score=candidate_score_value(selected.score_map.get(code)),
+        alloc_score=candidate_score_value(selected.score_map.get(code)),
+        watch_score=selected.watch_score_map.get(code),
         entry_close=plan.entry_close,
         exit_close=exit_close,
         ret_pct=(exit_exec - entry_exec) / entry_exec * 100.0 if entry_exec > 0 else 0.0,
