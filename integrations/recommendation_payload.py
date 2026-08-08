@@ -177,14 +177,67 @@ def write_recommendation_backup_artifact(
     return [str(json_path), str(sql_path)]
 
 
+def _write_step3_verdicts(
+    client: Any,
+    recommend_date: int,
+    step3_verdicts: dict[str, str] | None,
+    now_iso: str,
+) -> None:
+    """按判定分组批量写 step3_verdict，失败不影响 AI 标记主流程。
+
+    该字段是纯观测数据，不参与任何交易决策，因此写失败只告警不抛出——不能因为
+    一个诊断字段拖垮每日入库。但列缺失会被明确记为 ERROR 并给出 DDL，否则功能
+    会静默失效数月而无人察觉（本次上线前该列确实不存在）。
+
+    所需 DDL（Supabase schema 不在本仓库管理，需手动执行一次）：
+        ALTER TABLE recommendation_tracking ADD COLUMN IF NOT EXISTS step3_verdict text;
+    """
+    if not step3_verdicts:
+        return
+    by_verdict: dict[str, list[int]] = {}
+    for code6, verdict in step3_verdicts.items():
+        code_int = _safe_code_int(code6)
+        if code_int is None or not str(verdict or "").strip():
+            continue
+        by_verdict.setdefault(str(verdict).strip(), []).append(code_int)
+    for verdict, code_ints in by_verdict.items():
+        try:
+            client.table(TABLE_RECOMMENDATION_TRACKING).update({"step3_verdict": verdict, "updated_at": now_iso}).eq(
+                "recommend_date", recommend_date
+            ).in_("code", sorted(set(code_ints))).execute()
+        except Exception as exc:
+            if "step3_verdict" in str(exc) and "does not exist" in str(exc):
+                logger.error(
+                    "step3_verdict 列不存在，LLM 判定未落库。请执行一次: "
+                    "ALTER TABLE recommendation_tracking ADD COLUMN IF NOT EXISTS step3_verdict text;"
+                )
+            else:
+                logger.warning("step3_verdict 写入失败 verdict=%s count=%d", verdict, len(code_ints), exc_info=True)
+            return
+
+
+def _safe_code_int(code6: object) -> int | None:
+    try:
+        text = str(code6 or "").strip()
+        return int(text) if text.isdigit() else None
+    except (TypeError, ValueError):
+        return None
+
+
 def mark_ai_recommendations(
     recommend_date: int,
     ai_codes: list[str],
     springboard_updates: dict[str, dict[str, Any]] | None = None,
+    step3_verdicts: dict[str, str] | None = None,
 ) -> bool:
     """
     将某个推荐日的记录标记为是否 AI 推荐（可操作池）。
     ai_codes 传入 6 位代码字符串列表。
+
+    step3_verdicts 是 code6 -> invalidated/building/springboard 的完整三分类。
+    只标记放行码（is_ai_recommended）无法评估 LLM——被否决的候选不留痕迹，
+    事后就无法回答"拦对了吗"。把判定一并写入后，跟踪表里每个候选都带 LLM 结论，
+    配合既有的 change_pct/MFE/MAE 即可算出 LLM 的真实区分度。
     """
     if not is_supabase_configured():
         return False
@@ -196,6 +249,7 @@ def mark_ai_recommendations(
         client.table(TABLE_RECOMMENDATION_TRACKING).update({"is_ai_recommended": False, "updated_at": now_iso}).eq(
             "recommend_date", recommend_date
         ).execute()
+        _write_step3_verdicts(client, recommend_date, step3_verdicts, now_iso)
 
         code_map = ai_code_ints(ai_codes)
         if code_map:

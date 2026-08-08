@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import sys
 from contextlib import redirect_stderr, redirect_stdout
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from workflows.step4_pipeline import log_line as log_line
 
@@ -26,6 +26,9 @@ class Step3StageResult:
     springboard_codes: list[str]
     springboard_updates: dict[str, dict]
     summary_item: dict
+    # code6 -> invalidated / building / springboard。纯观测字段，用于事后评估
+    # LLM 是否真有区分度；不参与任何交易决策。
+    verdicts: dict[str, str] = field(default_factory=dict)
 
     @property
     def blocking_failure(self) -> bool:

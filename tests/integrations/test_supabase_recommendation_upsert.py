@@ -415,3 +415,75 @@ def test_mark_ai_recommendations_updates_step3_springboard_fields(monkeypatch):
     assert client.updates[2]["eq"] == {"recommend_date": 20260617, "code": 603373}
     assert client.updates[2]["payload"]["springboard_combo"] == "A+C"
     assert client.updates[2]["payload"]["springboard_met_count"] == 2
+
+
+class _FakeQuery:
+    def __init__(self, sink, fail_missing_column=False):
+        self.sink = sink
+        self.fail_missing_column = fail_missing_column
+        self.payload = None
+        self.filters = {}
+
+    def update(self, payload):
+        self.payload = payload
+        return self
+
+    def eq(self, key, value):
+        self.filters[key] = value
+        return self
+
+    def in_(self, key, values):
+        self.filters[key] = list(values)
+        return self
+
+    def execute(self):
+        if self.fail_missing_column and "step3_verdict" in (self.payload or {}):
+            raise RuntimeError("column recommendation_tracking.step3_verdict does not exist")
+        self.sink.append((dict(self.payload or {}), dict(self.filters)))
+        return type("R", (), {"data": []})()
+
+
+class _FakeClient:
+    def __init__(self, fail_missing_column=False):
+        self.writes = []
+        self.fail_missing_column = fail_missing_column
+
+    def table(self, _name):
+        return _FakeQuery(self.writes, self.fail_missing_column)
+
+
+def test_write_step3_verdicts_groups_by_verdict():
+    from integrations.recommendation_payload import _write_step3_verdicts
+
+    client = _FakeClient()
+    _write_step3_verdicts(
+        client,
+        20260808,
+        {"000001": "invalidated", "000002": "invalidated", "300750": "springboard"},
+        "2026-08-08T00:00:00Z",
+    )
+
+    verdict_writes = {w[0]["step3_verdict"]: w[1]["code"] for w in client.writes}
+    assert verdict_writes["invalidated"] == [1, 2]
+    assert verdict_writes["springboard"] == [300750]
+
+
+def test_write_step3_verdicts_missing_column_does_not_raise(caplog):
+    """列缺失必须明确报错但不抛出——诊断字段不能拖垮每日入库。"""
+    from integrations.recommendation_payload import _write_step3_verdicts
+
+    client = _FakeClient(fail_missing_column=True)
+    with caplog.at_level("ERROR"):
+        _write_step3_verdicts(client, 20260808, {"000001": "invalidated"}, "2026-08-08T00:00:00Z")
+
+    assert "ALTER TABLE recommendation_tracking" in caplog.text
+
+
+def test_write_step3_verdicts_noop_on_empty():
+    from integrations.recommendation_payload import _write_step3_verdicts
+
+    client = _FakeClient()
+    _write_step3_verdicts(client, 20260808, None, "2026-08-08T00:00:00Z")
+    _write_step3_verdicts(client, 20260808, {}, "2026-08-08T00:00:00Z")
+
+    assert client.writes == []

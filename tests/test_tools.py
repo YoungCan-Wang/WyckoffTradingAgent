@@ -4301,3 +4301,60 @@ class TestSymbolPool:
         }
         assert result["action_plan"]["data_quality_gate"]["status"] == "degraded"
         assert result["action_plan"]["report_candidates"][0]["action_status"] == "blocked_by_data_quality"
+
+
+class TestExtractStep3Verdicts:
+    """LLM 三分类判定解析：只记录放行码无法评估 LLM，被否决的也必须留痕。"""
+
+    REPORT = """🏛️ Alpha 投委会机密电报
+
+## 💀 逻辑破产 (Invalidated)
+- 000001 平安银行 | 放量 2.3x 冲高后收在振幅下沿 18%
+
+## ⏳ 储备营地 (Building Cause)
+### 🟡 近就绪（差 1 个条件）
+- 000002 万科A | 缺放量确认
+### ⚪ 早期（差 2+ 个条件）
+- 600519 贵州茅台 | 早期阶段
+
+## 🏹 处于起跳板 (On the Springboard)
+- 300750 宁德时代 | VALIDATED | 量比 0.7 缩量回踩
+"""
+
+    def test_classifies_all_three_buckets(self):
+        from tools.report_parser import extract_step3_verdicts
+
+        verdicts = extract_step3_verdicts(self.REPORT, ["000001", "000002", "600519", "300750"])
+
+        assert verdicts["000001"] == "invalidated"
+        assert verdicts["300750"] == "springboard"
+        # 子标题（近就绪/早期）不得中断分组，否则这两只会漏掉
+        assert verdicts["000002"] == "building"
+        assert verdicts["600519"] == "building"
+
+    def test_unlisted_code_absent_not_defaulted_to_pass(self):
+        """未出现在任何分组的候选不返回——漏写与研报失败都不应算作通过。"""
+        from tools.report_parser import extract_step3_verdicts
+
+        verdicts = extract_step3_verdicts(self.REPORT, ["000001", "999999"])
+
+        assert "999999" not in verdicts
+
+    def test_invalidated_wins_when_model_contradicts_itself(self):
+        """同码出现在多组时取最保守判定，不能把被否决的记成放行。"""
+        from tools.report_parser import extract_step3_verdicts
+
+        report = "## 🏹 起跳板\n- 000001\n\n## 💀 逻辑破产\n- 000001\n"
+
+        assert extract_step3_verdicts(report, ["000001"]) == {"000001": "invalidated"}
+
+    def test_empty_inputs_are_safe(self):
+        from tools.report_parser import extract_step3_verdicts
+
+        assert extract_step3_verdicts("", ["000001"]) == {}
+        assert extract_step3_verdicts(self.REPORT, []) == {}
+
+    def test_existing_invalidated_extractor_unaffected(self):
+        from tools.report_parser import extract_invalidated_codes
+
+        assert extract_invalidated_codes(self.REPORT, ["000001", "000002", "300750"]) == ["000001"]

@@ -388,8 +388,8 @@ claude mcp add wyckoff -- wyckoff-mcp
 ```
 ❯ 用户问题                           ← cyan 粗体
 
-  💭 推理摘要…  (1234 字)             ← thinking：一行，dim italic
-  ⚙ 搜索股票  keyword=宁德           ← tool 执行：黄色
+  … 推理摘要  (1234 字)               ← thinking：一行，dim italic
+  ✓ 搜索股票  0.3s                   ← tool 完成：绿色（执行中的 spinner 显示在状态栏）
   ✓ 搜索股票  0.3s                   ← tool 完成：绿色
   ✗ 调取行情  1.2s 超时              ← tool 失败：红色
   ↗ 全市场扫描  已提交后台            ← 后台任务：cyan
@@ -616,8 +616,18 @@ CREATE TABLE chat_log (
 |---|------|
 | `schema_version` | 迁移版本管理（当前 v15） |
 | `agent_memory_fts` | FTS5 全文检索索引（自动同步） |
-| `recommendation_tracking` | 形态复盘镜像；主线候选保存主题、阶段、角色与评分 |
+| `recommendation_tracking` | 形态复盘镜像；主线候选保存主题、阶段、角色与评分；`step3_verdict` 记录 LLM 三分类判定 |
 | `signal_pending` | 信号池镜像；跨日携带主线语义供 Step3/持仓诊断使用 |
+
+#### 待执行的 Supabase DDL
+
+Supabase schema 不在本仓库管理。`step3_verdict` 需手动执行一次后 LLM 判定才会落库（未执行时每日任务会在日志里记 ERROR 并给出该语句，不影响其他入库）：
+
+```sql
+ALTER TABLE recommendation_tracking ADD COLUMN IF NOT EXISTS step3_verdict text;
+```
+
+该字段取值 `invalidated` / `building` / `springboard`，是**纯观测数据，不参与任何交易决策**。它的用途是回答"LLM 拦对了吗"——此前只标记放行的 `is_ai_recommended`，被 LLM 否决的候选不留痕迹，导致 42 天内仅 4 条放行记录、`rag_vetoed` 全为 0，LLM 价值完全无法评估。积累 1-2 个月后即可对比三类判定各自的 `change_pct` / MFE / MAE，判断是否恢复其否决权（`STEP4_AI_CANDIDATE_POLICY=veto_only`）或彻底移除该链路。
 | `market_signal_daily` | 大盘信号镜像 |
 | `portfolio` | 持仓元数据镜像 |
 | `portfolio_position` | 持仓明细镜像 |
