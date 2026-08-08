@@ -34,6 +34,7 @@ data/*.csv
 data/trade_dates_cache.json
 data/sector_map_cache.json
 data/market_cap_cache.json
+data/float_share_cache.json
 data/concept_map_cache.json
 data/concept_heat_cache.json
 data/ths_hot_events_cache.json

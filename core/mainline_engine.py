@@ -16,6 +16,7 @@ from core._price_math import ret_pct as _ret_pct
 from core._price_math import sort_by_date_if_needed
 from core._price_math import upper_shadow_pct as _upper_shadow_pct
 from core._price_math import vol_ratio as _vol_ratio
+from core.candidate_metadata import code6
 from core.main_force_signal import MainForceSignal, analyze_main_force_signal
 from core.theme_radar import normalize_theme_name
 from utils.safe import safe_float as _safe_float
@@ -710,8 +711,7 @@ def _metric_score(metrics: dict, keys: tuple[str, ...], weak: float, strong: flo
 
 
 def _lookup_financial(financial_map: dict[str, dict], code: str) -> dict | None:
-    suffix = ".SH" if code.startswith(("6", "9")) else ".SZ"
-    return financial_map.get(code) or financial_map.get(f"{code}{suffix}")
+    return financial_map.get(code6(code))
 
 
 def _amount20_wan(amount: pd.Series) -> float:

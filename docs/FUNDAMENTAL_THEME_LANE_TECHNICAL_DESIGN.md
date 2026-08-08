@@ -1,10 +1,31 @@
 # 产业基本面独立召回通道：技术方案与验证协议
 
-> 状态：待实现（交付给后续编码 Agent）
-> 方案日期：2026-08-08
-> 目标分支：`codex/fundamental-theme-lane`
+> 状态：**Phase 1 已实现并合入；Phase 2–5 已暂停（`premise_not_supported`）**
+> 方案日期：2026-08-08　复核日期：2026-08-08
 > 原则：先证明独立信息有 alpha，再接 Shadow；先证明 Shadow 稳定，再讨论正式候选。本文不授权直接修改
 > `BUY`、市场闸门、Step4 或 OMS。
+>
+> **复核结论（先读这一段，再读方案正文）**
+>
+> 1. **Phase 1（第 2.3 节的代码键缺陷）是真 bug，已独立修复。** TickFlow 返回带后缀主键而下游按六位代码
+>    查询，导致财务覆盖率恒为 0、L1 财务硬过滤恒不命中、Step3 送进 LLM 的财务字段恒空。修复后全市场实测
+>    覆盖 5331/5331。这部分与下面的结论无关，是顺路发现的独立缺陷。
+> 2. **Phase 2–5 的立论前提经实测不成立。** 本方案的唯一经验依据是「AI 算力链五只票进不了漏斗」。按
+>    2026-08-07 逐层回放：五只全部通过 L1（与财务接线无关），四只倒在 L2 的 60 日回撤门槛（实际回撤
+>    26%–39%，且均线非多头排列），**五只的买点触发全部为空**——放宽召回也不会让它们当天成为候选。详见
+>    [`ITERATION_STRATEGY.md`](ITERATION_STRATEGY.md) 的「产业基本面召回通道」一节。
+> 3. **第 9.3 节的晋级门槛不足以判真伪。** 它与合成价值分当年**通过**的门槛是同一套（Rank IC 的
+>    Newey-West `|t| >= 2`、五分位单调 `rho >= 0.7`、spread 跨窗同号），而后者在 2018 至今连续历史上八格全负。
+>    重启前必须补两条：**beta 调整后 alpha 的 t 值**、**宽度扫描**（t 值须随持仓数上升）。第 7.4 节和门槛 5 用
+>    Top-K=1/3/5/10，方向正好相反。
+> 4. **第 5.2/5.3 节的示例行是按新易盛（300502）真实财务数据配的，权重让它拿到 rank 1。** 这与第 3.2 节
+>    非目标第 2 条「不根据少数已知牛股反推阈值」冲突。重启时须换成合成样例。
+> 5. **主检验口径要从逐笔超额改成组合级。** 第 8.2/8.3 节算的是「每笔候选相对同日全市场等权的超额」，
+>    正是 `ITERATION_STRATEGY.md`「组合级引擎揭示的三处口径错误」里指出会凭空造出 8–9%/年假 alpha 的
+>    一次性脚本口径（基准再平衡频率、一手制、零头现金）。
+>
+> 重启本方案 Phase 2 之前，先按 `ITERATION_STRATEGY.md` P0「任何新因子结论先过连续历史」补齐上述 3–5 项。
+> 以下正文保留原样，作为数据源能力调研与验证协议的素材。
 
 ## 1. 决策摘要
 
@@ -12,16 +33,25 @@
 财务、估值、业绩预告、机构预期和行情数据产生候选。第一阶段只做离线研究；通过预注册回测门槛后，候选才以
 `fundamental_theme_shadow` 身份写入现有观察与 outcome 体系，仍不进入正式推荐。
 
-这不是给现有 Wyckoff 分数叠加一个“基本面加分项”，也不是再次尝试“财务差就剔除形态信号”。仓库已有两项
+这不是给现有 Wyckoff 分数叠加一个“基本面加分项”，也不是再次尝试“财务差就剔除形态信号”。仓库已有三项
 负向证据：
 
 1. 通用基本面质量 Overlay 在 884 笔、六个窗口和 5/10/20 日持有期上均未通过，且剔除弱财务样本后平均收益和
    P10 反而恶化。结论已记录在 `docs/ITERATION_STRATEGY.md`。
 2. 通用“预告利润同比中点至少 +50%”事件研究包含 10,407 个主检验样本，5/10/20 日相对 A 股等权超额均为负。
-   对应研究提交为 `7bdafaf6`，只能复用其 point-in-time 归档和事件回测基础设施，不能推翻其失败结论。
+   对应研究提交为 `7bdafaf6`（只在 `codex/research-event-backtest`，未进 main），只能复用其 point-in-time 归档和
+   事件回测基础设施，不能推翻其失败结论。
+3. **本方案初版遗漏的一项，也是最贴近本方案的一项**：合成价值分（BP / 盈利收益率 / 销售市值比 / 股息率
+   按日秩标准化后合成，全市场截面排序，只做多 Top-N）在挑窗上通过了跨窗同号 4/5、Newey-West `IC_t=2.62`、
+   分位单调 0.76，年化 alpha 8.89%–11.19%，随后在 2018 至今连续历史上八格全为负。见
+   `docs/ITERATION_STRATEGY.md` 的「连续历史检验」。**本方案第 9.3 节的门槛与它当年通过的门槛是同一套**，
+   因此那套门槛不足以判真伪，须补 beta 调整后 alpha 的 t 值与宽度扫描。
 
 新通道要验证的是不同问题：**同一交易日的全市场截面中，盈利质量、增长变化、估值、预期修正和产业状态的组合，
 能否稳定区分未来相对收益**。只有这个问题被独立验证后，才讨论它与 Wyckoff 买点的交集。
+
+但请先读文首复核结论：本方案的立论依据（AI 算力链五只票进不了漏斗）经 2026-08-07 逐层回放已证伪，
+五只买点全空。因此上述问题在本轮**没有**进入验证阶段。
 
 ## 2. 为什么要改
 
@@ -148,18 +178,27 @@ flowchart LR
 Tushare/TickFlow: 000001.SZ / 601138.SH / 920xxx.BJ
 ```
 
-建议新增 `core/cn_symbols.py`，至少暴露：
+**不新增 `core/cn_symbols.py`**（本节原建议已作废）。仓库已有两个各司其职的工具，复用它们：
 
 ```python
-canonical_cn_code(raw: object) -> str
-to_tushare_code(code: str) -> str
-to_tickflow_code(code: str) -> str
+core.candidate_metadata.code6(raw)                    # 任意输入 -> 六位主键
+integrations.tickflow_client.normalize_cn_symbol(raw) # 六位主键 -> 供应商格式（.SH/.SZ/.BJ）
 ```
 
-禁止在业务层复制“6/9 为沪市、其它为深市”逻辑。注意北交所 `9` 开头不能再被误判为上交所；转换规则要复用
-`core.cn_boards`/现有数据源格式规则并由测试锁定。所有 map 在离开 adapter 前必须转成六位主键。
+`code6()` 语义与原设想的 `canonical_cn_code()` 一致；`normalize_cn_symbol()` 已是唯一知道
+「4/8/9 开头属北交所」的地方。再加一个模块只会制造两套主键工具。Tushare 侧若需 `ts_code`，在对应 adapter
+内部转换，不要新增第三套全局工具。
+
+禁止在业务层复制“6/9 为沪市、其它为深市”逻辑——这正是 `_lookup_financial` 曾经的写法，它让北交所三个前缀
+全部查不到、且 `9` 开头被误判为上交所。所有 map 在离开 adapter 前必须转成六位主键。
 
 ### 5.2 Point-in-time 因子行
+
+> **本节与 5.3 的示例数值须在重启时替换成合成样例。** 现有示例取自新易盛（300502）的真实财务
+> （`revenue_yoy` 105.76、`pe_ttm` 54.65、公告日 2026-04-24），而 5.3 的权重恰好让这只“贵但高增长高预期”的票
+> 拿到 `rank: 1`（Valuation 仅 32.0 却因权重只占 15 分而不影响排名）。这与第 3.2 节非目标第 2 条
+> “不根据少数已知牛股反推阈值，不硬编码新易盛、中际旭创、亿联网络或其它股票”冲突：虽未硬编码，但属于按
+> 已知标的标定权重。示例数据本身也不应暗示预期结果。
 
 建议使用冻结 dataclass 或 TypedDict，序列化时保持以下稳定字段：
 
@@ -355,10 +394,9 @@ F3 只在题材历史真实存在的日期运行，不能与 F0/F1/F2 的长历�
 
 ### 8.1 独立研究工作流
 
-建议文件结构：
+建议文件结构（Phase 2 起才创建；`core/cn_symbols.py` 已作废，见第 5.1 节）：
 
 ```text
-core/cn_symbols.py
 core/fundamental_theme_factors.py
 core/fundamental_theme_lane.py
 integrations/fundamental_history.py
@@ -367,7 +405,6 @@ integrations/consensus_archive.py
 workflows/fundamental_theme_archive.py
 workflows/fundamental_theme_backtest.py
 scripts/fundamental_theme_backtest.py
-tests/core/test_cn_symbols.py
 tests/core/test_fundamental_theme_factors.py
 tests/core/test_fundamental_theme_lane.py
 tests/integrations/test_fundamental_history.py
@@ -494,29 +531,55 @@ analysis/fundamental_theme_lane/result/*.md
 
 交付物：干净分支、计划清单、基线 fast gate 结果。
 
-### Phase 1：修复数据契约
+### Phase 1：修复数据契约 —— 已完成
 
-实现统一代码规范；修正全市场财务加载、数据质量统计、Step3 和 L1 的 lookup；补充针对后缀键和北交所的测试。
+实现与方案略有差别，按实际落地记录：
 
-此阶段只修“数据取到但下游读不到”，不把全市场财务默认开关改成 `True`，避免修 bug 与策略变化混在一个提交。
+**不新增 `core/cn_symbols.py`。** 仓库已有 `core.candidate_metadata.code6()`，语义与方案设想的
+`canonical_cn_code()` 一致（取末六位数字、左补零），再加一个模块只会制造两套主键工具。方案第 5.1 节设想的
+`to_tushare_code()` / `to_tickflow_code()` 也没有新增：`integrations.tickflow_client.normalize_cn_symbol()` 已经
+承担该职责，且它是唯一知道「4/8/9 开头属北交所」的地方。
 
-建议提交：`fix: normalize financial metric symbol keys`
+落地方式是在供应商边界收敛，而不是在业务层做双键兼容：
 
-### Phase 2：结构化数据归档
+- 新增 `integrations.tickflow_client.fetch_financial_metric_map(api_key, symbols)`，请求用供应商格式、
+  返回按 `code6` 主键。`get_financial_metrics()` 保留原语义（返回供应商主键）并在 docstring 标明，业务层改用
+  新函数。
+- `workflows/funnel_data.py::_load_financial_metrics` 与 `workflows/step3_candidates.py::_fetch_tickflow_financial_map`
+  改用该函数。
+- `core/mainline_engine.py::_lookup_financial` 原按「6/9 开头猜 `.SH`，其余猜 `.SZ`」做双键兼容，与
+  `normalize_cn_symbol` 把 4/8/9 映射到 `.BJ` 不一致，北交所三个前缀全部查不到、且 `9` 开头被误判为上交所；
+  改为统一按 `code6` 查询，删掉猜后缀逻辑。
+- 覆盖率统计原以 `len(financial_map)` 作分子，供应商多返回时会打印 `3/2`；改为按请求集合取差集。
+
+方案未提到但同属本类的一处：`funnel_data_quality` 的 `FINANCIAL_MIN_COVERAGE = 0.90` 在
+`financial_requested=False` 时整条跳过，而生产 `daily_job_lifecycle` 正是以 `include_financial_metrics=False`
+运行，所以 Step2 侧的 0% 覆盖率此前是潜伏的；一旦把开关翻成 `True`，闸门会立刻 fail closed。因此本阶段
+确实不能同时改开关，方案这个判断成立。
+
+提交：`fix: normalize financial metric symbol keys`。验证：新增
+`tests/workflows/test_financial_metric_keys.py`（9 项，全部 mock 网络），full pytest 2553 passed，fast gate 通过；
+全市场实测财务覆盖 5331/5331。
+
+### Phase 2：结构化数据归档 —— 已暂停
 
 实现财务历史、daily_basic、consensus adapters；复用 forecast 事件归档；生成 point-in-time Parquet 和 manifest。
 先跑固定 20/120 只 smoke，再跑全市场。记录速率、耗时、请求批数、覆盖率和失败分区。
 
 建议提交：`feat: archive point-in-time fundamental inputs`
 
-### Phase 3：纯函数因子和独立回测
+### Phase 3：纯函数因子和独立回测 —— 已暂停
 
 实现 F0/F1/F2/F3/F2-P、截面 percentile、缺失处理、候选解释和固定持有期回测。输出 JSON 明细和 Markdown
 汇总，运行完整消融和负控制。
 
+重启前须先改三处口径，否则结果不可与上一轮研究比较：主检验换成 2018 至今连续历史（不用挑窗）；每个实验臂
+给出对同频、同调仓基准回归后的 beta 调整 alpha 及其 t 值；把 Top-K=1/3/5/10 换成宽度扫描，并把「t 值随持仓数
+上升」写成门槛。第 8.2/8.3 节的逐笔超额要改成组合级，且把再平衡频率对齐、一手制、零头现金回收做成断言。
+
 建议提交：`feat: add fundamental theme lane backtest`
 
-### Phase 4：依据结果决策
+### Phase 4：依据结果决策 —— 已暂停
 
 - 未通过：提交报告，标记 research only，停止。
 - 通过：增加现有 observation/outcome 的 Shadow 接线和 feature flag，默认 `shadow`，不得进入正式 AI/OMS。
@@ -540,21 +603,17 @@ Step4 共享生产资源，沿用现有共享 concurrency group。
 
 ## 11. 测试与提交门禁
 
-每个阶段至少执行 fast gate 和聚焦测试：
+每个阶段至少执行 fast gate 和聚焦测试。Phase 1 已落地的聚焦测试：
 
 ```bash
-.venv/bin/ruff check .
-.venv/bin/ruff format --check .
-.venv/bin/python scripts/quality_gate.py --check-functions
-.venv/bin/python -m pytest \
-  tests/core/test_cn_symbols.py \
-  tests/core/test_fundamental_theme_factors.py \
-  tests/core/test_fundamental_theme_lane.py \
-  tests/integrations/test_fundamental_history.py \
-  tests/integrations/test_valuation_snapshot.py \
-  tests/integrations/test_consensus_archive.py \
-  tests/workflows/test_fundamental_theme_backtest.py -q
+.venv/bin/python -m pytest tests/workflows/test_financial_metric_keys.py tests/core/test_layer2_strength.py -q
 ```
+
+Phase 2–5 重启时按实际新增文件补充测试路径；下列文件均未创建，不要照抄：
+`tests/core/test_fundamental_theme_factors.py`、`tests/core/test_fundamental_theme_lane.py`、
+`tests/integrations/test_fundamental_history.py`、`tests/integrations/test_valuation_snapshot.py`、
+`tests/integrations/test_consensus_archive.py`、`tests/workflows/test_fundamental_theme_backtest.py`。
+`tests/core/test_cn_symbols.py` 不会创建——主键工具复用 `core.candidate_metadata.code6()`。
 
 准备合入前执行仓库完整门禁：
 
@@ -570,20 +629,25 @@ Step4 共享生产资源，沿用现有共享 concurrency group。
 若修改 `.github/workflows/`、生产数据写入或日任务，必须再通过 CI smoke dry-run。不能以本地测试、queued、
 in_progress 或 continue-on-error 任务作为可合并证据。PR 正文必须有 `Summary` 和 `Validation` Markdown 标题。
 
-## 12. Opus 5 执行约束与验收清单
+## 12. 执行约束与验收清单
 
-交给编码 Agent 时，应原样附带以下约束：
+Phase 1 已完成，Phase 2–5 已暂停。**在补齐文首复核结论第 3–5 项之前，不要把本节作为开工指令交给编码
+Agent。** 若日后重启，以下约束仍然适用：
 
-1. 先阅读根目录 `AGENTS.md`，从 `origin/main` 创建独立 worktree，绝不覆盖当前工作区改动。
-2. 先实现 Phase 1 并单独提交；不要在同一提交里修改策略权重或生产开关。
-3. 优先复用 `7bdafaf6` 的 forecast 归档；保留失败研究结论，不把负结果包装成已验证策略。
+1. 先阅读根目录 `AGENTS.md`，从最新 `main` 创建独立 worktree，绝不覆盖当前工作区改动。
+2. 先确认立论前提：用 `scripts/diagnose_funnel_recall.py` 对目标股票做逐层归因，确认拒绝确实发生在召回层，
+   而不是买点层或结构层。2026-08-08 的实测是五只票买点全空，前提不成立。
+3. 优先复用 `7bdafaf6` 的 forecast 归档（该提交只在 `codex/research-event-backtest`，未进 main）；保留失败研究
+   结论，不把负结果包装成已验证策略。
 4. 所有历史字段必须附 `information_available_date`，缺失就 unavailable，不做未来回填。
 5. 所有测试 mock 网络；真实数据探测只能是显式 smoke，不进入 pytest。
 6. 先跑 F0/F1/F2；在没有历史题材快照的日期不得运行伪造的 F3。
 7. 回测结果无论正负都提交机器可读 summary 和人类可读报告。
-8. 未达到第 9.3 节全部门槛时停止，不实现生产 Shadow。
+8. 未达到第 9.3 节全部门槛（且已补上 beta 调整 alpha 的 t 值与宽度扫描）时停止，不实现生产 Shadow。
 9. 达到离线门槛也只能实现 Shadow；不得写正式推荐、BUY、Step4 或 OMS。
 10. 最终交付列出：改动文件、数据覆盖、回测命令、每个实验臂结果、所有门禁、CI URL、未解决偏差。
 
 完成定义：不是“代码写完”或“回测为正”，而是数据时点可证明、结果可复现、消融能解释增量，并由预注册门槛
-给出 `rejected`、`keep_research_only` 或 `eligible_for_live_shadow` 三者之一。
+给出 `rejected`、`keep_research_only` 或 `eligible_for_live_shadow` 三者之一。本轮的实际结论是第四种：
+`premise_not_supported`——立论依据的现象经回放不存在，因此不进入回测阶段。允许研究结论为负，删除无效
+复杂度也是有效迭代。

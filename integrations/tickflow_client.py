@@ -215,6 +215,23 @@ def normalize_cn_symbol(raw: str) -> str:
     return f"{digits}.SH"
 
 
+def fetch_financial_metric_map(api_key: str, symbols: list[str]) -> dict[str, dict]:
+    """取最新财务指标，按仓库统一的六位主键返回 {code6: MetricsRecord}。
+
+    供应商后缀只存在于请求与响应边界；北交所 4/8/9 开头无法由六位代码反推交易所，
+    业务层不得自行拼接后缀。
+    """
+    from core.candidate_metadata import code6
+
+    raw = TickFlowClient(api_key=api_key).get_financial_metrics(symbols, latest=True)
+    out: dict[str, dict] = {}
+    for sym, records in raw.items():
+        code = code6(sym)
+        if code and records:
+            out[code] = records[0]
+    return out
+
+
 def parse_ohlcv_payload(payload: dict[str, Any]) -> pd.DataFrame:
     """将 TickFlow K线 payload 转为标准 DataFrame。"""
     data = payload.get("data") if isinstance(payload, dict) else None
@@ -462,7 +479,11 @@ class TickFlowClient:
         return resp.get("data", {}) if isinstance(resp, dict) else {}
 
     def get_financial_metrics(self, symbols: list[str], *, latest: bool = True) -> dict[str, list[dict]]:
-        """批量获取核心财务指标。返回 {symbol: [MetricsRecord]}"""
+        """批量获取核心财务指标。返回 {vendor_symbol: [MetricsRecord]}
+
+        主键为供应商格式（`300502.SZ`）。业务层请改用 `fetch_financial_metric_map()`，
+        它按仓库统一的六位主键返回，避免下游按六位代码查询时静默取空。
+        """
         clean = [normalize_cn_symbol(x) for x in symbols if str(x or "").strip()]
         clean = sorted({x for x in clean if x})
         if not clean:
