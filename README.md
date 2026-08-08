@@ -10,7 +10,7 @@
 [![Web App](https://img.shields.io/badge/Web-React%20App-0ea5e9.svg)](https://wyckoff-analysis.pages.dev/)
 [![Homepage](https://img.shields.io/badge/homepage-Wyckoff%20Homepage-0ea5e9.svg)](https://youngcan-wang.github.io/wyckoff-homepage/)
 
-[English](docs/README_EN.md) | [日本語](docs/README_JA.md) | [Español](docs/README_ES.md) | [한국어](docs/README_KO.md) | [架构文档](docs/ARCHITECTURE.md)
+[English](docs/README_EN.md) | [架构文档](docs/ARCHITECTURE.md)
 
 </div>
 
@@ -27,11 +27,7 @@ React Web、CLI、MCP 与 GitHub Actions 共同组成当前产品形态；日线
 ## 云端运行成本透明
 
 WyckoffAgent 会始终保持开源，欢迎 fork 自行部署、提交 Issue 和 PR。  
-从 **2026-06-03** 起，项目的云端共享服务按付费基础设施运行：行情源、数据库、AI 报告、在线分析服务和自动化维护都会进入显性成本模型。下面的 Supabase 配额提示是这类成本边界的例子，完整成本明细与风险边界见 [docs/COST_MODEL.md](docs/COST_MODEL.md)。
-
-<p align="center">
-  <img src="docs/screenshots/supabase-quota-grace-2026-06-03.svg" alt="Supabase quota grace period until 03 Jun, 2026" width="900" />
-</p>
+项目的云端共享服务按付费基础设施运行：行情源、数据库、AI 报告、在线分析服务和自动化维护都会进入显性成本模型。完整成本明细与风险边界见 [docs/COST_MODEL.md](docs/COST_MODEL.md)。
 
 ---
 

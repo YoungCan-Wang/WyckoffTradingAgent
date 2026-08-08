@@ -31,10 +31,10 @@ flowchart TD
     B --> C["Step2: run_funnel"]
     C --> D["读取上一轮<br/>signal_health_daily / signal_registry"]
     D --> E{"FUNNEL_DYNAMIC_POLICY"}
-    E -- "off" --> F1["静态 Trend / Accum 配额"]
-    E -- "shadow" --> F2["主流程仍用静态配额<br/>旁路计算动态候选"]
-    E -- "on" --> F3["动态配额 + registry 过滤"]
-    F1 --> G["Layer1-4 漏斗 + AI 候选分配"]
+    E -- "off" --> F1["不计算动态策略对照"]
+    E -- "shadow" --> F2["正式质量池不变<br/>旁路计算动态候选"]
+    E -- "on" --> F3["动态配额 + registry<br/>参与初始分配"]
+    F1 --> G["Layer1-4 漏斗 + 统一质量池"]
     F2 --> G
     F3 --> G
     G --> H["Step3: AI 三阵营研报"]
@@ -72,9 +72,9 @@ flowchart TD
 
 | 模式 | 主流程候选 | 额外落库 | 适用阶段 |
 |------|------------|----------|----------|
-| `off` | 静态配额 | 无 | 默认保守模式 |
-| `shadow` | 静态配额 | `signal_policy_shadow_runs` 记录动态配额会选哪些、会换掉哪些 | 观察新策略是否稳定，不影响漏斗正式输出 |
-| `on` | 动态配额 + registry 过滤 + 策略归因调权 | observations / outcomes 正常记录 | shadow 结果稳定后切正式 |
+| `off` | `tradeable_l4` 统一质量池 | 无 | 不运行动态策略对照 |
+| `shadow` | `tradeable_l4` 统一质量池 | `signal_policy_shadow_runs` 记录动态配额会选哪些、会换掉哪些 | 当前生产模式；观察新策略是否稳定，不影响正式输出 |
+| `on` | 动态策略参与初始分配，随后仍执行质量池损失护栏、总量和行业上限 | observations / outcomes 正常记录 | 实验模式，需在 shadow 验证稳定后再启用 |
 
 GitHub Actions 中建议用 Repository Variables 配置：
 
