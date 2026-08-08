@@ -418,8 +418,8 @@ sequenceDiagram
     T1->>REC: 形态复盘记录
     Note over T1: signal_pending 写入待确认
 
-    FB->>OBS: 读取观察样本
-    FB->>FB: 拉后续 K 线计算 1/3/5/10/20 日 outcomes
+    FB->>OBS: 读取观察样本和既有 outcome 状态
+    FB->>FB: 同股一次拉线，仅结算缺失/pending horizons
     FB->>HL: 聚合胜率/均值收益/权重
     FB->>REG: 更新信号启停状态
 

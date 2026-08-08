@@ -36,6 +36,7 @@ jobs:
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
       SIGNAL_REGISTRY_HORIZON: "5"
+      WYCKOFF_STRATEGY_REFLECTION: ${{ vars.WYCKOFF_STRATEGY_REFLECTION || 'shadow' }}
       TZ: Asia/Shanghai
 
     steps:
@@ -54,6 +55,15 @@ jobs:
 
       - name: Refresh signal feedback
         run: python -u scripts/signal_feedback_job.py
+
+      - name: Decide whether to run weekly strategy reflection
+        id: reflection_policy
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] || [ "$(date -u +%u)" = "5" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Download latest backtest confirmation
         env:
@@ -125,3 +135,7 @@ jobs:
             args+=(--formal-dynamic-approval-json formal_dynamic_approval.json)
           fi
           python -u scripts/strategy_attribution_report.py "${args[@]}"
+
+      - name: Refresh weekly strategy reflection
+        if: steps.reflection_policy.outputs.run == 'true'
+        run: python -u scripts/strategy_reflection_job.py

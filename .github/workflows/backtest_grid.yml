@@ -286,6 +286,12 @@ jobs:
           elif [ "$PERIOD" = "bear_2022" ]; then
             echo "BT_START=2021-12-13" >> "$GITHUB_ENV"
             echo "BT_END=2022-10-31" >> "$GITHUB_ENV"
+          elif [ "$PERIOD" = "sideways_2023" ]; then
+            echo "BT_START=2023-01-03" >> "$GITHUB_ENV"
+            echo "BT_END=2023-12-29" >> "$GITHUB_ENV"
+          elif [ "$PERIOD" = "volatile_2024" ]; then
+            echo "BT_START=2024-01-02" >> "$GITHUB_ENV"
+            echo "BT_END=2024-12-31" >> "$GITHUB_ENV"
           elif [ "$PERIOD" = "custom" ]; then
             if [ -z "$BT_END" ]; then
               echo "BT_END=$(TZ=Asia/Shanghai date -d '-1 day' +%Y-%m-%d)" >> "$GITHUB_ENV"
@@ -293,9 +299,15 @@ jobs:
             if [ -z "$BT_START" ]; then
               echo "BT_START=$(TZ=Asia/Shanghai date -d '-6 months -1 day' +%Y-%m-%d)" >> "$GITHUB_ENV"
             fi
-          else
+          elif [ "$PERIOD" = "recent_6m" ]; then
             echo "BT_END=$(TZ=Asia/Shanghai date -d '-1 day' +%Y-%m-%d)" >> "$GITHUB_ENV"
             echo "BT_START=$(TZ=Asia/Shanghai date -d '-6 months -1 day' +%Y-%m-%d)" >> "$GITHUB_ENV"
+          else
+            # 显式失败而非静默兜底：此前 sideways_2023/volatile_2024 在本 job 缺少
+            # 日期分支，落到"近 6 个月"默认值，于是拿 2026 的日期去查 2023 的快照，
+            # 报"回测区间交易日过少(0)"且看不出原因。矩阵新增周期必须同步这里。
+            echo "::error::未知周期 ${PERIOD}：grid job 缺少日期分支，请同步补充"
+            exit 1
           fi
 
       - uses: actions/checkout@v4

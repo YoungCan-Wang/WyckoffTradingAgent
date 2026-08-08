@@ -18,6 +18,7 @@ from integrations.supabase_signal_feedback import (
     load_recent_signal_observations,
     load_recent_signal_outcomes,
     load_signal_observations_by_ids,
+    load_signal_outcome_states,
     load_signal_registry,
     replace_signal_health,
     replace_signal_registry,
@@ -66,21 +67,54 @@ def run_signal_feedback(config: SignalFeedbackConfig, log_fn: LogFn = print) -> 
 
 def refresh_outcomes(config: SignalFeedbackConfig, log_fn: LogFn = print) -> int:
     observations = _observations_to_settle(config)
-    cache: dict[tuple[str, str, str], pd.DataFrame] = {}
+    pending = _pending_horizons(observations, config)
+    groups = _group_pending_observations(observations, pending, config.market)
     rows: list[dict[str, Any]] = []
     skipped = 0
-    for obs in observations:
-        cache_key = _observation_cache_key(obs, config.market)
-        if cache_key not in cache:
-            cache[cache_key] = _fetch_history(obs, config.end_date, config.pre_days)
-        if cache[cache_key].empty:
-            skipped += 1
-        rows.extend(_outcome_rows(obs, cache[cache_key], config.horizons))
+    for (market, code), group in groups.items():
+        start_date = min(_date_minus(obs.get("trade_date"), config.pre_days) for obs in group)
+        hist = _fetch_code_history(market, code, start_date, config.end_date)
+        if hist.empty:
+            skipped += len(group)
+            continue
+        for obs in group:
+            rows.extend(_outcome_rows(obs, hist, pending[int(obs["id"])]))
     written = upsert_signal_outcomes(rows)
     log_fn(
-        f"[signal_feedback] outcomes: observations={len(observations)}, rows={len(rows)}, skipped={skipped}, written={written}"
+        f"[signal_feedback] outcomes: observations={len(observations)}, unsettled={sum(len(v) for v in pending.values())}, "
+        f"symbols={len(groups)}, rows={len(rows)}, skipped={skipped}, written={written}"
     )
     return written
+
+
+def _pending_horizons(observations: list[dict[str, Any]], config: SignalFeedbackConfig) -> dict[int, tuple[int, ...]]:
+    ids = [int(obs["id"]) for obs in observations if obs.get("id") is not None]
+    states = load_signal_outcome_states(ids, config.market, raise_on_error=True)
+    pending: dict[int, tuple[int, ...]] = {}
+    for obs in observations:
+        if obs.get("id") is None:
+            continue
+        observation_id = int(obs["id"])
+        required = tuple(
+            horizon for horizon in config.horizons if states.get(observation_id, {}).get(horizon) in {None, "pending"}
+        )
+        if required:
+            pending[observation_id] = required
+    return pending
+
+
+def _group_pending_observations(
+    observations: list[dict[str, Any]],
+    pending: dict[int, tuple[int, ...]],
+    market: str,
+) -> dict[tuple[str, str], list[dict[str, Any]]]:
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for obs in observations:
+        if obs.get("id") is None or int(obs["id"]) not in pending:
+            continue
+        key = (str(obs.get("market") or market).lower(), str(obs.get("code") or ""))
+        groups.setdefault(key, []).append(obs)
+    return groups
 
 
 def _observations_to_settle(config: SignalFeedbackConfig) -> list[dict[str, Any]]:
@@ -146,12 +180,19 @@ def _normalize_history(raw: pd.DataFrame | None) -> pd.DataFrame:
 
 
 def _fetch_history(obs: dict[str, Any], end_date: str, pre_days: int) -> pd.DataFrame:
-    if str(obs.get("market") or "cn").lower() != "cn":
+    return _fetch_code_history(
+        str(obs.get("market") or "cn"),
+        str(obs.get("code") or ""),
+        _date_minus(obs.get("trade_date"), pre_days),
+        end_date,
+    )
+
+
+def _fetch_code_history(market: str, code: str, start_date: str, end_date: str) -> pd.DataFrame:
+    if str(market).lower() != "cn":
         return pd.DataFrame()
     from integrations.data_source import fetch_stock_hist
 
-    code = str(obs.get("code") or "")
-    start_date = _date_minus(obs.get("trade_date"), pre_days)
     try:
         raw = fetch_stock_hist(code, start_date, end_date, adjust="qfq")
     except RuntimeError:
@@ -187,11 +228,3 @@ def _outcome_row(obs: dict[str, Any], outcome) -> dict[str, Any]:
         "return_pct": outcome.return_pct,
         "max_drawdown_pct": outcome.max_drawdown_pct,
     }
-
-
-def _observation_cache_key(obs: dict[str, Any], market: str) -> tuple[str, str, str]:
-    return (
-        str(obs.get("market") or market),
-        str(obs.get("code") or ""),
-        str(obs.get("trade_date") or ""),
-    )

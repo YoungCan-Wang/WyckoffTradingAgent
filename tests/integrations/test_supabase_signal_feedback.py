@@ -241,3 +241,46 @@ def test_strict_outcome_load_raises_instead_of_returning_empty(monkeypatch):
 
     with pytest.raises(RuntimeError, match="failed to load signal outcomes"):
         mod.load_recent_signal_outcomes(raise_on_error=True)
+
+
+class _OutcomeStateQuery:
+    def __init__(self, rows: list[dict]):
+        self.rows = rows
+
+    def select(self, *_args):
+        return self
+
+    def eq(self, *_args):
+        return self
+
+    def in_(self, _column: str, values: list[int]):
+        self.values = set(values)
+        return self
+
+    def execute(self):
+        return _Response([row for row in self.rows if row["observation_id"] in self.values])
+
+
+class _OutcomeStateClient:
+    def __init__(self, rows: list[dict]):
+        self.query = _OutcomeStateQuery(rows)
+
+    def table(self, _name: str):
+        return self.query
+
+
+def test_load_signal_outcome_states_returns_horizons_by_observation(monkeypatch):
+    client = _OutcomeStateClient(
+        [
+            {"observation_id": 1, "horizon_days": 1, "status": "done"},
+            {"observation_id": 1, "horizon_days": 5, "status": "pending"},
+            {"observation_id": 9, "horizon_days": 1, "status": "done"},
+        ]
+    )
+    monkeypatch.setattr(mod, "_configured", lambda: True)
+    monkeypatch.setattr(mod, "_admin", lambda: client)
+    monkeypatch.setattr(mod, "_close", lambda _client: None)
+
+    states = mod.load_signal_outcome_states([1], raise_on_error=True)
+
+    assert states == {1: {1: "done", 5: "pending"}}

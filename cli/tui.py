@@ -435,7 +435,7 @@ def _tool_result_view(event: dict[str, Any], tools) -> tuple[dict[str, object], 
         renderable = Text.from_markup(f"  [cyan]↗ {display}[/cyan] [dim]已提交后台[/dim]")
     else:
         summary["status"] = event.get("status", "ok")
-        renderable = Text.from_markup(f"  [green]✓ {display}[/green] [dim]{elapsed_s:.1f}s[/dim]")
+        renderable = Text.from_markup(f"  [green]✓[/green] {display} [dim]{elapsed_s:.1f}s[/dim]")
         if brief_lines := tool_result_brief_lines(name, result):
             summary["brief"] = brief_lines
             for line in brief_lines:
@@ -469,7 +469,7 @@ def _display_workflow_plan_event(
     steps = event.get("plan", {}).get("steps", [])
     step_count = len(steps) if isinstance(steps, list) else 0
     count_text = _workflow_task_count_text(event.get("plan"), step_count)
-    header_mark = {"pending_approval": "◇", "adapted": "↻"}.get(launch_state, "⚡")
+    header_mark = {"pending_approval": "◇", "adapted": "↻"}.get(launch_state, "▸")
     lines = [
         f"  [bold cyan]{header_mark} workflow[/bold cyan] [bold]{escape(label)}[/bold]"
         f" [dim]{escape(run_id)}{count_text}[/dim]"
@@ -850,7 +850,7 @@ def _display_continuation_event(event: dict[str, Any], write, scroll) -> None:
 def _display_steered_event(event: dict[str, Any], write, scroll) -> None:
     texts = event.get("texts") or []
     preview = escape(str(texts[0])) if texts else ""
-    write(Text.from_markup(f"  [magenta]🧭 已注入转向: {preview}[/magenta]"))
+    write(Text.from_markup(f"  [cyan]⇢ 已注入转向: {preview}[/cyan]"))
     scroll()
 
 
@@ -1419,7 +1419,7 @@ def _compaction_panel(event: dict[str, Any]):
     before, after = event["before_messages"], event["after_messages"]
     return Panel(
         Text.assemble(
-            (" ⚡ 系统状态：上下文深度压缩中...\n\n", "bold yellow"),
+            (" 系统状态：上下文深度压缩中...\n\n", "bold yellow"),
             ("已自动提取持久偏好写入 ", "dim white"),
             ("SQLite 记忆库", "bold cyan"),
             ("；\n已将前序 ", "dim white"),
@@ -1429,7 +1429,7 @@ def _compaction_panel(event: dict[str, Any]):
             (" 条消息以维持当前上下文连贯性。", "dim white"),
         ),
         border_style="yellow",
-        title="[bold yellow] 📦 CONTEXT COMPACTION [/bold yellow]",
+        title="[bold yellow]CONTEXT COMPACTION[/bold yellow]",
         title_align="left",
         padding=(1, 2),
     )
@@ -1573,13 +1573,58 @@ def _pending_user_question_lines(pending: _PendingUserQuestion) -> list[str]:
     return lines
 
 
+# TUI 配色令牌：硬编码颜色只允许出现在这里。语义色（green 成功 / yellow 警告 / red 错误）直接内联使用。
+# 品牌主色是琥珀金（ticker tape 意象），cyan 保留给交互/信息元素（workflow、链接 id、后台任务）。
+_UI_PALETTES: dict[str, dict[str, str]] = {
+    # transparent 主题跟随终端背景，只用明暗背景都可读的 ANSI 色
+    "ansi": {
+        "brand": "yellow",
+        "heading": "yellow",
+        "code": "cyan",
+        "link": "blue",
+        "quote": "bright_black",
+        "rule": "bright_black",
+        "bullet": "yellow",
+    },
+    "dark": {
+        "brand": "#e6b450",
+        "heading": "#e6b450",
+        "code": "#d19a66",
+        "link": "#e6b450",
+        "quote": "#8b949e",
+        "rule": "#30363d",
+        "bullet": "#e6b450",
+    },
+    "light": {
+        "brand": "#9a6700",
+        "heading": "#9a6700",
+        "code": "#cf222e",
+        "link": "#0969da",
+        "quote": "#57606a",
+        "rule": "#d0d7de",
+        "bullet": "#9a6700",
+    },
+}
+
+_LIGHT_THEME_NAMES = {"solarized-light", "atom-one-light", "textual-light", "light", "github-light"}
+
+
+def _ui_palette(theme_setting: str) -> dict[str, str]:
+    name = theme_setting.strip().lower()
+    if name in ("transparent", "terminal"):
+        return _UI_PALETTES["ansi"]
+    if name in _LIGHT_THEME_NAMES:
+        return _UI_PALETTES["light"]
+    return _UI_PALETTES["dark"]
+
+
 def _build_thinking_preview(text: str) -> Text | None:
     preview = text.strip().replace("\n", " ")
     if len(preview) > 80:
         preview = preview[:80] + "…"
     if not preview:
         return None
-    return Text.from_markup(f"  [italic magenta]💭 {preview}[/italic magenta]  [dim]({len(text)} 字)[/dim]")
+    return Text.from_markup(f"  [dim italic]… {preview}  ({len(text)} 字)[/dim italic]")
 
 
 class ChatLog(RichLog):
@@ -1588,24 +1633,13 @@ class ChatLog(RichLog):
         background: $background;
         scrollbar-size: 1 1;
         border: none;
-        margin: 0 2;
+        margin: 1 2 0 2;
         height: 1fr;
     }
     """
 
 
 class StatusBar(Static):
-    DEFAULT_CSS = """
-    StatusBar {
-        dock: bottom;
-        height: 1;
-        background: $background;
-        color: $text-muted;
-        padding: 0 2;
-        text-align: right;
-    }
-    """
-
     def __init__(self, *args, **kwargs) -> None:
         kwargs.setdefault("markup", True)
         super().__init__(*args, **kwargs)
@@ -1626,7 +1660,7 @@ class ChatInput(Input):
         background: $background;
         border: none;
         color: $text;
-        height: 3;
+        height: 1;
         margin: 0;
         padding: 0 1;
         width: 1fr;
@@ -1975,21 +2009,48 @@ class WyckoffTUI(App):
     #input-container {
         layout: horizontal;
         height: 3;
-        border-top: solid $border;
+        border: round $border;
         background: $background;
+        margin: 0 2;
         align: left middle;
     }
     Screen.transparent #input-container {
         background: ansi_default;
     }
+    /* 品牌琥珀色与 _UI_PALETTES 的 brand 保持一致；CSS 无法引用 Python 变量，需手动同步 */
     #input-container:focus-within {
-        border-top: solid $primary;
+        border: round #e6b450;
+    }
+    Screen.light-mode #input-container:focus-within {
+        border: round #9a6700;
     }
     #prompt-prefix {
         width: auto;
-        color: $primary;
-        margin: 0 0 0 2;
+        color: #e6b450;
+        margin: 0 0 0 1;
         text-style: bold;
+    }
+    Screen.light-mode #prompt-prefix {
+        color: #9a6700;
+    }
+    #status-bar {
+        dock: bottom;
+        layout: horizontal;
+        height: 1;
+        background: $surface;
+        color: $text-muted;
+    }
+    Screen.transparent #status-bar {
+        background: ansi_default;
+    }
+    #status-left {
+        width: 1fr;
+        padding: 0 0 0 2;
+    }
+    #status-right {
+        width: auto;
+        padding: 0 2 0 0;
+        text-align: right;
     }
     """
 
@@ -2112,57 +2173,26 @@ class WyckoffTUI(App):
                 id="chat-input",
                 highlighter=_PasteHighlighter(),
             )
-        yield StatusBar(self._build_status_text(), id="status-bar")
+        with Horizontal(id="status-bar"):
+            yield StatusBar(self._build_status_left(), id="status-left")
+            yield StatusBar(self._build_status_right(), id="status-right")
 
     def _update_console_markdown_theme(self, name: str) -> None:
         """动态适配 Markdown 渲染样式，绝不在透明/浅色模式下硬加纯黑底色框。"""
         from rich.style import Style
         from rich.theme import Theme
 
-        name_lower = name.strip().lower()
-
-        if name_lower in ("transparent", "terminal"):
-            md_styles = {
-                "markdown.h1": Style(color="cyan", bold=True),
-                "markdown.h2": Style(color="cyan", bold=True),
-                "markdown.h3": Style(color="cyan", bold=True),
-                "markdown.h4": Style(color="cyan", bold=True),
-                "markdown.h5": Style(color="cyan", bold=True),
-                "markdown.h6": Style(color="cyan", bold=True),
-                "markdown.link": Style(color="blue", underline=True),
-                "markdown.code": Style(color="magenta", bold=True),
-                "markdown.block_quote": Style(dim=True, italic=True),
-                "markdown.hr": Style(dim=True),
-                "markdown.item.bullet": Style(color="cyan"),
-            }
-        elif name_lower in ("solarized-light", "atom-one-light", "light", "github-light"):
-            md_styles = {
-                "markdown.h1": Style(color="#0550ae", bold=True),
-                "markdown.h2": Style(color="#0550ae", bold=True),
-                "markdown.h3": Style(color="#0550ae", bold=True),
-                "markdown.h4": Style(color="#0550ae", bold=True),
-                "markdown.h5": Style(color="#0550ae", bold=True),
-                "markdown.h6": Style(color="#0550ae", bold=True),
-                "markdown.link": Style(color="#0969da", underline=True),
-                "markdown.code": Style(color="#cf222e", bold=True),
-                "markdown.block_quote": Style(color="#57606a", italic=True),
-                "markdown.hr": Style(color="#d0d7de"),
-                "markdown.item.bullet": Style(color="#0550ae"),
-            }
-        else:
-            md_styles = {
-                "markdown.h1": Style(color="#8aa4ff", bold=True),
-                "markdown.h2": Style(color="#8aa4ff", bold=True),
-                "markdown.h3": Style(color="#8aa4ff", bold=True),
-                "markdown.h4": Style(color="#8aa4ff", bold=True),
-                "markdown.h5": Style(color="#8aa4ff", bold=True),
-                "markdown.h6": Style(color="#8aa4ff", bold=True),
-                "markdown.link": Style(color="#58a6ff", underline=True),
-                "markdown.code": Style(color="#e06c75", bold=True),
-                "markdown.block_quote": Style(color="#8b949e", italic=True),
-                "markdown.hr": Style(color="#30363d"),
-                "markdown.item.bullet": Style(color="#8aa4ff"),
-            }
+        palette = _ui_palette(name)
+        md_styles = {
+            "markdown.h1": Style(color=palette["heading"], bold=True),
+            "markdown.h2": Style(color=palette["heading"], bold=True),
+            "markdown.h3": Style(color=palette["heading"]),
+            "markdown.link": Style(color=palette["link"], underline=True),
+            "markdown.code": Style(color=palette["code"], bold=True),
+            "markdown.block_quote": Style(color=palette["quote"], italic=True),
+            "markdown.hr": Style(color=palette["rule"]),
+            "markdown.item.bullet": Style(color=palette["bullet"]),
+        }
 
         with contextlib.suppress(Exception):
             # 先弹掉上一次压入的：push_theme 是压栈而非替换，每切一次主题栈就长一层，
@@ -2210,6 +2240,10 @@ class WyckoffTUI(App):
                 self.theme = "textual-dark"
                 res = "textual-dark"
 
+        if res in _LIGHT_THEME_NAMES:
+            _add_cls("light-mode")
+        else:
+            _rm_cls("light-mode")
         self._update_console_markdown_theme(res)
         return res
 
@@ -2234,41 +2268,19 @@ class WyckoffTUI(App):
         except Exception:
             ver = "dev"
 
-        from rich.panel import Panel
-        from rich.table import Table
+        palette = _ui_palette(getattr(self, "_active_theme_setting", "transparent"))
+        brand = palette["brand"]
 
-        layout_table = Table.grid(expand=True)
-        layout_table.add_column(ratio=2)
-        layout_table.add_column(ratio=3)
-
-        left_text = Text.from_markup(
-            "\n"
-            " [bold white]Welcome back![/bold white]\n\n"
-            "    [bold #58a6ff]⚡ WYCKOFF QUANT[/bold #58a6ff]\n\n"
-            " [dim]Market Workstation[/dim]\n"
+        log.write(Text.from_markup(f"  [bold {brand}]▞▚ WYCKOFF STATION[/bold {brand}]  [dim]v{ver}[/dim]"))
+        log.write(Text.from_markup("  [dim]威科夫读盘室 · Market Workstation[/dim]"))
+        log.write("")
+        log.write(
+            Text.from_markup(
+                f"  [dim]输入股票代码开始分析（如 [{brand}]600519[/{brand}]）"
+                f" · [{brand}]/help[/{brand}] 查看全部命令[/dim]"
+            )
         )
-
-        right_text = Text.from_markup(
-            "\n"
-            " [bold #ff7b72]Tips for getting started[/bold #ff7b72]\n"
-            " 输入股票代码 (如 [cyan]600519[/cyan]) 开始量化分析。\n"
-            " 输入 [cyan]/help[/cyan] 查看所有支持的交互式命令。\n\n"
-            " [bold #ff7b72]Quick Shortcuts[/bold #ff7b72]\n"
-            " [cyan]Ctrl+N[/cyan] 新会话  ·  [cyan]Ctrl+L[/cyan] 清理屏幕\n"
-            " [cyan]Ctrl+P[/cyan] 命令面板 · [cyan]Ctrl+Q[/cyan] 退出系统\n"
-        )
-
-        layout_table.add_row(left_text, right_text)
-
-        welcome_panel = Panel(
-            layout_table,
-            title=f"[bold #58a6ff]Wyckoff Station v{ver}[/bold #58a6ff]",
-            title_align="left",
-            border_style="#30363d",
-            padding=(0, 1),
-            expand=True,
-        )
-        log.write(welcome_panel)
+        log.write(Text.from_markup("  [dim]Ctrl+N 新会话 · Ctrl+L 清屏 · Ctrl+P 命令面板 · Ctrl+Q 退出[/dim]"))
         log.write("")
         if not self._provider:
             log.write(Text.from_markup("[yellow]⚠ 未配置模型，请输入 /model add 添加[/yellow]\n"))
@@ -2279,13 +2291,7 @@ class WyckoffTUI(App):
             self.set_interval(60.0, self._check_schedules)
         self.call_after_refresh(self._check_auto_resume)
 
-    def _build_status_text(self) -> str:
-        from importlib.metadata import version as _ver
-
-        try:
-            ver = _ver("youngcan-wyckoff-analysis")
-        except Exception:
-            ver = "?"
+    def _build_status_left(self) -> str:
         parts = []
         active_tasks = self._bg_manager.active_tasks()
         if active_tasks:
@@ -2313,14 +2319,16 @@ class WyckoffTUI(App):
             parts.append(f"queued:{queue_depth}")
         if steer_depth := len(self._conversation.steering_queue):
             parts.append(f"steer:{steer_depth}")
-        parts.append(f"Wyckoff CLI v{ver}")
+        return " · ".join(parts)
+
+    def _build_status_right(self) -> str:
+        parts = []
         prov = self._state.get("provider_name", "")
         model = self._state.get("model", "")
         if prov and model:
             parts.append(f"{prov}:{model}")
         email = self._tools.state.get("email", "") if self._tools else ""
         parts.append(email or "未登录")
-        parts.append(f"#{self._session_id}")
         t = self._session_tokens
         if t["rounds"] > 0:
             tok_bits = [f"Token: {t['input'] + t['output']:,}"]
@@ -2337,7 +2345,8 @@ class WyckoffTUI(App):
         return " · ".join(parts)
 
     def _update_status(self) -> None:
-        self.query_one("#status-bar", StatusBar).update(self._build_status_text())
+        self.query_one("#status-left", StatusBar).update(self._build_status_left())
+        self.query_one("#status-right", StatusBar).update(self._build_status_right())
 
     def _tick_global_spinner(self) -> None:
         active_tasks = self._bg_manager.active_tasks()
@@ -2601,6 +2610,10 @@ class WyckoffTUI(App):
         self._conversation.abandon_active_turn()
         self._send_message(text)
 
+    def _user_echo_line(self, content: str) -> Text:
+        brand = _ui_palette(getattr(self, "_active_theme_setting", "transparent"))["brand"]
+        return Text.from_markup(f"[{brand}]▌[/{brand}] [bold]{escape(content)}[/bold]")
+
     def _send_message(
         self,
         text: str,
@@ -2614,9 +2627,9 @@ class WyckoffTUI(App):
             lines = display.splitlines()
             if len(lines) > 3:
                 preview = "\n".join(lines[:3]) + f"\n... ({len(lines)} lines total)"
-                log.write(Text.from_markup(f"[bold cyan]❯[/bold cyan] {preview}"))
+                log.write(self._user_echo_line(preview))
             else:
-                log.write(Text.from_markup(f"[bold cyan]❯[/bold cyan] {display}"))
+                log.write(self._user_echo_line(display))
         mem_ctx = ""
         try:
             from cli.memory import build_memory_context
@@ -3061,7 +3074,7 @@ class WyckoffTUI(App):
         if action == "reload":
             self._reload_pending_workflow_script(run_id, log)
             return True
-        log.write(Text.from_markup(f"[bold cyan]❯[/bold cyan] {escape(text)}"))
+        log.write(self._user_echo_line(text))
         if action == "events":
             self._show_workflow_events(run_id, log)
             return True
@@ -5202,7 +5215,7 @@ class WyckoffTUI(App):
                 continue
 
             if role == "user":
-                log.write(Text.from_markup(f"[bold cyan]❯ {escape(content)}[/bold cyan]"))
+                log.write(self._user_echo_line(content))
 
             elif role == "assistant":
                 tc = row.get("tool_calls", "")
