@@ -83,6 +83,16 @@ wyckoff portfolio fill 600519 --side buy  --shares 100 --price 1680 --date 20260
 工单顶部若出现「未执行的离场工单」，说明某只票的 EXIT 已连发多日仍未落地——
 要么去券商补掉这一笔，要么回填你实际已经成交的记录。
 
+想主动体检而不是等工单提醒，用只读脚本（不写库、不发通知）：
+
+```bash
+.venv/bin/python scripts/check_execution_loop.py
+```
+
+它同时给出执行环状态与 `market_signal_daily` 的连续就绪天数。两点容易误读：工单里出现但已不在
+持仓表的代码属于**已执行**，不是漏报；`daily_nav.positions_value` 是 `total_equity − free_cash`
+的残差，不能用它反推持仓。
+
 工单底部的现金是“若全部工单成交后的预计可用现金”，不是券商实时余额。未成交 `EXIT`
 不会再把模型给出的历史破位价写回持仓；若新仓工单出现同时高于成本和现价的止损，OMS 会将
 该离场动作降级为 `HOLD`。此时应先核对买入日期和原始入场失效位，不要把倒挂价当保护止损。
