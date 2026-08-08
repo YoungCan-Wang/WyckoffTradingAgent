@@ -43,6 +43,7 @@ from core.wyckoff_engine import (
     layer5_exit_signals,
     sort_by_date_if_needed,
 )
+from utils.env import env_float
 
 logger = logging.getLogger(__name__)
 
@@ -106,11 +107,16 @@ class HoldingDiagnostic:
     exit_price: float | None = None
     exit_reason: str = ""
 
-    # 止损/止盈参考（回测网格验证的最优组合：SL-7% / TP+18%，夏普2.493）
+    # 止损参考：跨周期回测确认加止损优于不加（bull_2020/bear_2022/recent_6m
+    # 三周期方向一致），-7% 与 -8% 差异很小。
     stop_loss_7pct: float = 0.0  # 成本 × 0.93
     stop_loss_status: str = "安全"  # 已穿止损 / 逼近止损 / 安全
-    take_profit_18pct: float = 0.0  # 成本 × 1.18
-    take_profit_status: str = "未达标"  # 已达标 / 接近目标 / 未达标
+    # 止盈参考：默认关闭。2026-08-08 跨周期回测（run 31237549718，三周期 ×
+    # 10 参数格、1983 笔）配对比较显示固定 +18% 止盈在 12 个配对中 11 个损害
+    # 夏普，牛市尤甚（bull_2020 h10-sl7 由 +0.991 降到 -0.131）。原注释声称
+    # 「夏普 2.493」无法复现且符号相反。需要时用 HOLDING_TAKE_PROFIT_PCT 开启。
+    take_profit_18pct: float = 0.0  # 成本 × (1 + HOLDING_TAKE_PROFIT_PCT/100)
+    take_profit_status: str = "未启用"  # 已达标 / 接近目标 / 未达标 / 未启用
 
     # 技术位目标价（量度运动/前高/ATR倍数，供参考，不是盈利预测）
     target_conservative: float | None = None  # 三个技术位中最保守的一个
@@ -338,10 +344,24 @@ def _stop_status(cost: float, latest_close: float) -> tuple[float, str]:
     return stop_loss_7pct, "安全"
 
 
+def holding_take_profit_pct() -> float:
+    """固定止盈目标百分比；<=0 表示关闭（默认）。
+
+    2026-08-08 跨周期回测（run 31237549718：bear_2022 / bull_2020 / recent_6m
+    三周期 × 10 参数格、1983 笔成交）用配对比较（同持有期、同止损，只差有无止盈）
+    验证固定 +18% 止盈的净效应：12 个配对中 11 个损害夏普，各周期平均变化
+    bear_2022 -0.162、bull_2020 -1.238、recent_6m -1.185。牛市伤害最大，因为能
+    涨到 +18% 的正是真正的赢家，砍掉它们只剩亏损单。原注释声称的「夏普 2.493」
+    无法复现且符号相反，已作废。
+    """
+    return env_float("HOLDING_TAKE_PROFIT_PCT", 0.0)
+
+
 def _take_profit_status(cost: float, latest_close: float) -> tuple[float, str]:
-    # 回测网格验证：SL-7%/TP+18% 是各周期最稳健参数组合（夏普2.493），
-    # 实盘持仓诊断只提醒止损、不提醒止盈是纪律缺口的来源之一。
-    take_profit_18pct = cost * 1.18
+    target_pct = holding_take_profit_pct()
+    if target_pct <= 0:
+        return 0.0, "未启用"
+    take_profit_18pct = cost * (1.0 + target_pct / 100.0)
     if take_profit_18pct <= 0:
         return take_profit_18pct, "无成本价"
     if latest_close >= take_profit_18pct:
@@ -670,9 +690,11 @@ def format_diagnostic_text(d: HoldingDiagnostic) -> str:
             exit_parts.append(d.exit_reason)
         lines.append("  " + " | ".join(exit_parts))
 
-    # 止损 / 止盈
+    # 止损 / 止盈（止盈默认关闭，关闭时不渲染以免误导为"有目标但未达标"）
     lines.append(f"  止损(-7%): {d.stop_loss_7pct:.2f} → {d.stop_loss_status}")
-    lines.append(f"  止盈(+18%): {d.take_profit_18pct:.2f} → {d.take_profit_status}")
+    if d.take_profit_status != "未启用":
+        target_pct = holding_take_profit_pct()
+        lines.append(f"  止盈(+{target_pct:.0f}%): {d.take_profit_18pct:.2f} → {d.take_profit_status}")
 
     # 技术位目标价（量度运动/前高/ATR倍数，仅供参考）
     if d.target_conservative is not None or d.target_aggressive is not None:

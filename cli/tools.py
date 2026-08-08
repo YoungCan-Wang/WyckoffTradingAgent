@@ -957,13 +957,11 @@ class ToolRegistry:
         confirm = self._confirm_callback(name, args)
         action = confirm.get("action", "deny")
         if action == "timeout":
-            # 超时和明确拒绝必须分开：说成「用户拒绝」等于伪造一件没发生的事，模型只能照着
-            # 这个措辞往下写，用户会在回复里读到自己从没做过的决定。
+            # 超时和明确拒绝必须分开；文案保持短，供 TUI 脚注渲染，避免再刷长红叉。
             return args, {
                 "error": (
-                    f"操作 [{name}] 的确认弹窗等待超时，用户没有做出选择——这不是拒绝。"
-                    "不要声称用户拒绝或取消了操作。请说明确认超时、该操作尚未执行，"
-                    "并让用户确认后重试。"
+                    f"操作 [{name}] 确认弹窗等待超时——这不是拒绝。"
+                    "不要声称用户拒绝。简短说明确认超时、尚未执行，请用户重试即可。"
                 )
             }
         if action == "deny":
