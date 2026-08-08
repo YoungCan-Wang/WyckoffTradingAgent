@@ -35,6 +35,12 @@ class TradeRecord:
     ret_pct: float
     track: str = ""
     regime: str = ""
+    # 排序诊断用：score 是候选排序分（allocate_ai_candidates 输出，含阶段分/主升
+    # +100/触发分等），alloc_score 与之相同、显式命名以免误读；watch_score 是
+    # candidate_ranker 的 L3 质量分，在最终排序里只贡献 watch_score*8（上限 9.6）。
+    # 两者必须分列记录，否则无法区分"排序主体无效"与"质量分无效"。
+    alloc_score: float | None = None
+    watch_score: float | None = None
     entry_price_source: str = "daily_open"
     entry_target_time: str = ""
     exit_reason: str = "unknown"
