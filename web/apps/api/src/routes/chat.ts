@@ -657,7 +657,7 @@ function buildAnalysisTools(deps: ToolDeps, userId: string, config: LLMToolConfi
 
 const PORTFOLIO_UPDATE_SCHEMA = z.object({
   action: z.enum(['add', 'update', 'delete']),
-  code: z.string(),
+  code: z.string().describe('A股6位 / 港股00700.HK / 美股AAPL.US'),
   name: z.string().nullable(),
   shares: z.number().nullable(),
   cost_price: z.number().nullable(),

@@ -88,17 +88,21 @@ def record_trade_fill(
     """
     from datetime import datetime
 
+    from core.portfolio_symbol import normalize_portfolio_code
     from core.trade_fill import Fill
     from utils.trading_clock import CN_TZ
 
     try:
+        normalized = normalize_portfolio_code(str(code))
+        if not normalized:
+            return {"error": "无效的股票代码：A股用6位数字，港股用00700.HK，美股用AAPL.US"}
         fill = Fill(
-            code=str(code).strip(),
+            code=normalized,
             side=str(side or "").strip().lower(),
             shares=int(shares),
             price=float(price),
             trade_date=str(trade_date or "").strip() or datetime.now(CN_TZ).strftime("%Y%m%d"),
-            name=str(name or "").strip() or code_to_name(str(code).strip()),
+            name=str(name or "").strip() or code_to_name(normalized),
         )
     except (ValueError, TypeError) as exc:
         return {"error": str(exc)}
@@ -421,16 +425,23 @@ def _upsert_position(
     cloud: bool,
     tool_context: ToolContext | None,
 ) -> str | dict:
+    from core.portfolio_symbol import normalize_portfolio_code, portfolio_name_conflict
+
     if not code:
         return {"error": "add/update 操作需要提供股票代码 code"}
     amount_error = _validate_position_amounts(shares, cost_price)
     if amount_error:
         return amount_error
-    code = code.strip()
+    code = normalize_portfolio_code(code)
+    if not code:
+        return {
+            "error": "无效的股票代码：A股用6位数字，港股用00700.HK，美股用AAPL.US",
+        }
     resolved_name = code_to_name(code)
-    if resolved_name and name and resolved_name != name:
-        return {"error": f"代码 {code} 对应的股票是「{resolved_name}」，而非「{name}」，请确认代码或名称是否正确"}
-    name = name or resolved_name
+    conflict = portfolio_name_conflict(code, name, resolved_name)
+    if conflict:
+        return {"error": conflict}
+    name = name or (resolved_name if resolved_name != code else "")
     if cloud:
         from integrations.supabase_portfolio import upsert_position
 
@@ -450,9 +461,11 @@ def _upsert_position(
 
 
 def _remove_position(portfolio_id: str, code: str, cloud: bool, tool_context: ToolContext | None) -> str | dict:
+    from core.portfolio_symbol import normalize_portfolio_code
+
     if not code:
         return {"error": "remove 操作需要提供股票代码 code"}
-    code = code.strip()
+    code = normalize_portfolio_code(code) or str(code).strip().upper()
     if cloud:
         from integrations.supabase_portfolio import delete_position
 

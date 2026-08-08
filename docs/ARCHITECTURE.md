@@ -811,7 +811,7 @@ Web 个股、持仓和股票对抗分析保存历史时写入 `meta`：输入快
 
 持仓账本 `portfolio_positions` 由人工维护：OMS 只产出建议单，任何代码路径都不会因为发过 EXIT
 就自动减少股数。这意味着**成交必须回填，否则系统状态会停在成交前**——止损会对着早该卖掉的仓位
-每天重发一次，`daily_nav` 也会长期偏离真实账户。
+每天重发一次，`daily_nav` 也会长期偏离真实账户。`code` 支持 A 股 6 位、港股 `NNNNN.HK`、美股 `TICKER.US`（TickFlow 标准码）；CLI/Web 写入前会规范化大小写与港股补零。
 
 - `core/trade_fill.py` 是纯计算：按成交增量摊薄成本价（含佣金）、扣双边费用、卖光时清仓、
   给出已实现盈亏。`integrations.supabase_portfolio.record_fill` 负责落库，先读后写，需串行调用。

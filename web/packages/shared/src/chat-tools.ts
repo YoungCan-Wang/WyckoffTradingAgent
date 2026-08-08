@@ -2,7 +2,16 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { Output } from 'ai'
 import type { generateText as GenerateTextFn } from 'ai'
 import { z } from 'zod'
-import { fetchValueSnapshotWithFetch, isCnSymbol, normalizeCode, normalizeTickFlowSymbol, normalizeTushareCode, type ValueSnapshot } from './agent-market'
+import {
+  fetchValueSnapshotWithFetch,
+  isCnSymbol,
+  isSupportedPortfolioCode,
+  normalizeCode,
+  normalizePortfolioCode,
+  normalizeTickFlowSymbol,
+  normalizeTushareCode,
+  type ValueSnapshot,
+} from './agent-market'
 import { buildValuePrompt, buildValueScore } from './agent-value'
 import {
   attributionFormalDynamicLabel,
@@ -476,15 +485,13 @@ export function buildValueAgentDigest(snapshot: ValueSnapshot): string {
 export async function fetchQuotes(
   deps: ToolDeps,
   tickflowKey: string | null,
-  stocks: { code: number }[],
+  stocks: { code: string | number }[],
 ): Promise<Record<string, Record<string, number>>> {
   if (!tickflowKey || stocks.length === 0) return {}
   try {
-    const symbols = stocks.map(r => {
-      const c = normalizeCode(r.code)
-      if (c.startsWith('6')) return `${c}.SH`
-      if (c.startsWith('4') || c.startsWith('8') || c.startsWith('9')) return `${c}.BJ`
-      return `${c}.SZ`
+    const symbols = stocks.map((r) => {
+      const portfolioCode = normalizePortfolioCode(r.code) || normalizeCode(r.code)
+      return normalizeTickFlowSymbol(portfolioCode)
     }).join(',')
     const resp = await deps.fetch(
       `/api/llm-proxy/v1/quotes?symbols=${symbols}`,
@@ -494,9 +501,13 @@ export async function fetchQuotes(
     const json = await resp.json() as { data?: Record<string, number>[] }
     const result: Record<string, Record<string, number>> = {}
     for (const row of (json.data || [])) {
-      const sym = String((row as Record<string, unknown>).symbol || '')
-      const code6 = sym.split('.')[0] || ''
-      if (code6) result[code6] = row
+      const sym = String((row as Record<string, unknown>).symbol || '').toUpperCase()
+      if (!sym) continue
+      result[sym] = row
+      const base = sym.split('.')[0] || ''
+      if (base) result[base] = row
+      const portfolioCode = normalizePortfolioCode(sym)
+      if (portfolioCode) result[portfolioCode] = row
     }
     return result
   } catch { return {} }
@@ -504,40 +515,45 @@ export async function fetchQuotes(
 
 export async function execSearchStock(deps: ToolDeps, userId: string, query: string): Promise<string> {
   const q = query.trim()
-  const isCode = /^\d+$/.test(q)
-
+  const portfolioCode = normalizePortfolioCode(q)
   const tables = ['recommendation_tracking', 'portfolio_positions'] as const
-  const allRows: { code: number; name: string }[] = []
+  const allRows: { code: string; name: string }[] = []
 
   for (const table of tables) {
-    const res = isCode
-      ? await deps.supabase.from(table).select('code, name').eq('code', parseInt(q)).limit(5)
+    const res = portfolioCode
+      ? await deps.supabase.from(table).select('code, name').eq('code', portfolioCode).limit(5)
       : await deps.supabase.from(table).select('code, name').ilike('name', `%${q}%`).limit(10)
-    if (res.data) allRows.push(...res.data)
+    if (res.data) {
+      for (const row of res.data as { code: string | number; name: string }[]) {
+        allRows.push({ code: String(row.code), name: row.name })
+      }
+    }
   }
 
   if (allRows.length === 0) return `未找到匹配"${query}"的股票`
 
-  const seen = new Set<number>()
+  const seen = new Set<string>()
   const unique = allRows.filter((r) => {
-    if (seen.has(r.code)) return false
-    seen.add(r.code)
+    const key = normalizePortfolioCode(r.code) || normalizeCode(r.code)
+    if (!key || seen.has(key)) return false
+    seen.add(key)
     return true
   }).slice(0, 10)
 
   const tickflowKey = await fetchTickFlowKey(deps, userId)
   const quotes = await fetchQuotes(deps, tickflowKey, unique)
 
-  const lines = unique.map(r => {
-    const code6 = normalizeCode(r.code)
-    const qt = quotes[code6]
+  const lines = unique.map((r) => {
+    const code = normalizePortfolioCode(r.code) || normalizeCode(r.code)
+    const qt = quotes[code] || quotes[normalizeTickFlowSymbol(code)]
     if (qt) {
       const price = qt.close || qt.last || qt.price || qt.current || 0
       const pct = qt.pct_chg ?? ((qt.close && qt.pre_close) ? ((qt.close - qt.pre_close) / qt.pre_close * 100) : null)
       const pctStr = pct != null ? `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%` : ''
-      return `${code6} ${r.name} | ¥${price.toFixed(2)} ${pctStr}`
+      const currency = code.endsWith('.HK') ? 'HK$' : code.endsWith('.US') ? '$' : '¥'
+      return `${code} ${r.name} | ${currency}${Number(price).toFixed(2)} ${pctStr}`
     }
-    return `${code6} ${r.name}`
+    return `${code} ${r.name}`
   })
 
   return lines.join('\n')
@@ -1067,14 +1083,18 @@ export async function execExecutePortfolioUpdate(
   stop_loss: number | null,
 ): Promise<string> {
   const portfolioId = `USER_LIVE:${userId}`
+  const normalized = normalizePortfolioCode(code)
+  if (!normalized || !isSupportedPortfolioCode(normalized)) {
+    return '执行失败：无效股票代码（A股6位 / 港股00700.HK / 美股AAPL.US）'
+  }
 
   if (action === 'delete') {
     const { error } = await deps.supabase
       .from('portfolio_positions')
       .delete()
       .eq('portfolio_id', portfolioId)
-      .eq('code', code)
-    return error ? `删除失败: ${error.message}` : `✅ 已删除 ${code} ${name || ''}`
+      .eq('code', normalized)
+    return error ? `删除失败: ${error.message}` : `✅ 已删除 ${normalized} ${name || ''}`
   }
 
   if (action === 'add' || action === 'update') {
@@ -1082,14 +1102,15 @@ export async function execExecutePortfolioUpdate(
       return '执行失败：缺少 name、shares、cost_price 参数'
     }
     const record: Record<string, unknown> = {
-      portfolio_id: portfolioId, code, name, shares, cost_price,
+      portfolio_id: portfolioId, code: normalized, name, shares, cost_price,
       buy_dt: new Date().toISOString().slice(0, 10),
     }
     if (stop_loss !== undefined) record.stop_loss = stop_loss
-    const error = await savePortfolioPosition(deps, portfolioId, code, record)
+    const error = await savePortfolioPosition(deps, portfolioId, normalized, record)
+    const currency = normalized.endsWith('.HK') ? 'HK$' : normalized.endsWith('.US') ? '$' : '¥'
     return error
       ? `执行失败: ${error}`
-      : `✅ 已${action === 'add' ? '新增' : '更新'} ${code} ${name} ${shares}股 @¥${cost_price}${stop_loss ? ` 止损¥${stop_loss}` : ''}`
+      : `✅ 已${action === 'add' ? '新增' : '更新'} ${normalized} ${name} ${shares}股 @${currency}${cost_price}${stop_loss ? ` 止损${currency}${stop_loss}` : ''}`
   }
 
   return '未知操作'

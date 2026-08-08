@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
+import { normalizePortfolioCode } from '@wyckoff/shared'
 import { authMiddleware, createUserSupabase, type AuthContext } from '../middleware/auth'
 import { isActiveWhitelistUser } from '../middleware/whitelist'
 import type { Env } from '../app'
@@ -59,9 +60,20 @@ export function parsePortfolioInput(raw: unknown):
   | { error: string; details?: unknown } {
   const parsed = PORTFOLIO_SCHEMA.safeParse(raw)
   if (!parsed.success) return { error: 'Invalid portfolio', details: parsed.error.flatten() }
-  const codes = parsed.data.positions.map((item) => item.code.toUpperCase())
+  const positions = []
+  for (const item of parsed.data.positions) {
+    const code = normalizePortfolioCode(item.code)
+    if (!code) {
+      return {
+        error: `Invalid position code: ${item.code}`,
+        details: 'Use A-share 6 digits, HK like 00700.HK, or US like AAPL.US',
+      }
+    }
+    positions.push({ ...item, code })
+  }
+  const codes = positions.map((item) => item.code)
   if (new Set(codes).size !== codes.length) return { error: 'Duplicate position code' }
-  return { data: parsed.data }
+  return { data: { ...parsed.data, positions } }
 }
 
 async function loadPortfolio(supabase: ReturnType<typeof createUserSupabase>, userId: string) {

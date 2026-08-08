@@ -11,7 +11,7 @@ import { clearStreamFlush, scheduleStreamFlush } from '@/lib/stream-render'
 import { MarkdownContent } from '@/components/markdown'
 import { UpgradeNotice } from '@/components/upgrade-notice'
 import { AIDisclaimer } from '@/components/ai-disclaimer'
-import { TICKFLOW_PURCHASE, fetchValueSnapshotWithFetch, normalizeCode } from '@wyckoff/shared'
+import { TICKFLOW_PURCHASE, fetchValueSnapshotWithFetch, isSupportedPortfolioCode, normalizeCode, normalizePortfolioCode } from '@wyckoff/shared'
 import type { KlineRow, ValueSnapshot } from '@wyckoff/shared'
 import { fetchKlineViaTickFlow, getUserDataKeys } from '@/lib/kline'
 import { formatSignedPercent } from '@/lib/format'
@@ -298,15 +298,15 @@ async function fetchAllPositionKlines(positions: Position[], keys: Awaited<Retur
   await Promise.all(
     positions.map(async (p, i) => {
       try {
-        const code = normalizeCode(p.code)
+        const code = normalizePortfolioCode(p.code) || normalizeCode(p.code)
         const [kline, valueSnapshot] = await Promise.all([
           fetchKlineViaTickFlow(code, keys.tickflow!),
           fetchValueSnapshotWithFetch(globalThis.fetch, code, keys).catch((): ValueSnapshot => ({ symbol: code, source: 'none', metrics: null, reason: 'not-found' })),
         ])
         if (kline.length > 0) entries.push({ position: positions[i]!, kline, valueSnapshot })
-        else errors.push(normalizeCode(p.code))
+        else errors.push(code)
       } catch (err) {
-        errors.push(`${normalizeCode(p.code)}: ${err instanceof Error ? err.message : '失败'}`)
+        errors.push(`${normalizePortfolioCode(p.code) || normalizeCode(p.code)}: ${err instanceof Error ? err.message : '失败'}`)
       }
       onProgress(++fetched)
     }),
@@ -407,7 +407,7 @@ function ManualPositionRow({ position, onChange, onRemove }: { position: Positio
   const cls = 'rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none'
   return (
     <div className="flex flex-wrap items-center gap-3 px-4 py-3">
-      <input value={String(position.code)} onChange={(e) => onChange({ code: e.target.value })} placeholder={t('portfolio.code')} className={`${cls} w-28`} />
+      <input value={String(position.code)} onChange={(e) => onChange({ code: e.target.value })} placeholder={t('portfolio.code')} className={`${cls} w-36`} title={t('portfolio.invalidCode')} />
       <input value={position.name || ''} onChange={(e) => onChange({ name: e.target.value || null })} placeholder={t('portfolio.name')} className={`${cls} w-24`} />
       <input type="number" min={0} value={position.shares || ''} onChange={(e) => onChange({ shares: Number(e.target.value) || 0 })} placeholder={t('portfolio.shares')} className={`${cls} w-20`} />
       <input type="number" min={0} step={0.01} value={position.cost_price || ''} onChange={(e) => onChange({ cost_price: Number(e.target.value) || 0 })} placeholder={t('portfolio.costPrice')} className={`${cls} w-24`} />
@@ -418,7 +418,7 @@ function ManualPositionRow({ position, onChange, onRemove }: { position: Positio
 }
 
 function isValidManualPosition(position: Position): boolean {
-  return Boolean(String(position.code).trim()) && Number(position.shares) > 0 && Number(position.cost_price) > 0
+  return isSupportedPortfolioCode(position.code) && Number(position.shares) > 0 && Number(position.cost_price) > 0
 }
 
 function DiagProgressBar({ progress }: { progress: DiagProgress }) {

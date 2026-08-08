@@ -74,10 +74,12 @@ def compute_portfolio_state_signature(
     free_cash: float | int | None,
     positions: list[dict[str, Any]] | None,
 ) -> str:
+    from core.portfolio_symbol import normalize_portfolio_code
+
     normalized_positions: list[dict[str, Any]] = []
     for row in positions or []:
-        code = str(row.get("code", "") or "").strip()
-        if not re.fullmatch(r"\d{6}", code):
+        code = normalize_portfolio_code(str(row.get("code", "") or ""))
+        if not code:
             continue
         normalized_positions.append(
             {
@@ -308,9 +310,11 @@ def upsert_position(portfolio_id: str, position: dict[str, Any], client: Client 
     position 需包含 code，可选 name/shares/cost_price/buy_dt/strategy。
     返回 (成功, 消息)。
     """
-    code = str(position.get("code", "")).strip()
-    if not code or len(code) != 6:
-        return False, f"无效的股票代码: {code}"
+    from core.portfolio_symbol import normalize_portfolio_code
+
+    code = normalize_portfolio_code(str(position.get("code", "")))
+    if not code:
+        return False, f"无效的股票代码: {position.get('code', '')}"
     try:
         client = _resolve_write_client(client, "upsert portfolio position")
         _ensure_portfolio_exists(portfolio_id, client)
@@ -333,7 +337,9 @@ def upsert_position(portfolio_id: str, position: dict[str, Any], client: Client 
 
 def delete_position(portfolio_id: str, code: str, client: Client | None = None) -> tuple[bool, str]:
     """删除单个持仓。"""
-    code = code.strip()
+    from core.portfolio_symbol import normalize_portfolio_code
+
+    code = normalize_portfolio_code(code) or str(code or "").strip().upper()
     try:
         client = _resolve_write_client(client, "delete portfolio position")
         client.table(TABLE_PORTFOLIO_POSITIONS).delete().eq("portfolio_id", portfolio_id).eq("code", code).execute()

@@ -89,9 +89,10 @@ def default_holding_portfolio_id() -> str:
     return monitor or "USER_LIVE"
 
 
-def _normalize_code6(raw: Any) -> str:
-    digits = "".join(ch for ch in str(raw or "") if ch.isdigit())
-    return digits[-6:].zfill(6) if digits else ""
+def _normalize_holding_code(raw: Any) -> str:
+    from core.portfolio_symbol import normalize_portfolio_code
+
+    return normalize_portfolio_code(str(raw or ""))
 
 
 def _empty_position_stats() -> dict[str, int]:
@@ -109,8 +110,8 @@ def _append_position(row: Any, positions: list[dict[str, Any]], stats: dict[str,
     if not isinstance(row, dict):
         stats["invalid_row"] += 1
         return
-    code = _normalize_code6(row.get("code"))
-    if len(code) != 6:
+    code = _normalize_holding_code(row.get("code"))
+    if not code:
         stats["invalid_code"] += 1
         return
     shares_value = _finite_number(row.get("shares"))
@@ -254,7 +255,13 @@ def _action_from_diagnostic(
 
 
 def fetch_holding_daily_frame(code: str) -> pd.DataFrame | None:
-    symbol = f"{code}.SH" if code.startswith("6") else f"{code}.SZ"
+    from core.portfolio_symbol import is_cn_portfolio_code, normalize_portfolio_code
+    from integrations.tickflow_client import normalize_cn_symbol
+
+    normalized = normalize_portfolio_code(code)
+    if not normalized:
+        return None
+    symbol = normalize_cn_symbol(normalized) if is_cn_portfolio_code(normalized) else normalized
     window = resolve_trading_window(end_calendar_day=resolve_end_calendar_day(), trading_days=TRADING_DAYS)
     try:
         raw = fetch_hist(symbol, window, adjust="qfq")

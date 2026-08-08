@@ -267,7 +267,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "enum": ["add", "update", "remove", "set_cash", "delete_records"],
                     "description": "操作类型：add/update/remove/set_cash 管理持仓；delete_records 删除推荐或信号记录",
                 },
-                "code": {"type": "string", "description": "6 位股票代码（add/update/remove 时必填）"},
+                "code": {
+                    "type": "string",
+                    "description": "股票代码（add/update/remove 必填）：A股6位如601881，港股06881.HK，美股AAPL.US",
+                },
                 "name": {"type": "string", "description": "股票名称（可选）"},
                 "shares": {"type": "integer", "description": "持仓股数"},
                 "cost_price": {"type": "number", "description": "成本价"},
@@ -292,7 +295,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "code": {"type": "string", "description": "6 位股票代码"},
+                "code": {
+                    "type": "string",
+                    "description": "股票代码：A股6位 / 港股06881.HK / 美股AAPL.US",
+                },
                 "side": {"type": "string", "enum": ["buy", "sell"], "description": "成交方向"},
                 "shares": {"type": "integer", "description": "成交股数（正数）"},
                 "price": {"type": "number", "description": "成交价"},
