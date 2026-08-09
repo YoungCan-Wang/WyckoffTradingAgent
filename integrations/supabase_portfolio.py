@@ -349,18 +349,50 @@ def delete_position(portfolio_id: str, code: str, client: Client | None = None) 
         return False, str(e)
 
 
+def _canonicalize_fill(fill: Fill) -> Fill | None:
+    """CLI 可能传入大小写/补零不一致的港美代码；写路径必须先收成账本规范码。"""
+    from core.portfolio_symbol import normalize_portfolio_code
+
+    code = normalize_portfolio_code(fill.code)
+    if not code:
+        return None
+    if code == fill.code:
+        return fill
+    return Fill(
+        code=code,
+        side=fill.side,
+        shares=fill.shares,
+        price=fill.price,
+        trade_date=fill.trade_date,
+        name=fill.name,
+    )
+
+
+def _find_position_for_fill(positions: list[dict[str, Any]], code: str) -> dict[str, Any] | None:
+    from core.portfolio_symbol import normalize_portfolio_code
+
+    for row in positions:
+        raw = str(row.get("code", "") or "").strip()
+        if (normalize_portfolio_code(raw) or raw.upper()) == code:
+            return row
+    return None
+
+
 def record_fill(portfolio_id: str, fill: Fill, client: Client | None = None) -> FillWriteResult:
     """把一笔真实成交写回持仓与现金。
 
     先读当前状态再算，所以必须串行调用；同一账户并发回填会互相覆盖。人工录入的
     使用场景下这个约束是成立的，换成自动对接券商前需要改成带版本号的乐观锁。
     """
+    fill = _canonicalize_fill(fill)
+    if fill is None:
+        return FillWriteResult(False, "无效的股票代码：A股用6位数字，港股用00700.HK，美股用AAPL.US")
     try:
         client = _resolve_write_client(client, "record trade fill")
         state = load_portfolio_state(portfolio_id, client=client)
         if state is None:
             return FillWriteResult(False, f"未找到组合 {portfolio_id}")
-        row = next((p for p in state["positions"] if str(p.get("code", "")).strip() == fill.code), None)
+        row = _find_position_for_fill(state["positions"], fill.code)
         holding = (
             Holding(
                 code=fill.code,
