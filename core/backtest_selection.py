@@ -47,16 +47,49 @@ SIGNAL_WEIGHT_ALIASES = {
 }
 
 
+#: 触发分归一化后的刻度上限。与 candidate_entries 的 _lane_score / _candidate_entry
+#: 同为 0~100，两条路径的分数才能在 _expand_tradeable_quality_pool 里安全 max()，
+#: pure_*_min_score 这组阈值也才对所有触发类型一视同仁。
+TRIGGER_SCORE_SCALE = 100.0
+
+
 def combine_trigger_scores(
     triggers: dict[str, list[tuple[str, float]]],
     signal_weight_map: dict[str, float] | None = None,
     *,
     regime: str = "",
 ) -> dict[str, tuple[float, str]]:
+    """合并同一标的的多触发器分数，归一化到 0~100 后取最大值。
+
+    各 detector 返回的是**不同物理量**，直接比较是错的（实测 1983 笔）：
+
+        _detect_spring → 收回幅度%   1.00 ~ 100.00（中位 8.05）
+        _detect_sos    → 量比        3.05 ~  20.49（中位 4.69）
+        _detect_evr    → 量比        1.86 ~   8.93（中位 2.79）
+        _detect_lps    → 缩量比      0.58
+        _detect_compression → 缩量比 0.61 ~ 0.72
+        trend_pullback → 缩量比      0.25 ~ 0.60
+
+    后果有两层：
+
+    1. **排序错**：spring 天然高一到两个量级，但它 10 日均收 -3.93% 是六类最差，
+       分数几乎最低的 compression 是 +1.44%（类型级 score-ret Spearman = -0.257）。
+    2. **阈值错**：`pure_*_min_score` 默认 6.0 这一刀，只有 spring 的中位分(8.05)
+       能过，trend_pullback(0.43) / compression(0.67) / lps(0.58) 被整类砍掉——
+       而后两者恰是收益最好的。此前观察到"低分拦截拦掉的标的反而更好"
+       （Welch t=-4.51）根因就在这里：阈值不是方向反了，是刻度不对。
+
+    改为先在各触发类型内部做分位归一化，再乘 TRIGGER_SCORE_SCALE 对齐
+    candidate_entries 的 0~100 刻度，最后乘治理权重取 max。分位是无量纲量，
+    消除单位差异；类型内部的相对排序完全保留。
+
+    详见 docs/SCORING_SYSTEM_AUDIT_2026_08.md。
+    """
     reason_map: dict[str, list[str]] = {}
     score_map: dict[str, float] = {}
     for key, pairs in triggers.items():
-        for code, score in pairs:
+        normalized = normalized_trigger_scores(pairs)
+        for code, _score in pairs:
             code_s = str(code).strip()
             if not code_s:
                 continue
@@ -65,9 +98,43 @@ def combine_trigger_scores(
             reason_map[code_s].append(key)
             score_map[code_s] = max(
                 candidate_score_value(score_map.get(code_s)),
-                candidate_score_value(score) * signal_weight_multiplier(key, signal_weight_map, regime=regime),
+                normalized.get(code_s, 0.0) * signal_weight_multiplier(key, signal_weight_map, regime=regime),
             )
     return {code: (score_map.get(code, 0.0), "、".join(reasons)) for code, reasons in reason_map.items()}
+
+
+def normalized_trigger_scores(pairs: list[tuple[str, float]]) -> dict[str, float]:
+    """把同一触发类型内的原始分数转成 0~TRIGGER_SCORE_SCALE，使其跨类型可比。
+
+    两个必须保留的行为（均为实测踩到的回归）：
+
+    1. **非法或非正分数仍归 0**，不参与分位计算。否则 rank(pct) 会让它拿到中位
+       分位（实测 0.5 → 50 分），等于给"算不出分数"的候选一个中等评价。
+    2. **只有一个有效候选时给满分**——该类型内它就是最高分，不该因样本少被压低。
+       实测单候选情形仅占 2%，不影响整体分布。
+
+    同分并列取平均分位，避免顺序抖动。
+    """
+    valid: dict[str, float] = {}
+    zeros: list[str] = []
+    for code, score in pairs or []:
+        code_s = str(code).strip()
+        if not code_s:
+            continue
+        value = candidate_score_value(score)
+        if value > 0:
+            valid[code_s] = value
+        else:
+            zeros.append(code_s)
+    out: dict[str, float] = dict.fromkeys(zeros, 0.0)
+    if not valid:
+        return out
+    if len(valid) == 1:
+        out[next(iter(valid))] = TRIGGER_SCORE_SCALE
+        return out
+    ranks = pd.Series(valid).rank(pct=True, method="average")
+    out.update({str(code): float(pct) * TRIGGER_SCORE_SCALE for code, pct in ranks.items()})
+    return out
 
 
 def dedup_order(codes: list[str]) -> list[str]:

@@ -573,14 +573,16 @@ def test_name_score_map_prefers_higher_confirmed_source_name() -> None:
     )
     confirmed = replay_mod._ConfirmedSignals(
         codes=["000001"],
-        score_map={"000001": 90.0},
+        # 触发分已归一化到 0~100（该类型内唯一候选得满分 100），故 confirmed 分数
+        # 需高于 100 才能体现"分数更高时优先 confirmed 名称"这一意图。
+        score_map={"000001": 110.0},
         track_map={"000001": "Accum"},
         trigger_map={"000001": "spring"},
     )
 
     got = replay_mod._name_score_map(result, confirmed)
 
-    assert got["000001"] == (90.0, "spring(确认)")
+    assert got["000001"] == (110.0, "spring(确认)")
     assert got["000002"] == (70.0, "tight_base")
 
 
@@ -610,7 +612,9 @@ def test_name_score_map_treats_invalid_candidate_scores_as_zero() -> None:
 
     got = replay_mod._name_score_map(result, confirmed)
 
-    assert got["000001"] == (2.0, "sos")
+    # 触发分已归一化：sos 在该类型内是唯一有效候选，得满分 100。
+    # 非法的 candidate_entries 分数（inf/nan）仍归 0，不会顶掉触发名。
+    assert got["000001"] == (100.0, "sos")
     assert got["000002"] == (0.0, "tight_base")
 
 

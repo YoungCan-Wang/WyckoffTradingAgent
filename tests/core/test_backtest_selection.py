@@ -73,7 +73,8 @@ def test_all_formal_l4_selection_treats_invalid_trigger_scores_as_zero() -> None
     )
 
     assert codes == ["GOOD", "BAD", "INF", "NAN"]
-    assert score_map == {"GOOD": 2.0, "BAD": 0.0, "INF": 0.0, "NAN": 0.0}
+    # 触发分在类型内归一化到 0~100（跨类型可比）；非法分数仍归 0。
+    assert score_map == {"GOOD": 100.0, "BAD": 0.0, "INF": 0.0, "NAN": 0.0}
     assert track_map == {"GOOD": "Trend", "BAD": "Trend", "INF": "Trend", "NAN": "Trend"}
 
 
@@ -101,7 +102,7 @@ def test_all_formal_l4_selection_excludes_stage_only_candidates() -> None:
     )
 
     assert codes == ["000001"]
-    assert score_map == {"000001": 2.0}
+    assert score_map == {"000001": 100.0}
     assert track_map == {"000001": "Trend"}
 
 
@@ -130,7 +131,8 @@ def test_all_formal_l4_selection_respects_hard_cap() -> None:
     )
 
     assert codes == ["000001", "000002"]
-    assert score_map == {"000001": 3.0, "000002": 2.0}
+    # 三个候选的类内分位为 3/3、2/3、1/3 → 100 / 66.67 / 33.33，硬上限截到前两个。
+    assert score_map == {"000001": 100.0, "000002": pytest.approx(66.667, abs=0.01)}
     assert track_map == {"000001": "Trend", "000002": "Trend"}
 
 
@@ -159,8 +161,9 @@ def test_all_formal_l4_selection_applies_signal_weight_map() -> None:
     )
 
     assert codes == ["000001", "000002"]
-    assert score_map["000001"] == 8.0
-    assert score_map["000002"] == pytest.approx(4.8)
+    # 各类型最高分归一化为 100；权重乘数仍生效（lps ×0.4 → 40）。
+    assert score_map["000001"] == 100.0
+    assert score_map["000002"] == pytest.approx(40.0)
     assert track_map == {"000001": "Trend", "000002": "Accum"}
 
 
@@ -189,8 +192,9 @@ def test_all_formal_l4_selection_applies_scoped_regime_signal_weight() -> None:
     )
 
     assert codes == ["000001", "000002"]
-    assert score_map["000001"] == 8.0
-    assert score_map["000002"] == pytest.approx(4.8)
+    # 各类型最高分归一化为 100；权重乘数仍生效（lps ×0.4 → 40）。
+    assert score_map["000001"] == 100.0
+    assert score_map["000002"] == pytest.approx(40.0)
     assert track_map == {"000001": "Trend", "000002": "Accum"}
 
 
@@ -229,7 +233,7 @@ def test_tradeable_l4_selection_uses_formal_l4_without_l3_fallback() -> None:
     )
 
     assert codes == ["000005", "000006"]
-    assert score_map == {"000005": 1.5, "000006": 1.0}
+    assert score_map == {"000005": 100.0, "000006": 100.0}
 
 
 def test_tradeable_l4_selection_unions_candidate_board_with_formal_quality_pool() -> None:
@@ -264,7 +268,8 @@ def test_tradeable_l4_selection_unions_candidate_board_with_formal_quality_pool(
     )
 
     assert codes == ["000001", "000002"]
-    assert score_map == {"000001": 85.0, "000002": 78.0}
+    # 两条路径现在同为 0~100 刻度：triggers 归一化后 100，candidate_entries 原样 78。
+    assert score_map == {"000001": 100.0, "000002": 78.0}
     assert track_map == {"000001": "Trend", "000002": "Trend"}
 
 
