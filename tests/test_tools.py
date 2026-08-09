@@ -4344,9 +4344,29 @@ class TestExtractStep3Verdicts:
         """同码出现在多组时取最保守判定，不能把被否决的记成放行。"""
         from tools.report_parser import extract_step3_verdicts
 
-        report = "## 🏹 起跳板\n- 000001\n\n## 💀 逻辑破产\n- 000001\n"
+        report = "## 🏹 处于起跳板\n- 000001\n\n## 💀 逻辑破产\n- 000001\n"
 
         assert extract_step3_verdicts(report, ["000001"]) == {"000001": "invalidated"}
+
+    def test_near_ready_subheading_with_springboard_word_stays_building(self):
+        """储备营地下含「起跳板」字样的子标题不得开启 springboard 分组。"""
+        from tools.report_parser import extract_step3_verdicts
+
+        report = (
+            "## ⏳ 储备营地\n"
+            "### 🟡 近就绪（接近起跳板）\n"
+            "- 000001 差量能确认\n"
+            "### Near ready (approaching Springboard)\n"
+            "- 000002 still building\n"
+            "## 🏹 处于起跳板 (On the Springboard)\n"
+            "- 600519 结构完整\n"
+        )
+
+        assert extract_step3_verdicts(report, ["000001", "000002", "600519"]) == {
+            "000001": "building",
+            "000002": "building",
+            "600519": "springboard",
+        }
 
     def test_empty_inputs_are_safe(self):
         from tools.report_parser import extract_step3_verdicts
