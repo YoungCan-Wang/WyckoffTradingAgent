@@ -752,47 +752,45 @@ def test_watch_score_map_degrades_to_empty_on_failure(monkeypatch):
     assert replay_mod._watch_score_map(ctx, {}) == {}
 
 
-def test_confirmed_codes_pass_through_loss_guard(monkeypatch) -> None:
-    """跨日确认信号必须补跑损失护栏，与实盘 apply_loss_guard 对齐。
+def test_confirmed_codes_apply_risk_guards_not_observe_only() -> None:
+    """确认信号补跑风险类护栏，但不套用"仅观察"规则。
 
-    pending_mode="only" 时 _merge_codes 原本直接返回未经护栏的 confirmed，
-    导致「单 EVR/单 SOS/单 Spring 仅观察」「结构止损上限」等护栏在回测中全部
-    失效——护栏类改动因此无法被验证，且回测系统性高估这些标的的入选量。
+    pending_mode="only" 时 _merge_codes 原本返回未经护栏的 confirmed，结构止损
+    上限等风险约束在回测中失效。但不能照搬全套护栏：PendingPool 以
+    (code, signal_type) 为键、tick() 返回往日入池今日确认的信号，因此确认信号
+    天然是单信号；对它套用「单 SOS/单 Spring/... 仅观察」在语义上错误——那些
+    规则针对未经确认的裸信号。实测照搬会把 1983 笔打到 20 笔。
     """
+    from dataclasses import replace as dc_replace
 
-    class Pending:
-        def write(self, *_args, **_kwargs):
-            return None
+    from core.candidate_policy import CandidatePolicyConfig, loss_guard_reason
 
-        def tick(self, *_args, **_kwargs):
-            # 单 EVR：pure_evr_observe_only 默认 True，应被护栏拦掉
-            return [{"code": "000001", "score": 20.0, "track": "Trend", "signal_type": "evr"}]
-
-    monkeypatch.setattr("core.backtest_replay.calc_market_breadth", lambda _df_map: {})
-    monkeypatch.setattr(
-        "core.backtest_replay.analyze_benchmark_and_tune_cfg", lambda *_args, **_kwargs: {"regime": "NEUTRAL"}
-    )
-    monkeypatch.setattr(
-        "core.backtest_replay.run_funnel", lambda **_kwargs: _result()._replace(triggers={}, candidate_entries=[])
-    )
-    monkeypatch.setattr("core.backtest_replay.PendingPool", Pending)
-
-    cfg = FunnelConfig(trading_days=3)
-    cfg.ma_long = 2
-    kwargs = dict(
-        all_df_map={"000001": _hist()},
-        bench_df=_hist(),
-        trade_dates=[date(2026, 1, day) for day in range(1, 6)],
-        name_map={"000001": "平安银行"},
-        market_cap_map={},
-        sector_map={},
-        base_cfg=cfg,
+    policy = dc_replace(
+        CandidatePolicyConfig(),
+        pure_sos_observe_only=False,
+        pure_spring_observe_only=False,
+        pure_evr_observe_only=False,
+        pure_lps_observe_only=False,
+        pure_trendpb_observe_only=False,
     )
 
-    guarded = replay_backtest(config=replace(_config(), pending_mode="only"), **kwargs)
-    assert guarded.records == [], "单 EVR 应被护栏拦掉，不得成交"
+    # 单信号在风险口径下放行（"仅观察"已关闭）
+    for key in ("sos", "spring", "evr", "lps", "trend_pullback"):
+        assert loss_guard_reason("000001", "NEUTRAL", {key}, 20.0, "", {}, config=policy) == ""
 
-    legacy = replay_backtest(
-        config=replace(_config(), pending_mode="only", enforce_confirmed_loss_guard=False), **kwargs
-    )
-    assert legacy.records, "关闭开关应能复现旧口径（confirmed 绕过护栏）"
+    # 但默认口径（裸信号）仍拦——证明两套语义确实不同
+    default_policy = CandidatePolicyConfig()
+    assert loss_guard_reason("000001", "NEUTRAL", {"spring"}, 20.0, "", {}, config=default_policy)
+
+
+def test_enforce_confirmed_loss_guard_flag_exists() -> None:
+    """开关默认关闭：机制已就位但 pure_*_min_score 阈值方向是反的。
+
+    见 docs/SCORING_SYSTEM_AUDIT_2026_08.md——被"低分 XXX"拦掉的标的反而更好
+    （+0.075%/37.9% vs 放行 -2.777%/23.1%，Welch t=-4.51）。打开会用方向错误的
+    阈值污染回测结论，修好分数体系后再开。
+    """
+    cfg = _config()
+
+    assert cfg.enforce_confirmed_loss_guard is False
+    assert replace(cfg, enforce_confirmed_loss_guard=True).enforce_confirmed_loss_guard is True

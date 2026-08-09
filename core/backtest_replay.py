@@ -32,8 +32,13 @@ from core.backtest_execution import (
     market_of_board,
     resolve_trade_exit,
 )
-from core.backtest_selection import candidate_entry_loss_guard, combine_trigger_scores, select_ai_input_codes
-from core.candidate_policy import CandidatePolicyConfig, candidate_score_value
+from core.backtest_selection import combine_trigger_scores, select_ai_input_codes
+from core.candidate_policy import (
+    CandidatePolicyConfig,
+    candidate_score_value,
+    loss_guard_reason,
+    trigger_sets_by_code,
+)
 from core.candidate_ranker import rank_l3_candidates
 from core.candidate_tracks import candidate_entry_track
 from core.mainline_engine import MainlineEngineConfig
@@ -93,8 +98,15 @@ class BacktestReplayConfig:
     signal_weight_map: dict[str, float] = field(default_factory=dict)
     signal_weight_meta: dict[str, object] = field(default_factory=dict)
     # 对跨日确认信号补跑损失护栏，与实盘 apply_loss_guard 对齐。
-    # 默认开启；设 False 可复现历史上"confirmed 绕过护栏"的旧口径做对照。
-    enforce_confirmed_loss_guard: bool = True
+    #
+    # 暂时默认关闭（2026-08-08）：机制已就位且语义已修正（只施加风险类护栏、
+    # 不套用"仅观察"规则），但 pure_*_min_score 这组阈值方向是反的——用 1983 笔
+    # 历史成交推演，被"低分 XXX"拦掉的标的均收 +0.075%／胜率 37.9%，放行的
+    # -2.777%／23.1%（Welch t=-4.51）。根因见 docs/SCORING_SYSTEM_AUDIT_2026_08.md：
+    # 分数体系把表现最差的 spring 打了最高分。
+    #
+    # 打开它会用方向错误的阈值污染回测结论，故先关闭；修好分数体系后再开。
+    enforce_confirmed_loss_guard: bool = False
     market_breadth_calculator: MarketBreadthCalculator | None = None
     market_regime_analyzer: MarketRegimeAnalyzer | None = None
     a_share_entry_research: AShareEntryResearchPolicy = field(default_factory=AShareEntryResearchPolicy)
@@ -622,30 +634,51 @@ def _guarded_confirmed_codes(
     ctx: _DayContext,
     config: BacktestReplayConfig,
 ) -> tuple[list[str], dict[str, str]]:
-    """对跨日确认信号补跑损失护栏。
+    """对跨日确认信号补跑与其语义相容的损失护栏。
 
-    实盘 (workflows/wyckoff_funnel.py) 对漏斗输出统一调用 apply_loss_guard，
-    但回测的 confirmed 路径此前直接绕过 candidate_policy：pending_mode="only"
-    时 _merge_codes 返回未经护栏的 confirmed，导致「单 SOS/单 Spring 仅观察」
-    「结构止损距离上限」等护栏在回测中全部失效——护栏类改动因此无法被验证，
-    且回测会系统性高估这些标的的入选量。
+    背景：回测的 confirmed 路径此前完全绕过 candidate_policy —— pending_mode="only"
+    时 _merge_codes 返回未经护栏的 confirmed，导致结构止损上限等护栏在回测中失效，
+    护栏类改动无法被验证。
 
-    确认状态由信号状态机提供，不代表通过护栏：两者约束的是不同维度
-    （前者是"结构是否跨日存活"，后者是"该结构值不值得买"）。
+    但不能照搬实盘的全套护栏。PendingPool 以 (code, signal_type) 为键，且 tick()
+    返回的是【往日入池、今日才确认】的信号，因此：
+
+    1. 确认信号天然是单信号，ctx.result.triggers（当日命中）通常查不到它；
+    2. 对它套用「单 SOS/单 Spring/单 EVR/单 LPS/单 TrendPB 仅观察」在语义上是错的
+       —— 那些规则针对的是"未经确认的裸信号"，而确认流程已经额外要求守住信号位并
+       出现高收/缩量/转强。实测照搬会把 1983 笔打到 20 笔（88 天仅 3 笔），是误拦。
+
+    因此这里只施加与确认状态无关、纯风险维度的护栏：结构止损距离上限、市场环境、
+    过热与高位追涨。这些约束不因"跨日存活"而豁免。
     """
     if not confirmed.codes:
         return [], {}
+    policy = config.candidate_policy or CandidatePolicyConfig()
+    # 关闭"仅观察"类规则：它们针对裸信号，对已确认信号不适用（见 docstring）。
+    risk_only_policy = replace(
+        policy,
+        pure_sos_observe_only=False,
+        pure_spring_observe_only=False,
+        pure_evr_observe_only=False,
+        pure_lps_observe_only=False,
+        pure_trendpb_observe_only=False,
+    )
+    trigger_sets = trigger_sets_by_code(ctx.result.triggers)
     kept: list[str] = []
     dropped: dict[str, str] = {}
     for code in confirmed.codes:
-        item = {"code": code, "entry_type": confirmed.trigger_map.get(code, ""), "score": confirmed.score_map.get(code)}
-        reason = candidate_entry_loss_guard(
-            item,
-            result=ctx.result,
-            day_df_map=ctx.day_df_map,
-            regime=ctx.regime,
-            candidate_policy=config.candidate_policy,
-            signal_weight_map=config.signal_weight_map,
+        keys = trigger_sets.get(code) or set()
+        if not keys:
+            single = str(confirmed.trigger_map.get(code, "") or "").strip()
+            keys = {single} if single else set()
+        reason = loss_guard_reason(
+            code,
+            ctx.regime,
+            keys,
+            candidate_score_value(confirmed.score_map.get(code)),
+            str(ctx.result.channel_map.get(code, "") or ""),
+            ctx.day_df_map,
+            config=risk_only_policy,
         )
         if reason:
             dropped[code] = reason
