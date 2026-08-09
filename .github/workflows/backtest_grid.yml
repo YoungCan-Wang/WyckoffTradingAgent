@@ -492,7 +492,11 @@ jobs:
             --board "$BT_BOARD" \
             --sample-size "$BT_SAMPLE_SIZE" \
             --trading-days "$BT_TRADING_DAYS" \
-            --strategy-variants A,M,P \
+            # I = calibrate_confirmed_score：把确认分按类型先验重算到统一 0~20 刻度。
+            # 2026-08-09 离线推演（3594 笔、五周期）显示它把 Q5-Q1 的 Welch t 从
+            # -2.58（高分更差）翻到 +2.63（高分更好）。加入对照组以取得线上证据；
+            # A 是基线，故 A vs I 的差值即校准的净效应。
+            --strategy-variants A,M,P,I \
             --strategy-prefix "backtest-strategy-${BT_PERIOD_KEY}" \
             --abc-filter \
             --entry-price-mode "$BT_ENTRY_PRICE_MODE" \
