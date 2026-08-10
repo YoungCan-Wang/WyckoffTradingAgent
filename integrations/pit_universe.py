@@ -47,6 +47,70 @@ def _ymd(raw: object) -> str:
     return "".join(ch for ch in str(raw or "") if ch.isdigit())[:8]
 
 
+@dataclass(frozen=True)
+class NameSpan:
+    """一段生效的证券名称。`end` 为空表示沿用至今。"""
+
+    code: str
+    name: str
+    start: str
+    end: str
+
+    def covers(self, day: str) -> bool:
+        if self.start and day < self.start:
+            return False
+        return not (self.end and day > self.end)
+
+
+def build_name_spans(rows: list[dict]) -> dict[str, list[NameSpan]]:
+    """把 Tushare `namechange` 的行按代码归并成有序的名称区间。"""
+    out: dict[str, list[NameSpan]] = {}
+    for row in rows or []:
+        code = _digits6(row.get("ts_code") or row.get("symbol") or row.get("code"))
+        name = str(row.get("name", "") or "").strip()
+        if not code or not name:
+            continue
+        out.setdefault(code, []).append(
+            NameSpan(code=code, name=name, start=_ymd(row.get("start_date")), end=_ymd(row.get("end_date")))
+        )
+    for spans in out.values():
+        spans.sort(key=lambda s: s.start)
+    return out
+
+
+def name_on(spans: dict[str, list[NameSpan]], code: str, as_of: str, fallback: str = "") -> str:
+    """取 `code` 在 `as_of` 当日生效的名称；无覆盖区间时回落到 `fallback`。
+
+    命中多段时取最后一段——`namechange` 偶有同日多条（如 000918 在 20090429 当天连改两次），
+    按 start 升序后取末条即当日最终名称。
+    """
+    day = _ymd(as_of)
+    if not day:
+        return fallback
+    hits = [s.name for s in spans.get(_digits6(code), []) if s.covers(day)]
+    return hits[-1] if hits else fallback
+
+
+def fetch_name_spans() -> dict[str, list[NameSpan]]:
+    """拉取全量改名记录。
+
+    单次调用有 10000 行上限，而全量远超该数，因此按年分段拉取再合并。
+    起点取 1990（A 股开市）——早于此无记录，多拉几年只是空段。
+    """
+    from datetime import date
+
+    from integrations.tushare_client import get_pro
+
+    pro = get_pro()
+    fields = "ts_code,name,start_date,end_date"
+    rows: list[dict] = []
+    for year in range(1990, date.today().year + 1):
+        frame = pro.namechange(start_date=f"{year}0101", end_date=f"{year}1231", fields=fields)
+        if frame is not None and not frame.empty:
+            rows.extend(frame.to_dict("records"))
+    return build_name_spans(rows)
+
+
 def build_pit_symbols(rows: list[dict]) -> list[PitSymbol]:
     """把 `stock_basic` 的行（L 与 D 合并）转成去重后的 PitSymbol 列表。
 
