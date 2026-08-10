@@ -38,11 +38,29 @@ class CandidatePolicyConfig:
     loss_guard_enabled: bool = True
     alpha_block_risk_on_early_breakout: bool = True
     alpha_risk_on_early_breakout_min_score: float = 70.0
-    mix_trendpb_min_score: float = 12.0
+    # 下面三个阈值 2026-08-10 从「结构上不可达」修正为可达值。
+    #
+    # 根因：各 detector 返回的是不同物理量，而这组阈值按"量比"量级设定：
+    #   _detect_trend_pullback 返回 float(1.0 - vol_ratio)，vol_ratio > 0
+    #       → score < 1.0 恒成立（实测 163 笔 max=0.601）
+    #   _detect_lps 返回 float(vol_ratio) 且 vol_ratio > lps_vol_dry_ratio(0.65) 即弃用
+    #       → score ∈ (0, 0.65]（实测 9 笔 max=0.649）
+    # 而原阈值 10.0 / 6.0 / 12.0 分别是上界的 10 倍、9.2 倍、12 倍以上，
+    # 意味着这三条判据【永远为真】：
+    #   主线 trend_pullback / lps 候选 100% 被拦（"主线跳过仅观察"这条快速通道
+    #   对它们实际是关闭的）；含 trend_pullback 的【共振组合】在五种弱回踩市况下
+    #   被无条件拦掉——共振组合没有 observe_only 兜底，本该是质量更高的一批。
+    #
+    # 取 0.05 而非样本分位：trendpb/lps 的样本仅 163/9 笔且分数按周期分层
+    #   （recent_6m 全在某阈值上、sideways_2023 全在其下），用分位数会把周期差异
+    #   当成分数差异——据此算出的 Welch t=+4.01 实为周期间比较，不可用。
+    # 0.05 的语义是"几乎不拦"：本阶段只消除不可达，把真正的判别权留给后续的
+    # 类内相对判据（绝对阈值跨量纲比较的问题无法靠调数值根治）。
+    mix_trendpb_min_score: float = 0.05
     pure_lps_observe_only: bool = True
-    pure_lps_min_score: float = 6.0
+    pure_lps_min_score: float = 0.05
     pure_trendpb_observe_only: bool = True
-    pure_trendpb_min_score: float = 10.0
+    pure_trendpb_min_score: float = 0.05
     pure_sos_min_score: float = 6.0
     pure_sos_observe_only: bool = True
     pure_spring_observe_only: bool = True
