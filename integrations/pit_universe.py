@@ -1,8 +1,16 @@
-"""Point-in-time A 股股票池：补齐历史退市与当时 ST 标的。
+"""Point-in-time A 股股票池：补齐窗口内可交易但已从存续名单消失的标的。
 
-快照回放此前用「拉取当时的存续名单且不含 ST」当股票池，于是自动排除了两类在窗口内
-真实可交易的标的：拉取日之前已退市的（乐视网、千山药机等），以及拉取日处于 ST 状态的。
-实测缺口 4.1%–10.8%（越早的窗口越大），方向是乐观偏差，且集中在「便宜且困境」这一段。
+快照回放此前用「拉取当时的存续名单」当股票池，于是漏掉了拉取日之前已退市的标的
+（乐视网、千山药机等）——它们在窗口内是正常股票，生产 `layer1_filter` 会放行。
+实测退市缺口按窗口为 19~231 只，越早的窗口越大，方向是乐观偏差。
+
+**本模块不承担 ST 过滤，因为 ST 不是本层的事。** 生产 `layer1_filter` 的硬过滤本身就
+剔除 ST（见其 docstring），回测消费侧 `workflows/backtest_data.py` 同样按名称剔除，
+两侧口径一致——这是「同一输入在实盘与回放得到同一候选语义」的要求，不是偏差。
+
+尚未解决的是 **PIT 名称**：`name_map` 记的是拉取当时的名称，因此一只 2020 年正常、
+2024 年才变 ST 的股票，如今会以 ST 名被两侧过滤掉，而它在 2020 年本该可交易。
+这部分缺口需要按 as-of 日期还原当时名称才能补齐，本模块暂未提供。
 
 本模块只负责「某个 as-of 日期应该有哪些股票」，不涉及行情抓取。
 """
@@ -66,7 +74,10 @@ def tradable_on(symbols: list[PitSymbol], as_of: str, *, include_bse: bool = Tru
     """给出 `as_of`（YYYYMMDD）当日真实可交易的标的。
 
     判据：已上市（`list_date <= as_of`），且未在该日之前摘牌（无退市日，或 `delist_date >= as_of`）。
-    **不按 ST 过滤**——ST 股在窗口内是可交易的，排除它们正是原偏差的一半来源。
+
+    只做「当日是否存在」这一层，**不按 ST 过滤**——ST 属策略口径，由下游
+    `layer1_filter` 与 `workflows/backtest_data.py` 按各自规则剔除，两者本就一致。
+    在这里再滤一次会让本模块的语义从「PIT 存在性」漂移成「PIT 可买性」。
     """
     day = _ymd(as_of)
     if not day:
@@ -102,7 +113,11 @@ def fetch_pit_symbols() -> list[PitSymbol]:
 
 
 def universe_gap(should: list[PitSymbol], have: set[str]) -> dict[str, object]:
-    """对比应有池与实际快照池，给出缺口构成。用于回放前的自检。"""
+    """对比应有池与实际快照池，给出缺口构成。用于回放前的自检。
+
+    `missing_delisted` 是真偏差（当时可交易、生产会放行）；`missing_st` 只是分类信息——
+    ST 由下游按策略口径剔除，不计入偏差。两者分开报，避免把「按设计排除」读成「漏掉」。
+    """
     missing = [s for s in should if s.code not in have]
     return {
         "should": len(should),
