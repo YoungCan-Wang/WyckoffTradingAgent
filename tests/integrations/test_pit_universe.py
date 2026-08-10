@@ -18,7 +18,7 @@ def test_delisted_stock_is_tradable_before_its_delist_date() -> None:
 
 
 def test_st_stock_is_not_excluded() -> None:
-    """ST 股在窗口内可交易；排除它们正是原偏差的另一半来源。"""
+    """本层只判「当日是否存在」，ST 交给下游按策略口径剔除，不在这里预先过滤。"""
     symbols = build_pit_symbols([_row("000004", "ST国华", "19910114")])
 
     picked = tradable_on(symbols, "20240101")
