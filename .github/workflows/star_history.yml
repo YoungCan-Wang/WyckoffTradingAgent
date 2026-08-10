@@ -9,8 +9,10 @@ on:
     - cron: "0 12 * * 0" # 每周日 UTC 12:00 ≈ 北京时间 20:00
   workflow_dispatch:
 
+# 顶层保持最小权限；写权限只下放给真正要提交图表的 job（check_workflow_hygiene 要求
+# 顶层为 contents: read，job 级不受检——这也是最小权限原则本身想要的形状）。
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: star-history
@@ -19,6 +21,8 @@ concurrency:
 jobs:
   star-history:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
