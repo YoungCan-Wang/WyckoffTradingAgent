@@ -65,9 +65,12 @@ def extract_step3_verdicts(
     allowed_set = {str(code).strip() for code in allowed_codes if re.fullmatch(r"\d{6}", str(code).strip())}
     if not allowed_set:
         return {}
+    # Markdown 阵营标题必须与 ops 抽取同口径用「处于起跳板 / On the Springboard」。
+    # 裸匹配「起跳板 / Springboard」会命中储备营地下常见的「近就绪（接近起跳板）」
+    # 子标题；再叠加“更深标题不切分组”，这些本应 building 的代码会被写成 springboard。
     buckets = (
         (STEP3_VERDICT_BUILDING, ("储备营地", "Building Cause"), BUILDING_POOL_KEYS),
-        (STEP3_VERDICT_SPRINGBOARD, ("起跳板", "Springboard"), SPRINGBOARD_POOL_KEYS),
+        (STEP3_VERDICT_SPRINGBOARD, ("处于起跳板", "On the Springboard"), SPRINGBOARD_POOL_KEYS),
         (STEP3_VERDICT_INVALIDATED, ("逻辑破产", "Invalidated"), INVALIDATED_POOL_KEYS),
     )
     verdicts: dict[str, str] = {}
