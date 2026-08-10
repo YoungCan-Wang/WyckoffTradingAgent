@@ -17,7 +17,7 @@ from integrations.fetch_a_share_csv import get_stocks_by_board, normalize_symbol
 from integrations.index_data_source import fetch_index_akshare, fetch_index_hist
 from integrations.market_metadata import fetch_concept_heat, fetch_concept_map, fetch_market_cap_map, fetch_sector_map
 from integrations.ths_hot_concept import fetch_ths_hot_events, merge_concept_heat, ths_hot_events_to_concept_heat
-from utils.env import env_flag
+from utils.env import env_bool, env_flag
 
 
 @dataclass(frozen=True)
@@ -40,8 +40,14 @@ def _normalize_board(board: str) -> str:
     return b
 
 
-def _load_symbols(board: str, sample_size: int) -> tuple[list[str], list[dict]]:
+def _load_symbols(board: str, sample_size: int, as_of: str = "") -> tuple[list[str], list[dict]]:
     board_norm = _normalize_board(board)
+    if as_of and env_bool("BACKTEST_PIT_UNIVERSE", True):
+        pit = _load_pit_symbols(board_norm, as_of)
+        if pit is not None:
+            symbols, pool = pit
+            return _apply_sample(symbols, pool, sample_size)
+
     raw_pool = get_stocks_by_board(board_norm)
     pool: list[dict] = []
     for item in raw_pool:
@@ -59,11 +65,42 @@ def _load_symbols(board: str, sample_size: int) -> tuple[list[str], list[dict]]:
     symbols = [
         s for s in sorted(set(normalize_symbols(list(name_map.keys())))) if "ST" not in name_map.get(s, "").upper()
     ]
+    return _apply_sample(symbols, name_map, sample_size)
+
+
+def _apply_sample(
+    symbols: list[str],
+    names: dict[str, str],
+    sample_size: int,
+) -> tuple[list[str], list[dict]]:
     if sample_size > 0 and sample_size < len(symbols):
         random.seed(42)
         symbols = random.sample(symbols, sample_size)
-    filtered_pool = [{"code": s, "name": name_map.get(s, "")} for s in symbols]
-    return symbols, filtered_pool
+    return symbols, [{"code": s, "name": names.get(s, "")} for s in symbols]
+
+
+def _load_pit_symbols(board_norm: str, as_of: str) -> tuple[list[str], dict[str, str]] | None:
+    """按窗口起点取 point-in-time 股票池：含当时 ST 与此后才退市的标的。
+
+    拉取失败时返回 None，由调用方回落到存续名单——回放宁可带偏差也不能空跑，
+    但偏差必须在日志里说清楚。
+    """
+    try:
+        from integrations.pit_universe import fetch_pit_symbols, tradable_on
+
+        include_bse = board_norm in {"all", "bse"}
+        tradable = tradable_on(fetch_pit_symbols(), as_of, include_bse=include_bse)
+        if not tradable:
+            print(f"[snapshot] PIT 股票池为空 (as_of={as_of})，回落到存续名单")
+            return None
+        names = {s.code: s.name for s in tradable}
+        delisted = sum(1 for s in tradable if s.delisted)
+        st_count = sum(1 for s in tradable if s.is_st)
+        print(f"[snapshot] PIT 股票池 as_of={as_of}: {len(names)} 只（其中此后退市 {delisted}、当时 ST {st_count}）")
+        return sorted(names), names
+    except Exception as exc:
+        print(f"[snapshot] PIT 股票池加载失败，回落到存续名单（结果带幸存者偏差）: {exc}")
+        return None
 
 
 def _fetch_one(
@@ -340,13 +377,15 @@ def run_snapshot_fetch(args) -> int:
     date_range = _snapshot_range(args)
     print(f"[snapshot] 数据区间: {date_range.prefetch_start} -> {date_range.end}")
 
-    symbols, raw_pool = _load_symbols(args.board, int(args.sample_size))
+    # 用预取起点作为 PIT as-of：窗口开始前已上市、且当时尚未摘牌的才算可交易
+    symbols, raw_pool = _load_symbols(args.board, int(args.sample_size), as_of=date_range.prefetch_start)
     if not symbols:
         print("[snapshot] 严重错误: 股票池为空，请检查 board 参数或行情源可用性")
         return 1
+    pit_on = bool(date_range.prefetch_start) and env_bool("BACKTEST_PIT_UNIVERSE", True)
     print(
         f"[snapshot] 股票池: {len(symbols)} symbols, sample={symbols[:5]}, "
-        f"board={_normalize_board(args.board)}, exclude_st=True"
+        f"board={_normalize_board(args.board)}, pit_universe={pit_on}, exclude_st={not pit_on}"
     )
 
     all_frames, ok, fail, fail_samples = _fetch_snapshot_frames(
