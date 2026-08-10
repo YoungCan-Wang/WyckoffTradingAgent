@@ -49,6 +49,7 @@ import {
   decideAgentLoop,
 } from '../services/chat-agent-loop'
 import { resolveChatLanguageModel } from '../services/chat-language-model'
+import { appendMarketWatchModelMessage, buildStableChatSystemPrompt } from '../services/chat-prompt-prefix'
 
 type ChatBindings = { Bindings: Env; Variables: { auth: AuthContext } }
 
@@ -463,12 +464,12 @@ function writeLlmUsage(
   writer.write({ type: 'data-llm-usage', data: metrics, transient: true } as never)
 }
 
-function buildChatSystemPrompt(transport: 'chat' | 'responses', marketWatchContext: string): string {
-  return [
-    WYCKOFF_CHAT_SYSTEM_PROMPT,
-    transport === 'responses' ? WEB_SEARCH_GUIDANCE : '',
-    marketWatchContext,
-  ].filter(Boolean).join('\n\n')
+function buildChatSystemPrompt(transport: 'chat' | 'responses'): string {
+  // 观察篮行情不得拼进 system：价/fetchedAt 一变会打爆整段 prompt cache。
+  return buildStableChatSystemPrompt({
+    rolePrompt: WYCKOFF_CHAT_SYSTEM_PROMPT,
+    webSearchGuidance: transport === 'responses' ? WEB_SEARCH_GUIDANCE : '',
+  })
 }
 
 async function runChatAttempt(args: ChatResilienceArgs, config: ChatModelConfig, marketWatchContext: string): Promise<void> {
@@ -487,12 +488,14 @@ async function runChatAttempt(args: ChatResilienceArgs, config: ChatModelConfig,
       tools,
       ignoreIncompleteToolCalls: true,
     })
+    // 行情作为当轮额外 user 消息挂在末尾，不改写 system / 历史前缀。
+    modelMessages = appendMarketWatchModelMessage(modelMessages, marketWatchContext)
     let continuationCount = 0
     let totalSteps = 0
     let segmentIndex = 0
     let finalFinishReason = 'stop'
 
-    const system = buildChatSystemPrompt(resolved.transport, marketWatchContext)
+    const system = buildChatSystemPrompt(resolved.transport)
 
     while (true) {
       const remainingSteps = CHAT_MAX_TOTAL_STEPS - totalSteps

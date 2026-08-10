@@ -1010,8 +1010,11 @@ def test_send_message_does_not_insert_blank_log_line(monkeypatch):
     WyckoffTUI._send_message(app, "你看我持仓呀")
 
     assert len(log.lines) == 2
-    assert str(log.lines[-1]) == "▌ 你看我持仓呀"
-    assert app._messages == [{"role": "user", "content": "你看我持仓呀"}]
+    assert "你看我持仓呀" in str(log.lines[-1])
+    assert "当前北京时间" not in str(log.lines[-1])
+    assert app._messages[0]["role"] == "user"
+    assert app._messages[0]["content"].startswith("你看我持仓呀")
+    assert "当前北京时间：" in app._messages[0]["content"]
 
 
 def test_send_message_resume_keeps_original_turn_user_text(monkeypatch):
@@ -1030,7 +1033,8 @@ def test_send_message_resume_keeps_original_turn_user_text(monkeypatch):
     soft = "<turn-resume-context>\n原问题: 分析宁德时代\n</turn-resume-context>\n\n分析宁德时代"
     WyckoffTUI._send_message(app, soft, turn_user_text="分析宁德时代", echo_user=False)
 
-    assert app._messages[-1]["content"] == soft
+    assert app._messages[-1]["content"].startswith(soft)
+    assert "当前北京时间：" in app._messages[-1]["content"]
     assert app._conversation.active_turn.user_text == "分析宁德时代"
     assert log.lines == ["kept"]
 
@@ -1047,7 +1051,10 @@ def test_send_system_notification_does_not_insert_blank_log_line():
 
     assert len(log.lines) == 2
     assert "后台结果已回传给 agent" in str(log.lines[-1])
-    assert app._messages == [{"role": "user", "content": "workflow done", "_system_notification": True}]
+    assert app._messages[0]["role"] == "user"
+    assert app._messages[0]["_system_notification"] is True
+    assert app._messages[0]["content"].startswith("workflow done")
+    assert "当前北京时间：" in app._messages[0]["content"]
 
 
 def test_auto_resume_notice_does_not_insert_blank_log_line():
