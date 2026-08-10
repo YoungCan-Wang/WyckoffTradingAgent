@@ -253,7 +253,7 @@ System Prompt 内建路由规则，LLM 自主判断调哪个工具：
 
 - "我有什么持仓" → `portfolio(mode="view")`（纯数据，秒回）
 - "持仓健康吗" → `portfolio(mode="diagnose")`（逐只诊断，较慢）
-- "帮我加/删持仓" → Web 使用 `plan_portfolio_update` → 用户确认 → `execute_portfolio_update`；CLI 使用 `update_portfolio` 并由 TUI 弹窗确认
+- "帮我加/删持仓" → Web 使用 `plan_portfolio_update` → 用户确认 → `execute_portfolio_update`；CLI 使用 `update_portfolio` 并由 TUI 弹窗确认；多只变更时 CLI/MCP 用 `items` 一次提交，避免多轮 LLM
 - "有什么机会" → `screen_stocks`（后台执行）
 
 **铁律：一个工具能回答的问题，绝不调两个。用户没要求分析，就不要分析。**

@@ -1860,22 +1860,48 @@ class ToolConfirmScreen(ModalScreen[dict]):
             size = len(self.tool_args.get("content", ""))
             return f"  路径: {path}\n  内容: {size} 字符"
         if self.tool_name == "update_portfolio":
-            action = self.tool_args.get("action", "")
-            code = self.tool_args.get("code", "")
-            parts = [f"操作: {action}"]
-            if code:
-                parts.append(f"代码: {code}")
-            shares = self.tool_args.get("shares")
-            if shares:
-                parts.append(f"股数: {shares}")
-            cost = self.tool_args.get("cost_price")
-            if cost:
-                parts.append(f"成本: {cost}")
-            cash = self.tool_args.get("free_cash")
-            if cash is not None:
-                parts.append(f"现金: {cash}")
-            return "  " + "  ".join(parts)
+            return self._format_portfolio_confirm_summary()
         return f"  {json.dumps(self.tool_args, ensure_ascii=False)}"
+
+    def _format_portfolio_confirm_summary(self) -> str:
+        action = str(self.tool_args.get("action", "") or "")
+        items = self.tool_args.get("items")
+        if isinstance(items, list) and items:
+            lines = [f"  操作: {action} × {len(items)} 只"]
+            for row in items[:8]:
+                if not isinstance(row, dict):
+                    continue
+                code = str(row.get("code") or "").strip()
+                name = str(row.get("name") or "").strip()
+                shares = row.get("shares")
+                cost = row.get("cost_price")
+                detail = " ".join(
+                    part
+                    for part in (
+                        name,
+                        f"{shares}股" if shares not in (None, "", 0) else "",
+                        f"成本{cost}" if cost not in (None, "") else "",
+                    )
+                    if part
+                )
+                lines.append(f"  · {code} {detail}".rstrip())
+            if len(items) > 8:
+                lines.append(f"  · …另有 {len(items) - 8} 只")
+            return "\n".join(lines)
+        code = self.tool_args.get("code", "")
+        parts = [f"操作: {action}"]
+        if code:
+            parts.append(f"代码: {code}")
+        shares = self.tool_args.get("shares")
+        if shares:
+            parts.append(f"股数: {shares}")
+        cost = self.tool_args.get("cost_price")
+        if cost:
+            parts.append(f"成本: {cost}")
+        cash = self.tool_args.get("free_cash")
+        if cash is not None and action == "set_cash":
+            parts.append(f"现金: {cash}")
+        return "  " + "  ".join(parts)
 
     def _editable_value(self) -> str:
         if self.tool_name == "exec_command":

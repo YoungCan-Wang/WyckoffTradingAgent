@@ -201,7 +201,7 @@ The agent's arsenal — 10 quant tools + 5 general capabilities:
 | `search_stock_by_name` | Fuzzy search by name, ticker, or pinyin |
 | `analyze_stock` | Wyckoff diagnosis / recent OHLCV quotes / fundamental quality overlay (mode switch) |
 | `portfolio` | View holdings / batch portfolio health scan (mode switch) |
-| `update_portfolio` | Add / modify / delete holdings, set available cash, delete tracking records |
+| `update_portfolio` | Add / modify / delete holdings (use `items` for multi-symbol batches), set available cash, delete tracking records |
 | `record_trade_fill` | Back-fill an executed trade: averages cost basis, deducts fees, reports realised P&L |
 | `get_market_overview` | Broad market temperature overview |
 | `screen_stocks` | Mainline funnel full-market screening (⚡background) |

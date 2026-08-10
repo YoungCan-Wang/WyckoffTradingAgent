@@ -51,6 +51,7 @@ def update_portfolio(
     free_cash: float = 0,
     table: str = "",
     codes: list[str] | None = None,
+    items: list[dict[str, Any]] | None = None,
     tool_context: ToolContext | None = None,
 ) -> dict:
     try:
@@ -59,6 +60,8 @@ def update_portfolio(
             return _delete_tracking_records(table, codes)
         portfolio_id = _portfolio_id(tool_context)
         cloud = has_cloud(tool_context)
+        if items is not None:
+            return _update_portfolio_batch(normalized_action, portfolio_id, items, free_cash, cloud, tool_context)
         msg = _apply_portfolio_action(
             normalized_action, portfolio_id, code, name, shares, cost_price, buy_dt, free_cash, cloud, tool_context
         )
@@ -70,6 +73,84 @@ def update_portfolio(
     except Exception as e:
         logger.exception("update_portfolio error")
         return {"error": str(e)}
+
+
+_BATCH_ACTIONS = frozenset({"add", "update", "remove"})
+_BATCH_MAX_ITEMS = 30
+
+
+def _update_portfolio_batch(
+    action: str,
+    portfolio_id: str,
+    items: list[dict[str, Any]],
+    free_cash: float,
+    cloud: bool,
+    tool_context: ToolContext | None,
+) -> dict:
+    """一次工具调用改多只：减少 Agent 多轮 LLM，利于 prompt cache。"""
+    if action == "set_cash":
+        return {"error": "批量 items 不支持 set_cash，请单独调用"}
+    if action not in _BATCH_ACTIONS:
+        return {"error": f"批量 items 仅支持 add/update/remove，收到: {action}"}
+    if not isinstance(items, list) or not items:
+        return {"error": "items 必须是非空数组"}
+    if len(items) > _BATCH_MAX_ITEMS:
+        return {"error": f"单次最多 {_BATCH_MAX_ITEMS} 条，请拆分后重试"}
+
+    ok_messages: list[str] = []
+    failures: list[dict[str, Any]] = []
+    for index, raw in enumerate(items):
+        row = _batch_item_row(index, raw, failures)
+        if row is None:
+            continue
+        msg = _apply_portfolio_action(
+            action,
+            portfolio_id,
+            row["code"],
+            row["name"],
+            row["shares"],
+            row["cost_price"],
+            row["buy_dt"],
+            free_cash,
+            cloud,
+            tool_context,
+        )
+        if isinstance(msg, dict) and msg.get("error"):
+            failures.append({"index": index, "code": row["code"], "error": msg["error"]})
+        else:
+            ok_messages.append(str(msg))
+
+    if not ok_messages:
+        first = failures[0]["error"] if failures else "批量操作失败"
+        return {"error": first, "failures": failures, "updated_count": 0, "failed_count": len(failures)}
+    if cloud:
+        _sync_remote_portfolio_to_local(portfolio_id, tool_context)
+    summary = _local_update_summary(portfolio_id, f"批量{action}成功 {len(ok_messages)} 只", cloud)
+    summary["updated_count"] = len(ok_messages)
+    summary["failed_count"] = len(failures)
+    summary["item_messages"] = ok_messages
+    if failures:
+        summary["failures"] = failures
+    return summary
+
+
+def _batch_item_row(index: int, raw: Any, failures: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        failures.append({"index": index, "error": "item 必须是对象"})
+        return None
+    try:
+        shares = int(raw.get("shares") or 0)
+        cost_price = float(raw.get("cost_price") or 0)
+    except (TypeError, ValueError):
+        failures.append({"index": index, "code": raw.get("code"), "error": "shares/cost_price 无效"})
+        return None
+    return {
+        "code": str(raw.get("code") or "").strip(),
+        "name": str(raw.get("name") or "").strip(),
+        "shares": shares,
+        "cost_price": cost_price,
+        "buy_dt": str(raw.get("buy_dt") or "").strip(),
+    }
 
 
 def record_trade_fill(
