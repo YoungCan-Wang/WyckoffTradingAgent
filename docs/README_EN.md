@@ -330,4 +330,5 @@ If this project helps, a GitHub Star is appreciated. If it helps you make money,
 
 ---
 
-[![Star History Chart](https://api.star-history.com/svg?repos=YoungCan-Wang/WyckoffTradingAgent&type=Date)](https://star-history.com/#YoungCan-Wang/WyckoffTradingAgent&Date)
+<!-- star-history:start -->
+<!-- star-history:end -->
