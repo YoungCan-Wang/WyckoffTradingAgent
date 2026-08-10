@@ -93,14 +93,39 @@ def _load_pit_symbols(board_norm: str, as_of: str) -> tuple[list[str], dict[str,
         if not tradable:
             print(f"[snapshot] PIT 股票池为空 (as_of={as_of})，回落到存续名单")
             return None
-        names = {s.code: s.name for s in tradable}
+        names = _pit_names(tradable, as_of)
         delisted = sum(1 for s in tradable if s.delisted)
-        st_count = sum(1 for s in tradable if s.is_st)
-        print(f"[snapshot] PIT 股票池 as_of={as_of}: {len(names)} 只（其中此后退市 {delisted}、当时 ST {st_count}）")
+        st_now = sum(1 for s in tradable if s.is_st)
+        st_then = sum(1 for n in names.values() if "ST" in n.upper())
+        print(
+            f"[snapshot] PIT 股票池 as_of={as_of}: {len(names)} 只"
+            f"（其中此后退市 {delisted}；ST 按当时名 {st_then} 只，按今日名会误判为 {st_now} 只）"
+        )
         return sorted(names), names
     except Exception as exc:
         print(f"[snapshot] PIT 股票池加载失败，回落到存续名单（结果带幸存者偏差）: {exc}")
         return None
+
+
+def _pit_names(tradable: list, as_of: str) -> dict[str, str]:
+    """把 name_map 换成 as-of 当时的名称。
+
+    今日名称会把「当年正常、后来变 ST」的股票误判为 ST，而下游 layer1_filter 与
+    backtest_data 都按名称剔除 ST——于是这批当时可交易的标的被静默排除。实测 2020-01-01
+    有 224 只属于此类。改名记录拉取失败时回落到今日名称，并明说结果仍带该偏差。
+    """
+    from integrations.pit_universe import fetch_name_spans, name_on
+
+    fallback = {s.code: s.name for s in tradable}
+    try:
+        spans = fetch_name_spans()
+    except Exception as exc:
+        print(f"[snapshot] 改名记录拉取失败，name_map 沿用今日名称（仍会误滤当年正常后变 ST 的标的）: {exc}")
+        return fallback
+    if not spans:
+        print("[snapshot] 改名记录为空，name_map 沿用今日名称")
+        return fallback
+    return {code: name_on(spans, code, as_of, fallback=today) for code, today in fallback.items()}
 
 
 def _fetch_one(
