@@ -3,6 +3,7 @@ import type { ToolDeps, KlineRow } from '@wyckoff/shared'
 import {
   buildValueAgentDigest,
   buildKlineDigest,
+  buildPortfolioWriteRecord,
   execSearchStock,
   execViewPortfolio,
   execMarketOverview,
@@ -553,13 +554,47 @@ describe('execExecutePortfolioUpdate', () => {
     expect(insertChain.insert).not.toHaveBeenCalled()
   })
 
-  it('inserts a position only when no existing row matches', async () => {
+  it('does not reset buy_dt or clear stop_loss when updating without a new stop', async () => {
+    const { deps, updateChain } = createPortfolioWriteDeps([{ id: 'pos-1' }])
+
+    await execExecutePortfolioUpdate(deps, 'user1', 'update', '600519', '贵州茅台', 200, 1810, null)
+
+    expect(updateChain.update).toHaveBeenCalledWith(
+      expect.objectContaining({ code: '600519', shares: 200, cost_price: 1810 }),
+    )
+    const payload = updateChain.update.mock.calls[0]?.[0] as Record<string, unknown>
+    expect(payload).not.toHaveProperty('buy_dt')
+    expect(payload).not.toHaveProperty('stop_loss')
+  })
+
+  it('sets buy_dt only when adding a new position', async () => {
     const { deps, insertChain } = createPortfolioWriteDeps([])
 
     const result = await execExecutePortfolioUpdate(deps, 'user1', 'add', '600519', '贵州茅台', 100, 1800, 1700)
 
     expect(result).toContain('已新增')
-    expect(insertChain.insert).toHaveBeenCalledWith(expect.objectContaining({ portfolio_id: 'USER_LIVE:user1', code: '600519' }))
+    expect(insertChain.insert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        portfolio_id: 'USER_LIVE:user1',
+        code: '600519',
+        buy_dt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+        stop_loss: 1700,
+      }),
+    )
+  })
+})
+
+describe('buildPortfolioWriteRecord', () => {
+  it('keeps update payloads free of buy_dt and null stop_loss', () => {
+    const record = buildPortfolioWriteRecord('USER_LIVE:u', '600519', 'update', '贵州茅台', 200, 1810, null)
+    expect(record).not.toHaveProperty('buy_dt')
+    expect(record).not.toHaveProperty('stop_loss')
+  })
+
+  it('writes buy_dt and finite stop_loss on add', () => {
+    const record = buildPortfolioWriteRecord('USER_LIVE:u', '600519', 'add', '贵州茅台', 100, 1800, 1700)
+    expect(record.buy_dt).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+    expect(record.stop_loss).toBe(1700)
   })
 })
 

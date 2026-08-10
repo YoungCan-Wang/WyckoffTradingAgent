@@ -1101,11 +1101,7 @@ export async function execExecutePortfolioUpdate(
     if (!name || !shares || !cost_price) {
       return '执行失败：缺少 name、shares、cost_price 参数'
     }
-    const record: Record<string, unknown> = {
-      portfolio_id: portfolioId, code: normalized, name, shares, cost_price,
-      buy_dt: new Date().toISOString().slice(0, 10),
-    }
-    if (stop_loss !== undefined) record.stop_loss = stop_loss
+    const record = buildPortfolioWriteRecord(portfolioId, normalized, action, name, shares, cost_price, stop_loss)
     const error = await savePortfolioPosition(deps, portfolioId, normalized, record)
     const currency = normalized.endsWith('.HK') ? 'HK$' : normalized.endsWith('.US') ? '$' : '¥'
     return error
@@ -1114,6 +1110,30 @@ export async function execExecutePortfolioUpdate(
   }
 
   return '未知操作'
+}
+
+export function buildPortfolioWriteRecord(
+  portfolioId: string,
+  code: string,
+  action: 'add' | 'update',
+  name: string,
+  shares: number,
+  cost_price: number,
+  stop_loss: number | null,
+): Record<string, unknown> {
+  // update 不得重写 buy_dt：Step4 sellable_shares 用它做 A 股 T+1，写成「今天」会把可卖仓冻住。
+  // stop_loss 仅在显式给到有限数字时写入；工具 schema 是 nullable，LLM 省略时传来 null，
+  // 若仍写入会把已有止损清掉，Step4 止损强平/继承都会失效。
+  const record: Record<string, unknown> = {
+    portfolio_id: portfolioId,
+    code,
+    name,
+    shares,
+    cost_price,
+  }
+  if (action === 'add') record.buy_dt = todayDateString()
+  if (typeof stop_loss === 'number' && Number.isFinite(stop_loss)) record.stop_loss = stop_loss
+  return record
 }
 
 async function savePortfolioPosition(
