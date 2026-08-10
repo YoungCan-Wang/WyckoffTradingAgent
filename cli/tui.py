@@ -146,7 +146,7 @@ from cli.tools import TOOL_SPECS
 from cli.workflows.dispatch import build_turn_runtime
 from cli.workflows.executor import WorkflowExecutor
 from cli.workflows.router import WORKFLOWS
-from core.prompts import with_current_time
+from core.prompts import append_beijing_time_context, with_current_time
 
 
 def _pop_lines(log_widget, n: int) -> None:
@@ -2639,7 +2639,8 @@ class WyckoffTUI(App):
             logger.debug("memory context injection failed", exc_info=True)
         if workflow_ctx := self._recent_workflow_context(display):
             mem_ctx = "\n\n".join(item for item in (mem_ctx, workflow_ctx) if item)
-        user_message = {"role": "user", "content": text}
+        # 时间挂在 user 尾部，system 保持静态以便跨 turn 复用 prompt cache。
+        user_message = {"role": "user", "content": append_beijing_time_context(text)}
         if mem_ctx:
             user_message["_memory_context"] = mem_ctx
         self._messages.append(user_message)
@@ -2652,7 +2653,13 @@ class WyckoffTUI(App):
     def _send_system_notification(self, text: str) -> None:
         log = self.query_one("#chat-log", ChatLog)
         log.write(Text.from_markup("  [dim]↳ 后台结果已回传给 agent[/dim]"))
-        self._messages.append({"role": "user", "content": text, "_system_notification": True})
+        self._messages.append(
+            {
+                "role": "user",
+                "content": append_beijing_time_context(text),
+                "_system_notification": True,
+            }
+        )
         if hasattr(self, "_cancel_event") and self._cancel_event is not None:
             self._cancel_event.clear()
         self._ensure_conversation().begin_turn(text, system_notification=True)

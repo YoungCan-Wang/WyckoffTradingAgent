@@ -102,7 +102,7 @@ Worker 负责鉴权、输入校验、队列控制面和 HMAC 签名。Vercel Nod
 
 `X-RateLimit-Backend` 明确返回 `redis`、`local` 或 `local-fallback`，便于区分共享额度、未配置 Redis 和 Redis 故障降级。Redis 只承载可过期的协调状态与短期 Agent Run 结果，不承载持仓、订单、交易信号或审计真相；这些数据仍由 Supabase/RLS 管理。
 
-读盘室只在用户问题命中观察篮代码，或明确要求复盘观察篮时，从 TickFlow 拉取相关标的的最新可用行情。快照只在浏览器保存 45 秒，随请求传入 Worker 并校验代码集合、时间和数值类型；它不写入 Supabase 或 Redis，数据源不可用时模型必须明确说明缺失，不得估算价格。
+读盘室只在用户问题命中观察篮代码，或明确要求复盘观察篮时，从 TickFlow 拉取相关标的的最新可用行情。快照只在浏览器保存 45 秒，随请求传入 Worker 并校验代码集合、时间和数值类型；它不写入 Supabase 或 Redis，数据源不可用时模型必须明确说明缺失，不得估算价格。行情块以当轮额外 user 消息注入模型上下文，**不拼进 system prompt**，避免价/时间戳变动打爆 prompt cache。
 
 前端的 `web/apps/web/src/lib/api-url.ts` 统一生成 chat、portfolio 和 settings 的后端地址。本地开发默认连接 `http://127.0.0.1:8787`，生产默认连接 `https://wyckoff-api.yongkai-wang.workers.dev`；部署环境可用公开的构建变量 `VITE_API_URL` 覆盖地址。该变量只包含公开服务地址，不能放 Token。
 
@@ -456,7 +456,7 @@ TUI 启动时自动执行 `prune_memories()`，按类型清理旧记忆：L1 `de
 5. **股票作用域过滤**：当前问题有明确股票时，只保留全局记忆和同代码记忆；当前问题没有明确股票时，带 `codes` 的单股记忆不参与召回
 6. 始终拉取 L3 `persona` 和近期 `preference`，置顶显示，但同样遵守股票作用域过滤
 
-拼成两段注入 system prompt 尾部：
+拼成两段注入当前 user 轮次的记忆上下文（CLI 挂在消息元数据 / 包装层；Web 走对应召回通道），**不要**为了展示时间或行情去改写静态 system 前缀：
 
 ```
 # 用户画像

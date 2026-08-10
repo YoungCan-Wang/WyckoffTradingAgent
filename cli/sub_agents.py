@@ -243,9 +243,12 @@ def run_sub_agent(
         tool_timeout_seconds=sub.tool_timeout_seconds,
         deadline=deadline,
     )
+    from core.prompts import append_beijing_time_context
+
     trimmed_context, context_truncated = _fit_context(context, sub.context_budget_tokens)
     user_content = f"{task}\n\n上下文:\n{trimmed_context}" if trimmed_context else task
-    messages: list[dict[str, Any]] = [{"role": "user", "content": user_content}]
+    # 时间挂 user，勿 prepend system，避免子 agent 多轮打爆 prompt cache。
+    messages: list[dict[str, Any]] = [{"role": "user", "content": append_beijing_time_context(user_content)}]
     tool_calls: list[str] = []
     background_task_ids: list[str] = []
     cancelled = _sub_agent_cancel_check(cancel_check, deadline)
@@ -308,10 +311,8 @@ def _run_sub_agent_loop(
     deadline: float,
     on_progress=None,
 ) -> dict[str, Any]:
-    from core.prompts import with_current_time
-
     try:
-        for event in runtime.run_stream(messages, with_current_time(sub.system_prompt)):
+        for event in runtime.run_stream(messages, sub.system_prompt):
             if cancelled():
                 raise AgentCancelled()
             if event["type"] == "tool_start":

@@ -13,17 +13,40 @@ __all__ = [
     "CHAT_AGENT_SYSTEM_PROMPT",
     "BACKTEST_ANALYST_SYSTEM_PROMPT",
     "with_current_time",
+    "beijing_time_context_line",
+    "append_beijing_time_context",
 ]
 
+_BEIJING_TIME_MARKER = "当前北京时间："
 
-def with_current_time(base_prompt: str) -> str:
-    """在 system prompt 前注入当前北京时间，让 LLM 可靠地感知时间。"""
+
+def beijing_time_context_line() -> str:
+    """当前北京时间一行说明；供挂到 user 消息尾部，勿 prepend 进 system。"""
     from datetime import datetime, timedelta, timezone
 
     beijing = timezone(timedelta(hours=8))
     now = datetime.now(beijing)
     weekday_cn = "一二三四五六日"[now.weekday()]
-    return f"当前北京时间：{now.strftime('%Y-%m-%d %H:%M')}（星期{weekday_cn}，UTC+8）\n\n{base_prompt}"
+    return f"{_BEIJING_TIME_MARKER}{now.strftime('%Y-%m-%d %H:%M')}（星期{weekday_cn}，UTC+8）"
+
+
+def append_beijing_time_context(text: str) -> str:
+    """把北京时间附在用户话尾部，保持 system 前缀可被 prompt cache 复用。"""
+    body = str(text or "")
+    if _BEIJING_TIME_MARKER in body:
+        return body
+    line = beijing_time_context_line()
+    if not body.strip():
+        return f"[{line}]"
+    return f"{body.rstrip()}\n\n[{line}]"
+
+
+def with_current_time(base_prompt: str) -> str:
+    """兼容旧调用：不再改写 system（分钟级时间戳会整段打爆 prompt cache）。
+
+    时间请用 ``append_beijing_time_context`` 挂到当前 user 轮次。
+    """
+    return base_prompt
 
 
 WYCKOFF_FUNNEL_SYSTEM_PROMPT = r"""# 角色设定
