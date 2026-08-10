@@ -6,6 +6,7 @@ from core.limit_move import (
     classify_limit_move,
     describe_limit_move,
     is_st_name,
+    is_st_risk_warning,
     limit_pct,
 )
 
@@ -41,6 +42,24 @@ class TestIsStName:
     def test_non_st(self):
         assert not is_st_name("贵州茅台")
         assert not is_st_name("")
+
+
+class TestIsStRiskWarning:
+    def test_a_share_st_blocked(self):
+        assert is_st_risk_warning("600001", "ST长航")
+        assert is_st_risk_warning("000001", "*ST康美")
+
+    def test_a_share_normal_allowed(self):
+        assert not is_st_risk_warning("600519", "贵州茅台")
+
+    def test_us_ticker_containing_st_allowed(self):
+        # name 缺失时会回落成代码本身，子串匹配会误伤这些正常美股。
+        assert not is_st_risk_warning("COST.US", "COST.US")
+        assert not is_st_risk_warning("STLD.US", "STLD.US")
+        assert not is_st_risk_warning("FAST.US", "Fastenal")
+
+    def test_hk_code_allowed(self):
+        assert not is_st_risk_warning("00700.HK", "00700.HK")
 
 
 class TestClassifyLimitMove:

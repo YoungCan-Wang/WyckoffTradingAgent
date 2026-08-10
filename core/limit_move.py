@@ -24,6 +24,18 @@ def is_st_name(name: str) -> bool:
     return text.startswith("ST") or text.startswith("*ST")
 
 
+def is_st_risk_warning(code: str, name: str) -> bool:
+    """是否属 A 股风险警示（ST/*ST）标的，用于候选池硬过滤。
+
+    ST 是 A 股监管制度，港股/美股没有该制度。这两个市场的 ``name`` 常缺失并回落成
+    代码本身，若按名称子串匹配会误伤正常标的（美股 116 只 ticker 含 "ST"，
+    如 ``COST``/``FAST``/``STLD``），因此非 A 股代码一律不判。
+    """
+    if cn_board(code) == "unknown":
+        return False
+    return is_st_name(name) or "ST" in str(name or "").upper()
+
+
 def limit_pct(code: str, name: str = "", *, market: str = "cn") -> float | None:
     """返回该股票的涨跌停幅度（如 10.0 表示 ±10%）。
 
@@ -133,5 +145,6 @@ __all__ = [
     "classify_limit_move",
     "describe_limit_move",
     "is_st_name",
+    "is_st_risk_warning",
     "limit_pct",
 ]

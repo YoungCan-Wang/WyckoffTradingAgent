@@ -14,6 +14,7 @@ import pandas as pd
 
 from core.cn_boards import cn_board, is_supported_cn_board
 from core.hk_boards import is_hk_main_board
+from core.limit_move import is_st_risk_warning
 from core.wyckoff_engine import normalize_hist_from_fetch
 from integrations.data_source import fetch_stock_hist
 from integrations.fetch_a_share_csv import get_stocks_by_board, normalize_symbols
@@ -112,11 +113,13 @@ def resolve_backtest_universe(board: str, sample_size: int, snapshot_dir: Path |
 
 
 def _filter_symbols(symbols: list[str], name_map: dict[str, str], board: str) -> list[str]:
+    """与生产 layer1_filter 保持同一候选语义：ST 只对 A 股判定。"""
     return sorted(
         {
             str(symbol).strip()
             for symbol in symbols
-            if board_match(str(symbol).strip(), board) and "ST" not in name_map.get(str(symbol).strip(), "").upper()
+            if board_match(str(symbol).strip(), board)
+            and not is_st_risk_warning(str(symbol).strip(), name_map.get(str(symbol).strip(), ""))
         }
     )
 
