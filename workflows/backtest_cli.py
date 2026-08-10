@@ -48,7 +48,7 @@ def build_backtest_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--grid-cells",
         default="",
-        help="共享一次信号计算的参数格，格式 hold:stop:take:trail，多个格用逗号分隔",
+        help="共享一次信号计算的参数格，格式 hold:stop:take:trail[:activate]，多个格用逗号分隔。activate 为移动止盈激活门槛（浮盈达到该%%后才启用），省略=0 即入场即启用",
     )
     parser.add_argument("--grid-prefix", default="backtest-grid", help="参数格输出目录名前缀")
     parser.add_argument(

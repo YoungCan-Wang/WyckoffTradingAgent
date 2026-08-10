@@ -253,3 +253,79 @@ def _args(tmp_path: Path, **overrides) -> Namespace:
     }
     values.update(overrides)
     return Namespace(**values)
+
+
+class TestGridCellTrailingActivate:
+    """grid cell 第 5 段：移动止盈激活门槛。
+
+    此前 cell 只有 4 段，activate 固定为 0（入场即启用移动止盈）。实测
+    （run 31348338247，360 笔配对）该设定把 stop_loss 从 49% 压到 31%、最大亏损
+    -28.89% → -18.32%，但截断赢家：68 单平均少赚 6.48%，配对 t 仅 +1.77 不显著。
+    MFE 证据显示被止损的单里 18% 曾浮盈超 +7%，故需能测"先让利润跑到 +5~7% 再
+    保护"。引擎早已支持该门槛（core/backtest_execution.py:461），缺的是 grid 传参。
+    """
+
+    def test_four_segment_format_stays_compatible(self):
+        from workflows.backtest_runner import parse_grid_cells
+
+        cells = parse_grid_cells("10:-8:0:-8")
+
+        assert len(cells) == 1
+        assert cells[0].trailing_activate == 0.0
+
+    def test_fifth_segment_sets_activate_threshold(self):
+        from workflows.backtest_runner import parse_grid_cells
+
+        cells = parse_grid_cells("10:-8:0:-8:5,15:-8:0:-8:7")
+
+        assert [c.trailing_activate for c in cells] == [5.0, 7.0]
+        assert [c.trailing_stop for c in cells] == [-8.0, -8.0]
+
+    def test_activate_reaches_run_args(self):
+        """门槛必须真的传到 args，否则参数格看起来测了、实际没测。"""
+        from argparse import Namespace
+
+        from workflows.backtest_runner import _args_for_grid_cell, parse_grid_cells
+
+        base = Namespace(
+            hold_days=1, hold_days_list="", stop_loss=0, take_profit=0, trailing_stop=0, trailing_activate=0
+        )
+        args = _args_for_grid_cell(base, parse_grid_cells("10:-8:0:-8:7")[0])
+
+        assert args.trailing_activate == 7.0
+        assert args.trailing_stop == -8.0
+
+    def test_dir_name_only_gains_suffix_when_threshold_set(self):
+        """既有参数格的目录名保持不变，便于跨轮对比。"""
+        from workflows.backtest_runner import _grid_cell_dir, parse_grid_cells
+
+        plain = _grid_cell_dir("g", parse_grid_cells("10:-8:0:-8")[0])
+        gated = _grid_cell_dir("g", parse_grid_cells("10:-8:0:-8:7")[0])
+
+        assert plain == "g-h10-sl8-tp0-tr8"
+        assert gated == "g-h10-sl8-tp0-tr8-ta7"
+
+    def test_threshold_without_trailing_stop_is_rejected(self):
+        """设了门槛却没有移动止盈：静默接受会让参数格看似测了某组合、实际没测。"""
+        import pytest
+
+        from workflows.backtest_runner import parse_grid_cells
+
+        with pytest.raises(ValueError, match="没有移动止盈"):
+            parse_grid_cells("10:-8:0:0:5")
+
+    def test_negative_threshold_is_rejected(self):
+        import pytest
+
+        from workflows.backtest_runner import parse_grid_cells
+
+        with pytest.raises(ValueError, match="激活门槛"):
+            parse_grid_cells("10:-8:0:-8:-3")
+
+    def test_six_segments_still_rejected(self):
+        import pytest
+
+        from workflows.backtest_runner import parse_grid_cells
+
+        with pytest.raises(ValueError, match="非法 grid cell"):
+            parse_grid_cells("10:-8:0:-8:7:9")

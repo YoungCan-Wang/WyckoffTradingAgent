@@ -85,6 +85,16 @@ class GridCell:
     stop_loss: float
     take_profit: float
     trailing_stop: float
+    # 移动止盈激活门槛（浮盈达到该百分比后才启用移动止盈）。0 = 入场即启用。
+    #
+    # 2026-08-10 补齐：此前 grid cell 只有 4 段，activate 固定取默认值 0，于是
+    # 移动止盈从入场就生效。实测（run 31348338247，360 笔配对）该设定把 stop_loss
+    # 占比从 49% 压到 31%、最大亏损 -28.89% → -18.32%，但同时截断赢家：68 单平均
+    # 少赚 6.48%（最惨 -43.58%），盈利单均盈 +10.43% → +8.50%，配对 t 仅 +1.77。
+    # 而 MFE 证据显示被止损的单里 18% 曾浮盈超 +7% —— 真正要测的是"先让利润跑到
+    # +5~7% 再用移动止盈保住"，而不是入场就贴着价格跟。引擎早已支持该门槛
+    # （core/backtest_execution.py:461），缺的只是 grid 这一层的传参。
+    trailing_activate: float = 0.0
 
 
 def parse_strategy_variants(raw: str) -> list[str]:
@@ -102,11 +112,19 @@ def parse_grid_cells(raw: str) -> list[GridCell]:
         if not item.strip():
             continue
         parts = item.strip().split(":")
-        if len(parts) != 4:
+        # 第 5 段（移动止盈激活门槛）可选，省略时为 0=入场即启用，保持既有参数格兼容。
+        if len(parts) not in (4, 5):
             raise ValueError(f"非法 grid cell: {item}")
-        cell = GridCell(int(parts[0]), float(parts[1]), float(parts[2]), float(parts[3]))
+        activate = float(parts[4]) if len(parts) == 5 else 0.0
+        cell = GridCell(int(parts[0]), float(parts[1]), float(parts[2]), float(parts[3]), activate)
         if cell.hold_days < 1 or cell.stop_loss > 0 or cell.take_profit < 0 or cell.trailing_stop > 0:
             raise ValueError(f"非法 grid cell: {item}")
+        # 激活门槛是"浮盈达到多少后启用"，必须为非负；且没有移动止盈时设门槛无意义，
+        # 静默接受会让参数格看起来测了某个组合、实际没测。
+        if cell.trailing_activate < 0:
+            raise ValueError(f"非法 grid cell（激活门槛需 >= 0）: {item}")
+        if cell.trailing_activate > 0 and cell.trailing_stop == 0:
+            raise ValueError(f"非法 grid cell（设了激活门槛却没有移动止盈）: {item}")
         cells.append(cell)
     return cells
 
@@ -171,12 +189,17 @@ def _args_for_grid_cell(args, cell: GridCell) -> Namespace:
         stop_loss=cell.stop_loss,
         take_profit=cell.take_profit,
         trailing_stop=cell.trailing_stop,
+        trailing_activate=cell.trailing_activate,
     )
     return Namespace(**values)
 
 
 def _grid_cell_dir(prefix: str, cell: GridCell) -> str:
-    return f"{prefix}-h{cell.hold_days}-sl{abs(cell.stop_loss):g}-tp{cell.take_profit:g}-tr{abs(cell.trailing_stop):g}"
+    name = f"{prefix}-h{cell.hold_days}-sl{abs(cell.stop_loss):g}-tp{cell.take_profit:g}-tr{abs(cell.trailing_stop):g}"
+    # 只在设了门槛时加后缀，保持既有参数格的目录名不变（便于跨轮对比）。
+    if cell.trailing_activate > 0:
+        name += f"-ta{cell.trailing_activate:g}"
+    return name
 
 
 def run_one_hold_days(args, start_dt, end_dt, out_dir: Path, hold_days: int, progress) -> dict:
