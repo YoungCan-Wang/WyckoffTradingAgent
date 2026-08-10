@@ -556,13 +556,14 @@ describe('execExecutePortfolioUpdate', () => {
 
   it('does not reset buy_dt or clear stop_loss when updating without a new stop', async () => {
     const { deps, updateChain } = createPortfolioWriteDeps([{ id: 'pos-1' }])
+    const update = updateChain.update as ReturnType<typeof vi.fn>
 
     await execExecutePortfolioUpdate(deps, 'user1', 'update', '600519', '贵州茅台', 200, 1810, null)
 
-    expect(updateChain.update).toHaveBeenCalledWith(
+    expect(update).toHaveBeenCalledWith(
       expect.objectContaining({ code: '600519', shares: 200, cost_price: 1810 }),
     )
-    const payload = updateChain.update.mock.calls[0]?.[0] as Record<string, unknown>
+    const payload = update.mock.calls[0]?.[0] as Record<string, unknown>
     expect(payload).not.toHaveProperty('buy_dt')
     expect(payload).not.toHaveProperty('stop_loss')
   })
