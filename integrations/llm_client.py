@@ -38,6 +38,12 @@ GEMINI_MAX_OUTPUT_TOKENS_DEFAULT = 32768
 GEMINI_MAX_RETRIES = 3
 GEMINI_RETRY_DELAY = 2.0
 
+# 推理型模型思考耗尽 max_tokens 时的放大重试。放大 2 倍是按生产实测取的：
+# deepseek-v4-flash 在 6000 下 100% 返回空正文，12000 下可返回。上限设 32768
+# 防止无界放大——真需要更大预算的提示应该拆分，不是无限抬预算。
+OPENAI_COMPATIBLE_BUDGET_RETRY_FACTOR = 2
+OPENAI_COMPATIBLE_MAX_BUDGET = 32768
+
 
 def get_provider_credentials(provider: str) -> tuple[str, str, str]:
     """
@@ -276,21 +282,51 @@ def _call_openai_compatible(
     max_output_tokens: int | None,
 ) -> str:
     """通过 OpenAI 兼容的 /chat/completions 接口调用（OpenAI/智谱/DeepSeek/Qwen 等）。"""
-    import requests
-
     url = base_url.rstrip("/") + "/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    max_tokens = int(max_output_tokens) if max_output_tokens is not None else 8192
+    max_tokens = max(256, int(max_output_tokens) if max_output_tokens is not None else 8192)
+    text, retry_budget = _openai_compatible_attempt(
+        url, headers, model, system_prompt, user_message, timeout, max_tokens
+    )
+    if text:
+        return text
+    # 推理型模型（deepseek-v4-flash 等）把思考写进 reasoning_content，与正文共用 max_tokens。
+    # 思考吃满预算时 content 为空、finish_reason=length，此前只报「返回内容为空」，
+    # 既看不出根因也无法自救。这里放大一次预算重试——生产实测 flash 在 6000 下 100% 失败、
+    # 12000 下可返回正文。
+    if retry_budget:
+        text, _ = _openai_compatible_attempt(
+            url, headers, model, system_prompt, user_message, timeout, retry_budget, is_retry=True
+        )
+        if text:
+            return text
+    raise RuntimeError("OpenAI 兼容接口返回内容为空")
+
+
+def _openai_compatible_attempt(
+    url: str,
+    headers: dict[str, str],
+    model: str,
+    system_prompt: str,
+    user_message: str,
+    timeout: int,
+    max_tokens: int,
+    *,
+    is_retry: bool = False,
+) -> tuple[str, int]:
+    """发一次请求。返回 (正文, 建议的重试预算)；正文非空时重试预算为 0。"""
+    import requests
+
     payload = {
         "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
         ],
-        "max_tokens": max(256, max_tokens),
+        "max_tokens": max_tokens,
         "temperature": 0.4,
     }
     resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
@@ -300,11 +336,40 @@ def _call_openai_compatible(
     choices = data.get("choices") or []
     if not choices:
         raise RuntimeError("OpenAI 兼容接口返回无 choices")
-    msg = choices[0].get("message") or {}
-    text = (msg.get("content") or "").strip()
-    if not text:
-        raise RuntimeError("OpenAI 兼容接口返回内容为空")
-    return text
+    choice = choices[0] or {}
+    msg = choice.get("message") or {}
+    text = str(msg.get("content") or "").strip()
+    finish_reason = str(choice.get("finish_reason") or "unknown")
+    usage = data.get("usage") or {}
+    reasoning_tokens = int((usage.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0)
+    completion_tokens = int(usage.get("completion_tokens") or 0)
+    if text:
+        return text, 0
+
+    logger.error(
+        "openai_compatible model=%s 返回空正文: finish_reason=%s max_tokens=%s "
+        "completion_tokens=%s reasoning_tokens=%s reasoning_len=%s is_retry=%s",
+        model,
+        finish_reason,
+        max_tokens,
+        completion_tokens,
+        reasoning_tokens,
+        len(str(msg.get("reasoning_content") or "")),
+        is_retry,
+    )
+    if is_retry or finish_reason.lower() != "length" or reasoning_tokens <= 0:
+        return "", 0
+    retry_budget = min(max_tokens * OPENAI_COMPATIBLE_BUDGET_RETRY_FACTOR, OPENAI_COMPATIBLE_MAX_BUDGET)
+    if retry_budget <= max_tokens:
+        return "", 0
+    logger.warning(
+        "openai_compatible model=%s 推理耗尽预算(%s/%s)，放大到 %s 重试一次",
+        model,
+        reasoning_tokens,
+        max_tokens,
+        retry_budget,
+    )
+    return "", retry_budget
 
 
 def _gemini_http_options(timeout: int, base_url: str) -> dict:
