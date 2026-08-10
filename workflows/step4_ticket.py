@@ -20,6 +20,7 @@ def render_trade_ticket(
     *,
     atr_period: int,
     stale_exits: list[StaleExit] | None = None,
+    model_label: str = "",
 ) -> str:
     now_str = datetime.now(CN_TZ).strftime("%Y-%m-%d")
     sells = [t for t in tickets if t.status == "APPROVED" and t.action in {"EXIT", "TRIM"}]
@@ -42,6 +43,10 @@ def render_trade_ticket(
     lines.extend(_render_buy_ticket_lines(approved_buy, atr_period=atr_period))
     lines.extend(_render_blocked_ticket_lines(blocked))
     lines.append(f"💰 若全部工单成交后的预计可用现金：{free_cash_after:.2f}")
+    if model_label:
+        # Step4 的模型选型直接决定这张工单的内容（决策经 WyckoffOrderEngine 变成订单），
+        # 因此必须与工单同屏可见，而不是只留在 CI 日志里。
+        lines.append(f"🤖 决策模型：{model_label}")
     return "\n".join(lines)
 
 

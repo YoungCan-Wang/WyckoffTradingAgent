@@ -57,6 +57,19 @@ from workflows.step4_ticket import render_trade_ticket
 logger = logging.getLogger(__name__)
 
 
+def _step4_model_label(options) -> str:
+    """provider:model，用于把决策模型写进工单。
+
+    容忍缺字段：部分测试用 SimpleNamespace 构造精简 options，缺字段时返回空串
+    让工单省略该行，而不是让一个展示用字段中断下单主流程。
+    """
+    provider = str(getattr(options, "provider", "") or "").strip()
+    model = str(getattr(options, "model", "") or "").strip()
+    if not provider and not model:
+        return ""
+    return f"{provider or '?'}:{model or '?'}"
+
+
 def _resolve_step4_trade_context(runtime_config: Step4RuntimeConfig) -> tuple[date, TradingWindow, str]:
     end_day = resolve_end_calendar_day()
     window = resolve_trading_window(end_calendar_day=end_day, trading_days=runtime_config.trading_days)
@@ -299,6 +312,7 @@ def _send_and_persist_step4_results(
         tickets=tickets,
         atr_period=options.runtime_config.atr_period,
         stale_exits=stale_exits,
+        model_label=_step4_model_label(options),
     )
     persistence = save_step4_orders_and_nav(
         options=options,

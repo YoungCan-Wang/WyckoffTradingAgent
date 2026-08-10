@@ -99,6 +99,7 @@ def send_step3_final_report(
         rag_veto_preview=rag_veto_preview,
         rag_veto_lines=rag_veto_lines,
         failed=failed,
+        model_footer=build_model_footer(llm_result, active_tracks, options.model),
     )
     _log_step3_report_stats(content, llm_result, active_tracks, track_inputs, failed, options.model, options.notify)
     if options.notify and not notify_step3_channels(options, _step3_title(benchmark_context), content):
@@ -147,6 +148,7 @@ def _build_final_content(
     rag_veto_preview: str,
     rag_veto_lines: list[str],
     failed: list[tuple[str, str]],
+    model_footer: str = "",
 ) -> str:
     content = (
         f"{_compact_rag_preview(rag_veto_preview)}{build_signal_confirmed_preview(selected_df)}"
@@ -158,7 +160,33 @@ def _build_final_content(
         content += "\n\n## 🛑 RAG 防雷剔除清单\n" + "\n".join(rag_veto_lines)
     if failed:
         content += f"\n\n**获取失败**: {', '.join(f'{s}({e})' for s, e in failed)}"
+    if model_footer:
+        content += f"\n\n---\n{model_footer}"
     return content
+
+
+def build_model_footer(
+    llm_result: Step3LlmResult,
+    active_tracks: list[str],
+    fallback_model: str,
+) -> str:
+    """把实际使用的模型写进研报尾部。
+
+    此前该信息只 print 到 stdout（`[step3] 研报实际使用模型=...`），要翻 CI 日志
+    才能看到，于是"这份研报是哪个模型生成的、有没有走 fallback"在阅读时不可见。
+    模型选型直接决定 API 成本与输出风格，成本排查时缺了它只能靠猜。
+
+    显示每条轨实际命中的路由（provider:model）。若某轨回退到了非首选模型，
+    这里会与其他轨不同——那正是需要被看见的信号。
+    """
+    if not active_tracks:
+        return ""
+    used = [f"{track}={llm_result.used_models.get(track) or fallback_model}" for track in active_tracks]
+    distinct = {llm_result.used_models.get(track) or fallback_model for track in active_tracks}
+    line = f"🤖 生成模型: {' | '.join(used)}"
+    if len(distinct) > 1:
+        line += "\n⚠️ 各轨模型不一致，说明有轨道回退到了备用路由"
+    return line
 
 
 def _compact_rag_preview(preview: str) -> str:

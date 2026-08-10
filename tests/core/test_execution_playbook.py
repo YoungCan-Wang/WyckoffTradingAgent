@@ -84,3 +84,53 @@ def test_oms_ticket_includes_playbook() -> None:
 def test_step3_and_oms_playbook_helpers() -> None:
     assert "起跳板" in "\n".join(step3_playbook_lines("NEUTRAL"))
     assert "PROBE/ATTACK" in "\n".join(oms_playbook_lines())
+
+
+def test_trade_ticket_shows_decision_model():
+    """Step4 的模型选型直接决定这张工单的内容，必须与工单同屏可见。
+
+    Step4 的 LLM 输出经 complete_step4_decisions → WyckoffOrderEngine 变成实际
+    订单，不像 Step3 只是研报。因此"这批单子是哪个模型决定的"必须能在工单上直接
+    看到，而不是只留在 CI 日志里。
+    """
+    from workflows.step4_ticket import render_trade_ticket
+
+    report = render_trade_ticket(
+        market_view="",
+        total_equity=100000.0,
+        free_cash_before=50000.0,
+        free_cash_after=50000.0,
+        tickets=[],
+        atr_period=14,
+        model_label="deepseek:deepseek-v4-flash",
+    )
+
+    assert "deepseek-v4-flash" in report
+    assert "决策模型" in report
+
+
+def test_trade_ticket_omits_model_line_when_unknown():
+    """缺 provider/model 时省略该行，不让展示字段中断下单主流程。"""
+    from workflows.step4_ticket import render_trade_ticket
+
+    report = render_trade_ticket(
+        market_view="",
+        total_equity=100000.0,
+        free_cash_before=50000.0,
+        free_cash_after=50000.0,
+        tickets=[],
+        atr_period=14,
+    )
+
+    assert "决策模型" not in report
+
+
+def test_step4_model_label_tolerates_missing_fields():
+    from types import SimpleNamespace
+
+    from workflows.step4_rebalancer import _step4_model_label
+
+    assert _step4_model_label(SimpleNamespace()) == ""
+    assert _step4_model_label(SimpleNamespace(provider="gemini", model="gemini-3-flash-preview")) == (
+        "gemini:gemini-3-flash-preview"
+    )
