@@ -476,6 +476,12 @@ jobs:
           name: backtest-snapshot-${{ steps.period.outputs.period_key }}
           path: snapshot_data/
 
+      # 策略对照组 A,M,P,I。I = calibrate_confirmed_score：把确认分按类型先验
+      # 重算到统一 0~20 刻度。离线推演（3594 笔、五周期）显示它把 Q5-Q1 的
+      # Welch t 从 -2.58（高分更差）翻到 +2.63（高分更好）。A 是基线，
+      # 故 A vs I 的差值即校准的净效应。
+      # 注意：shell 续行(\)之间不能插注释，否则命令被截断、后续参数全部丢失
+      # （2026-08-09 曾因此丢掉 --snapshot-dir，回测转为实时拉数据而被限流）。
       - name: Run strategy ablation cell
         if: steps.period.outputs.active == 'true'
         shell: bash
@@ -492,10 +498,6 @@ jobs:
             --board "$BT_BOARD" \
             --sample-size "$BT_SAMPLE_SIZE" \
             --trading-days "$BT_TRADING_DAYS" \
-            # I = calibrate_confirmed_score：把确认分按类型先验重算到统一 0~20 刻度。
-            # 2026-08-09 离线推演（3594 笔、五周期）显示它把 Q5-Q1 的 Welch t 从
-            # -2.58（高分更差）翻到 +2.63（高分更好）。加入对照组以取得线上证据；
-            # A 是基线，故 A vs I 的差值即校准的净效应。
             --strategy-variants A,M,P,I \
             --strategy-prefix "backtest-strategy-${BT_PERIOD_KEY}" \
             --abc-filter \
