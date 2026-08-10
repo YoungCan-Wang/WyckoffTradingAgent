@@ -16,7 +16,8 @@ permissions:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # 候选池 1500 -> 3500 后日K批次由 15 增至 35，取数耗时按批次线性增长。
+    timeout-minutes: 75
     env:
       PYTHONUNBUFFERED: "1"
       WYCKOFF_WRITE_CONTEXT: "server_job"
@@ -24,13 +25,15 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       MARKET_FUNNEL_WRITE_DB: "1"
-      MARKET_FUNNEL_MAX_SYMBOLS: "1500"
+      # 低价股/仙股已纳入候选池：容量抬到 3500 并把成交额门槛降到 30 万美元，
+      # 否则按成交额降序截断会先把低价股全部挤出（详见 market_funnel_runtime.py）。
+      MARKET_FUNNEL_MAX_SYMBOLS: "3500"
       MARKET_FUNNEL_QUOTE_BATCH_SIZE: "50"
       MARKET_FUNNEL_QUOTE_BATCH_SLEEP: "1.1"
       MARKET_FUNNEL_KLINE_COUNT: "320"
       MARKET_FUNNEL_KLINE_BATCH_SIZE: "100"
       MARKET_FUNNEL_KLINE_BATCH_SLEEP: "2.1"
-      MARKET_FUNNEL_MIN_QUOTE_AMOUNT: "5000000"
+      MARKET_FUNNEL_MIN_QUOTE_AMOUNT: "300000"
       US_TRACKING_PERFORMANCE_MAX_DATES: "60"
       US_TRACKING_PERFORMANCE_KLINE_COUNT: "180"
       TICKFLOW_KLINE_BATCH_SIZE: "100"

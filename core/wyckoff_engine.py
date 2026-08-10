@@ -29,6 +29,7 @@ from core.layer2_strength import (
     build_rps_context,
     evaluate_layer2_symbol,
 )
+from core.limit_move import is_st_risk_warning
 from core.main_force_signal import analyze_main_force_signal
 from core.mainline_engine import MainlineEngineConfig, build_mainline_candidates, mainline_candidate_entries
 from core.price_targets import compute_price_targets
@@ -531,8 +532,7 @@ def layer1_filter(
     for sym in symbols:
         if cfg.require_cn_main_or_chinext and not is_supported_cn_board(sym, include_bse=cfg.include_bse_board):
             continue
-        name = name_map.get(sym, "")
-        if "ST" in name.upper():
+        if is_st_risk_warning(sym, name_map.get(sym, "")):
             continue
         if not _market_cap_ok(sym, market_cap_map, df_map, cfg):
             continue
