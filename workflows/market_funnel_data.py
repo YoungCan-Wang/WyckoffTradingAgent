@@ -132,7 +132,7 @@ def _quote_rank_row(
         return None
     return {
         "symbol": symbol,
-        "name": _quote_name(row, symbol),
+        "name": quote_name(row, symbol),
         "last_price": float(last_price),
         "amount": float(amount),
         "volume": float(_row_float(row, "volume") or 0.0),
@@ -166,7 +166,8 @@ def _quote_change_pct(row: dict[str, Any]) -> float:
     return (last_price / prev_close - 1.0) * 100.0
 
 
-def _quote_name(row: dict[str, Any], symbol: str) -> str:
+def quote_name(row: dict[str, Any], symbol: str) -> str:
+    """报价行里的名称；美股/港股实际落在 ``ext.name``，顶层 ``name`` 为 None。"""
     ext = row.get("ext") if isinstance(row.get("ext"), dict) else {}
     for value in (row.get("name"), row.get("ext.name"), ext.get("name")):
         text = str(value or "").strip()
