@@ -89,6 +89,8 @@ def tool_result_brief_lines(tool_name: str, result: Any, *, max_lines: int = 3) 
         lines = _screen_stocks_brief_lines(result, max_lines=max_lines)
     elif tool_name == "portfolio":
         lines = _portfolio_brief_lines(result, max_lines=max_lines)
+    elif tool_name == "update_portfolio":
+        lines = _update_portfolio_brief_lines(result, max_lines=max_lines)
     elif tool_name == "analyze_stock":
         lines = _analyze_stock_brief_lines(result, max_lines=max_lines)
     elif tool_name == "generate_ai_report":
@@ -597,6 +599,36 @@ def _portfolio_brief_lines(result: dict[str, Any], *, max_lines: int) -> list[st
     if isinstance(result.get("diagnostics"), list):
         return _portfolio_diagnosis_brief_lines(result, max_lines=max_lines)
     return _portfolio_view_brief_lines(result, max_lines=max_lines)
+
+
+def _update_portfolio_brief_lines(result: dict[str, Any], *, max_lines: int) -> list[str]:
+    updated = result.get("updated_count")
+    failed = result.get("failed_count")
+    if updated is not None or failed is not None:
+        headline = f"批量调仓: 成功{int(updated or 0)}只"
+        if int(failed or 0) > 0:
+            headline += f" · 失败{int(failed)}只"
+        lines = [headline]
+    elif result.get("message"):
+        lines = [_text_excerpt(result.get("message"), 120)]
+    else:
+        lines = []
+    count = result.get("position_count")
+    cash = result.get("free_cash")
+    if count is not None or cash is not None:
+        bits = []
+        if count is not None:
+            bits.append(f"持仓{count}只")
+        if cash is not None:
+            bits.append(f"现金{_format_money(cash)}")
+        if bits:
+            lines.append(" · ".join(bits))
+    failures = result.get("failures")
+    if isinstance(failures, list) and failures:
+        first = failures[0] if isinstance(failures[0], dict) else {}
+        err = str(first.get("error") or first)[:80]
+        lines.append(f"失败样例: {first.get('code', '')} {err}".strip())
+    return [line for line in lines if line][:max_lines]
 
 
 def _portfolio_view_brief_lines(result: dict[str, Any], *, max_lines: int) -> list[str]:

@@ -481,10 +481,12 @@ def update_portfolio(
     free_cash: float = 0,
     table: str = "",
     codes: list[str] | None = None,
+    items: list[dict] | None = None,
 ) -> dict:
     """管理用户持仓或删除追踪记录。
 
     **调用时机**：用户说"买入/卖出/调仓"、"设置现金"、"删除记录"时调用。
+    **批量**：一次改多只用 items，不要拆成多次调用。
     **危险操作**：会修改用户数据，请确认用户意图后再调用。
     """
     return _update_portfolio(
@@ -497,6 +499,7 @@ def update_portfolio(
         free_cash=free_cash,
         table=table,
         codes=codes,
+        items=items,
         tool_context=_ctx,
     )
 

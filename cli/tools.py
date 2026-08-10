@@ -258,7 +258,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "update_portfolio",
-        "description": "管理用户持仓或删除追踪记录。操作后返回最新状态。",
+        "description": (
+            "管理用户持仓或删除追踪记录。操作后返回最新状态。"
+            "用户一次给出多只加/改/删时，必须用 items 一次提交，禁止拆成多次调用。"
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -269,7 +272,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 },
                 "code": {
                     "type": "string",
-                    "description": "股票代码（add/update/remove 必填）：A股6位如601881，港股06881.HK，美股AAPL.US",
+                    "description": "单只股票代码（无 items 时 add/update/remove 必填）：A股6位如601881，港股06881.HK，美股AAPL.US",
                 },
                 "name": {"type": "string", "description": "股票名称（可选）"},
                 "shares": {"type": "integer", "description": "持仓股数"},
@@ -281,6 +284,24 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "仅 delete_records：股票代码列表",
+                },
+                "items": {
+                    "type": "array",
+                    "description": (
+                        "批量 add/update/remove：一次传入多只。"
+                        "每项含 code；add/update 另需 shares、cost_price；name/buy_dt 可选。"
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "code": {"type": "string"},
+                            "name": {"type": "string"},
+                            "shares": {"type": "integer"},
+                            "cost_price": {"type": "number"},
+                            "buy_dt": {"type": "string"},
+                        },
+                        "required": ["code"],
+                    },
                 },
             },
             "required": ["action"],
