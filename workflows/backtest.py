@@ -30,6 +30,7 @@ from workflows.backtest_data import (
     ProgressReporter,
     load_backtest_history,
     load_backtest_metadata,
+    load_snapshot_pit_meta,
     normalize_backtest_board,
     resolve_backtest_universe,
 )
@@ -314,6 +315,7 @@ def _load_prepared_data(
         snapshot_rows_total=history.snapshot_rows_total,
         snapshot_used=history.snapshot_used,
         metadata_source=metadata.source,
+        pit_meta=load_snapshot_pit_meta(request.snapshot_dir),
     )
 
 

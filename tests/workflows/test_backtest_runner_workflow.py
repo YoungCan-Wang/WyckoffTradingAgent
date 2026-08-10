@@ -329,3 +329,20 @@ class TestGridCellTrailingActivate:
 
         with pytest.raises(ValueError, match="非法 grid cell"):
             parse_grid_cells("10:-8:0:-8:7:9")
+
+
+def test_survivorship_note_reflects_pit_state():
+    """PIT 启用后报告不应再声称存在幸存者偏差。
+
+    该行原为硬编码静态文案，PIT 股票池上线后已不准确，且会让读日志的人误判 PIT
+    未生效（2026-08-10 排查时确有此误判）。
+    """
+    from core.backtest_report import _survivorship_note
+
+    assert "仍存在幸存者偏差" in _survivorship_note({})
+
+    note = _survivorship_note(
+        {"pit_universe": True, "pit_as_of": "20180930", "pit_delisted": 231, "pit_st_then": 86, "pit_st_today": 260}
+    )
+    assert "仍存在幸存者偏差" not in note
+    assert "231" in note and "86" in note and "260" in note

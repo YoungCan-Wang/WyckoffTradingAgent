@@ -177,6 +177,18 @@ def load_snapshot_benchmark(snapshot_dir: Path) -> pd.DataFrame | None:
     return out if not out.empty else None
 
 
+def load_snapshot_pit_meta(snapshot_dir: Path | None) -> dict:
+    """读取快照的 PIT 状态，供报告据实描述幸存者偏差。
+
+    报告此前硬编码「仍存在幸存者偏差：股票池来自当前在市样本」。PIT 股票池上线后
+    该句已不准确——实测 bull_2020 窗口补回 231 只此后退市的标的、ST 按当时名 86 只
+    （按今日名会误判为 260 只）。而这行静态文案会让读日志的人以为 PIT 没生效
+    （2026-08-10 我本人就据此误判过一次）。
+    """
+    data = _load_json_map(snapshot_dir, "metadata.json")
+    return data if isinstance(data, dict) else {}
+
+
 def load_snapshot_name_map(snapshot_dir: Path | None) -> dict[str, str] | None:
     data = _load_json_map(snapshot_dir, "name_map.json")
     return {str(k): str(v) for k, v in data.items()} if data else None

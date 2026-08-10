@@ -47,6 +47,8 @@ class GridCell:
     metrics_engine: str
     entry_price_mode: str
     strategy_policy: str
+    #: 移动止盈激活门槛（浮盈达该%后启用）。0 = 入场即启用。默认值保证旧产物可解析。
+    trailing_activate: int = 0
 
 
 def load_grid_cells(artifacts_dir: Path) -> list[GridCell]:
@@ -137,9 +139,16 @@ def _parse_board_sample(content: str) -> tuple[str, str]:
     return match.group(1).strip(), match.group(2).strip()
 
 
-def _parse_params(dirname: str) -> tuple[int, int, int, int] | None:
+def _parse_params(dirname: str) -> tuple[int, int, int, int, int] | None:
+    """解析参数格目录名。
+
+    含 ta 段（移动止盈激活门槛）——不解析它会让 tr8 / tr8-ta5 / tr8-ta7 三个 cell
+    折叠成同一个 param key，参数稳定性验证器于是只评到其中一个（实测 2026-08-10
+    的 run 31366326715 里 anchor 的 ta 是 None，即只评了 activate=0 那档，而那恰是
+    三档中配对 t 最低的一档：ta0 +1.46 / ta5 +1.98 / ta7 +2.36）。
+    """
     match = re.search(
-        r"h(?P<hold>\d+).*?sl-?(?P<sl>\d+).*?tp(?P<tp>\d+)(?:.*?tr-?(?P<tr>\d+))?",
+        r"h(?P<hold>\d+).*?sl-?(?P<sl>\d+).*?tp(?P<tp>\d+)(?:.*?tr-?(?P<tr>\d+))?(?:.*?ta(?P<ta>\d+))?",
         dirname,
     )
     if not match:
@@ -149,11 +158,18 @@ def _parse_params(dirname: str) -> tuple[int, int, int, int] | None:
         int(match.group("sl")),
         int(match.group("tp")),
         int(match.group("tr") or 0),
+        int(match.group("ta") or 0),
     )
 
 
 def _parse_period_key(dirname: str) -> str:
-    match = re.search(r"backtest-grid-(recent_2m|recent_6m|bull_2020|bear_2022|custom)-h", dirname)
+    # 周期名单必须与 backtest_grid.yml 的 matrix 同步。缺 sideways_2023 / volatile_2024
+    # 会让这两个窗口的 period_key 变成空串，回落到 start_end 兜底——周期数没丢，但
+    # REQUIRED_PERIODS 判定与 _representative 的偏好选择都会失准。
+    match = re.search(
+        r"backtest-grid-(recent_2m|recent_6m|bull_2020|bear_2022|sideways_2023|volatile_2024|custom)-h",
+        dirname,
+    )
     return match.group(1) if match else ""
 
 
@@ -237,7 +253,7 @@ def _grid_cell_from_style(
     params: tuple[int, int, int, int],
     style_row: dict[str, str],
 ) -> GridCell:
-    hold, stop_loss, take_profit, trailing_stop = params
+    hold, stop_loss, take_profit, trailing_stop, trailing_activate = params
     portfolio_style = style_row.get("风格ID", "") or "slot_equal_4"
     meta = {
         **meta,
@@ -251,6 +267,7 @@ def _grid_cell_from_style(
         stop_loss=stop_loss,
         take_profit=take_profit,
         trailing_stop=trailing_stop,
+        trailing_activate=trailing_activate,
         trades=_extract_int(content, "成交样本"),
         win_rate=_coalesce(_to_float(style_row.get("胜率")), _extract_float(content, "胜率")),
         avg_ret=_extract_float(content, "平均收益"),

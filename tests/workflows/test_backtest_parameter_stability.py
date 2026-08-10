@@ -88,3 +88,29 @@ def test_parameter_stability_reviews_when_anchor_misses_required_period(tmp_path
 
     assert result["status"] == "review"
     assert "bear_2022" in result["summary"]
+
+
+def test_parse_params_keeps_trailing_activate_distinct():
+    """tr8 / tr8-ta5 / tr8-ta7 必须是三个不同的 param key。
+
+    此前 _parse_params 不解析 ta 段，三者折叠成同一 key，参数稳定性验证器只评到
+    其中一档——实测 run 31366326715 的 anchor ta 字段是 None，即只评了 activate=0，
+    而那恰是三档里配对 t 最低的（ta0 +1.46 / ta5 +1.98 / ta7 +2.36）。
+    """
+    from workflows.backtest_market_report_artifacts import _parse_params
+
+    keys = {_parse_params(f"backtest-grid-bull_2020-h10-sl8-tp0-tr8{suffix}") for suffix in ("", "-ta5", "-ta7")}
+
+    assert keys == {(10, 8, 0, 8, 0), (10, 8, 0, 8, 5), (10, 8, 0, 8, 7)}
+
+
+def test_parse_period_key_covers_all_matrix_periods():
+    """周期名单需与 backtest_grid.yml 的 matrix 同步。
+
+    缺 sideways_2023 / volatile_2024 时它们的 period_key 为空串，会回落到 start_end
+    兜底：周期数不丢，但 REQUIRED_PERIODS 判定与 _representative 的偏好选择失准。
+    """
+    from workflows.backtest_market_report_artifacts import _parse_period_key
+
+    for period in ("recent_2m", "recent_6m", "bull_2020", "bear_2022", "sideways_2023", "volatile_2024"):
+        assert _parse_period_key(f"backtest-grid-{period}-h10-sl8-tp0-tr8") == period

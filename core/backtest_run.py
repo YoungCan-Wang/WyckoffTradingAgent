@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date, datetime
 
 import pandas as pd
@@ -48,6 +48,8 @@ class BacktestPreparedData:
     snapshot_rows_total: int = 0
     snapshot_used: bool = False
     metadata_source: str = "disabled"
+    #: 快照 metadata.json 里的 PIT 状态，供报告据实描述幸存者偏差（见 _survivorship_note）。
+    pit_meta: dict = field(default_factory=dict)
 
 
 def parse_date(v: str) -> date:
@@ -226,6 +228,11 @@ def _base_summary(
         "concept_heat_loaded": len(data.concept_heat),
         "financial_map_loaded": len(data.financial_map),
         "metadata_source": data.metadata_source,
+        "pit_universe": bool(data.pit_meta.get("pit_universe")),
+        "pit_as_of": data.pit_meta.get("pit_as_of"),
+        "pit_delisted": data.pit_meta.get("pit_delisted"),
+        "pit_st_then": data.pit_meta.get("pit_st_then"),
+        "pit_st_today": data.pit_meta.get("pit_st_today"),
         "mainline_engine_enabled": bool(config.replay.mainline_config and config.replay.mainline_config.enabled),
         "signal_weight_count": len(config.replay.signal_weight_map),
         "signal_weight_map": dict(config.replay.signal_weight_map),

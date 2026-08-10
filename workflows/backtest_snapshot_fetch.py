@@ -40,6 +40,12 @@ def _normalize_board(board: str) -> str:
     return b
 
 
+#: PIT 股票池的实际启用状态，落进 metadata.json 供报告读取。
+#: 报告此前硬编码「仍存在幸存者偏差」，PIT 上线后该结论已过时且会误导读日志的人
+#: （2026-08-10 排查时我据此误判 PIT 未生效）。故改为按实际状态输出。
+_PIT_STATE: dict = {"pit_universe": False}
+
+
 def _load_symbols(board: str, sample_size: int, as_of: str = "") -> tuple[list[str], list[dict]]:
     board_norm = _normalize_board(board)
     if as_of and env_bool("BACKTEST_PIT_UNIVERSE", True):
@@ -100,6 +106,16 @@ def _load_pit_symbols(board_norm: str, as_of: str) -> tuple[list[str], dict[str,
         print(
             f"[snapshot] PIT 股票池 as_of={as_of}: {len(names)} 只"
             f"（其中此后退市 {delisted}；ST 按当时名 {st_then} 只，按今日名会误判为 {st_now} 只）"
+        )
+        _PIT_STATE.update(
+            {
+                "pit_universe": True,
+                "as_of": as_of,
+                "symbols": len(names),
+                "delisted": delisted,
+                "st_then": st_then,
+                "st_today": st_now,
+            }
         )
         return sorted(names), names
     except Exception as exc:
@@ -433,6 +449,7 @@ def run_snapshot_fetch(args) -> int:
         "fail": fail,
         "start": date_range.prefetch_start,
         "end": date_range.end,
+        **{f"pit_{k}" if k != "pit_universe" else k: v for k, v in _PIT_STATE.items()},
     }
     out_dir = Path(args.output_dir)
     bench_main = _fetch_benchmark(date_range.prefetch_start, date_range.end)
