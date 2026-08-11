@@ -959,6 +959,7 @@ wyckoff model add                # 交互式添加模型
 wyckoff model set <id> ...       # 非交互式设置模型
 wyckoff model rm <id>            # 删除模型
 wyckoff model default <id>       # 设置默认模型
+wyckoff model refresh            # 刷新 OpenRouter 模型目录（真实上下文窗口）
 wyckoff config                   # 查看数据源配置
 wyckoff config tushare <token>   # 配置 Tushare
 wyckoff config tickflow <key>    # 配置 TickFlow
