@@ -1435,6 +1435,28 @@ def _compaction_panel(event: dict[str, Any]):
     )
 
 
+def _context_overflow_panel(event: dict[str, Any]):
+    """压缩没能把上下文降到窗口内，已硬丢弃最旧消息——这是有损的，必须让用户看见。"""
+    from rich.panel import Panel
+
+    return Panel(
+        Text.assemble(
+            (" 系统状态：上下文超出窗口上限\n\n", "bold red"),
+            ("摘要压缩未能生效或不足，已直接丢弃最旧 ", "dim white"),
+            (str(event.get("dropped_messages", 0)), "bold red"),
+            (" 条消息以保证请求不被拒绝；\n当前保留 ", "dim white"),
+            (str(event.get("after_messages", 0)), "bold green"),
+            (" 条，窗口上限 ", "dim white"),
+            (f"{int(event.get('limit', 0)):,}", "bold cyan"),
+            (" tokens。被丢弃的内容不进摘要，如仍需要请重新提供。", "dim white"),
+        ),
+        border_style="red",
+        title="[bold red]CONTEXT OVERFLOW[/bold red]",
+        title_align="left",
+        padding=(1, 2),
+    )
+
+
 _PERSISTED_THINKING_MAX_CHARS = 8_000
 
 
@@ -4942,6 +4964,9 @@ class WyckoffTUI(App):
             return False
         if event_type == "compaction":
             ui.write(_compaction_panel(event))
+            ui.scroll()
+        elif event_type == "context_overflow":
+            ui.write(_context_overflow_panel(event))
             ui.scroll()
         elif event_type == "text_delta":
             _append_stream_text(stream, event["text"], ui.write_stream, ui.scroll, ui.spinner_stop)
