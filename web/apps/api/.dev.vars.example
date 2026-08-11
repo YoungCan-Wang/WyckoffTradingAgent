@@ -1,5 +1,6 @@
 UPSTASH_REDIS_REST_URL=https://your-instance.upstash.io
 UPSTASH_REDIS_REST_TOKEN=replace-with-local-development-token
+CHAT_TOOL_APPROVAL_SECRET=replace-with-a-dedicated-random-approval-secret
 AGENT_SANDBOX_ENABLED=false
 AGENT_SANDBOX_TIMEOUT_MS=60000
 AGENT_RUN_TTL_SECONDS=3600

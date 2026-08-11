@@ -200,6 +200,8 @@ class WyckoffOrderEngine:
             effective_stop_loss=effective_stop_loss,
             slippage_bps=self.SLIPPAGE_BPS,
             audit="; ".join(audit_parts + ["hold"]),
+            signal_severity=dec.signal_severity,
+            action_timing=dec.action_timing,
             wyckoff_context=_decision_wyckoff_context(dec),
         )
 
@@ -366,6 +368,8 @@ class WyckoffOrderEngine:
             effective_stop_loss=ctx.effective_stop_loss,
             slippage_bps=self.SLIPPAGE_BPS,
             audit="; ".join(audit_parts),
+            signal_severity=ctx.dec.signal_severity,
+            action_timing=ctx.dec.action_timing,
             wyckoff_context=_decision_wyckoff_context(ctx.dec),
         )
 
@@ -584,6 +588,8 @@ class WyckoffOrderEngine:
             effective_stop_loss=ctx.effective_stop_loss,
             slippage_bps=slippage_abs / ctx.current_price if ctx.current_price > 0 else self.SLIPPAGE_BPS,
             audit="; ".join(audit),
+            signal_severity=ctx.dec.signal_severity,
+            action_timing=ctx.dec.action_timing,
             entry_zone_min=entry_zone_min,
             entry_zone_max=entry_zone_max,
             chase_profile=chase_profile,
@@ -654,6 +660,8 @@ class WyckoffOrderEngine:
             f"覆盖模型HOLD建议；原建议: {ctx.dec.reason}"
         )
         ctx.action = "EXIT"
+        ctx.dec.signal_severity = "HARD_RISK"
+        ctx.dec.action_timing = "NOW"
         ctx.audit_parts.append(f"system_stop_breach_override(price={ctx.current_price:.2f})")
         return self._sell_ticket(ctx, ctx.sellable_shares, ctx.audit_parts + ["forced_exit_stop_breach"])
 
@@ -678,5 +686,7 @@ class WyckoffOrderEngine:
             effective_stop_loss=dec.stop_loss,
             slippage_bps=self.SLIPPAGE_BPS,
             audit=f"reject:{reason}",
+            signal_severity=dec.signal_severity,
+            action_timing=dec.action_timing,
             wyckoff_context=_decision_wyckoff_context(dec),
         )

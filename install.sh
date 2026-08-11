@@ -68,8 +68,12 @@ else
     uv venv --python "$PYTHON" "$INSTALL_DIR"
 fi
 
-info "安装 $PACKAGE..."
-uv pip install --python "$INSTALL_DIR/bin/python" --upgrade "$PACKAGE"
+info "安装 ${PACKAGE}[browser]..."
+uv pip install --python "$INSTALL_DIR/bin/python" --upgrade "${PACKAGE}[browser]"
+info "安装 Playwright Chromium（browser_research）..."
+if ! "$INSTALL_DIR/bin/python" -m playwright install chromium; then
+    warn "Chromium 安装失败：浏览器搜索暂不可用，可稍后执行 wyckoff update 重试"
+fi
 
 # ---------------------------------------------------------------------------
 # 4. 创建 symlink
@@ -106,6 +110,7 @@ fi
 ok "安装完成！"
 echo ""
 echo "  启动:   wyckoff"
-echo "  升级:   wyckoff update"
+echo "  升级:   wyckoff update   # 含 [browser] + Chromium"
+echo "  浏览器: TUI 内输入 /browser 查看 Chrome CDP 状态"
 echo "  卸载:   rm -rf ~/.wyckoff ~/.local/bin/wyckoff"
 echo ""

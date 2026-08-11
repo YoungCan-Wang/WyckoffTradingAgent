@@ -145,8 +145,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);line-height:
 .pro-pname{color:var(--blue);font-weight:600}
 .pro-ptype{font-size:9px;color:var(--amber);background:rgba(251,191,36,.12);padding:1px 5px;border-radius:3px;margin-left:6px}
 
-.cfg-row{display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid var(--border);font-size:13px}
-.cfg-key{color:var(--text2)}.cfg-val{color:var(--accent);font-weight:600}.cfg-val.masked{color:var(--text-dim)}
+.cfg-row{display:grid;grid-template-columns:minmax(220px,2fr) minmax(120px,1.5fr) auto;align-items:center;column-gap:16px;padding:9px 0;border-bottom:1px solid var(--border);font-size:13px}
+.cfg-key{color:var(--text2)}.cfg-val{color:var(--accent);font-weight:600;justify-self:start;text-align:left;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.cfg-val.masked{color:var(--text-dim)}
 .mem-item{padding:12px 14px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
 .mem-item:last-child{border-bottom:none}
 .mem-content{flex:1;font-size:13px;line-height:1.65;white-space:pre-wrap;word-break:break-all}

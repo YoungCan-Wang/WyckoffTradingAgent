@@ -32,3 +32,14 @@ def test_execution_prompts_keep_research_and_order_boundaries_separate() -> None
     assert "不计算仓位比例" in PRIVATE_PM_SYSTEM_PROMPT
     assert "不计算金额、仓位比例和股数" in TRADING_AGENT_PROMPT
     assert "不能覆盖硬止损" in HOLDING_SYSTEM_PROMPT
+
+
+def test_execution_prompts_define_evidence_and_timing_contracts() -> None:
+    for prompt in (PRIVATE_PM_SYSTEM_PROMPT, PRIVATE_PM_DECISION_JSON_PROMPT, CHAT_AGENT_SYSTEM_PROMPT):
+        assert "capital_scope=account_only" in prompt
+        assert "confidence" in prompt
+        assert "上涨概率" in prompt
+    assert "signal_severity" in PRIVATE_PM_DECISION_JSON_PROMPT
+    assert "action_timing" in PRIVATE_PM_DECISION_JSON_PROMPT
+    assert "WARNING" in HOLDING_SYSTEM_PROMPT
+    assert "接近日内低点" in CHAT_AGENT_SYSTEM_PROMPT

@@ -96,7 +96,8 @@ def test_parse_decisions_collapses_duplicate_codes_to_higher_priority_action() -
       "market_view": "重复代码应折叠",
       "decisions": [
         {"code": "000001", "action": "HOLD", "reason": "先写 HOLD", "confidence": 0.5},
-        {"code": "000001", "action": "EXIT", "reason": "后写 EXIT", "confidence": 0.9},
+        {"code": "000001", "action": "EXIT", "reason": "后写 EXIT", "confidence": 0.9,
+         "signal_severity": "CONFIRMED_BREAK", "action_timing": "NEXT_SESSION_IF"},
         {"code": "000002", "action": "PROBE", "entry_zone": [10, 11], "stop_loss": 9,
          "tape_condition": "放量", "reason": "新仓", "confidence": 0.6},
         {"code": "000002", "action": "PROBE", "entry_zone": [10.2, 11.2], "stop_loss": 9.1,
@@ -117,3 +118,34 @@ def test_parse_decisions_collapses_duplicate_codes_to_higher_priority_action() -
         ("000001", "EXIT", "后写 EXIT"),
         ("000002", "PROBE", "新仓"),
     ]
+
+
+def test_parse_decisions_downgrades_unconfirmed_sell_to_hold() -> None:
+    raw = """
+    {"market_view":"等待确认","decisions":[
+      {"code":"000001","action":"EXIT","reason":"盘中走弱","confidence":0.8,
+       "signal_severity":"WARNING","action_timing":"NOW"}
+    ]}
+    """
+
+    _, decisions, err = parse_decisions(raw, {"000001"}, {"000001": "平安银行"})
+
+    assert err is None
+    assert decisions[0].action == "HOLD"
+    assert decisions[0].signal_severity == "WARNING"
+    assert "系统降级为 HOLD" in decisions[0].reason
+
+
+def test_parse_decisions_keeps_confirmed_sell_contract() -> None:
+    raw = """
+    {"market_view":"确认破位","decisions":[
+      {"code":"000001","action":"TRIM","reason":"收盘破位","confidence":0.8,
+       "signal_severity":"CONFIRMED_BREAK","action_timing":"NEXT_SESSION_IF","trim_ratio":0.5}
+    ]}
+    """
+
+    _, decisions, err = parse_decisions(raw, {"000001"}, {"000001": "平安银行"})
+
+    assert err is None
+    assert decisions[0].action == "TRIM"
+    assert decisions[0].action_timing == "NEXT_SESSION_IF"

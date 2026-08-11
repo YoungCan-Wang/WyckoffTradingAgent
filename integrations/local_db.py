@@ -840,6 +840,17 @@ def upsert_local_position(
             )
 
 
+def set_local_position_stop(portfolio_id: str, code: str, stop_loss: float | None) -> int:
+    """只更新 stop_loss 列，不新建持仓。返回受影响行数。"""
+    conn = get_db()
+    with conn:
+        cur = conn.execute(
+            "UPDATE portfolio_position SET stop_loss=?, synced_at=datetime('now') WHERE portfolio_id=? AND code=?",
+            (float(stop_loss) if stop_loss is not None else None, portfolio_id, code),
+        )
+        return cur.rowcount or 0
+
+
 def delete_local_position(portfolio_id: str, code: str) -> None:
     conn = get_db()
     with conn:

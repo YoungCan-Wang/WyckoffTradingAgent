@@ -22,6 +22,11 @@ _ACTION_PRIORITY = {
     "ATTACK": 5,
 }
 
+_VALID_SIGNAL_SEVERITIES = {"NONE", "WARNING", "CONFIRMED_BREAK", "HARD_RISK"}
+_VALID_ACTION_TIMINGS = {"NOW", "CLOSE_CONFIRM", "NEXT_SESSION_IF", "ON_REBOUND", "WAIT"}
+_EXECUTABLE_SELL_SEVERITIES = {"CONFIRMED_BREAK", "HARD_RISK"}
+_EXECUTABLE_SELL_TIMINGS = {"NOW", "NEXT_SESSION_IF", "ON_REBOUND"}
+
 
 def parse_decisions(
     raw_text: str,
@@ -176,6 +181,25 @@ def _parse_decision_float(item: dict, key: str, code: str) -> float | None:
         return None
 
 
+def _parse_contract_value(raw: object, allowed: set[str], default: str) -> str:
+    value = str(raw or "").strip().upper()
+    return value if value in allowed else default
+
+
+def _enforce_sell_contract(
+    action: str,
+    severity: str,
+    timing: str,
+    reason: str,
+) -> tuple[str, str]:
+    if action not in {"EXIT", "TRIM"}:
+        return action, reason
+    if severity in _EXECUTABLE_SELL_SEVERITIES and timing in _EXECUTABLE_SELL_TIMINGS:
+        return action, reason
+    contract_reason = f"卖出条件尚未确认（severity={severity}, timing={timing}），系统降级为 HOLD"
+    return "HOLD", f"{contract_reason}；原判断: {reason}" if reason else contract_reason
+
+
 def _parse_decision_item(
     item: object,
     *,
@@ -194,6 +218,20 @@ def _parse_decision_item(
     trim_ratio = _parse_decision_float(item, "trim_ratio", code)
     if stop_loss is not None and stop_loss <= 0:
         stop_loss = None
+    severity_default = "WARNING" if action in {"EXIT", "TRIM"} else "NONE"
+    if action in {"EXIT", "TRIM"}:
+        timing_default = "CLOSE_CONFIRM"
+    elif action in {"PROBE", "ATTACK"}:
+        timing_default = "NEXT_SESSION_IF"
+    else:
+        timing_default = "WAIT"
+    signal_severity = _parse_contract_value(item.get("signal_severity"), _VALID_SIGNAL_SEVERITIES, severity_default)
+    action_timing = _parse_contract_value(item.get("action_timing"), _VALID_ACTION_TIMINGS, timing_default)
+    reason = str(item.get("reason", "")).strip()
+    action, reason = _enforce_sell_contract(action, signal_severity, action_timing, reason)
+    system_reject_reason = ""
+    if action in {"PROBE", "ATTACK"} and action_timing in {"WAIT", "CLOSE_CONFIRM"}:
+        system_reject_reason = f"action_timing={action_timing}，尚未形成可执行买入条件"
     return DecisionItem(
         code=code,
         name=str(item.get("name", "")).strip() or name_map.get(code, code),
@@ -205,6 +243,9 @@ def _parse_decision_item(
         tape_condition=str(item.get("tape_condition", "")).strip(),
         invalidate_condition=str(item.get("invalidate_condition", "")).strip(),
         is_add_on=_parse_bool_like(item.get("is_add_on", False)),
-        reason=str(item.get("reason", "")).strip(),
+        reason=reason,
         confidence=_parse_confidence_like(item.get("confidence")),
+        signal_severity=signal_severity,
+        action_timing=action_timing,
+        system_reject_reason=system_reject_reason,
     )

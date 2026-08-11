@@ -195,7 +195,7 @@ function buildBattleHistoryPayload(
 
   const meta = {
     inputSnapshotHash,
-    promptVersion: 'wyckoff-prompt-v2.1',
+    promptVersion: 'evidence-contract-v2.2',
     model,
     generatedAt: new Date().toISOString(),
     valueSource: stocks.map(s => sourceLabel(s.valueSnapshot)).filter(Boolean).join(','),
@@ -556,16 +556,18 @@ async function callBattleLLM(configs: Parameters<typeof streamLLMResponseWithFal
   return result
 }
 
-export const BATTLE_SYSTEM_PROMPT = `你是威科夫强弱对抗分析师。主框架是量价相对强弱、趋势延续性和回撤位置；若给出价值面摘要，只把它作为质量、风险和置信度校准，不用基本面替代 K 线事实。
+export const BATTLE_SYSTEM_PROMPT = `你是证据约束型多股比较分析师，analysis_mode=standalone_equity。先分别判断每只股票的公司质量、估值与事件风险，再比较量价相对强弱、趋势延续性和回撤位置。技术强不自动等于公司质量高，未进入威科夫漏斗也不自动等于股票差。
 
 【核心质量要求】
 - 必须在报告中说明数据来源、给出明确的置信度理由与风控建议，并提供策略失效判定条件。
+- 只使用输入实际提供且时点明确的证据，缺失项明确标记。置信度表示证据支持度，不是上涨概率。
+- 排名必须把“长期质量”和“当前买点”分开；对高开或价格过度延伸的强股给等待条件，不追涨。
 - 绝对禁止在分析结论中使用“必然”、“保证”、“无风险”、“稳赚”、“稳赢”、“包赚”等夸大或确定性的承诺词语。
 
 输出结构：
-1. 强弱排序及核心胜出原因。
-2. 各标的落后风险及价值面校准。
-3. 各标的适合观察的触发价位、防守生死线/策略失效条件。`
+1. 独立质量排序与当前交易时机排序，解释二者差异。
+2. 各标的反面证据、数据缺口和落后风险。
+3. 各标的允许区间、确认条件、取消条件、防守线与 action_timing。`
 
 function buildBattleMessages(stocks: BattleStock[]) {
   return [

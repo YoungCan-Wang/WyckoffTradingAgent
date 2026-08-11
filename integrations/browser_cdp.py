@@ -6,6 +6,11 @@ import logging
 import os
 import platform
 import re
+import shutil
+import subprocess
+import sys
+import time
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
@@ -15,12 +20,15 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CDP_URL = "http://127.0.0.1:9222"
 MAX_PAGE_CHARS = 8000
+CDP_WAIT_SECONDS = 20.0
+CDP_POLL_INTERVAL = 0.4
 SEARCH_ENGINES = {
     "bing": "https://www.bing.com/search?q={query}",
     "duckduckgo": "https://html.duckduckgo.com/html/?q={query}",
 }
 # Empirically more reliable for automated SERP parsing than Bing in this environment.
 DEFAULT_SEARCH_ENGINE = "duckduckgo"
+ConsentCallback = Callable[[], str]
 _DDG_RESULT_RE = re.compile(
     r'<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)</a>',
     re.IGNORECASE | re.DOTALL,
@@ -50,25 +58,170 @@ def resolve_cdp_url(raw: str | None = None) -> str | dict[str, str]:
     return value.rstrip("/")
 
 
+def missing_playwright_message() -> str:
+    return (
+        f"当前解释器未安装 playwright（{sys.executable}）。"
+        "请执行: wyckoff update"
+        "（会安装 youngcan-wyckoff-analysis[browser] 与 Chromium）。"
+        f"手动: uv pip install --python {sys.executable} 'youngcan-wyckoff-analysis[browser]' "
+        f"&& {sys.executable} -m playwright install chromium"
+    )
+
+
+def chrome_cdp_profile_dir() -> str:
+    return os.path.expanduser("~/.wyckoff/chrome-cdp")
+
+
+def chrome_cdp_binary() -> str | None:
+    system = platform.system()
+    if system == "Darwin":
+        path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        return path if os.path.isfile(path) else None
+    if system == "Windows":
+        candidates = [
+            os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
+        ]
+        for path in candidates:
+            if path and os.path.isfile(path):
+                return path
+        return shutil.which("chrome") or shutil.which("chrome.exe")
+    for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+def chrome_cdp_launch_argv(cdp_url: str | None = None) -> list[str] | dict[str, str]:
+    resolved = resolve_cdp_url(cdp_url)
+    if isinstance(resolved, dict):
+        return resolved
+    binary = chrome_cdp_binary()
+    if not binary:
+        return {"error": "未找到本机 Google Chrome / Chromium，请先安装浏览器"}
+    port = urlparse(resolved).port or 9222
+    profile = chrome_cdp_profile_dir()
+    os.makedirs(profile, exist_ok=True)
+    return [
+        binary,
+        f"--remote-debugging-port={port}",
+        f"--user-data-dir={profile}",
+        "--no-first-run",
+        "--no-default-browser-check",
+    ]
+
+
 def chrome_cdp_launch_hint(cdp_url: str | None = None) -> str:
+    argv = chrome_cdp_launch_argv(cdp_url)
+    if isinstance(argv, dict):
+        return str(argv.get("error") or "无法生成 Chrome CDP 启动命令")
+    return " ".join(f'"{part}"' if " " in part else part for part in argv)
+
+
+def launch_chrome_for_cdp(cdp_url: str | None = None) -> dict[str, Any]:
     resolved = resolve_cdp_url(cdp_url)
     endpoint = resolved if isinstance(resolved, str) else DEFAULT_CDP_URL
-    port = urlparse(endpoint).port or 9222
-    profile = os.path.expanduser("~/.wyckoff/chrome-cdp")
-    system = platform.system()
-    # macOS `open -a ... --args` is ignored when Chrome is already running; use the binary.
-    if system == "Darwin":
-        chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-        return (
-            f'"{chrome}" --remote-debugging-port={port} --user-data-dir="{profile}" '
-            "--no-first-run --no-default-browser-check"
+    argv = chrome_cdp_launch_argv(cdp_url)
+    if isinstance(argv, dict):
+        return {"ok": False, "cdp_url": endpoint, **argv}
+    try:
+        proc = subprocess.Popen(  # noqa: S603 — argv list, no shell
+            argv,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
         )
-    if system == "Windows":
-        return f'start "" chrome.exe --remote-debugging-port={port} --user-data-dir="{profile}"'
-    return (
-        f'google-chrome --remote-debugging-port={port} --user-data-dir="{profile}" '
-        "--no-first-run --no-default-browser-check"
-    )
+    except OSError as exc:
+        return {
+            "ok": False,
+            "cdp_url": endpoint,
+            "error": f"启动 Chrome CDP 失败: {exc}",
+            "hint": chrome_cdp_launch_hint(cdp_url),
+        }
+    return {
+        "ok": True,
+        "pid": proc.pid,
+        "cdp_url": endpoint,
+        "profile": chrome_cdp_profile_dir(),
+        "argv": argv,
+    }
+
+
+def wait_for_cdp(
+    cdp_url: str | None = None,
+    *,
+    timeout_seconds: float = CDP_WAIT_SECONDS,
+    poll_interval: float = CDP_POLL_INTERVAL,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + max(0.5, float(timeout_seconds))
+    last: dict[str, Any] = {"ok": False, "error": "等待 CDP 超时"}
+    while time.monotonic() < deadline:
+        last = browser_cdp_status(cdp_url)
+        if last.get("ok"):
+            return last
+        err = str(last.get("error") or "")
+        if "未安装 playwright" in err or "wyckoff update" in err:
+            return last
+        time.sleep(max(0.1, float(poll_interval)))
+    last.setdefault("error", "等待 CDP 超时")
+    return last
+
+
+def ensure_cdp_session(
+    consent_cb: ConsentCallback | None = None,
+    *,
+    cdp_url: str | None = None,
+) -> dict[str, Any]:
+    """Ensure local Chrome CDP is reachable; optionally ask consent then auto-launch."""
+    status = browser_cdp_status(cdp_url)
+    if status.get("ok"):
+        return status
+    err = str(status.get("error") or "")
+    if "未安装 playwright" in err or ("wyckoff update" in err and "playwright" in err.lower()):
+        return status
+    if consent_cb is None:
+        return {
+            **status,
+            "error": "本机 Chrome CDP 未就绪。TUI 中再次触发浏览器搜索可授权自动拉起，或执行 /browser start",
+            "hint": status.get("hint") or chrome_cdp_launch_hint(cdp_url),
+        }
+    decision = (consent_cb() or "deny").strip().lower()
+    if decision in {"deny", "cancel", "no"}:
+        return {
+            "ok": False,
+            "cdp_url": status.get("cdp_url") or DEFAULT_CDP_URL,
+            "error": "用户拒绝启动本机调试 Chrome，已取消浏览器搜索",
+            "hint": "/browser start 可稍后手动授权启动",
+        }
+    if decision == "timeout":
+        return {
+            "ok": False,
+            "cdp_url": status.get("cdp_url") or DEFAULT_CDP_URL,
+            "error": "等待用户授权启动 Chrome CDP 超时",
+            "hint": "/browser start 可稍后手动授权启动",
+        }
+    if decision not in {"allow", "once", "always", "yes", "ok"}:
+        return {
+            "ok": False,
+            "cdp_url": status.get("cdp_url") or DEFAULT_CDP_URL,
+            "error": f"未知授权结果: {decision}",
+            "hint": chrome_cdp_launch_hint(cdp_url),
+        }
+    launched = launch_chrome_for_cdp(cdp_url)
+    if not launched.get("ok"):
+        return launched
+    ready = wait_for_cdp(cdp_url)
+    if ready.get("ok"):
+        return {**ready, "launched": True, "pid": launched.get("pid")}
+    return {
+        "ok": False,
+        "cdp_url": ready.get("cdp_url") or status.get("cdp_url") or DEFAULT_CDP_URL,
+        "error": f"已尝试启动 Chrome，但仍无法连接 CDP: {ready.get('error') or 'unknown'}",
+        "hint": ready.get("hint") or chrome_cdp_launch_hint(cdp_url),
+        "pid": launched.get("pid"),
+    }
 
 
 def browser_cdp_status(cdp_url: str | None = None) -> dict[str, Any]:
@@ -81,7 +234,8 @@ def browser_cdp_status(cdp_url: str | None = None) -> dict[str, Any]:
         return {
             "ok": False,
             "cdp_url": resolved,
-            "error": "未安装 playwright。请执行: pip install 'youngcan-wyckoff-analysis[browser]' && playwright install chromium",
+            "error": missing_playwright_message(),
+            "hint": chrome_cdp_launch_hint(resolved),
         }
     try:
         with sync_playwright() as playwright:
@@ -93,7 +247,7 @@ def browser_cdp_status(cdp_url: str | None = None) -> dict[str, Any]:
         return {
             "ok": False,
             "cdp_url": resolved,
-            "error": f"无法连接 CDP: {exc}",
+            "error": f"playwright 已安装，但无法连接本机 Chrome CDP: {exc}",
             "hint": chrome_cdp_launch_hint(resolved),
         }
 
@@ -160,7 +314,7 @@ def research_via_cdp(
         from playwright.sync_api import sync_playwright
     except ImportError:
         return {
-            "error": "未安装 playwright。请执行: pip install 'youngcan-wyckoff-analysis[browser]' && playwright install chromium",
+            "error": missing_playwright_message(),
             "hint": chrome_cdp_launch_hint(resolved),
         }
     n_results = max(1, min(int(max_results or 5), 10))
@@ -182,7 +336,7 @@ def research_via_cdp(
                 browser.close()
     except Exception as exc:
         return {
-            "error": f"无法连接 CDP: {exc}",
+            "error": f"playwright 已安装，但无法连接本机 Chrome CDP: {exc}",
             "cdp_url": resolved,
             "hint": chrome_cdp_launch_hint(resolved),
         }

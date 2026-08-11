@@ -45,10 +45,108 @@ def test_browser_cdp_status_reports_missing_playwright(monkeypatch):
     status = browser_cdp.browser_cdp_status("http://127.0.0.1:9222")
     assert status["ok"] is False
     assert "playwright" in status["error"].lower()
+    assert "wyckoff update" in status["error"]
+    assert "hint" in status
+
+
+def test_missing_playwright_message_points_at_current_interpreter(monkeypatch):
+    monkeypatch.setattr(browser_cdp.sys, "executable", "/tmp/fake-wyckoff-venv/bin/python")
+    msg = browser_cdp.missing_playwright_message()
+    assert "/tmp/fake-wyckoff-venv/bin/python" in msg
+    assert "wyckoff update" in msg
 
 
 def test_research_via_cdp_requires_query():
     assert browser_cdp.research_via_cdp("  ")["error"] == "query 不能为空"
+
+
+def test_chrome_cdp_launch_argv_uses_dedicated_profile(monkeypatch, tmp_path):
+    profile = tmp_path / "chrome-cdp"
+    monkeypatch.setattr(browser_cdp, "chrome_cdp_profile_dir", lambda: str(profile))
+    monkeypatch.setattr(browser_cdp, "chrome_cdp_binary", lambda: "/fake/Google Chrome")
+    argv = browser_cdp.chrome_cdp_launch_argv("http://127.0.0.1:9222")
+    assert isinstance(argv, list)
+    assert argv[0] == "/fake/Google Chrome"
+    assert "--remote-debugging-port=9222" in argv
+    assert f"--user-data-dir={profile}" in argv
+    assert profile.is_dir()
+
+
+def test_ensure_cdp_session_skips_when_already_connected(monkeypatch):
+    monkeypatch.setattr(
+        browser_cdp,
+        "browser_cdp_status",
+        lambda _url=None: {"ok": True, "cdp_url": "http://127.0.0.1:9222", "browser": "Chrome"},
+    )
+    called = {"consent": 0}
+
+    def consent():
+        called["consent"] += 1
+        return "allow"
+
+    out = browser_cdp.ensure_cdp_session(consent)
+    assert out["ok"] is True
+    assert called["consent"] == 0
+
+
+def test_ensure_cdp_session_denies_without_launch(monkeypatch):
+    monkeypatch.setattr(
+        browser_cdp,
+        "browser_cdp_status",
+        lambda _url=None: {"ok": False, "cdp_url": "http://127.0.0.1:9222", "error": "down", "hint": "hint"},
+    )
+    launched = {"n": 0}
+    monkeypatch.setattr(
+        browser_cdp,
+        "launch_chrome_for_cdp",
+        lambda _url=None: launched.__setitem__("n", launched["n"] + 1) or {"ok": True, "pid": 1},
+    )
+    out = browser_cdp.ensure_cdp_session(lambda: "deny")
+    assert out["ok"] is False
+    assert "拒绝" in out["error"]
+    assert launched["n"] == 0
+
+
+def test_ensure_cdp_session_launches_after_consent(monkeypatch):
+    statuses = iter(
+        [
+            {"ok": False, "cdp_url": "http://127.0.0.1:9222", "error": "down", "hint": "hint"},
+            {"ok": True, "cdp_url": "http://127.0.0.1:9222", "browser": "Chrome/150"},
+        ]
+    )
+    monkeypatch.setattr(browser_cdp, "browser_cdp_status", lambda _url=None: next(statuses))
+    monkeypatch.setattr(
+        browser_cdp,
+        "launch_chrome_for_cdp",
+        lambda _url=None: {"ok": True, "pid": 4321, "cdp_url": "http://127.0.0.1:9222"},
+    )
+    monkeypatch.setattr(
+        browser_cdp,
+        "wait_for_cdp",
+        lambda _url=None, **_kw: {"ok": True, "cdp_url": "http://127.0.0.1:9222", "browser": "Chrome/150"},
+    )
+    out = browser_cdp.ensure_cdp_session(lambda: "allow")
+    assert out["ok"] is True
+    assert out.get("launched") is True
+    assert out.get("pid") == 4321
+
+
+def test_ensure_cdp_session_without_callback_does_not_autostart(monkeypatch):
+    monkeypatch.setattr(
+        browser_cdp,
+        "browser_cdp_status",
+        lambda _url=None: {"ok": False, "cdp_url": "http://127.0.0.1:9222", "error": "down", "hint": "run chrome"},
+    )
+    launched = {"n": 0}
+    monkeypatch.setattr(
+        browser_cdp,
+        "launch_chrome_for_cdp",
+        lambda _url=None: launched.__setitem__("n", launched["n"] + 1) or {"ok": True},
+    )
+    out = browser_cdp.ensure_cdp_session(None)
+    assert out["ok"] is False
+    assert "授权" in out["error"] or "/browser start" in out["error"]
+    assert launched["n"] == 0
 
 
 def test_research_via_cdp_returns_hint_when_connect_fails(monkeypatch):
@@ -84,5 +182,6 @@ def test_research_via_cdp_returns_hint_when_connect_fails(monkeypatch):
     monkeypatch.setitem(sys.modules, "playwright.sync_api", fake_sync)
 
     result = browser_cdp.research_via_cdp("宇树科技 IPO")
-    assert "无法连接 CDP" in result["error"]
+    assert "无法连接本机 Chrome CDP" in result["error"]
+    assert "playwright 已安装" in result["error"]
     assert "remote-debugging-port" in result["hint"]
