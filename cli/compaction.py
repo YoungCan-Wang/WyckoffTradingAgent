@@ -180,6 +180,7 @@ def _summarize_tool_result(name: str, content: str, max_len: int = 400) -> str:
 
 
 SHRINK_THRESHOLD = 800
+MIN_SUMMARY_CHARS = 20
 
 
 def shrink_stale_tool_results(messages: list[dict[str, Any]]) -> int:
@@ -581,14 +582,71 @@ def compact_messages(
 
     try:
         summary = _run_compaction_summary(provider, head_text)
-        if summary and len(summary) >= 20:
-            archive_meta = _create_archive_safely(head, summary, session_id, archive_dir, tail_start, anchors)
-            compacted = [
-                {"role": "user", "content": _format_compacted_summary(summary, archive_meta, anchors)},
-                {"role": "assistant", "content": "好的，我已了解之前的对话上下文，请继续。"},
-            ] + tail
-            return _compact_return(compacted, True, archive_meta, include_metadata)
     except Exception:
-        logger.debug("compaction LLM call failed", exc_info=True)
+        # 压缩失败是静默劣化：上下文继续增长直到被网关拒绝，所以必须可见。
+        logger.warning(
+            "上下文压缩失败：摘要请求异常，历史保持 %d 条（约 %d tokens）未压缩",
+            len(messages),
+            estimate_tokens(messages),
+            exc_info=True,
+        )
+        return _compact_return(messages, False, None, include_metadata)
 
-    return _compact_return(messages, False, None, include_metadata)
+    if not summary or len(summary) < MIN_SUMMARY_CHARS:
+        logger.warning(
+            "上下文压缩失败：摘要仅 %d 字符（低于 %d 的下限），历史保持 %d 条（约 %d tokens）未压缩",
+            len(summary or ""),
+            MIN_SUMMARY_CHARS,
+            len(messages),
+            estimate_tokens(messages),
+        )
+        return _compact_return(messages, False, None, include_metadata)
+
+    archive_meta = _create_archive_safely(head, summary, session_id, archive_dir, tail_start, anchors)
+    compacted = [
+        {"role": "user", "content": _format_compacted_summary(summary, archive_meta, anchors)},
+        {"role": "assistant", "content": "好的，我已了解之前的对话上下文，请继续。"},
+    ] + tail
+    return _compact_return(compacted, True, archive_meta, include_metadata)
+
+
+def enforce_context_limit(
+    messages: list[dict[str, Any]],
+    model_name: str = "",
+    context_window: int | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """压缩之后仍超窗口时，硬丢弃最旧消息，返回 (messages, drop_info)。
+
+    压缩不保证一定生效：摘要请求可能失败、tail 本身就可能超过窗口。此时把包原样
+    发出去只会被网关以 400 拒绝，用户看到的是一次失败的对话而非降级的对话。宁可
+    丢最旧的上下文也要让请求成立。
+
+    只丢头部、保留尾部，且不在 tool 结果上切断——孤立的 tool result 缺少配对的
+    assistant tool_calls，多数 provider 会直接报错。
+    """
+    limit = get_compact_threshold(model_name, context_window)
+    if estimate_tokens(messages) <= limit:
+        return messages, None
+
+    before_messages = len(messages)
+    before_tokens = estimate_tokens(messages)
+    kept = list(messages)
+    while len(kept) > 2 and estimate_tokens(kept) > limit:
+        kept = kept[1:]
+        while kept and kept[0].get("role") == "tool":
+            kept = kept[1:]
+    if not kept:
+        kept = messages[-1:]
+    info = {
+        "dropped_messages": before_messages - len(kept),
+        "before_tokens": before_tokens,
+        "after_tokens": estimate_tokens(kept),
+        "limit": limit,
+    }
+    logger.warning(
+        "上下文仍超出上限：压缩后约 %d tokens > %d，已硬丢弃最旧 %d 条消息",
+        before_tokens,
+        limit,
+        info["dropped_messages"],
+    )
+    return kept, info

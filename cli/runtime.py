@@ -33,7 +33,7 @@ from cli.agent_loop import (
     decide_agent_loop,
     has_incomplete_tool_calls,
 )
-from cli.compaction import compact_messages
+from cli.compaction import compact_messages, enforce_context_limit
 from cli.loop_guard import (
     MAX_INCOMPLETE_TOOL_RETRIES,
     MAX_TOOL_ROUNDS,
@@ -601,6 +601,24 @@ class AgentRuntime:
             session_id=self._session_id(),
             include_metadata=True,
         )
+        # 压缩可能未生效（摘要失败）或不足（tail 本身超窗），兜底硬截断，
+        # 否则请求会被网关以 400 拒绝。
+        compacted_messages, overflow = enforce_context_limit(compacted_messages, model_name, context_window)
+        if overflow:
+            messages[:] = compacted_messages
+            if self.scratchpad:
+                self.scratchpad.record_compaction(
+                    before_messages=prev_len,
+                    after_messages=len(compacted_messages),
+                    metadata={"contextOverflow": overflow},
+                )
+            return messages, {
+                "type": "context_overflow",
+                "before_messages": prev_len,
+                "after_messages": len(compacted_messages),
+                "dropped_messages": overflow["dropped_messages"],
+                "limit": overflow["limit"],
+            }
         if not compacted:
             return compacted_messages, None
         messages[:] = compacted_messages
