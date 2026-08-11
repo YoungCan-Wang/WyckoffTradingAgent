@@ -220,6 +220,25 @@ def _cmd_auth(args):
         sys.exit(1)
 
 
+def _model_refresh():
+    """重新拉取 OpenRouter 模型目录，刷新真实上下文窗口。"""
+    from cli.auth import load_model_configs
+    from cli.model_catalog import CACHE_PATH, looks_like_openrouter, refresh_catalog
+    from cli.model_registry import infer_model_info
+
+    catalog = refresh_catalog()
+    if not catalog:
+        print("✗ 无法获取 OpenRouter 模型目录（网络或接口异常），继续使用缓存/名称推断")
+        sys.exit(1)
+    print(f"✓ 已刷新 {len(catalog)} 个模型的上下文窗口 -> {CACHE_PATH}")
+    for cfg in load_model_configs():
+        model = str(cfg.get("model", "") or "")
+        if not looks_like_openrouter(str(cfg.get("base_url", "") or "")):
+            continue
+        info = infer_model_info(cfg)
+        print(f"  {cfg['id']:<22} {model:<44} ctx={info.context_window:>9,}  ({info.window_source})")
+
+
 def _model_list():
     from cli.auth import load_default_model_id, load_fallback_model_id, load_model_configs
     from cli.model_registry import format_model_metadata, infer_model_info
@@ -363,6 +382,8 @@ def _cmd_model(args):
         save_model_entry(updated)
         print(f"✓ 模型 {args.model_id} 的成本/上下文元数据已保存")
         return
+    if sub == "refresh":
+        return _model_refresh()
     if sub == "usage":
         from cli.model_registry import summarize_model_usage
 
@@ -1876,7 +1897,9 @@ def _add_auth_model_config_parsers(sub) -> None:
     p_auth.add_argument("password", nargs="?", default="", help="密码（可省略，交互输入）")
 
     p_model = sub.add_parser("model", help="模型管理")
-    p_model.add_argument("model_cmd", nargs="?", default="list", help="list/add/set/rm/default/fallback/cost/usage")
+    p_model.add_argument(
+        "model_cmd", nargs="?", default="list", help="list/add/set/rm/default/fallback/cost/refresh/usage"
+    )
     p_model.add_argument("model_id", nargs="?", default="", help="模型 ID")
     p_model.add_argument("provider", nargs="?", default="", help="供应商 (set 时)")
     p_model.add_argument("api_key", nargs="?", default="", help="API Key (set 时)")

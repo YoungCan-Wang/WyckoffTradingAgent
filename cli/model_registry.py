@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
+from cli.model_catalog import catalog_context_window, looks_like_openrouter
 from cli.model_metadata import infer_context_window
 
 
@@ -22,6 +23,7 @@ class ModelInfo:
     cache_read_cost_per_1m: float | None = None
     cache_write_cost_per_1m: float | None = None
     source: str = "inferred"
+    window_source: str = "inferred"
 
 
 @dataclass(frozen=True)
@@ -88,8 +90,9 @@ def infer_model_info(config: dict[str, Any]) -> ModelInfo:
     model = str(config.get("model", "") or "")
     pattern_info = next((item for item in _MODEL_PATTERNS if item.pattern.search(model)), None)
     context_window = _int_or_none(config.get("context_window"))
+    window_source = "config" if context_window is not None else ""
     if context_window is None:
-        context_window = infer_context_window(model)
+        context_window, window_source = _resolve_window(model, str(config.get("base_url", "") or ""))
     supports_reasoning = (
         bool(config.get("supports_reasoning"))
         if "supports_reasoning" in config
@@ -110,8 +113,27 @@ def infer_model_info(config: dict[str, Any]) -> ModelInfo:
         output_cost_per_1m=_float_or_none(config.get("output_cost_per_1m")),
         cache_read_cost_per_1m=_float_or_none(config.get("cache_read_cost_per_1m")),
         cache_write_cost_per_1m=_float_or_none(config.get("cache_write_cost_per_1m")),
-        source="config" if config.get("context_window") or config.get("input_cost_per_1m") else "inferred",
+        source=_metadata_source(config, window_source),
+        window_source=window_source,
     )
+
+
+def _resolve_window(model: str, base_url: str) -> tuple[int, str]:
+    """Prefer the provider-reported window; fall back to name patterns.
+
+    只对 OpenRouter 走目录：其它 base_url 的模型 id 命名空间不同，用它的目录反而会误配。
+    """
+    if looks_like_openrouter(base_url):
+        window = catalog_context_window(model)
+        if window:
+            return window, "catalog"
+    return infer_context_window(model), "inferred"
+
+
+def _metadata_source(config: dict[str, Any], window_source: str) -> str:
+    if window_source == "config" or config.get("input_cost_per_1m"):
+        return "config"
+    return window_source or "inferred"
 
 
 def estimate_cost_usd(info: ModelInfo, *, tokens_in: int = 0, tokens_out: int = 0) -> float | None:

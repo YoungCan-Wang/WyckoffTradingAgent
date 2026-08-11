@@ -233,7 +233,7 @@ wyckoff mcp-list
 - **Agent 分层记忆** — L1 原子记忆 + L2 场景 + L3 画像，FTS5/代码/关键词混合召回并保留来源追溯
 - **Skills 扩展** — 内置 `/screen`、`/checkup`、`/report`、`/backtest`，用户可自定义
 - **Prompt 模板** — 内置 `/daily`、`/review-l4`、`/step3-audit` 等高频投研模板，也支持 `~/.wyckoff/prompts/*.md`
-- **模型元数据与成本可见性** — `wyckoff model list/usage/cost` 展示上下文窗口、reasoning 能力和本地 token 成本估算
+- **模型元数据与成本可见性** — `wyckoff model list/usage/cost` 展示上下文窗口、reasoning 能力和本地 token 成本估算；OpenRouter 模型的上下文窗口取自其 `/models` 接口的真实值（`wyckoff model refresh` 刷新），不靠模型名猜
 - **会话分叉与导出** — `wyckoff session export/fork` 或 TUI `/fork` 把历史对话变成可复盘、可继续的新分支
 - **标准事件流** — `wyckoff trace --events <scratchpad.jsonl>` / `wyckoff diag` 产出统一 JSONL，方便复盘工具调用时间线
 - **独立边缘后端** — React 统一调用 Hono Worker；后端提供请求 ID、安全响应头、请求体上限、Redis 共享限流和白名单沙箱任务。读盘室的研究计算必须经用户确认，先进入单并发 Cloudflare Queue，再由签名的 Node 执行桥进入无网络、自动销毁的 Vercel Sandbox；每用户同时仅一个任务，并按日限制创建次数与实际 CPU 用量。Worker 与 bridge 用 `requestId`/`runId` 输出不含脚本与密钥的结构化执行日志，本地支持 VS Code 断点与 `workerd` 集成测试
