@@ -13,6 +13,11 @@ def test_cash_write_failure_does_not_echo_auth_keywords(monkeypatch):
     monkeypatch.setattr(sp, "upsert_position", lambda *_args, **_kwargs: (True, "ok"))
     monkeypatch.setattr(
         sp,
+        "refresh_portfolio_total_equity",
+        lambda *_args, **_kwargs: sp.EquityRefreshResult(True, 40_000, "ok"),
+    )
+    monkeypatch.setattr(
+        sp,
         "update_free_cash",
         lambda *_args, **_kwargs: (False, "{'message': 'JWT expired', 'code': 'PGRST303'}"),
     )

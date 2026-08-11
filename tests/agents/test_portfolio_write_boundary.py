@@ -58,9 +58,15 @@ class _FakeUserClient:
 
 
 def test_portfolio_writes_accept_explicit_user_client(monkeypatch):
-    from integrations.supabase_portfolio import delete_position, update_free_cash, upsert_position
+    from integrations import supabase_portfolio as portfolio_store
+    from integrations.supabase_portfolio import EquityRefreshResult, delete_position, update_free_cash, upsert_position
 
     monkeypatch.delenv("WYCKOFF_WRITE_CONTEXT", raising=False)
+    monkeypatch.setattr(
+        portfolio_store,
+        "refresh_portfolio_total_equity",
+        lambda *_args, **_kwargs: EquityRefreshResult(True, 2_000, "ok"),
+    )
     client = _FakeUserClient()
 
     ok, _ = upsert_position("USER_LIVE:u1", {"code": "000001", "shares": 100, "cost_price": 10}, client=client)

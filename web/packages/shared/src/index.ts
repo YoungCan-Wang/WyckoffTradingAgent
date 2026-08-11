@@ -36,6 +36,7 @@ export {
   looksLikeFinancialRecord,
   findFinancialRecord,
 } from './agent-market'
+export { refreshPortfolioTotalEquity, type PortfolioEquityRefresh } from './portfolio-valuation'
 export type { FundamentalMetric, ValueSnapshot, ValueSnapshotReason } from './agent-market'
 export {
   formatMarketWatchContext,

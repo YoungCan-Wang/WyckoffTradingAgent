@@ -263,6 +263,7 @@ Advanced configuration (`.env` file or GitHub Actions Secrets):
 | `TUSHARE_TOKEN` | Stock market data (`/config set tushare_token`) | Yes |
 | `SUPABASE_URL` / `SUPABASE_KEY` | Cloud portfolio sync (multi-device) | Optional |
 | `TICKFLOW_API_KEY` | TickFlow real-time / intraday data | Optional |
+| `PORTFOLIO_HKD_CNY_RATE` / `PORTFOLIO_USD_CNY_RATE` | Optional broker FX overrides for CNY portfolio valuation; ECB reference rates are used otherwise | Optional |
 | `FEISHU_WEBHOOK_URL` | Feishu push notifications | Optional |
 | `TG_BOT_TOKEN` + `TG_CHAT_ID` | Telegram push notifications | Optional |
 

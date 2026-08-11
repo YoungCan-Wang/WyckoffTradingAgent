@@ -31,6 +31,7 @@ import {
 } from './pattern-review'
 import { ANALYSIS_CONTEXT_PACK_SCHEMA, buildStockAnalysisContextPack } from './analysis-context'
 import { marketWatchSymbol, normalizeMarketWatchCode, readFreshMarketWatchSnapshot, type MarketWatchQuote, type MarketWatchSnapshot } from './market-watch'
+import { refreshPortfolioTotalEquity } from './portfolio-valuation'
 
 export interface KlineRow {
   date: string
@@ -547,7 +548,7 @@ export async function execSearchStock(deps: ToolDeps, userId: string, query: str
     const code = normalizePortfolioCode(r.code) || normalizeCode(r.code)
     const qt = quotes[code] || quotes[normalizeTickFlowSymbol(code)]
     if (qt) {
-      const price = qt.close || qt.last || qt.price || qt.current || 0
+      const price = qt.last_price || qt.close || qt.last || qt.price || qt.current || 0
       const pct = qt.pct_chg ?? ((qt.close && qt.pre_close) ? ((qt.close - qt.pre_close) / qt.pre_close * 100) : null)
       const pctStr = pct != null ? `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%` : ''
       const currency = code.endsWith('.HK') ? 'HK$' : code.endsWith('.US') ? '$' : '¥'
@@ -1094,7 +1095,9 @@ export async function execExecutePortfolioUpdate(
       .delete()
       .eq('portfolio_id', portfolioId)
       .eq('code', normalized)
-    return error ? `删除失败: ${error.message}` : `✅ 已删除 ${normalized} ${name || ''}`
+    if (error) return `删除失败: ${error.message}`
+    const valuation = await refreshPortfolioTotalEquity(deps, userId)
+    return `✅ 已删除 ${normalized} ${name || ''}；${valuation.message}`
   }
 
   if (action === 'add' || action === 'update') {
@@ -1104,9 +1107,9 @@ export async function execExecutePortfolioUpdate(
     const record = buildPortfolioWriteRecord(portfolioId, normalized, action, name, shares, cost_price, stop_loss)
     const error = await savePortfolioPosition(deps, portfolioId, normalized, record)
     const currency = normalized.endsWith('.HK') ? 'HK$' : normalized.endsWith('.US') ? '$' : '¥'
-    return error
-      ? `执行失败: ${error}`
-      : `✅ 已${action === 'add' ? '新增' : '更新'} ${normalized} ${name} ${shares}股 @${currency}${cost_price}${stop_loss ? ` 止损${currency}${stop_loss}` : ''}`
+    if (error) return `执行失败: ${error}`
+    const valuation = await refreshPortfolioTotalEquity(deps, userId)
+    return `✅ 已${action === 'add' ? '新增' : '更新'} ${normalized} ${name} ${shares}股 @${currency}${cost_price}${stop_loss ? ` 止损${currency}${stop_loss}` : ''}；${valuation.message}`
   }
 
   return '未知操作'
