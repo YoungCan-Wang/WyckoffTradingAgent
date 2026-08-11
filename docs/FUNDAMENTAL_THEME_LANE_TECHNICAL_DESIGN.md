@@ -181,8 +181,8 @@ Tushare/TickFlow: 000001.SZ / 601138.SH / 920xxx.BJ
 **不新增 `core/cn_symbols.py`**（本节原建议已作废）。仓库已有两个各司其职的工具，复用它们：
 
 ```python
-core.candidate_metadata.code6(raw)                    # 任意输入 -> 六位主键
-integrations.tickflow_client.normalize_cn_symbol(raw) # 六位主键 -> 供应商格式（.SH/.SZ/.BJ）
+core.candidate_metadata.code6(raw)  # 任意输入 -> 六位主键
+integrations.tickflow_client.normalize_cn_symbol(raw)  # 六位主键 -> 供应商格式（.SH/.SZ/.BJ）
 ```
 
 `code6()` 语义与原设想的 `canonical_cn_code()` 一致；`normalize_cn_symbol()` 已是唯一知道
@@ -213,7 +213,7 @@ integrations.tickflow_client.normalize_cn_symbol(raw) # 六位主键 -> 供应�
         "financial_announce_date": "2026-04-24",
         "financial_period_end": "2026-03-31",
         "consensus_cutoff_date": "2026-08-07",
-        "theme_snapshot_date": None
+        "theme_snapshot_date": None,
     },
     "raw": {
         "revenue_yoy": 105.76,
@@ -224,11 +224,11 @@ integrations.tickflow_client.normalize_cn_symbol(raw) # 六位主键 -> 供应�
         "operating_cash_to_revenue": 0.88,
         "pe_ttm": 54.65,
         "pb": 28.80,
-        "ps_ttm": 20.15
+        "ps_ttm": 20.15,
     },
     "features": {},
     "missing_fields": [],
-    "lineage": []
+    "lineage": [],
 }
 ```
 
@@ -253,19 +253,13 @@ integrations.tickflow_client.normalize_cn_symbol(raw) # 六位主键 -> 供应�
     "rank": 1,
     "lane": "fundamental_theme_shadow",
     "total_score": 78.4,
-    "component_scores": {
-        "growth": 86.0,
-        "quality": 75.0,
-        "valuation": 32.0,
-        "expectation": 81.0,
-        "theme": None
-    },
+    "component_scores": {"growth": 86.0, "quality": 75.0, "valuation": 32.0, "expectation": 81.0, "theme": None},
     "coverage": 0.80,
     "eligible": True,
     "vetoes": [],
     "reasons": [],
     "source_dates": {},
-    "raw_features": {}
+    "raw_features": {},
 }
 ```
 

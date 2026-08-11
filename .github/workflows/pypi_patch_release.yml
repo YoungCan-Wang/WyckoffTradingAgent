@@ -35,8 +35,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]" build twine
+          # 与 CI / pyproject 显式对齐，避免 [dev] 解析漂移
+          python -m pip install "ruff==0.16.2"
       - name: Validate package source
         run: |
+          ruff --version
           ruff check .
           ruff format --check .
           python scripts/quality_gate.py --ci
