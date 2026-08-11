@@ -125,14 +125,31 @@ def update_step4_position_stops(portfolio_id: str, tickets: list[ExecutionTicket
         return False
 
 
+#: 会落库止损价的动作。PROBE/ATTACK（买入建仓）必须包含在内。
+#:
+#: 2026-08-10 修复：此前只有 {HOLD, TRIM} 落库，于是新建仓的止损价被算出来却不写库
+#: （_raise_entry_stop_from_atr 明确为 PROBE/ATTACK 算了 ATR 止损）。要等该股下一次
+#: 被判为 HOLD/TRIM 才补上，而 Step4 每天只处理模型给出决策的标的——实测 196 个持仓
+#: 里 189 个（96%）stop_loss 为空。
+#:
+#: 后果是 _process_hold 的强制止损兜底形同虚设：它的判据是
+#: `ctx.effective_stop_loss and ctx.current_price <= ctx.effective_stop_loss`，
+#: stop 为 None 时直接短路。实盘 302 笔推荐里 57% 跌破 -8% 仍在持有，MAE 均值
+#: -13.96%、最差 -59.2%（对照回测因有 -8% 强制止损，MAE 被截断在 -6~-8.6%）。
+_STOP_PERSIST_ACTIONS = frozenset({"HOLD", "TRIM", "PROBE", "ATTACK"})
+
+
 def _should_persist_stop(ticket: ExecutionTicket) -> bool:
     """未成交卖单不改持仓；倒挂参考价也不能成为下一轮保护止损。"""
     stop = ticket.effective_stop_loss
     price = ticket.price_hint
+    # 买入建仓时 is_holding 为 False（首次买入 held_shares=0），不能作为落库前提，
+    # 否则新仓的止损价依旧写不进去——这正是要修的场景。加仓与持有走 is_holding 分支。
+    is_entry = ticket.action in {"PROBE", "ATTACK"}
     return bool(
         ticket.status == "APPROVED"
-        and ticket.is_holding
-        and ticket.action in {"HOLD", "TRIM"}
+        and (ticket.is_holding or is_entry)
+        and ticket.action in _STOP_PERSIST_ACTIONS
         and stop is not None
         and price is not None
         and 0 < stop < price

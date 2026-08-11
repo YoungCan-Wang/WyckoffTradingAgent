@@ -1559,3 +1559,74 @@ def test_rollback_step4_run_surfaces_cancel_error(monkeypatch):
         )
         is False
     )
+
+
+class TestStopLossPersistence:
+    """买入建仓时必须落库止损价。
+
+    2026-08-10 修复：_should_persist_stop 原先要求 action in {HOLD, TRIM} 且
+    is_holding=True，而买入建仓的 action 是 PROBE/ATTACK、首次买入 held_shares=0
+    使 is_holding=False——于是 _raise_entry_stop_from_atr 算好的 ATR 止损从不写库。
+    实测 196 个持仓里 189 个（96%）stop_loss 为空。
+
+    后果：_process_hold 的强制止损兜底判据是
+    `ctx.effective_stop_loss and ctx.current_price <= ctx.effective_stop_loss`，
+    stop 为 None 时短路，兜底形同虚设。实盘 302 笔推荐 57% 跌破 -8% 仍在持有，
+    MAE 均值 -13.96%、最差 -59.2%。
+    """
+
+    @staticmethod
+    def _ticket(action: str, is_holding: bool, stop: float = 9.0, price: float = 10.0, status: str = "APPROVED"):
+        from workflows.step4_models import ExecutionTicket
+
+        return ExecutionTicket(
+            code="000001",
+            name="x",
+            action=action,
+            status=status,
+            shares=100,
+            price_hint=price,
+            amount=1000.0,
+            stop_loss=stop,
+            max_loss=100.0,
+            drawdown_ratio=0.01,
+            reason="",
+            tape_condition="",
+            invalidate_condition="",
+            is_holding=is_holding,
+            atr14=0.5,
+            original_stop_loss=stop,
+            effective_stop_loss=stop,
+            slippage_bps=0.001,
+            audit="",
+        )
+
+    def test_new_entry_persists_stop(self):
+        """首次买入 is_holding=False，仍须落库——这正是原 bug 的场景。"""
+        from workflows.step4_results import _should_persist_stop
+
+        assert _should_persist_stop(self._ticket("PROBE", is_holding=False))
+        assert _should_persist_stop(self._ticket("ATTACK", is_holding=False))
+
+    def test_hold_and_trim_still_persist(self):
+        from workflows.step4_results import _should_persist_stop
+
+        assert _should_persist_stop(self._ticket("HOLD", is_holding=True))
+        assert _should_persist_stop(self._ticket("TRIM", is_holding=True))
+
+    def test_exit_does_not_persist(self):
+        """清仓不应留下止损价。"""
+        from workflows.step4_results import _should_persist_stop
+
+        assert not _should_persist_stop(self._ticket("EXIT", is_holding=True))
+
+    def test_inverted_stop_rejected(self):
+        """倒挂参考价不能成为下一轮保护止损。"""
+        from workflows.step4_results import _should_persist_stop
+
+        assert not _should_persist_stop(self._ticket("PROBE", is_holding=False, stop=11.0, price=10.0))
+
+    def test_unfilled_order_rejected(self):
+        from workflows.step4_results import _should_persist_stop
+
+        assert not _should_persist_stop(self._ticket("PROBE", is_holding=False, status="NO_TRADE"))

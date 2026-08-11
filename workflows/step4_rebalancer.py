@@ -35,6 +35,7 @@ from workflows.step4_market import (
     load_market_signal_for_trade_date as _load_market_signal_for_trade_date,
 )
 from workflows.step4_models import (
+    DecisionItem,
     ExecutionTicket,
     PortfolioState,
     Step4InputContext,
@@ -55,6 +56,64 @@ from workflows.step4_runtime_config import step4_runtime_config_from_env
 from workflows.step4_ticket import render_trade_ticket
 
 logger = logging.getLogger(__name__)
+
+
+def _run_stop_loss_only_fallback(
+    options: Step4RunOptions,
+    context: Step4InputContext,
+    report_progress,
+    status: str,
+) -> tuple[bool, str]:
+    """LLM 全部失败时，仍按系统规则出一张「只保护、不调仓」的工单。
+
+    此前 LLM 一失败就 return，整条 OMS 随之 exit 1——2026-08-09/10 连续两天因
+    「OpenAI 兼容接口返回内容为空」完全停摆，期间连持仓与止损状态都看不到。而实盘
+    302 笔推荐里 57% 跌破 -8% 仍在持有（MAE 均值 -13.96%、最差 -59.2%），说明这段
+    停摆期恰恰是最需要止损保护的时候。
+
+    这里对每个持仓生成 HOLD 决策，不含任何 LLM 主观判断：买入一律不做，卖出只可能
+    来自 WyckoffOrderEngine 的结构止损兜底（_process_hold 在跌破止损线时把 HOLD 降级
+    为强制 EXIT）。即"模型不可用时不主动开仓，但止损照旧执行"。
+    """
+    positions = list(getattr(getattr(context, "portfolio", None), "positions", None) or [])
+    if not positions:
+        logger.error("Step4 模型不可用且无持仓，无可降级内容 | status=%s", status)
+        return (False, status)
+
+    logger.warning("Step4 模型不可用（%s），降级为「仅止损保护」工单，持仓 %d 只", status, len(positions))
+    report_progress("LLM决策", "降级为仅止损保护", 0.6)
+    decisions = [
+        DecisionItem(
+            code=str(pos.code),
+            name=str(getattr(pos, "name", "") or pos.code),
+            action="HOLD",
+            entry_zone_min=None,
+            entry_zone_max=None,
+            stop_loss=getattr(pos, "stop_loss", None),
+            trim_ratio=None,
+            tape_condition="",
+            invalidate_condition="",
+            is_add_on=False,
+            reason=f"模型不可用（{status}），系统降级：维持持仓，仅保留结构止损兜底",
+            confidence=None,
+        )
+        for pos in positions
+    ]
+    tickets, free_cash_after = execute_step4_decisions(context, decisions, options.order_config)
+    report = render_trade_ticket(
+        market_view=f"⚠️ 决策模型不可用（{status}），本工单仅执行止损保护，不含调仓建议",
+        total_equity=float(context.total_equity),
+        free_cash_before=context.portfolio.free_cash,
+        free_cash_after=free_cash_after,
+        tickets=tickets,
+        atr_period=options.runtime_config.atr_period,
+        model_label=f"degraded:{status}",
+    )
+    _send_trade_ticket(report, options.tg_bot_token, options.tg_chat_id)
+    forced = [t for t in tickets if t.action == "EXIT"]
+    logger.warning("降级工单已发出：持仓 %d 只，其中强制止损 %d 只", len(tickets), len(forced))
+    # 仍报失败，避免掩盖 LLM 故障；但工单与止损已执行。
+    return (False, f"{status}_degraded")
 
 
 def _step4_model_label(options) -> str:
@@ -404,7 +463,7 @@ def _run_step4_decision_flow(
 ) -> tuple[bool, str]:
     ok, status, decision_result = call_step4_decision_model(options, context, report_progress)
     if not ok or decision_result is None:
-        return (ok, status)
+        return _run_stop_loss_only_fallback(options, context, report_progress, status)
     rendered_market_view = rendered_step4_market_view(context.system_market_view, decision_result.market_view)
     decisions = complete_step4_decisions(
         decision_result.decisions,
