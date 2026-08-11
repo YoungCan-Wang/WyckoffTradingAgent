@@ -24,12 +24,17 @@ def test_record_fill_buy_matches_existing_hk_despite_case_and_padding(monkeypatc
     monkeypatch.setattr(sp, "_resolve_write_client", lambda client, _action: client or object())
     monkeypatch.setattr(sp, "load_portfolio_state", lambda _pid, client=None: state)
 
-    def fake_upsert(portfolio_id, position, client=None):
+    def fake_upsert(portfolio_id, position, client=None, **_kwargs):
         captured["position"] = dict(position)
         return True, "ok"
 
     monkeypatch.setattr(sp, "upsert_position", fake_upsert)
     monkeypatch.setattr(sp, "update_free_cash", lambda *_args, **_kwargs: (True, "ok"))
+    monkeypatch.setattr(
+        sp,
+        "refresh_portfolio_total_equity",
+        lambda *_args, **_kwargs: sp.EquityRefreshResult(True, 1, "ok"),
+    )
 
     result = sp.record_fill("USER_LIVE:u1", fill, client=object())
 
@@ -65,12 +70,17 @@ def test_record_fill_sell_matches_us_bare_ticker(monkeypatch):
     monkeypatch.setattr(sp, "_resolve_write_client", lambda client, _action: client or object())
     monkeypatch.setattr(sp, "load_portfolio_state", lambda _pid, client=None: state)
 
-    def fake_upsert(portfolio_id, position, client=None):
+    def fake_upsert(portfolio_id, position, client=None, **_kwargs):
         captured["position"] = dict(position)
         return True, "ok"
 
     monkeypatch.setattr(sp, "upsert_position", fake_upsert)
     monkeypatch.setattr(sp, "update_free_cash", lambda *_args, **_kwargs: (True, "ok"))
+    monkeypatch.setattr(
+        sp,
+        "refresh_portfolio_total_equity",
+        lambda *_args, **_kwargs: sp.EquityRefreshResult(True, 1, "ok"),
+    )
 
     result = sp.record_fill("USER_LIVE:u1", fill, client=object())
 

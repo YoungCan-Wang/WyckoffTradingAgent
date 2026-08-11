@@ -114,6 +114,7 @@ def _update_portfolio_batch(
             free_cash,
             cloud,
             tool_context,
+            refresh_equity=False,
         )
         if isinstance(msg, dict) and msg.get("error"):
             failures.append({"index": index, "code": row["code"], "error": msg["error"]})
@@ -124,11 +125,14 @@ def _update_portfolio_batch(
         first = failures[0]["error"] if failures else "批量操作失败"
         return {"error": first, "failures": failures, "updated_count": 0, "failed_count": len(failures)}
     if cloud:
+        valuation_message = _refresh_cloud_equity(portfolio_id, tool_context)
         _sync_remote_portfolio_to_local(portfolio_id, tool_context)
     summary = _local_update_summary(portfolio_id, f"批量{action}成功 {len(ok_messages)} 只", cloud)
     summary["updated_count"] = len(ok_messages)
     summary["failed_count"] = len(failures)
     summary["item_messages"] = ok_messages
+    if cloud:
+        summary["valuation_message"] = valuation_message
     if failures:
         summary["failures"] = failures
     return summary
@@ -280,12 +284,16 @@ def _portfolio_view(portfolio_id: str, state: dict) -> dict:
         }
         for p in state.get("positions", [])
     ]
-    return {
+    result = {
         "portfolio_id": portfolio_id,
         "free_cash": state.get("free_cash", 0),
         "position_count": len(positions),
         "positions": positions,
     }
+    if state.get("total_equity") is not None:
+        result["total_equity"] = state["total_equity"]
+        result["valuation_updated_at"] = state.get("updated_at", "")
+    return result
 
 
 def _portfolio_diagnosis(portfolio_id: str, state: dict, tool_context: ToolContext | None) -> dict:
@@ -309,6 +317,8 @@ def _portfolio_diagnosis(portfolio_id: str, state: dict, tool_context: ToolConte
             success += 1
     free_cash = float(state.get("free_cash", 0) or 0)
     total_market_value = _fill_position_weights(results)
+    stored_total = state.get("total_equity")
+    computed_total = total_market_value + free_cash
     out = {
         "portfolio_id": portfolio_id,
         "free_cash": state.get("free_cash", 0),
@@ -316,12 +326,12 @@ def _portfolio_diagnosis(portfolio_id: str, state: dict, tool_context: ToolConte
         "successful_count": success,
         "failed_count": failed,
         "total_market_value": round(total_market_value, 2),
-        "total_assets": round(total_market_value + free_cash, 2),
+        "total_assets": round(float(stored_total) if stored_total is not None else computed_total, 2),
         "diagnostics": results,
     }
-    total_equity = state.get("total_equity")
-    if total_equity is not None:
-        out["total_equity"] = total_equity
+    if stored_total is not None:
+        out["total_equity"] = stored_total
+        out["valuation_updated_at"] = state.get("updated_at", "")
     if failed:
         out["market_value_note"] = f"{failed} 只持仓行情缺失，总市值与仓位占比仅覆盖成功诊断的部分"
     if hints:
@@ -478,13 +488,17 @@ def _apply_portfolio_action(
     free_cash: float,
     cloud: bool,
     tool_context: ToolContext | None,
+    *,
+    refresh_equity: bool = True,
 ) -> str | dict:
     if action in ("add", "update"):
-        return _upsert_position(portfolio_id, code, name, shares, cost_price, buy_dt, cloud, tool_context)
+        return _upsert_position(
+            portfolio_id, code, name, shares, cost_price, buy_dt, cloud, tool_context, refresh_equity=refresh_equity
+        )
     if action == "remove":
-        return _remove_position(portfolio_id, code, cloud, tool_context)
+        return _remove_position(portfolio_id, code, cloud, tool_context, refresh_equity=refresh_equity)
     if action == "set_cash":
-        return _set_cash(portfolio_id, free_cash, cloud, tool_context)
+        return _set_cash(portfolio_id, free_cash, cloud, tool_context, refresh_equity=refresh_equity)
     return {"error": f"未知操作: {action}，支持 add/update/remove/set_cash/delete_records"}
 
 
@@ -505,6 +519,8 @@ def _upsert_position(
     buy_dt: str,
     cloud: bool,
     tool_context: ToolContext | None,
+    *,
+    refresh_equity: bool = True,
 ) -> str | dict:
     from core.portfolio_symbol import normalize_portfolio_code, portfolio_name_conflict
 
@@ -532,6 +548,7 @@ def _upsert_position(
             portfolio_id,
             {"code": code, "name": name, "shares": shares, "cost_price": cost_price, "buy_dt": buy_dt},
             client=get_user_client(tool_context),
+            refresh_equity=refresh_equity,
         )
         if not ok:
             return {"error": msg}
@@ -541,7 +558,14 @@ def _upsert_position(
     return f"{code} 已更新"
 
 
-def _remove_position(portfolio_id: str, code: str, cloud: bool, tool_context: ToolContext | None) -> str | dict:
+def _remove_position(
+    portfolio_id: str,
+    code: str,
+    cloud: bool,
+    tool_context: ToolContext | None,
+    *,
+    refresh_equity: bool = True,
+) -> str | dict:
     from core.portfolio_symbol import normalize_portfolio_code
 
     if not code:
@@ -551,7 +575,12 @@ def _remove_position(portfolio_id: str, code: str, cloud: bool, tool_context: To
         from integrations.supabase_portfolio import delete_position
 
         ok, msg = with_auth_retry(
-            tool_context, delete_position, portfolio_id, code, client=get_user_client(tool_context)
+            tool_context,
+            delete_position,
+            portfolio_id,
+            code,
+            client=get_user_client(tool_context),
+            refresh_equity=refresh_equity,
         )
         if not ok:
             return {"error": msg}
@@ -561,14 +590,26 @@ def _remove_position(portfolio_id: str, code: str, cloud: bool, tool_context: To
     return f"{code} 已删除"
 
 
-def _set_cash(portfolio_id: str, free_cash: float, cloud: bool, tool_context: ToolContext | None) -> str | dict:
+def _set_cash(
+    portfolio_id: str,
+    free_cash: float,
+    cloud: bool,
+    tool_context: ToolContext | None,
+    *,
+    refresh_equity: bool = True,
+) -> str | dict:
     if float(free_cash) < 0:
         return {"error": "free_cash 不能为负数"}
     if cloud:
         from integrations.supabase_portfolio import update_free_cash
 
         ok, msg = with_auth_retry(
-            tool_context, update_free_cash, portfolio_id, free_cash, client=get_user_client(tool_context)
+            tool_context,
+            update_free_cash,
+            portfolio_id,
+            free_cash,
+            client=get_user_client(tool_context),
+            refresh_equity=refresh_equity,
         )
         if not ok:
             return {"error": msg}
@@ -576,6 +617,18 @@ def _set_cash(portfolio_id: str, free_cash: float, cloud: bool, tool_context: To
 
     update_local_free_cash(portfolio_id, free_cash)
     return f"可用资金已更新为 {free_cash:,.2f}"
+
+
+def _refresh_cloud_equity(portfolio_id: str, tool_context: ToolContext | None) -> str:
+    from integrations.supabase_portfolio import refresh_portfolio_total_equity
+
+    result = with_auth_retry(
+        tool_context,
+        refresh_portfolio_total_equity,
+        portfolio_id,
+        client=get_user_client(tool_context),
+    )
+    return result.message if result.ok else f"总权益刷新失败：{result.message}"
 
 
 def _sync_remote_portfolio_to_local(portfolio_id: str, tool_context: ToolContext | None) -> None:

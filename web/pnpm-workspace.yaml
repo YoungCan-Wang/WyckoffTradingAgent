@@ -4,6 +4,7 @@ packages:
 overrides:
   '@babel/core': 7.29.6
   esbuild: 0.25.12
+  undici: 7.29.0
   ws: 8.21.0
 allowBuilds:
   esbuild: true

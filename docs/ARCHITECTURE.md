@@ -824,6 +824,13 @@ Web 个股、持仓和股票对抗分析保存历史时写入 `meta`：输入快
   给出已实现盈亏。`integrations.supabase_portfolio.record_fill` 负责落库，先读后写，需串行调用。
 - 入口：CLI `wyckoff portfolio fill`、MCP/Agent 工具 `record_trade_fill`。
   `portfolio add` 仍是覆盖式录快照，两者语义不同，不要混用。
+- 任一持仓新增、覆盖、删除、现金修改或完整成交回填成功后，写入边界都会重新读取整个组合，
+  用 TickFlow 最新可用报价按市值计价，并把港股/美股按 ECB 最新参考汇率折算成人民币，随后同步更新
+  `portfolios.total_equity` 与 `updated_at`。Python/CLI、Web `/api/portfolio` 整表保存和 Web Agent
+  `execute_portfolio_update` 使用同一口径；批量修改与成交回填只在全部字段写完后刷新一次。
+- 估值必须覆盖全部非零持仓；任一行情或汇率缺失时，持仓修改仍视为成功，但旧 `total_equity` 不会被
+  成本价或部分市值覆盖，调用方会收到明确的估值警告。券商使用自定义结算汇率时，可设置
+  `PORTFOLIO_HKD_CNY_RATE` / `PORTFOLIO_USD_CNY_RATE` 覆盖 ECB 参考值。
 - 持仓写入后若现金写入失败，结果会显式标记 `position_committed`，Agent 不得因 JWT 文本重放整笔成交；
   操作者必须先核对并修正现金，再决定是否重新回填。当前两次写入不具备数据库事务性。
 - Step4 先写本轮 `trade_orders`，再更新止损与真实净值，全部成功后才作废同日旧工单。后续持久化失败只按
@@ -844,6 +851,8 @@ Web `/portfolio` 的数据库模式仅对白名单用户开放。浏览器把 Su
 从已验证令牌取得 `user_id` 并固定映射到 `USER_LIVE:<user_id>`，请求体不能指定 `portfolio_id`。
 Cloudflare Pages 通过 `web/functions/api/portfolio/[[path]].ts` 将同域请求交给 Hono API，前端同时校验
 响应结构，避免 SPA fallback 的 HTML 或缺失字段被误当成持仓数据。
+API 响应同时返回 `total_equity`、`valuation_updated_at`；刷新失败时另带 `valuation_warning`，前端不得
+把旧值展示成刚刚成功刷新的实时净值。
 历史持仓允许 `buy_dt` 使用 `YYYYMMDD` 或空字符串；API 输出统一归一化为 `YYYY-MM-DD` 或 `null`，
 确保 Web 日期控件和诊断链路只消费一种日期格式。
 `portfolios` 与 `portfolio_positions` 已启用 RLS，SELECT/INSERT/UPDATE/DELETE 均要求

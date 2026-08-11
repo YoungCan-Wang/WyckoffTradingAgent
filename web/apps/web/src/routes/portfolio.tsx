@@ -370,9 +370,17 @@ function ManualInput({
   return (
     <section className="rounded-lg border border-border">
       <div className="flex items-center justify-between border-b border-border bg-muted/30 p-4">
-        <div className="space-y-1">
-          <label className="text-sm font-medium">{t('portfolio.freeCash')}</label>
-          <input type="number" min={0} value={portfolio.free_cash || ''} onChange={(e) => onChange({ ...portfolio, free_cash: Number(e.target.value) || 0 })} className="block w-40 rounded-md border border-border bg-background px-3 py-1.5 text-sm outline-none" placeholder="0" />
+        <div className="flex flex-wrap items-end gap-4">
+          <div className="space-y-1">
+            <label className="text-sm font-medium">{t('portfolio.freeCash')}</label>
+            <input type="number" min={0} value={portfolio.free_cash || ''} onChange={(e) => onChange({ ...portfolio, free_cash: Number(e.target.value) || 0 })} className="block w-40 rounded-md border border-border bg-background px-3 py-1.5 text-sm outline-none" placeholder="0" />
+          </div>
+          {databaseMode && portfolio.total_equity != null && (
+            <div className="pb-1 text-sm">
+              <div className="text-xs text-muted-foreground">{t('portfolio.totalEquity')}</div>
+              <div className="font-semibold">¥{portfolio.total_equity.toLocaleString()}</div>
+            </div>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {databaseMode && onSave && (
@@ -388,6 +396,7 @@ function ManualInput({
         </div>
       </div>
       {saveError && <div className="border-b border-destructive/30 bg-destructive/5 px-4 py-2 text-sm text-destructive">{saveError}</div>}
+      {portfolio.valuation_warning && <div className="border-b border-amber-500/30 bg-amber-500/5 px-4 py-2 text-sm text-amber-700 dark:text-amber-300">{portfolio.valuation_warning}</div>}
       {saveSuccess && !saveError && <div className="border-b border-emerald-500/30 bg-emerald-500/5 px-4 py-2 text-sm text-emerald-700 dark:text-emerald-300">{t('portfolio.saved')}</div>}
       {progress && <DiagProgressBar progress={progress} />}
       <div className="divide-y divide-border">

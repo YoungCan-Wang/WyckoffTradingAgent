@@ -480,8 +480,12 @@ def _cmd_portfolio(args):
             print("暂无持仓记录")
             if state:
                 print(f"可用资金: {state.get('free_cash', 0):,.2f}")
+                if state.get("total_equity") is not None:
+                    print(f"最新总权益: {state['total_equity']:,.2f}")
             return
         print(f"持仓 ({len(state['positions'])} 只)  可用资金: {state.get('free_cash', 0):,.2f}")
+        if state.get("total_equity") is not None:
+            print(f"最新总权益: {state['total_equity']:,.2f}  估值时间: {state.get('updated_at', '-')}")
         print(f"{'代码':<8} {'名称':<10} {'股数':>6} {'成本':>8} {'买入日期':<10} {'止损':>8}")
         print("-" * 60)
         for p in state["positions"]:

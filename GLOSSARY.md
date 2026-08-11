@@ -223,6 +223,7 @@ watch_score = 0.25 × q20 + 0.20 × q5 + 0.05 × q3
 | **OMS** | Order Management System | 订单管理系统。AI 建议不直接下单，执行权在 OMS 的风控引擎手中 |
 | **SLTP** | Stop Loss & Take Profit | 止损与止盈的组合退出机制 |
 | **NAV** | Net Asset Value | 账户净资产价值。OMS 根据 NAV 分配单次交易预算 |
+| **总权益缓存** | Total Equity Cache | `portfolios.total_equity`。持仓/现金写入后按 TickFlow 最新报价重新估值，港美股以 ECB 参考汇率折算人民币；行情不完整时保留旧值并显式告警，不以成本价冒充市值 |
 | **盈亏比** | Risk/Reward Ratio | 预期收益与预期风险的比值。如止损 -7% / 止盈 +18% 的盈亏比为 2.57:1 |
 | **熔断** | Circuit Breaker | 当市场进入 CRASH 或盘前检测到极端风险（RISK_OFF / BLACK_SWAN）时，OMS 直接冻结买入权限 |
 | **Springboard ABC** | 右侧信号三项确认 | 对 SOS / EVR 和趋势候选的成交量、价格与支撑确认。普通弱确认至少 2/3，纯 SOS 正式候选要求 3/3 |
