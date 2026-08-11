@@ -198,7 +198,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                         "'archive' 历史上下文归档"
                     ),
                 },
-                "status": {"type": "string", "description": "仅 signal：'all'/'pending'/'confirmed'/'expired'"},
+                "status": {
+                    "type": "string",
+                    "description": "仅 signal：'all'/'pending'/'survived'/'confirmed'/'expired'",
+                },
                 "limit": {"type": "integer", "description": "返回记录数上限，默认 20"},
                 "query": {"type": "string", "description": "仅 archive：搜索归档的关键词或股票代码"},
                 "archive_ref": {
@@ -255,7 +258,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "update_portfolio",
-        "description": "管理用户持仓或删除追踪记录。操作后返回最新状态。",
+        "description": (
+            "管理用户持仓或删除追踪记录。操作后返回最新状态。"
+            "用户一次给出多只加/改/删时，必须用 items 一次提交，禁止拆成多次调用。"
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -264,7 +270,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "enum": ["add", "update", "remove", "set_cash", "delete_records"],
                     "description": "操作类型：add/update/remove/set_cash 管理持仓；delete_records 删除推荐或信号记录",
                 },
-                "code": {"type": "string", "description": "6 位股票代码（add/update/remove 时必填）"},
+                "code": {
+                    "type": "string",
+                    "description": "单只股票代码（无 items 时 add/update/remove 必填）：A股6位如601881，港股06881.HK，美股AAPL.US",
+                },
                 "name": {"type": "string", "description": "股票名称（可选）"},
                 "shares": {"type": "integer", "description": "持仓股数"},
                 "cost_price": {"type": "number", "description": "成本价"},
@@ -276,8 +285,121 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "items": {"type": "string"},
                     "description": "仅 delete_records：股票代码列表",
                 },
+                "items": {
+                    "type": "array",
+                    "description": (
+                        "批量 add/update/remove：一次传入多只。"
+                        "每项含 code；add/update 另需 shares、cost_price；name/buy_dt 可选。"
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "code": {"type": "string"},
+                            "name": {"type": "string"},
+                            "shares": {"type": "integer"},
+                            "cost_price": {"type": "number"},
+                            "buy_dt": {"type": "string"},
+                        },
+                        "required": ["code"],
+                    },
+                },
             },
             "required": ["action"],
+        },
+    },
+    {
+        "name": "market_regime",
+        "description": (
+            "A 股市况判定与动态阈值（纯引擎计算，不经 LLM）。返回 regime 枚举"
+            "（含 CRASH、PANIC_REPAIR 候选与确认）及斜率、3 日收益等指标。"
+            "适用于量化判断仓位上限与执行环松紧；"
+            "get_market_overview 只给原始行情，不含市况判定。"
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "wyckoff_diagnose",
+        "description": (
+            "单股 Wyckoff 结构诊断（纯引擎计算，比 analyze_stock 更底层）。"
+            "返回交易区间 TR、触发信号 Spring/SOS/LPS/EVR、阶段与事件分类。"
+            "stage 仅供诊断解读，不等于可执行决策。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"code": {"type": "string", "description": "股票代码"}},
+            "required": ["code"],
+        },
+    },
+    {
+        "name": "intraday_analysis",
+        "description": (
+            "单股盘中多周期分析。返回 VWAP 位置、5m/15m 趋势方向、动量、量能分布、"
+            "综合强度分 strength_score(0-100)。适用于判断当日盘中强弱与即时买点。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"code": {"type": "string", "description": "股票代码"}},
+            "required": ["code"],
+        },
+    },
+    {
+        "name": "intraday_rescue_check",
+        "description": (
+            "单股 60m 结构救援评估：平台突破、VWAP 收复、趋势确立等中期结构信号。"
+            "适用于日线走坏但需要判断中周期结构是否仍成立的持仓。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"code": {"type": "string", "description": "股票代码"}},
+            "required": ["code"],
+        },
+    },
+    {
+        "name": "set_stop_loss",
+        "description": (
+            "只设置已有持仓的止损价，不能改股数、成本或现金。补录缺失止损用这个，"
+            "不要用 update_portfolio。一次给多只用 items 提交。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "description": "单只股票代码（无 items 时必填）"},
+                "stop_loss": {"type": "number", "description": "止损价，必须大于 0"},
+                "items": {
+                    "type": "array",
+                    "description": "批量设置：每项含 code 与 stop_loss",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "code": {"type": "string"},
+                            "stop_loss": {"type": "number"},
+                        },
+                        "required": ["code", "stop_loss"],
+                    },
+                },
+            },
+        },
+    },
+    {
+        "name": "record_trade_fill",
+        "description": (
+            "回填一笔已经发生的成交，按增量更新持仓与现金：摊薄成本价、扣佣金印花税、卖光时清仓、"
+            "给出已实现盈亏。用户描述的是「已成交」就用这个，不要用 update_portfolio 覆盖快照。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "股票代码：A股6位 / 港股06881.HK / 美股AAPL.US",
+                },
+                "side": {"type": "string", "enum": ["buy", "sell"], "description": "成交方向"},
+                "shares": {"type": "integer", "description": "成交股数（正数）"},
+                "price": {"type": "number", "description": "成交价"},
+                "trade_date": {"type": "string", "description": "成交日期 YYYYMMDD，缺省为今天"},
+                "name": {"type": "string", "description": "股票名称（可选）"},
+            },
+            "required": ["code", "side", "shares", "price"],
         },
     },
     {
@@ -440,17 +562,6 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "web_fetch",
-        "description": "抓取指定 URL 的网页内容并返回纯文本。可用于查看财经新闻、公告、在线数据等。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "url": {"type": "string", "description": "要抓取的网页 URL"},
-            },
-            "required": ["url"],
-        },
-    },
-    {
         "name": "reassess_profile",
         "description": "基于已有的 AI 研报文本，重新评估并预览保守 (conservative)、均衡 (balanced) 或激进 (aggressive) 决策风格下的交易信号与参数调整。不写入数据库。",
         "parameters": {
@@ -478,15 +589,19 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "query_news_intelligence",
-        "description": "查询本地新闻情报池，并返回来源、发布时间和可打开的引用链接。需要刷新时可显式指定 refresh=true。",
+        "name": "browser_research",
+        "description": (
+            "通过本机 Chrome CDP 搜索公开网页并抽取正文，返回可引用的标题/链接/摘要。"
+            "适合未上市标的、IPO、舆情等公开信息检索。需先启动带 --remote-debugging-port 的 Chrome。"
+        ),
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "股票代码、名称或主题关键词"},
-                "limit": {"type": "integer", "description": "返回条数，默认 10，最大 50"},
-                "refresh": {"type": "boolean", "description": "是否强制刷新新闻池，默认 false"},
+                "query": {"type": "string", "description": "搜索关键词，如公司名、IPO、事件主题"},
+                "max_results": {"type": "integer", "description": "搜索结果条数，默认 5，最大 10"},
+                "max_pages": {"type": "integer", "description": "深入打开的页面数，默认 3，最大 5"},
             },
+            "required": ["query"],
         },
     },
     {
@@ -558,15 +673,20 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "evaluate_recommendation_events": ToolSpec("evaluate_recommendation_events", "推荐评估", background=True),
     "research_hypothesis": ToolSpec("research_hypothesis", "研究假设", concurrency_safe=True),
     "update_portfolio": ToolSpec("update_portfolio", "调仓操作", requires_approval=True),
+    "set_stop_loss": ToolSpec("set_stop_loss", "设置止损价", requires_approval=True),
+    "market_regime": ToolSpec("market_regime", "市况判定"),
+    "wyckoff_diagnose": ToolSpec("wyckoff_diagnose", "结构诊断"),
+    "intraday_analysis": ToolSpec("intraday_analysis", "盘中分析"),
+    "intraday_rescue_check": ToolSpec("intraday_rescue_check", "中周期结构"),
+    "record_trade_fill": ToolSpec("record_trade_fill", "成交回填", requires_approval=True),
     "run_backtest": ToolSpec("run_backtest", "回测", background=True),
     "check_background_tasks": ToolSpec("check_background_tasks", "任务状态"),
     "exec_command": ToolSpec("exec_command", "执行命令", requires_approval=True),
     "read_file": ToolSpec("read_file", "读取文件"),
     "write_file": ToolSpec("write_file", "写入文件", requires_approval=True),
-    "web_fetch": ToolSpec("web_fetch", "抓取网页"),
+    "browser_research": ToolSpec("browser_research", "浏览器搜索"),
     "reassess_profile": ToolSpec("reassess_profile", "风控评估", concurrency_safe=True),
     "diagnose_backend": ToolSpec("diagnose_backend", "大模型诊疗", concurrency_safe=True),
-    "query_news_intelligence": ToolSpec("query_news_intelligence", "新闻情报", concurrency_safe=True),
     "ask_user_question": ToolSpec("ask_user_question", "提问用户", concurrency_safe=False),
     "execute_skill": ToolSpec("execute_skill", "执行技能", concurrency_safe=True),
     "delegate_to_research": ToolSpec("delegate_to_research", "委派研究员"),
@@ -594,6 +714,9 @@ def is_concurrency_safe(name: str) -> bool:
     return bool(spec and spec.concurrency_safe)
 
 
+ASK_USER_TIMEOUT_SENTINEL = "__ask_user_question_timeout__"
+
+
 def ask_user_question(
     question: str,
     options: list[str] | None = None,
@@ -607,6 +730,17 @@ def ask_user_question(
     if registry and getattr(registry, "_ask_user_question_callback", None):
         try:
             answer = registry._ask_user_question_callback(question, options, allow_free_text, default_answer)
+            if answer == ASK_USER_TIMEOUT_SENTINEL:
+                # 超时不是答复：原先它会以 status="answered" 返回「已超时未作答」这句话本身，
+                # 模型只能把这句话当成用户的回答内容继续往下推理。
+                return {
+                    "status": "timeout",
+                    "error": (
+                        "提问等待超时，用户没有作答——这既不是答复也不是拒绝。"
+                        "不要把超时当成用户的回答内容，也不要重复追问同一个问题；"
+                        "请直接说明未收到答复以及需要用户补充什么。"
+                    ),
+                }
             return {"status": "answered", "answer": answer, "result": f"用户已答复: {answer}"}
         except Exception as e:
             logger.error("ask_user_question_callback failed", exc_info=True)
@@ -670,6 +804,7 @@ class ToolRegistry:
         self._confirm_callback = None
         self._ask_user_question_callback = None
         self._always_allowed: set[str] = set()
+        self._mcp_manager = None
 
         # Initialize ToolSurface and populate from TOOL_SCHEMAS
         from tools.tool_surface import ToolSurface, from_json_schema
@@ -711,11 +846,18 @@ class ToolRegistry:
     def _register_tools(self) -> dict[str, callable]:
         """注册所有工具函数。"""
         from agents.backtest_tools import run_backtest
+        from agents.browser_tools import browser_research
         from agents.diagnosis_tools import analyze_stock
+        from agents.engine_tools import (
+            intraday_analysis,
+            intraday_rescue_check,
+            market_regime,
+            wyckoff_diagnose,
+        )
         from agents.history_tools import query_history
-        from agents.local_tools import exec_command, read_file, web_fetch, write_file
+        from agents.local_tools import exec_command, read_file, write_file
         from agents.market_tools import get_market_history, get_market_overview
-        from agents.portfolio_tools import portfolio, update_portfolio
+        from agents.portfolio_tools import portfolio, record_trade_fill, set_stop_loss, update_portfolio
         from agents.recommendation_tools import evaluate_recommendation_events
         from agents.report_tools import generate_ai_report
         from agents.research_tools import research_hypothesis
@@ -727,7 +869,6 @@ class ToolRegistry:
             delegate_to_research,
             delegate_to_trading,
         )
-        from integrations.news_intelligence import query_news_intelligence
         from tools.backend_doctor import diagnose_backend
         from workflows.reassess_profile import reassess_decision_profile
 
@@ -744,6 +885,12 @@ class ToolRegistry:
             "evaluate_recommendation_events": evaluate_recommendation_events,
             "research_hypothesis": research_hypothesis,
             "update_portfolio": update_portfolio,
+            "set_stop_loss": set_stop_loss,
+            "record_trade_fill": record_trade_fill,
+            "market_regime": market_regime,
+            "wyckoff_diagnose": wyckoff_diagnose,
+            "intraday_analysis": intraday_analysis,
+            "intraday_rescue_check": intraday_rescue_check,
             "run_backtest": run_backtest,
             "ask_user_question": ask_user_question,
             "execute_skill": execute_skill,
@@ -753,18 +900,72 @@ class ToolRegistry:
             "exec_command": exec_command,
             "read_file": read_file,
             "write_file": write_file,
-            "web_fetch": web_fetch,
+            "browser_research": browser_research,
             "reassess_profile": reassess_decision_profile,
             "diagnose_backend": diagnose_backend,
-            "query_news_intelligence": query_news_intelligence,
         }
+
+    def set_mcp_manager(self, manager) -> None:
+        """注入外部 MCP 客户端。工具在实例上合并，不改模块级 TOOL_SCHEMAS。"""
+        self._mcp_manager = manager
+
+    def _external_schemas(self) -> list[dict[str, Any]]:
+        if self._mcp_manager is None:
+            return []
+        try:
+            return self._mcp_manager.schemas()
+        except Exception:
+            logger.warning("failed to collect external mcp schemas", exc_info=True)
+            return []
+
+    def _is_external(self, name: str) -> bool:
+        from cli.mcp_config import TOOL_PREFIX
+
+        return bool(self._mcp_manager) and name.startswith(TOOL_PREFIX)
+
+    def _external_tool(self, name: str):
+        if not self._is_external(name):
+            return None
+        try:
+            return self._mcp_manager.find(name)
+        except Exception:
+            logger.debug("external tool lookup failed: %s", name, exc_info=True)
+            return None
 
     def schemas(self, allowed_tools: set[str] | tuple[str, ...] | None = None) -> list[dict[str, Any]]:
         """返回工具 JSON Schema；allowed_tools 存在时只暴露当前 workflow 范围。"""
+        merged = TOOL_SCHEMAS + self._external_schemas()
         if not allowed_tools:
-            return TOOL_SCHEMAS
+            return merged
         allowed = set(allowed_tools)
-        return [schema for schema in TOOL_SCHEMAS if schema["name"] in allowed]
+        return [schema for schema in merged if schema["name"] in allowed]
+
+    def has_tool(self, name: str) -> bool:
+        return name in self._tools or self._external_tool(name) is not None
+
+    def prepare(self, name: str, args: dict[str, Any]) -> Any:
+        """Pre-execution gates (exists + schema/scope). Approval stays in execute()."""
+
+        from cli.prepare_tool_call import accept, reject
+
+        if name == "check_background_tasks":
+            return accept(args)
+        if self._external_tool(name) is not None:
+            # 外部工具的参数由对端 server 校验，本地没有 ToolSurface 定义。
+            return accept(args)
+        if name not in self._tools:
+            return reject("tool_not_found", f"未知工具: {name}", args=args)
+        if self._tool_surface.resolve(name) is None:
+            return accept(args)
+        prepared = self._tool_surface.prepare_call(name, args)
+        if prepared.get("ok"):
+            return accept(prepared.get("args") or args)
+        return reject(
+            str(prepared.get("code") or "invalid_arguments"),
+            str(prepared.get("message") or "工具参数校验失败"),
+            args=args if isinstance(args, dict) else {},
+            details=prepared.get("details") if isinstance(prepared.get("details"), dict) else None,
+        )
 
     def _check_user_confirmed_in_history(self, messages: list[dict[str, Any]] | None) -> bool:
         if not messages:
@@ -788,6 +989,13 @@ class ToolRegistry:
                 return {"tasks": [], "message": "无后台任务"}
             self._remember_background_handoffs()
             return {"tasks": self._bg_manager.list_tasks()}
+
+        if self._is_external(name):
+            # 外部工具也必须过闸门：写工具入队等审批，不能因为来自 MCP 就跳过。
+            args, blocked = self._confirm_high_risk_call(name, args, messages)
+            if blocked:
+                return blocked
+            return self._mcp_manager.call(name, args)
 
         fn = self._tools.get(name)
         if fn is None:
@@ -827,10 +1035,11 @@ class ToolRegistry:
                 logger.exception("Tool %s execution failed", name)
                 return {"error": f"工具执行失败: {e}"}
 
+        from cli.auth import get_tool_timeout_seconds
         from tools.tool_surface import ToolAccessContext
 
         ctx = ToolAccessContext(
-            timeout_seconds=30.0,
+            timeout_seconds=get_tool_timeout_seconds(),
             session_id=self._tool_context.state.get("session_id"),
         )
         res = self._tool_surface.execute_tool(name, call_args, ctx)
@@ -896,6 +1105,19 @@ class ToolRegistry:
             }
         confirm = self._confirm_callback(name, args)
         action = confirm.get("action", "deny")
+        if action == "queued":
+            # 无人监督时入队等人批：既不是超时也不是拒绝，措辞必须由调用方给。
+            return args, {"error": str(confirm.get("message") or f"操作 [{name}] 已提交审批，尚未执行。")}
+        if action == "timeout":
+            # 超时和明确拒绝必须分开：说成「用户拒绝」等于伪造一件没发生的事，模型只能照着
+            # 这个措辞往下写，用户会在回复里读到自己从没做过的决定。
+            return args, {
+                "error": (
+                    f"操作 [{name}] 的确认弹窗等待超时，用户没有做出选择——这不是拒绝。"
+                    "不要声称用户拒绝或取消了操作。请说明确认超时、该操作尚未执行，"
+                    "并让用户确认后重试。"
+                )
+            }
         if action == "deny":
             return args, {"error": "用户拒绝执行此操作"}
         if action == "always":
@@ -919,6 +1141,9 @@ class ToolRegistry:
 
     def requires_approval(self, name: str) -> bool:
         """返回工具执行前是否需要用户确认。"""
+        external = self._external_tool(name)
+        if external is not None:
+            return bool(external.is_write)
         spec = self.spec(name)
         return bool(spec and spec.requires_approval)
 

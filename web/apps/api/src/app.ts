@@ -12,6 +12,8 @@ export type Env = {
   VITE_SUPABASE_URL?: string
   VITE_SUPABASE_ANON_KEY?: string
   TICKFLOW_API_BASE?: string
+  PORTFOLIO_HKD_CNY_RATE?: string
+  PORTFOLIO_USD_CNY_RATE?: string
   CHAT_DAILY_LIMIT_PER_USER?: string
   CHAT_MIN_INTERVAL_MS?: string
   CHAT_TOOL_APPROVAL_SECRET?: string

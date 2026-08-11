@@ -10,7 +10,7 @@
 [![Web App](https://img.shields.io/badge/Web-React%20App-0ea5e9.svg)](https://wyckoff-analysis.pages.dev/)
 [![Homepage](https://img.shields.io/badge/homepage-Wyckoff%20Homepage-0ea5e9.svg)](https://youngcan-wang.github.io/wyckoff-homepage/)
 
-[English](docs/README_EN.md) | [日本語](docs/README_JA.md) | [Español](docs/README_ES.md) | [한국어](docs/README_KO.md) | [架构文档](docs/ARCHITECTURE.md)
+[English](docs/README_EN.md) | [架构文档](docs/ARCHITECTURE.md)
 
 </div>
 
@@ -27,11 +27,7 @@ React Web、CLI、MCP 与 GitHub Actions 共同组成当前产品形态；日线
 ## 云端运行成本透明
 
 WyckoffAgent 会始终保持开源，欢迎 fork 自行部署、提交 Issue 和 PR。  
-从 **2026-06-03** 起，项目的云端共享服务按付费基础设施运行：行情源、数据库、AI 报告、在线分析服务和自动化维护都会进入显性成本模型。下面的 Supabase 配额提示是这类成本边界的例子，完整成本明细与风险边界见 [docs/COST_MODEL.md](docs/COST_MODEL.md)。
-
-<p align="center">
-  <img src="docs/screenshots/supabase-quota-grace-2026-06-03.svg" alt="Supabase quota grace period until 03 Jun, 2026" width="900" />
-</p>
+项目的云端共享服务按付费基础设施运行：行情源、数据库、AI 报告、在线分析服务和自动化维护都会进入显性成本模型。完整成本明细与风险边界见 [docs/COST_MODEL.md](docs/COST_MODEL.md)。
 
 ---
 
@@ -151,6 +147,63 @@ wyckoff dashboard
 
 </details>
 
+### 定时任务常驻（macOS launchd）
+
+定时任务默认只在 TUI 打开时运行 —— 关掉窗口就停。装上 daemon 后它独立常驻，关 UI 也继续跑：
+
+```bash
+scripts/daemon_install.sh      # 装成 launchd 用户级服务
+wyckoff daemon --status        # 看运行状态
+tail -f ~/.wyckoff/logs/daemon.log
+scripts/daemon_uninstall.sh    # 卸载
+```
+
+daemon 持锁时 TUI 会自动让出调度权，两边不会重复触发。
+
+**无人监督时的写操作策略。** daemon 只会自己执行 `set_stop_loss` —— 这个工具
+只能改止损价,签名里没有股数、成本、现金,不移仓也不花钱。其余全部进待批准队列等你决定：
+
+```bash
+wyckoff approve list           # 看待批项
+wyckoff approve ok <id>        # 批准并立即执行队列中保存的精确参数
+wyckoff approve no <id>        # 拒绝
+```
+
+`approve list` 会展示脱敏后的完整参数；`approve ok` 通过正常工具注册表立即执行并记录结果，
+失败不会自动重试，避免重复成交。待批项 12 小时后过期且不可批准 —— 隔夜的调仓会按旧价成交。
+
+也可以手动跑一轮，不进 TUI：
+
+```bash
+wyckoff run "盘前风控检查"
+```
+
+### 接入外部 MCP server
+
+第三方 MCP server（GitHub、文件系统、你自己的数据源）的工具可以接进同一个会话，
+和原生工具走同一套审批闸门。需要 mcp 依赖：`uv pip install -e '.[mcp]'`。
+
+```bash
+wyckoff mcp-add github --command npx \
+  --args -y @modelcontextprotocol/server-github \
+  --env GITHUB_TOKEN              # 从当前环境读取，避免把值写进命令历史
+
+wyckoff mcp-test github     # 先试连，列出工具，不进会话
+wyckoff mcp-enable github   # 确认没问题再启用
+wyckoff mcp-list
+```
+
+**接一个 server 等于允许在本机 spawn 它的命令**，所以：新增后默认未启用，
+配置只能你自己写（模型不能新增 server），本项目自建的 `mcp_server.py`
+会被拒绝接入（工具已内置，接第二遍只会出现两份同名工具）。
+
+外部工具名带 `mcp__<server>__` 前缀，不会顶掉原生工具。写操作按工具名和
+`annotations` 启发式识别 —— **认不出就当写**，进待批准队列。daemon 无人时
+永不自动执行外部写入。
+
+某个 server 连不上只会让它自己不可用，原生工具照常。
+错误看 `~/.wyckoff/logs/mcp-<server>.log`。
+
 ### 回测网格
 
 <p align="center">
@@ -176,11 +229,11 @@ wyckoff dashboard
 - **跨市场** — A 股 / 港股 / 美股漏斗独立 workflow
 - **AI 三阵营研报** — 逻辑破产 / 储备营地 / 起跳板，LLM 独立审判
 - **信号反馈闭环** — 漏斗记录 observations，盘后 feedback 聚合 health / registry，支持 shadow 动态策略验证
-- **持仓诊断 & 私人决断** — EXIT/TRIM/HOLD/PROBE/ATTACK；非主线 5 日时间管理；灾难地板约 -12%
+- **持仓诊断 & 私人决断** — 单股质量先于账户角色；WARNING 只观察，确认破位/硬风险才产生 EXIT/TRIM；非主线 5 日进入复核但不机械卖出
 - **Agent 分层记忆** — L1 原子记忆 + L2 场景 + L3 画像，FTS5/代码/关键词混合召回并保留来源追溯
 - **Skills 扩展** — 内置 `/screen`、`/checkup`、`/report`、`/backtest`，用户可自定义
 - **Prompt 模板** — 内置 `/daily`、`/review-l4`、`/step3-audit` 等高频投研模板，也支持 `~/.wyckoff/prompts/*.md`
-- **模型元数据与成本可见性** — `wyckoff model list/usage/cost` 展示上下文窗口、reasoning 能力和本地 token 成本估算
+- **模型元数据与成本可见性** — `wyckoff model list/usage/cost` 展示上下文窗口、reasoning 能力和本地 token 成本估算；OpenRouter 模型的上下文窗口取自其 `/models` 接口的真实值（`wyckoff model refresh` 刷新），不靠模型名猜
 - **会话分叉与导出** — `wyckoff session export/fork` 或 TUI `/fork` 把历史对话变成可复盘、可继续的新分支
 - **标准事件流** — `wyckoff trace --events <scratchpad.jsonl>` / `wyckoff diag` 产出统一 JSONL，方便复盘工具调用时间线
 - **独立边缘后端** — React 统一调用 Hono Worker；后端提供请求 ID、安全响应头、请求体上限、Redis 共享限流和白名单沙箱任务。读盘室的研究计算必须经用户确认，先进入单并发 Cloudflare Queue，再由签名的 Node 执行桥进入无网络、自动销毁的 Vercel Sandbox；每用户同时仅一个任务，并按日限制创建次数与实际 CPU 用量。Worker 与 bridge 用 `requestId`/`runId` 输出不含脚本与密钥的结构化执行日志，本地支持 VS Code 断点与 `workerd` 集成测试
@@ -270,4 +323,9 @@ wyckoff dashboard
 
 ---
 
-[![Star History Chart](https://api.star-history.com/svg?repos=YoungCan-Wang/WyckoffTradingAgent&type=Date)](https://star-history.com/#YoungCan-Wang/WyckoffTradingAgent&Date)
+<!-- star-history:start -->
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/star-history/star-history-dark.svg">
+  <img alt="Star history" src="assets/star-history/star-history-light.svg">
+</picture>
+<!-- star-history:end -->

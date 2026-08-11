@@ -7,10 +7,11 @@ import { WyckoffLoading } from '@/components/loading'
 import { usePreferences } from '@/lib/preferences'
 import { loadLLMConfigCandidates } from '@/lib/chat-agent'
 import { streamLLMResponseWithFallback } from '@/lib/llm-stream'
+import { clearStreamFlush, scheduleStreamFlush } from '@/lib/stream-render'
 import { MarkdownContent } from '@/components/markdown'
 import { UpgradeNotice } from '@/components/upgrade-notice'
 import { AIDisclaimer } from '@/components/ai-disclaimer'
-import { TICKFLOW_PURCHASE, fetchValueSnapshotWithFetch, normalizeCode } from '@wyckoff/shared'
+import { TICKFLOW_PURCHASE, fetchValueSnapshotWithFetch, isSupportedPortfolioCode, normalizeCode, normalizePortfolioCode } from '@wyckoff/shared'
 import type { KlineRow, ValueSnapshot } from '@wyckoff/shared'
 import { fetchKlineViaTickFlow, getUserDataKeys } from '@/lib/kline'
 import { formatSignedPercent } from '@/lib/format'
@@ -159,12 +160,12 @@ function useFullDiagnosisRunner() {
   const [progress, setProgress] = useState<DiagProgress | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const streamBuf = useRef('')
-  const rafRef = useRef(0)
+  const flushTimer = useRef<ReturnType<typeof setTimeout> | 0>(0)
 
   async function run(portfolio: Portfolio) {
     if (!user || loading || portfolio.positions.length === 0) return
     const total = portfolio.positions.length
-    const abort = startDiagnosisRun(abortRef, streamBuf, rafRef)
+    const abort = startDiagnosisRun(abortRef, streamBuf, flushTimer)
     resetDiagnosisState(setError, setResult, setStreamingReport, setLoading, setProgress, total)
     try {
       const [configs, keys] = await Promise.all([loadLLMConfigCandidates(user.id), getUserDataKeys(user.id)])
@@ -180,10 +181,10 @@ function useFullDiagnosisRunner() {
       const prompt = buildFullPortfolioPrompt(entries, portfolio.free_cash)
       const onDelta = (chunk: string) => {
         streamBuf.current += chunk
-        scheduleStreamingReportFlush(streamBuf, rafRef, setStreamingReport)
+        scheduleStreamFlush(streamBuf, flushTimer, setStreamingReport)
       }
       const report = await callFullPortfolioLLM(configs, prompt, abort.signal, onDelta, (nextModel) => setModel(nextModel))
-      cancelAnimationFrame(rafRef.current)
+      clearStreamFlush(flushTimer)
       if (abort.signal.aborted) return
       setStreamingReport(report)
       setResult(buildDiagnosisResult(entries, report, portfolio.free_cash))
@@ -191,7 +192,7 @@ function useFullDiagnosisRunner() {
       if (abort.signal.aborted) return
       setError(err instanceof Error ? err.message : t('portfolio.failed'))
     } finally {
-      finishDiagnosisRun(rafRef, setLoading, setProgress)
+      finishDiagnosisRun(flushTimer, setLoading, setProgress)
     }
   }
 
@@ -219,7 +220,7 @@ function usePortfolioHistory(userId: string | undefined, result: FullDiagnosisRe
 
     const meta = {
       inputSnapshotHash,
-      promptVersion: 'wyckoff-prompt-v2.1',
+      promptVersion: 'evidence-contract-v2.2',
       model,
       generatedAt: new Date().toISOString(),
       valueSource: result.values.map(v => sourceLabel(v.snapshot)).filter(Boolean).join(','),
@@ -252,10 +253,10 @@ function portfolioHistoryKey(payload: PortfolioHistoryPayload): string {
 function startDiagnosisRun(
   abortRef: MutableRefObject<AbortController | null>,
   streamBuf: MutableRefObject<string>,
-  rafRef: MutableRefObject<number>,
+  flushTimer: MutableRefObject<ReturnType<typeof setTimeout> | 0>,
 ) {
   abortRef.current?.abort()
-  cancelAnimationFrame(rafRef.current)
+  clearStreamFlush(flushTimer)
   const abort = new AbortController()
   abortRef.current = abort
   streamBuf.current = ''
@@ -278,21 +279,13 @@ function resetDiagnosisState(
 }
 
 function finishDiagnosisRun(
-  rafRef: MutableRefObject<number>,
+  flushTimer: MutableRefObject<ReturnType<typeof setTimeout> | 0>,
   setLoading: Dispatch<SetStateAction<boolean>>,
   setProgress: Dispatch<SetStateAction<DiagProgress | null>>,
 ) {
-  cancelAnimationFrame(rafRef.current)
+  clearStreamFlush(flushTimer)
   setLoading(false)
   setProgress(null)
-}
-
-function scheduleStreamingReportFlush(buf: MutableRefObject<string>, raf: MutableRefObject<number>, set: Dispatch<SetStateAction<string>>) {
-  if (raf.current) return
-  raf.current = requestAnimationFrame(() => {
-    raf.current = 0
-    set(buf.current)
-  })
 }
 
 type PositionEntry = { position: Position; kline: KlineRow[]; valueSnapshot: ValueSnapshot }
@@ -305,15 +298,15 @@ async function fetchAllPositionKlines(positions: Position[], keys: Awaited<Retur
   await Promise.all(
     positions.map(async (p, i) => {
       try {
-        const code = normalizeCode(p.code)
+        const code = normalizePortfolioCode(p.code) || normalizeCode(p.code)
         const [kline, valueSnapshot] = await Promise.all([
           fetchKlineViaTickFlow(code, keys.tickflow!),
           fetchValueSnapshotWithFetch(globalThis.fetch, code, keys).catch((): ValueSnapshot => ({ symbol: code, source: 'none', metrics: null, reason: 'not-found' })),
         ])
         if (kline.length > 0) entries.push({ position: positions[i]!, kline, valueSnapshot })
-        else errors.push(normalizeCode(p.code))
+        else errors.push(code)
       } catch (err) {
-        errors.push(`${normalizeCode(p.code)}: ${err instanceof Error ? err.message : '失败'}`)
+        errors.push(`${normalizePortfolioCode(p.code) || normalizeCode(p.code)}: ${err instanceof Error ? err.message : '失败'}`)
       }
       onProgress(++fetched)
     }),
@@ -377,9 +370,17 @@ function ManualInput({
   return (
     <section className="rounded-lg border border-border">
       <div className="flex items-center justify-between border-b border-border bg-muted/30 p-4">
-        <div className="space-y-1">
-          <label className="text-sm font-medium">{t('portfolio.freeCash')}</label>
-          <input type="number" min={0} value={portfolio.free_cash || ''} onChange={(e) => onChange({ ...portfolio, free_cash: Number(e.target.value) || 0 })} className="block w-40 rounded-md border border-border bg-background px-3 py-1.5 text-sm outline-none" placeholder="0" />
+        <div className="flex flex-wrap items-end gap-4">
+          <div className="space-y-1">
+            <label className="text-sm font-medium">{t('portfolio.freeCash')}</label>
+            <input type="number" min={0} value={portfolio.free_cash || ''} onChange={(e) => onChange({ ...portfolio, free_cash: Number(e.target.value) || 0 })} className="block w-40 rounded-md border border-border bg-background px-3 py-1.5 text-sm outline-none" placeholder="0" />
+          </div>
+          {databaseMode && portfolio.total_equity != null && (
+            <div className="pb-1 text-sm">
+              <div className="text-xs text-muted-foreground">{t('portfolio.totalEquity')}</div>
+              <div className="font-semibold">¥{portfolio.total_equity.toLocaleString()}</div>
+            </div>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {databaseMode && onSave && (
@@ -395,6 +396,7 @@ function ManualInput({
         </div>
       </div>
       {saveError && <div className="border-b border-destructive/30 bg-destructive/5 px-4 py-2 text-sm text-destructive">{saveError}</div>}
+      {portfolio.valuation_warning && <div className="border-b border-amber-500/30 bg-amber-500/5 px-4 py-2 text-sm text-amber-700 dark:text-amber-300">{portfolio.valuation_warning}</div>}
       {saveSuccess && !saveError && <div className="border-b border-emerald-500/30 bg-emerald-500/5 px-4 py-2 text-sm text-emerald-700 dark:text-emerald-300">{t('portfolio.saved')}</div>}
       {progress && <DiagProgressBar progress={progress} />}
       <div className="divide-y divide-border">
@@ -414,7 +416,7 @@ function ManualPositionRow({ position, onChange, onRemove }: { position: Positio
   const cls = 'rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none'
   return (
     <div className="flex flex-wrap items-center gap-3 px-4 py-3">
-      <input value={String(position.code)} onChange={(e) => onChange({ code: e.target.value })} placeholder={t('portfolio.code')} className={`${cls} w-28`} />
+      <input value={String(position.code)} onChange={(e) => onChange({ code: e.target.value })} placeholder={t('portfolio.code')} className={`${cls} w-36`} title={t('portfolio.invalidCode')} />
       <input value={position.name || ''} onChange={(e) => onChange({ name: e.target.value || null })} placeholder={t('portfolio.name')} className={`${cls} w-24`} />
       <input type="number" min={0} value={position.shares || ''} onChange={(e) => onChange({ shares: Number(e.target.value) || 0 })} placeholder={t('portfolio.shares')} className={`${cls} w-20`} />
       <input type="number" min={0} step={0.01} value={position.cost_price || ''} onChange={(e) => onChange({ cost_price: Number(e.target.value) || 0 })} placeholder={t('portfolio.costPrice')} className={`${cls} w-24`} />
@@ -425,7 +427,7 @@ function ManualPositionRow({ position, onChange, onRemove }: { position: Positio
 }
 
 function isValidManualPosition(position: Position): boolean {
-  return Boolean(String(position.code).trim()) && Number(position.shares) > 0 && Number(position.cost_price) > 0
+  return isSupportedPortfolioCode(position.code) && Number(position.shares) > 0 && Number(position.cost_price) > 0
 }
 
 function DiagProgressBar({ progress }: { progress: DiagProgress }) {
@@ -469,7 +471,7 @@ function FullDiagnosisPanel({ result, report, streaming }: { result: FullDiagnos
         </div>
         <AIDisclaimer />
         <article className="mt-4 prose prose-sm max-w-none text-foreground">
-          {report ? <MarkdownContent content={report} /> : <p className="text-sm text-muted-foreground">模型分析中...</p>}
+          {report ? <MarkdownContent content={report} streaming={streaming} /> : <p className="text-sm text-muted-foreground">模型分析中...</p>}
         </article>
       </div>
     </section>
@@ -644,26 +646,30 @@ function buildFullPortfolioPrompt(entries: PositionEntry[], freeCash: number): s
   const cashPct = totalAssets > 0 ? (freeCash / totalAssets) * 100 : 0
 
   const header = [
-    `# 账户概况`,
+    `# 账户概况（capital_scope=account_only）`,
+    `以下现金、持仓权重和总资产只代表当前证券账户，不代表用户全部可投资资产。`,
     `现金 ¥${freeCash.toLocaleString()}（${cashPct.toFixed(1)}%）| 持仓 ${entries.length} 只 | 总成本 ¥${totalCost.toLocaleString()} | 总市值 ¥${totalMarket.toLocaleString()} | 整体盈亏 ${formatSignedPercent(totalPnl)}`,
   ].join('\n')
 
   return [header, '', ...sections].join('\n\n')
 }
 
-export const PORTFOLIO_SYSTEM_PROMPT = `你是威科夫资产配置诊断专家。基于用户的全部持仓、真实K线和价值面快照做整体诊断。主框架仍是仓位、趋势和量价结构；价值面只用于校准公司质量、风险暴露和仓位置信度，不要用基本面替代K线事实。
+export const PORTFOLIO_SYSTEM_PROMPT = `你是证据约束型组合诊断专家。analysis_mode=portfolio_rebalance，默认 capital_scope=account_only；当前账户不代表用户全部可投资资产。先独立判断每只股票的基本面质量、估值风险、趋势和量价结构，再比较它在当前账户中的角色。成本与浮盈亏只用于执行和风险上下文，不是股票优劣证据。
 
 【核心质量要求】
 - 必须在诊断报告中说明数据来源、给出明确的置信度理由与配置风控建议，并提供调仓或防守策略的失效条件/警戒水位线。
+- 除非用户明确补充 complete_investable_assets，不得仅凭本账户单股权重、行业集中度或现金比例要求 TRIM/EXIT，也不得假设这是用户完整持仓。
+- 普通技术走弱只标 WARNING 并等待收盘确认；TRIM/EXIT 只允许用于 HARD_RISK 或 CONFIRMED_BREAK。若价格接近日内低点且未确认，应给 CLOSE_CONFIRM、ON_REBOUND 或 WAIT，避免机械杀跌。
+- 新开仓和加仓必须给允许区间、确认条件和取消条件；高开或脱离支撑时不追。
+- 置信度只表示当前证据支持度，不是上涨概率。未提供的基本面、估值、行业或消息数据必须明确标记缺失，不得补写。
 - 绝对禁止在分析结论中使用“必然”、“保证”、“无风险”、“稳赚”、“稳赢”、“包赚”等夸大或确定性的承诺词语。
 
 输出包含：
-1. 仓位分布评估（集中度、行业分散性）
-2. 各持仓当前威科夫阶段一句话判断，并说明价值面质量/风险如何影响持仓置信度
-3. 现金比例是否合理
-4. 整体风险暴露（哪些持仓需要警惕，包括失效位和风险提示）
-5. 加减仓优先级建议
-6. 操作建议（先减谁、可加谁、现金该不该动）
+1. 各持仓独立质量与风险判断（基本面/估值证据、趋势、量价结构及数据缺口）
+2. 当前账户内的相对强弱与角色；集中度和现金仅作账户快照描述
+3. 风险级别与执行时机（signal_severity / action_timing）
+4. 加减仓优先级、允许区间、确认条件、失效条件
+5. 反面证据：最可能推翻当前结论的事实
 
 用简洁的 Markdown 格式回答。不编造数据。`
 

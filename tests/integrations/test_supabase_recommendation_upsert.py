@@ -105,8 +105,8 @@ def test_upsert_recommendations_aborts_when_history_fetch_fails(monkeypatch):
 def test_upsert_recommendations_preserves_existing_recommend_count(monkeypatch):
     client = FakeSupabaseClient(
         rows=[
-            {"code": 1, "recommend_count": 3, "recommend_date": 20260517},
-            {"code": 1, "recommend_count": 2, "recommend_date": 20260516},
+            {"code": 1, "recommend_count": 3, "recommend_date": 20260517, "initial_price": 9.5},
+            {"code": 1, "recommend_count": 2, "recommend_date": 20260516, "initial_price": 9.0},
         ]
     )
     _enable_fake_supabase(monkeypatch, client)
@@ -115,6 +115,22 @@ def test_upsert_recommendations_preserves_existing_recommend_count(monkeypatch):
 
     assert ok is True
     assert client.upserts[0][0]["recommend_count"] == 4
+    assert client.upserts[0][0]["initial_price"] == 9.0
+    assert client.upserts[0][0]["current_price"] == 10.0
+
+
+def test_upsert_recommendations_sticks_first_recommend_price_on_same_day_rerun(monkeypatch):
+    client = FakeSupabaseClient(
+        rows=[{"code": 1, "recommend_count": 1, "recommend_date": 20260518, "initial_price": 8.8}]
+    )
+    _enable_fake_supabase(monkeypatch, client)
+
+    ok = upsert_recommendations(20260518, [{"code": "000001", "name": "Ping An", "initial_price": 10.0}])
+
+    assert ok is True
+    assert client.upserts[0][0]["recommend_count"] == 1
+    assert client.upserts[0][0]["initial_price"] == 8.8
+    assert client.upserts[0][0]["current_price"] == 10.0
 
 
 def test_upsert_recommendations_dedupes_same_code_same_date(monkeypatch):
@@ -344,6 +360,7 @@ def test_write_recommendation_backup_artifact_marks_ai_and_sql(tmp_path):
     sql = (tmp_path / "recommendation_tracking_20260526.sql").read_text(encoding="utf-8")
     assert "insert into public.recommendation_tracking" in sql
     assert "on conflict (code, recommend_date) do update set" in sql
+    assert "initial_price = coalesce(nullif(recommendation_tracking.initial_price, 0), excluded.initial_price)" in sql
     assert "array['sos', 'lps']::text[]" in sql
     assert '\'{"c_support": {"touch_dates": ["2026-05-24"]}}\'::jsonb' in sql
     assert "'O''Reilly setup'" in sql
@@ -398,3 +415,75 @@ def test_mark_ai_recommendations_updates_step3_springboard_fields(monkeypatch):
     assert client.updates[2]["eq"] == {"recommend_date": 20260617, "code": 603373}
     assert client.updates[2]["payload"]["springboard_combo"] == "A+C"
     assert client.updates[2]["payload"]["springboard_met_count"] == 2
+
+
+class _FakeQuery:
+    def __init__(self, sink, fail_missing_column=False):
+        self.sink = sink
+        self.fail_missing_column = fail_missing_column
+        self.payload = None
+        self.filters = {}
+
+    def update(self, payload):
+        self.payload = payload
+        return self
+
+    def eq(self, key, value):
+        self.filters[key] = value
+        return self
+
+    def in_(self, key, values):
+        self.filters[key] = list(values)
+        return self
+
+    def execute(self):
+        if self.fail_missing_column and "step3_verdict" in (self.payload or {}):
+            raise RuntimeError("column recommendation_tracking.step3_verdict does not exist")
+        self.sink.append((dict(self.payload or {}), dict(self.filters)))
+        return type("R", (), {"data": []})()
+
+
+class _FakeClient:
+    def __init__(self, fail_missing_column=False):
+        self.writes = []
+        self.fail_missing_column = fail_missing_column
+
+    def table(self, _name):
+        return _FakeQuery(self.writes, self.fail_missing_column)
+
+
+def test_write_step3_verdicts_groups_by_verdict():
+    from integrations.recommendation_payload import _write_step3_verdicts
+
+    client = _FakeClient()
+    _write_step3_verdicts(
+        client,
+        20260808,
+        {"000001": "invalidated", "000002": "invalidated", "300750": "springboard"},
+        "2026-08-08T00:00:00Z",
+    )
+
+    verdict_writes = {w[0]["step3_verdict"]: w[1]["code"] for w in client.writes}
+    assert verdict_writes["invalidated"] == [1, 2]
+    assert verdict_writes["springboard"] == [300750]
+
+
+def test_write_step3_verdicts_missing_column_does_not_raise(caplog):
+    """列缺失必须明确报错但不抛出——诊断字段不能拖垮每日入库。"""
+    from integrations.recommendation_payload import _write_step3_verdicts
+
+    client = _FakeClient(fail_missing_column=True)
+    with caplog.at_level("ERROR"):
+        _write_step3_verdicts(client, 20260808, {"000001": "invalidated"}, "2026-08-08T00:00:00Z")
+
+    assert "ALTER TABLE recommendation_tracking" in caplog.text
+
+
+def test_write_step3_verdicts_noop_on_empty():
+    from integrations.recommendation_payload import _write_step3_verdicts
+
+    client = _FakeClient()
+    _write_step3_verdicts(client, 20260808, None, "2026-08-08T00:00:00Z")
+    _write_step3_verdicts(client, 20260808, {}, "2026-08-08T00:00:00Z")
+
+    assert client.writes == []

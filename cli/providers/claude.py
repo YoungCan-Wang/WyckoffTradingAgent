@@ -9,6 +9,7 @@ from typing import Any
 import anthropic
 
 from cli.providers.base import LLMProvider
+from cli.usage_metrics import normalize_anthropic_usage
 
 
 class ClaudeProvider(LLMProvider):
@@ -86,6 +87,7 @@ class ClaudeProvider(LLMProvider):
         output_tokens = 0
         cache_read = 0
         cache_write = 0
+        stop_reason = ""
 
         with self._client.messages.stream(**kwargs) as stream:
             for event in stream:
@@ -120,6 +122,9 @@ class ClaudeProvider(LLMProvider):
                     usage = getattr(event, "usage", None)
                     if usage:
                         output_tokens = getattr(usage, "output_tokens", 0)
+                    delta = getattr(event, "delta", None)
+                    if delta is not None and getattr(delta, "stop_reason", None):
+                        stop_reason = str(delta.stop_reason)
                 elif event.type == "message_start":
                     usage = getattr(event.message, "usage", None)
                     if usage:
@@ -130,13 +135,16 @@ class ClaudeProvider(LLMProvider):
         if tool_calls:
             yield {"type": "tool_calls", "tool_calls": tool_calls, "text": text_buf}
 
-        yield {
-            "type": "usage",
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "cache_read_tokens": cache_read,
-            "cache_write_tokens": cache_write,
-        }
+        usage = normalize_anthropic_usage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read=cache_read,
+            cache_write=cache_write,
+        )
+        yield {"type": "usage", **usage}
+        if stop_reason:
+            reason = "length" if stop_reason == "max_tokens" else stop_reason
+            yield {"type": "finish", "reason": reason}
 
     def _build_messages(self, messages: list[dict], add_caching: bool = True) -> list[dict]:
         """将统一消息格式转为 Claude messages 格式，并在最后一条消息上添加 prompt caching 断点。"""

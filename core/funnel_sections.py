@@ -8,25 +8,6 @@ from core.candidate_ranker import TRIGGER_GROUP_ORDER, TRIGGER_GROUP_TITLES, TRI
 from core.funnel_format import fmt_pct, fmt_ratio
 
 
-def append_leader_radar_section(
-    lines: list[str],
-    rows: list[dict],
-    name_map: dict[str, str],
-    *,
-    display_limit: int = 0,
-) -> None:
-    if not rows:
-        return
-    lines.append("")
-    lines.append(f"**【📈 趋势观察池】{len(rows)} 只**")
-    lines.append("仅用于跟踪强趋势背景，不是正式买点；进入可买区仍必须通过主线/候选车道和 confirmed 确认")
-    display = rows if display_limit <= 0 else rows[:display_limit]
-    lines.extend(_leader_row(row, name_map) for row in display)
-    omitted = len(rows) - len(display)
-    if omitted > 0:
-        lines.append(f"  ... 另 {omitted} 只略")
-
-
 def append_formal_l4_sections(
     lines: list[str],
     formal_codes: list[str],

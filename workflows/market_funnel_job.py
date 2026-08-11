@@ -260,7 +260,7 @@ def _build_funnel_result(
     }
 
 
-def _run_funnel_for_ranked(
+def run_funnel_for_ranked(
     ranked: list[dict[str, Any]],
     df_map: dict[str, pd.DataFrame],
     runtime: RuntimeConfig,
@@ -310,7 +310,7 @@ def run_market_funnel(
     quotes, ranked, bench_df, bench_symbol, df_map, fetch_stats = fetch_market_inputs(tf, universe_symbols, runtime)
     symbols = [str(item["symbol"]) for item in ranked]
     report_path = market_funnel_report_path(runtime.output_path)
-    metrics, candidates = _run_funnel_for_ranked(ranked, df_map, runtime, bench_df, bench_symbol)
+    metrics, candidates = run_funnel_for_ranked(ranked, df_map, runtime, bench_df, bench_symbol)
     result = _build_funnel_result(
         runtime,
         universe_symbols,

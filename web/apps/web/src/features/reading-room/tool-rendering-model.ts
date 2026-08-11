@@ -18,6 +18,7 @@ const TOOL_LABEL_KEYS: Record<string, TranslationKey> = {
   generate_strategy_decision: 'tool.generate_strategy_decision',
   intraday_analysis: 'tool.intraday_analysis',
   run_python_research: 'tool.run_python_research',
+  web_search: 'tool.web_search',
 }
 
 const TOOL_TONES: Record<string, string> = {
@@ -29,6 +30,7 @@ const TOOL_TONES: Record<string, string> = {
   plan_portfolio_update: 'border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-100',
   execute_portfolio_update: 'border-red-200 bg-red-50 text-red-800 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-100',
   run_python_research: 'border-indigo-200 bg-indigo-50 text-indigo-800 dark:border-indigo-500/30 dark:bg-indigo-500/10 dark:text-indigo-100',
+  web_search: 'border-cyan-200 bg-cyan-50 text-cyan-800 dark:border-cyan-500/30 dark:bg-cyan-500/10 dark:text-cyan-100',
 }
 
 export const STRUCTURED_TOOL_NAMES = new Set(['screen_stocks', 'analyze_stock', 'generate_strategy_decision'])
@@ -142,7 +144,7 @@ export function toolStepStateTone(part: ToolPart): string {
   return 'bg-sky-50 text-sky-700 dark:bg-sky-500/10 dark:text-sky-200'
 }
 
-export function toolProgressDescription(toolName: string, input: unknown): string {
+export function toolProgressDescription(toolName: string, input: unknown, part?: ToolPart): string {
   const item = asRecord(input)
   switch (toolName) {
     case 'search_stock':
@@ -173,6 +175,12 @@ export function toolProgressDescription(toolName: string, input: unknown): strin
       return '执行已确认的持仓变更。'
     case 'run_python_research':
       return `在隔离 Python 沙箱中执行：${sanitizeText(item?.purpose) || '已确认的研究计算'}。`
+    case 'web_search':
+      // SDK emits empty tool-call input; action/query only appear on tool result output.
+      return webSearchProgressDescription(
+        part?.state === 'output-available' ? asRecord(part.output) : item,
+        part?.state === 'output-available',
+      )
     default:
       return '读取读盘室相关数据，并把结果交给模型综合判断。'
   }
@@ -185,6 +193,31 @@ export function toolResultDigest(toolName: string, output: unknown): string {
   if (toolName === 'query_attribution') return `策略归因读取完成：${recordCountDigest(output)}`
   if (toolName === 'market_history') return `指数历史读取完成：${recordCountDigest(output)}`
   if (toolName === 'run_python_research') return `沙箱计算完成：${sandboxResultDigest(output)}`
+  if (toolName === 'web_search') return `联网搜索完成：${webSearchResultDigest(output)}`
+  return summarizeToolOutput(output)
+}
+
+function webSearchProgressDescription(item: Record<string, unknown> | null, hasOutput: boolean): string {
+  if (!hasOutput) return '服务端联网检索公开信息。'
+  const action = asRecord(item?.action)
+  const queries = Array.isArray(action?.queries)
+    ? action.queries.map((query) => sanitizeText(query)).filter(Boolean)
+    : []
+  const query = sanitizeText(action?.query) || queries[0]
+  if (action?.type === 'openPage') return `打开网页核验：${sanitizeText(action.url) || '搜索结果页'}`
+  if (action?.type === 'findInPage') return `页内检索：${sanitizeText(action.pattern) || '关键词'}`
+  return query ? `服务端联网搜索：${query}` : '服务端联网检索公开信息。'
+}
+
+function webSearchResultDigest(output: unknown): string {
+  const item = asRecord(output)
+  if (!item) return summarizeToolOutput(output)
+  const sources = Array.isArray(item.sources) ? item.sources.length : 0
+  const action = asRecord(item.action)
+  const query = sanitizeText(action?.query)
+    || (Array.isArray(action?.queries) ? sanitizeText(action.queries[0]) : '')
+  if (query && sources > 0) return `${query} · ${sources} 个来源`
+  if (sources > 0) return `${sources} 个来源`
   return summarizeToolOutput(output)
 }
 

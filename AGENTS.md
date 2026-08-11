@@ -17,11 +17,15 @@ Streamlit is fully retired from `main`: do not add, restore, or maintain Streaml
 .venv/bin/ruff check .                   # lint
 .venv/bin/ruff format --check .          # format check
 .venv/bin/python scripts/quality_gate.py --ci  # function length + LOC trend
+.venv/bin/python scripts/check_workflow_hygiene.py
+.venv/bin/python scripts/check_dependency_hygiene.py
 
 # Web (from web/ directory)
 pnpm dev                                 # dev server
 pnpm build                               # production build
 pnpm -r exec tsc --noEmit                # typecheck
+pnpm --filter @wyckoff/web test
+pnpm --filter @wyckoff/api test
 ```
 
 ## Hard Rules (CI enforced, will block merge)
@@ -35,6 +39,14 @@ pnpm -r exec tsc --noEmit                # typecheck
 4. **Pass TypeScript strict mode** — Web code must compile with `tsc --noEmit` (strict: true, noUnusedLocals, noUnusedParameters).
 
 5. **Pass pytest** — All tests must pass. Tests must not make real network calls.
+
+6. **Pass PR policy** — Every non-automated PR must have Markdown headings for both `Summary`/`变更摘要` and `Validation`/`验证`. It must not include secrets, local logs, traces, database dumps, or key material.
+
+7. **Pass workflow hygiene** — Changes to `.github/workflows/` must retain least-privilege top-level permissions, concurrency for automation workflows, artifact upload when a job prepares logs, and environment indirection for shell inputs. The A-share funnel and Step4/OMS entrypoints must keep their shared concurrency group.
+
+8. **Pass dependency hygiene** — Dependency changes must preserve `uv.lock` and `web/pnpm-lock.yaml`, and the lockfile must be updated with its manifest. Do not introduce `latest`, wildcard, unpinned remote, or runtime-resolved dependencies.
+
+9. **Pass operational smoke checks** — A change that can affect daily jobs, funnel execution, data writes, or integrations must pass the CI smoke dry-run as well as its focused tests. A queued or in-progress run is not evidence of success.
 
 ## Review Rules (strong expectations, not mechanically CI-enforced)
 
@@ -53,7 +65,15 @@ pnpm -r exec tsc --noEmit                # typecheck
 ## Gate Levels
 
 - **Fast gate (local/default)**: `.venv/bin/ruff check .`, `.venv/bin/ruff format --check .`, `.venv/bin/python scripts/quality_gate.py --check-functions`, and focused tests for touched code.
-- **Full gate (CI/release)**: fast gate plus full `pytest`, TypeScript strict mode, web tests/build, and dry-run jobs where relevant.
+- **Full gate (CI/release)**: fast gate plus `.venv/bin/python scripts/check_workflow_hygiene.py`, `.venv/bin/python scripts/check_dependency_hygiene.py`, full `pytest`, TypeScript strict mode, web and API tests, Pages-functions build, and dry-run jobs where relevant.
+
+## CI and Submission Contract
+
+- `.github/workflows/ci.yml` is the executable source of truth. `AGENTS.md` defines the contributor contract; if the two disagree, update this file in the same PR instead of treating stale instructions as an exception.
+- Do not claim a change is ready to merge from local checks alone. Required CI jobs must be successful; `queued`, `in_progress`, `skipped`, and `continue-on-error` coverage are not a green merge gate.
+- Run the full web gate for web changes from `web/`: `CI=true pnpm install --frozen-lockfile`, TypeScript check, both package test suites, and the Pages-functions build. Do not use an interactive dependency repair as validation.
+- The CI runner installs Ruff independently. Keep the local toolchain compatible, but when local and CI results differ, resolve against the CI version and record the successful CI run before merging.
+- For workflow, schedule, environment-variable, prompt, or operational-contract changes, update the affected documentation and the independent `wiki_repo_new/` checkout in the same delivery.
 
 ## Architecture Constraints
 

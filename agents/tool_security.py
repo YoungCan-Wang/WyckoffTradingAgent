@@ -1,13 +1,29 @@
 from __future__ import annotations
 
-import ipaddress
 import logging
 import pathlib
 import re
 import shlex
-import socket
 from typing import Any
-from urllib.parse import urlparse
+
+from utils.http_security import (
+    BEARER_RE as BEARER_RE,
+)
+from utils.http_security import (
+    COMMON_SECRET_VALUE_RE as COMMON_SECRET_VALUE_RE,
+)
+from utils.http_security import (
+    SECRET_ASSIGNMENT_RE as SECRET_ASSIGNMENT_RE,
+)
+from utils.http_security import (
+    redact_sensitive_text as redact_sensitive_text,
+)
+from utils.http_security import (
+    security_error as security_error,
+)
+from utils.http_security import (
+    validate_public_http_url as validate_public_http_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -15,19 +31,6 @@ SENSITIVE_KEY_RE = re.compile(
     r"(api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|passwd|secret|credential|authorization|cookie|session)",
     re.IGNORECASE,
 )
-SECRET_ASSIGNMENT_RE = re.compile(
-    r"(?i)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|passwd|secret|authorization|cookie)\b"
-    r"\s*[:=]\s*([\"']?)[^\s\"',;]+"
-)
-BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{12,}")
-COMMON_SECRET_VALUE_RE = re.compile(r"\b(?:sk|ak|pk|ghp|gho|github_pat|glpat|xoxb|xoxp|AIza)[A-Za-z0-9_\-]{12,}\b")
-SAFE_WEB_CONTENT_TYPE_PREFIXES = (
-    "application/json",
-    "application/xml",
-    "application/xhtml+xml",
-    "text/",
-)
-_PROXY_FAKE_IP_NETWORKS = (ipaddress.ip_network("198.18.0.0/15"),)
 
 _BLOCKED_PATH_PARTS = {
     ".ssh",
@@ -127,18 +130,6 @@ _SAFE_WRITE_SUFFIXES = {
     ".yml",
 }
 _SECRET_FILE_HINT = "不要读取密钥文件；如果凭据已由 CLI/.env 加载，直接运行需要凭据的命令即可继承当前环境。"
-
-
-def security_error(message: str) -> dict:
-    return {"error": f"安全拦截: {message}"}
-
-
-def redact_sensitive_text(text: str) -> str:
-    if not text:
-        return text
-    redacted = SECRET_ASSIGNMENT_RE.sub(lambda m: f"{m.group(1)}={m.group(2)}***REDACTED***", text)
-    redacted = BEARER_RE.sub("Bearer ***REDACTED***", redacted)
-    return COMMON_SECRET_VALUE_RE.sub("***REDACTED***", redacted)
 
 
 def redact_sensitive_columns(df: Any) -> Any:
@@ -262,55 +253,3 @@ def validate_agent_command(command: str) -> list[str] | dict:
         if SENSITIVE_KEY_RE.search(arg) or ".ssh" in lowered or ".env" in lowered or touches_wyckoff_config:
             return security_error(f"命令参数疑似访问凭据、会话或密钥。{_SECRET_FILE_HINT}")
     return args
-
-
-def validate_public_http_url(url: str) -> str | dict:
-    raw = str(url or "").strip()
-    if not raw:
-        return security_error("URL 不能为空")
-
-    parsed = urlparse(raw)
-    if parsed.scheme not in {"http", "https"}:
-        return security_error("只允许抓取 http/https URL")
-    if parsed.username or parsed.password:
-        return security_error("URL 中禁止携带用户名或密码")
-    if not parsed.hostname:
-        return security_error("URL 缺少主机名")
-    if parsed.port and parsed.port not in {80, 443}:
-        return security_error("禁止抓取非标准端口，避免访问内网服务")
-
-    host = parsed.hostname.strip().lower().rstrip(".")
-    if host in {"localhost", "localhost.localdomain"} or host.endswith(".local"):
-        return security_error("禁止抓取本机或本地域名")
-
-    try:
-        infos = socket.getaddrinfo(
-            host, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM
-        )
-    except socket.gaierror:
-        return security_error("URL 主机无法解析")
-
-    host_is_ip_literal = _parse_ip(host) is not None
-    for info in infos:
-        ip_result = _validate_public_ip(info[4][0], allow_proxy_fake_ip=not host_is_ip_literal)
-        if ip_result:
-            return ip_result
-    return raw
-
-
-def _parse_ip(ip_text: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
-    try:
-        return ipaddress.ip_address(ip_text)
-    except ValueError:
-        return None
-
-
-def _validate_public_ip(ip_text: str, *, allow_proxy_fake_ip: bool = False) -> dict | None:
-    ip = _parse_ip(ip_text)
-    if ip is None:
-        return security_error("URL 解析到无效地址")
-    if allow_proxy_fake_ip and any(ip in network for network in _PROXY_FAKE_IP_NETWORKS):
-        return None
-    if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
-        return security_error("禁止抓取内网、本机、链路本地或保留地址")
-    return None

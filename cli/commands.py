@@ -76,7 +76,7 @@ class WyckoffCommands(Provider):
                 ("清屏", "clear_chat", "Ctrl+L"),
                 ("模型列表", "list_models", "/model list"),
                 ("添加模型", "add_model", "/model add"),
-                ("切换主题", "switch_theme", ""),
+                ("切换主题", "switch_theme", "/theme"),
                 ("Token 用量", "show_token", "/token"),
                 ("Prompt 模板", "show_prompt_templates", "/prompt"),
                 ("Workflow 记录", "show_workflows", "/workflow approve|reload|restart|pause|stop|save|run"),

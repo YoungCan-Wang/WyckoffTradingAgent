@@ -414,51 +414,7 @@ def test_confirmed_signals_require_breadth_for_neutral_research_variant() -> Non
     assert pending.ticked is True
 
 
-def test_confirmed_signals_apply_breadth_only_to_neutral_spring() -> None:
-    class Pending:
-        def write(self, *_args, **_kwargs):
-            return None
-
-        def tick(self, *_args, **_kwargs):
-            return [
-                {"code": "SPRING", "score": 10.0, "signal_type": "spring"},
-                {"code": "EVR", "score": 9.0, "signal_type": "evr"},
-            ]
-
-    ctx = replay_mod._DayContext(
-        idx=0,
-        signal_date=date(2026, 1, 1),
-        entry_target_date=date(2026, 1, 2),
-        day_df_map={"000001": _hist()},
-        name_map={},
-        day_cfg=FunnelConfig(trading_days=3),
-        result=_result(),
-        regime="NEUTRAL",
-    )
-
-    confirmed = replay_mod._confirmed_signals(
-        ctx,
-        Pending(),
-        {},
-        AShareEntryResearchPolicy(require_neutral_spring_breadth_confirmation=True),
-    )
-
-    assert confirmed.codes == ["EVR"]
-    strong_ctx = replace(
-        ctx,
-        breadth={"ratio_pct": 55, "delta_pct": 2, "daily_up_ratio_pct": 60, "sample_size": 1000},
-    )
-    confirmed = replay_mod._confirmed_signals(
-        strong_ctx,
-        Pending(),
-        {},
-        AShareEntryResearchPolicy(require_neutral_spring_breadth_confirmation=True),
-    )
-
-    assert confirmed.codes == ["SPRING", "EVR"]
-
-
-def test_confirmed_signals_carry_research_entry_weight() -> None:
+def test_confirmed_signals_preserve_signal_type_for_execution_weight() -> None:
     class Pending:
         def write(self, *_args, **_kwargs):
             return None
@@ -476,11 +432,9 @@ def test_confirmed_signals_carry_research_entry_weight() -> None:
         result=_result(),
         regime="NEUTRAL",
     )
-    policy = AShareEntryResearchPolicy(entry_weight_multipliers=(("NEUTRAL", "spring", 0.5),))
+    confirmed = replay_mod._confirmed_signals(ctx, Pending(), {})
 
-    confirmed = replay_mod._confirmed_signals(ctx, Pending(), {}, policy)
-
-    assert confirmed.entry_weight_map == {"000001": 0.5}
+    assert confirmed.trigger_map == {"000001": "spring"}
 
 
 def test_confirmed_signals_apply_regime_specific_research_filter() -> None:
@@ -527,7 +481,10 @@ def test_trade_record_applies_research_hold_limit_by_regime_and_signal() -> None
         confirmed_codes=frozenset({"000001"}),
         signal_type_map={"000001": "spring"},
     )
-    policy = AShareEntryResearchPolicy(max_hold_days_by_regime_signal=(("CAUTION", "spring", 1),))
+    policy = AShareEntryResearchPolicy(
+        entry_weight_multipliers=(("CAUTION", "spring", 0.25),),
+        max_hold_days_by_regime_signal=(("CAUTION", "spring", 1),),
+    )
     config = replace(_config(), hold_days=3, a_share_entry_research=policy)
 
     record, skipped = replay_mod._trade_record_for_code(
@@ -545,6 +502,7 @@ def test_trade_record_applies_research_hold_limit_by_regime_and_signal() -> None
     assert skipped is False
     assert record is not None
     assert record.exit_date == date(2026, 1, 3)
+    assert record.entry_weight_multiplier == 0.25
 
 
 def test_confirmed_signals_treats_invalid_scores_as_zero() -> None:
@@ -615,14 +573,16 @@ def test_name_score_map_prefers_higher_confirmed_source_name() -> None:
     )
     confirmed = replay_mod._ConfirmedSignals(
         codes=["000001"],
-        score_map={"000001": 90.0},
+        # 触发分已归一化到 0~100（该类型内唯一候选得满分 100），故 confirmed 分数
+        # 需高于 100 才能体现"分数更高时优先 confirmed 名称"这一意图。
+        score_map={"000001": 110.0},
         track_map={"000001": "Accum"},
         trigger_map={"000001": "spring"},
     )
 
     got = replay_mod._name_score_map(result, confirmed)
 
-    assert got["000001"] == (90.0, "spring(确认)")
+    assert got["000001"] == (110.0, "spring(确认)")
     assert got["000002"] == (70.0, "tight_base")
 
 
@@ -652,7 +612,9 @@ def test_name_score_map_treats_invalid_candidate_scores_as_zero() -> None:
 
     got = replay_mod._name_score_map(result, confirmed)
 
-    assert got["000001"] == (2.0, "sos")
+    # 触发分已归一化：sos 在该类型内是唯一有效候选，得满分 100。
+    # 非法的 candidate_entries 分数（inf/nan）仍归 0，不会顶掉触发名。
+    assert got["000001"] == (100.0, "sos")
     assert got["000002"] == (0.0, "tight_base")
 
 
@@ -667,7 +629,7 @@ def test_candidate_entry_duplicate_metadata_stays_consistent_in_replay(monkeypat
             triggers={},
             candidate_entries=[
                 {"code": "000001", "track": "future_leader", "entry_type": "launchpad", "score": 80.0},
-                {"code": "000001", "track": "accumulation", "entry_type": "spring", "score": 100.0},
+                {"code": "000001", "track": "accumulation", "entry_type": "compression", "score": 100.0},
             ],
         )
 
@@ -689,7 +651,7 @@ def test_candidate_entry_duplicate_metadata_stays_consistent_in_replay(monkeypat
 
     assert replay.records[0].score == 100.0
     assert replay.records[0].track == "Accum"
-    assert replay.records[0].trigger == "spring"
+    assert replay.records[0].trigger == "compression"
 
 
 def test_low_score_confirmed_signal_does_not_downgrade_funnel_candidate(monkeypatch) -> None:
@@ -701,7 +663,10 @@ def test_low_score_confirmed_signal_does_not_downgrade_funnel_candidate(monkeypa
             self.written = True
 
         def tick(self, *_args, **_kwargs):
-            return [{"code": "000001", "score": 20.0, "track": "Trend", "signal_type": "evr"}]
+            # 单 EVR 会被 pure_evr_observe_only 正确拦掉；本用例要测的是
+            # "低分 confirmed 不得覆盖漏斗候选元数据"，故改用能通过护栏的
+            # compression，以隔离该行为。
+            return [{"code": "000001", "score": 20.0, "track": "Trend", "signal_type": "compression"}]
 
     monkeypatch.setattr("core.backtest_replay.calc_market_breadth", lambda _df_map: {})
     monkeypatch.setattr(
@@ -712,7 +677,7 @@ def test_low_score_confirmed_signal_does_not_downgrade_funnel_candidate(monkeypa
         lambda **_kwargs: _result()._replace(
             triggers={},
             candidate_entries=[
-                {"code": "000001", "track": "accumulation", "entry_type": "spring", "score": 100.0},
+                {"code": "000001", "track": "accumulation", "entry_type": "compression", "score": 100.0},
             ],
         ),
     )
@@ -734,5 +699,102 @@ def test_low_score_confirmed_signal_does_not_downgrade_funnel_candidate(monkeypa
 
     assert replay.records[0].score == 100.0
     assert replay.records[0].track == "Accum"
-    assert replay.records[0].trigger == "spring"
+    assert replay.records[0].trigger == "compression"
     assert replay.records[0].signal_confirmed is True
+
+
+def test_trade_record_carries_alloc_and_watch_scores_separately():
+    """排序诊断需要分列记录两种分数。
+
+    score/alloc_score 是 allocate_ai_candidates 的排序分（含主升 +100、触发分等）；
+    watch_score 是 candidate_ranker 的 L3 质量分，在最终排序里只贡献 *8（上限 9.6）。
+    合成一列会让"排序主体无效"与"质量分无效"无法区分——此前 trades.csv 只有 score
+    一列且实为触发分，导致相关性分析口径错误。
+    """
+    import dataclasses
+
+    from core.backtest_execution import TradeRecord
+
+    fields = {f.name for f in dataclasses.fields(TradeRecord)}
+    assert {"alloc_score", "watch_score"} <= fields
+
+    record = TradeRecord(
+        signal_date=date(2026, 1, 2),
+        entry_date=date(2026, 1, 3),
+        exit_date=date(2026, 1, 5),
+        code="000001",
+        name="平安银行",
+        trigger="sos",
+        score=42.0,
+        entry_close=10.0,
+        exit_close=11.0,
+        ret_pct=10.0,
+        alloc_score=42.0,
+        watch_score=0.87,
+    )
+    row = dataclasses.asdict(record)
+    assert row["alloc_score"] == 42.0
+    assert row["watch_score"] == 0.87
+    assert row["watch_score"] != row["alloc_score"]
+
+
+def test_watch_score_map_degrades_to_empty_on_failure(monkeypatch):
+    """诊断字段不得影响回测主流程：排名失败时返回空表而非抛出。"""
+    monkeypatch.setattr(replay_mod, "rank_l3_candidates", lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+    ctx = replay_mod._DayContext(
+        0,
+        date(2026, 1, 2),
+        date(2026, 1, 3),
+        {},
+        {},
+        FunnelConfig(),
+        _result(),
+        "NEUTRAL",
+        {},
+    )
+
+    assert replay_mod._watch_score_map(ctx, {}) == {}
+
+
+def test_confirmed_codes_apply_risk_guards_not_observe_only() -> None:
+    """确认信号补跑风险类护栏，但不套用"仅观察"规则。
+
+    pending_mode="only" 时 _merge_codes 原本返回未经护栏的 confirmed，结构止损
+    上限等风险约束在回测中失效。但不能照搬全套护栏：PendingPool 以
+    (code, signal_type) 为键、tick() 返回往日入池今日确认的信号，因此确认信号
+    天然是单信号；对它套用「单 SOS/单 Spring/... 仅观察」在语义上错误——那些
+    规则针对未经确认的裸信号。实测照搬会把 1983 笔打到 20 笔。
+    """
+    from dataclasses import replace as dc_replace
+
+    from core.candidate_policy import CandidatePolicyConfig, loss_guard_reason
+
+    policy = dc_replace(
+        CandidatePolicyConfig(),
+        pure_sos_observe_only=False,
+        pure_spring_observe_only=False,
+        pure_evr_observe_only=False,
+        pure_lps_observe_only=False,
+        pure_trendpb_observe_only=False,
+    )
+
+    # 单信号在风险口径下放行（"仅观察"已关闭）
+    for key in ("sos", "spring", "evr", "lps", "trend_pullback"):
+        assert loss_guard_reason("000001", "NEUTRAL", {key}, 20.0, "", {}, config=policy) == ""
+
+    # 但默认口径（裸信号）仍拦——证明两套语义确实不同
+    default_policy = CandidatePolicyConfig()
+    assert loss_guard_reason("000001", "NEUTRAL", {"spring"}, 20.0, "", {}, config=default_policy)
+
+
+def test_enforce_confirmed_loss_guard_flag_exists() -> None:
+    """开关默认关闭：机制已就位但 pure_*_min_score 阈值方向是反的。
+
+    见 docs/SCORING_SYSTEM_AUDIT_2026_08.md——被"低分 XXX"拦掉的标的反而更好
+    （+0.075%/37.9% vs 放行 -2.777%/23.1%，Welch t=-4.51）。打开会用方向错误的
+    阈值污染回测结论，修好分数体系后再开。
+    """
+    cfg = _config()
+
+    assert cfg.enforce_confirmed_loss_guard is False
+    assert replace(cfg, enforce_confirmed_loss_guard=True).enforce_confirmed_loss_guard is True

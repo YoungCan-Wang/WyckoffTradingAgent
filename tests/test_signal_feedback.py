@@ -182,10 +182,10 @@ def test_build_signal_observations_marks_selection_and_source():
     assert lineage["sources"]["external_capital"]["providers"] == ["lhb", "margin"]
     assert lineage["sources"]["selection"]["candidate_rank"] == 1
     shadow_score = first["features_json"]["candidate_shadow_score"]
-    assert shadow_score["version"] == "candidate_shadow_score_v1"
+    assert shadow_score["version"] == "candidate_shadow_score_v2"
     assert shadow_score["components"]["funnel"] == 26.4
     assert shadow_score["components"]["springboard"] == 12.0
-    assert "springboard_confirmed" in shadow_score["positive_tags"]
+    assert "springboard_structure_ready" in shadow_score["positive_tags"]
     assert second["track"] == "Accum"
     assert second["source"] == "l2_bypass"
     assert second["selection_mode"] == "l2_bypass_shadow"
@@ -633,6 +633,131 @@ def test_registry_retires_after_repeated_decay():
     assert updates[0]["status"] == "RETIRED"
 
 
+def test_registry_updates_preserve_retired_rows_missing_from_health_window():
+    updates = build_signal_registry_updates(
+        [
+            {
+                "signal_type": "sos",
+                "track": "Trend",
+                "regime": "ALL",
+                "horizon_days": 5,
+                "health_state": "HEALTHY",
+                "weight_multiplier": 1.0,
+            }
+        ],
+        market="cn",
+        horizon_days=5,
+        registry_rows=[
+            {"signal_type": "sos", "regime": "", "status": "ACTIVE", "weight_multiplier": 1.0},
+            {
+                "signal_type": "spring",
+                "regime": "",
+                "status": "RETIRED",
+                "weight_multiplier": 0.0,
+                "track": "Accum",
+                "reason": "repeated decay",
+            },
+            {
+                "signal_type": "launchpad",
+                "regime": "RISK_ON",
+                "status": "ACTIVE",
+                "weight_multiplier": 0.3,
+                "track": "Accum",
+            },
+        ],
+    )
+
+    by_key = {(row["signal_type"], row.get("regime") or ""): row for row in updates}
+    assert by_key[("sos", "")]["status"] == "ACTIVE"
+    assert by_key[("spring", "")]["status"] == "RETIRED"
+    assert by_key[("launchpad", "RISK_ON")]["weight_multiplier"] == 0.3
+    assert filter_triggers_by_registry(
+        {"sos": [("000001", 1.0)], "spring": [("000002", 1.0)]},
+        updates,
+    ) == {"sos": [("000001", 1.0)]}
+
+
+def test_registry_regime_rows_follow_global_retired_status():
+    updates = build_signal_registry_updates(
+        [
+            {
+                "signal_type": "spring",
+                "track": "Accum",
+                "regime": "ALL",
+                "horizon_days": 5,
+                "health_state": "DECAYED",
+                "weight_multiplier": 0.4,
+            },
+            {
+                "signal_type": "spring",
+                "track": "Accum",
+                "regime": "RISK_ON",
+                "horizon_days": 5,
+                "health_state": "HEALTHY",
+                "weight_multiplier": 1.0,
+            },
+        ],
+        horizon_days=5,
+        registry_rows=[{"signal_type": "spring", "regime": "", "status": "WATCH"}],
+    )
+
+    by_key = {(row["signal_type"], row.get("regime") or ""): row for row in updates}
+    assert by_key[("spring", "")]["status"] == "RETIRED"
+    assert by_key[("spring", "RISK_ON")]["status"] == "RETIRED"
+    assert filter_triggers_by_registry({"spring": [("000001", 1.0)]}, updates) == {}
+
+
+def test_registry_ignores_stale_regime_status_when_global_retired():
+    updates = build_signal_registry_updates(
+        [
+            {
+                "signal_type": "spring",
+                "track": "Accum",
+                "regime": "ALL",
+                "horizon_days": 5,
+                "health_state": "DECAYED",
+                "weight_multiplier": 0.4,
+            }
+        ],
+        horizon_days=5,
+        registry_rows=[
+            {"signal_type": "spring", "regime": "", "status": "RETIRED", "weight_multiplier": 0.0},
+            {
+                "signal_type": "spring",
+                "regime": "RISK_ON",
+                "status": "ACTIVE",
+                "weight_multiplier": 0.5,
+                "track": "Accum",
+            },
+        ],
+    )
+
+    by_key = {(row["signal_type"], row.get("regime") or ""): row for row in updates}
+    assert by_key[("spring", "")]["status"] == "RETIRED"
+    assert by_key[("spring", "RISK_ON")]["status"] == "RETIRED"
+    assert filter_triggers_by_registry({"spring": [("000001", 1.0)]}, updates) == {}
+
+
+def test_registry_keeps_retired_on_insufficient_health():
+    updates = build_signal_registry_updates(
+        [
+            {
+                "signal_type": "spring",
+                "track": "Accum",
+                "regime": "ALL",
+                "horizon_days": 5,
+                "health_state": "INSUFFICIENT",
+                "weight_multiplier": 0.6,
+            }
+        ],
+        horizon_days=5,
+        registry_rows=[{"signal_type": "spring", "regime": "", "status": "RETIRED"}],
+    )
+
+    assert updates[0]["status"] == "RETIRED"
+    assert filter_triggers_by_registry({"spring": [("000001", 1.0)]}, updates) == {}
+
+
 def test_filter_triggers_by_registry_blocks_experimental_signal():
     filtered = filter_triggers_by_registry(
         {"sos": [("000001", 1.0)], "spring": [("000002", 1.0)]},
@@ -1057,6 +1182,7 @@ def test_refresh_outcomes_skips_delisted_without_crash(monkeypatch):
     monkeypatch.setattr(data_source, "fetch_stock_hist", _fetch_side_effect)
     monkeypatch.setattr(job, "load_recent_signal_observations", lambda *_a, **_k: [good_obs, bad_obs])
     monkeypatch.setattr(job, "load_pending_outcome_observation_ids", lambda *_a, **_k: [])
+    monkeypatch.setattr(job, "load_signal_outcome_states", lambda *_a, **_k: {})
     monkeypatch.setattr(job, "upsert_signal_outcomes", lambda rows: len(rows))
 
     log_lines: list[str] = []
@@ -1064,3 +1190,75 @@ def test_refresh_outcomes_skips_delisted_without_crash(monkeypatch):
 
     assert written > 0
     assert any("skipped=1" in line for line in log_lines)
+
+
+def test_refresh_outcomes_fetches_once_per_symbol_and_only_unsettled_horizons(monkeypatch):
+    from integrations import data_source
+    from workflows import signal_feedback_job as job
+
+    observations = [
+        {
+            "id": 1,
+            "market": "cn",
+            "trade_date": "2024-01-02",
+            "code": "000001",
+            "signal_type": "sos",
+            "entry_price": 10,
+        },
+        {
+            "id": 2,
+            "market": "cn",
+            "trade_date": "2024-01-03",
+            "code": "000001",
+            "signal_type": "spring",
+            "entry_price": 11,
+        },
+    ]
+    history = pd.DataFrame(
+        {
+            "date": pd.bdate_range("2024-01-01", periods=8).astype(str),
+            "close": [9, 10, 11, 12, 13, 14, 15, 16],
+            "low": [8.5, 9.5, 10.5, 11.5, 12.5, 13.5, 14.5, 15.5],
+        }
+    )
+    fetches: list[tuple[str, str, str]] = []
+    written: list[dict] = []
+
+    def fake_fetch(symbol, start, end, adjust="qfq"):
+        fetches.append((symbol, start, end))
+        return history
+
+    monkeypatch.setattr(data_source, "fetch_stock_hist", fake_fetch)
+    monkeypatch.setattr(job, "load_recent_signal_observations", lambda *_a, **_k: observations)
+    monkeypatch.setattr(job, "load_pending_outcome_observation_ids", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        job,
+        "load_signal_outcome_states",
+        lambda *_a, **_k: {1: {1: "done", 3: "pending"}, 2: {1: "done"}},
+    )
+    monkeypatch.setattr(job, "upsert_signal_outcomes", lambda rows: written.extend(rows) or len(rows))
+
+    result = job.refresh_outcomes(
+        job.SignalFeedbackConfig(end_date="2024-02-01", horizons=(1, 3)),
+        log_fn=lambda _line: None,
+    )
+
+    assert result == 2
+    assert len(fetches) == 1
+    assert {(row["observation_id"], row["horizon_days"]) for row in written} == {(1, 3), (2, 3)}
+
+
+def test_refresh_outcomes_skips_symbols_when_every_horizon_is_done(monkeypatch):
+    from integrations import data_source
+    from workflows import signal_feedback_job as job
+
+    observation = {"id": 1, "market": "cn", "trade_date": "2024-01-02", "code": "000001"}
+    monkeypatch.setattr(job, "load_recent_signal_observations", lambda *_a, **_k: [observation])
+    monkeypatch.setattr(job, "load_pending_outcome_observation_ids", lambda *_a, **_k: [])
+    monkeypatch.setattr(job, "load_signal_outcome_states", lambda *_a, **_k: {1: {1: "done", 3: "done"}})
+    monkeypatch.setattr(data_source, "fetch_stock_hist", lambda *_a, **_k: pytest.fail("history should not be fetched"))
+    monkeypatch.setattr(job, "upsert_signal_outcomes", lambda rows: len(rows))
+
+    result = job.refresh_outcomes(job.SignalFeedbackConfig(horizons=(1, 3)), log_fn=lambda _line: None)
+
+    assert result == 0

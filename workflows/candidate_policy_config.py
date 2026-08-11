@@ -22,6 +22,8 @@ def candidate_policy_config_from_env() -> CandidatePolicyConfig:
         pure_trendpb_observe_only=_env_bool("FUNNEL_LOSS_GUARD_PURE_TRENDPB_OBSERVE_ONLY", True),
         pure_trendpb_min_score=_env_float("FUNNEL_LOSS_GUARD_PURE_TRENDPB_MIN_SCORE", 14.0),
         pure_sos_min_score=_env_float("FUNNEL_LOSS_GUARD_PURE_SOS_MIN_SCORE", 6.0),
+        pure_sos_observe_only=_env_bool("FUNNEL_LOSS_GUARD_PURE_SOS_OBSERVE_ONLY", True),
+        pure_spring_observe_only=_env_bool("FUNNEL_LOSS_GUARD_PURE_SPRING_OBSERVE_ONLY", True),
         pure_evr_observe_only=_env_bool("FUNNEL_LOSS_GUARD_PURE_EVR_OBSERVE_ONLY", True),
         pure_evr_min_score_default=evr_min_score if evr_min_score is not None else 3.0,
         pure_evr_min_score_hot=evr_min_score if evr_min_score is not None else 5.0,
@@ -34,6 +36,7 @@ def candidate_policy_config_from_env() -> CandidatePolicyConfig:
         defensive_high_20d_ret=_env_float("FUNNEL_LOSS_GUARD_DEFENSIVE_HIGH_20D_RET", 18.0),
         neutral_high_range_pos=_env_float("FUNNEL_LOSS_GUARD_NEUTRAL_HIGH_RANGE_POS", 90.0),
         neutral_high_20d_ret=_env_float("FUNNEL_LOSS_GUARD_NEUTRAL_HIGH_20D_RET", 35.0),
+        max_structure_stop_pct=_env_float("FUNNEL_MAX_STRUCTURE_STOP_PCT", 12.0),
     )
 
 

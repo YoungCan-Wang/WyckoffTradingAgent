@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-from bisect import bisect_right
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -24,23 +23,6 @@ def is_a_share_trading_day(d: date | None = None) -> bool:
         return d in set(cached_trade_dates())
     except Exception:
         return d.weekday() < 5
-
-
-def next_trading_day(after: date | None = None) -> date | None:
-    """返回 after 之后最近的交易日，找不到则返回 None。"""
-    base = after or datetime.now(CN_TZ).date()
-    try:
-        from integrations.fetch_a_share_csv import cached_trade_dates
-
-        dates = cached_trade_dates()
-        idx = bisect_right(dates, base)
-        return dates[idx] if idx < len(dates) else None
-    except Exception:
-        for i in range(1, 8):
-            d = base + timedelta(days=i)
-            if d.weekday() < 5:
-                return d
-        return None
 
 
 def resolve_end_calendar_day(

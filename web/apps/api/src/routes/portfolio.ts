@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
+import { normalizePortfolioCode, refreshPortfolioTotalEquity } from '@wyckoff/shared'
 import { authMiddleware, createUserSupabase, type AuthContext } from '../middleware/auth'
 import { isActiveWhitelistUser } from '../middleware/whitelist'
 import type { Env } from '../app'
@@ -50,8 +51,23 @@ portfolioRoutes.put('/', async (c) => {
   if (!(await isActiveWhitelistUser(supabase, auth.userId))) return c.json({ error: 'Whitelist required' }, 403)
   const error = await savePortfolio(supabase, auth.userId, body.data)
   if (error) return c.json({ error }, 500)
+  const valuation = await refreshPortfolioTotalEquity(
+    { supabase, fetch: globalThis.fetch },
+    auth.userId,
+    {
+      quoteEndpoint: `${(c.env.TICKFLOW_API_BASE || 'https://api.tickflow.org').replace(/\/$/, '')}/v1/quotes`,
+      cnyRates: {
+        HKD: positiveRate(c.env.PORTFOLIO_HKD_CNY_RATE),
+        USD: positiveRate(c.env.PORTFOLIO_USD_CNY_RATE),
+      },
+    },
+  )
   const result = await loadPortfolio(supabase, auth.userId)
-  return result.error ? c.json({ error: result.error }, 500) : c.json(result.portfolio)
+  if (result.error) return c.json({ error: result.error }, 500)
+  return c.json({
+    ...result.portfolio,
+    ...(valuation.ok ? {} : { valuation_warning: valuation.message }),
+  })
 })
 
 export function parsePortfolioInput(raw: unknown):
@@ -59,15 +75,26 @@ export function parsePortfolioInput(raw: unknown):
   | { error: string; details?: unknown } {
   const parsed = PORTFOLIO_SCHEMA.safeParse(raw)
   if (!parsed.success) return { error: 'Invalid portfolio', details: parsed.error.flatten() }
-  const codes = parsed.data.positions.map((item) => item.code.toUpperCase())
+  const positions = []
+  for (const item of parsed.data.positions) {
+    const code = normalizePortfolioCode(item.code)
+    if (!code) {
+      return {
+        error: `Invalid position code: ${item.code}`,
+        details: 'Use A-share 6 digits, HK like 00700.HK, or US like AAPL.US',
+      }
+    }
+    positions.push({ ...item, code })
+  }
+  const codes = positions.map((item) => item.code)
   if (new Set(codes).size !== codes.length) return { error: 'Duplicate position code' }
-  return { data: parsed.data }
+  return { data: { ...parsed.data, positions } }
 }
 
 async function loadPortfolio(supabase: ReturnType<typeof createUserSupabase>, userId: string) {
   const portfolioId = `USER_LIVE:${userId}`
   const [portfolioResult, positionsResult] = await Promise.all([
-    supabase.from('portfolios').select('free_cash').eq('portfolio_id', portfolioId).maybeSingle(),
+    supabase.from('portfolios').select('free_cash, total_equity, updated_at').eq('portfolio_id', portfolioId).maybeSingle(),
     supabase.from('portfolio_positions').select('code, name, shares, cost_price, buy_dt').eq('portfolio_id', portfolioId).order('buy_dt', { ascending: false }),
   ])
   const positions = z.array(POSITION_SCHEMA).safeParse(positionsResult.data || [])
@@ -77,9 +104,16 @@ async function loadPortfolio(supabase: ReturnType<typeof createUserSupabase>, us
     error,
     portfolio: {
       free_cash: Number(portfolioResult.data?.free_cash || 0),
+      total_equity: portfolioResult.data?.total_equity == null ? null : Number(portfolioResult.data.total_equity),
+      valuation_updated_at: portfolioResult.data?.updated_at || null,
       positions: positions.success ? positions.data : [],
     },
   }
+}
+
+function positiveRate(raw: string | undefined): number | undefined {
+  const value = Number(raw || 0)
+  return Number.isFinite(value) && value > 0 ? value : undefined
 }
 
 async function savePortfolio(

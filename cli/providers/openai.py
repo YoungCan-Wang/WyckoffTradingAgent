@@ -12,6 +12,7 @@ import httpx
 import openai
 
 from cli.providers.base import LLMProvider
+from cli.usage_metrics import extract_openai_cache_tokens, openai_cache_reported
 
 _TIMEOUT = httpx.Timeout(300.0, connect=60.0)
 
@@ -24,6 +25,8 @@ class OpenAIStreamState:
     output_tokens: int = 0
     cache_read: int = 0
     cache_write: int = 0
+    cache_reported: bool = False
+    finish_reason: str = ""
 
 
 def _openai_extra_content(obj: Any) -> dict[str, Any] | None:
@@ -74,18 +77,19 @@ def _create_openai_stream(client: openai.OpenAI, kwargs: dict[str, Any]):
             return client.chat.completions.create(**kwargs)
 
 
-def _consume_usage_chunk(state: OpenAIStreamState, chunk: Any) -> bool:
-    if chunk.choices or not chunk.usage:
-        return False
-    state.input_tokens = chunk.usage.prompt_tokens or 0
-    state.output_tokens = chunk.usage.completion_tokens or 0
-    details = getattr(chunk.usage, "prompt_tokens_details", None)
-    if details:
-        state.cache_read = getattr(details, "cached_tokens", 0) or 0
-    comp_details = getattr(chunk.usage, "completion_tokens_details", None)
-    if comp_details:
-        state.cache_write = getattr(comp_details, "cached_tokens", 0) or 0
-    return True
+def _apply_usage_from_chunk(state: OpenAIStreamState, chunk: Any) -> None:
+    """Capture usage whenever present — MiniMax/OpenRouter may attach it on a choices chunk."""
+    usage = getattr(chunk, "usage", None)
+    if usage is None:
+        return
+    prompt = getattr(usage, "prompt_tokens", None)
+    completion = getattr(usage, "completion_tokens", None)
+    if prompt is not None:
+        state.input_tokens = int(prompt or 0)
+    if completion is not None:
+        state.output_tokens = int(completion or 0)
+    state.cache_read, state.cache_write = extract_openai_cache_tokens(usage)
+    state.cache_reported = state.cache_reported or openai_cache_reported(usage)
 
 
 def _accumulate_tool_delta(tool_map: dict[int, dict[str, Any]], tc_delta: Any) -> None:
@@ -108,9 +112,25 @@ def _accumulate_tool_delta(tool_map: dict[int, dict[str, Any]], tc_delta: Any) -
             tool_map[idx]["args_json"] += tc_delta.function.arguments
 
 
+# 各家 OpenAI 兼容网关放思维链的字段名不统一，逐个试。
+_REASONING_DELTA_FIELDS = ("reasoning_content", "reasoning", "thinking", "thought")
+
+
+def _reasoning_delta_text(delta: Any) -> str:
+    for field_name in _REASONING_DELTA_FIELDS:
+        value = getattr(delta, field_name, None)
+        if isinstance(value, str) and value:
+            return value
+        # 有的网关给 {"reasoning": {"content": "..."}} 这种嵌套结构
+        if isinstance(value, dict):
+            nested = value.get("content") or value.get("text")
+            if isinstance(nested, str) and nested:
+                return nested
+    return ""
+
+
 def _consume_delta_events(state: OpenAIStreamState, delta: Any) -> Generator[dict[str, Any], None, None]:
-    reasoning = getattr(delta, "reasoning_content", None)
-    if reasoning:
+    if reasoning := _reasoning_delta_text(delta):
         yield {"type": "thinking_delta", "text": reasoning}
 
     if delta.content:
@@ -160,13 +180,15 @@ def _extract_text_tool_calls(text: str) -> tuple[dict[int, dict[str, Any]], str]
 
 
 def _usage_event(state: OpenAIStreamState) -> dict[str, Any]:
-    return {
+    event: dict[str, Any] = {
         "type": "usage",
         "input_tokens": state.input_tokens,
         "output_tokens": state.output_tokens,
-        "cache_read_tokens": state.cache_read,
-        "cache_write_tokens": state.cache_write,
     }
+    if state.cache_reported:
+        event["cache_read_tokens"] = state.cache_read
+        event["cache_write_tokens"] = state.cache_write
+    return event
 
 
 class OpenAIProvider(LLMProvider):
@@ -207,14 +229,15 @@ class OpenAIProvider(LLMProvider):
         response = self._client.chat.completions.create(**kwargs)
         result = self._parse_response(response)
         if hasattr(response, "usage") and response.usage:
-            p_details = getattr(response.usage, "prompt_tokens_details", None)
-            c_details = getattr(response.usage, "completion_tokens_details", None)
-            result["usage"] = {
+            usage: dict[str, Any] = {
                 "input_tokens": response.usage.prompt_tokens or 0,
                 "output_tokens": response.usage.completion_tokens or 0,
-                "cache_read_tokens": (getattr(p_details, "cached_tokens", 0) or 0) if p_details else 0,
-                "cache_write_tokens": (getattr(c_details, "cached_tokens", 0) or 0) if c_details else 0,
             }
+            if openai_cache_reported(response.usage):
+                cache_read, cache_write = extract_openai_cache_tokens(response.usage)
+                usage["cache_read_tokens"] = cache_read
+                usage["cache_write_tokens"] = cache_write
+            result["usage"] = usage
         return result
 
     def chat_stream(
@@ -241,11 +264,15 @@ class OpenAIProvider(LLMProvider):
 
         try:
             for chunk in stream:
-                if _consume_usage_chunk(state, chunk):
-                    continue
+                _apply_usage_from_chunk(state, chunk)
                 if not chunk.choices:
                     continue
-                yield from _consume_delta_events(state, chunk.choices[0].delta)
+                choice = chunk.choices[0]
+                if reason := getattr(choice, "finish_reason", None):
+                    state.finish_reason = str(reason)
+                delta = getattr(choice, "delta", None)
+                if delta is not None:
+                    yield from _consume_delta_events(state, delta)
         finally:
             if hasattr(stream, "close"):
                 stream.close()
@@ -255,6 +282,8 @@ class OpenAIProvider(LLMProvider):
         if state.tool_map:
             yield {"type": "tool_calls", "tool_calls": _tool_calls_from_map(state.tool_map), "text": state.text_buf}
         yield _usage_event(state)
+        if state.finish_reason:
+            yield {"type": "finish", "reason": state.finish_reason}
 
     def _build_messages(self, messages: list[dict], system_prompt: str) -> list[dict]:
         """将统一消息格式转为 OpenAI messages 格式。"""

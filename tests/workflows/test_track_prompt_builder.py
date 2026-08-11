@@ -18,9 +18,9 @@ def test_build_track_user_message_includes_regime_scope_gate_and_payloads():
     assert "当前 RISK_OFF 弱势环境" in message
     assert "Accum轨" in message
     assert "候选已从 9 只压缩到 3 只" in message
-    assert "跨日确认=confirmed" in message
-    assert "满足的硬门槛" in message
-    assert "BUY-APPROVED" in message
+    assert "跨日确认:confirmed" in message
+    assert "VALIDATED" in message
+    assert "OMS" in message
     assert "000001 平安银行" in message
 
 

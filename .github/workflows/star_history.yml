@@ -1,0 +1,61 @@
+name: Star History
+
+# GitHub 自 2026-06-30 起收紧 stargazers API：第三方服务无法再公开拉 star 时间线，
+# README 里 api.star-history.com 的实时图会显示 "restricted access"。
+# 本 workflow 用仓库自己的 GITHUB_TOKEN 读本仓 stargazers，生成 SVG 并写回 README。
+
+on:
+  schedule:
+    - cron: "0 12 * * 0" # 每周日 UTC 12:00 ≈ 北京时间 20:00
+  workflow_dispatch:
+
+# 顶层保持最小权限；写权限只下放给真正要提交图表的 job（check_workflow_hygiene 要求
+# 顶层为 contents: read，job 级不受检——这也是最小权限原则本身想要的形状）。
+permissions:
+  contents: read
+
+concurrency:
+  group: star-history
+  cancel-in-progress: false
+
+jobs:
+  star-history:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Render chart into README.md
+        uses: narayann7/star-history-action@v1
+        with:
+          repos: ${{ github.repository }}
+          output-dir: assets/star-history
+          type: Date
+          themes: light,dark
+          update-readme: true
+          readme: README.md
+          commit: false
+
+      - name: Render chart into docs/README_EN.md
+        uses: narayann7/star-history-action@v1
+        with:
+          repos: ${{ github.repository }}
+          output-dir: assets/star-history
+          type: Date
+          themes: light,dark
+          update-readme: true
+          readme: docs/README_EN.md
+          commit: false
+
+      - name: Commit and push chart
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add assets/star-history README.md docs/README_EN.md
+          if git diff --staged --quiet; then
+            echo "No star history changes"
+            exit 0
+          fi
+          git commit -m "chore: update star history [skip ci]"
+          git push

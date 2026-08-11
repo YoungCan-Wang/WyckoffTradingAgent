@@ -1,26 +1,12 @@
-import pandas as pd
-
-from workflows.step3_reporting import _mainline_preview
+from workflows.step3_reporting import _compact_rag_preview
 
 
-def test_mainline_preview_is_deterministic_and_optional():
-    selected = pd.DataFrame(
-        [
-            {
-                "code": "300308",
-                "name": "中际旭创",
-                "candidate_lane": "mainline",
-                "candidate_status": "主线买点候选",
-                "candidate_reasons": {"theme": "光模块"},
-                "stock_role_score": 0.8,
-            },
-            {"code": "000001", "name": "平安银行"},
-        ]
+def test_rag_preview_keeps_only_execution_summary():
+    preview = _compact_rag_preview(
+        "## RAG 防雷\n- 扫描股票: 10\n- 新闻拉取成功: 10/10\n- 相关新闻覆盖: 10/10\n- veto 剔除: 1"
     )
 
-    preview = _mainline_preview(selected)
-
-    assert "主线定位（确定性字段）" in preview
-    assert "300308 中际旭创 | 光模块 / 主升候选 / 主线核心" in preview
-    assert "000001" not in preview
-    assert _mainline_preview(pd.DataFrame()) == ""
+    assert "扫描股票" in preview
+    assert "新闻拉取成功" in preview
+    assert "veto 剔除" in preview
+    assert "相关新闻覆盖" not in preview

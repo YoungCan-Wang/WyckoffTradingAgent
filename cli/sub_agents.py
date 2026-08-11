@@ -22,6 +22,12 @@ from cli.sub_agent_prompts import (
 logger = logging.getLogger(__name__)
 
 
+def _sub_agent_stream_chunk_timeout(sub_timeout_seconds: float) -> float:
+    from cli.auth import get_stream_chunk_timeout_seconds
+
+    return min(get_stream_chunk_timeout_seconds(), float(sub_timeout_seconds))
+
+
 @dataclass(frozen=True)
 class SubAgent:
     name: str
@@ -157,6 +163,13 @@ class SubAgentToolProxy:
     def schemas(self) -> list[dict[str, Any]]:
         return [s for s in self._registry.schemas() if s["name"] in self._allowed]
 
+    def has_tool(self, name: str) -> bool:
+        if name not in self._allowed:
+            return False
+        if hasattr(self._registry, "has_tool"):
+            return bool(self._registry.has_tool(name))
+        return any(schema.get("name") == name for schema in self.schemas())
+
     def execute(self, name: str, args: dict[str, Any], messages: list[dict[str, Any]] | None = None) -> Any:
         if name not in self._allowed:
             return {"error": f"sub-agent 无权调用工具: {name}"}
@@ -230,9 +243,12 @@ def run_sub_agent(
         tool_timeout_seconds=sub.tool_timeout_seconds,
         deadline=deadline,
     )
+    from core.prompts import append_beijing_time_context
+
     trimmed_context, context_truncated = _fit_context(context, sub.context_budget_tokens)
     user_content = f"{task}\n\n上下文:\n{trimmed_context}" if trimmed_context else task
-    messages: list[dict[str, Any]] = [{"role": "user", "content": user_content}]
+    # 时间挂 user，勿 prepend system，避免子 agent 多轮打爆 prompt cache。
+    messages: list[dict[str, Any]] = [{"role": "user", "content": append_beijing_time_context(user_content)}]
     tool_calls: list[str] = []
     background_task_ids: list[str] = []
     cancelled = _sub_agent_cancel_check(cancel_check, deadline)
@@ -242,7 +258,7 @@ def run_sub_agent(
         proxy,
         max_tool_rounds=sub.max_tool_rounds,
         cancel_check=cancelled,
-        stream_chunk_timeout=min(60.0, float(sub.timeout_seconds)),
+        stream_chunk_timeout=_sub_agent_stream_chunk_timeout(sub.timeout_seconds),
         allowed_tools=allowed_tools,
         required_tools=required_tool_names if enforce_turn_expectations else None,
         required_tool_args=required_tool_args if enforce_turn_expectations else None,
@@ -295,10 +311,8 @@ def _run_sub_agent_loop(
     deadline: float,
     on_progress=None,
 ) -> dict[str, Any]:
-    from core.prompts import with_current_time
-
     try:
-        for event in runtime.run_stream(messages, with_current_time(sub.system_prompt)):
+        for event in runtime.run_stream(messages, sub.system_prompt):
             if cancelled():
                 raise AgentCancelled()
             if event["type"] == "tool_start":

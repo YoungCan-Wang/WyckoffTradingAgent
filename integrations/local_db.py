@@ -710,18 +710,6 @@ def save_market_signal(trade_date: str, data: dict) -> None:
         )
 
 
-def load_latest_market_signal() -> dict | None:
-    conn = get_db()
-    cur = conn.execute("SELECT data_json FROM market_signal_daily ORDER BY trade_date DESC LIMIT 1")
-    row = cur.fetchone()
-    if not row:
-        return None
-    try:
-        return json.loads(row["data_json"])
-    except (json.JSONDecodeError, TypeError):
-        return None
-
-
 # ---------------------------------------------------------------------------
 # Theme radar snapshot
 # ---------------------------------------------------------------------------
@@ -850,6 +838,17 @@ def upsert_local_position(
                    synced_at=excluded.synced_at""",
                 (portfolio_id, code, name, shares, cost_price),
             )
+
+
+def set_local_position_stop(portfolio_id: str, code: str, stop_loss: float | None) -> int:
+    """只更新 stop_loss 列，不新建持仓。返回受影响行数。"""
+    conn = get_db()
+    with conn:
+        cur = conn.execute(
+            "UPDATE portfolio_position SET stop_loss=?, synced_at=datetime('now') WHERE portfolio_id=? AND code=?",
+            (float(stop_loss) if stop_loss is not None else None, portfolio_id, code),
+        )
+        return cur.rowcount or 0
 
 
 def delete_local_position(portfolio_id: str, code: str) -> None:

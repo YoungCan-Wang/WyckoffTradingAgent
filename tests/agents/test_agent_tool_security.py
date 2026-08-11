@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import socket
-from types import SimpleNamespace
 
 import pandas as pd
 import pytest
 
-from agents.local_tools import _get_public_response, exec_command, read_file, web_fetch, write_file
+from agents.local_tools import exec_command, read_file, write_file
 from agents.tool_security import redact_sensitive_columns, validate_public_http_url
 from cli.tools import TOOL_SCHEMAS
 
@@ -185,13 +184,6 @@ def test_write_file_blocks_executable_suffix(tmp_path):
     assert not target.exists()
 
 
-def test_web_fetch_blocks_localhost():
-    result = web_fetch("http://127.0.0.1/")
-
-    assert result["error"].startswith("安全拦截")
-    assert "内网" in result["error"] or "本机" in result["error"]
-
-
 def test_validate_public_url_allows_proxy_fake_ip_for_domain(monkeypatch):
     url = "https://www.sse.com.cn/disclosure/listedinfo/announcement/"
 
@@ -211,28 +203,18 @@ def test_validate_public_url_blocks_proxy_fake_ip_literal():
     assert "内网" in result["error"] or "保留地址" in result["error"]
 
 
-def test_web_fetch_blocks_non_http_scheme():
-    result = web_fetch("file:///etc/passwd")
+def test_validate_public_url_blocks_non_http_scheme():
+    result = validate_public_http_url("file:///etc/passwd")
 
+    assert isinstance(result, dict)
     assert result["error"].startswith("安全拦截")
     assert "http/https" in result["error"]
 
 
-def test_web_fetch_revalidates_redirect_targets(monkeypatch):
-    monkeypatch.setattr(
-        "agents.local_tools.validate_public_http_url",
-        lambda url: {"error": "安全拦截: 本机"} if "127.0.0.1" in url else url,
-    )
-
-    class Requests:
-        @staticmethod
-        def get(url, **kwargs):
-            assert kwargs["allow_redirects"] is False
-            return SimpleNamespace(status_code=302, headers={"location": "http://127.0.0.1/admin"}, close=lambda: None)
-
-    result, _ = _get_public_response(Requests, "https://example.com/start")
-
-    assert result["error"].startswith("安全拦截")
+def test_tool_schemas_omit_web_fetch():
+    names = {schema["name"] for schema in TOOL_SCHEMAS}
+    assert "web_fetch" not in names
+    assert "browser_research" in names
 
 
 def test_redact_sensitive_columns_masks_columns_by_name():

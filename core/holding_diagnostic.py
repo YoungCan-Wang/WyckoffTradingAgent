@@ -5,10 +5,10 @@
 吸筹阶段分析、派发识别等能力，对任意持仓个股做结构化健康诊断。
 
 用法:
-    from core.holding_diagnostic import diagnose_holdings, format_diagnostic_text
+    from core.holding_diagnostic import HoldingInput, diagnose_holdings, format_diagnostic_text
 
     diagnostics = diagnose_holdings(
-        holdings=[(code, name, cost), ...],
+        holdings=[HoldingInput(code, name, cost, buy_dt), ...],
         df_map=df_map,
         bench_df=bench_df,
     )
@@ -43,10 +43,36 @@ from core.wyckoff_engine import (
     layer5_exit_signals,
     sort_by_date_if_needed,
 )
+from utils.env import env_float
 
 logger = logging.getLogger(__name__)
 
 _LIMIT_MOVE_DAY_CHANGE_PCT = -5.0  # 当日跌幅达到此阈值才触发涨跌停/日内路径核查
+
+
+@dataclass(frozen=True)
+class HoldingInput:
+    """诊断输入的持仓标识。
+
+    ``buy_dt`` 必须显式给出：退出结构只能看建仓后的价格路径，缺失时会静默退化成
+    全历史，让建仓前的暴跌反杀新仓。留空是"确实无建仓日"的显式声明，不是默认值。
+    """
+
+    code: str
+    name: str
+    cost: float
+    buy_dt: str
+
+    @classmethod
+    def from_position(cls, position: dict) -> HoldingInput:
+        code = str(position.get("code", "") or "").strip()
+        cost = position.get("cost", position.get("cost_price", 0.0))
+        return cls(
+            code=code,
+            name=str(position.get("name", "") or code).strip() or code,
+            cost=float(cost or 0.0),
+            buy_dt=str(position.get("buy_dt", position.get("buy_date", "")) or "").strip(),
+        )
 
 
 @dataclass
@@ -81,11 +107,16 @@ class HoldingDiagnostic:
     exit_price: float | None = None
     exit_reason: str = ""
 
-    # 止损/止盈参考（回测网格验证的最优组合：SL-7% / TP+18%，夏普2.493）
+    # 止损参考：跨周期回测确认加止损优于不加（bull_2020/bear_2022/recent_6m
+    # 三周期方向一致），-7% 与 -8% 差异很小。
     stop_loss_7pct: float = 0.0  # 成本 × 0.93
     stop_loss_status: str = "安全"  # 已穿止损 / 逼近止损 / 安全
-    take_profit_18pct: float = 0.0  # 成本 × 1.18
-    take_profit_status: str = "未达标"  # 已达标 / 接近目标 / 未达标
+    # 止盈参考：默认关闭。2026-08-08 跨周期回测（run 31237549718，三周期 ×
+    # 10 参数格、1983 笔）配对比较显示固定 +18% 止盈在 12 个配对中 11 个损害
+    # 夏普，牛市尤甚（bull_2020 h10-sl7 由 +0.991 降到 -0.131）。原注释声称
+    # 「夏普 2.493」无法复现且符号相反。需要时用 HOLDING_TAKE_PROFIT_PCT 开启。
+    take_profit_18pct: float = 0.0  # 成本 × (1 + HOLDING_TAKE_PROFIT_PCT/100)
+    take_profit_status: str = "未启用"  # 已达标 / 接近目标 / 未达标 / 未启用
 
     # 技术位目标价（量度运动/前高/ATR倍数，供参考，不是盈利预测）
     target_conservative: float | None = None  # 三个技术位中最保守的一个
@@ -250,11 +281,16 @@ def _l4_triggers(code: str, df: pd.DataFrame, cfg: FunnelConfig) -> list[str]:
 
 
 def _exit_snapshot(
-    code: str, df: pd.DataFrame, accum_stage: str | None, cfg: FunnelConfig
+    code: str,
+    df: pd.DataFrame,
+    accum_stage: str | None,
+    cfg: FunnelConfig,
+    buy_dt: str = "",
 ) -> tuple[str | None, float | None, str]:
     try:
+        exit_df = _exit_history_since_entry(df, buy_dt)
         accum_map = {code: accum_stage} if accum_stage else {}
-        sig = layer5_exit_signals([code], {code: df}, accum_map, cfg).get(code, {})
+        sig = layer5_exit_signals([code], {code: exit_df}, accum_map, cfg).get(code, {})
         if not sig:
             return None, None, ""
         return sig.get("signal"), sig.get("price"), sig.get("reason", "")
@@ -263,15 +299,29 @@ def _exit_snapshot(
         return None, None, ""
 
 
+def _exit_history_since_entry(df: pd.DataFrame, buy_dt: str) -> pd.DataFrame:
+    """退出结构只能使用建仓后的价格路径，避免历史高点反杀新仓。
+
+    已声明 buy_dt 但切不出建仓后 K 线时（例如当日建仓、日线尚未入库），
+    返回空表 fail-closed，禁止回退全历史让建仓前暴跌冒充破位。
+    """
+    entry = pd.to_datetime(str(buy_dt or "").strip(), errors="coerce")
+    if pd.isna(entry) or "date" not in df.columns:
+        return df
+    dates = pd.to_datetime(df["date"], errors="coerce")
+    return df.loc[dates >= entry].copy()
+
+
 def _wyckoff_snapshot(
     code: str,
     series: _SeriesSnapshot,
     bench_df: pd.DataFrame | None,
     cfg: FunnelConfig,
+    buy_dt: str = "",
 ) -> _WyckoffSnapshot:
     l2_channel = _l2_channel(code, series.df, bench_df, cfg)
     accum_stage = _accum_stage(series.df, cfg)
-    exit_signal, exit_price, exit_reason = _exit_snapshot(code, series.df, accum_stage, cfg)
+    exit_signal, exit_price, exit_reason = _exit_snapshot(code, series.df, accum_stage, cfg, buy_dt)
     return _WyckoffSnapshot(
         l2_channel=l2_channel,
         track=_classify_track(l2_channel),
@@ -294,10 +344,24 @@ def _stop_status(cost: float, latest_close: float) -> tuple[float, str]:
     return stop_loss_7pct, "安全"
 
 
+def holding_take_profit_pct() -> float:
+    """固定止盈目标百分比；<=0 表示关闭（默认）。
+
+    2026-08-08 跨周期回测（run 31237549718：bear_2022 / bull_2020 / recent_6m
+    三周期 × 10 参数格、1983 笔成交）用配对比较（同持有期、同止损，只差有无止盈）
+    验证固定 +18% 止盈的净效应：12 个配对中 11 个损害夏普，各周期平均变化
+    bear_2022 -0.162、bull_2020 -1.238、recent_6m -1.185。牛市伤害最大，因为能
+    涨到 +18% 的正是真正的赢家，砍掉它们只剩亏损单。原注释声称的「夏普 2.493」
+    无法复现且符号相反，已作废。
+    """
+    return env_float("HOLDING_TAKE_PROFIT_PCT", 0.0)
+
+
 def _take_profit_status(cost: float, latest_close: float) -> tuple[float, str]:
-    # 回测网格验证：SL-7%/TP+18% 是各周期最稳健参数组合（夏普2.493），
-    # 实盘持仓诊断只提醒止损、不提醒止盈是纪律缺口的来源之一。
-    take_profit_18pct = cost * 1.18
+    target_pct = holding_take_profit_pct()
+    if target_pct <= 0:
+        return 0.0, "未启用"
+    take_profit_18pct = cost * (1.0 + target_pct / 100.0)
     if take_profit_18pct <= 0:
         return take_profit_18pct, "无成本价"
     if latest_close >= take_profit_18pct:
@@ -453,6 +517,7 @@ def diagnose_one_stock(
     bench_df: pd.DataFrame | None = None,
     cfg: FunnelConfig | None = None,
     intraday_df: pd.DataFrame | None = None,
+    buy_dt: str = "",
 ) -> HoldingDiagnostic:
     """
     对单只股票执行全面 Wyckoff 健康诊断。
@@ -473,7 +538,7 @@ def diagnose_one_stock(
 
     series = _series_snapshot(df, cost)
     ma = _ma_snapshot(series.close, series.latest_close)
-    wyckoff = _wyckoff_snapshot(code, series, bench_df, cfg)
+    wyckoff = _wyckoff_snapshot(code, series, bench_df, cfg, buy_dt)
     candidate_entry = _candidate_lane_entry(code, series, wyckoff)
     risk = _risk_snapshot(series, cost)
     targets = compute_price_targets(series.close, series.high, series.low)
@@ -543,7 +608,7 @@ def _build_diagnostic(
 
 
 def diagnose_holdings(
-    holdings: list[tuple[str, str, float]],
+    holdings: list[HoldingInput],
     df_map: dict[str, pd.DataFrame],
     bench_df: pd.DataFrame | None = None,
     cfg: FunnelConfig | None = None,
@@ -554,7 +619,7 @@ def diagnose_holdings(
 
     Parameters
     ----------
-    holdings : [(code, name, cost), ...]
+    holdings : [HoldingInput, ...]，buy_dt 必填（无建仓日时显式传空串）
     df_map   : {code: DataFrame} 每只股票的 OHLCV 数据
     bench_df : 大盘基准 OHLCV
     cfg      : FunnelConfig
@@ -562,15 +627,15 @@ def diagnose_holdings(
     """
     results = []
     intraday_map = intraday_df_map or {}
-    for code, name, cost in holdings:
-        df = df_map.get(code)
+    for holding in holdings:
+        df = df_map.get(holding.code)
         if df is None or df.empty:
             # 无数据时返回最小诊断
             results.append(
                 HoldingDiagnostic(
-                    code=code,
-                    name=name,
-                    cost=cost,
+                    code=holding.code,
+                    name=holding.name,
+                    cost=holding.cost,
                     latest_close=0.0,
                     pnl_pct=0.0,
                     health="🔴危险",
@@ -578,7 +643,18 @@ def diagnose_holdings(
                 )
             )
             continue
-        results.append(diagnose_one_stock(code, name, cost, df, bench_df, cfg, intraday_map.get(code)))
+        results.append(
+            diagnose_one_stock(
+                holding.code,
+                holding.name,
+                holding.cost,
+                df,
+                bench_df,
+                cfg,
+                intraday_map.get(holding.code),
+                buy_dt=holding.buy_dt,
+            )
+        )
     return results
 
 
@@ -614,9 +690,11 @@ def format_diagnostic_text(d: HoldingDiagnostic) -> str:
             exit_parts.append(d.exit_reason)
         lines.append("  " + " | ".join(exit_parts))
 
-    # 止损 / 止盈
+    # 止损 / 止盈（止盈默认关闭，关闭时不渲染以免误导为"有目标但未达标"）
     lines.append(f"  止损(-7%): {d.stop_loss_7pct:.2f} → {d.stop_loss_status}")
-    lines.append(f"  止盈(+18%): {d.take_profit_18pct:.2f} → {d.take_profit_status}")
+    if d.take_profit_status != "未启用":
+        target_pct = holding_take_profit_pct()
+        lines.append(f"  止盈(+{target_pct:.0f}%): {d.take_profit_18pct:.2f} → {d.take_profit_status}")
 
     # 技术位目标价（量度运动/前高/ATR倍数，仅供参考）
     if d.target_conservative is not None or d.target_aggressive is not None:

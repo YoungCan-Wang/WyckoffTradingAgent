@@ -10,7 +10,7 @@
 [![Web App](https://img.shields.io/badge/Web-React%20App-0ea5e9.svg)](https://wyckoff-analysis.pages.dev/)
 [![Homepage](https://img.shields.io/badge/homepage-Wyckoff%20Homepage-0ea5e9.svg)](https://youngcan-wang.github.io/wyckoff-homepage/)
 
-[中文](../README.md) | [日本語](README_JA.md) | [Español](README_ES.md) | [한국어](README_KO.md) | [Architecture](ARCHITECTURE.md)
+[中文](../README.md) | [Architecture](ARCHITECTURE.md)
 
 </div>
 
@@ -148,7 +148,7 @@ Just two steps after launch:
 
 > Optional: `/login` to sync portfolio to cloud for multi-device access. All features work without login.
 
-Upgrade: `wyckoff update`
+Upgrade: `wyckoff update` (includes `[browser]` + Playwright Chromium for CLI `browser_research`)
 
 | Launch Screen | Portfolio Query |
 |:---:|:---:|
@@ -201,7 +201,8 @@ The agent's arsenal — 10 quant tools + 5 general capabilities:
 | `search_stock_by_name` | Fuzzy search by name, ticker, or pinyin |
 | `analyze_stock` | Wyckoff diagnosis / recent OHLCV quotes / fundamental quality overlay (mode switch) |
 | `portfolio` | View holdings / batch portfolio health scan (mode switch) |
-| `update_portfolio` | Add / modify / delete holdings, set available cash, delete tracking records |
+| `update_portfolio` | Add / modify / delete holdings (use `items` for multi-symbol batches), set available cash, delete tracking records |
+| `record_trade_fill` | Back-fill an executed trade: averages cost basis, deducts fees, reports realised P&L |
 | `get_market_overview` | Broad market temperature overview |
 | `screen_stocks` | Mainline funnel full-market screening (⚡background) |
 | `generate_ai_report` | Three-camp AI deep research report (⚡background) |
@@ -212,7 +213,7 @@ The agent's arsenal — 10 quant tools + 5 general capabilities:
 | `exec_command` | Execute local shell commands |
 | `read_file` | Read local files (CSV/Excel auto-parsed) |
 | `write_file` | Write files (export reports/data) |
-| `web_fetch` | Fetch web content (financial news/announcements) |
+| `browser_research` | Search via local Chrome CDP and extract cited pages (CLI only); TUI prompts once to auto-launch a dedicated debug Chrome |
 
 Tool call order and frequency are decided by the LLM at runtime — no pre-choreography needed. Send a CSV path and it reads it; say "install a package" and it executes.
 
@@ -220,7 +221,7 @@ Tool call order and frequency are decided by the LLM at runtime — no pre-chore
 
 | Layer | Name | What It Does |
 |---|---|---|
-| L1 | Garbage Filter | Remove ST / BSE / STAR Market; market cap >= 3.5 B CNY; avg daily turnover >= 50 M CNY |
+| L1 | Garbage Filter | Remove ST; include Main Board, ChiNext, STAR Market, and BSE by default. Price >= CNY 2, market cap normally >= CNY 2.5 B, and 20-day average turnover >= CNY 40 M; CNY 1-2.5 B names require average turnover >= CNY 80 M |
 | L2 | Eight-Channel Strength | Rally / Ignition / Stealth / Accumulation / Dry Volume / Support / Trend Continuation / Breakout Acceleration |
 | Mainline | Theme Engine | Dynamic concept heat, theme radar, financial quality, and timing gates identify tradable mainline candidates |
 | L3 | Sector & Concept Resonance | Filter weak sectors while allowing strong individual stocks and verified themes to bypass fixed Top-N sector limits |
@@ -228,7 +229,7 @@ Tool call order and frequency are decided by the LLM at runtime — no pre-chore
 | L5 | AI + OMS Verdict | LLM review, cross-day signal confirmation, and OMS risk gates before action |
 
 **How to trade:** Daily funnel = candidates + market gate; only **confirmed** candidates whose next-day open falls inside the single OMS entry range may be bought.
-NEUTRAL is the main battleground (mainline-first quotas); **RISK_ON blocks new buys**. See [OPERATOR_PLAYBOOK.md](OPERATOR_PLAYBOOK.md).
+NEUTRAL is the main battleground. Tradable structures compete in a quality-first pool capped at 8 names and 2 per sector; **RISK_ON blocks new buys**. See [OPERATOR_PLAYBOOK.md](OPERATOR_PLAYBOOK.md).
 
 ## Daily Automation
 
@@ -239,7 +240,7 @@ Daily automations (GitHub Actions plus Codex Automation):
 | Funnel + AI Report + Rebalance | Sun–Thu 17:17 | Fully automated; results pushed to Feishu / Telegram |
 | Holding Diagnosis | Manual trigger (`workflow_dispatch`) | Daily-bar based portfolio health check; RISK_ON/weak regimes block new entries; holding time management |
 | Pre-Market Risk | Mon–Fri 08:20 | Codex Automation dispatches the GitHub workflow; A50 + VIX alert |
-| Strong-Move Review | Mon–Fri 19:25 | Review stocks with today's close return > 7% and previous-session close return < 3% |
+| Strong-Move Review | Mon–Fri 19:25 | Discover >7% / prior <3% movers from two Tushare cross-sections and attribute them against the previous production funnel's compact as-run artifact |
 | Recommendation Reprice | Mon–Fri 23:00 | Sync closing prices |
 | Backtest Grid | 1st & 15th monthly 04:00 | 8 focused parameter combos → aggregated report |
 | DB Maintenance | Tue–Sat 06:20 | Purge stale quotes, orders, signals, market signals, and other rolling-window data |
@@ -262,12 +263,22 @@ Advanced configuration (`.env` file or GitHub Actions Secrets):
 | `TUSHARE_TOKEN` | Stock market data (`/config set tushare_token`) | Yes |
 | `SUPABASE_URL` / `SUPABASE_KEY` | Cloud portfolio sync (multi-device) | Optional |
 | `TICKFLOW_API_KEY` | TickFlow real-time / intraday data | Optional |
+| `PORTFOLIO_HKD_CNY_RATE` / `PORTFOLIO_USD_CNY_RATE` | Optional broker FX overrides for CNY portfolio valuation; ECB reference rates are used otherwise | Optional |
 | `FEISHU_WEBHOOK_URL` | Feishu push notifications | Optional |
 | `TG_BOT_TOKEN` + `TG_CHAT_ID` | Telegram push notifications | Optional |
+| `CHAT_TOOL_APPROVAL_SECRET` | Dedicated Web tool-approval signing secret; recommended. A one-way domain-separated key is derived from the service-role secret during migration | Recommended for Web chat |
 
 > Data source: [TickFlow →](https://tickflow.org/auth/register?ref=5N4NKTCPL4) | LLM API: [1Route →](https://www.1route.dev/register?aff=359904261)
 
 See the [Architecture doc](ARCHITECTURE.md) for the full config reference and GitHub Actions Secrets setup.
+
+### Persistent local schedules and approvals
+
+On macOS, `scripts/daemon_install.sh` installs the user-level launchd daemon so schedules continue after the TUI closes. `wyckoff daemon --status` reports its state. Unattended runs auto-apply only the narrow `set_stop_loss` tool; every other write is queued. Review exact redacted arguments with `wyckoff approve list`, then run `wyckoff approve ok <id>` to approve and execute or `wyckoff approve no <id>` to reject. Pending operations expire after 12 hours and failed executions are not retried automatically.
+
+### External MCP servers
+
+Install `.[mcp]`, add a disabled-by-default server with `wyckoff mcp-add`, test it with `wyckoff mcp-test`, then explicitly enable it. Pass secret environment names as `--env GITHUB_TOKEN` so values are read from the current environment rather than shell arguments; the saved config is mode 0600. External tools use the `mcp__<server>__<tool>` prefix; unknown or write-capable tools always require approval and are never auto-executed by the daemon.
 
 ## MCP Server
 
@@ -329,4 +340,5 @@ If this project helps, a GitHub Star is appreciated. If it helps you make money,
 
 ---
 
-[![Star History Chart](https://api.star-history.com/svg?repos=YoungCan-Wang/WyckoffTradingAgent&type=Date)](https://star-history.com/#YoungCan-Wang/WyckoffTradingAgent&Date)
+<!-- star-history:start -->
+<!-- star-history:end -->

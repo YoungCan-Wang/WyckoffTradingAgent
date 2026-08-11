@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from core.signal_confirmation import score_springboard_abc
+from core.signal_confirmation import compute_support_level, score_springboard_abc
 
 logger = logging.getLogger(__name__)
 
@@ -38,12 +38,32 @@ class CandidatePolicyConfig:
     loss_guard_enabled: bool = True
     alpha_block_risk_on_early_breakout: bool = True
     alpha_risk_on_early_breakout_min_score: float = 70.0
-    mix_trendpb_min_score: float = 12.0
+    # 下面三个阈值 2026-08-10 从「结构上不可达」修正为可达值。
+    #
+    # 根因：各 detector 返回的是不同物理量，而这组阈值按"量比"量级设定：
+    #   _detect_trend_pullback 返回 float(1.0 - vol_ratio)，vol_ratio > 0
+    #       → score < 1.0 恒成立（实测 163 笔 max=0.601）
+    #   _detect_lps 返回 float(vol_ratio) 且 vol_ratio > lps_vol_dry_ratio(0.65) 即弃用
+    #       → score ∈ (0, 0.65]（实测 9 笔 max=0.649）
+    # 而原阈值 10.0 / 6.0 / 12.0 分别是上界的 10 倍、9.2 倍、12 倍以上，
+    # 意味着这三条判据【永远为真】：
+    #   主线 trend_pullback / lps 候选 100% 被拦（"主线跳过仅观察"这条快速通道
+    #   对它们实际是关闭的）；含 trend_pullback 的【共振组合】在五种弱回踩市况下
+    #   被无条件拦掉——共振组合没有 observe_only 兜底，本该是质量更高的一批。
+    #
+    # 取 0.05 而非样本分位：trendpb/lps 的样本仅 163/9 笔且分数按周期分层
+    #   （recent_6m 全在某阈值上、sideways_2023 全在其下），用分位数会把周期差异
+    #   当成分数差异——据此算出的 Welch t=+4.01 实为周期间比较，不可用。
+    # 0.05 的语义是"几乎不拦"：本阶段只消除不可达，把真正的判别权留给后续的
+    # 类内相对判据（绝对阈值跨量纲比较的问题无法靠调数值根治）。
+    mix_trendpb_min_score: float = 0.05
     pure_lps_observe_only: bool = True
-    pure_lps_min_score: float = 6.0
+    pure_lps_min_score: float = 0.05
     pure_trendpb_observe_only: bool = True
-    pure_trendpb_min_score: float = 10.0
+    pure_trendpb_min_score: float = 0.05
     pure_sos_min_score: float = 6.0
+    pure_sos_observe_only: bool = True
+    pure_spring_observe_only: bool = True
     pure_evr_observe_only: bool = True
     pure_evr_min_score_default: float = 3.0
     pure_evr_min_score_hot: float = 5.0
@@ -57,6 +77,7 @@ class CandidatePolicyConfig:
     # NEUTRAL 放宽高位中继误杀，主升段常见 20 日涨幅 >35%。
     neutral_high_range_pos: float = 95.0
     neutral_high_20d_ret: float = 45.0
+    max_structure_stop_pct: float = 12.0
 
 
 DEFAULT_CANDIDATE_POLICY_CONFIG = CandidatePolicyConfig()
@@ -238,7 +259,17 @@ def loss_guard_reason(
     weak_reason = _weak_confirmation_reason(keys, df_map.get(code), policy)
     if weak_reason:
         return weak_reason
+    stop_reason = _structure_stop_reason(keys, df_map.get(code), policy)
+    if stop_reason:
+        return stop_reason
     is_mainline = bool(mainline_codes and code in mainline_codes)
+    if keys == {"spring"} and policy.pure_spring_observe_only and not is_mainline:
+        # 跨周期回测（2026-08-08，run 31237549718：bear_2022 / bull_2020 /
+        # recent_6m 三周期、696 条 spring 成交）：spring 均收 -3.93%、胜率 22.4%，
+        # 对照非 spring -0.24%／33.4%，Welch t=-6.70（合并）；分周期 bear_2022
+        # t=-4.82、bull_2020 t=-6.57 均显著。三个周期方向一致为负，是唯一在全部
+        # 周期都一致为负的信号，与市场环境无关。
+        return "单Spring仅观察"
     if "lps" in keys and not (keys & {"sos", "evr", "spring"}):
         return _pure_lps_reason(regime_norm, trigger_score, policy, is_mainline)
     if keys == {"trend_pullback"}:
@@ -253,6 +284,33 @@ def loss_guard_reason(
         if reason:
             return reason
     return ""
+
+
+def _structure_stop_reason(
+    keys: set[str],
+    df: pd.DataFrame | None,
+    config: CandidatePolicyConfig,
+) -> str:
+    if not keys or df is None or df.empty or config.max_structure_stop_pct <= 0:
+        return ""
+    if "close" not in df.columns:
+        return ""
+    close_series = pd.to_numeric(df["close"], errors="coerce").dropna()
+    close = candidate_score_value(close_series.iloc[-1]) if not close_series.empty else 0.0
+    if close <= 0:
+        return ""
+    levels = []
+    for signal_type in sorted(keys):
+        try:
+            support = candidate_score_value(compute_support_level(df, signal_type))
+        except Exception:
+            continue
+        if 0 < support < close:
+            levels.append(support)
+    if not levels:
+        return ""
+    risk_pct = (close - max(levels)) / close * 100.0
+    return "结构止损超出风险上限" if risk_pct > config.max_structure_stop_pct else ""
 
 
 def _weak_confirmation_reason(keys: set[str], df: pd.DataFrame | None, config: CandidatePolicyConfig) -> str:
@@ -326,11 +384,18 @@ def _naked_right_side_reason(
         return f"{regime_norm}纯趋势追涨"
     if keys == {"evr"} and config.pure_evr_observe_only and not is_mainline:
         return "单EVR仅观察"
+    if keys == {"sos"} and config.pure_sos_observe_only and not is_mainline:
+        # 标准回放（2026-08-07，snapshot 2025-11-03..2026-07-20，162 交易日，两次独立
+        # ledger 去重后 493 条纯 SOS）：10 日中位 -3.20%、胜率 40.0%，对照非纯 SOS
+        # 中位 -1.27%、胜率 44.3%。均值受少数极端日主导（剔最差 5 日即转正），但中位
+        # 与胜率两个抗尾部口径在 5/10 日、两次 ledger 上方向一致。
+        # ABC 门槛松紧无法改善：met=2 与 met=3 的差异在所有周期 |t|<0.5。
+        return "单SOS仅观察"
     if "sos" in keys and trigger_score < config.pure_sos_min_score:
         return "低分SOS"
     if keys == {"sos"} and df is not None and _springboard_met_count(df, keys) < config.pure_sos_min_abc:
-        # 回刷数据显示：纯SOS只有ABC三项全部满足(met_count=3)才是正期望(胜率53.8%/+3.98%)，
-        # met_count=2 依然是负期望(-1.46%)，弱确认门槛(>=2)对纯SOS不够严。
+        # pure_sos_observe_only=False 时才会走到这里。met=3 未被证明优于 met=2
+        # （标准回放 |t|<0.5），保留 3 只是保守默认值，不代表已验证。
         return "纯SOS确认强度不足"
     evr_min_score = (
         config.pure_evr_min_score_hot

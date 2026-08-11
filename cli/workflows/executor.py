@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import time
@@ -40,6 +41,7 @@ from cli.workflows.planner import (
     adapt_workflow_script,
     plan_workflow,
     revise_workflow_script,
+    script_handoff_reason,
     workflow_steps_from_script,
 )
 from cli.workflows.store import append_workflow_event, persist_workflow_script, save_workflow_run
@@ -49,6 +51,8 @@ from core.candidate_ranker import TRIGGER_SHORT_LABELS
 from core.strategy_policy_display import policy_execution_mode_label, policy_next_action_label
 from utils.safe import drop_empty as _drop_empty
 from utils.tool_result_preview import tool_result_brief_lines
+
+logger = logging.getLogger(__name__)
 
 _AGENTS: dict[str, SubAgent] = {
     "task": WORKFLOW_TASK_AGENT,
@@ -217,11 +221,13 @@ class WorkflowExecutor:
         workflow_args: Any = None,
         workflow_control: WorkflowControl | None = None,
         only_step_id: str = "",
+        planning_messages: list[dict[str, Any]] | None = None,
     ) -> None:
         self.provider = provider
         self.tools = tools
         self.session_id = session_id
         self.user_text = user_text
+        self.planning_messages = planning_messages
         self.scratchpad = scratchpad
         self.cancel_check = cancel_check
         self.stream_chunk_timeout = stream_chunk_timeout
@@ -233,9 +239,42 @@ class WorkflowExecutor:
         self.only_step_id = only_step_id
         self._stopped = False
         self.run: WorkflowRun | None = None
+        # plan_handoff_reason() 会先把 run 规划出来但不落库，所以「已规划」和「已落库」得分开记。
+        self._persisted_run = False
 
     def set_control(self, control: WorkflowControl | None) -> None:
         self.workflow_control = control
+
+    def plan_handoff_reason(self) -> str:
+        """Plan this turn and report why it should go back to direct chat, if it should.
+
+        两个来源：planner 自己声明的交还，和计划成型后的结构校验。规划结果会缓存到 self.run，
+        交还与继续执行都不会多花一次规划调用。交还时不落库：一次没跑过任何 step 的 run
+        写进 workflow_run 只会让历史里多一条噪音。
+        """
+
+        try:
+            run = self._planned_run()
+        except Exception:
+            logger.debug("workflow handoff planning failed", exc_info=True)
+            return ""
+        return script_handoff_reason(run.script) or _orchestration_waste_reason(run)
+
+    def _planned_run(self) -> WorkflowRun:
+        if self.run is None:
+            self.run = plan_workflow(
+                self.user_text,
+                session_id=self.session_id,
+                context=self.workflow_context,
+                provider=self.provider,
+                tools=self.tools,
+                workflow_script=self.workflow_script,
+                source_run_id=self.source_run_id,
+                workflow_args=self.workflow_args,
+                only_step_id=self.only_step_id,
+                messages=self.planning_messages,
+            )
+        return self.run
 
     def prepare_run(self) -> RuntimeEvent:
         self._plan_run(PENDING)
@@ -269,9 +308,11 @@ class WorkflowExecutor:
             source_run_id=self.source_run_id,
             workflow_args=self.workflow_args,
             only_step_id=self.only_step_id,
+            messages=self.planning_messages,
         )
         self.run.run_id = old_run_id
         self.run.status = PENDING
+        self._persisted_run = True
         persist_workflow_script(self.run)
         save_workflow_run(self.run)
         payload = self._plan_event()
@@ -280,7 +321,9 @@ class WorkflowExecutor:
 
     def run_stream(self, messages: list[dict[str, Any]], system_prompt: str = "") -> Iterator[RuntimeEvent]:
         started_at = time.monotonic()
-        if self.run is None:
+        if not self._persisted_run:
+            # 判据是「计划公布过没有」而不是「规划过没有」：plan_handoff_reason() 会先规划但不落库，
+            # 按 self.run is None 判会把这一轮的 workflow_plan 事件整个跳掉。
             self._plan_run(RUNNING)
             yield self._plan_event()
         else:
@@ -337,24 +380,16 @@ class WorkflowExecutor:
         }
 
     def _plan_run(self, status: str) -> None:
-        if self.run is not None:
-            self.run.status = status
-            save_workflow_run(self.run)
+        if self._persisted_run:
+            run = self._require_run()
+            run.status = status
+            save_workflow_run(run)
             return
-        self.run = plan_workflow(
-            self.user_text,
-            session_id=self.session_id,
-            context=self.workflow_context,
-            provider=self.provider,
-            tools=self.tools,
-            workflow_script=self.workflow_script,
-            source_run_id=self.source_run_id,
-            workflow_args=self.workflow_args,
-            only_step_id=self.only_step_id,
-        )
-        self.run.status = status
-        persist_workflow_script(self.run)
-        save_workflow_run(self.run)
+        run = self._planned_run()
+        run.status = status
+        self._persisted_run = True
+        persist_workflow_script(run)
+        save_workflow_run(run)
 
     def _plan_event(self) -> RuntimeEvent:
         run = self._require_run()
@@ -629,7 +664,12 @@ class WorkflowExecutor:
             "run_id": run.run_id,
             "step": run.step_payload(step),
             "source": _source_payload(source),
+            "step_total": len(run.steps),
         }
+        # 用身份比较：WorkflowStep 是值相等的 dataclass，index() 可能命中同构的另一步
+        step_index = next((idx for idx, item in enumerate(run.steps, 1) if item is step), 0)
+        if step_index:
+            payload["step_index"] = step_index
         append_workflow_event(run.run_id, event_type, payload)
         return payload
 
@@ -637,13 +677,14 @@ class WorkflowExecutor:
         return self._require_run().step_payload(step)
 
     def _synthesize_results(self, results: list[dict[str, Any]], system_prompt: str) -> tuple[str, dict[str, int]]:
-        prompt = _synthesis_prompt(self._require_run(), results)
+        run = self._require_run()
+        prompt = _synthesis_prompt(run, results)
         fallback_text = _fallback_summary(results)
         try:
             text, usage = _collect_synthesis(self.provider, prompt, system_prompt, fallback_text=fallback_text)
         except Exception:
             text, usage = fallback_text, {"input_tokens": 0, "output_tokens": 0}
-        return _ensure_candidate_delivery(text, results), usage
+        return _with_failure_lead(_ensure_candidate_delivery(text, results), run), usage
 
     def _mark_run_done(self, final_text: str) -> RuntimeEvent:
         run = self._require_run()
@@ -738,6 +779,48 @@ def _workflow_adaptation_count(run: WorkflowRun) -> int:
 
 def _workflow_runtime(run: WorkflowRun) -> dict[str, Any]:
     return run.script.get("runtime") if isinstance(run.script.get("runtime"), dict) else {}
+
+
+def _orchestration_waste_reason(run: WorkflowRun) -> str:
+    """Return why this plan is not worth orchestrating, judged on the plan's own shape.
+
+    模式决策发生在计划存在之前，而计划生成后没人回头看它值不值得编排。「我的持仓有什么」被判成
+    dynamic_task（置信度 0.85，理由「需要收集并汇总用户持仓事实」），planner 照此拆出的计划是
+    1 个 phase、1 个 step、1 个工具（portfolio）——和 direct 一轮调一个工具结构上等价，
+    却多付了后台执行、计划落库、进度树和额外对话轮次。
+
+    判据只看形状，不看关键词、也不靠模型自觉：workflow 的价值全在多步、依赖排序、并发和
+    可恢复的持久计划上，「一步一个工具」一样都不占，而 direct 车道本来就拿得到同一个工具。
+
+    刻意只卡「恰好一个工具」：声明了多个工具的单步还是一条链，而 planner 兜底脚本的 scope 是空的，
+    按「≤1 个工具」卡会让 planner 一出故障就整条 workflow 车道消失。
+    """
+
+    if not run.steps:
+        return "计划里没有任何步骤"
+    if len(run.steps) > 1:
+        return ""
+    step = run.steps[0]
+    if len(step.tool_scope) != 1:
+        return ""
+    title = _clip(step.title or step.step_id, 40)
+    return f"计划只有 1 个步骤（{title}），只用 {step.tool_scope[0]} 一个工具，直接对话拿得到同一个工具"
+
+
+def _with_failure_lead(text: str, run: WorkflowRun) -> str:
+    """Put failed steps at the top when the run did not fully succeed.
+
+    昊华科技那次 run 是 failed，用户读到的开头却是三条候选结论——候选前插逻辑不看运行状态，
+    真正重要的事实（那一步超时了、清仓没被记录）被埋在后面。失败必须先说。
+    """
+
+    failed = [step for step in run.steps if step.status == FAILED]
+    if not failed:
+        return text
+    titles = ", ".join(_clip(step.title or step.step_id, 40) for step in failed[:4])
+    more = f" 等 {len(failed)} 步" if len(failed) > 4 else ""
+    lead = f"⚠️ 本次 workflow 未完全成功：{len(failed)} 个步骤失败（{titles}{more}）。以下结论缺少这些步骤的事实支撑。"
+    return f"{lead}\n\n{text}" if text.strip() else lead
 
 
 def _empty_workflow_text(run: WorkflowRun) -> str:

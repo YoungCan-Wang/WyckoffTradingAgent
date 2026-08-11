@@ -58,6 +58,12 @@ _surface = ToolSurface()
 
 def _execute_mcp_tool(name: str, handler: Callable, arguments: dict[str, Any]) -> dict[str, Any]:
     from tools.tool_surface import ToolAccessContext, from_handler
+    from tools.write_guard import check_write_allowed
+
+    # MCP 没有审批环节，写操作默认拒绝——否则任何 MCP 客户端都能绕过确认流程清仓。
+    denied = check_write_allowed(name)
+    if denied is not None:
+        return denied
 
     existing = _surface.resolve(name)
     if existing is None or existing.handler is not handler:
@@ -291,18 +297,7 @@ def market_regime() -> dict:
     返回 regime 枚举（含 CRASH、PANIC_REPAIR 候选、PANIC_REPAIR_CONFIRMED 确认）及斜率、3日收益等指标。
     **结果处理**：regime 是核心字段，请据此给出仓位建议。
     """
-    from datetime import date as _date
-    from datetime import timedelta
-
-    from core.wyckoff_engine import FunnelConfig
-    from integrations.data_source import fetch_index_hist
-    from tools.market_regime import analyze_benchmark_and_tune_cfg
-
-    end = _date.today()
-    start = end - timedelta(days=400)
-    bench_df = fetch_index_hist("000001", start, end)
-    smallcap_df = fetch_index_hist("399006", start, end)
-    return analyze_benchmark_and_tune_cfg(bench_df, smallcap_df, FunnelConfig(), breadth=None)
+    return _execute_mcp_tool("market_regime", _market_regime, {})
 
 
 @mcp.tool()
@@ -313,43 +308,7 @@ def wyckoff_diagnose(code: str) -> dict:
     返回交易区间(TR)、触发信号(Spring/SOS/LPS/EVR)、阶段和事件分类。
     **结果处理**：trading_range 和 triggers 是核心，请结合阶段判断当前是吸筹/派发/标记。
     """
-    import dataclasses
-    from datetime import date as _date
-    from datetime import timedelta
-
-    from core.wyckoff_engine import FunnelConfig
-    from core.wyckoff_events import classify_wyckoff_event
-    from core.wyckoff_structure import detect_structure_triggers, identify_trading_range
-    from integrations.stock_hist_repository import get_stock_hist, normalize_hist_df
-
-    end = _date.today()
-    start = end - timedelta(days=500)
-    raw = get_stock_hist(code, start, end)
-    if raw is None or raw.empty:
-        return {"error": f"无法获取 {code} 的行情数据"}
-
-    df = normalize_hist_df(raw)
-    cfg = FunnelConfig()
-    tr = identify_trading_range(df, cfg)
-    result = detect_structure_triggers([code], {code: df}, cfg)
-
-    stock_triggers = []
-    for trig_type in ("spring", "sos", "lps", "evr"):
-        for sym, _score in result.triggers.get(trig_type, []):
-            if sym == code:
-                stock_triggers.append(trig_type)
-
-    stage = result.stage_map.get(code, "")
-    event = classify_wyckoff_event(stock_triggers, stage=stage)
-
-    return {
-        "code": code,
-        "trading_range": dataclasses.asdict(tr) if tr else None,
-        "triggers": stock_triggers,
-        "stage": stage,
-        "stage_semantics": "diagnostic_only",
-        "event": dataclasses.asdict(event),
-    }
+    return _execute_mcp_tool("wyckoff_diagnose", _wyckoff_diagnose, {"code": code})
 
 
 @mcp.tool()
@@ -360,22 +319,7 @@ def intraday_analysis(code: str) -> dict:
     返回 VWAP 位置、5m/15m 趋势方向、动量、量能分布、综合强度分等。
     **结果处理**：strength_score 是核心（0-100），配合趋势和VWAP位置给出通俗建议。
     """
-    import os
-
-    from core.intraday_analysis import analyze_intraday
-    from integrations.tickflow_client import TickFlowClient
-
-    api_key = os.getenv("TICKFLOW_API_KEY", "").strip()
-    if not api_key:
-        return {"error": "未配置 TICKFLOW_API_KEY，无法获取分钟线数据"}
-    client = TickFlowClient(api_key=api_key)
-    df_1m = client.get_intraday(code, period="1m", count=500)
-    df_5m = client.get_intraday(code, period="5m", count=100)
-    df_15m = client.get_intraday(code, period="15m", count=50)
-    if df_1m.empty:
-        return {"error": f"{code} 无法获取分钟线数据，可能非交易时段"}
-    profile = analyze_intraday(df_1m, df_5m, df_15m)
-    return {"code": code, **profile.to_dict()}
+    return _execute_mcp_tool("intraday_analysis", _intraday_analysis, {"code": code, "tool_context": _ctx})
 
 
 @mcp.tool()
@@ -384,24 +328,7 @@ def intraday_rescue_check(code: str) -> dict:
 
     **调用时机**：用户问"这票中周期结构怎么样"、"60分钟线能不能救回来"、"主线票日线不行但想看看中期"时调用。
     """
-    import os
-
-    from core.intraday_analysis import analyze_rescue_structure
-    from integrations.tickflow_client import TickFlowClient
-
-    api_key = os.getenv("TICKFLOW_API_KEY", "").strip()
-    if not api_key:
-        return {"error": "未配置 TICKFLOW_API_KEY"}
-    client = TickFlowClient(api_key=api_key)
-    df_60m = client.get_klines(code, period="60m", count=100)
-    if df_60m is None or df_60m.empty:
-        return {"error": f"{code} 无法获取60m数据，可能非交易时段"}
-    try:
-        df_30m = client.get_klines(code, period="30m", count=100)
-    except Exception:
-        df_30m = None
-    result = analyze_rescue_structure(df_60m, df_30m)
-    return {"code": code, **result.to_dict()}
+    return _execute_mcp_tool("intraday_rescue_check", _intraday_rescue_check, {"code": code, "tool_context": _ctx})
 
 
 @mcp.tool()
@@ -452,7 +379,12 @@ def run_funnel_simulation(
 # Tier 3: 需 Supabase 用户认证
 # ---------------------------------------------------------------------------
 
+from agents.engine_tools import intraday_analysis as _intraday_analysis
+from agents.engine_tools import intraday_rescue_check as _intraday_rescue_check
+from agents.engine_tools import market_regime as _market_regime
+from agents.engine_tools import wyckoff_diagnose as _wyckoff_diagnose
 from agents.portfolio_tools import portfolio as _portfolio
+from agents.portfolio_tools import record_trade_fill as _record_trade_fill
 from agents.portfolio_tools import update_portfolio as _update_portfolio
 from agents.report_tools import generate_ai_report as _generate_ai_report
 from agents.strategy_tools import generate_strategy_decision as _generate_strategy_decision
@@ -480,23 +412,59 @@ def update_portfolio(
     free_cash: float = 0,
     table: str = "",
     codes: list[str] | None = None,
+    items: list[dict] | None = None,
 ) -> dict:
     """管理用户持仓或删除追踪记录。
 
     **调用时机**：用户说"买入/卖出/调仓"、"设置现金"、"删除记录"时调用。
+    **批量**：一次改多只用 items，不要拆成多次调用。
     **危险操作**：会修改用户数据，请确认用户意图后再调用。
     """
-    return _update_portfolio(
-        action=action,
-        code=code,
-        name=name,
-        shares=shares,
-        cost_price=cost_price,
-        buy_dt=buy_dt,
-        free_cash=free_cash,
-        table=table,
-        codes=codes,
-        tool_context=_ctx,
+    return _execute_mcp_tool(
+        "update_portfolio",
+        _update_portfolio,
+        {
+            "action": action,
+            "code": code,
+            "name": name,
+            "shares": shares,
+            "cost_price": cost_price,
+            "buy_dt": buy_dt,
+            "free_cash": free_cash,
+            "table": table,
+            "codes": codes,
+            "items": items,
+        },
+    )
+
+
+@mcp.tool()
+def record_trade_fill(
+    code: str,
+    side: Literal["buy", "sell"],
+    shares: int,
+    price: float,
+    trade_date: str = "",
+    name: str = "",
+) -> dict:
+    """回填一笔真实成交，按增量更新持仓与现金。
+
+    **调用时机**：用户说"我今天卖了 X 股 Y"、"刚买入 Z"等已经发生的成交时调用。
+    **与 update_portfolio 的区别**：这个按成交算账（摊薄成本、扣费用、算已实现盈亏），
+    update_portfolio 是直接覆盖持仓快照。用户描述的是「成交」就用这个。
+    **危险操作**：会修改持仓与现金，确认股数、价格、方向后再调用。
+    """
+    return _execute_mcp_tool(
+        "record_trade_fill",
+        _record_trade_fill,
+        {
+            "code": code,
+            "side": side,
+            "shares": shares,
+            "price": price,
+            "trade_date": trade_date,
+            "name": name,
+        },
     )
 
 

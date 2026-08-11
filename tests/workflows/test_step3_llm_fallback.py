@@ -85,7 +85,7 @@ def test_step3_runtime_config_from_env_normalizes_values(monkeypatch):
     cfg = step3_runtime_config_from_env()
 
     assert cfg.trading_days == 1
-    assert cfg.max_output_tokens == 32768
+    assert cfg.max_output_tokens == 6000
     assert cfg.max_ai_input == 0
     assert cfg.empty_compression_fallback_cap == 0
     assert cfg.entry_quality_tie_bucket == 0.5
@@ -103,3 +103,57 @@ def test_step3_runtime_config_rejects_legacy_report_style(monkeypatch):
 
     with pytest.raises(RuntimeError, match="legacy 口径已禁用"):
         step3_runtime_config_from_env()
+
+
+class TestModelFooter:
+    """研报尾部标注实际使用模型。
+
+    此前该信息只 print 到 stdout，要翻 CI 日志才能看到，导致"这份研报是哪个模型
+    生成的、有没有走 fallback"在阅读时不可见。模型选型直接决定 API 成本与输出
+    风格——2026-08 排查 Gemini 月费时就是因为看不到实际模型而只能靠猜。
+    """
+
+    @staticmethod
+    def _result(used_models: dict[str, str]):
+        from workflows.step3_models import Step3LlmResult
+
+        return Step3LlmResult(ok=True, status="", report="x", used_models=used_models)
+
+    def test_footer_lists_model_per_track(self):
+        from workflows.step3_reporting import build_model_footer
+
+        footer = build_model_footer(
+            self._result({"accum": "Gemini:gemini-3-flash-preview", "trend": "Gemini:gemini-3-flash-preview"}),
+            ["accum", "trend"],
+            "fallback",
+        )
+
+        assert "gemini-3-flash-preview" in footer
+        assert "accum=" in footer and "trend=" in footer
+        # 各轨一致时不应报警
+        assert "不一致" not in footer
+
+    def test_footer_flags_track_level_fallback(self):
+        """各轨模型不一致意味着有轨道回退了——这正是需要被看见的信号。"""
+        from workflows.step3_reporting import build_model_footer
+
+        footer = build_model_footer(
+            self._result({"accum": "Gemini:gemini-3-pro-preview", "trend": "DeepSeek:deepseek-v4-flash"}),
+            ["accum", "trend"],
+            "fallback",
+        )
+
+        assert "不一致" in footer
+        assert "gemini-3-pro-preview" in footer and "deepseek-v4-flash" in footer
+
+    def test_footer_falls_back_to_options_model(self):
+        from workflows.step3_reporting import build_model_footer
+
+        footer = build_model_footer(self._result({}), ["accum"], "Gemini:gemini-2.5-flash-lite")
+
+        assert "gemini-2.5-flash-lite" in footer
+
+    def test_footer_empty_without_tracks(self):
+        from workflows.step3_reporting import build_model_footer
+
+        assert build_model_footer(self._result({}), [], "x") == ""

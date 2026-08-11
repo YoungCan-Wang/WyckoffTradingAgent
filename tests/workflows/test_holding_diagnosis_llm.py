@@ -33,7 +33,14 @@ def test_run_holding_llm_report_overrides_rule_action(monkeypatch):
         "_build_llm_routes",
         lambda: [{"name": "route1", "provider": "p", "model": "m", "api_key": "k"}],
     )
-    monkeypatch.setattr(llm, "call_llm", lambda **_kwargs: '{"action":"TRIM","reason":"尾盘转弱","confidence":0.76}')
+    monkeypatch.setattr(
+        llm,
+        "call_llm",
+        lambda **_kwargs: (
+            '{"action":"TRIM","signal_severity":"CONFIRMED_BREAK",'
+            '"action_timing":"NEXT_SESSION_IF","reason":"尾盘转弱","confidence":0.76}'
+        ),
+    )
 
     report = llm.run_holding_llm_report(
         holdings=[Advice()],
@@ -45,7 +52,7 @@ def test_run_holding_llm_report_overrides_rule_action(monkeypatch):
     )
 
     assert "## TRIM（确认破位减仓）" in report
-    assert "000001 平安银行 [规则:HOLD] conf=76% | 尾盘转弱" in report
+    assert "000001 平安银行 [规则:HOLD] conf=76% [CONFIRMED_BREAK/NEXT_SESSION_IF] | 尾盘转弱" in report
     assert "规则明细" in report
     assert any("LLM: 1/1 success" in line for line in logs)
 

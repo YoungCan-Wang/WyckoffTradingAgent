@@ -354,7 +354,7 @@ def _notes(summary: dict) -> list[str]:
         "- 该回测使用日线数据（qfq），含 T+1 与涨跌停成交约束（一字板不可成交）。",
         _entry_price_note(summary),
         _cost_note(summary),
-        "- ⚠️ 仍存在幸存者偏差：股票池来自当前在市样本，未包含历史退市股票。",
+        _survivorship_note(summary),
         _meta_note(summary),
     ]
     if summary.get("wbt_requested"):
@@ -450,13 +450,42 @@ def _meta_mode(summary: dict) -> str:
         return "current_snapshot (⚠️ look-ahead bias)"
     if source == "current":
         return "current_network (⚠️ look-ahead bias)"
+    if source.endswith("_no_heat"):
+        return "static_meta_no_concept_heat (bias-reduced)"
     return "disabled_current_snapshot_filters (bias-reduced)"
 
 
+def _survivorship_note(summary: dict) -> str:
+    """按 PIT 实际状态描述幸存者偏差，而非硬编码。
+
+    该行此前是静态文案「仍存在幸存者偏差：股票池来自当前在市样本」。PIT 股票池上线
+    后它已不准确，且会让读日志的人以为 PIT 未生效——2026-08-10 排查 PIT 是否落地时
+    我本人就被这行误导过一次。现改为据实输出：启用 PIT 时报告补回的退市数与
+    当时 ST 口径，未启用时保留原免责声明。
+    """
+    if not summary.get("pit_universe"):
+        return "- ⚠️ 仍存在幸存者偏差：股票池来自当前在市样本，未包含历史退市股票。"
+    delisted = summary.get("pit_delisted")
+    st_then = summary.get("pit_st_then")
+    st_today = summary.get("pit_st_today")
+    parts = [f"- ✅ 已用 PIT 股票池（as_of={summary.get('pit_as_of') or '窗口起点'}）消除幸存者偏差"]
+    if delisted is not None:
+        parts.append(f"，含此后退市 {delisted} 只")
+    if st_then is not None and st_today is not None:
+        parts.append(f"；ST 按当时名 {st_then} 只（按今日名会误判为 {st_today} 只）")
+    return "".join(parts) + "。"
+
+
 def _meta_note(summary: dict) -> str:
-    if _metadata_source(summary) in {"snapshot", "current"}:
+    source = _metadata_source(summary)
+    if source in {"snapshot", "current"}:
         return (
             "- ⚠️ 市值/行业映射采用当前截面，会引入 look-ahead bias （市值穿越与行业漂移）；该结果仅用于参数方向验证。"
+        )
+    if source.endswith("_no_heat"):
+        return (
+            "- 保留市值/行业/概念归属（缓变属性，轻微偏差）但已剔除 concept_heat 题材热度快照，"
+            "避免主线引擎预知未来热点；仍存在当前股票池幸存者偏差。"
         )
     return "- 本次按正式回测默认口径关闭当前截面市值/行业/概念映射，降低前视偏差；仍存在当前股票池幸存者偏差。"
 

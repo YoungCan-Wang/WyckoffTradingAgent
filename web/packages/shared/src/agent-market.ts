@@ -48,6 +48,26 @@ export function isSupportedKlineCode(code: string): boolean {
   return isCnSymbol(code) || isTickFlowMarketSymbol(code)
 }
 
+/** Normalize holdings codes: CN 6-digit, HK NNNNN.HK, US TICKER.US. Empty if unsupported.
+ * Does not pad short digit strings into fake A-share codes (e.g. "6881" stays invalid). */
+export function normalizePortfolioCode(raw: string | number): string {
+  const c = String(raw ?? '').trim().toUpperCase()
+  if (!c) return ''
+  if (isCnSymbol(c)) return c
+  const hk = c.match(/^(\d{1,5})\.HK$/)
+  if (hk) return `${hk[1]!.padStart(5, '0')}.HK`
+  if (isTickFlowMarketSymbol(c)) return c
+  if (/^[A-Z][A-Z0-9.-]{0,15}$/.test(c)) {
+    const withUs = `${c}.US`
+    return isTickFlowMarketSymbol(withUs) ? withUs : ''
+  }
+  return ''
+}
+
+export function isSupportedPortfolioCode(code: string | number): boolean {
+  return Boolean(normalizePortfolioCode(code))
+}
+
 export function detectMarket(code: string): 'cn' | 'hk' | 'us' {
   const c = code.trim().toUpperCase()
   if (isCnSymbol(c)) return 'cn'

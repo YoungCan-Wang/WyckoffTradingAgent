@@ -44,6 +44,7 @@ class FunnelLayerOutputs:
     l1_passed: list[str]
     l2_passed: list[str]
     l2_channel_map: dict[str, str]
+    l2_rejections: dict[str, str]
     l2_counts: dict[str, int]
     l3_passed: list[str]
     top_sectors: list[str]
@@ -77,7 +78,9 @@ def run_base_funnel_layers(
     print("[funnel] 开始执行全量漏斗筛选...")
     _report_progress("漏斗筛选", "L1~L4 计算中", 0.85)
     l1_input = list(all_df_map.keys())
-    l1_passed, l2_passed, l2_channel_map = _run_strength_layers(l1_input, all_df_map, bench_df, cfg, ref_data)
+    l1_passed, l2_passed, l2_channel_map, l2_rejections = _run_strength_layers(
+        l1_input, all_df_map, bench_df, cfg, ref_data
+    )
     theme_activity = _build_theme_activity(window, ref_data, all_df_map)
     l3_passed, top_sectors, sector_rotation = _run_sector_layer(
         l1_passed,
@@ -114,6 +117,7 @@ def run_base_funnel_layers(
         l1_passed=l1_passed,
         l2_passed=l2_passed,
         l2_channel_map=l2_channel_map,
+        l2_rejections=l2_rejections,
         l3_passed=l3_passed,
         top_sectors=top_sectors,
         sector_rotation=sector_rotation,
@@ -134,6 +138,7 @@ def _build_funnel_layer_outputs(
     l1_passed: list[str],
     l2_passed: list[str],
     l2_channel_map: dict[str, str],
+    l2_rejections: dict[str, str],
     l3_passed: list[str],
     top_sectors: list[str],
     sector_rotation: dict,
@@ -151,6 +156,7 @@ def _build_funnel_layer_outputs(
         l1_passed=l1_passed,
         l2_passed=l2_passed,
         l2_channel_map=l2_channel_map,
+        l2_rejections=l2_rejections,
         l2_counts=_l2_channel_counts(l2_channel_map),
         l3_passed=l3_passed,
         top_sectors=top_sectors,
@@ -196,18 +202,20 @@ def _run_strength_layers(
     bench_df: pd.DataFrame | None,
     cfg: FunnelConfig,
     ref_data: FunnelReferenceData,
-) -> tuple[list[str], list[str], dict[str, str]]:
+) -> tuple[list[str], list[str], dict[str, str], dict[str, str]]:
     l1_passed = layer1_filter(
         l1_input, ref_data.name_map, ref_data.market_cap_map, all_df_map, cfg, financial_map=ref_data.financial_map
     )
+    l2_rejections: dict[str, str] = {}
     l2_passed, l2_channel_map, _pre_ignition = layer2_strength_detailed(
         l1_passed,
         all_df_map,
         bench_df,
         cfg,
         rps_universe=l1_input,
+        rejections=l2_rejections,
     )
-    return l1_passed, l2_passed, l2_channel_map
+    return l1_passed, l2_passed, l2_channel_map, l2_rejections
 
 
 def _run_sector_layer(
@@ -396,6 +404,7 @@ def _build_mainline_candidates_helper(
         l1_passed=l1_passed,
         l2_passed=l2_passed,
         concept_map=ref_data.concept_map,
+        sector_map=ref_data.sector_map,
         concept_heat=_effective_concept_heat(ref_data),
         theme_radar=theme_current,
         theme_activity=theme_activity,

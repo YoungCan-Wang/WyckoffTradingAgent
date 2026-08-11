@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: '25 11 * * 1-5'   # UTC 11:25 Mon-Fri = 北京时间 19:25
   workflow_dispatch:
+    inputs:
+      allow_full_funnel_fallback:
+        description: "快照缺失时显式允许完整重跑前一交易日全市场漏斗"
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: review-list-replay-${{ github.ref }}
@@ -11,6 +17,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   run:
@@ -24,6 +31,7 @@ jobs:
       SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       TICKFLOW_API_KEY: ${{ secrets.TICKFLOW_API_KEY }}
+      REVIEW_ALLOW_FULL_FUNNEL_FALLBACK: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_full_funnel_fallback && '1' || '0' }}
       TZ: Asia/Shanghai
 
     steps:
@@ -39,6 +47,41 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e .
+
+      - name: Download matching production funnel trace
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          target_date="$(python -u scripts/review_list_replay.py --print-previous-trade-date | tail -n 1)"
+          if [[ ! "$target_date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+            echo "[review] invalid target trade date: ${target_date}; workflow fallback policy will decide"
+            exit 0
+          fi
+          target_file="review_trace_${target_date//-/}.json.gz"
+          if ! run_ids="$(gh run list --workflow wyckoff_funnel.yml --branch "$GITHUB_REF_NAME" --status success --limit 12 --json databaseId --jq '.[].databaseId')"; then
+            echo "[review] failed to query production funnel runs; workflow fallback policy will decide"
+            exit 0
+          fi
+          for run_id in $run_ids; do
+            artifact_name="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts" --jq '.artifacts[] | select(.expired == false and (.name | startswith("daily-job-artifacts-"))) | .name' 2>/dev/null | tail -n 1 || true)"
+            if [ -z "$artifact_name" ]; then
+              continue
+            fi
+            destination="review-trace-download/${run_id}"
+            mkdir -p "$destination"
+            if ! gh run download "$run_id" --name "$artifact_name" --dir "$destination"; then
+              continue
+            fi
+            match="$(find "$destination" -type f -name "$target_file" -print -quit)"
+            if [ -n "$match" ]; then
+              cp "$match" "$GITHUB_WORKSPACE/review_trace_input.json.gz"
+              echo "REVIEW_TRACE_PATH=$GITHUB_WORKSPACE/review_trace_input.json.gz" >> "$GITHUB_ENV"
+              echo "[review] matched production trace: run=${run_id}, date=${target_date}"
+              exit 0
+            fi
+          done
+          echo "[review] no production trace matched date=${target_date}; workflow fallback policy will decide"
 
       - name: Prepare logs dir
         run: mkdir -p logs

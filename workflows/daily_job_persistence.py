@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections import Counter
 from datetime import datetime
 from typing import Any
 
@@ -24,7 +25,14 @@ from workflows.step4_text import clean_text as _clean_text
 RECOMMENDATION_MAINLINE_STATUSES = TRADEABLE_MAINLINE_STATUSES
 RECOMMENDATION_STRATEGIC_MIN_THEME_SCORE = 0.45
 RECOMMENDATION_STRATEGIC_MIN_STOCK_SCORE = 0.55
-STEP3_REPAIR_REVIEW_SPRINGBOARD_CAP = "STEP3_REPAIR_REVIEW_SPRINGBOARD_CAP"
+STEP3_CONFIRMED_REVIEW_CAP = "STEP3_CONFIRMED_REVIEW_CAP"
+
+
+def _env_cap(name: str, default: int) -> int:
+    try:
+        return max(int(float(os.getenv(name, str(default)))), 0)
+    except (TypeError, ValueError):
+        return default
 
 
 def persist_benchmark_context(
@@ -112,82 +120,34 @@ def step3_review_symbols(
     step2_details: dict | None = None,
     trade_mode: MarketTradeMode | None = None,
 ) -> list[dict]:
-    mode = trade_mode or resolve_market_trade_mode(None)
-    if step2_details is not None and "selected_for_ai" in step2_details and mode.mode != "repair_review":
+    if step2_details is not None and "selected_for_ai" in step2_details:
         return _selected_funnel_review_symbols(symbols_info, step2_details)
-    strict = [item for item in symbols_info if is_recommendation_review_candidate(item)]
-    extras = repair_review_springboard_symbols(
-        step2_details,
-        mode,
-        exclude_codes={code6(item.get("code")) for item in strict},
-    )
-    return strict + extras
+    return [item for item in symbols_info if is_recommendation_review_candidate(item)]
 
 
 def _selected_funnel_review_symbols(symbols_info: list[dict], step2_details: dict) -> list[dict]:
-    selected_codes = [code6(code) for code in step2_details.get("selected_for_ai", []) or []]
-    by_code = {code6(item.get("code")): item for item in symbols_info if isinstance(item, dict)}
+    """Reserve the front of the Step3 context for validated carry-over signals."""
     rows: list[dict] = []
-    for input_order, code in enumerate(selected_codes):
-        item = by_code.get(code)
-        if not code or item is None:
-            continue
-        row = dict(item)
-        row["input_order"] = input_order
-        rows.append(row)
-    return rows
-
-
-def repair_review_springboard_symbols(
-    step2_details: dict | None,
-    trade_mode: MarketTradeMode | None,
-    *,
-    exclude_codes: set[str] | None = None,
-) -> list[dict]:
-    if not _allow_repair_springboard_review(step2_details, trade_mode):
-        return []
-    mode = trade_mode or resolve_market_trade_mode(None)
-    excluded = exclude_codes or set()
-    rows = _dedupe_tracking_symbols(_springboard_tracking_symbols(step2_details or {}, mode))
-    rows.sort(key=_tracking_rank, reverse=True)
-    out: list[dict] = []
-    for row in rows:
-        code = code6(row.get("code"))
-        if not code or code in excluded:
-            continue
-        out.append(_step3_repair_springboard_row(row))
-        if len(out) >= _repair_springboard_review_cap():
+    seen: set[str] = set()
+    by_code = {code6(item.get("code")): item for item in symbols_info if isinstance(item, dict)}
+    confirmed_cap = _env_cap(STEP3_CONFIRMED_REVIEW_CAP, 3)
+    added = 0
+    for item in symbols_info:
+        if added >= confirmed_cap:
             break
-    return out
-
-
-def _allow_repair_springboard_review(step2_details: dict | None, trade_mode: MarketTradeMode | None) -> bool:
-    if not step2_details or _repair_springboard_review_cap() <= 0:
-        return False
-    mode = trade_mode or resolve_market_trade_mode(None)
-    return mode.mode == "repair_review" and not mode.allow_recommendation_write
-
-
-def _step3_repair_springboard_row(row: dict) -> dict:
-    out = dict(row)
-    confirmed = is_confirmed_step4_candidate(out)
-    out["selection_source"] = "l4_springboard"
-    out["source_type"] = "repair_springboard_review"
-    out["signal_status"] = "confirmed" if confirmed else "pending"
-    out["candidate_status"] = "修复复核候选"
-    out["selection_is_fill"] = False
-    out.setdefault("structure_reason", out.get("tag") or "修复期起跳板结构复核")
-    if not confirmed:
-        out.pop("confirm_reason", None)
-        out.pop("confirm_date", None)
-    return out
-
-
-def _repair_springboard_review_cap() -> int:
-    try:
-        return max(int(float(os.getenv(STEP3_REPAIR_REVIEW_SPRINGBOARD_CAP, "3"))), 0)
-    except (TypeError, ValueError):
-        return 3
+        code = code6(item.get("code")) if isinstance(item, dict) else ""
+        if not code or code in seen or not is_confirmed_step4_candidate(item):
+            continue
+        seen.add(code)
+        rows.append({**item, "input_order": len(rows)})
+        added += 1
+    for code in [code6(code) for code in step2_details.get("selected_for_ai", []) or []]:
+        item = by_code.get(code)
+        if not code or item is None or code in seen:
+            continue
+        seen.add(code)
+        rows.append({**item, "selection_source": "step2_selected_for_ai", "input_order": len(rows)})
+    return rows
 
 
 def is_recommendation_tracking_candidate(item: dict) -> bool:
@@ -325,9 +285,28 @@ def _dedupe_tracking_symbols(rows: list[dict]) -> list[dict]:
             continue
         row["code"] = code
         old = best.get(code)
-        if old is None or _tracking_rank(row) > _tracking_rank(old):
+        if old is None:
             best[code] = row
+            continue
+        preferred, other = (row, old) if _tracking_rank(row) > _tracking_rank(old) else (old, row)
+        best[code] = _merge_tracking_signals(preferred, other)
     return list(best.values())
+
+
+def _merge_tracking_signals(preferred: dict, other: dict) -> dict:
+    merged = dict(preferred)
+    signals: list[str] = []
+    for row in (preferred, other):
+        values = row.get("signal_types") or [row.get("primary_signal")]
+        for value in values:
+            signal = _clean_text(value).lower()
+            if signal and signal not in signals:
+                signals.append(signal)
+    merged["signal_types"] = signals
+    if len(signals) > 1 and _clean_text(merged.get("selection_source")).startswith("l4_springboard"):
+        prefix = "双形态共振" if len(signals) == 2 else "多形态共振"
+        merged["tag"] = f"{prefix}({'+'.join(signal.upper() for signal in signals)})"
+    return merged
 
 
 def _tracking_rank(row: dict) -> tuple[int, float]:
@@ -370,6 +349,7 @@ def mark_step3_recommendations(
     *,
     dry_run: bool,
     log_fn,
+    step3_verdicts: dict[str, str] | None = None,
 ) -> None:
     if dry_run:
         log_fn("预演模式: 跳过推荐记录AI标记", logs_path)
@@ -381,10 +361,13 @@ def mark_step3_recommendations(
             recommend_date=recommend_trade_date_int,
             ai_codes=step3_springboard_codes,
             springboard_updates=step3_springboard_updates,
+            step3_verdicts=step3_verdicts,
         )
+        verdict_counts = Counter((step3_verdicts or {}).values())
         log_fn(
             "推荐记录AI标记: "
-            f"ok={ai_mark_ok}, date={recommend_trade_date_int}, ai_count={len(step3_springboard_codes)}",
+            f"ok={ai_mark_ok}, date={recommend_trade_date_int}, ai_count={len(step3_springboard_codes)}, "
+            f"verdicts={dict(verdict_counts) or '无'}",
             logs_path,
         )
     except Exception as e:

@@ -51,7 +51,14 @@ def _rank(cells: list[GridCell]) -> list[RobustParamScore[GridCell]]:
 
 
 def _param_key(cell: GridCell) -> ParamKey:
-    return (cell.portfolio_style or "slot_equal_4", cell.hold, cell.stop_loss, cell.take_profit, cell.trailing_stop)
+    return (
+        cell.portfolio_style or "slot_equal_4",
+        cell.hold,
+        cell.stop_loss,
+        cell.take_profit,
+        cell.trailing_stop,
+        cell.trailing_activate,
+    )
 
 
 def _representative(cells: list[GridCell]) -> GridCell:
@@ -72,12 +79,12 @@ def _neighbors(
     ranked: list[RobustParamScore[GridCell]],
 ) -> list[RobustParamScore[GridCell]]:
     candidates = [score for score in ranked if score.key != anchor.key and score.key[0] == anchor.key[0]]
-    value_sets = [sorted({score.key[idx] for score in ranked if score.key[0] == anchor.key[0]}) for idx in range(1, 5)]
+    value_sets = [sorted({score.key[idx] for score in ranked if score.key[0] == anchor.key[0]}) for idx in range(1, 6)]
     return [score for score in candidates if _adjacent(anchor.key, score.key, value_sets)]
 
 
 def _adjacent(anchor: ParamKey, candidate: ParamKey, value_sets: list[list[int]]) -> bool:
-    differing = [idx for idx in range(1, 5) if anchor[idx] != candidate[idx]]
+    differing = [idx for idx in range(1, 6) if anchor[idx] != candidate[idx]]
     if len(differing) != 1:
         return False
     idx = differing[0]
@@ -127,13 +134,14 @@ def _summary(
 
 
 def _score_payload(score: RobustParamScore[GridCell]) -> dict[str, Any]:
-    style, hold, stop_loss, take_profit, trailing_stop = score.key
+    style, hold, stop_loss, take_profit, trailing_stop, trailing_activate = score.key
     return {
         "portfolio_style": style,
         "hold_days": hold,
         "stop_loss_pct": -stop_loss if stop_loss else 0,
         "take_profit_pct": take_profit,
         "trailing_stop_pct": -trailing_stop if trailing_stop else 0,
+        "trailing_activate_pct": trailing_activate,
         "period_count": score.period_count,
         "positive_periods": score.positive_periods,
         "avg_cash_return": _round(score.avg_cash_return),

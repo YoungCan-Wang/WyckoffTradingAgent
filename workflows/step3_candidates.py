@@ -188,18 +188,15 @@ def _load_step3_financial_map(items: list[dict]) -> dict[str, dict]:
 
 
 def _fetch_tickflow_financial_map(items: list[dict], api_key: str) -> dict[str, dict]:
-    from integrations.tickflow_client import TickFlowClient
+    from integrations.tickflow_client import fetch_financial_metric_map
 
-    client = TickFlowClient(api_key=api_key)
     codes = [str(i["code"]) for i in items if i.get("code")]
     print(f"[step3] TickFlow 财务指标请求: symbols={len(codes)}")
-    raw_fin = client.get_financial_metrics(codes, latest=True)
-    financial_map = {sym: records[0] for sym, records in raw_fin.items() if records}
-    missing = max(len(codes) - len(financial_map), 0)
-    sample_missing = ",".join(sorted([s for s in codes if s not in financial_map])[:8])
+    financial_map = fetch_financial_metric_map(api_key, codes)
+    missing_codes = sorted(set(codes) - set(financial_map))
     print(
-        f"[step3] TickFlow 财务指标: {len(financial_map)}/{len(codes)}, "
-        f"missing={missing}, sample_missing={sample_missing or '-'}"
+        f"[step3] TickFlow 财务指标: {len(codes) - len(missing_codes)}/{len(codes)}, "
+        f"missing={len(missing_codes)}, sample_missing={','.join(missing_codes[:8]) or '-'}"
     )
     return financial_map
 

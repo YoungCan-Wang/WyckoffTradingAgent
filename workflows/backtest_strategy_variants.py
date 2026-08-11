@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from core.a_share_entry_research import AShareEntryResearchPolicy
 
 VARIANT_LABELS = {
@@ -17,10 +19,9 @@ VARIANT_LABELS = {
     "I": "A股实证：按历史命中先验重排确认信号",
     "M": "A股实证：弱水温信号缩仓",
     "P": "A股实证：M + NEUTRAL Spring 缩仓至 25%",
-    "Q": "A股实证：P + NEUTRAL Spring 需广度确认",
 }
 
-DEFAULT_COMPARISON_VARIANTS = ("A", "M", "P", "Q")
+DEFAULT_COMPARISON_VARIANTS = ("A", "M", "P")
 
 _ALL_SWITCHES = {
     "dist_upthrust_enabled": False,
@@ -46,7 +47,6 @@ _VARIANT_SWITCHES = {
     "I": {},
     "M": {},
     "P": {},
-    "Q": {},
 }
 
 _WEAK_REGIME_WEIGHTS = (
@@ -74,10 +74,6 @@ _ENTRY_POLICIES = {
     "I": AShareEntryResearchPolicy(calibrate_confirmed_score=True),
     "M": AShareEntryResearchPolicy(entry_weight_multipliers=_WEAK_REGIME_WEIGHTS),
     "P": AShareEntryResearchPolicy(entry_weight_multipliers=_LOWER_NEUTRAL_SPRING_WEIGHTS),
-    "Q": AShareEntryResearchPolicy(
-        entry_weight_multipliers=_LOWER_NEUTRAL_SPRING_WEIGHTS,
-        require_neutral_spring_breadth_confirmation=True,
-    ),
 }
 
 
@@ -85,7 +81,7 @@ def normalize_strategy_variant(raw: str) -> str:
     value = str(raw or "live").strip()
     normalized = value.upper() if value.lower() != "live" else "live"
     if normalized not in VARIANT_LABELS:
-        raise ValueError("strategy_variant 必须是 live / A / B / C / D / E / F / G / H / I / M / P / Q")
+        raise ValueError("strategy_variant 必须是 live / A / B / C / D / E / F / G / H / I / M / P")
     return normalized
 
 
@@ -96,9 +92,18 @@ def strategy_variant_overrides(raw: str) -> dict[str, object]:
     return {**_ALL_SWITCHES, **_VARIANT_SWITCHES[variant]}
 
 
-def strategy_variant_label(raw: str) -> str:
-    return VARIANT_LABELS[normalize_strategy_variant(raw)]
-
-
 def strategy_variant_entry_policy(raw: str) -> AShareEntryResearchPolicy:
     return _ENTRY_POLICIES.get(normalize_strategy_variant(raw), AShareEntryResearchPolicy())
+
+
+def strategy_variants_share_signal_ledger(raw_variants: list[str]) -> bool:
+    variants = [normalize_strategy_variant(raw) for raw in raw_variants]
+    if not variants:
+        return False
+    first_overrides = strategy_variant_overrides(variants[0])
+    first_policy = replace(strategy_variant_entry_policy(variants[0]), entry_weight_multipliers=())
+    return all(
+        strategy_variant_overrides(variant) == first_overrides
+        and replace(strategy_variant_entry_policy(variant), entry_weight_multipliers=()) == first_policy
+        for variant in variants[1:]
+    )

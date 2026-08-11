@@ -29,6 +29,7 @@ from core.layer2_strength import (
     build_rps_context,
     evaluate_layer2_symbol,
 )
+from core.limit_move import is_st_risk_warning
 from core.main_force_signal import analyze_main_force_signal
 from core.mainline_engine import MainlineEngineConfig, build_mainline_candidates, mainline_candidate_entries
 from core.price_targets import compute_price_targets
@@ -230,10 +231,10 @@ class FunnelConfig:
     lps_lookback: int = 3
     lps_ma: int = 20
     lps_ma_tolerance: float = 0.02
-    lps_vol_dry_ratio: float = 0.50
+    lps_vol_dry_ratio: float = 0.65
     lps_vol_ref_window: int = 60
     lps_ma_rising_window: int = 5
-    lps_creek_confirmation_enabled: bool = False
+    lps_creek_confirmation_enabled: bool = True
     lps_creek_lookback: int = 60
     lps_creek_breakout_lookback: int = 15
     lps_creek_swing_window: int = 3
@@ -531,8 +532,7 @@ def layer1_filter(
     for sym in symbols:
         if cfg.require_cn_main_or_chinext and not is_supported_cn_board(sym, include_bse=cfg.include_bse_board):
             continue
-        name = name_map.get(sym, "")
-        if "ST" in name.upper():
+        if is_st_risk_warning(sym, name_map.get(sym, "")):
             continue
         if not _market_cap_ok(sym, market_cap_map, df_map, cfg):
             continue
@@ -1167,12 +1167,12 @@ def _detect_lps(df: pd.DataFrame, cfg: FunnelConfig, max_bias_200: float | None 
     if abs(low_near_ma - last_ma) / last_ma > cfg.lps_ma_tolerance:
         return None
 
-    recent_max_vol = recent["volume"].max()
+    recent_typical_vol = pd.to_numeric(recent["volume"], errors="coerce").median()
     ref_window_df = df_s.tail(cfg.lps_vol_ref_window + cfg.lps_lookback).iloc[: -cfg.lps_lookback]
-    ref_max_vol = ref_window_df["volume"].max() if not ref_window_df.empty else 0
-    if ref_max_vol <= 0:
+    ref_typical_vol = pd.to_numeric(ref_window_df["volume"], errors="coerce").median() if not ref_window_df.empty else 0
+    if ref_typical_vol <= 0:
         return None
-    vol_ratio = recent_max_vol / ref_max_vol
+    vol_ratio = recent_typical_vol / ref_typical_vol
     if vol_ratio > cfg.lps_vol_dry_ratio:
         return None
     if cfg.lps_creek_confirmation_enabled and not _lps_creek_confirmed(df_s, cfg):
@@ -2989,6 +2989,7 @@ def _mainline_entries_for_result(
         l1_passed=l1,
         l2_passed=l2,
         concept_map=concept_map or {},
+        sector_map=sector_map or {},
         concept_heat=concept_heat or [],
         theme_radar=theme_radar or {},
         theme_activity=theme_activity,

@@ -10,7 +10,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -23,11 +25,30 @@ from core.constants import (
     TABLE_TRADE_ORDERS,
     TABLE_USER_SETTINGS,
 )
+from core.trade_fill import Fill, Holding, apply_fill
 from integrations.supabase_base import create_admin_client as _get_supabase_admin_client
 from integrations.supabase_base import is_admin_configured as is_supabase_configured
 from integrations.supabase_base import require_server_write_context
 
 logger = logging.getLogger(__name__)
+
+# Partial commit after position write. Must not embed upstream auth/JWT text — callers
+# that auth-retry on keyword match would otherwise re-apply the same fill.
+PARTIAL_FILL_WRITE_MSG = "持仓已更新但现金写入失败，请手动核对可用现金，勿重复回填同一笔成交"
+
+
+@dataclass(frozen=True)
+class FillWriteResult:
+    ok: bool
+    message: str
+    position_committed: bool = False
+
+
+@dataclass(frozen=True)
+class EquityRefreshResult:
+    ok: bool
+    total_equity: float | None
+    message: str
 
 
 def load_user_settings_admin(user_id: str) -> dict[str, Any] | None:
@@ -61,10 +82,12 @@ def compute_portfolio_state_signature(
     free_cash: float | int | None,
     positions: list[dict[str, Any]] | None,
 ) -> str:
+    from core.portfolio_symbol import normalize_portfolio_code
+
     normalized_positions: list[dict[str, Any]] = []
     for row in positions or []:
-        code = str(row.get("code", "") or "").strip()
-        if not re.fullmatch(r"\d{6}", code):
+        code = normalize_portfolio_code(str(row.get("code", "") or ""))
+        if not code:
             continue
         normalized_positions.append(
             {
@@ -243,6 +266,39 @@ def check_daily_run_exists(
         return False
 
 
+def set_position_stops(
+    portfolio_id: str,
+    updates: list[dict[str, Any]],
+    client: Client | None = None,
+) -> tuple[bool, int]:
+    """按用户 JWT 写止损价，只碰 stop_loss 列。返回 (成功, 写入条数)。
+
+    与 update_position_stops 的区别：那个走 server_job admin 上下文（Step4 用），
+    这个走用户自己的 client，供 CLI/桌面端的 set_stop_loss 工具调用。
+    """
+    if not updates:
+        return True, 0
+    try:
+        write_client = _resolve_write_client(client, "set portfolio stop losses")
+        written = 0
+        for item in updates:
+            code = str(item.get("code") or "").strip()
+            if not code or "stop_loss" not in item:
+                continue
+            (
+                write_client.table(TABLE_PORTFOLIO_POSITIONS)
+                .update({"stop_loss": item.get("stop_loss")})
+                .eq("portfolio_id", portfolio_id)
+                .eq("code", code)
+                .execute()
+            )
+            written += 1
+        return True, written
+    except Exception as e:
+        logger.warning("[supabase_portfolio] set_position_stops failed: %s", e)
+        return False, 0
+
+
 def update_position_stops(portfolio_id: str, updates: list[dict[str, Any]]) -> bool:
     """
     批量更新持仓止损价。
@@ -257,12 +313,11 @@ def update_position_stops(portfolio_id: str, updates: list[dict[str, Any]]) -> b
         # 若量大可考虑其它方式，目前持仓数不多，循环即可
         for item in updates:
             code = item.get("code")
-            stop_loss = item.get("stop_loss")
-            if not code or stop_loss is None:
+            if not code or "stop_loss" not in item:
                 continue
             (
                 client.table(TABLE_PORTFOLIO_POSITIONS)
-                .update({"stop_loss": stop_loss})
+                .update({"stop_loss": item.get("stop_loss")})
                 .eq("portfolio_id", portfolio_id)
                 .eq("code", code)
                 .execute()
@@ -290,15 +345,71 @@ def _resolve_write_client(client: Client | None, operation: str) -> Client:
     return _get_supabase_admin_client()
 
 
-def upsert_position(portfolio_id: str, position: dict[str, Any], client: Client | None = None) -> tuple[bool, str]:
+def refresh_portfolio_total_equity(
+    portfolio_id: str,
+    client: Client | None = None,
+) -> EquityRefreshResult:
+    """Revalue every holding at the latest quote and persist the CNY total."""
+    from core.portfolio_valuation import calculate_portfolio_valuation
+    from integrations.portfolio_market_value import load_portfolio_marks
+
+    try:
+        client = _resolve_write_client(client, "refresh portfolio total equity")
+        state = load_portfolio_state(portfolio_id, client=client)
+        if state is None:
+            return EquityRefreshResult(False, None, f"未找到组合 {portfolio_id}")
+        positions = list(state.get("positions") or [])
+        if positions:
+            api_key = _portfolio_tickflow_key(portfolio_id, client)
+            if not api_key:
+                return EquityRefreshResult(False, None, "未配置 TickFlow API Key")
+            prices, rates = load_portfolio_marks(positions, api_key)
+        else:
+            prices, rates = {}, {"CNY": 1.0}
+        valuation = calculate_portfolio_valuation(float(state.get("free_cash", 0.0) or 0.0), positions, prices, rates)
+        payload = {"total_equity": valuation.total_equity, "updated_at": datetime.now(UTC).isoformat()}
+        client.table(TABLE_PORTFOLIOS).update(payload).eq("portfolio_id", portfolio_id).execute()
+        return EquityRefreshResult(True, valuation.total_equity, f"总权益已刷新为 {valuation.total_equity:,.2f}")
+    except Exception as exc:
+        logger.warning("[supabase_portfolio] refresh total_equity failed: %s", exc)
+        return EquityRefreshResult(False, None, str(exc))
+
+
+def _portfolio_tickflow_key(portfolio_id: str, client: Client) -> str:
+    fallback = os.getenv("TICKFLOW_API_KEY", "").strip()
+    prefix, separator, user_id = str(portfolio_id or "").partition(":")
+    if prefix != "USER_LIVE" or not separator or not user_id:
+        return fallback
+    response = client.table(TABLE_USER_SETTINGS).select("tickflow_api_key").eq("user_id", user_id).limit(1).execute()
+    rows = response.data or []
+    return str(rows[0].get("tickflow_api_key", "") or "").strip() if rows else fallback
+
+
+def _mutation_message(message: str, portfolio_id: str, client: Client, refresh_equity: bool) -> str:
+    if not refresh_equity:
+        return message
+    refreshed = refresh_portfolio_total_equity(portfolio_id, client=client)
+    suffix = refreshed.message if refreshed.ok else f"总权益刷新失败：{refreshed.message}"
+    return f"{message}；{suffix}"
+
+
+def upsert_position(
+    portfolio_id: str,
+    position: dict[str, Any],
+    client: Client | None = None,
+    *,
+    refresh_equity: bool = True,
+) -> tuple[bool, str]:
     """新增或更新单个持仓。
 
     position 需包含 code，可选 name/shares/cost_price/buy_dt/strategy。
     返回 (成功, 消息)。
     """
-    code = str(position.get("code", "")).strip()
-    if not code or len(code) != 6:
-        return False, f"无效的股票代码: {code}"
+    from core.portfolio_symbol import normalize_portfolio_code
+
+    code = normalize_portfolio_code(str(position.get("code", "")))
+    if not code:
+        return False, f"无效的股票代码: {position.get('code', '')}"
     try:
         client = _resolve_write_client(client, "upsert portfolio position")
         _ensure_portfolio_exists(portfolio_id, client)
@@ -313,31 +424,138 @@ def upsert_position(portfolio_id: str, position: dict[str, Any], client: Client 
         if buy_dt:
             row["buy_dt"] = buy_dt
         client.table(TABLE_PORTFOLIO_POSITIONS).upsert(row, on_conflict="portfolio_id,code").execute()
-        return True, f"{code} 已更新"
+        return True, _mutation_message(f"{code} 已更新", portfolio_id, client, refresh_equity)
     except Exception as e:
         logger.warning("[supabase_portfolio] upsert_position failed: %s", e)
         return False, str(e)
 
 
-def delete_position(portfolio_id: str, code: str, client: Client | None = None) -> tuple[bool, str]:
+def delete_position(
+    portfolio_id: str,
+    code: str,
+    client: Client | None = None,
+    *,
+    refresh_equity: bool = True,
+) -> tuple[bool, str]:
     """删除单个持仓。"""
-    code = code.strip()
+    from core.portfolio_symbol import normalize_portfolio_code
+
+    code = normalize_portfolio_code(code) or str(code or "").strip().upper()
     try:
         client = _resolve_write_client(client, "delete portfolio position")
         client.table(TABLE_PORTFOLIO_POSITIONS).delete().eq("portfolio_id", portfolio_id).eq("code", code).execute()
-        return True, f"{code} 已删除"
+        return True, _mutation_message(f"{code} 已删除", portfolio_id, client, refresh_equity)
     except Exception as e:
         logger.warning("[supabase_portfolio] delete_position failed: %s", e)
         return False, str(e)
 
 
-def update_free_cash(portfolio_id: str, free_cash: float, client: Client | None = None) -> tuple[bool, str]:
+def _canonicalize_fill(fill: Fill) -> Fill | None:
+    """CLI 可能传入大小写/补零不一致的港美代码；写路径必须先收成账本规范码。"""
+    from core.portfolio_symbol import normalize_portfolio_code
+
+    code = normalize_portfolio_code(fill.code)
+    if not code:
+        return None
+    if code == fill.code:
+        return fill
+    return Fill(
+        code=code,
+        side=fill.side,
+        shares=fill.shares,
+        price=fill.price,
+        trade_date=fill.trade_date,
+        name=fill.name,
+    )
+
+
+def _find_position_for_fill(positions: list[dict[str, Any]], code: str) -> dict[str, Any] | None:
+    from core.portfolio_symbol import normalize_portfolio_code
+
+    for row in positions:
+        raw = str(row.get("code", "") or "").strip()
+        if (normalize_portfolio_code(raw) or raw.upper()) == code:
+            return row
+    return None
+
+
+def record_fill(portfolio_id: str, fill: Fill, client: Client | None = None) -> FillWriteResult:
+    """把一笔真实成交写回持仓与现金。
+
+    先读当前状态再算，所以必须串行调用；同一账户并发回填会互相覆盖。人工录入的
+    使用场景下这个约束是成立的，换成自动对接券商前需要改成带版本号的乐观锁。
+    """
+    fill = _canonicalize_fill(fill)
+    if fill is None:
+        return FillWriteResult(False, "无效的股票代码：A股用6位数字，港股用00700.HK，美股用AAPL.US")
+    try:
+        client = _resolve_write_client(client, "record trade fill")
+        state = load_portfolio_state(portfolio_id, client=client)
+        if state is None:
+            return FillWriteResult(False, f"未找到组合 {portfolio_id}")
+        row = _find_position_for_fill(state["positions"], fill.code)
+        holding = (
+            Holding(
+                code=fill.code,
+                name=str(row.get("name", "") or ""),
+                shares=int(row.get("shares", 0) or 0),
+                cost_price=float(row.get("cost", 0) or 0),
+                buy_dt=str(row.get("buy_dt", "") or ""),
+            )
+            if row
+            else None
+        )
+        result = apply_fill(holding, float(state["free_cash"]), fill)
+    except ValueError as exc:
+        return FillWriteResult(False, str(exc))
+    except Exception as exc:
+        logger.warning("[supabase_portfolio] record_fill failed: %s", exc)
+        return FillWriteResult(False, str(exc))
+
+    if result.holding is None:
+        ok, msg = delete_position(portfolio_id, fill.code, client=client, refresh_equity=False)
+    else:
+        ok, msg = upsert_position(
+            portfolio_id,
+            {
+                "code": result.holding.code,
+                "name": result.holding.name,
+                "shares": result.holding.shares,
+                "cost_price": result.holding.cost_price,
+                "buy_dt": result.holding.buy_dt,
+            },
+            client=client,
+            refresh_equity=False,
+        )
+    if not ok:
+        return FillWriteResult(False, f"持仓写入失败：{msg}")
+    ok, msg = update_free_cash(portfolio_id, result.cash, client=client, refresh_equity=False)
+    if not ok:
+        logger.warning("[supabase_portfolio] cash write failed after position update: %s", msg)
+        return FillWriteResult(False, PARTIAL_FILL_WRITE_MSG, position_committed=True)
+    refresh = refresh_portfolio_total_equity(portfolio_id, client=client)
+    refresh_msg = refresh.message if refresh.ok else f"总权益刷新失败：{refresh.message}"
+    return FillWriteResult(
+        True,
+        f"{result.note}；可用现金 {result.cash:,.2f}；{refresh_msg}",
+        position_committed=True,
+    )
+
+
+def update_free_cash(
+    portfolio_id: str,
+    free_cash: float,
+    client: Client | None = None,
+    *,
+    refresh_equity: bool = True,
+) -> tuple[bool, str]:
     """更新可用资金。"""
     try:
         client = _resolve_write_client(client, "update portfolio cash")
         _ensure_portfolio_exists(portfolio_id, client)
         client.table(TABLE_PORTFOLIOS).update({"free_cash": free_cash}).eq("portfolio_id", portfolio_id).execute()
-        return True, f"可用资金已更新为 {free_cash:,.2f}"
+        message = f"可用资金已更新为 {free_cash:,.2f}"
+        return True, _mutation_message(message, portfolio_id, client, refresh_equity)
     except Exception as e:
         logger.warning("[supabase_portfolio] update_free_cash failed: %s", e)
         return False, str(e)
@@ -396,6 +614,8 @@ def cancel_trade_orders(
     portfolio_id: str,
     trade_date: str,
     exclude_run_id: str | None = None,
+    only_run_id: str | None = None,
+    raise_on_error: bool = False,
 ) -> int:
     if not is_supabase_configured():
         return 0
@@ -409,7 +629,9 @@ def cancel_trade_orders(
             .eq("trade_date", trade_date)
             .limit(500)
         )
-        if exclude_run_id:
+        if only_run_id:
+            query = query.eq("run_id", only_run_id)
+        elif exclude_run_id:
             query = query.neq("run_id", exclude_run_id)
         rows = query.execute().data or []
         active_ids = [row["id"] for row in rows if _is_active_trade_order_status(row.get("status"))]
@@ -418,7 +640,29 @@ def cancel_trade_orders(
         return len(active_ids)
     except Exception as e:
         logger.warning("[supabase_portfolio] cancel_trade_orders failed: %s", e)
+        if raise_on_error:
+            raise
         return 0
+
+
+def load_recent_trade_orders(portfolio_id: str, *, limit: int = 200) -> list[dict]:
+    """近期工单，用于识别反复发出却没被执行的离场建议。"""
+    if not is_supabase_configured():
+        return []
+    try:
+        client = _get_supabase_admin_client()
+        resp = (
+            client.table(TABLE_TRADE_ORDERS)
+            .select("code,name,action,status,trade_date")
+            .eq("portfolio_id", portfolio_id)
+            .order("trade_date", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return list(resp.data or [])
+    except Exception as e:
+        logger.warning("[supabase_portfolio] load_recent_trade_orders failed: %s", e)
+        return []
 
 
 def upsert_daily_nav(

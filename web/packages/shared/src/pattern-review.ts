@@ -46,7 +46,9 @@ function formatCount(value: number | null | undefined): number {
 
 export function patternReviewRole(row: PatternReviewRow): string {
   if (row.source_type === 'signal_pending') {
-    return row.signal_status === 'confirmed' ? '已确认信号' : '待确认信号'
+    if (row.signal_status === 'confirmed') return '已确认信号'
+    if (row.signal_status === 'survived') return '跨日存活信号'
+    return '待确认信号'
   }
   return isAiRecommended(row.is_ai_recommended) ? 'AI推荐' : '观察/信号复盘'
 }
@@ -98,4 +100,94 @@ export function formatPatternReviewDigest(rows: PatternReviewRow[]): string {
   if (rows.length === 0) return PATTERN_REVIEW_EMPTY_MESSAGE
   const lines = rows.map(formatPatternReviewLine)
   return `最近 ${rows.length} 条形态复盘记录：${PATTERN_REVIEW_SCOPE_NOTE}\n\n${lines.join('\n')}`
+}
+
+export interface DedupeTrackingRow {
+  code: string | number
+  recommend_date: string | number
+  recommend_count?: number | null
+  initial_price?: number | null
+  current_price?: number | null
+  change_pct?: number | null
+  is_ai_recommended?: boolean | number | string | null
+  rag_vetoed?: boolean | null
+  funnel_score?: number | null
+  source_type?: string | null
+}
+
+function reviewDateNumber(value: string | number): number {
+  const digits = String(value ?? '').replaceAll(/[^\d]/g, '')
+  return digits ? Number(digits.slice(0, 8)) : 0
+}
+
+function positivePrice(value: number | null | undefined): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null
+}
+
+function trackingSourcePriority(row: DedupeTrackingRow): number {
+  return row.source_type === 'signal_pending' ? 1 : 2
+}
+
+export function preferTrackingRow(next: DedupeTrackingRow, current: DedupeTrackingRow): boolean {
+  const nextDate = reviewDateNumber(next.recommend_date)
+  const currentDate = reviewDateNumber(current.recommend_date)
+  if (nextDate !== currentDate) return nextDate > currentDate
+  const sourceDelta = trackingSourcePriority(next) - trackingSourcePriority(current)
+  if (sourceDelta !== 0) return sourceDelta > 0
+  const nextAi = isAiRecommended(next.is_ai_recommended)
+  const currentAi = isAiRecommended(current.is_ai_recommended)
+  if (nextAi !== currentAi) return nextAi
+  return (next.funnel_score ?? -Infinity) > (current.funnel_score ?? -Infinity)
+}
+
+function stickyInitialPrice(preferred: DedupeTrackingRow, other: DedupeTrackingRow): number | null {
+  const trackingPrices = [preferred, other]
+    .filter((row) => row.source_type !== 'signal_pending')
+    .map((row) => ({ date: reviewDateNumber(row.recommend_date), price: positivePrice(row.initial_price) }))
+    .filter((row): row is { date: number; price: number } => row.price != null)
+    .sort((a, b) => a.date - b.date)
+  if (trackingPrices[0]) return trackingPrices[0].price
+  return positivePrice(preferred.initial_price) ?? positivePrice(other.initial_price)
+}
+
+function mergeTrackingPrices<T extends DedupeTrackingRow>(preferred: T, other: T): T {
+  const initialPrice = stickyInitialPrice(preferred, other)
+  const currentPrice = positivePrice(preferred.current_price) ?? positivePrice(other.current_price)
+  let changePct = preferred.change_pct ?? null
+  if (currentPrice != null && (positivePrice(preferred.current_price) == null || preferred.change_pct == null)) {
+    if (initialPrice != null) {
+      changePct = Number((((currentPrice - initialPrice) / initialPrice) * 100).toFixed(2))
+    } else if (other.change_pct != null) {
+      changePct = other.change_pct
+    }
+  }
+  return {
+    ...preferred,
+    initial_price: initialPrice ?? preferred.initial_price ?? null,
+    current_price: currentPrice ?? preferred.current_price ?? null,
+    change_pct: changePct,
+  }
+}
+
+/** 按 code 去重：较新日期优先；同日 tracking 优于 signal_pending；价格字段从 tracking 行补齐。 */
+export function dedupeTrackingRows<T extends DedupeTrackingRow>(rows: T[]): T[] {
+  const byCode = new Map<string, T>()
+  for (const row of rows) {
+    const key = normalizeCode(row.code)
+    const existing = byCode.get(key)
+    if (!existing) {
+      byCode.set(key, { ...row, recommend_count: formatCount(row.recommend_count) })
+      continue
+    }
+    const preferred = preferTrackingRow(row, existing) ? row : existing
+    const other = preferred === row ? existing : row
+    const merged = mergeTrackingPrices(preferred, other)
+    byCode.set(key, {
+      ...merged,
+      is_ai_recommended: isAiRecommended(existing.is_ai_recommended) || isAiRecommended(row.is_ai_recommended),
+      rag_vetoed: Boolean(existing.rag_vetoed || row.rag_vetoed),
+      recommend_count: Math.max(formatCount(existing.recommend_count), formatCount(row.recommend_count)),
+    })
+  }
+  return [...byCode.values()]
 }

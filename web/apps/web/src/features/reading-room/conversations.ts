@@ -1,6 +1,7 @@
 import * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 import type { UIMessage } from 'ai'
+import { removeSupersededToolApprovals } from '@wyckoff/shared'
 import { assistantText, isToolPart, messageText, type MessagePart } from './messages'
 import { asRecord, sanitizeText } from './utils'
 
@@ -216,18 +217,34 @@ export function replaceConversationToolOutput(
   toolCallId: string,
   output: unknown,
 ): UIMessage[] {
-  let changed = false
-  const next = messages.map((message) => {
+  const normalized = removeSupersededToolApprovals(messages)
+  const matches = normalized.flatMap((message, messageIndex) => message.role === 'assistant'
+    ? message.parts.flatMap((part, partIndex) => {
+      const tool = part as MessagePart
+      return isToolPart(tool) && tool.toolCallId === toolCallId
+        ? [{ messageIndex, partIndex, state: tool.state }]
+        : []
+    })
+    : [])
+  const canonical = matches.findLast((match) => match.state === 'output-available' || match.state === 'output-error')
+  if (!canonical) return messages
+
+  let changed = normalized !== messages
+  const next = normalized.flatMap((message, messageIndex) => {
     if (message.role !== 'assistant') return message
     let messageChanged = false
-    const parts = message.parts.map((part) => {
+    const parts = message.parts.flatMap((part, partIndex) => {
       const tool = part as MessagePart
-      if (!isToolPart(tool) || tool.toolCallId !== toolCallId) return part
+      if (!isToolPart(tool) || tool.toolCallId !== toolCallId) return [part]
+      if (messageIndex !== canonical.messageIndex || partIndex !== canonical.partIndex) return [part]
+      if (tool.state === 'output-available' && tool.output === output) return [part]
       changed = true
       messageChanged = true
-      return { ...tool, state: 'output-available' as const, output, errorText: undefined } as MessagePart
+      return [{ ...tool, state: 'output-available' as const, output, errorText: undefined } as MessagePart]
     })
-    return messageChanged ? { ...message, parts } as UIMessage : message
+    messageChanged ||= parts.length !== message.parts.length
+    if (parts.length === 0) return []
+    return [messageChanged ? { ...message, parts } as UIMessage : message]
   })
   return changed ? next : messages
 }

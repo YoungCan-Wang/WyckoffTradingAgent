@@ -143,6 +143,7 @@ class WyckoffOrderEngine:
         market_regime: str | None = None,
         config: Step4OrderConfig | None = None,
         trade_date: str = "",
+        stale_exit_codes: frozenset[str] = frozenset(),
     ) -> None:
         self.total_equity = float(max(total_equity, 0.0))
         self.free_cash = float(max(free_cash, 0.0))
@@ -150,6 +151,7 @@ class WyckoffOrderEngine:
         self.latest_price_map = latest_price_map
         self.atr_map = atr_map or {}
         self.trade_date = trade_date
+        self.stale_exit_codes = stale_exit_codes
         self.market_regime = normalize_regime(market_regime)
         self.config = config or DEFAULT_STEP4_ORDER_CONFIG
         probe_limit = self.config.probe_budget_limit
@@ -198,6 +200,8 @@ class WyckoffOrderEngine:
             effective_stop_loss=effective_stop_loss,
             slippage_bps=self.SLIPPAGE_BPS,
             audit="; ".join(audit_parts + ["hold"]),
+            signal_severity=dec.signal_severity,
+            action_timing=dec.action_timing,
             wyckoff_context=_decision_wyckoff_context(dec),
         )
 
@@ -234,15 +238,37 @@ class WyckoffOrderEngine:
             ctx.audit_parts.append(f"tighter_by_pos_stop({ctx.effective_stop_loss:.2f}->{merged:.2f})")
         ctx.effective_stop_loss = merged
 
+    def _is_invalid_recent_decision_stop(self, ctx: OrderContext, stop_loss: float) -> bool:
+        if not ctx.pos or not ctx.pos.is_recent(self.trade_date, self.config.new_position_stop_guard_days):
+            return False
+        return stop_loss >= max(ctx.pos.cost, ctx.current_price)
+
+    def _guard_recent_decision_stop(self, ctx: OrderContext) -> None:
+        stop_loss = ctx.effective_stop_loss
+        if stop_loss is None or not self._is_invalid_recent_decision_stop(ctx, stop_loss):
+            return
+        ctx.audit_parts.append(f"reject_inverted_recent_decision_stop({stop_loss:.2f})")
+        ctx.effective_stop_loss = None
+        if ctx.action not in {"EXIT", "TRIM"}:
+            return
+        original_action = ctx.action
+        ctx.action = "HOLD"
+        ctx.dec.reason = (
+            f"新仓止损倒挂：{stop_loss:.2f} 不低于成本/现价，{original_action} 已降级为 HOLD；原建议: {ctx.dec.reason}"
+        )
+
     def _raise_stop_from_atr(self, ctx: OrderContext) -> None:
         if ctx.atr14 is None or ctx.atr14 <= 0:
             return
         trailing_stop = ctx.current_price - self.config.atr_multiplier * ctx.atr14
         if ctx.action in {"HOLD", "TRIM", "EXIT"}:
-            if ctx.effective_stop_loss is None or trailing_stop > ctx.effective_stop_loss:
+            if ctx.effective_stop_loss is None:
                 ctx.effective_stop_loss = trailing_stop
-                original = ctx.original_stop_loss if ctx.original_stop_loss is not None else float("nan")
-                ctx.audit_parts.append(f"atr_trailing_raise({original:.2f}->{ctx.effective_stop_loss:.2f})")
+                ctx.audit_parts.append(f"atr_trailing_init({trailing_stop:.2f})")
+            elif trailing_stop > ctx.effective_stop_loss:
+                original = ctx.effective_stop_loss
+                ctx.effective_stop_loss = trailing_stop
+                ctx.audit_parts.append(f"atr_trailing_raise({original:.2f}->{trailing_stop:.2f})")
         elif ctx.action in {"PROBE", "ATTACK"}:
             self._raise_entry_stop_from_atr(ctx, trailing_stop)
 
@@ -289,6 +315,7 @@ class WyckoffOrderEngine:
         ctx = self._build_order_context(dec)
         if isinstance(ctx, ExecutionTicket):
             return ctx
+        self._guard_recent_decision_stop(ctx)
         self._raise_stop_from_position(ctx)
         self._raise_stop_from_atr(ctx)
         self._raise_buy_stop_floor(ctx)
@@ -316,6 +343,11 @@ class WyckoffOrderEngine:
         fill_price = ctx.current_price * (1.0 - self.SLIPPAGE_BPS)
         proceeds = sell_shares * fill_price
         self.free_cash += proceeds
+        # Keep remaining inventory in sync so a second EXIT/TRIM for the same code
+        # cannot oversell or double-count simulated cash.
+        pos = self.position_map.get(ctx.dec.code)
+        if pos is not None:
+            pos.shares = max(int(pos.shares) - int(sell_shares), 0)
         return ExecutionTicket(
             code=ctx.dec.code,
             name=ctx.name,
@@ -336,6 +368,8 @@ class WyckoffOrderEngine:
             effective_stop_loss=ctx.effective_stop_loss,
             slippage_bps=self.SLIPPAGE_BPS,
             audit="; ".join(audit_parts),
+            signal_severity=ctx.dec.signal_severity,
+            action_timing=ctx.dec.action_timing,
             wyckoff_context=_decision_wyckoff_context(ctx.dec),
         )
 
@@ -554,6 +588,8 @@ class WyckoffOrderEngine:
             effective_stop_loss=ctx.effective_stop_loss,
             slippage_bps=slippage_abs / ctx.current_price if ctx.current_price > 0 else self.SLIPPAGE_BPS,
             audit="; ".join(audit),
+            signal_severity=ctx.dec.signal_severity,
+            action_timing=ctx.dec.action_timing,
             entry_zone_min=entry_zone_min,
             entry_zone_max=entry_zone_max,
             chase_profile=chase_profile,
@@ -561,6 +597,13 @@ class WyckoffOrderEngine:
         )
 
     def _process_buy(self, ctx: OrderContext) -> ExecutionTicket:
+        if ctx.action == "ATTACK" and self.stale_exit_codes and self.config.block_buy_on_stale_exit:
+            # 止损只有成交才算数。旧仓位已跌破止损却没离场，就没有资格上重仓；
+            # 小额 PROBE 仍放行——它自带硬止损且额度受限，一刀切会让闸门变成永久停摆。
+            pending = "、".join(sorted(self.stale_exit_codes))
+            return self._no_trade(
+                ctx.dec, ctx.name, f"已跌破止损却未离场（{pending}），只允许小额 PROBE，禁止 ATTACK 重仓"
+            )
         if ctx.action in {"PROBE", "ATTACK"} and self.market_regime in self.config.buy_block_regimes:
             return self._no_trade(ctx.dec, ctx.name, f"系统性风控拦截: regime={self.market_regime} 禁止买入")
         if ctx.action == "ATTACK" and self.market_regime in PROBE_ONLY_REGIMES:
@@ -617,6 +660,8 @@ class WyckoffOrderEngine:
             f"覆盖模型HOLD建议；原建议: {ctx.dec.reason}"
         )
         ctx.action = "EXIT"
+        ctx.dec.signal_severity = "HARD_RISK"
+        ctx.dec.action_timing = "NOW"
         ctx.audit_parts.append(f"system_stop_breach_override(price={ctx.current_price:.2f})")
         return self._sell_ticket(ctx, ctx.sellable_shares, ctx.audit_parts + ["forced_exit_stop_breach"])
 
@@ -641,5 +686,7 @@ class WyckoffOrderEngine:
             effective_stop_loss=dec.stop_loss,
             slippage_bps=self.SLIPPAGE_BPS,
             audit=f"reject:{reason}",
+            signal_severity=dec.signal_severity,
+            action_timing=dec.action_timing,
             wyckoff_context=_decision_wyckoff_context(dec),
         )

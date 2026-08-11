@@ -1,4 +1,6 @@
-import type { MarketWatchQuote, MarketWatchSnapshot } from '@wyckoff/shared'
+import type { LlmUsageMetrics, MarketWatchQuote, MarketWatchSnapshot } from '@wyckoff/shared'
+
+export type { LlmUsageMetrics }
 
 export interface WatchItem {
   id: string

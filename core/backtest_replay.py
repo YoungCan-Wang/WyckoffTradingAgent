@@ -33,7 +33,13 @@ from core.backtest_execution import (
     resolve_trade_exit,
 )
 from core.backtest_selection import combine_trigger_scores, select_ai_input_codes
-from core.candidate_policy import CandidatePolicyConfig, candidate_score_value
+from core.candidate_policy import (
+    CandidatePolicyConfig,
+    candidate_score_value,
+    loss_guard_reason,
+    trigger_sets_by_code,
+)
+from core.candidate_ranker import rank_l3_candidates
 from core.candidate_tracks import candidate_entry_track
 from core.mainline_engine import MainlineEngineConfig
 from core.market_breadth import calc_market_breadth
@@ -91,6 +97,16 @@ class BacktestReplayConfig:
     mainline_config: MainlineEngineConfig | None = None
     signal_weight_map: dict[str, float] = field(default_factory=dict)
     signal_weight_meta: dict[str, object] = field(default_factory=dict)
+    # 对跨日确认信号补跑损失护栏，与实盘 apply_loss_guard 对齐。
+    #
+    # 暂时默认关闭（2026-08-08）：机制已就位且语义已修正（只施加风险类护栏、
+    # 不套用"仅观察"规则），但 pure_*_min_score 这组阈值方向是反的——用 1983 笔
+    # 历史成交推演，被"低分 XXX"拦掉的标的均收 +0.075%／胜率 37.9%，放行的
+    # -2.777%／23.1%（Welch t=-4.51）。根因见 docs/SCORING_SYSTEM_AUDIT_2026_08.md：
+    # 分数体系把表现最差的 spring 打了最高分。
+    #
+    # 打开它会用方向错误的阈值污染回测结论，故先关闭；修好分数体系后再开。
+    enforce_confirmed_loss_guard: bool = False
     market_breadth_calculator: MarketBreadthCalculator | None = None
     market_regime_analyzer: MarketRegimeAnalyzer | None = None
     a_share_entry_research: AShareEntryResearchPolicy = field(default_factory=AShareEntryResearchPolicy)
@@ -150,7 +166,6 @@ class _ConfirmedSignals:
     score_map: dict[str, float]
     track_map: dict[str, str]
     trigger_map: dict[str, str]
-    entry_weight_map: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -160,8 +175,8 @@ class _RankedSelection:
     track_map: dict[str, str]
     trigger_name_map: dict[str, tuple[float, str]]
     confirmed_codes: frozenset[str] = field(default_factory=frozenset)
-    entry_weight_map: dict[str, float] = field(default_factory=dict)
     signal_type_map: dict[str, str] = field(default_factory=dict)
+    watch_score_map: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -378,8 +393,8 @@ def _limit_probe_only_selection(
             {code: selected.track_map[code] for code in kept if code in selected.track_map},
             {code: selected.trigger_name_map[code] for code in kept if code in selected.trigger_name_map},
             frozenset(code for code in kept if code in selected.confirmed_codes),
-            {code: selected.entry_weight_map[code] for code in kept if code in selected.entry_weight_map},
             {code: selected.signal_type_map[code] for code in kept if code in selected.signal_type_map},
+            {code: selected.watch_score_map[code] for code in kept if code in selected.watch_score_map},
         ),
         len(selected.codes) - 1,
     )
@@ -507,6 +522,11 @@ def _select_ranked_codes(
     config: BacktestReplayConfig,
 ) -> tuple[_RankedSelection | None, int]:
     confirmed = _confirmed_signals(ctx, pending_pool, sector_map, config.a_share_entry_research)
+    if config.enforce_confirmed_loss_guard:
+        guarded_codes, guard_dropped = _guarded_confirmed_codes(confirmed, ctx, config)
+        if guard_dropped:
+            logger.debug("confirmed 护栏拦截 %d 只: %s", len(guard_dropped), guard_dropped)
+        confirmed = replace(confirmed, codes=guarded_codes)
     selected_codes, score_map, track_map = select_ai_input_codes(
         result=ctx.result,
         day_df_map=ctx.day_df_map,
@@ -523,6 +543,7 @@ def _select_ranked_codes(
     ranked_codes = _apply_selection_guards(ranked_codes, ctx, config)
     if not ranked_codes:
         return None, len(confirmed.codes)
+    watch_score_map = _watch_score_map(ctx, sector_map)
     return (
         _RankedSelection(
             ranked_codes,
@@ -530,11 +551,32 @@ def _select_ranked_codes(
             track_map,
             _name_score_map(ctx.result, confirmed, prefer_confirmed=config.pending_mode == "only"),
             frozenset(confirmed.codes),
-            confirmed.entry_weight_map,
             confirmed.trigger_map,
+            watch_score_map,
         ),
         len(confirmed.codes),
     )
+
+
+def _watch_score_map(ctx: _DayContext, sector_map: dict[str, str]) -> dict[str, float]:
+    """L3 质量分（candidate_ranker.watch_score），仅用于排序有效性诊断。
+
+    它不参与回测决策：最终排序由 allocate_ai_candidates 决定，watch_score 在那里
+    只贡献 watch_score*8（上限 9.6），相对主升 +100 与触发分是小量。分列记录才能
+    区分"排序主体无效"与"质量分无效"。
+    """
+    try:
+        _, score_map = rank_l3_candidates(
+            l3_symbols=ctx.result.layer3_symbols,
+            df_map=ctx.day_df_map,
+            sector_map=sector_map,
+            triggers=ctx.result.triggers,
+            top_sectors=ctx.result.top_sectors,
+            l2_channel_map=ctx.result.channel_map,
+        )
+    except Exception:
+        return {}
+    return {str(k): float(v) for k, v in (score_map or {}).items()}
 
 
 def _confirmed_signals(
@@ -557,13 +599,12 @@ def _confirmed_signals(
     score_map: dict[str, float] = {}
     track_map: dict[str, str] = {}
     trigger_map: dict[str, str] = {}
-    entry_weight_map: dict[str, float] = {}
     for item in confirmed_items:
         signal_type = str(item.get("signal_type", "confirmed"))
         code = str(item.get("code", "")).strip()
         if not code:
             continue
-        if not confirmed_signal_allowed(research, signal_type, ctx.regime, breadth=ctx.breadth):
+        if not confirmed_signal_allowed(research, signal_type, ctx.regime):
             continue
         score = calibrated_confirmation_score(research, signal_type, item.get("score"))
         if code not in score_map:
@@ -572,9 +613,8 @@ def _confirmed_signals(
             score_map[code] = score
             track_map[code] = candidate_entry_track(item, fields=("track", "signal_type"))
             trigger_map[code] = signal_type
-            entry_weight_map[code] = entry_weight_multiplier(research, signal_type, ctx.regime)
     codes.sort(key=lambda code: (-candidate_score_value(score_map.get(code)), code))
-    return _ConfirmedSignals(codes, score_map, track_map, trigger_map, entry_weight_map)
+    return _ConfirmedSignals(codes, score_map, track_map, trigger_map)
 
 
 def _merge_confirmed_metadata(
@@ -587,6 +627,64 @@ def _merge_confirmed_metadata(
         if code not in score_map or score > candidate_score_value(score_map.get(code)):
             score_map[code] = score
             track_map[code] = confirmed.track_map.get(code, track_map.get(code, ""))
+
+
+def _guarded_confirmed_codes(
+    confirmed: _ConfirmedSignals,
+    ctx: _DayContext,
+    config: BacktestReplayConfig,
+) -> tuple[list[str], dict[str, str]]:
+    """对跨日确认信号补跑与其语义相容的损失护栏。
+
+    背景：回测的 confirmed 路径此前完全绕过 candidate_policy —— pending_mode="only"
+    时 _merge_codes 返回未经护栏的 confirmed，导致结构止损上限等护栏在回测中失效，
+    护栏类改动无法被验证。
+
+    但不能照搬实盘的全套护栏。PendingPool 以 (code, signal_type) 为键，且 tick()
+    返回的是【往日入池、今日才确认】的信号，因此：
+
+    1. 确认信号天然是单信号，ctx.result.triggers（当日命中）通常查不到它；
+    2. 对它套用「单 SOS/单 Spring/单 EVR/单 LPS/单 TrendPB 仅观察」在语义上是错的
+       —— 那些规则针对的是"未经确认的裸信号"，而确认流程已经额外要求守住信号位并
+       出现高收/缩量/转强。实测照搬会把 1983 笔打到 20 笔（88 天仅 3 笔），是误拦。
+
+    因此这里只施加与确认状态无关、纯风险维度的护栏：结构止损距离上限、市场环境、
+    过热与高位追涨。这些约束不因"跨日存活"而豁免。
+    """
+    if not confirmed.codes:
+        return [], {}
+    policy = config.candidate_policy or CandidatePolicyConfig()
+    # 关闭"仅观察"类规则：它们针对裸信号，对已确认信号不适用（见 docstring）。
+    risk_only_policy = replace(
+        policy,
+        pure_sos_observe_only=False,
+        pure_spring_observe_only=False,
+        pure_evr_observe_only=False,
+        pure_lps_observe_only=False,
+        pure_trendpb_observe_only=False,
+    )
+    trigger_sets = trigger_sets_by_code(ctx.result.triggers)
+    kept: list[str] = []
+    dropped: dict[str, str] = {}
+    for code in confirmed.codes:
+        keys = trigger_sets.get(code) or set()
+        if not keys:
+            single = str(confirmed.trigger_map.get(code, "") or "").strip()
+            keys = {single} if single else set()
+        reason = loss_guard_reason(
+            code,
+            ctx.regime,
+            keys,
+            candidate_score_value(confirmed.score_map.get(code)),
+            str(ctx.result.channel_map.get(code, "") or ""),
+            ctx.day_df_map,
+            config=risk_only_policy,
+        )
+        if reason:
+            dropped[code] = reason
+        else:
+            kept.append(code)
+    return kept, dropped
 
 
 def _merge_codes(selected: list[str], confirmed: list[str], pending_mode: str, merge_order: str) -> list[str]:
@@ -793,6 +891,8 @@ def _make_trade_record(
         name=name_map.get(code, code),
         trigger=trigger_name,
         score=candidate_score_value(selected.score_map.get(code)),
+        alloc_score=candidate_score_value(selected.score_map.get(code)),
+        watch_score=selected.watch_score_map.get(code),
         entry_close=plan.entry_close,
         exit_close=exit_close,
         ret_pct=(exit_exec - entry_exec) / entry_exec * 100.0 if entry_exec > 0 else 0.0,
@@ -804,7 +904,11 @@ def _make_trade_record(
         mfe_pct=mfe_pct,
         mae_pct=mae_pct,
         signal_confirmed=code in selected.confirmed_codes,
-        entry_weight_multiplier=selected.entry_weight_map.get(code, 1.0),
+        entry_weight_multiplier=entry_weight_multiplier(
+            config.a_share_entry_research,
+            selected.signal_type_map.get(code),
+            ctx.regime,
+        ),
     )
 
 

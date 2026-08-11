@@ -1,15 +1,23 @@
 name: Premarket Risk
 
 on:
-  # 定时 schedule 已停用：GitHub Actions 免费额度下 schedule 触发实测常延迟 3~5 小时
-  # （曾配置 UTC 00:20/北京 08:20，实际多在北京 11:36~13:35 才开始跑），完全错过开盘前窗口。
-  # 现由 Codex Automation 在工作日北京时间 08:20 调用 workflow_dispatch；Actions 页面仍可手动补跑。
-  # 此时 VIX 已随美股收盘稳定超过 1 小时以上，且给 09:30 开盘留出缓冲。
+  # 主路径：Codex Automation 在工作日北京时间 08:20 调用 workflow_dispatch，此时 VIX 已随美股
+  # 收盘稳定超过 1 小时，且给 09:30 开盘留出缓冲。Actions 页面仍可手动补跑。
+  #
+  # 兜底：schedule 只补 workflow_dispatch 漏掉的日子，带 --backstop 幂等短路。
+  # schedule 曾被完全停用，因为免费额度下实测延迟 3~5 小时（配 UTC 00:20 实际北京 11:36~13:35
+  # 才起跑），错过开盘前窗口。但盘前态的另一个消费方是 Step4（北京 20:15），迟到几小时对它毫无
+  # 影响——缺失才会让它降级成 UNKNOWN 禁买一整天。外部触发器实测连续 4 个周一周二未触发，
+  # 期间 Step4 因此禁买，故补上这条纯服务于 Step4 的兜底。
+  schedule:
+    - cron: "20 2 * * 1-5"
   workflow_dispatch:
 
 concurrency:
+  # 不取消在跑的任务：延迟的 schedule 兜底一旦排到 workflow_dispatch 前面就会把主路径掐掉。
+  # 排队等待反而自洽——兜底轮到自己时会读到主路径已写好的盘前态，直接短路退出。
   group: premarket-risk-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -51,9 +59,11 @@ jobs:
         run: mkdir -p logs
 
       - name: Run premarket risk job
+        env:
+          BACKSTOP: ${{ github.event_name == 'schedule' && '--backstop' || '' }}
         run: |
           set -o pipefail
-          python -u scripts/premarket_risk_job.py --logs ${{ github.workspace }}/logs/premarket_risk.log \
+          python -u scripts/premarket_risk_job.py --logs ${{ github.workspace }}/logs/premarket_risk.log $BACKSTOP \
             2>&1 | tee -a ${{ github.workspace }}/logs/premarket_risk.console.log
 
       - name: Upload artifacts

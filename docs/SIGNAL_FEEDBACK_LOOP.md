@@ -31,10 +31,10 @@ flowchart TD
     B --> C["Step2: run_funnel"]
     C --> D["读取上一轮<br/>signal_health_daily / signal_registry"]
     D --> E{"FUNNEL_DYNAMIC_POLICY"}
-    E -- "off" --> F1["静态 Trend / Accum 配额"]
-    E -- "shadow" --> F2["主流程仍用静态配额<br/>旁路计算动态候选"]
-    E -- "on" --> F3["动态配额 + registry 过滤"]
-    F1 --> G["Layer1-4 漏斗 + AI 候选分配"]
+    E -- "off" --> F1["不计算动态策略对照"]
+    E -- "shadow" --> F2["正式质量池不变<br/>旁路计算动态候选"]
+    E -- "on" --> F3["动态配额 + registry<br/>参与初始分配"]
+    F1 --> G["Layer1-4 漏斗 + 统一质量池"]
     F2 --> G
     F3 --> G
     G --> H["Step3: AI 三阵营研报"]
@@ -46,11 +46,13 @@ flowchart TD
 
   subgraph R["T 日 23:30：信号反馈"]
     L["signal_feedback.yml<br/>定时或手动触发"] --> M["scripts/signal_feedback_job.py"]
-    M --> N["读最近 signal_observations"]
-    N --> O["补行情并计算 1/3/5/10/20 日 outcomes"]
+    M --> N["读最近 observation<br/>并补入窗口外 pending"]
+    N --> O["仅保留缺失 / pending horizon<br/>同股共享一次 K 线"]
     O --> P["写 signal_outcomes"]
     P --> Q["聚合 signal_health_daily"]
     Q --> S["更新 signal_registry"]
+    S --> T{"周五或手动触发?"}
+    T -- "是" --> U["strategy_reflection_job<br/>Shadow 反思"]
   end
 
   J -. "同日稍后被读取；若还没完成则下次读取" .-> N
@@ -72,9 +74,9 @@ flowchart TD
 
 | 模式 | 主流程候选 | 额外落库 | 适用阶段 |
 |------|------------|----------|----------|
-| `off` | 静态配额 | 无 | 默认保守模式 |
-| `shadow` | 静态配额 | `signal_policy_shadow_runs` 记录动态配额会选哪些、会换掉哪些 | 观察新策略是否稳定，不影响漏斗正式输出 |
-| `on` | 动态配额 + registry 过滤 + 策略归因调权 | observations / outcomes 正常记录 | shadow 结果稳定后切正式 |
+| `off` | `tradeable_l4` 统一质量池 | 无 | 不运行动态策略对照 |
+| `shadow` | `tradeable_l4` 统一质量池 | `signal_policy_shadow_runs` 记录动态配额会选哪些、会换掉哪些 | 当前生产模式；观察新策略是否稳定，不影响正式输出 |
+| `on` | 动态策略参与初始分配，随后仍执行质量池损失护栏、总量和行业上限 | observations / outcomes 正常记录 | 实验模式，需在 shadow 验证稳定后再启用 |
 
 GitHub Actions 中建议用 Repository Variables 配置：
 
@@ -92,6 +94,10 @@ GitHub Actions 中建议用 Repository Variables 配置：
 FUNNEL_DYNAMIC_POLICY=shadow uv run python scripts/daily_job.py
 uv run python scripts/signal_feedback_job.py
 ```
+
+Feedback 不再逐日重算已经完成的 horizon。每次先读取现有 outcome 状态，只处理缺失或仍为
+`pending` 的部分；同一股票即使跨多个观察日，也只拉一次覆盖最早观察日的 K 线。周五在同一
+workflow 的归因报告之后运行策略反思，手动触发则允许立即补跑，不再单独占用一套 Actions runner。
 
 ## 核心数据表
 
@@ -145,7 +151,7 @@ stateDiagram-v2
   RETIRED --> RETIRED: 保持下线
 ```
 
-registry 只负责控制动态策略是否使用信号；原始 observations 仍会记录，避免因为下线后失去后续观测能力。
+registry 只负责控制动态策略是否使用信号；原始 observations 仍会记录，避免因为下线后失去后续观测能力。信号级 `status` 只由全局行（`regime=""` / `ALL`）决定；regime 拆分行只承载精确权重，写入与过滤时必须跟随全局生命周期，避免陈旧的 regime `ACTIVE`/`WATCH` 把已 `RETIRED` 的信号重新放进漏斗。
 
 ## Price-Action Footprint
 
@@ -179,14 +185,28 @@ registry 只负责控制动态策略是否使用信号；原始 observations 仍
 - `score` / `grade`：总分和 S/A/B/C/D 评级。
 - `components.funnel`：主漏斗触发分、候选车道优先级或主线评分。
 - `components.price_action`：承接、缩量、突破质量和支撑收回等量价痕迹加分。
-- `components.springboard`：起跳板/二次确认质量加分，历史 ABC 仅作为内部特征，不再要求报告按 A+B+C 呈现。
+- `components.springboard`：起跳板结构质量加分，历史 ABC 仅作为内部特征；`springboard_structure_ready` 不代表跨日确认。
 - `components.external_capital`：龙虎榜净买、融资买入、大宗交易和大单净买等资金佐证加分。
 - `components.risk_penalty`：派发压力、失败突破、弱收盘等扣分。
 - `positive_tags` / `negative_tags`：可解释的正负证据标签。
 
 这部分只做 shadow 复盘，不新增候选表，也不改变正式候选、AI 候选池或 Step4。只有当后续 `signal_outcomes` 证明它能提高胜率或降低回撤时，才考虑把总分升成结构化列或用于真实排序。
 
-`strategy_attribution_report.py` 会把 `candidate_shadow_score.grade` 聚合进 `score_bucket_stats_json._candidate_shadow_grade`，Web 端策略归因页展示 S/A/B/C/D 各档在不同持有周期下的胜率、平均收益、大涨率、大跌率和平均回撤。`evaluate_recommendation_events.py` 也会只读 join 同日 observation，把候选影子分档输出到 `summary.candidate_shadow_grade`，并在 `summary.top_k_by_strategy.candidate_shadow_then_score` 对照“按候选影子分排序”的 5 日冲刺命中率、MFE 和 MAE；`summary.top_k_lift_vs_score_only.candidate_shadow_then_score` 会直接给出相对原漏斗分排序的差值，`summary.ranking_decision` 进一步用样本量、命中率 lift、MFE lift 和 MAE 恶化门槛判断它是否只是观察项，还是可以进入下一步排序接入候选。
+候选影子评分版本为 `candidate_shadow_score_v2`。观察血缘按 `(code, signal_type)` 绑定，避免同一股票的 LPS、趋势回踩或主线候选互相覆盖元数据。历史规则发生语义变化时，必须先用 `scripts/backfill_recommendation_tracking.py` 做只读 dry-run；替换 observation 会级联删除对应 outcome，随后必须重跑 signal feedback。反馈任务按当前 `as_of_date` 整体替换 health 快照；registry 先 upsert 再删除孤儿行，并把健康窗口未覆盖的既有生命周期行（如 `RETIRED` / `EXPERIMENTAL` 与 regime 降权）合并进快照，避免全量替换把屏蔽信号默认回 `ACTIVE`。
+
+`strategy_attribution_report.py` 会把 `candidate_shadow_score.grade` 聚合进 `score_bucket_stats_json._candidate_shadow_grade`，Web 端策略归因页展示 S/A/B/C/D 各档在不同持有周期下的胜率、平均收益、大涨率、大跌率和平均回撤。`evaluate_recommendation_events.py` 也会只读 join 同日 observation，把候选影子分档输出到 `summary.candidate_shadow_grade`，并在 `summary.top_k_by_strategy.candidate_shadow_then_score` 对照“按候选影子分排序”的 5 日冲刺命中率、MFE 和 MAE；`summary.top_k_lift_vs_score_only.candidate_shadow_then_score` 会直接给出相对原漏斗分排序的差值，`summary.ranking_decision` 进一步用样本量、命中率 lift、MFE lift 和 MAE 恶化门槛判断它是否只是观察项，还是可以进入下一步排序接入候选。2026-08-02 的 90 个推荐日复核中，候选影子 Top1/3/5 均未产生正 lift，因此继续使用 `score_only`，不得把影子分升级为正式排序。
+
+同一 evaluator 还从 observation 带回 `regime`、`signal_type`、`industry` 和 `track`；没有同日 observation
+时，使用 recommendation tracking 行内的 `market_regime / signal_types / primary_signal / industry /
+signal_track` 补足。读取 observation 必须按 `id` 稳定分页，不能被 PostgREST 1000 行上限静默截断。
+
+`metadata.observation_context` 与 `summary.context_coverage` 输出总覆盖率、成熟样本覆盖率、可观察日期范围、
+各字段及交叉切片覆盖率和
+`matched_observation / tracking_fallback / not_in_observation_universe / query_failed` 状态计数。
+`summary.outcome_context` 除单独水温、信号、行业和轨道外，还包含 `regime_signal` 与
+`regime_industry` 交叉切片。10-29 个成熟样本标为 `watch`，至少 30 个才标为 `evaluable`；这只是防止
+小样本过度解释，不是自动晋级阈值。同一候选若同时有多个信号，会进入多个归因切片，任何切片都不会直接
+生成买入许可。
 
 ## Entry Quality
 

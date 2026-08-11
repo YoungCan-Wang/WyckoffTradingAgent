@@ -58,7 +58,12 @@ def test_runtime_emits_tool_events_and_done():
     assert [e["type"] for e in events if e["type"].startswith("tool_")] == ["tool_calls", "tool_start", "tool_result"]
     assert events[-1]["type"] == "done"
     assert events[-1]["text"] == "你当前没有持仓。"
-    assert events[-1]["usage"] == {"input_tokens": 25, "output_tokens": 11}
+    usage = events[-1]["usage"]
+    assert usage["input_tokens"] == 25
+    assert usage["output_tokens"] == 11
+    assert "cache_read_tokens" not in usage  # provider 未回报 cache 时不带键
+    assert not usage.get("cache_reported")
+    assert "generation_ms" in usage
     assert any(m.get("role") == "tool" and m.get("name") == "portfolio" for m in messages)
 
 
@@ -89,6 +94,9 @@ def test_runtime_emits_failed_model_stage_before_provider_error():
 
     assert next(stream) == {"type": "stage_start", "stage": "model", "round": 1, "message": "正在分析"}
     assert next(stream) == {"type": "stage_done", "stage": "model", "round": 1, "success": False}
+    failed = next(stream)
+    assert failed["type"] == "turn_failed"
+    assert failed["failure"]["kind"] in {"provider", "unknown"}
     with pytest.raises(RuntimeError, match="provider unavailable"):
         next(stream)
 

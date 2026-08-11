@@ -6,7 +6,6 @@ import logging
 import os
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -19,8 +18,8 @@ from integrations.recommendation_tracking_common import (
     close_map_from_tickflow_hist,
     empty_tracking_refresh_summary,
     fetch_tickflow_tracking_market_data,
+    first_recommend_date_yyyymmdd,
     parse_recommend_date,
-    pick_close_on_or_before,
     quote_trade_date_yyyymmdd,
     recommend_date_to_yyyymmdd,
     resolve_tickflow_quote_price,
@@ -61,8 +60,9 @@ def _build_tickflow_tracking_updates(
         if current_price <= 0 or not trade_dates:
             codes_no_data += 1
             continue
+        first_date = first_recommend_date_yyyymmdd(rows)
         for row in rows:
-            update = _tickflow_tracking_update(row, code, trade_dates, close_map, current_price, now_iso)
+            update = _tickflow_tracking_update(row, code, trade_dates, close_map, current_price, now_iso, first_date)
             if update is not None:
                 updates.append(update)
     return updates, codes_no_data, latest_trade_date
@@ -75,21 +75,18 @@ def _tickflow_tracking_update(
     close_map: dict[str, float],
     current_price: float,
     now_iso: str,
+    first_recommend_date: str = "",
 ) -> dict[str, Any] | None:
-    rec_date = recommend_date_to_yyyymmdd(row.get("recommend_date"))
-    pick_date = pick_close_on_or_before(trade_dates, rec_date)
-    initial_close = float(close_map.get(pick_date, 0.0)) if pick_date else 0.0
-    if initial_close <= 0:
-        return None
-    return {
-        "id": row.get("id"),
-        "code": int(code),
-        "recommend_date": int(rec_date) if rec_date.isdigit() else None,
-        "initial_price": round(initial_close, 4),
-        "current_price": round(current_price, 4),
-        "change_pct": round((current_price - initial_close) / initial_close * 100.0, 2),
-        "updated_at": now_iso,
-    }
+    update = tracking_update_from_close_map(
+        row,
+        int(code),
+        trade_dates,
+        close_map,
+        current_price,
+        now_iso,
+        first_recommend_date=first_recommend_date,
+    )
+    return update
 
 
 def _parse_write_date(record: dict[str, Any]) -> date | None:
@@ -161,14 +158,21 @@ def _resolve_price(code: str, price_map, history_fn, spot_fn) -> float | None:
     return price if price is not None else spot_fn(code)
 
 
-def _build_price_update_row(record: dict, new_price: float, code: str, now_iso: str) -> dict:
+def _build_price_update_row(
+    record: dict,
+    new_price: float,
+    code: str,
+    now_iso: str,
+    *,
+    first_recommend_date: date | None = None,
+) -> dict:
     row: dict = {"id": record["id"], "current_price": new_price, "updated_at": now_iso}
     initial_price = float(record.get("initial_price") or 0.0)
     if initial_price > 0:
         row["change_pct"] = round((new_price - initial_price) / initial_price * 100.0, 2)
         return row
-    rec_date = parse_recommend_date(record.get("recommend_date"))
-    backfill = _resolve_initial_price_from_history(code, rec_date) if rec_date else 0.0
+    anchor = first_recommend_date or parse_recommend_date(record.get("recommend_date"))
+    backfill = _resolve_initial_price_from_history(code, anchor) if anchor else 0.0
     row["initial_price"] = backfill if backfill > 0 else new_price
     row["change_pct"] = round((new_price - row["initial_price"]) / row["initial_price"] * 100.0, 2)
     return row
@@ -256,8 +260,15 @@ def _build_current_price_updates(
         current_price = _resolve_price(code, price_map, history_fn, spot_fn)
         if current_price is None:
             continue
-        for record in records_by_code.get(code_int, []):
-            updates.append(_build_price_update_row(record, current_price, code, now_iso))
+        rows = records_by_code.get(code_int, [])
+        first_date = min(
+            (d for d in (parse_recommend_date(row.get("recommend_date")) for row in rows) if d is not None),
+            default=None,
+        )
+        for record in rows:
+            updates.append(
+                _build_price_update_row(record, current_price, code, now_iso, first_recommend_date=first_date)
+            )
     return updates
 
 
@@ -293,43 +304,86 @@ def _spot_fallback_enabled() -> bool:
     return env_flag("RECOMMENDATION_PRICE_ALLOW_SPOT_FALLBACK")
 
 
-def correct_tracking_initial_prices() -> int:
+def correct_tracking_initial_prices(*, apply: bool = True) -> dict[str, Any]:
+    """按 code 首次 recommend_date 收盘价纠偏 initial_price。
+
+    apply=False 时只预览将改写的行，不落库。
+    """
+    summary = {"rows_total": 0, "rows_changed": 0, "rows_written": 0, "samples": []}
     if not is_admin_configured():
         logger.info("correct_tracking_initial_prices skipped: Supabase is not configured")
-        return 0
-    require_server_write_context("correct recommendation_tracking prices")
+        return summary
+    if apply:
+        require_server_write_context("correct recommendation_tracking prices")
     try:
         client = create_admin_client()
         records = fetch_recommendation_tracking_records(client, "*")
+        summary["rows_total"] = len(records)
+        first_dates = _first_recommend_dates_by_code(records)
         cache: dict[tuple[str, date], float] = {}
-        updates = [_correct_initial_price_update(record, cache) for record in records]
-        updates = [row for row in updates if row is not None]
-        return upsert_recommendation_tracking_price_updates(client, updates)
+        updates = [
+            update
+            for record in records
+            if (update := _correct_initial_price_update(record, cache, first_dates)) is not None
+        ]
+        summary["rows_changed"] = len(updates)
+        summary["samples"] = updates[:10]
+        if not apply or not updates:
+            return summary
+        summary["rows_written"] = upsert_recommendation_tracking_price_updates(client, updates)
+        return summary
     except Exception as exc:
         logger.warning("correct_tracking_initial_prices failed: %s", exc)
-        return 0
+        return summary
+
+
+def _first_recommend_dates_by_code(records: list[dict[str, Any]]) -> dict[str, date]:
+    first_dates: dict[str, date] = {}
+    for record in records:
+        if record.get("code") is None:
+            continue
+        code = f"{int(record['code']):06d}"
+        write_date = _parse_write_date(record)
+        if write_date is None:
+            continue
+        prev = first_dates.get(code)
+        if prev is None or write_date < prev:
+            first_dates[code] = write_date
+    return first_dates
 
 
 def _correct_initial_price_update(
-    record: dict[str, Any], cache: dict[tuple[str, date], float]
+    record: dict[str, Any],
+    cache: dict[tuple[str, date], float],
+    first_dates: dict[str, date],
 ) -> dict[str, Any] | None:
-    write_date = _parse_write_date(record)
-    if not write_date or record.get("code") is None:
+    if record.get("code") is None:
         return None
     current_price = float(record.get("current_price") or 0.0)
     if current_price <= 0:
         return None
     code = f"{int(record['code']):06d}"
-    key = (code, write_date)
-    if key not in cache:
-        cache[key] = _resolve_initial_price_from_history(code, write_date)
-    initial_price = cache[key]
-    if initial_price <= 0:
+    first_date = first_dates.get(code) or _parse_write_date(record)
+    if first_date is None:
         return None
+    key = (code, first_date)
+    if key not in cache:
+        cache[key] = _resolve_initial_price_from_history(code, first_date)
+    raw_price = cache[key]
+    if raw_price <= 0:
+        return None
+    # PG numeric 展示/存储通常到分；与前复权浮点直接比会反复误判为脏数据。
+    initial_price = round(raw_price, 2)
+    old_price = round(float(record.get("initial_price") or 0.0), 2)
+    if abs(old_price - initial_price) < 1e-9:
+        return None
+    change_pct = round((current_price - initial_price) / initial_price * 100.0, 2)
     return {
         "id": record["id"],
+        "code": int(record["code"]),
+        "recommend_date": record.get("recommend_date"),
         "initial_price": initial_price,
-        "change_pct": round((current_price - initial_price) / initial_price * 100.0, 2),
+        "change_pct": change_pct,
         "updated_at": datetime.now(UTC).isoformat(),
     }
 
@@ -380,34 +434,20 @@ def _build_tushare_tracking_updates(
         trade_dates = sorted(close_map)
         current_close = float(close_map[trade_dates[-1]])
         latest_trade_date = max(latest_trade_date, trade_dates[-1])
+        first_date = first_recommend_date_yyyymmdd(rows)
         for row in rows:
-            update = tracking_update_from_close_map(row, int(code), trade_dates, close_map, current_close, now_iso)
+            update = tracking_update_from_close_map(
+                row,
+                int(code),
+                trade_dates,
+                close_map,
+                current_close,
+                now_iso,
+                first_recommend_date=first_date,
+            )
             if update is not None:
                 updates.append(update)
     return updates, codes_no_data, latest_trade_date
-
-
-def refresh_tracking_prices_with_tushare_unadjusted() -> dict[str, Any]:
-    from integrations.tushare_client import get_pro
-
-    if not is_admin_configured():
-        raise ValueError("SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY 未配置")
-    require_server_write_context("refresh CN tracking prices with Tushare")
-    pro = get_pro()
-    if pro is None:
-        raise ValueError("TUSHARE_TOKEN 未配置或 tushare 不可用")
-    client = create_admin_client()
-    records = fetch_recommendation_tracking_records(client, "id,code,recommend_date")
-    if not records:
-        return empty_tracking_refresh_summary()
-    grouped = _group_records_by_code6(records)
-    updates, codes_no_data, latest_trade_date = _build_tushare_tracking_updates(
-        pro,
-        grouped,
-        datetime.now(ZoneInfo("Asia/Shanghai")).date().strftime("%Y%m%d"),
-        datetime.now(UTC).isoformat(),
-    )
-    return _refresh_summary(records, grouped, updates, codes_no_data, latest_trade_date, client)
 
 
 def refresh_tracking_prices_with_tickflow_realtime() -> dict[str, Any]:
@@ -489,8 +529,17 @@ def build_global_tickflow_tracking_updates(
         if current_price <= 0 or not trade_dates:
             codes_no_data += 1
             continue
+        first_date = first_recommend_date_yyyymmdd(rows)
         for row in rows:
-            update = tracking_update_from_close_map(row, symbol, trade_dates, close_map, current_price, now_iso)
+            update = tracking_update_from_close_map(
+                row,
+                symbol,
+                trade_dates,
+                close_map,
+                current_price,
+                now_iso,
+                first_recommend_date=first_date,
+            )
             if update is not None:
                 updates.append(update)
     return updates, codes_no_data, latest_trade_date

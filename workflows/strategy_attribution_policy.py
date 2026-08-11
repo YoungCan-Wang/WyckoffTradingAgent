@@ -82,15 +82,6 @@ class AttributionPolicySnapshot:
         }
 
 
-def load_attribution_signal_weights(
-    *,
-    market: str = "cn",
-    log_fn: Callable[[str], None] | None = None,
-    as_of: date | None = None,
-) -> dict[str, float]:
-    return load_attribution_policy_snapshot(market=market, log_fn=log_fn, as_of=as_of).weights
-
-
 def load_attribution_policy_snapshot(
     *,
     market: str = "cn",

@@ -19,7 +19,7 @@ MAX_CASH_DRAWDOWN_PCT = 20.0
 _DIR_PATTERN = re.compile(
     r"backtest-strategy-"
     r"(?P<period>recent_2m|recent_6m|bull_2020|bear_2022|sideways_2023|volatile_2024|custom)-"
-    r"(?P<variant>[A-Q])"
+    r"(?P<variant>[A-I]|M|P)"
     r"(?:-\d+)?$"
 )
 
@@ -37,6 +37,17 @@ class StrategyComparisonRow:
     avg_return: float | None
     sharpe: float | None
     trade_keys: tuple[str, ...] = ()
+    executed_trades: tuple[StrategyExecutedTrade, ...] = ()
+
+
+@dataclass(frozen=True)
+class StrategyExecutedTrade:
+    trigger: str
+    regime: str
+    exit_reason: str
+    ret_pct: float | None
+    pnl: float | None
+    cost_total: float | None
 
 
 def load_strategy_comparison_rows(artifacts_dir: Path) -> list[StrategyComparisonRow]:
@@ -61,6 +72,7 @@ def load_strategy_comparison_rows(artifacts_dir: Path) -> list[StrategyCompariso
                 avg_return=_cash_trade_average(path.parent),
                 sharpe=_metric(content, r"夏普比(?:\s*\(Sharpe Ratio\))?"),
                 trade_keys=_trade_keys(path.parent),
+                executed_trades=_executed_trades(path.parent),
             )
         )
     return rows
@@ -72,7 +84,7 @@ def build_strategy_comparison(rows: list[StrategyComparisonRow]) -> dict[str, An
     required = {(period, variant) for period in DEFAULT_COMPARISON_PERIODS for variant in DEFAULT_COMPARISON_VARIANTS}
     evaluations = {}
     for variant, values in by_variant.items():
-        reference = {"M": "A", "P": "M", "Q": "P"}.get(variant, "A")
+        reference = {"M": "A", "P": "M"}.get(variant, "A")
         evaluations[variant] = _evaluate_variant(variant, values, by_variant.get(reference, []), reference)
     return {
         "status": "ready" if required.issubset(available) else "incomplete",
@@ -82,17 +94,18 @@ def build_strategy_comparison(rows: list[StrategyComparisonRow]) -> dict[str, An
         "rows": [_row_payload(row) for row in sorted(rows, key=lambda row: (row.period, row.variant))],
         "evaluations": evaluations,
         "walk_forward": _walk_forward(rows),
-        "scope": "M 相对 A 评估弱水温缩仓；P 相对 M 评估 NEUTRAL Spring 再缩仓；Q 相对 P 评估其广度确认。",
+        "loss_attribution": _loss_attribution(rows),
+        "scope": "默认矩阵评估 M 相对 A 的弱水温缩仓，以及 P 相对 M 的 NEUTRAL Spring 再缩仓。",
         "decision_rule": "全部周期现金收益为正、绝对回撤不超过20%，且真实改变交易、胜出过半、平均增量为正、回撤恶化不超过2个百分点。",
     }
 
 
 def render_strategy_comparison(report: dict[str, Any]) -> str:
     lines = [
-        "# 策略 A/M/P/Q A股实证对比",
+        "# 策略 A/M/P A股实证对比",
         "",
-        "固定同一数据快照、确认口径和组合。A/M/P/Q 共用固定退出。",
-        "M 验证弱水温信号缩仓；P 在 M 上验证 NEUTRAL Spring 再缩仓；Q 只在 NEUTRAL Spring 上要求广度确认；全部为研究策略。",
+        "固定同一数据快照、确认口径和组合。A/M/P 共用固定退出。",
+        "M 验证弱水温信号缩仓；P 在 M 上验证 NEUTRAL Spring 再缩仓；全部为研究策略。",
         "",
         "| 周期 | 组别 | 现金收益 | 现金回撤 | 成交 | 胜率 | 平均单笔 | 夏普 |",
         "|---|---|---:|---:|---:|---:|---:|---:|",
@@ -119,6 +132,7 @@ def render_strategy_comparison(report: dict[str, Any]) -> str:
             f"{_fmt(item.get('max_drawdown_worsening'), 'pp')} | "
             f"{item.get('status', 'missing')} |"
         )
+    lines.extend(_loss_attribution_lines(report.get("loss_attribution") or {}))
     lines.extend(_walk_forward_lines(report.get("walk_forward") or {}))
     return "\n".join(lines) + "\n"
 
@@ -211,6 +225,74 @@ def _walk_forward_lines(result: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _loss_attribution(rows: list[StrategyComparisonRow]) -> dict[str, Any]:
+    result = {}
+    for variant in DEFAULT_COMPARISON_VARIANTS:
+        selected = [row for row in rows if row.variant == variant and row.period in DEFAULT_COMPARISON_PERIODS]
+        trades = [trade for row in selected for trade in row.executed_trades]
+        result[variant] = {
+            "source": "executed_cash_trades",
+            "covered_periods": sorted({row.period for row in selected if row.executed_trades}),
+            "trade_count": len(trades),
+            "by_trigger": _group_executed_trades(trades, "trigger"),
+            "by_regime": _group_executed_trades(trades, "regime"),
+            "by_exit_reason": _group_executed_trades(trades, "exit_reason"),
+        }
+    return result
+
+
+def _group_executed_trades(trades: list[StrategyExecutedTrade], field: str) -> list[dict[str, Any]]:
+    grouped: dict[str, list[StrategyExecutedTrade]] = defaultdict(list)
+    for trade in trades:
+        grouped[str(getattr(trade, field) or "unknown")].append(trade)
+    return sorted((_executed_trade_stats(key, values) for key, values in grouped.items()), key=_attribution_sort_key)
+
+
+def _executed_trade_stats(group: str, trades: list[StrategyExecutedTrade]) -> dict[str, Any]:
+    returns = [value for trade in trades if (value := trade.ret_pct) is not None]
+    pnl = sum(value for trade in trades if (value := trade.pnl) is not None)
+    capital = sum(value for trade in trades if (value := trade.cost_total) is not None)
+    return {
+        "group": group,
+        "trades": len(trades),
+        "win_rate": sum(value > 0 for value in returns) / len(returns) * 100.0 if returns else None,
+        "avg_return": mean(returns) if returns else None,
+        "pnl": pnl,
+        "pnl_on_cost_pct": pnl / capital * 100.0 if capital > 0 else None,
+    }
+
+
+def _attribution_sort_key(row: dict[str, Any]) -> tuple[float, str]:
+    return float(row.get("pnl") or 0.0), str(row.get("group") or "")
+
+
+def _loss_attribution_lines(result: dict[str, Any]) -> list[str]:
+    selected = result.get("P") or {}
+    lines = ["", "## P 组实际成交亏损归因", ""]
+    if not selected.get("trade_count"):
+        return [*lines, "- 缺少现金成交明细，无法归因。"]
+    lines.extend(
+        [
+            "只列每个维度亏损贡献最大的三组；`资本盈亏率` 为该组总盈亏 / 累计买入成本，不等于组合收益。",
+            "",
+            "| 维度 | 分组 | 成交 | 胜率 | 平均单笔 | 总盈亏(元) | 资本盈亏率 |",
+            "|---|---|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for label, key in (("信号", "by_trigger"), ("水温", "by_regime"), ("退出", "by_exit_reason")):
+        losses = [row for row in selected.get(key, []) if float(row.get("pnl") or 0.0) < 0][:3]
+        lines.extend(_attribution_line(label, row) for row in losses)
+    return lines
+
+
+def _attribution_line(label: str, row: dict[str, Any]) -> str:
+    return (
+        f"| {label} | {row.get('group', 'unknown')} | {row.get('trades', 0)} | "
+        f"{_fmt(row.get('win_rate'), '%')} | {_fmt(row.get('avg_return'), '%')} | "
+        f"{_fmt(row.get('pnl'))} | {_fmt(row.get('pnl_on_cost_pct'), '%')} |"
+    )
+
+
 def _row_line(row: dict[str, Any]) -> str:
     return (
         f"| {row['period']} | {row['variant']} | {_fmt(row.get('cash_return'), '%')} | "
@@ -269,6 +351,48 @@ def _cash_trade_average(directory: Path) -> float | None:
             except (TypeError, ValueError):
                 continue
     return mean(values) if values else None
+
+
+def _executed_trades(directory: Path) -> tuple[StrategyExecutedTrade, ...]:
+    paths = sorted(directory.glob("cash_trades_*.csv"))
+    if not paths:
+        return ()
+    regimes = _trade_regime_lookup(directory)
+    with paths[0].open(encoding="utf-8-sig", newline="") as handle:
+        return tuple(_executed_trade(row, regimes) for row in csv.DictReader(handle))
+
+
+def _executed_trade(row: dict[str, str], regimes: dict[tuple[str, ...], str]) -> StrategyExecutedTrade:
+    key = tuple(str(row.get(field) or "") for field in ("signal_date", "entry_date", "exit_date", "code"))
+    return StrategyExecutedTrade(
+        trigger=str(row.get("trigger") or "unknown"),
+        regime=str(row.get("regime") or regimes.get(key) or "unknown"),
+        exit_reason=str(row.get("exit_reason") or "unknown"),
+        ret_pct=_optional_float(row.get("ret_pct")),
+        pnl=_optional_float(row.get("pnl")),
+        cost_total=_optional_float(row.get("cost_total")),
+    )
+
+
+def _trade_regime_lookup(directory: Path) -> dict[tuple[str, ...], str]:
+    paths = sorted(directory.glob("trades_*.csv"))
+    if not paths:
+        return {}
+    with paths[0].open(encoding="utf-8-sig", newline="") as handle:
+        return {
+            tuple(str(row.get(field) or "") for field in ("signal_date", "entry_date", "exit_date", "code")): str(
+                row.get("regime") or "unknown"
+            )
+            for row in csv.DictReader(handle)
+        }
+
+
+def _optional_float(raw: object) -> float | None:
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
 
 
 def _trade_delta(base: StrategyComparisonRow, candidate: StrategyComparisonRow) -> int:

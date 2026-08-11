@@ -12,6 +12,8 @@ logger = logging.getLogger(__name__)
 
 SCHEDULES_PATH = Path.home() / ".wyckoff" / "schedules.json"
 
+SCHEDULE_CHECK_MAX_CATCHUP_MINUTES = 15
+
 DEFAULT_PRESETS: list[dict] = [
     {
         "id": "mkt-open",
@@ -64,6 +66,33 @@ def save_schedules(schedules: list[Schedule]) -> None:
         json.dumps([asdict(s) for s in schedules], ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def pending_check_minutes(last_check_at: datetime | None, now: datetime) -> list[datetime]:
+    """Minutes to evaluate since the last check, so a delayed tick (e.g. blocked by a
+    long-running task) doesn't silently skip a cron minute that fell in the gap."""
+    if last_check_at is None or last_check_at >= now:
+        return [now]
+    gap_minutes = min(int((now - last_check_at).total_seconds() // 60), SCHEDULE_CHECK_MAX_CATCHUP_MINUTES)
+    return [now - timedelta(minutes=offset) for offset in range(gap_minutes - 1, -1, -1)]
+
+
+def due_schedules(
+    schedules: list[Schedule],
+    *,
+    last_check_at: datetime | None,
+    now: datetime,
+) -> list[tuple[Schedule, str]]:
+    """返回本轮应触发的 (schedule, minute_key)，并跳过该分钟已触发过的。"""
+    due: list[tuple[Schedule, str]] = []
+    for minute in pending_check_minutes(last_check_at, now):
+        minute_key = minute.strftime("%Y-%m-%dT%H:%M")
+        for schedule in schedules:
+            if not schedule.enabled or schedule.last_fired.startswith(minute_key):
+                continue
+            if cron_matches_now(schedule.cron, at=minute):
+                due.append((schedule, minute_key))
+    return due
 
 
 def cron_matches_now(cron: str, at: datetime | None = None) -> bool:

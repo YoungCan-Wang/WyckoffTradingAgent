@@ -73,7 +73,8 @@ def test_all_formal_l4_selection_treats_invalid_trigger_scores_as_zero() -> None
     )
 
     assert codes == ["GOOD", "BAD", "INF", "NAN"]
-    assert score_map == {"GOOD": 2.0, "BAD": 0.0, "INF": 0.0, "NAN": 0.0}
+    # 触发分在类型内归一化到 0~100（跨类型可比）；非法分数仍归 0。
+    assert score_map == {"GOOD": 100.0, "BAD": 0.0, "INF": 0.0, "NAN": 0.0}
     assert track_map == {"GOOD": "Trend", "BAD": "Trend", "INF": "Trend", "NAN": "Trend"}
 
 
@@ -101,7 +102,7 @@ def test_all_formal_l4_selection_excludes_stage_only_candidates() -> None:
     )
 
     assert codes == ["000001"]
-    assert score_map == {"000001": 2.0}
+    assert score_map == {"000001": 100.0}
     assert track_map == {"000001": "Trend"}
 
 
@@ -130,7 +131,8 @@ def test_all_formal_l4_selection_respects_hard_cap() -> None:
     )
 
     assert codes == ["000001", "000002"]
-    assert score_map == {"000001": 3.0, "000002": 2.0}
+    # 三个候选的类内分位为 3/3、2/3、1/3 → 100 / 66.67 / 33.33，硬上限截到前两个。
+    assert score_map == {"000001": 100.0, "000002": pytest.approx(66.667, abs=0.01)}
     assert track_map == {"000001": "Trend", "000002": "Trend"}
 
 
@@ -159,8 +161,9 @@ def test_all_formal_l4_selection_applies_signal_weight_map() -> None:
     )
 
     assert codes == ["000001", "000002"]
-    assert score_map["000001"] == 8.0
-    assert score_map["000002"] == pytest.approx(4.8)
+    # 各类型最高分归一化为 100；权重乘数仍生效（lps ×0.4 → 40）。
+    assert score_map["000001"] == 100.0
+    assert score_map["000002"] == pytest.approx(40.0)
     assert track_map == {"000001": "Trend", "000002": "Accum"}
 
 
@@ -189,8 +192,9 @@ def test_all_formal_l4_selection_applies_scoped_regime_signal_weight() -> None:
     )
 
     assert codes == ["000001", "000002"]
-    assert score_map["000001"] == 8.0
-    assert score_map["000002"] == pytest.approx(4.8)
+    # 各类型最高分归一化为 100；权重乘数仍生效（lps ×0.4 → 40）。
+    assert score_map["000001"] == 100.0
+    assert score_map["000002"] == pytest.approx(40.0)
     assert track_map == {"000001": "Trend", "000002": "Accum"}
 
 
@@ -229,7 +233,7 @@ def test_tradeable_l4_selection_uses_formal_l4_without_l3_fallback() -> None:
     )
 
     assert codes == ["000005", "000006"]
-    assert score_map == {"000005": 1.5, "000006": 1.0}
+    assert score_map == {"000005": 100.0, "000006": 100.0}
 
 
 def test_tradeable_l4_selection_unions_candidate_board_with_formal_quality_pool() -> None:
@@ -264,7 +268,8 @@ def test_tradeable_l4_selection_unions_candidate_board_with_formal_quality_pool(
     )
 
     assert codes == ["000001", "000002"]
-    assert score_map == {"000001": 85.0, "000002": 78.0}
+    # 两条路径现在同为 0~100 刻度：triggers 归一化后 100，candidate_entries 原样 78。
+    assert score_map == {"000001": 100.0, "000002": 78.0}
     assert track_map == {"000001": "Trend", "000002": "Trend"}
 
 
@@ -461,7 +466,7 @@ def test_tradeable_l4_candidate_board_prioritizes_confirmed_score_and_caps_launc
         leader_radar_symbols=[],
         leader_radar_rows=[],
         candidate_entries=[
-            {"code": "000001", "track": "accumulation", "entry_type": "spring", "score": 100.0},
+            {"code": "000001", "track": "accumulation", "entry_type": "compression", "score": 100.0},
             {"code": "000002", "track": "future_leader", "entry_type": "launchpad", "score": 80.0},
         ],
     )
@@ -492,7 +497,7 @@ def test_tradeable_l4_candidate_board_excludes_unconfirmed_launchpad_in_caution(
         leader_radar_symbols=[],
         leader_radar_rows=[],
         candidate_entries=[
-            {"code": "000001", "track": "accumulation", "entry_type": "spring", "score": 75.0},
+            {"code": "000001", "track": "accumulation", "entry_type": "compression", "score": 75.0},
             {"code": "000002", "track": "future_leader", "entry_type": "launchpad", "score": 90.0},
         ],
     )
@@ -553,7 +558,7 @@ def test_tradeable_l4_candidate_board_keeps_best_duplicate_score_and_track() -> 
         leader_radar_rows=[],
         candidate_entries=[
             {"code": "000001", "track": "future_leader", "entry_type": "launchpad", "score": 80.0},
-            {"code": "000001", "track": "accumulation", "entry_type": "spring", "score": 100.0},
+            {"code": "000001", "track": "accumulation", "entry_type": "compression", "score": 100.0},
         ],
     )
 
@@ -585,7 +590,7 @@ def test_tradeable_l4_candidate_board_ranks_by_best_duplicate_entry() -> None:
         leader_radar_rows=[],
         candidate_entries=[
             {"code": "000001", "track": "future_leader", "entry_type": "launchpad", "score": 80.0},
-            {"code": "000001", "track": "accumulation", "entry_type": "spring", "score": 100.0},
+            {"code": "000001", "track": "accumulation", "entry_type": "compression", "score": 100.0},
             {"code": "000002", "track": "future_leader", "entry_type": "tight_base", "score": 90.0},
         ],
     )
@@ -679,7 +684,7 @@ def test_tradeable_l4_candidate_board_accepts_accum_track_alias() -> None:
         leader_radar_symbols=[],
         leader_radar_rows=[],
         candidate_entries=[
-            {"code": "000001", "track": "Accum", "entry_type": "spring", "score": 100.0},
+            {"code": "000001", "track": "Accum", "entry_type": "compression", "score": 100.0},
         ],
     )
 
@@ -710,7 +715,7 @@ def test_tradeable_l4_candidate_board_infers_accum_track_from_entry_type() -> No
         leader_radar_symbols=[],
         leader_radar_rows=[],
         candidate_entries=[
-            {"code": "000001", "entry_type": "spring", "score": 100.0},
+            {"code": "000001", "entry_type": "compression", "score": 100.0},
         ],
     )
 
@@ -820,7 +825,7 @@ def test_loss_guard_blocks_defensive_high_position_chase() -> None:
     assert reason == "RISK_OFF20日高位追涨"
 
 
-def test_loss_guard_keeps_defensive_spring_even_near_range_high() -> None:
+def test_loss_guard_blocks_defensive_spring_with_distant_structure_stop() -> None:
     df = _daily_position_df([10.0 + idx * 0.2 for idx in range(21)])
 
     reason = loss_guard_reason(
@@ -832,7 +837,7 @@ def test_loss_guard_keeps_defensive_spring_even_near_range_high() -> None:
         {"000001": df},
     )
 
-    assert reason == ""
+    assert reason == "结构止损超出风险上限"
 
 
 def test_loss_guard_blocks_weak_right_side_without_abc_confirmation() -> None:
@@ -872,6 +877,26 @@ def test_loss_guard_blocks_weak_main_force_entry_without_abc_confirmation() -> N
     )
 
     assert reason == "趋势候选ABC不足"
+
+
+def test_loss_guard_enforces_structure_stop_limit_in_bear_rebound(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "core.candidate_policy.score_springboard_abc",
+        lambda _df, _signal_type: {"met_count": 2},
+    )
+    df = _daily_position_df([100.0] * 60)
+    df["low"] = 50.0
+
+    reason = loss_guard_reason(
+        "000001",
+        "BEAR_REBOUND",
+        ["main_force_entry"],
+        100.0,
+        "趋势延续",
+        {"000001": df},
+    )
+
+    assert reason == "结构止损超出风险上限"
 
 
 def test_stratified_stats_include_exit_and_excursion_diagnostics() -> None:

@@ -335,7 +335,7 @@ def _observation_feature_inputs(
     springboard = _springboard_observation_fields(signal_type, code, ctx["springboard_map"])
     footprint = _footprint_fields(signal_type, code, ctx["footprint_map"])
     source_context = _source_context_fields(signal_type, code, ctx["source_context_map"])
-    candidate_metadata = ctx["candidate_metadata_map"].get(code6(code), {})
+    candidate_metadata = _candidate_metadata_for_signal(ctx["candidate_metadata_map"], code, signal_type)
     entry_quality = _entry_quality_fields(
         ctx["entry_quality_map"].get(code6(code)) or ctx["entry_quality_map"].get(code)
     )
@@ -381,7 +381,7 @@ def _signal_observation_row(
     stage = ctx["stage_map"].get(code, "")
     channel = ctx["channel_map"].get(code, "")
     priority_score, feature_fields = _observation_feature_inputs(signal_type, code, trigger_score, ctx)
-    candidate_metadata = ctx["candidate_metadata_map"].get(code6(code), {})
+    candidate_metadata = _candidate_metadata_for_signal(ctx["candidate_metadata_map"], code, signal_type)
     return {
         "market": market,
         "trade_date": trade_date,
@@ -414,6 +414,14 @@ def _signal_observation_row(
         "updated_at": now_iso,
         **feature_fields,
     }
+
+
+def _candidate_metadata_for_signal(
+    metadata_map: dict[Any, dict[str, Any]], code: str, signal_type: str
+) -> dict[str, Any]:
+    from core.candidate_metadata import candidate_metadata_for_signal
+
+    return candidate_metadata_for_signal(metadata_map, code, signal_type)
 
 
 def _derived_rank_map(selected_for_ai: list[str] | None, rank_map: dict[str, int] | None) -> dict[str, int]:
@@ -538,22 +546,31 @@ def _health_row(
     }
 
 
+def _is_global_registry_regime(regime: Any) -> bool:
+    return str(regime or "").strip().upper() in {"", "ALL"}
+
+
 def _registry_status_by_signal(rows: list[dict[str, Any]] | None) -> dict[str, str]:
+    """Read signal-level lifecycle status from global rows only.
+
+    Regime-scoped rows carry weights; mixing them into this map lets a stale
+    ACTIVE/WATCH regime row overwrite global RETIRED (last write wins).
+    """
     out: dict[str, str] = {}
     for row in rows or []:
         signal_type = normalize_signal_type(row.get("signal_type"))
-        if signal_type:
+        if signal_type and _is_global_registry_regime(row.get("regime")):
             out[signal_type] = str(row.get("status") or "ACTIVE").strip().upper()
     return out
 
 
 def _next_registry_status(signal_type: str, health_state: str, current_status: str) -> str:
+    if current_status == "RETIRED":
+        return "RETIRED"
     if health_state == "HEALTHY":
         return "ACTIVE"
     if health_state == "INSUFFICIENT":
         return "ACTIVE" if signal_type in KNOWN_SIGNALS else "EXPERIMENTAL"
-    if current_status == "RETIRED":
-        return "RETIRED"
     if health_state == "DECAYED" and current_status == "WATCH":
         return "RETIRED"
     return "WATCH"
@@ -581,6 +598,76 @@ def summarize_signal_health(
     return [_health_row(as_of_date, market, key, rows, min_samples) for key, rows in sorted(groups.items())]
 
 
+def _registry_row_key(signal_type: str, regime: Any) -> tuple[str, str]:
+    regime_norm = str(regime or "").strip().upper()
+    if regime_norm in {"", "ALL"}:
+        return signal_type, ""
+    return signal_type, regime_norm
+
+
+def _preserved_registry_rows(
+    registry_rows: list[dict[str, Any]] | None,
+    *,
+    market: str,
+    horizon_days: int,
+    covered_keys: set[tuple[str, str]],
+    status_by_signal: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """Keep lifecycle rows absent from this health window.
+
+    Full registry replace only emits keys present in health at registry_horizon.
+    Without this merge, RETIRED/EXPERIMENTAL rows (and regime downweights) with no
+    recent outcomes disappear; dynamic policy then defaults missing signals to ACTIVE.
+    Regime-scoped survivors still inherit the signal-level status map so a stale
+    ACTIVE/WATCH weight row cannot outlive global RETIRED.
+    """
+    preserved: list[dict[str, Any]] = []
+    now = datetime.now(UTC).isoformat()
+    for row in registry_rows or []:
+        signal_type = normalize_signal_type(row.get("signal_type"))
+        if not signal_type:
+            continue
+        key = _registry_row_key(signal_type, row.get("regime"))
+        if key in covered_keys:
+            continue
+        kept = dict(row)
+        status = (status_by_signal or {}).get(signal_type) or kept.get("status") or "ACTIVE"
+        kept.update(
+            {
+                "market": market,
+                "signal_type": signal_type,
+                "regime": key[1],
+                "status": str(status).strip().upper(),
+                "track": kept.get("track") or signal_track(signal_type),
+                "horizon_days": int(kept.get("horizon_days") or horizon_days),
+                "updated_at": now,
+            }
+        )
+        preserved.append(kept)
+    return preserved
+
+
+def _next_global_registry_status(
+    health_rows: list[dict[str, Any]],
+    *,
+    target_horizon: int,
+    status_by_signal: dict[str, str],
+) -> dict[str, str]:
+    next_status = dict(status_by_signal)
+    for row in health_rows:
+        if int(row.get("horizon_days") or 0) != target_horizon:
+            continue
+        if not _is_global_registry_regime(row.get("regime")):
+            continue
+        signal_type = normalize_signal_type(row.get("signal_type"))
+        if not signal_type:
+            continue
+        state = str(row.get("health_state") or "INSUFFICIENT")
+        current_status = status_by_signal.get(signal_type, "ACTIVE")
+        next_status[signal_type] = _next_registry_status(signal_type, state, current_status)
+    return next_status
+
+
 def build_signal_registry_updates(
     health_rows: list[dict[str, Any]],
     *,
@@ -590,10 +677,18 @@ def build_signal_registry_updates(
 ) -> list[dict[str, Any]]:
     target_horizon = horizon_days
     status_by_signal = _registry_status_by_signal(registry_rows)
+    # 先算全局下一状态，再让 regime 拆分行跟随；否则同一次 rebuild 会出现
+    # 全局 RETIRED、regime 仍 WATCH/ACTIVE，filter 按行序 last-wins 放行已下线信号。
+    next_status = _next_global_registry_status(
+        health_rows,
+        target_horizon=target_horizon,
+        status_by_signal=status_by_signal,
+    )
     # 按regime拆分存储：每个 (signal_type, regime) 都有独立行，
     # resolve_signal_weight_multiplier 会优先命中带regime的精确行，
     # 避免像 launchpad 这样"允许买入市况下正期望、但被全局统计拖累"的信号被误降权。
     updates = []
+    covered_keys: set[tuple[str, str]] = set()
     for row in health_rows:
         if int(row.get("horizon_days") or 0) != target_horizon:
             continue
@@ -601,22 +696,15 @@ def build_signal_registry_updates(
         signal_type = normalize_signal_type(row.get("signal_type"))
         if not signal_type:
             continue
-        # 信号级 status 只取 regime=ALL 的全局行来判定（保持向后兼容）；
-        # regime 拆分行只用于精确权重查询，status 跟随全局行。
-        state = str(row.get("health_state") or "INSUFFICIENT")
-        current_status = status_by_signal.get(signal_type, "ACTIVE")
-        status = (
-            _next_registry_status(signal_type, state, current_status)
-            if regime == "ALL"
-            else status_by_signal.get(signal_type, "ACTIVE")
-        )
+        key = _registry_row_key(signal_type, regime)
+        covered_keys.add(key)
         updates.append(
             {
                 "market": market,
                 "signal_type": signal_type,
                 "track": row.get("track") or signal_track(signal_type),
-                "regime": "" if regime == "ALL" else regime,
-                "status": status,
+                "regime": key[1],
+                "status": next_status.get(signal_type, "ACTIVE"),
                 "weight_multiplier": row.get("weight_multiplier") or 1.0,
                 "sample_count": row.get("sample_count") or 0,
                 "win_rate_pct": row.get("win_rate_pct"),
@@ -626,4 +714,13 @@ def build_signal_registry_updates(
                 "updated_at": datetime.now(UTC).isoformat(),
             }
         )
+    updates.extend(
+        _preserved_registry_rows(
+            registry_rows,
+            market=market,
+            horizon_days=target_horizon,
+            covered_keys=covered_keys,
+            status_by_signal=next_status,
+        )
+    )
     return updates

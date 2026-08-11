@@ -56,4 +56,29 @@ describe('portfolio API input', () => {
     expect(duplicate).toEqual({ error: 'Duplicate position code' })
     expect(fractional).toHaveProperty('error', 'Invalid portfolio')
   })
+
+  it('normalizes HK/US codes and rejects bare short digits', () => {
+    const ok = parsePortfolioInput({
+      free_cash: 0,
+      positions: [
+        { code: '6881.HK', name: '中国银河', shares: 1000, cost_price: 7.68, buy_dt: '2026-08-07' },
+        { code: 'aapl', name: 'Apple', shares: 10, cost_price: 200, buy_dt: null },
+      ],
+    })
+    expect(ok).toEqual({
+      data: {
+        free_cash: 0,
+        positions: [
+          { code: '06881.HK', name: '中国银河', shares: 1000, cost_price: 7.68, buy_dt: '2026-08-07' },
+          { code: 'AAPL.US', name: 'Apple', shares: 10, cost_price: 200, buy_dt: null },
+        ],
+      },
+    })
+
+    const bad = parsePortfolioInput({
+      free_cash: 0,
+      positions: [{ code: '6881', name: '中国银河', shares: 1000, cost_price: 7.68, buy_dt: null }],
+    })
+    expect(bad).toMatchObject({ error: expect.stringContaining('Invalid position code') })
+  })
 })

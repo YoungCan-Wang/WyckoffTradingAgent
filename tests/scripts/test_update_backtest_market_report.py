@@ -406,11 +406,13 @@ def test_backtest_grid_exposes_portable_hypothesis_evidence():
     assert "research_evidence.json" in workflow
     assert "parameter_stability.json" in workflow
     assert "walk_forward_validation.json" in workflow
+    assert "run_strategy_compare:" in workflow
     assert "strategy_compare:" in workflow
-    assert "variant: [A, M, P, Q]" in workflow
+    assert "if: ${{ inputs.run_strategy_compare }}" in workflow
+    assert "variant: [A, M, P]" not in workflow
     assert "sideways_2023" in workflow
     assert "volatile_2024" in workflow
-    assert '--strategy-variant "$VARIANT"' in workflow
+    assert "--strategy-variants A,M,P" in workflow
     assert "strategy_ablation_report.json" in workflow
     assert "EXTRA_ARGS+=(--require-complete)" in workflow
     assert "grid_cells:" in workflow

@@ -17,6 +17,7 @@ from agents.tool_context import (
     get_user_client,
     get_user_id,
     has_cloud,
+    is_auth_failure_result,
     with_auth_retry,
 )
 
@@ -50,6 +51,7 @@ def update_portfolio(
     free_cash: float = 0,
     table: str = "",
     codes: list[str] | None = None,
+    items: list[dict[str, Any]] | None = None,
     tool_context: ToolContext | None = None,
 ) -> dict:
     try:
@@ -58,6 +60,8 @@ def update_portfolio(
             return _delete_tracking_records(table, codes)
         portfolio_id = _portfolio_id(tool_context)
         cloud = has_cloud(tool_context)
+        if items is not None:
+            return _update_portfolio_batch(normalized_action, portfolio_id, items, free_cash, cloud, tool_context)
         msg = _apply_portfolio_action(
             normalized_action, portfolio_id, code, name, shares, cost_price, buy_dt, free_cash, cloud, tool_context
         )
@@ -69,6 +73,233 @@ def update_portfolio(
     except Exception as e:
         logger.exception("update_portfolio error")
         return {"error": str(e)}
+
+
+_BATCH_ACTIONS = frozenset({"add", "update", "remove"})
+_BATCH_MAX_ITEMS = 30
+_STOPS_MAX_ITEMS = 200
+
+
+def set_stop_loss(
+    code: str = "",
+    stop_loss: float = 0,
+    items: list[dict[str, Any]] | None = None,
+    tool_context: ToolContext | None = None,
+) -> dict:
+    """只设置持仓止损价，不能改股数、成本或现金。
+
+    安全性来自这个工具能做的事很窄，而不是来自调用方检查了参数。
+    """
+    try:
+        rows, error = _normalize_stop_rows(code, stop_loss, items)
+        if error:
+            return error
+
+        portfolio_id = _portfolio_id(tool_context)
+        cloud = has_cloud(tool_context)
+        if cloud:
+            from integrations.supabase_portfolio import set_position_stops
+
+            ok, _written = with_auth_retry(
+                tool_context,
+                set_position_stops,
+                portfolio_id,
+                rows,
+                client=get_user_client(tool_context),
+            )
+            if not ok:
+                return {"error": "云端止损写入失败"}
+
+        from integrations.local_db import set_local_position_stop
+
+        updated = 0
+        missing: list[str] = []
+        for row in rows:
+            if set_local_position_stop(portfolio_id, row["code"], row["stop_loss"]):
+                updated += 1
+            else:
+                missing.append(row["code"])
+        result: dict[str, Any] = {"updated_count": updated, "cloud": cloud}
+        if missing:
+            result["not_in_portfolio"] = missing
+        return result
+    except Exception as e:
+        logger.exception("set_stop_loss error")
+        return {"error": str(e)}
+
+
+def _normalize_stop_rows(
+    code: str,
+    stop_loss: float,
+    items: list[dict[str, Any]] | None,
+) -> tuple[list[dict[str, Any]], dict | None]:
+    from core.portfolio_symbol import normalize_portfolio_code
+
+    raw = items if items is not None else [{"code": code, "stop_loss": stop_loss}]
+    if not isinstance(raw, list) or not raw:
+        return [], {"error": "items 必须是非空数组"}
+    if len(raw) > _STOPS_MAX_ITEMS:
+        return [], {"error": f"单次最多 {_STOPS_MAX_ITEMS} 条，请拆分后重试"}
+
+    rows: list[dict[str, Any]] = []
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            return [], {"error": f"第 {index} 项必须是对象"}
+        normalized = normalize_portfolio_code(str(item.get("code") or ""))
+        if not normalized:
+            return [], {"error": f"第 {index} 项股票代码无效: {item.get('code')}"}
+        try:
+            price = float(item.get("stop_loss"))
+        except (TypeError, ValueError):
+            return [], {"error": f"{normalized} 的 stop_loss 无效"}
+        if price <= 0:
+            return [], {"error": f"{normalized} 的 stop_loss 必须大于 0"}
+        rows.append({"code": normalized, "stop_loss": price})
+    return rows, None
+
+
+def _update_portfolio_batch(
+    action: str,
+    portfolio_id: str,
+    items: list[dict[str, Any]],
+    free_cash: float,
+    cloud: bool,
+    tool_context: ToolContext | None,
+) -> dict:
+    """一次工具调用改多只：减少 Agent 多轮 LLM，利于 prompt cache。"""
+    if action == "set_cash":
+        return {"error": "批量 items 不支持 set_cash，请单独调用"}
+    if action not in _BATCH_ACTIONS:
+        return {"error": f"批量 items 仅支持 add/update/remove，收到: {action}"}
+    if not isinstance(items, list) or not items:
+        return {"error": "items 必须是非空数组"}
+    if len(items) > _BATCH_MAX_ITEMS:
+        return {"error": f"单次最多 {_BATCH_MAX_ITEMS} 条，请拆分后重试"}
+
+    ok_messages: list[str] = []
+    failures: list[dict[str, Any]] = []
+    for index, raw in enumerate(items):
+        row = _batch_item_row(index, raw, failures)
+        if row is None:
+            continue
+        msg = _apply_portfolio_action(
+            action,
+            portfolio_id,
+            row["code"],
+            row["name"],
+            row["shares"],
+            row["cost_price"],
+            row["buy_dt"],
+            free_cash,
+            cloud,
+            tool_context,
+            refresh_equity=False,
+        )
+        if isinstance(msg, dict) and msg.get("error"):
+            failures.append({"index": index, "code": row["code"], "error": msg["error"]})
+        else:
+            ok_messages.append(str(msg))
+
+    if not ok_messages:
+        first = failures[0]["error"] if failures else "批量操作失败"
+        return {"error": first, "failures": failures, "updated_count": 0, "failed_count": len(failures)}
+    if cloud:
+        valuation_message = _refresh_cloud_equity(portfolio_id, tool_context)
+        _sync_remote_portfolio_to_local(portfolio_id, tool_context)
+    summary = _local_update_summary(portfolio_id, f"批量{action}成功 {len(ok_messages)} 只", cloud)
+    summary["updated_count"] = len(ok_messages)
+    summary["failed_count"] = len(failures)
+    summary["item_messages"] = ok_messages
+    if cloud:
+        summary["valuation_message"] = valuation_message
+    if failures:
+        summary["failures"] = failures
+    return summary
+
+
+def _batch_item_row(index: int, raw: Any, failures: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        failures.append({"index": index, "error": "item 必须是对象"})
+        return None
+    try:
+        shares = int(raw.get("shares") or 0)
+        cost_price = float(raw.get("cost_price") or 0)
+    except (TypeError, ValueError):
+        failures.append({"index": index, "code": raw.get("code"), "error": "shares/cost_price 无效"})
+        return None
+    return {
+        "code": str(raw.get("code") or "").strip(),
+        "name": str(raw.get("name") or "").strip(),
+        "shares": shares,
+        "cost_price": cost_price,
+        "buy_dt": str(raw.get("buy_dt") or "").strip(),
+    }
+
+
+def record_trade_fill(
+    code: str,
+    side: str,
+    shares: int,
+    price: float,
+    trade_date: str = "",
+    name: str = "",
+    tool_context: ToolContext | None = None,
+) -> dict:
+    """把一笔真实成交回填进持仓与现金。
+
+    与 update_portfolio 的区别：那个是覆盖式录入快照，这个是按成交增量算账，会自动
+    摊薄成本价、扣减佣金印花税、卖光时清仓，并给出已实现盈亏。
+    """
+    from datetime import datetime
+
+    from core.portfolio_symbol import normalize_portfolio_code
+    from core.trade_fill import Fill
+    from utils.trading_clock import CN_TZ
+
+    try:
+        normalized = normalize_portfolio_code(str(code))
+        if not normalized:
+            return {"error": "无效的股票代码：A股用6位数字，港股用00700.HK，美股用AAPL.US"}
+        fill = Fill(
+            code=normalized,
+            side=str(side or "").strip().lower(),
+            shares=int(shares),
+            price=float(price),
+            trade_date=str(trade_date or "").strip() or datetime.now(CN_TZ).strftime("%Y%m%d"),
+            name=str(name or "").strip() or code_to_name(normalized),
+        )
+    except (ValueError, TypeError) as exc:
+        return {"error": str(exc)}
+
+    portfolio_id = _portfolio_id(tool_context)
+    if not has_cloud(tool_context):
+        return {"error": "成交回填需要登录云端账户"}
+    result = _record_fill_with_safe_auth_retry(portfolio_id, fill, tool_context)
+    if not result.ok:
+        return {"error": result.message}
+    _sync_remote_portfolio_to_local(portfolio_id, tool_context)
+    return {"message": result.message}
+
+
+def _record_fill_with_safe_auth_retry(portfolio_id: str, fill: Any, tool_context: ToolContext | None):
+    """Auth-retry only when the fill did not already mutate positions.
+
+    `record_fill` writes position then cash. If cash fails with a JWT-looking error,
+    blanket `with_auth_retry` would replay the buy/sell against the already-updated
+    holding and corrupt shares/cash.
+    """
+    from integrations.supabase_portfolio import FillWriteResult, record_fill
+
+    def _call(*, client):
+        return record_fill(portfolio_id, fill, client=client)
+
+    result = _call(client=get_user_client(tool_context))
+    if not isinstance(result, FillWriteResult):
+        return FillWriteResult(False, "成交回填失败")
+    if result.ok or result.position_committed or not is_auth_failure_result(result):
+        return result
+    retried = with_auth_retry(tool_context, _call, client=get_user_client(tool_context))
+    return retried if isinstance(retried, FillWriteResult) else result
 
 
 def _portfolio_id(tool_context: ToolContext | None) -> str:
@@ -132,12 +363,16 @@ def _portfolio_view(portfolio_id: str, state: dict) -> dict:
         }
         for p in state.get("positions", [])
     ]
-    return {
+    result = {
         "portfolio_id": portfolio_id,
         "free_cash": state.get("free_cash", 0),
         "position_count": len(positions),
         "positions": positions,
     }
+    if state.get("total_equity") is not None:
+        result["total_equity"] = state["total_equity"]
+        result["valuation_updated_at"] = state.get("updated_at", "")
+    return result
 
 
 def _portfolio_diagnosis(portfolio_id: str, state: dict, tool_context: ToolContext | None) -> dict:
@@ -159,17 +394,39 @@ def _portfolio_diagnosis(portfolio_id: str, state: dict, tool_context: ToolConte
             failed += 1
         else:
             success += 1
+    free_cash = float(state.get("free_cash", 0) or 0)
+    total_market_value = _fill_position_weights(results)
+    stored_total = state.get("total_equity")
+    computed_total = total_market_value + free_cash
     out = {
         "portfolio_id": portfolio_id,
         "free_cash": state.get("free_cash", 0),
         "position_count": len(state["positions"]),
         "successful_count": success,
         "failed_count": failed,
+        "total_market_value": round(total_market_value, 2),
+        "total_assets": round(float(stored_total) if stored_total is not None else computed_total, 2),
         "diagnostics": results,
     }
+    if stored_total is not None:
+        out["total_equity"] = stored_total
+        out["valuation_updated_at"] = state.get("updated_at", "")
+    if failed:
+        out["market_value_note"] = f"{failed} 只持仓行情缺失，总市值与仓位占比仅覆盖成功诊断的部分"
     if hints:
         out["tickflow_limit_hint"] = hints[0]
     return out
+
+
+def _fill_position_weights(results: list[dict]) -> float:
+    """按市值回填 weight_pct，返回可计算的总市值（行情缺失的持仓不计入）。"""
+    total = sum(float(item.get("market_value") or 0) for item in results)
+    if total > 0:
+        for item in results:
+            market_value = float(item.get("market_value") or 0)
+            if market_value > 0:
+                item["weight_pct"] = round(market_value / total * 100.0, 2)
+    return total
 
 
 _EXTREME_DAY_CHANGE_PCT = -5.0  # 与 core.holding_diagnostic 的阈值保持一致，避免无谓拉取分时线
@@ -182,19 +439,34 @@ def _diagnose_position(position: dict, start_date: date, end_date: date, hints: 
     code = position.get("code", "") or position.get("code", "")
     name = position.get("name", code)
     cost = float(position.get("cost", position.get("cost_price", 0)) or 0)
+    shares = _position_shares(position)
     try:
         df = get_stock_hist(code, start_date, end_date)
         if df is None or df.empty:
-            return {"code": code, "name": name, "error": "无行情数据"}
+            return {"code": code, "name": name, "shares": shares, "error": "无行情数据"}
         metadata = hist_metadata(df)
         _append_unique_hints(hints, collect_tickflow_limit_hints_from_df(df))
         normalized_df = normalize_hist_df(df)
         latest_date = latest_hist_date(df, "日期") or latest_hist_date(normalized_df)
         intraday_df = _fetch_intraday_if_extreme_day(code, normalized_df)
-        diagnostic = diagnose_one_stock(code, name, cost, normalized_df, intraday_df=intraday_df)
-        return _diagnostic_payload(diagnostic, latest_date, metadata)
+        diagnostic = diagnose_one_stock(
+            code,
+            name,
+            cost,
+            normalized_df,
+            intraday_df=intraday_df,
+            buy_dt=str(position.get("buy_dt", "") or "").strip(),
+        )
+        return _diagnostic_payload(diagnostic, latest_date, metadata, shares)
     except Exception as e:
-        return {"code": code, "name": name, "error": str(e)}
+        return {"code": code, "name": name, "shares": shares, "error": str(e)}
+
+
+def _position_shares(position: dict) -> int:
+    try:
+        return int(float(position.get("shares", 0) or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _fetch_intraday_if_extreme_day(code: str, normalized_df) -> Any:
@@ -228,15 +500,19 @@ def _append_unique_hints(target: list[str], hints: list[str]) -> None:
             target.append(hint)
 
 
-def _diagnostic_payload(diagnostic, latest_date: str, metadata: dict) -> dict:
+def _diagnostic_payload(diagnostic, latest_date: str, metadata: dict, shares: int = 0) -> dict:
     from agents.diagnosis_tools import diagnosis_brief_from_diagnostic
     from core.holding_diagnostic import format_diagnostic_text
 
     payload = {
         "code": diagnostic.code,
         "name": diagnostic.name,
+        "shares": shares,
+        "cost": round(diagnostic.cost, 3),
+        "market_value": round(shares * diagnostic.latest_close, 2) if shares else 0,
         "health": diagnostic.health,
         "pnl_pct": round(diagnostic.pnl_pct, 2),
+        "pnl_amount": round(shares * (diagnostic.latest_close - diagnostic.cost), 2) if shares else 0,
         "latest_close": diagnostic.latest_close,
         "ma_pattern": diagnostic.ma_pattern,
         "l2_channel": diagnostic.l2_channel,
@@ -291,13 +567,17 @@ def _apply_portfolio_action(
     free_cash: float,
     cloud: bool,
     tool_context: ToolContext | None,
+    *,
+    refresh_equity: bool = True,
 ) -> str | dict:
     if action in ("add", "update"):
-        return _upsert_position(portfolio_id, code, name, shares, cost_price, buy_dt, cloud, tool_context)
+        return _upsert_position(
+            portfolio_id, code, name, shares, cost_price, buy_dt, cloud, tool_context, refresh_equity=refresh_equity
+        )
     if action == "remove":
-        return _remove_position(portfolio_id, code, cloud, tool_context)
+        return _remove_position(portfolio_id, code, cloud, tool_context, refresh_equity=refresh_equity)
     if action == "set_cash":
-        return _set_cash(portfolio_id, free_cash, cloud, tool_context)
+        return _set_cash(portfolio_id, free_cash, cloud, tool_context, refresh_equity=refresh_equity)
     return {"error": f"未知操作: {action}，支持 add/update/remove/set_cash/delete_records"}
 
 
@@ -318,17 +598,26 @@ def _upsert_position(
     buy_dt: str,
     cloud: bool,
     tool_context: ToolContext | None,
+    *,
+    refresh_equity: bool = True,
 ) -> str | dict:
+    from core.portfolio_symbol import normalize_portfolio_code, portfolio_name_conflict
+
     if not code:
         return {"error": "add/update 操作需要提供股票代码 code"}
     amount_error = _validate_position_amounts(shares, cost_price)
     if amount_error:
         return amount_error
-    code = code.strip()
+    code = normalize_portfolio_code(code)
+    if not code:
+        return {
+            "error": "无效的股票代码：A股用6位数字，港股用00700.HK，美股用AAPL.US",
+        }
     resolved_name = code_to_name(code)
-    if resolved_name and name and resolved_name != name:
-        return {"error": f"代码 {code} 对应的股票是「{resolved_name}」，而非「{name}」，请确认代码或名称是否正确"}
-    name = name or resolved_name
+    conflict = portfolio_name_conflict(code, name, resolved_name)
+    if conflict:
+        return {"error": conflict}
+    name = name or (resolved_name if resolved_name != code else "")
     if cloud:
         from integrations.supabase_portfolio import upsert_position
 
@@ -338,6 +627,7 @@ def _upsert_position(
             portfolio_id,
             {"code": code, "name": name, "shares": shares, "cost_price": cost_price, "buy_dt": buy_dt},
             client=get_user_client(tool_context),
+            refresh_equity=refresh_equity,
         )
         if not ok:
             return {"error": msg}
@@ -347,15 +637,29 @@ def _upsert_position(
     return f"{code} 已更新"
 
 
-def _remove_position(portfolio_id: str, code: str, cloud: bool, tool_context: ToolContext | None) -> str | dict:
+def _remove_position(
+    portfolio_id: str,
+    code: str,
+    cloud: bool,
+    tool_context: ToolContext | None,
+    *,
+    refresh_equity: bool = True,
+) -> str | dict:
+    from core.portfolio_symbol import normalize_portfolio_code
+
     if not code:
         return {"error": "remove 操作需要提供股票代码 code"}
-    code = code.strip()
+    code = normalize_portfolio_code(code) or str(code).strip().upper()
     if cloud:
         from integrations.supabase_portfolio import delete_position
 
         ok, msg = with_auth_retry(
-            tool_context, delete_position, portfolio_id, code, client=get_user_client(tool_context)
+            tool_context,
+            delete_position,
+            portfolio_id,
+            code,
+            client=get_user_client(tool_context),
+            refresh_equity=refresh_equity,
         )
         if not ok:
             return {"error": msg}
@@ -365,14 +669,26 @@ def _remove_position(portfolio_id: str, code: str, cloud: bool, tool_context: To
     return f"{code} 已删除"
 
 
-def _set_cash(portfolio_id: str, free_cash: float, cloud: bool, tool_context: ToolContext | None) -> str | dict:
+def _set_cash(
+    portfolio_id: str,
+    free_cash: float,
+    cloud: bool,
+    tool_context: ToolContext | None,
+    *,
+    refresh_equity: bool = True,
+) -> str | dict:
     if float(free_cash) < 0:
         return {"error": "free_cash 不能为负数"}
     if cloud:
         from integrations.supabase_portfolio import update_free_cash
 
         ok, msg = with_auth_retry(
-            tool_context, update_free_cash, portfolio_id, free_cash, client=get_user_client(tool_context)
+            tool_context,
+            update_free_cash,
+            portfolio_id,
+            free_cash,
+            client=get_user_client(tool_context),
+            refresh_equity=refresh_equity,
         )
         if not ok:
             return {"error": msg}
@@ -380,6 +696,18 @@ def _set_cash(portfolio_id: str, free_cash: float, cloud: bool, tool_context: To
 
     update_local_free_cash(portfolio_id, free_cash)
     return f"可用资金已更新为 {free_cash:,.2f}"
+
+
+def _refresh_cloud_equity(portfolio_id: str, tool_context: ToolContext | None) -> str:
+    from integrations.supabase_portfolio import refresh_portfolio_total_equity
+
+    result = with_auth_retry(
+        tool_context,
+        refresh_portfolio_total_equity,
+        portfolio_id,
+        client=get_user_client(tool_context),
+    )
+    return result.message if result.ok else f"总权益刷新失败：{result.message}"
 
 
 def _sync_remote_portfolio_to_local(portfolio_id: str, tool_context: ToolContext | None) -> None:

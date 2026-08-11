@@ -15,7 +15,7 @@ def test_sos_confirmation_requires_reclaiming_signal_close():
         days_elapsed=1,
     )
 
-    assert status == "pending"
+    assert status == "survived"
     assert "等待缩量" in reason
 
 
@@ -43,7 +43,7 @@ def test_sos_confirmation_rejects_close_below_ma20():
         days_elapsed=1,
     )
 
-    assert status == "pending"
+    assert status == "survived"
     assert "站稳MA20" in reason
 
 
@@ -57,8 +57,44 @@ def test_evr_confirmation_rejects_close_below_ma20():
         days_elapsed=1,
     )
 
-    assert status == "pending"
+    assert status == "survived"
     assert "站稳MA20" in reason
+
+
+def test_lps_weak_close_only_survives_without_validation():
+    status, reason = check_confirmation(
+        "lps",
+        {"snap_support": 10.0, "snap_close": 10.3, "snap_volume": 1_000_000, "snap_ma20": 10.0},
+        {"open": 10.3, "high": 10.4, "low": 10.0, "close": 10.05, "volume": 700_000, "ma20": 10.0},
+        days_elapsed=1,
+    )
+
+    assert status == "survived"
+    assert "高收" in reason
+
+
+def test_lps_high_close_and_dry_volume_validates_demand():
+    status, reason = check_confirmation(
+        "lps",
+        {"snap_support": 10.0, "snap_close": 10.3, "snap_volume": 1_000_000, "snap_ma20": 10.0},
+        {"open": 10.2, "high": 10.6, "low": 10.0, "close": 10.5, "volume": 700_000, "ma20": 10.1},
+        days_elapsed=1,
+    )
+
+    assert status == "confirmed"
+    assert "需求确认" in reason
+
+
+def test_lps_one_price_up_day_can_validate_research_signal():
+    status, reason = check_confirmation(
+        "lps",
+        {"snap_support": 10.0, "snap_close": 10.3, "snap_volume": 1_000_000, "snap_ma20": 10.0},
+        {"open": 11.3, "high": 11.3, "low": 11.3, "close": 11.3, "volume": 800_000, "ma20": 10.2},
+        days_elapsed=1,
+    )
+
+    assert status == "confirmed"
+    assert "需求确认" in reason
 
 
 def test_confirmation_cycle_marks_confirmed_source_for_step3():

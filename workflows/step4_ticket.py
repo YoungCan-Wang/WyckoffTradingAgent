@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from datetime import datetime
 
+from core.execution_audit import StaleExit, render_stale_exit_alert
 from core.execution_playbook import oms_playbook_lines
 from utils.trading_clock import CN_TZ
 from workflows.step4_models import ExecutionTicket
@@ -18,6 +19,8 @@ def render_trade_ticket(
     tickets: list[ExecutionTicket],
     *,
     atr_period: int,
+    stale_exits: list[StaleExit] | None = None,
+    model_label: str = "",
 ) -> str:
     now_str = datetime.now(CN_TZ).strftime("%Y-%m-%d")
     sells = [t for t in tickets if t.status == "APPROVED" and t.action in {"EXIT", "TRIM"}]
@@ -31,13 +34,19 @@ def render_trade_ticket(
     ]
     if market_view:
         lines.append(f"📌 市场视图：{market_view}")
+    # 拖延告警排在操作清单之前：读到一半就该知道昨天的单子还没落地。
+    lines.extend(render_stale_exit_alert(stale_exits or []))
     lines.append("")
     lines.extend(oms_playbook_lines())
     lines.extend(_render_sell_ticket_lines(sells, atr_period=atr_period))
     lines.extend(_render_hold_ticket_lines(holds, atr_period=atr_period))
     lines.extend(_render_buy_ticket_lines(approved_buy, atr_period=atr_period))
     lines.extend(_render_blocked_ticket_lines(blocked))
-    lines.append(f"💰 执行后可用现金：{free_cash_after:.2f}")
+    lines.append(f"💰 若全部工单成交后的预计可用现金：{free_cash_after:.2f}")
+    if model_label:
+        # Step4 的模型选型直接决定这张工单的内容（决策经 WyckoffOrderEngine 变成订单），
+        # 因此必须与工单同屏可见，而不是只留在 CI 日志里。
+        lines.append(f"🤖 决策模型：{model_label}")
     return "\n".join(lines)
 
 
@@ -54,6 +63,7 @@ def _fmt_ticket_stop(value: float | None) -> str:
 
 
 def _append_ticket_context(lines: list[str], ticket: ExecutionTicket) -> None:
+    lines.append(f"  决策契约：风险={ticket.signal_severity} | 时机={ticket.action_timing}")
     if ticket.wyckoff_context:
         lines.append(f"  结构：{ticket.wyckoff_context}")
 

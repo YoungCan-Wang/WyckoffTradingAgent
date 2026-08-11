@@ -6,6 +6,7 @@ import argparse
 from datetime import date, timedelta
 
 from workflows.backtest_defaults import (
+    DEFAULT_ALLOW_STATIC_META,
     DEFAULT_ATR_HARD_STOP_PCT,
     DEFAULT_ATR_MULTIPLIER,
     DEFAULT_ATR_PERIOD,
@@ -47,9 +48,15 @@ def build_backtest_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--grid-cells",
         default="",
-        help="共享一次信号计算的参数格，格式 hold:stop:take:trail，多个格用逗号分隔",
+        help="共享一次信号计算的参数格，格式 hold:stop:take:trail[:activate]，多个格用逗号分隔。activate 为移动止盈激活门槛（浮盈达到该%%后才启用），省略=0 即入场即启用",
     )
     parser.add_argument("--grid-prefix", default="backtest-grid", help="参数格输出目录名前缀")
+    parser.add_argument(
+        "--strategy-variants",
+        default="",
+        help="共享一次信号台账的策略组，例如 A,M,P；仅允许入场仓位权重不同",
+    )
+    parser.add_argument("--strategy-prefix", default="backtest-strategy", help="策略组输出目录名前缀")
     parser.add_argument(
         "--trigger-grid",
         default="",
@@ -161,6 +168,14 @@ def _add_metadata_and_cost_args(parser: argparse.ArgumentParser) -> None:
         dest="use_current_meta",
         action="store_false",
         help="关闭当前截面市值/行业映射过滤（降低 look-ahead bias）",
+    )
+    parser.add_argument(
+        "--allow-static-meta",
+        dest="allow_static_meta",
+        action="store_true",
+        default=DEFAULT_ALLOW_STATIC_META,
+        help="保留市值/行业/概念归属（缓变属性）但剔除 concept_heat 题材热度快照，"
+        "让 L1 市值过滤与 L3 板块共振可用而不引入题材前瞻偏差；推荐的基线口径",
     )
     parser.add_argument("--buy-friction-pct", type=float, default=DEFAULT_BUY_FRICTION_PCT, help="买入端摩擦成本(%%)")
     parser.add_argument("--sell-friction-pct", type=float, default=DEFAULT_SELL_FRICTION_PCT, help="卖出端摩擦成本(%%)")

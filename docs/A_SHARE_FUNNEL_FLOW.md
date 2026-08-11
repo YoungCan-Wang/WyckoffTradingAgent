@@ -23,7 +23,7 @@ flowchart TB
 
     subgraph CORE["🔬 核心：daily_job.py"]
         S2["Step2 Wyckoff Funnel<br/>workflows/wyckoff_funnel.py"]
-        S25["Step2.5 信号确认<br/>pending → confirmed"]
+        S25["Step2.5 信号确认<br/>pending → survived / confirmed / expired"]
         S26["Step2.6 推荐写库<br/>recommendation_tracking"]
         S27["Step2.7 起跳板/候选影子评分"]
         S3["Step3 批量 AI 研报<br/>workflows/step3_batch_report.py"]
@@ -82,7 +82,7 @@ flowchart TD
     STEP2 --> S25
 
     S25["Step2.5: run_step2_5()<br/>signal_pending 确认"] --> S26
-    S26["Step2.6: prepare_recommendation_payload<br/>→ recommendation_tracking"] --> S27
+    S26["Step2.6: prepare_recommendation_payload<br/>→ recommendation_tracking<br/>推荐价=首次推荐日收盘"] --> S27
     S27["Step2.7: score_springboard_abc<br/>起跳板/候选影子评分"] --> S3
 
     S3["Step3: run_step3()<br/>批量 AI 研报"] --> MARK["mark_ai_recommendations<br/>标记起跳板"]
@@ -106,8 +106,13 @@ flowchart TD
 | 调度 | `wyckoff_funnel.yml` | GitHub Actions |
 | 编排 | `scripts/daily_job.py` | 主流程 |
 | Step2 | `workflows/wyckoff_funnel.py` | `core/wyckoff_engine.py` |
+| Step2.6 | `integrations/recommendation_payload.py` | `recommendation_tracking` 写库；`initial_price` 按 code 粘住首次推荐日收盘 |
 | Step3 | `workflows/step3_batch_report.py` | `tools/report_builder.py` |
 | Step4 | `workflows/step4_rebalancer.py` | `core/holding_diagnostic.py` / `core/wyckoff_engine.py` |
+
+**推荐价语义**：`recommendation_tracking.initial_price` = 该股票首次 `recommend_date` 的收盘价；同股再次推荐、同日重跑、晚间 reprice/performance 都不得改成新日价。`change_pct` 相对该粘住价；MFE/MAE 仍按该行事件日计算。performance 的 `max_dates` 只限制刷新哪些行，首次推荐日锚点仍按该 code 全量历史计算。存量纠偏入口为 `workflows.recommendation_tracking_reprice.correct_tracking_initial_prices`。
+
+**强势股复盘证据**：生产漏斗在同轮 L1-L4 计算结束后，将逐股阶段、淘汰原因、候选车道、配置摘要和代码版本写入压缩 `review_trace_YYYYMMDD.json.gz`。该文件不含 OHLCV，随现有 Daily Job artifact 上传；19:25 Review 按前一交易日精确匹配成功运行的 trace，因此归因反映当时真实代码与配置，不依赖 Supabase，也不会被后来改动的策略重写历史。
 
 ---
 
@@ -174,12 +179,13 @@ flowchart TD
         R4C["Mainline 轨：主线买点候选"]
         R5{"FUNNEL_AI_SELECTION_MODE"}
         R5 -->|all_formal_l4| R6["正式 L4 全量送 AI<br/>不含 L3 补位"]
-        R5 -->|quota 当前默认| R7["按 regime 静态配额<br/>FUNNEL_AI_*_TREND/ACCUM"]
+        R5 -->|tradeable_l4 生产默认| R7["可交易结构进入统一质量池<br/>总数≤8 / 单行业≤2"]
+        R5 -->|quota 研究兼容| R7A["按 regime Trend / Accum 配额"]
         R8{"FUNNEL_DYNAMIC_POLICY"}
-        R8 -->|off| R9["静态配额"]
-        R8 -->|shadow| R10["静态出结果 + shadow 差异写库"]
-        R8 -->|on| R11["读 signal_health/registry 动态配额"]
-        R12["候选车道 / 主线候选<br/>按配额加权送审"]
+        R8 -->|off| R9["不计算动态策略对照"]
+        R8 -->|shadow 生产默认| R10["正式质量池不变<br/>动态差异写库"]
+        R8 -->|on 实验| R11["读取 signal_health / registry<br/>参与初始分配"]
+        R12["候选车道 / 主线候选<br/>进入统一质量池竞争"]
         R15["统一损失护栏<br/>纯SOS ABC=3/3<br/>单EVR/LPS/TrendPB默认观察"]
         R14["Shadow 观察<br/>只验证不入 AI"]
         R16{"数据质量门禁<br/>OHLCV/市值≥95%<br/>财务≥90%（请求时）"}
@@ -218,12 +224,30 @@ ETF 行情重复进入全市场统计；ETF 候选仍可通过 L3 共振进入�
 |------|----------|--------------|
 | 传统 Wyckoff | L1/L2/L3 后出现 L4 信号 | 不直接买，先进入 AI/二次确认 |
 | 主线候选 | `mainline_score` 达标，且 timing gate 过关 | 不直接买，仍需 AI/跨日确认 |
-| 候选车道 | 趋势回踩、平台突破、强承接等结构接近 | 默认观察，质量足够才按配额送审 |
+| 候选车道 | 趋势回踩、平台突破、强承接等结构接近 | 默认观察，形成可交易结构后进入统一质量池 |
 | Shadow 旁路 | L2 未过但有复盘价值，或外部观察名单 | 不进入正式 AI，除非显式打开开关 |
 
-报告将三类状态分开命名：Spring/LPS/SOS/EVR 命中称为“L4 量价触发”；A/B/C 只表示“起跳板结构”完整度；`pending/confirmed/expired` 才是跨交易日确认状态。三者不能互相替代，OMS 也不会生成 `confirmed`。
+报告把状态拆成 `DETECTED → SURVIVED → VALIDATED → OMS_APPROVED`：Spring/LPS/SOS/EVR 与 A/B/C 只表示当日结构命中；`SURVIVED` 只表示跨日未失效；守住信号位并出现高收、缩量或转强需求后才记 `VALIDATED`（库内兼容值 `confirmed`）；最后仍需 OMS 核准。四层不能互相替代。
 
-正式候选在送入 Step3 前还会经过 `core/candidate_policy.py` 的统一损失护栏。纯 SOS 必须通过 Springboard ABC 3/3；单 EVR、单 LPS 与单 Trend Pullback 默认仅观察。状态已是可交易的主线候选可跳过这三类“仅观察”限制，但仍必须通过最低分、市场环境、弱确认、过热和高位追涨检查；“主线观察”与“过热不追”不享受豁免。L2 的八通道原始命中数会写入诊断日志，但不参与评分。
+正式候选在送入 Step3 前还会经过 `core/candidate_policy.py` 的统一损失护栏。单 SOS、单 EVR、单 LPS 与单 Trend Pullback 默认仅观察。状态已是可交易的主线候选可跳过这三类“仅观察”限制，但仍必须通过最低分、市场环境、弱确认、过热、高位追涨和结构止损距离检查；结构止损上限适用于全部市场状态，弱市与主线身份都不豁免。“主线观察”与“过热不追”不享受豁免。主题雷达候选还必须由当日概念或行业元数据再次证明其主题归属，旧快照标签不能单独形成主线种子。L2 的八通道原始命中数会写入诊断日志，但不参与评分。
+
+结构止损上限是**风险敞口约束，不是收益筛选**。2026-08-07 直接调用 `_structure_stop_reason` 与 `compute_support_level` 验证：被拦候选的止损距离中位数 19.42%，放行候选 6.14%；按风险归一化后每承担 1% 止损距离换得的 10 日收益为放行 +0.150% vs 被拦 +0.051%，相差约 3 倍。收益维度本身不显著（Welch t 均 < 2，10 日方向反转），所以不要把它当作 alpha 来源；它的作用是阻止在任何市况下买入需要下跌约 20% 才触及结构止损的标的。
+
+主题归属复检同日验证：全市场 34,440 个真实主题归属零误杀，抽样 3000 只中 2720 只只能靠 `sector_map` 兜底自证，因此 `sector_map` 必须与 `concept_map` 一并传入，否则会误杀这批标的。
+
+**单 SOS 降级为仅观察的依据。** 2026-08-07 走 `scripts/backtest_snapshot_fetch.py` + `core/backtest_replay.build_signal_ledger()` 标准路径回放 2025-11-03..2026-07-20 共 162 个交易日，并额外跑一次 `pure_sos_min_abc=0` 的对照 ledger 拿到未被门槛筛掉的全集，两次去重后共 493 条纯 SOS：
+
+| 口径 | 纯 SOS | 非纯 SOS |
+|---|---|---|
+| 10 日中位 | -3.20% | -1.27% |
+| 10 日胜率 | 40.0% | 44.3% |
+| 5 日中位 | -1.68% | -0.44% |
+
+均值受少数极端日主导（剔除最差 5 日即由负转正），但该脆弱性是 A 股共性、保留组同样存在，因此以中位数与胜率两个抗尾部口径为准；两者在 5/10 日、两次独立 ledger 上方向一致。提高 `score` 门槛无法改善（score≥75 时 10 日中位反而降到 -4.18%）。
+
+ABC 门槛松紧不是问题所在：met=2 与 met=3 的差异在 1/3/5/10 日全部 |t|<0.5，无显著差异。原注释声称 met=2 负期望（-1.46%）、met=3 正期望（+3.98%/胜率 53.8%），标准回放中方向相反且无法复现，已作废。`FUNNEL_LOSS_GUARD_PURE_SOS_MIN_ABC` 保留为 3 只是 `pure_sos_observe_only=False` 时的保守回退值。
+
+所有 Welch t 均在 ±1.4 以内，未达显著；结论强度仅支持"单 SOS 不足以单独支撑买入决策"，不支持"SOS 信号无效"——SOS 与其他形态共振时不受此限，主线候选亦豁免。若后续样本改变结论，可用 `FUNNEL_LOSS_GUARD_PURE_SOS_OBSERVE_ONLY=0` 一键放开。
 
 ### 数据质量与诊断口径
 
@@ -251,6 +275,8 @@ ETF 行情重复进入全市场统计；ETF 候选仍可通过 L3 共振进入�
 | Compression | 压缩蓄势 | 通用 |
 | Trend Pullback | 趋势回踩 | Trend / Mainline |
 
+生产 LPS 只识别“先越过 Creek、后缩量回踩守住 Creek/MA20”的序列，量能比较使用近期与前 60 日的中位数，默认阈值 65%。没有 Creek 前序的普通均线回踩归入 Trend Pullback。观察与待确认记录按 `(code, signal_type)` 绑定候选元数据，禁止把趋势回踩车道误写到 LPS 行。
+
 `core/wyckoff_structure.py` 会在同一批 L3 股票上额外识别动态交易区间，并对 Spring、LPS、SOS、EVR
 生成 `structure_shadow` 对照。该结果只记录区间覆盖率、正式/结构共同命中和各自独有命中，固定为
 `observation_only`，不合并进正式 `triggers`，不参与候选评分、二次确认、回测成交或 OMS。
@@ -273,7 +299,7 @@ ETF 行情重复进入全市场统计；ETF 候选仍可通过 L3 共振进入�
 
 ```mermaid
 flowchart LR
-    IN["selected_for_ai<br/>与漏斗报告送审清单一致"] --> FETCH["逐只拉 OHLCV<br/>320 日窗口"]
+    IN["跨日 VALIDATED 优先保留最多3席<br/>剩余席位来自当日 selected_for_ai"] --> FETCH["逐只拉 OHLCV<br/>320 日窗口"]
     FETCH --> FEAT["特征工程<br/>generate_stock_payload<br/>均线/量价切片/高光事件"]
     FEAT --> RAG["RAG 语义防雷<br/>rag_veto 新闻否决"]
     RAG --> SPLIT["双轨分组<br/>Trend vs Accum"]
@@ -290,8 +316,12 @@ flowchart LR
 
 - Step3：`STEP3_LLM_PROVIDER=gemini`，fallback `efficiency`
 - 输入不是原始 K 线，而是压缩后的结构特征
-- 漏斗展示的送审数量与 Step3 实际输入保持一致；模型审判不等于执行放行，`confirmed` 仍是 Step4 硬门槛
-- 空候选仍发送空集报告、合规摘要和明日执行结论，并明确区分上游空输入、RAG 全剔除和数据门槛过滤；主 provider 失败时按配置回退，不会在 daily-job 包装层静默跳过
+- Step3 总输入默认最多 5 只：跨日 `VALIDATED` 候选优先保留最多 3 席，其余席位按漏斗顺序从当日 `selected_for_ai` 填充；当日不足时，未使用的保留席不会浪费。市场修复模式不再从另一条“起跳板补位”路径私自换名单
+- 合规版市场观察简报默认发送；只有显式设置 `STEP3_SEND_COMPLIANCE_BRIEF=0` 才关闭
+- 精简形态观察按股票聚合；两种及以上 A/B/C≥2 的正式 L4 信号显示为“双/多 Wyckoff 形态共振”，入表时保留完整 `signal_types`
+- `STEP3_SKIP_LLM=1` 的输入预演在空候选时静默返回，不发送空研报或合规简报
+- 模型审判不等于执行放行，`confirmed` 仍是 Step4 硬门槛
+- 用户报告保留执行摘要、实际送审清单，以及 A/B/C≥2 且当日写入 `recommendation_tracking` 的精简形态观察（默认最多 20 只）；完整 L4/主线池、逐层计数和证据仍保留在结构化运行数据中。空候选仍发送空集报告并明确区分上游空输入、RAG 全剔除和数据门槛过滤
 
 ---
 
@@ -322,9 +352,15 @@ RISK -->|PANIC_REPAIR_CONFIRMED| REPAIR_PROBE["最多1只小额 PROBE<br/>禁止
     ALLOW --> OMS["灾难止损地板 -12%<br/>PROBE≤10% / ATTACK≤20%<br/>ATR/结构/时间管理优先"]
     REPAIR_PROBE --> OMS
     CAUTION_PROBE --> OMS
-    OMS --> TG["推送工单（含执行纪律）"]
     OMS --> DB["trade_orders 写库"]
+    DB --> AUX["仅更新 HOLD / 剩余 TRIM 的有效止损<br/>保存真实净值"]
+    AUX --> OLD["作废同日旧工单"]
+    OLD --> TG["推送工单（含执行纪律）"]
+    DB -->|后续持久化失败| RB["作废本轮 run_id<br/>并恢复止损快照<br/>保留旧工单"]
+    TG -->|推送失败| KEEP["保留本轮工单<br/>禁止重跑 OMS"]
 ```
+
+Step4 以 `trade_orders` 作为幂等事实源。Telegram 超时具有“可能已送达”的歧义，因此推送失败会让任务显式失败，但不会作废订单或重跑 LLM/OMS；否则可能重复发送或生成相互冲突的工单。只有订单已写入、后续数据库持久化失败时才精确作废本次 `run_id`，并按写入前快照恢复已改动的持仓止损；回滚自身失败会升级为独立错误。同日旧工单在本轮持久化全部成功后才作废。LLM 若对同一代码输出多条决策，解析阶段按 `EXIT > TRIM > HOLD > PROBE > ATTACK` 折叠为一条；OMS 卖单通过后同步扣减内存持仓，避免重复 EXIT/TRIM 超卖。持仓结构退出只看建仓后的价格路径；新仓保护期内，当轮模型给出的、同时高于成本和现价的倒挂止损会被拒绝，但已持久化的跟踪止损继续作为权威防线，未成交 `EXIT` 不再反写并污染持仓止损。
 
 ### 回放与确认安全边界
 
@@ -341,17 +377,20 @@ RISK -->|PANIC_REPAIR_CONFIRMED| REPAIR_PROBE["最多1只小额 PROBE<br/>禁止
 
 `entry_price_mode=open` 是当前生产候选默认口径；信号确认口径 `pending_mode=only`（仅用跨日 confirmed 信号）与实盘 Step4 `STEP4_REQUIRE_CONFIRMED_BUY_CANDIDATE` 严格对齐。`off`/`both` 仅作为跳过或放宽确认门槛的研究对照，不代表实盘可执行表现；`open`、`close` 和 `tail_1455` 也必须在相同 confirmed-only 门槛下完成对照后，才能宣称某种入场口径更优。最终 OMS 将 AI 结构区间、涨幅和 ATR 防追高约束收敛成唯一允许买入区间；区间缺失或无交集直接拒单，次日开盘价不在区间内也不执行。
 
-Backtest Grid 的默认策略消融为 `A/M/P/Q`。M 相对 A 缩小弱水温下指定 confirmed 信号的研究仓位；
-P 相对 M 仅将 NEUTRAL Spring 仓位由 50% 降至 25%；Q 相对 P 只在市场广度未确认时拦截 NEUTRAL Spring，不影响 EVR/SOS 等其他信号。默认 `all_defined` 除近期、牛市和熊市外，增加 2023 震荡与 2024
-剧烈波动窗口；报告必须收齐五个窗口的 A/M/P/Q 单元才标记完整。N（过滤后重排）与 O（拦截后不补位）已被证伪，不再属于默认研究矩阵。
+Backtest Grid 的默认策略消融为 `A/M/P`。M 相对 A 缩小弱水温下指定 confirmed 信号的研究仓位；
+P 相对 M 仅将 NEUTRAL Spring 仓位由 50% 降至 25%。默认 `all_defined` 除近期、牛市和熊市外，增加 2023 震荡与 2024
+剧烈波动窗口；报告必须收齐五个窗口的 A/M/P 单元才标记完整。Q 的广度确认在五窗口相对 P 仅 1/5 胜、平均收益差 −3.85pp，实验实现已删除；N（过滤后重排）与 O（拦截后不补位）也已被证伪。
+每个窗口的 A/M/P 共享一次信号台账，再分别应用仓位权重并重放现金组合；只有权重以外的策略配置完全
+一致时才允许复用，避免把真正改变选股或信号的实验误当成轻量仓位对照。
 候选组还必须五个窗口现金收益全部为正且最大绝对回撤不超过 20%，不能只凭相对基线少亏获得 `pass`。
+策略报告还会对 P 组实际现金成交按信号、水温和退出原因汇总亏损贡献，避免用未成交信号的纸面均收指导下一轮。
 这些能力只作用于回放，不改变生产漏斗、Step3 或 OMS。F-I 与经典 B-E 仍可手动复验，但已退出默认矩阵。
 
 | 项 | 说明 |
 |----|------|
 | 入口 | 漏斗候选行内联展示（`workflows/funnel_render.py`） |
 | 候选 | 读 `signal_pending`；**confirmed 才可执行** |
-| 排序 | 生产仍使用 confirmed → 主线/趋势 → 信号分；A/M/P/Q 不改变生产排序 |
+| 排序 | 生产仍使用 confirmed → 主线/趋势 → 信号分；A/M/P 不改变生产排序 |
 | 主线语义 | `candidate_theme / candidate_phase / candidate_role` 从推荐、信号贯穿到执行记录；LLM 只解释不重判 |
 | 禁新开 | `RISK_ON` 与弱市/修复期与 Step4 对齐，新票不买 |
 | 持仓诊断 | `workflows/holding_diagnosis_core.py` + `core/holding_diagnostic.py`（日线为准），硬止损约 12%；非主线满 5 日建议时间止盈 |
@@ -379,8 +418,8 @@ sequenceDiagram
     T1->>REC: 形态复盘记录
     Note over T1: signal_pending 写入待确认
 
-    FB->>OBS: 读取观察样本
-    FB->>FB: 拉后续 K 线计算 1/3/5/10/20 日 outcomes
+    FB->>OBS: 读取观察样本和既有 outcome 状态
+    FB->>FB: 同股一次拉线，仅结算缺失/pending horizons
     FB->>HL: 聚合胜率/均值收益/权重
     FB->>REG: 更新信号启停状态
 
@@ -469,17 +508,40 @@ efinance
 | `FUNNEL_AI_SELECTION_MODE` | `tradeable_l4` | 只把可交易 L4 结构送入 Step3，减少裸 SOS/EVR 追高噪声 |
 | `FUNNEL_AI_TOTAL_CAP` | `8` | 质量达标候选的最终统一硬上限；主线、战略和主题补位共同竞争 |
 | `FUNNEL_AI_MAX_PER_SECTOR` | `2` | 最终送审清单的单行业上限，避免同一板块占满上下文 |
-| `FUNNEL_DYNAMIC_POLICY` | `shadow` | 主流程用静态配额，同时记录动态策略差异 |
+| `FUNNEL_DYNAMIC_POLICY` | `shadow` | 正式输出仍用 `tradeable_l4` 统一质量池，同时记录动态配额与信号权重的对照差异 |
 | `FUNNEL_DAILY_BREADTH_REPAIR_PCT` / `FUNNEL_DAILY_BREADTH_WEAK_PCT` | `60` / `35` | 修复候选日上涨家数占比阈值 / 强结构转弱阈值 |
 | `FUNNEL_PANIC_REPAIR_CONFIRM_MAIN_PCT` / `FUNNEL_PANIC_REPAIR_CONFIRM_BREADTH_PCT` | `0` / `50` | 修复候选次日的指数价格与上涨家数占比确认阈值 |
-| `FUNNEL_AI_NEUTRAL_TREND` / `FUNNEL_AI_NEUTRAL_ACCUM` | `5` / `1` | 中性市主线/趋势主导，Accum 仅残量 |
-| `FUNNEL_AI_RISK_ON_TREND` / `FUNNEL_AI_RISK_ON_ACCUM` | `5` / `1` | 过热市 AI/shadow 研究配额；正式推荐与新开仓由市场闸门禁止 |
+| `FUNNEL_AI_NEUTRAL_TREND` / `FUNNEL_AI_NEUTRAL_ACCUM` | `5` / `1` | dynamic shadow 与 quota 兼容模式的研究基线；不截断生产质量池 |
+| `FUNNEL_AI_RISK_ON_TREND` / `FUNNEL_AI_RISK_ON_ACCUM` | `5` / `1` | AI/shadow 研究基线；正式推荐与新开仓由市场闸门禁止 |
 | `FUNNEL_EXTERNAL_SEED_SYMBOLS` / `FUNNEL_EXTRA_SYMBOLS` | 空 | 临时追加外部观察名单；存在时自动启用 external seed shadow |
 | `STEP4_BUY_HARD_STOP_PCT` | `12.0` | 新开仓灾难止损地板；ATR/结构/时间管理优先 |
+| `FUNNEL_MAX_STRUCTURE_STOP_PCT` | `12.0` | 漏斗送审前的结构止损距离上限；与 OMS 灾难地板独立配置 |
+| `FUNNEL_LOSS_GUARD_PURE_SOS_OBSERVE_ONLY` | `1` | 单 SOS 仅观察；设为 `0` 放开后由 `PURE_SOS_MIN_ABC` 兜底 |
+| `STEP3_SEND_COMPLIANCE_BRIEF` | `1` | 默认发送脱敏市场观察简报；设为 `0` 才显式关闭 |
+| `STEP4_BLOCK_BUY_ON_STALE_EXIT` | `1` | 持仓已跌破止损却连续多日未离场时禁止 `ATTACK` 重仓；小额 `PROBE` 与离场减仓不受影响，一字跌停日不计入拖延 |
+| `STEP4_NEW_POSITION_STOP_GUARD_DAYS` | `4` | 新仓倒挂止损保护期（自然日）；保护期内同时高于成本和现价的止损不得触发 EXIT/TRIM |
 | `STEP4_REPAIR_PROBE_BUDGET_LIMIT` | `0.05` | `PANIC_REPAIR_CONFIRMED` 单票试探仓上限；同时最多只开放一只 |
 | `STEP4_REQUIRE_CONFIRMED_BUY_CANDIDATE` | `1` | Step4 新开仓只允许显式跨日确认候选；否定/观察状态优先拦截，不做模糊字符串匹配 |
 | `STEP4_AI_CANDIDATE_POLICY` | `veto_only` | `veto_only` 只剔除逻辑破产；`shadow` 仅记录分类用于实验对照 |
 | `STEP4_BUY_BLOCK_REGIMES` | `UNKNOWN,RISK_ON,BEAR_REBOUND,PANIC_REPAIR,RISK_OFF,CRASH,BLACK_SWAN` | 市场数据未就绪、过热与弱市均冻结新开仓 |
+
+### 数据缺失导致的禁买要能被认出来
+
+生效状态 = 收盘态与盘前态取严，任何一边缺失都会落到 `UNKNOWN`，而 `UNKNOWN` 属于禁止开仓。
+这是有意的 fail-closed，但缺失和「行情确实不明」在状态上无法区分：生产 47 天样本里有 10 天
+是因为上游任务没产出而禁买，与真正放行的天数（10 天）持平。
+
+`build_market_guardrail` 因此额外做一次归因：只有在**补齐缺失项后本可放行**时，才在风控段和
+`trade_orders.market_view` 里写明「禁买源自数据缺失」，并给出缺失项。收盘态自身已经是 CRASH
+这类禁买态时不会这么标注——那时补数据也不会放行，误报只会让运维白跑一趟。风控语义不变，
+缺的只是可见性。
+
+排查顺序：看到 `⛑️ 禁买源自数据缺失` 就手动补跑 `premarket_risk`（或检查 `market_signal_daily`
+当日行的 `benchmark_regime`），再重跑 Step4。
+
+盘前那一半另有 `schedule` 兜底（UTC 02:20 工作日，带 `--backstop` 幂等短路）：外部
+`workflow_dispatch` 触发器实测连续 4 个周一周二未触发，而周一周二恰是 Step4 出单最多的两天。
+兜底只在当日盘前态缺失且当天是交易日时才干活，触发正常的日子秒退，不会多推一条飞书。
 
 ---
 

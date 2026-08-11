@@ -33,13 +33,13 @@ def test_candidate_shadow_score_rewards_confirmed_breakout_setup():
         },
     )
 
-    assert score["version"] == "candidate_shadow_score_v1"
+    assert score["version"] == "candidate_shadow_score_v2"
     assert score["grade"] == "B"
     assert score["score"] >= 65
     assert score["components"]["funnel"] == 27.6
     assert score["components"]["springboard"] == 18.0
     assert "quality_breakout" in score["positive_tags"]
-    assert "springboard_confirmed" in score["positive_tags"]
+    assert "springboard_structure_ready" in score["positive_tags"]
     assert "lhb_net_buy" in score["positive_tags"]
     assert score["negative_tags"] == []
 

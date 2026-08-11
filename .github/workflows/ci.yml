@@ -40,7 +40,9 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install ruff
-        run: python -m pip install ruff
+        # 钉版本：与 pyproject `[dev]` / pre-commit 对齐。0.16 起会格式化 Markdown
+        # 代码块，升级时需同步 `ruff format` 全仓（含 docs）。
+        run: python -m pip install "ruff==0.16.2"
       - name: Ruff lint
         run: ruff check .
       - name: Ruff format
@@ -89,13 +91,20 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Collect changed files
+      # 从 API 现取 body，而不是读 event payload：payload 是事件发生那一刻的快照，且
+      # pull_request 默认不监听 edited，于是「改 body 修不好 body 策略失败」——只能靠再推一个
+      # 提交才能刷新。event-path 仍要传，dependabot 判定需要 sender。
+      - name: Collect PR body and changed files
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: gh pr view "$PR_NUMBER" --json files --jq '.files[].path' > /tmp/pr-changed-files.txt
+        run: |
+          gh pr view "$PR_NUMBER" --json files --jq '.files[].path' > /tmp/pr-changed-files.txt
+          gh pr view "$PR_NUMBER" --json body --jq '.body' > /tmp/pr-body.md
       - name: Validate PR body and file policy
-        run: python scripts/check_pr_policy.py --event-path "$GITHUB_EVENT_PATH" --changed-files-file /tmp/pr-changed-files.txt
+        run: |
+          python scripts/check_pr_policy.py --body-file /tmp/pr-body.md \
+            --event-path "$GITHUB_EVENT_PATH" --changed-files-file /tmp/pr-changed-files.txt
 
   test:
     runs-on: ubuntu-latest

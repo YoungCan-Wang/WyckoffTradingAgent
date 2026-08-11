@@ -79,15 +79,47 @@ def get_recent_keep_tokens(model_name: str = "", context_window: int | None = No
 # ---------------------------------------------------------------------------
 
 
+def estimate_text_tokens(text: str) -> int:
+    """字符级 token 估算，对 CJK 取保守（偏大）值。
+
+    实测 poolside/laguna-xs-2.1 上原式 ``max(len//2, utf8_len//3)`` 的估算/实际比：
+    纯中文 0.79x、中英混合 0.86x、JSON 0.97x、纯英文 2.87x。英文侧高估无害（只是
+    压缩早触发），但**中文侧低估会让超限兜底放过真正超窗的请求**——实测一份估算
+    228,014 的纯中文历史实际是 274,938 tokens，直接被网关 400 拒绝。
+
+    因此 CJK 字符按每字 1.3 token 计（覆盖实测最差 0.79x ≈ 1.27 倍缺口），
+    其余字符沿用 utf8/3 与 len/2 的较大值。
+    """
+    if not text:
+        return 0
+    cjk = sum(1 for ch in text if _is_cjk(ch))
+    rest = text if cjk == 0 else "".join(ch for ch in text if not _is_cjk(ch))
+    rest_tokens = max(len(rest) // 2, len(rest.encode("utf-8")) // 3)
+    return int(cjk * _CJK_TOKENS_PER_CHAR) + rest_tokens
+
+
+def _is_cjk(ch: str) -> bool:
+    code = ord(ch)
+    return (
+        0x4E00 <= code <= 0x9FFF  # CJK 统一汉字
+        or 0x3400 <= code <= 0x4DBF  # 扩展 A
+        or 0xF900 <= code <= 0xFAFF  # 兼容汉字
+        or 0x3000 <= code <= 0x303F  # CJK 标点
+        or 0xFF00 <= code <= 0xFFEF  # 全角字符
+        or 0x3040 <= code <= 0x30FF  # 日文假名
+        or 0xAC00 <= code <= 0xD7AF  # 韩文音节
+    )
+
+
 def estimate_tokens(messages: list[dict[str, Any]]) -> int:
     total = 0
     for m in messages:
         content = m.get("content", "")
         if isinstance(content, str):
-            total += max(len(content) // 2, len(content.encode("utf-8")) // 3)
+            total += estimate_text_tokens(content)
         for tc in m.get("tool_calls", []):
             args_str = json.dumps(tc.get("args", {}), ensure_ascii=False)
-            total += len(args_str) // 3
+            total += estimate_text_tokens(args_str)
     return total
 
 
@@ -180,6 +212,8 @@ def _summarize_tool_result(name: str, content: str, max_len: int = 400) -> str:
 
 
 SHRINK_THRESHOLD = 800
+MIN_SUMMARY_CHARS = 20
+_CJK_TOKENS_PER_CHAR = 1.3
 
 
 def shrink_stale_tool_results(messages: list[dict[str, Any]]) -> int:
@@ -581,14 +615,71 @@ def compact_messages(
 
     try:
         summary = _run_compaction_summary(provider, head_text)
-        if summary and len(summary) >= 20:
-            archive_meta = _create_archive_safely(head, summary, session_id, archive_dir, tail_start, anchors)
-            compacted = [
-                {"role": "user", "content": _format_compacted_summary(summary, archive_meta, anchors)},
-                {"role": "assistant", "content": "好的，我已了解之前的对话上下文，请继续。"},
-            ] + tail
-            return _compact_return(compacted, True, archive_meta, include_metadata)
     except Exception:
-        logger.debug("compaction LLM call failed", exc_info=True)
+        # 压缩失败是静默劣化：上下文继续增长直到被网关拒绝，所以必须可见。
+        logger.warning(
+            "上下文压缩失败：摘要请求异常，历史保持 %d 条（约 %d tokens）未压缩",
+            len(messages),
+            estimate_tokens(messages),
+            exc_info=True,
+        )
+        return _compact_return(messages, False, None, include_metadata)
 
-    return _compact_return(messages, False, None, include_metadata)
+    if not summary or len(summary) < MIN_SUMMARY_CHARS:
+        logger.warning(
+            "上下文压缩失败：摘要仅 %d 字符（低于 %d 的下限），历史保持 %d 条（约 %d tokens）未压缩",
+            len(summary or ""),
+            MIN_SUMMARY_CHARS,
+            len(messages),
+            estimate_tokens(messages),
+        )
+        return _compact_return(messages, False, None, include_metadata)
+
+    archive_meta = _create_archive_safely(head, summary, session_id, archive_dir, tail_start, anchors)
+    compacted = [
+        {"role": "user", "content": _format_compacted_summary(summary, archive_meta, anchors)},
+        {"role": "assistant", "content": "好的，我已了解之前的对话上下文，请继续。"},
+    ] + tail
+    return _compact_return(compacted, True, archive_meta, include_metadata)
+
+
+def enforce_context_limit(
+    messages: list[dict[str, Any]],
+    model_name: str = "",
+    context_window: int | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """压缩之后仍超窗口时，硬丢弃最旧消息，返回 (messages, drop_info)。
+
+    压缩不保证一定生效：摘要请求可能失败、tail 本身就可能超过窗口。此时把包原样
+    发出去只会被网关以 400 拒绝，用户看到的是一次失败的对话而非降级的对话。宁可
+    丢最旧的上下文也要让请求成立。
+
+    只丢头部、保留尾部，且不在 tool 结果上切断——孤立的 tool result 缺少配对的
+    assistant tool_calls，多数 provider 会直接报错。
+    """
+    limit = get_compact_threshold(model_name, context_window)
+    if estimate_tokens(messages) <= limit:
+        return messages, None
+
+    before_messages = len(messages)
+    before_tokens = estimate_tokens(messages)
+    kept = list(messages)
+    while len(kept) > 2 and estimate_tokens(kept) > limit:
+        kept = kept[1:]
+        while kept and kept[0].get("role") == "tool":
+            kept = kept[1:]
+    if not kept:
+        kept = messages[-1:]
+    info = {
+        "dropped_messages": before_messages - len(kept),
+        "before_tokens": before_tokens,
+        "after_tokens": estimate_tokens(kept),
+        "limit": limit,
+    }
+    logger.warning(
+        "上下文仍超出上限：压缩后约 %d tokens > %d，已硬丢弃最旧 %d 条消息",
+        before_tokens,
+        limit,
+        info["dropped_messages"],
+    )
+    return kept, info

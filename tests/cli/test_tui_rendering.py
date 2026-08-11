@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import threading
 from collections import deque
 from datetime import datetime
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -22,6 +24,7 @@ from cli.tui import (
     _display_workflow_step_event,
     _is_system_notification_message,
     _make_sub_agent_progress_handler,
+    _needs_markdown_render,
     _pending_user_question_answer,
     _pending_user_question_lines,
     _pending_workflow_reply_intent,
@@ -29,6 +32,8 @@ from cli.tui import (
     _PendingUserQuestion,
     _pop_lines,
     _replace_streamed_response,
+    _run_workflow_background,
+    _session_avg_tok_per_s,
     _settle_markdown_render,
     _system_notification_queue_item,
     _tool_result_view,
@@ -113,7 +118,7 @@ def test_pop_lines_removes_actual_added_strips():
     assert log.refreshed is True
 
 
-def test_expand_recent_workflow_followup_uses_current_session(monkeypatch):
+def test_latest_relevant_workflow_run_selection(monkeypatch):
     app = object.__new__(WyckoffTUI)
     app._session_id = "s1"
     monkeypatch.setattr(
@@ -137,15 +142,8 @@ def test_expand_recent_workflow_followup_uses_current_session(monkeypatch):
             },
         ],
     )
+    assert app._latest_relevant_workflow_run()["run_id"] == "wf_current"
 
-    expanded = app._expand_recent_workflow_followup("接着刚才那个")
-
-    assert "继续 workflow wf_current" in expanded
-    assert "wf_other" not in expanded
-
-
-def test_expand_recent_workflow_followup_falls_back_to_latest_run(monkeypatch):
-    app = object.__new__(WyckoffTUI)
     app._session_id = "new_session"
     monkeypatch.setattr(
         "cli.workflows.store.list_workflow_runs",
@@ -161,15 +159,8 @@ def test_expand_recent_workflow_followup_falls_back_to_latest_run(monkeypatch):
             }
         ],
     )
+    assert app._latest_relevant_workflow_run()["run_id"] == "wf_latest"
 
-    expanded = app._expand_recent_workflow_followup("接着刚才那个")
-
-    assert "继续 workflow wf_latest" in expanded
-
-
-def test_expand_recent_workflow_followup_ignores_stale_latest_run(monkeypatch):
-    app = object.__new__(WyckoffTUI)
-    app._session_id = "new_session"
     monkeypatch.setattr(
         "cli.workflows.store.list_workflow_runs",
         lambda limit=8: [
@@ -184,8 +175,7 @@ def test_expand_recent_workflow_followup_ignores_stale_latest_run(monkeypatch):
             }
         ],
     )
-
-    assert app._expand_recent_workflow_followup("接着刚才那个") == "接着刚才那个"
+    assert app._latest_relevant_workflow_run() is None
 
 
 def test_recent_workflow_context_skips_explicit_resume(monkeypatch):
@@ -346,6 +336,29 @@ def test_display_final_response_replaces_streamed_raw_text():
     assert isinstance(log.lines[1], Markdown)
 
 
+def test_display_final_response_keeps_plain_stream_without_markdown():
+    assert _needs_markdown_render("普通结论，无格式") is False
+    assert _needs_markdown_render("## 标题\n\n- 条目") is True
+
+    log = _FakeLog()
+    log.lines.extend(["  ---", "plain answer"])
+    writes = []
+
+    displayed = _display_final_response(
+        log,
+        "plain answer",
+        streaming_started=True,
+        stream_separator_strips=1,
+        stream_text_strips=1,
+        write=writes.append,
+        call_from_thread=lambda func, *args: func(*args),
+    )
+
+    assert displayed is True
+    assert writes == []
+    assert log.lines == ["kept", "  ---", "plain answer"]
+
+
 def test_display_workflow_plan_event_keeps_pending_plan_compact():
     writes = []
     scrolled = []
@@ -360,6 +373,7 @@ def test_display_workflow_plan_event_keeps_pending_plan_compact():
         },
         writes.append,
         lambda: scrolled.append(True),
+        verbose=True,
     )
 
     assert run_id == "wf_1"
@@ -418,6 +432,7 @@ def test_display_workflow_plan_event_uses_plan_route_for_saved_events():
         },
         writes.append,
         lambda: None,
+        verbose=True,
     )
 
     rendered = "\n".join(str(item) for item in writes)
@@ -443,6 +458,7 @@ def test_display_workflow_plan_event_hides_internal_model_router_matches():
         },
         writes.append,
         lambda: None,
+        verbose=True,
     )
 
     rendered = "\n".join(str(item) for item in writes)
@@ -468,6 +484,7 @@ def test_display_workflow_plan_event_omits_empty_internal_matches():
         },
         writes.append,
         lambda: None,
+        verbose=True,
     )
 
     rendered = "\n".join(str(item) for item in writes)
@@ -519,6 +536,7 @@ def test_display_workflow_plan_event_surfaces_planner_provenance():
         },
         writes.append,
         lambda: None,
+        verbose=True,
     )
 
     rendered = "\n".join(str(item) for item in writes)
@@ -558,6 +576,7 @@ def test_display_workflow_plan_update_surfaces_model_adaptation():
         writes.append,
         lambda: None,
         launch_state="adapted",
+        verbose=True,
     )
 
     rendered = "\n".join(str(item) for item in writes)
@@ -588,6 +607,7 @@ def test_display_workflow_plan_event_surfaces_model_contract_repair():
         },
         writes.append,
         lambda: None,
+        verbose=True,
     )
 
     rendered = "\n".join(str(item) for item in writes)
@@ -616,6 +636,7 @@ def test_display_workflow_plan_event_surfaces_fallback_reason():
         },
         writes.append,
         lambda: None,
+        verbose=True,
     )
 
     rendered = "\n".join(str(item) for item in writes)
@@ -648,6 +669,7 @@ def test_display_workflow_plan_event_labels_stock_selection_fallback():
         },
         writes.append,
         lambda: None,
+        verbose=True,
     )
 
     rendered = "\n".join(str(item) for item in writes)
@@ -684,6 +706,7 @@ def test_display_workflow_plan_event_surfaces_model_step_boundaries():
         },
         writes.append,
         lambda: None,
+        verbose=True,
     )
 
     rendered = "\n".join(str(item) for item in writes)
@@ -715,6 +738,7 @@ def test_display_workflow_plan_event_marks_semantic_tool_boundaries():
         },
         writes.append,
         lambda: None,
+        verbose=True,
     )
 
     rendered = "\n".join(str(item) for item in writes)
@@ -743,6 +767,7 @@ def test_display_workflow_plan_event_surfaces_effective_tool_scope():
         },
         writes.append,
         lambda: None,
+        verbose=True,
     )
 
     rendered = "\n".join(str(item) for item in writes)
@@ -773,6 +798,7 @@ def test_display_workflow_plan_event_does_not_warn_for_explicit_tool_scope():
         },
         writes.append,
         lambda: None,
+        verbose=True,
     )
 
     rendered = "\n".join(str(item) for item in writes)
@@ -798,6 +824,7 @@ def test_display_workflow_plan_event_previews_tool_only_model_steps():
         },
         writes.append,
         lambda: None,
+        verbose=True,
     )
 
     rendered = "\n".join(str(item) for item in writes)
@@ -983,8 +1010,33 @@ def test_send_message_does_not_insert_blank_log_line(monkeypatch):
     WyckoffTUI._send_message(app, "你看我持仓呀")
 
     assert len(log.lines) == 2
-    assert str(log.lines[-1]) == "❯ 你看我持仓呀"
-    assert app._messages == [{"role": "user", "content": "你看我持仓呀"}]
+    assert "你看我持仓呀" in str(log.lines[-1])
+    assert "当前北京时间" not in str(log.lines[-1])
+    assert app._messages[0]["role"] == "user"
+    assert app._messages[0]["content"].startswith("你看我持仓呀")
+    assert "当前北京时间：" in app._messages[0]["content"]
+
+
+def test_send_message_resume_keeps_original_turn_user_text(monkeypatch):
+    app = object.__new__(WyckoffTUI)
+    log = _FakeLog()
+    app._messages = []
+    app.query_one = lambda *_args, **_kwargs: log
+    app._recent_workflow_context = lambda _text: ""
+    app._start_spinner = lambda _label: None
+    app._run_agent = lambda: None
+
+    import cli.memory as memory
+
+    monkeypatch.setattr(memory, "build_memory_context", lambda _text: "")
+
+    soft = "<turn-resume-context>\n原问题: 分析宁德时代\n</turn-resume-context>\n\n分析宁德时代"
+    WyckoffTUI._send_message(app, soft, turn_user_text="分析宁德时代", echo_user=False)
+
+    assert app._messages[-1]["content"].startswith(soft)
+    assert "当前北京时间：" in app._messages[-1]["content"]
+    assert app._conversation.active_turn.user_text == "分析宁德时代"
+    assert log.lines == ["kept"]
 
 
 def test_send_system_notification_does_not_insert_blank_log_line():
@@ -999,14 +1051,20 @@ def test_send_system_notification_does_not_insert_blank_log_line():
 
     assert len(log.lines) == 2
     assert "后台结果已回传给 agent" in str(log.lines[-1])
-    assert app._messages == [{"role": "user", "content": "workflow done", "_system_notification": True}]
+    assert app._messages[0]["role"] == "user"
+    assert app._messages[0]["_system_notification"] is True
+    assert app._messages[0]["content"].startswith("workflow done")
+    assert "当前北京时间：" in app._messages[0]["content"]
 
 
 def test_auto_resume_notice_does_not_insert_blank_log_line():
+    from cli.conversation import ConversationSession, TurnPhase
+
     app = object.__new__(WyckoffTUI)
     log = _FakeLog()
     resumed = []
     sent = []
+    app._conversation = ConversationSession()
     app._find_interrupted_scratchpad = lambda: ("sess123", "帮我找机器人机会")
     app._resume_session = lambda session_id: resumed.append(session_id)
     app.query_one = lambda *_args, **_kwargs: log
@@ -1014,17 +1072,22 @@ def test_auto_resume_notice_does_not_insert_blank_log_line():
 
     WyckoffTUI._check_auto_resume(app)
 
-    rendered = [str(item) for item in log.lines[1:]]
+    rendered = [str(item) for item in log.lines if str(item) != "kept"]
     assert resumed == ["sess123"]
-    assert sent == ["帮我找机器人机会"]
-    assert len(rendered) == 2
+    assert sent == []
+    assert app._conversation.phase == TurnPhase.CANCELLED
+    assert any("sess123" in line for line in rendered)
+    assert any("继续" in line for line in rendered)
     assert all(line.strip() for line in rendered)
     assert all(not line.startswith("\n") and not line.endswith("\n") for line in rendered)
 
 
 def test_new_chat_notice_does_not_insert_blank_log_line():
+    from cli.conversation import ConversationSession
+
     app = object.__new__(WyckoffTUI)
     log = _FakeLog()
+    app._conversation = ConversationSession()
     app._save_memory_async = lambda: None
     app._messages = [{"role": "user", "content": "旧会话"}]
     app._queue = deque(["queued"])
@@ -1147,10 +1210,12 @@ def test_submit_workflow_background_auto_starts_model_plan():
     assert launched[0][2] == "system prompt"
     assert launched[0][5].startswith("wfbg_wf_auto_")
     rendered = "\n".join(str(item) for item in writes)
-    assert "脚本来源：模型生成" in rendered
+    assert "扫描候选" in rendered
     assert "已交给 agent 动态执行" in rendered
     assert "等待批准" not in rendered
     assert "/workflow show wf_auto" in rendered
+    # 脚本来源属于内部溯源信息，默认不渲染
+    assert "脚本来源" not in rendered
     assert scrolls
 
 
@@ -1199,6 +1264,39 @@ def test_prepare_workflow_approval_keeps_plan_pending():
     assert chatlog_rows[1][0] == "assistant"
     assert "workflow_pending_approval" in chatlog_rows[1][2]["metadata_json"]
     assert scrolls == [True, True]
+
+
+def test_run_workflow_background_forwards_ui_progress_events():
+    class Runtime:
+        run = SimpleNamespace(run_id="wf_ui", workflow="dynamic_task")
+
+        def run_stream(self, messages, system_prompt):
+            yield {
+                "type": "workflow_step_start",
+                "step": {"title": "扫描候选", "agent": "scanner", "status": "running"},
+                "step_index": 1,
+                "step_total": 2,
+            }
+            yield {
+                "type": "workflow_step_done",
+                "step": {"title": "扫描候选", "agent": "scanner", "status": "completed", "summary": "ok"},
+            }
+            yield {"type": "done", "text": "done", "usage": {"input_tokens": 1, "output_tokens": 2}}
+
+    seen = []
+    result = _run_workflow_background(
+        Runtime(),
+        [{"role": "user", "content": "go"}],
+        "sys",
+        on_ui_event=seen.append,
+    )
+    assert [event["type"] for event in seen] == ["workflow_step_start", "workflow_step_done"]
+    assert result["final_text"] == "done"
+    assert result["usage"]["output_tokens"] == 2
+
+
+def test_session_avg_tok_per_s_ignores_unrated_workflow_output():
+    assert _session_avg_tok_per_s({"output": 100, "unrated_output": 80, "generation_ms": 1000}) == 20.0
 
 
 def test_workflow_background_event_summary_keeps_handoff_evidence():
@@ -1250,7 +1348,15 @@ def test_complete_workflow_background_does_not_wake_idle_agent():
     app._busy = False
     app._queue = deque()
     app._messages = []
-    app._session_tokens = {"input": 0, "output": 0, "rounds": 0}
+    app._session_tokens = {
+        "input": 0,
+        "output": 0,
+        "unrated_output": 0,
+        "rounds": 0,
+        "cache_read": 0,
+        "generation_ms": 0,
+        "cache_reported": False,
+    }
     app._update_status = lambda: updates.append(True)
     app._chatlog_save = lambda role, content, **kwargs: chatlog_rows.append((role, content, kwargs))
 
@@ -1267,22 +1373,40 @@ def test_complete_workflow_background_does_not_wake_idle_agent():
 
     assert app._queue == deque()
     assert app._messages[-1]["content"] == "候选结论: 首选 300750 宁德时代"
-    assert app._session_tokens == {"input": 10, "output": 5, "rounds": 1}
+    assert app._session_tokens["input"] == 10
+    assert app._session_tokens["output"] == 5
+    assert app._session_tokens["rounds"] == 1
+    assert app._session_tokens["unrated_output"] == 5  # 无 generation_ms，不抬高均速
     assert chatlog_rows[0][0] == "assistant"
     assert updates == [True]
     assert "workflow 后台完成" in str(log.lines[-2])
 
 
-def test_complete_workflow_background_queues_system_notification_when_busy():
+def _busy_tui_for_workflow_completion() -> WyckoffTUI:
     app = object.__new__(WyckoffTUI)
     log = _FakeLog()
     app.query_one = lambda *_args, **_kwargs: log
     app._busy = True
     app._queue = deque()
     app._messages = []
-    app._session_tokens = {"input": 0, "output": 0, "rounds": 0}
+    app._session_tokens = {
+        "input": 0,
+        "output": 0,
+        "unrated_output": 0,
+        "rounds": 0,
+        "cache_read": 0,
+        "generation_ms": 0,
+        "cache_reported": False,
+    }
     app._update_status = lambda: None
     app._chatlog_save = lambda *_args, **_kwargs: None
+    return app
+
+
+def test_complete_workflow_background_does_not_queue_notification_on_success():
+    """成功结果已经显示、落库并进了 _messages，再叫模型说一遍只会得到重复的一轮。"""
+
+    app = _busy_tui_for_workflow_completion()
 
     WyckoffTUI._complete_workflow_background(
         app,
@@ -1295,13 +1419,33 @@ def test_complete_workflow_background_queues_system_notification_when_busy():
         },
     )
 
+    assert not app._queue
+    assert app._messages[-1]["role"] == "assistant"
+    assert "候选结论: 首选 300750 宁德时代" in app._messages[-1]["content"]
+
+
+def test_complete_workflow_background_queues_system_notification_on_failure():
+    """失败结果不会进 _messages，所以必须靠通知让模型知道这轮没跑成。"""
+
+    app = _busy_tui_for_workflow_completion()
+
+    WyckoffTUI._complete_workflow_background(
+        app,
+        "wfbg_busy",
+        {
+            "workflow_run_id": "wf_busy",
+            "workflow": "dynamic_task",
+            "error": "step 超时",
+            "events": [{"type": "workflow_step_done", "step": {"title": "扫描候选", "status": "failed"}}],
+        },
+    )
+
     assert len(app._queue) == 1
     item = app._queue[0]
-    assert item["type"] == "system_notification"
-    assert "<run-id>wf_busy</run-id>" in item["content"]
-    assert "dynamic-workflow event" in item["content"]
-    assert "候选结论: 首选 300750 宁德时代" in item["content"]
-    assert app._messages[-1]["role"] == "assistant"
+    assert item.kind == "system_notification"
+    assert "<run-id>wf_busy</run-id>" in item.content
+    assert "<status>failed</status>" in item.content
+    assert "dynamic-workflow event" in item.content
 
 
 def test_display_retry_event_surfaces_required_tool_and_reason():
@@ -1625,6 +1769,259 @@ def test_tool_result_view_surfaces_recommendation_eval_pick_action():
     assert "最新候选的未来窗口标签尚未成熟" in rendered
 
 
+def test_tool_result_view_persists_full_result_and_call_metadata():
+    summary, _renderable = _tool_result_view(
+        {
+            "type": "tool_result",
+            "name": "portfolio",
+            "args": {"mode": "diagnose"},
+            "tool_call_id": "tc_1",
+            "elapsed_ms": 10500,
+            "result": {"free_cash": 40000.0, "diagnostics": [{"code": "002326", "shares": 200}]},
+        },
+        None,
+    )
+
+    assert summary["tool_call_id"] == "tc_1"
+    assert summary["args"] == {"mode": "diagnose"}
+    assert summary["elapsed_ms"] == 10500
+    assert summary["result"]["diagnostics"][0]["shares"] == 200
+    assert "result_truncated" not in summary
+
+
+def test_tool_result_view_truncates_oversized_result():
+    summary, _renderable = _tool_result_view(
+        {
+            "type": "tool_result",
+            "name": "screen_stocks",
+            "args": {},
+            "elapsed_ms": 1,
+            "result": {"blob": "x" * 40_000},
+        },
+        None,
+    )
+
+    assert summary["result_truncated"] is True
+    assert isinstance(summary["result"], str)
+    assert len(summary["result"]) == 20_000
+
+
+def test_tool_result_view_result_stays_json_serializable():
+    """持久化的 result 必须能过 json.dumps —— 否则整轮 span 会一起丢。
+
+    工具结果里常混进 date / NaN / numpy 标量，_tool_result_view 的返回值会被
+    整批 dumps 进 chat_log.tool_calls，任一脏值抛 TypeError 就是全轮丢失。
+    """
+    summary, _renderable = _tool_result_view(
+        {
+            "type": "tool_result",
+            "name": "portfolio",
+            "args": {},
+            "elapsed_ms": 1,
+            "result": {"latest_date": datetime(2026, 8, 2).date(), "pnl_pct": float("nan")},
+        },
+        None,
+    )
+
+    blob = json.dumps([summary], ensure_ascii=False, allow_nan=False)
+
+    assert "2026-08-02" in blob
+    assert "NaN" not in blob
+    assert summary["result"]["pnl_pct"] is None
+
+
+def test_tool_result_view_keeps_error_result_for_replay():
+    summary, _renderable = _tool_result_view(
+        {
+            "type": "tool_error",
+            "name": "generate_strategy_decision",
+            "args": {},
+            "elapsed_ms": 0,
+            "error": "未配置 LLM API Key",
+            "result": {"error": "未配置 LLM API Key"},
+        },
+        None,
+    )
+
+    assert summary["status"] == "error"
+    assert summary["result"] == {"error": "未配置 LLM API Key"}
+
+
+def test_workflow_spans_json_folds_steps_into_dashboard_spans():
+    from cli.tui import _workflow_spans_json
+
+    spans = json.loads(
+        _workflow_spans_json(
+            [
+                {"type": "workflow_plan", "step": {}},
+                {
+                    "type": "workflow_step_done",
+                    "step": {
+                        "title": "诊断持仓",
+                        "status": "completed",
+                        "tool_scope": ["portfolio"],
+                        "elapsed": 10.5,
+                        "result": "4 只持仓已诊断",
+                    },
+                },
+                {
+                    "type": "workflow_step_done",
+                    "step": {"title": "攻防决策", "status": "failed", "error": "未配置 LLM API Key"},
+                },
+            ]
+        )
+    )
+
+    assert [s["name"] for s in spans] == ["诊断持仓", "攻防决策"]
+    assert spans[0]["status"] == "ok"
+    assert spans[0]["elapsed_ms"] == 10500
+    assert spans[0]["result"] == "4 只持仓已诊断"
+    assert spans[1]["status"] == "error"
+    assert spans[1]["error"] == "未配置 LLM API Key"
+
+
+def test_workflow_spans_json_is_empty_without_step_events():
+    from cli.tui import _workflow_spans_json
+
+    assert _workflow_spans_json([{"type": "workflow_plan"}]) == ""
+
+
+def test_workflow_bg_event_summary_keeps_step_execution_detail():
+    from cli.tui import _workflow_bg_event_summary
+
+    payload = _workflow_bg_event_summary(
+        {
+            "type": "workflow_step_done",
+            "run_id": "wf_1",
+            "step": {"title": "诊断持仓", "agent": "analysis", "status": "completed", "step_id": "diag"},
+            "source": {
+                "agent_detail": {
+                    "elapsed": 10.5,
+                    "tool_calls": [{"name": "portfolio"}],
+                    "result": "4 只持仓已诊断",
+                }
+            },
+        }
+    )
+
+    assert payload["step"]["elapsed"] == 10.5
+    assert payload["step"]["tool_calls"] == [{"name": "portfolio"}]
+    assert payload["step"]["result"] == "4 只持仓已诊断"
+    assert payload["step"]["step_id"] == "diag"
+
+
+def test_build_rounds_detail_records_thinking_per_round():
+    from cli.tui import _build_rounds_detail
+
+    details = _build_rounds_detail(
+        2,
+        {1: {"input_tokens": 100, "stop_reason": "tool_use"}, 2: {"input_tokens": 50}},
+        {1: ["portfolio"]},
+        {},
+        0.0,
+        "gpt-test",
+        {1: "先看持仓再判断风险"},
+    )
+
+    assert details[0]["thinking"] == "先看持仓再判断风险"
+    assert details[0]["stop_reason"] == "tool_use"
+    assert "thinking" not in details[1]
+    assert "thinking_truncated" not in details[0]
+
+
+def test_build_rounds_detail_marks_truncated_thinking():
+    """超长思维链必须标注截断——残句被当成模型的完整结论会误导复盘。"""
+    from cli.tui import _PERSISTED_THINKING_MAX_CHARS, _build_rounds_detail
+
+    long_thinking = "推" * (_PERSISTED_THINKING_MAX_CHARS + 500)
+    details = _build_rounds_detail(
+        1,
+        {1: {"input_tokens": 10}},
+        {},
+        {},
+        0.0,
+        "gpt-test",
+        {1: long_thinking},
+    )
+
+    assert len(details[0]["thinking"]) == _PERSISTED_THINKING_MAX_CHARS
+    assert details[0]["thinking_truncated"] is True
+
+
+def test_display_workflow_plan_event_hides_internal_provenance_by_default():
+    writes = []
+
+    _display_workflow_plan_event(
+        {
+            "run_id": "wf_quiet",
+            "workflow": "dynamic_task",
+            "label": "持仓复盘",
+            "route": {"reason": "模型判断需要动态 workflow", "matches": ["持仓"], "confidence": 0.58},
+            "plan": {
+                "script": {"runtime": {"planner": "model_script"}},
+                "steps": [
+                    {"title": "读取并诊断持仓", "phase": "取数", "tool_scope": ["portfolio"]},
+                    {"title": "形成去留动作", "phase": "决策", "tool_scope": ["generate_strategy_decision"]},
+                ],
+            },
+        },
+        writes.append,
+        lambda: None,
+    )
+
+    rendered = "\n".join(str(item) for item in writes)
+    assert "识别原因" not in rendered
+    assert "置信度" not in rendered
+    assert "脚本来源" not in rendered
+    assert "执行接力" not in rendered
+    assert "工具边界" not in rendered
+    # 保留的是"要跑几步、每步做什么"
+    assert "2 个动态任务" in rendered
+    assert "1 读取并诊断持仓" in rendered
+    assert "2 形成去留动作" in rendered
+    assert "取数" in rendered and "决策" in rendered
+
+
+def test_workflow_plan_tree_lines_collapse_overlong_plans():
+    from cli.tui import _workflow_plan_tree_lines
+
+    steps = [{"title": f"任务{i}"} for i in range(1, 12)]
+
+    lines = _workflow_plan_tree_lines(steps, limit=3)
+
+    assert len(lines) == 4
+    assert "另有 8 个任务" in lines[-1]
+
+
+def test_display_workflow_step_event_shows_progress_position():
+    writes = []
+
+    _display_workflow_step_event(
+        {
+            "step": {"title": "诊断持仓", "status": "completed", "tool_scope": ["portfolio"]},
+            "step_index": 2,
+            "step_total": 3,
+        },
+        writes.append,
+        lambda: None,
+    )
+
+    assert "[2/3] 诊断持仓" in str(writes[0])
+
+
+def test_display_workflow_step_event_omits_position_when_unknown():
+    writes = []
+
+    _display_workflow_step_event(
+        {"step": {"title": "诊断持仓", "status": "running", "tool_scope": ["portfolio"]}},
+        writes.append,
+        lambda: None,
+    )
+
+    assert "诊断持仓" in str(writes[0])
+    assert "[" not in str(writes[0]).split("诊断持仓")[0]
+
+
 def test_workflow_detail_step_line_includes_tool_scope():
     line = _workflow_detail_step_line(
         {
@@ -1785,7 +2182,7 @@ def test_pending_workflow_feedback_revises_single_pending_workflow():
 
     assert handled is True
     assert feedbacks == ["别这么拆，直接先扫候选"]
-    assert any("改后脚本" in str(line) for line in log.lines)
+    assert any("扫描候选" in str(line) for line in log.lines)
     assert "已根据反馈更新 workflow" in str(log.lines[-1])
 
 
@@ -1932,3 +2329,57 @@ def test_wyckoff_tui_spinner_start_stop_clears_label():
     WyckoffTUI._stop_spinner(app)
     assert app._spinner_label == ""
     assert updated == [True]
+
+
+def test_request_tool_confirm_reports_timeout_not_deny():
+    """弹窗等了两分钟没人理，不等于用户点了拒绝——把沉默当否决会伪造用户的决定。"""
+    app = object.__new__(WyckoffTUI)
+    app._tools = None
+    app.call_from_thread = lambda fn, *a: None
+
+    with patch("threading.Event.wait", return_value=False):
+        choice = WyckoffTUI._request_tool_confirm(app, "update_portfolio", {"code": "002648"})
+
+    assert choice == {"action": "timeout"}
+
+
+def test_request_tool_confirm_still_denies_on_explicit_choice():
+    app = object.__new__(WyckoffTUI)
+    app._tools = None
+
+    def _fake_call_from_thread(fn, *args):
+        return None
+
+    app.call_from_thread = _fake_call_from_thread
+
+    with patch("threading.Event.wait", return_value=True):
+        choice = WyckoffTUI._request_tool_confirm(app, "update_portfolio", {"code": "002648"})
+
+    # result[0] 仍是 None（没人真的 dismiss），保持原有的保守 deny 兜底。
+    assert choice == {"action": "deny"}
+
+
+def test_request_user_question_returns_timeout_sentinel():
+    """返回「已超时未作答」这句自然语言，会被模型当成用户真的这么回答了。"""
+    from cli.tools import ASK_USER_TIMEOUT_SENTINEL
+
+    app = object.__new__(WyckoffTUI)
+    app.call_from_thread = lambda fn, *a: None
+
+    with patch("threading.Event.wait", return_value=False):
+        answer = WyckoffTUI._request_user_question(app, "要录入哪一条？")
+
+    assert answer == ASK_USER_TIMEOUT_SENTINEL
+
+
+def test_request_user_question_prefers_default_answer_over_timeout_sentinel():
+    from cli.tools import ASK_USER_TIMEOUT_SENTINEL
+
+    app = object.__new__(WyckoffTUI)
+    app.call_from_thread = lambda fn, *a: None
+
+    with patch("threading.Event.wait", return_value=False):
+        answer = WyckoffTUI._request_user_question(app, "继续吗？", default_answer="继续")
+
+    assert answer == "继续"
+    assert answer != ASK_USER_TIMEOUT_SENTINEL

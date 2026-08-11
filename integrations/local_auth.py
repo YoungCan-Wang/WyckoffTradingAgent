@@ -196,8 +196,59 @@ def load_config() -> dict[str, Any]:
 
 def save_config_key(key: str, value: Any) -> None:
     data = load_config()
+    if key in TIMEOUT_CONFIG_SPECS:
+        value = coerce_timeout_config_value(key, value)
     data[key] = value
     _save_config(data)
+
+
+# 模型空闲/首 token 超时与工具执行超时（秒）。控制面板 / TUI / CLI 均可改。
+DEFAULT_STREAM_CHUNK_TIMEOUT_SECONDS = 120
+DEFAULT_TOOL_TIMEOUT_SECONDS = 60
+TIMEOUT_CONFIG_SPECS: dict[str, tuple[int, int, int]] = {
+    # key: (default, min, max)
+    "stream_chunk_timeout_seconds": (DEFAULT_STREAM_CHUNK_TIMEOUT_SECONDS, 10, 600),
+    "tool_timeout_seconds": (DEFAULT_TOOL_TIMEOUT_SECONDS, 5, 300),
+}
+
+
+def coerce_timeout_config_value(key: str, value: Any) -> int:
+    """Validate and clamp a timeout config value; raises ValueError on bad input."""
+    if key not in TIMEOUT_CONFIG_SPECS:
+        raise ValueError(f"unknown timeout key: {key}")
+    default, min_v, max_v = TIMEOUT_CONFIG_SPECS[key]
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return default
+    try:
+        parsed = int(float(str(value).strip()))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{key} 必须是整数秒") from exc
+    if parsed < min_v or parsed > max_v:
+        raise ValueError(f"{key} 须在 {min_v}–{max_v} 秒之间")
+    return parsed
+
+
+def get_stream_chunk_timeout_seconds(config: dict[str, Any] | None = None) -> float:
+    return float(_get_timeout_seconds("stream_chunk_timeout_seconds", config))
+
+
+def get_tool_timeout_seconds(config: dict[str, Any] | None = None) -> float:
+    return float(_get_timeout_seconds("tool_timeout_seconds", config))
+
+
+def timeout_config_defaults() -> dict[str, int]:
+    return {key: spec[0] for key, spec in TIMEOUT_CONFIG_SPECS.items()}
+
+
+def _get_timeout_seconds(key: str, config: dict[str, Any] | None = None) -> int:
+    default, min_v, max_v = TIMEOUT_CONFIG_SPECS[key]
+    cfg = config if config is not None else load_config()
+    raw = cfg.get(key, default)
+    try:
+        parsed = int(float(str(raw).strip()))
+    except (TypeError, ValueError):
+        return default
+    return max(min_v, min(max_v, parsed))
 
 
 def _create_client():

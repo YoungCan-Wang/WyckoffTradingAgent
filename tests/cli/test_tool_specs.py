@@ -5,6 +5,7 @@ import time
 from cli.background import BackgroundTask, BackgroundTaskManager
 from cli.sub_agent_prompts import RESEARCH_AGENT_PROMPT, WORKFLOW_TASK_AGENT_PROMPT
 from cli.tools import (
+    ASK_USER_TIMEOUT_SENTINEL,
     BACKGROUND_TOOLS,
     CONCURRENCY_SAFE_TOOLS,
     CONFIRM_TOOLS,
@@ -12,6 +13,7 @@ from cli.tools import (
     TOOL_SCHEMAS,
     TOOL_SPECS,
     ToolRegistry,
+    ask_user_question,
 )
 
 
@@ -38,6 +40,52 @@ def test_tool_registry_reads_runtime_behavior_from_specs():
     assert registry.is_background("run_backtest")
     assert registry.is_background("evaluate_recommendation_events")
     assert registry.display_name("unknown_tool") == "unknown_tool"
+
+
+def test_confirm_timeout_is_not_reported_as_user_denial():
+    """超时说成「用户拒绝」等于伪造一件没发生的事，用户会读到自己从没做过的决定。"""
+    registry = ToolRegistry()
+    registry.set_confirm_callback(lambda _name, _args: {"action": "timeout"})
+
+    _args, error = registry._confirm_high_risk_call("update_portfolio", {"code": "002648"}, None)
+
+    assert error is not None
+    assert error["error"] != "用户拒绝执行此操作"
+    assert "超时" in error["error"]
+    assert "这不是拒绝" in error["error"]
+    assert "重试" in error["error"]
+
+
+def test_confirm_deny_still_reports_denial():
+    registry = ToolRegistry()
+    registry.set_confirm_callback(lambda _name, _args: {"action": "deny"})
+
+    _args, error = registry._confirm_high_risk_call("update_portfolio", {"code": "002648"}, None)
+
+    assert error == {"error": "用户拒绝执行此操作"}
+
+
+def test_ask_user_question_timeout_is_not_reported_as_an_answer():
+    """原先它以 status=answered 返回「已超时未作答」，模型只能把这句话当成用户的回答。"""
+    registry = ToolRegistry()
+    registry.set_ask_user_question_callback(lambda *_a, **_k: ASK_USER_TIMEOUT_SENTINEL)
+
+    result = ask_user_question("要录入哪一条？", tool_context=registry._tool_context)
+
+    assert result["status"] == "timeout"
+    assert "answer" not in result
+    assert ASK_USER_TIMEOUT_SENTINEL not in result["error"]
+    assert "不要把超时当成用户的回答" in result["error"]
+
+
+def test_ask_user_question_still_returns_real_answers():
+    registry = ToolRegistry()
+    registry.set_ask_user_question_callback(lambda *_a, **_k: "卫星化学 200股")
+
+    result = ask_user_question("要录入哪一条？", tool_context=registry._tool_context)
+
+    assert result["status"] == "answered"
+    assert result["answer"] == "卫星化学 200股"
 
 
 def test_tool_registry_filters_schemas_by_workflow_scope():

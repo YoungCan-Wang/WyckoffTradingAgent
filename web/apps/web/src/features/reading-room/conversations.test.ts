@@ -65,4 +65,32 @@ describe('conversation sandbox result recovery', () => {
 
     expect(preferStoredTerminalToolOutputs(live, storedFailed)).toBe(live)
   })
+
+  it('collapses approval and output copies of the same sandbox tool call', () => {
+    const duplicated = [{
+      id: 'assistant-approval',
+      role: 'assistant',
+      parts: [{
+        type: 'tool-run_python_research', toolCallId: 'tool-1', state: 'approval-responded',
+        approval: { id: 'approval-1', approved: true, signature: 'signed' },
+      }],
+    }, ...messages] as UIMessage[]
+
+    const updated = replaceConversationToolOutput(duplicated, 'tool-1', completedOutput)
+
+    expect(updated).toHaveLength(messages.length)
+    expect(updated.some((message) => message.id === 'assistant-approval')).toBe(false)
+    expect(updated[0]?.parts[0]).toMatchObject({ state: 'output-available', output: completedOutput })
+    expect(replaceConversationToolOutput(updated, 'tool-1', completedOutput)).toBe(updated)
+  })
+
+  it('preserves an additional output copy instead of silently repairing it', () => {
+    const duplicated = [messages[0]!, messages[0]!, messages[1]!]
+
+    const updated = replaceConversationToolOutput(duplicated, 'tool-1', completedOutput)
+
+    expect(updated).toHaveLength(duplicated.length)
+    expect(updated[0]?.parts[0]).toMatchObject({ output: queuedOutput })
+    expect(updated[1]?.parts[0]).toMatchObject({ output: completedOutput })
+  })
 })

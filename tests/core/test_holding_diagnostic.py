@@ -8,11 +8,14 @@ import pandas as pd
 
 from core.holding_diagnostic import (
     HoldingDiagnostic,
+    HoldingInput,
+    _exit_snapshot,
     diagnose_holdings,
     diagnose_one_stock,
     format_diagnostic_text,
 )
 from core.intraday_shakeout import PATH_DISTRIBUTION, PATH_WASHOUT
+from core.wyckoff_engine import FunnelConfig
 from tests.helpers.golden import assert_golden
 from tests.helpers.synthetic_data import make_ohlcv
 
@@ -78,7 +81,18 @@ class TestDiagnoseOneStock:
         assert result.health in ("🟡警戒", "🔴危险")
         assert len(result.health_reasons) > 0
 
-    def test_take_profit_target_reached(self):
+    def test_take_profit_disabled_by_default(self):
+        """固定止盈默认关闭：跨周期回测显示 +18% 止盈在 12 个配对中 11 个损害夏普。"""
+        df = make_ohlcv(n=250, trend="up", base=10.0, volatility=0.008, seed=1)
+        latest = float(df["close"].iloc[-1])
+        result = diagnose_one_stock("600519", "贵州茅台", cost=latest / 1.20, df=df)
+
+        assert result.take_profit_status == "未启用"
+        assert result.take_profit_18pct == 0.0
+        assert not any("TP+" in r for r in result.health_reasons)
+
+    def test_take_profit_target_reached(self, monkeypatch):
+        monkeypatch.setenv("HOLDING_TAKE_PROFIT_PCT", "18")
         df = make_ohlcv(n=250, trend="up", base=10.0, volatility=0.008, seed=1)
         latest = float(df["close"].iloc[-1])
         cost = latest / 1.20  # pnl comfortably clears the +18% take-profit target
@@ -88,7 +102,8 @@ class TestDiagnoseOneStock:
         assert result.take_profit_18pct == cost * 1.18
         assert any("TP+18%" in r for r in result.health_reasons)
 
-    def test_take_profit_not_reached_for_small_gain(self):
+    def test_take_profit_not_reached_for_small_gain(self, monkeypatch):
+        monkeypatch.setenv("HOLDING_TAKE_PROFIT_PCT", "18")
         df = make_ohlcv(n=250, trend="up", base=10.0, volatility=0.008, seed=1)
         latest = float(df["close"].iloc[-1])
         cost = latest / 1.02  # small gain, well below +18% target
@@ -105,11 +120,36 @@ class TestDiagnoseOneStock:
         assert result.ma200 is None
         assert result.ma_pattern == "数据不足"
 
+    def test_exit_signal_ignores_price_history_before_entry(self):
+        df = make_ohlcv(n=100, trend="flat", base=100.0, volatility=0.002, seed=8)
+        df.loc[df.index[-3:], ["open", "high", "low", "close"]] = [50.0, 51.0, 49.0, 50.0]
+        cfg = FunnelConfig()
+
+        legacy_signal = _exit_snapshot("000001", df, None, cfg)
+        entry_signal = _exit_snapshot("000001", df, None, cfg, str(df["date"].iloc[-3]))
+
+        assert legacy_signal[0] == "stop_loss"
+        assert entry_signal[0] is None
+
+    def test_exit_signal_fails_closed_when_entry_after_available_bars(self):
+        """当日建仓但日线尚未入库时，不得回退全历史把建仓前暴跌判成破位。"""
+        df = make_ohlcv(n=100, trend="flat", base=100.0, volatility=0.002, seed=8)
+        df.loc[df.index[-3:], ["open", "high", "low", "close"]] = [50.0, 51.0, 49.0, 50.0]
+        last_bar = pd.to_datetime(df["date"].iloc[-1])
+        future_entry = (last_bar + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        cfg = FunnelConfig()
+
+        assert _exit_snapshot("000001", df, None, cfg)[0] == "stop_loss"
+        assert _exit_snapshot("000001", df, None, cfg, future_entry)[0] is None
+        result = diagnose_one_stock("000001", "平安银行", 100.0, df, buy_dt=future_entry)
+        assert result.exit_signal is None
+        assert "结构止损" not in " ".join(result.health_reasons)
+
 
 class TestDiagnoseHoldings:
     def test_empty_dataframe_returns_danger(self):
         results = diagnose_holdings(
-            holdings=[("600519", "贵州茅台", 1800.0)],
+            holdings=[HoldingInput("600519", "贵州茅台", 1800.0, "")],
             df_map={"600519": pd.DataFrame()},
         )
         assert len(results) == 1
@@ -118,11 +158,55 @@ class TestDiagnoseHoldings:
 
     def test_missing_code_returns_danger(self):
         results = diagnose_holdings(
-            holdings=[("999999", "不存在", 10.0)],
+            holdings=[HoldingInput("999999", "不存在", 10.0, "")],
             df_map={},
         )
         assert len(results) == 1
         assert results[0].health == "🔴危险"
+
+    def test_batch_diagnosis_accepts_buy_date(self):
+        df = make_ohlcv(n=100, trend="flat", base=100.0, volatility=0.002, seed=9)
+        df.loc[df.index[-3:], ["open", "high", "low", "close"]] = [50.0, 51.0, 49.0, 50.0]
+
+        results = diagnose_holdings(
+            holdings=[HoldingInput("000001", "平安银行", 50.0, str(df["date"].iloc[-3]))],
+            df_map={"000001": df},
+        )
+
+        assert results[0].exit_signal is None
+
+    def test_batch_diagnosis_matches_single_stock_with_same_buy_date(self):
+        """批量与单只路径在同一 buy_dt 下必须给出一致结论。
+
+        回归防护：调用方漏传 buy_dt 曾让退出信号静默退化成全历史，
+        把建仓前的暴跌误判为破位。
+        """
+        df = make_ohlcv(n=120, trend="up", base=100.0, volatility=0.003, seed=11)
+        df.loc[df.index[-40:-35], ["open", "high", "low", "close"]] = [60.0, 61.0, 39.0, 40.0]
+        buy_dt = str(df["date"].iloc[-10])
+
+        batch = diagnose_holdings(
+            holdings=[HoldingInput("000001", "平安银行", 100.0, buy_dt)],
+            df_map={"000001": df},
+        )[0]
+        single = diagnose_one_stock("000001", "平安银行", 100.0, df, buy_dt=buy_dt)
+
+        assert batch.exit_signal == single.exit_signal
+        assert batch.health == single.health
+
+    def test_holding_input_from_position_preserves_buy_date(self):
+        holding = HoldingInput.from_position(
+            {"code": "600519", "name": "贵州茅台", "cost_price": 1500.0, "buy_dt": "2026-05-06"}
+        )
+
+        assert holding == HoldingInput("600519", "贵州茅台", 1500.0, "2026-05-06")
+
+    def test_holding_input_from_position_accepts_cost_alias(self):
+        holding = HoldingInput.from_position({"code": "000001", "cost": 12.5, "buy_date": "2026-04-01"})
+
+        assert holding.cost == 12.5
+        assert holding.buy_dt == "2026-04-01"
+        assert holding.name == "000001"
 
 
 class TestExtremeDayIntradayPath:

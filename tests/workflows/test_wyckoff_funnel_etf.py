@@ -567,7 +567,11 @@ def test_loss_guard_keeps_risk_on_pure_momentum_after_confirmation_gate():
         trend,
         accum,
         regime="RISK_ON",
-        code_to_trigger_keys={"000001": ["lps"], "000002": ["sos"], "000003": ["sos"]},
+        code_to_trigger_keys={
+            "000001": ["lps"],
+            "000002": ["sos", "spring"],
+            "000003": ["sos", "spring"],
+        },
         code_to_total_score={"000001": 0.4, "000002": 6.0, "000003": 6.0},
         channel_map={"000002": "主升通道", "000003": "点火破局"},
         df_map={},
@@ -603,7 +607,7 @@ def test_loss_guard_keeps_neutral_point_ignition():
         ["000001"],
         [],
         regime="NEUTRAL",
-        code_to_trigger_keys={"000001": ["sos"]},
+        code_to_trigger_keys={"000001": ["sos", "spring"]},
         code_to_total_score={"000001": 6.0},
         channel_map={"000001": "加速突破+点火破局"},
         df_map={},
@@ -611,6 +615,41 @@ def test_loss_guard_keeps_neutral_point_ignition():
 
     assert kept == ["000001"]
     assert trend_kept == ["000001"]
+    assert dropped == {}
+
+
+def test_loss_guard_demotes_pure_sos_to_observe_only():
+    """单 SOS 不足以支撑买入：标准回放显示 10 日中位 -3.20%、胜率 40.0%。"""
+    kept, trend_kept, _accum_kept, dropped = apply_loss_guard(
+        ["000001"],
+        ["000001"],
+        [],
+        regime="NEUTRAL",
+        code_to_trigger_keys={"000001": ["sos"]},
+        code_to_total_score={"000001": 90.0},
+        channel_map={"000001": "加速突破+点火破局"},
+        df_map={},
+    )
+
+    assert kept == []
+    assert trend_kept == []
+    assert dropped == {"单SOS仅观察": 1}
+
+
+def test_loss_guard_keeps_sos_when_confirmed_by_second_signal():
+    """SOS 与其他形态共振时不受"仅观察"限制。"""
+    kept, _trend_kept, _accum_kept, dropped = apply_loss_guard(
+        ["000001"],
+        ["000001"],
+        [],
+        regime="NEUTRAL",
+        code_to_trigger_keys={"000001": ["sos", "spring"]},
+        code_to_total_score={"000001": 8.0},
+        channel_map={"000001": "主升通道"},
+        df_map={},
+    )
+
+    assert kept == ["000001"]
     assert dropped == {}
 
 
@@ -771,6 +810,27 @@ def test_tradeable_l4_quality_pool_does_not_stop_at_old_trend_quota(monkeypatch)
     assert policy["quality_pool_before_guards"] == 7
 
 
+def test_tradeable_l4_quality_pool_respects_explicit_zero_quota(monkeypatch):
+    monkeypatch.setattr(funnel, "FUNNEL_AI_SELECTION_MODE", "tradeable_l4")
+    ctx = SimpleNamespace(
+        formal_sorted_codes=["000001", "000002"],
+        candidate_entry_map={},
+        code_to_trigger_keys={"000001": ["sos"], "000002": ["sos"]},
+        code_to_total_score={"000001": 90.0, "000002": 80.0},
+    )
+
+    selected, trend, accum = funnel._expand_quality_first_pool(
+        ctx,
+        [],
+        {},
+        {"total_cap": 8, "trend_quota": 0, "accum_quota": 0},
+    )
+
+    assert selected == []
+    assert trend == []
+    assert accum == []
+
+
 def test_loss_guard_risk_on_bans_pure_trend_pullback():
     kept, trend_kept, accum_kept, dropped = apply_loss_guard(
         ["000001"],
@@ -824,3 +884,60 @@ def test_signal_report_fields_fallback_empty_without_track_or_source():
     fields = signal_report_fields("000001", {}, "", "crash", 0.0)
 
     assert fields["primary_signal"] == ""
+
+
+def test_loss_guard_demotes_pure_spring_to_observe_only():
+    """单 Spring 不足以支撑买入：三周期回测均为负，是唯一跨周期一致为负的信号。
+
+    run 31237549718：696 条 spring 成交，均收 -3.93%／胜率 22.4%，对照非 spring
+    -0.24%／33.4%，合并 Welch t=-6.70；bear_2022 t=-4.82、bull_2020 t=-6.57 显著。
+    """
+    kept, trend_kept, accum_kept, dropped = apply_loss_guard(
+        ["000001"],
+        [],
+        ["000001"],
+        regime="NEUTRAL",
+        code_to_trigger_keys={"000001": ["spring"]},
+        code_to_total_score={"000001": 95.0},
+        channel_map={},
+        df_map={},
+    )
+
+    assert kept == []
+    assert trend_kept == []
+    assert accum_kept == []
+    assert dropped == {"单Spring仅观察": 1}
+
+
+def test_loss_guard_keeps_spring_when_confirmed_by_second_signal():
+    """Spring 与其他形态共振时不受"仅观察"限制。"""
+    kept, _trend_kept, _accum_kept, dropped = apply_loss_guard(
+        ["000001"],
+        [],
+        ["000001"],
+        regime="NEUTRAL",
+        code_to_trigger_keys={"000001": ["spring", "evr"]},
+        code_to_total_score={"000001": 8.0},
+        channel_map={},
+        df_map={},
+    )
+
+    assert kept == ["000001"]
+    assert dropped == {}
+
+
+def test_loss_guard_spring_exempt_for_mainline():
+    kept, _t, _a, dropped = apply_loss_guard(
+        ["000001"],
+        [],
+        ["000001"],
+        regime="NEUTRAL",
+        code_to_trigger_keys={"000001": ["spring"]},
+        code_to_total_score={"000001": 95.0},
+        channel_map={},
+        df_map={},
+        mainline_codes=["000001"],
+    )
+
+    assert kept == ["000001"]
+    assert dropped == {}

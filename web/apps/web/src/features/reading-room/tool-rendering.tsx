@@ -88,16 +88,29 @@ function AssistantParts({
   onInterpretAgentRun: (runId: string) => void
 }) {
   const items = buildAssistantRenderItems(message.parts as MessagePart[])
+  const lastTextKey = lastAssistantTextKey(items)
   return (
     <>
       {items.map((item) => {
-        if (item.type === 'text') return <MarkdownContent key={item.key} content={item.content} />
+        if (item.type === 'text') {
+          // Only the tip of the stream stays plain; earlier segments can take full MD.
+          const streaming = isActive && item.key === lastTextKey
+          return <MarkdownContent key={item.key} content={item.content} streaming={streaming} />
+        }
         if (item.type === 'tool-group') return <ToolRunSummary key={item.key} parts={item.parts} isActive={isActive} />
         if (item.type === 'tool') return <ToolPartCard key={item.key} part={item.part} approve={approve} deny={deny} onPinStock={onPinStock} agentRunRecords={agentRunRecords} onCancelAgentRun={onCancelAgentRun} onInterpretAgentRun={onInterpretAgentRun} />
         return null
       })}
     </>
   )
+}
+
+function lastAssistantTextKey(items: ReturnType<typeof buildAssistantRenderItems>): string | null {
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const item = items[i]
+    if (item?.type === 'text') return item.key
+  }
+  return null
 }
 
 function UserText({ message }: { message: UIMessage }) {
@@ -262,7 +275,7 @@ function ToolProgressStep({ part, isLast }: { part: ToolPart; isLast: boolean })
         <div className="flex min-w-0 items-center justify-between gap-2">
           <div className="min-w-0">
             <div className="truncate text-xs font-medium text-foreground">{toolChipLabel(part, t)}</div>
-            <div className="mt-0.5 line-clamp-2 text-[11px] leading-4">{toolProgressDescription(toolName, part.input)}</div>
+            <div className="mt-0.5 line-clamp-2 text-[11px] leading-4">{toolProgressDescription(toolName, part.input, part)}</div>
           </div>
           <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] ${toolStepStateTone(part)}`}>{toolStateLabel(part, t)}</span>
         </div>

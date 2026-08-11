@@ -217,6 +217,20 @@ def _t1_engine(*, buy_dt: str, trade_date: str, price: float = 9.5) -> WyckoffOr
     )
 
 
+def test_duplicate_exit_decisions_do_not_oversell_or_double_count_cash() -> None:
+    engine = _t1_engine(buy_dt="2026-05-14", trade_date="2026-05-15", price=9.5)
+
+    tickets, cash = engine.process([_exit_decision(), _exit_decision()])
+
+    approved = [ticket for ticket in tickets if ticket.status == "APPROVED" and ticket.action == "EXIT"]
+    rejected = [ticket for ticket in tickets if ticket.status != "APPROVED"]
+    assert len(approved) == 1
+    assert approved[0].shares == 1000
+    assert len(rejected) == 1
+    assert "无可卖持仓" in rejected[0].reason
+    assert cash == 50000 + 1000 * 9.5 * (1.0 - WyckoffOrderEngine.SLIPPAGE_BPS)
+
+
 def test_exit_is_rejected_for_shares_bought_today() -> None:
     engine = _t1_engine(buy_dt="2026-05-15", trade_date="2026-05-15")
 
@@ -266,6 +280,38 @@ def test_rejected_t1_exit_does_not_persist_model_stop_loss(monkeypatch) -> None:
     assert captured == []
 
 
+def test_approved_exit_does_not_persist_stop_loss(monkeypatch) -> None:
+    captured: list[tuple[str, list[dict]]] = []
+    monkeypatch.setattr(
+        step4_results,
+        "update_position_stops",
+        lambda portfolio_id, updates: captured.append((portfolio_id, updates)) or True,
+    )
+    engine = _t1_engine(buy_dt="2026-05-14", trade_date="2026-05-15", price=8.8)
+
+    tickets, _cash = engine.process([_exit_decision()])
+    ok = step4_results.update_step4_position_stops("P1", tickets)
+
+    assert tickets[0].status == "APPROVED"
+    assert ok is True
+    assert captured == []
+
+
+def test_only_actionable_hold_stop_is_persisted(monkeypatch) -> None:
+    captured: list[tuple[str, list[dict]]] = []
+    monkeypatch.setattr(
+        step4_results,
+        "update_position_stops",
+        lambda portfolio_id, updates: captured.append((portfolio_id, updates)) or True,
+    )
+    ticket = _ticket(effective_stop_loss=8.8)
+
+    ok = step4_results.update_step4_position_stops("P1", [ticket])
+
+    assert ok is True
+    assert captured == [("P1", [{"code": "000001", "stop_loss": 8.8}])]
+
+
 def test_exit_is_allowed_for_shares_bought_before_today() -> None:
     engine = _t1_engine(buy_dt="2026-05-14", trade_date="2026-05-15")
 
@@ -274,6 +320,96 @@ def test_exit_is_allowed_for_shares_bought_before_today() -> None:
     assert tickets[0].status == "APPROVED"
     assert tickets[0].shares == 1000
     assert cash > 50000
+
+
+def test_recent_inverted_stop_exit_is_downgraded_to_hold() -> None:
+    engine = WyckoffOrderEngine(
+        total_equity=100000,
+        free_cash=50000,
+        position_map={
+            "000001": PositionItem(
+                code="000001", name="平安银行", cost=50.0, buy_dt="2026-05-14", shares=1000, stop_loss=None
+            )
+        },
+        latest_price_map={"000001": 50.3},
+        trade_date="2026-05-15",
+    )
+    decision = _exit_decision()
+    decision.stop_loss = 112.0
+
+    tickets, cash = engine.process([decision])
+
+    assert tickets[0].action == "HOLD"
+    assert tickets[0].effective_stop_loss is None
+    assert "新仓止损倒挂" in tickets[0].reason
+    assert "reject_inverted_recent_decision_stop" in tickets[0].audit
+    assert cash == 50000
+
+
+def test_recent_persisted_trailing_stop_is_authoritative_after_pullback() -> None:
+    engine = WyckoffOrderEngine(
+        total_equity=100000,
+        free_cash=50000,
+        position_map={
+            "000001": PositionItem(
+                code="000001", name="平安银行", cost=50.0, buy_dt="2026-05-14", shares=1000, stop_loss=52.0
+            )
+        },
+        latest_price_map={"000001": 51.0},
+        trade_date="2026-05-15",
+    )
+    decision = _hold_decision(stop_loss=None)
+
+    tickets, cash = engine.process([decision])
+
+    assert tickets[0].action == "EXIT"
+    assert tickets[0].status == "APPROVED"
+    assert tickets[0].effective_stop_loss == 52.0
+    assert "forced_exit_stop_breach" in tickets[0].audit
+    assert cash > 50000
+
+
+def test_recent_valid_breached_stop_still_allows_exit() -> None:
+    engine = WyckoffOrderEngine(
+        total_equity=100000,
+        free_cash=50000,
+        position_map={
+            "000001": PositionItem(
+                code="000001", name="平安银行", cost=50.0, buy_dt="2026-05-14", shares=1000, stop_loss=46.7
+            )
+        },
+        latest_price_map={"000001": 45.0},
+        trade_date="2026-05-15",
+    )
+    decision = _exit_decision()
+    decision.stop_loss = 46.7
+
+    tickets, cash = engine.process([decision])
+
+    assert tickets[0].action == "EXIT"
+    assert tickets[0].status == "APPROVED"
+    assert cash > 50000
+
+
+def test_old_profitable_trailing_stop_still_allows_exit() -> None:
+    engine = WyckoffOrderEngine(
+        total_equity=100000,
+        free_cash=50000,
+        position_map={
+            "000001": PositionItem(
+                code="000001", name="平安银行", cost=50.0, buy_dt="2026-04-01", shares=1000, stop_loss=90.0
+            )
+        },
+        latest_price_map={"000001": 80.0},
+        trade_date="2026-05-15",
+    )
+    decision = _exit_decision()
+    decision.stop_loss = 90.0
+
+    tickets, _cash = engine.process([decision])
+
+    assert tickets[0].action == "EXIT"
+    assert tickets[0].status == "APPROVED"
 
 
 def test_forced_stop_loss_exit_waits_for_t1_to_clear() -> None:
@@ -304,6 +440,65 @@ def test_order_engine_uses_explicit_buy_block_config():
     assert cash == 50000
     assert tickets[0].status == "NO_TRADE"
     assert "regime=NEUTRAL" in tickets[0].reason
+
+
+def _stale_exit_engine(**overrides):
+    kwargs = {
+        "total_equity": 100000,
+        "free_cash": 50000,
+        "position_map": {},
+        "latest_price_map": {"000001": 9.5},
+        "atr_map": {"000001": 0.2},
+        "market_regime": "NEUTRAL",
+        "stale_exit_codes": frozenset({"603661"}),
+    }
+    kwargs.update(overrides)
+    return WyckoffOrderEngine(**kwargs)
+
+
+def test_unexecuted_exit_blocks_attack_sized_buys():
+    """止损没落地还上重仓，等于一边放任亏损扩大一边加码。"""
+    tickets, cash = _stale_exit_engine().process([_decision("ATTACK")])
+
+    assert cash == 50000
+    assert tickets[0].status == "NO_TRADE"
+    assert "禁止 ATTACK 重仓" in tickets[0].reason
+    assert "603661" in tickets[0].reason
+
+
+def test_unexecuted_exit_still_allows_small_probe():
+    """PROBE 自带硬止损且额度受限，一刀切会让闸门变成永久停摆。"""
+    tickets, cash = _stale_exit_engine().process([_decision("PROBE")])
+
+    assert tickets[0].status == "APPROVED"
+    assert cash < 50000
+
+
+def test_unexecuted_exit_does_not_block_selling_or_holding():
+    """闸门只拦重仓买入；离场和持有必须照常给出，否则会把仓位锁死。"""
+    position = PositionItem(code="000001", name="平安银行", cost=10.0, buy_dt="20260701", shares=1000, stop_loss=8.9)
+    engine = _stale_exit_engine(position_map={"000001": position})
+
+    tickets, _cash = engine.process([_decision("EXIT")])
+
+    assert tickets[0].status == "APPROVED"
+    assert tickets[0].action == "EXIT"
+
+
+def test_stale_exit_buy_block_can_be_switched_off():
+    engine = _stale_exit_engine(config=step4.Step4OrderConfig(block_buy_on_stale_exit=False))
+
+    tickets, _cash = engine.process([_decision("ATTACK")])
+
+    assert tickets[0].status == "APPROVED"
+
+
+def test_no_stale_exits_leaves_buys_alone():
+    engine = _stale_exit_engine(stale_exit_codes=frozenset())
+
+    tickets, _cash = engine.process([_decision("ATTACK")])
+
+    assert tickets[0].status == "APPROVED"
 
 
 def test_candidate_attribution_reaches_buy_ticket_and_persistence_row():
@@ -951,6 +1146,13 @@ def test_step4_result_record_defers_stop_updates_until_orders_are_saved(monkeypa
     assert record.ticket_rows[0]["reason"] == "系统风控 | audit=risk-ok"
 
 
+def _persist_portfolio(*, stop_loss: float | None = 8.1) -> SimpleNamespace:
+    return SimpleNamespace(
+        free_cash=50000.0,
+        positions=[SimpleNamespace(code="000001", stop_loss=stop_loss)],
+    )
+
+
 def test_step4_save_orders_and_nav_uses_persistence_boundaries(monkeypatch):
     calls: dict[str, object] = {}
     monkeypatch.setattr(
@@ -974,18 +1176,23 @@ def test_step4_save_orders_and_nav_uses_persistence_boundaries(monkeypatch):
         lambda portfolio_id, updates: calls.setdefault("stops", (portfolio_id, updates)) is not None,
     )
     options = SimpleNamespace(portfolio_id="P1", model="model-x")
-    context = SimpleNamespace(trade_date="2026-05-15", total_equity=120000.0)
+    # 账户真实现金 50000、持仓 70000；OMS 若把清仓建议算进去会得到 120000 的模拟现金。
+    context = SimpleNamespace(
+        trade_date="2026-05-15",
+        total_equity=120000.0,
+        portfolio=_persist_portfolio(stop_loss=8.1),
+    )
 
-    step4_results.save_step4_orders_and_nav(
+    result = step4_results.save_step4_orders_and_nav(
         options=options,
         context=context,
         run_id="run-1",
         rendered_market_view="市场视图",
         tickets=[_ticket()],
         ticket_rows=[{"code": "000001"}],
-        free_cash_after=50000.0,
     )
 
+    assert result == step4_results.Step4PersistenceResult(True, orders_written=True)
     assert calls["orders"] == {
         "run_id": "run-1",
         "portfolio_id": "P1",
@@ -998,6 +1205,7 @@ def test_step4_save_orders_and_nav_uses_persistence_boundaries(monkeypatch):
         "portfolio_id": "P1",
         "trade_date": "2026-05-15",
         "exclude_run_id": "run-1",
+        "raise_on_error": True,
     }
     assert calls["nav"] == {
         "portfolio_id": "P1",
@@ -1022,15 +1230,378 @@ def test_step4_order_write_failure_does_not_mutate_stops_or_nav(monkeypatch):
         lambda **_kwargs: mutated.append("nav") or True,
     )
 
-    ok = step4_results.save_step4_orders_and_nav(
+    result = step4_results.save_step4_orders_and_nav(
         options=SimpleNamespace(portfolio_id="P1", model="model-x"),
-        context=SimpleNamespace(trade_date="2026-05-15", total_equity=120000.0),
+        context=SimpleNamespace(
+            trade_date="2026-05-15",
+            total_equity=120000.0,
+            portfolio=_persist_portfolio(),
+        ),
         run_id="run-1",
         rendered_market_view="市场视图",
         tickets=[_ticket()],
         ticket_rows=[{"code": "000001"}],
-        free_cash_after=50000.0,
     )
 
-    assert ok is False
+    assert result == step4_results.Step4PersistenceResult(False, orders_written=False)
     assert mutated == []
+
+
+def test_step4_auxiliary_failure_keeps_previous_orders_active(monkeypatch):
+    cancelled: list[dict] = []
+    monkeypatch.setattr(step4_results, "save_ai_trade_orders", lambda **_kwargs: True)
+    monkeypatch.setattr(step4_results, "update_position_stops", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(step4_results, "upsert_daily_nav", lambda **_kwargs: True)
+    monkeypatch.setattr(
+        step4_results,
+        "cancel_trade_orders",
+        lambda **kwargs: cancelled.append(kwargs) or 1,
+    )
+
+    result = step4_results.save_step4_orders_and_nav(
+        options=SimpleNamespace(portfolio_id="P1", model="model-x"),
+        context=SimpleNamespace(
+            trade_date="2026-05-15",
+            total_equity=120000.0,
+            portfolio=_persist_portfolio(stop_loss=8.1),
+        ),
+        run_id="run-1",
+        rendered_market_view="市场视图",
+        tickets=[_ticket()],
+        ticket_rows=[{"code": "000001"}],
+    )
+
+    assert result == step4_results.Step4PersistenceResult(
+        False,
+        orders_written=True,
+        stop_rollback=({"code": "000001", "stop_loss": 8.1},),
+    )
+    assert cancelled == []
+
+
+def test_step4_previous_order_cancel_failure_requires_new_order_rollback(monkeypatch):
+    monkeypatch.setattr(step4_results, "save_ai_trade_orders", lambda **_kwargs: True)
+    monkeypatch.setattr(step4_results, "update_position_stops", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(step4_results, "upsert_daily_nav", lambda **_kwargs: True)
+
+    def fail_cancel(**_kwargs):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(step4_results, "cancel_trade_orders", fail_cancel)
+
+    result = step4_results.save_step4_orders_and_nav(
+        options=SimpleNamespace(portfolio_id="P1", model="model-x"),
+        context=SimpleNamespace(
+            trade_date="2026-05-15",
+            total_equity=120000.0,
+            portfolio=_persist_portfolio(stop_loss=8.1),
+        ),
+        run_id="run-1",
+        rendered_market_view="市场视图",
+        tickets=[_ticket()],
+        ticket_rows=[{"code": "000001"}],
+    )
+
+    assert result == step4_results.Step4PersistenceResult(
+        False,
+        orders_written=True,
+        stop_rollback=({"code": "000001", "stop_loss": 8.1},),
+    )
+
+
+def test_step4_nav_failure_after_stop_update_carries_stop_rollback(monkeypatch):
+    monkeypatch.setattr(step4_results, "save_ai_trade_orders", lambda **_kwargs: True)
+    monkeypatch.setattr(step4_results, "update_position_stops", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(step4_results, "upsert_daily_nav", lambda **_kwargs: False)
+    monkeypatch.setattr(step4_results, "cancel_trade_orders", lambda **_kwargs: 0)
+
+    result = step4_results.save_step4_orders_and_nav(
+        options=SimpleNamespace(portfolio_id="P1", model="model-x"),
+        context=SimpleNamespace(
+            trade_date="2026-05-15",
+            total_equity=120000.0,
+            portfolio=_persist_portfolio(stop_loss=7.5),
+        ),
+        run_id="run-1",
+        rendered_market_view="市场视图",
+        tickets=[_ticket(effective_stop_loss=9.2)],
+        ticket_rows=[{"code": "000001"}],
+    )
+
+    assert result == step4_results.Step4PersistenceResult(
+        False,
+        orders_written=True,
+        stop_rollback=({"code": "000001", "stop_loss": 7.5},),
+    )
+
+
+def test_nav_snapshot_records_real_cash_not_the_post_execution_projection(monkeypatch):
+    """工单没被执行时，净值快照不能把「假设已清仓」的现金当成账户现金。"""
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(step4_results, "save_ai_trade_orders", lambda **_kwargs: True)
+    monkeypatch.setattr(step4_results, "cancel_trade_orders", lambda **_kwargs: 0)
+    monkeypatch.setattr(step4_results, "update_position_stops", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(step4_results, "upsert_daily_nav", lambda **kwargs: captured.update(kwargs) is None)
+
+    step4_results.save_step4_orders_and_nav(
+        options=SimpleNamespace(portfolio_id="P1", model="model-x"),
+        context=SimpleNamespace(
+            trade_date="2026-05-15",
+            total_equity=87000.0,
+            portfolio=SimpleNamespace(free_cash=71000.0, positions=[]),
+        ),
+        run_id="run-1",
+        rendered_market_view="市场视图",
+        tickets=[_ticket()],
+        ticket_rows=[{"code": "000001"}],
+    )
+
+    assert captured["free_cash"] == 71000.0
+    assert captured["positions_value"] == 16000.0
+
+
+def _persist_context() -> SimpleNamespace:
+    return SimpleNamespace(
+        trade_date="2026-05-15",
+        total_equity=120000.0,
+        state_signature="abc123",
+        portfolio=_persist_portfolio(stop_loss=8.1),
+    )
+
+
+def _persist_options() -> SimpleNamespace:
+    return SimpleNamespace(
+        portfolio_id="P1",
+        model="model-x",
+        tg_bot_token="token",
+        tg_chat_id="chat",
+        runtime_config=SimpleNamespace(atr_period=14),
+    )
+
+
+def _run_step4_result_flow(
+    monkeypatch,
+    persistence: step4_results.Step4PersistenceResult,
+    *,
+    notification_ok: bool = True,
+    rollback_ok: bool = True,
+) -> tuple[tuple[bool, str], dict[str, list]]:
+    calls: dict[str, list] = {"notifications": [], "rollbacks": []}
+    monkeypatch.setattr(
+        step4,
+        "prepare_step4_result_record",
+        lambda **_kwargs: SimpleNamespace(run_id="run-new", ticket_rows=[{"code": "000001"}]),
+    )
+    monkeypatch.setattr(step4, "render_trade_ticket", lambda **_kwargs: "# ticket")
+    monkeypatch.setattr(step4, "save_step4_orders_and_nav", lambda **_kwargs: persistence)
+    monkeypatch.setattr(
+        step4,
+        "_send_trade_ticket",
+        lambda *_args, **_kwargs: calls["notifications"].append(True) or notification_ok,
+    )
+    monkeypatch.setattr(
+        step4,
+        "rollback_step4_run",
+        lambda **kwargs: calls["rollbacks"].append(kwargs) or rollback_ok,
+    )
+    result = step4._send_and_persist_step4_results(
+        options=_persist_options(),
+        context=_persist_context(),
+        decisions=[],
+        tickets=[_ticket()],
+        free_cash_after=50000.0,
+        rendered_market_view="市场视图",
+        stale_exits=[],
+        report_progress=lambda *_args, **_kwargs: None,
+    )
+    return result, calls
+
+
+def test_notification_failure_preserves_written_orders(monkeypatch):
+    """通知超时可能已经送达；保留工单才能阻止重跑 OMS 产生重复指令。"""
+    result, calls = _run_step4_result_flow(
+        monkeypatch,
+        step4_results.Step4PersistenceResult(True, orders_written=True),
+        notification_ok=False,
+    )
+
+    assert result == (False, "notification_failed_orders_preserved")
+    assert calls == {"notifications": [True], "rollbacks": []}
+
+
+def test_persistence_failure_rolls_back_written_orders(monkeypatch):
+    stop_rollback = ({"code": "000001", "stop_loss": 8.1},)
+    result, calls = _run_step4_result_flow(
+        monkeypatch,
+        step4_results.Step4PersistenceResult(False, orders_written=True, stop_rollback=stop_rollback),
+    )
+
+    assert result == (False, "persistence_failed")
+    assert calls["notifications"] == []
+    assert calls["rollbacks"] == [
+        {
+            "portfolio_id": "P1",
+            "trade_date": "2026-05-15",
+            "run_id": "run-new",
+            "stop_rollback": stop_rollback,
+        }
+    ]
+
+
+def test_order_write_failure_does_not_attempt_rollback(monkeypatch):
+    result, calls = _run_step4_result_flow(
+        monkeypatch,
+        step4_results.Step4PersistenceResult(False),
+    )
+
+    assert result == (False, "persistence_failed")
+    assert calls == {"notifications": [], "rollbacks": []}
+
+
+def test_persistence_failure_surfaces_rollback_failure(monkeypatch):
+    result, _calls = _run_step4_result_flow(
+        monkeypatch,
+        step4_results.Step4PersistenceResult(False, orders_written=True),
+        rollback_ok=False,
+    )
+
+    assert result == (False, "persistence_failed_rollback_failed")
+
+
+def test_rollback_step4_run_cancels_only_current_run_id(monkeypatch):
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        step4_results,
+        "cancel_trade_orders",
+        lambda **kwargs: captured.update(kwargs) or 2,
+    )
+    monkeypatch.setattr(step4_results, "update_position_stops", lambda *_args, **_kwargs: True)
+
+    rolled_back = step4_results.rollback_step4_run(
+        portfolio_id="P1",
+        trade_date="2026-05-15",
+        run_id="run-new",
+    )
+
+    assert rolled_back is True
+    assert captured == {
+        "portfolio_id": "P1",
+        "trade_date": "2026-05-15",
+        "only_run_id": "run-new",
+        "raise_on_error": True,
+    }
+
+
+def test_rollback_step4_run_restores_previous_stop_losses(monkeypatch):
+    cancelled: list[dict] = []
+    restored: list[tuple[str, list[dict]]] = []
+    monkeypatch.setattr(
+        step4_results,
+        "cancel_trade_orders",
+        lambda **kwargs: cancelled.append(kwargs) or 1,
+    )
+    monkeypatch.setattr(
+        step4_results,
+        "update_position_stops",
+        lambda portfolio_id, updates: restored.append((portfolio_id, updates)) or True,
+    )
+
+    rolled_back = step4_results.rollback_step4_run(
+        portfolio_id="P1",
+        trade_date="2026-05-15",
+        run_id="run-new",
+        stop_rollback=({"code": "000001", "stop_loss": 8.1}, {"code": "600519", "stop_loss": None}),
+    )
+
+    assert rolled_back is True
+    assert cancelled == [
+        {
+            "portfolio_id": "P1",
+            "trade_date": "2026-05-15",
+            "only_run_id": "run-new",
+            "raise_on_error": True,
+        }
+    ]
+    assert restored == [
+        (
+            "P1",
+            [{"code": "000001", "stop_loss": 8.1}, {"code": "600519", "stop_loss": None}],
+        )
+    ]
+
+
+def test_rollback_step4_run_surfaces_stop_restore_failure(monkeypatch):
+    monkeypatch.setattr(step4_results, "cancel_trade_orders", lambda **_kwargs: 1)
+    monkeypatch.setattr(step4_results, "update_position_stops", lambda *_args, **_kwargs: False)
+
+    assert (
+        step4_results.rollback_step4_run(
+            portfolio_id="P1",
+            trade_date="2026-05-15",
+            run_id="run-new",
+            stop_rollback=({"code": "000001", "stop_loss": 8.1},),
+        )
+        is False
+    )
+
+
+def test_rollback_step4_run_surfaces_cancel_error(monkeypatch):
+    def fail_cancel(**_kwargs):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(step4_results, "cancel_trade_orders", fail_cancel)
+
+    assert (
+        step4_results.rollback_step4_run(
+            portfolio_id="P1",
+            trade_date="2026-05-15",
+            run_id="run-new",
+        )
+        is False
+    )
+
+
+class TestStopLossPersistence:
+    """买入建仓与存量持仓都必须按执行状态持久化有效止损。"""
+
+    @staticmethod
+    def _ticket(action: str, is_holding: bool, stop: float = 9.0, price: float = 10.0, status: str = "APPROVED"):
+        from workflows.step4_models import ExecutionTicket
+
+        return ExecutionTicket(
+            code="000001",
+            name="x",
+            action=action,
+            status=status,
+            shares=100,
+            price_hint=price,
+            amount=1000.0,
+            stop_loss=stop,
+            max_loss=100.0,
+            drawdown_ratio=0.01,
+            reason="",
+            tape_condition="",
+            invalidate_condition="",
+            is_holding=is_holding,
+            atr14=0.5,
+            original_stop_loss=stop,
+            effective_stop_loss=stop,
+            slippage_bps=0.001,
+            audit="",
+        )
+
+    def test_executable_entries_and_held_positions_persist_stop(self):
+        from workflows.step4_results import _should_persist_stop
+
+        cases = (("PROBE", False), ("ATTACK", False), ("HOLD", True), ("TRIM", True))
+        assert all(_should_persist_stop(self._ticket(action, held)) for action, held in cases)
+
+    def test_non_executable_or_invalid_stops_are_rejected(self):
+        from workflows.step4_results import _should_persist_stop
+
+        tickets = (
+            self._ticket("EXIT", is_holding=True),
+            self._ticket("PROBE", is_holding=False, stop=11.0, price=10.0),
+            self._ticket("PROBE", is_holding=False, status="NO_TRADE"),
+        )
+        assert not any(_should_persist_stop(ticket) for ticket in tickets)

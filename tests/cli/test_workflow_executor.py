@@ -16,10 +16,12 @@ from cli.workflows.executor import (
     _ensure_candidate_delivery,
     _fallback_handoff_lines,
     _fallback_summary,
+    _orchestration_waste_reason,
     _phase_batches,
     _step_context,
     _synthesis_handoff_summary,
     _synthesis_prompt,
+    _with_failure_lead,
     _workflow_handoff_state,
 )
 from cli.workflows.models import WorkflowContext, WorkflowRun, WorkflowStep
@@ -4473,7 +4475,9 @@ def test_workflow_executor_filters_disallowed_explicit_tool_scope_without_wideni
     def _after_block_round(messages, tools, _system_prompt):
         assert tools == []
         assert any(
-            message.get("role") == "tool" and "不在当前 workflow 允许范围内" in message.get("content", "")
+            message.get("role") == "tool"
+            and "不在当前 workflow" in message.get("content", "")
+            and "允许范围内" in message.get("content", "")
             for message in messages
         )
         return [{"type": "text_delta", "text": "已阻止越权工具。"}]
@@ -5691,3 +5695,95 @@ def test_build_recent_workflow_context_is_bounded_reference():
     assert "证据: 候选结论: 首选 A 高质量候选" in context
     assert "证据: 候选护栏: 禁止直接买入" in context
     assert context.endswith("</recent-workflow-context>")
+
+
+def _run_with_step_statuses(*statuses: str) -> WorkflowRun:
+    return WorkflowRun(
+        run_id="wf_lead",
+        session_id="s_lead",
+        user_text="昊华科技清仓了",
+        context=WORKFLOWS["dynamic_task"],
+        steps=[
+            WorkflowStep(step_id=f"s{index}", title=f"步骤{index}", status=status)
+            for index, status in enumerate(statuses)
+        ],
+    )
+
+
+def test_failure_lead_puts_failed_steps_above_the_candidate_block():
+    """failed run 的开头曾经是候选结论，真正重要的事实被埋在后面。"""
+
+    run = _run_with_step_statuses("failed", "completed")
+    text = "候选结论: 重点观察 300628 亿联网络"
+
+    final_text = _with_failure_lead(text, run)
+
+    assert final_text.startswith("⚠️ 本次 workflow 未完全成功")
+    assert "1 个步骤失败" in final_text
+    assert "步骤0" in final_text
+    assert final_text.index("未完全成功") < final_text.index("候选结论")
+
+
+def test_failure_lead_is_absent_when_every_step_succeeded():
+    run = _run_with_step_statuses("completed", "completed")
+
+    assert _with_failure_lead("候选结论: 观察 002648", run) == "候选结论: 观察 002648"
+
+
+def test_failure_lead_collapses_a_long_failure_list():
+    run = _run_with_step_statuses(*(["failed"] * 6))
+
+    final_text = _with_failure_lead("结论", run)
+
+    assert "6 个步骤失败" in final_text
+    assert "等 6 步" in final_text
+
+
+def _run_with_tool_scopes(*scopes: tuple[str, ...]) -> WorkflowRun:
+    return WorkflowRun(
+        run_id="wf_shape",
+        session_id="s_shape",
+        user_text="我的持仓有什么",
+        context=WORKFLOWS["dynamic_task"],
+        steps=[
+            WorkflowStep(step_id=f"s{index}", title=f"步骤{index}", tool_scope=scope)
+            for index, scope in enumerate(scopes)
+        ],
+    )
+
+
+def test_single_tool_single_step_plan_is_not_worth_orchestrating():
+    """「我的持仓有什么」拆出来就是 1 步 1 个 portfolio，和 direct 调一次工具等价。"""
+
+    run = _run_with_tool_scopes(("portfolio",))
+
+    reason = _orchestration_waste_reason(run)
+
+    assert "只有 1 个步骤" in reason
+    assert "portfolio" in reason
+
+
+def test_multi_step_plan_still_orchestrates():
+    run = _run_with_tool_scopes(("portfolio",), ("generate_strategy_decision",))
+
+    assert _orchestration_waste_reason(run) == ""
+
+
+def test_single_step_with_several_tools_still_orchestrates():
+    """声明了多个工具的单步还是一条链，不该按单工具读取降级。"""
+
+    run = _run_with_tool_scopes(("screen_stocks", "generate_strategy_decision"))
+
+    assert _orchestration_waste_reason(run) == ""
+
+
+def test_single_step_without_declared_tools_still_orchestrates():
+    """planner 兜底脚本的 scope 是空的；按空 scope 降级会让 planner 一故障就没有 workflow。"""
+
+    run = _run_with_tool_scopes(())
+
+    assert _orchestration_waste_reason(run) == ""
+
+
+def test_empty_plan_is_not_worth_orchestrating():
+    assert _orchestration_waste_reason(_run_with_tool_scopes()) == "计划里没有任何步骤"

@@ -9,13 +9,13 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import os
 import re
 import threading
 import time
 import uuid
-from collections import deque
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 from rich.highlighter import Highlighter
@@ -30,8 +30,9 @@ from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList, RichLog, Static
 from textual.widgets.option_list import Option
 
+from cli.conversation import ConversationSession, QueuedInput, TurnPhase, UserIntent
 from cli.workflows.pending_reply import classify_pending_workflow_reply, is_pending_workflow_revision
-from utils.tool_result_preview import tool_result_brief_lines
+from utils.tool_result_preview import serialize_tool_result, tool_result_brief_lines
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +146,7 @@ from cli.tools import TOOL_SPECS
 from cli.workflows.dispatch import build_turn_runtime
 from cli.workflows.executor import WorkflowExecutor
 from cli.workflows.router import WORKFLOWS
-from core.prompts import with_current_time
+from core.prompts import append_beijing_time_context, with_current_time
 
 
 def _pop_lines(log_widget, n: int) -> None:
@@ -192,6 +193,21 @@ def _refresh_log_layout(log_widget) -> None:
         log_widget.refresh()
 
 
+_MD_RENDER_HINT_RE = re.compile(
+    r"(?m)"
+    r"(^\s{0,3}#{1,6}\s)"  # headings
+    r"|(^\s*([-*+]|\d+\.)\s)"  # lists
+    r"|(\*\*[^*]|\[[^\]]+\]\([^)]+\))"  # bold / links
+    r"|(`{1,3})"  # code
+    r"|(^\|.+\|)"  # tables
+)
+
+
+def _needs_markdown_render(text: str) -> bool:
+    """Plain streamed strips are enough when Rich Markdown would not change layout."""
+    return bool(_MD_RENDER_HINT_RE.search(text))
+
+
 def _replace_streamed_response(log_widget, strip_count: int, final_text: str) -> int:
     _get_agent_logger().info("TUI_STREAM_REPLACE: strip_count=%d text_len=%d", strip_count, len(final_text))
     _pop_lines(log_widget, strip_count)
@@ -226,11 +242,14 @@ def _display_final_response(
     if not final_text:
         return False
     if streaming_started:
+        # Keep plain streamed lines when Markdown would not change visual structure.
+        if not _needs_markdown_render(final_text):
+            return True
         strip_count = stream_separator_strips + stream_text_strips
         call_from_thread(_replace_streamed_response, log_widget, strip_count, final_text)
     else:
         write(Text.from_markup("  [dim]───[/dim]"))
-        write(Markdown(final_text))
+        write(Markdown(final_text) if _needs_markdown_render(final_text) else Text(final_text))
     return True
 
 
@@ -256,6 +275,7 @@ class _TurnRunState:
     round_usages: dict[int, dict[str, Any]] = field(default_factory=dict)
     round_tool_names: dict[int, list[str]] = field(default_factory=dict)
     round_starts: dict[int, float] = field(default_factory=dict)
+    round_thinking: dict[int, str] = field(default_factory=dict)
     final_usage: dict[str, int] = field(default_factory=lambda: {"input_tokens": 0, "output_tokens": 0})
     final_elapsed: float = 0.0
     final_rounds: int = 0
@@ -361,6 +381,27 @@ def _tool_display_name(tools, name: str) -> str:
     return tools.display_name(name) if tools else name
 
 
+_PERSISTED_TOOL_RESULT_MAX_CHARS = 20_000
+
+
+def _persistable_tool_result(result: Any) -> tuple[Any, bool]:
+    """把工具结果压成可入库的形态，过大就截断并标记，避免 chat_log 被单条撑爆。
+
+    必须走 serialize_tool_result 再 loads 回来：工具结果里会混进 date / Timestamp /
+    NaN / numpy 标量，直接塞进 summary 会让整轮 executed_tool_summaries 的 dumps 抛
+    TypeError，连带把这一轮全部 span 丢掉。
+    """
+    if result is None:
+        return None, False
+    try:
+        rendered = serialize_tool_result(result)
+    except (TypeError, ValueError):
+        return str(result)[:_PERSISTED_TOOL_RESULT_MAX_CHARS], True
+    if len(rendered) > _PERSISTED_TOOL_RESULT_MAX_CHARS:
+        return rendered[:_PERSISTED_TOOL_RESULT_MAX_CHARS], True
+    return json.loads(rendered), False
+
+
 def _tool_result_view(event: dict[str, Any], tools) -> tuple[dict[str, object], Text]:
     name = event["name"]
     args = event.get("args", {})
@@ -369,7 +410,20 @@ def _tool_result_view(event: dict[str, Any], tools) -> tuple[dict[str, object], 
     if result is None and event.get("error"):
         result = {"error": event["error"]}
     elapsed_s = float(event.get("elapsed_ms", 0)) / 1000
-    summary: dict[str, object] = {"name": name, "args_brief": str(args)[:100]}
+    summary: dict[str, object] = {
+        "name": name,
+        "display_name": display,
+        "args_brief": str(args)[:100],
+        "args": args,
+        "elapsed_ms": event.get("elapsed_ms", 0),
+    }
+    if call_id := event.get("tool_call_id"):
+        summary["tool_call_id"] = call_id
+    persisted_result, truncated = _persistable_tool_result(result)
+    if persisted_result is not None:
+        summary["result"] = persisted_result
+        if truncated:
+            summary["result_truncated"] = True
 
     if isinstance(result, dict) and result.get("error"):
         summary.update({"status": "error", "error": str(result.get("error", ""))[:160]})
@@ -381,7 +435,7 @@ def _tool_result_view(event: dict[str, Any], tools) -> tuple[dict[str, object], 
         renderable = Text.from_markup(f"  [cyan]↗ {display}[/cyan] [dim]已提交后台[/dim]")
     else:
         summary["status"] = event.get("status", "ok")
-        renderable = Text.from_markup(f"  [green]✓ {display}[/green] [dim]{elapsed_s:.1f}s[/dim]")
+        renderable = Text.from_markup(f"  [green]✓[/green] {display} [dim]{elapsed_s:.1f}s[/dim]")
         if brief_lines := tool_result_brief_lines(name, result):
             summary["brief"] = brief_lines
             for line in brief_lines:
@@ -396,12 +450,18 @@ def _display_tool_result_event(event: dict[str, Any], tools, write, scroll) -> d
     return summary
 
 
+def _workflow_verbose_plan() -> bool:
+    """默认只渲染进度骨架；路由/脚本来源这些内部信息用 /workflow show 或本开关查看。"""
+    return os.getenv("WYCKOFF_WORKFLOW_VERBOSE", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _display_workflow_plan_event(
     event: dict[str, Any],
     write,
     scroll,
     *,
     launch_state: str = "running",
+    verbose: bool | None = None,
 ) -> tuple[str, str]:
     run_id = str(event.get("run_id", ""))
     workflow_name = str(event.get("workflow", ""))
@@ -409,17 +469,41 @@ def _display_workflow_plan_event(
     steps = event.get("plan", {}).get("steps", [])
     step_count = len(steps) if isinstance(steps, list) else 0
     count_text = _workflow_task_count_text(event.get("plan"), step_count)
-    lines = [f"  [bold cyan]workflow[/bold cyan] [bold]{escape(label)}[/bold] [dim]{escape(run_id)}{count_text}[/dim]"]
-    lines.extend(_workflow_plan_detail_lines(event, label, steps, step_count, launch_state))
+    header_mark = {"pending_approval": "◇", "adapted": "↻"}.get(launch_state, "▸")
+    lines = [
+        f"  [bold cyan]{header_mark} workflow[/bold cyan] [bold]{escape(label)}[/bold]"
+        f" [dim]{escape(run_id)}{count_text}[/dim]"
+    ]
+    if verbose is None:
+        verbose = _workflow_verbose_plan()
+    lines.extend(_workflow_plan_detail_lines(event, label, steps, step_count, launch_state, verbose))
     write(Text.from_markup("\n".join(line for line in lines if line)))
     scroll()
     return run_id, workflow_name
 
 
 def _workflow_plan_detail_lines(
-    event: dict[str, Any], label: str, steps: Any, step_count: int, launch_state: str
+    event: dict[str, Any],
+    label: str,
+    steps: Any,
+    step_count: int,
+    launch_state: str,
+    verbose: bool = False,
 ) -> list[str]:
     plan = event.get("plan", {})
+    lines: list[str] = []
+    if verbose:
+        lines.extend(_workflow_plan_provenance_lines(event, plan, label))
+    if not step_count:
+        return lines
+    lines.extend(_workflow_plan_tree_lines(steps))
+    if verbose:
+        lines.extend(_workflow_plan_execution_lines(steps))
+    lines.append(_workflow_plan_footer_line(str(event.get("run_id", "")), launch_state))
+    return lines
+
+
+def _workflow_plan_provenance_lines(event: dict[str, Any], plan: Any, label: str) -> list[str]:
     lines: list[str] = []
     if route_line := _workflow_event_route_line(event):
         lines.append(route_line)
@@ -433,13 +517,35 @@ def _workflow_plan_detail_lines(
         lines.append(rationale_line)
     if contract_line := _workflow_plan_contract_line(plan):
         lines.append(contract_line)
-    if not step_count:
-        return lines
-    if launch_state == "pending_approval":
-        lines.extend(_workflow_plan_step_preview_lines(steps))
-    else:
-        lines.extend(_workflow_plan_execution_lines(steps))
-    lines.append(_workflow_plan_footer_line(str(event.get("run_id", "")), launch_state))
+    return lines
+
+
+def _workflow_plan_tree_lines(steps: Any, *, limit: int = 8) -> list[str]:
+    """把计划渲染成带序号的阶段树，让"要跑几步、跑到哪一步"一眼可见。"""
+    if not isinstance(steps, list):
+        return []
+    rows = [step for step in steps if isinstance(step, dict)]
+    if not rows:
+        return []
+    visible = rows[:limit]
+    lines: list[str] = []
+    last_phase = ""
+    for index, step in enumerate(visible, 1):
+        phase = str(step.get("phase") or "").strip()
+        if phase and phase != last_phase:
+            lines.append(f"    [dim]· {escape(phase[:40])}[/dim]")
+            last_phase = phase
+        is_last = index == len(visible) and len(rows) <= limit
+        glyph = "└" if is_last else "├"
+        title = escape(str(step.get("title") or step.get("step_id") or step.get("id") or "task")[:48])
+        tools, _label = _workflow_step_tool_values(step)
+        tool_text = "、".join(_workflow_tool_display_name(tool) for tool in tools[:3])
+        if len(tools) > 3:
+            tool_text += f"、+{len(tools) - 3}"
+        suffix = f" [dim]· {escape(tool_text)}[/dim]" if tool_text else ""
+        lines.append(f"    [dim]{glyph}[/dim] [dim]{index}[/dim] {title}{suffix}")
+    if len(rows) > limit:
+        lines.append(f"    [dim]└ 另有 {len(rows) - limit} 个任务，详情见 /workflow show[/dim]")
     return lines
 
 
@@ -693,6 +799,16 @@ def _is_visible_route_match(text: str) -> bool:
     return not text.startswith("model_router") and not text.endswith("_guard")
 
 
+def _workflow_step_position_text(event: dict[str, Any]) -> str:
+    """[2/3] 这种位置标记，让后台跑到第几步一眼可见。"""
+    try:
+        index = int(event.get("step_index", 0) or 0)
+        total = int(event.get("step_total", 0) or 0)
+    except (TypeError, ValueError):
+        return ""
+    return f"[{index}/{total}] " if index > 0 and total > 0 else ""
+
+
 def _display_workflow_step_event(event: dict[str, Any], write, scroll) -> None:
     step = event.get("step", {})
     status = step.get("status", "")
@@ -702,10 +818,11 @@ def _display_workflow_step_event(event: dict[str, Any], write, scroll) -> None:
     summary = _workflow_visible_summary(step)
     label = {"running": "运行中", "completed": "完成", "failed": "失败", "skipped": "跳过"}.get(status, status)
     meta = _workflow_step_live_meta(step, label)
+    position = _workflow_step_position_text(event)
     suffix = f" {summary}" if summary else ""
-    write(Text.from_markup(f"    [{color}]{mark} {title}[/{color}] [dim]{meta}{suffix}[/dim]"))
+    write(Text.from_markup(f"    [{color}]{mark} [dim]{position}[/dim]{title}[/{color}] [dim]{meta}{suffix}[/dim]"))
     for line in _workflow_step_handoff_lines(event):
-        write(Text.from_markup(f"      [dim]证据: {escape(line)}[/dim]"))
+        write(Text.from_markup(f"      [dim]└ 证据: {escape(line)}[/dim]"))
     scroll()
 
 
@@ -716,6 +833,24 @@ def _display_retry_event(event: dict[str, Any], write, scroll) -> None:
     reason = _workflow_meta_text(event.get("message"), 96)
     suffix = f" · {escape(reason)}" if reason else ""
     write(Text.from_markup(f"  [yellow]⚠ 运行时校验：第 {retry} 次要求先调用 {escape(display)}{suffix}[/yellow]"))
+    scroll()
+
+
+def _display_continuation_event(event: dict[str, Any], write, scroll) -> None:
+    reason = str(event.get("reason") or "")
+    label = {
+        "output-length": "回答达到上限，自动续写",
+        "step-limit": "工具轮次达上限，自动续跑",
+        "unfinished-work": "仍有未完成步骤，自动续跑",
+    }.get(reason, "自动续跑")
+    write(Text.from_markup(f"  [cyan]↻ {label}（{event.get('n', 1)}）[/cyan]"))
+    scroll()
+
+
+def _display_steered_event(event: dict[str, Any], write, scroll) -> None:
+    texts = event.get("texts") or []
+    preview = escape(str(texts[0])) if texts else ""
+    write(Text.from_markup(f"  [cyan]⇢ 已注入转向: {preview}[/cyan]"))
     scroll()
 
 
@@ -1104,12 +1239,25 @@ def _split_workflow_name_args(name_part: str, rest: str) -> tuple[str, str]:
     return pieces[0], pieces[1] if len(pieces) > 1 else ""
 
 
+_WORKFLOW_UI_EVENT_TYPES = frozenset(
+    {
+        "workflow_plan_update",
+        "workflow_phase_start",
+        "workflow_phase_done",
+        "workflow_step_start",
+        "workflow_step_done",
+        "workflow_disagreement_summary",
+    }
+)
+
+
 def _run_workflow_background(
     runtime: WorkflowExecutor,
     messages: list[dict[str, Any]],
     system_prompt: str,
     model_name: str = "",
     provider_name: str = "",
+    on_ui_event=None,
 ) -> dict[str, Any]:
     from utils.progress import report_progress
 
@@ -1138,6 +1286,11 @@ def _run_workflow_background(
             elif event_type == "done":
                 final_text = str(event.get("text", ""))
                 usage = event.get("usage", usage)
+            if on_ui_event and event_type in _WORKFLOW_UI_EVENT_TYPES:
+                try:
+                    on_ui_event(event)
+                except Exception:
+                    logger.debug("workflow background ui event failed", exc_info=True)
     except Exception as exc:
         run_id = run_id or (runtime.run.run_id if runtime.run else "")
         return {"workflow_run_id": run_id, "error": str(exc), "events": events[-40:]}
@@ -1163,15 +1316,62 @@ def _workflow_bg_event_summary(event: dict[str, Any]) -> dict[str, Any]:
             payload[key] = event.get(key)
     step = event.get("step")
     if isinstance(step, dict):
-        payload["step"] = {
+        step_payload: dict[str, Any] = {
             "title": step.get("title", ""),
             "agent": step.get("agent", ""),
             "status": step.get("status", ""),
             "summary": step.get("summary", ""),
         }
+        for key in ("step_id", "phase", "tool_scope"):
+            if step.get(key) not in (None, "", []):
+                step_payload[key] = step.get(key)
+        # 耗时/工具/结果在 source.agent_detail 里，不在 step.to_dict() 里；
+        # 不捞出来的话 workflow 轮次在库里查不到任何执行细节。
+        detail = event.get("source", {}).get("agent_detail") if isinstance(event.get("source"), dict) else None
+        if isinstance(detail, dict):
+            if detail.get("elapsed"):
+                step_payload["elapsed"] = detail["elapsed"]
+            if tool_calls := detail.get("tool_calls"):
+                step_payload["tool_calls"] = tool_calls
+            if step_result := detail.get("result"):
+                step_payload["result"] = str(step_result)[:4000]
+            if step_error := detail.get("error"):
+                step_payload["error"] = str(step_error)[:1000]
         if evidence := _workflow_step_handoff_lines(event):
-            payload["step"]["evidence"] = evidence
+            step_payload["evidence"] = evidence
+        payload["step"] = step_payload
     return payload
+
+
+def _tool_schemas_or_empty(tools: Any) -> list[dict[str, Any]]:
+    try:
+        return tools.schemas() if tools else []
+    except Exception:
+        return []
+
+
+def _workflow_spans_json(events: list[dict[str, Any]]) -> str:
+    """把 workflow 的每一步折成 dashboard 认得的 span，让后台轮次也能看到执行明细。"""
+    spans: list[dict[str, Any]] = []
+    for event in events:
+        if event.get("type") != "workflow_step_done":
+            continue
+        step = event.get("step")
+        if not isinstance(step, dict):
+            continue
+        status = str(step.get("status", ""))
+        span: dict[str, Any] = {
+            "name": step.get("title", "") or step.get("agent", "step"),
+            "display_name": step.get("title", ""),
+            "status": "error" if status not in {"completed", "ok"} else "ok",
+            "args_brief": ", ".join(str(name) for name in (step.get("tool_scope") or [])),
+            "elapsed_ms": int(float(step.get("elapsed", 0) or 0) * 1000),
+        }
+        for key in ("tool_calls", "result", "error", "phase", "step_id"):
+            if step.get(key):
+                span[key] = step[key]
+        spans.append(span)
+    return json.dumps(spans, ensure_ascii=False) if spans else ""
 
 
 def _background_task_summary(tool_name: str, task_id: str, result: Any, *, max_chars: int = 3000) -> str:
@@ -1219,7 +1419,7 @@ def _compaction_panel(event: dict[str, Any]):
     before, after = event["before_messages"], event["after_messages"]
     return Panel(
         Text.assemble(
-            (" ⚡ 系统状态：上下文深度压缩中...\n\n", "bold yellow"),
+            (" 系统状态：上下文深度压缩中...\n\n", "bold yellow"),
             ("已自动提取持久偏好写入 ", "dim white"),
             ("SQLite 记忆库", "bold cyan"),
             ("；\n已将前序 ", "dim white"),
@@ -1229,10 +1429,35 @@ def _compaction_panel(event: dict[str, Any]):
             (" 条消息以维持当前上下文连贯性。", "dim white"),
         ),
         border_style="yellow",
-        title="[bold yellow] 📦 CONTEXT COMPACTION [/bold yellow]",
+        title="[bold yellow]CONTEXT COMPACTION[/bold yellow]",
         title_align="left",
         padding=(1, 2),
     )
+
+
+def _context_overflow_panel(event: dict[str, Any]):
+    """压缩没能把上下文降到窗口内，已硬丢弃最旧消息——这是有损的，必须让用户看见。"""
+    from rich.panel import Panel
+
+    return Panel(
+        Text.assemble(
+            (" 系统状态：上下文超出窗口上限\n\n", "bold red"),
+            ("摘要压缩未能生效或不足，已直接丢弃最旧 ", "dim white"),
+            (str(event.get("dropped_messages", 0)), "bold red"),
+            (" 条消息以保证请求不被拒绝；\n当前保留 ", "dim white"),
+            (str(event.get("after_messages", 0)), "bold green"),
+            (" 条，窗口上限 ", "dim white"),
+            (f"{int(event.get('limit', 0)):,}", "bold cyan"),
+            (" tokens。被丢弃的内容不进摘要，如仍需要请重新提供。", "dim white"),
+        ),
+        border_style="red",
+        title="[bold red]CONTEXT OVERFLOW[/bold red]",
+        title_align="left",
+        padding=(1, 2),
+    )
+
+
+_PERSISTED_THINKING_MAX_CHARS = 8_000
 
 
 def _build_rounds_detail(
@@ -1242,33 +1467,61 @@ def _build_rounds_detail(
     round_starts: dict[int, float],
     t_start: float,
     model_name: str,
+    round_thinking: dict[int, str] | None = None,
 ) -> list[dict[str, object]]:
     details: list[dict[str, object]] = []
     for round_number in range(1, rounds + 1):
         usage = round_usages.get(round_number, {})
         started = round_starts.get(round_number, t_start)
-        details.append(
-            {
-                "round": round_number,
-                "model": model_name,
-                "tokens_in": usage.get("input_tokens", 0),
-                "tokens_out": usage.get("output_tokens", 0),
-                "cache_read": usage.get("cache_read_tokens", 0),
-                "cache_write": usage.get("cache_write_tokens", 0),
-                "duration": round(max(0.0, time.monotonic() - started), 2),
-                "has_tool_calls": bool(round_tool_names.get(round_number)),
-                "tool_names": round_tool_names.get(round_number, []),
-            }
-        )
+        detail: dict[str, object] = {
+            "round": round_number,
+            "model": model_name,
+            "tokens_in": usage.get("input_tokens", 0),
+            "tokens_out": usage.get("output_tokens", 0),
+            "cache_read": usage.get("cache_read_tokens", 0),
+            "cache_write": usage.get("cache_write_tokens", 0),
+            "stop_reason": usage.get("stop_reason", ""),
+            "duration": round(max(0.0, time.monotonic() - started), 2),
+            "has_tool_calls": bool(round_tool_names.get(round_number)),
+            "tool_names": round_tool_names.get(round_number, []),
+        }
+        if thinking := (round_thinking or {}).get(round_number, ""):
+            detail["thinking"] = thinking[:_PERSISTED_THINKING_MAX_CHARS]
+            # 与工具结果一致地标注截断：思维链被无声切断时，读者会把残句当成模型的真实结论。
+            if len(thinking) > _PERSISTED_THINKING_MAX_CHARS:
+                detail["thinking_truncated"] = True
+        details.append(detail)
     return details
 
 
-def _usage_footer(total_input: int, total_output: int, elapsed_s: float) -> Text:
-    usage_parts = []
-    if total_input or total_output:
-        usage_parts.append(f"↑{total_input:,} ↓{total_output:,}")
-    usage_parts.append(f"{elapsed_s:.1f}s")
-    return Text.from_markup(f"  [dim]{' · '.join(usage_parts)}[/dim]")
+def _usage_footer(
+    total_input: int,
+    total_output: int,
+    elapsed_s: float,
+    *,
+    output_tok_per_s: float | None = None,
+    cache_hit_rate: int | None = None,
+    cache_reported: bool = False,
+) -> Text:
+    from cli.usage_metrics import format_usage_footer
+
+    line = format_usage_footer(
+        input_tokens=total_input,
+        output_tokens=total_output,
+        elapsed_s=elapsed_s,
+        output_tok_per_s=output_tok_per_s,
+        cache_hit_rate=cache_hit_rate,
+        cache_reported=cache_reported,
+    )
+    return Text.from_markup(f"  [dim]{line}[/dim]")
+
+
+def _session_avg_tok_per_s(session_tokens: dict) -> float | None:
+    from cli.usage_metrics import output_tok_per_s
+
+    # Workflow 等无 generation_ms 的轮次计入 unrated_output，避免会话均速虚高。
+    rated_output = max(0, int(session_tokens.get("output") or 0) - int(session_tokens.get("unrated_output") or 0))
+    return output_tok_per_s(rated_output, int(session_tokens.get("generation_ms") or 0) / 1000.0)
 
 
 def _make_sub_agent_progress_handler(tools, write, scroll, spinner_start, spinner_stop):
@@ -1342,13 +1595,58 @@ def _pending_user_question_lines(pending: _PendingUserQuestion) -> list[str]:
     return lines
 
 
+# TUI 配色令牌：硬编码颜色只允许出现在这里。语义色（green 成功 / yellow 警告 / red 错误）直接内联使用。
+# 品牌主色是琥珀金（ticker tape 意象），cyan 保留给交互/信息元素（workflow、链接 id、后台任务）。
+_UI_PALETTES: dict[str, dict[str, str]] = {
+    # transparent 主题跟随终端背景，只用明暗背景都可读的 ANSI 色
+    "ansi": {
+        "brand": "yellow",
+        "heading": "yellow",
+        "code": "cyan",
+        "link": "blue",
+        "quote": "bright_black",
+        "rule": "bright_black",
+        "bullet": "yellow",
+    },
+    "dark": {
+        "brand": "#e6b450",
+        "heading": "#e6b450",
+        "code": "#d19a66",
+        "link": "#e6b450",
+        "quote": "#8b949e",
+        "rule": "#30363d",
+        "bullet": "#e6b450",
+    },
+    "light": {
+        "brand": "#9a6700",
+        "heading": "#9a6700",
+        "code": "#cf222e",
+        "link": "#0969da",
+        "quote": "#57606a",
+        "rule": "#d0d7de",
+        "bullet": "#9a6700",
+    },
+}
+
+_LIGHT_THEME_NAMES = {"solarized-light", "atom-one-light", "textual-light", "light", "github-light"}
+
+
+def _ui_palette(theme_setting: str) -> dict[str, str]:
+    name = theme_setting.strip().lower()
+    if name in ("transparent", "terminal"):
+        return _UI_PALETTES["ansi"]
+    if name in _LIGHT_THEME_NAMES:
+        return _UI_PALETTES["light"]
+    return _UI_PALETTES["dark"]
+
+
 def _build_thinking_preview(text: str) -> Text | None:
     preview = text.strip().replace("\n", " ")
     if len(preview) > 80:
         preview = preview[:80] + "…"
     if not preview:
         return None
-    return Text.from_markup(f"  [italic magenta]💭 {preview}[/italic magenta]  [dim]({len(text)} 字)[/dim]")
+    return Text.from_markup(f"  [dim italic]… {preview}  ({len(text)} 字)[/dim italic]")
 
 
 class ChatLog(RichLog):
@@ -1357,24 +1655,13 @@ class ChatLog(RichLog):
         background: $background;
         scrollbar-size: 1 1;
         border: none;
-        margin: 0 2;
+        margin: 1 2 0 2;
         height: 1fr;
     }
     """
 
 
 class StatusBar(Static):
-    DEFAULT_CSS = """
-    StatusBar {
-        dock: bottom;
-        height: 1;
-        background: $background;
-        color: $text-muted;
-        padding: 0 2;
-        text-align: right;
-    }
-    """
-
     def __init__(self, *args, **kwargs) -> None:
         kwargs.setdefault("markup", True)
         super().__init__(*args, **kwargs)
@@ -1395,7 +1682,7 @@ class ChatInput(Input):
         background: $background;
         border: none;
         color: $text;
-        height: 3;
+        height: 1;
         margin: 0;
         padding: 0 1;
         width: 1fr;
@@ -1475,16 +1762,6 @@ class SelectorScreen(ModalScreen):
 
 
 _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-_SCHEDULE_CHECK_MAX_CATCHUP_MINUTES = 15
-
-
-def _pending_schedule_check_minutes(last_check_at: datetime | None, now: datetime) -> list[datetime]:
-    """Minutes to evaluate since the last check, so a delayed timer tick (e.g. blocked by a
-    long-running task) doesn't silently skip a cron minute that fell in the gap."""
-    if last_check_at is None or last_check_at >= now:
-        return [now]
-    gap_minutes = min(int((now - last_check_at).total_seconds() // 60), _SCHEDULE_CHECK_MAX_CATCHUP_MINUTES)
-    return [now - timedelta(minutes=offset) for offset in range(gap_minutes - 1, -1, -1)]
 
 
 _DEFAULT_MODEL_BY_PROVIDER = {
@@ -1595,22 +1872,48 @@ class ToolConfirmScreen(ModalScreen[dict]):
             size = len(self.tool_args.get("content", ""))
             return f"  路径: {path}\n  内容: {size} 字符"
         if self.tool_name == "update_portfolio":
-            action = self.tool_args.get("action", "")
-            code = self.tool_args.get("code", "")
-            parts = [f"操作: {action}"]
-            if code:
-                parts.append(f"代码: {code}")
-            shares = self.tool_args.get("shares")
-            if shares:
-                parts.append(f"股数: {shares}")
-            cost = self.tool_args.get("cost_price")
-            if cost:
-                parts.append(f"成本: {cost}")
-            cash = self.tool_args.get("free_cash")
-            if cash is not None:
-                parts.append(f"现金: {cash}")
-            return "  " + "  ".join(parts)
+            return self._format_portfolio_confirm_summary()
         return f"  {json.dumps(self.tool_args, ensure_ascii=False)}"
+
+    def _format_portfolio_confirm_summary(self) -> str:
+        action = str(self.tool_args.get("action", "") or "")
+        items = self.tool_args.get("items")
+        if isinstance(items, list) and items:
+            lines = [f"  操作: {action} × {len(items)} 只"]
+            for row in items[:8]:
+                if not isinstance(row, dict):
+                    continue
+                code = str(row.get("code") or "").strip()
+                name = str(row.get("name") or "").strip()
+                shares = row.get("shares")
+                cost = row.get("cost_price")
+                detail = " ".join(
+                    part
+                    for part in (
+                        name,
+                        f"{shares}股" if shares not in (None, "", 0) else "",
+                        f"成本{cost}" if cost not in (None, "") else "",
+                    )
+                    if part
+                )
+                lines.append(f"  · {code} {detail}".rstrip())
+            if len(items) > 8:
+                lines.append(f"  · …另有 {len(items) - 8} 只")
+            return "\n".join(lines)
+        code = self.tool_args.get("code", "")
+        parts = [f"操作: {action}"]
+        if code:
+            parts.append(f"代码: {code}")
+        shares = self.tool_args.get("shares")
+        if shares:
+            parts.append(f"股数: {shares}")
+        cost = self.tool_args.get("cost_price")
+        if cost:
+            parts.append(f"成本: {cost}")
+        cash = self.tool_args.get("free_cash")
+        if cash is not None and action == "set_cash":
+            parts.append(f"现金: {cash}")
+        return "  " + "  ".join(parts)
 
     def _editable_value(self) -> str:
         if self.tool_name == "exec_command":
@@ -1645,6 +1948,57 @@ class ToolConfirmScreen(ModalScreen[dict]):
         self.dismiss({"action": "deny"})
 
 
+class BrowserCdpConsentScreen(ModalScreen[dict]):
+    """授权启动独立调试 Chrome（专用 profile，本会话有效）。"""
+
+    DEFAULT_CSS = """
+    BrowserCdpConsentScreen {
+        align: center middle;
+    }
+    #cdp-consent-box {
+        width: 68;
+        max-height: 16;
+        background: $surface;
+        border: thick $accent;
+        padding: 1 2;
+    }
+    #cdp-consent-title {
+        text-style: bold;
+        margin-bottom: 1;
+    }
+    #cdp-consent-body {
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+    """
+
+    BINDINGS = [Binding("escape", "cancel", show=False)]
+
+    def compose(self) -> ComposeResult:
+        from integrations.browser_cdp import chrome_cdp_profile_dir
+
+        profile = chrome_cdp_profile_dir()
+        with Vertical(id="cdp-consent-box"):
+            yield Static("⚠ [bold]浏览器搜索需要本机调试 Chrome[/bold]", id="cdp-consent-title")
+            yield Static(
+                "将启动独立 Chrome（专用配置目录，不碰你日常浏览数据）：\n"
+                f"  {profile}\n"
+                "同意后本会话内可自动重拉，无需再确认。",
+                id="cdp-consent-body",
+            )
+            yield OptionList(
+                Option("允许并启动", id="allow"),
+                Option("不允许", id="deny"),
+                id="cdp-consent-options",
+            )
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss({"action": event.option_id or "deny"})
+
+    def action_cancel(self) -> None:
+        self.dismiss({"action": "deny"})
+
+
 # ---------------------------------------------------------------------------
 # 错误友好化
 # ---------------------------------------------------------------------------
@@ -1656,7 +2010,8 @@ def _friendly_error(e: Exception) -> str:
 
     cls_name = type(e).__name__
     if isinstance(e, TimeoutError):
-        return "模型响应超时（60s 无数据），请检查网络"
+        detail = str(e).strip() or "模型响应超时"
+        return f"{detail}，请检查网络或调大 stream_chunk_timeout_seconds"
     if "RemoteProtocolError" in cls_name or "ReadError" in cls_name:
         return "连接已断开，请检查网络后重试"
     if "APIConnectionError" in cls_name or "ConnectError" in cls_name:
@@ -1675,8 +2030,57 @@ def _should_force_exit_busy_cancel(cancel_requested: bool, last_interrupt_at: fl
 
 
 # ---------------------------------------------------------------------------
-# 主应用
+# 主应用与主题
 # ---------------------------------------------------------------------------
+
+SUPPORTED_TUI_THEMES: dict[str, str] = {
+    "transparent": "终端透出模式（继承终端 App 原生底色/亚克力透明度）",
+    "auto": "系统自适应模式（根据 Win/Mac 系统深浅外观自动调配）",
+    "dracula": "Dracula 炫酷暗紫",
+    "nord": "Nord 北欧极光",
+    "monokai": "Monokai 经典暗色",
+    "solarized-dark": "Solarized 深色",
+    "solarized-light": "Solarized 浅色",
+    "tokyo-night": "Tokyo Night 东京之夜",
+    "catppuccin-mocha": "Catppuccin 摩卡暗色",
+    "atom-one-dark": "Atom One Dark",
+    "atom-one-light": "Atom One Light",
+    "textual-dark": "Textual 默认暗色",
+    "textual-light": "Textual 默认亮色",
+}
+
+
+def detect_os_dark_mode() -> bool:
+    """感知 OS 系统的深浅色外观模式（支持 Windows 注册表和 macOS）。"""
+    import sys
+
+    if sys.platform == "win32":
+        try:
+            import winreg
+
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+            )
+            value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+            return value == 0
+        except Exception:
+            return True
+    elif sys.platform == "darwin":
+        try:
+            import subprocess
+
+            # 必须带 timeout：这是启动路径上的同步调用，defaults 卡住会把整个 TUI 挂在黑屏上
+            res = subprocess.run(
+                ["defaults", "read", "-g", "AppleInterfaceStyle"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            return "Dark" in res.stdout
+        except Exception:
+            return True
+    return True
 
 
 class WyckoffTUI(App):
@@ -1688,21 +2092,54 @@ class WyckoffTUI(App):
         layout: vertical;
         background: $background;
     }
+    Screen.transparent {
+        background: ansi_default;
+    }
     #input-container {
         layout: horizontal;
         height: 3;
-        border-top: solid $border;
+        border: round $border;
         background: $background;
+        margin: 0 2;
         align: left middle;
     }
+    Screen.transparent #input-container {
+        background: ansi_default;
+    }
+    /* 品牌琥珀色与 _UI_PALETTES 的 brand 保持一致；CSS 无法引用 Python 变量，需手动同步 */
     #input-container:focus-within {
-        border-top: solid $primary;
+        border: round #e6b450;
+    }
+    Screen.light-mode #input-container:focus-within {
+        border: round #9a6700;
     }
     #prompt-prefix {
         width: auto;
-        color: $primary;
-        margin: 0 0 0 2;
+        color: #e6b450;
+        margin: 0 0 0 1;
         text-style: bold;
+    }
+    Screen.light-mode #prompt-prefix {
+        color: #9a6700;
+    }
+    #status-bar {
+        dock: bottom;
+        layout: horizontal;
+        height: 1;
+        background: $surface;
+        color: $text-muted;
+    }
+    Screen.transparent #status-bar {
+        background: ansi_default;
+    }
+    #status-left {
+        width: 1fr;
+        padding: 0 0 0 2;
+    }
+    #status-right {
+        width: auto;
+        padding: 0 2 0 0;
+        text-align: right;
     }
     """
 
@@ -1733,15 +2170,24 @@ class WyckoffTUI(App):
         self._system_prompt = system_prompt
         self._session_expired = session_expired
         self._messages: list[dict] = []
-        self._session_tokens = {"input": 0, "output": 0, "rounds": 0}
-        self._busy = False
+        self._session_tokens = {
+            "input": 0,
+            "output": 0,
+            "unrated_output": 0,
+            "rounds": 0,
+            "cache_read": 0,
+            "generation_ms": 0,
+            "cache_reported": False,
+        }
+        self._conversation = ConversationSession()
         self._cancel_event = threading.Event()
         self._last_ctrl_c: float = 0.0
-        self._queue: deque[Any] = deque()
         self._workflow_override: _WorkflowOverride | None = None
         self._pending_workflows: dict[str, _PendingWorkflowLaunch] = {}
         self._pending_user_question: _PendingUserQuestion | None = None
+        self._pending_resume_checkpoint = None
         self._session_id = uuid.uuid4().hex[:12]
+        self._browser_cdp_autostart_allowed = False
         self._spinner_idx = 0
         self._spinner_label = ""
         self._agent_log = _get_agent_logger()
@@ -1754,6 +2200,8 @@ class WyckoffTUI(App):
             self._tools.set_background_manager(self._bg_manager, self._on_bg_complete)
             self._tools.set_confirm_callback(self._request_tool_confirm)
             self._tools.set_ask_user_question_callback(self._request_user_question)
+            self._tools._tool_context.state["ensure_browser_cdp"] = self._ensure_browser_cdp_consent
+        self._mcp_manager = None
         # 交互式输入状态
         self._input_mode = _InputState.NONE
         self._input_buf: dict[str, str] = {}
@@ -1762,6 +2210,49 @@ class WyckoffTUI(App):
 
         self._schedules = load_schedules()
         self._last_schedule_check_at: datetime | None = None
+
+    def _ensure_conversation(self) -> ConversationSession:
+        if not hasattr(self, "_conversation") or self._conversation is None:
+            self._conversation = ConversationSession()
+        return self._conversation
+
+    @property
+    def _busy(self) -> bool:
+        session = getattr(self, "_conversation", None)
+        return bool(session and session.is_busy)
+
+    @_busy.setter
+    def _busy(self, value: bool) -> None:
+        """Test/compat shim: map boolean busy onto ConversationSession phases."""
+
+        session = self._ensure_conversation()
+        if value:
+            if not session.is_busy:
+                session.begin_turn("")
+                session.mark_running()
+            return
+        if session.is_busy:
+            session.abandon_active_turn()
+
+    @property
+    def _queue(self):
+        """Compat view of Session.input_queue (deque of QueuedInput / legacy items)."""
+
+        return self._ensure_conversation().input_queue
+
+    @_queue.setter
+    def _queue(self, value) -> None:
+        session = self._ensure_conversation()
+        session.clear_queue()
+        for item in value or ():
+            if isinstance(item, QueuedInput):
+                session.input_queue.append(item)
+            elif isinstance(item, dict) and item.get("type") == "system_notification":
+                session.input_queue.append(
+                    QueuedInput(kind="system_notification", content=str(item.get("content", "")))
+                )
+            else:
+                session.input_queue.append(QueuedInput(kind="user", content=str(item)))
 
     def compose(self) -> ComposeResult:
         from textual.containers import Horizontal
@@ -1774,40 +2265,93 @@ class WyckoffTUI(App):
                 id="chat-input",
                 highlighter=_PasteHighlighter(),
             )
-        yield StatusBar(self._build_status_text(), id="status-bar")
+        with Horizontal(id="status-bar"):
+            yield StatusBar(self._build_status_left(), id="status-left")
+            yield StatusBar(self._build_status_right(), id="status-right")
+
+    def _update_console_markdown_theme(self, name: str) -> None:
+        """动态适配 Markdown 渲染样式，绝不在透明/浅色模式下硬加纯黑底色框。"""
+        from rich.style import Style
+        from rich.theme import Theme
+
+        palette = _ui_palette(name)
+        md_styles = {
+            "markdown.h1": Style(color=palette["heading"], bold=True),
+            "markdown.h2": Style(color=palette["heading"], bold=True),
+            "markdown.h3": Style(color=palette["heading"]),
+            "markdown.link": Style(color=palette["link"], underline=True),
+            "markdown.code": Style(color=palette["code"], bold=True),
+            "markdown.block_quote": Style(color=palette["quote"], italic=True),
+            "markdown.hr": Style(color=palette["rule"]),
+            "markdown.item.bullet": Style(color=palette["bullet"]),
+        }
+
+        with contextlib.suppress(Exception):
+            # 先弹掉上一次压入的：push_theme 是压栈而非替换，每切一次主题栈就长一层，
+            # 反复切主题会把这些字典一直留在 console 上。
+            if getattr(self, "_md_theme_pushed", False):
+                self.console.pop_theme()
+                self._md_theme_pushed = False
+            self.console.push_theme(Theme(md_styles))
+            self._md_theme_pushed = True
+
+    def apply_theme_setting(self, name: str) -> str:
+        """根据主题名称生效对应的色彩与 CSS 类。"""
+        normalized = name.strip().lower()
+        self._active_theme_setting = normalized
+
+        def _add_cls(cls_name: str) -> None:
+            with contextlib.suppress(Exception):
+                self.screen.add_class(cls_name)
+
+        def _rm_cls(cls_name: str) -> None:
+            with contextlib.suppress(Exception):
+                self.screen.remove_class(cls_name)
+
+        res = ""
+        if normalized in ("transparent", "terminal"):
+            self.theme = "textual-dark"
+            _add_cls("transparent")
+            res = "transparent"
+        elif normalized == "auto":
+            is_dark = detect_os_dark_mode()
+            target = "transparent" if is_dark else "solarized-light"
+            return self.apply_theme_setting(target)
+        else:
+            _rm_cls("transparent")
+            if normalized in self.available_themes:
+                self.theme = normalized
+                res = normalized
+            elif normalized in ("light", "github-light"):
+                self.theme = "solarized-light"
+                res = "solarized-light"
+            elif normalized in ("dark", "black"):
+                self.theme = "textual-dark"
+                res = "textual-dark"
+            else:
+                self.theme = "textual-dark"
+                res = "textual-dark"
+
+        if res in _LIGHT_THEME_NAMES:
+            _add_cls("light-mode")
+        else:
+            _rm_cls("light-mode")
+        self._update_console_markdown_theme(res)
+        return res
 
     def on_mount(self) -> None:
         # 加载保存的主题
         try:
             from cli.auth import load_config
 
-            saved_theme = load_config().get("theme", "")
-            if saved_theme and saved_theme in self.available_themes:
-                self.theme = saved_theme
+            saved_theme = load_config().get("theme", "transparent")
+            if saved_theme:
+                self.apply_theme_setting(saved_theme)
         except Exception:
             logger.debug("load saved theme failed", exc_info=True)
 
-        # Override console theme to make Markdown clean and beautiful
-        from rich.style import Style
-        from rich.theme import Theme
-
-        custom_theme = Theme(
-            {
-                "markdown.h1": Style(color="#8aa4ff", bold=True),
-                "markdown.h2": Style(color="#8aa4ff", bold=True),
-                "markdown.h3": Style(color="#8aa4ff", bold=True),
-                "markdown.h4": Style(color="#8aa4ff", bold=True),
-                "markdown.h5": Style(color="#8aa4ff", bold=True),
-                "markdown.h6": Style(color="#8aa4ff", bold=True),
-                "markdown.link": Style(color="#58a6ff", underline=True),
-                "markdown.code": Style(color="#e06c75", bgcolor="#1e1e1e"),
-                "markdown.block_quote": Style(color="#8b949e", italic=True),
-                "markdown.hr": Style(color="#30363d"),
-                "markdown.item.bullet": Style(color="#8aa4ff"),
-            }
-        )
-        self.console.push_theme(custom_theme)
         self.set_interval(0.1, self._tick_global_spinner)
+        self._start_external_mcp()
 
         log = self.query_one("#chat-log", ChatLog)
         from importlib.metadata import version as _ver
@@ -1817,41 +2361,19 @@ class WyckoffTUI(App):
         except Exception:
             ver = "dev"
 
-        from rich.panel import Panel
-        from rich.table import Table
+        palette = _ui_palette(getattr(self, "_active_theme_setting", "transparent"))
+        brand = palette["brand"]
 
-        layout_table = Table.grid(expand=True)
-        layout_table.add_column(ratio=2)
-        layout_table.add_column(ratio=3)
-
-        left_text = Text.from_markup(
-            "\n"
-            " [bold white]Welcome back![/bold white]\n\n"
-            "    [bold #58a6ff]⚡ WYCKOFF QUANT[/bold #58a6ff]\n\n"
-            " [dim]Market Workstation[/dim]\n"
+        log.write(Text.from_markup(f"  [bold {brand}]▞▚ WYCKOFF STATION[/bold {brand}]  [dim]v{ver}[/dim]"))
+        log.write(Text.from_markup("  [dim]威科夫读盘室 · Market Workstation[/dim]"))
+        log.write("")
+        log.write(
+            Text.from_markup(
+                f"  [dim]输入股票代码开始分析（如 [{brand}]600519[/{brand}]）"
+                f" · [{brand}]/help[/{brand}] 查看全部命令[/dim]"
+            )
         )
-
-        right_text = Text.from_markup(
-            "\n"
-            " [bold #ff7b72]Tips for getting started[/bold #ff7b72]\n"
-            " 输入股票代码 (如 [cyan]600519[/cyan]) 开始量化分析。\n"
-            " 输入 [cyan]/help[/cyan] 查看所有支持的交互式命令。\n\n"
-            " [bold #ff7b72]Quick Shortcuts[/bold #ff7b72]\n"
-            " [cyan]Ctrl+N[/cyan] 新会话  ·  [cyan]Ctrl+L[/cyan] 清理屏幕\n"
-            " [cyan]Ctrl+P[/cyan] 命令面板 · [cyan]Ctrl+Q[/cyan] 退出系统\n"
-        )
-
-        layout_table.add_row(left_text, right_text)
-
-        welcome_panel = Panel(
-            layout_table,
-            title=f"[bold #58a6ff]Wyckoff Station v{ver}[/bold #58a6ff]",
-            title_align="left",
-            border_style="#30363d",
-            padding=(0, 1),
-            expand=True,
-        )
-        log.write(welcome_panel)
+        log.write(Text.from_markup("  [dim]Ctrl+N 新会话 · Ctrl+L 清屏 · Ctrl+P 命令面板 · Ctrl+Q 退出[/dim]"))
         log.write("")
         if not self._provider:
             log.write(Text.from_markup("[yellow]⚠ 未配置模型，请输入 /model add 添加[/yellow]\n"))
@@ -1862,13 +2384,7 @@ class WyckoffTUI(App):
             self.set_interval(60.0, self._check_schedules)
         self.call_after_refresh(self._check_auto_resume)
 
-    def _build_status_text(self) -> str:
-        from importlib.metadata import version as _ver
-
-        try:
-            ver = _ver("youngcan-wyckoff-analysis")
-        except Exception:
-            ver = "?"
+    def _build_status_left(self) -> str:
         parts = []
         active_tasks = self._bg_manager.active_tasks()
         if active_tasks:
@@ -1889,21 +2405,41 @@ class WyckoffTUI(App):
             )
         elif getattr(self, "_spinner_label", ""):
             parts.append(f"[bold cyan]{_SPINNER[self._spinner_idx]} {self._spinner_label}[/bold cyan]")
-        parts.append(f"Wyckoff CLI v{ver}")
+        elif phase_label := self._conversation.status_label():
+            style = "yellow" if phase_label in {"failed", "cancelled", "cancelling"} else "dim"
+            parts.append(f"[{style}]turn:{phase_label}[/{style}]")
+        if queue_depth := len(self._conversation.input_queue):
+            parts.append(f"queued:{queue_depth}")
+        if steer_depth := len(self._conversation.steering_queue):
+            parts.append(f"steer:{steer_depth}")
+        return " · ".join(parts)
+
+    def _build_status_right(self) -> str:
+        parts = []
         prov = self._state.get("provider_name", "")
         model = self._state.get("model", "")
         if prov and model:
             parts.append(f"{prov}:{model}")
         email = self._tools.state.get("email", "") if self._tools else ""
         parts.append(email or "未登录")
-        parts.append(f"#{self._session_id}")
         t = self._session_tokens
         if t["rounds"] > 0:
-            parts.append(f"Token: {t['input'] + t['output']:,}")
+            tok_bits = [f"Token: {t['input'] + t['output']:,}"]
+            avg = _session_avg_tok_per_s(t)
+            if avg is not None:
+                tok_bits.append(f"{avg:g}tok/s")
+            if t.get("cache_reported") and t["input"] > 0:
+                from cli.usage_metrics import cache_hit_rate_pct
+
+                hit = cache_hit_rate_pct(int(t.get("cache_read") or 0), int(t["input"]))
+                if hit is not None:
+                    tok_bits.append(f"cache {hit}%")
+            parts.append(" ".join(tok_bits))
         return " · ".join(parts)
 
     def _update_status(self) -> None:
-        self.query_one("#status-bar", StatusBar).update(self._build_status_text())
+        self.query_one("#status-left", StatusBar).update(self._build_status_left())
+        self.query_one("#status-right", StatusBar).update(self._build_status_right())
 
     def _tick_global_spinner(self) -> None:
         active_tasks = self._bg_manager.active_tasks()
@@ -1928,8 +2464,34 @@ class WyckoffTUI(App):
             self.push_screen(ToolConfirmScreen(name, args, display), _on_dismiss)
 
         self.call_from_thread(_show)
-        event.wait(timeout=120)
+        if not event.wait(timeout=120):
+            # 沉默不是否决：超时必须和 deny 区分开，否则模型会告诉用户「你拒绝了」，
+            # 而用户只是没看见弹窗。
+            return {"action": "timeout"}
         return result[0] or {"action": "deny"}
+
+    def _ensure_browser_cdp_consent(self) -> str:
+        """供 browser_research 在 worker 线程调用：本会话授权后可自动拉起 CDP Chrome。"""
+        if self._browser_cdp_autostart_allowed:
+            return "allow"
+        event = threading.Event()
+        result: list[dict | None] = [None]
+
+        def _on_dismiss(choice: dict) -> None:
+            result[0] = choice
+            event.set()
+
+        def _show() -> None:
+            self.push_screen(BrowserCdpConsentScreen(), _on_dismiss)
+
+        self.call_from_thread(_show)
+        if not event.wait(timeout=120):
+            return "timeout"
+        action = str((result[0] or {}).get("action") or "deny")
+        if action == "allow":
+            self._browser_cdp_autostart_allowed = True
+            return "allow"
+        return "deny"
 
     def _request_user_question(
         self,
@@ -1953,9 +2515,14 @@ class WyckoffTUI(App):
                 self.query_one("#chat-input", ChatInput).focus()
 
         self.call_from_thread(_show)
-        event.wait(timeout=300)  # 等待最长 5 分钟
+        answered = event.wait(timeout=300)  # 等待最长 5 分钟
         self.call_from_thread(self._clear_pending_user_question, pending)
-        return result[0] or default_answer or "已超时未作答"
+        if not answered and not default_answer:
+            from cli.tools import ASK_USER_TIMEOUT_SENTINEL
+
+            # 用哨兵而不是「已超时未作答」这类自然语言：后者会被当成用户真的这么回答了。
+            return ASK_USER_TIMEOUT_SENTINEL
+        return result[0] or default_answer
 
     def _clear_pending_user_question(self, pending: _PendingUserQuestion) -> None:
         if self._pending_user_question is pending:
@@ -2000,9 +2567,41 @@ class WyckoffTUI(App):
         except Exception:
             logger.debug("save session summary failed", exc_info=True)
 
+    def _start_external_mcp(self) -> None:
+        """连接用户配置的外部 MCP server。失败只记日志，不影响原生工具。"""
+        try:
+            from cli.mcp_client import McpClientManager
+            from cli.mcp_config import enabled_servers
+
+            servers = enabled_servers()
+            if not servers or not self._tools:
+                return
+            manager = McpClientManager(servers)
+            manager.start()
+            tools = manager.tools()
+            if not tools:
+                manager.stop()
+                return
+            self._mcp_manager = manager
+            self._tools.set_mcp_manager(manager)
+            log = self.query_one("#chat-log", ChatLog)
+            log.write(Text.from_markup(f"[dim]◈ 外部 MCP：{len(tools)} 个工具已接入[/dim]"))
+        except Exception:
+            logger.warning("external mcp start failed", exc_info=True)
+
+    def _stop_external_mcp(self) -> None:
+        if self._mcp_manager is None:
+            return
+        try:
+            self._mcp_manager.stop()
+        except Exception:
+            logger.debug("external mcp stop failed", exc_info=True)
+        self._mcp_manager = None
+
     def _save_and_exit(self, *, force: bool = False) -> None:
         if force:
             self._cancel_event.set()
+        self._stop_external_mcp()
         self._save_memory_async(wait_timeout=1 if force else 5, skip_layers=True)
         self.exit(return_code=130 if force else 0)
         if force:
@@ -2040,6 +2639,7 @@ class WyckoffTUI(App):
                 return
             self._cancel_event.set()
             self._last_ctrl_c = now
+            self._apply_session_ui(self._conversation.request_cancel())
             self.notify("已中断，再按一次 Ctrl+C 强制退出", timeout=1)
             return
         if now - self._last_ctrl_c < 1.0:
@@ -2065,17 +2665,7 @@ class WyckoffTUI(App):
 
     def action_show_token(self) -> None:
         log = self.query_one("#chat-log", ChatLog)
-        t = self._session_tokens
-        if t["rounds"] == 0:
-            log.write(Text.from_markup("[dim]本次会话尚无 Token 记录[/dim]"))
-        else:
-            log.write(
-                Text.from_markup(
-                    f"\n[bold]Token 用量[/bold]  "
-                    f"输入: {t['input']:,}  输出: {t['output']:,}  "
-                    f"合计: {t['input'] + t['output']:,}  轮次: {t['rounds']}"
-                )
-            )
+        self._show_token_usage(log)
 
     def action_show_prompt_templates(self) -> None:
         self._show_prompt_templates()
@@ -2084,8 +2674,9 @@ class WyckoffTUI(App):
         self._show_workflows()
 
     def action_switch_theme(self) -> None:
-        """打开主题切换器并保存选择。"""
-        self.action_change_theme()
+        """打开主题切换器并显示列表。"""
+        log = self.query_one("#chat-log", ChatLog)
+        self._handle_theme_cmd("/theme list", log)
 
     def watch_theme(self, new_theme: str) -> None:
         """主题变化时自动保存。"""
@@ -2104,8 +2695,10 @@ class WyckoffTUI(App):
         self._update_status()
 
     def _stop_spinner(self) -> None:
+        had_label = bool(self._spinner_label)
         self._spinner_label = ""
-        self._update_status()
+        if had_label:
+            self._update_status()
 
     # ----- 输入处理 -----
 
@@ -2138,57 +2731,148 @@ class WyckoffTUI(App):
         if self._handle_workflow_control_text(text, log):
             return
 
-        text = self._expand_recent_workflow_followup(text)
-
         if not self._provider:
             log.write(Text.from_markup("[yellow]⚠ 未配置模型，请先输入 /model add[/yellow]"))
             return
 
-        if self._busy:
-            self._queue.append(text)
+        intent = self._conversation.resolve_text(
+            text,
+            has_pending_question=bool(self._pending_user_question),
+            has_pending_workflow=False,
+            resumable_workflow_exists=bool(self._latest_relevant_workflow_run()),
+        )
+        if intent.kind == UserIntent.RESUME_TURN:
+            self._resume_active_turn(log)
+            return
+        if intent.kind == UserIntent.RESUME_WORKFLOW:
+            self._resume_recent_workflow_followup(text, log)
+            return
+        if intent.kind == UserIntent.STEER_TURN:
+            self._apply_session_ui(self._conversation.enqueue_steer(intent.text))
+            log.write(Text.from_markup("  [dim]🧭 已注入转向指令（本轮下一跳生效）[/dim]"))
+            return
+        if intent.kind == UserIntent.ENQUEUE_INPUT:
+            self._apply_session_ui(self._conversation.enqueue(text))
             log.write(Text.from_markup("  [dim]📋 已排队（等待当前回复完成后自动发送）[/dim]"))
             return
-
-        # 用户消息
+        self._conversation.abandon_active_turn()
         self._send_message(text)
 
-    def _send_message(self, text: str) -> None:
+    def _user_echo_line(self, content: str) -> Text:
+        brand = _ui_palette(getattr(self, "_active_theme_setting", "transparent"))["brand"]
+        return Text.from_markup(f"[{brand}]▌[/{brand}] [bold]{escape(content)}[/bold]")
+
+    def _send_message(
+        self,
+        text: str,
+        *,
+        turn_user_text: str | None = None,
+        echo_user: bool = True,
+    ) -> None:
         log = self.query_one("#chat-log", ChatLog)
-        lines = text.splitlines()
-        if len(lines) > 3:
-            preview = "\n".join(lines[:3]) + f"\n... ({len(lines)} lines total)"
-            log.write(Text.from_markup(f"[bold cyan]❯[/bold cyan] {preview}"))
-        else:
-            log.write(Text.from_markup(f"[bold cyan]❯[/bold cyan] {text}"))
-        # 注入记忆上下文
+        display = turn_user_text or text
+        if echo_user:
+            lines = display.splitlines()
+            if len(lines) > 3:
+                preview = "\n".join(lines[:3]) + f"\n... ({len(lines)} lines total)"
+                log.write(self._user_echo_line(preview))
+            else:
+                log.write(self._user_echo_line(display))
         mem_ctx = ""
         try:
             from cli.memory import build_memory_context
 
-            mem_ctx = build_memory_context(text)
+            mem_ctx = build_memory_context(display)
         except Exception:
             logger.debug("memory context injection failed", exc_info=True)
-        if workflow_ctx := self._recent_workflow_context(text):
+        if workflow_ctx := self._recent_workflow_context(display):
             mem_ctx = "\n\n".join(item for item in (mem_ctx, workflow_ctx) if item)
-        user_message = {"role": "user", "content": text}
+        # 时间挂在 user 尾部，system 保持静态以便跨 turn 复用 prompt cache。
+        user_message = {"role": "user", "content": append_beijing_time_context(text)}
         if mem_ctx:
             user_message["_memory_context"] = mem_ctx
         self._messages.append(user_message)
+        if hasattr(self, "_cancel_event") and self._cancel_event is not None:
+            self._cancel_event.clear()
+        self._ensure_conversation().begin_turn(turn_user_text or text)
         self._start_spinner("thinking")
         self._run_agent()
 
     def _send_system_notification(self, text: str) -> None:
         log = self.query_one("#chat-log", ChatLog)
         log.write(Text.from_markup("  [dim]↳ 后台结果已回传给 agent[/dim]"))
-        self._messages.append({"role": "user", "content": text, "_system_notification": True})
+        self._messages.append(
+            {
+                "role": "user",
+                "content": append_beijing_time_context(text),
+                "_system_notification": True,
+            }
+        )
+        if hasattr(self, "_cancel_event") and self._cancel_event is not None:
+            self._cancel_event.clear()
+        self._ensure_conversation().begin_turn(text, system_notification=True)
         self._start_spinner("处理后台结果")
         self._run_agent()
 
     def _dispatch_queued_item(self, item: Any) -> None:
+        if isinstance(item, QueuedInput):
+            if item.kind == "system_notification":
+                self._send_system_notification(item.content)
+                return
+            self._send_message(item.content)
+            return
         if isinstance(item, dict) and item.get("type") == "system_notification":
             self._send_system_notification(str(item.get("content", "")))
             return
         self._send_message(str(item))
+
+    def _apply_session_ui(self, events: list) -> None:
+        log = self.query_one("#chat-log", ChatLog)
+        for event in events:
+            etype = getattr(event, "type", "")
+            if etype == "spinner_stop":
+                self._stop_spinner()
+            elif etype == "status_refresh":
+                self._update_status()
+            elif etype == "resume_hint":
+                cancelled = bool((event.payload or {}).get("cancelled"))
+                if cancelled:
+                    log.write(Text.from_markup("  [dim]提示: 输入「继续」可接着刚才的问题[/dim]"))
+                else:
+                    log.write(Text.from_markup("  [dim]提示: 切换模型后输入「继续」可重试刚才的问题[/dim]"))
+            elif etype == "steered":
+                depth = int((event.payload or {}).get("depth") or 0)
+                log.write(Text.from_markup(f"  [dim]🧭 转向已入队（pending:{depth}）[/dim]"))
+            elif etype == "interrupted_banner":
+                payload = event.payload or {}
+                sid = escape(str(payload.get("session_id", "")))
+                query = escape(str(payload.get("query", "")))
+                log.write(Text.from_markup(f"[yellow]⚠ 检测到会话 [bold]#{sid}[/bold] 上次执行中途异常中断。[/yellow]"))
+                log.write(Text.from_markup(f'[yellow]输入「继续」可恢复任务: [bold]"{query}"[/bold][/yellow]'))
+
+    def _resume_active_turn(self, log) -> None:
+        original = self._conversation.resumable_user_text
+        soft = self._conversation.build_resume_user_text()
+        hard = self._conversation.take_hard_checkpoint()
+        self._conversation.abandon_active_turn()
+        if not original or not soft:
+            log.write(Text.from_markup("[yellow]没有可继续的对话轮次[/yellow]"))
+            return
+        if hard and hard.messages:
+            self._messages[:] = [dict(item) for item in hard.messages]
+            self._pending_resume_checkpoint = hard
+        log.write(Text.from_markup("  [dim]↻ 重试刚才未完成的问题[/dim]"))
+        self._send_message(soft, turn_user_text=original, echo_user=False)
+
+    def _resume_recent_workflow_followup(self, text: str, log) -> None:
+        from cli.workflows.resume import build_chat_resume_prompt
+
+        run = self._latest_relevant_workflow_run()
+        if not run:
+            log.write(Text.from_markup("[yellow]没有可继续的 workflow[/yellow]"))
+            return
+        self._conversation.abandon_active_turn()
+        self._send_message(build_chat_resume_prompt(_workflow_run_with_events(run), text))
 
     # ----- 斜杠命令 -----
 
@@ -2196,6 +2880,9 @@ class WyckoffTUI(App):
         cmd = raw.lower().split()[0]
         log = self.query_one("#chat-log", ChatLog)
 
+        if cmd == "/steer":
+            self._handle_steer_command(raw, log)
+            return
         if cmd in ("/quit", "/exit", "/q"):
             self._save_and_exit()
         elif cmd == "/clear":
@@ -2228,10 +2915,39 @@ class WyckoffTUI(App):
             self._handle_schedule_cmd(raw, log)
         elif cmd == "/doctor":
             self._show_backend_doctor(log)
-        elif cmd == "/news":
-            self._handle_news_cmd(raw, log)
+        elif cmd == "/browser":
+            self._handle_browser_cmd(raw, log)
+        elif cmd == "/theme":
+            self._handle_theme_cmd(raw, log)
         else:
             self._try_skill(raw, log)
+
+    def _handle_theme_cmd(self, raw: str, log) -> None:
+        parts = raw.strip().split(maxsplit=1)
+        if len(parts) == 1 or parts[1].strip() in ("list", "show"):
+            current = getattr(self, "_active_theme_setting", self.theme)
+            lines = ["\n[bold]可用终端主题[/bold]"]
+            for key, desc in SUPPORTED_TUI_THEMES.items():
+                is_cur = key == current or (current == "transparent" and key == "transparent")
+                mark = " [green]✔ (当前)[/green]" if is_cur else ""
+                lines.append(f"  [cyan]{key:<16s}[/cyan] — {desc}{mark}")
+            lines.append(
+                "\n[dim]用法: /theme <名称> （例如: /theme transparent | /theme dracula | /theme auto）[/dim]\n"
+            )
+            log.write(Text.from_markup("\n".join(lines)))
+        else:
+            target = parts[1].strip()
+            applied = self.apply_theme_setting(target)
+            if applied:
+                try:
+                    from cli.auth import save_config_key
+
+                    save_config_key("theme", target)
+                except Exception:
+                    logger.debug("save theme config failed", exc_info=True)
+                log.write(Text.from_markup(f"[green]✓ 已设置主题为: {applied}[/green]"))
+            else:
+                log.write(Text.from_markup(f"[yellow]⚠ 未知主题: {target}，输入 /theme list 查看可用主题[/yellow]"))
 
     def _show_help(self, log) -> None:
         from cli.prompt_templates import load_prompt_templates
@@ -2245,6 +2961,7 @@ class WyckoffTUI(App):
             Text.from_markup(
                 "\n[bold]可用命令[/bold]\n"
                 "  /model   — 切换模型（list/add/rm/default）\n"
+                "  /theme   — 切换终端配色主题（transparent/auto/dracula/nord/monokai...）\n"
                 "  /config  — 数据源配置（tushare_token, tickflow_api_key）\n"
                 "  /login   — 登录\n"
                 "  /logout  — 退出登录\n"
@@ -2254,7 +2971,8 @@ class WyckoffTUI(App):
                 "  /workflow— workflow（approve/reload/restart/pause/stop/save/run）\n"
                 "  /schedule— 定时任务（list/status/run/add/rm/on/off）\n"
                 "  /doctor  — 模型与数据源健康检查\n"
-                "  /news    — 新闻来源状态（status/refresh）\n"
+                "  /browser — 本机 Chrome CDP（status|start|hint|stop）\n"
+                "  /steer   — 忙时注入转向指令（本轮生效；也可用 !指令）\n"
                 "  /resume  — 恢复历史对话\n"
                 "  /fork    — 分叉当前会话\n"
                 "  /new     — 新对话 (Ctrl+N)\n"
@@ -2264,23 +2982,49 @@ class WyckoffTUI(App):
                 f"\n[bold]Prompt Templates[/bold]\n{template_lines}"
                 "\n[bold]快捷键[/bold]\n"
                 "  Ctrl+P   — 命令面板\n"
-                "  Ctrl+C   — 复制选中文本 / 退出\n"
+                "  Ctrl+C   — 复制选中文本 / 忙时中断\n"
                 "  Ctrl+N   — 新对话\n"
                 "  Ctrl+L   — 清屏\n"
+                "  忙时普通输入 — 排队到下一轮；`!指令` — 本轮转向\n"
                 "  鼠标拖选  — 选择文本\n"
             )
         )
+
+    def _handle_steer_command(self, raw: str, log) -> None:
+        from cli.conversation.intents import strip_steer_prefix
+
+        payload = strip_steer_prefix(raw)
+        if not payload:
+            log.write(Text.from_markup("[dim]用法: /steer <指令>  或忙时输入 !指令[/dim]"))
+            return
+        if self._busy:
+            self._apply_session_ui(self._conversation.enqueue_steer(payload))
+            log.write(Text.from_markup("  [dim]🧭 已注入转向指令（本轮下一跳生效）[/dim]"))
+            return
+        log.write(Text.from_markup("[dim]当前空闲，转向指令将作为普通消息发送[/dim]"))
+        self._send_message(payload)
 
     def _show_token_usage(self, log) -> None:
         t = self._session_tokens
         if t["rounds"] == 0:
             log.write(Text.from_markup("[dim]本次会话尚无 Token 记录[/dim]"))
             return
+        extras = []
+        avg = _session_avg_tok_per_s(t)
+        if avg is not None:
+            extras.append(f"均速: {avg:g}tok/s")
+        if t.get("cache_reported") and t["input"] > 0:
+            from cli.usage_metrics import cache_hit_rate_pct
+
+            hit = cache_hit_rate_pct(int(t.get("cache_read") or 0), int(t["input"]))
+            if hit is not None:
+                extras.append(f"缓存命中: {hit}%（读 {int(t.get('cache_read') or 0):,}）")
+        extra_text = ("  " + "  ".join(extras)) if extras else ""
         log.write(
             Text.from_markup(
                 f"\n[bold]Token 用量[/bold]  "
                 f"输入: {t['input']:,}  输出: {t['output']:,}  "
-                f"合计: {t['input'] + t['output']:,}  轮次: {t['rounds']}"
+                f"合计: {t['input'] + t['output']:,}  轮次: {t['rounds']}{extra_text}"
             )
         )
 
@@ -2293,7 +3037,8 @@ class WyckoffTUI(App):
         else:
             log.write(
                 Text.from_markup(
-                    "[dim]/config 用法: /config (查看) | /config set tushare_token | /config set tickflow_api_key[/dim]"
+                    "[dim]/config 用法: /config | /config set tushare_token | tickflow_api_key | "
+                    "stream_chunk_timeout_seconds | tool_timeout_seconds[/dim]"
                 )
             )
 
@@ -2484,7 +3229,7 @@ class WyckoffTUI(App):
         if action == "reload":
             self._reload_pending_workflow_script(run_id, log)
             return True
-        log.write(Text.from_markup(f"[bold cyan]❯[/bold cyan] {escape(text)}"))
+        log.write(self._user_echo_line(text))
         if action == "events":
             self._show_workflow_events(run_id, log)
             return True
@@ -2508,15 +3253,6 @@ class WyckoffTUI(App):
         except Exception:
             logger.debug("pending workflow model reply intent failed", exc_info=True)
             return ""
-
-    def _expand_recent_workflow_followup(self, text: str) -> str:
-        from cli.workflows.resume import build_chat_resume_prompt, is_recent_workflow_followup
-
-        if not is_recent_workflow_followup(text):
-            return text
-        if run := self._latest_relevant_workflow_run():
-            return build_chat_resume_prompt(_workflow_run_with_events(run), text)
-        return text
 
     def _latest_relevant_workflow_run(self) -> dict[str, Any] | None:
         from cli.workflows.store import list_workflow_runs
@@ -3038,28 +3774,54 @@ class WyckoffTUI(App):
     # ----- /config 交互 -----
 
     _CONFIG_KEYS = {
-        "tushare_token": ("Tushare Token", "TUSHARE_TOKEN", ""),
+        "tushare_token": ("Tushare Token", "TUSHARE_TOKEN", "", "secret"),
         "tickflow_api_key": (
             "TickFlow API Key",
             "TICKFLOW_API_KEY",
             "购买: https://tickflow.org/auth/register?ref=5N4NKTCPL4",
+            "secret",
+        ),
+        "stream_chunk_timeout_seconds": (
+            "模型空闲/首token超时(秒)",
+            "",
+            "默认 120；相邻流式包间隔超过该值会中断（含首 token）",
+            "timeout",
+        ),
+        "tool_timeout_seconds": (
+            "工具执行超时(秒)",
+            "",
+            "默认 60；单个工具墙钟超时（搜索/行情慢请求）",
+            "timeout",
         ),
     }
 
     def _show_config(self) -> None:
         log = self.query_one("#chat-log", ChatLog)
-        from cli.auth import load_config
+        from cli.auth import get_stream_chunk_timeout_seconds, get_tool_timeout_seconds, load_config
 
         cfg = load_config()
-        log.write(Text.from_markup("\n[bold]数据源配置[/bold]"))
-        for key, (label, _, hint) in self._CONFIG_KEYS.items():
+        log.write(Text.from_markup("\n[bold]数据源与超时配置[/bold]"))
+        for key, (label, _, hint, kind) in self._CONFIG_KEYS.items():
+            if kind == "timeout":
+                current = (
+                    get_stream_chunk_timeout_seconds(cfg)
+                    if key == "stream_chunk_timeout_seconds"
+                    else get_tool_timeout_seconds(cfg)
+                )
+                stored = "已自定义" if key in cfg else "默认"
+                log.write(Text.from_markup(f"  {label}: [green]{int(current)}[/green] [dim]({stored})[/dim] — {hint}"))
+                continue
             val = str(cfg.get(key, "") or "").strip()
             if val:
                 masked = val[:4] + "****" + val[-4:] if len(val) > 8 else "****"
                 log.write(Text.from_markup(f"  {label}: [green]{masked}[/green]"))
             else:
                 log.write(Text.from_markup(f"  {label}: [dim]未配置[/dim] — {hint}"))
-        log.write(Text.from_markup("\n[dim]使用 /config set tushare_token 或 /config set tickflow_api_key 配置[/dim]"))
+        log.write(
+            Text.from_markup(
+                "\n[dim]使用 /config set <key>；超时 key: stream_chunk_timeout_seconds / tool_timeout_seconds[/dim]"
+            )
+        )
 
     def _start_config_set(self, key: str) -> None:
         log = self.query_one("#chat-log", ChatLog)
@@ -3068,12 +3830,12 @@ class WyckoffTUI(App):
         if key not in self._CONFIG_KEYS:
             log.write(Text.from_markup(f"[red]不支持的配置项: {key}[/red]，可选: {', '.join(self._CONFIG_KEYS)}"))
             return
-        label, _, hint = self._CONFIG_KEYS[key]
+        label, _, hint, kind = self._CONFIG_KEYS[key]
         log.write(Text.from_markup(f"\n[bold]配置 {label}[/bold]"))
         log.write(Text.from_markup(f"  {hint}"))
         log.write(Text.from_markup("  输入值（留空取消）："))
         inp.placeholder = f"{label}..."
-        inp.password = True
+        inp.password = kind == "secret"
         self._input_mode = _InputState.CONFIG_KEY
         self._input_buf = {"config_key": key}
 
@@ -3275,13 +4037,19 @@ class WyckoffTUI(App):
     def _handle_config_value(self, text: str, log, inp: Input) -> None:
         inp.password = False
         key = self._input_buf["config_key"]
-        label, env_key, _ = self._CONFIG_KEYS[key]
+        label, env_key, _, kind = self._CONFIG_KEYS[key]
         from cli.auth import save_config_key
 
-        save_config_key(key, text)
-        import os
+        try:
+            save_config_key(key, text)
+        except ValueError as exc:
+            log.write(Text.from_markup(f"  [red]✗ {exc}[/red]"))
+            self._reset_input_prompt(inp)
+            return
+        if kind == "secret" and env_key:
+            import os
 
-        os.environ[env_key] = text
+            os.environ[env_key] = text
         log.write(Text.from_markup(f"  [green]✓ {label} 已保存[/green]"))
         self._reset_input_prompt(inp)
 
@@ -3489,25 +4257,77 @@ class WyckoffTUI(App):
                     Text.from_markup(f"  [{tone}]{escape(str(name))}[/{tone}] · {escape(status)}{escape(detail)}")
                 )
 
-    def _handle_news_cmd(self, raw: str, log) -> None:
-        from integrations.news_intelligence import intelligence_status, refresh_intelligence_pool
+    def _handle_browser_cmd(self, raw: str, log) -> None:
+        from integrations.browser_cdp import (
+            browser_cdp_status,
+            chrome_cdp_launch_hint,
+            chrome_cdp_profile_dir,
+        )
 
         parts = raw.strip().split()
         sub = parts[1] if len(parts) > 1 else "status"
-        if sub not in {"status", "refresh"}:
-            log.write(Text.from_markup("[dim]/news 用法: status | refresh[/dim]"))
+        if sub not in {"status", "hint", "start", "stop"}:
+            log.write(Text.from_markup("[dim]/browser 用法: status | start | hint | stop[/dim]"))
             return
-        result = refresh_intelligence_pool(force=True) if sub == "refresh" else intelligence_status()
-        log.write(Text.from_markup("\n[bold]新闻情报来源[/bold]"))
-        if sub == "refresh":
-            log.write(Text.from_markup(f"  [cyan]刷新完成[/cyan] · 新增 {int(result.get('new_items') or 0)} 条"))
-        for item in result.get("sources") or []:
-            source = escape(str(item.get("source") or "unknown"))
-            success = str(item.get("last_success_at") or "-").replace("T", " ")
-            count = int(item.get("last_item_count") or 0)
-            log.write(Text.from_markup(f"  {source} · 最近成功 {escape(success)} · 本次 {count} 条"))
-            if error := item.get("last_error"):
-                log.write(Text.from_markup(f"    [yellow]{escape(str(error)[:160])}[/yellow]"))
+        if sub == "hint":
+            log.write(Text.from_markup(f"\n[dim]{escape(chrome_cdp_launch_hint())}[/dim]"))
+            return
+        if sub == "stop":
+            log.write(
+                Text.from_markup(
+                    "\n[dim]请直接关闭专用调试 Chrome 窗口"
+                    f"（配置目录: {escape(chrome_cdp_profile_dir())}）。不会结束你的日常 Chrome。[/dim]"
+                )
+            )
+            return
+        if sub == "start":
+            self._browser_cdp_start_from_ui(log)
+            return
+        status = browser_cdp_status()
+        log.write(Text.from_markup("\n[bold]本机 Chrome CDP[/bold]"))
+        log.write(Text.from_markup(f"  端点: {escape(str(status.get('cdp_url') or ''))}"))
+        session = "已授权自动拉起" if self._browser_cdp_autostart_allowed else "未授权自动拉起"
+        log.write(Text.from_markup(f"  本会话: {escape(session)}"))
+        if status.get("ok"):
+            log.write(Text.from_markup(f"  [green]已连接[/green] · {escape(str(status.get('browser') or 'Chrome'))}"))
+        else:
+            log.write(Text.from_markup(f"  [yellow]未连接[/yellow] · {escape(str(status.get('error') or 'unknown'))}"))
+            log.write(Text.from_markup("  [dim]可执行 /browser start，或在浏览器搜索时按提示授权[/dim]"))
+
+    def _browser_cdp_start_from_ui(self, log) -> None:
+        """主线程入口：不阻塞 event loop，授权后回调里 launch。"""
+        from integrations.browser_cdp import browser_cdp_status, ensure_cdp_session
+
+        log.write(Text.from_markup("\n[bold]启动本机 Chrome CDP[/bold]"))
+        status = browser_cdp_status()
+        if status.get("ok"):
+            log.write(Text.from_markup(f"  [green]已连接[/green] · {escape(str(status.get('browser') or 'Chrome'))}"))
+            return
+
+        def _report(ensured: dict) -> None:
+            if ensured.get("ok"):
+                launched = "已拉起并连接" if ensured.get("launched") else "已连接"
+                log.write(
+                    Text.from_markup(f"  [green]{launched}[/green] · {escape(str(ensured.get('browser') or 'Chrome'))}")
+                )
+                return
+            log.write(Text.from_markup(f"  [yellow]失败[/yellow] · {escape(str(ensured.get('error') or ''))}"))
+            if ensured.get("hint"):
+                log.write(Text.from_markup(f"  [dim]{escape(str(ensured.get('hint')))}[/dim]"))
+
+        if self._browser_cdp_autostart_allowed:
+            _report(ensure_cdp_session(lambda: "allow"))
+            return
+
+        def _on_dismiss(choice: dict) -> None:
+            action = str((choice or {}).get("action") or "deny")
+            if action != "allow":
+                log.write(Text.from_markup("  [dim]已取消启动[/dim]"))
+                return
+            self._browser_cdp_autostart_allowed = True
+            _report(ensure_cdp_session(lambda: "allow"))
+
+        self.push_screen(BrowserCdpConsentScreen(), _on_dismiss)
 
     def _handle_sched_input(self, mode: str, text: str, log, inp) -> None:
         if mode == _InputState.SCHED_ID:
@@ -3622,38 +4442,34 @@ class WyckoffTUI(App):
 
     def _check_auto_resume(self) -> None:
         try:
+            from cli.conversation.events import SessionUiEvent
+
             res = self._find_interrupted_scratchpad()
             if not res:
                 return
             session_id, query = res
-            # 恢复该会话历史
             self._resume_session(session_id)
-            log = self.query_one("#chat-log", ChatLog)
-            log.write(
-                Text.from_markup(
-                    f"[yellow]⚠ 检测到会话 [bold]#{session_id}[/bold] 上次执行中途异常中断（可能由于网络超时或崩溃）。[/yellow]"
-                )
-            )
-            log.write(Text.from_markup(f'[yellow]正在自动恢复会话并重新提交任务: [bold]"{query}"[/bold][/yellow]'))
-            # 自动发送消息重新执行
-            self._send_message(query)
+            self._conversation.begin_turn(query)
+            self._conversation.on_turn_cancelled()
+            self._apply_session_ui([SessionUiEvent.interrupted_banner(session_id=session_id, query=query)])
         except Exception:
             logger.debug("auto resume check failed", exc_info=True)
 
     def _check_schedules(self) -> None:
-        from cli.scheduler import cron_matches_now, save_schedules
+        from cli.daemon import is_daemon_running
+        from cli.scheduler import due_schedules, save_schedules
+
+        # daemon 持锁时它已在跑同一批任务；两边都跑会重复触发并互相覆盖 last_fired。
+        if is_daemon_running():
+            self._last_schedule_check_at = datetime.now()
+            return
 
         now = datetime.now()
         fired = False
-        for minute in _pending_schedule_check_minutes(self._last_schedule_check_at, now):
-            minute_key = minute.strftime("%Y-%m-%dT%H:%M")
-            for s in self._schedules:
-                if not s.enabled or s.last_fired.startswith(minute_key):
-                    continue
-                if cron_matches_now(s.cron, at=minute):
-                    s.last_fired = minute_key
-                    fired = True
-                    self._fire_schedule(s)
+        for sched, minute_key in due_schedules(self._schedules, last_check_at=self._last_schedule_check_at, now=now):
+            sched.last_fired = minute_key
+            fired = True
+            self._fire_schedule(sched)
         self._last_schedule_check_at = now
         if fired:
             save_schedules(self._schedules)
@@ -3671,7 +4487,7 @@ class WyckoffTUI(App):
             self._handle_command(action)
         elif self._busy:
             sched.last_status = "queued"
-            self._queue.append(action)
+            self._apply_session_ui(self._conversation.enqueue(QueuedInput(kind="schedule", content=action)))
             log.write(Text.from_markup("  [dim]📋 Agent 忙碌中，已排队[/dim]"))
         else:
             sched.last_status = "triggered"
@@ -3761,19 +4577,40 @@ class WyckoffTUI(App):
         if self._messages:
             self._messages.pop()
 
-    def _handle_cancelled_agent_turn(self, stream: _StreamViewState, ui: _AgentUiOps) -> None:
+    def _handle_cancelled_agent_turn(
+        self,
+        stream: _StreamViewState,
+        ui: _AgentUiOps,
+        *,
+        user_text: str = "",
+        system_notification: bool = False,
+    ) -> None:
         ui.spinner_stop()
         _flush_stream_line(stream, ui.write_stream, ui.scroll)
         ui.write(Text.from_markup("[yellow]⏹ 已中断[/yellow]"))
         ui.scroll()
+        if self._conversation.phase == TurnPhase.CANCELLED:
+            return
+        checkpoint = [dict(item) for item in self._messages]
+        events = self._conversation.on_turn_cancelled(messages_checkpoint=checkpoint)
+        if system_notification:
+            self._conversation.abandon_active_turn()
+        else:
+            self.call_from_thread(self._apply_session_ui, events)
         self._drop_current_turn_messages()
 
     def _save_completed_agent_turn(self, state: _TurnRunState, final_text: str, t_start: float, chatlog_save) -> None:
+        self._conversation.on_turn_completed()
         total_input = state.final_usage.get("input_tokens", 0)
         total_output = state.final_usage.get("output_tokens", 0)
         self._session_tokens["input"] += total_input
         self._session_tokens["output"] += total_output
         self._session_tokens["rounds"] += 1
+        self._session_tokens["cache_read"] += int(state.final_usage.get("cache_read_tokens") or 0)
+        self._session_tokens["generation_ms"] += int(state.final_usage.get("generation_ms") or 0)
+        self._session_tokens["cache_reported"] = bool(
+            self._session_tokens.get("cache_reported") or state.final_usage.get("cache_reported")
+        )
         self.call_from_thread(self._update_status)
         self._restore_turn_user_message(state.turn_user_index)
 
@@ -3790,8 +4627,11 @@ class WyckoffTUI(App):
             json.dumps(state.executed_tool_summaries, ensure_ascii=False) if state.executed_tool_summaries else ""
         )
         metadata = {
-            "cache_read": state.last_usage.get("cache_read_tokens", 0),
-            "cache_write": state.last_usage.get("cache_write_tokens", 0),
+            "cache_read": state.final_usage.get("cache_read_tokens", state.last_usage.get("cache_read_tokens", 0)),
+            "cache_write": state.final_usage.get("cache_write_tokens", state.last_usage.get("cache_write_tokens", 0)),
+            "output_tok_per_s": state.final_usage.get("output_tok_per_s"),
+            "cache_hit_rate": state.final_usage.get("cache_hit_rate"),
+            "generation_ms": state.final_usage.get("generation_ms"),
             "stop_reason": state.last_usage.get("stop_reason", "stop"),
             "rounds": state.final_rounds,
             "rounds_detail": _build_rounds_detail(
@@ -3801,6 +4641,7 @@ class WyckoffTUI(App):
                 state.round_starts,
                 t_start,
                 state.model_name,
+                state.round_thinking,
             ),
             "messages": list(self._messages),
             "system_prompt": self._system_prompt,
@@ -3829,6 +4670,8 @@ class WyckoffTUI(App):
         )
 
     def _save_failed_agent_turn(self, e: Exception, state: _TurnRunState, t_start: float, chatlog_save, write) -> None:
+        from cli.conversation import classify_failure
+
         self._restore_turn_user_message(state.turn_user_index)
         err = _friendly_error(e)
         if state.scratchpad:
@@ -3842,8 +4685,27 @@ class WyckoffTUI(App):
             type(e).__name__,
             str(e)[:500],
         )
+        failure = classify_failure(e)
         turn_role = _chatlog_role_for_turn(state.system_notification)
-        turn_metadata = {"system_notification": True} if state.system_notification else {}
+        turn_metadata: dict[str, Any] = {"system_notification": True} if state.system_notification else {}
+        turn = self._conversation.active_turn
+        if turn:
+            turn_metadata.update({"turn_id": turn.turn_id, "failure_kind": failure.kind.value})
+            for summary in state.executed_tool_summaries:
+                name = str(summary.get("name") or "")
+                brief = ""
+                if lines := summary.get("brief"):
+                    brief = "; ".join(str(line) for line in lines[:3]) if isinstance(lines, list) else str(lines)[:200]
+                elif err := summary.get("error"):
+                    brief = f"error: {err}"[:200]
+                if name or brief:
+                    turn.tool_result_briefs.append(
+                        {
+                            "name": name,
+                            "brief": brief,
+                            "tool_call_id": str(summary.get("tool_call_id") or ""),
+                        }
+                    )
         chatlog_save(
             turn_role,
             state.user_text,
@@ -3858,7 +4720,17 @@ class WyckoffTUI(App):
             provider=state.provider_name,
             elapsed_s=round(elapsed, 2),
             error=f"{type(e).__name__}: {str(e)[:500]}",
+            metadata_json=json.dumps(
+                {"turn_id": turn.turn_id if turn else "", "failure_kind": failure.kind.value},
+                ensure_ascii=False,
+            ),
         )
+        checkpoint = [dict(item) for item in self._messages]
+        events = self._conversation.on_turn_failed(failure, messages_checkpoint=checkpoint)
+        if state.system_notification:
+            self._conversation.abandon_active_turn()
+        else:
+            self.call_from_thread(self._apply_session_ui, events)
         self._drop_current_turn_messages()
 
     def _submit_workflow_background(
@@ -3877,7 +4749,7 @@ class WyckoffTUI(App):
         _display_workflow_plan_event(event, write, scroll)
         messages_snapshot = [dict(item) for item in self._messages]
         workflow_label = f"workflow {run_id}" if run_id else "workflow"
-        ack = f"{workflow_label} 自动开始后台运行；可继续聊天，用 /workflow 查看进度。"
+        ack = f"{workflow_label} 自动开始后台运行；步骤进度会刷到本会话，也可继续聊天或用 /workflow 查看。"
         self._messages.append({"role": "assistant", "content": ack})
         self._chatlog_save(
             "assistant",
@@ -3954,6 +4826,10 @@ class WyckoffTUI(App):
             from cli.workflows.control import register_workflow_control
 
             runtime.set_control(register_workflow_control(run_id))
+
+        def on_ui_event(event: dict[str, Any]) -> None:
+            self.call_from_thread(self._display_workflow_background_event, event)
+
         self._bg_manager.submit(
             task_id,
             "dynamic_workflow",
@@ -3964,18 +4840,40 @@ class WyckoffTUI(App):
                 "system_prompt": system_prompt,
                 "model_name": model_name,
                 "provider_name": provider_name,
+                "on_ui_event": on_ui_event,
             },
             on_complete=self._on_bg_complete,
         )
         write(Text.from_markup(f"  [cyan]↗ dynamic workflow[/cyan] [dim]后台运行中，任务 {task_id}[/dim]"))
         scroll()
 
+    def _display_workflow_background_event(self, event: dict[str, Any]) -> None:
+        """从后台线程经 call_from_thread 刷阶段/步骤进度到聊天区。"""
+        log = self.query_one("#chat-log", ChatLog)
+
+        def write(renderable) -> None:
+            log.write(renderable)
+
+        def scroll() -> None:
+            with contextlib.suppress(Exception):
+                log.scroll_end(animate=False)
+
+        event_type = str(event.get("type", ""))
+        if event_type == "workflow_plan_update":
+            _display_workflow_plan_event(event, write, scroll, launch_state="adapted")
+        elif event_type in {"workflow_phase_start", "workflow_phase_done"}:
+            _display_workflow_phase_event(event, write, scroll)
+        elif event_type == "workflow_disagreement_summary":
+            _display_workflow_disagreement_event(event, write, scroll)
+        elif event_type in {"workflow_step_start", "workflow_step_done"}:
+            _display_workflow_step_event(event, write, scroll)
+
     def _complete_workflow_background(self, task_id: str, result: dict[str, Any]) -> None:
         from cli.workflows.control import unregister_workflow_control
 
         log = self.query_one("#chat-log", ChatLog)
         is_error = bool(result.get("error"))
-        notify_followup = self._busy or bool(self._queue)
+        notify_followup = self._busy or bool(self._conversation.input_queue)
         run_id = str(result.get("workflow_run_id", ""))
         if run_id:
             unregister_workflow_control(run_id)
@@ -3994,10 +4892,21 @@ class WyckoffTUI(App):
         usage = result.get("usage", {}) if isinstance(result.get("usage"), dict) else {}
         tokens_in = int(usage.get("input_tokens", 0) or 0)
         tokens_out = int(usage.get("output_tokens", 0) or 0)
+        gen_ms = int(usage.get("generation_ms") or 0)
         self._session_tokens["input"] += tokens_in
         self._session_tokens["output"] += tokens_out
         self._session_tokens["rounds"] += 1
+        self._session_tokens["cache_read"] += int(usage.get("cache_read_tokens") or 0)
+        if gen_ms > 0:
+            self._session_tokens["generation_ms"] += gen_ms
+        else:
+            # 合成轮常无 generation_ms；计入 unrated，避免会话均速虚高。
+            self._session_tokens["unrated_output"] = int(self._session_tokens.get("unrated_output") or 0) + tokens_out
+        self._session_tokens["cache_reported"] = bool(
+            self._session_tokens.get("cache_reported") or usage.get("cache_reported")
+        )
         self._update_status()
+        events = result.get("events", [])
         self._chatlog_save(
             "assistant",
             final_text,
@@ -4006,12 +4915,16 @@ class WyckoffTUI(App):
             tokens_in=tokens_in,
             tokens_out=tokens_out,
             elapsed_s=float(result.get("elapsed", 0.0) or 0.0),
+            tool_calls_json=_workflow_spans_json(events),
             metadata_json=json.dumps(
                 {
                     "workflow": result.get("workflow", ""),
                     "workflow_run_id": run_id,
                     "background_task_id": task_id,
-                    "events": result.get("events", []),
+                    "events": events,
+                    "messages": list(self._messages),
+                    "system_prompt": getattr(self, "_system_prompt", ""),
+                    "tools": _tool_schemas_or_empty(getattr(self, "_tools", None)),
                 },
                 ensure_ascii=False,
             ),
@@ -4023,12 +4936,16 @@ class WyckoffTUI(App):
     ) -> None:
         if not notify_followup:
             return
+        if status == "completed":
+            # 成功时不再追加一轮：final_text 已经显示、已经落库、也已经进了 _messages，
+            # 模型下一轮本来就看得到。再叫它就同一份结果说一次，只会得到一段和上一条重复的话。
+            return
         summary = _background_task_summary("dynamic_workflow", task_id, result)
-        self._queue.append(
-            _system_notification_queue_item(_workflow_background_notification(task_id, result, status, summary))
-        )
+        item = _system_notification_queue_item(_workflow_background_notification(task_id, result, status, summary))
+        self._conversation.enqueue(QueuedInput(kind="system_notification", content=str(item.get("content", ""))))
         if not self._busy:
-            self._dispatch_queued_item(self._queue.popleft())
+            if next_item := self._conversation.dequeue_next():
+                self._dispatch_queued_item(next_item)
 
     def _handle_agent_event(
         self,
@@ -4043,26 +4960,13 @@ class WyckoffTUI(App):
         round_number = int(event.get("round") or 0)
         if round_number > 0:
             state.round_starts.setdefault(round_number, time.monotonic())
-
-        if event_type == "workflow_plan":
-            state.workflow_run_id, state.workflow_name = _display_workflow_plan_event(event, ui.write, ui.scroll)
-        elif event_type == "workflow_plan_update":
-            state.workflow_run_id, state.workflow_name = _display_workflow_plan_event(
-                event,
-                ui.write,
-                ui.scroll,
-                launch_state="adapted",
-            )
-        elif event_type in {"workflow_phase_start", "workflow_phase_done"}:
-            _display_workflow_phase_event(event, ui.write, ui.scroll)
-        elif event_type == "workflow_disagreement_summary":
-            _display_workflow_disagreement_event(event, ui.write, ui.scroll)
-        elif event_type in {"workflow_step_start", "workflow_step_done"}:
-            _display_workflow_step_event(event, ui.write, ui.scroll)
-        elif event_type in {"workflow_done", "thinking_delta"}:
-            pass
-        elif event_type == "compaction":
+        if self._handle_workflow_agent_event(event_type, event, state, ui):
+            return False
+        if event_type == "compaction":
             ui.write(_compaction_panel(event))
+            ui.scroll()
+        elif event_type == "context_overflow":
+            ui.write(_context_overflow_panel(event))
             ui.scroll()
         elif event_type == "text_delta":
             _append_stream_text(stream, event["text"], ui.write_stream, ui.scroll, ui.spinner_stop)
@@ -4072,19 +4976,9 @@ class WyckoffTUI(App):
             if round_number:
                 state.round_tool_names.setdefault(round_number, []).extend(names)
         elif event_type == "usage":
-            usage = event.get("usage", {})
-            if round_number:
-                state.round_usages[round_number] = usage
-            state.last_usage = usage
-            fb_msg = getattr(self._provider, "last_fallback_msg", None)
-            if fb_msg:
-                ui.write(Text.from_markup(f"  [yellow]⚡ {fb_msg}[/yellow]"))
-                self._provider.last_fallback_msg = None
+            self._handle_usage_agent_event(event, state, round_number, ui)
         elif event_type == "thinking":
-            ui.spinner_stop()
-            preview = _build_thinking_preview(event.get("text", ""))
-            if preview:
-                ui.write(preview)
+            self._handle_thinking_agent_event(event, state, ui)
         elif event_type == "model_start":
             ui.spinner_start("思考中")
         elif event_type == "stage_start":
@@ -4098,7 +4992,53 @@ class WyckoffTUI(App):
         elif event_type in {"tool_result", "tool_error"}:
             ui.spinner_stop()
             state.executed_tool_summaries.append(_display_tool_result_event(event, self._tools, ui.write, ui.scroll))
-        elif event_type == "retry":
+        elif event_type in {"retry", "continuation", "steered"}:
+            self._handle_loop_control_event(event_type, event, stream, ui)
+        elif event_type == "done":
+            return self._finish_agent_event(event, state, stream, ui, t_start, chatlog_save)
+        return False
+
+    def _handle_workflow_agent_event(self, event_type, event, state, ui) -> bool:
+        if event_type == "workflow_plan":
+            state.workflow_run_id, state.workflow_name = _display_workflow_plan_event(event, ui.write, ui.scroll)
+            return True
+        if event_type == "workflow_plan_update":
+            state.workflow_run_id, state.workflow_name = _display_workflow_plan_event(
+                event, ui.write, ui.scroll, launch_state="adapted"
+            )
+            return True
+        if event_type in {"workflow_phase_start", "workflow_phase_done"}:
+            _display_workflow_phase_event(event, ui.write, ui.scroll)
+            return True
+        if event_type == "workflow_disagreement_summary":
+            _display_workflow_disagreement_event(event, ui.write, ui.scroll)
+            return True
+        if event_type in {"workflow_step_start", "workflow_step_done"}:
+            _display_workflow_step_event(event, ui.write, ui.scroll)
+            return True
+        return event_type in {"workflow_done", "thinking_delta"}
+
+    def _handle_usage_agent_event(self, event, state, round_number: int, ui) -> None:
+        usage = event.get("usage", {})
+        if round_number:
+            state.round_usages[round_number] = usage
+        state.last_usage = usage
+        fb_msg = getattr(self._provider, "last_fallback_msg", None)
+        if fb_msg:
+            ui.write(Text.from_markup(f"  [yellow]⚡ {fb_msg}[/yellow]"))
+            self._provider.last_fallback_msg = None
+
+    def _handle_thinking_agent_event(self, event, state, ui) -> None:
+        ui.spinner_stop()
+        thinking_text = event.get("text", "")
+        if round_number := event.get("round"):
+            state.round_thinking[int(round_number)] = thinking_text
+        if preview := _build_thinking_preview(thinking_text):
+            ui.write(preview)
+
+    def _handle_loop_control_event(self, event_type, event, stream, ui) -> None:
+        if event_type == "retry":
+            # retry 会改写未完成回合，清掉半截流式输出避免和下一跳叠在一起。
             _flush_and_clear_stream(self, ui, stream)
             self._agent_log.info(
                 "session=%s loop_guard retry=%d required_tool=%s",
@@ -4108,28 +5048,46 @@ class WyckoffTUI(App):
             )
             _display_retry_event(event, ui.write, ui.scroll)
             ui.spinner_start()
-        elif event_type == "done":
-            ui.spinner_stop()
-            _flush_stream_line(stream, ui.write_stream, ui.scroll)
-            final_text = event.get("text", "")
-            state.final_usage = event.get("usage", state.final_usage)
-            state.final_elapsed = float(event.get("elapsed", time.monotonic() - t_start))
-            state.final_rounds = int(event.get("rounds", 0))
-            _display_stream_final(self, ui.log, stream, final_text, ui.write, ui.scroll)
-            total_input = state.final_usage.get("input_tokens", 0)
-            total_output = state.final_usage.get("output_tokens", 0)
-            ui.write(_usage_footer(total_input, total_output, state.final_elapsed))
-            ui.scroll()
-            self._save_completed_agent_turn(state, final_text, t_start, chatlog_save)
-            return True
-        return False
+            return
+        # continuation / steered：已流出的正文要留在屏幕上，只冲掉行缓冲。
+        _flush_stream_line(stream, ui.write_stream, ui.scroll)
+        if event_type == "continuation":
+            _display_continuation_event(event, ui.write, ui.scroll)
+            ui.spinner_start("续跑中")
+            return
+        _display_steered_event(event, ui.write, ui.scroll)
+        ui.spinner_start("按转向继续")
+
+    def _finish_agent_event(self, event, state, stream, ui, t_start, chatlog_save) -> bool:
+        ui.spinner_stop()
+        _flush_stream_line(stream, ui.write_stream, ui.scroll)
+        final_text = event.get("text", "")
+        state.final_usage = event.get("usage", state.final_usage)
+        state.final_elapsed = float(event.get("elapsed", time.monotonic() - t_start))
+        state.final_rounds = int(event.get("rounds", 0))
+        _display_stream_final(self, ui.log, stream, final_text, ui.write, ui.scroll)
+        ui.write(
+            _usage_footer(
+                state.final_usage.get("input_tokens", 0),
+                state.final_usage.get("output_tokens", 0),
+                state.final_elapsed,
+                output_tok_per_s=state.final_usage.get("output_tok_per_s"),
+                cache_hit_rate=state.final_usage.get("cache_hit_rate"),
+                cache_reported=bool(state.final_usage.get("cache_reported")),
+            )
+        )
+        ui.scroll()
+        self._save_completed_agent_turn(state, final_text, t_start, chatlog_save)
+        return True
 
     # ----- Agent 执行（后台 Worker）-----
 
     @work(thread=True, exclusive=True)
     def _run_agent(self) -> None:
-        self._busy = True
-        self._cancel_event.clear()
+        # cancel_event 在 begin_turn 时清；此处勿 clear，否则会丢掉 SUBMITTED 阶段的 Ctrl+C。
+        cancelled_before_start = self._cancel_event.is_set() or self._conversation.phase == TurnPhase.CANCELLING
+        if not cancelled_before_start:
+            self._conversation.mark_running()
         log = self.query_one("#chat-log", ChatLog)
 
         def _write(renderable):
@@ -4148,75 +5106,129 @@ class WyckoffTUI(App):
             self.call_from_thread(self._stop_spinner)
 
         t_start = time.monotonic()
-
         state = self._create_turn_run_state()
         self._agent_log.info("session=%s user: %s", self._session_id, state.user_text[:200])
-        _chatlog_save = self._chatlog_save  # bound method ref
-
         stream = _StreamViewState()
         ui = _AgentUiOps(log, _write, _write_stream, _scroll, _spinner_start, _spinner_stop)
 
         try:
-            if not self._provider or not self._tools:
-                raise RuntimeError("模型或工具未初始化")
-
-            # Sub-agent 实时进度回调
-            self._tools._tool_context.on_progress = _make_sub_agent_progress_handler(
-                self._tools,
-                _write,
-                _scroll,
-                _spinner_start,
-                _spinner_stop,
-            )
-            self._tools._tool_context.cancel_check = self._cancel_event.is_set
-
-            workflow_override = self._workflow_override
-            self._workflow_override = None
-            workflow_context = WORKFLOWS["general_chat"] if state.system_notification else None
-            runtime, workflow_context = build_turn_runtime(
-                self._provider,
-                self._tools,
-                session_id=self._session_id,
-                user_text=state.user_text,
-                scratchpad=state.scratchpad,
-                cancel_check=self._cancel_event.is_set,
-                workflow_context=workflow_context or (workflow_override.context if workflow_override else None),
-                workflow_script=workflow_override.script if workflow_override else None,
-                workflow_source_run_id=workflow_override.source_run_id if workflow_override else "",
-                workflow_args=workflow_override.args if workflow_override else None,
-                workflow_only_step_id=workflow_override.only_step_id if workflow_override else "",
-                routing_messages=self._messages,
-            )
-            state.workflow_name = "" if workflow_context.is_general else workflow_context.name
-            system_prompt = with_current_time(self._system_prompt)
-            if isinstance(runtime, WorkflowExecutor):
-                ui.spinner_stop()
-                if workflow_override:
-                    self._prepare_workflow_approval(runtime, state, system_prompt, _write, _scroll)
-                else:
-                    self._submit_workflow_background(runtime, state, system_prompt, _write, _scroll)
+            if cancelled_before_start:
+                self._handle_cancelled_agent_turn(
+                    stream,
+                    ui,
+                    user_text=state.user_text,
+                    system_notification=state.system_notification,
+                )
                 return
-            for event in runtime.run_stream(self._messages, with_current_time(self._system_prompt)):
-                if self._cancel_event.is_set():
-                    self._handle_cancelled_agent_turn(stream, ui)
-                    break
-                if self._handle_agent_event(event, state, stream, ui, t_start, _chatlog_save):
-                    break
-
+            self._run_agent_body(state, stream, ui, t_start)
         except AgentCancelled:
-            self._handle_cancelled_agent_turn(stream, ui)
-
+            self._handle_cancelled_agent_turn(
+                stream,
+                ui,
+                user_text=state.user_text,
+                system_notification=state.system_notification,
+            )
         except Exception as e:
             _spinner_stop()
-            self._save_failed_agent_turn(e, state, t_start, _chatlog_save, _write)
-
+            self._save_failed_agent_turn(e, state, t_start, self._chatlog_save, _write)
         finally:
-            self._busy = False
-            if self._tools:
-                self._tools._tool_context.on_progress = None
-            if self._queue:
-                next_msg = self._queue.popleft()
-                self.call_from_thread(self._dispatch_queued_item, next_msg)
+            self._finish_agent_turn()
+
+    def _run_agent_body(self, state, stream, ui, t_start) -> None:
+        if not self._provider or not self._tools:
+            raise RuntimeError("模型或工具未初始化")
+
+        self._tools._tool_context.on_progress = _make_sub_agent_progress_handler(
+            self._tools,
+            ui.write,
+            ui.scroll,
+            ui.spinner_start,
+            ui.spinner_stop,
+        )
+        self._tools._tool_context.cancel_check = self._cancel_event.is_set
+
+        workflow_override = self._workflow_override
+        self._workflow_override = None
+        workflow_context = WORKFLOWS["general_chat"] if state.system_notification else None
+        runtime, workflow_context = build_turn_runtime(
+            self._provider,
+            self._tools,
+            session_id=self._session_id,
+            user_text=state.user_text,
+            scratchpad=state.scratchpad,
+            cancel_check=self._cancel_event.is_set,
+            workflow_context=workflow_context or (workflow_override.context if workflow_override else None),
+            workflow_script=workflow_override.script if workflow_override else None,
+            workflow_source_run_id=workflow_override.source_run_id if workflow_override else "",
+            workflow_args=workflow_override.args if workflow_override else None,
+            workflow_only_step_id=workflow_override.only_step_id if workflow_override else "",
+            routing_messages=self._messages,
+            steer_drain=self._conversation.drain_steering,
+        )
+        state.workflow_name = "" if workflow_context.is_general else workflow_context.name
+        system_prompt = with_current_time(self._system_prompt)
+        if isinstance(runtime, WorkflowExecutor):
+            ui.spinner_stop()
+            self._conversation.on_turn_completed()
+            if workflow_override:
+                self._prepare_workflow_approval(runtime, state, system_prompt, ui.write, ui.scroll)
+            else:
+                self._submit_workflow_background(runtime, state, system_prompt, ui.write, ui.scroll)
+            return
+        self._consume_agent_event_stream(runtime, state, stream, ui, t_start, self._chatlog_save)
+
+    def _consume_agent_event_stream(self, runtime, state, stream, ui, t_start, chatlog_save) -> None:
+        resume_from = self._pending_resume_checkpoint
+        self._pending_resume_checkpoint = None
+        for event in runtime.run_stream(
+            self._messages,
+            with_current_time(self._system_prompt),
+            resume_from=resume_from,
+        ):
+            etype = event.get("type")
+            if etype not in {"turn_cancelled", "turn_failed", "done"}:
+                self._conversation.on_runtime_event(event)
+            if etype == "turn_cancelled":
+                self._handle_cancelled_agent_turn(
+                    stream,
+                    ui,
+                    user_text=state.user_text,
+                    system_notification=state.system_notification,
+                )
+                return
+            if etype == "turn_failed":
+                continue
+            if self._cancel_event.is_set():
+                self._handle_cancelled_agent_turn(
+                    stream,
+                    ui,
+                    user_text=state.user_text,
+                    system_notification=state.system_notification,
+                )
+                return
+            if self._handle_agent_event(event, state, stream, ui, t_start, chatlog_save):
+                return
+
+    def _finish_agent_turn(self) -> None:
+        if self._conversation.phase in {
+            TurnPhase.SUBMITTED,
+            TurnPhase.RUNNING,
+            TurnPhase.STREAMING,
+            TurnPhase.TOOL_RUNNING,
+            TurnPhase.AWAITING_USER,
+            TurnPhase.CANCELLING,
+        }:
+            # Workflow/approval paths clear via on_turn_completed; leftover running → idle.
+            if self._conversation.phase != TurnPhase.CANCELLING:
+                self._conversation.abandon_active_turn()
+        try:
+            self.call_from_thread(self._stop_spinner)
+        except Exception:
+            logger.debug("stop spinner after agent turn failed", exc_info=True)
+        if self._tools:
+            self._tools._tool_context.on_progress = None
+        if next_msg := self._conversation.dequeue_next():
+            self.call_from_thread(self._dispatch_queued_item, next_msg)
 
     # ----- 后台任务回调 -----
 
@@ -4297,10 +5309,10 @@ class WyckoffTUI(App):
             "</task-notification>\n"
             "</system-reminder>"
         )
-        self._queue.append(_system_notification_queue_item(notification))
-        # 空闲时自动触发
+        self._conversation.enqueue(QueuedInput(kind="system_notification", content=notification))
         if not self._busy:
-            self.call_from_thread(self._dispatch_queued_item, self._queue.popleft())
+            if next_item := self._conversation.dequeue_next():
+                self.call_from_thread(self._dispatch_queued_item, next_item)
 
     # ----- Actions -----
 
@@ -4384,8 +5396,17 @@ class WyckoffTUI(App):
         self._save_memory_async()
 
         self._messages[:] = resumed.messages
-        self._queue.clear()
-        self._session_tokens = {"input": 0, "output": 0, "rounds": 0}
+        self._conversation.clear_queue()
+        self._conversation.abandon_active_turn()
+        self._session_tokens = {
+            "input": 0,
+            "output": 0,
+            "unrated_output": 0,
+            "rounds": 0,
+            "cache_read": 0,
+            "generation_ms": 0,
+            "cache_reported": False,
+        }
         self._session_id = session_id
         self._update_status()
         log.clear()
@@ -4408,7 +5429,7 @@ class WyckoffTUI(App):
                 continue
 
             if role == "user":
-                log.write(Text.from_markup(f"[bold cyan]❯ {escape(content)}[/bold cyan]"))
+                log.write(self._user_echo_line(content))
 
             elif role == "assistant":
                 tc = row.get("tool_calls", "")
@@ -4430,8 +5451,17 @@ class WyckoffTUI(App):
         # 保存会话记忆
         self._save_memory_async()
         self._messages.clear()
-        self._queue.clear()
-        self._session_tokens = {"input": 0, "output": 0, "rounds": 0}
+        self._conversation.clear_queue()
+        self._conversation.abandon_active_turn()
+        self._session_tokens = {
+            "input": 0,
+            "output": 0,
+            "unrated_output": 0,
+            "rounds": 0,
+            "cache_read": 0,
+            "generation_ms": 0,
+            "cache_reported": False,
+        }
         self._session_id = uuid.uuid4().hex[:12]
         log = self.query_one("#chat-log", ChatLog)
         log.clear()

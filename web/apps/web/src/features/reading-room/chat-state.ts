@@ -27,8 +27,9 @@ import {
   type AgentRunRecord,
   type SandboxRunTool,
 } from './agent-runs'
-import type { ReadingRoomConversations } from './conversations'
+import { replaceConversationToolOutput, type ReadingRoomConversations } from './conversations'
 import { scrollToMessage } from './run-records'
+import { mergeLlmUsageMetrics, type LlmUsageMetrics } from '@wyckoff/shared'
 import type { ChatConfig, ChatRunEvent, ChatRunStatus, MarketWatchSnapshot, QueuedMessage, ReadingRoomTab, StageProgressStatus, WatchItem } from './types'
 import { writeBooleanStorage } from './utils'
 
@@ -36,7 +37,9 @@ export const CONVERSATION_SIDEBAR_STORAGE_KEY = 'wyckoff:reading-room-sidebar-co
 
 const MAX_QUEUED_MESSAGES = 5
 
-export type ReadingRoomChat = ReturnType<typeof useChat<UIMessage>>
+export type ReadingRoomChat = ReturnType<typeof useChat<UIMessage>> & {
+  clearLlmUsage: () => void
+}
 
 export interface MessageQueue {
   messages: QueuedMessage[]
@@ -174,6 +177,7 @@ export function useReadingRoomChat(
   setLocalError: (value: string) => void,
   t: (key: TranslationKey) => string,
   setModelStatus: (value: ChatRunStatus | null) => void,
+  setLlmUsage: (value: LlmUsageMetrics | null) => void,
   watchlist: Pick<WatchItem, 'code' | 'name'>[],
   marketWatch: MarketWatchSnapshot | null,
   setMarketWatch: (value: MarketWatchSnapshot) => void,
@@ -183,25 +187,46 @@ export function useReadingRoomChat(
 ) {
   const watchlistRef = useRef(watchlist)
   const marketWatchRef = useRef(marketWatch)
+  const usagePartsRef = useRef<LlmUsageMetrics[]>([])
   useEffect(() => { watchlistRef.current = watchlist }, [watchlist])
   useEffect(() => { marketWatchRef.current = marketWatch }, [marketWatch])
+  const clearLlmUsage = useCallback(() => {
+    usagePartsRef.current = []
+    setLlmUsage(null)
+  }, [setLlmUsage])
   const transport = useMemo(() => buildChatTransport(token, watchlistRef, marketWatchRef), [token])
-  return useChat({
+  const chat = useChat({
     transport,
-    experimental_throttle: 50,
+    experimental_throttle: 120,
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
     onData: (part) => {
       if (part.type === 'data-run-event') onRunEvent?.(part.data as ChatRunEvent)
       if (part.type === 'data-model-status') setModelStatus(part.data as ChatRunStatus)
       if (part.type === 'data-market-watch') setMarketWatch(part.data as MarketWatchSnapshot)
+      if (part.type === 'data-llm-usage') {
+        const metrics = part.data as LlmUsageMetrics
+        if (metrics.segmentIndex === 0) usagePartsRef.current = [metrics]
+        else usagePartsRef.current = [...usagePartsRef.current, metrics]
+        setLlmUsage(mergeLlmUsageMetrics(usagePartsRef.current))
+      }
       if (part.type === 'data-stage-progress') {
         const progress = part.data as StageProgressStatus
         setModelStatus(progress.state === 'completed' ? null : progress)
       }
     },
-    onFinish: () => { setModelStatus(null); onRunFinish?.() },
-    onError: (err) => { setModelStatus(null); onRunError?.(); setLocalError(err.message || t('chat.requestFailed')) },
+    onFinish: () => {
+      setModelStatus(null)
+      usagePartsRef.current = []
+      onRunFinish?.()
+    },
+    onError: (err) => {
+      setModelStatus(null)
+      usagePartsRef.current = []
+      onRunError?.()
+      setLocalError(err.message || t('chat.requestFailed'))
+    },
   })
+  return { ...chat, clearLlmUsage }
 }
 
 export function useAgentRunPolling(
@@ -252,14 +277,12 @@ export function useAgentRunPolling(
 
   useEffect(() => {
     for (const tool of tools) {
-      const record = records[tool.runId]
-      if (!record || !isAgentRunTerminal(record) || isAgentRunTerminal(tool.record)) continue
-      // Always persist into the owning conversation first. If we only call addToolOutput while
-      // the conversation is active, a mid-flight switch drops the result before localStorage
-      // is updated, and Redis TTL expiry makes recovery impossible.
+      const record = records[tool.runId] || tool.record
+      // Normalize the approval/output lifecycle as soon as the queued result exists, then
+      // keep replacing that same output as polling advances it to a terminal state.
       conversations.replaceToolOutput(tool.conversationId, tool.toolCallId, record)
       if (tool.conversationId === conversations.activeId) {
-        void chat.addToolOutput({ tool: 'run_python_research', toolCallId: tool.toolCallId, output: record })
+        chat.setMessages((messages) => replaceConversationToolOutput(messages, tool.toolCallId, record))
       }
     }
   }, [chat, conversations, records, tools])
@@ -336,6 +359,17 @@ export function useChatConfig(
   return config
 }
 
+export function hasPendingToolApproval(messages: UIMessage[]): boolean {
+  for (const message of messages) {
+    for (const part of message.parts ?? []) {
+      if (!part || typeof part !== 'object') continue
+      const state = 'state' in part ? String((part as { state?: unknown }).state ?? '') : ''
+      if (state === 'approval-requested') return true
+    }
+  }
+  return false
+}
+
 export function useMessageQueue(
   chat: ReadingRoomChat,
   loading: boolean,
@@ -359,7 +393,9 @@ export function useMessageQueue(
 
   useEffect(() => {
     const next = messages[0]
+    // 审批未完成时 loading 可能已 false，不能把队列消息抢发出去。
     if (!next || loading || !token || !configured || dispatchingRef.current) return
+    if (hasPendingToolApproval(chat.messages)) return
     dispatchingRef.current = next.id
     setMessages((items) => items[0]?.id === next.id ? items.slice(1) : items.filter((item) => item.id !== next.id))
     setLocalError('')

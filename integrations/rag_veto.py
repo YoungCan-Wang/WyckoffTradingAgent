@@ -107,26 +107,6 @@ def _normalize_keywords() -> list[str]:
     return parts or DEFAULT_NEGATIVE_KEYWORDS
 
 
-def _normalize_match_text(s: str) -> str:
-    return re.sub(r"\s+", "", str(s or "")).lower()
-
-
-def _extract_hits(text: str, keywords: list[str]) -> list[str]:
-    hits: list[str] = []
-    for kw in keywords:
-        k = str(kw or "").strip().lower()
-        if not k or k in {"st", "*st"}:
-            continue
-        if k in text and k not in hits:
-            hits.append(k)
-
-    if _STAR_ST_PATTERN.search(text):
-        hits.append("*st")
-    if _ST_PATTERN.search(text):
-        hits.append("st")
-    return hits
-
-
 def _is_about_this_stock(sentence: str, code: str, name: str) -> bool:
     """判断一段文本是否在讨论该股本身（而非泛泛提及其他股票）。"""
     s = sentence.lower()
@@ -404,54 +384,31 @@ def _build_veto_result(
     )
 
 
-def _fetch_local_news(code: str, name: str) -> list[dict[str, Any]]:
-    from integrations.news_intelligence import query_intelligence_by_keyword
-
-    local_news = []
-    if code:
-        local_news.extend(query_intelligence_by_keyword(code))
-    if name:
-        local_news.extend(query_intelligence_by_keyword(name))
-
-    seen_keys = set()
-    dedup_local = []
-    for ln in local_news:
-        key = ln.get("url") or ln.get("title")
-        if key not in seen_keys:
-            seen_keys.add(key)
-            dedup_local.append(ln)
-    return dedup_local
-
-
-def _merge_news(local_news: list[dict[str, Any]], remote_news: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _merge_news(*batches: list[dict[str, Any]]) -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for item in [*local_news, *remote_news]:
-        title = " ".join(str(item.get("title") or "").lower().split())
-        key = str(item.get("url") or "").strip() or title
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        merged.append(item)
+    for batch in batches:
+        for item in batch:
+            title = " ".join(str(item.get("title") or "").lower().split())
+            key = str(item.get("url") or "").strip() or title
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
     return sorted(merged, key=lambda item: str(item.get("pub_date") or item.get("date") or ""), reverse=True)
 
 
 def _fetch_merged_news(code: str, name: str) -> tuple[list[dict[str, Any]], str, list[str]]:
-    local_news: list[dict[str, Any]] = []
+    _ = name
     remote_news: list[dict[str, Any]] = []
     errors: list[str] = []
-    try:
-        local_news = _fetch_local_news(code, name)
-    except Exception as exc:
-        errors.append(f"local:{exc}")
-        logger.debug("[rag_veto] local news fetch failed for %s: %s", code, exc)
     try:
         remote_news = _fetch_news_akshare(code)
     except Exception as exc:
         errors.append(f"akshare:{exc}")
         logger.debug("[rag_veto] akshare news fetch failed for %s: %s", code, exc)
-    sources = [source for source, rows in (("local_intelligence", local_news), ("akshare", remote_news)) if rows]
-    return _merge_news(local_news, remote_news), "+".join(sources) or "none", errors
+    source = "akshare" if remote_news else "none"
+    return _merge_news(remote_news), source, errors
 
 
 def _scan_one(code: str, name: str, keywords: list[str]) -> VetoResult:
@@ -518,14 +475,6 @@ def run_negative_news_veto(candidates: list[dict[str, str]]) -> dict[str, VetoRe
     out: dict[str, VetoResult] = {}
     if not is_rag_veto_enabled():
         return out
-
-    # Best-effort fail-open auto refresh news intelligence pool
-    from integrations.news_intelligence import refresh_intelligence_pool
-
-    try:
-        refresh_intelligence_pool()
-    except Exception as e:
-        logger.warning("[rag_veto] Failed to refresh local intelligence pool: %s", e)
 
     keywords = _normalize_keywords()
     items = [

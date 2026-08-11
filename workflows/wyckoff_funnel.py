@@ -11,6 +11,7 @@ Layer 4: 威科夫狙击（Spring / SOS / LPS / Effort vs Result）
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, replace
 
 import pandas as pd
@@ -368,7 +369,10 @@ def _expand_quality_first_pool(
     score_map: dict[str, float],
     ai_policy: dict,
 ) -> tuple[list[str], list[str], list[str]]:
-    if FUNNEL_AI_SELECTION_MODE != "tradeable_l4" or int(ai_policy.get("total_cap") or 0) <= 0:
+    quota_is_explicit = "trend_quota" in ai_policy or "accum_quota" in ai_policy
+    active_quota = int(ai_policy.get("trend_quota") or 0) + int(ai_policy.get("accum_quota") or 0)
+    quota_closed = quota_is_explicit and active_quota <= 0
+    if FUNNEL_AI_SELECTION_MODE != "tradeable_l4" or int(ai_policy.get("total_cap") or 0) <= 0 or quota_closed:
         trend, accum = split_selected_tracks(selected_for_ai, ctx.code_to_trigger_keys)
         return selected_for_ai, trend, accum
     pool = list(selected_for_ai)
@@ -752,6 +756,17 @@ def _attach_funnel_debug_context(metrics: dict, inputs: FunnelMetricsInputs, inc
     }
 
 
+def _write_review_trace(inputs: FunnelMetricsInputs, triggers: dict, metrics: dict) -> None:
+    output_dir = os.getenv("DAILY_JOB_ARTIFACTS_DIR", "").strip()
+    if not output_dir:
+        return
+    from workflows.review_trace import write_review_trace_artifact
+
+    path = write_review_trace_artifact(inputs, triggers, metrics, output_dir)
+    if path is not None:
+        print(f"[funnel] Review trace artifact: {path}")
+
+
 def _log_funnel_summary(metrics: dict, inputs: FunnelMetricsInputs) -> None:
     counts = inputs.layers.l2_counts
     print(
@@ -803,12 +818,20 @@ def _mainline_log_counts(candidates: list[dict]) -> str:
     counts = _mainline_status_counts(candidates)
     return (
         f"买点{counts['主线买点候选']}/分歧{counts['强主线分歧']}/"
-        f"修复{counts['事件主题修复候选']}/观察{counts['主线观察']}/鱼尾{counts['过热不追']}"
+        f"修复{counts['事件主题修复候选'] + counts['主题修复候选']}/"
+        f"观察{counts['主线观察']}/鱼尾{counts['过热不追']}"
     )
 
 
 def _mainline_status_counts(candidates: list[dict]) -> dict[str, int]:
-    counts = {"主线买点候选": 0, "强主线分歧": 0, "事件主题修复候选": 0, "主线观察": 0, "过热不追": 0}
+    counts = {
+        "主线买点候选": 0,
+        "强主线分歧": 0,
+        "事件主题修复候选": 0,
+        "主题修复候选": 0,
+        "主线观察": 0,
+        "过热不追": 0,
+    }
     for item in candidates or []:
         status = str(item.get("status") or "主线观察")
         counts[status] = counts.get(status, 0) + 1
@@ -888,6 +911,7 @@ def run_funnel_job(
         financial_metrics_requested=include_financial_metrics,
     )
     metrics = _build_funnel_metrics(metrics_inputs)
+    _write_review_trace(metrics_inputs, artifacts.layers.triggers, metrics)
     _attach_funnel_debug_context(metrics, metrics_inputs, include_debug_context)
     _log_funnel_summary(metrics, metrics_inputs)
     return artifacts.layers.triggers, metrics

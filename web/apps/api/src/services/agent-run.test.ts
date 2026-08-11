@@ -240,16 +240,70 @@ describe('Agent run service', () => {
     expect(log).toHaveBeenCalledWith('metering_failed', expect.objectContaining({ status: 'completed' }))
   })
 
-  it('does not retry a completed execution when its result cannot be persisted', async () => {
-    const store = testStore({ save: vi.fn(async () => { throw new Error('offline') }) })
+  it('retries when a completed execution result cannot be persisted', async () => {
+    const log = vi.fn()
+    const save = vi.fn(async (_userId: string, record: AgentRunRecord) => {
+      if (record.status === 'completed') throw new Error('offline')
+    })
+    const store = testStore({ save })
+    const executeSandbox = vi.fn(async () => successfulResult)
 
     await expect(consumePythonResearch(
       { AGENT_SANDBOX_ENABLED: 'true' },
       runMessage(),
-      { createStore: () => store, executeSandbox: async () => successfulResult },
+      { createStore: () => store, executeSandbox, log },
+    )).resolves.toBe('retry')
+
+    expect(executeSandbox).toHaveBeenCalledOnce()
+    expect(save).toHaveBeenCalledWith('user-1', expect.objectContaining({
+      status: 'running',
+      stdout: '42\n',
+      exitCode: 0,
+    }))
+    expect(save).toHaveBeenCalledWith('user-1', expect.objectContaining({
+      status: 'completed',
+      stdout: '42\n',
+    }))
+    expect(store.requeue).not.toHaveBeenCalled()
+    expect(store.releaseActiveSlot).not.toHaveBeenCalled()
+    expect(log).toHaveBeenCalledWith('retrying', expect.objectContaining({
+      errorCode: 'storage_unavailable',
+      status: 'failed',
+    }))
+  })
+
+  it('finalizes a staged running result on redelivery without re-entering the sandbox', async () => {
+    const save = vi.fn(async () => undefined)
+    const stagedRunning: AgentRunRecord = {
+      ...runningRecord,
+      exitCode: 0,
+      stdout: '42\n',
+      stderr: '',
+      usage: {
+        activeCpuUsageMs: 17,
+        networkIngressBytes: 0,
+        networkEgressBytes: 0,
+      },
+    }
+    const store = testStore({
+      claim: vi.fn(async () => stagedRunning),
+      save,
+    })
+    const executeSandbox = vi.fn(async () => successfulResult)
+
+    await expect(consumePythonResearch(
+      { AGENT_SANDBOX_ENABLED: 'true' },
+      runMessage(),
+      { createStore: () => store, executeSandbox },
     )).resolves.toBe('ack')
 
-    expect(store.requeue).not.toHaveBeenCalled()
+    expect(executeSandbox).not.toHaveBeenCalled()
+    expect(save).toHaveBeenCalledWith('user-1', expect.objectContaining({
+      status: 'completed',
+      stdout: '42\n',
+      exitCode: 0,
+    }))
+    expect(store.addDailyCpuUsage).toHaveBeenCalledWith('user-1', 17)
     expect(store.releaseActiveSlot).toHaveBeenCalledWith('user-1', 'run-1')
   })
 

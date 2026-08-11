@@ -546,7 +546,24 @@ def _trigger_score(
     regime: str,
 ) -> float:
     value = (50.0 if code in other_hits else 15.0) * _signal_weight(weights, "sos", regime) if code in sos_hits else 0.0
-    value += 45.0 * _signal_weight(weights, "spring", regime) if code in spring_hits else 0.0
+    # spring 权重 2026-08-08 由 45.0 下调至 12.0（并列末位）。
+    #
+    # 依据：跨周期回测（run 31237549718 / 31248741109，bear_2022 / bull_2020 /
+    # recent_6m，696 条 spring 成交）显示 spring 是六类触发器里 10 日收益最差的
+    # 一类，且是唯一在三个周期方向全部为负的：
+    #     spring -3.93% / 胜率 22.4%   对照非 spring -0.24% / 33.4%
+    #     合并 Welch t=-6.70；分周期 bear_2022 t=-4.82、bull_2020 t=-6.57 均显著
+    # 而原权重 45.0 让它排在六类第二高，形成"最差信号得次高分"的错配。
+    #
+    # 只下调 spring 一项、不重排整表：compression(+1.44%) 与 lps(-3.19%) 的样本
+    # 分别只有 20 / 10 笔，按它们重排等于拟合噪声。取 12.0 是对齐当前末位
+    # (evr) 的量级，不是拟合出的精确值。spring 仍可通过共振（sos+spring 等）
+    # 进入候选，只是不再单靠自身排到前面。
+    #
+    # 注意本函数在回测 tradeable_l4 口径下不被触达（_select_candidate_entries
+    # 提前 return），故该调整暂时只影响实盘。回测侧的根因是 detector 原始分数
+    # 单位混用，需独立修复——详见 docs/SCORING_SYSTEM_AUDIT_2026_08.md。
+    value += 12.0 * _signal_weight(weights, "spring", regime) if code in spring_hits else 0.0
     value += 30.0 * _signal_weight(weights, "lps", regime) if code in lps_hits else 0.0
     value += 12.0 * _signal_weight(weights, "evr", regime) if code in evr_hits else 0.0
     value += 22.0 * _signal_weight(weights, "compression", regime) if code in compression_hits else 0.0

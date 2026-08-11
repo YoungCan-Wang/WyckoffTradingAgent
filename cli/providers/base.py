@@ -19,6 +19,7 @@ class LLMProvider(ABC):
     - {"type": "text_delta", "text": "..."}
     - {"type": "tool_calls", "tool_calls": [...]}   （流结束时一次性返回）
     - {"type": "usage", "input_tokens": N, "output_tokens": N}
+    - {"type": "finish", "reason": "stop"|"length"|"tool_calls"|...}  （可选）
     """
 
     context_window: int | None = None

@@ -9,7 +9,8 @@ import type { ReadingRoomChat } from './chat-state'
 import type { AgentRunRecord } from './agent-runs'
 import { MessageBubble, QueuedMessageBubble } from './tool-rendering'
 import { messageText } from './messages'
-import type { ChatRunStatus, MarketWatchSnapshot, PinStockInput, QueuedMessage, ReadingRoomTab, RunCheckpoint, RunRecord, WatchItem } from './types'
+import { formatLlmUsageLine } from '@wyckoff/shared'
+import type { ChatRunStatus, LlmUsageMetrics, MarketWatchSnapshot, PinStockInput, QueuedMessage, ReadingRoomTab, RunCheckpoint, RunRecord, WatchItem } from './types'
 import { WatchlistPanelView } from './watchlist'
 
 interface ChatMessagesProps {
@@ -40,6 +41,7 @@ interface ChatMessagesProps {
   onSubmit: (e: FormEvent) => void
   onStop: () => void
   modelStatus: ChatRunStatus | null
+  llmUsage: LlmUsageMetrics | null
   runCheckpoint: RunCheckpoint | null
   onResumeRun: () => void
   onClearRunCheckpoint: () => void
@@ -70,6 +72,7 @@ export function ChatMessages(props: ChatMessagesProps) {
               onRemoveWatchItem={props.onRemoveWatchItem}
               onStart={props.onStart}
               modelStatus={props.modelStatus}
+              llmUsage={props.llmUsage}
               runCheckpoint={props.runCheckpoint}
               onResumeRun={props.onResumeRun}
               onClearRunCheckpoint={props.onClearRunCheckpoint}
@@ -130,6 +133,7 @@ function ReadingRoomMainContent({
   onRemoveWatchItem,
   onStart,
   modelStatus,
+  llmUsage,
   runCheckpoint,
   onResumeRun,
   onClearRunCheckpoint,
@@ -139,6 +143,7 @@ function ReadingRoomMainContent({
 }: Pick<ChatMessagesProps, 'activeTab' | 'chat' | 'loading' | 'queuedMessages' | 'runRecords' | 'watchlist' | 'marketWatch' | 'onOpenRecord' | 'onPinStock' | 'onRemoveWatchItem' | 'onStart' | 'agentRunRecords' | 'onCancelAgentRun' | 'onInterpretAgentRun'> & {
   activeAssistantId: string | null
   modelStatus: ChatRunStatus | null
+  llmUsage: LlmUsageMetrics | null
   runCheckpoint: RunCheckpoint | null
   onResumeRun: () => void
   onClearRunCheckpoint: () => void
@@ -166,6 +171,7 @@ function ReadingRoomMainContent({
         queuedMessages={queuedMessages}
         onPinStock={onPinStock}
         modelStatus={modelStatus}
+        llmUsage={llmUsage}
         runCheckpoint={runCheckpoint}
         onResumeRun={onResumeRun}
         onClearRunCheckpoint={onClearRunCheckpoint}
@@ -184,17 +190,26 @@ function ChatTranscript({
   queuedMessages,
   onPinStock,
   modelStatus,
+  llmUsage,
   runCheckpoint,
   onResumeRun,
   onClearRunCheckpoint,
   agentRunRecords,
   onCancelAgentRun,
   onInterpretAgentRun,
-}: Pick<ChatMessagesProps, 'chat' | 'loading' | 'queuedMessages' | 'onPinStock' | 'agentRunRecords' | 'onCancelAgentRun' | 'onInterpretAgentRun'> & { activeAssistantId: string | null; modelStatus: ChatRunStatus | null; runCheckpoint: RunCheckpoint | null; onResumeRun: () => void; onClearRunCheckpoint: () => void }) {
+}: Pick<ChatMessagesProps, 'chat' | 'loading' | 'queuedMessages' | 'onPinStock' | 'agentRunRecords' | 'onCancelAgentRun' | 'onInterpretAgentRun'> & {
+  activeAssistantId: string | null
+  modelStatus: ChatRunStatus | null
+  llmUsage: LlmUsageMetrics | null
+  runCheckpoint: RunCheckpoint | null
+  onResumeRun: () => void
+  onClearRunCheckpoint: () => void
+}) {
   if (chat.messages.length === 0 && !loading && queuedMessages.length === 0 && !runCheckpoint) return <EmptyChatPanel />
   return (
     <div className="space-y-5 pb-4 animate-fade-in-up">
       {modelStatus && <ModelStatusBanner status={modelStatus} />}
+      {llmUsage && <LlmUsageBanner usage={llmUsage} />}
       {!loading && runCheckpoint && runCheckpoint.status !== 'completed' && (
         <RunRecoveryBanner checkpoint={runCheckpoint} onResume={onResumeRun} onClear={onClearRunCheckpoint} />
       )}
@@ -266,6 +281,16 @@ function ModelStatusBanner({ status }: { status: ChatRunStatus }) {
     <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100" role="status" aria-live="polite">
       <AlertTriangle size={14} className="shrink-0" />
       <span>{label}</span>
+    </div>
+  )
+}
+
+function LlmUsageBanner({ usage }: { usage: LlmUsageMetrics }) {
+  const line = formatLlmUsageLine(usage)
+  if (!line) return null
+  return (
+    <div className="px-1 text-[11px] text-muted-foreground/80" role="status" aria-live="polite">
+      {line}
     </div>
   )
 }

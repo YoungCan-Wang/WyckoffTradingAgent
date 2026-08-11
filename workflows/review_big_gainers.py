@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import timedelta
 
 import pandas as pd
 
@@ -77,8 +78,18 @@ def load_today_review_pool(
     name_map_today: dict[str, str],
     today_window,
     log: Callable[[str], None] | None = None,
+    previous_trade_date=None,
 ) -> ReviewPool:
     logger = log or (lambda _msg: None)
+    tushare_pool = _load_tushare_review_pool(
+        all_codes,
+        name_map_today,
+        today_window,
+        previous_trade_date,
+        logger,
+    )
+    if tushare_pool is not None:
+        return tushare_pool
     spot_codes, spot_usable = _load_spot_candidates(name_map_today, logger)
     spot_min_coverage = review_spot_min_coverage()
     spot_coverage = spot_usable / max(len(all_codes), 1)
@@ -86,15 +97,6 @@ def load_today_review_pool(
         return _load_pool_from_sufficient_spot(spot_codes, all_codes, name_map_today, today_window, logger)
     _log_spot_fallback(spot_usable, spot_coverage, spot_min_coverage, logger)
     return fetch_review_pool(all_codes, name_map_today, today_window, logger)
-
-
-def fetch_and_filter_review_codes(
-    codes: list[str],
-    name_map: dict[str, str],
-    window,
-    log: Callable[[str], None] | None = None,
-) -> list[str]:
-    return fetch_review_pool(codes, name_map, window, log).codes
 
 
 def fetch_review_pool(
@@ -120,6 +122,14 @@ def fetch_review_pool(
 def review_spot_min_coverage() -> float:
     try:
         value = float(os.getenv("REVIEW_SPOT_MIN_COVERAGE", "0.8"))
+    except ValueError:
+        value = 0.8
+    return min(max(value, 0.0), 1.0)
+
+
+def review_tushare_min_coverage() -> float:
+    try:
+        value = float(os.getenv("REVIEW_TUSHARE_MIN_COVERAGE", "0.8"))
     except ValueError:
         value = 0.8
     return min(max(value, 0.0), 1.0)
@@ -231,6 +241,120 @@ def _load_spot_candidates(name_map_today: dict[str, str], log: Callable[[str], N
     except Exception as exc:
         log(f"[review] 实时快照加载失败，准备回退日线拉取: {exc}")
         return [], 0
+
+
+def _load_tushare_review_pool(
+    all_codes: list[str],
+    name_map: dict[str, str],
+    today_window,
+    previous_trade_date,
+    log: Callable[[str], None],
+) -> ReviewPool | None:
+    try:
+        from integrations.tushare_client import get_pro, has_tushare_token
+
+        if not has_tushare_token() or not hasattr(today_window, "end_trade_date"):
+            return None
+        today = today_window.end_trade_date
+        previous = previous_trade_date or _previous_trade_date(today)
+        pro = get_pro()
+        if pro is None:
+            return None
+        today_rows = _tushare_rows_by_code(pro.daily(trade_date=today.strftime("%Y%m%d")))
+        previous_rows = _tushare_rows_by_code(pro.daily(trade_date=previous.strftime("%Y%m%d")))
+        today_coverage = len(today_rows) / max(len(all_codes), 1)
+        previous_coverage = len(previous_rows) / max(len(all_codes), 1)
+        minimum = review_tushare_min_coverage()
+        if min(today_coverage, previous_coverage) < minimum:
+            log(
+                "[review] Tushare 日截面覆盖不足: "
+                f"today={today_coverage:.1%}, previous={previous_coverage:.1%}, min={minimum:.1%}"
+            )
+            return None
+        pool = _review_pool_from_tushare(today_rows, previous_rows, all_codes, name_map, today, previous)
+        log(
+            "[review] Tushare 双日截面加载完成: "
+            f"today_rows={len(today_rows)}, previous_rows={len(previous_rows)}, candidates={len(pool.codes)}"
+        )
+        return pool
+    except Exception as exc:
+        log(f"[review] Tushare 日截面加载失败，准备回退实时快照: {exc}")
+        return None
+
+
+def _previous_trade_date(today):
+    from integrations.fetch_a_share_csv import resolve_trading_window
+
+    return resolve_trading_window(end_calendar_day=today - timedelta(days=1), trading_days=1).end_trade_date
+
+
+def _tushare_rows_by_code(frame: pd.DataFrame | None) -> dict[str, dict]:
+    if frame is None or frame.empty or "ts_code" not in frame.columns:
+        return {}
+    rows: dict[str, dict] = {}
+    for raw in frame.to_dict("records"):
+        code = str(raw.get("ts_code") or "").split(".", 1)[0].zfill(6)
+        if code.isdigit() and len(code) == 6:
+            rows[code] = raw
+    return rows
+
+
+def _review_pool_from_tushare(
+    today_rows: dict[str, dict],
+    previous_rows: dict[str, dict],
+    all_codes: list[str],
+    name_map: dict[str, str],
+    today,
+    previous,
+) -> ReviewPool:
+    allowed = set(all_codes)
+    codes: list[str] = []
+    frames: dict[str, pd.DataFrame] = {}
+    for code, today_row in today_rows.items():
+        previous_row = previous_rows.get(code) or {}
+        if _skip_cross_section_code(code, allowed, name_map):
+            continue
+        if not _daily_candidate_matches(
+            _number(today_row.get("pct_chg")),
+            _number(previous_row.get("pct_chg")),
+            TODAY_REVIEW_MIN_PCT,
+            PREVIOUS_REVIEW_MAX_PCT,
+        ):
+            continue
+        frame = _tushare_execution_frame(today_row, previous_row, today, previous)
+        if not frame.empty:
+            codes.append(code)
+            frames[code] = frame
+    return ReviewPool(sorted(codes), frames)
+
+
+def _skip_cross_section_code(code: str, allowed: set[str], name_map: dict[str, str]) -> bool:
+    return code not in allowed or not is_target_cn_board(code) or "ST" in str(name_map.get(code, "")).upper()
+
+
+def _tushare_execution_frame(today_row: dict, previous_row: dict, today, previous) -> pd.DataFrame:
+    previous_close = _number(today_row.get("pre_close")) or _number(previous_row.get("close"))
+    today_close = _number(today_row.get("close"))
+    if previous_close is None or today_close is None:
+        return pd.DataFrame()
+    return pd.DataFrame(
+        [
+            {
+                "date": previous.isoformat(),
+                "open": previous_close,
+                "high": previous_close,
+                "low": previous_close,
+                "close": previous_close,
+            },
+            {
+                "date": today.isoformat(),
+                "open": _number(today_row.get("open")),
+                "high": _number(today_row.get("high")),
+                "low": _number(today_row.get("low")),
+                "close": today_close,
+            },
+        ]
+    )
 
 
 def _load_pool_from_sufficient_spot(

@@ -62,18 +62,19 @@ class StubToolRegistry:
         tool_results: dict[str, Any] | None = None,
         concurrency_safe_tools: set[str] | None = None,
     ):
-        self._schemas = (
-            deepcopy(schemas)
-            if schemas is not None
-            else [
-                {
-                    "name": "portfolio",
-                    "description": "Mock portfolio tool",
-                    "parameters": {"type": "object", "properties": {}},
-                },
-            ]
-        )
         self._tool_results = tool_results or {}
+        if schemas is not None:
+            self._schemas = deepcopy(schemas)
+        else:
+            names = ["portfolio", *self._tool_results.keys()]
+            self._schemas = [
+                {
+                    "name": name,
+                    "description": f"Mock {name} tool",
+                    "parameters": {"type": "object", "properties": {}},
+                }
+                for name in dict.fromkeys(names)
+            ]
         self._concurrency_safe_tools = (
             concurrency_safe_tools
             if concurrency_safe_tools is not None
@@ -94,6 +95,10 @@ class StubToolRegistry:
             return schemas
         allowed = set(allowed_tools)
         return [schema for schema in schemas if schema["name"] in allowed]
+
+    def has_tool(self, name: str) -> bool:
+        # Stub execute() accepts any name; mirror that for prepareToolCall.
+        return True
 
     def execute(self, name: str, args: dict[str, Any], messages: list[dict[str, Any]] | None = None) -> Any:
         self.calls.append({"name": name, "args": deepcopy(args)})

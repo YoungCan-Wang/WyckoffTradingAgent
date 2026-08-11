@@ -1,6 +1,6 @@
 [project]
 name = "youngcan-wyckoff-analysis"
-version = "0.9.158"
+version = "0.9.234"
 requires-python = ">=3.11"
 description = "Wyckoff method quantitative analysis system for A-shares, Hong Kong stocks, and US stocks"
 readme = "README.md"
@@ -35,9 +35,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-mcp = ["mcp>=1.0.0", "starlette>=1.0.1"]
+mcp = ["mcp>=1.28.0", "starlette>=1.0.1", "jsonschema>=4.20"]
 wbt = ["wbt>=0.1.6"]
-dev = ["pytest>=7.0", "ruff>=0.4.0", "pre-commit>=3.7.0"]
+browser = ["playwright>=1.49"]
+dev = ["pytest>=7.0", "ruff==0.16.2", "pre-commit>=3.7.0"]
 
 [project.scripts]
 wyckoff = "cli.__main__:main"
@@ -51,7 +52,10 @@ build-backend = "setuptools.build_meta"
 py-modules = ["mcp_server"]
 
 [tool.setuptools.packages.find]
-include = ["agents*", "cli*", "core*", "integrations*", "tools*", "utils*", "scripts*", "workflows*"]
+include = ["agents*", "cli*", "core*", "integrations*", "llmdoc*", "tools*", "utils*", "scripts*", "workflows*"]
+
+[tool.setuptools.package-data]
+llmdoc = ["*.json", "*.md", "cases/*.md"]
 
 [tool.setuptools.data-files]
 "share/youngcan-wyckoff-analysis" = ["CHANGELOG.md"]

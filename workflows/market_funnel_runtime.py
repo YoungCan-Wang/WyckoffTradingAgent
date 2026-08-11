@@ -58,11 +58,13 @@ MARKET_SPECS = {
         universe="US_Equity",
         symbol_file="us.txt",
         benchmark_symbols=("SPY.US", "QQQ.US"),
-        default_max_symbols=1500,
-        default_min_quote_amount=5_000_000.0,
-        # 恢复收敛前基线：只拦截 $1 以下几乎无意义的极端仙股报价噪音，
-        # 全市场（含 $1-5 低价股）均纳入候选池，不做额外价格分层。
-        default_min_quote_price=1.0,
+        # 放开低价股：候选池按成交额降序截断，1500 的容量本身就是隐含流动性门槛
+        # （美股第 1500 名日成交额约千万美元级），低价股几乎排不进来。要真正纳入
+        # 仙股，必须同时抬高容量并下调成交额门槛，单调价格门无效。
+        default_max_symbols=3500,
+        default_min_quote_amount=300_000.0,
+        # $0.5 以下多为流动性枯竭或退市途中的报价噪音，仍然拦掉。
+        default_min_quote_price=0.5,
     ),
     "etf": MarketSpec(
         key="etf",

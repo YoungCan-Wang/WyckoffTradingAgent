@@ -2,8 +2,8 @@ name: DB Maintenance
 
 on:
   schedule:
-    # 北京时间次日 06:20（UTC+8），在美股收盘后任务之后、A股开盘前执行。
-    - cron: "20 22 * * 1-5"
+    # 北京时间每周六 06:20（UTC+8），在周五美股收盘后执行。
+    - cron: "20 22 * * 5"
   workflow_dispatch:
 
 concurrency:

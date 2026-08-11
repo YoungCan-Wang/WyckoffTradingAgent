@@ -203,6 +203,8 @@ def _fetch_funnel_ohlcv(
         direct_source=direct_source,
         runtime_config=fetch_runtime_config_from_env(),
     )
+    if env_bool("FUNNEL_REQUIRE_COMPLETE_REPLAY_DATA", False) and int(fetch_stats.get("failed_batches", 0) or 0):
+        raise RuntimeError(f"回放行情存在失败批次: {fetch_stats['failed_batches']}")
     _report_progress("日线拉取", _fetch_progress_summary(fetch_stats, all_df_map), 0.75)
     fetch_stats["turnover_coverage"] = _attach_turnover(all_df_map)
     return all_df_map, fetch_stats
@@ -264,6 +266,8 @@ def _load_benchmark_indices(start_s: str, end_s: str) -> tuple[pd.DataFrame | No
         print(f"[funnel] 小盘基准加载成功: {SMALLCAP_BENCH_CODE}")
     except Exception as e:
         logger.error("小盘基准加载失败 %s: %s", SMALLCAP_BENCH_CODE, e, exc_info=True)
+    if env_bool("FUNNEL_REQUIRE_COMPLETE_REPLAY_DATA", False) and (bench_df is None or smallcap_df is None):
+        raise RuntimeError("回放基准数据不完整，拒绝继续回刷")
     _report_progress("指数加载", "基准加载完成", 0.35)
     return bench_df, smallcap_df
 
@@ -332,7 +336,7 @@ def _resolve_funnel_symbol_pool(
         chinext_count=chinext_count,
         star_count=star_count,
         bse_count=bse_count,
-        merged_count=len(pool_name_map),
+        merged_count=int(pool_stats.get("pool_merged", len(pool_name_map)) or len(pool_name_map)),
         st_excluded_count=st_excluded_count,
         total_batches=total_batches,
     )
@@ -377,6 +381,8 @@ def _load_market_metadata(
             logger.warning("历史市值数据加载失败，降级为空映射: %s", e)
             market_cap_map = {}
         if not market_cap_map:
+            if env_bool("FUNNEL_REQUIRE_COMPLETE_REPLAY_DATA", False):
+                raise RuntimeError(f"{as_of_date} 历史市值数据为空，拒绝继续回刷")
             print(
                 "[funnel] ⚠️ 历史市值数据加载为空（可能API频控或权限限制），回放模式下将临时跳过市值过滤以防误杀，存在数据质量降级风险"
             )
@@ -470,20 +476,18 @@ def _load_financial_metrics(all_symbols: list[str]) -> dict[str, dict]:
         _report_progress("财务指标", "未配置 TickFlow，跳过", 0.20)
         return {}
     try:
-        from integrations.tickflow_client import TickFlowClient
+        from integrations.tickflow_client import fetch_financial_metric_map
 
-        client = TickFlowClient(api_key=api_key)
         print(f"[funnel] TickFlow 财务指标请求: symbols={len(all_symbols)}")
         _report_progress("财务指标", f"请求{len(all_symbols)}只", 0.20)
-        raw_fin = client.get_financial_metrics(all_symbols, latest=True)
-        financial_map = {sym: records[0] for sym, records in raw_fin.items() if records}
-        missing = max(len(all_symbols) - len(financial_map), 0)
-        sample_missing = ",".join(sorted([s for s in all_symbols if s not in financial_map])[:8])
+        financial_map = fetch_financial_metric_map(api_key, all_symbols)
+        missing_codes = sorted(set(all_symbols) - set(financial_map))
+        covered = len(all_symbols) - len(missing_codes)
         print(
-            f"[funnel] TickFlow 财务指标加载成功: {len(financial_map)}/{len(all_symbols)}, "
-            f"missing={missing}, sample_missing={sample_missing or '-'}"
+            f"[funnel] TickFlow 财务指标加载成功: {covered}/{len(all_symbols)}, "
+            f"missing={len(missing_codes)}, sample_missing={','.join(missing_codes[:8]) or '-'}"
         )
-        _report_progress("财务指标", f"成功{len(financial_map)}/{len(all_symbols)}", 0.24)
+        _report_progress("财务指标", f"成功{covered}/{len(all_symbols)}", 0.24)
         return financial_map
     except Exception as e:
         logger.warning("TickFlow 财务指标加载失败，跳过财务过滤: %s", e)

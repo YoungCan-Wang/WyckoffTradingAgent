@@ -6,7 +6,7 @@ import json
 import logging
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
 
@@ -14,6 +14,7 @@ import pandas as pd
 
 from core.cn_boards import cn_board, is_supported_cn_board
 from core.hk_boards import is_hk_main_board
+from core.limit_move import is_st_risk_warning
 from core.wyckoff_engine import normalize_hist_from_fetch
 from integrations.data_source import fetch_stock_hist
 from integrations.fetch_a_share_csv import get_stocks_by_board, normalize_symbols
@@ -112,11 +113,13 @@ def resolve_backtest_universe(board: str, sample_size: int, snapshot_dir: Path |
 
 
 def _filter_symbols(symbols: list[str], name_map: dict[str, str], board: str) -> list[str]:
+    """与生产 layer1_filter 保持同一候选语义：ST 只对 A 股判定。"""
     return sorted(
         {
             str(symbol).strip()
             for symbol in symbols
-            if board_match(str(symbol).strip(), board) and "ST" not in name_map.get(str(symbol).strip(), "").upper()
+            if board_match(str(symbol).strip(), board)
+            and not is_st_risk_warning(str(symbol).strip(), name_map.get(str(symbol).strip(), ""))
         }
     )
 
@@ -177,6 +180,18 @@ def load_snapshot_benchmark(snapshot_dir: Path) -> pd.DataFrame | None:
     return out if not out.empty else None
 
 
+def load_snapshot_pit_meta(snapshot_dir: Path | None) -> dict:
+    """读取快照的 PIT 状态，供报告据实描述幸存者偏差。
+
+    报告此前硬编码「仍存在幸存者偏差：股票池来自当前在市样本」。PIT 股票池上线后
+    该句已不准确——实测 bull_2020 窗口补回 231 只此后退市的标的、ST 按当时名 86 只
+    （按今日名会误判为 260 只）。而这行静态文案会让读日志的人以为 PIT 没生效
+    （2026-08-10 我本人就据此误判过一次）。
+    """
+    data = _load_json_map(snapshot_dir, "metadata.json")
+    return data if isinstance(data, dict) else {}
+
+
 def load_snapshot_name_map(snapshot_dir: Path | None) -> dict[str, str] | None:
     data = _load_json_map(snapshot_dir, "name_map.json")
     return {str(k): str(v) for k, v in data.items()} if data else None
@@ -209,14 +224,31 @@ def load_snapshot_financial_map(snapshot_dir: Path | None) -> dict[str, dict] | 
     return {str(k): v for k, v in data.items() if isinstance(v, dict)} if data else None
 
 
-def load_backtest_metadata(use_current_meta: bool, snapshot_dir: Path | None) -> BacktestMetadata:
-    if not use_current_meta:
+def load_backtest_metadata(
+    use_current_meta: bool,
+    snapshot_dir: Path | None,
+    *,
+    allow_static_meta: bool = False,
+) -> BacktestMetadata:
+    """装配回测元数据。
+
+    元数据分两类：市值/行业/概念归属是缓变的静态属性，用当前截面近似历史只带来
+    轻微偏差；``concept_heat`` 是抓取当日的题材热度快照，把它喂给 N 天前的决策
+    等于让回测预知哪个题材会火，是真正的前瞻偏差。
+
+    ``allow_static_meta=True`` 时保留静态映射、单独剔除 ``concept_heat``，让
+    L1 市值过滤与 L3 板块共振仍可工作，同时不引入题材前瞻。
+    """
+    if not use_current_meta and not allow_static_meta:
         logger.info("偏差抑制口径：关闭当前截面市值/行业/概念/财务元数据")
         return BacktestMetadata({}, {}, {}, [], {}, "disabled")
 
     snap = _snapshot_metadata(snapshot_dir)
     if snap is not None:
-        return snap
+        return snap if use_current_meta else _without_concept_heat(snap)
+    if not use_current_meta:
+        logger.info("偏差抑制口径：无快照可用，退回全空元数据")
+        return BacktestMetadata({}, {}, {}, [], {}, "disabled")
 
     market_cap_map = fetch_market_cap_map()
     sector_map = fetch_sector_map()
@@ -226,6 +258,17 @@ def load_backtest_metadata(use_current_meta: bool, snapshot_dir: Path | None) ->
     if not market_cap_map:
         logger.warning("当前市值映射为空，Layer1 市值过滤将被跳过")
     return BacktestMetadata(market_cap_map, sector_map, concept_map, concept_heat, {}, "current")
+
+
+def _without_concept_heat(metadata: BacktestMetadata) -> BacktestMetadata:
+    """剔除题材热度，保留静态映射。
+
+    concept_heat 是抓取当日快照，喂给历史决策会让主线引擎预知未来热点。
+    """
+    if not metadata.concept_heat:
+        return metadata
+    logger.info("偏差抑制口径：保留市值/行业/概念归属，剔除 concept_heat(%d 条)", len(metadata.concept_heat))
+    return replace(metadata, concept_heat=[], source=f"{metadata.source}_no_heat")
 
 
 def _snapshot_metadata(snapshot_dir: Path | None) -> BacktestMetadata | None:

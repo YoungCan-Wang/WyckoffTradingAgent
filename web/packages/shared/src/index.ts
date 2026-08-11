@@ -23,8 +23,10 @@ export {
   fetchValueSnapshotWithFetch,
   isCnSymbol,
   isSupportedKlineCode,
+  isSupportedPortfolioCode,
   isTickFlowMarketSymbol,
   normalizeCode,
+  normalizePortfolioCode,
   normalizeTickFlowSymbol,
   normalizeTushareCode,
   normalizeReportDate,
@@ -34,6 +36,7 @@ export {
   looksLikeFinancialRecord,
   findFinancialRecord,
 } from './agent-market'
+export { refreshPortfolioTotalEquity, type PortfolioEquityRefresh } from './portfolio-valuation'
 export type { FundamentalMetric, ValueSnapshot, ValueSnapshotReason } from './agent-market'
 export {
   formatMarketWatchContext,
@@ -60,14 +63,16 @@ export {
 } from './agent-value'
 export type { ValueDataQuality, ValueDataQualityLevel, ValueRule, ValueScore, ValueSignal, ValueTone, ValueTraceMeta } from './agent-value'
 export {
+  dedupeTrackingRows,
   formatPatternReviewDigest,
   formatPatternReviewLine,
   labelCandidateTerm,
   patternReviewRole,
+  preferTrackingRow,
   PATTERN_REVIEW_EMPTY_MESSAGE,
   PATTERN_REVIEW_SCOPE_NOTE,
 } from './pattern-review'
-export type { PatternReviewRow } from './pattern-review'
+export type { DedupeTrackingRow, PatternReviewRow } from './pattern-review'
 export {
   attributionExecutionImpactText,
   attributionFormalDynamicLabel,
@@ -84,6 +89,7 @@ export type { AttributionExecutionImpactInput, AttributionOperatorAction, Attrib
 export { formatPolicyWeightMetaText, formatStrategyPolicyText, policyExecutionModeLabel } from './policy-weight-meta'
 export type { PolicyWeightMetaInput } from './policy-weight-meta'
 export * from './chat-tools'
+export * from './chat-message-history'
 export {
   ANALYSIS_CONTEXT_PACK_SCHEMA,
   CONTEXT_EVIDENCE_SCHEMA,
@@ -91,3 +97,16 @@ export {
   formatAnalysisContextPack,
 } from './analysis-context'
 export type { AnalysisContextPack, ContextEvidence } from './analysis-context'
+export {
+  buildLlmUsageMetrics,
+  cacheHitRatePct,
+  formatLlmUsageLine,
+  mergeLlmUsageMetrics,
+  outputTokPerS,
+} from './llm-usage'
+export type { LlmUsageMetrics } from './llm-usage'
+export {
+  createModelGenerationClock,
+  isModelContentChunkType,
+  isToolBoundaryChunkType,
+} from './model-generation-clock'

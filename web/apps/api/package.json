@@ -21,14 +21,14 @@
     "@upstash/redis": "^1.38.0",
     "@wyckoff/shared": "workspace:*",
     "ai": "^6.0.234",
-    "hono": "^4.12.27",
+    "hono": "^4.12.34",
     "zod": "^3.25.76"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "0.16.18",
-    "@cloudflare/workers-types": "^4.20260620.1",
+    "@cloudflare/vitest-pool-workers": "0.18.8",
+    "@cloudflare/workers-types": "^5.20260722.1",
     "typescript": "^5.7.0",
     "vitest": "^4.1.5",
-    "wrangler": "^4.103.0"
+    "wrangler": "^4.114.0"
   }
 }

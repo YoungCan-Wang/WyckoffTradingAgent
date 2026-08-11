@@ -89,6 +89,8 @@ def tool_result_brief_lines(tool_name: str, result: Any, *, max_lines: int = 3) 
         lines = _screen_stocks_brief_lines(result, max_lines=max_lines)
     elif tool_name == "portfolio":
         lines = _portfolio_brief_lines(result, max_lines=max_lines)
+    elif tool_name == "update_portfolio":
+        lines = _update_portfolio_brief_lines(result, max_lines=max_lines)
     elif tool_name == "analyze_stock":
         lines = _analyze_stock_brief_lines(result, max_lines=max_lines)
     elif tool_name == "generate_ai_report":
@@ -534,9 +536,13 @@ def _portfolio_preview(result: dict[str, Any]) -> str:
             "portfolio_id": result.get("portfolio_id"),
             "message": result.get("message"),
             "free_cash": result.get("free_cash"),
+            "total_market_value": result.get("total_market_value"),
+            "total_assets": result.get("total_assets"),
+            "total_equity": result.get("total_equity"),
             "position_count": result.get("position_count"),
             "successful_count": result.get("successful_count"),
             "failed_count": result.get("failed_count"),
+            "market_value_note": result.get("market_value_note"),
             "positions": _portfolio_position_preview(result.get("positions"), 8),
             "diagnostics": _portfolio_diagnostic_preview(result.get("diagnostics"), 8),
             "tickflow_limit_hint": result.get("tickflow_limit_hint"),
@@ -567,8 +573,13 @@ def _portfolio_diagnostic_preview(value: Any, limit: int) -> list[dict[str, Any]
             {
                 "code": row.get("code"),
                 "name": row.get("name"),
+                "shares": row.get("shares"),
+                "cost": row.get("cost"),
+                "market_value": row.get("market_value"),
+                "weight_pct": row.get("weight_pct"),
                 "health": row.get("health"),
                 "pnl_pct": row.get("pnl_pct"),
+                "pnl_amount": row.get("pnl_amount"),
                 "latest_close": row.get("latest_close"),
                 "latest_date": row.get("latest_date"),
                 "l2_channel": row.get("l2_channel"),
@@ -588,6 +599,36 @@ def _portfolio_brief_lines(result: dict[str, Any], *, max_lines: int) -> list[st
     if isinstance(result.get("diagnostics"), list):
         return _portfolio_diagnosis_brief_lines(result, max_lines=max_lines)
     return _portfolio_view_brief_lines(result, max_lines=max_lines)
+
+
+def _update_portfolio_brief_lines(result: dict[str, Any], *, max_lines: int) -> list[str]:
+    updated = result.get("updated_count")
+    failed = result.get("failed_count")
+    if updated is not None or failed is not None:
+        headline = f"批量调仓: 成功{int(updated or 0)}只"
+        if int(failed or 0) > 0:
+            headline += f" · 失败{int(failed)}只"
+        lines = [headline]
+    elif result.get("message"):
+        lines = [_text_excerpt(result.get("message"), 120)]
+    else:
+        lines = []
+    count = result.get("position_count")
+    cash = result.get("free_cash")
+    if count is not None or cash is not None:
+        bits = []
+        if count is not None:
+            bits.append(f"持仓{count}只")
+        if cash is not None:
+            bits.append(f"现金{_format_money(cash)}")
+        if bits:
+            lines.append(" · ".join(bits))
+    failures = result.get("failures")
+    if isinstance(failures, list) and failures:
+        first = failures[0] if isinstance(failures[0], dict) else {}
+        err = str(first.get("error") or first)[:80]
+        lines.append(f"失败样例: {first.get('code', '')} {err}".strip())
+    return [line for line in lines if line][:max_lines]
 
 
 def _portfolio_view_brief_lines(result: dict[str, Any], *, max_lines: int) -> list[str]:
@@ -635,7 +676,14 @@ def _portfolio_diagnosis_headline(result: dict[str, Any], count: int) -> str:
     success = _safe_int_text(result.get("successful_count"))
     failed = _safe_int_text(result.get("failed_count"))
     status = f"成功{success or '-'}，失败{failed or '0'}"
-    return f"持仓诊断: {count}只 · {status} · 现金{cash}"
+    parts = [f"持仓诊断: {count}只", status]
+    # 总市值/总资产是"该减谁"的前提，headline 不带的话模型只能按结构风险排序
+    if market_value := _format_positive_money(result.get("total_market_value")):
+        parts.append(f"总市值{market_value}")
+    parts.append(f"现金{cash}")
+    if total_assets := _format_positive_money(result.get("total_assets")):
+        parts.append(f"总资产{total_assets}")
+    return " · ".join(parts)
 
 
 def _portfolio_position_line(row: dict[str, Any]) -> str:
@@ -645,6 +693,17 @@ def _portfolio_position_line(row: dict[str, Any]) -> str:
     parts = [f"{shares}股" if shares else "", f"成本{cost}" if cost else ""]
     detail = " ".join(part for part in parts if part)
     return f"{name} {detail}".strip()
+
+
+def _format_positive_money(value: Any) -> str:
+    """只在金额可用时给出文本，0/缺失都返回空串，避免 headline 里出现"总市值0.00"。"""
+    try:
+        amount = float(value or 0)
+    except (TypeError, ValueError):
+        return ""
+    if not math.isfinite(amount) or amount <= 0:
+        return ""
+    return f"{amount:,.2f}"
 
 
 def _portfolio_empty_next_step(count: int) -> str:
@@ -657,21 +716,38 @@ def _rank_portfolio_diagnostics(rows: list[dict[str, Any]]) -> list[dict[str, An
     return sorted(rows, key=_portfolio_diagnostic_rank)
 
 
-def _portfolio_diagnostic_rank(row: dict[str, Any]) -> tuple[int, str]:
+def _portfolio_diagnostic_rank(row: dict[str, Any]) -> tuple[int, float, str]:
+    """先按健康度分档，同档内重仓优先——brief 只留 3 行时，被截掉的应该是小仓位。"""
     health = str(row.get("health") or "")
     if row.get("error"):
-        return (0, _candidate_name(row))
-    if "危险" in health:
-        return (1, _candidate_name(row))
-    if "警戒" in health:
-        return (2, _candidate_name(row))
-    return (3, _candidate_name(row))
+        tier = 0
+    elif "危险" in health:
+        tier = 1
+    elif "警戒" in health:
+        tier = 2
+    else:
+        tier = 3
+    return (tier, -_portfolio_row_weight(row), _candidate_name(row))
+
+
+def _portfolio_row_weight(row: dict[str, Any]) -> float:
+    for key in ("weight_pct", "market_value"):
+        try:
+            value = float(row.get(key) or 0)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value) and value > 0:
+            return value
+    return 0.0
 
 
 def _portfolio_diagnostic_line(row: dict[str, Any]) -> str:
     brief = row.get("diagnosis_brief") if isinstance(row.get("diagnosis_brief"), dict) else {}
     parts = [
         _stock_value_part("", row.get("health")),
+        # 仓位占比排在现价前面：决定"先动谁"看的是权重，不是价格
+        _stock_value_part("仓位", _format_weight_pct(row.get("weight_pct"))),
+        _stock_value_part("市值", _format_positive_money(row.get("market_value"))),
         _stock_value_part("现价", row.get("latest_close")),
         _stock_value_part("盈亏", _format_pct_signed(row.get("pnl_pct"))),
         _stock_value_part("通道", row.get("l2_channel")),
@@ -701,6 +777,16 @@ def _format_money(value: Any) -> str:
     except (TypeError, ValueError):
         amount = 0.0
     return f"{amount:,.2f}"
+
+
+def _format_weight_pct(value: Any) -> str:
+    try:
+        pct = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if not math.isfinite(pct) or pct <= 0:
+        return ""
+    return f"{pct:.1f}%"
 
 
 def _format_pct_signed(value: Any) -> str:

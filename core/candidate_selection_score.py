@@ -11,7 +11,7 @@ from typing import Any
 
 from utils.safe import parse_cn_num
 
-CANDIDATE_SHADOW_SCORE_VERSION = "candidate_shadow_score_v1"
+CANDIDATE_SHADOW_SCORE_VERSION = "candidate_shadow_score_v2"
 
 _ACCUM_SIGNALS = {"spring", "lps", "compression"}
 
@@ -116,7 +116,7 @@ def _springboard_component(springboard: dict[str, Any]) -> tuple[float, list[str
     if grade and grade.lower() != "none":
         tags.append(f"springboard:{grade}")
     if max(met_count, float(bool_hits)) >= 2:
-        tags.append("springboard_confirmed")
+        tags.append("springboard_structure_ready")
     return component, tags
 
 

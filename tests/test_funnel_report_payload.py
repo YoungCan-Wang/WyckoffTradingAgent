@@ -229,3 +229,17 @@ def test_recommendation_payload_keeps_capital_migration_bonus():
     )
 
     assert payload[0]["capital_migration_bonus"] == 4.5
+
+
+def test_recommendation_payload_sticks_first_price_across_days():
+    payload = build_recommendation_payload(
+        20260702,
+        [{"code": "000001", "name": "平安银行", "initial_price": 12.0}],
+        {1: 1},
+        {1: {20260630}},
+        {1: 10.5},
+    )
+
+    assert payload[0]["initial_price"] == 10.5
+    assert payload[0]["current_price"] == 12.0
+    assert payload[0]["recommend_count"] == 2

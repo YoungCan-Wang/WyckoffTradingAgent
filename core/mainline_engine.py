@@ -16,6 +16,7 @@ from core._price_math import ret_pct as _ret_pct
 from core._price_math import sort_by_date_if_needed
 from core._price_math import upper_shadow_pct as _upper_shadow_pct
 from core._price_math import vol_ratio as _vol_ratio
+from core.candidate_metadata import code6
 from core.main_force_signal import MainForceSignal, analyze_main_force_signal
 from core.theme_radar import normalize_theme_name
 from utils.safe import safe_float as _safe_float
@@ -23,10 +24,16 @@ from utils.safe import safe_float as _safe_float
 MAINLINE_BUY_STATUS = "主线买点候选"
 MAINLINE_DIVERGENCE_STATUS = "强主线分歧"
 MAINLINE_EVENT_REVERSAL_STATUS = "事件主题修复候选"
+MAINLINE_THEME_REVERSAL_STATUS = "主题修复候选"
 MAINLINE_OBSERVE_STATUS = "主线观察"
 MAINLINE_AVOID_STATUS = "过热不追"
 TRADEABLE_MAINLINE_STATUSES = frozenset(
-    {MAINLINE_BUY_STATUS, MAINLINE_DIVERGENCE_STATUS, MAINLINE_EVENT_REVERSAL_STATUS}
+    {
+        MAINLINE_BUY_STATUS,
+        MAINLINE_DIVERGENCE_STATUS,
+        MAINLINE_EVENT_REVERSAL_STATUS,
+        MAINLINE_THEME_REVERSAL_STATUS,
+    }
 )
 BLOCKING_TIMING_FLAGS = {"鱼尾加速", "放量长上影", "跌破确认支撑", "主题缩量阴跌"}
 
@@ -75,6 +82,7 @@ def build_mainline_candidates(
     l1_passed: list[str],
     l2_passed: list[str],
     concept_map: dict[str, list[str]],
+    sector_map: dict[str, str] | None = None,
     concept_heat: list[dict[str, Any]],
     theme_radar: dict[str, Any],
     theme_activity: dict[str, Any] | None = None,
@@ -91,7 +99,15 @@ def build_mainline_candidates(
     l1_set = {str(code).strip() for code in l1_passed if str(code).strip()}
     l2_set = {str(code).strip() for code in l2_passed if str(code).strip()}
     theme_scores = _theme_scores(concept_heat, theme_radar, theme_activity or {}, hot_events or {}, cfg)
-    seeds = _mainline_seed_map(l1_set, concept_map, theme_scores, theme_radar, hot_events or {}, cfg)
+    seeds = _mainline_seed_map(
+        l1_set,
+        concept_map,
+        sector_map or {},
+        theme_scores,
+        theme_radar,
+        hot_events or {},
+        cfg,
+    )
     candidates = [
         _candidate_from_seed(
             code, seed, l2_set, df_map, financial_map, name_map, theme_scores, cfg, (main_force_map or {}).get(code)
@@ -112,6 +128,7 @@ def mainline_candidate_entries(candidates: list[dict[str, Any]], *, max_count: i
 def _mainline_seed_map(
     l1_set: set[str],
     concept_map: dict[str, list[str]],
+    sector_map: dict[str, str],
     theme_scores: dict[str, float],
     theme_radar: dict[str, Any],
     hot_events: dict[str, Any],
@@ -119,7 +136,7 @@ def _mainline_seed_map(
 ) -> dict[str, dict[str, Any]]:
     seeds: dict[str, dict[str, Any]] = {}
     _add_core_basket_seeds(seeds, l1_set, cfg)
-    _add_radar_seeds(seeds, l1_set, theme_radar, cfg)
+    _add_radar_seeds(seeds, l1_set, concept_map, sector_map, theme_radar, cfg)
     _add_hot_event_seeds(seeds, l1_set, hot_events, cfg)
     _add_concept_seeds(seeds, l1_set, concept_map, theme_scores, cfg)
     return seeds
@@ -134,14 +151,33 @@ def _add_core_basket_seeds(seeds: dict[str, dict[str, Any]], l1_set: set[str], c
 def _add_radar_seeds(
     seeds: dict[str, dict[str, Any]],
     l1_set: set[str],
+    concept_map: dict[str, list[str]],
+    sector_map: dict[str, str],
     theme_radar: dict[str, Any],
     cfg: MainlineEngineConfig,
 ) -> None:
     for item in theme_radar.get("strategic_candidates") or []:
         code = str(item.get("code", "")).strip()
         theme = _mainline_theme(item.get("theme"), cfg)
-        if code in l1_set and theme:
-            seeds[code] = {"theme": theme, "source": "theme_radar", "radar": item}
+        evidence = _current_theme_evidence(code, theme, concept_map, sector_map, cfg)
+        if code in l1_set and theme and evidence:
+            seeds[code] = {
+                "theme": theme,
+                "source": "theme_radar",
+                "radar": item,
+                "theme_membership_evidence": evidence,
+            }
+
+
+def _current_theme_evidence(
+    code: str,
+    theme: str,
+    concept_map: dict[str, list[str]],
+    sector_map: dict[str, str],
+    cfg: MainlineEngineConfig,
+) -> list[str]:
+    labels = [*(concept_map.get(code) or []), sector_map.get(code, "")]
+    return [str(label) for label in labels if label and _mainline_theme(label, cfg) == theme]
 
 
 def _add_concept_seeds(
@@ -217,7 +253,7 @@ def _candidate_from_seed(
     theme_score = _seed_theme_score(seed, theme, theme_scores, radar)
     role_score = _stock_role_score(metrics, radar, seed.get("source") == "core_basket", _is_hot_event_seed(seed))
     quality_score = _quality_score(_lookup_financial(financial_map, code))
-    timing_score, entry_type, risk_flags = _timing_result(metrics)
+    timing_score, entry_type, risk_flags = _timing_result(metrics, has_event=_is_hot_event_seed(seed))
     mainline_score = _score(theme_score, role_score, quality_score, timing_score)
     status = _status(theme_score, role_score, timing_score, entry_type, risk_flags, cfg)
     return MainlineCandidate(
@@ -250,6 +286,7 @@ def _rank_candidates(candidates: list[MainlineCandidate], cfg: MainlineEngineCon
         MAINLINE_BUY_STATUS: 0,
         MAINLINE_DIVERGENCE_STATUS: 1,
         MAINLINE_EVENT_REVERSAL_STATUS: 2,
+        MAINLINE_THEME_REVERSAL_STATUS: 2,
         MAINLINE_OBSERVE_STATUS: 3,
         MAINLINE_AVOID_STATUS: 4,
     }
@@ -363,10 +400,10 @@ def _price_metrics(df: pd.DataFrame | None, main_force: MainForceSignal | None =
     }
 
 
-def _timing_result(metrics: dict[str, float]) -> tuple[float, str, list[str]]:
+def _timing_result(metrics: dict[str, float], *, has_event: bool = False) -> tuple[float, str, list[str]]:
     risk_flags = _timing_risks(metrics)
     score = _timing_score(metrics, risk_flags)
-    entries = _entry_types(metrics, risk_flags)
+    entries = _entry_types(metrics, risk_flags, has_event=has_event)
     return score, " + ".join(entries), risk_flags
 
 
@@ -387,10 +424,10 @@ def _timing_risks(metrics: dict[str, float]) -> list[str]:
     return risks
 
 
-def _entry_types(metrics: dict[str, float], risk_flags: list[str]) -> list[str]:
+def _entry_types(metrics: dict[str, float], risk_flags: list[str], *, has_event: bool = False) -> list[str]:
     entries: list[str] = []
     if _event_reversal_entry_ok(metrics, risk_flags):
-        entries.append("事件主题低位修复")
+        entries.append("事件主题低位修复" if has_event else "主题低位修复")
     if any(flag in risk_flags for flag in BLOCKING_TIMING_FLAGS if flag != "跌破确认支撑"):
         return entries
     if "跌破确认支撑" in risk_flags and not entries:
@@ -599,6 +636,8 @@ def _reasons(
     if _is_hot_event_seed(seed):
         event = seed.get("event") or {}
         rows.insert(1, f"事件:{event.get('title') or event.get('theme')}")
+    elif seed.get("theme_membership_evidence"):
+        rows.insert(1, "主题依据:" + "/".join(seed["theme_membership_evidence"][:3]))
     return rows
 
 
@@ -615,7 +654,9 @@ def _status(
     if _high_divergence_is_tradeable(theme_score, role_score, timing_score, entry_type, risk_flags, cfg):
         return MAINLINE_DIVERGENCE_STATUS
     if _event_reversal_is_tradeable(theme_score, timing_score, entry_type, risk_flags, cfg):
-        return MAINLINE_EVENT_REVERSAL_STATUS
+        if "事件主题低位修复" in entry_type:
+            return MAINLINE_EVENT_REVERSAL_STATUS
+        return MAINLINE_THEME_REVERSAL_STATUS
     if (
         theme_score >= cfg.min_theme_score
         and role_score >= cfg.min_stock_score
@@ -634,7 +675,7 @@ def _event_reversal_is_tradeable(
     cfg: MainlineEngineConfig,
 ) -> bool:
     return (
-        "事件主题低位修复" in entry_type
+        ("事件主题低位修复" in entry_type or "主题低位修复" in entry_type)
         and theme_score >= max(cfg.min_theme_score - 0.05, 0.45)
         and timing_score >= max(cfg.min_timing_score * 0.45, 0.24)
         and not {"鱼尾加速", "放量长上影"} & set(risk_flags)
@@ -670,8 +711,7 @@ def _metric_score(metrics: dict, keys: tuple[str, ...], weak: float, strong: flo
 
 
 def _lookup_financial(financial_map: dict[str, dict], code: str) -> dict | None:
-    suffix = ".SH" if code.startswith(("6", "9")) else ".SZ"
-    return financial_map.get(code) or financial_map.get(f"{code}{suffix}")
+    return financial_map.get(code6(code))
 
 
 def _amount20_wan(amount: pd.Series) -> float:

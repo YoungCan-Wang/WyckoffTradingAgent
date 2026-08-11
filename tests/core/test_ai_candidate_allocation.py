@@ -592,3 +592,44 @@ class TestTrackAlignmentBonus:
 def _workflow_job_env(path: str, job_name: str) -> dict[str, str]:
     workflow = yaml.safe_load((ROOT / path).read_text(encoding="utf-8"))
     return {**(workflow.get("env") or {}), **(workflow["jobs"][job_name].get("env") or {})}
+
+
+def test_spring_weight_no_longer_outranks_other_single_signals():
+    """spring 权重 45.0 → 12.0：最差信号不应得次高分。
+
+    跨周期回测（696 条 spring 成交、bear_2022/bull_2020/recent_6m）显示 spring 是
+    六类里 10 日收益最差且三周期方向全为负的一类（-3.93%/胜率 22.4%，对照非
+    spring -0.24%/33.4%，合并 Welch t=-6.70）。原权重让它排第二高。
+
+    只下调 spring：compression(20 笔)/lps(10 笔) 样本不足，重排整表等于拟合噪声。
+    """
+    from core.ai_candidate_allocation import _trigger_score
+
+    hit = {"X"}
+    empty: set[str] = set()
+
+    def score(**kwargs):
+        return _trigger_score(
+            "X",
+            kwargs.get("sos", empty),
+            kwargs.get("other", empty),
+            kwargs.get("spring", empty),
+            kwargs.get("lps", empty),
+            kwargs.get("evr", empty),
+            kwargs.get("compression", empty),
+            kwargs.get("trend_pb", empty),
+            {},
+            "NEUTRAL",
+        )
+
+    spring_only = score(spring=hit)
+    assert spring_only == 12.0
+
+    # spring 不再高于其他单信号（此前 45.0 时高于全部）
+    assert spring_only <= score(trend_pb=hit)
+    assert spring_only <= score(lps=hit)
+    assert spring_only <= score(compression=hit)
+    assert spring_only <= score(sos=hit)
+
+    # 共振不受影响：spring 仍能与其他形态叠加进入候选
+    assert score(sos=hit, other=hit, spring=hit) > score(sos=hit, other=hit)

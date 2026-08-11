@@ -18,6 +18,9 @@ def funnel_config_for_market(market: str, *, trading_days: int = 320, min_avg_am
     if market == "us":
         # 恢复收敛前参数：SOS 8%/3.2x，不设低价股闸门（min_avg_amount_wan/RS 过滤
         # 已提供基础流动性把关），全市场含仙股/低价股均纳入候选池观察。
+        # l1_min_close_price 的 2.0 默认值来自 A 股口径，会让 $1-2 的低价股在 L1
+        # 被静默剔除，与上述「全市场纳入」矛盾；美股统一交给报价层价格门把关。
+        funnel_cfg.l1_min_close_price = 0.0
         funnel_cfg.sos_pct_min = 8.0
         funnel_cfg.sos_vol_ratio = 3.2
         funnel_cfg.spring_vol_ratio = 1.3

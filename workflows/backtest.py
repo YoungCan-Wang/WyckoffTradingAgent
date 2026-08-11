@@ -30,10 +30,12 @@ from workflows.backtest_data import (
     ProgressReporter,
     load_backtest_history,
     load_backtest_metadata,
+    load_snapshot_pit_meta,
     normalize_backtest_board,
     resolve_backtest_universe,
 )
 from workflows.backtest_defaults import (
+    DEFAULT_ALLOW_STATIC_META,
     DEFAULT_ATR_HARD_STOP_PCT,
     DEFAULT_ATR_MAX_HOLD_DAYS,
     DEFAULT_ATR_MULTIPLIER,
@@ -67,6 +69,7 @@ from workflows.backtest_strategy_variants import (
     normalize_strategy_variant,
     strategy_variant_entry_policy,
     strategy_variant_overrides,
+    strategy_variants_share_signal_ledger,
 )
 from workflows.candidate_policy_config import candidate_policy_config_from_env
 from workflows.dynamic_policy_config import dynamic_policy_config_from_env
@@ -97,6 +100,7 @@ class BacktestWorkflowRequest:
     trailing_activate_pct: float = DEFAULT_TRAILING_ACTIVATE_PCT
     sltp_priority: str = "stop_first"
     use_current_meta: bool = DEFAULT_USE_CURRENT_META
+    allow_static_meta: bool = DEFAULT_ALLOW_STATIC_META
     buy_friction_pct: float = DEFAULT_BUY_FRICTION_PCT
     sell_friction_pct: float = DEFAULT_SELL_FRICTION_PCT
     regime_filter: bool = False
@@ -176,6 +180,9 @@ def _validate_shared_signal_suite(requests: list[BacktestWorkflowRequest]) -> No
     request_key = _shared_request_key(first_request)
     if any(_shared_request_key(request) != request_key for request in requests[1:]):
         raise ValueError("复用信号台账的回测组合只能改变持有期和退出参数")
+    variants = [request.strategy_variant for request in requests]
+    if not strategy_variants_share_signal_ledger(variants):
+        raise ValueError("复用信号台账的策略组只能改变入场仓位权重")
 
 
 def _shared_request_key(request: BacktestWorkflowRequest) -> tuple:
@@ -190,6 +197,7 @@ def _shared_request_key(request: BacktestWorkflowRequest) -> tuple:
         "atr_period",
         "atr_multiplier",
         "atr_hard_stop_pct",
+        "strategy_variant",
     }
     return tuple((name, value) for name, value in vars(request).items() if name not in ignored)
 
@@ -288,7 +296,11 @@ def _load_prepared_data(
         max_workers=request.max_workers,
         progress=progress,
     )
-    metadata = load_backtest_metadata(request.use_current_meta, config.snapshot_dir)
+    metadata = load_backtest_metadata(
+        request.use_current_meta,
+        config.snapshot_dir,
+        allow_static_meta=request.allow_static_meta,
+    )
     return BacktestPreparedData(
         all_df_map=history.all_df_map,
         bench_df=history.bench_df,
@@ -303,6 +315,7 @@ def _load_prepared_data(
         snapshot_rows_total=history.snapshot_rows_total,
         snapshot_used=history.snapshot_used,
         metadata_source=metadata.source,
+        pit_meta=load_snapshot_pit_meta(request.snapshot_dir),
     )
 
 

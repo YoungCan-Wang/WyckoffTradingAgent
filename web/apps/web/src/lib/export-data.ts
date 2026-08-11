@@ -26,6 +26,12 @@ export function normalizeExportSymbol(raw: string): string {
   return `${input}.SH`
 }
 
+/** Resolve a typed/selected search hit into TickFlow export symbol (supports Chinese names via caller-provided stock). */
+export function exportSymbolFromStock(stock: { symbol?: string; analysisCode?: string } | null | undefined): string {
+  if (!stock) return ''
+  return normalizeExportSymbol(stock.symbol || stock.analysisCode || '')
+}
+
 export function parseExportSymbols(text: string): string[] {
   const matches = text
     .toUpperCase()

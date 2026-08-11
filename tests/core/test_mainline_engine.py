@@ -71,8 +71,8 @@ def test_mainline_event_reversal_theme_can_bypass_l2_with_liquidity() -> None:
     )
 
     assert candidates[0]["theme"] == "创新药医药"
-    assert candidates[0]["status"] == "事件主题修复候选"
-    assert "事件主题低位修复" in candidates[0]["entry_type"]
+    assert candidates[0]["status"] == "主题修复候选"
+    assert "主题低位修复" in candidates[0]["entry_type"]
     assert mainline_candidate_entries(candidates, max_count=3)
 
 
@@ -93,6 +93,29 @@ def test_mainline_can_seed_candidates_from_theme_activity() -> None:
     assert candidates[0]["theme"] == "机器人"
     assert candidates[0]["source"] == "concept_map"
     assert mainline_candidate_entries(candidates, max_count=3)
+
+
+def test_mainline_radar_seed_requires_current_theme_membership() -> None:
+    radar = {
+        "themes": [{"theme": "芯片半导体", "score": 0.70}],
+        "strategic_candidates": [{"code": "000013", "theme": "芯片半导体", "stock_score": 0.80}],
+    }
+    common = {
+        "l1_passed": ["000013"],
+        "l2_passed": ["000013"],
+        "concept_heat": [],
+        "theme_radar": radar,
+        "df_map": {"000013": _frame(_trend_values())},
+        "financial_map": {},
+        "name_map": {"000013": "主题证据股"},
+    }
+
+    accepted = build_mainline_candidates(concept_map={"000013": ["光刻胶"]}, **common)
+    rejected = build_mainline_candidates(concept_map={"000013": ["染料涂料"]}, **common)
+
+    assert accepted[0]["source"] == "theme_radar"
+    assert "主题依据:光刻胶" in accepted[0]["reasons"]
+    assert rejected == []
 
 
 def test_mainline_can_seed_candidates_from_ths_hot_event_without_concept_map() -> None:
@@ -203,8 +226,8 @@ def test_mainline_event_reversal_enters_tradeable_pool_before_observe() -> None:
     )
 
     assert candidates[0]["code"] == "000006"
-    assert candidates[0]["status"] == "事件主题修复候选"
-    assert "事件主题低位修复" in candidates[0]["entry_type"]
+    assert candidates[0]["status"] == "主题修复候选"
+    assert "主题低位修复" in candidates[0]["entry_type"]
     assert mainline_candidate_entries(candidates, max_count=3)[0]["code"] == "000006"
 
 

@@ -15,7 +15,6 @@ class AShareEntryResearchPolicy:
     entry_weight_multipliers: tuple[tuple[str, str, float], ...] = ()
     max_hold_days_by_regime_signal: tuple[tuple[str, str, int], ...] = ()
     require_neutral_breadth_confirmation: bool = False
-    require_neutral_spring_breadth_confirmation: bool = False
     calibrate_confirmed_score: bool = False
     neutral_breadth_ratio_min: float = 50.0
     neutral_breadth_delta_min: float = 0.0
@@ -25,6 +24,25 @@ class AShareEntryResearchPolicy:
 
 # Research priors only. Production promotion still requires cross-period and
 # walk-forward evidence; a Wyckoff label alone never grants execution priority.
+# 确认信号的类型先验。数值越高表示该形态确认后越值得给分。
+#
+# 2026-08-09 用 run 31293167694（五个市场环境、3594 笔成交）校准了一次：
+#   trend_pullback  prior 1.00   实测 +0.86%  n=171
+#   lps             prior 0.90   实测 -2.95%  n=11   （样本不足，不动）
+#   compression     prior 0.75   实测 +1.44%  n=30   （样本不足，不动）
+#   spring          prior 0.65   实测 -3.15%  n=1285 ← 唯一明确错配
+#   sos             prior 0.35   实测 -0.99%  n=876
+#   evr             prior 0.10   实测 -2.66%  n=1221
+# prior 与实测收益的 Spearman = +0.257，方向大致正确，只有 spring 定得过高。
+#
+# spring 0.65 → 0.15：它是唯一"样本充足且五个周期方向全部为负"的类型
+# （-4.66 / -4.45 / -4.68 / -1.62 / -2.68，周期均值标准差仅 1.39），
+# 对照其余类型 Welch t=-4.26。0.15 使其落到 evr(0.10) 与 sos(0.35) 之间，
+# 与实测末位相称，且与实盘 _trigger_score 的 spring 降权（45→12）方向一致。
+#
+# 未调 trend_pullback / compression / lps：trend_pullback 虽实测最好但逐周期
+# 方向不稳（+3.12 / +0.98 / -9.25 / -5.93 / +12.26，标准差 8.39），
+# compression(30 笔) 与 lps(11 笔) 样本不足，按它们调整等于拟合噪声。
 CONFIRMED_SIGNAL_PRIOR = {
     "trend_pullback": 1.00,
     "trend_lane_pullback": 1.00,
@@ -33,8 +51,8 @@ CONFIRMED_SIGNAL_PRIOR = {
     "mainline": 0.95,
     "lps": 0.90,
     "compression": 0.75,
-    "spring": 0.65,
     "sos": 0.35,
+    "spring": 0.15,
     "evr": 0.10,
 }
 
@@ -47,8 +65,6 @@ def confirmed_signal_allowed(
     policy: AShareEntryResearchPolicy,
     signal_type: object,
     regime: object = "",
-    *,
-    breadth: dict[str, Any] | None = None,
 ) -> bool:
     signal = normalized_signal_type(signal_type)
     regime_key = str(regime or "").strip().upper()
@@ -59,7 +75,7 @@ def confirmed_signal_allowed(
     }
     if signal in blocked or (regime_key, signal) in blocked_pairs:
         return False
-    return not _neutral_spring_needs_breadth_confirmation(policy, signal, regime_key, breadth)
+    return True
 
 
 def entry_weight_multiplier(
@@ -119,20 +135,6 @@ def _number(raw: object) -> float:
     except (TypeError, ValueError):
         return float("-inf")
     return value if value == value else float("-inf")
-
-
-def _neutral_spring_needs_breadth_confirmation(
-    policy: AShareEntryResearchPolicy,
-    signal: str,
-    regime: str,
-    breadth: dict[str, Any] | None,
-) -> bool:
-    return (
-        policy.require_neutral_spring_breadth_confirmation
-        and regime == "NEUTRAL"
-        and signal == "spring"
-        and not _neutral_breadth_confirmed(policy, breadth)
-    )
 
 
 def _neutral_breadth_confirmed(policy: AShareEntryResearchPolicy, breadth: dict[str, Any] | None) -> bool:

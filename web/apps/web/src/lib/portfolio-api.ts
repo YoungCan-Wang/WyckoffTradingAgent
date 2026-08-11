@@ -21,6 +21,9 @@ const positionSchema = z.object({
 
 const portfolioSchema = z.object({
   free_cash: z.number(),
+  total_equity: z.number().nullable().optional(),
+  valuation_updated_at: z.string().nullable().optional(),
+  valuation_warning: z.string().optional(),
   positions: z.array(positionSchema),
 })
 
@@ -29,7 +32,7 @@ const errorSchema = z.object({ error: z.string() })
 export type Position = z.infer<typeof positionSchema>
 export type Portfolio = z.infer<typeof portfolioSchema>
 
-export const EMPTY_PORTFOLIO: Portfolio = { free_cash: 0, positions: [] }
+export const EMPTY_PORTFOLIO: Portfolio = { free_cash: 0, total_equity: null, positions: [] }
 
 export async function requestPortfolio(
   method: 'GET' | 'PUT',

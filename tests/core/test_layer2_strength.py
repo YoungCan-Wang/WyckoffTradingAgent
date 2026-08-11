@@ -7,6 +7,8 @@ from types import SimpleNamespace
 import pandas as pd
 
 from core.layer2_strength import (
+    Layer2SymbolState,
+    _diagnose_momentum,
     build_benchmark_context,
     build_rps_context,
     calc_relative_strength,
@@ -176,3 +178,42 @@ def test_diagnose_layer2_symbol_failure(monkeypatch) -> None:
 
     assert "000001" in rejections
     assert "诊断失败" not in rejections["000001"]
+
+
+def _momentum_state(*, last_close: float, last_ma_long: float, alignment: bool, holding: bool):
+    return Layer2SymbolState(
+        close=pd.Series([last_close]),
+        last_close=last_close,
+        last_ma_short=last_close,
+        last_ma_long=last_ma_long,
+        bullish_alignment=alignment,
+        holding_ma20=holding,
+    )
+
+
+def test_momentum_diagnosis_reports_ma200_overextension() -> None:
+    """回归：被 MA200 乖离上限拦下的票此前显示缺口 0.0% 且原因为空。"""
+    cfg = SimpleNamespace(rps_slow_min=75.0, momentum_bias_200_max=0.25)
+    state = _momentum_state(last_close=125.87, last_ma_long=92.01, alignment=False, holding=True)
+
+    gap, reasons = _diagnose_momentum(cfg, 90.0, True, state)
+
+    assert gap > 0
+    assert any("偏离MA200过高" in reason for reason in reasons)
+
+
+def test_momentum_diagnosis_reports_broken_ma_structure() -> None:
+    cfg = SimpleNamespace(rps_slow_min=75.0, momentum_bias_200_max=0.25)
+    state = _momentum_state(last_close=90.0, last_ma_long=100.0, alignment=False, holding=False)
+
+    gap, reasons = _diagnose_momentum(cfg, 90.0, True, state)
+
+    assert gap > 0
+    assert any("均线结构未确认" in reason for reason in reasons)
+
+
+def test_momentum_diagnosis_stays_clean_when_structure_passes() -> None:
+    cfg = SimpleNamespace(rps_slow_min=75.0, momentum_bias_200_max=0.25)
+    state = _momentum_state(last_close=110.0, last_ma_long=100.0, alignment=True, holding=True)
+
+    assert _diagnose_momentum(cfg, 90.0, True, state) == (0.0, [])

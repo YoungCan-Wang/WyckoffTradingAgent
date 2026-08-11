@@ -16,6 +16,7 @@ from core.constants import (
 from integrations.recommendation_tracking_common import (
     chunked,
     fetch_records_from_table,
+    first_recommend_date_yyyymmdd,
     ohlc_map_from_tickflow_hist,
     pick_close_on_or_before,
     recommend_date_to_yyyymmdd,
@@ -51,8 +52,10 @@ def refresh_tracking_performance(
 
     client = create_admin_client()
     table = TRACKING_TABLE_BY_MARKET[market_key]
-    records = fetch_records_from_table(client, table, "id,code,recommend_date,initial_price")
-    records = latest_market_records(records, max_dates)
+    all_records = fetch_records_from_table(client, table, "id,code,recommend_date,initial_price")
+    # max_dates 只限制「刷新哪些行」；首次推荐日必须用全量历史，否则会把 sticky 锚点算成窗口内最早日。
+    first_dates = first_recommend_dates_by_market_code(all_records, market_key)
+    records = latest_market_records(all_records, max_dates)
     if not records:
         return empty_performance_summary()
 
@@ -61,7 +64,13 @@ def refresh_tracking_performance(
     hist_map = _fetch_histories(api_key, sorted(set(symbol_map.values())), kline_count)
     hist_by_code = {code: hist_map.get(symbol) for code, symbol in symbol_map.items()}
     now_iso = datetime.now(UTC).isoformat()
-    updates, codes_no_data, latest_td = build_market_performance_updates(grouped, hist_by_code, now_iso, market_key)
+    updates, codes_no_data, latest_td = build_market_performance_updates(
+        grouped,
+        hist_by_code,
+        now_iso,
+        market_key,
+        first_dates=first_dates,
+    )
     written = upsert_to_table(client, table, updates, optional_columns=("stop_loss_sim_pct",))
     return performance_summary(records, grouped, written, codes_no_data, latest_td, updates)
 
@@ -89,8 +98,15 @@ def build_us_performance_updates(
     grouped: dict[str, list[dict[str, Any]]],
     hist_map: dict[str, pd.DataFrame],
     now_iso: str,
+    *,
+    first_dates: dict[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], int, str]:
-    return build_market_performance_updates(grouped, hist_map, now_iso, "us")
+    return build_market_performance_updates(grouped, hist_map, now_iso, "us", first_dates=first_dates)
+
+
+def first_recommend_dates_by_market_code(records: list[dict[str, Any]], market: str) -> dict[str, str]:
+    grouped = group_records_by_market_code(records, market)
+    return {code: first_recommend_date_yyyymmdd(rows) for code, rows in grouped.items() if rows}
 
 
 def build_market_performance_updates(
@@ -98,6 +114,8 @@ def build_market_performance_updates(
     hist_map: dict[str, pd.DataFrame | None],
     now_iso: str,
     market: str,
+    *,
+    first_dates: dict[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], int, str]:
     market_key = resolve_tracking_market(market)
     updates: list[dict[str, Any]] = []
@@ -110,14 +128,13 @@ def build_market_performance_updates(
             codes_no_data += 1
             continue
         latest_td = max(latest_td, trade_dates[-1])
+        first_date = (first_dates or {}).get(code) or first_recommend_date_yyyymmdd(rows)
         updates.extend(
-            row for row in (_build_performance_update(row, code, ohlc, now_iso, market_key) for row in rows) if row
+            row
+            for row in (_build_performance_update(row, code, ohlc, now_iso, market_key, first_date) for row in rows)
+            if row
         )
     return updates, codes_no_data, latest_td
-
-
-def empty_us_performance_summary() -> dict[str, Any]:
-    return empty_performance_summary()
 
 
 def empty_performance_summary() -> dict[str, Any]:
@@ -132,17 +149,6 @@ def empty_performance_summary() -> dict[str, Any]:
         "mfe_ge_10": 0,
         "mae_le_neg5": 0,
     }
-
-
-def us_performance_summary(
-    records: list[dict[str, Any]],
-    grouped: dict[str, list[dict[str, Any]]],
-    written: int,
-    codes_no_data: int,
-    latest_trade_date: str,
-    updates: list[dict[str, Any]],
-) -> dict[str, Any]:
-    return performance_summary(records, grouped, written, codes_no_data, latest_trade_date, updates)
 
 
 def performance_summary(
@@ -186,33 +192,51 @@ def _build_performance_update(
     ohlc: dict[str, dict[str, float]],
     now_iso: str,
     market: str,
+    first_recommend_date: str = "",
 ) -> dict[str, Any] | None:
     trade_dates = sorted(ohlc)
     recommend_date = recommend_date_to_yyyymmdd(row.get("recommend_date"))
-    entry_date = pick_close_on_or_before(trade_dates, recommend_date)
-    if not entry_date:
+    event_date = pick_close_on_or_before(trade_dates, recommend_date)
+    if not event_date:
         return None
-    entry = safe_float(ohlc.get(entry_date, {}).get("close"), 0.0)
-    if entry <= 0:
-        entry = safe_float(row.get("initial_price"), 0.0)
+    event_entry = safe_float(ohlc.get(event_date, {}).get("close"), 0.0)
+    sticky_date = pick_close_on_or_before(trade_dates, first_recommend_date or recommend_date)
+    sticky_entry = safe_float(ohlc.get(sticky_date, {}).get("close"), 0.0) if sticky_date else 0.0
+    if sticky_entry <= 0:
+        sticky_entry = safe_float(row.get("initial_price"), 0.0)
+    if event_entry <= 0:
+        event_entry = sticky_entry
+    if sticky_entry <= 0 or event_entry <= 0:
+        return None
     code_value = int(code) if market == "cn" and code.isdigit() else code
     return _performance_row(
-        row, code_value, recommend_date, entry, _window_rows(trade_dates, entry_date, ohlc), now_iso
+        row,
+        code_value,
+        recommend_date,
+        sticky_entry,
+        event_entry,
+        _window_rows(trade_dates, event_date, ohlc),
+        now_iso,
     )
 
 
-STOP_LOSS_SIM_PCT = -9.0  # 与 Step4 港/美/A 股共用的硬止损口径（STEP4_BUY_HARD_STOP_PCT）对齐
+# 固定的复盘标尺，**不等于**生产止损：Step4 的 STEP4_BUY_HARD_STOP_PCT 是 -12% 灾难地板。
+# 两者回答不同问题，此处刻意不跟随环境变量，否则改一次参数就会让整列历史值失去可比性。
+# 阈值本身也不是调优结果——实盘样本上收益对止损松紧单调（越紧越好，一路到 -4%），
+# 说明信号本身是负漂移，没有可识别的最优点，取整到 -9% 只是一把固定尺子。
+STOP_LOSS_SIM_PCT = -9.0
 
 
 def _performance_row(
     row: dict[str, Any],
     code: int | str,
     recommend_date: str,
-    entry: float,
+    sticky_entry: float,
+    event_entry: float,
     window: list[tuple[str, dict[str, float]]],
     now_iso: str,
 ) -> dict[str, Any] | None:
-    if entry <= 0 or not window:
+    if sticky_entry <= 0 or event_entry <= 0 or not window:
         return None
     high_date, high_row = max(window, key=lambda item: item[1]["high"])
     low_date, low_row = min(window, key=lambda item: item[1]["low"])
@@ -224,17 +248,17 @@ def _performance_row(
         "id": row.get("id"),
         "code": code,
         "recommend_date": int(recommend_date) if recommend_date.isdigit() else None,
-        "initial_price": round(entry, 4),
+        "initial_price": round(sticky_entry, 4),
         "current_price": round(current_price, 4),
-        "change_pct": round((current_price / entry - 1.0) * 100.0, 2),
-        "mfe_pct": round((mfe_price / entry - 1.0) * 100.0, 2),
-        "mae_pct": round((mae_price / entry - 1.0) * 100.0, 2),
+        "change_pct": round((current_price / sticky_entry - 1.0) * 100.0, 2),
+        "mfe_pct": round((mfe_price / event_entry - 1.0) * 100.0, 2),
+        "mae_pct": round((mae_price / event_entry - 1.0) * 100.0, 2),
         "range_amp_pct": round((mfe_price / mae_price - 1.0) * 100.0, 2) if mae_price > 0 else 0.0,
         "mfe_price": round(mfe_price, 4),
         "mae_price": round(mae_price, 4),
         "mfe_date": int(high_date),
         "mae_date": int(low_date),
-        "stop_loss_sim_pct": round(_simulate_stop_loss_pct(entry, window), 2),
+        "stop_loss_sim_pct": round(_simulate_stop_loss_pct(event_entry, window), 2),
         "performance_days": len(window),
         "performance_updated_at": now_iso,
         "updated_at": now_iso,
