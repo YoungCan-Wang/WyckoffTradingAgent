@@ -2,6 +2,8 @@
 
 # WyckoffAgent — Open-Source Wyckoff Trading Agent
 
+[![MCP Toplist](https://mcptoplist.com/badge/glama%2FYoungCan-Wang%2FWyckoffTradingAgent.svg)](https://mcptoplist.com/server/glama%2FYoungCan-Wang%2FWyckoffTradingAgent)
+
 **A 股 / 港股 / 美股威科夫量价分析智能体 — 你说人话，他读盘面。**
 
 [![PyPI](https://img.shields.io/pypi/v/youngcan-wyckoff-analysis?color=blue)](https://pypi.org/project/youngcan-wyckoff-analysis/)
