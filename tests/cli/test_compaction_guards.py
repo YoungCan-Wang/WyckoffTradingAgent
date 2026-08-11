@@ -10,11 +10,22 @@ from cli.compaction import (
     MIN_SUMMARY_CHARS,
     compact_messages,
     enforce_context_limit,
+    estimate_text_tokens,
     estimate_tokens,
     get_compact_threshold,
 )
 
 _MODEL = "test-model"
+
+# 实测于 poolside/laguna-xs-2.1（OpenRouter），(文本, 真实 input_tokens)。
+# 估算必须 >= 真实值：低估会让超限兜底放过真正超窗的请求，直接吃 400。
+_REAL_TOKEN_SAMPLES = [
+    ("纯中文", "华勤技术奕瑞科技持仓复盘主力放量出货震荡洗盘吸筹派发" * 200, 6_622),
+    ("中文长句", "今天大盘出现明显下杀，创业板指数跌幅扩大，市场宽度急剧收窄，主力资金转入派发阶段。" * 80, 3_541),
+    ("纯英文", "The composite man accumulates supply before markup begins in earnest. " * 120, 1_461),
+    ("中英混合", "华勤技术 603296 close=76.02 vol_ratio=3.2 SOS triggered 主力放量出货 " * 120, 4_101),
+    ("JSON", '{"symbol":"603296.SH","close":76.02,"名称":"华勤技术"},' * 150, 3_772),
+]
 
 
 def _history(tool_rounds: int, *, chunk: int = 3000) -> list[dict]:
@@ -126,6 +137,51 @@ class TestEnforceContextLimit:
         messages = _history(30)
         out, _ = enforce_context_limit(messages, _MODEL, window)
         assert estimate_tokens(out) <= get_compact_threshold(_MODEL, window)
+
+
+class TestEstimatorIsConservative:
+    """估算必须 >= 真实 token 数，否则兜底形同虚设。"""
+
+    @pytest.mark.parametrize(("label", "text", "actual"), _REAL_TOKEN_SAMPLES)
+    def test_never_underestimates_real_tokens(self, label, text, actual):
+        assert estimate_text_tokens(text) >= actual, f"{label} 低估：兜底会放过超窗请求"
+
+    def test_cjk_counted_above_one_token_per_char(self):
+        # 原式 len//2 把中文按 0.5 token/字算，实测约 1.27，低估 2.5 倍。
+        assert estimate_text_tokens("持仓复盘" * 100) > 400
+
+    def test_ascii_not_regressed(self):
+        text = "The composite man accumulates supply. " * 50
+        assert estimate_text_tokens(text) == max(len(text) // 2, len(text.encode("utf-8")) // 3)
+
+    def test_empty_and_mixed(self):
+        assert estimate_text_tokens("") == 0
+        # 混合文本必须两部分都计入，不能只算一边。
+        assert estimate_text_tokens("持仓abc") > estimate_text_tokens("abc")
+
+    def test_tool_call_args_use_same_estimator(self):
+        messages = [
+            {"role": "assistant", "content": "", "tool_calls": [{"name": "p", "args": {"名称": "华勤技术" * 50}}]}
+        ]
+        assert estimate_tokens(messages) > 200
+
+
+class TestOverflowRegression:
+    def test_history_that_gateway_rejected_is_now_truncated(self):
+        """回归：这份历史旧估算 228,014 < 阈值被放行，实际 274,938 tokens 被网关 400。"""
+        unit = "华勤技术奕瑞科技持仓复盘主力放量出货震荡洗盘吸筹派发形态确认"
+        messages: list[dict] = [{"role": "user", "content": "起始"}]
+        for i in range(76):
+            messages.append(
+                {"role": "assistant", "content": "", "tool_calls": [{"id": f"c{i}", "name": "p", "args": {}}]}
+            )
+            messages.append({"role": "tool", "tool_call_id": f"c{i}", "name": "p", "content": unit * 100})
+
+        limit = get_compact_threshold(_MODEL, 262_144)
+        assert estimate_tokens(messages) > limit, "新估算应识别出这份历史超窗"
+        kept, info = enforce_context_limit(messages, _MODEL, 262_144)
+        assert info is not None
+        assert estimate_tokens(kept) <= limit
 
 
 class _RecordingScratchpad:
