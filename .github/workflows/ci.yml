@@ -40,10 +40,9 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install ruff
-        # 必须钉版本：此前未钉导致 CI 静默升到 0.16.2，而 0.16 起 `ruff format`
-        # 默认会格式化 Markdown 里的代码块，于本地 0.15 通过的分支在 CI 变红，
-        # 且失败点与改动无关（docs/*.md）。升级 ruff 应是显式动作。
-        run: python -m pip install "ruff==0.15.12"
+        # 钉版本：与 pyproject `[dev]` / pre-commit 对齐。0.16 起会格式化 Markdown
+        # 代码块，升级时需同步 `ruff format` 全仓（含 docs）。
+        run: python -m pip install "ruff==0.16.2"
       - name: Ruff lint
         run: ruff check .
       - name: Ruff format
