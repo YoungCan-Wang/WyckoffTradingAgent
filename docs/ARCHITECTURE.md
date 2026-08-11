@@ -87,6 +87,7 @@ Worker 负责鉴权、输入校验、队列控制面和 HMAC 签名。Vercel Nod
 |---|---:|---|
 | `CHAT_DAILY_LIMIT_PER_USER` | `80` | 每个用户每天允许的聊天 POST 数 |
 | `CHAT_MIN_INTERVAL_MS` | `2500` | 同一用户两次聊天 POST 的最小间隔 |
+| `CHAT_TOOL_APPROVAL_SECRET` | Worker secret | Web 工具审批签名专用随机密钥；建议独立配置。迁移期缺失时从 service-role key 做单向域分离派生，不直接复用或传播原值 |
 | `UPSTASH_REDIS_REST_URL` | 未设置 | Upstash Redis REST 地址；与 Token 同时存在时启用共享限流 |
 | `UPSTASH_REDIS_REST_TOKEN` | 未设置 | Upstash Redis REST Token，必须通过 Worker secret 注入 |
 | `AGENT_SANDBOX_ENABLED` | `false` | 显式开启白名单 Agent 沙箱端点；本地/生产凭据与一次真实调用验证通过后才打开 |
@@ -108,7 +109,7 @@ Worker 负责鉴权、输入校验、队列控制面和 HMAC 签名。Vercel Nod
 
 每次 `main` 上的 CI 成功后，`Web deployment health` 工作流会从 GitHub runner 轮询 Worker 的公开 `/api/health` 与 Pages 的 `/chat`，直到两者同时通过；也可在 Actions 页面手动运行。它只验证部署可达性，不会调用需要登录的聊天、持仓或沙箱端点，也不会创建沙箱。
 
-本地开发可复制 `web/apps/api/.dev.vars.example` 为 `.dev.vars`。首次部署异步 Agent 前，先在 `web/apps/api/` 创建两个队列，再部署 Worker：`pnpm exec wrangler queues create wyckoff-agent-runs`、`pnpm exec wrangler queues create wyckoff-agent-runs-dlq`、`pnpm run deploy`。部署时不要把密钥写入 `wrangler.toml`：在 Vercel 项目将 `SANDBOX_BRIDGE_SECRET` 写入 production 环境变量，并在 `web/apps/api/` 下分别执行 `pnpm exec wrangler secret put UPSTASH_REDIS_REST_URL`、`pnpm exec wrangler secret put UPSTASH_REDIS_REST_TOKEN` 和 `pnpm exec wrangler secret put SANDBOX_BRIDGE_SECRET`。Vercel bridge 在生产环境由平台 OIDC 自动获取短期 Sandbox 凭据，Cloudflare Worker 不再保留 Vercel Access Token。
+本地开发可复制 `web/apps/api/.dev.vars.example` 为 `.dev.vars`。首次部署异步 Agent 前，先在 `web/apps/api/` 创建两个队列，再部署 Worker：`pnpm exec wrangler queues create wyckoff-agent-runs`、`pnpm exec wrangler queues create wyckoff-agent-runs-dlq`、`pnpm run deploy`。部署时不要把密钥写入 `wrangler.toml`：在 Vercel 项目将 `SANDBOX_BRIDGE_SECRET` 写入 production 环境变量，并在 `web/apps/api/` 下分别执行 `pnpm exec wrangler secret put CHAT_TOOL_APPROVAL_SECRET`、`pnpm exec wrangler secret put UPSTASH_REDIS_REST_URL`、`pnpm exec wrangler secret put UPSTASH_REDIS_REST_TOKEN` 和 `pnpm exec wrangler secret put SANDBOX_BRIDGE_SECRET`。Vercel bridge 在生产环境由平台 OIDC 自动获取短期 Sandbox 凭据，Cloudflare Worker 不再保留 Vercel Access Token。
 
 **零成本执行面（Hobby）**：系统控制面继续跑在 Cloudflare Workers/Pages + Upstash 免费额度；Vercel 只用于按需 microVM。Hobby 套餐每月包含 Sandbox 额度（约 5 小时 Active CPU、420 GB-hour 内存、5,000 次创建、20 GB 传输），超限后创建会被暂停而不是自动扣费。为压低用量，当前实现固定 `resources.vcpus=1`、`networkPolicy=deny-all`、`persistent=false`、60s 超时，并在结束后 `stop` + `delete`。
 
@@ -710,9 +711,89 @@ TTL：SOS 2 天、Spring 3 天、LPS 3 天、EVR 2 天、Compression 3 天。
 
 基于日线的持仓健康诊断，替代了原尾盘分钟线监控。`confirmed` 候选的买入执行采用次日开盘价策略：日线报告会展示候选股的现价、参考止损位和「按次日开盘价附近买入」提示。GitHub Actions 通过 `holding_diagnosis.yml` 触发，输出 HOLD / ADD / TRIM 建议。
 
-持仓诊断默认以 -12% 为固定止损兜底；ATR 放宽需显式开启且受上限约束。非主线满 5 日建议时间止盈。
+持仓诊断默认以 -12% 为固定止损兜底；ATR 放宽需显式开启且受上限约束。非主线满 5 日进入时间复核，
+但 LLM 只有在 `CONFIRMED_BREAK` / `HARD_RISK` 且执行时机成立时才能给出 TRIM/EXIT，不能按持有天数机械卖出。
+
+Step4、持仓诊断和 Web 投研提示词共享证据契约：默认 `capital_scope=account_only`，账户现金与权重不代表
+用户全部可投资资产；单股先独立看基本面、估值、事件与趋势，再看账户角色。`confidence` 表示证据支持度，
+不是上涨概率；行情、基本面、估值、新闻缺失时必须显式标记。模型卖出同时携带 `signal_severity` 与
+`action_timing`，解析器把 WARNING 或 `WAIT/CLOSE_CONFIRM` 自动降级为 HOLD，系统硬止损仍可覆盖模型。
 
 ## Pipeline（定时任务）
+
+### 本地调度：常驻 daemon
+
+本机定时任务由 `cli/daemon.py` 常驻进程驱动，不再依赖 TUI 存活。三层分工：
+
+| 模块 | 职责 |
+|------|------|
+| `cli/scheduler.py` | 纯策略：cron 匹配、到期判定（`due_schedules`）、补跑窗口（`pending_check_minutes`）。无副作用，可独立测试 |
+| `cli/daemon.py` | 主循环 + `fcntl.flock` 单例 + SIGTERM 优雅退出 + 日志轮转 |
+| `cli/headless.py` | `run_once()` 无界面跑一轮 `AgentRuntime`，注入无人监督下的工具闸门 |
+
+由 launchd（`com.wyckoff.daemon`，`KeepAlive.SuccessfulExit=false`）保活，
+`scripts/daemon_install.sh` 安装。**不使用** `StartCalendarInterval` 逐条映射 cron ——
+保持单一常驻进程读 `schedules.json`，避免调度真相分裂成 launchd 和 JSON 两处。
+
+daemon 持锁时 TUI 的 `_check_schedules` 直接返回，让出调度权。两边同时跑会重复触发，
+并且都会 `save_schedules` 覆盖对方的 `last_fired`。
+
+### 无人监督的写操作边界
+
+`cli/approval_policy.classify()` 把高风险工具调用分三档：`auto` / `review` / `confirm`。
+daemon 只放行 `auto`，其余写入 `~/.wyckoff/approvals.db` 等人批准，12 小时过期。
+`approve list` 展示脱敏后的完整参数；`approve ok` 原子认领一次后通过正常 ToolRegistry 执行并记录结果，
+执行失败不自动重试，避免真实成交或外部写入被重复提交。
+详见 [GLOSSARY.md](../GLOSSARY.md) 第 16 节。
+
+`auto` 按**工具身份**判定（目前仅 `set_stop_loss`），不按参数字段。原因是字段检查
+防不住批量 `items` —— 30 只股票的调仓在顶层只有一个 `items` 键。窄工具的安全性来自
+它的签名根本不接受股数、成本、现金，这是结构性的，不依赖调用方检查得对。
+
+`update_portfolio` 没有 `stop_loss` 参数，所以补录止损必须走 `set_stop_loss`；
+Step4 那条 `update_position_stops` 路径需要 `WYCKOFF_WRITE_CONTEXT=server_job`，
+agent 工具层碰不到。两条路写同一列但授权模型不同。
+
+闸门本身是既有机制（`ToolRegistry.set_confirm_callback`），daemon 只注入回调，
+不改执行语义。回执新增 `queued` 档，与 `deny` / `timeout` 分开 ——
+措辞混用会让模型把用户从未做过的决定写进回复。
+
+`ask_user_question` 在无回调时会回落读 stdin，daemon 必须注入超时哨兵，否则永久挂死。
+
+### MCP 入口：写操作默认拒绝
+
+MCP server 走 ToolSurface，没有确认弹窗也没有待批队列。`tools/write_guard.py`
+对 `WRITE_TOOLS` 默认拒绝，显式设 `WYCKOFF_MCP_ALLOW_WRITES=1` 才放行 ——
+否则任何 MCP 客户端（Claude Desktop、Cursor）都能绕过审批直接清仓。
+
+`tools/` 不能 import `cli/`（架构边界测试），所以工具名单在两处各存一份，
+由 `tests/test_mcp_write_guard.py` 断言两者一致。
+
+`market_regime` / `wyckoff_diagnose` / `intraday_analysis` / `intraday_rescue_check`
+的实现已收敛到 `agents/engine_tools.py`，MCP 与 Agent 共用一份；
+`run_funnel_simulation` 与 `screen_stocks` 底层同为 `workflows.wyckoff_funnel`，不再另立入口。
+
+### 客户端方向：接入外部 MCP server
+
+与上面相反的方向 —— 本项目作为客户端连第三方 server。三个模块：
+
+| 模块 | 职责 |
+|------|------|
+| `cli/mcp_config.py` | `~/.wyckoff/mcp_servers.json` 读写；自建 server 识别（`command` 与 `args` 中的路径都查） |
+| `cli/mcp_policy.py` | 读写启发式；未知一律按写 |
+| `cli/mcp_client.py` | 连接、发现、同步调用桥接、结果归一化 |
+
+外部工具在 **ToolRegistry 实例上**合并进 `schemas()`，不改模块级 `TOOL_SCHEMAS` ——
+后者会跨实例污染，测试对此有断言。`execute()` 按 `mcp__` 前缀分流，
+但**先过 `_confirm_high_risk_call`**：外部写工具必须能被闸门拦住，
+不能因为来自 MCP 就跳过分级。
+
+同步桥接只有一种正确写法（anyio portal + `wrap_async_context_manager`），
+原因见 [GLOSSARY.md](../GLOSSARY.md) 第 17 节。`mcp` 是可选依赖，
+未安装时外部功能静默关闭，原生工具不受影响。
+
+生命周期：TUI 启动时连、退出时断；headless 每轮结束在 `finally` 里回收 ——
+外部 server 是子进程，daemon 每次触发不回收就会累积泄漏。
 
 ### 飞书报告卡片
 
@@ -774,7 +855,9 @@ tickflow                                        （1 分钟盘中数据，供个
 
 `integrations/rag_veto.py` — 新闻否决层：读取 AkShare/东方财富个股新闻，按 URL 或标准化标题去重后做相关性、关键词和语义检查；来源失败时 fail-open，不阻断 Step3。
 
-CLI 公开信息检索走 `browser_research`：Playwright 附着本机 Chrome CDP（默认 `http://127.0.0.1:9222`，可用 `WYCKOFF_BROWSER_CDP_URL` 覆盖），搜索后打开前几条结果并抽取正文；Web / MCP 不暴露该工具。安装：`pip install 'youngcan-wyckoff-analysis[browser]' && playwright install chromium`，并用 `/browser` 查看连接状态。
+CLI 公开信息检索走 `browser_research`：Playwright 附着本机 Chrome CDP（默认 `http://127.0.0.1:9222`，可用 `WYCKOFF_BROWSER_CDP_URL` 覆盖），搜索后打开前几条结果并抽取正文；Web / MCP 不暴露该工具。`install.sh` / `wyckoff update` 默认安装 `youngcan-wyckoff-analysis[browser]` 并执行 `python -m playwright install chromium`（装进当前 `wyckoff` 解释器，通常是 `~/.wyckoff/venv`）。
+
+CDP 未就绪时，TUI 会弹窗请用户授权，同意后自动拉起**独立调试 Chrome**（专用 profile：`~/.wyckoff/chrome-cdp`，不碰日常浏览数据）；授权对本 TUI 会话有效。也可主动执行 `/browser start`。`/browser status|hint|stop` 查看状态或关闭提示。无 TUI 回调的环境不会静默开浏览器。
 
 Web 读盘室在用户选择 DeepSeek、模型为 `deepseek-v4-flash`、且 `base_url` origin 为 `https://api.deepseek.com` 时，改走 Responses API（`https://api.deepseek.com/responses`），并注入服务端执行的 `web_search`，用于 IPO/舆情/公告等公开网页检索；行情、持仓、形态复盘仍走本地工具。搜索结果仅当轮有效（SDK/无状态 API 不会跨轮回传完整 `web_search_call`）；切到 Chat Completions 模型或跨供应商 fallback 前会把历史中的 provider-executed `web_search` 部件折叠成短文本，避免悬空 `tool_calls` 导致 400。其它 DeepSeek 模型、非官方 origin（如 ark 代理）与其它供应商继续使用 Chat Completions；嵌套研报/诊断 LLM 调用始终保持 `/v1/chat/completions`。
 
@@ -867,7 +950,7 @@ API 响应同时返回 `total_equity`、`valuation_updated_at`；刷新失败时
 
 ```bash
 wyckoff                          # 启动 TUI 对话（默认）
-wyckoff update                   # 升级到最新版
+wyckoff update                   # 升级到最新版（含 [browser] + Chromium）
 wyckoff auth <email> <password>  # 登录
 wyckoff auth logout              # 登出
 wyckoff auth status              # 查看登录状态

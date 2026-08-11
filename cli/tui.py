@@ -15,7 +15,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 from rich.highlighter import Highlighter
@@ -1740,16 +1740,6 @@ class SelectorScreen(ModalScreen):
 
 
 _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-_SCHEDULE_CHECK_MAX_CATCHUP_MINUTES = 15
-
-
-def _pending_schedule_check_minutes(last_check_at: datetime | None, now: datetime) -> list[datetime]:
-    """Minutes to evaluate since the last check, so a delayed timer tick (e.g. blocked by a
-    long-running task) doesn't silently skip a cron minute that fell in the gap."""
-    if last_check_at is None or last_check_at >= now:
-        return [now]
-    gap_minutes = min(int((now - last_check_at).total_seconds() // 60), _SCHEDULE_CHECK_MAX_CATCHUP_MINUTES)
-    return [now - timedelta(minutes=offset) for offset in range(gap_minutes - 1, -1, -1)]
 
 
 _DEFAULT_MODEL_BY_PROVIDER = {
@@ -1931,6 +1921,57 @@ class ToolConfirmScreen(ModalScreen[dict]):
             with contextlib.suppress(json.JSONDecodeError):
                 modified = json.loads(event.value)
         self.dismiss({"action": "edit", "modified_args": modified})
+
+    def action_cancel(self) -> None:
+        self.dismiss({"action": "deny"})
+
+
+class BrowserCdpConsentScreen(ModalScreen[dict]):
+    """授权启动独立调试 Chrome（专用 profile，本会话有效）。"""
+
+    DEFAULT_CSS = """
+    BrowserCdpConsentScreen {
+        align: center middle;
+    }
+    #cdp-consent-box {
+        width: 68;
+        max-height: 16;
+        background: $surface;
+        border: thick $accent;
+        padding: 1 2;
+    }
+    #cdp-consent-title {
+        text-style: bold;
+        margin-bottom: 1;
+    }
+    #cdp-consent-body {
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+    """
+
+    BINDINGS = [Binding("escape", "cancel", show=False)]
+
+    def compose(self) -> ComposeResult:
+        from integrations.browser_cdp import chrome_cdp_profile_dir
+
+        profile = chrome_cdp_profile_dir()
+        with Vertical(id="cdp-consent-box"):
+            yield Static("⚠ [bold]浏览器搜索需要本机调试 Chrome[/bold]", id="cdp-consent-title")
+            yield Static(
+                "将启动独立 Chrome（专用配置目录，不碰你日常浏览数据）：\n"
+                f"  {profile}\n"
+                "同意后本会话内可自动重拉，无需再确认。",
+                id="cdp-consent-body",
+            )
+            yield OptionList(
+                Option("允许并启动", id="allow"),
+                Option("不允许", id="deny"),
+                id="cdp-consent-options",
+            )
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss({"action": event.option_id or "deny"})
 
     def action_cancel(self) -> None:
         self.dismiss({"action": "deny"})
@@ -2124,6 +2165,7 @@ class WyckoffTUI(App):
         self._pending_user_question: _PendingUserQuestion | None = None
         self._pending_resume_checkpoint = None
         self._session_id = uuid.uuid4().hex[:12]
+        self._browser_cdp_autostart_allowed = False
         self._spinner_idx = 0
         self._spinner_label = ""
         self._agent_log = _get_agent_logger()
@@ -2136,6 +2178,8 @@ class WyckoffTUI(App):
             self._tools.set_background_manager(self._bg_manager, self._on_bg_complete)
             self._tools.set_confirm_callback(self._request_tool_confirm)
             self._tools.set_ask_user_question_callback(self._request_user_question)
+            self._tools._tool_context.state["ensure_browser_cdp"] = self._ensure_browser_cdp_consent
+        self._mcp_manager = None
         # 交互式输入状态
         self._input_mode = _InputState.NONE
         self._input_buf: dict[str, str] = {}
@@ -2285,6 +2329,7 @@ class WyckoffTUI(App):
             logger.debug("load saved theme failed", exc_info=True)
 
         self.set_interval(0.1, self._tick_global_spinner)
+        self._start_external_mcp()
 
         log = self.query_one("#chat-log", ChatLog)
         from importlib.metadata import version as _ver
@@ -2403,6 +2448,29 @@ class WyckoffTUI(App):
             return {"action": "timeout"}
         return result[0] or {"action": "deny"}
 
+    def _ensure_browser_cdp_consent(self) -> str:
+        """供 browser_research 在 worker 线程调用：本会话授权后可自动拉起 CDP Chrome。"""
+        if self._browser_cdp_autostart_allowed:
+            return "allow"
+        event = threading.Event()
+        result: list[dict | None] = [None]
+
+        def _on_dismiss(choice: dict) -> None:
+            result[0] = choice
+            event.set()
+
+        def _show() -> None:
+            self.push_screen(BrowserCdpConsentScreen(), _on_dismiss)
+
+        self.call_from_thread(_show)
+        if not event.wait(timeout=120):
+            return "timeout"
+        action = str((result[0] or {}).get("action") or "deny")
+        if action == "allow":
+            self._browser_cdp_autostart_allowed = True
+            return "allow"
+        return "deny"
+
     def _request_user_question(
         self,
         question: str,
@@ -2477,9 +2545,41 @@ class WyckoffTUI(App):
         except Exception:
             logger.debug("save session summary failed", exc_info=True)
 
+    def _start_external_mcp(self) -> None:
+        """连接用户配置的外部 MCP server。失败只记日志，不影响原生工具。"""
+        try:
+            from cli.mcp_client import McpClientManager
+            from cli.mcp_config import enabled_servers
+
+            servers = enabled_servers()
+            if not servers or not self._tools:
+                return
+            manager = McpClientManager(servers)
+            manager.start()
+            tools = manager.tools()
+            if not tools:
+                manager.stop()
+                return
+            self._mcp_manager = manager
+            self._tools.set_mcp_manager(manager)
+            log = self.query_one("#chat-log", ChatLog)
+            log.write(Text.from_markup(f"[dim]◈ 外部 MCP：{len(tools)} 个工具已接入[/dim]"))
+        except Exception:
+            logger.warning("external mcp start failed", exc_info=True)
+
+    def _stop_external_mcp(self) -> None:
+        if self._mcp_manager is None:
+            return
+        try:
+            self._mcp_manager.stop()
+        except Exception:
+            logger.debug("external mcp stop failed", exc_info=True)
+        self._mcp_manager = None
+
     def _save_and_exit(self, *, force: bool = False) -> None:
         if force:
             self._cancel_event.set()
+        self._stop_external_mcp()
         self._save_memory_async(wait_timeout=1 if force else 5, skip_layers=True)
         self.exit(return_code=130 if force else 0)
         if force:
@@ -2849,7 +2949,7 @@ class WyckoffTUI(App):
                 "  /workflow— workflow（approve/reload/restart/pause/stop/save/run）\n"
                 "  /schedule— 定时任务（list/status/run/add/rm/on/off）\n"
                 "  /doctor  — 模型与数据源健康检查\n"
-                "  /browser — 本机 Chrome CDP 状态与启动提示\n"
+                "  /browser — 本机 Chrome CDP（status|start|hint|stop）\n"
                 "  /steer   — 忙时注入转向指令（本轮生效；也可用 !指令）\n"
                 "  /resume  — 恢复历史对话\n"
                 "  /fork    — 分叉当前会话\n"
@@ -4136,21 +4236,76 @@ class WyckoffTUI(App):
                 )
 
     def _handle_browser_cmd(self, raw: str, log) -> None:
-        from integrations.browser_cdp import browser_cdp_status, chrome_cdp_launch_hint
+        from integrations.browser_cdp import (
+            browser_cdp_status,
+            chrome_cdp_launch_hint,
+            chrome_cdp_profile_dir,
+        )
 
         parts = raw.strip().split()
         sub = parts[1] if len(parts) > 1 else "status"
-        if sub not in {"status", "hint"}:
-            log.write(Text.from_markup("[dim]/browser 用法: status | hint[/dim]"))
+        if sub not in {"status", "hint", "start", "stop"}:
+            log.write(Text.from_markup("[dim]/browser 用法: status | start | hint | stop[/dim]"))
+            return
+        if sub == "hint":
+            log.write(Text.from_markup(f"\n[dim]{escape(chrome_cdp_launch_hint())}[/dim]"))
+            return
+        if sub == "stop":
+            log.write(
+                Text.from_markup(
+                    "\n[dim]请直接关闭专用调试 Chrome 窗口"
+                    f"（配置目录: {escape(chrome_cdp_profile_dir())}）。不会结束你的日常 Chrome。[/dim]"
+                )
+            )
+            return
+        if sub == "start":
+            self._browser_cdp_start_from_ui(log)
             return
         status = browser_cdp_status()
         log.write(Text.from_markup("\n[bold]本机 Chrome CDP[/bold]"))
         log.write(Text.from_markup(f"  端点: {escape(str(status.get('cdp_url') or ''))}"))
+        session = "已授权自动拉起" if self._browser_cdp_autostart_allowed else "未授权自动拉起"
+        log.write(Text.from_markup(f"  本会话: {escape(session)}"))
         if status.get("ok"):
             log.write(Text.from_markup(f"  [green]已连接[/green] · {escape(str(status.get('browser') or 'Chrome'))}"))
         else:
             log.write(Text.from_markup(f"  [yellow]未连接[/yellow] · {escape(str(status.get('error') or 'unknown'))}"))
-            log.write(Text.from_markup(f"\n[dim]{escape(chrome_cdp_launch_hint())}[/dim]"))
+            log.write(Text.from_markup("  [dim]可执行 /browser start，或在浏览器搜索时按提示授权[/dim]"))
+
+    def _browser_cdp_start_from_ui(self, log) -> None:
+        """主线程入口：不阻塞 event loop，授权后回调里 launch。"""
+        from integrations.browser_cdp import browser_cdp_status, ensure_cdp_session
+
+        log.write(Text.from_markup("\n[bold]启动本机 Chrome CDP[/bold]"))
+        status = browser_cdp_status()
+        if status.get("ok"):
+            log.write(Text.from_markup(f"  [green]已连接[/green] · {escape(str(status.get('browser') or 'Chrome'))}"))
+            return
+
+        def _report(ensured: dict) -> None:
+            if ensured.get("ok"):
+                launched = "已拉起并连接" if ensured.get("launched") else "已连接"
+                log.write(
+                    Text.from_markup(f"  [green]{launched}[/green] · {escape(str(ensured.get('browser') or 'Chrome'))}")
+                )
+                return
+            log.write(Text.from_markup(f"  [yellow]失败[/yellow] · {escape(str(ensured.get('error') or ''))}"))
+            if ensured.get("hint"):
+                log.write(Text.from_markup(f"  [dim]{escape(str(ensured.get('hint')))}[/dim]"))
+
+        if self._browser_cdp_autostart_allowed:
+            _report(ensure_cdp_session(lambda: "allow"))
+            return
+
+        def _on_dismiss(choice: dict) -> None:
+            action = str((choice or {}).get("action") or "deny")
+            if action != "allow":
+                log.write(Text.from_markup("  [dim]已取消启动[/dim]"))
+                return
+            self._browser_cdp_autostart_allowed = True
+            _report(ensure_cdp_session(lambda: "allow"))
+
+        self.push_screen(BrowserCdpConsentScreen(), _on_dismiss)
 
     def _handle_sched_input(self, mode: str, text: str, log, inp) -> None:
         if mode == _InputState.SCHED_ID:
@@ -4279,19 +4434,20 @@ class WyckoffTUI(App):
             logger.debug("auto resume check failed", exc_info=True)
 
     def _check_schedules(self) -> None:
-        from cli.scheduler import cron_matches_now, save_schedules
+        from cli.daemon import is_daemon_running
+        from cli.scheduler import due_schedules, save_schedules
+
+        # daemon 持锁时它已在跑同一批任务；两边都跑会重复触发并互相覆盖 last_fired。
+        if is_daemon_running():
+            self._last_schedule_check_at = datetime.now()
+            return
 
         now = datetime.now()
         fired = False
-        for minute in _pending_schedule_check_minutes(self._last_schedule_check_at, now):
-            minute_key = minute.strftime("%Y-%m-%dT%H:%M")
-            for s in self._schedules:
-                if not s.enabled or s.last_fired.startswith(minute_key):
-                    continue
-                if cron_matches_now(s.cron, at=minute):
-                    s.last_fired = minute_key
-                    fired = True
-                    self._fire_schedule(s)
+        for sched, minute_key in due_schedules(self._schedules, last_check_at=self._last_schedule_check_at, now=now):
+            sched.last_fired = minute_key
+            fired = True
+            self._fire_schedule(sched)
         self._last_schedule_check_at = now
         if fired:
             save_schedules(self._schedules)

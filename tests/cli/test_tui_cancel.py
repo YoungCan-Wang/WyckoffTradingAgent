@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from cli.tui import _pending_schedule_check_minutes, _should_force_exit_busy_cancel
+from cli.scheduler import pending_check_minutes as _pending_schedule_check_minutes
+from cli.tui import _should_force_exit_busy_cancel
 
 
 def test_busy_cancel_requires_existing_cancel_signal():

@@ -349,7 +349,40 @@ flowchart LR
 | **Redis 临时协调状态** | 使用 Upstash Redis REST 保存可过期的用户请求额度、每日沙箱 CPU 用量和短期 Agent Run 结果，使不同 Worker 实例看到一致状态；Redis 不保存持仓、订单、交易信号或长期审计真相。 |
 | **本地软限流** | 未配置 Redis 或 Redis 临时故障时，单个 Worker 实例内的保护计数。实例回收或扩容后不保证全局一致，响应头通过 `local` / `local-fallback` 明确标识。 |
 | **web_search（读盘室）** | DeepSeek Responses API 的服务端联网搜索工具；仅在读盘室、模型为 `deepseek-v4-flash`、且官方 `api.deepseek.com` origin 时注入。用于公开网页/舆情检索，不替代行情与持仓工具；搜索证据仅当轮有效。与 CLI 本机 CDP `browser_research` 不同路径。 |
+| **browser_research（CLI）** | TUI/CLI 专用公开网页检索：Playwright 附着本机 Chrome CDP。CDP 未就绪时弹窗授权，同意后自动拉起独立调试 Chrome（`~/.wyckoff/chrome-cdp`），授权本会话有效；可用 `/browser start|status`。 |
 | **观察篮临时行情** | 读盘室按当前问题选取观察篮标的后拉取的 TickFlow 快照；浏览器缓存有效期为 45 秒，只作本轮模型上下文，不写入 Redis、持仓或信号表。 |
 | **Agent Run** | 一个按 Supabase 用户隔离的短期执行记录。当前只支持 `python_research`：提交后先返回 `queued`，由 Cloudflare Queue 消费并转为 `running`、`completed`、`failed` 或 `cancelled`；结果在 Redis 中自动过期。读盘室工具与 REST 端点复用同一记录。 |
 | **Agent Run 队列** | `wyckoff-agent-runs` 是单并发、单消息批次的 Cloudflare Queue 消费者。瞬时基础设施故障最多自动重试三次，之后转入 `wyckoff-agent-runs-dlq` 并把对应记录标为失败；Python 脚本非零退出是业务失败，不自动重跑。 |
 | **执行沙箱** | 执行 Agent 生成代码的临时 Vercel Sandbox。当前固定禁用外网与持久化，不注入业务密钥，结束后永久删除；读盘室仅在用户确认后执行，并再次校验白名单、创建次数及累计 CPU 额度；Cloudflare Worker 只承担鉴权、编排和结果返回。 |
+
+## 16. 定时调度与写操作审批
+
+| 名词 | 含义 |
+|------|------|
+| **调度 daemon** | `wyckoff daemon --foreground` 常驻进程，由 macOS launchd 保活（`com.wyckoff.daemon`）。读 `~/.wyckoff/schedules.json`，每分钟检查 cron 是否到期。UI 关闭后定时任务仍会跑；这是它与 TUI 内 60 秒定时器的根本区别。 |
+| **单例锁** | `~/.wyckoff/daemon.lock` 上的 `fcntl.flock`。用 flock 而非 PID 文件，因为 PID 会被系统回收从而误判进程存活。daemon 持锁期间 TUI 检测到后**让出调度权**，只做展示，避免重复触发和 `last_fired` 互相覆盖。 |
+| **补跑（catch-up）** | 定时器被长任务拖延时，`pending_check_minutes` 回溯最多 15 分钟内被跳过的 cron 分钟并补触发。上次已检查的那一分钟不再重算，避免同一任务触发两次。 |
+| **auto（自动放行）** | 写操作风险分级最低档，按**工具身份**而非参数字段判定：目前仅 `set_stop_loss`。安全性来自该工具签名只接受 `code` / `stop_loss` / `items`，根本不能改股数、成本或现金；靠「检查参数里没有别的字段」防不住批量 `items` 把动作藏在数组里。`update_portfolio` 永远不是 auto。 |
+| **review（待审）** | 需要人看一眼的写操作：小额买入成交回填、常规持仓更新、`exec_command`、`write_file`。入待批准队列，不阻塞对话继续。 |
+| **confirm（二次确认）** | 最高档：卖出成交回填、不可逆动作（`sell` / `remove` / `delete` / `clear` / `delete_records`），或名义金额超过净值 5%。批量 `items` 逐项判定并取最高档，合计金额也参与阈值比较。 |
+| **待批准队列** | `~/.wyckoff/approvals.db`（SQLite，权限 0600）。daemon 无人时保存 review / confirm 调用的精确参数。`approve list` 展示脱敏参数，`approve ok` 经正常工具注册表立即执行并记录结果；失败不自动重试，避免重复成交。 |
+| **审批过期** | 待批项 12 小时后自动转 `expired` 且不可批准。这不是清理策略而是安全要求：隔夜批准的调仓会按旧价成交。 |
+| **queued（入队回执）** | 工具闸门的第四种回执，与 `deny`（用户明确拒绝）和 `timeout`（弹窗无人应答）分开。措辞必须明确「已提交审批、不是拒绝」，否则模型会把用户从未做过的决定写进回复。 |
+| **set_stop_loss** | 只写 `stop_loss` 列的窄工具。`update_portfolio` 没有 `stop_loss` 参数（止损另由 `update_position_stops` 在 `server_job` 上下文写入，供 Step4 用），所以补录缺失止损必须用这个。云端走用户 JWT，本地镜像到 SQLite，只 UPDATE 不新建持仓。 |
+| **WYCKOFF_MCP_ALLOW_WRITES** | MCP 入口写操作开关，默认关闭。MCP 没有任何人机确认环节，放行等于让任意 MCP 客户端绕过审批直接改持仓，因此默认拒绝而非默认允许。显式设为 `1` 才承担风险。 |
+| **CHAT_TOOL_APPROVAL_SECRET** | Web 端审批签名专用密钥，建议独立配置。迁移期缺失时对 `SUPABASE_SERVICE_ROLE_KEY` 做单向、域分离的 SHA-256 派生，只把派生值用于审批签名，不直接复用或传播能绕过 RLS 的原值。两者都缺失时拒绝启动聊天。 |
+
+## 17. 外部 MCP 接入（客户端方向）
+
+| 名词 | 含义 |
+|------|------|
+| **两个方向** | `mcp_server.py` 是本项目**作为 server** 被 Claude Desktop / Cursor 连接；`cli/mcp_client.py` 是本项目**作为客户端**去连第三方 server。两者工具集不同、审批路径不同，不要混谈。 |
+| **配置即信任边界** | 接入一个外部 server 等于允许在本机 spawn 它的命令。因此 `~/.wyckoff/mcp_servers.json` 只由用户手写，模型不能新增 server，新增条目默认 `enabled: false`；文件权限固定为 0600。 |
+| **工具前缀** | 外部工具统一命名 `mcp__<server>__<tool>`，避免与原生 31 个工具撞名。前缀在读写判定时会被剥掉，所以 server 名叫 `deploy` 不会让它的只读工具被误判为写。 |
+| **写工具启发式** | MCP 的 `annotations` 是可选的，server 不保证声明副作用。判定顺序：`readOnlyHint=True` → 读；`destructiveHint=True` → 写；工具名含 create/delete/update/send/deploy 等动词 → 写；**其余一律按写**。判错代价不对称：把读当写只多一次确认，把写当读是静默执行了副作用。 |
+| **外部工具永不 auto** | 外部写工具映射到 `review` 档，进待批准队列。`AUTO_TOOLS` 只含 `set_stop_loss`，daemon 无人监督时不会执行任何第三方写入。 |
+| **失败隔离** | 某个 server 连不上（命令不存在、进程立刻退出、协议超时）只把它自己标为不可用，不影响原生工具和其他 server。SDK 的失败以 `ExceptionGroup` / `FileNotFoundError` 形式抛出，不总是 `McpError`，所以捕获必须宽。 |
+| **stderr 重定向** | `stdio_client` 默认把 server 的 stderr 灌到本进程 stderr，会搅乱 Textual 画面。统一重定向到 `~/.wyckoff/logs/mcp-<server>.log`。 |
+| **同步桥接** | MCP SDK 只有 async API，而 `ToolRegistry.execute` 是同步的。唯一可行写法是 anyio `start_blocking_portal()` + `portal.wrap_async_context_manager()`；手工 `AsyncExitStack` 配 `portal.call` 会抛 "Attempted to exit a cancel scope that isn't the current task's"，因为 cancel scope 必须在创建它的 task 里退出。 |
+| **env 白名单** | `stdio_client` 只继承 `HOME/LOGNAME/PATH/SHELL/USER`，server 需要的 API key 必须在配置的 `env` 里显式给出。 |
+| **描述截断** | 外部工具描述会进 system prompt，等于第三方能往模型上下文里写字。描述截断到 600 字符并加 `[外部 MCP: <server>]` 前缀标明来源。 |

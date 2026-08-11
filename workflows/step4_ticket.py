@@ -63,6 +63,7 @@ def _fmt_ticket_stop(value: float | None) -> str:
 
 
 def _append_ticket_context(lines: list[str], ticket: ExecutionTicket) -> None:
+    lines.append(f"  决策契约：风险={ticket.signal_severity} | 时机={ticket.action_timing}")
     if ticket.wyckoff_context:
         lines.append(f"  结构：{ticket.wyckoff_context}")
 

@@ -308,6 +308,79 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "market_regime",
+        "description": (
+            "A 股市况判定与动态阈值（纯引擎计算，不经 LLM）。返回 regime 枚举"
+            "（含 CRASH、PANIC_REPAIR 候选与确认）及斜率、3 日收益等指标。"
+            "适用于量化判断仓位上限与执行环松紧；"
+            "get_market_overview 只给原始行情，不含市况判定。"
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "wyckoff_diagnose",
+        "description": (
+            "单股 Wyckoff 结构诊断（纯引擎计算，比 analyze_stock 更底层）。"
+            "返回交易区间 TR、触发信号 Spring/SOS/LPS/EVR、阶段与事件分类。"
+            "stage 仅供诊断解读，不等于可执行决策。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"code": {"type": "string", "description": "股票代码"}},
+            "required": ["code"],
+        },
+    },
+    {
+        "name": "intraday_analysis",
+        "description": (
+            "单股盘中多周期分析。返回 VWAP 位置、5m/15m 趋势方向、动量、量能分布、"
+            "综合强度分 strength_score(0-100)。适用于判断当日盘中强弱与即时买点。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"code": {"type": "string", "description": "股票代码"}},
+            "required": ["code"],
+        },
+    },
+    {
+        "name": "intraday_rescue_check",
+        "description": (
+            "单股 60m 结构救援评估：平台突破、VWAP 收复、趋势确立等中期结构信号。"
+            "适用于日线走坏但需要判断中周期结构是否仍成立的持仓。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"code": {"type": "string", "description": "股票代码"}},
+            "required": ["code"],
+        },
+    },
+    {
+        "name": "set_stop_loss",
+        "description": (
+            "只设置已有持仓的止损价，不能改股数、成本或现金。补录缺失止损用这个，"
+            "不要用 update_portfolio。一次给多只用 items 提交。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "description": "单只股票代码（无 items 时必填）"},
+                "stop_loss": {"type": "number", "description": "止损价，必须大于 0"},
+                "items": {
+                    "type": "array",
+                    "description": "批量设置：每项含 code 与 stop_loss",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "code": {"type": "string"},
+                            "stop_loss": {"type": "number"},
+                        },
+                        "required": ["code", "stop_loss"],
+                    },
+                },
+            },
+        },
+    },
+    {
         "name": "record_trade_fill",
         "description": (
             "回填一笔已经发生的成交，按增量更新持仓与现金：摊薄成本价、扣佣金印花税、卖光时清仓、"
@@ -600,6 +673,11 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "evaluate_recommendation_events": ToolSpec("evaluate_recommendation_events", "推荐评估", background=True),
     "research_hypothesis": ToolSpec("research_hypothesis", "研究假设", concurrency_safe=True),
     "update_portfolio": ToolSpec("update_portfolio", "调仓操作", requires_approval=True),
+    "set_stop_loss": ToolSpec("set_stop_loss", "设置止损价", requires_approval=True),
+    "market_regime": ToolSpec("market_regime", "市况判定"),
+    "wyckoff_diagnose": ToolSpec("wyckoff_diagnose", "结构诊断"),
+    "intraday_analysis": ToolSpec("intraday_analysis", "盘中分析"),
+    "intraday_rescue_check": ToolSpec("intraday_rescue_check", "中周期结构"),
     "record_trade_fill": ToolSpec("record_trade_fill", "成交回填", requires_approval=True),
     "run_backtest": ToolSpec("run_backtest", "回测", background=True),
     "check_background_tasks": ToolSpec("check_background_tasks", "任务状态"),
@@ -726,6 +804,7 @@ class ToolRegistry:
         self._confirm_callback = None
         self._ask_user_question_callback = None
         self._always_allowed: set[str] = set()
+        self._mcp_manager = None
 
         # Initialize ToolSurface and populate from TOOL_SCHEMAS
         from tools.tool_surface import ToolSurface, from_json_schema
@@ -769,10 +848,16 @@ class ToolRegistry:
         from agents.backtest_tools import run_backtest
         from agents.browser_tools import browser_research
         from agents.diagnosis_tools import analyze_stock
+        from agents.engine_tools import (
+            intraday_analysis,
+            intraday_rescue_check,
+            market_regime,
+            wyckoff_diagnose,
+        )
         from agents.history_tools import query_history
         from agents.local_tools import exec_command, read_file, write_file
         from agents.market_tools import get_market_history, get_market_overview
-        from agents.portfolio_tools import portfolio, record_trade_fill, update_portfolio
+        from agents.portfolio_tools import portfolio, record_trade_fill, set_stop_loss, update_portfolio
         from agents.recommendation_tools import evaluate_recommendation_events
         from agents.report_tools import generate_ai_report
         from agents.research_tools import research_hypothesis
@@ -800,7 +885,12 @@ class ToolRegistry:
             "evaluate_recommendation_events": evaluate_recommendation_events,
             "research_hypothesis": research_hypothesis,
             "update_portfolio": update_portfolio,
+            "set_stop_loss": set_stop_loss,
             "record_trade_fill": record_trade_fill,
+            "market_regime": market_regime,
+            "wyckoff_diagnose": wyckoff_diagnose,
+            "intraday_analysis": intraday_analysis,
+            "intraday_rescue_check": intraday_rescue_check,
             "run_backtest": run_backtest,
             "ask_user_question": ask_user_question,
             "execute_skill": execute_skill,
@@ -815,15 +905,43 @@ class ToolRegistry:
             "diagnose_backend": diagnose_backend,
         }
 
+    def set_mcp_manager(self, manager) -> None:
+        """注入外部 MCP 客户端。工具在实例上合并，不改模块级 TOOL_SCHEMAS。"""
+        self._mcp_manager = manager
+
+    def _external_schemas(self) -> list[dict[str, Any]]:
+        if self._mcp_manager is None:
+            return []
+        try:
+            return self._mcp_manager.schemas()
+        except Exception:
+            logger.warning("failed to collect external mcp schemas", exc_info=True)
+            return []
+
+    def _is_external(self, name: str) -> bool:
+        from cli.mcp_config import TOOL_PREFIX
+
+        return bool(self._mcp_manager) and name.startswith(TOOL_PREFIX)
+
+    def _external_tool(self, name: str):
+        if not self._is_external(name):
+            return None
+        try:
+            return self._mcp_manager.find(name)
+        except Exception:
+            logger.debug("external tool lookup failed: %s", name, exc_info=True)
+            return None
+
     def schemas(self, allowed_tools: set[str] | tuple[str, ...] | None = None) -> list[dict[str, Any]]:
         """返回工具 JSON Schema；allowed_tools 存在时只暴露当前 workflow 范围。"""
+        merged = TOOL_SCHEMAS + self._external_schemas()
         if not allowed_tools:
-            return TOOL_SCHEMAS
+            return merged
         allowed = set(allowed_tools)
-        return [schema for schema in TOOL_SCHEMAS if schema["name"] in allowed]
+        return [schema for schema in merged if schema["name"] in allowed]
 
     def has_tool(self, name: str) -> bool:
-        return name in self._tools
+        return name in self._tools or self._external_tool(name) is not None
 
     def prepare(self, name: str, args: dict[str, Any]) -> Any:
         """Pre-execution gates (exists + schema/scope). Approval stays in execute()."""
@@ -831,6 +949,9 @@ class ToolRegistry:
         from cli.prepare_tool_call import accept, reject
 
         if name == "check_background_tasks":
+            return accept(args)
+        if self._external_tool(name) is not None:
+            # 外部工具的参数由对端 server 校验，本地没有 ToolSurface 定义。
             return accept(args)
         if name not in self._tools:
             return reject("tool_not_found", f"未知工具: {name}", args=args)
@@ -868,6 +989,13 @@ class ToolRegistry:
                 return {"tasks": [], "message": "无后台任务"}
             self._remember_background_handoffs()
             return {"tasks": self._bg_manager.list_tasks()}
+
+        if self._is_external(name):
+            # 外部工具也必须过闸门：写工具入队等审批，不能因为来自 MCP 就跳过。
+            args, blocked = self._confirm_high_risk_call(name, args, messages)
+            if blocked:
+                return blocked
+            return self._mcp_manager.call(name, args)
 
         fn = self._tools.get(name)
         if fn is None:
@@ -977,6 +1105,9 @@ class ToolRegistry:
             }
         confirm = self._confirm_callback(name, args)
         action = confirm.get("action", "deny")
+        if action == "queued":
+            # 无人监督时入队等人批：既不是超时也不是拒绝，措辞必须由调用方给。
+            return args, {"error": str(confirm.get("message") or f"操作 [{name}] 已提交审批，尚未执行。")}
         if action == "timeout":
             # 超时和明确拒绝必须分开：说成「用户拒绝」等于伪造一件没发生的事，模型只能照着
             # 这个措辞往下写，用户会在回复里读到自己从没做过的决定。
@@ -1010,6 +1141,9 @@ class ToolRegistry:
 
     def requires_approval(self, name: str) -> bool:
         """返回工具执行前是否需要用户确认。"""
+        external = self._external_tool(name)
+        if external is not None:
+            return bool(external.is_write)
         spec = self.spec(name)
         return bool(spec and spec.requires_approval)
 

@@ -28,5 +28,15 @@ describe('Frontend Prompt Quality Contracts', () => {
       const missing = requiredKeywords.filter((keyword) => !text.includes(keyword))
       expect(missing).toEqual([])
     })
+
+    it(`should define evidence confidence in ${name}`, () => {
+      expect(text).toContain('证据支持度')
+      expect(text).toContain('action_timing')
+    })
+  })
+
+  it('keeps portfolio account scope explicit', () => {
+    expect(PORTFOLIO_SYSTEM_PROMPT).toContain('capital_scope=account_only')
+    expect(PORTFOLIO_SYSTEM_PROMPT).toContain('不代表用户全部可投资资产')
   })
 })

@@ -147,6 +147,63 @@ wyckoff dashboard
 
 </details>
 
+### 定时任务常驻（macOS launchd）
+
+定时任务默认只在 TUI 打开时运行 —— 关掉窗口就停。装上 daemon 后它独立常驻，关 UI 也继续跑：
+
+```bash
+scripts/daemon_install.sh      # 装成 launchd 用户级服务
+wyckoff daemon --status        # 看运行状态
+tail -f ~/.wyckoff/logs/daemon.log
+scripts/daemon_uninstall.sh    # 卸载
+```
+
+daemon 持锁时 TUI 会自动让出调度权，两边不会重复触发。
+
+**无人监督时的写操作策略。** daemon 只会自己执行 `set_stop_loss` —— 这个工具
+只能改止损价,签名里没有股数、成本、现金,不移仓也不花钱。其余全部进待批准队列等你决定：
+
+```bash
+wyckoff approve list           # 看待批项
+wyckoff approve ok <id>        # 批准并立即执行队列中保存的精确参数
+wyckoff approve no <id>        # 拒绝
+```
+
+`approve list` 会展示脱敏后的完整参数；`approve ok` 通过正常工具注册表立即执行并记录结果，
+失败不会自动重试，避免重复成交。待批项 12 小时后过期且不可批准 —— 隔夜的调仓会按旧价成交。
+
+也可以手动跑一轮，不进 TUI：
+
+```bash
+wyckoff run "盘前风控检查"
+```
+
+### 接入外部 MCP server
+
+第三方 MCP server（GitHub、文件系统、你自己的数据源）的工具可以接进同一个会话，
+和原生工具走同一套审批闸门。需要 mcp 依赖：`uv pip install -e '.[mcp]'`。
+
+```bash
+wyckoff mcp-add github --command npx \
+  --args -y @modelcontextprotocol/server-github \
+  --env GITHUB_TOKEN              # 从当前环境读取，避免把值写进命令历史
+
+wyckoff mcp-test github     # 先试连，列出工具，不进会话
+wyckoff mcp-enable github   # 确认没问题再启用
+wyckoff mcp-list
+```
+
+**接一个 server 等于允许在本机 spawn 它的命令**，所以：新增后默认未启用，
+配置只能你自己写（模型不能新增 server），本项目自建的 `mcp_server.py`
+会被拒绝接入（工具已内置，接第二遍只会出现两份同名工具）。
+
+外部工具名带 `mcp__<server>__` 前缀，不会顶掉原生工具。写操作按工具名和
+`annotations` 启发式识别 —— **认不出就当写**，进待批准队列。daemon 无人时
+永不自动执行外部写入。
+
+某个 server 连不上只会让它自己不可用，原生工具照常。
+错误看 `~/.wyckoff/logs/mcp-<server>.log`。
+
 ### 回测网格
 
 <p align="center">
@@ -172,7 +229,7 @@ wyckoff dashboard
 - **跨市场** — A 股 / 港股 / 美股漏斗独立 workflow
 - **AI 三阵营研报** — 逻辑破产 / 储备营地 / 起跳板，LLM 独立审判
 - **信号反馈闭环** — 漏斗记录 observations，盘后 feedback 聚合 health / registry，支持 shadow 动态策略验证
-- **持仓诊断 & 私人决断** — EXIT/TRIM/HOLD/PROBE/ATTACK；非主线 5 日时间管理；灾难地板约 -12%
+- **持仓诊断 & 私人决断** — 单股质量先于账户角色；WARNING 只观察，确认破位/硬风险才产生 EXIT/TRIM；非主线 5 日进入复核但不机械卖出
 - **Agent 分层记忆** — L1 原子记忆 + L2 场景 + L3 画像，FTS5/代码/关键词混合召回并保留来源追溯
 - **Skills 扩展** — 内置 `/screen`、`/checkup`、`/report`、`/backtest`，用户可自定义
 - **Prompt 模板** — 内置 `/daily`、`/review-l4`、`/step3-audit` 等高频投研模板，也支持 `~/.wyckoff/prompts/*.md`

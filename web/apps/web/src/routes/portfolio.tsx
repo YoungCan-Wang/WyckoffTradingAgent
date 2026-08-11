@@ -220,7 +220,7 @@ function usePortfolioHistory(userId: string | undefined, result: FullDiagnosisRe
 
     const meta = {
       inputSnapshotHash,
-      promptVersion: 'wyckoff-prompt-v2.1',
+      promptVersion: 'evidence-contract-v2.2',
       model,
       generatedAt: new Date().toISOString(),
       valueSource: result.values.map(v => sourceLabel(v.snapshot)).filter(Boolean).join(','),
@@ -646,26 +646,30 @@ function buildFullPortfolioPrompt(entries: PositionEntry[], freeCash: number): s
   const cashPct = totalAssets > 0 ? (freeCash / totalAssets) * 100 : 0
 
   const header = [
-    `# 账户概况`,
+    `# 账户概况（capital_scope=account_only）`,
+    `以下现金、持仓权重和总资产只代表当前证券账户，不代表用户全部可投资资产。`,
     `现金 ¥${freeCash.toLocaleString()}（${cashPct.toFixed(1)}%）| 持仓 ${entries.length} 只 | 总成本 ¥${totalCost.toLocaleString()} | 总市值 ¥${totalMarket.toLocaleString()} | 整体盈亏 ${formatSignedPercent(totalPnl)}`,
   ].join('\n')
 
   return [header, '', ...sections].join('\n\n')
 }
 
-export const PORTFOLIO_SYSTEM_PROMPT = `你是威科夫资产配置诊断专家。基于用户的全部持仓、真实K线和价值面快照做整体诊断。主框架仍是仓位、趋势和量价结构；价值面只用于校准公司质量、风险暴露和仓位置信度，不要用基本面替代K线事实。
+export const PORTFOLIO_SYSTEM_PROMPT = `你是证据约束型组合诊断专家。analysis_mode=portfolio_rebalance，默认 capital_scope=account_only；当前账户不代表用户全部可投资资产。先独立判断每只股票的基本面质量、估值风险、趋势和量价结构，再比较它在当前账户中的角色。成本与浮盈亏只用于执行和风险上下文，不是股票优劣证据。
 
 【核心质量要求】
 - 必须在诊断报告中说明数据来源、给出明确的置信度理由与配置风控建议，并提供调仓或防守策略的失效条件/警戒水位线。
+- 除非用户明确补充 complete_investable_assets，不得仅凭本账户单股权重、行业集中度或现金比例要求 TRIM/EXIT，也不得假设这是用户完整持仓。
+- 普通技术走弱只标 WARNING 并等待收盘确认；TRIM/EXIT 只允许用于 HARD_RISK 或 CONFIRMED_BREAK。若价格接近日内低点且未确认，应给 CLOSE_CONFIRM、ON_REBOUND 或 WAIT，避免机械杀跌。
+- 新开仓和加仓必须给允许区间、确认条件和取消条件；高开或脱离支撑时不追。
+- 置信度只表示当前证据支持度，不是上涨概率。未提供的基本面、估值、行业或消息数据必须明确标记缺失，不得补写。
 - 绝对禁止在分析结论中使用“必然”、“保证”、“无风险”、“稳赚”、“稳赢”、“包赚”等夸大或确定性的承诺词语。
 
 输出包含：
-1. 仓位分布评估（集中度、行业分散性）
-2. 各持仓当前威科夫阶段一句话判断，并说明价值面质量/风险如何影响持仓置信度
-3. 现金比例是否合理
-4. 整体风险暴露（哪些持仓需要警惕，包括失效位和风险提示）
-5. 加减仓优先级建议
-6. 操作建议（先减谁、可加谁、现金该不该动）
+1. 各持仓独立质量与风险判断（基本面/估值证据、趋势、量价结构及数据缺口）
+2. 当前账户内的相对强弱与角色；集中度和现金仅作账户快照描述
+3. 风险级别与执行时机（signal_severity / action_timing）
+4. 加减仓优先级、允许区间、确认条件、失效条件
+5. 反面证据：最可能推翻当前结论的事实
 
 用简洁的 Markdown 格式回答。不编造数据。`
 

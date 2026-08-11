@@ -58,6 +58,7 @@ _logging.basicConfig(level=_logging.CRITICAL)
 # ---------------------------------------------------------------------------
 
 
+from cli.bootstrap import build_provider_state, init_local_services, load_config_env
 from cli.provider_factory import create_provider, provider_config_kwargs  # noqa: F401
 
 
@@ -138,18 +139,29 @@ def _set_terminal_title(title: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _cmd_update(_args):
+_PACKAGE_WITH_BROWSER = "youngcan-wyckoff-analysis[browser]"
+
+
+def _upgrade_package_cmd() -> list[str]:
     import shutil
 
-    print("正在升级 youngcan-wyckoff-analysis ...")
-    pkg = "youngcan-wyckoff-analysis"
     uv = shutil.which("uv")
     if uv:
-        cmd = [uv, "pip", "install", "--python", sys.executable, "--upgrade", pkg]
-    else:
-        cmd = [sys.executable, "-m", "pip", "install", "--upgrade", pkg]
+        return [uv, "pip", "install", "--python", sys.executable, "--upgrade", _PACKAGE_WITH_BROWSER]
+    return [sys.executable, "-m", "pip", "install", "--upgrade", _PACKAGE_WITH_BROWSER]
+
+
+def _ensure_playwright_chromium() -> None:
+    print("正在安装 Playwright Chromium（browser_research 依赖）...")
+    subprocess.check_call([sys.executable, "-m", "playwright", "install", "chromium"])
+
+
+def _cmd_update(_args):
+    print(f"正在升级 {_PACKAGE_WITH_BROWSER} ...")
+    print(f"  目标解释器: {sys.executable}")
     try:
-        subprocess.check_call(cmd)
+        subprocess.check_call(_upgrade_package_cmd())
+        _ensure_playwright_chromium()
         url = "https://wyckoff-analysis.pages.dev/"
         try:
             subprocess.run(["pbcopy"], input=url.encode(), check=True)
@@ -159,6 +171,7 @@ def _cmd_update(_args):
             except FileNotFoundError:
                 logger.debug("no clipboard tool available", exc_info=True)
         print(f"\n✓ 升级完成！请重新运行 wyckoff。\n  Web 版已复制到剪切板: {url}")
+        print("  浏览器搜索：TUI 首次使用时会弹窗授权并自动拉起调试 Chrome（/browser start）")
     except subprocess.CalledProcessError as e:
         print(f"\n✗ 升级失败: {e}")
         sys.exit(1)
@@ -1477,6 +1490,184 @@ def _cmd_sync(_args=None):
     print("同步完成")
 
 
+def _cmd_mcp_add(args):
+    from cli.mcp_config import Server, is_builtin_duplicate, upsert_server
+
+    env: dict[str, str] = {}
+    for pair in args.env or []:
+        key, _, value = str(pair).partition("=")
+        if key and not _:
+            value = os.getenv(key, "")
+        if not key or not value:
+            print(f"跳过无效的 --env 项: {pair}（使用 KEY 或 KEY=VALUE；KEY 模式从当前环境读取）")
+            continue
+        env[key] = value
+
+    server = Server(name=args.name, command=args.command, args=list(args.args or []), env=env)
+    if is_builtin_duplicate(server):
+        print(f"拒绝添加 {args.name}：这是本项目自建的 MCP server，工具已内置。")
+        print("再接一遍会让模型看到两份同名工具，且 MCP 路径不过审批闸门。")
+        raise SystemExit(1)
+
+    upsert_server(server)
+    print(f"已添加 {args.name}（默认未启用）")
+    print(f"启用：wyckoff mcp-enable {args.name}")
+    print(f"先试连：wyckoff mcp-test {args.name}")
+
+
+def _cmd_mcp_list(args):
+    from cli.mcp_config import is_builtin_duplicate, load_servers
+
+    servers = load_servers()
+    if not servers:
+        print("未配置外部 MCP server")
+        print("添加：wyckoff mcp-add <name> --command <cmd> --args <arg> ...")
+        return
+    for server in servers:
+        state = "已启用" if server.enabled else "未启用"
+        note = " · 自建重复项（不会连接）" if is_builtin_duplicate(server) else ""
+        print(f"  {server.name:<16} [{state}]{note}")
+        print(f"    {server.command} {' '.join(server.args)}")
+        if server.env:
+            print(f"    env: {', '.join(sorted(server.env))}")
+
+
+def _cmd_mcp_toggle(args, enabled: bool):
+    from cli.mcp_config import find_server, is_builtin_duplicate, set_enabled
+
+    server = find_server(args.name)
+    if server is None:
+        print(f"未找到 server: {args.name}")
+        raise SystemExit(1)
+    if enabled and is_builtin_duplicate(server):
+        print(f"{args.name} 是自建 server，工具已内置，不能启用。")
+        raise SystemExit(1)
+    set_enabled(args.name, enabled)
+    print(f"{args.name} 已{'启用' if enabled else '停用'}")
+
+
+def _cmd_mcp_remove(args):
+    from cli.mcp_config import remove_server
+
+    if not remove_server(args.name):
+        print(f"未找到 server: {args.name}")
+        raise SystemExit(1)
+    print(f"已移除 {args.name}")
+
+
+def _cmd_mcp_test(args):
+    from cli.mcp_client import McpClientManager, mcp_available
+    from cli.mcp_config import find_server
+
+    if not mcp_available():
+        print("未安装 mcp 依赖。安装：uv pip install -e '.[mcp]'")
+        raise SystemExit(1)
+    server = find_server(args.name)
+    if server is None:
+        print(f"未找到 server: {args.name}")
+        raise SystemExit(1)
+
+    print(f"连接 {server.name}: {server.command} {' '.join(server.args)}")
+    manager = McpClientManager([server])
+    try:
+        manager.start()
+        status = manager.status()[0] if manager.status() else {}
+        if not status.get("available"):
+            print(f"连接失败: {status.get('error') or '未知错误'}")
+            print(f"日志: ~/.wyckoff/logs/mcp-{server.name}.log")
+            raise SystemExit(1)
+        tools = manager.tools()
+        print(f"连接成功，发现 {len(tools)} 个工具：\n")
+        for tool in tools:
+            kind = "写" if tool.is_write else "读"
+            print(f"  [{kind}] {tool.name}")
+        print("\n写工具需经审批后执行；读工具直接调用。")
+    finally:
+        manager.stop()
+
+
+def _cmd_run(args):
+    """无界面跑一轮 Agent，写操作按无人策略分级。"""
+    from cli.headless import run_once
+
+    result = run_once(args.action, source="cli")
+    if result.text:
+        print(result.text)
+    if result.queued:
+        print(f"\n已提交 {len(result.queued)} 项待批准：{', '.join(result.queued)}")
+        print("用 `wyckoff approve list` 查看，`wyckoff approve ok <id>` 批准")
+    if not result.ok:
+        print(f"执行失败: {result.error}")
+        raise SystemExit(1)
+
+
+def _cmd_daemon(args):
+    from cli.daemon import main_loop, setup_logging, status
+
+    if args.status:
+        info = status()
+        state = "运行中" if info["running"] else "未运行"
+        print(f"daemon: {state}")
+        if info["pid"]:
+            print(f"  pid:  {info['pid']}")
+        print(f"  lock: {info['lock']}")
+        print(f"  log:  {info['log']}")
+        return
+
+    setup_logging(verbose=args.verbose)
+    if not args.foreground:
+        print("daemon 需要由 launchd 托管运行。")
+        print("安装：scripts/daemon_install.sh")
+        print("前台调试：wyckoff daemon --foreground")
+        return
+    raise SystemExit(main_loop())
+
+
+def _cmd_approve(args):
+    from cli import approval_queue as aq
+
+    action = args.action
+    if action == "list":
+        pending = aq.list_pending()
+        if not pending:
+            print("无待批准项")
+            return
+        print(f"{len(pending)} 项待批准：\n")
+        for item in pending:
+            tier = {"confirm": "需二次确认", "review": "待审"}.get(item.risk, item.risk)
+            print(f"  {item.id}  [{tier}]  {item.tool_name}")
+            print(f"           {item.summary or '(无摘要)'}")
+            print(f"           参数 {json.dumps(aq.sanitized_args(item.args), ensure_ascii=False, default=str)}")
+            print(f"           来自 {item.source} {item.schedule_id} · {item.created_at}")
+        print("\n批准：wyckoff approve ok <id>    拒绝：wyckoff approve no <id>")
+        return
+
+    if not args.id:
+        print(f"用法: wyckoff approve {action} <id>")
+        raise SystemExit(2)
+
+    record = aq.decide(args.id, approved=(action == "ok"))
+    if record is None:
+        print(f"{args.id} 无法处理：不存在、已决策，或已超过 {aq.DEFAULT_TTL_HOURS} 小时过期。")
+        print("过期项不可批准——隔夜的调仓会按旧价成交。")
+        raise SystemExit(1)
+    if record.status != aq.APPROVED:
+        print(f"已拒绝: {record.summary or record.tool_name}")
+        return
+
+    from cli.approval_executor import execute_approved
+
+    print(f"已批准，正在执行: {record.summary or record.tool_name}")
+    result = execute_approved(record.tool_name, record.args)
+    succeeded = not (isinstance(result, dict) and result.get("error"))
+    aq.record_execution(record.id, result, succeeded=succeeded)
+    print(json.dumps(result, ensure_ascii=False, default=str, indent=2))
+    if not succeeded:
+        print("执行失败；该批准项不会自动重试，避免重复成交。")
+        raise SystemExit(1)
+    print("✓ 已执行")
+
+
 def _cmd_cleanup(args):
     from integrations.local_db import cleanup_old_records, init_db
 
@@ -1518,63 +1709,6 @@ def _restore_tui_session(tools) -> bool:
     except Exception:
         logger.warning("session restore failed", exc_info=True)
     return False
-
-
-def _init_tui_local_services() -> None:
-    try:
-        from integrations.local_db import init_db, prune_memories
-
-        init_db()
-        prune_memories()
-        from integrations.sync import sync_all_background
-
-        sync_all_background()
-    except Exception:
-        logger.warning("local db init or sync failed", exc_info=True)
-
-
-def _load_tui_config_env() -> None:
-    from cli.auth import load_config
-
-    cfg = load_config()
-    for key, env_key in [("tushare_token", "TUSHARE_TOKEN"), ("tickflow_api_key", "TICKFLOW_API_KEY")]:
-        value = str(cfg.get(key, "") or "").strip()
-        if value:
-            os.environ.setdefault(env_key, value)
-
-
-def _seed_model_env(configs: list[dict[str, Any]]) -> None:
-    env_map = {"gemini": "GEMINI_API_KEY", "claude": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
-    for cfg in configs:
-        env_key = env_map.get(cfg.get("provider_name", ""))
-        if env_key and cfg.get("api_key"):
-            os.environ.setdefault(env_key, cfg["api_key"])
-
-
-def _build_tui_provider_state() -> dict[str, Any]:
-    state: dict[str, Any] = {"provider": None, "provider_name": "", "model": "", "api_key": "", "base_url": ""}
-    try:
-        from cli.auth import load_default_model_id, load_model_configs
-
-        configs = load_model_configs()
-        default_id = load_default_model_id()
-        if configs and default_id:
-            _seed_model_env(configs)
-            default_cfg = next((c for c in configs if c["id"] == default_id), configs[0])
-            if len(configs) == 1:
-                provider, err = create_provider(**provider_config_kwargs(default_cfg))
-                if not err:
-                    state.update(default_cfg)
-                    state["provider"] = provider
-            else:
-                from cli.auth import load_fallback_model_id
-                from cli.providers.fallback import FallbackProvider
-
-                state.update(default_cfg)
-                state["provider"] = FallbackProvider(configs, default_id, fallback_id=load_fallback_model_id())
-    except Exception:
-        logger.warning("model provider init failed", exc_info=True)
-    return state
 
 
 def _start_tui_dashboard() -> None:
@@ -1635,12 +1769,12 @@ def _cmd_tui(_args=None):
 
     tools = ToolRegistry()
     session_expired = _restore_tui_session(tools)
-    _init_tui_local_services()
+    init_local_services()
     try:
-        _load_tui_config_env()
+        load_config_env()
     except Exception:
         logger.debug("config env vars load failed", exc_info=True)
-    state = _build_tui_provider_state()
+    state = build_provider_state()
     if state["provider"]:
         tools.set_provider(state["provider"])
     _start_tui_dashboard()
@@ -1697,6 +1831,24 @@ def _dispatch_command(args) -> None:
         _cmd_sync(args)
     elif args.cmd == "cleanup":
         _cmd_cleanup(args)
+    elif args.cmd == "run":
+        _cmd_run(args)
+    elif args.cmd == "daemon":
+        _cmd_daemon(args)
+    elif args.cmd == "approve":
+        _cmd_approve(args)
+    elif args.cmd == "mcp-add":
+        _cmd_mcp_add(args)
+    elif args.cmd == "mcp-list":
+        _cmd_mcp_list(args)
+    elif args.cmd == "mcp-enable":
+        _cmd_mcp_toggle(args, True)
+    elif args.cmd == "mcp-disable":
+        _cmd_mcp_toggle(args, False)
+    elif args.cmd == "mcp-remove":
+        _cmd_mcp_remove(args)
+    elif args.cmd == "mcp-test":
+        _cmd_mcp_test(args)
     else:
         _cmd_tui(args)
 
@@ -1860,6 +2012,33 @@ def _add_maintenance_parsers(sub) -> None:
     # wyckoff cleanup
     p_cleanup = sub.add_parser("cleanup", help="清理过期本地数据")
     p_cleanup.add_argument("--days", type=int, default=30, help="保留天数 (默认 30)")
+
+    p_run = sub.add_parser("run", help="无界面跑一轮 Agent")
+    p_run.add_argument("action", help="要执行的指令或问题")
+
+    p_daemon = sub.add_parser("daemon", help="常驻定时调度进程")
+    p_daemon.add_argument("--foreground", action="store_true", help="前台运行 (launchd 用这个)")
+    p_daemon.add_argument("--status", action="store_true", help="查看运行状态")
+    p_daemon.add_argument("--verbose", action="store_true", help="调试日志")
+
+    p_approve = sub.add_parser("approve", help="查看和处理待批准的写操作")
+    p_approve.add_argument("action", choices=["list", "ok", "no"], help="list 查看 / ok 批准 / no 拒绝")
+    p_approve.add_argument("id", nargs="?", default="", help="待批准项编号")
+
+    p_mcp_add = sub.add_parser("mcp-add", help="添加外部 MCP server")
+    p_mcp_add.add_argument("name", help="server 名称，用作工具前缀")
+    p_mcp_add.add_argument("--command", required=True, help="启动命令，如 npx")
+    p_mcp_add.add_argument("--args", nargs="*", default=[], help="命令参数")
+    p_mcp_add.add_argument("--env", nargs="*", default=[], help="环境变量 KEY（从当前环境读取）或 KEY=VALUE")
+
+    sub.add_parser("mcp-list", help="列出外部 MCP server")
+    for cmd, help_text in [
+        ("mcp-enable", "启用外部 MCP server"),
+        ("mcp-disable", "停用外部 MCP server"),
+        ("mcp-remove", "移除外部 MCP server"),
+        ("mcp-test", "试连并列出工具，不进入会话"),
+    ]:
+        sub.add_parser(cmd, help=help_text).add_argument("name", help="server 名称")
 
 
 def main():

@@ -266,6 +266,39 @@ def check_daily_run_exists(
         return False
 
 
+def set_position_stops(
+    portfolio_id: str,
+    updates: list[dict[str, Any]],
+    client: Client | None = None,
+) -> tuple[bool, int]:
+    """按用户 JWT 写止损价，只碰 stop_loss 列。返回 (成功, 写入条数)。
+
+    与 update_position_stops 的区别：那个走 server_job admin 上下文（Step4 用），
+    这个走用户自己的 client，供 CLI/桌面端的 set_stop_loss 工具调用。
+    """
+    if not updates:
+        return True, 0
+    try:
+        write_client = _resolve_write_client(client, "set portfolio stop losses")
+        written = 0
+        for item in updates:
+            code = str(item.get("code") or "").strip()
+            if not code or "stop_loss" not in item:
+                continue
+            (
+                write_client.table(TABLE_PORTFOLIO_POSITIONS)
+                .update({"stop_loss": item.get("stop_loss")})
+                .eq("portfolio_id", portfolio_id)
+                .eq("code", code)
+                .execute()
+            )
+            written += 1
+        return True, written
+    except Exception as e:
+        logger.warning("[supabase_portfolio] set_position_stops failed: %s", e)
+        return False, 0
+
+
 def update_position_stops(portfolio_id: str, updates: list[dict[str, Any]]) -> bool:
     """
     批量更新持仓止损价。

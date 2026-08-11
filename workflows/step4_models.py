@@ -87,6 +87,8 @@ class DecisionItem:
     is_add_on: bool
     reason: str
     confidence: float | None
+    signal_severity: str = "NONE"
+    action_timing: str = "WAIT"
     funnel_score: float | None = None
     wyckoff_track: str = ""
     wyckoff_stage: str = ""
@@ -117,6 +119,8 @@ class ExecutionTicket:
     effective_stop_loss: float | None
     slippage_bps: float
     audit: str
+    signal_severity: str = "NONE"
+    action_timing: str = "WAIT"
     entry_zone_min: float | None = None
     entry_zone_max: float | None = None
     chase_profile: str = ""

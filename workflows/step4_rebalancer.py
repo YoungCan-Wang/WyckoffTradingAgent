@@ -152,6 +152,22 @@ def _send_trade_ticket(report: str, tg_bot_token: str, tg_chat_id: str) -> bool:
     return False
 
 
+def _step4_evidence_contract(trade_date: str) -> str:
+    return (
+        "[分析契约]\n"
+        "analysis_mode=portfolio_rebalance\n"
+        "capital_scope=account_only\n"
+        "账户现金、权重和总权益仅代表当前证券账户，不代表用户全部可投资资产。\n"
+        "先评价股票自身质量与风险，再评价账户内角色；不得只因本账户现金比例或集中度卖出。\n\n"
+        "[证据可用性]\n"
+        f"price_volume=available_as_of_{trade_date}\n"
+        "portfolio=available_current_snapshot\n"
+        "fundamentals=available_only_when_explicitly_in_input\n"
+        "news=available_only_when_explicitly_in_input\n"
+        "missing_evidence_policy=do_not_infer\n\n"
+    )
+
+
 def _build_user_message(
     *,
     benchmark_text: str,
@@ -178,6 +194,7 @@ def _build_user_message(
     llm_doc_context = build_llm_doc_context("step4", symbols=doc_symbols, as_of=date.fromisoformat(trade_date))
     msg = (
         benchmark_text
+        + _step4_evidence_contract(trade_date)
         + "[账户状态]\n"
         + f"free_cash={portfolio.free_cash:.2f}\n"
         + f"total_equity={float(total_equity):.2f}\n"
@@ -195,10 +212,11 @@ def _build_user_message(
         + f"buy_stop_mode={order_config.buy_stop_mode}, buy_stop_pct={order_config.buy_hard_stop_pct:.1f}\n"
         + "仅允许依据结构止损、Distribution 信号与量价破坏做减仓/清仓，不得因为持有天数到期而机械离场。\n\n"
         + "[持仓动作规则]\n"
-        + "EXIT: 只在跌破有效止损、出现明确派发/破位、或风控一票否决时使用。\n"
-        + "TRIM: 只在逼近止损、放量跌破关键位、上涨后出现派发/滞涨时使用；不能只因为浮亏或持有天数而减仓。\n"
+        + "EXIT: 只在 HARD_RISK 或收盘确认的 CONFIRMED_BREAK 时使用。\n"
+        + "TRIM: 只在 HARD_RISK 或收盘确认的 CONFIRMED_BREAK 时使用；普通走弱只能标 WARNING 并 HOLD。\n"
         + "HOLD: 默认动作。结构未破坏、止损未触发、无更强替代候选时必须继续持有。\n"
         + "PROBE/ATTACK加仓: 只允许已有持仓浮盈、止损已上移、且当前结构明显强于原买点时使用；禁止亏损补仓。\n"
+        + "action_timing=WAIT/CLOSE_CONFIRM 时不得生成卖单；接近日内低点且未确认时优先 CLOSE_CONFIRM/ON_REBOUND。\n"
         + "新开仓: 输入候选已通过确定性准入；AI只能否决或保留，不能把候选升级为无条件买入。\n"
         + "外部新仓最多给 PROBE，禁止由AI升级为 ATTACK。\n\n"
         + (llm_doc_context + "\n\n" if llm_doc_context else "")

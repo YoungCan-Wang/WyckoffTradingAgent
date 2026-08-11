@@ -148,7 +148,7 @@ Just two steps after launch:
 
 > Optional: `/login` to sync portfolio to cloud for multi-device access. All features work without login.
 
-Upgrade: `wyckoff update`
+Upgrade: `wyckoff update` (includes `[browser]` + Playwright Chromium for CLI `browser_research`)
 
 | Launch Screen | Portfolio Query |
 |:---:|:---:|
@@ -213,7 +213,7 @@ The agent's arsenal — 10 quant tools + 5 general capabilities:
 | `exec_command` | Execute local shell commands |
 | `read_file` | Read local files (CSV/Excel auto-parsed) |
 | `write_file` | Write files (export reports/data) |
-| `browser_research` | Search via local Chrome CDP and extract cited pages (CLI only) |
+| `browser_research` | Search via local Chrome CDP and extract cited pages (CLI only); TUI prompts once to auto-launch a dedicated debug Chrome |
 
 Tool call order and frequency are decided by the LLM at runtime — no pre-choreography needed. Send a CSV path and it reads it; say "install a package" and it executes.
 
@@ -266,10 +266,19 @@ Advanced configuration (`.env` file or GitHub Actions Secrets):
 | `PORTFOLIO_HKD_CNY_RATE` / `PORTFOLIO_USD_CNY_RATE` | Optional broker FX overrides for CNY portfolio valuation; ECB reference rates are used otherwise | Optional |
 | `FEISHU_WEBHOOK_URL` | Feishu push notifications | Optional |
 | `TG_BOT_TOKEN` + `TG_CHAT_ID` | Telegram push notifications | Optional |
+| `CHAT_TOOL_APPROVAL_SECRET` | Dedicated Web tool-approval signing secret; recommended. A one-way domain-separated key is derived from the service-role secret during migration | Recommended for Web chat |
 
 > Data source: [TickFlow →](https://tickflow.org/auth/register?ref=5N4NKTCPL4) | LLM API: [1Route →](https://www.1route.dev/register?aff=359904261)
 
 See the [Architecture doc](ARCHITECTURE.md) for the full config reference and GitHub Actions Secrets setup.
+
+### Persistent local schedules and approvals
+
+On macOS, `scripts/daemon_install.sh` installs the user-level launchd daemon so schedules continue after the TUI closes. `wyckoff daemon --status` reports its state. Unattended runs auto-apply only the narrow `set_stop_loss` tool; every other write is queued. Review exact redacted arguments with `wyckoff approve list`, then run `wyckoff approve ok <id>` to approve and execute or `wyckoff approve no <id>` to reject. Pending operations expire after 12 hours and failed executions are not retried automatically.
+
+### External MCP servers
+
+Install `.[mcp]`, add a disabled-by-default server with `wyckoff mcp-add`, test it with `wyckoff mcp-test`, then explicitly enable it. Pass secret environment names as `--env GITHUB_TOKEN` so values are read from the current environment rather than shell arguments; the saved config is mode 0600. External tools use the `mcp__<server>__<tool>` prefix; unknown or write-capable tools always require approval and are never auto-executed by the daemon.
 
 ## MCP Server
 

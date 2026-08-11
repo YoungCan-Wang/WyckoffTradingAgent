@@ -77,6 +77,85 @@ def update_portfolio(
 
 _BATCH_ACTIONS = frozenset({"add", "update", "remove"})
 _BATCH_MAX_ITEMS = 30
+_STOPS_MAX_ITEMS = 200
+
+
+def set_stop_loss(
+    code: str = "",
+    stop_loss: float = 0,
+    items: list[dict[str, Any]] | None = None,
+    tool_context: ToolContext | None = None,
+) -> dict:
+    """只设置持仓止损价，不能改股数、成本或现金。
+
+    安全性来自这个工具能做的事很窄，而不是来自调用方检查了参数。
+    """
+    try:
+        rows, error = _normalize_stop_rows(code, stop_loss, items)
+        if error:
+            return error
+
+        portfolio_id = _portfolio_id(tool_context)
+        cloud = has_cloud(tool_context)
+        if cloud:
+            from integrations.supabase_portfolio import set_position_stops
+
+            ok, _written = with_auth_retry(
+                tool_context,
+                set_position_stops,
+                portfolio_id,
+                rows,
+                client=get_user_client(tool_context),
+            )
+            if not ok:
+                return {"error": "云端止损写入失败"}
+
+        from integrations.local_db import set_local_position_stop
+
+        updated = 0
+        missing: list[str] = []
+        for row in rows:
+            if set_local_position_stop(portfolio_id, row["code"], row["stop_loss"]):
+                updated += 1
+            else:
+                missing.append(row["code"])
+        result: dict[str, Any] = {"updated_count": updated, "cloud": cloud}
+        if missing:
+            result["not_in_portfolio"] = missing
+        return result
+    except Exception as e:
+        logger.exception("set_stop_loss error")
+        return {"error": str(e)}
+
+
+def _normalize_stop_rows(
+    code: str,
+    stop_loss: float,
+    items: list[dict[str, Any]] | None,
+) -> tuple[list[dict[str, Any]], dict | None]:
+    from core.portfolio_symbol import normalize_portfolio_code
+
+    raw = items if items is not None else [{"code": code, "stop_loss": stop_loss}]
+    if not isinstance(raw, list) or not raw:
+        return [], {"error": "items 必须是非空数组"}
+    if len(raw) > _STOPS_MAX_ITEMS:
+        return [], {"error": f"单次最多 {_STOPS_MAX_ITEMS} 条，请拆分后重试"}
+
+    rows: list[dict[str, Any]] = []
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            return [], {"error": f"第 {index} 项必须是对象"}
+        normalized = normalize_portfolio_code(str(item.get("code") or ""))
+        if not normalized:
+            return [], {"error": f"第 {index} 项股票代码无效: {item.get('code')}"}
+        try:
+            price = float(item.get("stop_loss"))
+        except (TypeError, ValueError):
+            return [], {"error": f"{normalized} 的 stop_loss 无效"}
+        if price <= 0:
+            return [], {"error": f"{normalized} 的 stop_loss 必须大于 0"}
+        rows.append({"code": normalized, "stop_loss": price})
+    return rows, None
 
 
 def _update_portfolio_batch(
