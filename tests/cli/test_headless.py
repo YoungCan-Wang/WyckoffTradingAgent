@@ -58,6 +58,41 @@ class TestGuardWiring:
         assert "待批准队列" in blocked["error"]
         assert "超时" not in blocked["error"]
 
+    def test_queued_item_binds_session_user(self, db):
+        guard = DaemonGuard(source="daemon", db_path=db)
+        guard.bind_session("alice")
+        guard.confirm("update_portfolio", {"code": "002270", "shares": 100, "cost_price": 30.0})
+        assert aq.list_pending(db_path=db)[0].user_id == "alice"
+
+    def test_build_tools_restores_session_into_registry(self, monkeypatch, db):
+        from cli import headless
+
+        monkeypatch.setattr(
+            "cli.auth.restore_session",
+            lambda: {
+                "user_id": "alice",
+                "email": "a@example.com",
+                "access_token": "tok",
+                "refresh_token": "ref",
+            },
+        )
+        guard = DaemonGuard(source="daemon", db_path=db)
+        tools = headless.build_tools(guard)
+        assert tools.state["user_id"] == "alice"
+        assert tools.state["access_token"] == "tok"
+        guard.confirm("update_portfolio", {"code": "002270", "shares": 1, "cost_price": 1.0})
+        assert aq.list_pending(db_path=db)[0].user_id == "alice"
+
+    def test_current_nav_uses_authenticated_portfolio(self, monkeypatch):
+        from cli import headless
+
+        class FakeTools:
+            def execute(self, name, args):
+                assert name == "portfolio" and args == {"mode": "view"}
+                return {"total_equity": 12345.0}
+
+        assert headless.current_nav(FakeTools()) == 12345.0
+
     def test_high_risk_blocked_without_callback(self):
         """无回调时高风险工具必须被拦截，不能默认放行。"""
         registry = ToolRegistry()

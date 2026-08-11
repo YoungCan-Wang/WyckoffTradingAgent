@@ -20,6 +20,7 @@ def _enqueue(db, **kwargs):
         args,
         risk=kwargs.pop("risk", "review"),
         source=kwargs.pop("source", "daemon"),
+        user_id=kwargs.pop("user_id", "alice"),
         db_path=db,
         **kwargs,
     )
@@ -40,10 +41,18 @@ class TestEnqueue:
         assert [p.id for p in pending] == [approval_id]
         assert pending[0].schedule_id == "mkt-open"
         assert pending[0].status == aq.PENDING
+        assert pending[0].user_id == "alice"
 
     def test_args_roundtrip(self, db):
         _enqueue(db, args={"code": "605007", "stop_loss": 13.0})
         assert aq.list_pending(db_path=db)[0].args == {"code": "605007", "stop_loss": 13.0}
+
+    def test_owner_matches_requires_same_account(self, db):
+        _enqueue(db, user_id="alice")
+        record = aq.list_pending(db_path=db)[0]
+        assert aq.owner_matches(record, "alice")
+        assert not aq.owner_matches(record, "bob")
+        assert not aq.owner_matches(record, "")
 
     def test_ordered_by_creation(self, db):
         first = _enqueue(db)
