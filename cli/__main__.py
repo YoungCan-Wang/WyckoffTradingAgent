@@ -1511,6 +1511,13 @@ def _cmd_sync(_args=None):
     print("同步完成")
 
 
+def _cmd_ipc(args):
+    """桌面端 IPC 服务：Electron spawn 本进程，通过 stdin/stdout 通信。"""
+    from cli.ipc.stdio import serve
+
+    raise SystemExit(serve(verbose=args.verbose))
+
+
 def _cmd_mcp_add(args):
     from cli.mcp_config import Server, is_builtin_duplicate, upsert_server
 
@@ -1870,6 +1877,8 @@ def _dispatch_command(args) -> None:
         _cmd_mcp_remove(args)
     elif args.cmd == "mcp-test":
         _cmd_mcp_test(args)
+    elif args.cmd == "ipc":
+        _cmd_ipc(args)
     else:
         _cmd_tui(args)
 
@@ -2047,6 +2056,9 @@ def _add_maintenance_parsers(sub) -> None:
     p_approve = sub.add_parser("approve", help="查看和处理待批准的写操作")
     p_approve.add_argument("action", choices=["list", "ok", "no"], help="list 查看 / ok 批准 / no 拒绝")
     p_approve.add_argument("id", nargs="?", default="", help="待批准项编号")
+
+    p_ipc = sub.add_parser("ipc", help="桌面端 IPC 服务（由 Electron 启动）")
+    p_ipc.add_argument("--verbose", action="store_true", help="调试日志")
 
     p_mcp_add = sub.add_parser("mcp-add", help="添加外部 MCP server")
     p_mcp_add.add_argument("name", help="server 名称，用作工具前缀")

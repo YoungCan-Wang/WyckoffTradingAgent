@@ -94,3 +94,7 @@ analysis/
 test-results/
 .traces/
 wiki_repo_new/
+
+# Electron 桌面端依赖
+desktop/node_modules/
+desktop/dist/

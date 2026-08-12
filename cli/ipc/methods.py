@@ -1,0 +1,518 @@
+"""IPC 方法层 — 不知道传输是 stdio 还是 HTTP。
+
+这一层是换传输时保持不变的部分：每个方法是一个生成器，yield 结构化事件。
+传输层负责把事件序列化并送出去。
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import subprocess
+import sys
+from collections.abc import Callable, Iterator
+from pathlib import Path
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+Event = dict[str, Any]
+
+# 单次请求最多回传的事件数，防止异常循环把前端刷爆。
+MAX_EVENTS_PER_CALL = 100_000
+
+
+class MethodError(Exception):
+    """方法执行失败，带机器可读的 code。"""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def _ok(**payload: Any) -> Event:
+    return {"type": "result", **payload}
+
+
+# -- 查询类：一次返回 ---------------------------------------------------------
+
+
+def approve_list(_params: dict[str, Any]) -> Iterator[Event]:
+    from cli import approval_queue as aq
+
+    items = [
+        {
+            "id": item.id,
+            "tool_name": item.tool_name,
+            "summary": item.summary,
+            "risk": item.risk,
+            "source": item.source,
+            "schedule_id": item.schedule_id,
+            "created_at": item.created_at,
+            "args": aq.sanitized_args(item.args),
+        }
+        for item in aq.list_pending()
+    ]
+    yield _ok(items=items, count=len(items))
+
+
+def approve_decide(params: dict[str, Any]) -> Iterator[Event]:
+    """批准或拒绝一项。批准后立即执行，与 CLI 同一条路径。"""
+    from cli import approval_queue as aq
+
+    approval_id = str(params.get("id") or "").strip()
+    if not approval_id:
+        raise MethodError("invalid_params", "缺少 id")
+    approved = bool(params.get("approved"))
+
+    record = aq.decide(approval_id, approved=approved)
+    if record is None:
+        raise MethodError(
+            "not_actionable",
+            f"{approval_id} 不存在、已决策，或已超过 {aq.DEFAULT_TTL_HOURS} 小时过期",
+        )
+    if not approved:
+        yield _ok(status=record.status, summary=record.summary)
+        return
+
+    from cli.approval_executor import execute_approved
+
+    yield {"type": "progress", "message": f"正在执行：{record.summary or record.tool_name}"}
+    result = execute_approved(record.tool_name, record.args)
+    succeeded = not (isinstance(result, dict) and result.get("error"))
+    aq.record_execution(record.id, result, succeeded=succeeded)
+    yield _ok(status="executed" if succeeded else "failed", result=result, succeeded=succeeded)
+
+
+def portfolio(_params: dict[str, Any]) -> Iterator[Event]:
+    from agents.portfolio_tools import portfolio as portfolio_tool
+
+    yield _ok(portfolio=portfolio_tool(mode="view"))
+
+
+def schedules(_params: dict[str, Any]) -> Iterator[Event]:
+    from cli.daemon import is_daemon_running
+    from cli.scheduler import load_schedules, schedule_status
+
+    yield _ok(
+        schedules=schedule_status(load_schedules()),
+        daemon_running=is_daemon_running(),
+    )
+
+
+def account(_params: dict[str, Any]) -> Iterator[Event]:
+    """当前登录态。绝不返回 token 或密码，只返回身份标识。"""
+    from integrations.local_auth import load_session
+
+    session = load_session() or {}
+    email = str(session.get("email") or "")
+    yield _ok(
+        signed_in=bool(session.get("access_token")),
+        email=email,
+        user_id=str(session.get("user_id") or ""),
+    )
+
+
+def artifact_list(_params: dict[str, Any]) -> Iterator[Event]:
+    """列出报告目录里可预览的产物。"""
+    from cli.ipc.artifacts import list_artifacts
+
+    items = [
+        {
+            "name": a.name,
+            "rel_path": a.rel_path,
+            "kind": a.kind,
+            "size": a.size,
+            "modified_at": a.modified_at,
+        }
+        for a in list_artifacts()
+    ]
+    yield _ok(items=items, count=len(items))
+
+
+def artifact_read(params: dict[str, Any]) -> Iterator[Event]:
+    """读取单个产物内容供容器渲染。"""
+    from cli.ipc.artifacts import ArtifactError, read_artifact
+
+    try:
+        yield _ok(**read_artifact(str(params.get("path") or "")))
+    except ArtifactError as exc:
+        raise MethodError(exc.code, str(exc)) from exc
+
+
+def artifact_import(params: dict[str, Any]) -> Iterator[Event]:
+    """把用户拖进来的文件复制到报告目录。"""
+    from cli.ipc.artifacts import ArtifactError, import_file
+
+    try:
+        artifact = import_file(str(params.get("source") or ""))
+    except ArtifactError as exc:
+        raise MethodError(exc.code, str(exc)) from exc
+
+    yield _ok(
+        imported=True,
+        name=artifact.name,
+        rel_path=artifact.rel_path,
+        kind=artifact.kind,
+        size=artifact.size,
+    )
+
+
+def model_add(params: dict[str, Any]) -> Iterator[Event]:
+    """新增或覆盖一个模型条目。
+
+    api_key 只进配置文件，永不回传给前端（settings_get 只报 has_key）。
+    """
+    from cli.providers import PROVIDERS
+    from integrations.local_auth import save_model_entry
+
+    model_id = str(params.get("id") or "").strip()
+    provider_name = str(params.get("provider_name") or "").strip()
+    model = str(params.get("model") or "").strip()
+    api_key = str(params.get("api_key") or "").strip()
+    base_url = str(params.get("base_url") or "").strip()
+
+    if not model_id:
+        raise MethodError("invalid_params", "缺少模型标识")
+    if provider_name not in PROVIDERS:
+        raise MethodError("invalid_params", f"未知 provider: {provider_name}（可选: {', '.join(PROVIDERS)}）")
+    if not model:
+        raise MethodError("invalid_params", "缺少模型名")
+    if not api_key:
+        raise MethodError("invalid_params", "缺少 API Key")
+
+    save_model_entry(
+        {
+            "id": model_id,
+            "provider_name": provider_name,
+            "model": model,
+            "api_key": api_key,
+            "base_url": base_url,
+        }
+    )
+    yield _ok(saved=True, model_id=model_id)
+
+
+def model_remove(params: dict[str, Any]) -> Iterator[Event]:
+    """删除模型条目。最后一个不允许删——删光了应用就没法工作。"""
+    from integrations.local_auth import remove_model_entry
+
+    model_id = str(params.get("id") or "").strip()
+    if not model_id:
+        raise MethodError("invalid_params", "缺少模型标识")
+    if not remove_model_entry(model_id):
+        raise MethodError("last_model", "至少要保留一个模型")
+    yield _ok(removed=True, model_id=model_id)
+
+
+def model_test(params: dict[str, Any]) -> Iterator[Event]:
+    """实际发一次最小请求验证连通性。
+
+    只验证「密钥有效且模型可达」，因此把 token 压到最低。不做流式，也不
+    进对话历史。
+    """
+    import time
+
+    from cli.provider_factory import create_provider
+    from integrations.local_auth import load_model_configs
+
+    model_id = str(params.get("id") or "").strip()
+    entry = next((m for m in load_model_configs() if m.get("id") == model_id), None)
+    if entry is None:
+        raise MethodError("not_found", f"找不到模型: {model_id}")
+
+    yield {"type": "progress", "message": f"正在连接 {model_id}…"}
+
+    provider, error = create_provider(
+        entry.get("provider_name", ""),
+        entry.get("api_key", ""),
+        entry.get("model", ""),
+        entry.get("base_url", ""),
+    )
+    if provider is None:
+        yield _ok(model_id=model_id, connected=False, error=error or "无法构造 provider")
+        return
+
+    started = time.monotonic()
+    try:
+        # tools 是必需位置参数；传空列表，连通性测试不需要工具。
+        reply = provider.chat(
+            [{"role": "user", "content": "ping"}],
+            [],
+            system_prompt="Reply with the single word: pong",
+        )
+    except Exception as exc:  # noqa: BLE001 - 任何异常都算连不通，要原样报给用户
+        yield _ok(model_id=model_id, connected=False, error=f"{type(exc).__name__}: {exc}"[:300])
+        return
+
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    text = ""
+    if isinstance(reply, dict):
+        text = str(reply.get("text") or reply.get("content") or "")
+    else:
+        text = str(reply or "")
+    yield _ok(model_id=model_id, connected=True, latency_ms=elapsed_ms, sample=text.strip()[:80])
+
+
+_LAUNCHD_LABEL = "com.wyckoff.daemon"
+
+
+def _launchd_plist() -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{_LAUNCHD_LABEL}.plist"
+
+
+def daemon_status(_params: dict[str, Any]) -> Iterator[Event]:
+    """定时 daemon 是否在跑、是否已注册为登录项。
+
+    GUI 关掉后定时任务要继续跑，靠的是 launchd 常驻，而不是 GUI 自启。
+    """
+    from cli.daemon import is_daemon_running
+
+    installed = _launchd_plist().exists()
+    loaded = False
+    if sys.platform == "darwin" and installed:
+        result = subprocess.run(  # noqa: S603
+            ["/bin/launchctl", "list", _LAUNCHD_LABEL],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        loaded = result.returncode == 0
+
+    yield _ok(
+        running=is_daemon_running(),
+        installed=installed,
+        loaded=loaded,
+        supported=sys.platform == "darwin",
+        plist=str(_launchd_plist()),
+    )
+
+
+def daemon_uninstall(_params: dict[str, Any]) -> Iterator[Event]:
+    """注销 launchd 服务并删除 plist。
+
+    刻意不提供对称的 install：调度进程由桌面应用自己拉起（见
+    desktop/src/daemon-runner.js），关掉应用就不该再跑定时任务。这个方法只用于
+    清理历史遗留的 launchd 服务——它会在应用关闭时照样执行任务，与设计相悖。
+    """
+    if sys.platform != "darwin":
+        raise MethodError("unsupported", "launchd 只在 macOS 可用。")
+
+    plist = _launchd_plist()
+    yield {"type": "progress", "message": "正在注销 launchd 服务…"}
+    # bootout 失败通常只是本来就没加载，不该因此中断删除 plist。
+    subprocess.run(  # noqa: S603
+        ["/bin/launchctl", "bootout", f"gui/{os.getuid()}/{_LAUNCHD_LABEL}"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    try:
+        plist.unlink(missing_ok=True)
+    except OSError as exc:
+        raise MethodError("uninstall_failed", f"删除 plist 失败: {exc}") from exc
+
+    yield _ok(installed=False)
+
+
+def sign_out(_params: dict[str, Any]) -> Iterator[Event]:
+    """清除本地会话。同时清掉配置里的凭据，否则 auto_relogin 会立刻登回去。"""
+    from integrations.local_auth import load_config, logout, save_config_key
+
+    logout()
+    # login() 会把 email/password 写进 config，auto_relogin 靠它静默恢复会话。
+    # 只删 session 文件的话，「退出登录」下一次启动就自动失效了。
+    config = load_config()
+    for key in ("email", "password"):
+        if key in config:
+            save_config_key(key, "")
+    yield _ok(signed_out=True)
+
+
+def settings_get(_params: dict[str, Any]) -> Iterator[Event]:
+    """设置页需要的真实配置。api_key 只报是否已配置，不回传值。"""
+    from integrations.local_auth import (
+        DEFAULT_STREAM_CHUNK_TIMEOUT_SECONDS,
+        DEFAULT_TOOL_TIMEOUT_SECONDS,
+        load_config,
+        load_default_model_id,
+        load_fallback_model_id,
+        load_model_configs,
+    )
+
+    config = load_config()
+    models = [
+        {
+            "id": str(m.get("id") or ""),
+            "model": str(m.get("model") or ""),
+            "provider_name": str(m.get("provider_name") or ""),
+            # base_url 不是机密（密钥才是），前端要靠它区分同名自建端点。
+            "base_url": str(m.get("base_url") or ""),
+            "has_key": bool(m.get("api_key")),
+        }
+        for m in load_model_configs()
+    ]
+    appearance = {key: config.get(key, default) for key, default in DESKTOP_APPEARANCE_DEFAULTS.items()}
+
+    yield _ok(
+        models=models,
+        default_model=load_default_model_id() or "",
+        fallback_model=load_fallback_model_id() or "",
+        theme=str(config.get("theme") or "light"),
+        **appearance,
+        stream_chunk_timeout_seconds=int(
+            config.get("stream_chunk_timeout_seconds") or DEFAULT_STREAM_CHUNK_TIMEOUT_SECONDS
+        ),
+        tool_timeout_seconds=int(config.get("tool_timeout_seconds") or DEFAULT_TOOL_TIMEOUT_SECONDS),
+        has_tickflow_key=bool(config.get("tickflow_api_key")),
+        has_tushare_token=bool(config.get("tushare_token")),
+    )
+
+
+# 桌面端外观/行为配置。全部用 desktop_ 前缀，避免和 TUI 的 theme（值是
+# textual-dark 这类 Textual 专用主题名）互相覆盖——两边含义不同。
+DESKTOP_APPEARANCE_DEFAULTS: dict[str, Any] = {
+    "desktop_appearance": "system",  # system | light | dark
+    "desktop_font_scale": 100,  # 80–140，百分比
+    "desktop_font_family": "sans",  # sans | serif
+    "desktop_density": "cozy",  # cozy | compact
+    "desktop_reduce_motion": False,
+    "desktop_send_on_enter": True,
+    "desktop_tone": "default",  # default = 沿用 TUI 提示词，不额外插入
+    "desktop_tone_custom": "",
+}
+
+_APPEARANCE_CHOICES: dict[str, frozenset[str]] = {
+    "desktop_appearance": frozenset({"system", "light", "dark"}),
+    "desktop_font_family": frozenset({"sans", "serif"}),
+    "desktop_density": frozenset({"cozy", "compact"}),
+    "desktop_tone": frozenset({"default", "brief", "detailed", "evidence", "custom"}),
+}
+
+_TONE_CUSTOM_MAX = 600
+
+_SETTABLE_KEYS = frozenset(
+    {"theme", "stream_chunk_timeout_seconds", "tool_timeout_seconds"} | set(DESKTOP_APPEARANCE_DEFAULTS)
+)
+
+
+def _coerce_desktop_value(key: str, value: Any) -> Any:
+    """把前端传来的值收敛到合法范围，非法就抛错而不是静默写坏配置。"""
+    if key in _APPEARANCE_CHOICES:
+        text = str(value or "")
+        if text not in _APPEARANCE_CHOICES[key]:
+            raise MethodError("invalid_value", f"{key} 不接受的值: {text}")
+        return text
+    if key == "desktop_font_scale":
+        try:
+            scale = int(value)
+        except (TypeError, ValueError):
+            raise MethodError("invalid_value", "字号需为整数百分比") from None
+        # 钳制而不是报错：滑块拖到边界属于正常操作。
+        return max(80, min(140, scale))
+    if key in {"desktop_reduce_motion", "desktop_send_on_enter"}:
+        return bool(value)
+    if key == "desktop_tone_custom":
+        # 会拼进系统提示词，必须限长，否则可挤掉真正的指令。
+        return str(value or "")[:_TONE_CUSTOM_MAX]
+    return value
+
+
+def settings_set(params: dict[str, Any]) -> Iterator[Event]:
+    """只允许白名单里的键。避免前端把任意配置（含凭据）写进配置文件。"""
+    from integrations.local_auth import save_config_key, set_default_model, set_fallback_model
+
+    key = str(params.get("key") or "")
+    value = params.get("value")
+
+    if key == "default_model":
+        set_default_model(str(value or ""))
+    elif key == "fallback_model":
+        set_fallback_model(str(value or ""))
+    elif key in _SETTABLE_KEYS:
+        save_config_key(key, _coerce_desktop_value(key, value))
+    else:
+        raise MethodError("invalid_key", f"不可设置的配置项: {key}")
+
+    yield _ok(saved=True, key=key)
+
+
+def mcp_list(_params: dict[str, Any]) -> Iterator[Event]:
+    from cli.mcp_config import is_builtin_duplicate, load_servers
+
+    yield _ok(
+        servers=[
+            {
+                "name": s.name,
+                "command": s.command,
+                "args": s.args,
+                "enabled": s.enabled,
+                "builtin_duplicate": is_builtin_duplicate(s),
+            }
+            for s in load_servers()
+        ]
+    )
+
+
+def health(_params: dict[str, Any]) -> Iterator[Event]:
+    from cli.daemon import is_daemon_running
+
+    yield _ok(ready=True, daemon_running=is_daemon_running())
+
+
+# -- 对话：流式 --------------------------------------------------------------
+
+
+def chat(params: dict[str, Any]) -> Iterator[Event]:
+    """跑一轮对话，把 runtime 事件透传给前端。"""
+    text = str(params.get("text") or "").strip()
+    if not text:
+        raise MethodError("invalid_params", "缺少 text")
+
+    from cli.ipc.session import get_session
+
+    session = get_session()
+    yield from session.run_turn(text)
+
+
+METHODS: dict[str, Callable[[dict[str, Any]], Iterator[Event]]] = {
+    "health": health,
+    "chat": chat,
+    "approve_list": approve_list,
+    "approve_decide": approve_decide,
+    "portfolio": portfolio,
+    "schedules": schedules,
+    "mcp_list": mcp_list,
+    "account": account,
+    "sign_out": sign_out,
+    "artifact_list": artifact_list,
+    "artifact_read": artifact_read,
+    "artifact_import": artifact_import,
+    "model_add": model_add,
+    "model_remove": model_remove,
+    "model_test": model_test,
+    "daemon_status": daemon_status,
+    "daemon_uninstall": daemon_uninstall,
+    "settings_get": settings_get,
+    "settings_set": settings_set,
+}
+
+
+def dispatch(method: str, params: dict[str, Any] | None) -> Iterator[Event]:
+    """执行方法并逐个 yield 事件。未知方法抛 MethodError。"""
+    handler = METHODS.get(method)
+    if handler is None:
+        raise MethodError("unknown_method", f"未知方法: {method}")
+    # 记录每次调用：渲染进程是否真的连上来了，只看进程状态是看不出的。
+    logger.info("dispatch %s", method)
+    emitted = 0
+    for event in handler(params or {}):
+        emitted += 1
+        if emitted > MAX_EVENTS_PER_CALL:
+            logger.warning("method %s exceeded event cap", method)
+            yield {"type": "error", "code": "event_cap", "message": "事件数超限，已截断"}
+            return
+        yield event

@@ -61,3 +61,32 @@ class TestFetchIntradayIfExtremeDay:
         df = _df([10.0, 9.0])
         result = portfolio_tools._fetch_intraday_if_extreme_day("600519", df)
         assert result is None
+
+
+class TestPortfolioViewStopLoss:
+    """view 模式必须带出 stop_loss：缺了会把有止损的持仓误报成无止损。"""
+
+    def test_view_preserves_stop_loss(self) -> None:
+        state = {
+            "free_cash": 1000.0,
+            "positions": [
+                {"code": "600519", "name": "贵州茅台", "shares": 200, "cost": 1452.0, "stop_loss": 1380.5},
+                {"code": "002270", "name": "法狮龙", "shares": 2500, "cost": 30.84, "stop_loss": None},
+            ],
+        }
+        view = portfolio_tools._portfolio_view("pf-1", state)
+        stops = {p["code"]: p["stop_loss"] for p in view["positions"]}
+        assert stops == {"600519": 1380.5, "002270": None}
+
+    def test_view_missing_stop_loss_count_is_accurate(self) -> None:
+        state = {
+            "free_cash": 0.0,
+            "positions": [
+                {"code": "600519", "name": "贵州茅台", "shares": 200, "cost": 1452.0, "stop_loss": 1380.5},
+                {"code": "002270", "name": "法狮龙", "shares": 2500, "cost": 30.84},
+            ],
+        }
+        view = portfolio_tools._portfolio_view("pf-1", state)
+        missing = [p for p in view["positions"] if p.get("stop_loss") is None]
+        assert len(missing) == 1
+        assert missing[0]["code"] == "002270"

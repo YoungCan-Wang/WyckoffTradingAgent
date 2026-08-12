@@ -1,0 +1,14 @@
+{
+  "name": "wyckoff-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Wyckoff 读盘室桌面端",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "start:debug": "electron . --inspect"
+  },
+  "devDependencies": {
+    "electron": "38.2.2"
+  }
+}

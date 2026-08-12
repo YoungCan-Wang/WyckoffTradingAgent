@@ -589,6 +589,29 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "app_browser",
+        "description": (
+            "操作 Wyckoff 桌面应用内置浏览器：导航、读正文、点击、填表。"
+            "适合需要交互（登录、翻页、展开）才能拿到内容的页面。"
+            "只在桌面应用中可用；命令行环境请用 browser_research。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["navigate", "read", "title", "url", "click", "fill", "back", "wait"],
+                    "description": "要执行的动作",
+                },
+                "url": {"type": "string", "description": "navigate 的目标地址，必须是公网 http(s)"},
+                "selector": {"type": "string", "description": "click/fill 的 CSS 选择器"},
+                "value": {"type": "string", "description": "fill 要填入的值"},
+                "ms": {"type": "integer", "description": "wait 的毫秒数，50-10000"},
+            },
+            "required": ["action"],
+        },
+    },
+    {
         "name": "browser_research",
         "description": (
             "通过本机 Chrome CDP 搜索公开网页并抽取正文，返回可引用的标题/链接/摘要。"
@@ -685,6 +708,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "read_file": ToolSpec("read_file", "读取文件"),
     "write_file": ToolSpec("write_file", "写入文件", requires_approval=True),
     "browser_research": ToolSpec("browser_research", "浏览器搜索"),
+    "app_browser": ToolSpec("app_browser", "内置浏览器"),
     "reassess_profile": ToolSpec("reassess_profile", "风控评估", concurrency_safe=True),
     "diagnose_backend": ToolSpec("diagnose_backend", "大模型诊疗", concurrency_safe=True),
     "ask_user_question": ToolSpec("ask_user_question", "提问用户", concurrency_safe=False),
@@ -845,6 +869,7 @@ class ToolRegistry:
 
     def _register_tools(self) -> dict[str, callable]:
         """注册所有工具函数。"""
+        from agents.app_browser_tools import app_browser
         from agents.backtest_tools import run_backtest
         from agents.browser_tools import browser_research
         from agents.diagnosis_tools import analyze_stock
@@ -901,6 +926,7 @@ class ToolRegistry:
             "read_file": read_file,
             "write_file": write_file,
             "browser_research": browser_research,
+            "app_browser": app_browser,
             "reassess_profile": reassess_decision_profile,
             "diagnose_backend": diagnose_backend,
         }

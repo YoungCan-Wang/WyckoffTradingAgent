@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import fcntl
 import logging
 import os
 import signal
@@ -12,6 +11,8 @@ from contextlib import contextmanager
 from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
+
+from cli import platform_lock
 
 logger = logging.getLogger(__name__)
 
@@ -28,21 +29,21 @@ class DaemonLockBusy(RuntimeError):
 
 @contextmanager
 def single_instance_lock(lock_path: Path | None = None) -> Iterator[None]:
-    """flock 而非 PID 文件：PID 会被系统回收，导致误判进程还活着。"""
+    """内核级文件锁而非 PID 文件：PID 会被系统回收，导致误判进程还活着。"""
     path = lock_path or LOCK_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
-    handle = path.open("w")
+    handle = path.open(platform_lock.lock_mode())
     try:
+        if not platform_lock.try_acquire(handle):
+            raise DaemonLockBusy(f"daemon already running (lock held: {path})")
         try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            raise DaemonLockBusy(f"daemon already running (lock held: {path})") from exc
-        handle.write(str(os.getpid()))
-        handle.flush()
-        try:
+            handle.seek(0)
+            handle.truncate()
+            handle.write(str(os.getpid()))
+            handle.flush()
             yield
         finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            platform_lock.release(handle)
     finally:
         handle.close()
 
@@ -53,15 +54,13 @@ def is_daemon_running(lock_path: Path | None = None) -> bool:
     if not path.exists():
         return False
     try:
-        handle = path.open("a")
+        handle = path.open("a+")
     except OSError:
         return False
     try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        return True
-    else:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        if not platform_lock.try_acquire(handle):
+            return True
+        platform_lock.release(handle)
         return False
     finally:
         handle.close()
@@ -92,8 +91,15 @@ def _handle_signal(signum: int, _frame: object) -> None:
 
 
 def install_signal_handlers() -> None:
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        signal.signal(sig, _handle_signal)
+    """Windows 只支持 SIGTERM/SIGINT 的有限语义，SIGBREAK 才是 taskkill 的送达信号。"""
+    signals = [signal.SIGTERM, signal.SIGINT]
+    if platform_lock.IS_WINDOWS:  # pragma: no cover - platform-specific
+        signals.append(getattr(signal, "SIGBREAK", signal.SIGTERM))
+    for sig in signals:
+        try:
+            signal.signal(sig, _handle_signal)
+        except (OSError, ValueError):
+            logger.debug("cannot install handler for signal %s", sig)
 
 
 def run_due_schedules(last_check_at: datetime | None, now: datetime) -> datetime:

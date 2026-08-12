@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>Wyckoff 工作台 · 深色图表 tab</title>
+<style>
+  :root{--paper:#fffefc;--side:#f4f3f0;--line:#e6e4de;--line2:#efedE8;
+    --tx:#26251f;--tx2:#6f6d66;--tx3:#9b9891;--clay:#d97757;
+    /* A 股惯例：红涨绿跌 */
+    --up:#e5484d;--dn:#2f9e5f;
+    /* 深色图表区 */
+    --d-bg:#15171c;--d-card:#1b1e24;--d-line:#282c34;--d-tx:#e8eaed;--d-tx2:#9096a1;--d-tx3:#666c77}
+  *{box-sizing:border-box}
+  body{margin:0;background:#e8e6e1;color:var(--tx);zoom:1.12;
+    font:13.5px/1.6 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif;
+    -webkit-font-smoothing:antialiased}
+  .win{width:1480px;height:880px;margin:12px auto;background:var(--paper);
+    border-radius:12px;overflow:hidden;display:flex;box-shadow:0 22px 60px rgba(0,0,0,.22)}
+
+  .side{width:196px;flex:none;background:var(--side);border-right:1px solid var(--line);
+    display:flex;flex-direction:column;overflow:auto}
+  .chrome{display:flex;align-items:center;gap:8px;padding:12px 12px 9px}
+  .dot{width:11px;height:11px;border-radius:50%}
+  .brand{display:flex;align-items:center;gap:6px;padding:0 15px 11px;font-size:14.5px;font-weight:600}
+  .brand .cv{color:var(--tx3);font-size:10px;font-weight:400}
+  .nav{padding:0 7px}
+  .nv{display:flex;align-items:center;gap:9px;padding:6px 9px;border-radius:7px;font-size:13px}
+  .nv.on{background:#e7e5e0;font-weight:600}
+  .nv .g{width:14px;text-align:center;color:#7d7a73;font-size:12px}
+  .nv .n{margin-left:auto;color:var(--tx3);font-size:11px}
+  .nv .n.warn{color:var(--clay);font-weight:600}
+  .lbl{padding:14px 15px 4px;color:var(--tx3);font-size:12px}
+  .prj{display:flex;align-items:center;gap:9px;padding:5px 15px;font-size:13px}
+  .prj .g{width:14px;text-align:center;color:#7d7a73;font-size:11px}
+  .sess{display:flex;align-items:center;gap:7px;padding:4px 15px 4px 38px;font-size:12px;color:var(--tx2)}
+  .sess.on{background:#e7e5e0;color:var(--tx);font-weight:600}
+  .sess .s{margin-left:auto;font-size:10px;color:var(--clay)}
+  .acct{margin-top:auto;display:flex;align-items:center;gap:8px;padding:11px 14px;
+    border-top:1px solid var(--line);position:sticky;bottom:0;background:var(--side)}
+  .star{color:var(--clay);font-size:15px}
+  .acct b{font-size:12.5px}.acct .cv{margin-left:auto;color:var(--tx3);font-size:10px}
+
+  .thread{width:430px;flex:none;display:flex;flex-direction:column;border-right:1px solid var(--line)}
+  .ttop{display:flex;align-items:center;padding:12px 18px;border-bottom:1px solid var(--line2)}
+  .ttop h2{margin:0;font:600 14px/1.3 inherit}
+  .ttop .d3{margin-left:auto;color:var(--tx3)}
+  .tscroll{flex:1;overflow:auto;padding:16px 18px 0}
+  .u{display:flex;gap:10px;margin-bottom:18px}
+  .av{width:22px;height:22px;flex:none;border-radius:50%;background:#e7e5e0;
+    display:flex;align-items:center;justify-content:center;font-size:10.5px;color:var(--tx2)}
+  .u p{margin:1px 0 0;font-size:13.5px}
+  .a{display:flex;gap:10px}
+  .a .as{color:var(--clay);font-size:15px;width:22px;text-align:center;flex:none}
+  .a .bd{flex:1;min-width:0}
+  .a p{margin:1px 0 11px;font-size:13.5px}
+  .a p b{font-weight:600}
+  .tool{display:flex;align-items:center;gap:8px;padding:5px 0;color:var(--tx2);font-size:12.5px}
+  .tool .g{color:#8d8a83;font-size:11px}
+  .tool .nm{font-family:ui-monospace,Menlo,monospace;font-size:12px}
+  .tool .ok{color:var(--dn);font-size:11px;margin-left:auto}
+  .tool .ok.r{color:var(--up)}
+
+  .ins{border:1px solid var(--line);border-radius:10px;background:#fdfcfa;
+    padding:11px 13px;margin:2px 0 12px}
+  .ins .r1{display:flex;align-items:center;gap:8px;font-size:13px}
+  .ins .r1 b{font-weight:600}
+  .ins .r1 .tg{margin-left:auto;font-size:11.5px;color:var(--tx3)}
+  .ins .kv{display:flex;gap:14px;margin-top:9px;padding-top:9px;border-top:1px solid var(--line2)}
+  .ins .kv div{font-size:12px;color:var(--tx3)}
+  .ins .kv div b{display:block;font-size:14.5px;font-weight:600;color:var(--tx);
+    font-variant-numeric:tabular-nums;margin-top:1px}
+  .ins .kv div b.up{color:var(--up)}.ins .kv div b.dn{color:var(--dn)}
+  .btns{display:flex;gap:6px;margin-top:10px}
+  .b{border:1px solid var(--line);background:#fff;color:var(--tx2);border-radius:6px;
+    padding:4px 10px;font-size:12px}
+  .b.pri{background:var(--tx);border-color:var(--tx);color:#fff;font-weight:600}
+
+  .comp{margin:6px 18px 16px;background:#fff;border:1px solid var(--line);
+    border-radius:11px;box-shadow:0 2px 8px rgba(0,0,0,.04)}
+  .comp .ph{padding:12px 15px 0;color:#a9a6a0;font-size:14px}
+  .comp .cr{display:flex;align-items:center;padding:10px 12px}
+  .plus{width:24px;height:24px;border-radius:7px;display:flex;align-items:center;
+    justify-content:center;color:var(--tx2);font-size:16px}
+  .mdl{margin-left:auto;display:flex;align-items:center;gap:5px;font-size:12.5px}
+  .mdl i{font-style:normal;color:var(--tx2)}
+  .send{width:26px;height:26px;border-radius:8px;background:#f0eeE9;border:1px solid var(--line);
+    display:flex;align-items:center;justify-content:center;color:#8d8a83;margin-left:9px}
+
+  /* ── artifact pane: tabs stay light, content goes dark ── */
+  .pane{flex:1;min-width:0;display:flex;flex-direction:column}
+  .tabs{display:flex;align-items:center;gap:1px;padding:7px 10px 0;
+    border-bottom:1px solid var(--line);background:var(--side);flex:none}
+  .tab{display:flex;align-items:center;gap:6px;padding:7px 12px;font-size:12.5px;
+    color:var(--tx2);border-radius:7px 7px 0 0;border:1px solid transparent;max-width:160px}
+  .tab .g{font-size:11px;color:#8d8a83}
+  .tab .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .tab.on{background:var(--d-bg);border-color:var(--d-bg);color:#fff;font-weight:600;margin-bottom:-1px}
+  .tab.on .g{color:var(--clay)}
+  .tab .x{color:var(--tx3);font-size:11px}
+  .tab.on .x{color:#7b818c}
+  .tabs .add{margin-left:4px;color:var(--tx3);font-size:13px;padding:6px}
+  .tabs .rt{margin-left:auto;display:flex;gap:9px;color:var(--tx3);font-size:12px;padding-bottom:6px}
+
+  .dark{flex:1;background:var(--d-bg);color:var(--d-tx);overflow:auto;padding:14px 16px 18px}
+  .fbar{display:flex;align-items:center;gap:7px;margin-bottom:12px}
+  .fc{display:flex;align-items:center;gap:6px;background:var(--d-card);border:1px solid var(--d-line);
+    border-radius:7px;padding:5px 10px;font-size:12px;color:var(--d-tx2)}
+  .fc b{color:var(--d-tx);font-weight:600;font-variant-numeric:tabular-nums}
+  .fc .cv{color:var(--d-tx3);font-size:10px}
+  .fbar .rt{margin-left:auto;display:flex;gap:6px}
+  .seg2{display:flex;background:var(--d-card);border:1px solid var(--d-line);border-radius:7px;overflow:hidden}
+  .seg2 span{padding:5px 11px;font-size:12px;color:var(--d-tx2)}
+  .seg2 span.on{background:#2a2f38;color:#fff;font-weight:600}
+
+  .kpis{display:flex;gap:9px;margin-bottom:11px}
+  .k{flex:1;background:var(--d-card);border:1px solid var(--d-line);border-radius:9px;padding:10px 12px}
+  .k .t{color:var(--d-tx3);font-size:11.5px}
+  .k .v{font-size:20px;font-weight:600;margin-top:3px;font-variant-numeric:tabular-nums;
+    letter-spacing:-.3px}
+  .k .v.up{color:var(--up)}.k .v.dn{color:var(--dn)}
+  .k .m{font-size:11px;margin-top:2px;color:var(--d-tx3)}
+  .k .m.up{color:var(--up)}.k .m.dn{color:var(--dn)}
+
+  .charts{display:flex;gap:9px}
+  .card{background:var(--d-card);border:1px solid var(--d-line);border-radius:9px;padding:11px 13px 8px}
+  .card .h{display:flex;align-items:center;gap:7px;margin-bottom:9px}
+  .card .h .bar{width:2px;height:12px;background:var(--clay);border-radius:1px}
+  .card .h b{font-size:12.5px;font-weight:600}
+  .card .h .rt{margin-left:auto;color:var(--d-tx3);font-size:11px}
+  .c1{flex:1.7;min-width:0}
+  .c2{flex:1;min-width:0}
+  .lg{display:flex;flex-wrap:wrap;gap:9px;margin-top:8px}
+  .lg div{display:flex;align-items:center;gap:5px;font-size:11.5px;color:var(--d-tx2)}
+  .lg i{width:7px;height:7px;border-radius:2px;display:block}
+  .lg b{color:var(--d-tx);font-weight:600;font-variant-numeric:tabular-nums}
+
+  .tbl{margin-top:9px;background:var(--d-card);border:1px solid var(--d-line);
+    border-radius:9px;padding:11px 13px 4px}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th{text-align:right;color:var(--d-tx3);font-weight:600;font-size:11px;padding:5px 8px;
+    border-bottom:1px solid var(--d-line)}
+  th:first-child,td:first-child{text-align:left}
+  td{text-align:right;padding:6px 8px;border-bottom:1px solid #21242a;
+    font-variant-numeric:tabular-nums;color:var(--d-tx)}
+  tr:last-child td{border:0}
+  td.c{font-family:ui-monospace,Menlo,monospace;font-size:11.5px}
+  .up{color:var(--up)}.dn{color:var(--dn)}
+  .warnc{color:#e0a458;font-weight:600}
+  .cap{width:1480px;margin:0 auto 6px;color:#6f6d66;font-size:12.5px}
+  .note{margin-top:9px;color:var(--d-tx3);font-size:11.5px;line-height:1.6}
+</style>
+</head>
+<body>
+
+<div class="cap">混搭验证 — 外壳浅色（协作态），图表 tab 深色（盯盘态）。涨跌按 A 股惯例：红涨绿跌</div>
+
+<div class="win">
+  <div class="side">
+    <div class="chrome">
+      <span class="dot" style="background:#ff5f57"></span>
+      <span class="dot" style="background:#febc2e"></span>
+      <span class="dot" style="background:#28c840"></span>
+    </div>
+    <div class="brand">Wyckoff <span class="cv">⌄</span></div>
+    <div class="nav">
+      <div class="nv"><span class="g">+</span>新会话</div>
+      <div class="nv on"><span class="g">▤</span>组合<span class="n warn">189 ⚠</span></div>
+      <div class="nv"><span class="g">◈</span>产物<span class="n">42</span></div>
+      <div class="nv"><span class="g">◷</span>定时<span class="n">6</span></div>
+      <div class="nv"><span class="g">◔</span>回测<span class="n">1</span></div>
+      <div class="nv"><span class="g">▨</span>偏好</div>
+    </div>
+    <div class="lbl">组合</div>
+    <div class="prj"><span class="g">▣</span>A 股实盘</div>
+    <div class="sess on">净值与仓位复盘</div>
+    <div class="sess">今日调仓 <span class="s">◐</span></div>
+    <div class="sess">止损落库排查</div>
+    <div class="prj" style="margin-top:7px"><span class="g">▣</span>回测研究</div>
+    <div class="sess">all_defined <span class="s">◐</span></div>
+    <div class="acct"><span class="star">✳</span><b>youngcan</b><span class="cv">⌄</span></div>
+  </div>
+
+  <div class="thread">
+    <div class="ttop"><h2>净值与仓位复盘</h2><span class="d3">···</span></div>
+    <div class="tscroll">
+      <div class="u"><span class="av">你</span>
+        <p>这个月净值怎么走的？仓位集中在哪。</p></div>
+
+      <div class="a"><span class="as">✳</span>
+        <div class="bd">
+          <p>拉了 7/1 到 8/11 的日频净值和行业分布，图在右边 →</p>
+
+          <div class="tool"><span class="g">◈</span>
+            <span class="nm">get_nav_series</span><span class="ok r">30 个交易日</span></div>
+          <div class="tool"><span class="g">◈</span>
+            <span class="nm">get_sector_exposure</span><span class="ok r">196 持仓</span></div>
+
+          <p>三个结论：</p>
+
+          <div class="ins">
+            <div class="r1"><b>净值 +3.24%，但跑输沪深300</b><span class="tg">同期基准 +5.11%</span></div>
+            <div class="kv">
+              <div>期初<b>¥2,757,140</b></div>
+              <div>期末<b class="up">¥2,847,533</b></div>
+              <div>超额<b class="dn">-1.87%</b></div>
+              <div>最大回撤<b class="dn">-4.62%</b></div>
+            </div>
+          </div>
+
+          <div class="ins">
+            <div class="r1"><b>白酒占 31.4%，过度集中</b><span class="tg">单行业上限建议 20%</span></div>
+            <div class="kv">
+              <div>白酒<b>31.4%</b></div>
+              <div>医药<b>24.8%</b></div>
+              <div>科技<b>18.2%</b></div>
+              <div>其他<b>25.6%</b></div>
+            </div>
+          </div>
+
+          <div class="ins">
+            <div class="r1"><b>7/22 那笔回撤来自无止损持仓</b><span class="tg">单日 -2.14%</span></div>
+            <p style="margin:9px 0 0;font-size:12.5px;color:var(--tx2)">
+              当日 605007 跌 9.8%，因 <b>stop_loss 为 NULL</b> 强制止损未触发。
+              若有 ATR 止损，回撤可控在 -0.9%。</p>
+            <div class="btns"><button class="b pri">补 189 条止损</button>
+              <button class="b">看那天的决策</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="comp">
+      <div class="ph">继续说……</div>
+      <div class="cr"><span class="plus">+</span>
+        <span class="mdl">claude-opus-5 <i>Max</i> ⌄</span><span class="send">↑</span></div>
+    </div>
+  </div>
+
+  <div class="pane">
+    <div class="tabs">
+      <div class="tab on"><span class="g">◫</span><span class="nm">净值与仓位</span>
+        <span class="x">✕</span></div>
+      <div class="tab"><span class="g">▤</span><span class="nm">简报 08-11.md</span></div>
+      <div class="tab"><span class="g">▦</span><span class="nm">trades.csv</span></div>
+      <div class="tab"><span class="g">▣</span><span class="nm">持仓 196</span></div>
+      <span class="add">+</span>
+      <div class="rt"><span>⤢</span><span>◫</span></div>
+    </div>
+
+    <div class="dark">
+      <div class="fbar">
+        <span class="fc">交易日期 <b>2026-07-01 → 08-11</b> <span class="cv">⌄</span></span>
+        <span class="fc">基准 <b>沪深300</b> <span class="cv">⌄</span></span>
+        <div class="rt"><span class="seg2"><span>日</span><span class="on">月</span><span>年</span></span></div>
+      </div>
+
+      <div class="kpis">
+        <div class="k"><div class="t">总资产</div><div class="v">¥2,847,533</div>
+          <div class="m up">▲ 3.24% 期初</div></div>
+        <div class="k"><div class="t">当日盈亏</div><div class="v up">+¥17,240</div>
+          <div class="m up">▲ 0.61%</div></div>
+        <div class="k"><div class="t">持仓市值</div><div class="v">¥2,795,353</div>
+          <div class="m">现金 ¥52,180</div></div>
+        <div class="k"><div class="t">胜率</div><div class="v warnc">36.8%</div>
+          <div class="m dn">▼ 302 笔跟踪</div></div>
+      </div>
+
+      <div class="charts">
+        <div class="card c1">
+          <div class="h"><span class="bar"></span><b>净值走势</b>
+            <span class="rt">组合 vs 沪深300</span></div>
+          <svg viewBox="0 0 560 190" style="width:100%;height:190px;display:block">
+            <defs>
+              <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#e5484d" stop-opacity=".26"/>
+                <stop offset="1" stop-color="#e5484d" stop-opacity="0"/>
+              </linearGradient>
+            </defs>
+            <g stroke="#282c34" stroke-width="1">
+              <line x1="42" y1="20" x2="552" y2="20"/><line x1="42" y1="58" x2="552" y2="58"/>
+              <line x1="42" y1="96" x2="552" y2="96"/><line x1="42" y1="134" x2="552" y2="134"/>
+              <line x1="42" y1="164" x2="552" y2="164"/>
+            </g>
+            <g fill="#666c77" font-size="10" text-anchor="end" font-family="monospace">
+              <text x="36" y="24">1.06</text><text x="36" y="62">1.04</text>
+              <text x="36" y="100">1.02</text><text x="36" y="138">1.00</text>
+              <text x="36" y="168">0.98</text>
+            </g>
+            <!-- benchmark -->
+            <path d="M46,132 L82,126 L118,118 L154,124 L190,110 L226,100 L262,104 L298,88
+                     L334,78 L370,84 L406,66 L442,58 L478,50 L514,44 L548,38"
+                  fill="none" stroke="#5a6472" stroke-width="1.6" stroke-dasharray="4 3"/>
+            <!-- portfolio -->
+            <path d="M46,134 L82,128 L118,120 L154,112 L190,116 L226,104 L262,96 L298,158
+                     L334,150 L370,140 L406,128 L442,116 L478,104 L514,92 L548,84
+                     L548,178 L46,178 Z" fill="url(#g1)"/>
+            <path d="M46,134 L82,128 L118,120 L154,112 L190,116 L226,104 L262,96 L298,158
+                     L334,150 L370,140 L406,128 L442,116 L478,104 L514,92 L548,84"
+                  fill="none" stroke="#e5484d" stroke-width="2"/>
+            <circle cx="298" cy="158" r="3.4" fill="#15171c" stroke="#e0a458" stroke-width="2"/>
+            <text x="298" y="176" fill="#e0a458" font-size="10" text-anchor="middle">7/22 −2.14%</text>
+            <g fill="#666c77" font-size="10" font-family="monospace">
+              <text x="46" y="188">7/01</text><text x="200" y="188">7/15</text>
+              <text x="350" y="188">7/29</text><text x="520" y="188">8/11</text>
+            </g>
+          </svg>
+          <div class="lg">
+            <div><i style="background:#e5484d"></i>组合 <b>+3.24%</b></div>
+            <div><i style="background:#5a6472"></i>沪深300 <b>+5.11%</b></div>
+            <div><i style="background:#e0a458"></i>无止损导致的回撤</div>
+          </div>
+        </div>
+
+        <div class="card c2">
+          <div class="h"><span class="bar"></span><b>行业持仓分布</b>
+            <span class="rt">196 只</span></div>
+          <svg viewBox="0 0 200 190" style="width:100%;height:190px;display:block">
+            <g transform="translate(100,88)" fill="none" stroke-width="21">
+              <!-- 白酒 31.4% -->
+              <circle r="58" stroke="#e5484d" stroke-dasharray="114 250"
+                      transform="rotate(-90)"/>
+              <!-- 医药 24.8% -->
+              <circle r="58" stroke="#e0a458" stroke-dasharray="90 274"
+                      transform="rotate(23)"/>
+              <!-- 科技 18.2% -->
+              <circle r="58" stroke="#4a90d9" stroke-dasharray="66 298"
+                      transform="rotate(112)"/>
+              <!-- 消费 12.1% -->
+              <circle r="58" stroke="#2f9e5f" stroke-dasharray="44 320"
+                      transform="rotate(178)"/>
+              <!-- 其他 13.5% -->
+              <circle r="58" stroke="#5a6472" stroke-dasharray="49 315"
+                      transform="rotate(222)"/>
+            </g>
+            <text x="100" y="84" fill="#e8eaed" font-size="19" font-weight="600"
+                  text-anchor="middle" font-family="monospace">31.4%</text>
+            <text x="100" y="100" fill="#666c77" font-size="10" text-anchor="middle">白酒占比</text>
+          </svg>
+          <div class="lg">
+            <div><i style="background:#e5484d"></i>白酒 <b>31.4%</b></div>
+            <div><i style="background:#e0a458"></i>医药 <b>24.8%</b></div>
+            <div><i style="background:#4a90d9"></i>科技 <b>18.2%</b></div>
+            <div><i style="background:#2f9e5f"></i>消费 <b>12.1%</b></div>
+            <div><i style="background:#5a6472"></i>其他 <b>13.5%</b></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="tbl">
+        <table>
+          <tr><th>代码</th><th>名称</th><th>行业</th><th>市值</th><th>占比</th>
+              <th>今日</th><th>浮动盈亏</th><th>止损</th></tr>
+          <tr><td class="c">600519</td><td>贵州茅台</td><td>白酒</td><td>¥318,400</td>
+            <td>11.4%</td><td class="up">+1.24%</td><td class="up">+8.9%</td><td>1,452.00</td></tr>
+          <tr><td class="c">002270</td><td>法狮龙</td><td>消费</td><td>¥77,100</td>
+            <td>2.8%</td><td class="up">+2.06%</td><td class="up">+6.3%</td>
+            <td class="warnc">无</td></tr>
+          <tr><td class="c">300628</td><td>亿联网络</td><td>科技</td><td>¥64,352</td>
+            <td>2.3%</td><td class="dn">-0.82%</td><td class="up">+4.9%</td><td>36.156</td></tr>
+          <tr><td class="c">605007</td><td>五洲特纸</td><td>消费</td><td>¥42,060</td>
+            <td>1.5%</td><td class="dn">-1.41%</td><td class="dn">-8.7%</td>
+            <td class="warnc">无 · 已跌破</td></tr>
+        </table>
+      </div>
+
+      <div class="note">
+        涨跌按 A 股惯例：<span class="up">红涨</span> / <span class="dn">绿跌</span>。
+        止损列 <span class="warnc">无</span> 共 189 条，可在左侧对话中一次补齐。
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
