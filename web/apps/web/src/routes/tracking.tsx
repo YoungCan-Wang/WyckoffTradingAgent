@@ -6,7 +6,14 @@ import { supabase } from '@/lib/supabase'
 import { watchChartResize } from '@/lib/chart-resize'
 import { useWhitelistGate, whitelistGateView } from '@/lib/whitelist-gate'
 import { SortableHeader, type SortOrder } from '@/components/sortable-header'
-import { dedupeTrackingRows, labelCandidateTerm, normalizeCode } from '@wyckoff/shared'
+import {
+  countTrackingOccurrences,
+  dedupeTrackingRows,
+  hasCompleteTrackingWindow,
+  labelCandidateTerm,
+  latestTrackingDates,
+  normalizeCode,
+} from '@wyckoff/shared'
 import { WyckoffLoading } from '@/components/loading'
 import { usePreferences, type TranslationKey } from '@/lib/preferences'
 import { financialValueClass } from '@/lib/financial-colors'
@@ -147,11 +154,11 @@ async function fetchTracking(market: MarketTab): Promise<Recommendation[]> {
   while (true) {
     const batch = await fetchTrackingPage(market, offset)
     rows.push(...batch)
-    if (batch.length < TRACKING_PAGE_SIZE || hasLoadedRetentionWindow(rows)) break
+    if (batch.length < TRACKING_PAGE_SIZE || hasCompleteTrackingWindow(rows, RETENTION_DATES)) break
     offset += TRACKING_PAGE_SIZE
   }
   const combined = market === 'cn' ? rows.concat(await fetchSignalPendingTracking()) : rows
-  const dateSet = new Set(getLatestRecommendDates(combined, RETENTION_DATES))
+  const dateSet = new Set(latestTrackingDates(combined, RETENTION_DATES))
   return combined.filter((row) => dateSet.has(row.recommend_date))
 }
 
@@ -214,18 +221,6 @@ function mapSignalPendingRow(row: SignalPendingRow): Recommendation | null {
   }
 }
 
-function hasLoadedRetentionWindow(rows: Recommendation[]): boolean {
-  const dates = getLatestRecommendDates(rows, RETENTION_DATES + 1)
-  const cutoffDate = dates[RETENTION_DATES - 1]
-  const oldestFetched = rows.at(-1)?.recommend_date
-  return (
-    dates.length > RETENTION_DATES
-    && typeof oldestFetched === 'number'
-    && typeof cutoffDate === 'number'
-    && oldestFetched < cutoffDate
-  )
-}
-
 export function TrackingPage() {
   const [market, setMarket] = useState<MarketTab>('cn')
   const [search, setSearch] = useState('')
@@ -247,7 +242,7 @@ export function TrackingPage() {
     retry: 1,
   })
 
-  const latestDates = useMemo(() => getLatestRecommendDates(data, RETENTION_DATES), [data])
+  const latestDates = useMemo(() => latestTrackingDates(data, RETENTION_DATES), [data])
   const activeDates = useMemo(() => latestDates.slice(0, selectedWindow), [latestDates, selectedWindow])
   const windowRows = useMemo(() => {
     const dateSet = new Set(activeDates)
@@ -269,7 +264,11 @@ export function TrackingPage() {
     return sortRecommendations(result, sortBy, sortOrder)
   }, [visibleData, search, onlyAI, sortBy, sortOrder])
 
-  const stats = useMemo(() => buildSummaryStats(visibleData), [visibleData])
+  const totalRecommendations = useMemo(() => countTrackingOccurrences(windowRows), [windowRows])
+  const stats = useMemo(
+    () => buildSummaryStats(visibleData, totalRecommendations),
+    [visibleData, totalRecommendations],
+  )
   const latestDate = latestDates[0] ?? null
   const oldestDate = latestDates.at(-1) ?? null
   const activeOldestDate = activeDates.at(-1) ?? null
@@ -996,20 +995,12 @@ function StatCard({ label, value, color, hint }: { label: string; value: string;
   )
 }
 
-function getLatestRecommendDates(rows: Recommendation[], limit: number): number[] {
-  const dates = rows
-    .map((row) => row.recommend_date)
-    .filter((date) => Number.isFinite(date) && date > 0)
-  return [...new Set(dates)].sort((a, b) => b - a).slice(0, limit)
-}
-
 function dedupeRecommendations(rows: Recommendation[]): Recommendation[] {
   return dedupeTrackingRows(rows)
 }
 
-function buildSummaryStats(rows: Recommendation[]): SummaryStats | null {
+function buildSummaryStats(rows: Recommendation[], totalRecommendations: number): SummaryStats | null {
   if (rows.length === 0) return null
-  const totalRecommendations = rows.reduce((total, row) => total + recommendationCount(row.recommend_count), 0)
   const activeRows = rows.filter((row) => !row.rag_vetoed)
   const values = activeRows.map((row) => row.change_pct).filter(isFiniteNumber)
   if (values.length === 0) {

@@ -155,6 +155,8 @@ CLI Agent 的本地命令工具只允许明确的只读命令；文件工具继�
 | `/guide` | 功能与能力边界 | Web 端功能入口、日常工作流和运行边界说明 |
 | `/settings` | 设置 | 模型 / API Key / 数据源配置 |
 
+`/tracking` 按数据库实际存在的最近 30 个复盘交易日分页读取。窗口原始记录数保留数据源行数，“总入选次数”以唯一 `(code, recommend_date)` 为粒度；“覆盖股票数”及平均/最高/最低涨跌幅先按 `code` 去重，使用窗口内该股的最新复盘行和粘住的首次推荐价。
+
 ### Provider Stream 兼容
 
 读盘室走 `/api/chat` 的 UIMessage stream，Worker 端根据用户设置创建 OpenAI-compatible 或 Anthropic provider。Gemini OpenAI-compatible SSE 会经过 `normalizeGeminiStream()` 归一化，避免工具调用 chunk 在前端缺失。旧的 `/api/llm-proxy` 路径仍服务单股、多股、导出等非读盘室直连能力。

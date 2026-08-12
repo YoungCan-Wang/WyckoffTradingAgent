@@ -102,8 +102,17 @@ class TestExpiry:
 
 class TestSummarize:
     def test_stop_loss_summary(self):
+        """止损摘要必须挂在 set_stop_loss 上：update_portfolio 已不接受 stop_loss。"""
         args = {"code": "002270", "name": "法狮龙", "stop_loss": 33.15}
-        assert aq.summarize("update_portfolio", args) == "002270 法狮龙 止损 → 33.15"
+        assert aq.summarize("set_stop_loss", args) == "002270 法狮龙 止损 → 33.15"
+
+    def test_batch_stop_loss_summary(self):
+        args = {"items": [{"code": str(i), "stop_loss": 1.0} for i in range(189)]}
+        assert aq.summarize("set_stop_loss", args) == "批量补止损 189 只"
+
+    def test_portfolio_action_summary(self):
+        args = {"code": "002270", "name": "法狮龙", "action": "add", "shares": 500}
+        assert aq.summarize("update_portfolio", args) == "002270 法狮龙 add 500 股"
 
     def test_trade_summary(self):
         args = {"code": "600519", "name": "贵州茅台", "side": "buy", "shares": 100}
