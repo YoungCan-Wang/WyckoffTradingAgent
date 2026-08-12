@@ -731,7 +731,7 @@ Step4、持仓诊断和 Web 投研提示词共享证据契约：默认 `capital_
 |------|------|
 | `cli/scheduler.py` | 纯策略：cron 匹配、到期判定（`due_schedules`）、补跑窗口（`pending_check_minutes`）。无副作用，可独立测试 |
 | `cli/daemon.py` | 主循环 + `fcntl.flock` 单例 + SIGTERM 优雅退出 + 日志轮转 |
-| `cli/headless.py` | `run_once()` 无界面跑一轮 `AgentRuntime`，注入无人监督下的工具闸门 |
+| `cli/headless.py` | `run_once()` 无界面跑一轮 `AgentRuntime`：恢复 CLI 登录态后再注入无人监督工具闸门（否则 `set_stop_loss` 会写到 `USER_LIVE:local`） |
 
 由 launchd（`com.wyckoff.daemon`，`KeepAlive.SuccessfulExit=false`）保活，
 `scripts/daemon_install.sh` 安装。**不使用** `StartCalendarInterval` 逐条映射 cron ——
@@ -744,6 +744,7 @@ daemon 持锁时 TUI 的 `_check_schedules` 直接返回，让出调度权。两
 
 `cli/approval_policy.classify()` 把高风险工具调用分三档：`auto` / `review` / `confirm`。
 daemon 只放行 `auto`，其余写入 `~/.wyckoff/approvals.db` 等人批准，12 小时过期。
+队列项绑定入队时的 `user_id`；`approve ok/no` 要求当前登录账户一致，防止换号后改到别人的持仓。
 `approve list` 展示脱敏后的完整参数；`approve ok` 原子认领一次后通过正常 ToolRegistry 执行并记录结果，
 执行失败不自动重试，避免真实成交或外部写入被重复提交。
 详见 [GLOSSARY.md](../GLOSSARY.md) 第 16 节。

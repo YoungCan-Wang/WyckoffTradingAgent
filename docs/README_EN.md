@@ -276,7 +276,7 @@ See the [Architecture doc](ARCHITECTURE.md) for the full config reference and Gi
 
 ### Persistent local schedules and approvals
 
-On macOS, `scripts/daemon_install.sh` installs the user-level launchd daemon so schedules continue after the TUI closes. `wyckoff daemon --status` reports its state. Unattended runs auto-apply only the narrow `set_stop_loss` tool; every other write is queued. Review exact redacted arguments with `wyckoff approve list`, then run `wyckoff approve ok <id>` to approve and execute or `wyckoff approve no <id>` to reject. Pending operations expire after 12 hours and failed executions are not retried automatically.
+On macOS, `scripts/daemon_install.sh` installs the user-level launchd daemon so schedules continue after the TUI closes. `wyckoff daemon --status` reports its state. Unattended runs restore the saved CLI login before tools run, then auto-apply only the narrow `set_stop_loss` tool; every other write is queued and bound to that account. Review exact redacted arguments with `wyckoff approve list`, then run `wyckoff approve ok <id>` to approve and execute or `wyckoff approve no <id>` to reject — only the same logged-in account may decide an item. Pending operations expire after 12 hours and failed executions are not retried automatically.
 
 ### External MCP servers
 

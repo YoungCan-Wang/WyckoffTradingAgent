@@ -366,10 +366,10 @@ flowchart LR
 | **auto（自动放行）** | 写操作风险分级最低档，按**工具身份**而非参数字段判定：目前仅 `set_stop_loss`。安全性来自该工具签名只接受 `code` / `stop_loss` / `items`，根本不能改股数、成本或现金；靠「检查参数里没有别的字段」防不住批量 `items` 把动作藏在数组里。`update_portfolio` 永远不是 auto。 |
 | **review（待审）** | 需要人看一眼的写操作：小额买入成交回填、常规持仓更新、`exec_command`、`write_file`。入待批准队列，不阻塞对话继续。 |
 | **confirm（二次确认）** | 最高档：卖出成交回填、不可逆动作（`sell` / `remove` / `delete` / `clear` / `delete_records`），或名义金额超过净值 5%。批量 `items` 逐项判定并取最高档，合计金额也参与阈值比较。 |
-| **待批准队列** | `~/.wyckoff/approvals.db`（SQLite，权限 0600）。daemon 无人时保存 review / confirm 调用的精确参数。`approve list` 展示脱敏参数，`approve ok` 经正常工具注册表立即执行并记录结果；失败不自动重试，避免重复成交。 |
+| **待批准队列** | `~/.wyckoff/approvals.db`（SQLite，权限 0600）。daemon 无人时保存 review / confirm 调用的精确参数，并记录入队时的 `user_id`。`approve list` 展示脱敏参数；`approve ok/no` 要求当前登录账户与该项一致，再经正常工具注册表执行并记录结果；失败不自动重试，避免重复成交或跨账户误写。 |
 | **审批过期** | 待批项 12 小时后自动转 `expired` 且不可批准。这不是清理策略而是安全要求：隔夜批准的调仓会按旧价成交。 |
 | **queued（入队回执）** | 工具闸门的第四种回执，与 `deny`（用户明确拒绝）和 `timeout`（弹窗无人应答）分开。措辞必须明确「已提交审批、不是拒绝」，否则模型会把用户从未做过的决定写进回复。 |
-| **set_stop_loss** | 只写 `stop_loss` 列的窄工具。`update_portfolio` 没有 `stop_loss` 参数（止损另由 `update_position_stops` 在 `server_job` 上下文写入，供 Step4 用），所以补录缺失止损必须用这个。云端走用户 JWT，本地镜像到 SQLite，只 UPDATE 不新建持仓。 |
+| **set_stop_loss** | 只写 `stop_loss` 列的窄工具。`update_portfolio` 没有 `stop_loss` 参数（止损另由 `update_position_stops` 在 `server_job` 上下文写入，供 Step4 用），所以补录缺失止损必须用这个。云端走用户 JWT，本地镜像到 SQLite，只 UPDATE 不新建持仓。daemon / `wyckoff run` 必须先恢复 CLI 登录态，否则会落到 `USER_LIVE:local` 而不是云端持仓。 |
 | **WYCKOFF_MCP_ALLOW_WRITES** | MCP 入口写操作开关，默认关闭。MCP 没有任何人机确认环节，放行等于让任意 MCP 客户端绕过审批直接改持仓，因此默认拒绝而非默认允许。显式设为 `1` 才承担风险。 |
 | **CHAT_TOOL_APPROVAL_SECRET** | Web 端审批签名专用密钥，建议独立配置。迁移期缺失时对 `SUPABASE_SERVICE_ROLE_KEY` 做单向、域分离的 SHA-256 派生，只把派生值用于审批签名，不直接复用或传播能绕过 RLS 的原值。两者都缺失时拒绝启动聊天。 |
 
