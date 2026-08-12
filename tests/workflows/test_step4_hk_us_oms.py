@@ -6,7 +6,10 @@ import pytest
 
 from workflows import step4_payload
 from workflows.step4_decision_parser import parse_decisions
+from workflows.step4_models import DecisionItem, PositionItem
+from workflows.step4_order_engine import WyckoffOrderEngine
 from workflows.step4_portfolio import _build_position_item
+from workflows.step4_results import _should_persist_stop
 
 
 def _item(code: str) -> dict:
@@ -109,3 +112,124 @@ def test_missing_single_rate_is_reported(monkeypatch: pytest.MonkeyPatch) -> Non
     step4_payload._to_cny_total({"06881.HK": 7500.0}, failures)
 
     assert any("06881.HK" in f for f in failures)
+
+
+def _us_hold_decision(*, stop_loss: float) -> DecisionItem:
+    return DecisionItem(
+        code="AAPL.US",
+        name="Apple",
+        action="HOLD",
+        entry_zone_min=None,
+        entry_zone_max=None,
+        stop_loss=stop_loss,
+        trim_ratio=None,
+        tape_condition="",
+        invalidate_condition="",
+        is_add_on=False,
+        reason="继续持有",
+        confidence=0.6,
+    )
+
+
+def test_us_odd_lot_stop_breach_forces_exit() -> None:
+    """回归：港美进 OMS 后若仍要求 >=100 股，10 股美股跌破止损会静默 HOLD。"""
+    engine = WyckoffOrderEngine(
+        total_equity=100000,
+        free_cash=50000,
+        position_map={
+            "AAPL.US": PositionItem(
+                code="AAPL.US",
+                name="Apple",
+                cost=200.0,
+                buy_dt="2026-08-01",
+                shares=10,
+                stop_loss=180.0,
+            )
+        },
+        latest_price_map={"AAPL.US": 170.0},
+        market_regime="NEUTRAL",
+        trade_date="2026-08-12",
+        cny_rates={"CNY": 1.0, "USD": 7.2},
+    )
+
+    tickets, cash = engine.process([_us_hold_decision(stop_loss=180.0)])
+
+    ticket = tickets[0]
+    assert ticket.action == "EXIT"
+    assert ticket.status == "APPROVED"
+    assert ticket.shares == 10
+    assert ticket.is_holding is True
+    assert "forced_exit_stop_breach" in ticket.audit
+    expected = 10 * 170.0 * (1.0 - WyckoffOrderEngine.SLIPPAGE_BPS) * 7.2
+    assert ticket.amount == pytest.approx(expected)
+    assert cash == pytest.approx(50000 + expected)
+
+
+def test_us_odd_lot_hold_stop_is_persistable() -> None:
+    """小仓位 HOLD 必须 is_holding=True，否则 ATR 止损上移写不进库。"""
+    engine = WyckoffOrderEngine(
+        total_equity=100000,
+        free_cash=50000,
+        position_map={
+            "AAPL.US": PositionItem(
+                code="AAPL.US",
+                name="Apple",
+                cost=200.0,
+                buy_dt="2026-08-01",
+                shares=10,
+                stop_loss=180.0,
+            )
+        },
+        latest_price_map={"AAPL.US": 190.0},
+        atr_map={"AAPL.US": 5.0},
+        market_regime="NEUTRAL",
+        trade_date="2026-08-12",
+        cny_rates={"CNY": 1.0, "USD": 7.2},
+    )
+
+    tickets, _cash = engine.process([_us_hold_decision(stop_loss=180.0)])
+    ticket = tickets[0]
+
+    assert ticket.action == "HOLD"
+    assert ticket.status == "APPROVED"
+    assert ticket.is_holding is True
+    assert ticket.effective_stop_loss is not None
+    assert _should_persist_stop(ticket) is True
+
+
+def test_us_buy_sizes_against_cny_budget() -> None:
+    """人民币预算 / 美元报价若不乘汇率，会把 $200 当成 ¥200，严重超买。"""
+    engine = WyckoffOrderEngine(
+        total_equity=100000,
+        free_cash=20000,
+        position_map={},
+        latest_price_map={"AAPL.US": 200.0},
+        atr_map={"AAPL.US": 4.0},
+        market_regime="NEUTRAL",
+        trade_date="2026-08-12",
+        cny_rates={"CNY": 1.0, "USD": 7.0},
+    )
+    decision = DecisionItem(
+        code="AAPL.US",
+        name="Apple",
+        action="PROBE",
+        entry_zone_min=195.0,
+        entry_zone_max=205.0,
+        stop_loss=180.0,
+        trim_ratio=None,
+        tape_condition="",
+        invalidate_condition="",
+        is_add_on=False,
+        reason="试探",
+        confidence=0.7,
+    )
+
+    tickets, cash = engine.process([decision])
+    ticket = tickets[0]
+
+    assert ticket.status == "APPROVED"
+    assert ticket.shares >= 1
+    # 若未乘汇率，预算 20000 可买约 100 股；乘 7.0 后最多约 14 股量级。
+    assert ticket.shares < 50
+    assert ticket.amount == pytest.approx(ticket.shares * ticket.price_hint * 7.0, rel=0.05)
+    assert cash < 20000

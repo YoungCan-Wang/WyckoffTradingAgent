@@ -138,6 +138,7 @@ def execute_step4_decisions(
     order_config: Step4OrderConfig,
     stale_exit_codes: frozenset[str] = frozenset(),
 ) -> tuple[list[ExecutionTicket], float]:
+    codes = {p.code for p in context.portfolio.positions} | {d.code for d in decisions}
     engine = WyckoffOrderEngine(
         total_equity=float(context.total_equity),
         free_cash=context.portfolio.free_cash,
@@ -148,8 +149,23 @@ def execute_step4_decisions(
         config=order_config,
         trade_date=context.trade_date,
         stale_exit_codes=stale_exit_codes,
+        cny_rates=_load_step4_cny_rates(codes),
     )
     return engine.process(decisions)
+
+
+def _load_step4_cny_rates(codes: set[str]) -> dict[str, float]:
+    """OMS 现金与预算按人民币计；港美报价需汇率。取不到时只给 CNY=1，外币交易会因缺汇率拒单。"""
+    from core.portfolio_valuation import portfolio_currency
+    from integrations.portfolio_market_value import load_cny_rates
+
+    currencies = {portfolio_currency(code) for code in codes if code}
+    if currencies <= {"CNY"}:
+        return {"CNY": 1.0}
+    try:
+        return load_cny_rates(currencies)
+    except Exception:
+        return {"CNY": 1.0}
 
 
 def _attach_candidate_meta(

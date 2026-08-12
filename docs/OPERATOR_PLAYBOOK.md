@@ -80,6 +80,9 @@ wyckoff portfolio fill 600519 --side buy  --shares 100 --price 1680 --date 20260
 回填会按成交增量摊薄成本价、扣掉佣金印花税、卖光时清仓，并给出已实现盈亏；
 `portfolio add` 是覆盖式录快照，不要拿它记成交。
 
+Step4 OMS 对港美持仓按 1 股整手处理（A 股仍为 100），止损强制离场与止损落库不再要求满 100 股；
+买卖金额按汇率折成人民币后再改 `free_cash` / 工单占用，避免把美元报价直接套进人民币预算。
+
 持仓、现金或成交写入完成后，系统会按最新可用行情刷新 `portfolios.total_equity`。港美股默认使用
 ECB 参考汇率折算人民币；券商结算口径不同可配置 `PORTFOLIO_HKD_CNY_RATE` / `PORTFOLIO_USD_CNY_RATE`。
 如果返回“总权益刷新失败”，说明账本修改已经落地、但行情或汇率不完整：不要重放成交，应先修复数据源，

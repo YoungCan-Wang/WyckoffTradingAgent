@@ -39,6 +39,18 @@ def is_cn_portfolio_code(code: str) -> bool:
     return bool(_CN_RE.fullmatch(str(code or "").strip().upper()))
 
 
+def portfolio_lot_size(code: str) -> int:
+    """OMS 整手：A 股 100；港美 1。
+
+    港美进 OMS 后若仍套用 A 股 100 股门槛，常见的 10/50 股美股仓会：
+    1) 跌破止损却不强制 EXIT；2) HOLD 的 is_holding=False 使止损落库被跳过。
+    """
+    text = str(code or "").strip().upper()
+    if text.endswith((".HK", ".US")):
+        return 1
+    return 100
+
+
 def portfolio_name_conflict(code: str, provided_name: str, resolved_name: str) -> str | None:
     """仅当名册真正解析出不同于 code 的中文名，且与用户提供名不一致时才报错。
 
