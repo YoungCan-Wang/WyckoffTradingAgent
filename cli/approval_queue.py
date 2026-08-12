@@ -233,8 +233,12 @@ def summarize(tool_name: str, args: dict[str, Any]) -> str:
     code = args.get("code") or ""
     name = args.get("name") or ""
     label = f"{code} {name}".strip() or tool_name
-    if tool_name == "update_portfolio" and args.get("stop_loss") is not None:
-        return f"{label} 止损 → {args['stop_loss']}"
+    if tool_name == "set_stop_loss":
+        items = args.get("items")
+        if isinstance(items, list) and items:
+            return f"批量补止损 {len(items)} 只"
+        if args.get("stop_loss") is not None:
+            return f"{label} 止损 → {args['stop_loss']}"
     action = args.get("side") if tool_name == "record_trade_fill" else args.get("action")
     action = action or ""
     shares = args.get("shares")
