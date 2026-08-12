@@ -439,7 +439,7 @@ def format_position_payload(
 ) -> tuple[str, list[str], float, dict[str, float], dict[str, float]]:
     blocks: list[str] = []
     failures: list[str] = []
-    live_value_sum = 0.0
+    raw_values: dict[str, float] = {}
     latest_close_map: dict[str, float] = {}
     atr_map: dict[str, float] = {}
     if not positions:
@@ -472,11 +472,44 @@ def format_position_payload(
                 failures.append(fail_msg)
             if meta_block:
                 blocks.append(meta_block)
-                live_value_sum += value
+                raw_values[pos.code] = value
                 latest_close_map[pos.code] = close
                 if atr is not None:
                     atr_map[pos.code] = atr
+    live_value_sum = _to_cny_total(raw_values, failures)
     return ("\n\n".join(blocks), failures, live_value_sum, latest_close_map, atr_map)
+
+
+def _to_cny_total(raw_values: dict[str, float], failures: list[str]) -> float:
+    """把各币种市值折算成人民币再加总。
+
+    `total_equity` 是仓位上限、单票占比与 PROBE/ATTACK 预算的分母，混币加总会让分母
+    虚高、所有仓位约束偏松。实测 1000 股 06881.HK @7.5 HKD 曾被当作 7500 CNY 计入，
+    按 0.92 汇率高估约 600 元（8.7%）。
+
+    汇率取不到时按 1.0 计并写入 failures——宁可报出来，也不要静默用错误汇率下单。
+    """
+    from core.portfolio_valuation import portfolio_currency
+    from integrations.portfolio_market_value import load_cny_rates
+
+    currencies = {portfolio_currency(code) for code in raw_values}
+    if currencies <= {"CNY"}:
+        return round(sum(raw_values.values()), 2)
+    try:
+        rates = load_cny_rates(currencies)
+    except Exception as exc:
+        failures.append(f"汇率获取失败，非人民币持仓按 1:1 计入总权益（分母可能偏高）: {exc}")
+        logger.warning("[step4] 汇率获取失败: %s", exc)
+        return round(sum(raw_values.values()), 2)
+    total = 0.0
+    for code, value in raw_values.items():
+        currency = portfolio_currency(code)
+        rate = float(rates.get(currency, 0.0) or 0.0)
+        if rate <= 0:
+            failures.append(f"{code} 缺少 {currency}->CNY 汇率，按 1:1 计入总权益（分母可能偏高）")
+            rate = 1.0
+        total += value * rate
+    return round(total, 2)
 
 
 def format_candidate_payload(

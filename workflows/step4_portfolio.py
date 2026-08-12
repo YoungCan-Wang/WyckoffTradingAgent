@@ -7,6 +7,7 @@ import logging
 import os
 import re
 
+from core.portfolio_symbol import normalize_portfolio_code
 from integrations.supabase_portfolio import compute_portfolio_state_signature
 from integrations.supabase_portfolio import load_portfolio_state as load_portfolio_state_from_supabase
 from workflows.step4_models import PortfolioState, PositionItem
@@ -93,10 +94,24 @@ def _build_position_items(positions_raw: list) -> list[PositionItem]:
     return positions
 
 
+def _has_explicit_market(raw: str) -> bool:
+    """6 位纯数字（A 股），或带 .HK/.US 后缀。裸 ticker 不算——见调用处说明。"""
+    text = raw.strip().upper()
+    return bool(re.fullmatch(r"\d{6}", text)) or text.endswith((".HK", ".US"))
+
+
 def _build_position_item(idx: int, item: dict) -> PositionItem | None:
-    code = str(item.get("code", "")).strip()
-    if not re.fullmatch(r"\d{6}", code):
-        logger.warning("跳过非法持仓#%s: code 非6位", idx)
+    # 港美代码（00700.HK / AAPL.US）此前被 6 位数字校验丢在这里，导致它们既不出工单、
+    # 也不计入 OMS 的任何风控。
+    #
+    # 这里要求后缀显式，不走 normalize_portfolio_code 的裸 ticker 补全：持仓来自库/环境
+    # 变量，脏数据（例如把名称误写进 code）会被 `bad` -> `BAD.US` 静默变成一笔美股建仓。
+    # 写入侧（record_fill）接受裸 ticker 是因为那是人工即时输入、当场能看到回显；
+    # 读取侧没有这个纠错机会，宁可丢弃并告警。
+    raw_code = str(item.get("code", "") or "").strip()
+    code = normalize_portfolio_code(raw_code) if _has_explicit_market(raw_code) else ""
+    if not code:
+        logger.warning("跳过非法持仓#%s: code=%r 非 6 位 A 股码且无 .HK/.US 后缀", idx, raw_code)
         return None
     return PositionItem(
         code=code,
