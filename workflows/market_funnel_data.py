@@ -93,16 +93,51 @@ def fetch_daily_histories(
     return out, _fetch_stats(symbols, out, batches, started)
 
 
+BENCHMARK_MAX_GAP_DAYS = 21
+
+
 def fetch_benchmark_history(client: TickFlowClient, runtime: RuntimeConfig) -> tuple[pd.DataFrame | None, str]:
+    """按候选顺序取第一份**连续**的基准。
+
+    只看行数会选中坏数据：TickFlow 的港股 ETF 自 2026-03-20 起停更，02800.HK 仍返回 320
+    行（历史 319 行 + 一根 2026-08-12 的孤立 K 线），行数检查完全通过，但中间缺 145 天。
+    水温分类要在这份序列上算 MA50/MA200 与近 3 日累计涨幅，空洞会让 regime 静默失真。
+    因此这里额外要求近端无长断层，并把跳过原因打出来。
+    """
+    rejected: list[str] = []
     for symbol in runtime.benchmark_symbols:
         try:
             norm = _fetch_one_benchmark_history(client, symbol, runtime.kline_count)
-            if norm is not None and len(norm) >= 60:
-                print(f"[market-funnel] benchmark loaded: {symbol} rows={len(norm)}")
-                return norm, symbol
         except Exception as exc:
-            print(f"[market-funnel] benchmark fetch failed: {symbol}: {exc}")
+            rejected.append(f"{symbol}(取数失败: {exc})")
+            continue
+        if norm is None or len(norm) < 60:
+            rejected.append(f"{symbol}(行数不足: {0 if norm is None else len(norm)})")
+            continue
+        gap = _max_recent_gap_days(norm)
+        if gap > BENCHMARK_MAX_GAP_DAYS:
+            rejected.append(f"{symbol}(断层 {gap} 天)")
+            continue
+        if rejected:
+            print(f"[market-funnel] benchmark 跳过: {', '.join(rejected)}")
+        print(f"[market-funnel] benchmark loaded: {symbol} rows={len(norm)} max_gap={gap}d")
+        return norm, symbol
+    if rejected:
+        print(f"[market-funnel] benchmark 全部不可用: {', '.join(rejected)}")
     return None, ""
+
+
+def _max_recent_gap_days(df: pd.DataFrame) -> int:
+    """最近 120 根 K 线内的最大相邻日期间隔（自然日）。
+
+    只看近端：更早的历史断层不影响当前水温判断，收得太严会把可用基准也否掉。
+    """
+    if "date" not in df.columns or df.empty:
+        return 0
+    stamps = pd.to_datetime(df["date"], errors="coerce").dropna().sort_values().tail(120)
+    if len(stamps) < 2:
+        return 0
+    return int(stamps.diff().dt.days.max() or 0)
 
 
 def _dedupe_symbols(lines: list[str]) -> list[str]:
