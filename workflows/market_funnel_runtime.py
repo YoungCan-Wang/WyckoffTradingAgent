@@ -47,7 +47,13 @@ MARKET_SPECS = {
         symbol_file="hk.txt",
         # TickFlow 不支持任何形式的恒生指数代码（800000.HK/HSI.HK/^HSI/HSI 均无数据），
         # 用 02800.HK（盈富基金）代理恒指、03033.HK（南方恒生科技）代理科技股行情。
-        benchmark_symbols=("02800.HK", "03033.HK"),
+        #
+        # 2026-08 实测：TickFlow 的港股 ETF 自 2026-03-20 起停止更新，02800/02828/03033/
+        # 03067 全部只剩一根 2026-08-12 的孤立 K 线，中间缺 145 天；与 count、复权方式无关。
+        # 而港股个股（00700/00939/01299）同期数据完整。因此在 ETF 之后补几只高流动性权重股
+        # 作兜底——它们不是理想的指数代理，但一份连续的近似基准远好过一份有 5 个月空洞的
+        # "精确"基准：水温分类要算 MA50/MA200，空洞会让 regime 判断静默失真。
+        benchmark_symbols=("02800.HK", "03033.HK", "00939.HK", "01299.HK", "00700.HK"),
         default_max_symbols=600,
         default_min_quote_amount=2_000_000.0,
         default_min_quote_price=1.0,
