@@ -32,6 +32,7 @@ jobs:
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       TICKFLOW_API_KEY: ${{ secrets.TICKFLOW_API_KEY }}
       REVIEW_ALLOW_FULL_FUNNEL_FALLBACK: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_full_funnel_fallback && '1' || '0' }}
+      REVIEW_REPORT_OUTPUT_DIR: ${{ github.workspace }}/logs
       TZ: Asia/Shanghai
 
     steps:

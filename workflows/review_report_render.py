@@ -15,6 +15,7 @@ from core.funnel_taxonomy import (
     REVIEW_STAGE_TRIGGER_HIT,
     REVIEW_STAGE_TRIGGER_MISS,
 )
+from core.review_shadow_lanes import shadow_lane_label
 
 
 def short_code_list(rows: list[dict[str, Any]], limit: int = 8) -> str:
@@ -52,9 +53,16 @@ def build_report_lines(
             lines.append(f"**归因数据源**: {stats['context_source']}")
         stats_line = (
             f"**漏斗全链路追踪**: 前一日候选 {stats['candidate']}/{stats['total']} | "
-            f"正式推荐 {stats['recommended']}/{stats['total']}"
+            f"跟踪表记录 {stats.get('tracked_previous_day', stats['recommended'])}/{stats['total']} | "
+            f"AI正式推荐 {stats.get('ai_recommended_previous_day', 0)}/{stats['total']}"
         )
         lines.append(stats_line)
+        if stats.get("shadow"):
+            lines.append(
+                f"**影子召回（不进推荐）**: {stats['shadow']}/{stats['total']} | "
+                f"其中次日开盘可交易 {stats.get('shadow_open_executable', 0)}/{stats['shadow']} | "
+                "这是事后命中统计，不是影子池规模或次日买入清单"
+            )
         execution_line = _execution_scope_line(stats)
         if execution_line:
             lines.append(execution_line)
@@ -78,9 +86,12 @@ def _execution_scope_line(stats: dict[str, Any]) -> str:
     eligible = stats.get("l1_eligible", 0)
     executable = stats.get("open_executable", 0)
     captured = stats.get("candidate_open_executable", 0)
+    intraday = stats.get("intraday_executable", 0)
+    intraday_captured = stats.get("candidate_intraday_executable", 0)
     return (
         f"**可交易复盘口径**: 前日基础准入 {eligible}/{stats.get('total', 0)} | "
-        f"次日开盘≤+4%且非一字板 {executable}/{eligible} | 可交易样本前日候选 {captured}/{executable}"
+        f"次日开盘≤+4%且非一字板 {executable}/{eligible} | 可交易样本前日候选 {captured}/{executable} | "
+        f"盘中曾给≤+4%价格 {intraday}/{eligible} | 其中前日候选 {intraday_captured}/{intraday}"
     )
 
 
@@ -168,5 +179,31 @@ def _detail_lines(rows: list[dict[str, Any]]) -> list[str]:
     for row in rows:
         recommendation = str(row.get("recommendation", "")).strip()
         suffix = f" | {recommendation}" if recommendation else ""
-        lines.append(f"• {row['code']} {row['name']} | {row['stage']} | {row['reason']}{suffix}")
+        state = _state_suffix(row)
+        lines.append(f"• {row['code']} {row['name']} | {row['stage']} | {row['reason']}{state}{suffix}")
     return lines
+
+
+def _state_suffix(row: dict[str, Any]) -> str:
+    states: list[str] = []
+    if row.get("shadow_lane"):
+        states.append(f"影子={shadow_lane_label(str(row['shadow_lane']))}")
+    if row.get("trigger_labels"):
+        states.append(f"买点={'、'.join(str(x) for x in row['trigger_labels'])}")
+    if row.get("risk_signal"):
+        states.append(f"风控={row['risk_signal']}")
+    if row.get("tracked_previous_day"):
+        status = "、".join(str(x) for x in row.get("candidate_statuses") or []) or "已跟踪"
+        states.append(f"跟踪状态={status}")
+    if row.get("execution_available"):
+        open_gap = _pct(row.get("open_gap_pct"))
+        low_gap = _pct(row.get("low_gap_pct"))
+        states.append(f"次日开盘{open_gap}，最低{low_gap}")
+    return f" | {' | '.join(states)}" if states else ""
+
+
+def _pct(value: Any) -> str:
+    try:
+        return f"{float(value):+.2f}%"
+    except (TypeError, ValueError):
+        return "未知"

@@ -163,8 +163,17 @@ def execution_snapshot(frame: pd.DataFrame | None) -> dict[str, object]:
     open_gap = (today_open / prev_close - 1.0) * 100.0
     one_price = today_high is not None and today_low is not None and abs(today_high - today_low) <= 1e-8
     executable = open_gap <= EXECUTABLE_OPEN_GAP_MAX_PCT and not one_price
+    low_gap = (today_low / prev_close - 1.0) * 100.0 if today_low is not None else None
+    intraday_executable = low_gap is not None and low_gap <= EXECUTABLE_OPEN_GAP_MAX_PCT and not one_price
     reason = "开盘可交易" if executable else "一字板不可成交" if one_price else "开盘跳空超过4%"
-    return {"available": True, "executable": executable, "open_gap_pct": open_gap, "reason": reason}
+    return {
+        "available": True,
+        "executable": executable,
+        "intraday_executable": intraday_executable,
+        "open_gap_pct": open_gap,
+        "low_gap_pct": low_gap,
+        "reason": reason,
+    }
 
 
 def _skip_daily_candidate(code: str, df: pd.DataFrame, name_map: dict[str, str]) -> bool:

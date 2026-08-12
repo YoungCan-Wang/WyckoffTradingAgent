@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 from collections import Counter
 from dataclasses import dataclass
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -276,13 +278,15 @@ def _build_replay_row(
     recommendation_error: Any,
     execution_map: dict[str, dict[str, object]],
 ) -> tuple[dict, str, bool, bool]:
-    from workflows.review_recommendation_lookup import normalize_code6, normalize_recommend_date
+    from workflows.review_recommendation_lookup import normalize_code6, recommendation_state
 
     name, stage, reason = classify_review_code(code, ctx)
     is_candidate = code in ctx.candidate_entry_map
 
+    decision = dict((ctx.decision_rows or {}).get(code) or {})
     rec_records = recommendation_lookup.get(normalize_code6(code), [])
-    is_recommended = any(normalize_recommend_date(r.get("recommend_date")) == prev_date_str for r in rec_records)
+    rec_state = recommendation_state(rec_records, prev_date_str)
+    is_tracked = bool(rec_state["tracked"])
 
     rec_text = format_recommendation_history(code, recommendation_lookup, recommendation_error, exclude_date=today)
     execution = execution_map.get(code, {})
@@ -296,10 +300,23 @@ def _build_replay_row(
         "l1_eligible": code in ctx.l1_set,
         "open_executable": bool(execution.get("executable")),
         "execution_available": bool(execution.get("available")),
+        "intraday_executable": bool(execution.get("intraday_executable")),
         "open_gap_pct": execution.get("open_gap_pct"),
+        "low_gap_pct": execution.get("low_gap_pct"),
         "execution_reason": str(execution.get("reason", "") or ""),
+        "l2_eligible": code in ctx.l2_set,
+        "l3_eligible": code in ctx.l3_set,
+        "trigger_labels": list(decision.get("trigger_labels") or []),
+        "risk_signal": str(decision.get("risk_signal") or ""),
+        "shadow_lane": str(decision.get("shadow_lane") or ""),
+        "shadow_score": decision.get("shadow_score"),
+        "shadow_reason": str(decision.get("shadow_reason") or ""),
+        "tracked_previous_day": bool(rec_state["tracked"]),
+        "ai_recommended_previous_day": bool(rec_state["ai_recommended"]),
+        "candidate_statuses": list(rec_state["statuses"]),
+        "selection_sources": list(rec_state["sources"]),
     }
-    return row, stage, is_candidate, is_recommended
+    return row, stage, is_candidate, is_tracked
 
 
 def build_replay_rows(
@@ -321,7 +338,7 @@ def build_replay_rows(
     prev_date_str = previous_trade_date.strftime("%Y-%m-%d")
 
     for code in review_codes:
-        row, stage, is_candidate, is_recommended = _build_replay_row(
+        row, stage, is_candidate, is_tracked = _build_replay_row(
             code=code,
             ctx=ctx,
             today=today,
@@ -334,7 +351,7 @@ def build_replay_rows(
         stage_counter[stage] += 1
         if is_candidate:
             cand_count += 1
-        if is_recommended:
+        if is_tracked:
             rec_count += 1
 
     stats = {
@@ -347,6 +364,17 @@ def build_replay_rows(
             row["code"] in ctx.candidate_entry_map and bool(row["l1_eligible"]) and bool(row["open_executable"])
             for row in rows
         ),
+        "intraday_executable": sum(bool(row["l1_eligible"]) and bool(row["intraday_executable"]) for row in rows),
+        "candidate_intraday_executable": sum(
+            row["code"] in ctx.candidate_entry_map and bool(row["l1_eligible"]) and bool(row["intraday_executable"])
+            for row in rows
+        ),
+        "shadow": sum(bool(row["shadow_lane"]) for row in rows),
+        "shadow_open_executable": sum(
+            bool(row["shadow_lane"]) and bool(row["l1_eligible"]) and bool(row["open_executable"]) for row in rows
+        ),
+        "tracked_previous_day": sum(bool(row["tracked_previous_day"]) for row in rows),
+        "ai_recommended_previous_day": sum(bool(row["ai_recommended_previous_day"]) for row in rows),
         "execution_available": sum(bool(row["execution_available"]) for row in rows),
         "context_source": ctx.source,
     }
@@ -385,7 +413,26 @@ def send_replay_report(
         end_trade_date=end_trade_date,
         stats=stats,
     )
-    return send_feishu_notification(webhook, "🔍 强势股复盘：今日异动为何未在前一日漏斗捕获", "\n".join(lines))
+    report = "\n".join(lines)
+    _write_review_outputs(rows, stats or {}, dates, report)
+    return send_feishu_notification(webhook, "🔍 强势股复盘：今日异动为何未在前一日漏斗捕获", report)
+
+
+def _write_review_outputs(rows: list[dict[str, Any]], stats: dict[str, Any], dates: ReviewDates, report: str) -> None:
+    output_dir = os.getenv("REVIEW_REPORT_OUTPUT_DIR", "").strip()
+    if not output_dir:
+        return
+    root = Path(output_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    stem = f"review_list_{dates.today.strftime('%Y%m%d')}"
+    (root / f"{stem}.md").write_text(report + "\n", encoding="utf-8")
+    payload = {
+        "today": dates.today.isoformat(),
+        "previous_trade_date": dates.previous_trade_date.isoformat(),
+        "stats": stats,
+        "rows": rows,
+    }
+    (root / f"{stem}.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _run_review_for_codes(
@@ -436,7 +483,13 @@ def load_previous_context(previous_trade_date: date, log=print) -> ReplayContext
 
 
 def replay_context_from_trace(payload: dict[str, Any]) -> ReplayContext:
-    rows = {str(code): dict(row or {}) for code, row in (payload.get("symbols") or {}).items()}
+    from core.review_shadow_lanes import attach_shadow_signal
+
+    maximum = float((payload.get("policy") or {}).get("shadow_near_l2_max_gap_pct") or 10.0)
+    rows = {
+        str(code): attach_shadow_signal(dict(row or {}), near_l2_max_gap_pct=maximum)
+        for code, row in (payload.get("symbols") or {}).items()
+    }
     entries = [dict(row.get("entry") or {}) for row in rows.values() if row.get("entry")]
     name_map = {code: str(row.get("name") or code) for code, row in rows.items()}
     source_run = payload.get("run") or {}
