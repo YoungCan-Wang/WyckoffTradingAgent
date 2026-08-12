@@ -217,3 +217,28 @@ def test_momentum_diagnosis_stays_clean_when_structure_passes() -> None:
     state = _momentum_state(last_close=110.0, last_ma_long=100.0, alignment=True, holding=True)
 
     assert _diagnose_momentum(cfg, 90.0, True, state) == (0.0, [])
+
+
+def test_momentum_diagnosis_reports_fast_rps_and_slope() -> None:
+    cfg = SimpleNamespace(
+        rps_slow_min=75.0,
+        rps_fast_min=80.0,
+        rps_slope_min=0.5,
+        momentum_bias_200_max=0.25,
+    )
+    state = _momentum_state(last_close=110.0, last_ma_long=100.0, alignment=True, holding=True)
+
+    gap, reasons = _diagnose_momentum(
+        cfg,
+        80.0,
+        True,
+        state,
+        rps_fast=70.0,
+        slope_ok=False,
+        slope_value=-0.2,
+        momentum_rps_ok=False,
+    )
+
+    assert gap > 0
+    assert any("RPS(fast)不足" in reason for reason in reasons)
+    assert any("RPS斜率不足" in reason for reason in reasons)
