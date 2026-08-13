@@ -908,8 +908,10 @@ Web 个股、持仓和股票对抗分析保存历史时写入 `meta`：输入快
 
 - `core/trade_fill.py` 是纯计算：按成交增量摊薄成本价（含佣金）、扣双边费用、卖光时清仓、
   给出已实现盈亏。`integrations.supabase_portfolio.record_fill` 负责落库，先读后写，需串行调用。
+  已有持仓走 update（空 `buy_dt` 不覆盖原建仓日）；新仓走 insert，必须有合法 `YYYYMMDD` / `YYYY-MM-DD`，
+  禁止插入无日期多头。
 - 入口：CLI `wyckoff portfolio fill`、MCP/Agent 工具 `record_trade_fill`。
-  `portfolio add` 仍是覆盖式录快照，两者语义不同，不要混用。
+  `portfolio add` 只插入新仓且必须带合法建仓日，不要拿它记成交。
 - 任一持仓新增、覆盖、删除、现金修改或完整成交回填成功后，写入边界都会重新读取整个组合，
   用 TickFlow 最新可用报价按市值计价，并把港股/美股按 ECB 最新参考汇率折算成人民币，随后同步更新
   `portfolios.total_equity` 与 `updated_at`。Python/CLI、Web `/api/portfolio` 整表保存和 Web Agent
@@ -940,7 +942,9 @@ Cloudflare Pages 通过 `web/functions/api/portfolio/[[path]].ts` 将同域请�
 API 响应同时返回 `total_equity`、`valuation_updated_at`；刷新失败时另带 `valuation_warning`，前端不得
 把旧值展示成刚刚成功刷新的实时净值。
 历史持仓允许 `buy_dt` 使用 `YYYYMMDD` 或空字符串；API 输出统一归一化为 `YYYY-MM-DD` 或 `null`，
-确保 Web 日期控件和诊断链路只消费一种日期格式。
+确保 Web 日期控件和诊断链路只消费一种日期格式。新多头 `add` 必须带合法 `buy_dt`（YYYYMMDD 或 YYYY-MM-DD），
+未给或格式非法时报错，须询问用户，禁止默认今天；`update` 只更新已有持仓，空账本或目标不存在时不得新建，
+改股数/成本时不得覆盖已有建仓日。
 `portfolios` 与 `portfolio_positions` 已启用 RLS，SELECT/INSERT/UPDATE/DELETE 均要求
 `split_part(portfolio_id, ':', 2) = auth.uid()::text`；UPDATE 同时使用 `USING` 与 `WITH CHECK`。
 因此用户只能读取和修改自己的持仓。白名单用户可在页面编辑现金和持仓，选择“保存到云端”或

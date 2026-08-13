@@ -418,6 +418,7 @@ def update_portfolio(
 
     **调用时机**：用户说"买入/卖出/调仓"、"设置现金"、"删除记录"时调用。
     **批量**：一次改多只用 items，不要拆成多次调用。
+    **建仓日**：add 必须带合法 buy_dt（YYYYMMDD 或 YYYY-MM-DD）；用户没说日期就先问，禁止猜今天。update 改股数/成本时不要传 buy_dt；目标不存在时报错，不会新建。
     **危险操作**：会修改用户数据，请确认用户意图后再调用。
     """
     return _execute_mcp_tool(

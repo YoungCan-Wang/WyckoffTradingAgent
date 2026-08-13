@@ -7,7 +7,14 @@ import math
 from core.market_trade_mode import PROBE_ONLY_REGIMES, normalize_regime
 from core.portfolio_symbol import portfolio_lot_size
 from core.portfolio_valuation import portfolio_currency
-from workflows.step4_models import DecisionItem, ExecutionTicket, OrderContext, PositionItem, Step4OrderConfig
+from workflows.step4_models import (
+    DecisionItem,
+    ExecutionTicket,
+    OrderContext,
+    PositionItem,
+    Step4OrderConfig,
+    parse_trade_day,
+)
 from workflows.step4_text import clean_text, contains_keyword, normalize_stage, normalize_track
 
 DEFAULT_STEP4_ORDER_CONFIG = Step4OrderConfig()
@@ -254,7 +261,10 @@ class WyckoffOrderEngine:
         ctx.effective_stop_loss = merged
 
     def _is_invalid_recent_decision_stop(self, ctx: OrderContext, stop_loss: float) -> bool:
-        if not ctx.pos or not ctx.pos.is_recent(self.trade_date, self.config.new_position_stop_guard_days):
+        if not ctx.pos:
+            return False
+        known_entry = parse_trade_day(ctx.pos.buy_dt) is not None
+        if known_entry and not ctx.pos.is_recent(self.trade_date, self.config.new_position_stop_guard_days):
             return False
         return stop_loss >= max(ctx.pos.cost, ctx.current_price)
 

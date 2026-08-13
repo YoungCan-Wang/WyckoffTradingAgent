@@ -537,7 +537,7 @@ describe('execExecutePortfolioUpdate', () => {
 
   it('handles add action with all fields', async () => {
     const deps = createMockDeps({ portfolio_positions: null })
-    const result = await execExecutePortfolioUpdate(deps, 'user1', 'add', '600519', '贵州茅台', 100, 1800, 1700)
+    const result = await execExecutePortfolioUpdate(deps, 'user1', 'add', '600519', '贵州茅台', 100, 1800, 1700, '2026-08-12')
     expect(result).toContain('已新增')
     expect(result).toContain('100股')
   })
@@ -568,20 +568,55 @@ describe('execExecutePortfolioUpdate', () => {
     expect(payload).not.toHaveProperty('stop_loss')
   })
 
-  it('sets buy_dt only when adding a new position', async () => {
-    const { deps, insertChain } = createPortfolioWriteDeps([])
-
+  it('rejects add without buy_dt so the agent must ask for 建仓日', async () => {
+    const deps = createMockDeps({})
     const result = await execExecutePortfolioUpdate(deps, 'user1', 'add', '600519', '贵州茅台', 100, 1800, 1700)
+    expect(result).toContain('缺少建仓日 buy_dt')
+  })
+
+  it('writes the provided buy_dt when adding a new position', async () => {
+    const insertChain = createMockChain(null)
+    const mockFrom = vi.fn().mockReturnValue(insertChain)
+    const deps = {
+      supabase: { from: mockFrom } as unknown as ToolDeps['supabase'],
+      fetch: vi.fn(),
+      generateText: vi.fn(),
+    } as unknown as ToolDeps
+
+    const result = await execExecutePortfolioUpdate(deps, 'user1', 'add', '600519', '贵州茅台', 100, 1800, 1700, '2026-08-12')
 
     expect(result).toContain('已新增')
     expect(insertChain.insert).toHaveBeenCalledWith(
       expect.objectContaining({
         portfolio_id: 'USER_LIVE:user1',
         code: '600519',
-        buy_dt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+        buy_dt: '2026-08-12',
         stop_loss: 1700,
       }),
     )
+  })
+
+  it('rejects add with an invalid buy_dt and does not insert', async () => {
+    const insertChain = createMockChain(null)
+    const deps = {
+      supabase: { from: vi.fn().mockReturnValue(insertChain) } as unknown as ToolDeps['supabase'],
+      fetch: vi.fn(),
+      generateText: vi.fn(),
+    } as unknown as ToolDeps
+
+    const result = await execExecutePortfolioUpdate(deps, 'user1', 'add', '600519', '贵州茅台', 100, 1800, 1700, 'yesterday')
+
+    expect(result).toContain('buy_dt 必须是合法日期')
+    expect(insertChain.insert).not.toHaveBeenCalled()
+  })
+
+  it('does not insert when update matches no rows', async () => {
+    const { deps, insertChain } = createPortfolioWriteDeps([])
+
+    const result = await execExecutePortfolioUpdate(deps, 'user1', 'update', '600519', '贵州茅台', 200, 1810, 1700)
+
+    expect(result).toContain('无法 update')
+    expect(insertChain.insert).not.toHaveBeenCalled()
   })
 })
 
@@ -592,9 +627,9 @@ describe('buildPortfolioWriteRecord', () => {
     expect(record).not.toHaveProperty('stop_loss')
   })
 
-  it('writes buy_dt and finite stop_loss on add', () => {
-    const record = buildPortfolioWriteRecord('USER_LIVE:u', '600519', 'add', '贵州茅台', 100, 1800, 1700)
-    expect(record.buy_dt).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+  it('writes buy_dt and finite stop_loss on add when the date is explicit', () => {
+    const record = buildPortfolioWriteRecord('USER_LIVE:u', '600519', 'add', '贵州茅台', 100, 1800, 1700, '2026-08-12')
+    expect(record.buy_dt).toBe('2026-08-12')
     expect(record.stop_loss).toBe(1700)
   })
 })

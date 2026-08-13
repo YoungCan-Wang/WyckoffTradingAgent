@@ -656,7 +656,7 @@ function buildReadTools(deps: ToolDeps, userId: string, model: unknown) {
 function buildPortfolioTools(deps: ToolDeps, userId: string) {
   return {
     plan_portfolio_update: tool({ description: '生成调仓方案（不执行）。', inputSchema: PORTFOLIO_UPDATE_SCHEMA.extend({ reason: z.string().nullable() }), execute: formatPortfolioPlan }),
-    execute_portfolio_update: tool({ description: '执行调仓。此工具必须经过用户审批。', inputSchema: PORTFOLIO_UPDATE_SCHEMA, needsApproval: true, execute: ({ action, code, name, shares, cost_price, stop_loss }) => execExecutePortfolioUpdate(deps, userId, action, code, name, shares, cost_price, stop_loss) }),
+    execute_portfolio_update: tool({ description: '执行调仓。此工具必须经过用户审批。新增必须带合法建仓日 buy_dt（YYYYMMDD 或 YYYY-MM-DD），改股数/成本不要传 buy_dt；update 目标不存在时报错，不会新建。', inputSchema: PORTFOLIO_UPDATE_SCHEMA, needsApproval: true, execute: ({ action, code, name, shares, cost_price, stop_loss, buy_dt }) => execExecutePortfolioUpdate(deps, userId, action, code, name, shares, cost_price, stop_loss, buy_dt) }),
   }
 }
 
@@ -677,6 +677,7 @@ const PORTFOLIO_UPDATE_SCHEMA = z.object({
   shares: z.number().nullable(),
   cost_price: z.number().nullable(),
   stop_loss: z.number().nullable(),
+  buy_dt: z.string().nullable().describe('建仓日 YYYYMMDD 或 YYYY-MM-DD；新增必填且须为真实日期，改股数/成本时不要传。update 目标不存在时报错，不会新建'),
 })
 
 function formatPortfolioPlan(params: z.infer<typeof PORTFOLIO_UPDATE_SCHEMA> & { reason: string | null }) {
