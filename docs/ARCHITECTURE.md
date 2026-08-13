@@ -319,7 +319,7 @@ CLI/TUI 队列：
 用户输入 → Agent 忙?
             │
             ├─ `!指令` / `/steer …` → steering_queue（本轮下一跳注入，不杀 turn）
-            ├─ 普通文本 → input_queue，显示 queued:N；当前任务完成后自动发送
+            ├─ 普通文本 → input_queue，输入框上方弹出 follow-ups 框（边框跟随当前主题 brand）；enter 立即排队 · ↑ 编辑 · esc 取消；当前任务完成后自动发送
             └─ Ctrl+C → 硬取消 + checkpoint；可「继续」ResumeTurn
 ```
 

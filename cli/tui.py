@@ -31,6 +31,14 @@ from textual.widgets import Input, OptionList, RichLog, Static
 from textual.widgets.option_list import Option
 
 from cli.conversation import ConversationSession, QueuedInput, TurnPhase, UserIntent
+from cli.tui_followups import (
+    FOLLOWUP_PLACEHOLDER,
+    IDLE_PLACEHOLDER,
+    FollowUpCancelRequested,
+    FollowUpEditRequested,
+    FollowUpsPanel,
+    render_followups,
+)
 from cli.workflows.pending_reply import classify_pending_workflow_reply, is_pending_workflow_revision
 from utils.tool_result_preview import serialize_tool_result, tool_result_brief_lines
 
@@ -1715,6 +1723,14 @@ class ChatInput(Input):
         self._pasted_text = None
         return text
 
+    def on_key(self, event: events.Key) -> None:
+        if event.key == "up" and not (self.value or "").strip():
+            event.stop()
+            self.post_message(FollowUpEditRequested())
+        elif event.key == "escape":
+            event.stop()
+            self.post_message(FollowUpCancelRequested())
+
 
 class SelectorScreen(ModalScreen):
     """模态选择器 — 上下键选择，Enter 确认，Esc 取消。"""
@@ -2106,12 +2122,15 @@ class WyckoffTUI(App):
     Screen.transparent #input-container {
         background: ansi_default;
     }
-    /* 品牌琥珀色与 _UI_PALETTES 的 brand 保持一致；CSS 无法引用 Python 变量，需手动同步 */
+    /* 品牌色与 _UI_PALETTES.brand 保持一致；CSS 无法引用 Python 变量，需手动同步 */
     #input-container:focus-within {
         border: round #e6b450;
     }
     Screen.light-mode #input-container:focus-within {
         border: round #9a6700;
+    }
+    Screen.transparent #input-container:focus-within {
+        border: round yellow;
     }
     #prompt-prefix {
         width: auto;
@@ -2121,6 +2140,9 @@ class WyckoffTUI(App):
     }
     Screen.light-mode #prompt-prefix {
         color: #9a6700;
+    }
+    Screen.transparent #prompt-prefix {
+        color: yellow;
     }
     #status-bar {
         dock: bottom;
@@ -2258,10 +2280,11 @@ class WyckoffTUI(App):
         from textual.containers import Horizontal
 
         yield ChatLog(id="chat-log", highlight=True, markup=True, wrap=True)
+        yield FollowUpsPanel(id="followups-panel")
         with Horizontal(id="input-container"):
             yield Static("❯", id="prompt-prefix")
             yield ChatInput(
-                placeholder="问我关于股票的任何问题... (/help 查看命令)",
+                placeholder=IDLE_PLACEHOLDER,
                 id="chat-input",
                 highlighter=_PasteHighlighter(),
             )
@@ -2337,6 +2360,7 @@ class WyckoffTUI(App):
         else:
             _rm_cls("light-mode")
         self._update_console_markdown_theme(res)
+        self._refresh_followups_panel()
         return res
 
     def on_mount(self) -> None:
@@ -2693,12 +2717,14 @@ class WyckoffTUI(App):
         self._spinner_label = label
         self._spinner_idx = 0
         self._update_status()
+        self._refresh_followups_panel()
 
     def _stop_spinner(self) -> None:
         had_label = bool(self._spinner_label)
         self._spinner_label = ""
         if had_label:
             self._update_status()
+        self._refresh_followups_panel()
 
     # ----- 输入处理 -----
 
@@ -2753,7 +2779,6 @@ class WyckoffTUI(App):
             return
         if intent.kind == UserIntent.ENQUEUE_INPUT:
             self._apply_session_ui(self._conversation.enqueue(text))
-            log.write(Text.from_markup("  [dim]📋 已排队（等待当前回复完成后自动发送）[/dim]"))
             return
         self._conversation.abandon_active_turn()
         self._send_message(text)
@@ -2815,6 +2840,7 @@ class WyckoffTUI(App):
         self._run_agent()
 
     def _dispatch_queued_item(self, item: Any) -> None:
+        self._refresh_followups_panel()
         if isinstance(item, QueuedInput):
             if item.kind == "system_notification":
                 self._send_system_notification(item.content)
@@ -2840,6 +2866,8 @@ class WyckoffTUI(App):
                     log.write(Text.from_markup("  [dim]提示: 输入「继续」可接着刚才的问题[/dim]"))
                 else:
                     log.write(Text.from_markup("  [dim]提示: 切换模型后输入「继续」可重试刚才的问题[/dim]"))
+            elif etype == "queued":
+                self._refresh_followups_panel()
             elif etype == "steered":
                 depth = int((event.payload or {}).get("depth") or 0)
                 log.write(Text.from_markup(f"  [dim]🧭 转向已入队（pending:{depth}）[/dim]"))
@@ -2849,6 +2877,51 @@ class WyckoffTUI(App):
                 query = escape(str(payload.get("query", "")))
                 log.write(Text.from_markup(f"[yellow]⚠ 检测到会话 [bold]#{sid}[/bold] 上次执行中途异常中断。[/yellow]"))
                 log.write(Text.from_markup(f'[yellow]输入「继续」可恢复任务: [bold]"{query}"[/bold][/yellow]'))
+
+    def _refresh_followups_panel(self) -> None:
+        try:
+            panel = self.query_one("#followups-panel", FollowUpsPanel)
+            inp = self.query_one("#chat-input", ChatInput)
+        except Exception:
+            return
+        if not isinstance(panel, FollowUpsPanel):
+            return
+        brand = _ui_palette(getattr(self, "_active_theme_setting", "transparent"))["brand"]
+        panel.apply_brand(brand)
+        items = list(self._conversation.input_queue)
+        if items:
+            panel.update(render_followups(items, brand=brand))
+            panel.display = True
+        else:
+            panel.update("")
+            panel.display = False
+        if isinstance(inp, ChatInput) and getattr(self, "_input_mode", _InputState.NONE) == _InputState.NONE:
+            inp.placeholder = FOLLOWUP_PLACEHOLDER if (self._busy or items) else IDLE_PLACEHOLDER
+
+    def on_follow_up_edit_requested(self, _event: FollowUpEditRequested) -> None:
+        if self._input_mode != _InputState.NONE:
+            return
+        taken = self._conversation.pop_last_user_followup()
+        if taken is None:
+            return
+        inp = self.query_one("#chat-input", ChatInput)
+        inp.value = taken.content
+        inp.cursor_position = len(taken.content)
+        self._refresh_followups_panel()
+        self._update_status()
+
+    def on_follow_up_cancel_requested(self, _event: FollowUpCancelRequested) -> None:
+        if self._input_mode != _InputState.NONE:
+            return
+        inp = self.query_one("#chat-input", ChatInput)
+        if (inp.value or "").strip() or inp._pasted_text:
+            inp.clear()
+            inp._pasted_text = None
+            return
+        if self._conversation.pop_last_user_followup() is None:
+            return
+        self._refresh_followups_panel()
+        self._update_status()
 
     def _resume_active_turn(self, log) -> None:
         original = self._conversation.resumable_user_text
@@ -2985,7 +3058,8 @@ class WyckoffTUI(App):
                 "  Ctrl+C   — 复制选中文本 / 忙时中断\n"
                 "  Ctrl+N   — 新对话\n"
                 "  Ctrl+L   — 清屏\n"
-                "  忙时普通输入 — 排队到下一轮；`!指令` — 本轮转向\n"
+                "  忙时普通输入 — 进入 follow-ups 排队（enter 立即排队 · ↑ 编辑 · esc 取消）\n"
+                "  `!指令` — 本轮转向\n"
                 "  鼠标拖选  — 选择文本\n"
             )
         )
@@ -4488,7 +4562,6 @@ class WyckoffTUI(App):
         elif self._busy:
             sched.last_status = "queued"
             self._apply_session_ui(self._conversation.enqueue(QueuedInput(kind="schedule", content=action)))
-            log.write(Text.from_markup("  [dim]📋 Agent 忙碌中，已排队[/dim]"))
         else:
             sched.last_status = "triggered"
             self._send_message(action)
@@ -4942,10 +5015,14 @@ class WyckoffTUI(App):
             return
         summary = _background_task_summary("dynamic_workflow", task_id, result)
         item = _system_notification_queue_item(_workflow_background_notification(task_id, result, status, summary))
-        self._conversation.enqueue(QueuedInput(kind="system_notification", content=str(item.get("content", ""))))
+        events = self._conversation.enqueue(
+            QueuedInput(kind="system_notification", content=str(item.get("content", "")))
+        )
         if not self._busy:
             if next_item := self._conversation.dequeue_next():
                 self._dispatch_queued_item(next_item)
+                return
+        self._apply_session_ui(events)
 
     def _handle_agent_event(
         self,
@@ -5313,6 +5390,8 @@ class WyckoffTUI(App):
         if not self._busy:
             if next_item := self._conversation.dequeue_next():
                 self.call_from_thread(self._dispatch_queued_item, next_item)
+                return
+        self.call_from_thread(self._refresh_followups_panel)
 
     # ----- Actions -----
 
@@ -5408,6 +5487,7 @@ class WyckoffTUI(App):
             "cache_reported": False,
         }
         self._session_id = session_id
+        self._refresh_followups_panel()
         self._update_status()
         log.clear()
 
@@ -5466,6 +5546,7 @@ class WyckoffTUI(App):
         log = self.query_one("#chat-log", ChatLog)
         log.clear()
         log.write(Text.from_markup("[green]新对话已开始[/green]"))
+        self._refresh_followups_panel()
         self._update_status()
 
 

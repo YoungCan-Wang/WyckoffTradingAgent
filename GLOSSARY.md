@@ -337,6 +337,7 @@ flowchart LR
 | **TurnOutcome** | Runtime 终态事件：`done` / `turn_cancelled` / `turn_failed`（含 `failure.kind`）。Session 只认这些终态，不再靠 generator 静默结束。 |
 | **prepareToolCall** | 工具执行前的统一预检（存在 / schema / scope / 过早提问）；失败以结构化 `code` 回灌模型，不进入 handler。安卓对标：`PackageManager` resolve + permission 检查后再 `startService`。 |
 | **Steering** | 忙时注入本轮新指令（`!…` / `/steer`），经 `steering_queue` 在下一跳 model 调用前写入 messages；与排队到下一 turn 的 `input_queue` 不同。安卓对标：改正在跑 Job 的参数，而不是再 enqueue 一个新 Work。 |
+| **follow-ups（TUI）** | Agent 忙碌时普通输入进入 `input_queue`，输入框上方列出待发跟进。边框与标题用 `_UI_PALETTES.brand`（品牌主色：transparent 为 ANSI yellow / 终端标准黄，暗色主题琥珀金 `#e6b450`，浅色主题深金 `#9a6700`）。`enter` 立即排队；↑ 把最近一条用户跟进拉回编辑；esc 清空草稿或丢掉队尾跟进。与 Steering 分层。 |
 | **Auto-continuation** | 模型停了但工作未完时由 `decide_agent_loop` 自动注入续跑 prompt（截断 / 轮次上限 / 未完成必需工具），最多 2 次；与用户「继续」ResumeTurn 分层。 |
 | **FallbackProvider** | Provider 层自动切换备用模型；与用户主动 ResumeTurn **分层**，不混为一个概念。 |
 | **output tok/s** | 输出生成速率：`output_tokens / generation_seconds`。`generation_seconds` 只累计模型生成窗口（首个 text/thinking delta → 该段 stream/step 结束），多步 tool 循环**不含**工具执行时间。Web 用量横幅末尾标为 `Xs gen`（模型窗口）；CLI footer 末尾 `elapsed` 仍是整轮墙钟。 |
