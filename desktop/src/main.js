@@ -6,6 +6,7 @@ const fs = require('node:fs')
 const { PythonBridge } = require('./python-bridge')
 const { DaemonRunner } = require('./daemon-runner')
 const { BrowserHost } = require('./browser-host')
+const { PRINT_WEB_PREFERENCES, blockPrintNetwork } = require('./print-security')
 
 // src/ -> desktop/ -> repo root
 const REPO_ROOT = path.resolve(__dirname, '..', '..')
@@ -203,8 +204,14 @@ async function exportPdf (payload) {
 
   const win = new BrowserWindow({
     show: false,
-    webPreferences: { sandbox: true, nodeIntegration: false, contextIsolation: true }
+    webPreferences: {
+      ...PRINT_WEB_PREFERENCES,
+      // webRequest listeners are session-wide. Keep print-only restrictions
+      // away from the main renderer and the agent browser.
+      partition: `print-${Date.now()}-${Math.random().toString(16).slice(2)}`
+    }
   })
+  blockPrintNetwork(win.webContents.session)
   try {
     // data: URL keeps it an opaque origin with no filesystem access.
     await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
@@ -224,20 +231,7 @@ async function exportPdf (payload) {
 
 app.whenReady().then(async () => {
   createWindow()
-
-  // The control endpoint must exist before Python spawns, so the token can be
-  // handed over through the child's environment.
-  browser = new BrowserHost({
-    window: mainWindow,
-    onLog: (message) => console.log(`[browser] ${message}`)
-  })
-  let endpoint = null
-  try {
-    endpoint = await browser.start()
-  } catch (err) {
-    console.error(`[browser] control endpoint failed: ${err.message}`)
-  }
-
+  const endpoint = await createBrowserHost()
   startBridge(endpoint)
   startDaemon()
 
@@ -286,17 +280,31 @@ app.whenReady().then(async () => {
     return { ok: true }
   })
 
-  app.on('activate', () => {
+  app.on('activate', async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow()
-      // On macOS closing the window does not quit, and the children were
-      // stopped on close — without this, reopening from the Dock leaves a dead
-      // bridge and the UI hangs on "连接中…".
-      if (!bridge.child) bridge.start()
+      const endpoint = await createBrowserHost()
+      bridge.browserEndpoint = endpoint
+      // Closing the last macOS window stops all window-owned resources. Restart
+      // even if the old child has not emitted exit yet; restart() detaches it.
+      bridge.restart()
       if (!daemon.child) daemon.start()
     }
   })
 })
+
+async function createBrowserHost () {
+  browser = new BrowserHost({
+    window: mainWindow,
+    onLog: (message) => console.log(`[browser] ${message}`)
+  })
+  try {
+    return await browser.start()
+  } catch (err) {
+    console.error(`[browser] control endpoint failed: ${err.message}`)
+    return null
+  }
+}
 
 // Killing the children on every exit path is what keeps orphan Python
 // processes from accumulating — the main risk of a resident-subprocess design.

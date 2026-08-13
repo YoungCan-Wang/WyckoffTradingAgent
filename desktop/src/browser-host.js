@@ -10,6 +10,7 @@
 const http = require('node:http')
 const crypto = require('node:crypto')
 const { WebContentsView } = require('electron')
+const { validatePublicHttpUrl } = require('./public-url')
 
 // 只允许这些动作。新增动作必须显式加进来，避免控制口变成任意代码执行。
 const ACTIONS = new Set(['navigate', 'text', 'title', 'url', 'click', 'fill', 'back', 'wait', 'screenshot'])
@@ -45,10 +46,21 @@ class BrowserHost {
       }
     })
     const wc = this.view.webContents
+    wc.session.webRequest.onBeforeRequest((details, callback) => {
+      if (!/^https?:/i.test(details.url)) return callback({})
+      validatePublicHttpUrl(details.url)
+        .then(() => callback({}))
+        .catch((err) => {
+          this.onLog(`浏览器导航已拦截: ${err.message}`)
+          callback({ cancel: true })
+        })
+    })
     // 页面里的 window.open / target=_blank 一律在当前视图导航，
     // 不允许它凭空造出没有这些限制的新窗口。
     wc.setWindowOpenHandler(({ url }) => {
-      if (/^https?:/i.test(url)) wc.loadURL(url)
+      validatePublicHttpUrl(url)
+        .then((safeUrl) => wc.loadURL(safeUrl))
+        .catch((err) => this.onLog(`浏览器弹窗导航已拦截: ${err.message}`))
       return { action: 'deny' }
     })
     wc.on('render-process-gone', (_e, details) => {
@@ -82,10 +94,7 @@ class BrowserHost {
     const wc = this.ensureView().webContents
 
     if (action === 'navigate') {
-      const url = String(params.url || '')
-      // 只允许 http(s)：file:// 会让 Agent 读本地磁盘，
-      // javascript: 会在页面上下文执行任意代码。
-      if (!/^https?:\/\//i.test(url)) throw new Error('only http(s) URLs are allowed')
+      const url = await validatePublicHttpUrl(params.url)
       await this.withTimeout(wc.loadURL(url), NAV_TIMEOUT_MS, 'navigate timed out')
       return { url: wc.getURL(), title: wc.getTitle() }
     }

@@ -12,6 +12,7 @@ const IS_WINDOWS = process.platform === 'win32'
 // 退出即失败说明环境不对（缺依赖、路径错），重试只是空转。
 const MAX_RESTARTS = 3
 const RESTART_DELAY_MS = 2_000
+const LOCK_BUSY_EXIT_CODE = 75
 
 class DaemonRunner {
   constructor ({ repoRoot, python, onLog }) {
@@ -22,23 +23,28 @@ class DaemonRunner {
     this.restarts = 0
     this.stopping = false
     this.startedAt = 0
+    this.spawnFailed = false
   }
 
   start () {
     if (this.child) return
     this.stopping = false
     this.startedAt = Date.now()
+    this.spawnFailed = false
 
     // --foreground 让它在前台阻塞跑主循环，由我们持有进程句柄。
     // 不加这个参数，CLI 只会打印一句「需要 launchd 托管」然后退出。
-    this.child = spawn(this.python, ['-m', 'cli', 'daemon', '--foreground'], {
+    const child = spawn(this.python, ['-m', 'cli', 'daemon', '--foreground'], {
       cwd: this.repoRoot,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
       env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' }
     })
+    this.child = child
 
-    this.child.on('error', (err) => {
+    child.on('error', (err) => {
+      if (this.child === child) this.child = null
+      this.spawnFailed = true
       this.onLog(`daemon 启动失败: ${err.message}`)
     })
 
@@ -46,20 +52,24 @@ class DaemonRunner {
       const text = String(buf).trim()
       if (text) this.onLog(text)
     }
-    this.child.stdout.on('data', relay)
-    this.child.stderr.on('data', relay)
+    child.stdout.on('data', relay)
+    child.stderr.on('data', relay)
 
-    this.child.on('exit', (code, signal) => this.handleExit(code, signal))
+    child.on('exit', (code, signal) => {
+      if (this.child !== child) return
+      this.handleExit(code, signal)
+    })
   }
 
   handleExit (code, signal) {
     this.child = null
     if (this.stopping) return
+    if (this.spawnFailed) return
 
     // 锁被占用说明已经有一个 daemon 在跑（比如用户装了 launchd 服务，
     // 或上一个实例还没退干净）。这不是错误，让位即可，重启只会继续撞锁。
-    const ranBriefly = Date.now() - this.startedAt < 3_000
-    if (ranBriefly && this.restarts >= 1) {
+    const lockBusy = code === LOCK_BUSY_EXIT_CODE
+    if (lockBusy) {
       this.onLog('定时调度已由其他进程接管，本次不再重试。')
       return
     }

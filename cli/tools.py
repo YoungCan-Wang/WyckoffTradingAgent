@@ -755,7 +755,8 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "market_regime": ToolSpec("market_regime", "市况判定"),
     "wyckoff_diagnose": ToolSpec("wyckoff_diagnose", "结构诊断"),
     # 纯展示：不动持仓、不下单，所以不需要审批。
-    "annotate_chart": ToolSpec("annotate_chart", "标注图表", concurrency_safe=True),
+    # 存储是一个原子替换的 JSON 文件；并发写会彼此覆盖，因此不能批内并行。
+    "annotate_chart": ToolSpec("annotate_chart", "标注图表"),
     "intraday_analysis": ToolSpec("intraday_analysis", "盘中分析"),
     "intraday_rescue_check": ToolSpec("intraday_rescue_check", "中周期结构"),
     "record_trade_fill": ToolSpec("record_trade_fill", "成交回填", requires_approval=True),

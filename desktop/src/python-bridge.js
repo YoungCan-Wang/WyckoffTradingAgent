@@ -168,12 +168,7 @@ class PythonBridge {
     this.child = null
     clearTimeout(this.readyTimer)
 
-    // Fail every in-flight request; the renderer must not wait forever.
-    for (const id of this.pending.keys()) {
-      this.onEvent({ id, type: 'error', code: 'child_exited', message: 'Python 进程已退出' })
-      this.onEvent({ id, type: 'end' })
-    }
-    this.pending.clear()
+    this.failPending('child_exited', 'Python 进程已退出')
 
     if (this.stopping) {
       this.status({ state: 'stopped' })
@@ -207,6 +202,16 @@ class PythonBridge {
       detail: `python exited (code=${code}, signal=${signal}), restart #${this.restarts}`
     })
     setTimeout(() => this.start(), RESTART_DELAY_MS)
+  }
+
+  failPending (code, message) {
+    // Every request must terminate exactly once; otherwise collect() and chat
+    // streams in the renderer retain callbacks forever after a process change.
+    for (const id of this.pending.keys()) {
+      this.onEvent({ id, type: 'error', code, message })
+      this.onEvent({ id, type: 'end' })
+    }
+    this.pending.clear()
   }
 
   send (method, params) {
@@ -266,6 +271,7 @@ class PythonBridge {
     this.ready = false
     this.restarts = 0
     clearTimeout(this.readyTimer)
+    this.failPending('backend_restarted', '后端已重启，请重新发起操作')
     if (old) {
       try {
         if (old.stdin.writable) {

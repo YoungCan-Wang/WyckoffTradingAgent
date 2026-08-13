@@ -41,6 +41,8 @@ def _ok(**payload: Any) -> Event:
 def approve_list(_params: dict[str, Any]) -> Iterator[Event]:
     from cli import approval_queue as aq
 
+    current_user = _current_user_id()
+
     items = [
         {
             "id": item.id,
@@ -53,6 +55,7 @@ def approve_list(_params: dict[str, Any]) -> Iterator[Event]:
             "args": aq.sanitized_args(item.args),
         }
         for item in aq.list_pending()
+        if aq.owner_matches(item, current_user)
     ]
     yield _ok(items=items, count=len(items))
 
@@ -65,6 +68,11 @@ def approve_decide(params: dict[str, Any]) -> Iterator[Event]:
     if not approval_id:
         raise MethodError("invalid_params", "缺少 id")
     approved = bool(params.get("approved"))
+
+    pending = aq.get(approval_id)
+    current_user = _current_user_id()
+    if pending is not None and not aq.owner_matches(pending, current_user):
+        raise MethodError("account_mismatch", "审批项所属账户与当前登录不一致，已拒绝处理")
 
     record = aq.decide(approval_id, approved=approved)
     if record is None:
@@ -79,7 +87,7 @@ def approve_decide(params: dict[str, Any]) -> Iterator[Event]:
     from cli.approval_executor import execute_approved
 
     yield {"type": "progress", "message": f"正在执行：{record.summary or record.tool_name}"}
-    result = execute_approved(record.tool_name, record.args)
+    result = execute_approved(record.tool_name, record.args, expected_user_id=record.user_id)
     succeeded = not (isinstance(result, dict) and result.get("error"))
     aq.record_execution(record.id, result, succeeded=succeeded)
     yield _ok(status="executed" if succeeded else "failed", result=result, succeeded=succeeded)
@@ -102,29 +110,10 @@ def ohlcv(params: dict[str, Any]) -> Iterator[Event]:
     列式（{date: [...], close: [...]}）而非对象数组：320 根日线约 40KB，
     对象数组要 100KB 上下，而画图端本来就按列消费。
     """
-    from datetime import date, timedelta
-
-    from integrations.stock_hist_repository import get_stock_hist, normalize_hist_df
-
-    symbol = str(params.get("symbol") or "").strip()
-    if not symbol:
-        raise MethodError("invalid_params", "缺少 symbol")
-    days = _clamp_int(params.get("days"), DEFAULT_OHLCV_DAYS, 2, MAX_OHLCV_DAYS)
     adjust = str(params.get("adjust") or "qfq")
     if adjust not in ("qfq", "hfq", ""):
         raise MethodError("invalid_params", f"不支持的 adjust: {adjust}")
-
-    end = date.today()
-    # 日历天要放宽于交易日：320 个交易日约 460 个自然日，留足余量。
-    start = end - timedelta(days=int(days * 1.6) + 40)
-    try:
-        raw = get_stock_hist(symbol, start, end, adjust=adjust or "qfq")
-    except Exception as exc:  # 数据源千奇百怪，统一成一个可读错误
-        raise MethodError("data_unavailable", f"取不到 {symbol} 的历史行情") from exc
-    if raw is None or raw.empty:
-        raise MethodError("data_unavailable", f"{symbol} 没有历史行情数据")
-
-    frame = normalize_hist_df(raw).tail(days)
+    symbol, frame = _chart_frame(params, adjust=adjust or "qfq")
     yield _ok(symbol=symbol, adjust=adjust or "qfq", bars=_columnar(frame))
 
 
@@ -134,26 +123,10 @@ def wyckoff_events(params: dict[str, Any]) -> Iterator[Event]:
     事件由 ``core.event_replay`` 重放生产检测器得到，因此图上标的和漏斗选的
     是同一套规则。结构缺失时对应字段为 None —— 图少画一层比画错一层好。
     """
-    from datetime import date, timedelta
-
     from core.event_replay import replay_events
-    from integrations.stock_hist_repository import get_stock_hist, normalize_hist_df
 
-    symbol = str(params.get("symbol") or "").strip()
-    if not symbol:
-        raise MethodError("invalid_params", "缺少 symbol")
-    days = _clamp_int(params.get("days"), DEFAULT_OHLCV_DAYS, 2, MAX_OHLCV_DAYS)
-
-    end = date.today()
-    start = end - timedelta(days=int(days * 1.6) + 40)
-    try:
-        raw = get_stock_hist(symbol, start, end, adjust="qfq")
-    except Exception as exc:
-        raise MethodError("data_unavailable", f"取不到 {symbol} 的历史行情") from exc
-    if raw is None or raw.empty:
-        raise MethodError("data_unavailable", f"{symbol} 没有历史行情数据")
-
-    frame = normalize_hist_df(raw).tail(days).reset_index(drop=True)
+    symbol, frame = _chart_frame(params)
+    frame = frame.reset_index(drop=True)
     events = replay_events(frame, code=symbol)
     yield _ok(
         symbol=symbol,
@@ -162,6 +135,43 @@ def wyckoff_events(params: dict[str, Any]) -> Iterator[Event]:
         targets=_targets_payload(frame),
         annotations=_annotations_payload(symbol),
     )
+
+
+def chart_data(params: dict[str, Any]) -> Iterator[Event]:
+    """同一份行情快照派生 K 线与所有标注，避免重复取数和快照漂移。"""
+    from core.event_replay import replay_events
+
+    symbol, frame = _chart_frame(params)
+    frame = frame.reset_index(drop=True)
+    yield _ok(
+        symbol=symbol,
+        adjust="qfq",
+        bars=_columnar(frame),
+        events=replay_events(frame, code=symbol),
+        trading_range=_trading_range_payload(frame),
+        targets=_targets_payload(frame),
+        annotations=_annotations_payload(symbol),
+    )
+
+
+def _chart_frame(params: dict[str, Any], *, adjust: str = "qfq") -> tuple[str, Any]:
+    from datetime import date, timedelta
+
+    from integrations.stock_hist_repository import get_stock_hist, normalize_hist_df
+
+    symbol = str(params.get("symbol") or "").strip()
+    if not symbol:
+        raise MethodError("invalid_params", "缺少 symbol")
+    days = _clamp_int(params.get("days"), DEFAULT_OHLCV_DAYS, 2, MAX_OHLCV_DAYS)
+    end = date.today()
+    start = end - timedelta(days=int(days * 1.6) + 40)
+    try:
+        raw = get_stock_hist(symbol, start, end, adjust=adjust)
+    except Exception as exc:
+        raise MethodError("data_unavailable", f"取不到 {symbol} 的历史行情") from exc
+    if raw is None or raw.empty:
+        raise MethodError("data_unavailable", f"{symbol} 没有历史行情数据")
+    return symbol, normalize_hist_df(raw).tail(days)
 
 
 def _annotations_payload(symbol: str) -> list[dict[str, Any]]:
@@ -347,6 +357,7 @@ def model_add(params: dict[str, Any]) -> Iterator[Event]:
             "base_url": base_url,
         }
     )
+    _reload_desktop_session()
     yield _ok(saved=True, model_id=model_id)
 
 
@@ -359,6 +370,7 @@ def model_remove(params: dict[str, Any]) -> Iterator[Event]:
         raise MethodError("invalid_params", "缺少模型标识")
     if not remove_model_entry(model_id):
         raise MethodError("last_model", "至少要保留一个模型")
+    _reload_desktop_session()
     yield _ok(removed=True, model_id=model_id)
 
 
@@ -421,7 +433,8 @@ def _launchd_plist() -> Path:
 def daemon_status(_params: dict[str, Any]) -> Iterator[Event]:
     """定时 daemon 是否在跑、是否已注册为登录项。
 
-    GUI 关掉后定时任务要继续跑，靠的是 launchd 常驻，而不是 GUI 自启。
+    当前桌面契约是应用打开期间运行；installed/loaded 只用于发现和清理
+    历史 launchd 服务，避免桌面关闭后仍意外执行任务。
     """
     from cli.daemon import is_daemon_running
 
@@ -485,7 +498,16 @@ def sign_out(_params: dict[str, Any]) -> Iterator[Event]:
     for key in ("email", "password"):
         if key in config:
             save_config_key(key, "")
+    from cli.ipc.session import shutdown_session
+
+    shutdown_session()
     yield _ok(signed_out=True)
+
+
+def _current_user_id() -> str:
+    from cli.auth import load_session
+
+    return str((load_session() or {}).get("user_id") or "")
 
 
 def settings_get(_params: dict[str, Any]) -> Iterator[Event]:
@@ -586,14 +608,23 @@ def settings_set(params: dict[str, Any]) -> Iterator[Event]:
 
     if key == "default_model":
         set_default_model(str(value or ""))
+        _reload_desktop_session()
     elif key == "fallback_model":
         set_fallback_model(str(value or ""))
+        _reload_desktop_session()
     elif key in _SETTABLE_KEYS:
         save_config_key(key, _coerce_desktop_value(key, value))
     else:
         raise MethodError("invalid_key", f"不可设置的配置项: {key}")
 
     yield _ok(saved=True, key=key)
+
+
+def _reload_desktop_session() -> None:
+    """让下轮对话使用刚保存的模型配置。"""
+    from cli.ipc.session import shutdown_session
+
+    shutdown_session()
 
 
 def mcp_list(_params: dict[str, Any]) -> Iterator[Event]:
@@ -640,6 +671,7 @@ METHODS: dict[str, Callable[[dict[str, Any]], Iterator[Event]]] = {
     "approve_list": approve_list,
     "approve_decide": approve_decide,
     "portfolio": portfolio,
+    "chart_data": chart_data,
     "ohlcv": ohlcv,
     "wyckoff_events": wyckoff_events,
     "schedules": schedules,

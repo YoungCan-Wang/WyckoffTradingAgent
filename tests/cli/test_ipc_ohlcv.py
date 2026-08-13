@@ -146,3 +146,19 @@ class TestFailures:
 class TestRegistration:
     def test_registered_in_methods_table(self) -> None:
         assert methods.METHODS["ohlcv"] is methods.ohlcv
+
+
+class TestChartData:
+    def test_fetches_once_for_bars_and_structure(self, stub_hist, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls, _fake_get = stub_hist
+        monkeypatch.setattr("core.event_replay.replay_events", lambda *a, **k: [])
+
+        result = list(methods.chart_data({"symbol": "600519", "days": 5}))[0]
+
+        assert len(calls) == 1
+        assert result["bars"]["close"][-1] == 14.5
+        assert result["events"] == []
+        assert {"trading_range", "targets", "annotations"} <= set(result)
+
+    def test_registered_in_methods_table(self) -> None:
+        assert methods.METHODS["chart_data"] is methods.chart_data

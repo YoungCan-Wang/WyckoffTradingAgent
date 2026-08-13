@@ -1,4 +1,4 @@
-"""常驻调度 daemon — UI 关闭后定时任务继续跑，由 launchd 保活。"""
+"""定时调度 daemon — CLI 可前台运行，桌面端打开期间由 Electron 托管。"""
 
 from __future__ import annotations
 
@@ -15,6 +15,8 @@ from pathlib import Path
 from cli import platform_lock
 
 logger = logging.getLogger(__name__)
+
+LOCK_BUSY_EXIT_CODE = 75
 
 WYCKOFF_DIR = Path.home() / ".wyckoff"
 LOCK_PATH = WYCKOFF_DIR / "daemon.lock"
@@ -151,7 +153,7 @@ def main_loop(*, lock_path: Path | None = None, poll_seconds: float = 60.0) -> i
             return 0
     except DaemonLockBusy as exc:
         logger.error("%s", exc)
-        return 1
+        return LOCK_BUSY_EXIT_CODE
 
 
 def _sleep_interruptible(seconds: float, *, step: float = 0.5) -> None:

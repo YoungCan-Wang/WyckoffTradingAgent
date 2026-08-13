@@ -417,6 +417,13 @@ const openReport = (title, source, meta) =>
 let browserBox = null
 let browserObserver = null
 
+function closeBrowser () {
+  window.wyckoff.browser.hide()
+  if (browserObserver) browserObserver.disconnect()
+  browserObserver = null
+  browserBox = null
+}
+
 function syncBrowserBounds () {
   if (!browserBox || !browserBox.isConnected) return
   const r = browserBox.getBoundingClientRect()
@@ -435,6 +442,7 @@ const openBrowser = () =>
     title: t('tab.browser'),
     glyph: '◍',
     onHide: () => window.wyckoff.browser.hide(),
+    onClose: closeBrowser,
     build: () => {
       const wrap = el('div', 'bwrap')
       const bar = el('div', 'bbar')
@@ -491,6 +499,7 @@ const openReports = () =>
     key: 'reports',
     title: t('tab.reports'),
     glyph: '▦',
+    onClose: () => artifactViewer && artifactViewer.dispose(),
     build: async () => {
       if (!artifactViewer) {
         artifactViewer = window.createArtifactViewer({
@@ -522,26 +531,22 @@ const openKline = (symbol) =>
     // NOTE: no onHide here — tabs.js fires it on tab *switch* too, and
     // disposing then would force a refetch every time the user switches back.
     // The prior chart is disposed inside build() instead.
+    onClose: () => disposeChart(symbol),
     build: async () => {
+      disposeChart(symbol)
       const wrap = el('div', 'klwrap')
       wrap.appendChild(el('p', 'empty', t('kline.loading')))
-      // Prices and structure in parallel: the chart needs bars, annotations
-      // need the replay, and neither should wait on the other.
-      const [priceRes, structRes] = await Promise.all([
-        collect('ohlcv', { symbol, days: 320 }).catch(() => null),
-        collect('wyckoff_events', { symbol, days: 320 }).catch(() => null)
-      ])
-      if (!priceRes || !priceRes.bars) {
+      // Bars and annotations share one fetched frame, so price and structure
+      // cannot drift across two upstream snapshots or consume quota twice.
+      const data = await collect('chart_data', { symbol, days: 320 }).catch(() => null)
+      if (!data || !data.bars) {
         wrap.replaceChildren(el('p', 'empty', t('kline.failed')))
         return wrap
       }
-      wrap.replaceChildren(klineHeader(symbol, priceRes.bars))
-      const chart = window.WyckoffKline.createKlineChart({ bars: priceRes.bars })
-      if (structRes) chart.addPainter(window.WyckoffAnnotations.createAnnotationPainter(structRes))
+      wrap.replaceChildren(klineHeader(symbol, data.bars))
+      const chart = window.WyckoffKline.createKlineChart({ bars: data.bars })
+      chart.addPainter(window.WyckoffAnnotations.createAnnotationPainter(data))
       wrap.appendChild(chart.node)
-      // Dispose the previous chart for this symbol: its ResizeObserver and
-      // window-level mouseup listener would otherwise outlive the rebuild.
-      disposeChart(symbol)
       liveCharts.set(symbol, chart)
       // Canvas colours are resolved once, so a theme switch needs a repaint.
       requestAnimationFrame(() => chart.resize())

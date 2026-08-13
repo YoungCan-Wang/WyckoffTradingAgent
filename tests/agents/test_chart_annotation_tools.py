@@ -109,6 +109,11 @@ class TestRegistration:
         # 走真实注册表的判定，而不是只看元数据字段。
         assert ToolRegistry().requires_approval("annotate_chart") is False
 
+    def test_is_not_marked_concurrency_safe(self) -> None:
+        from cli.tools import ToolRegistry
+
+        assert ToolRegistry().concurrency_safe("annotate_chart") is False
+
     def test_schema_lists_every_supported_type(self) -> None:
         """schema 里的 enum 必须和存储层支持的 type 一致，否则模型会画出被拒的形状。"""
         from cli.tools import TOOL_SCHEMAS

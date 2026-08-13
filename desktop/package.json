@@ -6,7 +6,8 @@
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
-    "start:debug": "electron . --inspect"
+    "start:debug": "electron . --inspect",
+    "test": "node --test test/*.test.js"
   },
   "devDependencies": {
     "electron": "38.2.2"

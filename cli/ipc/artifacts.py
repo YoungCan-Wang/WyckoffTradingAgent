@@ -8,6 +8,7 @@ AI 生成的报告落在 ``~/.wyckoff/reports``，桌面端从这里列出并读
 from __future__ import annotations
 
 import base64
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -145,8 +146,13 @@ def import_file(source: str) -> Artifact:
     src = Path(source).expanduser()
     if not src.is_file():
         raise ArtifactError("not_found", f"找不到文件: {source}")
-    if kind_for(src) == "unsupported":
+    kind = kind_for(src)
+    if kind == "unsupported":
         raise ArtifactError("unsupported", f"暂不支持 {src.suffix} 文件")
+    size = src.stat().st_size
+    limit = MAX_BINARY_BYTES if kind == "pdf" else MAX_TEXT_BYTES
+    if size > limit:
+        raise ArtifactError("too_large", "文件过大，无法导入预览")
 
     root = ensure_reports_dir()
     target = root / src.name
@@ -161,7 +167,8 @@ def import_file(source: str) -> Artifact:
         else:
             raise ArtifactError("name_conflict", "同名文件过多，请先清理报告目录")
 
-    target.write_bytes(src.read_bytes())
+    # 流式复制，避免先把整个文件读进常驻 IPC 进程的内存。
+    shutil.copy2(src, target)
     stat = target.stat()
     return Artifact(
         name=target.name,

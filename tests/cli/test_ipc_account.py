@@ -97,6 +97,9 @@ class TestSettings:
 
     def test_settings_set_routes_default_model(self, monkeypatch: pytest.MonkeyPatch) -> None:
         picked: list[str] = []
+        reloaded: list[str] = []
         monkeypatch.setattr("integrations.local_auth.set_default_model", lambda mid: picked.append(mid))
+        monkeypatch.setattr("cli.ipc.session.shutdown_session", lambda: reloaded.append("session"))
         _result("settings_set", {"key": "default_model", "value": "gemini"})
         assert picked == ["gemini"]
+        assert reloaded == ["session"]

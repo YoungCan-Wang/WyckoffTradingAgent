@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Iterator
 from typing import Any
 
@@ -16,6 +17,7 @@ logger = logging.getLogger(__name__)
 MAX_HISTORY_MESSAGES = 80
 
 _session: DesktopSession | None = None
+_session_lock = threading.RLock()
 
 
 class DesktopSession:
@@ -26,7 +28,9 @@ class DesktopSession:
         self._tools: Any = None
         self._provider: Any = None
         self._mcp_manager: Any = None
-        self._pending_confirm: dict[str, Any] | None = None
+        self._pending_confirms: list[dict[str, Any]] = []
+        self._user_id = ""
+        self._turn_lock = threading.RLock()
         self.ready_error = ""
 
     # -- 初始化 ---------------------------------------------------------------
@@ -47,8 +51,9 @@ class DesktopSession:
             self.ready_error = "no model provider configured"
 
         session = _load_session()
+        self._user_id = str(session.get("user_id") or "")
         self._tools = ToolRegistry(
-            user_id=str(session.get("user_id") or ""),
+            user_id=self._user_id,
             access_token=str(session.get("access_token") or ""),
             refresh_token=str(session.get("refresh_token") or ""),
         )
@@ -78,12 +83,13 @@ class DesktopSession:
             logger.warning("external mcp start failed", exc_info=True)
 
     def stop(self) -> None:
-        if self._mcp_manager is not None:
-            try:
-                self._mcp_manager.stop()
-            except Exception:
-                logger.debug("mcp stop failed", exc_info=True)
-            self._mcp_manager = None
+        with self._turn_lock:
+            if self._mcp_manager is not None:
+                try:
+                    self._mcp_manager.stop()
+                except Exception:
+                    logger.debug("mcp stop failed", exc_info=True)
+                self._mcp_manager = None
 
     # -- 工具闸门 -------------------------------------------------------------
 
@@ -99,8 +105,9 @@ class DesktopSession:
             risk=risk,
             source="desktop",
             summary=aq.summarize(name, args),
+            user_id=self._user_id,
         )
-        self._pending_confirm = {"id": approval_id, "tool": name, "risk": risk}
+        self._pending_confirms.append({"id": approval_id, "tool": name, "risk": risk})
         return {
             "action": "queued",
             "message": (
@@ -126,6 +133,10 @@ class DesktopSession:
     # -- 对话 -----------------------------------------------------------------
 
     def run_turn(self, text: str) -> Iterator[dict[str, Any]]:
+        with self._turn_lock:
+            yield from self._run_turn(text)
+
+    def _run_turn(self, text: str) -> Iterator[dict[str, Any]]:
         if self._tools is None:
             self.start()
         if self._provider is None:
@@ -137,7 +148,7 @@ class DesktopSession:
         from core.prompts import CHAT_AGENT_SYSTEM_PROMPT
         from integrations.local_auth import load_config
 
-        self._pending_confirm = None
+        self._pending_confirms.clear()
         self._messages.append({"role": "user", "content": text})
         runtime = AgentRuntime(self._provider, self._tools)
 
@@ -156,11 +167,12 @@ class DesktopSession:
                     if reply:
                         self._messages.append({"role": "assistant", "content": reply})
                     self._trim()
-                    if self._pending_confirm:
-                        yield {"type": "approval_pending", **self._pending_confirm}
         except Exception as exc:
             logger.exception("chat turn failed")
             yield {"type": "error", "code": "turn_failed", "message": str(exc)}
+
+        for pending in self._pending_confirms:
+            yield {"type": "approval_pending", **pending}
 
     def _trim(self) -> None:
         if len(self._messages) > MAX_HISTORY_MESSAGES:
@@ -208,14 +220,16 @@ def _load_session() -> dict[str, Any]:
 
 def get_session() -> DesktopSession:
     global _session
-    if _session is None:
-        _session = DesktopSession()
-        _session.start()
-    return _session
+    with _session_lock:
+        if _session is None:
+            _session = DesktopSession()
+            _session.start()
+        return _session
 
 
 def shutdown_session() -> None:
     global _session
-    if _session is not None:
-        _session.stop()
-        _session = None
+    with _session_lock:
+        if _session is not None:
+            _session.stop()
+            _session = None

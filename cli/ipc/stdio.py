@@ -11,11 +11,14 @@ import json
 import logging
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor, wait
 from typing import Any, TextIO
 
 logger = logging.getLogger(__name__)
 
 PROTOCOL_VERSION = 1
+MAX_WORKERS = 4
+SHUTDOWN_DRAIN_SECONDS = 2.0
 
 # Windows 管道缓冲和 POSIX 不同；每行显式 flush，否则前端会卡住等不到数据。
 _write_lock = threading.Lock()
@@ -95,13 +98,21 @@ def serve(*, verbose: bool = False) -> int:
     _emit({"type": "ready", "protocol": PROTOCOL_VERSION})
 
     try:
-        for raw in sys.stdin:
-            line = raw.strip()
-            if not line:
-                continue
-            if line == "__shutdown__":
-                break
-            _handle_line(line)
+        executor = ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="ipc")
+        futures = set()
+        try:
+            for raw in sys.stdin:
+                line = raw.strip()
+                if not line:
+                    continue
+                if line == "__shutdown__":
+                    break
+                future = executor.submit(_handle_line, line)
+                futures.add(future)
+                future.add_done_callback(futures.discard)
+        finally:
+            wait(futures, timeout=SHUTDOWN_DRAIN_SECONDS)
+            executor.shutdown(wait=False, cancel_futures=True)
     except KeyboardInterrupt:
         logger.info("interrupted")
     finally:

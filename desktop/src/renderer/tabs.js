@@ -40,6 +40,11 @@ class TabPane {
     if (current && current.spec.onHide) current.spec.onHide()
   }
 
+  dispose (tab) {
+    if (tab.spec.onHide) tab.spec.onHide()
+    if (tab.spec.onClose) tab.spec.onClose()
+  }
+
   /**
    * @param {object} spec
    *  - title: label text
@@ -60,7 +65,11 @@ class TabPane {
     // Drop the oldest non-pinned tab rather than letting the strip overflow.
     if (this.tabs.length > MAX_TABS) {
       const victim = this.tabs.findIndex((tab) => !tab.spec.pinned && tab.key !== key)
-      if (victim !== -1) this.tabs.splice(victim, 1)
+      if (victim !== -1) {
+        const [removed] = this.tabs.splice(victim, 1)
+        this.dispose(removed)
+        if (this.activeId === removed.key) this.activeId = null
+      }
     }
     this.notifyCount()
     this.select(key)
@@ -71,8 +80,8 @@ class TabPane {
     const index = this.tabs.findIndex((tab) => tab.key === key)
     if (index === -1) return
     // Read onHide before splicing: afterwards the spec is gone from the list.
-    const closing = this.tabs[index].spec
-    if (closing.onHide) closing.onHide()
+    const closing = this.tabs[index]
+    this.dispose(closing)
     this.tabs.splice(index, 1)
     if (this.activeId === key) {
       const next = this.tabs[index] || this.tabs[index - 1]
@@ -92,7 +101,7 @@ class TabPane {
   closeAll () {
     // Detach any native view first, or it keeps floating over the closed pane.
     for (const tab of this.tabs) {
-      if (tab.spec.onHide) tab.spec.onHide()
+      this.dispose(tab)
     }
     this.tabs = []
     this.activeId = null

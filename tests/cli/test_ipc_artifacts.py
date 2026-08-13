@@ -154,6 +154,17 @@ class TestImport:
             art.import_file(str(src))
         assert excinfo.value.code == "unsupported"
 
+    def test_rejects_oversized_import(self, reports: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(art, "MAX_TEXT_BYTES", 10)
+        src = tmp_path / "large.md"
+        src.write_bytes(b"x" * 11)
+
+        with pytest.raises(art.ArtifactError) as excinfo:
+            art.import_file(str(src))
+
+        assert excinfo.value.code == "too_large"
+        assert not (reports / "large.md").exists()
+
     def test_rejects_missing_source(self, reports: Path) -> None:
         with pytest.raises(art.ArtifactError) as excinfo:
             art.import_file("/nonexistent/x.md")
