@@ -754,6 +754,34 @@ html.dark .mfin { background: var(--paper2); }
 .dcard .h b { font-size: 12.5px; font-weight: 600; }
 .dcard .h .rt { margin-left: auto; color: var(--d-tx3); font-size: 11px; }
 .chart { width: 100%; height: 190px; display: block; }
+
+/* ---- candlestick chart (canvas) ---- */
+.kl { position: relative; flex: 1; min-height: 260px; display: flex; }
+.kl-cv { display: block; width: 100%; height: 100%; cursor: crosshair; }
+/* Readout floats over the plot: a fixed row would shift the chart on hover. */
+.kl-read {
+  position: absolute; top: 6px; left: 10px; right: 10px;
+  display: flex; gap: 12px; flex-wrap: wrap;
+  font-size: 11px; color: var(--tx2); pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+.kl-read .up { color: var(--up); }
+.kl-read .dn { color: var(--dn); }
+.klwrap { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.klbar {
+  display: flex; align-items: center; gap: 8px; flex: none;
+  padding: 9px 14px; border-bottom: 1px solid var(--line);
+}
+.klsym { font-size: 13px; font-weight: 600; }
+.klmeta { font-size: 11px; color: var(--tx3); }
+.kllegend { margin-left: auto; display: flex; gap: 10px; font-size: 10.5px; color: var(--tx3); }
+.kllegend i {
+  display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  margin-right: 4px; vertical-align: middle;
+}
+/* Holding rows link to their chart. */
+.dtbl-row { cursor: pointer; }
+.dtbl-row:hover td { background: var(--hover); }
 .lg { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 8px; }
 .lg div { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--d-tx2); }
 .lg i { width: 7px; height: 7px; border-radius: 2px; display: block; }

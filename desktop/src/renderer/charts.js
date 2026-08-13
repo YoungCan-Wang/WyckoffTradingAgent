@@ -197,7 +197,8 @@ function holdingsTable (positions) {
 
   for (const position of positions) {
     const row = el('tr')
-    row.appendChild(el('td', 'c', position.code || ''))
+    const code = position.code || ''
+    row.appendChild(el('td', 'c', code))
     row.appendChild(el('td', null, position.name || ''))
     row.appendChild(el('td', null, String(position.shares ?? '')))
     row.appendChild(el('td', null, String(position.cost_price ?? '')))
@@ -207,6 +208,13 @@ function holdingsTable (positions) {
         ? el('td', 'warnc', t('charts.noStop'))
         : el('td', null, String(stop))
     )
+    // A holding row is the natural entry to its chart — it already carries the
+    // symbol, so no picker is needed.
+    if (code && window.WyckoffOpenKline) {
+      row.className = 'dtbl-row'
+      row.title = t('charts.openChart')
+      row.onclick = () => window.WyckoffOpenKline(code)
+    }
     table.appendChild(row)
   }
   wrap.appendChild(table)

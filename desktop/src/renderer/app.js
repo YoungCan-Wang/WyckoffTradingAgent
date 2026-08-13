@@ -487,6 +487,68 @@ const openReports = () =>
     }
   })
 
+// Charts are per-symbol, so the tab key carries the symbol — opening a second
+// stock adds a tab instead of replacing the first.
+const liveCharts = new Map()
+
+const openKline = (symbol) =>
+  pane.open({
+    key: `kline:${symbol}`,
+    title: `${symbol} ${t('kline.title')}`,
+    glyph: '◫',
+    build: async () => {
+      const wrap = el('div', 'klwrap')
+      wrap.appendChild(el('p', 'empty', t('kline.loading')))
+      // Prices and structure in parallel: the chart needs bars, annotations
+      // need the replay, and neither should wait on the other.
+      const [priceRes, structRes] = await Promise.all([
+        collect('ohlcv', { symbol, days: 320 }).catch(() => null),
+        collect('wyckoff_events', { symbol, days: 320 }).catch(() => null)
+      ])
+      if (!priceRes || !priceRes.bars) {
+        wrap.replaceChildren(el('p', 'empty', t('kline.failed')))
+        return wrap
+      }
+      wrap.replaceChildren(klineHeader(symbol, priceRes.bars))
+      const chart = window.WyckoffKline.createKlineChart({ bars: priceRes.bars })
+      if (structRes) chart.addPainter(window.WyckoffAnnotations.createAnnotationPainter(structRes))
+      wrap.appendChild(chart.node)
+      // Dispose the previous chart for this symbol: its ResizeObserver and
+      // window-level mouseup listener would otherwise outlive the tab.
+      const prior = liveCharts.get(symbol)
+      if (prior) prior.dispose()
+      liveCharts.set(symbol, chart)
+      // Canvas colours are resolved once, so a theme switch needs a repaint.
+      requestAnimationFrame(() => chart.resize())
+      return wrap
+    }
+  })
+
+// charts.js 的持仓行需要它，但 charts.js 先于 app.js 加载，所以挂到 window
+// 而不是反向 import。
+window.WyckoffOpenKline = (symbol) => openKline(symbol)
+
+function klineHeader (symbol, bars) {
+  const bar = el('div', 'klbar')
+  bar.appendChild(el('span', 'klsym', symbol))
+  bar.appendChild(el('span', 'klmeta', t('kline.bars', { count: (bars.close || []).length })))
+  const legend = el('div', 'kllegend')
+  const item = (color, label) => {
+    const span = el('span', null)
+    const dot = el('i')
+    dot.style.background = color
+    span.append(dot, document.createTextNode(label))
+    return span
+  }
+  const cs = getComputedStyle(document.documentElement)
+  const clay = (cs.getPropertyValue('--clay') || '').trim() || '#d97757'
+  const up = (cs.getPropertyValue('--up') || '').trim() || '#e5484d'
+  legend.append(item(clay, t('kline.legendRange')), item(up, t('kline.legendEvent')))
+  legend.appendChild(el('span', null, t('kline.hint')))
+  bar.appendChild(legend)
+  return bar
+}
+
 // ---- appearance ------------------------------------------------------------
 
 const root = document.documentElement
