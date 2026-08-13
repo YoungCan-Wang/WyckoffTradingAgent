@@ -115,6 +115,19 @@ function renderEvent (event) {
       row.appendChild(el('span', 'g', '◈'))
       row.appendChild(el('span', 'nm', event.display_name || event.name || 'tool'))
       turn.bd.appendChild(row)
+      // Drawing on a chart is only useful if the chart is visible, so surface it
+      // in the pane. The turn's `end` handler refreshes it once drawing finishes.
+      if (event.name === 'annotate_chart') {
+        const code = event.args && event.args.code
+        if (code) {
+          // Remember it so `end` only refetches when drawing actually happened —
+          // a blind refresh on every turn would re-pull 320 bars each message.
+          turn.drewCharts = turn.drewCharts || new Set()
+          turn.drewCharts.add(String(code))
+          openKline(String(code))
+          turn.bd.appendChild(openedNote(`${code} ${t('kline.title')}`))
+        }
+      }
       break
     }
 
@@ -149,6 +162,9 @@ function renderEvent (event) {
     case 'end':
       turns.delete(event.id)
       setBusy(false)
+      // Only refetch charts this turn actually drew on — the annotation was
+      // written after the tab first built, so it needs one more pass.
+      refreshDrawnCharts(turn.drewCharts)
       break
   }
   if (atBottom()) stream.scrollTop = stream.scrollHeight
@@ -491,11 +507,21 @@ const openReports = () =>
 // stock adds a tab instead of replacing the first.
 const liveCharts = new Map()
 
+const disposeChart = (symbol) => {
+  const chart = liveCharts.get(symbol)
+  if (!chart) return
+  chart.dispose()
+  liveCharts.delete(symbol)
+}
+
 const openKline = (symbol) =>
   pane.open({
     key: `kline:${symbol}`,
     title: `${symbol} ${t('kline.title')}`,
     glyph: '◫',
+    // NOTE: no onHide here — tabs.js fires it on tab *switch* too, and
+    // disposing then would force a refetch every time the user switches back.
+    // The prior chart is disposed inside build() instead.
     build: async () => {
       const wrap = el('div', 'klwrap')
       wrap.appendChild(el('p', 'empty', t('kline.loading')))
@@ -514,9 +540,8 @@ const openKline = (symbol) =>
       if (structRes) chart.addPainter(window.WyckoffAnnotations.createAnnotationPainter(structRes))
       wrap.appendChild(chart.node)
       // Dispose the previous chart for this symbol: its ResizeObserver and
-      // window-level mouseup listener would otherwise outlive the tab.
-      const prior = liveCharts.get(symbol)
-      if (prior) prior.dispose()
+      // window-level mouseup listener would otherwise outlive the rebuild.
+      disposeChart(symbol)
       liveCharts.set(symbol, chart)
       // Canvas colours are resolved once, so a theme switch needs a repaint.
       requestAnimationFrame(() => chart.resize())
@@ -527,6 +552,19 @@ const openKline = (symbol) =>
 // charts.js 的持仓行需要它，但 charts.js 先于 app.js 加载，所以挂到 window
 // 而不是反向 import。
 window.WyckoffOpenKline = (symbol) => openKline(symbol)
+
+/**
+ * 重开本轮画过标注的 K 线 tab，让新标注显示出来。
+ *
+ * 标注是在 tab 首次构建之后才落盘的，所以需要再取一次。只刷新本轮真正画过的
+ * 图 —— 每轮无条件刷新会把 320 根 K 线重新拉一遍。
+ */
+function refreshDrawnCharts (symbols) {
+  if (!symbols || !symbols.size) return
+  for (const symbol of symbols) {
+    if (pane.has(`kline:${symbol}`)) openKline(symbol)
+  }
+}
 
 function klineHeader (symbol, bars) {
   const bar = el('div', 'klbar')
