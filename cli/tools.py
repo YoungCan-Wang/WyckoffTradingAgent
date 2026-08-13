@@ -279,7 +279,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "cost_price": {"type": "number", "description": "成本价"},
                 "buy_dt": {
                     "type": "string",
-                    "description": "买入日期（YYYYMMDD 或 YYYY-MM-DD）。add 必填；update 改股数/成本时不要传",
+                    "description": "买入日期（YYYYMMDD 或 YYYY-MM-DD，须为真实日历日）。add 必填；update 改股数/成本时不要传。update 目标不存在时报错，不会新建。",
                 },
                 "free_cash": {"type": "number", "description": "可用资金（set_cash 时使用）"},
                 "table": {"type": "string", "description": "仅 delete_records：'recommendation' 或 'signal'"},
@@ -292,7 +292,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "type": "array",
                     "description": (
                         "批量 add/update/remove：一次传入多只。"
-                        "每项含 code；add/update 另需 shares、cost_price；add 必须有 buy_dt，update 改股数/成本时不要传 buy_dt。"
+                        "每项含 code；add/update 另需 shares、cost_price；add 必须有合法 buy_dt，update 改股数/成本时不要传 buy_dt，且不会在空账本新建。",
                     ),
                     "items": {
                         "type": "object",

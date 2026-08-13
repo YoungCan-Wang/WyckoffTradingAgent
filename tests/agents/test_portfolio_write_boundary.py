@@ -14,6 +14,11 @@ class _FakeQuery:
         self.action = "select"
         return self
 
+    def insert(self, payload, **_kwargs):
+        self.action = "insert"
+        self.payload = payload
+        return self
+
     def upsert(self, payload, **_kwargs):
         self.action = "upsert"
         self.payload = payload
@@ -44,13 +49,21 @@ class _FakeQuery:
                 "filters": list(self.filters),
             }
         )
-        return SimpleNamespace(data=[] if self.action == "select" else [self.payload])
+        return SimpleNamespace(
+            data=[] if self.action == "select" else self.client.response_data(self.action, self.payload)
+        )
 
 
 class _FakeUserClient:
-    def __init__(self):
+    def __init__(self, *, update_rows: list | None = None):
         self.calls: list[dict] = []
         self.table_name = ""
+        self.update_rows = update_rows
+
+    def response_data(self, action: str, payload):
+        if action == "update":
+            return [] if self.update_rows is not None else [payload]
+        return [payload]
 
     def table(self, name: str):
         self.table_name = name
@@ -123,7 +136,7 @@ def test_update_portfolio_rejects_negative_free_cash():
 
 def test_update_portfolio_add_requires_buy_dt(monkeypatch, tmp_path):
     from agents import portfolio_tools
-    from agents.portfolio_tools import MISSING_BUY_DT_ERROR
+    from core.buy_dt import MISSING_BUY_DT_ERROR
     from integrations import local_db
 
     if local_db._conn is not None:
@@ -170,3 +183,90 @@ def test_update_portfolio_preserves_buy_dt_when_editing_size_or_cost(monkeypatch
     )
     assert updated.get("success") is True
     assert local_db.load_portfolio("LOCAL")["positions"][0]["buy_dt"] == "2026-07-01"
+
+
+def _local_portfolio(monkeypatch, tmp_path):
+    from agents import portfolio_tools
+    from integrations import local_db
+
+    if local_db._conn is not None:
+        local_db._conn.close()
+        local_db._conn = None
+    monkeypatch.setattr("core.constants.LOCAL_DB_PATH", tmp_path / "portfolio.db")
+    local_db.init_db()
+    monkeypatch.setattr(portfolio_tools, "has_cloud", lambda _ctx=None: False)
+    monkeypatch.setattr(portfolio_tools, "_portfolio_id", lambda _ctx=None: "LOCAL")
+    monkeypatch.setattr(portfolio_tools, "code_to_name", lambda code: code)
+    return portfolio_tools, local_db
+
+
+def test_update_portfolio_rejects_invalid_buy_dt(monkeypatch, tmp_path):
+    from core.buy_dt import INVALID_BUY_DT_ERROR
+
+    portfolio_tools, local_db = _local_portfolio(monkeypatch, tmp_path)
+    result = portfolio_tools.update_portfolio(
+        action="add", code="300390", name="天华新能", shares=200, cost_price=64.9, buy_dt="yesterday"
+    )
+    assert result["error"] == INVALID_BUY_DT_ERROR
+    state = local_db.load_portfolio("LOCAL")
+    assert not state or not state.get("positions")
+
+
+def test_update_portfolio_does_not_create_missing_position(monkeypatch, tmp_path):
+    from core.buy_dt import POSITION_MISSING_ERROR
+
+    portfolio_tools, local_db = _local_portfolio(monkeypatch, tmp_path)
+    result = portfolio_tools.update_portfolio(
+        action="update", code="300390", name="天华新能", shares=200, cost_price=64.9
+    )
+    assert result["error"] == POSITION_MISSING_ERROR
+    state = local_db.load_portfolio("LOCAL")
+    assert not state or not state.get("positions")
+
+
+def test_insert_position_requires_valid_buy_dt(monkeypatch):
+    from core.buy_dt import INVALID_BUY_DT_ERROR, MISSING_BUY_DT_ERROR
+    from integrations import supabase_portfolio as portfolio_store
+    from integrations.supabase_portfolio import insert_position
+
+    monkeypatch.setattr(
+        portfolio_store,
+        "refresh_portfolio_total_equity",
+        lambda *_args, **_kwargs: type("R", (), {"ok": True, "message": "ok"})(),
+    )
+    monkeypatch.setattr(portfolio_store, "_ensure_portfolio_exists", lambda *_a, **_k: None)
+
+    client = _FakeUserClient()
+    missing, msg = insert_position("USER_LIVE:u1", {"code": "000001", "shares": 100, "cost_price": 10}, client=client)
+    assert missing is False
+    assert msg == MISSING_BUY_DT_ERROR
+    assert "insert" not in [call["action"] for call in client.calls]
+
+    client = _FakeUserClient()
+    ok, msg = insert_position(
+        "USER_LIVE:u1",
+        {"code": "000001", "shares": 100, "cost_price": 10, "buy_dt": "2026-13-40"},
+        client=client,
+    )
+    assert ok is False
+    assert msg == INVALID_BUY_DT_ERROR
+    assert "insert" not in [call["action"] for call in client.calls]
+
+
+def test_update_position_does_not_insert_when_missing(monkeypatch):
+    from core.buy_dt import POSITION_MISSING_ERROR
+    from integrations import supabase_portfolio as portfolio_store
+    from integrations.supabase_portfolio import update_position
+
+    monkeypatch.setattr(portfolio_store, "_ensure_portfolio_exists", lambda *_a, **_k: None)
+    client = _FakeUserClient(update_rows=[])
+    ok, msg = update_position(
+        "USER_LIVE:u1",
+        {"code": "000001", "name": "平安银行", "shares": 200, "cost_price": 10.5},
+        client=client,
+    )
+    assert ok is False
+    assert msg == POSITION_MISSING_ERROR
+    assert [call["action"] for call in client.calls] == ["update"]
+    assert "insert" not in [call["action"] for call in client.calls]
+    assert "upsert" not in [call["action"] for call in client.calls]

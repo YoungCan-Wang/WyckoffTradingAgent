@@ -20,6 +20,7 @@ from agents.tool_context import (
     is_auth_failure_result,
     with_auth_retry,
 )
+from core.buy_dt import POSITION_EXISTS_ERROR, POSITION_MISSING_ERROR, buy_dt_error
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +79,6 @@ def update_portfolio(
 _BATCH_ACTIONS = frozenset({"add", "update", "remove"})
 _BATCH_MAX_ITEMS = 30
 _STOPS_MAX_ITEMS = 200
-MISSING_BUY_DT_ERROR = "缺少建仓日 buy_dt，请询问用户后再写入"
 
 
 def set_stop_loss(
@@ -572,11 +572,17 @@ def _apply_portfolio_action(
     refresh_equity: bool = True,
 ) -> str | dict:
     if action in ("add", "update"):
-        buy_dt = str(buy_dt or "").strip()
-        if action == "add" and not buy_dt:
-            return {"error": MISSING_BUY_DT_ERROR}
-        return _upsert_position(
-            portfolio_id, code, name, shares, cost_price, buy_dt, cloud, tool_context, refresh_equity=refresh_equity
+        return _write_position(
+            action,
+            portfolio_id,
+            code,
+            name,
+            shares,
+            cost_price,
+            buy_dt,
+            cloud,
+            tool_context,
+            refresh_equity=refresh_equity,
         )
     if action == "remove":
         return _remove_position(portfolio_id, code, cloud, tool_context, refresh_equity=refresh_equity)
@@ -593,7 +599,8 @@ def _validate_position_amounts(shares: int, cost_price: float) -> dict | None:
     return None
 
 
-def _upsert_position(
+def _write_position(
+    action: str,
     portfolio_id: str,
     code: str,
     name: str,
@@ -605,6 +612,19 @@ def _upsert_position(
     *,
     refresh_equity: bool = True,
 ) -> str | dict:
+    prepared = _prepare_position_write(action, code, name, shares, cost_price, buy_dt)
+    if isinstance(prepared, dict):
+        return prepared
+    code, name, shares, cost_price, buy_dt = prepared
+    payload = {"code": code, "name": name, "shares": shares, "cost_price": cost_price, "buy_dt": buy_dt}
+    if cloud:
+        return _write_cloud_position(action, portfolio_id, payload, tool_context, refresh_equity=refresh_equity)
+    return _write_local_position(action, portfolio_id, payload)
+
+
+def _prepare_position_write(
+    action: str, code: str, name: str, shares: int, cost_price: float, buy_dt: str
+) -> tuple[str, str, int, float, str] | dict:
     from core.portfolio_symbol import normalize_portfolio_code, portfolio_name_conflict
 
     if not code:
@@ -614,30 +634,62 @@ def _upsert_position(
         return amount_error
     code = normalize_portfolio_code(code)
     if not code:
-        return {
-            "error": "无效的股票代码：A股用6位数字，港股用00700.HK，美股用AAPL.US",
-        }
+        return {"error": "无效的股票代码：A股用6位数字，港股用00700.HK，美股用AAPL.US"}
+    date_error = buy_dt_error(buy_dt, required=action == "add")
+    if date_error:
+        return {"error": date_error}
     resolved_name = code_to_name(code)
     conflict = portfolio_name_conflict(code, name, resolved_name)
     if conflict:
         return {"error": conflict}
     name = name or (resolved_name if resolved_name != code else "")
-    if cloud:
-        from integrations.supabase_portfolio import upsert_position
+    return code, name, shares, cost_price, str(buy_dt or "").strip()
 
-        ok, msg = with_auth_retry(
-            tool_context,
-            upsert_position,
-            portfolio_id,
-            {"code": code, "name": name, "shares": shares, "cost_price": cost_price, "buy_dt": buy_dt},
-            client=get_user_client(tool_context),
-            refresh_equity=refresh_equity,
-        )
-        if not ok:
-            return {"error": msg}
+
+def _write_cloud_position(
+    action: str,
+    portfolio_id: str,
+    payload: dict,
+    tool_context: ToolContext | None,
+    *,
+    refresh_equity: bool,
+) -> str | dict:
     from integrations.local_db import upsert_local_position
+    from integrations.supabase_portfolio import insert_position, update_position
 
-    upsert_local_position(portfolio_id, code, name, shares, cost_price, buy_dt)
+    writer = insert_position if action == "add" else update_position
+    ok, msg = with_auth_retry(
+        tool_context,
+        writer,
+        portfolio_id,
+        payload,
+        client=get_user_client(tool_context),
+        refresh_equity=refresh_equity,
+    )
+    if not ok:
+        return {"error": msg}
+    upsert_local_position(
+        portfolio_id,
+        payload["code"],
+        payload["name"],
+        payload["shares"],
+        payload["cost_price"],
+        payload["buy_dt"],
+    )
+    return f"{payload['code']} 已更新"
+
+
+def _write_local_position(action: str, portfolio_id: str, payload: dict) -> str | dict:
+    from integrations.local_db import insert_local_position, update_local_position
+
+    code = payload["code"]
+    args = (portfolio_id, code, payload["name"], payload["shares"], payload["cost_price"], payload["buy_dt"])
+    if action == "add":
+        if not insert_local_position(*args):
+            return {"error": POSITION_EXISTS_ERROR}
+        return f"{code} 已更新"
+    if not update_local_position(*args):
+        return {"error": POSITION_MISSING_ERROR}
     return f"{code} 已更新"
 
 

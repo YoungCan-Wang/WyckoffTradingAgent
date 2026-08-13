@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { MISSING_BUY_DT_ERROR, normalizeBuyDate, parsePortfolioInput, positionWriteRecord } from './portfolio'
+import { describe, expect, it, vi } from 'vitest'
+import { MISSING_BUY_DT_ERROR, normalizeBuyDate, parsePortfolioInput, positionWriteRecord, savePosition } from './portfolio'
 
 describe('portfolio API input', () => {
   it('accepts a valid user portfolio', () => {
@@ -81,6 +81,14 @@ describe('portfolio API input', () => {
     })
     expect(bad).toMatchObject({ error: expect.stringContaining('Invalid position code') })
   })
+
+  it('rejects a buy_dt that is not a real calendar date', () => {
+    const result = parsePortfolioInput({
+      free_cash: 0,
+      positions: [{ code: '600519', name: '贵州茅台', shares: 100, cost_price: 1500, buy_dt: '2026-13-40' }],
+    })
+    expect(result).toHaveProperty('error', 'Invalid portfolio')
+  })
 })
 
 describe('positionWriteRecord', () => {
@@ -114,5 +122,49 @@ describe('positionWriteRecord', () => {
     })
     expect(missing.buy_dt).toBeUndefined()
     expect(MISSING_BUY_DT_ERROR).toContain('buy_dt')
+  })
+})
+
+function mockPortfolioClient(options: { updateRows?: unknown[] }) {
+  const insert = vi.fn().mockResolvedValue({ error: null })
+  const update = vi.fn()
+  const eq = vi.fn()
+  const select = vi.fn().mockResolvedValue({ data: options.updateRows ?? [], error: null })
+  const chain: Record<string, unknown> = {}
+  chain.update = (...args: unknown[]) => {
+    update(...args)
+    return chain
+  }
+  chain.eq = (...args: unknown[]) => {
+    eq(...args)
+    return chain
+  }
+  chain.select = select
+  chain.insert = insert
+  const from = vi.fn().mockReturnValue(chain)
+  return { supabase: { from } as never, insert, update }
+}
+
+describe('savePosition', () => {
+  const position = {
+    code: '300390',
+    name: '天华新能',
+    shares: 200,
+    cost_price: 64.9,
+    buy_dt: null as string | null,
+  }
+
+  it('does not insert when update matches no rows', async () => {
+    const { supabase, insert } = mockPortfolioClient({ updateRows: [] })
+    const error = await savePosition(supabase, 'USER_LIVE:u', position, 'update')
+    expect(error).toContain('无法 update')
+    expect(insert).not.toHaveBeenCalled()
+  })
+
+  it('does not insert an add without buy_dt', async () => {
+    const { supabase, insert } = mockPortfolioClient({ updateRows: [] })
+    const error = await savePosition(supabase, 'USER_LIVE:u', position, 'add')
+    expect(error).toBe(MISSING_BUY_DT_ERROR)
+    expect(insert).not.toHaveBeenCalled()
   })
 })

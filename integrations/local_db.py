@@ -805,6 +805,57 @@ def _ensure_local_portfolio(portfolio_id: str) -> None:
     conn.commit()
 
 
+def insert_local_position(
+    portfolio_id: str,
+    code: str,
+    name: str,
+    shares: int,
+    cost_price: float,
+    buy_dt: str = "",
+) -> bool:
+    """Insert-only. Returns False if (portfolio_id, code) already exists."""
+    _ensure_local_portfolio(portfolio_id)
+    conn = get_db()
+    with conn:
+        try:
+            conn.execute(
+                """INSERT INTO portfolio_position
+                   (portfolio_id, code, name, shares, cost_price, buy_dt, synced_at)
+                   VALUES (?, ?, ?, ?, ?, ?, datetime('now'))""",
+                (portfolio_id, code, name, shares, cost_price, str(buy_dt or "").strip()),
+            )
+        except sqlite3.IntegrityError:
+            return False
+    return True
+
+
+def update_local_position(
+    portfolio_id: str,
+    code: str,
+    name: str,
+    shares: int,
+    cost_price: float,
+    buy_dt: str = "",
+) -> bool:
+    """Update-only. Empty buy_dt leaves the original date. Returns False if no row matched."""
+    buy_dt = str(buy_dt or "").strip()
+    conn = get_db()
+    with conn:
+        if buy_dt:
+            cur = conn.execute(
+                """UPDATE portfolio_position SET name=?, shares=?, cost_price=?, buy_dt=?,
+                   synced_at=datetime('now') WHERE portfolio_id=? AND code=?""",
+                (name, shares, cost_price, buy_dt, portfolio_id, code),
+            )
+        else:
+            cur = conn.execute(
+                """UPDATE portfolio_position SET name=?, shares=?, cost_price=?,
+                   synced_at=datetime('now') WHERE portfolio_id=? AND code=?""",
+                (name, shares, cost_price, portfolio_id, code),
+            )
+        return (cur.rowcount or 0) > 0
+
+
 def upsert_local_position(
     portfolio_id: str,
     code: str,

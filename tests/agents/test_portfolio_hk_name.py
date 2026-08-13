@@ -20,8 +20,9 @@ def test_upsert_allows_hk_name_when_code_not_in_a_share_map(monkeypatch) -> None
                 "buy_dt": buy_dt,
             }
         )
+        return True
 
-    monkeypatch.setattr("integrations.local_db.upsert_local_position", fake_local)
+    monkeypatch.setattr("integrations.local_db.insert_local_position", fake_local)
     monkeypatch.setattr(portfolio_tools, "_portfolio_id", lambda _ctx: "USER_LIVE:local")
     monkeypatch.setattr(portfolio_tools, "_sync_remote_portfolio_to_local", lambda *_a, **_k: None)
     monkeypatch.setattr(
