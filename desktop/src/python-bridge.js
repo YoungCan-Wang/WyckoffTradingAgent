@@ -99,7 +99,7 @@ class PythonBridge {
         this.ready = false
         clearTimeout(this.readyTimer)
       }
-      this.status({ state: 'error', message: `无法启动 Python: ${err.message}` })
+      this.status({ state: 'error', reason: 'spawn_failed', detail: `spawn failed: ${err.message}` })
     })
 
     // An unhandled 'error' on stdin takes down the whole main process. EPIPE
@@ -128,7 +128,7 @@ class PythonBridge {
 
     this.readyTimer = setTimeout(() => {
       if (!this.ready) {
-        this.status({ state: 'error', message: 'Python 启动超时（60 秒）' })
+        this.status({ state: 'error', reason: 'timeout', detail: 'python did not signal ready within 60s' })
       }
     }, READY_TIMEOUT_MS)
 
@@ -179,25 +179,32 @@ class PythonBridge {
       this.status({ state: 'stopped' })
       return
     }
-    // A child that dies before ever signalling ready is misconfigured, not
-    // crashed — retrying just spins. Report it instead.
+    // Status carries a machine `reason` (front-end picks the localized copy)
+    // and a technical `detail` (logged, never shown). The user never sees exit
+    // codes, interpreter paths, or env-var hints.
     if (!this.everReady) {
+      // A child that dies before ever signalling ready is misconfigured, not
+      // crashed — retrying just spins. Report it instead.
       this.status({
         state: 'error',
-        message:
-          `Python 启动即退出（code=${code}）。多半是解释器缺依赖：` +
-          `当前使用 ${this.lastPython}。可设 WYCKOFF_PYTHON 指向正确的 venv。`
+        reason: 'exited_early',
+        detail: `python exited before ready (code=${code}, interpreter=${this.lastPython})`
       })
       return
     }
     if (this.restarts >= MAX_RESTARTS) {
-      this.status({ state: 'error', message: `Python 反复退出（${MAX_RESTARTS} 次），已放弃重启` })
+      this.status({
+        state: 'error',
+        reason: 'gave_up',
+        detail: `python exited ${MAX_RESTARTS}× consecutively, auto-restart abandoned`
+      })
       return
     }
     this.restarts += 1
     this.status({
       state: 'restarting',
-      message: `Python 退出（code=${code} signal=${signal}），第 ${this.restarts} 次重启`
+      reason: 'crashed',
+      detail: `python exited (code=${code}, signal=${signal}), restart #${this.restarts}`
     })
     setTimeout(() => this.start(), RESTART_DELAY_MS)
   }

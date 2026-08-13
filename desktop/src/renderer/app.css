@@ -325,6 +325,23 @@ html.dark .topbtn:hover { background: var(--hover); }
   padding: 24px 0 8vh;
 }
 .thread.chatting .wel { display: none; }
+
+/* Backend-error empty state: calm, centered, one action. No red alarm — a
+   stopped backend is recoverable, not a crash the user caused. */
+.berr {
+  min-height: 100%;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 6px; padding: 24px; text-align: center;
+}
+.berr-t { font-size: 15px; font-weight: 600; color: var(--tx); }
+.berr-s { font-size: 12.5px; color: var(--tx3); max-width: 360px; line-height: 1.6; }
+.berr-b {
+  margin-top: 14px; cursor: pointer; font: inherit; font-size: 12.5px;
+  color: var(--tx); padding: 6px 18px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--paper);
+}
+.berr-b:hover { border-color: #cdc9c0; background: var(--hover); }
+html.dark .berr-b { background: var(--paper2); }
 .wel-in { width: 100%; max-width: 620px; text-align: center; }
 .wel-t {
   margin: 0 0 6px;

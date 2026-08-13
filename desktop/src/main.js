@@ -137,6 +137,8 @@ function startBridge (browserEndpoint) {
     onEvent: (event) => forward('py:event', event),
     onStatus: (status) => {
       if (status.state !== 'log') lastStatus = status
+      // Technical detail is for the logs, never the user's screen.
+      if (status.detail) console.error(`[bridge] ${status.detail}`)
       forward('py:status', status)
     }
   })

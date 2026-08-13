@@ -36,6 +36,17 @@
     // 输入区
     'composer.placeholder': '随便问……',
 
+    // 后端错误空态（人话，无 code/venv 术语；技术细节只进日志）
+    'action.retry': '重试',
+    'backendError.spawn_failed.title': '后台服务没能启动',
+    'backendError.spawn_failed.sub': '点重试再试一次。若反复失败，重启应用通常能恢复。',
+    'backendError.exited_early.title': '后台服务启动失败',
+    'backendError.exited_early.sub': '服务刚启动就退出了，可能是安装不完整。点重试，或重启应用。',
+    'backendError.gave_up.title': '后台服务反复退出',
+    'backendError.gave_up.sub': '已停止自动重启。点重试手动拉起，或重启应用。',
+    'backendError.timeout.title': '后台服务启动超时',
+    'backendError.timeout.sub': '服务启动太久没有响应。点重试再试一次。',
+
     // 账号
     'account.signedOut': '未登录',
     'account.signedIn': '已登录',
@@ -319,6 +330,16 @@
     'tooltip.pending': 'View pending approvals',
     'tooltip.restart': 'Restart Python service',
     'composer.placeholder': 'Ask anything…',
+
+    'action.retry': 'Retry',
+    'backendError.spawn_failed.title': "The backend didn't start",
+    'backendError.spawn_failed.sub': 'Tap retry to try again. If it keeps failing, restarting the app usually fixes it.',
+    'backendError.exited_early.title': 'The backend failed to start',
+    'backendError.exited_early.sub': 'The service quit right after launching — the install may be incomplete. Tap retry, or restart the app.',
+    'backendError.gave_up.title': 'The backend keeps quitting',
+    'backendError.gave_up.sub': 'Auto-restart has stopped. Tap retry to bring it back, or restart the app.',
+    'backendError.timeout.title': 'The backend timed out starting',
+    'backendError.timeout.sub': 'The service took too long to respond. Tap retry to try again.',
 
     'account.signedOut': 'Not signed in',
     'account.signedIn': 'Signed in',

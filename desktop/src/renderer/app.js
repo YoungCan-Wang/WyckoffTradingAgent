@@ -220,6 +220,39 @@ function setBusy (value) {
   btnSend.disabled = value || !ready
 }
 
+// Backend-error empty state: one plain-language line + a retry button, shown
+// centered over the stream. reason maps to localized copy; unknown reasons fall
+// back to a generic message so a new bridge reason never leaks raw text.
+const BACKEND_REASONS = new Set(['spawn_failed', 'exited_early', 'gave_up', 'timeout'])
+
+function showBackendError (reason) {
+  const key = BACKEND_REASONS.has(reason) ? reason : 'exited_early'
+  let box = document.getElementById('backend-error')
+  if (!box) {
+    box = el('div', 'berr')
+    box.id = 'backend-error'
+    stream.appendChild(box)
+  }
+  box.replaceChildren(
+    el('div', 'berr-t', t(`backendError.${key}.title`)),
+    el('div', 'berr-s', t(`backendError.${key}.sub`))
+  )
+  const retry = el('button', 'berr-b', t('action.retry'))
+  retry.onclick = () => { clearBackendError(); window.wyckoff.restart() }
+  box.appendChild(retry)
+  document.getElementById('welcome').hidden = true
+  streamInner.hidden = true
+  box.hidden = false
+}
+
+function clearBackendError () {
+  const box = document.getElementById('backend-error')
+  if (box) box.hidden = true
+  streamInner.hidden = false
+  // Welcome reappears only if the conversation has not started.
+  if (!chatting) document.getElementById('welcome').hidden = false
+}
+
 function setStatus (payload) {
   if (payload.state === 'log') return
 
@@ -234,6 +267,7 @@ function setStatus (payload) {
   btnRestart.className = ready ? 'icb' : `icb has-dot ${payload.state}`
 
   if (payload.state === 'ready') {
+    clearBackendError()
     refreshApprovals()
     refreshSchedules()
     // Only on the transition into ready, and only before the conversation
@@ -241,12 +275,13 @@ function setStatus (payload) {
     loadAccount()
     loadAppearance()
     if (!wasReady && !chatting) loadWelcome()
+  } else if (payload.state === 'error') {
+    // A calm empty state with a retry action — never raw diagnostics. The
+    // technical detail already went to the logs from the main process.
+    showBackendError(payload.reason)
   }
-  // Surface a line only for genuine trouble (error / stopped), not the routine
-  // starting/restarting churn — those would shove the welcome screen aside.
-  if (payload.message && (payload.state === 'error' || payload.state === 'stopped')) {
-    sysLine(payload.message, payload.state === 'error')
-  }
+  // starting / restarting / stopped stay silent: the header status dot already
+  // reflects them, and auto-restart is in flight.
 }
 
 async function send () {
