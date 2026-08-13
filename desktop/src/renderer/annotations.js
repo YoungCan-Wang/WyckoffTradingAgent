@@ -117,6 +117,7 @@ function createAnnotationPainter (data) {
   const events = (data && data.events) || []
   const range = (data && data.trading_range) || null
   const targets = (data && data.targets) || null
+  const drawn = (data && data.annotations) || []
 
   return function paint (view) {
     const { ctx, width, theme, mainBox, timeToX, priceToY } = view
@@ -191,9 +192,83 @@ function createAnnotationPainter (data) {
     ctx.restore()
     ctx.save()
     ctx.font = FONT
+    // 4) agent 画的标注。和自动识别的部分同层，但用强调色区分来源。
+    for (const item of drawn) {
+      drawAgentShape(ctx, item, view, theme, chips)
+    }
+
     // 标签最后画，且统一走一次防重叠 —— 这样芯片总在线条之上，也不会互相压。
     for (const chip of layoutChips(clampChips(chips, width), view.height)) drawChip(ctx, chip)
     ctx.restore()
+  }
+}
+
+/**
+ * 画一条 agent 标注。类型未知时静默跳过 —— 后端以后加新 type，旧前端不该报错。
+ * 颜色优先用标注自带的 color，否则用强调色。
+ */
+function drawAgentShape (ctx, item, view, theme, chips) {
+  const { mainBox, timeToX, priceToY } = view
+  const color = item.color || theme.accent
+  const label = item.label || item.text || ''
+  const right = mainBox.x + mainBox.w
+
+  if (item.type === 'rectangle') {
+    const x1 = timeToX(item.start_date)
+    const x2 = timeToX(item.end_date)
+    const yHi = priceToY(item.high)
+    const yLo = priceToY(item.low)
+    if (yHi == null || yLo == null) return
+    // 一端在屏外就夹到边界；两端都在同一侧屏外时整块不可见，直接跳过。
+    const left = x1 == null ? mainBox.x : x1
+    const rightEdge = x2 == null ? right : x2
+    if (rightEdge <= mainBox.x || left >= right) return
+    ctx.fillStyle = withAlpha(color, 0.1)
+    ctx.fillRect(left, yHi, Math.max(1, rightEdge - left), Math.max(1, yLo - yHi))
+    ctx.strokeStyle = withAlpha(color, 0.7)
+    ctx.lineWidth = 1
+    ctx.strokeRect(left, yHi, Math.max(1, rightEdge - left), Math.max(1, yLo - yHi))
+    if (label) chips.push(chipAt(ctx, left + 4, yHi, label, color))
+    return
+  }
+
+  if (item.type === 'price_line') {
+    const y = priceToY(item.price)
+    if (y == null) return
+    ctx.strokeStyle = withAlpha(color, 0.8)
+    ctx.setLineDash([5, 3])
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    ctx.moveTo(mainBox.x, Math.round(y) + 0.5)
+    ctx.lineTo(right, Math.round(y) + 0.5)
+    ctx.stroke()
+    ctx.setLineDash([])
+    if (label) chips.push(chipAt(ctx, mainBox.x + 6, y, label, color))
+    return
+  }
+
+  if (item.type === 'trendline') {
+    const x1 = timeToX(item.start_date)
+    const x2 = timeToX(item.end_date)
+    const y1 = priceToY(item.start_price)
+    const y2 = priceToY(item.end_price)
+    if (x1 == null || x2 == null || y1 == null || y2 == null) return
+    ctx.strokeStyle = withAlpha(color, 0.85)
+    ctx.lineWidth = 1.5
+    ctx.beginPath()
+    ctx.moveTo(x1, y1)
+    ctx.lineTo(x2, y2)
+    ctx.stroke()
+    if (label) chips.push(chipAt(ctx, x2 - chipWidth(ctx, label), y2, label, color))
+    return
+  }
+
+  if (item.type === 'marker' || item.type === 'text') {
+    const x = timeToX(item.date)
+    const y = priceToY(item.price)
+    if (x == null || y == null) return
+    if (item.type === 'marker') drawTriangle(ctx, x, y, color, true)
+    if (label) chips.push(chipAt(ctx, x - chipWidth(ctx, label) / 2, y + 14, label, color))
   }
 }
 

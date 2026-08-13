@@ -318,6 +318,58 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "parameters": {"type": "object", "properties": {}},
     },
     {
+        "name": "annotate_chart",
+        "description": (
+            "把分析结论画到桌面端 K 线图上（吸筹区、支撑阻力、spring 标记等）。"
+            "仅桌面应用可见；纯展示，不影响持仓与下单。"
+            "draw 为整组替换该图标注（重画即编辑），list 查看，clear 清空。"
+            "先画后开图、先开图后画都可以。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "description": "股票代码，如 600519"},
+                "action": {
+                    "type": "string",
+                    "enum": ["draw", "list", "clear"],
+                    "description": "默认 draw",
+                },
+                "annotations": {
+                    "type": "array",
+                    "description": (
+                        "按 type 判别的标注数组。日期用 YYYY-MM-DD，价格用数字。"
+                        "rectangle{start_date,end_date,low,high}=吸筹/派发区；"
+                        "price_line{price}=支撑/阻力/目标；"
+                        "trendline{start_date,start_price,end_date,end_price}=供需线；"
+                        "marker{date,price}=spring/upthrust；"
+                        "text{date,price,text}=事件字母。均可带 label。"
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "enum": ["rectangle", "price_line", "trendline", "marker", "text"],
+                            },
+                            "label": {"type": "string", "description": "图上显示的短标签"},
+                            "date": {"type": "string"},
+                            "price": {"type": "number"},
+                            "start_date": {"type": "string"},
+                            "end_date": {"type": "string"},
+                            "low": {"type": "number"},
+                            "high": {"type": "number"},
+                            "start_price": {"type": "number"},
+                            "end_price": {"type": "number"},
+                            "text": {"type": "string"},
+                        },
+                        "required": ["type"],
+                    },
+                },
+            },
+            "required": ["code"],
+        },
+    },
+    {
         "name": "wyckoff_diagnose",
         "description": (
             "单股 Wyckoff 结构诊断（纯引擎计算，比 analyze_stock 更底层）。"
@@ -699,6 +751,8 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "set_stop_loss": ToolSpec("set_stop_loss", "设置止损价", requires_approval=True),
     "market_regime": ToolSpec("market_regime", "市况判定"),
     "wyckoff_diagnose": ToolSpec("wyckoff_diagnose", "结构诊断"),
+    # 纯展示：不动持仓、不下单，所以不需要审批。
+    "annotate_chart": ToolSpec("annotate_chart", "标注图表", concurrency_safe=True),
     "intraday_analysis": ToolSpec("intraday_analysis", "盘中分析"),
     "intraday_rescue_check": ToolSpec("intraday_rescue_check", "中周期结构"),
     "record_trade_fill": ToolSpec("record_trade_fill", "成交回填", requires_approval=True),
@@ -872,6 +926,7 @@ class ToolRegistry:
         from agents.app_browser_tools import app_browser
         from agents.backtest_tools import run_backtest
         from agents.browser_tools import browser_research
+        from agents.chart_annotation_tools import annotate_chart
         from agents.diagnosis_tools import analyze_stock
         from agents.engine_tools import (
             intraday_analysis,
@@ -914,6 +969,7 @@ class ToolRegistry:
             "record_trade_fill": record_trade_fill,
             "market_regime": market_regime,
             "wyckoff_diagnose": wyckoff_diagnose,
+            "annotate_chart": annotate_chart,
             "intraday_analysis": intraday_analysis,
             "intraday_rescue_check": intraday_rescue_check,
             "run_backtest": run_backtest,

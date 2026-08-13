@@ -160,7 +160,18 @@ def wyckoff_events(params: dict[str, Any]) -> Iterator[Event]:
         events=events,
         trading_range=_trading_range_payload(frame),
         targets=_targets_payload(frame),
+        annotations=_annotations_payload(symbol),
     )
+
+
+def _annotations_payload(symbol: str) -> list[dict[str, Any]]:
+    """agent 画的标注。读不到就当没有 —— 图照常显示自动识别的部分。"""
+    try:
+        from integrations.chart_annotations import load, make_chart_id
+
+        return load(make_chart_id(symbol))
+    except Exception:
+        return []
 
 
 def _trading_range_payload(frame: Any) -> dict[str, Any] | None:
