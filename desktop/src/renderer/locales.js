@@ -87,7 +87,7 @@
     // 定时任务
     'schedules.heading': '定时任务',
     'schedules.readFailed': '读取失败',
-    'schedules.daemonOn': 'daemon 运行中，关闭窗口后仍会执行',
+    'schedules.daemonOn': '定时进程运行中；关闭最后一个窗口后停止',
     'schedules.daemonOff': 'daemon 未运行，关闭窗口后定时任务不执行',
     'schedules.colTask': '任务',
     'schedules.colCron': 'cron',
@@ -396,7 +396,7 @@
 
     'schedules.heading': 'Scheduled tasks',
     'schedules.readFailed': 'Failed to load',
-    'schedules.daemonOn': 'Daemon running; tasks continue after the window closes',
+    'schedules.daemonOn': 'Scheduler running; it stops when the last window closes',
     'schedules.daemonOff': 'Daemon not running; scheduled tasks will not run once the window closes',
     'schedules.colTask': 'Task',
     'schedules.colCron': 'Cron',
