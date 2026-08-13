@@ -54,6 +54,65 @@ def test_confirmed_review_additions_are_bounded(monkeypatch) -> None:
     assert [row["code"] for row in rows] == ["000010", "000011"]
 
 
+def test_dynamic_shadow_promotion_gets_one_step3_review_seat(monkeypatch) -> None:
+    monkeypatch.setenv("FUNNEL_DYNAMIC_SHADOW_PROMOTION_CAP", "1")
+    symbols = [
+        {"code": "000001", "track": "Trend", "priority_score": 90.0},
+        {"code": "000002", "track": "Accum", "priority_score": 80.0},
+    ]
+    details = {
+        "selected_for_ai": ["000001"],
+        "dynamic_shadow_promoted": [
+            {
+                "code": "000002",
+                "signal_type": "lps",
+                "dynamic_score": 82.0,
+                "promotion": {"eligible": True, "status": "eligible"},
+            }
+        ],
+    }
+
+    rows = step3_review_symbols(symbols, step2_details=details)
+
+    assert [row["code"] for row in rows] == ["000002", "000001"]
+    assert rows[0]["selection_source"] == "dynamic_shadow_promotion"
+    assert rows[0]["dynamic_shadow_score"] == 82.0
+
+
+def test_dynamic_shadow_promotion_reserves_context_before_higher_static_scores() -> None:
+    from workflows.step3_runtime_config import Step3RuntimeConfig
+    from workflows.step3_selection import normalize_step3_candidates, select_step3_candidates
+
+    rows = normalize_step3_candidates(
+        [
+            {
+                "code": "000001",
+                "track": "Accum",
+                "signal_status": "confirmed",
+                "priority_score": 10.0,
+                "input_order": 0,
+            },
+            {
+                "code": "000002",
+                "track": "Trend",
+                "selection_source": "dynamic_shadow_promotion",
+                "priority_score": 75.0,
+                "input_order": 1,
+            },
+            {"code": "000003", "track": "Trend", "priority_score": 99.0, "input_order": 2},
+            {"code": "000004", "track": "Trend", "priority_score": 98.0, "input_order": 3},
+        ]
+    )
+
+    selected = select_step3_candidates(
+        rows,
+        "NEUTRAL",
+        Step3RuntimeConfig(max_ai_input=2, default_context_cap=2, enable_compression=False),
+    )
+
+    assert selected["code"].tolist() == ["000001", "000002"]
+
+
 def test_default_step3_cap_keeps_three_validated_and_two_fresh() -> None:
     from workflows.step3_runtime_config import Step3RuntimeConfig
     from workflows.step3_selection import normalize_step3_candidates, select_step3_candidates

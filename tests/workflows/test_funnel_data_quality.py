@@ -36,7 +36,7 @@ def test_data_quality_is_ready_when_all_required_coverages_pass() -> None:
 
     assert result["status"] == "normal"
     assert result["trade_readiness"] == "ready"
-    assert result["coverage"] == {"ohlcv": 1.0, "market_cap": 1.0, "financial": 1.0}
+    assert result["coverage"] == {"ohlcv": 1.0, "raw_ohlcv": 1.0, "market_cap": 1.0, "financial": 1.0}
     assert result["ohlcv_source_counts"] == {"tickflow": 1, "tushare": 1}
     assert result["ohlcv_source_ratios"] == {"tickflow": 0.5, "tushare": 0.5}
 
@@ -112,6 +112,41 @@ def test_data_quality_reports_stale_ohlcv_against_expected_trade_date() -> None:
 
     assert result["coverage"]["fresh_ohlcv"] == 0.5
     assert "fresh_ohlcv_coverage<95%" in result["reasons"]
+
+
+def test_data_quality_excludes_suspended_symbols_from_trade_readiness() -> None:
+    result = build_funnel_data_quality(
+        ["000001", "000002"],
+        {"000001": _dated_frame("2026-07-15")},
+        {"000001": 100.0, "000002": 100.0},
+        {},
+        financial_requested=False,
+        expected_trade_date=date(2026, 7, 15),
+        excluded_symbols={"000002"},
+    )
+
+    assert result["status"] == "normal"
+    assert result["coverage"]["ohlcv"] == 1.0
+    assert result["coverage"]["raw_ohlcv"] == 0.5
+    assert result["counts"]["excluded_non_trading"] == 1
+
+
+def test_data_quality_degrades_when_structural_metadata_is_missing() -> None:
+    frame = _frame("2026-07-15")
+    frame["turnover"] = [1.0]
+    result = build_funnel_data_quality(
+        ["000001"],
+        {"000001": frame},
+        {"000001": 100.0},
+        {},
+        financial_requested=False,
+        sector_map={},
+        concept_map={},
+        turnover_expected=True,
+    )
+
+    assert "sector_coverage<90%" in result["reasons"]
+    assert "concept_coverage<80%" in result["reasons"]
 
 
 def test_freshness_gate_rejects_stale_benchmark_even_when_stocks_are_fresh() -> None:

@@ -176,6 +176,9 @@ def _policy_text(row: pd.Series) -> str | None:
     )
     if semantic:
         parts.append("主线语义:" + "/".join(semantic))
+    dynamic_score = pd.to_numeric(row.get("dynamic_shadow_score"), errors="coerce")
+    if pd.notna(dynamic_score):
+        parts.append(f"动态影子晋级:{float(dynamic_score):.1f}(仅Step3复核资格)")
     for value in (row.get("policy_tag"), entry_quality_policy_tag(row)):
         if isinstance(value, str) and value.strip():
             parts.append(value.strip())

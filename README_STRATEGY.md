@@ -49,7 +49,7 @@ A 股主漏斗先写观察样本，盘后 feedback 再计算 outcomes，下一�
 `off`、`shadow`、`on` 的计算、落库、归因展示、正式晋级和 freshness 规则统一由
 [docs/SIGNAL_FEEDBACK_LOOP.md](docs/SIGNAL_FEEDBACK_LOOP.md) 维护；研究假设与证据门槛统一由
 [docs/ITERATION_STRATEGY.md](docs/ITERATION_STRATEGY.md) 维护。这里仅保留策略边界：Shadow 不改变真实推荐，
-`on` 也不能绕过 `formal_dynamic_allowed`、跨周期回测和人工复核。
+`on` 也不能绕过 `formal_dynamic_allowed`、跨周期回测和人工复核。单票层面的动态影子评分可在严格样本、结构和风险门槛通过后补充最多 1 个 Step3 复核席位；该资格不写正式推荐，也不绕过跨日确认、市场闸门或 OMS。
 
 推荐事件 evaluator 会分页读取 `signal_observations`，并使用 `recommendation_tracking` 自带字段补足同日
 上下文；报告同时展示覆盖率和“水温 × 信号/行业”切片。切片达到 10 个成熟样本仅进入 watch，达到 30 个

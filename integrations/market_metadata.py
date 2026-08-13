@@ -159,8 +159,13 @@ def _top_heat_items(heat: list[dict[str, Any]], top_n: int) -> list[dict[str, An
     return list(selected.values())
 
 
-def detect_theme_lines(min_days: int = 3, as_of_date: str | None = None) -> list[str]:
-    history = stale_json_cache(CONCEPT_HEAT_HISTORY, {})
+def detect_theme_lines(
+    min_days: int = 3,
+    as_of_date: str | None = None,
+    *,
+    history: dict[str, dict] | None = None,
+) -> list[str]:
+    history = history if history is not None else stale_json_cache(CONCEPT_HEAT_HISTORY, {})
     if not isinstance(history, dict):
         history = {}
     if as_of_date:
@@ -174,6 +179,25 @@ def detect_theme_lines(min_days: int = 3, as_of_date: str | None = None) -> list
         if streak >= min_days:
             concept_streak[concept] = streak
     return sorted(concept_streak, key=lambda c: concept_streak[c], reverse=True)
+
+
+def fetch_suspended_symbols(trade_date: date) -> set[str]:
+    """Return symbols suspended for the whole target trade date."""
+    pro = _tushare_pro()
+    if pro is None:
+        return set()
+    try:
+        rows = pro.suspend_d(trade_date=trade_date.strftime("%Y%m%d"))
+    except Exception as exc:
+        debug_metadata_fail(f"tushare_suspend_d[{trade_date}]", exc)
+        return set()
+    if rows is None or rows.empty:
+        return set()
+    return {
+        _ts_code_to_symbol(str(row.get("ts_code", "")))
+        for _, row in rows.iterrows()
+        if str(row.get("suspend_type", "")).strip().upper() == "S"
+    }
 
 
 def fetch_concept_map_from_eastmoney() -> dict[str, list[str]]:

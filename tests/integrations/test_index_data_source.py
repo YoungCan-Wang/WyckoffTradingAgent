@@ -47,3 +47,18 @@ def test_fetch_index_hist_retries_both_sources(monkeypatch) -> None:
 
     assert result["date"].tolist() == ["2026-07-15"]
     assert calls["tushare"] == 2
+
+
+def test_fetch_index_hist_falls_back_to_baostock(monkeypatch) -> None:
+    monkeypatch.setenv("INDEX_DATA_MAX_RETRIES", "1")
+    monkeypatch.setattr(index_data_source, "_fetch_index_tushare", lambda *_args: (_ for _ in ()).throw(OSError()))
+    monkeypatch.setattr(index_data_source, "fetch_index_akshare", lambda *_args: (_ for _ in ()).throw(OSError()))
+    monkeypatch.setattr(
+        index_data_source,
+        "fetch_index_baostock",
+        lambda *_args: pd.DataFrame({"date": ["2026-07-15"]}),
+    )
+
+    result = index_data_source.fetch_index_hist("000001", "20260710", "20260715")
+
+    assert result["date"].tolist() == ["2026-07-15"]

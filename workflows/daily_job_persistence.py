@@ -126,10 +126,11 @@ def step3_review_symbols(
 
 
 def _selected_funnel_review_symbols(symbols_info: list[dict], step2_details: dict) -> list[dict]:
-    """Reserve the front of the Step3 context for validated carry-over signals."""
+    """Reserve Step3 seats for validated and dynamic-shadow candidates."""
     rows: list[dict] = []
     seen: set[str] = set()
     by_code = {code6(item.get("code")): item for item in symbols_info if isinstance(item, dict)}
+    by_code.update(_dynamic_shadow_review_symbols(step2_details, by_code))
     confirmed_cap = _env_cap(STEP3_CONFIRMED_REVIEW_CAP, 3)
     added = 0
     for item in symbols_info:
@@ -141,12 +142,64 @@ def _selected_funnel_review_symbols(symbols_info: list[dict], step2_details: dic
         seen.add(code)
         rows.append({**item, "input_order": len(rows)})
         added += 1
+    dynamic_cap = _env_cap("FUNNEL_DYNAMIC_SHADOW_PROMOTION_CAP", 1)
+    dynamic_added = 0
+    selected_codes = {code6(code) for code in step2_details.get("selected_for_ai", []) or []}
+    for promotion in step2_details.get("dynamic_shadow_promoted", []) or []:
+        if dynamic_added >= dynamic_cap:
+            break
+        code = code6(promotion.get("code"))
+        item = by_code.get(code)
+        if not code or item is None or code in seen or code in selected_codes:
+            continue
+        seen.add(code)
+        rows.append(
+            {
+                **item,
+                "selection_source": "dynamic_shadow_promotion",
+                "dynamic_shadow_score": promotion.get("dynamic_score"),
+                "dynamic_shadow_promotion": promotion.get("promotion"),
+                "input_order": len(rows),
+            }
+        )
+        dynamic_added += 1
     for code in [code6(code) for code in step2_details.get("selected_for_ai", []) or []]:
         item = by_code.get(code)
         if not code or item is None or code in seen:
             continue
         seen.add(code)
         rows.append({**item, "selection_source": "step2_selected_for_ai", "input_order": len(rows)})
+    return rows
+
+
+def _dynamic_shadow_review_symbols(step2_details: dict, existing: dict[str, dict]) -> dict[str, dict]:
+    names = step2_details.get("name_map") or {}
+    sectors = step2_details.get("sector_map") or {}
+    rows: dict[str, dict] = {}
+    for promotion in step2_details.get("dynamic_shadow_promoted", []) or []:
+        code = code6(promotion.get("code"))
+        if not code:
+            continue
+        signal = str(promotion.get("signal_type") or "").strip().lower()
+        track = signal_track(signal)
+        score = _safe_float(promotion.get("dynamic_score"))
+        base = existing.get(code, {})
+        rows[code] = {
+            **base,
+            "code": code,
+            "name": base.get("name") or names.get(code, code),
+            "tag": base.get("tag") or f"动态影子晋级 | {signal.upper()} | 影子分 {score:.1f}",
+            "track": base.get("track") or track,
+            "stage": base.get("stage") or "",
+            "score": score,
+            "priority_score": score,
+            "selection_source": "dynamic_shadow_promotion",
+            "selection_is_fill": False,
+            "signal_type": signal,
+            "industry": base.get("industry") or sectors.get(code, ""),
+            "dynamic_shadow_score": score,
+            "dynamic_shadow_promotion": promotion.get("promotion") or {},
+        }
     return rows
 
 

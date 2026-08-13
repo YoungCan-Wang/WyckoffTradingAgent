@@ -62,9 +62,25 @@ def fetch_etf_ohlcv(
         direct_source=direct_source,
         runtime_config=runtime_config,
     )
+    _fill_missing_funds(df_map, etf_symbols, window)
     if not df_map:
         logger.warning("[funnel] ETF 行情拉取失败，跳过板块增强")
     return df_map
+
+
+def _fill_missing_funds(df_map: dict[str, pd.DataFrame], symbols: list[str], window: Any) -> None:
+    from integrations.tushare_fund_data import fetch_fund_daily
+
+    for symbol in symbols:
+        if symbol in df_map:
+            continue
+        try:
+            frame = fetch_fund_daily(symbol, window.start_trade_date, window.end_trade_date)
+        except Exception as exc:
+            logger.debug("fund fallback failed for %s: %s", symbol, exc)
+            continue
+        if frame is not None and not frame.empty:
+            df_map[symbol] = frame
 
 
 def _has_market_data_source() -> bool:

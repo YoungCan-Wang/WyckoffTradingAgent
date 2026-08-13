@@ -58,12 +58,27 @@ def select_step3_candidates(
         selected_df = select_compressed_step3_candidates(candidates_df, regime, runtime_config, effective_context_cap)
     else:
         print(f"[step3] 候选压缩未启用: selected=全量{len(selected_df)}")
+    selected_df = _reserve_review_seats(candidates_df, selected_df, effective_context_cap)
     selected_df = _apply_context_cap(selected_df, effective_context_cap, runtime_config)
     selected_df = annotate_entry_quality(selected_df)
     _fill_wyckoff_score(selected_df)
     if "industry_rank" not in selected_df.columns:
         selected_df["industry_rank"] = pd.NA
     return selected_df
+
+
+def _reserve_review_seats(candidates_df: pd.DataFrame, selected_df: pd.DataFrame, context_cap: int) -> pd.DataFrame:
+    if context_cap <= 0 or candidates_df.empty:
+        return selected_df
+    status = candidates_df.get("signal_status", pd.Series("", index=candidates_df.index)).astype(str).str.lower()
+    source = candidates_df.get("selection_source", pd.Series("", index=candidates_df.index)).astype(str)
+    reserved = candidates_df[status.eq("confirmed") | source.eq("dynamic_shadow_promotion")]
+    if reserved.empty:
+        return selected_df
+    reserved = reserved.drop_duplicates("code", keep="first").head(context_cap)
+    reserved_codes = set(reserved["code"].astype(str))
+    remainder = selected_df[~selected_df["code"].astype(str).isin(reserved_codes)]
+    return pd.concat([reserved, remainder], ignore_index=True)
 
 
 def _fill_wyckoff_score(df: pd.DataFrame) -> None:

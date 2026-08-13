@@ -224,6 +224,20 @@ def test_fetch_funnel_ohlcv_reports_overall_progress(monkeypatch):
     ]
 
 
+def test_fetch_etf_ohlcv_fills_missing_lof_from_fund_daily(monkeypatch):
+    window = SimpleNamespace(start_trade_date=date(2026, 4, 1), end_trade_date=date(2026, 5, 22))
+    monkeypatch.setattr(etf_workflow, "_has_market_data_source", lambda: True)
+    monkeypatch.setattr(etf_workflow, "fetch_all_ohlcv", lambda **_kwargs: ({"510300": _frame(0.1, 100)}, {}))
+    monkeypatch.setattr(
+        "integrations.tushare_fund_data.fetch_fund_daily",
+        lambda symbol, _start, _end: _frame(0.2, 100) if symbol == "164824" else None,
+    )
+
+    result = fetch_etf_ohlcv(["510300", "164824"], window)
+
+    assert set(result) == {"510300", "164824"}
+
+
 def test_load_stock_names_reports_progress(monkeypatch):
     from utils.progress import set_reporter
 

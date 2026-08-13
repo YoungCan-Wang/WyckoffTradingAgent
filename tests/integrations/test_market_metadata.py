@@ -72,6 +72,35 @@ def test_detect_theme_lines_uses_consecutive_recent_history(tmp_path, monkeypatc
     assert market_metadata.detect_theme_lines(min_days=3) == ["AI算力"]
 
 
+def test_detect_theme_lines_accepts_remote_history_without_local_cache(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(market_metadata, "CONCEPT_HEAT_HISTORY", tmp_path / "missing.json")
+    history = {
+        "2026-06-20": {"机器人": {}},
+        "2026-06-19": {"机器人": {}},
+        "2026-06-18": {"机器人": {}},
+    }
+
+    assert market_metadata.detect_theme_lines(min_days=3, history=history) == ["机器人"]
+
+
+def test_fetch_suspended_symbols_keeps_only_suspend_rows(monkeypatch) -> None:
+    import pandas as pd
+
+    class _FakePro:
+        def suspend_d(self, trade_date: str):
+            assert trade_date == "20260715"
+            return pd.DataFrame(
+                [
+                    {"ts_code": "000001.SZ", "suspend_type": "S"},
+                    {"ts_code": "000002.SZ", "suspend_type": "R"},
+                ]
+            )
+
+    monkeypatch.setattr(market_metadata, "_tushare_pro", lambda: _FakePro())
+
+    assert market_metadata.fetch_suspended_symbols(market_metadata.date(2026, 7, 15)) == {"000001"}
+
+
 def test_update_concept_heat_history_keeps_pct_and_inflow_leaders(tmp_path, monkeypatch) -> None:
     history = tmp_path / "concept_heat_history.json"
     monkeypatch.setattr(market_metadata, "CONCEPT_HEAT_HISTORY", history)

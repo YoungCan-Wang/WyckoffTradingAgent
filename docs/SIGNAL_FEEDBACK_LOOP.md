@@ -168,15 +168,21 @@ registry 只负责控制动态策略是否使用信号；原始 observations 仍
 
 ## External Capital Context
 
-`signal_observations.features_json.source_context` 记录正式主漏斗候选的外部资金佐证。当前通过 AkShare 按需读取龙虎榜、融资融券和大宗交易；逐笔大单使用腾讯分笔源作为可选项，默认不打开，避免日常任务被慢速网页源拖住：
+`signal_observations.features_json.source_context` 记录正式主漏斗候选的外部资金佐证。当前优先通过 Tushare 按需读取龙虎榜、融资融券、大宗交易、个股资金流和沪深股通观察字段；龙虎榜、融资融券和大宗交易在 Tushare 失败时才降级 AkShare。逐笔大单使用腾讯分笔源作为可选项，默认不打开，避免日常任务被慢速网页源拖住：
 
-- `lhb`：东方财富龙虎榜详情，记录上榜原因、净买额、买入额和卖出额。
-- `margin`：上交所 / 深交所融资融券明细，记录融资余额、融资买入、融资偿还和融券变化。
-- `block_trade`：东方财富大宗交易每日明细，记录成交笔数、成交额、折溢率和主要买卖席位。
+- `lhb`：Tushare 龙虎榜统计及席位明细，记录上榜原因、净买额、机构专用和沪深股通专用席位净额。
+- `margin`：Tushare 融资融券明细，记录融资余额、融资买入、融资偿还和融券变化；收盘后当日数据未更新时自动使用最近可用交易日并写明 `data_date`。
+- `block_trade`：Tushare 大宗交易每日明细，记录成交笔数、成交额和主要买卖席位。
+- `stock_moneyflow`：Tushare 个股资金流，记录净流入、大单和特大单净额，单位均明确为万元。
+- `northbound_market`：Tushare 发布的沪深股通市场金额上下文。历史字段名虽为 `north_money`，当前值按官方发布金额保存，明确标记 `published_connect_amount_not_net_inflow`，禁止解释为北向净买入。
+- `hsgt_top10`：沪深股通十大成交股；当前 `buy/sell/net_amount` 可能为空，仅把成交额和排名作为观察字段。
 - `tick_large_order`：腾讯分笔数据汇总的大额成交，仅在 `FUNNEL_EXTERNAL_CAPITAL_TICK_CONTEXT=1` 时启用。
 - `source_status`：每个外部源的成功、失败或降级状态，便于复盘时区分“没有资金痕迹”和“源失败”。
 
 这部分只作为外部资金痕迹解释和 outcome 复盘特征，不改变主漏斗候选、AI 候选池、loss guard 或 Step4。
+日常任务优先给 `selected_for_ai` / AI 研报代码补这些字段；市场闸门关闭、AI 名单为空时，改为按漏斗分从正式
+L4/形态观察样本中最多取 `FUNNEL_EXTERNAL_CAPITAL_MAX_SYMBOLS` 只，避免弱市日整批 observation 丢失资金侧
+上下文。外部资金字段仍不能反向创造候选。
 
 ## Candidate Shadow Score
 
@@ -192,7 +198,13 @@ registry 只负责控制动态策略是否使用信号；原始 observations 仍
 
 这部分只做 shadow 复盘，不新增候选表，也不改变正式候选、AI 候选池或 Step4。只有当后续 `signal_outcomes` 证明它能提高胜率或降低回撤时，才考虑把总分升成结构化列或用于真实排序。
 
-候选影子评分版本为 `candidate_shadow_score_v2`。观察血缘按 `(code, signal_type)` 绑定，避免同一股票的 LPS、趋势回踩或主线候选互相覆盖元数据。历史规则发生语义变化时，必须先用 `scripts/backfill_recommendation_tracking.py` 做只读 dry-run；替换 observation 会级联删除对应 outcome，随后必须重跑 signal feedback。反馈任务按当前 `as_of_date` 整体替换 health 快照；registry 先 upsert 再删除孤儿行，并把健康窗口未覆盖的既有生命周期行（如 `RETIRED` / `EXPERIMENTAL` 与 regime 降权）合并进快照，避免全量替换把屏蔽信号默认回 `ACTIVE`。
+候选影子评分版本为 `candidate_shadow_score_v3`。其中 `dynamic` 使用同一信号、同一市场水温、同一持有周期的最新 `signal_health_daily` 对基础影子分做有限校准，并生成可审计的 Step3 晋级清单。观察血缘按 `(code, signal_type)` 绑定，避免同一股票的 LPS、趋势回踩或主线候选互相覆盖元数据。历史规则发生语义变化时，必须先用 `scripts/backfill_recommendation_tracking.py` 做只读 dry-run；替换 observation 会级联删除对应 outcome，随后必须重跑 signal feedback。反馈任务按当前 `as_of_date` 整体替换 health 快照；registry 先 upsert 再删除孤儿行，并把健康窗口未覆盖的既有生命周期行（如 `RETIRED` / `EXPERIMENTAL` 与 regime 降权）合并进快照，避免全量替换把屏蔽信号默认回 `ACTIVE`。
+
+### 动态影子晋级
+
+`FUNNEL_DYNAMIC_SHADOW_PROMOTION=1` 时，Step2.75 会在正式漏斗候选之外，对当日 `review_triggers` 计算动态影子分。默认门槛为：基础影子分至少 65、动态分至少 75、对应 regime 的 5 日信号健康样本至少 30 且状态为 `HEALTHY`、健康权重至少 0.9、起跳板至少满足 2 个条件、没有失败突破/供应压力等硬风险。满足全部条件的候选最多补 1 个 Step3 复核席位。
+
+这里的“晋级”只表示获得 Step3 LLM 复核资格，不写正式推荐，不产生 OMS 买单，也不绕过 `SURVIVED → VALIDATED → OMS_APPROVED`。资金数据默认是稀疏加分项；设置 `FUNNEL_DYNAMIC_SHADOW_REQUIRE_STOCK_CAPITAL=1` 后才会成为硬门槛。市场级 `northbound_market` 不算个股外部证据覆盖，避免用同一条市场背景虚增所有候选的数据完整度。
 
 `strategy_attribution_report.py` 会把 `candidate_shadow_score.grade` 聚合进 `score_bucket_stats_json._candidate_shadow_grade`，Web 端策略归因页展示 S/A/B/C/D 各档在不同持有周期下的胜率、平均收益、大涨率、大跌率和平均回撤。`evaluate_recommendation_events.py` 也会只读 join 同日 observation，把候选影子分档输出到 `summary.candidate_shadow_grade`，并在 `summary.top_k_by_strategy.candidate_shadow_then_score` 对照“按候选影子分排序”的 5 日冲刺命中率、MFE 和 MAE；`summary.top_k_lift_vs_score_only.candidate_shadow_then_score` 会直接给出相对原漏斗分排序的差值，`summary.ranking_decision` 进一步用样本量、命中率 lift、MFE lift 和 MAE 恶化门槛判断它是否只是观察项，还是可以进入下一步排序接入候选。2026-08-02 的 90 个推荐日复核中，候选影子 Top1/3/5 均未产生正 lift，因此继续使用 `score_only`，不得把影子分升级为正式排序。
 

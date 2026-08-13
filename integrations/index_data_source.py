@@ -38,6 +38,10 @@ def _fetch_index_hist_once(code: str, start_s: str, end_s: str) -> pd.DataFrame 
         return fetch_index_akshare(code, start_s, end_s)
     except Exception as exc:
         _debug_index_fail("akshare(index)", exc)
+    try:
+        return fetch_index_baostock(code, start_s, end_s)
+    except Exception as exc:
+        _debug_index_fail("baostock(index)", exc)
     return None
 
 
@@ -63,6 +67,38 @@ def fetch_index_akshare(code: str, start: str, end: str) -> pd.DataFrame:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
     return df[["date", "open", "high", "low", "close", "volume", "pct_chg"]].sort_values("date").reset_index(drop=True)
+
+
+def fetch_index_baostock(code: str, start: str, end: str) -> pd.DataFrame:
+    import baostock as bs
+
+    login = bs.login()
+    if login.error_code != "0":
+        raise RuntimeError(f"baostock index login: {login.error_msg}")
+    try:
+        rs = bs.query_history_k_data_plus(
+            _index_to_baostock_code(code),
+            "date,open,high,low,close,volume,pctChg",
+            start_date=_dash_date(start),
+            end_date=_dash_date(end),
+            frequency="d",
+            adjustflag="3",
+        )
+        if rs.error_code != "0":
+            raise RuntimeError(f"baostock index: {rs.error_msg}")
+        rows = []
+        while rs.next():
+            rows.append(rs.get_row_data())
+    finally:
+        bs.logout()
+    if not rows:
+        raise RuntimeError("baostock index empty")
+    frame = pd.DataFrame(rows, columns=rs.fields).rename(columns={"pctChg": "pct_chg"})
+    for column in ("open", "high", "low", "close", "volume", "pct_chg"):
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    return (
+        frame[["date", "open", "high", "low", "close", "volume", "pct_chg"]].sort_values("date").reset_index(drop=True)
+    )
 
 
 def _fetch_index_tushare(code: str, start: str, end: str) -> pd.DataFrame:
@@ -93,6 +129,16 @@ def _index_to_ts_code(code: str) -> str:
     if text.startswith(("000", "880", "899")):
         return f"{text}.SH"
     return f"{text}.SZ"
+
+
+def _index_to_baostock_code(code: str) -> str:
+    text = str(code).split(".")[0].strip()
+    return f"sh.{text}" if text.startswith(("000", "880", "899")) else f"sz.{text}"
+
+
+def _dash_date(value: str) -> str:
+    text = str(value).replace("-", "")
+    return f"{text[:4]}-{text[4:6]}-{text[6:8]}"
 
 
 def _index_failure_suffix() -> str:

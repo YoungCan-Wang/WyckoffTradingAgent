@@ -9,8 +9,16 @@ from core.candidate_metadata import code6 as _code
 from utils.safe import drop_empty as _clean
 from utils.safe import parse_cn_num as _num
 
-CAPITAL_CONTEXT_VERSION = "external_capital_context_v1"
-_CONTEXT_KEYS = ("lhb", "margin", "block_trade", "tick_large_order")
+CAPITAL_CONTEXT_VERSION = "external_capital_context_v2"
+_CONTEXT_KEYS = (
+    "lhb",
+    "margin",
+    "block_trade",
+    "stock_moneyflow",
+    "northbound_market",
+    "hsgt_top10",
+    "tick_large_order",
+)
 
 
 def _akshare_module(ak_module: Any | None) -> Any:
@@ -262,10 +270,38 @@ def build_external_capital_context(
     ak = _akshare_module(ak_module)
     ymd = _yyyymmdd(trade_date)
     contexts = _new_contexts(code_order, trade_date)
-    _safe_attach(contexts, "lhb", lambda: _attach_lhb(contexts, ak, ymd))
-    _attach_margin(contexts, ak, ymd)
-    _safe_attach(contexts, "block_trade", lambda: _attach_block_trade(contexts, ak, ymd))
+    if ak_module is None and _attach_tushare(contexts, trade_date):
+        _fallback_failed_tushare_sources(contexts, ak, ymd)
+    else:
+        _safe_attach(contexts, "lhb", lambda: _attach_lhb(contexts, ak, ymd))
+        _attach_margin(contexts, ak, ymd)
+        _safe_attach(contexts, "block_trade", lambda: _attach_block_trade(contexts, ak, ymd))
     if include_tick and tick_max_symbols > 0:
         tick_codes = code_order[: max(int(tick_max_symbols), 1)]
         _attach_tick_large_order(contexts, ak, tick_codes, max(float(tick_min_amount_yuan), 0.0))
     return {code: ctx for code, ctx in contexts.items() if _has_context(ctx)}
+
+
+def _attach_tushare(contexts: dict[str, dict[str, Any]], trade_date: str) -> bool:
+    try:
+        from integrations.tushare_capital_context import attach_tushare_capital_context
+        from integrations.tushare_client import get_pro
+
+        pro = get_pro()
+        if pro is None:
+            return False
+        attach_tushare_capital_context(contexts, pro, trade_date)
+        return True
+    except Exception as exc:
+        _status(contexts, "tushare", f"error:{_err(exc)}")
+        return False
+
+
+def _fallback_failed_tushare_sources(contexts: dict[str, dict[str, Any]], ak: Any, ymd: str) -> None:
+    status = next(iter(contexts.values())).get("source_status", {}) if contexts else {}
+    if str(status.get("lhb", "")).startswith("error:"):
+        _safe_attach(contexts, "lhb", lambda: _attach_lhb(contexts, ak, ymd))
+    if str(status.get("margin", "")).startswith("error:"):
+        _attach_margin(contexts, ak, ymd)
+    if str(status.get("block_trade", "")).startswith("error:"):
+        _safe_attach(contexts, "block_trade", lambda: _attach_block_trade(contexts, ak, ymd))

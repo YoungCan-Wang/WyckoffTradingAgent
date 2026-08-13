@@ -129,7 +129,14 @@ def _source_status(raw: Any) -> str:
 
 def _external_capital_lineage(source_context: dict[str, Any]) -> dict[str, Any]:
     source_status = source_context.get("source_status") if isinstance(source_context.get("source_status"), dict) else {}
-    source_keys = ("lhb", "margin", "block_trade", "tick_large_order")
+    source_keys = (
+        "lhb",
+        "margin",
+        "block_trade",
+        "stock_moneyflow",
+        "hsgt_top10",
+        "tick_large_order",
+    )
     providers = [key for key in source_keys if isinstance(source_context.get(key), dict) and source_context.get(key)]
     statuses = {str(key): _source_status(value) for key, value in source_status.items()}
     errors = [key for key, value in statuses.items() if value == "error"]
@@ -270,6 +277,8 @@ def _features_json(
     data_lineage: dict[str, Any],
     candidate_metadata: dict[str, Any] | None = None,
     entry_quality: dict[str, Any] | None = None,
+    health_context: dict[str, Any] | None = None,
+    dynamic_promotion: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     out: dict[str, Any] = {}
     if candidate_metadata:
@@ -283,14 +292,18 @@ def _features_json(
     if source_context:
         out["source_context"] = source_context
     out["data_lineage"] = data_lineage
-    out["candidate_shadow_score"] = score_candidate_shadow(
+    shadow_score = score_candidate_shadow(
         signal_type=signal_type,
         trigger_score=trigger_score,
         priority_score=priority_score,
         footprint=footprint,
         springboard=springboard,
         source_context=source_context,
+        health_context=health_context,
     )
+    if dynamic_promotion:
+        shadow_score["dynamic_promotion_snapshot"] = dynamic_promotion
+    out["candidate_shadow_score"] = shadow_score
     return out
 
 
@@ -343,6 +356,8 @@ def _observation_feature_inputs(
     selected_for_ai = code in ctx["selected"]
     ai_recommended = code in ctx["recommended"]
     candidate_rank = ctx["rank_map"].get(code)
+    health_context = _health_context_for_signal(ctx["health_context_map"], signal_type, ctx["regime"])
+    dynamic_promotion = ctx["dynamic_promotion_map"].get(code) or {}
     data_lineage = _data_lineage(
         signal_type,
         trigger_score,
@@ -365,6 +380,8 @@ def _observation_feature_inputs(
         data_lineage,
         candidate_metadata,
         entry_quality,
+        health_context,
+        dynamic_promotion,
     )
     return priority_score, {"features_json": features, **springboard}
 
@@ -430,6 +447,20 @@ def _derived_rank_map(selected_for_ai: list[str] | None, rank_map: dict[str, int
     return derived
 
 
+def _health_context_for_signal(
+    health_map: dict[Any, dict[str, Any]],
+    signal_type: str,
+    regime: str,
+) -> dict[str, Any]:
+    regime_key = str(regime or "NEUTRAL").strip().upper()
+    return dict(
+        health_map.get((signal_type, regime_key))
+        or health_map.get((signal_type, "ALL"))
+        or health_map.get(signal_type)
+        or {}
+    )
+
+
 def _observation_context(triggers: dict[str, list[tuple[str, float]]], kwargs: dict[str, Any]) -> dict[str, Any]:
     return {
         "selected": {_code(c) for c in kwargs["selected_for_ai"] or []},
@@ -451,6 +482,9 @@ def _observation_context(triggers: dict[str, list[tuple[str, float]]], kwargs: d
         "selection_mode_map": kwargs["selection_mode_map"] or {},
         "policy_version": kwargs["policy_version"],
         "rank_map": _derived_rank_map(kwargs["selected_for_ai"], kwargs["rank_map"]),
+        "regime": str(kwargs.get("regime") or "NEUTRAL").strip().upper(),
+        "health_context_map": kwargs.get("health_context_map") or {},
+        "dynamic_promotion_map": kwargs.get("dynamic_promotion_map") or {},
     }
 
 
@@ -478,6 +512,8 @@ def build_signal_observations(
     selection_mode_map: dict[str, str] | None = None,
     policy_version: str = "",
     rank_map: dict[str, int] | None = None,
+    health_context_map: dict[Any, dict[str, Any]] | None = None,
+    dynamic_promotion_map: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     ctx = _observation_context(triggers, locals())
     now_iso = datetime.now(UTC).isoformat()

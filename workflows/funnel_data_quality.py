@@ -11,6 +11,9 @@ OHLCV_MIN_COVERAGE = 0.95
 MARKET_CAP_MIN_COVERAGE = 0.95
 FINANCIAL_MIN_COVERAGE = 0.90
 FRESH_OHLCV_MIN_COVERAGE = 0.95
+TURNOVER_MIN_COVERAGE = 0.95
+SECTOR_MIN_COVERAGE = 0.90
+CONCEPT_MIN_COVERAGE = 0.80
 
 
 class FunnelDataStaleError(RuntimeError):
@@ -33,20 +36,23 @@ def build_funnel_data_quality(
     *,
     financial_requested: bool,
     expected_trade_date: date | None = None,
+    excluded_symbols: list[str] | set[str] | tuple[str, ...] = (),
+    sector_map: dict[str, str] | None = None,
+    concept_map: dict[str, list[str]] | None = None,
+    turnover_expected: bool = False,
 ) -> dict:
     universe = list(dict.fromkeys(str(symbol).strip() for symbol in symbols if str(symbol).strip()))
-    total = len(universe)
-    ohlcv_count = sum(1 for symbol in universe if _has_frame(df_map.get(symbol)))
-    cap_count = sum(1 for symbol in universe if _positive_number(market_cap_map.get(symbol)))
-    financial_count = sum(1 for symbol in universe if bool(financial_map.get(symbol)))
-    coverage = {
-        "ohlcv": _ratio(ohlcv_count, total),
-        "market_cap": _ratio(cap_count, total),
-        "financial": _ratio(financial_count, total),
-    }
+    excluded = {str(symbol).strip() for symbol in excluded_symbols if str(symbol).strip()}
+    expected_symbols = [symbol for symbol in universe if symbol not in excluded]
+    counts = _coverage_counts(
+        universe, expected_symbols, df_map, market_cap_map, financial_map, sector_map, concept_map
+    )
+    coverage = _coverage_ratios(counts, turnover_expected, sector_map is not None, concept_map is not None)
     if expected_trade_date is not None:
-        fresh_count = sum(1 for symbol in universe if _latest_frame_date(df_map.get(symbol)) == expected_trade_date)
-        coverage["fresh_ohlcv"] = _ratio(fresh_count, total)
+        fresh_count = sum(
+            1 for symbol in expected_symbols if _latest_frame_date(df_map.get(symbol)) == expected_trade_date
+        )
+        coverage["fresh_ohlcv"] = _ratio(fresh_count, counts["expected_to_trade"])
     reasons = _quality_reasons(coverage, financial_requested)
     source_counts = _ohlcv_source_counts(universe, df_map)
     return {
@@ -55,16 +61,52 @@ def build_funnel_data_quality(
         "reasons": reasons,
         "financial_requested": bool(financial_requested),
         "coverage": coverage,
-        "counts": {"universe": total, "ohlcv": ohlcv_count, "market_cap": cap_count, "financial": financial_count},
+        "counts": counts,
         "thresholds": {
             "ohlcv": OHLCV_MIN_COVERAGE,
             "market_cap": MARKET_CAP_MIN_COVERAGE,
             "financial": FINANCIAL_MIN_COVERAGE,
             "fresh_ohlcv": FRESH_OHLCV_MIN_COVERAGE,
+            "turnover": TURNOVER_MIN_COVERAGE,
+            "sector": SECTOR_MIN_COVERAGE,
+            "concept": CONCEPT_MIN_COVERAGE,
         },
         "ohlcv_source_counts": source_counts,
-        "ohlcv_source_ratios": {source: _ratio(count, ohlcv_count) for source, count in source_counts.items()},
+        "ohlcv_source_ratios": {source: _ratio(count, counts["ohlcv"]) for source, count in source_counts.items()},
     }
+
+
+def _coverage_counts(universe, expected, df_map, market_cap_map, financial_map, sector_map, concept_map) -> dict:
+    return {
+        "universe": len(universe),
+        "expected_to_trade": len(expected),
+        "excluded_non_trading": len(universe) - len(expected),
+        "ohlcv": sum(1 for symbol in expected if _has_frame(df_map.get(symbol))),
+        "raw_ohlcv": sum(1 for symbol in universe if _has_frame(df_map.get(symbol))),
+        "market_cap": sum(1 for symbol in universe if _positive_number(market_cap_map.get(symbol))),
+        "financial": sum(1 for symbol in universe if bool(financial_map.get(symbol))),
+        "turnover": sum(1 for symbol in expected if _has_numeric_column(df_map.get(symbol), "turnover")),
+        "sector": sum(1 for symbol in universe if sector_map and str(sector_map.get(symbol) or "").strip()),
+        "concept": sum(1 for symbol in universe if concept_map and concept_map.get(symbol)),
+    }
+
+
+def _coverage_ratios(counts: dict, turnover_expected: bool, sector_expected: bool, concept_expected: bool) -> dict:
+    total, expected = counts["universe"], counts["expected_to_trade"]
+    coverage = {
+        "ohlcv": _ratio(counts["ohlcv"], expected),
+        "raw_ohlcv": _ratio(counts["raw_ohlcv"], total),
+        "market_cap": _ratio(counts["market_cap"], total),
+        "financial": _ratio(counts["financial"], total),
+    }
+    for enabled, key, denominator in (
+        (turnover_expected, "turnover", expected),
+        (sector_expected, "sector", total),
+        (concept_expected, "concept", total),
+    ):
+        if enabled:
+            coverage[key] = _ratio(counts[key], denominator)
+    return coverage
 
 
 def assert_funnel_data_freshness(
@@ -74,10 +116,13 @@ def assert_funnel_data_freshness(
     expected_trade_date: date,
     *,
     min_coverage: float = FRESH_OHLCV_MIN_COVERAGE,
+    excluded_symbols: list[str] | set[str] | tuple[str, ...] = (),
 ) -> None:
     universe = list(dict.fromkeys(str(symbol).strip() for symbol in symbols if str(symbol).strip()))
-    fresh = sum(1 for symbol in universe if _latest_frame_date(df_map.get(symbol)) == expected_trade_date)
-    coverage = fresh / len(universe) if universe else 0.0
+    excluded = {str(symbol).strip() for symbol in excluded_symbols if str(symbol).strip()}
+    expected_symbols = [symbol for symbol in universe if symbol not in excluded]
+    fresh = sum(1 for symbol in expected_symbols if _latest_frame_date(df_map.get(symbol)) == expected_trade_date)
+    coverage = fresh / len(expected_symbols) if expected_symbols else 0.0
     stale_benchmarks = [
         index for index, frame in enumerate(benchmark_frames) if _latest_frame_date(frame) != expected_trade_date
     ]
@@ -85,7 +130,8 @@ def assert_funnel_data_freshness(
         return
     raise FunnelDataStaleError(
         "funnel data freshness gate failed: "
-        f"expected={expected_trade_date.isoformat()}, fresh_ohlcv={fresh}/{len(universe)} ({coverage:.1%}), "
+        f"expected={expected_trade_date.isoformat()}, fresh_ohlcv={fresh}/{len(expected_symbols)} ({coverage:.1%}), "
+        f"excluded_non_trading={len(universe) - len(expected_symbols)}, "
         f"stale_benchmarks={stale_benchmarks}"
     )
 
@@ -126,7 +172,13 @@ def _quality_reasons(coverage: dict[str, float], financial_requested: bool) -> l
         checks.append(("fresh_ohlcv", FRESH_OHLCV_MIN_COVERAGE))
     if financial_requested:
         checks.append(("financial", FINANCIAL_MIN_COVERAGE))
-    return [f"{name}_coverage<{threshold:.0%}" for name, threshold in checks if coverage[name] < threshold]
+    if "turnover" in coverage:
+        checks.append(("turnover", TURNOVER_MIN_COVERAGE))
+    if "sector" in coverage:
+        checks.append(("sector", SECTOR_MIN_COVERAGE))
+    if "concept" in coverage:
+        checks.append(("concept", CONCEPT_MIN_COVERAGE))
+    return [f"{name}_coverage<{threshold:.0%}" for name, threshold in checks if coverage.get(name, 0.0) < threshold]
 
 
 def _ohlcv_source_counts(symbols: list[str], df_map: dict[str, pd.DataFrame]) -> dict[str, int]:
@@ -142,6 +194,10 @@ def _ohlcv_source_counts(symbols: list[str], df_map: dict[str, pd.DataFrame]) ->
 
 def _has_frame(frame: pd.DataFrame | None) -> bool:
     return frame is not None and not frame.empty
+
+
+def _has_numeric_column(frame: pd.DataFrame | None, column: str) -> bool:
+    return _has_frame(frame) and column in frame.columns and pd.to_numeric(frame[column], errors="coerce").notna().any()
 
 
 def _latest_frame_date(frame: pd.DataFrame | None) -> date | None:
