@@ -120,6 +120,29 @@ function reviewDateNumber(value: string | number): number {
   return digits ? Number(digits.slice(0, 8)) : 0
 }
 
+export function latestTrackingDates(rows: DedupeTrackingRow[], limit: number): number[] {
+  const dates = rows.map((row) => reviewDateNumber(row.recommend_date)).filter((date) => date > 0)
+  return [...new Set(dates)].sort((a, b) => b - a).slice(0, limit)
+}
+
+export function hasCompleteTrackingWindow(rows: DedupeTrackingRow[], retentionDates: number): boolean {
+  const dates = latestTrackingDates(rows, retentionDates + 1)
+  const cutoffDate = dates[retentionDates - 1]
+  const oldestFetched = rows.at(-1)
+  if (!cutoffDate || !oldestFetched || dates.length <= retentionDates) return false
+  return reviewDateNumber(oldestFetched.recommend_date) < cutoffDate
+}
+
+export function countTrackingOccurrences(rows: DedupeTrackingRow[]): number {
+  const occurrences = new Set<string>()
+  for (const row of rows) {
+    const code = normalizeCode(row.code)
+    const date = reviewDateNumber(row.recommend_date)
+    if (code && date > 0) occurrences.add(`${date}\u0000${code}`)
+  }
+  return occurrences.size
+}
+
 function positivePrice(value: number | null | undefined): number | null {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null
 }

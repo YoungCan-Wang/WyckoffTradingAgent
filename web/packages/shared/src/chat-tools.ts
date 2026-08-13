@@ -1082,6 +1082,7 @@ export async function execExecutePortfolioUpdate(
   shares: number | null,
   cost_price: number | null,
   stop_loss: number | null,
+  buy_dt: string | null = null,
 ): Promise<string> {
   const portfolioId = `USER_LIVE:${userId}`
   const normalized = normalizePortfolioCode(code)
@@ -1104,8 +1105,15 @@ export async function execExecutePortfolioUpdate(
     if (!name || !shares || !cost_price) {
       return '执行失败：缺少 name、shares、cost_price 参数'
     }
-    const record = buildPortfolioWriteRecord(portfolioId, normalized, action, name, shares, cost_price, stop_loss)
-    const error = await savePortfolioPosition(deps, portfolioId, normalized, record)
+    const buyDate = (buy_dt || '').trim()
+    if (action === 'add') {
+      if (!buyDate) return '执行失败：缺少建仓日 buy_dt，请询问用户后再写入'
+      if (!isValidBuyDt(buyDate)) return '执行失败：buy_dt 必须是合法日期 YYYYMMDD 或 YYYY-MM-DD'
+    } else if (buyDate && !isValidBuyDt(buyDate)) {
+      return '执行失败：buy_dt 必须是合法日期 YYYYMMDD 或 YYYY-MM-DD'
+    }
+    const record = buildPortfolioWriteRecord(portfolioId, normalized, action, name, shares, cost_price, stop_loss, buyDate)
+    const error = await savePortfolioPosition(deps, portfolioId, normalized, action, record)
     const currency = normalized.endsWith('.HK') ? 'HK$' : normalized.endsWith('.US') ? '$' : '¥'
     if (error) return `执行失败: ${error}`
     const valuation = await refreshPortfolioTotalEquity(deps, userId)
@@ -1118,13 +1126,14 @@ export async function execExecutePortfolioUpdate(
 export function buildPortfolioWriteRecord(
   portfolioId: string,
   code: string,
-  action: 'add' | 'update',
+  _action: 'add' | 'update',
   name: string,
   shares: number,
   cost_price: number,
   stop_loss: number | null,
+  buy_dt = '',
 ): Record<string, unknown> {
-  // update 不得重写 buy_dt：Step4 sellable_shares 用它做 A 股 T+1，写成「今天」会把可卖仓冻住。
+  // update 默认不写 buy_dt：Step4 sellable_shares 用它做 A 股 T+1，写成「今天」会把可卖仓冻住。
   // stop_loss 仅在显式给到有限数字时写入；工具 schema 是 nullable，LLM 省略时传来 null，
   // 若仍写入会把已有止损清掉，Step4 止损强平/继承都会失效。
   const record: Record<string, unknown> = {
@@ -1134,17 +1143,39 @@ export function buildPortfolioWriteRecord(
     shares,
     cost_price,
   }
-  if (action === 'add') record.buy_dt = todayDateString()
+  if (buy_dt) record.buy_dt = buy_dt
   if (typeof stop_loss === 'number' && Number.isFinite(stop_loss)) record.stop_loss = stop_loss
   return record
+}
+
+export function isValidBuyDt(raw: string): boolean {
+  const text = raw.trim()
+  const iso = /^\d{8}$/.test(text)
+    ? `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6)}`
+    : text
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso)
+  if (!match) return false
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  const date = new Date(Date.UTC(year, month - 1, day))
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
 }
 
 async function savePortfolioPosition(
   deps: ToolDeps,
   portfolioId: string,
   code: string,
+  action: 'add' | 'update',
   record: Record<string, unknown>,
 ): Promise<string | null> {
+  if (action === 'add') {
+    const { error } = await deps.supabase.from('portfolio_positions').insert(record)
+    if (error?.message && /duplicate|unique/i.test(error.message)) {
+      return '持仓已存在，无法 add；请改用 update'
+    }
+    return error?.message || null
+  }
   const { data, error } = await deps.supabase
     .from('portfolio_positions')
     .update(record)
@@ -1153,9 +1184,7 @@ async function savePortfolioPosition(
     .select('id')
   if (error) return error.message
   if (Array.isArray(data) && data.length > 0) return null
-
-  const { error: insertError } = await deps.supabase.from('portfolio_positions').insert(record)
-  return insertError?.message || null
+  return '持仓不存在，无法 update；请改用 add 并提供建仓日 buy_dt'
 }
 
 export interface ScreenStockItem {

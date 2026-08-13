@@ -49,6 +49,8 @@ class Layer2RpsState:
     slow: float | None
     momentum_ok: bool
     ambush_ok: bool
+    slope_ok: bool = True
+    slope_value: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -399,7 +401,7 @@ def _rps_state(sym: str, close: pd.Series, df_sorted: pd.DataFrame, cfg: Any, rp
         slope_ok=slope_ok,
         slope_value=slope_value,
     )
-    return Layer2RpsState(rps_fast, rps_slow, momentum_ok, ambush_ok)
+    return Layer2RpsState(rps_fast, rps_slow, momentum_ok, ambush_ok, slope_ok, slope_value)
 
 
 def _rs_flags(
@@ -710,6 +712,10 @@ def _diagnose_momentum(
     rps_slow: float | None,
     momentum_rs_ok: bool,
     state: Layer2SymbolState | None = None,
+    rps_fast: float | None = None,
+    slope_ok: bool = True,
+    slope_value: float = 0.0,
+    momentum_rps_ok: bool = True,
 ) -> tuple[float, list[str]]:
     if not getattr(cfg, "enable_momentum_channel", True):
         return 999.0, ["通道未启用"]
@@ -723,10 +729,31 @@ def _diagnose_momentum(
     if val < thresh:
         gaps.append((thresh - val) / thresh)
         fail.append(f"RPS(slow)不足: 当前 {val:.1f}, 阈值 {thresh:.1f}, 差距 {thresh - val:.1f}")
+    if not momentum_rps_ok:
+        _append_momentum_rps_gaps(cfg, rps_fast, slope_ok, slope_value, gaps, fail)
     gaps, fail = _momentum_structure_gaps(cfg, state, gaps, fail)
     if not gaps:
         return 0.0, []
     return max(gaps), fail
+
+
+def _append_momentum_rps_gaps(
+    cfg: Any,
+    rps_fast: float | None,
+    slope_ok: bool,
+    slope_value: float,
+    gaps: list[float],
+    fail: list[str],
+) -> None:
+    if rps_fast is not None and rps_fast < float(cfg.rps_fast_min):
+        threshold = float(cfg.rps_fast_min)
+        gaps.append((threshold - rps_fast) / max(threshold, 1.0))
+        fail.append(f"RPS(fast)不足: 当前 {rps_fast:.1f}, 阈值 {threshold:.1f}, 差距 {threshold - rps_fast:.1f}")
+    if not slope_ok:
+        threshold = float(cfg.rps_slope_min)
+        gap = max(threshold - float(slope_value), 0.0)
+        gaps.append(gap / max(abs(threshold), 1.0))
+        fail.append(f"RPS斜率不足: 当前 {slope_value:.2f}, 阈值 {threshold:.2f}, 差距 {gap:.2f}")
 
 
 def _momentum_structure_gaps(
@@ -1104,7 +1131,16 @@ def diagnose_layer2_symbol_failure(
     rps_fast = rps_state.fast
 
     channel_failures = {
-        "主升": _diagnose_momentum(cfg, rps_slow, momentum_rs_ok, state),
+        "主升": _diagnose_momentum(
+            cfg,
+            rps_slow,
+            momentum_rs_ok,
+            state,
+            rps_fast=rps_fast,
+            slope_ok=rps_state.slope_ok,
+            slope_value=rps_state.slope_value,
+            momentum_rps_ok=rps_state.momentum_ok,
+        ),
         "潜伏": _diagnose_ambush(cfg, last_ma_long, last_close, close_series, ambush_rs_ok, rps_slow),
         "吸筹": _diagnose_accum(cfg, df_sorted, close_series, last_close, last_ma_short, last_ma_long),
         "地量蓄势": _diagnose_dry_vol(cfg, df_sorted, close_series, last_close),

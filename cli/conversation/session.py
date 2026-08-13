@@ -183,6 +183,15 @@ class ConversationSession:
             return None
         return self.input_queue.popleft()
 
+    def pop_last_user_followup(self) -> QueuedInput | None:
+        items = list(self.input_queue)
+        for index in range(len(items) - 1, -1, -1):
+            if items[index].kind == "user":
+                taken = items.pop(index)
+                self.input_queue = deque(items)
+                return taken
+        return None
+
     def clear_queue(self) -> None:
         self.input_queue.clear()
         self.steering_queue.clear()

@@ -26,10 +26,12 @@ from core.funnel_taxonomy import (
     REVIEW_STAGE_TRIGGER_MISS,
     lane_label,
 )
+from core.review_shadow_lanes import attach_shadow_signal
 from core.wyckoff_engine import sort_by_date_if_needed
 
 REVIEW_TRACE_SCHEMA = "review_trace_v1"
 _BLOCKING_EXIT_SIGNALS = {"stop_loss", "distribution_warning", "upthrust_warning"}
+_SHADOW_NEAR_L2_MAX_GAP_PCT = 10.0
 
 
 def write_review_trace_artifact(inputs: Any, triggers: dict, metrics: dict, output_dir: str) -> Path | None:
@@ -63,6 +65,7 @@ def build_review_trace(inputs: Any, triggers: dict, metrics: dict) -> dict[str, 
         "config_digest": _digest(config_payload),
         "policy": _review_policy(inputs.cfg),
         "data_quality": metrics.get("data_quality") or {},
+        "market_context": _market_context(metrics),
         "counts": {
             "universe": len(inputs.pool.symbols),
             "trace_rows": len(symbols),
@@ -100,7 +103,10 @@ def _decision_rows(inputs: Any, triggers: dict) -> dict[str, dict[str, Any]]:
     hit_map = _trigger_labels(triggers)
     blocked = _blocked_exit_map(candidates.exit_signals)
     return {
-        code: _decision_row(code, inputs, l1_set, l2_set, l3_set, entry_map, hit_map, blocked)
+        code: attach_shadow_signal(
+            _decision_row(code, inputs, l1_set, l2_set, l3_set, entry_map, hit_map, blocked),
+            near_l2_max_gap_pct=_SHADOW_NEAR_L2_MAX_GAP_PCT,
+        )
         for code in inputs.pool.symbols
     }
 
@@ -124,6 +130,8 @@ def _decision_row(
         "l2_eligible": code in l2_set,
         "l3_eligible": code in l3_set,
         "l2_channel": str(inputs.layers.l2_channel_map.get(code, "")),
+        "trigger_labels": list(hit_map.get(code, [])),
+        "risk_signal": str((blocked.get(code) or {}).get("signal") or ""),
     }
     if code not in inputs.all_df_map:
         return {**base, "stage": "数据失败", "reason": "日线拉取失败/超时"}
@@ -269,6 +277,19 @@ def _review_policy(cfg: Any) -> dict[str, Any]:
         "ma_long": cfg.ma_long,
         "rps_fast_min": cfg.rps_fast_min,
         "rps_slow_min": cfg.rps_slow_min,
+        "shadow_near_l2_max_gap_pct": _SHADOW_NEAR_L2_MAX_GAP_PCT,
+    }
+
+
+def _market_context(metrics: dict[str, Any]) -> dict[str, Any]:
+    context = metrics.get("benchmark_context") or {}
+    tuned = context.get("tuned") or {}
+    return {
+        "regime": str(context.get("regime") or ""),
+        "trade_mode": str(metrics.get("trade_mode") or ""),
+        "min_avg_amount_wan": _float(tuned.get("min_avg_amount_wan")),
+        "rps_fast_min": _float(tuned.get("rps_fast_min")),
+        "rps_slow_min": _float(tuned.get("rps_slow_min")),
     }
 
 

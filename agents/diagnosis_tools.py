@@ -29,7 +29,8 @@ def analyze_stock(
 ) -> dict:
     """分析单只 A 股股票：Wyckoff 健康诊断、近期行情或基本面质量查询。
 
-    传入 buy_dt 时，退出信号只看建仓后的价格路径，避免建仓前的暴跌被误判为破位。
+    传入 buy_dt 时，退出信号只看建仓后的价格路径；缺失时结构退出 fail-closed，
+    避免建仓前的暴跌被误判为破位。
     """
     try:
         mode = (mode or "diagnose").strip().lower()

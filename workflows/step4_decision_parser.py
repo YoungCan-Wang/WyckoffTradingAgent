@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 
 from core.market_trade_mode import EXECUTE_BLOCK_NEW_BUY_REGIMES, PROBE_ONLY_REGIMES, normalize_regime
+from core.portfolio_symbol import normalize_portfolio_code
 from utils.json_text import extract_json_block
 from workflows.step4_models import DecisionItem, NewBuyLimits
 from workflows.step4_text import clean_text
@@ -209,9 +209,11 @@ def _parse_decision_item(
 ) -> DecisionItem | None:
     if not isinstance(item, dict):
         return None
-    code = str(item.get("code", "")).strip()
+    # 港美代码走账本规范码：LLM 可能回 700.HK / aapl，需收成 00700.HK / AAPL.US 才能
+    # 命中 allowed_codes。此前的 6 位数字校验会把港美决策整条丢弃。
+    code = normalize_portfolio_code(str(item.get("code", "") or ""))
     action = str(item.get("action", "")).strip().upper()
-    if not re.fullmatch(r"\d{6}", code) or code not in allowed_codes or action not in valid_actions:
+    if not code or code not in allowed_codes or action not in valid_actions:
         return None
     entry_zone_min, entry_zone_max = _parse_entry_zone(item.get("entry_zone"), code)
     stop_loss = _parse_decision_float(item, "stop_loss", code)

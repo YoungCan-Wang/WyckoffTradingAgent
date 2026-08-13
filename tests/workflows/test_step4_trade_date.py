@@ -412,6 +412,27 @@ def test_old_profitable_trailing_stop_still_allows_exit() -> None:
     assert tickets[0].status == "APPROVED"
 
 
+def test_missing_buy_dt_inverted_stop_exit_is_downgraded_to_hold() -> None:
+    engine = WyckoffOrderEngine(
+        total_equity=100000,
+        free_cash=50000,
+        position_map={
+            "000001": PositionItem(code="000001", name="平安银行", cost=50.0, buy_dt="", shares=1000, stop_loss=None)
+        },
+        latest_price_map={"000001": 50.3},
+        trade_date="2026-05-15",
+    )
+    decision = _exit_decision()
+    decision.stop_loss = 112.0
+
+    tickets, cash = engine.process([decision])
+
+    assert tickets[0].action == "HOLD"
+    assert "新仓止损倒挂" in tickets[0].reason
+    assert "reject_inverted_recent_decision_stop" in tickets[0].audit
+    assert cash == 50000
+
+
 def test_forced_stop_loss_exit_waits_for_t1_to_clear() -> None:
     engine = _t1_engine(buy_dt="2026-05-15", trade_date="2026-05-15", price=8.8)
 

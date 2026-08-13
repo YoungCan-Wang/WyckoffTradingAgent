@@ -25,6 +25,11 @@ EXPIRED = "expired"
 EXECUTED = "executed"
 FAILED = "failed"
 
+_COLS = (
+    "id, created_at, source, schedule_id, tool_name, args_json,"
+    " summary, risk, status, decided_at, executed_at, result_json, user_id"
+)
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS approvals (
     id TEXT PRIMARY KEY,
@@ -38,7 +43,8 @@ CREATE TABLE IF NOT EXISTS approvals (
     status TEXT NOT NULL,
     decided_at TEXT NOT NULL DEFAULT '',
     executed_at TEXT NOT NULL DEFAULT '',
-    result_json TEXT NOT NULL DEFAULT ''
+    result_json TEXT NOT NULL DEFAULT '',
+    user_id TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, created_at);
 """
@@ -58,6 +64,7 @@ class PendingApproval:
     decided_at: str = ""
     executed_at: str = ""
     result_json: str = ""
+    user_id: str = ""
 
     @property
     def args(self) -> dict[str, Any]:
@@ -82,13 +89,14 @@ def enqueue(
     source: str,
     schedule_id: str = "",
     summary: str = "",
+    user_id: str = "",
     db_path: Path | None = None,
 ) -> str:
     approval_id = uuid.uuid4().hex[:10]
     with _connect(db_path) as conn:
         conn.execute(
             "INSERT INTO approvals (id, created_at, source, schedule_id, tool_name,"
-            " args_json, summary, risk, status) VALUES (?,?,?,?,?,?,?,?,?)",
+            " args_json, summary, risk, status, user_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
                 approval_id,
                 _utcnow().isoformat(timespec="seconds"),
@@ -99,6 +107,7 @@ def enqueue(
                 summary,
                 risk,
                 PENDING,
+                str(user_id or ""),
             ),
         )
     return approval_id
@@ -109,9 +118,7 @@ def list_pending(*, db_path: Path | None = None, ttl_hours: int = DEFAULT_TTL_HO
     expire_stale(ttl_hours=ttl_hours, db_path=db_path)
     with _connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT id, created_at, source, schedule_id, tool_name, args_json,"
-            " summary, risk, status, decided_at, executed_at, result_json FROM approvals"
-            " WHERE status = ? ORDER BY created_at",
+            f"SELECT {_COLS} FROM approvals WHERE status = ? ORDER BY created_at",
             (PENDING,),
         ).fetchall()
     return [PendingApproval(*row) for row in rows]
@@ -120,11 +127,15 @@ def list_pending(*, db_path: Path | None = None, ttl_hours: int = DEFAULT_TTL_HO
 def get(approval_id: str, *, db_path: Path | None = None) -> PendingApproval | None:
     with _connect(db_path) as conn:
         row = conn.execute(
-            "SELECT id, created_at, source, schedule_id, tool_name, args_json,"
-            " summary, risk, status, decided_at, executed_at, result_json FROM approvals WHERE id = ?",
+            f"SELECT {_COLS} FROM approvals WHERE id = ?",
             (approval_id,),
         ).fetchone()
     return PendingApproval(*row) if row else None
+
+
+def owner_matches(record: PendingApproval, user_id: str | None) -> bool:
+    """审批项必须属于当前登录账户，防止换号后改到别人的持仓。"""
+    return str(record.user_id or "") == str(user_id or "")
 
 
 def decide(
@@ -138,8 +149,7 @@ def decide(
     with _connect(db_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
-            "SELECT id, created_at, source, schedule_id, tool_name, args_json,"
-            " summary, risk, status, decided_at, executed_at, result_json FROM approvals WHERE id = ?",
+            f"SELECT {_COLS} FROM approvals WHERE id = ?",
             (approval_id,),
         ).fetchone()
         record = PendingApproval(*row) if row else None
@@ -214,6 +224,8 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE approvals ADD COLUMN executed_at TEXT NOT NULL DEFAULT ''")
     if "result_json" not in columns:
         conn.execute("ALTER TABLE approvals ADD COLUMN result_json TEXT NOT NULL DEFAULT ''")
+    if "user_id" not in columns:
+        conn.execute("ALTER TABLE approvals ADD COLUMN user_id TEXT NOT NULL DEFAULT ''")
 
 
 def _utcnow() -> datetime:
@@ -233,8 +245,12 @@ def summarize(tool_name: str, args: dict[str, Any]) -> str:
     code = args.get("code") or ""
     name = args.get("name") or ""
     label = f"{code} {name}".strip() or tool_name
-    if tool_name == "update_portfolio" and args.get("stop_loss") is not None:
-        return f"{label} 止损 → {args['stop_loss']}"
+    if tool_name == "set_stop_loss":
+        items = args.get("items")
+        if isinstance(items, list) and items:
+            return f"批量补止损 {len(items)} 只"
+        if args.get("stop_loss") is not None:
+            return f"{label} 止损 → {args['stop_loss']}"
     action = args.get("side") if tool_name == "record_trade_fill" else args.get("action")
     action = action or ""
     shares = args.get("shares")
@@ -273,6 +289,7 @@ __all__ = [
     "expire_stale",
     "get",
     "list_pending",
+    "owner_matches",
     "record_execution",
     "sanitized_args",
     "summarize",

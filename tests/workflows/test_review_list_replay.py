@@ -27,12 +27,14 @@ from workflows.review_big_gainers import (
 )
 from workflows.review_list_replay import (
     ReplayContext,
+    ReviewDates,
+    _write_review_outputs,
     build_candidate_entry_map,
     classify_review_code,
     load_previous_context,
     replay_context_from_trace,
 )
-from workflows.review_recommendation_lookup import format_recommendation_history, normalize_code6
+from workflows.review_recommendation_lookup import format_recommendation_history, normalize_code6, recommendation_state
 from workflows.review_report_render import (
     build_focus_lines,
     build_report_lines,
@@ -218,6 +220,24 @@ def test_execution_snapshot_separates_raw_review_from_open_tradeability() -> Non
     assert execution_snapshot(one_price)["reason"] == "一字板不可成交"
 
 
+def test_execution_snapshot_reports_intraday_tradeability() -> None:
+    frame = pd.DataFrame(
+        {
+            "date": ["2026-05-12", "2026-05-13"],
+            "open": [10.0, 10.6],
+            "high": [10.2, 11.0],
+            "low": [9.9, 10.3],
+            "close": [10.0, 10.9],
+        }
+    )
+
+    snapshot = execution_snapshot(frame)
+
+    assert snapshot["executable"] is False
+    assert snapshot["intraday_executable"] is True
+    assert snapshot["low_gap_pct"] == pytest.approx(3.0)
+
+
 def test_spot_prefilter_uses_strict_today_close_threshold() -> None:
     codes, usable = find_big_gainers_from_spot(
         {
@@ -297,6 +317,26 @@ def test_format_recommendation_history_reports_missing_and_hits():
     assert "累计推荐3次" in note
 
 
+def test_recommendation_state_separates_tracking_from_ai_recommendation() -> None:
+    records = [
+        {
+            "recommend_date": "2026-05-12",
+            "is_ai_recommended": False,
+            "candidate_status": "shadow",
+            "selection_source": "step2_selected_for_ai",
+        }
+    ]
+
+    state = recommendation_state(records, "2026-05-12")
+
+    assert state == {
+        "tracked": True,
+        "ai_recommended": False,
+        "statuses": ["shadow"],
+        "sources": ["step2_selected_for_ai"],
+    }
+
+
 def test_build_report_lines_appends_recommendation_note():
     rows = [
         {
@@ -317,6 +357,17 @@ def test_build_report_lines_appends_recommendation_note():
     )
 
     assert "推荐记录: 2026-04-30 被推荐过；累计推荐1次" in "\n".join(lines)
+
+
+def test_review_outputs_write_structured_artifacts(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("REVIEW_REPORT_OUTPUT_DIR", str(tmp_path))
+    dates = ReviewDates(date(2026, 5, 13), date(2026, 5, 12), object())
+
+    _write_review_outputs([_row("000001", "平安银行", REVIEW_STAGE_TRIGGER_MISS)], {"total": 1}, dates, "报告")
+
+    assert (tmp_path / "review_list_20260513.md").read_text(encoding="utf-8") == "报告\n"
+    payload = (tmp_path / "review_list_20260513.json").read_text(encoding="utf-8")
+    assert '"previous_trade_date": "2026-05-12"' in payload
 
 
 def test_build_report_lines_separates_raw_and_executable_capture_rates() -> None:
@@ -449,6 +500,7 @@ def test_review_trace_records_as_run_stages_without_ohlcv(tmp_path):
     assert payload["symbols"]["000003"]["stage"] == REVIEW_STAGE_BASE_REJECT
     assert "all_df_map" not in payload
     assert "close" not in payload["symbols"]["000001"]
+    assert payload["symbols"]["000002"]["shadow_lane"] == "near_l2"
 
     path = write_review_trace_artifact(inputs, {"sos": [("000001", 5.0)]}, {}, str(tmp_path))
     loaded = load_review_trace_artifact(path, date(2026, 5, 12))

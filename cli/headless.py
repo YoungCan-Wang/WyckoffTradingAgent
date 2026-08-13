@@ -29,7 +29,11 @@ class DaemonGuard:
         self._schedule_id = schedule_id
         self._db_path = db_path
         self._nav = 0.0
+        self._user_id = ""
         self.queued: list[str] = []
+
+    def bind_session(self, user_id: str) -> None:
+        self._user_id = str(user_id or "")
 
     def set_nav(self, nav: float) -> None:
         self._nav = nav
@@ -46,6 +50,7 @@ class DaemonGuard:
             source=self._source,
             schedule_id=self._schedule_id,
             summary=approval_queue.summarize(name, args),
+            user_id=self._user_id,
             db_path=self._db_path,
         )
         self.queued.append(approval_id)
@@ -66,10 +71,32 @@ class DaemonGuard:
         return ASK_USER_TIMEOUT_SENTINEL
 
 
+def apply_saved_session(tools: Any) -> None:
+    """把 CLI 登录态注入 ToolRegistry；daemon 不恢复会话就会写到 USER_LIVE:local。"""
+    try:
+        from cli.auth import restore_session
+
+        session = restore_session()
+        if not session:
+            return
+        tools.state.update(
+            {
+                "user_id": session.get("user_id", ""),
+                "email": session.get("email", ""),
+                "access_token": session.get("access_token", ""),
+                "refresh_token": session.get("refresh_token", ""),
+            }
+        )
+    except Exception:
+        logger.warning("headless session restore failed", exc_info=True)
+
+
 def build_tools(guard: DaemonGuard) -> Any:
     from cli.tools import ToolRegistry
 
     tools = ToolRegistry()
+    apply_saved_session(tools)
+    guard.bind_session(str(tools.state.get("user_id") or ""))
     tools.set_confirm_callback(guard.confirm)
     tools.set_ask_user_question_callback(guard.ask)
     return tools
@@ -96,16 +123,19 @@ def start_external_mcp(tools: Any) -> Any:
         return None
 
 
-def current_nav() -> float:
+def current_nav(tools: Any | None = None) -> float:
     """取净值用于金额分级；取不到就返回 0，分级会退到 review。"""
     try:
-        from agents.portfolio_tools import portfolio
+        if tools is not None:
+            view = tools.execute("portfolio", {"mode": "view"})
+        else:
+            from agents.portfolio_tools import portfolio
 
-        view = portfolio(mode="view")
+            view = portfolio(mode="view")
     except Exception:
         logger.debug("nav lookup failed", exc_info=True)
         return 0.0
-    if not isinstance(view, dict):
+    if not isinstance(view, dict) or view.get("error"):
         return 0.0
     try:
         return float(view.get("total_equity") or 0.0)
@@ -137,7 +167,7 @@ def run_once(
 
     guard = DaemonGuard(source=source, schedule_id=schedule_id, db_path=db_path)
     tools = build_tools(guard)
-    guard.set_nav(current_nav())
+    guard.set_nav(current_nav(tools))
     mcp_manager = start_external_mcp(tools)
 
     from cli.runtime import AgentRuntime
