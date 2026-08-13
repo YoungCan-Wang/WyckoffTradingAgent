@@ -7,11 +7,7 @@ import type { Env } from '../app'
 
 type PortfolioBindings = { Bindings: Env; Variables: { auth: AuthContext } }
 
-export function buyDateForNewPosition(value: string | null | undefined): string {
-  const text = typeof value === 'string' ? value.trim() : ''
-  if (text) return text
-  return new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
-}
+export const MISSING_BUY_DT_ERROR = '缺少建仓日 buy_dt，请询问用户后再写入'
 
 export function normalizeBuyDate(value: unknown): unknown {
   if (value === '' || value == null) return null
@@ -177,12 +173,7 @@ async function savePosition(
   portfolioId: string,
   position: z.infer<typeof POSITION_SCHEMA>,
 ): Promise<string> {
-  const record = {
-    ...position,
-    name: position.name || position.code,
-    buy_dt: position.buy_dt || '',
-    portfolio_id: portfolioId,
-  }
+  const record = positionWriteRecord(portfolioId, position)
   const updated = await supabase
     .from('portfolio_positions')
     .update(record)
@@ -191,9 +182,23 @@ async function savePosition(
     .select('code')
   if (updated.error) return updated.error.message
   if ((updated.data || []).length > 0) return ''
-  const inserted = await supabase.from('portfolio_positions').insert({
-    ...record,
-    buy_dt: buyDateForNewPosition(position.buy_dt),
-  })
+  if (!record.buy_dt) return MISSING_BUY_DT_ERROR
+  const inserted = await supabase.from('portfolio_positions').insert(record)
   return inserted.error?.message || ''
+}
+
+export function positionWriteRecord(
+  portfolioId: string,
+  position: z.infer<typeof POSITION_SCHEMA>,
+): Record<string, unknown> {
+  const buyDt = (position.buy_dt || '').trim()
+  const record: Record<string, unknown> = {
+    code: position.code,
+    name: position.name || position.code,
+    shares: position.shares,
+    cost_price: position.cost_price,
+    portfolio_id: portfolioId,
+  }
+  if (buyDt) record.buy_dt = buyDt
+  return record
 }

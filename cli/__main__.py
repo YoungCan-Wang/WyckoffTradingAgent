@@ -533,7 +533,10 @@ def _cmd_portfolio(args):
         client, uid, pid = _get_session_client()
         code = args.code
         if not code:
-            print("用法: wyckoff portfolio add <code> --name X --shares N --cost N [--buy-dt YYYYMMDD]")
+            print("用法: wyckoff portfolio add <code> --name X --shares N --cost N --buy-dt YYYYMMDD")
+            sys.exit(1)
+        if not (args.buy_dt or "").strip():
+            print("缺少建仓日 buy_dt，请询问用户后再写入")
             sys.exit(1)
         from integrations.supabase_portfolio import upsert_position
 

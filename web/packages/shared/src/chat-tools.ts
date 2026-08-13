@@ -1082,6 +1082,7 @@ export async function execExecutePortfolioUpdate(
   shares: number | null,
   cost_price: number | null,
   stop_loss: number | null,
+  buy_dt: string | null = null,
 ): Promise<string> {
   const portfolioId = `USER_LIVE:${userId}`
   const normalized = normalizePortfolioCode(code)
@@ -1104,7 +1105,11 @@ export async function execExecutePortfolioUpdate(
     if (!name || !shares || !cost_price) {
       return '执行失败：缺少 name、shares、cost_price 参数'
     }
-    const record = buildPortfolioWriteRecord(portfolioId, normalized, action, name, shares, cost_price, stop_loss)
+    const buyDate = (buy_dt || '').trim()
+    if (action === 'add' && !buyDate) {
+      return '执行失败：缺少建仓日 buy_dt，请询问用户后再写入'
+    }
+    const record = buildPortfolioWriteRecord(portfolioId, normalized, action, name, shares, cost_price, stop_loss, buyDate)
     const error = await savePortfolioPosition(deps, portfolioId, normalized, record)
     const currency = normalized.endsWith('.HK') ? 'HK$' : normalized.endsWith('.US') ? '$' : '¥'
     if (error) return `执行失败: ${error}`
@@ -1118,13 +1123,14 @@ export async function execExecutePortfolioUpdate(
 export function buildPortfolioWriteRecord(
   portfolioId: string,
   code: string,
-  action: 'add' | 'update',
+  _action: 'add' | 'update',
   name: string,
   shares: number,
   cost_price: number,
   stop_loss: number | null,
+  buy_dt = '',
 ): Record<string, unknown> {
-  // update 不得重写 buy_dt：Step4 sellable_shares 用它做 A 股 T+1，写成「今天」会把可卖仓冻住。
+  // update 默认不写 buy_dt：Step4 sellable_shares 用它做 A 股 T+1，写成「今天」会把可卖仓冻住。
   // stop_loss 仅在显式给到有限数字时写入；工具 schema 是 nullable，LLM 省略时传来 null，
   // 若仍写入会把已有止损清掉，Step4 止损强平/继承都会失效。
   const record: Record<string, unknown> = {
@@ -1134,7 +1140,7 @@ export function buildPortfolioWriteRecord(
     shares,
     cost_price,
   }
-  if (action === 'add') record.buy_dt = todayDateString()
+  if (buy_dt) record.buy_dt = buy_dt
   if (typeof stop_loss === 'number' && Number.isFinite(stop_loss)) record.stop_loss = stop_loss
   return record
 }

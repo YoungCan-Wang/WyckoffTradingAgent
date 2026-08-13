@@ -78,6 +78,7 @@ def update_portfolio(
 _BATCH_ACTIONS = frozenset({"add", "update", "remove"})
 _BATCH_MAX_ITEMS = 30
 _STOPS_MAX_ITEMS = 200
+MISSING_BUY_DT_ERROR = "缺少建仓日 buy_dt，请询问用户后再写入"
 
 
 def set_stop_loss(
@@ -571,8 +572,9 @@ def _apply_portfolio_action(
     refresh_equity: bool = True,
 ) -> str | dict:
     if action in ("add", "update"):
-        if action == "add":
-            buy_dt = _filled_buy_dt(buy_dt)
+        buy_dt = str(buy_dt or "").strip()
+        if action == "add" and not buy_dt:
+            return {"error": MISSING_BUY_DT_ERROR}
         return _upsert_position(
             portfolio_id, code, name, shares, cost_price, buy_dt, cloud, tool_context, refresh_equity=refresh_equity
         )
@@ -581,11 +583,6 @@ def _apply_portfolio_action(
     if action == "set_cash":
         return _set_cash(portfolio_id, free_cash, cloud, tool_context, refresh_equity=refresh_equity)
     return {"error": f"未知操作: {action}，支持 add/update/remove/set_cash/delete_records"}
-
-
-def _filled_buy_dt(buy_dt: str) -> str:
-    text = str(buy_dt or "").strip()
-    return text or date.today().isoformat()
 
 
 def _validate_position_amounts(shares: int, cost_price: float) -> dict | None:

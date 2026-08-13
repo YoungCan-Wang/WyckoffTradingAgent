@@ -940,7 +940,8 @@ Cloudflare Pages 通过 `web/functions/api/portfolio/[[path]].ts` 将同域请�
 API 响应同时返回 `total_equity`、`valuation_updated_at`；刷新失败时另带 `valuation_warning`，前端不得
 把旧值展示成刚刚成功刷新的实时净值。
 历史持仓允许 `buy_dt` 使用 `YYYYMMDD` 或空字符串；API 输出统一归一化为 `YYYY-MM-DD` 或 `null`，
-确保 Web 日期控件和诊断链路只消费一种日期格式。新多头写入若未给 `buy_dt`，记为当天日期，禁止空建仓日落库。
+确保 Web 日期控件和诊断链路只消费一种日期格式。新多头 `add` 未给 `buy_dt` 时报错，须询问用户；
+`update` 改股数/成本时不得覆盖已有建仓日。
 `portfolios` 与 `portfolio_positions` 已启用 RLS，SELECT/INSERT/UPDATE/DELETE 均要求
 `split_part(portfolio_id, ':', 2) = auth.uid()::text`；UPDATE 同时使用 `USING` 与 `WITH CHECK`。
 因此用户只能读取和修改自己的持仓。白名单用户可在页面编辑现金和持仓，选择“保存到云端”或

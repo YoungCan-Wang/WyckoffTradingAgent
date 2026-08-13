@@ -814,6 +814,7 @@ def upsert_local_position(
     buy_dt: str = "",
 ) -> None:
     _ensure_local_portfolio(portfolio_id)
+    buy_dt = str(buy_dt or "").strip()
     conn = get_db()
     with conn:
         if buy_dt:

@@ -54,6 +54,40 @@ def test_upsert_position_accepts_hk_code(monkeypatch) -> None:
     assert "06881.HK" in msg
 
 
+def test_upsert_position_omits_empty_buy_dt(monkeypatch) -> None:
+    captured: dict = {}
+
+    class FakeTable:
+        def upsert(self, row, on_conflict=None):
+            captured["row"] = row
+
+            class Result:
+                def execute(self_inner):
+                    return self_inner
+
+            return Result()
+
+    class FakeClient:
+        def table(self, name):
+            return FakeTable()
+
+    monkeypatch.setattr(
+        "integrations.supabase_portfolio._resolve_write_client",
+        lambda client, operation: FakeClient(),
+    )
+    monkeypatch.setattr("integrations.supabase_portfolio._ensure_portfolio_exists", lambda *a, **k: None)
+
+    ok, _msg = upsert_position(
+        "USER_LIVE:u1",
+        {"code": "000001", "name": "平安银行", "shares": 200, "cost_price": 10.5, "buy_dt": ""},
+        client=object(),  # type: ignore[arg-type]
+    )
+    assert ok is True
+    assert "buy_dt" not in captured["row"]
+    assert captured["row"]["shares"] == 200
+    assert captured["row"]["cost_price"] == 10.5
+
+
 def test_upsert_position_rejects_bare_short_digits(monkeypatch) -> None:
     ok, msg = upsert_position("USER_LIVE:u1", {"code": "6881", "shares": 1, "cost_price": 1}, client=object())  # type: ignore[arg-type]
     assert ok is False

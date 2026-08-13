@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buyDateForNewPosition, normalizeBuyDate, parsePortfolioInput } from './portfolio'
+import { MISSING_BUY_DT_ERROR, normalizeBuyDate, parsePortfolioInput, positionWriteRecord } from './portfolio'
 
 describe('portfolio API input', () => {
   it('accepts a valid user portfolio', () => {
@@ -83,13 +83,36 @@ describe('portfolio API input', () => {
   })
 })
 
-describe('buyDateForNewPosition', () => {
-  it('keeps an explicit buy date', () => {
-    expect(buyDateForNewPosition('2026-08-12')).toBe('2026-08-12')
+describe('positionWriteRecord', () => {
+  it('omits buy_dt on size/cost edits when the caller did not send a date', () => {
+    const record = positionWriteRecord('USER_LIVE:u', {
+      code: '000001',
+      name: '平安银行',
+      shares: 200,
+      cost_price: 10.5,
+      buy_dt: null,
+    })
+    expect(record).not.toHaveProperty('buy_dt')
+    expect(record).toMatchObject({ code: '000001', shares: 200, cost_price: 10.5 })
   })
 
-  it('fills today when a new long omits buy_dt', () => {
-    expect(buyDateForNewPosition('')).toMatch(/^\d{4}-\d{2}-\d{2}$/)
-    expect(buyDateForNewPosition(null)).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+  it('keeps an explicit buy date and rejects a new long without one', () => {
+    const withDate = positionWriteRecord('USER_LIVE:u', {
+      code: '300390',
+      name: '天华新能',
+      shares: 200,
+      cost_price: 64.9,
+      buy_dt: '2026-08-12',
+    })
+    expect(withDate.buy_dt).toBe('2026-08-12')
+    const missing = positionWriteRecord('USER_LIVE:u', {
+      code: '300390',
+      name: '天华新能',
+      shares: 200,
+      cost_price: 64.9,
+      buy_dt: null,
+    })
+    expect(missing.buy_dt).toBeUndefined()
+    expect(MISSING_BUY_DT_ERROR).toContain('buy_dt')
   })
 })

@@ -423,6 +423,7 @@ def upsert_position(
         buy_dt = str(position.get("buy_dt", "") or "").strip()
         if buy_dt:
             row["buy_dt"] = buy_dt
+        # 空 buy_dt 不写入：update 不得覆盖已有建仓日，add 由调用方先校验。
         client.table(TABLE_PORTFOLIO_POSITIONS).upsert(row, on_conflict="portfolio_id,code").execute()
         return True, _mutation_message(f"{code} 已更新", portfolio_id, client, refresh_equity)
     except Exception as e:
