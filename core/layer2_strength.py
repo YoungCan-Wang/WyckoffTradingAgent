@@ -366,8 +366,7 @@ def trend_continuation_channel_ok(
         return False
     if rps_slow is None or rps_slow < cfg.trend_cont_rps_slow_min:
         return False
-    drawdown_ok = _trend_drawdown_ok(close, int(cfg.trend_cont_drawdown_window), float(cfg.trend_cont_max_drawdown_pct))
-    return drawdown_ok and _trend_volume_ok(df_sorted, float(cfg.trend_cont_vol_ratio_min))
+    return _trend_volume_ok(df_sorted, float(cfg.trend_cont_vol_ratio_min))
 
 
 def _symbol_state(df_sorted: pd.DataFrame, cfg: Any, bench_ctx: BenchmarkContext) -> Layer2SymbolState:
@@ -691,14 +690,6 @@ def _breakout_volume_ok(df_sorted: pd.DataFrame, cfg: Any) -> bool:
     return ref_vol > 0 and recent_vol / ref_vol >= cfg.breakout_accel_vol_ratio
 
 
-def _trend_drawdown_ok(close: pd.Series, window: int, max_drawdown_pct: float) -> bool:
-    recent_close = close.tail(max(int(window), 10))
-    if len(recent_close) < 10:
-        return False
-    drawdown = (recent_close - recent_close.cummax()) / recent_close.cummax() * 100.0
-    return abs(float(drawdown.min())) < max_drawdown_pct
-
-
 def _trend_volume_ok(df_sorted: pd.DataFrame, min_ratio: float) -> bool:
     vol = pd.to_numeric(df_sorted.get("volume"), errors="coerce").dropna()
     if len(vol) < 20:
@@ -1009,7 +1000,7 @@ def _diagnose_rs_div(
 
 
 def _diagnose_trend_cont(
-    cfg: Any, df_sorted: pd.DataFrame, close_series: pd.Series, rps_slow: float | None, state: Any
+    cfg: Any, df_sorted: pd.DataFrame, _close_series: pd.Series, rps_slow: float | None, state: Any
 ) -> tuple[float, list[str]]:
     if not getattr(cfg, "enable_trend_cont_channel", True):
         return 999.0, ["通道未启用"]
@@ -1025,12 +1016,6 @@ def _diagnose_trend_cont(
         gaps.append((thresh_rps - val_rps) / thresh_rps)
         fail.append(f"RPS(slow)不足: 当前 {val_rps:.1f}, 阈值 {thresh_rps:.1f}, 差距 {thresh_rps - val_rps:.1f}")
 
-    drawdown_ok = _trend_drawdown_ok(
-        close_series, int(cfg.trend_cont_drawdown_window), float(cfg.trend_cont_max_drawdown_pct)
-    )
-    if not drawdown_ok:
-        gaps.append(0.4)
-        fail.append("趋势回撤超标: 未通过")
     if not _trend_volume_ok(df_sorted, float(cfg.trend_cont_vol_ratio_min)):
         gaps.append(0.4)
         fail.append("成交量不合规: 未通过")

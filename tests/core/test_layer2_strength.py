@@ -15,6 +15,12 @@ from core.layer2_strength import (
     channel_labels,
     close_return_pct,
     rps_filter_flags,
+    trend_continuation_channel_ok,
+)
+from core.trend_drawdown_risk import (
+    annotate_trend_drawdown_risk,
+    classify_trend_drawdown,
+    classify_trend_drawdown_pct,
 )
 
 
@@ -92,6 +98,47 @@ def test_rps_filter_flags_allow_accel_bypass() -> None:
 def test_channel_labels_preserve_order_and_return_empty_without_hits() -> None:
     assert channel_labels({"ambush": True, "sos": True}) == ["潜伏通道", "点火破局"]
     assert channel_labels({}) == []
+
+
+def _volatile_trend_frame() -> pd.DataFrame:
+    close = [60.0 + i * 0.20 for i in range(140)] + [100.0, 68.0] + [82.0 + i * 0.45 for i in range(58)]
+    return pd.DataFrame({"close": close, "volume": [1_000_000.0] * len(close)})
+
+
+def test_trend_continuation_no_longer_hard_blocks_large_historical_drawdown() -> None:
+    frame = _volatile_trend_frame()
+    cfg = SimpleNamespace(
+        enable_trend_cont_channel=True,
+        trend_cont_rps_slow_min=75.0,
+        trend_cont_vol_ratio_min=0.70,
+    )
+
+    assert trend_continuation_channel_ok(
+        cfg,
+        df_sorted=frame,
+        close=frame["close"],
+        bullish_alignment=True,
+        rps_slow=90.0,
+        active=True,
+    )
+
+
+def test_trend_drawdown_becomes_candidate_risk_metadata() -> None:
+    frame = _volatile_trend_frame()
+    risk = classify_trend_drawdown(frame["close"])
+    entries = [{"code": "000001", "risk": "仍需 confirmed 确认"}]
+
+    annotate_trend_drawdown_risk(entries, {"000001": frame}, {"000001": "趋势延续"})
+
+    assert risk is not None and risk.drawdown_pct >= 30.0
+    assert "60日极高波动" in entries[0]["risk"]
+    assert entries[0]["metrics"]["trend_drawdown60_pct"] >= 30.0
+
+
+def test_trend_drawdown_penalty_starts_at_high_risk_boundary() -> None:
+    assert classify_trend_drawdown_pct(19.99).rank_penalty == 0.0
+    assert classify_trend_drawdown_pct(20.0).rank_penalty == 0.02
+    assert classify_trend_drawdown_pct(30.0).rank_penalty == 0.04
 
 
 def test_diagnose_layer2_symbol_failure(monkeypatch) -> None:

@@ -35,6 +35,7 @@ from core.mainline_engine import MainlineEngineConfig, build_mainline_candidates
 from core.price_targets import compute_price_targets
 from core.theme_activity import build_theme_activity_snapshot
 from core.theme_radar import normalize_theme_name
+from core.trend_drawdown_risk import annotate_trend_drawdown_risk
 
 logger = logging.getLogger(__name__)
 
@@ -186,11 +187,10 @@ class FunnelConfig:
     rs_div_price_from_low_max: float = 0.50  # 位阶保护：现价 <= 年内低点 +50%
 
     # Layer 2 趋势延续通道（Trend Continuation Channel）
-    # 已确认多头且 RPS 极强的稳定趋势股，不受 bias_200 上限约束。
-    # 通过最大回撤排除暴涨暴跌的老妖股。
+    # 已确认多头且 RPS 极强的趋势股，不受 bias_200 上限约束。
+    # 60 日最大回撤仅作风险分层，不再一票否决。
     enable_trend_cont_channel: bool = True
     trend_cont_rps_slow_min: float = 75.0  # RPS120 >= 此值
-    trend_cont_max_drawdown_pct: float = 20.0  # 近 N 日最大回撤 < 此值
     trend_cont_drawdown_window: int = 60  # 回撤计算窗口（交易日）
     trend_cont_vol_ratio_min: float = 0.70  # 近5日均量 / 20日均量，过滤缩量趋势末端
 
@@ -2928,6 +2928,7 @@ def _candidate_entries_for_result(
         main_force_map=main_force_map,
     )
     merged = merge_candidate_entries(wyckoff_entries, lane_entries, mainline_entries)
+    annotate_trend_drawdown_risk(merged, df_map, channel_map)
     _attach_price_targets(merged, df_map)
     return merged
 

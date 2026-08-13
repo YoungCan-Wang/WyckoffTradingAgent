@@ -66,6 +66,7 @@ def complete_step4_decisions(
             )
         )
     decisions = _attach_candidate_meta(decisions, candidate_meta_map)
+    decisions = _limit_high_drawdown_attacks(decisions, candidate_meta_map)
     held_codes = {p.code for p in portfolio.positions}
     decisions = _limit_ai_candidate_upgrades(decisions, held_codes)
     kept_decisions, dropped, max_new_names = trim_new_buy_decisions(
@@ -100,6 +101,23 @@ def _limit_ai_candidate_upgrades(
             out.append(decision)
             continue
         reason = "AI候选审计不得把外部新仓升级为ATTACK"
+        detail = f"{decision.reason}；{reason}" if decision.reason else reason
+        out.append(replace(decision, action="PROBE", reason=detail))
+    return out
+
+
+def _limit_high_drawdown_attacks(
+    decisions: list[DecisionItem],
+    candidate_meta_map: dict[str, CandidateMeta],
+) -> list[DecisionItem]:
+    out: list[DecisionItem] = []
+    for decision in decisions:
+        meta = candidate_meta_map.get(decision.code)
+        high_drawdown = meta and any("60日高波动" in risk or "60日极高波动" in risk for risk in meta.risk_factors)
+        if decision.action != "ATTACK" or not high_drawdown:
+            out.append(decision)
+            continue
+        reason = "趋势历史回撤显示高波动，只允许PROBE试仓"
         detail = f"{decision.reason}；{reason}" if decision.reason else reason
         out.append(replace(decision, action="PROBE", reason=detail))
     return out
