@@ -86,6 +86,7 @@ config/profiles/*private*.yaml
 *.sqlite3
 .wyckoff/
 .claude/settings.local.json
+.claude/plans/
 
 # 回测产物与快照缓存（体积大，本地生成即可）
 analysis/backtest/

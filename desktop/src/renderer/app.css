@@ -7,9 +7,23 @@
   --tx2: #6f6d66;
   --tx3: #9b9891;
   --clay: #d97757;
+  /* Accent tints: soft fill behind the accent, ink for text ON the accent.
+     Collected from scattered rgba(217,119,87,…) literals so a palette edit
+     lands in one place. */
+  --clay-soft: rgba(217, 119, 87, .14);
+  --clay-ink: #b4552f;
   /* A-share convention: red up, green down. */
   --up: #e5484d;
   --dn: #2f9e5f;
+  /* Profit/loss tints for tags and pills — same collection rationale. */
+  --up-soft: rgba(229, 72, 77, .12);
+  --up-ink: #c13d42;
+  --dn-soft: rgba(47, 158, 95, .13);
+  --dn-ink: #1f7a46;
+  /* Interactive surfaces. --hover collects the ~11 hardcoded greys
+     (#ecebe6/#e7e5e0/#eceae4/#f2f1ec); --active is the settled/selected state. */
+  --hover: #ecebe6;
+  --active: #e7e5e0;
   /* Data-view surface. Aliased to the regular palette so charts follow the
      app theme instead of being permanently dark — they are just another view,
      not a special "data" mode. html.dark overrides these below. */
@@ -25,6 +39,10 @@
   --fs: 13.5px;
   --ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC",
         "Microsoft YaHei", sans-serif;
+  /* Numeric/code face — tabular figures align in tables and don't jitter on
+     update. Serif is optional, reserved for long-form report titles. */
+  --mono: "JetBrains Mono", "SF Mono", Menlo, ui-monospace, monospace;
+  --serif: "Songti SC", Georgia, "Times New Roman", serif;
   --gap: 1;
   /* Raised surface (dialog nav, inputs). Overridden in dark. */
   --paper2: #f7f6f3;
@@ -43,6 +61,15 @@ html.dark {
   --tx3: #71777f;
   /* Cards need to sit slightly above the page in dark mode. */
   --d-card: #1b1e24;
+  /* Interactive + accent/pnl tints, dark variants. */
+  --hover: #24272e;
+  --active: #2a2e36;
+  --clay-soft: rgba(217, 119, 87, .2);
+  --clay-ink: #e8a184;
+  --up-soft: rgba(229, 72, 77, .2);
+  --up-ink: #f0888c;
+  --dn-soft: rgba(47, 158, 95, .2);
+  --dn-ink: #6ecb96;
   color-scheme: dark;
 }
 html.dark body { background: var(--paper); }
@@ -56,8 +83,8 @@ html.dark .num { background: var(--paper2); color: var(--tx); }
 html.dark .dlg-nav { background: var(--side); }
 html.dark .dlg-n:hover,
 html.dark .menu-i:hover,
-html.dark .acct:hover { background: #24272e; }
-html.dark .dlg-n.on { background: #2a2e36; }
+html.dark .acct:hover { background: var(--hover); }
+html.dark .dlg-n.on { background: var(--active); }
 html.dark .ava { background: #333842; color: #c8ccd4; }
 html.dark .ov { background: rgba(0, 0, 0, .5); }
 
@@ -79,6 +106,19 @@ html.no-motion *::after {
 }
 
 * { box-sizing: border-box; }
+
+/* Tabular figures: financial numbers align in columns and don't jitter as they
+   update. Apply to any numeric run — KPI values, table cells, prices. */
+.tnum { font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; }
+
+/* Motion + print discipline (see .claude/skills/ui-design.md hard constraints).
+   The opacity reset keeps entrance-animated content from exporting blank. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
+@media print {
+  *, *::before, *::after { animation: none !important; transition: none !important; opacity: 1 !important; }
+}
 
 body {
   margin: 0;
@@ -114,8 +154,8 @@ body {
   padding: 6px 9px; border-radius: 7px; font-size: 13px;
   cursor: default; user-select: none;
 }
-.nv:hover { background: #ecebe6; }
-.nv.on { background: #e7e5e0; font-weight: 600; }
+.nv:hover { background: var(--hover); }
+.nv.on { background: var(--active); font-weight: 600; }
 .nv .g { width: 14px; text-align: center; color: #7d7a73; font-size: 12px; }
 .nv .n { margin-left: auto; color: var(--tx3); font-size: 11px; }
 .nv .n.warn { color: var(--clay); font-weight: 600; }
@@ -128,7 +168,7 @@ body {
   font: inherit; font-size: 12.5px; color: var(--tx); cursor: pointer;
   text-align: left;
 }
-.acct:hover { background: #ecebe6; }
+.acct:hover { background: var(--hover); }
 .acct-n {
   flex: 1; min-width: 0; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap;
@@ -190,11 +230,11 @@ body {
   padding: 4px 9px 4px 8px; border-radius: 8px; cursor: pointer; line-height: 1;
 }
 .topbtn:hover { color: var(--tx); border-color: #cdc9c0; background: #f7f6f2; }
-.topbtn.on { color: var(--tx); background: #eceae4; }
+.topbtn.on { color: var(--tx); background: var(--hover); }
 .topbtn-g { font-size: 13px; color: var(--tx3); }
 .topbtn-cv { font-size: 10px; color: var(--tx3); margin-left: 1px; }
 html.dark .topbtn { background: var(--paper2); }
-html.dark .topbtn:hover { background: #24272e; }
+html.dark .topbtn:hover { background: var(--hover); }
 
 /* ---- settings modal ---- */
 .ov {
@@ -222,15 +262,15 @@ html.dark .topbtn:hover { background: #24272e; }
   font: inherit; font-size: 13px; color: var(--tx2);
   padding: 7px 9px; border-radius: 8px; cursor: pointer;
 }
-.dlg-n:hover { background: #eceae4; }
-.dlg-n.on { background: #e6e3dc; color: var(--tx); font-weight: 600; }
+.dlg-n:hover { background: var(--hover); }
+.dlg-n.on { background: var(--active); color: var(--tx); font-weight: 600; }
 .dlg-main { flex: 1; min-width: 0; position: relative; display: flex; }
 .dlg-x {
   position: absolute; top: 13px; right: 14px; z-index: 1;
   width: 27px; height: 27px; border: 0; border-radius: 7px;
   background: none; color: var(--tx3); font-size: 13px; cursor: pointer;
 }
-.dlg-x:hover { background: #f2f1ec; color: var(--tx); }
+.dlg-x:hover { background: var(--hover); color: var(--tx); }
 .dlg-body { flex: 1; overflow-y: auto; padding: 26px 30px 30px; }
 .dlg-body h3.sec:first-child { margin-top: 0; }
 .dlg-sub { margin: -6px 0 16px; color: var(--tx3); font-size: 12.5px; line-height: 1.6; }
@@ -253,7 +293,7 @@ html.dark .topbtn:hover { background: #24272e; }
   font: inherit; font-size: 13px; color: var(--tx); cursor: pointer;
   text-align: left;
 }
-.menu-i:hover { background: #f2f1ec; }
+.menu-i:hover { background: var(--hover); }
 .menu-i.danger { color: #c14a3d; }
 .menu-i.danger:hover { background: rgba(217, 119, 87, .1); }
 .menu-g { width: 15px; text-align: center; color: var(--tx3); font-size: 12px; }
@@ -268,7 +308,7 @@ html.dark .topbtn:hover { background: #24272e; }
   padding: 4px 8px; border-radius: 999px; cursor: pointer; margin-right: 4px;
 }
 .chip:hover { background: rgba(217, 119, 87, .16); }
-.icb.on { color: var(--tx); background: #e7e5e0; }
+.icb.on { color: var(--tx); background: var(--active); }
 #btn-side { flex: none; }
 
 /* Wide windows: keep the reading column from stretching to full width. */
@@ -306,7 +346,7 @@ html.dark .topbtn:hover { background: #24272e; }
 .msg { display: flex; gap: 10px; margin-bottom: calc(18px * var(--gap)); }
 .msg .av {
   width: 22px; height: 22px; flex: none; border-radius: 50%;
-  background: #e7e5e0; display: flex; align-items: center;
+  background: var(--active); display: flex; align-items: center;
   justify-content: center; font-size: 10.5px; color: var(--tx2);
 }
 .msg.a .av { background: none; color: var(--clay); font-size: 15px; }
@@ -393,7 +433,7 @@ html.dark .topbtn:hover { background: #24272e; }
   border-radius: 7px 7px 0 0; max-width: 170px;
   cursor: default; user-select: none;
 }
-.tab:hover { background: #ecebe6; }
+.tab:hover { background: var(--hover); }
 .tab .g { font-size: 11px; color: #8d8a83; }
 .tab .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tab .x { color: var(--tx3); font-size: 10px; cursor: pointer; }
@@ -525,11 +565,11 @@ html.dark .bview { background: #202329; }
   text-align: left; border: 0; background: none; font: inherit;
   padding: 7px 9px; border-radius: 8px; cursor: pointer;
 }
-.vitem:hover:not(:disabled) { background: #eceae4; }
-.vitem.on { background: #e6e3dc; }
+.vitem:hover:not(:disabled) { background: var(--hover); }
+.vitem.on { background: var(--active); }
 .vitem:disabled { cursor: default; opacity: .55; }
-html.dark .vitem:hover:not(:disabled) { background: #24272e; }
-html.dark .vitem.on { background: #2a2e36; }
+html.dark .vitem:hover:not(:disabled) { background: var(--hover); }
+html.dark .vitem.on { background: var(--active); }
 .vi-name {
   font-size: 12.5px; color: var(--tx); font-weight: 500;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -584,12 +624,11 @@ html.dark .vitem.on { background: #2a2e36; }
   font-size: 10.5px; padding: 1px 6px; border-radius: 5px; flex: none;
   line-height: 1.7;
 }
-.tag.pri { background: rgba(217, 119, 87, .14); color: #b4552f; }
-.tag.alt { background: rgba(47, 158, 95, .13); color: #1f7a46; }
-.tag.warn { background: rgba(229, 72, 77, .12); color: #c13d42; }
-html.dark .tag.pri { background: rgba(217, 119, 87, .2); color: #e8a184; }
-html.dark .tag.alt { background: rgba(47, 158, 95, .2); color: #6ecb96; }
-html.dark .tag.warn { background: rgba(229, 72, 77, .2); color: #f0888c; }
+/* pri = accent (clay), alt = profit (green), warn = loss (red). Tints follow
+   the theme via tokens, so no separate html.dark rule is needed. */
+.tag.pri { background: var(--clay-soft); color: var(--clay-ink); }
+.tag.alt { background: var(--dn-soft); color: var(--dn-ink); }
+.tag.warn { background: var(--up-soft); color: var(--up-ink); }
 
 .macts { display: flex; gap: 6px; flex-wrap: wrap; flex: none; }
 .mbtn {
