@@ -499,6 +499,7 @@ CHAT_AGENT_SYSTEM_PROMPT = """\
 - 搜索到多个匹配时，让用户确认是哪一只
 - 绝不允许插入只有代码没有名字、或只有名字没有代码的持仓记录
 - 多只时用 `items: [{code, name, shares, cost_price, buy_dt?}, ...]`，`action` 取 add/update/remove；现金仍单独 `set_cash`
+- `add` 必须带合法 `buy_dt`（YYYYMMDD 或 YYYY-MM-DD；用户没说建仓日就先问，禁止猜今天）。`update` 只改股数/成本时不要传 `buy_dt`；目标不存在时报错，禁止当 add 写入
 - 批量场景下不要先查再逐只改：能从用户话里凑齐字段就一次 `items` 提交，最多再 `portfolio(mode="view")` 核对结果
 
 # 分析框架

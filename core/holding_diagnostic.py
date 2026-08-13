@@ -54,8 +54,8 @@ _LIMIT_MOVE_DAY_CHANGE_PCT = -5.0  # 当日跌幅达到此阈值才触发涨跌�
 class HoldingInput:
     """诊断输入的持仓标识。
 
-    ``buy_dt`` 必须显式给出：退出结构只能看建仓后的价格路径，缺失时会静默退化成
-    全历史，让建仓前的暴跌反杀新仓。留空是"确实无建仓日"的显式声明，不是默认值。
+    ``buy_dt`` 必须显式给出：退出结构只能看建仓后的价格路径。缺失或无法解析时
+    fail-closed（不发结构退出），禁止回退全历史让建仓前暴跌反杀新仓。
     """
 
     code: str
@@ -302,12 +302,13 @@ def _exit_snapshot(
 def _exit_history_since_entry(df: pd.DataFrame, buy_dt: str) -> pd.DataFrame:
     """退出结构只能使用建仓后的价格路径，避免历史高点反杀新仓。
 
-    已声明 buy_dt 但切不出建仓后 K 线时（例如当日建仓、日线尚未入库），
+    buy_dt 缺失/无法解析，或切不出建仓后 K 线时（例如当日建仓、日线尚未入库），
     返回空表 fail-closed，禁止回退全历史让建仓前暴跌冒充破位。
     """
+    empty = df.iloc[0:0]
     entry = pd.to_datetime(str(buy_dt or "").strip(), errors="coerce")
     if pd.isna(entry) or "date" not in df.columns:
-        return df
+        return empty
     dates = pd.to_datetime(df["date"], errors="coerce")
     return df.loc[dates >= entry].copy()
 
@@ -619,7 +620,7 @@ def diagnose_holdings(
 
     Parameters
     ----------
-    holdings : [HoldingInput, ...]，buy_dt 必填（无建仓日时显式传空串）
+    holdings : [HoldingInput, ...]，buy_dt 必填；空串表示无建仓日，结构退出 fail-closed
     df_map   : {code: DataFrame} 每只股票的 OHLCV 数据
     bench_df : 大盘基准 OHLCV
     cfg      : FunnelConfig

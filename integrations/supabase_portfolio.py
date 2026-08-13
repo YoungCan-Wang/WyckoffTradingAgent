@@ -18,6 +18,11 @@ from typing import Any
 
 from supabase import Client
 
+from core.buy_dt import (
+    POSITION_EXISTS_ERROR,
+    POSITION_MISSING_ERROR,
+    buy_dt_error,
+)
 from core.constants import (
     TABLE_DAILY_NAV,
     TABLE_PORTFOLIO_POSITIONS,
@@ -393,6 +398,39 @@ def _mutation_message(message: str, portfolio_id: str, client: Client, refresh_e
     return f"{message}；{suffix}"
 
 
+def _base_position_row(portfolio_id: str, position: dict[str, Any]) -> tuple[str, dict[str, Any]] | tuple[None, str]:
+    from core.portfolio_symbol import normalize_portfolio_code
+
+    code = normalize_portfolio_code(str(position.get("code", "")))
+    if not code:
+        return None, f"无效的股票代码: {position.get('code', '')}"
+    row = {
+        "portfolio_id": portfolio_id,
+        "code": code,
+        "name": str(position.get("name", "") or "").strip(),
+        "shares": int(position.get("shares", 0) or 0),
+        "cost_price": float(position.get("cost_price", 0) or 0),
+    }
+    return code, row
+
+
+def _with_validated_buy_dt(
+    row: dict[str, Any], position: dict[str, Any], *, required: bool
+) -> tuple[dict[str, Any], str]:
+    buy_dt = str(position.get("buy_dt", "") or "").strip()
+    error = buy_dt_error(buy_dt, required=required)
+    if error:
+        return row, error
+    if buy_dt:
+        row["buy_dt"] = buy_dt
+    return row, ""
+
+
+def _is_unique_violation(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return "duplicate" in text or "23505" in text or "unique constraint" in text
+
+
 def upsert_position(
     portfolio_id: str,
     position: dict[str, Any],
@@ -400,33 +438,67 @@ def upsert_position(
     *,
     refresh_equity: bool = True,
 ) -> tuple[bool, str]:
-    """新增或更新单个持仓。
+    """成交回填兜底：先 update，仅当持仓不存在且 buy_dt 合法时才 insert。"""
+    ok, msg = update_position(portfolio_id, position, client=client, refresh_equity=refresh_equity)
+    if ok or msg != POSITION_MISSING_ERROR:
+        return ok, msg
+    return insert_position(portfolio_id, position, client=client, refresh_equity=refresh_equity)
 
-    position 需包含 code，可选 name/shares/cost_price/buy_dt/strategy。
-    返回 (成功, 消息)。
-    """
-    from core.portfolio_symbol import normalize_portfolio_code
 
-    code = normalize_portfolio_code(str(position.get("code", "")))
-    if not code:
-        return False, f"无效的股票代码: {position.get('code', '')}"
+def insert_position(
+    portfolio_id: str,
+    position: dict[str, Any],
+    client: Client | None = None,
+    *,
+    refresh_equity: bool = True,
+) -> tuple[bool, str]:
+    """Insert-only. Missing or invalid buy_dt fails without writing."""
+    code, row = _base_position_row(portfolio_id, position)
+    if code is None:
+        return False, str(row)
+    row, error = _with_validated_buy_dt(row, position, required=True)
+    if error:
+        return False, error
     try:
-        client = _resolve_write_client(client, "upsert portfolio position")
+        client = _resolve_write_client(client, "insert portfolio position")
         _ensure_portfolio_exists(portfolio_id, client)
-        row = {
-            "portfolio_id": portfolio_id,
-            "code": code,
-            "name": str(position.get("name", "") or "").strip(),
-            "shares": int(position.get("shares", 0) or 0),
-            "cost_price": float(position.get("cost_price", 0) or 0),
-        }
-        buy_dt = str(position.get("buy_dt", "") or "").strip()
-        if buy_dt:
-            row["buy_dt"] = buy_dt
-        client.table(TABLE_PORTFOLIO_POSITIONS).upsert(row, on_conflict="portfolio_id,code").execute()
+        client.table(TABLE_PORTFOLIO_POSITIONS).insert(row).execute()
+        return True, _mutation_message(f"{code} 已新增", portfolio_id, client, refresh_equity)
+    except Exception as e:
+        logger.warning("[supabase_portfolio] insert_position failed: %s", e)
+        if _is_unique_violation(e):
+            return False, POSITION_EXISTS_ERROR
+        return False, str(e)
+
+
+def update_position(
+    portfolio_id: str,
+    position: dict[str, Any],
+    client: Client | None = None,
+    *,
+    refresh_equity: bool = True,
+) -> tuple[bool, str]:
+    """Update-only. Does not insert a missing row. Empty buy_dt leaves the original date."""
+    code, row = _base_position_row(portfolio_id, position)
+    if code is None:
+        return False, str(row)
+    row, error = _with_validated_buy_dt(row, position, required=False)
+    if error:
+        return False, error
+    try:
+        client = _resolve_write_client(client, "update portfolio position")
+        response = (
+            client.table(TABLE_PORTFOLIO_POSITIONS)
+            .update(row)
+            .eq("portfolio_id", portfolio_id)
+            .eq("code", code)
+            .execute()
+        )
+        if not getattr(response, "data", None):
+            return False, POSITION_MISSING_ERROR
         return True, _mutation_message(f"{code} 已更新", portfolio_id, client, refresh_equity)
     except Exception as e:
-        logger.warning("[supabase_portfolio] upsert_position failed: %s", e)
+        logger.warning("[supabase_portfolio] update_position failed: %s", e)
         return False, str(e)
 
 
@@ -448,6 +520,23 @@ def delete_position(
     except Exception as e:
         logger.warning("[supabase_portfolio] delete_position failed: %s", e)
         return False, str(e)
+
+
+def _persist_filled_holding(
+    portfolio_id: str,
+    existing: dict[str, Any] | None,
+    holding: Holding,
+    client: Client,
+) -> tuple[bool, str]:
+    payload = {
+        "code": holding.code,
+        "name": holding.name,
+        "shares": holding.shares,
+        "cost_price": holding.cost_price,
+        "buy_dt": holding.buy_dt,
+    }
+    writer = insert_position if existing is None else update_position
+    return writer(portfolio_id, payload, client=client, refresh_equity=False)
 
 
 def _canonicalize_fill(fill: Fill) -> Fill | None:
@@ -515,18 +604,7 @@ def record_fill(portfolio_id: str, fill: Fill, client: Client | None = None) -> 
     if result.holding is None:
         ok, msg = delete_position(portfolio_id, fill.code, client=client, refresh_equity=False)
     else:
-        ok, msg = upsert_position(
-            portfolio_id,
-            {
-                "code": result.holding.code,
-                "name": result.holding.name,
-                "shares": result.holding.shares,
-                "cost_price": result.holding.cost_price,
-                "buy_dt": result.holding.buy_dt,
-            },
-            client=client,
-            refresh_equity=False,
-        )
+        ok, msg = _persist_filled_holding(portfolio_id, row, result.holding, client)
     if not ok:
         return FillWriteResult(False, f"持仓写入失败：{msg}")
     ok, msg = update_free_cash(portfolio_id, result.cash, client=client, refresh_equity=False)

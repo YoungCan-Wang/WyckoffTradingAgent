@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { normalizeBuyDate, parsePortfolioInput } from './portfolio'
+import { describe, expect, it, vi } from 'vitest'
+import { MISSING_BUY_DT_ERROR, normalizeBuyDate, parsePortfolioInput, positionWriteRecord, savePosition } from './portfolio'
 
 describe('portfolio API input', () => {
   it('accepts a valid user portfolio', () => {
@@ -80,5 +80,91 @@ describe('portfolio API input', () => {
       positions: [{ code: '6881', name: '中国银河', shares: 1000, cost_price: 7.68, buy_dt: null }],
     })
     expect(bad).toMatchObject({ error: expect.stringContaining('Invalid position code') })
+  })
+
+  it('rejects a buy_dt that is not a real calendar date', () => {
+    const result = parsePortfolioInput({
+      free_cash: 0,
+      positions: [{ code: '600519', name: '贵州茅台', shares: 100, cost_price: 1500, buy_dt: '2026-13-40' }],
+    })
+    expect(result).toHaveProperty('error', 'Invalid portfolio')
+  })
+})
+
+describe('positionWriteRecord', () => {
+  it('omits buy_dt on size/cost edits when the caller did not send a date', () => {
+    const record = positionWriteRecord('USER_LIVE:u', {
+      code: '000001',
+      name: '平安银行',
+      shares: 200,
+      cost_price: 10.5,
+      buy_dt: null,
+    })
+    expect(record).not.toHaveProperty('buy_dt')
+    expect(record).toMatchObject({ code: '000001', shares: 200, cost_price: 10.5 })
+  })
+
+  it('keeps an explicit buy date and rejects a new long without one', () => {
+    const withDate = positionWriteRecord('USER_LIVE:u', {
+      code: '300390',
+      name: '天华新能',
+      shares: 200,
+      cost_price: 64.9,
+      buy_dt: '2026-08-12',
+    })
+    expect(withDate.buy_dt).toBe('2026-08-12')
+    const missing = positionWriteRecord('USER_LIVE:u', {
+      code: '300390',
+      name: '天华新能',
+      shares: 200,
+      cost_price: 64.9,
+      buy_dt: null,
+    })
+    expect(missing.buy_dt).toBeUndefined()
+    expect(MISSING_BUY_DT_ERROR).toContain('buy_dt')
+  })
+})
+
+function mockPortfolioClient(options: { updateRows?: unknown[] }) {
+  const insert = vi.fn().mockResolvedValue({ error: null })
+  const update = vi.fn()
+  const eq = vi.fn()
+  const select = vi.fn().mockResolvedValue({ data: options.updateRows ?? [], error: null })
+  const chain: Record<string, unknown> = {}
+  chain.update = (...args: unknown[]) => {
+    update(...args)
+    return chain
+  }
+  chain.eq = (...args: unknown[]) => {
+    eq(...args)
+    return chain
+  }
+  chain.select = select
+  chain.insert = insert
+  const from = vi.fn().mockReturnValue(chain)
+  return { supabase: { from } as never, insert, update }
+}
+
+describe('savePosition', () => {
+  const position = {
+    code: '300390',
+    name: '天华新能',
+    shares: 200,
+    cost_price: 64.9,
+    buy_dt: null as string | null,
+  }
+
+  it('does not insert when update matches no rows', async () => {
+    const { supabase, insert } = mockPortfolioClient({ updateRows: [] })
+    const error = await savePosition(supabase, 'USER_LIVE:u', position, 'update')
+    expect(error).toContain('无法 update')
+    expect(insert).not.toHaveBeenCalled()
+  })
+
+  it('does not insert an add without buy_dt', async () => {
+    const { supabase, insert } = mockPortfolioClient({ updateRows: [] })
+    const error = await savePosition(supabase, 'USER_LIVE:u', position, 'add')
+    expect(error).toBe(MISSING_BUY_DT_ERROR)
+    expect(insert).not.toHaveBeenCalled()
   })
 })

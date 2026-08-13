@@ -1,11 +1,13 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { normalizePortfolioCode, refreshPortfolioTotalEquity } from '@wyckoff/shared'
+import { normalizePortfolioCode, refreshPortfolioTotalEquity, isValidBuyDt } from '@wyckoff/shared'
 import { authMiddleware, createUserSupabase, type AuthContext } from '../middleware/auth'
 import { isActiveWhitelistUser } from '../middleware/whitelist'
 import type { Env } from '../app'
 
 type PortfolioBindings = { Bindings: Env; Variables: { auth: AuthContext } }
+
+export const MISSING_BUY_DT_ERROR = '缺少建仓日 buy_dt，请询问用户后再写入'
 
 export function normalizeBuyDate(value: unknown): unknown {
   if (value === '' || value == null) return null
@@ -21,7 +23,10 @@ const POSITION_SCHEMA = z.object({
   cost_price: z.number().positive().finite(),
   buy_dt: z.preprocess(
     normalizeBuyDate,
-    z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
+    z.union([
+      z.null(),
+      z.string().refine(isValidBuyDt, { message: 'buy_dt must be a real YYYYMMDD or YYYY-MM-DD date' }),
+    ]),
   ),
 })
 
@@ -135,8 +140,11 @@ async function savePortfolio(
   const deleteError = await deleteRemovedPositions(supabase, portfolioId, removed)
   if (deleteError) return deleteError
 
+  const existingCodes = new Set((existing || []).map((item) => String(item.code).toUpperCase()))
   for (const position of portfolio.positions) {
-    const error = await savePosition(supabase, portfolioId, { ...position, code: position.code.toUpperCase() })
+    const code = position.code.toUpperCase()
+    const mode = existingCodes.has(code) ? 'update' : 'add'
+    const error = await savePosition(supabase, portfolioId, { ...position, code }, mode)
     if (error) return error
   }
   return ''
@@ -166,25 +174,43 @@ async function deleteRemovedPositions(
   return ''
 }
 
-async function savePosition(
+export async function savePosition(
   supabase: ReturnType<typeof createUserSupabase>,
   portfolioId: string,
   position: z.infer<typeof POSITION_SCHEMA>,
+  mode: 'add' | 'update',
 ): Promise<string> {
-  const record = {
-    ...position,
-    name: position.name || position.code,
-    buy_dt: position.buy_dt || '',
-    portfolio_id: portfolioId,
+  const record = positionWriteRecord(portfolioId, position)
+  if (mode === 'update') {
+    const updated = await supabase
+      .from('portfolio_positions')
+      .update(record)
+      .eq('portfolio_id', portfolioId)
+      .eq('code', position.code)
+      .select('code')
+    if (updated.error) return updated.error.message
+    if ((updated.data || []).length > 0) return ''
+    return '持仓不存在，无法 update；请改用 add 并提供建仓日 buy_dt'
   }
-  const updated = await supabase
-    .from('portfolio_positions')
-    .update(record)
-    .eq('portfolio_id', portfolioId)
-    .eq('code', position.code)
-    .select('code')
-  if (updated.error) return updated.error.message
-  if ((updated.data || []).length > 0) return ''
+  const buyDt = String(record.buy_dt || '').trim()
+  if (!buyDt) return MISSING_BUY_DT_ERROR
+  if (!isValidBuyDt(buyDt)) return 'buy_dt 必须是合法日期 YYYYMMDD 或 YYYY-MM-DD'
   const inserted = await supabase.from('portfolio_positions').insert(record)
   return inserted.error?.message || ''
+}
+
+export function positionWriteRecord(
+  portfolioId: string,
+  position: z.infer<typeof POSITION_SCHEMA>,
+): Record<string, unknown> {
+  const buyDt = (position.buy_dt || '').trim()
+  const record: Record<string, unknown> = {
+    code: position.code,
+    name: position.name || position.code,
+    shares: position.shares,
+    cost_price: position.cost_price,
+    portfolio_id: portfolioId,
+  }
+  if (buyDt) record.buy_dt = buyDt
+  return record
 }

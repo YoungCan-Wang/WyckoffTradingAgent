@@ -533,10 +533,15 @@ def _cmd_portfolio(args):
         client, uid, pid = _get_session_client()
         code = args.code
         if not code:
-            print("用法: wyckoff portfolio add <code> --name X --shares N --cost N [--buy-dt YYYYMMDD]")
+            print("用法: wyckoff portfolio add <code> --name X --shares N --cost N --buy-dt YYYYMMDD")
             sys.exit(1)
-        from integrations.supabase_portfolio import upsert_position
+        from core.buy_dt import buy_dt_error
+        from integrations.supabase_portfolio import insert_position
 
+        date_error = buy_dt_error(args.buy_dt, required=True)
+        if date_error:
+            print(date_error)
+            sys.exit(1)
         position = {
             "code": code,
             "name": args.name or "",
@@ -544,7 +549,7 @@ def _cmd_portfolio(args):
             "cost_price": args.cost or 0,
             "buy_dt": args.buy_dt or "",
         }
-        ok, msg = upsert_position(pid, position, client=client)
+        ok, msg = insert_position(pid, position, client=client)
         print(f"{'✓' if ok else '✗'} {msg}")
         return
 
@@ -1936,7 +1941,7 @@ def _add_portfolio_history_parsers(sub) -> None:
     p_port.add_argument("--name", default="", help="股票名称")
     p_port.add_argument("--shares", type=int, default=0, help="持仓数量 / 成交股数")
     p_port.add_argument("--cost", type=float, default=0, help="成本价")
-    p_port.add_argument("--buy-dt", dest="buy_dt", default="", help="买入日期 YYYYMMDD")
+    p_port.add_argument("--buy-dt", dest="buy_dt", default="", help="买入日期 YYYYMMDD 或 YYYY-MM-DD")
     p_port.add_argument("--amount", type=float, default=None, help="可用资金金额 (cash 时)")
     p_port.add_argument("--side", default="", choices=["", "buy", "sell"], help="成交方向 (fill 时)")
     p_port.add_argument("--price", type=float, default=0, help="成交价 (fill 时)")

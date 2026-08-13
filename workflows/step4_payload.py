@@ -586,6 +586,9 @@ def _position_base_meta(
     pnl_pct = (latest_close - pos.cost) / pos.cost * 100.0 if pos.cost > 0 else 0.0
     stop_info = f"- 当前止损: {pos.stop_loss:.2f}\n" if pos.stop_loss is not None else "- 当前止损: 未设置\n"
     time_line = _holding_time_meta_line(hold_trade_days, signal_info)
+    missing_buy = (
+        "" if str(pos.buy_dt or "").strip() else "- 建仓日缺失: 结构退出不可用，不得用建仓前前高/箱体作为本仓硬止损\n"
+    )
     return (
         f"### 持仓 {pos.code} {pos.name}\n"
         f"- 成本价: {pos.cost:.2f}\n"
@@ -598,6 +601,7 @@ def _position_base_meta(
         f"- 持仓交易日: {(hold_trade_days if hold_trade_days is not None else '-')}\n"
         f"{time_line}"
         f"- 买入日期: {pos.buy_dt or '-'}\n"
+        f"{missing_buy}"
         f"- 信号类型: {signal_info.get('signal_type', '未记录') if signal_info else '未记录'}\n"
         f"- 信号状态: {signal_info.get('status', '未记录') if signal_info else '未记录'}\n"
         f"- 信号日期: {signal_info.get('signal_date', '-') if signal_info else '-'}\n"
