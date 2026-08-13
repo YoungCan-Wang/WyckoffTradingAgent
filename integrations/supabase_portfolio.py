@@ -438,21 +438,11 @@ def upsert_position(
     *,
     refresh_equity: bool = True,
 ) -> tuple[bool, str]:
-    """成交回填用的 upsert：空 buy_dt 不覆盖原日期。add/update 不走这里。"""
-    code, row = _base_position_row(portfolio_id, position)
-    if code is None:
-        return False, str(row)
-    try:
-        client = _resolve_write_client(client, "upsert portfolio position")
-        _ensure_portfolio_exists(portfolio_id, client)
-        buy_dt = str(position.get("buy_dt", "") or "").strip()
-        if buy_dt:
-            row["buy_dt"] = buy_dt
-        client.table(TABLE_PORTFOLIO_POSITIONS).upsert(row, on_conflict="portfolio_id,code").execute()
-        return True, _mutation_message(f"{code} 已更新", portfolio_id, client, refresh_equity)
-    except Exception as e:
-        logger.warning("[supabase_portfolio] upsert_position failed: %s", e)
-        return False, str(e)
+    """成交回填兜底：先 update，仅当持仓不存在且 buy_dt 合法时才 insert。"""
+    ok, msg = update_position(portfolio_id, position, client=client, refresh_equity=refresh_equity)
+    if ok or msg != POSITION_MISSING_ERROR:
+        return ok, msg
+    return insert_position(portfolio_id, position, client=client, refresh_equity=refresh_equity)
 
 
 def insert_position(
@@ -532,6 +522,23 @@ def delete_position(
         return False, str(e)
 
 
+def _persist_filled_holding(
+    portfolio_id: str,
+    existing: dict[str, Any] | None,
+    holding: Holding,
+    client: Client,
+) -> tuple[bool, str]:
+    payload = {
+        "code": holding.code,
+        "name": holding.name,
+        "shares": holding.shares,
+        "cost_price": holding.cost_price,
+        "buy_dt": holding.buy_dt,
+    }
+    writer = insert_position if existing is None else update_position
+    return writer(portfolio_id, payload, client=client, refresh_equity=False)
+
+
 def _canonicalize_fill(fill: Fill) -> Fill | None:
     """CLI 可能传入大小写/补零不一致的港美代码；写路径必须先收成账本规范码。"""
     from core.portfolio_symbol import normalize_portfolio_code
@@ -597,18 +604,7 @@ def record_fill(portfolio_id: str, fill: Fill, client: Client | None = None) -> 
     if result.holding is None:
         ok, msg = delete_position(portfolio_id, fill.code, client=client, refresh_equity=False)
     else:
-        ok, msg = upsert_position(
-            portfolio_id,
-            {
-                "code": result.holding.code,
-                "name": result.holding.name,
-                "shares": result.holding.shares,
-                "cost_price": result.holding.cost_price,
-                "buy_dt": result.holding.buy_dt,
-            },
-            client=client,
-            refresh_equity=False,
-        )
+        ok, msg = _persist_filled_holding(portfolio_id, row, result.holding, client)
     if not ok:
         return FillWriteResult(False, f"持仓写入失败：{msg}")
     ok, msg = update_free_cash(portfolio_id, result.cash, client=client, refresh_equity=False)

@@ -654,7 +654,7 @@ def _write_cloud_position(
     *,
     refresh_equity: bool,
 ) -> str | dict:
-    from integrations.local_db import upsert_local_position
+    from integrations.local_db import insert_local_position, update_local_position
     from integrations.supabase_portfolio import insert_position, update_position
 
     writer = insert_position if action == "add" else update_position
@@ -668,7 +668,7 @@ def _write_cloud_position(
     )
     if not ok:
         return {"error": msg}
-    upsert_local_position(
+    args = (
         portfolio_id,
         payload["code"],
         payload["name"],
@@ -676,6 +676,10 @@ def _write_cloud_position(
         payload["cost_price"],
         payload["buy_dt"],
     )
+    if action == "add":
+        insert_local_position(*args)
+    else:
+        update_local_position(*args)
     return f"{payload['code']} 已更新"
 
 

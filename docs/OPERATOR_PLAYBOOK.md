@@ -78,6 +78,7 @@ wyckoff portfolio fill 600519 --side buy  --shares 100 --price 1680 --date 20260
 
 也可以直接对 Agent 说「我卖了 603661 六百股，成交 27.69」，走 `record_trade_fill` 工具。
 回填会按成交增量摊薄成本价、扣掉佣金印花税、卖光时清仓，并给出已实现盈亏；
+新仓回填必须带合法成交日（用作 `buy_dt`），已有仓空日期不会覆盖原建仓日。
 `portfolio add` 只插入新仓，必须带合法建仓日 `buy_dt`（YYYYMMDD 或 YYYY-MM-DD），不要拿它记成交，也不要让 Agent 用 `update` 去“补建”空账本里的仓。
 
 Step4 OMS 对港美持仓按 1 股整手处理（A 股仍为 100），止损强制离场与止损落库不再要求满 100 股；

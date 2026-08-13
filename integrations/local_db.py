@@ -856,42 +856,6 @@ def update_local_position(
         return (cur.rowcount or 0) > 0
 
 
-def upsert_local_position(
-    portfolio_id: str,
-    code: str,
-    name: str,
-    shares: int,
-    cost_price: float,
-    buy_dt: str = "",
-) -> None:
-    _ensure_local_portfolio(portfolio_id)
-    buy_dt = str(buy_dt or "").strip()
-    conn = get_db()
-    with conn:
-        if buy_dt:
-            conn.execute(
-                """INSERT INTO portfolio_position
-                   (portfolio_id, code, name, shares, cost_price, buy_dt, synced_at)
-                   VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
-                   ON CONFLICT(portfolio_id, code) DO UPDATE SET
-                   name=excluded.name, shares=excluded.shares,
-                   cost_price=excluded.cost_price, buy_dt=excluded.buy_dt,
-                   synced_at=excluded.synced_at""",
-                (portfolio_id, code, name, shares, cost_price, buy_dt),
-            )
-        else:
-            conn.execute(
-                """INSERT INTO portfolio_position
-                   (portfolio_id, code, name, shares, cost_price, synced_at)
-                   VALUES (?, ?, ?, ?, ?, datetime('now'))
-                   ON CONFLICT(portfolio_id, code) DO UPDATE SET
-                   name=excluded.name, shares=excluded.shares,
-                   cost_price=excluded.cost_price,
-                   synced_at=excluded.synced_at""",
-                (portfolio_id, code, name, shares, cost_price),
-            )
-
-
 def set_local_position_stop(portfolio_id: str, code: str, stop_loss: float | None) -> int:
     """只更新 stop_loss 列，不新建持仓。返回受影响行数。"""
     conn = get_db()

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from integrations.supabase_portfolio import compute_portfolio_state_signature, upsert_position
 from workflows.holding_diagnosis_core import _normalize_effective_positions
 
@@ -19,17 +21,28 @@ def test_signature_includes_hk_and_us_codes() -> None:
     assert sig_cn != sig_mixed
 
 
-def test_upsert_position_accepts_hk_code(monkeypatch) -> None:
-    captured: dict = {}
-
+def _position_write_client(captured: dict, *, update_rows: list):
     class FakeTable:
-        def upsert(self, row, on_conflict=None):
+        def update(self, row):
             captured["row"] = row
-            captured["on_conflict"] = on_conflict
+            captured["writes"] = captured.get("writes", []) + ["update"]
+
+            class Chain:
+                def eq(self, *_args, **_kwargs):
+                    return self
+
+                def execute(self):
+                    return SimpleNamespace(data=update_rows)
+
+            return Chain()
+
+        def insert(self, row):
+            captured["row"] = row
+            captured["writes"] = captured.get("writes", []) + ["insert"]
 
             class Result:
-                def execute(self_inner):
-                    return self_inner
+                def execute(self):
+                    return SimpleNamespace(data=[row])
 
             return Result()
 
@@ -38,9 +51,14 @@ def test_upsert_position_accepts_hk_code(monkeypatch) -> None:
             captured["table"] = name
             return FakeTable()
 
+    return FakeClient()
+
+
+def test_upsert_position_accepts_hk_code(monkeypatch) -> None:
+    captured: dict = {}
     monkeypatch.setattr(
         "integrations.supabase_portfolio._resolve_write_client",
-        lambda client, operation: FakeClient(),
+        lambda client, operation: _position_write_client(captured, update_rows=[]),
     )
     monkeypatch.setattr("integrations.supabase_portfolio._ensure_portfolio_exists", lambda *a, **k: None)
 
@@ -51,29 +69,15 @@ def test_upsert_position_accepts_hk_code(monkeypatch) -> None:
     )
     assert ok is True
     assert captured["row"]["code"] == "06881.HK"
+    assert captured["writes"] == ["update", "insert"]
     assert "06881.HK" in msg
 
 
 def test_upsert_position_omits_empty_buy_dt(monkeypatch) -> None:
     captured: dict = {}
-
-    class FakeTable:
-        def upsert(self, row, on_conflict=None):
-            captured["row"] = row
-
-            class Result:
-                def execute(self_inner):
-                    return self_inner
-
-            return Result()
-
-    class FakeClient:
-        def table(self, name):
-            return FakeTable()
-
     monkeypatch.setattr(
         "integrations.supabase_portfolio._resolve_write_client",
-        lambda client, operation: FakeClient(),
+        lambda client, operation: _position_write_client(captured, update_rows=[{"code": "000001"}]),
     )
     monkeypatch.setattr("integrations.supabase_portfolio._ensure_portfolio_exists", lambda *a, **k: None)
 
@@ -86,6 +90,7 @@ def test_upsert_position_omits_empty_buy_dt(monkeypatch) -> None:
     assert "buy_dt" not in captured["row"]
     assert captured["row"]["shares"] == 200
     assert captured["row"]["cost_price"] == 10.5
+    assert captured["writes"] == ["update"]
 
 
 def test_upsert_position_rejects_bare_short_digits(monkeypatch) -> None:
