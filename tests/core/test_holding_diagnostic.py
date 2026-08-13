@@ -66,7 +66,7 @@ class TestDiagnoseOneStock:
         df = make_ohlcv(n=250, trend="down", base=20.0, seed=2)
         latest = float(df["close"].iloc[-1])
         cost = latest * 1.15  # cost 15% above current → breached 7% stop
-        result = diagnose_one_stock("000001", "平安银行", cost=cost, df=df)
+        result = diagnose_one_stock("000001", "平安银行", cost=cost, df=df, buy_dt=str(df["date"].iloc[0]))
 
         assert result.health == "🔴危险"
         assert result.stop_loss_status == "已穿止损"
@@ -124,12 +124,20 @@ class TestDiagnoseOneStock:
         df = make_ohlcv(n=100, trend="flat", base=100.0, volatility=0.002, seed=8)
         df.loc[df.index[-3:], ["open", "high", "low", "close"]] = [50.0, 51.0, 49.0, 50.0]
         cfg = FunnelConfig()
+        after_crash = str(df["date"].iloc[-3])
+        before_crash = str(df["date"].iloc[0])
 
-        legacy_signal = _exit_snapshot("000001", df, None, cfg)
-        entry_signal = _exit_snapshot("000001", df, None, cfg, str(df["date"].iloc[-3]))
+        assert _exit_snapshot("000001", df, None, cfg)[0] is None
+        assert _exit_snapshot("000001", df, None, cfg, "")[0] is None
+        assert _exit_snapshot("000001", df, None, cfg, after_crash)[0] is None
+        assert _exit_snapshot("000001", df, None, cfg, before_crash)[0] == "stop_loss"
 
-        assert legacy_signal[0] == "stop_loss"
-        assert entry_signal[0] is None
+        empty_dt = diagnose_one_stock("000001", "平安银行", 50.0, df, buy_dt="")
+        after = diagnose_one_stock("000001", "平安银行", 50.0, df, buy_dt=after_crash)
+        assert empty_dt.exit_signal is None
+        assert "结构止损" not in " ".join(empty_dt.health_reasons)
+        assert after.exit_signal is None
+        assert "结构止损" not in " ".join(after.health_reasons)
 
     def test_exit_signal_fails_closed_when_entry_after_available_bars(self):
         """当日建仓但日线尚未入库时，不得回退全历史把建仓前暴跌判成破位。"""
@@ -139,7 +147,6 @@ class TestDiagnoseOneStock:
         future_entry = (last_bar + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
         cfg = FunnelConfig()
 
-        assert _exit_snapshot("000001", df, None, cfg)[0] == "stop_loss"
         assert _exit_snapshot("000001", df, None, cfg, future_entry)[0] is None
         result = diagnose_one_stock("000001", "平安银行", 100.0, df, buy_dt=future_entry)
         assert result.exit_signal is None
@@ -179,7 +186,7 @@ class TestDiagnoseHoldings:
         """批量与单只路径在同一 buy_dt 下必须给出一致结论。
 
         回归防护：调用方漏传 buy_dt 曾让退出信号静默退化成全历史，
-        把建仓前的暴跌误判为破位。
+        把建仓前的暴跌误判为破位；现已改为缺失 buy_dt 时 fail-closed。
         """
         df = make_ohlcv(n=120, trend="up", base=100.0, volatility=0.003, seed=11)
         df.loc[df.index[-40:-35], ["open", "high", "low", "close"]] = [60.0, 61.0, 39.0, 40.0]
@@ -273,6 +280,6 @@ class TestFormatDiagnosticText:
     def test_golden_danger(self):
         df = make_ohlcv(n=250, trend="down", base=20.0, seed=2)
         latest = float(df["close"].iloc[-1])
-        d = diagnose_one_stock("000001", "平安银行", cost=latest * 1.15, df=df)
+        d = diagnose_one_stock("000001", "平安银行", cost=latest * 1.15, df=df, buy_dt=str(df["date"].iloc[0]))
         text = format_diagnostic_text(d)
         assert_golden("diagnostic_danger.txt", text)

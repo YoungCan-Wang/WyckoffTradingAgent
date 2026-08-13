@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeBuyDate, parsePortfolioInput } from './portfolio'
+import { buyDateForNewPosition, normalizeBuyDate, parsePortfolioInput } from './portfolio'
 
 describe('portfolio API input', () => {
   it('accepts a valid user portfolio', () => {
@@ -80,5 +80,16 @@ describe('portfolio API input', () => {
       positions: [{ code: '6881', name: '中国银河', shares: 1000, cost_price: 7.68, buy_dt: null }],
     })
     expect(bad).toMatchObject({ error: expect.stringContaining('Invalid position code') })
+  })
+})
+
+describe('buyDateForNewPosition', () => {
+  it('keeps an explicit buy date', () => {
+    expect(buyDateForNewPosition('2026-08-12')).toBe('2026-08-12')
+  })
+
+  it('fills today when a new long omits buy_dt', () => {
+    expect(buyDateForNewPosition('')).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+    expect(buyDateForNewPosition(null)).toMatch(/^\d{4}-\d{2}-\d{2}$/)
   })
 })

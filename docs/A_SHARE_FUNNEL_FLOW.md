@@ -362,7 +362,7 @@ RISK -->|PANIC_REPAIR_CONFIRMED| REPAIR_PROBE["最多1只小额 PROBE<br/>禁止
     TG -->|推送失败| KEEP["保留本轮工单<br/>禁止重跑 OMS"]
 ```
 
-Step4 以 `trade_orders` 作为幂等事实源。Telegram 超时具有“可能已送达”的歧义，因此推送失败会让任务显式失败，但不会作废订单或重跑 LLM/OMS；否则可能重复发送或生成相互冲突的工单。只有订单已写入、后续数据库持久化失败时才精确作废本次 `run_id`，并按写入前快照恢复已改动的持仓止损；回滚自身失败会升级为独立错误。同日旧工单在本轮持久化全部成功后才作废。LLM 若对同一代码输出多条决策，解析阶段按 `EXIT > TRIM > HOLD > PROBE > ATTACK` 折叠为一条；OMS 卖单通过后同步扣减内存持仓，避免重复 EXIT/TRIM 超卖。持仓结构退出只看建仓后的价格路径；新仓保护期内，当轮模型给出的、同时高于成本和现价的倒挂止损会被拒绝，但已持久化的跟踪止损继续作为权威防线，未成交 `EXIT` 不再反写并污染持仓止损。
+Step4 以 `trade_orders` 作为幂等事实源。Telegram 超时具有“可能已送达”的歧义，因此推送失败会让任务显式失败，但不会作废订单或重跑 LLM/OMS；否则可能重复发送或生成相互冲突的工单。只有订单已写入、后续数据库持久化失败时才精确作废本次 `run_id`，并按写入前快照恢复已改动的持仓止损；回滚自身失败会升级为独立错误。同日旧工单在本轮持久化全部成功后才作废。LLM 若对同一代码输出多条决策，解析阶段按 `EXIT > TRIM > HOLD > PROBE > ATTACK` 折叠为一条；OMS 卖单通过后同步扣减内存持仓，避免重复 EXIT/TRIM 超卖。持仓结构退出只看建仓后的价格路径，`buy_dt` 缺失时 fail-closed 不发结构退出；新仓保护期内（以及建仓日缺失时），当轮模型给出的、同时高于成本和现价的倒挂止损会被拒绝，但已持久化的跟踪止损继续作为权威防线，未成交 `EXIT` 不再反写并污染持仓止损。新多头写入若未给 `buy_dt`，记为当天日期。
 
 ### 回放与确认安全边界
 
@@ -521,7 +521,7 @@ efinance
 | `FUNNEL_LOSS_GUARD_PURE_SOS_OBSERVE_ONLY` | `1` | 单 SOS 仅观察；设为 `0` 放开后由 `PURE_SOS_MIN_ABC` 兜底 |
 | `STEP3_SEND_COMPLIANCE_BRIEF` | `1` | 默认发送脱敏市场观察简报；设为 `0` 才显式关闭 |
 | `STEP4_BLOCK_BUY_ON_STALE_EXIT` | `1` | 持仓已跌破止损却连续多日未离场时禁止 `ATTACK` 重仓；小额 `PROBE` 与离场减仓不受影响，一字跌停日不计入拖延 |
-| `STEP4_NEW_POSITION_STOP_GUARD_DAYS` | `4` | 新仓倒挂止损保护期（自然日）；保护期内同时高于成本和现价的止损不得触发 EXIT/TRIM |
+| `STEP4_NEW_POSITION_STOP_GUARD_DAYS` | `4` | 新仓倒挂止损保护期（自然日）；保护期内或 `buy_dt` 缺失时，同时高于成本和现价的止损不得触发 EXIT/TRIM |
 | `STEP4_REPAIR_PROBE_BUDGET_LIMIT` | `0.05` | `PANIC_REPAIR_CONFIRMED` 单票试探仓上限；同时最多只开放一只 |
 | `STEP4_REQUIRE_CONFIRMED_BUY_CANDIDATE` | `1` | Step4 新开仓只允许显式跨日确认候选；否定/观察状态优先拦截，不做模糊字符串匹配 |
 | `STEP4_AI_CANDIDATE_POLICY` | `veto_only` | `veto_only` 只剔除逻辑破产；`shadow` 仅记录分类用于实验对照 |

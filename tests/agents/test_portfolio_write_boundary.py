@@ -115,3 +115,24 @@ def test_update_portfolio_rejects_negative_free_cash():
     result = update_portfolio(action="set_cash", free_cash=-500.0)
 
     assert result["error"] == "free_cash 不能为负数"
+
+
+def test_update_portfolio_add_fills_buy_dt_when_omitted(monkeypatch, tmp_path):
+    from agents import portfolio_tools
+    from integrations import local_db
+
+    if local_db._conn is not None:
+        local_db._conn.close()
+        local_db._conn = None
+    monkeypatch.setattr("core.constants.LOCAL_DB_PATH", tmp_path / "portfolio.db")
+    local_db.init_db()
+    monkeypatch.setattr(portfolio_tools, "has_cloud", lambda _ctx=None: False)
+    monkeypatch.setattr(portfolio_tools, "_portfolio_id", lambda _ctx=None: "LOCAL")
+    monkeypatch.setattr(portfolio_tools, "code_to_name", lambda code: "平安银行")
+
+    result = portfolio_tools.update_portfolio(action="add", code="000001", name="平安银行", shares=100, cost_price=10.0)
+
+    assert result.get("success") is True
+    buy_dt = local_db.load_portfolio("LOCAL")["positions"][0]["buy_dt"]
+    assert buy_dt
+    assert len(str(buy_dt).replace("-", "")) >= 8

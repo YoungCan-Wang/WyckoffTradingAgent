@@ -7,6 +7,12 @@ import type { Env } from '../app'
 
 type PortfolioBindings = { Bindings: Env; Variables: { auth: AuthContext } }
 
+export function buyDateForNewPosition(value: string | null | undefined): string {
+  const text = typeof value === 'string' ? value.trim() : ''
+  if (text) return text
+  return new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+}
+
 export function normalizeBuyDate(value: unknown): unknown {
   if (value === '' || value == null) return null
   if (typeof value !== 'string') return value
@@ -185,6 +191,9 @@ async function savePosition(
     .select('code')
   if (updated.error) return updated.error.message
   if ((updated.data || []).length > 0) return ''
-  const inserted = await supabase.from('portfolio_positions').insert(record)
+  const inserted = await supabase.from('portfolio_positions').insert({
+    ...record,
+    buy_dt: buyDateForNewPosition(position.buy_dt),
+  })
   return inserted.error?.message || ''
 }
