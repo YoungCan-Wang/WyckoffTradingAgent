@@ -121,33 +121,42 @@ function positiveRate(raw: string | undefined): number | undefined {
   return Number.isFinite(value) && value > 0 ? value : undefined
 }
 
-async function savePortfolio(
+export async function savePortfolio(
   supabase: ReturnType<typeof createUserSupabase>,
   userId: string,
   portfolio: z.infer<typeof PORTFOLIO_SCHEMA>,
 ): Promise<string> {
   const portfolioId = `USER_LIVE:${userId}`
-  const cashError = await saveFreeCash(supabase, portfolioId, portfolio.free_cash)
-  if (cashError) return cashError
-
   const { data: existing, error: readError } = await supabase
     .from('portfolio_positions')
     .select('code')
     .eq('portfolio_id', portfolioId)
   if (readError) return readError.message
-  const wanted = new Set(portfolio.positions.map((item) => item.code.toUpperCase()))
-  const removed = (existing || []).map((item) => String(item.code)).filter((code) => !wanted.has(code.toUpperCase()))
-  const deleteError = await deleteRemovedPositions(supabase, portfolioId, removed)
-  if (deleteError) return deleteError
 
   const existingCodes = new Set((existing || []).map((item) => String(item.code).toUpperCase()))
+  const wanted = new Set(portfolio.positions.map((item) => item.code.toUpperCase()))
+  const removed = (existing || [])
+    .map((item) => String(item.code))
+    .filter((code) => !wanted.has(code.toUpperCase()))
+
+  // Fail closed before any mutation: a missing buy_dt on add must not delete other lots first.
+  for (const position of portfolio.positions) {
+    const code = position.code.toUpperCase()
+    if (existingCodes.has(code)) continue
+    const buyDt = String(position.buy_dt || '').trim()
+    if (!buyDt) return MISSING_BUY_DT_ERROR
+    if (!isValidBuyDt(buyDt)) return 'buy_dt 必须是合法日期 YYYYMMDD 或 YYYY-MM-DD'
+  }
+
   for (const position of portfolio.positions) {
     const code = position.code.toUpperCase()
     const mode = existingCodes.has(code) ? 'update' : 'add'
     const error = await savePosition(supabase, portfolioId, { ...position, code }, mode)
     if (error) return error
   }
-  return ''
+  const deleteError = await deleteRemovedPositions(supabase, portfolioId, removed)
+  if (deleteError) return deleteError
+  return (await saveFreeCash(supabase, portfolioId, portfolio.free_cash)) || ''
 }
 
 async function saveFreeCash(

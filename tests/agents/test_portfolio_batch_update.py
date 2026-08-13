@@ -133,6 +133,39 @@ def test_update_portfolio_batch_rejects_empty_items():
     assert "非空" in result["error"]
 
 
+def test_update_portfolio_batch_rejects_omitted_or_zero_shares(monkeypatch, tmp_path):
+    from agents import portfolio_tools
+    from integrations import local_db
+
+    _isolate_local_db(monkeypatch, tmp_path)
+    monkeypatch.setattr(portfolio_tools, "has_cloud", lambda _ctx=None: False)
+    monkeypatch.setattr(portfolio_tools, "_portfolio_id", lambda _ctx=None: "LOCAL")
+    monkeypatch.setattr(portfolio_tools, "code_to_name", lambda code: code)
+
+    added = portfolio_tools.update_portfolio(
+        action="add",
+        items=[{"code": "600519", "name": "贵州茅台", "shares": 100, "cost_price": 1500, "buy_dt": "2026-07-01"}],
+    )
+    assert added.get("success") is True
+
+    omitted = portfolio_tools.update_portfolio(
+        action="update",
+        items=[{"code": "600519", "name": "贵州茅台", "cost_price": 1700}],
+    )
+    zeroed = portfolio_tools.update_portfolio(
+        action="update",
+        items=[{"code": "600519", "name": "贵州茅台", "shares": 0, "cost_price": 1700}],
+    )
+
+    assert omitted.get("success") is not True
+    assert "shares/cost_price 不能省略" in omitted["error"]
+    assert zeroed.get("success") is not True
+    assert zeroed["error"] == "shares 必须大于 0"
+    state = local_db.load_portfolio("LOCAL")
+    assert state["positions"][0]["shares"] == 100
+    assert state["positions"][0]["cost_price"] == 1500
+
+
 def test_update_portfolio_brief_lines_for_batch():
     lines = tool_result_brief_lines(
         "update_portfolio",

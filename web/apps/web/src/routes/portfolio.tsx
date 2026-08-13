@@ -11,7 +11,7 @@ import { clearStreamFlush, scheduleStreamFlush } from '@/lib/stream-render'
 import { MarkdownContent } from '@/components/markdown'
 import { UpgradeNotice } from '@/components/upgrade-notice'
 import { AIDisclaimer } from '@/components/ai-disclaimer'
-import { TICKFLOW_PURCHASE, fetchValueSnapshotWithFetch, isSupportedPortfolioCode, normalizeCode, normalizePortfolioCode } from '@wyckoff/shared'
+import { TICKFLOW_PURCHASE, fetchValueSnapshotWithFetch, isSupportedPortfolioCode, isValidBuyDt, normalizeCode, normalizePortfolioCode } from '@wyckoff/shared'
 import type { KlineRow, ValueSnapshot } from '@wyckoff/shared'
 import { fetchKlineViaTickFlow, getUserDataKeys } from '@/lib/kline'
 import { formatSignedPercent } from '@/lib/format'
@@ -427,7 +427,14 @@ function ManualPositionRow({ position, onChange, onRemove }: { position: Positio
 }
 
 function isValidManualPosition(position: Position): boolean {
-  return isSupportedPortfolioCode(position.code) && Number(position.shares) > 0 && Number(position.cost_price) > 0
+  const buyDt = String(position.buy_dt || '').trim()
+  return (
+    isSupportedPortfolioCode(position.code)
+    && Number(position.shares) > 0
+    && Number(position.cost_price) > 0
+    && Boolean(buyDt)
+    && isValidBuyDt(buyDt)
+  )
 }
 
 function DiagProgressBar({ progress }: { progress: DiagProgress }) {

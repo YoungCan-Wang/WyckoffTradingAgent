@@ -222,9 +222,12 @@ def _batch_item_row(index: int, raw: Any, failures: list[dict[str, Any]]) -> dic
     if not isinstance(raw, dict):
         failures.append({"index": index, "error": "item 必须是对象"})
         return None
+    if "shares" not in raw or "cost_price" not in raw:
+        failures.append({"index": index, "code": raw.get("code"), "error": "shares/cost_price 不能省略"})
+        return None
     try:
-        shares = int(raw.get("shares") or 0)
-        cost_price = float(raw.get("cost_price") or 0)
+        shares = int(raw["shares"])
+        cost_price = float(raw["cost_price"])
     except (TypeError, ValueError):
         failures.append({"index": index, "code": raw.get("code"), "error": "shares/cost_price 无效"})
         return None
@@ -592,10 +595,10 @@ def _apply_portfolio_action(
 
 
 def _validate_position_amounts(shares: int, cost_price: float) -> dict | None:
-    if float(shares) < 0:
-        return {"error": "shares 不能为负数"}
-    if float(cost_price) < 0:
-        return {"error": "cost_price 不能为负数"}
+    if float(shares) <= 0:
+        return {"error": "shares 必须大于 0"}
+    if float(cost_price) <= 0:
+        return {"error": "cost_price 必须大于 0"}
     return None
 
 
