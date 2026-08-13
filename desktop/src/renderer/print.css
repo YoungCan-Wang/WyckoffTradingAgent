@@ -1,0 +1,127 @@
+/* Print stylesheet for PDF export. Loaded into an OFFSCREEN window that has no
+   app.css, so it carries literal values (not var()) — but they mirror the
+   design tokens in .claude/skills/ui-design.md: warm paper, near-black ink,
+   hairline rules, tabular figures, green/red reserved for profit/loss.
+   Type is scaled up from the on-screen sizes for A4 reading distance. */
+
+@page {
+  size: A4;
+  margin: 18mm 16mm;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #ffffff;
+  /* Near-black ink, never pure #000. */
+  color: #26251f;
+  font: 11pt/1.6 -apple-system, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+.doc {
+  max-width: 100%;
+}
+
+/* Serif title gives the print-research feel. */
+.doc h1 {
+  margin: 0 0 4px;
+  font: 400 22pt/1.2 ui-serif, Georgia, "Songti SC", serif;
+  color: #1a1a1a;
+}
+.doc .meta {
+  color: #8a8780;
+  font-size: 9pt;
+  margin-bottom: 18px;
+}
+/* Hairline under section heads carries hierarchy without boxes. */
+.doc h2 {
+  margin: 20px 0 8px;
+  font: 600 14pt/1.35 inherit;
+  padding-bottom: 5px;
+  border-bottom: 1px solid #e0ddd6;
+  /* Never orphan a heading at the foot of a page. */
+  break-after: avoid;
+}
+.doc h3 {
+  margin: 15px 0 6px;
+  font: 600 12pt/1.4 inherit;
+  break-after: avoid;
+}
+.doc p {
+  margin: 0 0 9px;
+  font-size: 11pt;
+  color: #3a3830;
+  orphans: 2;
+  widows: 2;
+}
+.doc ul, .doc ol {
+  margin: 0 0 11px;
+  padding-left: 20px;
+  font-size: 11pt;
+  color: #3a3830;
+}
+.doc li { margin-bottom: 3px; }
+
+/* Tables: right-aligned numeric columns, tabular figures, hairline rules.
+   Never split a table across a page break. */
+.doc table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 10pt;
+  margin: 8px 0 16px;
+  break-inside: avoid;
+}
+.doc th {
+  text-align: right;
+  color: #6f6d66;
+  font-weight: 600;
+  font-size: 9pt;
+  padding: 6px 8px;
+  border-bottom: 1px solid #d6d2ca;
+}
+.doc td {
+  text-align: right;
+  padding: 6px 8px;
+  border-bottom: 1px solid #ecebe4;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+.doc th:first-child, .doc td:first-child { text-align: left; }
+
+.doc code {
+  background: #f2f0eb;
+  border: 1px solid #e6e4de;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  font-size: 9.5pt;
+}
+.doc pre {
+  background: #f7f6f2;
+  border: 1px solid #e6e4de;
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 4px 0 14px;
+  overflow: visible;
+  white-space: pre-wrap;
+  word-break: break-word;
+  break-inside: avoid;
+}
+.doc pre code { background: none; border: 0; padding: 0; font-size: 9pt; }
+.doc .quote {
+  border-left: 2px solid #d97757;
+  background: #fdf8f4;
+  padding: 9px 13px;
+  margin: 4px 0 14px;
+  font-size: 10.5pt;
+  color: #4a463c;
+  break-inside: avoid;
+}
+
+/* Green/red reserved strictly for profit/loss (A-share: red up, green down). */
+.doc .pos { color: #e5484d; }
+.doc .neg { color: #2f9e5f; }

@@ -23,6 +23,9 @@ contextBridge.exposeInMainWorld('wyckoff', {
     setBounds: (bounds) => ipcRenderer.invoke('browser:bounds', bounds),
     run: (action, params) => ipcRenderer.invoke('browser:run', action, params)
   },
+  // Export a report to PDF. { body, wrap, name }: wrap=true wraps body in the
+  // print stylesheet (markdown); wrap=false uses body as a whole document (html).
+  exportPdf: (payload) => ipcRenderer.invoke('pdf:export', payload),
   status: () => ipcRenderer.invoke('py:status'),
   restart: () => ipcRenderer.invoke('py:restart'),
   onEvent: (handler) => {

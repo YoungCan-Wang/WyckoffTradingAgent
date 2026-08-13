@@ -1,7 +1,8 @@
 'use strict'
 
-const { app, BrowserWindow, ipcMain } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog } = require('electron')
 const path = require('node:path')
+const fs = require('node:fs')
 const { PythonBridge } = require('./python-bridge')
 const { DaemonRunner } = require('./daemon-runner')
 const { BrowserHost } = require('./browser-host')
@@ -156,6 +157,69 @@ function startDaemon () {
   daemon.start()
 }
 
+let printCssCache = null
+
+const escapeHtml = (s) =>
+  String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+
+/** Wrap the rendered .doc markup in the print stylesheet (read from disk once). */
+async function wrapForPrint (bodyHtml, name) {
+  if (printCssCache == null) {
+    try {
+      printCssCache = await fs.promises.readFile(path.join(__dirname, 'renderer', 'print.css'), 'utf8')
+    } catch {
+      printCssCache = ''
+    }
+  }
+  return (
+    '<!doctype html><html><head><meta charset="utf-8">' +
+    `<title>${escapeHtml(name)}</title><style>${printCssCache}</style>` +
+    `</head><body>${bodyHtml}</body></html>`
+  )
+}
+
+/**
+ * Render report HTML to a PDF via an offscreen window and save it where the
+ * user picks. The window is fully locked down (no preload, no node, sandboxed)
+ * because it loads model-generated report HTML — same trust level as the
+ * viewer's iframe, just headed for print instead of screen.
+ */
+async function exportPdf (payload) {
+  const body = String((payload && payload.body) || '')
+  if (!body) return { ok: false, error: 'empty document' }
+  const name = String((payload && payload.name) || 'report')
+  // markdown (wrap=true): body is our .doc DOM, wrap it in the print stylesheet.
+  // html (wrap=false): body is the model's full document, use it verbatim.
+  const html = payload && payload.wrap ? await wrapForPrint(body, name) : body
+  const defaultName = name + '.pdf'
+
+  const target = await dialog.showSaveDialog(mainWindow, {
+    defaultPath: defaultName,
+    filters: [{ name: 'PDF', extensions: ['pdf'] }]
+  })
+  if (target.canceled || !target.filePath) return { ok: false, canceled: true }
+
+  const win = new BrowserWindow({
+    show: false,
+    webPreferences: { sandbox: true, nodeIntegration: false, contextIsolation: true }
+  })
+  try {
+    // data: URL keeps it an opaque origin with no filesystem access.
+    await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+    const pdf = await win.webContents.printToPDF({
+      pageSize: 'A4',
+      printBackground: true,
+      margins: { marginType: 'default' }
+    })
+    await fs.promises.writeFile(target.filePath, pdf)
+    return { ok: true, path: target.filePath }
+  } catch (err) {
+    return { ok: false, error: err.message }
+  } finally {
+    win.destroy()
+  }
+}
+
 app.whenReady().then(async () => {
   createWindow()
 
@@ -206,6 +270,8 @@ app.whenReady().then(async () => {
     }
     return bridge.send(method, params)
   })
+
+  ipcMain.handle('pdf:export', (_evt, payload) => exportPdf(payload))
 
   // The renderer asks for current status once its listener is attached, so a
   // ready that arrived early is not lost.

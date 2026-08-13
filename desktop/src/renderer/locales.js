@@ -135,6 +135,9 @@
     'viewer.unsupported': '不支持预览',
     'viewer.dropPathFailed': '无法读取拖入文件的路径',
     'viewer.importFailed': '导入失败：{name}',
+    'viewer.exportPdf': '导出 PDF',
+    'viewer.exporting': '导出中…',
+    'viewer.exportFailed': '导出失败：{error}',
     'browser.placeholder': 'https://…',
     'browser.openFailed': '打开失败：{error}',
 
@@ -409,6 +412,9 @@
     'viewer.unsupported': 'Preview not supported',
     'viewer.dropPathFailed': 'Could not read the dropped file path',
     'viewer.importFailed': 'Import failed: {name}',
+    'viewer.exportPdf': 'Export PDF',
+    'viewer.exporting': 'Exporting…',
+    'viewer.exportFailed': 'Export failed: {error}',
     'browser.placeholder': 'https://…',
     'browser.openFailed': 'Failed to open: {error}',
 

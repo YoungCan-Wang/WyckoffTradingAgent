@@ -589,6 +589,15 @@ html.dark .vitem.on { background: var(--active); }
   font-size: 10.5px; color: var(--tx3); flex: none;
   padding: 1px 6px; border-radius: 5px; background: var(--line2);
 }
+.vexport {
+  margin-left: auto; flex: none; cursor: pointer;
+  font: inherit; font-size: 11.5px; color: var(--tx2);
+  padding: 3px 10px; border: 1px solid var(--line); border-radius: 7px;
+  background: var(--paper);
+}
+.vexport:hover { color: var(--tx); border-color: #cdc9c0; background: var(--hover); }
+.vexport:disabled { opacity: .55; cursor: default; }
+html.dark .vexport { background: var(--paper2); }
 /* Fills the pane; the sandboxed document scrolls inside it. */
 .vframe { flex: 1; width: 100%; border: 0; background: #fff; }
 .vtext {

@@ -77,6 +77,31 @@
     return pre
   }
 
+  /**
+   * Hand report content to main for PDF export.
+   * markdown: re-render the source to the .doc DOM and send its outerHTML; main
+   *   wraps it in print.css (read from disk there — the renderer's CSP forbids
+   *   fetching it, and main already reads files).
+   * html: the model's document carries its own styles, send it whole.
+   */
+  async function exportReport (btn, payload, onError) {
+    const original = btn.textContent
+    btn.disabled = true
+    btn.textContent = t('viewer.exporting')
+    try {
+      const isMd = payload.kind === 'markdown' && window.WyckoffMd
+      const body = isMd
+        ? window.WyckoffMd.renderMarkdown(payload.content).outerHTML
+        : payload.content
+      const name = String(payload.name || 'report').replace(/\.[^.]+$/, '')
+      const res = await window.wyckoff.exportPdf({ body, wrap: isMd, name })
+      if (!res.ok && !res.canceled) onError(t('viewer.exportFailed', { error: res.error || '' }))
+    } finally {
+      btn.disabled = false
+      btn.textContent = original
+    }
+  }
+
   function renderBody (payload) {
     if (payload.kind === 'markdown') {
       // md.js 同样是纯 createElement 实现，可以安全复用。
@@ -118,6 +143,13 @@
       const head = el('div', 'vhead')
       head.appendChild(el('span', 'vname', payload.name))
       head.appendChild(el('span', 'vkind', kindLabel(payload.kind)))
+      // PDF export for the two kinds whose content we can serialize: markdown
+      // (our .doc DOM) and html (the model's own document). text/pdf get none.
+      if (window.wyckoff.exportPdf && (payload.kind === 'markdown' || payload.kind === 'html')) {
+        const btn = el('button', 'vexport', t('viewer.exportPdf'))
+        btn.onclick = () => exportReport(btn, payload, deps.onError)
+        head.appendChild(btn)
+      }
       bodyCol.replaceChildren(head, renderBody(payload))
     }
 
