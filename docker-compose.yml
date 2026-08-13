@@ -1,72 +1,130 @@
 # =============================================================================
 # Docker Compose - Wyckoff Trading Agent 部署配置
 # =============================================================================
+#
 # 用法：
-#   开发模式（TUI）:          docker compose up wyckoff
-#   MCP Server模式:           docker compose up mcp
-#   定时任务模式:              docker compose up cron
-#   所有服务:                  docker compose up -d
+#   启动所有常驻服务（daemon + dashboard）:  docker compose up -d
+#   仅启动 daemon（定时调度）:                  docker compose up -d daemon
+#   仅启动 dashboard（可视化面板）:             docker compose up -d dashboard
+#   手动进入 TUI:                              docker compose up -d wyckoff && docker exec -it wyckoff-tui bash
+#   启动 MCP Server:                          docker compose --profile mcp up -d
+#
+# 环境变量（可选，用于自定义镜像源）：
+#   DOCKER_IMAGE=birdxs/wyckoff-trading-agent:latest
+#   或者私有仓库：DOCKER_IMAGE=ghcr.io/your-user/wyckoff-trading-agent:latest
+#
+# =============================================================================
+# 定时任务配置（daemon 容器启动后执行）：
+# =============================================================================
+#
+# 1. 在宿主机项目目录创建 schedules.json 文件（或从容器复制模板）：
+#    # 先启动 daemon，它会在宿主机 ./schedules.json 写入默认模板
+#    docker compose up -d daemon
+#    # 然后编辑该文件
+#    nano ./schedules.json
+#
+#    或者直接创建：
+#    cat > ./schedules.json << 'EOF'
+#    [
+#      {
+#        "id": "a-share-funnel",
+#        "name": "A股漏斗（每日17:00）",
+#        "cron": "0 17 * * 1-5",
+#        "action": "运行今天的A股漏斗全量筛选（Step1→Step2→Step3），生成研报并推送飞书",
+#        "notify": true,
+#        "enabled": true
+#      },
+#      {
+#        "id": "hk-funnel",
+#        "name": "港股漏斗（每日18:00）",
+#        "cron": "0 18 * * 1-5",
+#        "action": "运行今天的港股漏斗全量筛选，生成研报并推送",
+#        "notify": true,
+#        "enabled": true
+#      },
+#      {
+#        "id": "us-funnel",
+#        "name": "美股漏斗（每日22:00）",
+#        "cron": "0 22 * * 1-5",
+#        "action": "运行今天的美股漏斗全量筛选，生成研报并推送",
+#        "notify": true,
+#        "enabled": true
+#      },
+#      {
+#        "id": "holding-diagnosis",
+#        "name": "持仓诊断（每日16:30）",
+#        "cron": "30 16 * * 1-5",
+#        "action": "对所有持仓做诊断，检查是否需要调仓或离场，并推送诊断结果",
+#        "notify": true,
+#        "enabled": true
+#      },
+#      {
+#        "id": "signal-feedback",
+#        "name": "信号反馈复盘（每日17:30）",
+#        "cron": "30 17 * * 1-5",
+#        "action": "对今日发出的信号做复盘反馈，统计信号质量并推送",
+#        "notify": true,
+#        "enabled": true
+#      },
+#      {
+#        "id": "premarket-risk",
+#        "name": "盘前风控（每日09:25）",
+#        "cron": "25 9 * * 1-5",
+#        "action": "盘前风控检查：评估大盘水温、持仓风险、今日关注要点",
+#        "notify": true,
+#        "enabled": true
+#      }
+#    ]
+#    EOF
+#
+# 2. 修改任务后，daemon 每 60 秒自动读取，无需重启。如需立即生效：
+#    docker compose restart daemon
+#
+# 3. 查看任务列表和下次执行时间：
+#    docker exec wyckoff-daemon python -m cli schedule-list
+#
+# 4. 查看 daemon 运行日志：
+#    docker logs -f wyckoff-daemon
+#
+# 5. 手动触发某个任务（立即执行一次）：
+#    docker exec wyckoff-daemon python -m cli run "运行今天的A股漏斗全量筛选"
+#
+# 6. 启用/禁用任务：直接编辑 ./schedules.json，改 enabled 字段后重启 daemon
+#    enabled: true  → 任务生效
+#    enabled: false → 任务暂停
+#
 # =============================================================================
 
 services:
   # ---------------------------------------------------------------------------
-  # 基础镜像构建
+  # 交互式 TUI（手动进入，不随 up -d 自动启动）
   # ---------------------------------------------------------------------------
   wyckoff:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: runtime
-    image: wyckoff-trading-agent:latest
+    image: ${DOCKER_IMAGE:-birdxs/wyckoff-trading-agent:latest}
     container_name: wyckoff-tui
-    restart: unless-stopped
+    restart: "no"
     stdin_open: true
     tty: true
     environment:
       - TZ=Asia/Shanghai
-      # 从环境文件加载配置
     env_file:
       - .env
     volumes:
-      # 数据持久化
-      - wyckoff_data:/home/wyckoff/.wyckoff/data
-      - wyckoff_logs:/home/wyckoff/.wyckoff/logs
-      # 配置文件挂载（可选）
-      - ./config/profiles:/app/config/profiles:ro
-      # 环境文件挂载
+      - ./wyckoff_data:/home/wyckoff/.wyckoff/data
+      - ./wyckoff_logs:/home/wyckoff/.wyckoff/logs
       - ./.env:/home/wyckoff/.wyckoff/.env:ro
     networks:
-      - wyckoff-net
-    # 默认启动TUI
-    command: ["--help"]
+      - wyckoff-network
+    # 覆盖 Dockerfile 的 ENTRYPOINT，直接执行 bash 保持容器运行
+    entrypoint: ["/bin/bash", "-lc"]
+    command: ["while true; do sleep 3600; done"]
+    profiles: ["tui"]
 
   # ---------------------------------------------------------------------------
-  # MCP Server 模式
-  # ---------------------------------------------------------------------------
-  mcp:
-    image: wyckoff-trading-agent:latest
-    container_name: wyckoff-mcp
-    restart: unless-stopped
-    environment:
-      - TZ=Asia/Shanghai
-    env_file:
-      - .env
-    volumes:
-      - wyckoff_data:/home/wyckoff/.wyckoff/data
-      - wyckoff_logs:/home/wyckoff/.wyckoff/logs
-      - ./.env:/home/wyckoff/.wyckoff/.env:ro
-    networks:
-      - wyckoff-net
-    # MCP Server 使用 stdio，不适合在容器中运行
-    # 保留此配置用于参考
-    command: ["mcp"]
-    profiles: ["mcp"]
-
-  # ---------------------------------------------------------------------------
-  # Dashboard 模式（本地可视化面板）
+  # Dashboard 可视化面板
   # ---------------------------------------------------------------------------
   dashboard:
-    image: wyckoff-trading-agent:latest
+    image: ${DOCKER_IMAGE:-birdxs/wyckoff-trading-agent:latest}
     container_name: wyckoff-dashboard
     restart: unless-stopped
     environment:
@@ -74,175 +132,73 @@ services:
     env_file:
       - .env
     volumes:
-      - wyckoff_data:/home/wyckoff/.wyckoff/data
-      - wyckoff_logs:/home/wyckoff/.wyckoff/logs
+      - ./wyckoff_data:/home/wyckoff/.wyckoff/data
+      - ./wyckoff_logs:/home/wyckoff/.wyckoff/logs
       - ./.env:/home/wyckoff/.wyckoff/.env:ro
     ports:
-      - "8765:8765"
+      - "8365:8765"
     networks:
-      - wyckoff-net
+      - wyckoff-network
     command: ["dashboard"]
     profiles: ["dashboard"]
 
   # ---------------------------------------------------------------------------
-  # 定时任务模式（A股漏斗）
+  # MCP Server 模式（按需启动）
   # ---------------------------------------------------------------------------
-  funnel-a-share:
-    image: wyckoff-trading-agent:latest
-    container_name: wyckoff-funnel-a-share
+  mcp:
+    image: ${DOCKER_IMAGE:-birdxs/wyckoff-trading-agent:latest}
+    container_name: wyckoff-mcp
     restart: unless-stopped
     environment:
       - TZ=Asia/Shanghai
     env_file:
       - .env
     volumes:
-      - wyckoff_data:/home/wyckoff/.wyckoff/data
-      - wyckoff_logs:/home/wyckock/.wyckoff/logs
+      - ./wyckoff_data:/home/wyckoff/.wyckoff/data
+      - ./wyckoff_logs:/home/wyckoff/.wyckoff/logs
       - ./.env:/home/wyckoff/.wyckoff/.env:ro
     networks:
-      - wyckoff-net
-    # A股漏斗每日17:00运行
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        # 等待系统启动
-        sleep 10
-        # 运行漏斗
-        python -m scripts.daily_job
-    profiles: ["cron"]
+      - wyckoff-network
+    command: ["mcp"]
+    profiles: ["mcp"]
 
   # ---------------------------------------------------------------------------
-  # 定时任务模式（港股漏斗）
+  # Daemon 常驻定时调度进程
+  #   - 每 60 秒检查一次任务列表（~/.wyckoff/schedules.json）
+  #   - 到时间自动触发 action（作为 Agent 提示词执行）
+  #   - 支持 cron 表达式，自动去重（同一分钟不重复触发）
+  #   - 任务失败记录 last_error，不影响其他任务
   # ---------------------------------------------------------------------------
-  funnel-hk:
-    image: wyckoff-trading-agent:latest
-    container_name: wyckoff-funnel-hk
+  daemon:
+    image: ${DOCKER_IMAGE:-birdxs/wyckoff-trading-agent:latest}
+    container_name: wyckoff-daemon
     restart: unless-stopped
     environment:
       - TZ=Asia/Shanghai
     env_file:
       - .env
     volumes:
-      - wyckoff_data:/home/wyckoff/.wyckoff/data
-      - wyckoff_logs:/home/wyckoff/.wyckoff/logs
+      - ./wyckoff_data:/home/wyckoff/.wyckoff/data
+      - ./wyckoff_logs:/home/wyckoff/.wyckoff/logs
       - ./.env:/home/wyckoff/.wyckoff/.env:ro
+      # 定时任务配置文件（宿主机编辑 → 容器内自动生效）
+      - ./schedules.json:/home/wyckoff/.wyckoff/schedules.json
     networks:
-      - wyckoff-net
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        sleep 10
-        python -m scripts.market_funnel_job --market hk
-    profiles: ["cron"]
-
-  # ---------------------------------------------------------------------------
-  # 定时任务模式（美股漏斗）
-  # ---------------------------------------------------------------------------
-  funnel-us:
-    image: wyckoff-trading-agent:latest
-    container_name: wyckoff-funnel-us
-    restart: unless-stopped
-    environment:
-      - TZ=Asia/Shanghai
-    env_file:
-      - .env
-    volumes:
-      - wyckoff_data:/home/wyckoff/.wyckoff/data
-      - wyckoff_logs:/home/wyckoff/.wyckoff/logs
-      - ./.env:/home/wyckoff/.wyckoff/.env:ro
-    networks:
-      - wyckoff-net
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        sleep 10
-        python -m scripts.market_funnel_job --market us
-    profiles: ["cron"]
-
-  # ---------------------------------------------------------------------------
-  # 持仓诊断定时任务
-  # ---------------------------------------------------------------------------
-  holding-diagnosis:
-    image: wyckoff-trading-agent:latest
-    container_name: wyckoff-holding-diagnosis
-    restart: unless-stopped
-    environment:
-      - TZ=Asia/Shanghai
-    env_file:
-      - .env
-    volumes:
-      - wyckoff_data:/home/wyckoff/.wyckoff/data
-      - wyckoff_logs:/home/wyckoff/.wyckoff/logs
-      - ./.env:/home/wyckoff/.wyckoff/.env:ro
-    networks:
-      - wyckoff-net
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        sleep 10
-        python -m scripts.holding_diagnosis_job
-    profiles: ["cron"]
-
-  # ---------------------------------------------------------------------------
-  # 信号反馈定时任务
-  # ---------------------------------------------------------------------------
-  signal-feedback:
-    image: wyckoff-trading-agent:latest
-    container_name: wyckoff-signal-feedback
-    restart: unless-stopped
-    environment:
-      - TZ=Asia/Shanghai
-    env_file:
-      - .env
-    volumes:
-      - wyckoff_data:/home/wyckoff/.wyckoff/data
-      - wyckoff_logs:/home/wyckoff/.wyckoff/logs
-      - ./.env:/home/wyckoff/.wyckoff/.env:ro
-    networks:
-      - wyckoff-net
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        sleep 10
-        python -m scripts.signal_feedback_job
-    profiles: ["cron"]
-
-  # ---------------------------------------------------------------------------
-  # 盘前风控定时任务
-  # ---------------------------------------------------------------------------
-  premarket-risk:
-    image: wyckoff-trading-agent:latest
-    container_name: wyckoff-premarket-risk
-    restart: unless-stopped
-    environment:
-      - TZ=Asia/Shanghai
-    env_file:
-      - .env
-    volumes:
-      - wyckoff_data:/home/wyckoff/.wyckoff/data
-      - wyckoff_logs:/home/wyckoff/.wyckoff/logs
-      - ./.env:/home/wyckoff/.wyckoff/.env:ro
-    networks:
-      - wyckoff-net
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        sleep 10
-        python -m scripts.premarket_risk_job
-    profiles: ["cron"]
+      - wyckoff-network
+    command: ["daemon", "--foreground"]
 
 # =============================================================================
-# 数据卷
+# 数据卷（注释掉，改用本地目录挂载）
 # =============================================================================
-volumes:
-  wyckoff_data:
-    driver: local
-  wyckoff_logs:
-    driver: local
+# volumes:
+#   wyckoff_data:
+#     driver: local
+#   wyckoff_logs:
+#     driver: local
 
 # =============================================================================
 # 网络配置
 # =============================================================================
 networks:
-  wyckoff-net:
-    driver: bridge
+  wyckoff-network:
+    external: true
