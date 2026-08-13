@@ -1667,6 +1667,14 @@ def _cmd_approve(args):
         print(f"用法: wyckoff approve {action} <id>")
         raise SystemExit(2)
 
+    from cli.auth import load_session
+
+    pending = aq.get(args.id)
+    current_user = str((load_session() or {}).get("user_id") or "")
+    if pending is not None and not aq.owner_matches(pending, current_user):
+        print(f"{args.id} 所属账户与当前登录不一致，拒绝处理（防止改到别人的持仓）。")
+        raise SystemExit(1)
+
     record = aq.decide(args.id, approved=(action == "ok"))
     if record is None:
         print(f"{args.id} 无法处理：不存在、已决策，或已超过 {aq.DEFAULT_TTL_HOURS} 小时过期。")
@@ -1679,7 +1687,7 @@ def _cmd_approve(args):
     from cli.approval_executor import execute_approved
 
     print(f"已批准，正在执行: {record.summary or record.tool_name}")
-    result = execute_approved(record.tool_name, record.args)
+    result = execute_approved(record.tool_name, record.args, expected_user_id=record.user_id)
     succeeded = not (isinstance(result, dict) and result.get("error"))
     aq.record_execution(record.id, result, succeeded=succeeded)
     print(json.dumps(result, ensure_ascii=False, default=str, indent=2))

@@ -20,6 +20,18 @@ def load_recommendation_lookup(codes: list[str]) -> tuple[dict[str, list[dict]],
         return {}, "推荐表读取失败，无法确认是否被推荐过"
 
 
+def recommendation_state(records: list[dict], target_date: str) -> dict[str, object]:
+    matched = [row for row in records if normalize_recommend_date(row.get("recommend_date")) == target_date]
+    if not matched:
+        return {"tracked": False, "ai_recommended": False, "statuses": [], "sources": []}
+    return {
+        "tracked": True,
+        "ai_recommended": any(bool(row.get("is_ai_recommended")) for row in matched),
+        "statuses": _unique_text(matched, "candidate_status"),
+        "sources": _unique_text(matched, "selection_source"),
+    }
+
+
 def format_recommendation_history(
     code: str,
     lookup: dict[str, list[dict]],
@@ -67,7 +79,7 @@ def _load_recommendation_rows(clean_codes: list[int]) -> dict[str, list[dict]]:
     for chunk in _chunks(clean_codes, 200):
         response = (
             client.table(TABLE_RECOMMENDATION_TRACKING)
-            .select("code,name,recommend_date,recommend_count,is_ai_recommended")
+            .select("code,name,recommend_date,recommend_count,is_ai_recommended,candidate_status,selection_source")
             .in_("code", chunk)
             .order("recommend_date", desc=True)
             .limit(10000)
@@ -104,3 +116,7 @@ def _recommendation_count(records: list[dict], dates: list[str]) -> int:
 def _chunks(items: list[int], size: int) -> list[list[int]]:
     width = max(int(size), 1)
     return [items[index : index + width] for index in range(0, len(items), width)]
+
+
+def _unique_text(rows: list[dict], key: str) -> list[str]:
+    return list(dict.fromkeys(str(row.get(key) or "").strip() for row in rows if str(row.get(key) or "").strip()))

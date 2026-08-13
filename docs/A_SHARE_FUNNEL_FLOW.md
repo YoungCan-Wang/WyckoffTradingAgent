@@ -114,6 +114,8 @@ flowchart TD
 
 **强势股复盘证据**：生产漏斗在同轮 L1-L4 计算结束后，将逐股阶段、淘汰原因、候选车道、配置摘要和代码版本写入压缩 `review_trace_YYYYMMDD.json.gz`。该文件不含 OHLCV，随现有 Daily Job artifact 上传；19:25 Review 按前一交易日精确匹配成功运行的 trace，因此归因反映当时真实代码与配置，不依赖 Supabase，也不会被后来改动的策略重写历史。
 
+trace 同时记录买点标签、风险信号和观察型影子归因车道。`near_l2`、`rotation_setup`、`pre_breakout` 不改变正式候选、AI 配额和 OMS；Review 只在当日强势样本内标出这些规则的事后召回，并与次日开盘/盘中可交易性并列展示，不把全量影子池当作买入清单。`scripts/review_shadow_backtest.py` 按 trace 日期逐日生成候选，再用后续行情计算 T+1/T+3/T+5、MFE/MAE，未来数据仅作结果标签。
+
 ---
 
 ## 三、Step2 漏斗内部：主线发现 + 多车道详细流程

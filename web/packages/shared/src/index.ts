@@ -63,10 +63,13 @@ export {
 } from './agent-value'
 export type { ValueDataQuality, ValueDataQualityLevel, ValueRule, ValueScore, ValueSignal, ValueTone, ValueTraceMeta } from './agent-value'
 export {
+  countTrackingOccurrences,
   dedupeTrackingRows,
   formatPatternReviewDigest,
   formatPatternReviewLine,
+  hasCompleteTrackingWindow,
   labelCandidateTerm,
+  latestTrackingDates,
   patternReviewRole,
   preferTrackingRow,
   PATTERN_REVIEW_EMPTY_MESSAGE,

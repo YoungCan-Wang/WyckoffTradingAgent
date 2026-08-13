@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 
 from core.market_trade_mode import PROBE_ONLY_REGIMES, normalize_regime
+from core.portfolio_symbol import portfolio_lot_size
+from core.portfolio_valuation import portfolio_currency
 from workflows.step4_models import DecisionItem, ExecutionTicket, OrderContext, PositionItem, Step4OrderConfig
 from workflows.step4_text import clean_text, contains_keyword, normalize_stage, normalize_track
 
@@ -144,6 +146,7 @@ class WyckoffOrderEngine:
         config: Step4OrderConfig | None = None,
         trade_date: str = "",
         stale_exit_codes: frozenset[str] = frozenset(),
+        cny_rates: dict[str, float] | None = None,
     ) -> None:
         self.total_equity = float(max(total_equity, 0.0))
         self.free_cash = float(max(free_cash, 0.0))
@@ -154,6 +157,7 @@ class WyckoffOrderEngine:
         self.stale_exit_codes = stale_exit_codes
         self.market_regime = normalize_regime(market_regime)
         self.config = config or DEFAULT_STEP4_ORDER_CONFIG
+        self.cny_rates = {"CNY": 1.0, **(cny_rates or {})}
         probe_limit = self.config.probe_budget_limit
         if self.market_regime in {"PANIC_REPAIR_CONFIRMED", "PANIC_REPAIR_INTRADAY"}:
             probe_limit = self.config.repair_probe_budget_limit
@@ -169,6 +173,16 @@ class WyckoffOrderEngine:
             tickets.append(self._process_one(dec))
         return (tickets, self.free_cash)
 
+    def _lot(self, code: str) -> int:
+        return portfolio_lot_size(code)
+
+    def _is_holding_qty(self, shares: int, code: str) -> bool:
+        return int(shares) >= self._lot(code)
+
+    def _cny_rate(self, code: str) -> float:
+        rate = float(self.cny_rates.get(portfolio_currency(code), 0.0) or 0.0)
+        return rate if rate > 0 else 0.0
+
     def _approved_hold(
         self,
         dec: DecisionItem,
@@ -180,6 +194,7 @@ class WyckoffOrderEngine:
         audit_parts: list[str],
         reason: str | None = None,
     ) -> ExecutionTicket:
+        held = self.position_map[dec.code].shares if dec.code in self.position_map else 0
         return ExecutionTicket(
             code=dec.code,
             name=name,
@@ -194,7 +209,7 @@ class WyckoffOrderEngine:
             reason=(reason or dec.reason or "").strip(),
             tape_condition=dec.tape_condition,
             invalidate_condition=dec.invalidate_condition,
-            is_holding=(dec.code in self.position_map and self.position_map[dec.code].shares >= 100),
+            is_holding=self._is_holding_qty(held, dec.code),
             atr14=atr14,
             original_stop_loss=original_stop_loss,
             effective_stop_loss=effective_stop_loss,
@@ -341,8 +356,18 @@ class WyckoffOrderEngine:
 
     def _sell_ticket(self, ctx: OrderContext, sell_shares: int, audit_parts: list[str]) -> ExecutionTicket:
         fill_price = ctx.current_price * (1.0 - self.SLIPPAGE_BPS)
-        proceeds = sell_shares * fill_price
-        self.free_cash += proceeds
+        proceeds_native = sell_shares * fill_price
+        # 卖出（含强制止损）不能因缺汇率卡死；缺汇率时 1:1 入账并打审计，买入侧仍硬拒。
+        rate = self._cny_rate(ctx.dec.code)
+        audit = list(audit_parts)
+        if rate <= 0:
+            proceeds_cny = proceeds_native
+            audit.append("fx_missing_1_to_1")
+        else:
+            proceeds_cny = proceeds_native * rate
+            if rate != 1.0:
+                audit.append(f"fx_to_cny={rate:.6f}")
+        self.free_cash += proceeds_cny
         # Keep remaining inventory in sync so a second EXIT/TRIM for the same code
         # cannot oversell or double-count simulated cash.
         pos = self.position_map.get(ctx.dec.code)
@@ -355,19 +380,19 @@ class WyckoffOrderEngine:
             status="APPROVED",
             shares=sell_shares,
             price_hint=fill_price,
-            amount=proceeds,
+            amount=proceeds_cny,
             stop_loss=ctx.effective_stop_loss,
             max_loss=0.0,
             drawdown_ratio=0.0,
             reason=ctx.dec.reason,
             tape_condition=ctx.dec.tape_condition,
             invalidate_condition=ctx.dec.invalidate_condition,
-            is_holding=ctx.held_shares >= 100,
+            is_holding=self._is_holding_qty(ctx.held_shares, ctx.dec.code),
             atr14=ctx.atr14,
             original_stop_loss=ctx.original_stop_loss,
             effective_stop_loss=ctx.effective_stop_loss,
             slippage_bps=self.SLIPPAGE_BPS,
-            audit="; ".join(audit_parts),
+            audit="; ".join(audit),
             signal_severity=ctx.dec.signal_severity,
             action_timing=ctx.dec.action_timing,
             wyckoff_context=_decision_wyckoff_context(ctx.dec),
@@ -385,14 +410,16 @@ class WyckoffOrderEngine:
             return self._no_trade(ctx.dec, ctx.name, _T_PLUS_ONE_REJECT)
         ratio = ctx.dec.trim_ratio if ctx.dec.trim_ratio is not None else 0.5
         ratio = min(max(ratio, 0.1), 1.0)
-        sell_shares = int(math.floor(ctx.sellable_shares * ratio / 100.0) * 100)
-        if sell_shares < 100:
-            return self._no_trade(ctx.dec, ctx.name, "减仓股数不足100股")
+        lot = self._lot(ctx.dec.code)
+        sell_shares = int(math.floor(ctx.sellable_shares * ratio / lot) * lot)
+        if sell_shares < lot:
+            return self._no_trade(ctx.dec, ctx.name, f"减仓股数不足{lot}股")
         return self._sell_ticket(ctx, sell_shares, ctx.audit_parts + [f"trim_ratio={ratio:.2f}", "sell_with_slippage"])
 
     def _validate_buy_stop(self, ctx: OrderContext) -> ExecutionTicket | None:
+        holding = self._is_holding_qty(ctx.held_shares, ctx.dec.code)
         if ctx.effective_stop_loss is None:
-            if ctx.held_shares >= 100:
+            if holding:
                 return self._hold_from_context(
                     ctx,
                     ctx.audit_parts + ["invalid_stop_loss->hold"],
@@ -400,7 +427,7 @@ class WyckoffOrderEngine:
                 )
             return self._no_trade(ctx.dec, ctx.name, "缺少 stop_loss")
         if ctx.effective_stop_loss <= 0:
-            if ctx.held_shares >= 100:
+            if holding:
                 return self._hold_from_context(
                     ctx,
                     ctx.audit_parts + ["stop_loss<=0->hold"],
@@ -413,10 +440,11 @@ class WyckoffOrderEngine:
         return None
 
     def _validate_add_on(self, ctx: OrderContext) -> ExecutionTicket | None:
-        is_add_on_action = ctx.action in {"PROBE", "ATTACK"} and ctx.held_shares >= 100
+        holding = self._is_holding_qty(ctx.held_shares, ctx.dec.code)
+        is_add_on_action = ctx.action in {"PROBE", "ATTACK"} and holding
         if not (ctx.dec.is_add_on or is_add_on_action):
             return None
-        if not ctx.pos or ctx.held_shares < 100:
+        if not ctx.pos or not holding:
             return self._no_trade(ctx.dec, ctx.name, "is_add_on=true 但无可加仓持仓")
         if ctx.pos.cost > 0 and ctx.current_price <= ctx.pos.cost:
             return self._hold_from_context(
@@ -453,7 +481,7 @@ class WyckoffOrderEngine:
         return max_entry_price, chase_profile, wyckoff_context
 
     def _invalid_entry_zone_ticket(self, ctx: OrderContext, reason: str, audit: str) -> ExecutionTicket:
-        if ctx.held_shares >= 100:
+        if self._is_holding_qty(ctx.held_shares, ctx.dec.code):
             return self._hold_from_context(
                 ctx,
                 ctx.audit_parts + [f"{audit}->hold"],
@@ -505,17 +533,23 @@ class WyckoffOrderEngine:
         )
         if risk_per_share <= 0:
             return self._no_trade(ctx.dec, ctx.name, "风险参数异常(risk_per_share<=0)")
+        rate = self._cny_rate(ctx.dec.code)
+        if rate <= 0:
+            return self._no_trade(ctx.dec, ctx.name, "缺少汇率，无法折算买入预算")
+        # total_equity / free_cash 是人民币；报价与止损间距是本地币，必须先乘汇率再定仓。
         max_loss_allowed = self.total_equity * self.RISK_LIMITS[ctx.action]
-        max_shares_by_risk = max_loss_allowed / risk_per_share
+        max_shares_by_risk = max_loss_allowed / (risk_per_share * rate)
         budget = min(self.total_equity * self.budget_limits[ctx.action], self.free_cash)
-        max_shares_by_cash = budget / fill_price
-        actual_shares = math.floor(min(max_shares_by_risk, max_shares_by_cash) / 100.0) * 100
-        if actual_shares < 100:
-            return self._no_trade(ctx.dec, ctx.name, "计算股数不足100股(触及风控或资金限制)")
-        actual_shares = int(actual_shares)
-        amount = actual_shares * fill_price
-        max_loss = actual_shares * risk_per_share
-        self.free_cash -= amount
+        max_shares_by_cash = budget / (fill_price * rate)
+        lot = self._lot(ctx.dec.code)
+        actual_shares = int(math.floor(min(max_shares_by_risk, max_shares_by_cash) / lot) * lot)
+        if actual_shares < lot:
+            return self._no_trade(ctx.dec, ctx.name, f"计算股数不足{lot}股(触及风控或资金限制)")
+        amount_cny = actual_shares * fill_price * rate
+        max_loss = actual_shares * risk_per_share * rate
+        self.free_cash -= amount_cny
+        if rate != 1.0:
+            ctx.audit_parts.append(f"fx_to_cny={rate:.6f}")
         return self._approved_buy_ticket(
             ctx,
             price_for_calc,
@@ -533,7 +567,7 @@ class WyckoffOrderEngine:
             max_shares_by_risk,
             max_shares_by_cash,
             actual_shares,
-            amount,
+            amount_cny,
             max_loss,
         )
 
@@ -582,7 +616,7 @@ class WyckoffOrderEngine:
             reason=ctx.dec.reason,
             tape_condition=ctx.dec.tape_condition,
             invalidate_condition=ctx.dec.invalidate_condition,
-            is_holding=ctx.held_shares >= 100,
+            is_holding=self._is_holding_qty(ctx.held_shares, ctx.dec.code),
             atr14=ctx.atr14,
             original_stop_loss=ctx.original_stop_loss,
             effective_stop_loss=ctx.effective_stop_loss,
@@ -643,10 +677,11 @@ class WyckoffOrderEngine:
         若只是记录而不强制执行，一旦模型误判给出 HOLD，系统就没有最后一道
         防线。这里在 HOLD 分支收口，将其降级为强制卖出。
         """
+        lot = self._lot(ctx.dec.code)
         breached = ctx.effective_stop_loss and ctx.current_price <= ctx.effective_stop_loss
-        if not (ctx.held_shares >= 100 and breached):
+        if not (self._is_holding_qty(ctx.held_shares, ctx.dec.code) and breached):
             return self._hold_from_context(ctx)
-        if ctx.sellable_shares < 100:
+        if ctx.sellable_shares < lot:
             return self._hold_from_context(
                 ctx,
                 ctx.audit_parts + ["stop_breach_blocked_by_t1"],
@@ -680,7 +715,10 @@ class WyckoffOrderEngine:
             reason=f"{reason} | {dec.reason}".strip(" |"),
             tape_condition=dec.tape_condition,
             invalidate_condition=dec.invalidate_condition,
-            is_holding=(dec.code in self.position_map and self.position_map[dec.code].shares >= 100),
+            is_holding=self._is_holding_qty(
+                self.position_map[dec.code].shares if dec.code in self.position_map else 0,
+                dec.code,
+            ),
             atr14=self.atr_map.get(dec.code),
             original_stop_loss=dec.stop_loss,
             effective_stop_loss=dec.stop_loss,

@@ -5,13 +5,22 @@ from __future__ import annotations
 from typing import Any
 
 
-def execute_approved(tool_name: str, args: dict[str, Any]) -> Any:
+def execute_approved(
+    tool_name: str,
+    args: dict[str, Any],
+    *,
+    expected_user_id: str | None = None,
+) -> Any:
     from cli.auth import load_session
     from cli.tools import ToolRegistry
 
     session = load_session() or {}
+    current_user = str(session.get("user_id") or "")
+    if expected_user_id is not None and current_user != str(expected_user_id or ""):
+        return {"error": "审批项所属账户与当前登录不一致，已拒绝执行"}
+
     tools = ToolRegistry(
-        user_id=str(session.get("user_id") or ""),
+        user_id=current_user,
         access_token=str(session.get("access_token") or ""),
         refresh_token=str(session.get("refresh_token") or ""),
     )

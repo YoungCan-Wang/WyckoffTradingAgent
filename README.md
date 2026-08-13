@@ -116,6 +116,8 @@ wyckoff dashboard  # 启动本地可视化面板
 
 </details>
 
+形态复盘页按数据库实际存在的最近 30 个复盘交易日读取数据：“复盘记录”保留窗口内的数据源行数，“总入选次数”按唯一的股票+入选日统计，“覆盖股票数”和涨跌幅摘要则按股票代码去重。
+
 ### Streamlit MVP 已下线
 
 Streamlit 已经不再迭代维护，主分支已全面移除 Streamlit 运行代码。相关代码仍保留在 `release/streamlit` 分支；Streamlit MVP 时期的产品架构和效果图见 [docs/STREAMLIT_MVP_ARCHITECTURE.md](docs/STREAMLIT_MVP_ARCHITECTURE.md)。
@@ -160,8 +162,10 @@ scripts/daemon_uninstall.sh    # 卸载
 
 daemon 持锁时 TUI 会自动让出调度权，两边不会重复触发。
 
-**无人监督时的写操作策略。** daemon 只会自己执行 `set_stop_loss` —— 这个工具
-只能改止损价,签名里没有股数、成本、现金,不移仓也不花钱。其余全部进待批准队列等你决定：
+**无人监督时的写操作策略。** daemon / `wyckoff run` 先恢复本机已保存的 CLI 登录态，再跑工具；
+否则自动止损会写到本地 `USER_LIVE:local` 而不是云端持仓。daemon 只会自己执行 `set_stop_loss` ——
+这个工具只能改止损价，签名里没有股数、成本、现金，不移仓也不花钱。其余全部进待批准队列，
+并绑定入队时的账户；换号后不能批准别人的项：
 
 ```bash
 wyckoff approve list           # 看待批项

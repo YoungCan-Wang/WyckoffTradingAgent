@@ -155,6 +155,8 @@ CLI Agent 的本地命令工具只允许明确的只读命令；文件工具继�
 | `/guide` | 功能与能力边界 | Web 端功能入口、日常工作流和运行边界说明 |
 | `/settings` | 设置 | 模型 / API Key / 数据源配置 |
 
+`/tracking` 按数据库实际存在的最近 30 个复盘交易日分页读取。窗口原始记录数保留数据源行数，“总入选次数”以唯一 `(code, recommend_date)` 为粒度；“覆盖股票数”及平均/最高/最低涨跌幅先按 `code` 去重，使用窗口内该股的最新复盘行和粘住的首次推荐价。
+
 ### Provider Stream 兼容
 
 读盘室走 `/api/chat` 的 UIMessage stream，Worker 端根据用户设置创建 OpenAI-compatible 或 Anthropic provider。Gemini OpenAI-compatible SSE 会经过 `normalizeGeminiStream()` 归一化，避免工具调用 chunk 在前端缺失。旧的 `/api/llm-proxy` 路径仍服务单股、多股、导出等非读盘室直连能力。
@@ -729,7 +731,7 @@ Step4、持仓诊断和 Web 投研提示词共享证据契约：默认 `capital_
 |------|------|
 | `cli/scheduler.py` | 纯策略：cron 匹配、到期判定（`due_schedules`）、补跑窗口（`pending_check_minutes`）。无副作用，可独立测试 |
 | `cli/daemon.py` | 主循环 + `fcntl.flock` 单例 + SIGTERM 优雅退出 + 日志轮转 |
-| `cli/headless.py` | `run_once()` 无界面跑一轮 `AgentRuntime`，注入无人监督下的工具闸门 |
+| `cli/headless.py` | `run_once()` 无界面跑一轮 `AgentRuntime`：恢复 CLI 登录态后再注入无人监督工具闸门（否则 `set_stop_loss` 会写到 `USER_LIVE:local`） |
 
 由 launchd（`com.wyckoff.daemon`，`KeepAlive.SuccessfulExit=false`）保活，
 `scripts/daemon_install.sh` 安装。**不使用** `StartCalendarInterval` 逐条映射 cron ——
@@ -742,6 +744,7 @@ daemon 持锁时 TUI 的 `_check_schedules` 直接返回，让出调度权。两
 
 `cli/approval_policy.classify()` 把高风险工具调用分三档：`auto` / `review` / `confirm`。
 daemon 只放行 `auto`，其余写入 `~/.wyckoff/approvals.db` 等人批准，12 小时过期。
+队列项绑定入队时的 `user_id`；`approve ok/no` 要求当前登录账户一致，防止换号后改到别人的持仓。
 `approve list` 展示脱敏后的完整参数；`approve ok` 原子认领一次后通过正常 ToolRegistry 执行并记录结果，
 执行失败不自动重试，避免真实成交或外部写入被重复提交。
 详见 [GLOSSARY.md](../GLOSSARY.md) 第 16 节。
@@ -809,7 +812,7 @@ MCP server 走 ToolSurface，没有确认弹窗也没有待批队列。`tools/wr
 | **港股漏斗筛选** (`wyckoff_funnel_hk.yml`) | 周一-周五 16:35 | `market_funnel_job.py --market hk` |
 | **A 股漏斗筛选 + AI 研报 + 决策** (`wyckoff_funnel.yml`) | 周日-周四 17:17 | `daily_job.py` Step2→3→4；周日正常为周一实盘准备候选，若次日非 A 股交易日才跳过，日频写入 `theme_radar_snapshot` |
 | **板块连续性报告** (`sector_continuity.yml`) | 周一-周五 16:10 | 刷新概念热度历史，辅助主线引擎判断延续性 |
-| **强势股复盘** (`review_list_replay.yml`) | 周一-周五 19:25 | 用 Tushare 双日截面发现当日涨幅 > 7% 且前日 < 3% 的完整样本；下载前一交易日生产漏斗的压缩 as-run trace，另列前日通过 L1、次日开盘 ≤ +4% 且非一字板的可交易样本。快照缺失默认不重跑，手动触发可显式允许全市场 fallback |
+| **强势股复盘** (`review_list_replay.yml`) | 周一-周五 19:25 | 用 Tushare 双日截面发现当日涨幅 > 7% 且前日 < 3% 的完整样本；下载前一交易日生产漏斗的压缩 as-run trace，同时列出逐层状态、跟踪/AI状态、次日开盘及盘中可交易口径，并输出结构化 JSON/Markdown artifact。三条影子召回车道只观察、不写推荐；历史验证严格以每日 trace 为 as-of 候选证据。快照缺失默认不重跑，手动触发可显式允许全市场 fallback |
 | **主线雷达周报** (`theme_radar.yml`) | 周五 21:10 | `theme_radar_job.py --with-news`，周频新闻增强复盘 |
 | **形态复盘重定价** (`recommendation_tracking_reprice.yml`) | 周一-周五 23:00 | 同步 A 股、港股收盘价并计算收益；美股由美股漏斗收盘后续步处理 |
 | **信号反馈闭环** (`signal_feedback.yml`) | 周一-周五 23:30 | 只结算缺失/`pending` outcomes，同股共享一次 K 线；刷新 health / registry，周五续跑策略反思 Shadow |

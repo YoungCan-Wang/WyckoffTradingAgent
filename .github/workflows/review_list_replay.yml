@@ -32,6 +32,7 @@ jobs:
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       TICKFLOW_API_KEY: ${{ secrets.TICKFLOW_API_KEY }}
       REVIEW_ALLOW_FULL_FUNNEL_FALLBACK: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_full_funnel_fallback && '1' || '0' }}
+      REVIEW_REPORT_OUTPUT_DIR: ${{ github.workspace }}/logs
       TZ: Asia/Shanghai
 
     steps:
@@ -82,6 +83,15 @@ jobs:
             fi
           done
           echo "[review] no production trace matched date=${target_date}; workflow fallback policy will decide"
+          # 最常见的真因是前一交易日那次漏斗失败——失败的 run 不产出 artifact，且上面按
+          # --status success 查询也筛不到它，于是复盘以「找不到快照」失败，看不出是上游问题。
+          # 把上游状态显式打出来，避免误判成复盘任务自身的故障。
+          upstream="$(gh run list --workflow wyckoff_funnel.yml --branch "$GITHUB_REF_NAME" --limit 20 \
+            --json databaseId,conclusion,createdAt \
+            --jq "[.[] | select(.createdAt | startswith(\"${target_date}\"))] | .[0] | \
+                  if . then \"run=\(.databaseId) conclusion=\(.conclusion)\" else \"未找到当日运行\" end" 2>/dev/null || true)"
+          echo "[review] 上游 wyckoff_funnel 于 ${target_date} 的状态: ${upstream:-查询失败}"
+          echo "[review] 若上游为 failure，本次失败是连带后果；上游恢复后次日自动恢复"
 
       - name: Prepare logs dir
         run: mkdir -p logs

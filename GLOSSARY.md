@@ -231,6 +231,8 @@ watch_score = 0.25 × q20 + 0.20 × q5 + 0.05 × q3
 | **ATR 止损放宽** | ATR Stop Relaxation | 持仓诊断中，根据波动率在上限内降低固定止损线，避免正常洗盘误杀；它只放宽、不收紧，也不取消硬止损 |
 | **可卖股数** | Sellable Shares | A 股 T+1 下当日实际能卖出的股数。持仓无分笔明细，买入日期等于当前交易日时整个仓位记为 0，EXIT/TRIM 与强制止损离场都会被拒并顺延到下一交易日 |
 | **持仓代码** | Portfolio Symbol | 持仓账本 `portfolio_positions.code`：A 股 6 位数字、港股 `NNNNN.HK`、美股 `TICKER.US`（TickFlow 标准）。CLI/Web 写入前规范化；漏斗 OMS 买入空间仍以 A 股为主 |
+| **OMS 整手** | OMS Lot Size | Step4 下单取整单位：A 股 100 股，港美 1 股。港美持仓进入 OMS 后不得再套用 A 股 100 股门槛，否则小仓位止损强制 EXIT 与止损落库会失效 |
+| **OMS 人民币口径** | OMS CNY Cash Path | Step4 的 `total_equity` / `free_cash` / 工单 `amount` 按人民币计；港美报价与止损间距先乘汇率再定仓与回笼，避免把美元/港元裸加进人民币预算 |
 | **LLM 决策注释** | LLM Decision Note | `llmdoc/` 中经过版本控制、按工作流/股票代码/有效期选择的咨询性上下文；只能提醒模型复核遗漏风险，不得覆盖实时数据、硬止损、市场闸门、候选准入或 OMS |
 
 ---
@@ -264,6 +266,7 @@ flowchart LR
 | **Shadow Run** | 动态策略旁路演练：真实推荐不变，只记录动态策略会新增或移除哪些候选。 |
 | **Dynamic Policy** | 根据信号健康度、registry 和市场广度，动态调整 Trend / Accum 候选配额。 |
 | **推荐价 / initial_price** | `recommendation_tracking` 中展示用的入场价：按股票 code 粘住首次 `recommend_date` 收盘价；再次推荐只增加 `recommend_count` 与新事件行，不改推荐价。涨跌幅相对该价；MFE/MAE 仍按事件日独立计算。performance 刷新的 `max_dates` 只裁剪待更新行，不算改锚点历史。 |
+| **复盘窗口入选次数** | Web `/tracking` 窗口内唯一 `(code, recommend_date)` 的数量；同股同日的 tracking 与 pending 数据源不重复计数。覆盖股票数另按 `code` 去重，两者不应混用。 |
 | **形态入表观察** | 当日 L4 中 Springboard A/B/C 至少满足 2 项、并写入 `recommendation_tracking` 的跟踪样本。同一股票有多个达标信号时按代码合并为“双/多 Wyckoff 形态共振”，`signal_types` 保留全部信号。它用于后续复盘，不等于 Step3 送审、`VALIDATED` 或 OMS 买入核准。 |
 
 ---
@@ -365,10 +368,10 @@ flowchart LR
 | **auto（自动放行）** | 写操作风险分级最低档，按**工具身份**而非参数字段判定：目前仅 `set_stop_loss`。安全性来自该工具签名只接受 `code` / `stop_loss` / `items`，根本不能改股数、成本或现金；靠「检查参数里没有别的字段」防不住批量 `items` 把动作藏在数组里。`update_portfolio` 永远不是 auto。 |
 | **review（待审）** | 需要人看一眼的写操作：小额买入成交回填、常规持仓更新、`exec_command`、`write_file`。入待批准队列，不阻塞对话继续。 |
 | **confirm（二次确认）** | 最高档：卖出成交回填、不可逆动作（`sell` / `remove` / `delete` / `clear` / `delete_records`），或名义金额超过净值 5%。批量 `items` 逐项判定并取最高档，合计金额也参与阈值比较。 |
-| **待批准队列** | `~/.wyckoff/approvals.db`（SQLite，权限 0600）。daemon 无人时保存 review / confirm 调用的精确参数。`approve list` 展示脱敏参数，`approve ok` 经正常工具注册表立即执行并记录结果；失败不自动重试，避免重复成交。 |
+| **待批准队列** | `~/.wyckoff/approvals.db`（SQLite，权限 0600）。daemon 无人时保存 review / confirm 调用的精确参数，并记录入队时的 `user_id`。`approve list` 展示脱敏参数；`approve ok/no` 要求当前登录账户与该项一致，再经正常工具注册表执行并记录结果；失败不自动重试，避免重复成交或跨账户误写。 |
 | **审批过期** | 待批项 12 小时后自动转 `expired` 且不可批准。这不是清理策略而是安全要求：隔夜批准的调仓会按旧价成交。 |
 | **queued（入队回执）** | 工具闸门的第四种回执，与 `deny`（用户明确拒绝）和 `timeout`（弹窗无人应答）分开。措辞必须明确「已提交审批、不是拒绝」，否则模型会把用户从未做过的决定写进回复。 |
-| **set_stop_loss** | 只写 `stop_loss` 列的窄工具。`update_portfolio` 没有 `stop_loss` 参数（止损另由 `update_position_stops` 在 `server_job` 上下文写入，供 Step4 用），所以补录缺失止损必须用这个。云端走用户 JWT，本地镜像到 SQLite，只 UPDATE 不新建持仓。 |
+| **set_stop_loss** | 只写 `stop_loss` 列的窄工具。`update_portfolio` 没有 `stop_loss` 参数（止损另由 `update_position_stops` 在 `server_job` 上下文写入，供 Step4 用），所以补录缺失止损必须用这个。云端走用户 JWT，本地镜像到 SQLite，只 UPDATE 不新建持仓。daemon / `wyckoff run` 必须先恢复 CLI 登录态，否则会落到 `USER_LIVE:local` 而不是云端持仓。 |
 | **WYCKOFF_MCP_ALLOW_WRITES** | MCP 入口写操作开关，默认关闭。MCP 没有任何人机确认环节，放行等于让任意 MCP 客户端绕过审批直接改持仓，因此默认拒绝而非默认允许。显式设为 `1` 才承担风险。 |
 | **CHAT_TOOL_APPROVAL_SECRET** | Web 端审批签名专用密钥，建议独立配置。迁移期缺失时对 `SUPABASE_SERVICE_ROLE_KEY` 做单向、域分离的 SHA-256 派生，只把派生值用于审批签名，不直接复用或传播能绕过 RLS 的原值。两者都缺失时拒绝启动聊天。 |
 

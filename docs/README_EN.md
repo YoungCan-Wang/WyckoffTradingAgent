@@ -68,6 +68,8 @@ Modern React SPA with AI Agent chat, portfolio management, funnel screening, rec
 |:---:|:---:|
 | <img src="screenshots/web-track.png" width="450" /> | <img src="screenshots/web-portfolio.png" width="450" /> |
 
+The pattern-review page reads the latest 30 review dates present in the database. The record count preserves source rows, the total-selection count uses unique symbol-date occurrences, and covered-stock and return summaries are deduplicated by symbol.
+
 **Streamlit MVP retired**: Streamlit is no longer maintained on `main`. The historical runtime code is preserved on the `release/streamlit` branch, and the MVP product architecture/screenshots are archived in [STREAMLIT_MVP_ARCHITECTURE.md](STREAMLIT_MVP_ARCHITECTURE.md).
 
 ## Features
@@ -274,7 +276,7 @@ See the [Architecture doc](ARCHITECTURE.md) for the full config reference and Gi
 
 ### Persistent local schedules and approvals
 
-On macOS, `scripts/daemon_install.sh` installs the user-level launchd daemon so schedules continue after the TUI closes. `wyckoff daemon --status` reports its state. Unattended runs auto-apply only the narrow `set_stop_loss` tool; every other write is queued. Review exact redacted arguments with `wyckoff approve list`, then run `wyckoff approve ok <id>` to approve and execute or `wyckoff approve no <id>` to reject. Pending operations expire after 12 hours and failed executions are not retried automatically.
+On macOS, `scripts/daemon_install.sh` installs the user-level launchd daemon so schedules continue after the TUI closes. `wyckoff daemon --status` reports its state. Unattended runs restore the saved CLI login before tools run, then auto-apply only the narrow `set_stop_loss` tool; every other write is queued and bound to that account. Review exact redacted arguments with `wyckoff approve list`, then run `wyckoff approve ok <id>` to approve and execute or `wyckoff approve no <id>` to reject — only the same logged-in account may decide an item. Pending operations expire after 12 hours and failed executions are not retried automatically.
 
 ### External MCP servers
 

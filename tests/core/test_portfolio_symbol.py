@@ -4,6 +4,7 @@ from core.portfolio_symbol import (
     is_cn_portfolio_code,
     is_supported_portfolio_code,
     normalize_portfolio_code,
+    portfolio_lot_size,
     portfolio_name_conflict,
 )
 
@@ -29,3 +30,9 @@ def test_cn_helper_and_name_conflict() -> None:
     assert portfolio_name_conflict("06881.HK", "中国银河", "06881.HK") is None
     assert portfolio_name_conflict("601881", "中国银河", "中国银河") is None
     assert portfolio_name_conflict("601881", "错名", "中国银河") is not None
+
+
+def test_portfolio_lot_size_cn_vs_hk_us() -> None:
+    assert portfolio_lot_size("601881") == 100
+    assert portfolio_lot_size("06881.HK") == 1
+    assert portfolio_lot_size("AAPL.US") == 1
