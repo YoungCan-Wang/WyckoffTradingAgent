@@ -91,6 +91,151 @@ def portfolio(_params: dict[str, Any]) -> Iterator[Event]:
     yield _ok(portfolio=portfolio_tool(mode="view"))
 
 
+# 日线上限：一屏 K 线图看不了更多，且列式 payload 也要有个封顶。
+MAX_OHLCV_DAYS = 1200
+DEFAULT_OHLCV_DAYS = 320
+
+
+def ohlcv(params: dict[str, Any]) -> Iterator[Event]:
+    """K 线序列，列式返回。
+
+    列式（{date: [...], close: [...]}）而非对象数组：320 根日线约 40KB，
+    对象数组要 100KB 上下，而画图端本来就按列消费。
+    """
+    from datetime import date, timedelta
+
+    from integrations.stock_hist_repository import get_stock_hist, normalize_hist_df
+
+    symbol = str(params.get("symbol") or "").strip()
+    if not symbol:
+        raise MethodError("invalid_params", "缺少 symbol")
+    days = _clamp_int(params.get("days"), DEFAULT_OHLCV_DAYS, 2, MAX_OHLCV_DAYS)
+    adjust = str(params.get("adjust") or "qfq")
+    if adjust not in ("qfq", "hfq", ""):
+        raise MethodError("invalid_params", f"不支持的 adjust: {adjust}")
+
+    end = date.today()
+    # 日历天要放宽于交易日：320 个交易日约 460 个自然日，留足余量。
+    start = end - timedelta(days=int(days * 1.6) + 40)
+    try:
+        raw = get_stock_hist(symbol, start, end, adjust=adjust or "qfq")
+    except Exception as exc:  # 数据源千奇百怪，统一成一个可读错误
+        raise MethodError("data_unavailable", f"取不到 {symbol} 的历史行情") from exc
+    if raw is None or raw.empty:
+        raise MethodError("data_unavailable", f"{symbol} 没有历史行情数据")
+
+    frame = normalize_hist_df(raw).tail(days)
+    yield _ok(symbol=symbol, adjust=adjust or "qfq", bars=_columnar(frame))
+
+
+def wyckoff_events(params: dict[str, Any]) -> Iterator[Event]:
+    """图表标注所需的威科夫结构：历史事件 + 支撑阻力带 + 目标位。
+
+    事件由 ``core.event_replay`` 重放生产检测器得到，因此图上标的和漏斗选的
+    是同一套规则。结构缺失时对应字段为 None —— 图少画一层比画错一层好。
+    """
+    from datetime import date, timedelta
+
+    from core.event_replay import replay_events
+    from integrations.stock_hist_repository import get_stock_hist, normalize_hist_df
+
+    symbol = str(params.get("symbol") or "").strip()
+    if not symbol:
+        raise MethodError("invalid_params", "缺少 symbol")
+    days = _clamp_int(params.get("days"), DEFAULT_OHLCV_DAYS, 2, MAX_OHLCV_DAYS)
+
+    end = date.today()
+    start = end - timedelta(days=int(days * 1.6) + 40)
+    try:
+        raw = get_stock_hist(symbol, start, end, adjust="qfq")
+    except Exception as exc:
+        raise MethodError("data_unavailable", f"取不到 {symbol} 的历史行情") from exc
+    if raw is None or raw.empty:
+        raise MethodError("data_unavailable", f"{symbol} 没有历史行情数据")
+
+    frame = normalize_hist_df(raw).tail(days).reset_index(drop=True)
+    events = replay_events(frame, code=symbol)
+    yield _ok(
+        symbol=symbol,
+        events=events,
+        trading_range=_trading_range_payload(frame),
+        targets=_targets_payload(frame),
+    )
+
+
+def _trading_range_payload(frame: Any) -> dict[str, Any] | None:
+    """支撑/阻力带 —— 图上画成一个矩形区。"""
+    try:
+        from core.wyckoff_structure import identify_trading_range
+
+        found = identify_trading_range(frame)
+    except Exception:
+        return None
+    if found is None:
+        return None
+    return {
+        "support": found.support,
+        "resistance": found.resistance,
+        "mid": found.mid,
+        "width_pct": found.width_pct,
+        "support_tests": found.support_tests,
+        "resistance_tests": found.resistance_tests,
+        "quality_score": found.quality_score,
+    }
+
+
+def _targets_payload(frame: Any) -> dict[str, Any] | None:
+    """目标位 —— 图上画成几条水平线。"""
+    try:
+        from core.price_targets import compute_price_targets
+
+        found = compute_price_targets(frame["close"], frame["high"], frame["low"])
+    except Exception:
+        return None
+    if found is None:
+        return None
+    return {
+        "last_close": found.last_close,
+        "measured_move": found.measured_move,
+        "prior_high": found.prior_high,
+        "atr_multiple": found.atr_multiple,
+        "conservative": found.conservative,
+        "aggressive": found.aggressive,
+    }
+
+
+def _columnar(frame: Any) -> dict[str, list[Any]]:
+    """DataFrame -> 列式 dict，NaN 换成 None（JSON 没有 NaN）。"""
+    import math
+
+    out: dict[str, list[Any]] = {}
+    for col in ("date", "open", "high", "low", "close", "volume", "amount", "pct_chg"):
+        if col not in frame.columns:
+            continue
+        values = frame[col].tolist()
+        if col == "date":
+            out[col] = [str(v)[:10] for v in values]
+            continue
+        cleaned: list[Any] = []
+        for v in values:
+            try:
+                num = float(v)
+            except (TypeError, ValueError):
+                cleaned.append(None)
+                continue
+            cleaned.append(None if math.isnan(num) or math.isinf(num) else num)
+        out[col] = cleaned
+    return out
+
+
+def _clamp_int(value: Any, default: int, low: int, high: int) -> int:
+    try:
+        num = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(low, min(high, num))
+
+
 def schedules(_params: dict[str, Any]) -> Iterator[Event]:
     from cli.daemon import is_daemon_running
     from cli.scheduler import load_schedules, schedule_status
@@ -484,6 +629,8 @@ METHODS: dict[str, Callable[[dict[str, Any]], Iterator[Event]]] = {
     "approve_list": approve_list,
     "approve_decide": approve_decide,
     "portfolio": portfolio,
+    "ohlcv": ohlcv,
+    "wyckoff_events": wyckoff_events,
     "schedules": schedules,
     "mcp_list": mcp_list,
     "account": account,
