@@ -410,7 +410,11 @@ def _candidate_risk_context(item: dict) -> str:
 
 
 def _candidate_risk_items(item: dict) -> list[str]:
-    risks = _text_items(item.get("risk_factors")) + _text_items(item.get("entry_quality_risk_flags"))
+    risks = (
+        _text_items(item.get("candidate_risk"))
+        + _text_items(item.get("risk_factors"))
+        + _text_items(item.get("entry_quality_risk_flags"))
+    )
     return list(dict.fromkeys(risks))
 
 
