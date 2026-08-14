@@ -233,3 +233,75 @@ def test_us_buy_sizes_against_cny_budget() -> None:
     assert ticket.shares < 50
     assert ticket.amount == pytest.approx(ticket.shares * ticket.price_hint * 7.0, rel=0.05)
     assert cash < 20000
+
+
+def test_us_same_day_stop_breach_is_sellable() -> None:
+    """港美 T+0：同日买入跌破止损仍须强制 EXIT，不得套用 A 股 T+1 冻结。"""
+    engine = WyckoffOrderEngine(
+        total_equity=100000,
+        free_cash=50000,
+        position_map={
+            "AAPL.US": PositionItem(
+                code="AAPL.US",
+                name="Apple",
+                cost=200.0,
+                buy_dt="2026-08-12",
+                shares=10,
+                stop_loss=180.0,
+            )
+        },
+        latest_price_map={"AAPL.US": 170.0},
+        market_regime="NEUTRAL",
+        trade_date="2026-08-12",
+        cny_rates={"CNY": 1.0, "USD": 7.2},
+    )
+
+    tickets, _cash = engine.process([_us_hold_decision(stop_loss=180.0)])
+
+    ticket = tickets[0]
+    assert ticket.action == "EXIT"
+    assert ticket.status == "APPROVED"
+    assert ticket.shares == 10
+    assert "forced_exit_stop_breach" in ticket.audit
+    assert "T+1" not in ticket.reason
+
+
+def test_a_share_same_day_still_t1_frozen() -> None:
+    """回归：A 股同日买入仍不可卖，港美修复不得放宽 A 股 T+1。"""
+    engine = WyckoffOrderEngine(
+        total_equity=100000,
+        free_cash=50000,
+        position_map={
+            "000001": PositionItem(
+                code="000001",
+                name="平安银行",
+                cost=10.0,
+                buy_dt="2026-08-12",
+                shares=1000,
+                stop_loss=9.0,
+            )
+        },
+        latest_price_map={"000001": 8.5},
+        market_regime="NEUTRAL",
+        trade_date="2026-08-12",
+    )
+    decision = DecisionItem(
+        code="000001",
+        name="平安银行",
+        action="EXIT",
+        entry_zone_min=None,
+        entry_zone_max=None,
+        stop_loss=9.0,
+        trim_ratio=None,
+        tape_condition="",
+        invalidate_condition="",
+        is_add_on=False,
+        reason="止损离场",
+        confidence=0.8,
+    )
+
+    tickets, cash = engine.process([decision])
+
+    assert tickets[0].status == "NO_TRADE"
+    assert "T+1限制" in tickets[0].reason
+    assert cash == 50000

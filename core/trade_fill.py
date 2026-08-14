@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from core.buy_dt import parse_buy_dt
 from core.cash_portfolio import CashPortfolioConfig, calc_trade_cost
 
 BUY = "buy"
@@ -76,15 +77,28 @@ def _apply_buy(holding: Holding | None, cash: float, fill: Fill, gross: float, f
     # 买入均价含手续费，卖出时算出的已实现盈亏才是到手的钱。
     prev_cost = (holding.cost_price * prev_shares) if holding else 0.0
     shares = prev_shares + fill.shares
+    # T+1 以最近一次买入为准；乱序回填更早成交日不得把 buy_dt 往回拨，否则当日加仓会被误判可卖。
+    prev_buy_dt = holding.buy_dt if holding else ""
     merged = Holding(
         code=fill.code,
         name=fill.name or (holding.name if holding else ""),
         shares=shares,
         cost_price=(prev_cost + outlay) / shares,
-        buy_dt=fill.trade_date,
+        buy_dt=_later_buy_dt(prev_buy_dt, fill.trade_date),
     )
     note = f"{fill.code} 买入 {fill.shares} 股 @ {fill.price:.3f}，费用 {fee:.2f}，持仓 {prev_shares} → {shares}"
     return FillResult(merged, cash - outlay, fee, None, note)
+
+
+def _later_buy_dt(existing: str, incoming: str) -> str:
+    """保留较晚的建仓日；无法解析的一侧退让给可解析侧。"""
+    old = parse_buy_dt(existing)
+    new = parse_buy_dt(incoming)
+    if old is None:
+        return str(incoming or "").strip() or str(existing or "").strip()
+    if new is None:
+        return str(existing or "").strip()
+    return str(incoming).strip() if new.date() >= old.date() else str(existing).strip()
 
 
 def _apply_sell(holding: Holding | None, cash: float, fill: Fill, gross: float, fee: float) -> FillResult:

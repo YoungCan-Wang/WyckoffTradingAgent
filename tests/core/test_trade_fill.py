@@ -32,6 +32,16 @@ def test_buy_more_averages_the_cost_and_refreshes_buy_date():
     assert result.holding.buy_dt == "20260715"
 
 
+def test_older_addon_fill_does_not_regress_buy_dt():
+    """乱序回填更早成交日不得把 buy_dt 拨回，否则当日加仓会被误判可卖。"""
+    held = Holding(code="000001", name="平安银行", shares=1000, cost_price=10.0, buy_dt="20260715")
+
+    result = apply_fill(held, 50_000.0, Fill("000001", "buy", 500, 11.0, "20260701"), FREE)
+
+    assert result.holding.shares == 1500
+    assert result.holding.buy_dt == "20260715"
+
+
 def test_cost_basis_absorbs_the_commission():
     cfg = CashPortfolioConfig(commission_rate=0.0003, min_commission=5.0, transfer_fee_rate=0.0, stamp_duty_rate=0.0)
 
