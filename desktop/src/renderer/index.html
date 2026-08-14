@@ -13,11 +13,23 @@
 <div class="win">
   <aside class="side" id="side">
     <div class="brand">Wyckoff <span class="cv">⌄</span></div>
-    <nav class="nav">
-      <div class="nv" data-view="chat"><span class="g">✳</span><span data-i18n="nav.chat">会话</span></div>
-      <div class="nv" data-view="approvals"><span class="g">▤</span><span data-i18n="nav.approvals">审批</span><span class="n" id="approval-count"></span></div>
-      <div class="nv" data-view="schedules"><span class="g">◷</span><span data-i18n="nav.schedules">定时</span><span class="n" id="schedule-count"></span></div>
-      <div class="nv" data-view="portfolio"><span class="g">▣</span><span data-i18n="nav.portfolio">持仓</span></div>
+    <button class="side-new" id="btn-new-analysis" type="button" data-i18n="nav.newAnalysis">开始分析</button>
+    <nav class="nav" data-i18n-aria-label="nav.primary" aria-label="主导航">
+      <div class="nav-group">
+        <div class="nav-label" data-i18n="nav.groupWork">工作</div>
+        <button class="nv" type="button" data-view="chat"><span class="g">✳</span><span data-i18n="nav.today">今天</span></button>
+        <button class="nv" type="button" data-view="tasks"><span class="g">◫</span><span data-i18n="nav.tasks">任务运行</span><span class="n" id="task-count"></span></button>
+        <button class="nv" type="button" data-view="approvals"><span class="g">▤</span><span data-i18n="nav.approvals">审批</span><span class="n" id="approval-count"></span></button>
+      </div>
+      <div class="nav-group">
+        <div class="nav-label" data-i18n="nav.groupDomain">业务</div>
+        <button class="nv" type="button" data-view="portfolio"><span class="g">▣</span><span data-i18n="nav.portfolio">持仓</span></button>
+        <button class="nv" type="button" data-view="schedules"><span class="g">◷</span><span data-i18n="nav.schedules">定时任务</span><span class="n" id="schedule-count"></span></button>
+      </div>
+      <div class="nav-group">
+        <div class="nav-label" data-i18n="nav.groupLibrary">资料库</div>
+        <button class="nv" type="button" data-view="reports"><span class="g">▦</span><span data-i18n="nav.reports">报告</span></button>
+      </div>
     </nav>
     <div class="side-foot">
       <button class="acct" id="btn-acct" aria-haspopup="menu" aria-expanded="false">
@@ -58,6 +70,9 @@
               <button class="send" id="btn-send">↑</button>
             </div>
           </div>
+          <div class="wel-overview" id="wel-overview"></div>
+          <div class="wel-attention" id="wel-attention" hidden></div>
+          <div class="wel-label" data-i18n="welcome.quickStart">快速开始</div>
           <div class="wel-g" id="wel-cards"></div>
         </div>
       </div>

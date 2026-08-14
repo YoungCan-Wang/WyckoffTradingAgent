@@ -178,11 +178,12 @@
     const refresh = async (selectRel) => {
       const res = await deps.call('artifact_list')
       items = (res && res.items) || []
-      const target = selectRel || activeRel
+      const firstPreview = items.find((item) => item.kind !== 'unsupported')
+      const target = selectRel || activeRel || (firstPreview && firstPreview.rel_path)
       const exists = items.some((i) => i.rel_path === target)
       renderList()
       if (exists) await showBody(target)
-      else if (!items.length) bodyCol.replaceChildren(el('p', 'empty', t('viewer.pickHint')))
+      else bodyCol.replaceChildren(el('p', 'empty', t('viewer.pickHint')))
       renderList()
     }
 

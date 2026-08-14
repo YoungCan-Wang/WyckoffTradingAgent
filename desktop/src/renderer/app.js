@@ -190,14 +190,47 @@ function openedNote (title) {
   return note
 }
 
-function approvalCard (item) {
+function displayTime (value) {
+  if (!value) return '—'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString(i18n.getLang())
+}
+
+function evidenceItem (label, value) {
+  const item = el('div', 'evidence-item')
+  item.appendChild(el('span', null, label))
+  item.appendChild(el('b', null, value || '—'))
+  return item
+}
+
+function approvalEvidence (item, context) {
+  const grid = el('div', 'approval-evidence')
+  if (context.account) grid.appendChild(evidenceItem(t('approvals.account'), context.account))
+  grid.appendChild(evidenceItem(t('approvals.source'), item.source || t('tasks.sourceApproval')))
+  grid.appendChild(evidenceItem(t('approvals.requestedAt'), displayTime(item.created_at)))
+  grid.appendChild(evidenceItem(t('approvals.tool'), item.tool_name || item.tool))
+  if (item.schedule_id) grid.appendChild(evidenceItem(t('approvals.schedule'), item.schedule_id))
+  return grid
+}
+
+function approvalCard (item, context = {}) {
   const card = el('div', 'card')
   const r1 = el('div', 'r1')
   r1.appendChild(el('b', null, item.summary || item.tool || item.tool_name || t('approvals.defaultItem')))
   const tier = { confirm: t('approvals.tierConfirm'), review: t('approvals.tierReview') }[item.risk] || item.risk || ''
-  r1.appendChild(el('span', 'tg', tier))
+  const tone = ['confirm', 'review'].includes(item.risk) ? item.risk : ''
+  r1.appendChild(el('span', `tg ${tone}`, tier))
   card.appendChild(r1)
   card.appendChild(el('p', 'sub', t('approvals.submitted')))
+  if (item.created_at || item.source || item.tool_name || context.account) {
+    card.appendChild(approvalEvidence(item, context))
+  }
+  if (item.args && Object.keys(item.args).length) {
+    const details = el('details', 'approval-args')
+    details.appendChild(el('summary', null, t('approvals.exactChange')))
+    details.appendChild(el('pre', null, JSON.stringify(item.args, null, 2)))
+    card.appendChild(details)
+  }
 
   const btns = el('div', 'btns')
   const ok = el('button', 'b pri', t('action.approve'))
@@ -350,8 +383,9 @@ async function refreshApprovals () {
 async function refreshSchedules () {
   const data = await collect('schedules')
   if (!data) return
-  const enabled = (data.schedules || []).filter((s) => s.enabled).length
-  document.getElementById('schedule-count').textContent = enabled ? String(enabled) : ''
+  const count = (data.schedules || []).length
+  document.getElementById('schedule-count').textContent = count ? String(count) : ''
+  document.getElementById('task-count').textContent = count ? String(count) : ''
 }
 
 // The pane reports how many tabs it holds, so visibility follows content:
@@ -361,40 +395,156 @@ const pane = new window.WyckoffTabs.TabPane('tabs', 'pane-body', {
   onCountChange: (count) => setPane(count > 0)
 })
 
-function buildApprovals (data) {
+function buildApprovals (data, account) {
   const wrap = el('div')
   if (!data || !data.count) {
     wrap.appendChild(el('p', 'empty', t('approvals.empty')))
     return wrap
   }
-  for (const item of data.items) wrap.appendChild(approvalCard(item))
+  const accountLabel = account ? (account.signed_in ? account.email : t('account.signedOut')) : null
+  for (const item of data.items) wrap.appendChild(approvalCard(item, { account: accountLabel }))
   return wrap
+}
+
+const failedStatus = (value) => /fail|error|失败|异常/i.test(String(value || ''))
+const successStatus = (value) => /success|complete|done|ok|成功|完成/i.test(String(value || ''))
+
+function scheduleState (schedule) {
+  if (!schedule.enabled) return { tone: '', label: t('tasks.statusDisabled') }
+  if (failedStatus(schedule.last_status) || schedule.last_error) return { tone: 'failed', label: t('tasks.statusFailed') }
+  if (successStatus(schedule.last_status)) return { tone: 'success', label: t('tasks.statusSuccess') }
+  return { tone: '', label: t('tasks.statusEnabled') }
+}
+
+function describeCron (cron) {
+  const parts = String(cron || '').trim().split(/\s+/)
+  if (parts.length !== 5) return t('schedules.rawCron', { cron })
+  const [minute, hour, , , weekday] = parts
+  if (/^\*\/\d+$/.test(minute) && hour === '*') {
+    return t('schedules.everyMinutes', { count: minute.slice(2) })
+  }
+  if (/^\d+$/.test(minute) && /^\d+$/.test(hour)) {
+    const time = `${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`
+    if (weekday === '1-5') return t('schedules.everyWeekday', { time })
+    if (weekday === '*') return t('schedules.everyDay', { time })
+  }
+  return t('schedules.rawCron', { cron })
+}
+
+function taskMetric (value, label) {
+  const card = el('div', 'task-metric')
+  card.appendChild(el('b', 'tnum', String(value)))
+  card.appendChild(el('span', null, label))
+  return card
+}
+
+function taskRow ({ tone, title, meta, state, time, action, onAction }) {
+  const row = el('div', 'task-row')
+  row.appendChild(el('span', `task-dot ${tone || ''}`))
+  const body = el('div')
+  body.appendChild(el('div', 'task-title', title))
+  body.appendChild(el('div', 'task-meta', meta))
+  row.appendChild(body)
+  const side = el('div', 'task-side')
+  side.appendChild(el('span', 'task-state', state))
+  side.appendChild(el('span', 'task-time', time || '—'))
+  if (action) {
+    const button = el('button', 'task-action', action)
+    button.onclick = onAction
+    side.appendChild(button)
+  }
+  row.appendChild(side)
+  return row
+}
+
+function taskSection (title, count) {
+  const section = el('section', 'task-section')
+  const head = el('div', 'task-section-h')
+  head.appendChild(el('h2', null, title))
+  head.appendChild(el('span', 'tnum', String(count)))
+  section.appendChild(head)
+  const list = el('div', 'task-list')
+  section.appendChild(list)
+  return { section, list }
+}
+
+function buildTasks (approvals, data) {
+  const wrap = el('div')
+  const schedules = (data && data.schedules) || []
+  const pending = (approvals && approvals.items) || []
+  const enabled = schedules.filter((item) => item.enabled)
+  const issues = schedules.filter((item) => item.enabled && (failedStatus(item.last_status) || item.last_error))
+  const metrics = el('div', 'task-metrics')
+  metrics.append(
+    taskMetric(enabled.length, t('tasks.enabled')),
+    taskMetric(pending.length, t('tasks.pending')),
+    taskMetric(issues.length, t('tasks.issues')),
+    taskMetric(data && data.daemon_running ? t('tasks.running') : t('tasks.stopped'), t('tasks.runtime'))
+  )
+  wrap.appendChild(metrics)
+
+  const attention = taskSection(t('tasks.attention'), pending.length + issues.length)
+  if (!pending.length && !issues.length) attention.list.appendChild(el('p', 'empty', t('tasks.noneAttention')))
+  for (const item of pending) attention.list.appendChild(approvalTaskRow(item))
+  for (const item of issues) attention.list.appendChild(scheduleTaskRow(item, true))
+  wrap.appendChild(attention.section)
+
+  const scheduled = taskSection(t('tasks.scheduled'), schedules.length)
+  if (!schedules.length) scheduled.list.appendChild(el('p', 'empty', t('tasks.noneScheduled')))
+  for (const item of schedules) scheduled.list.appendChild(scheduleTaskRow(item, false))
+  wrap.appendChild(scheduled.section)
+  return wrap
+}
+
+function approvalTaskRow (item) {
+  const meta = [t('tasks.sourceApproval'), item.tool_name, item.source].filter(Boolean).join(' · ')
+  return taskRow({
+    tone: 'pending', title: item.summary || item.tool_name || t('approvals.defaultItem'), meta,
+    state: t('tasks.statusPending'), time: displayTime(item.created_at),
+    action: t('tasks.openApprovals'), onAction: () => navigateView('approvals')
+  })
+}
+
+function scheduleTaskRow (schedule, issue) {
+  const state = scheduleState(schedule)
+  const last = schedule.last_fired ? t('tasks.lastRun', { time: displayTime(schedule.last_fired) }) : t('tasks.neverRun')
+  return taskRow({
+    tone: issue ? 'failed' : state.tone, title: schedule.name, meta: `${t('tasks.sourceSchedule')} · ${describeCron(schedule.cron)} · ${last}`,
+    state: state.label, time: schedule.next_run ? t('tasks.nextRun', { time: displayTime(schedule.next_run) }) : '—',
+    action: t('tasks.openSchedules'), onAction: () => navigateView('schedules')
+  })
+}
+
+function buildScheduleCard (schedule) {
+  const card = el('div', 'schedule-card')
+  const identity = el('div')
+  identity.appendChild(el('div', 'schedule-name', schedule.name))
+  identity.appendChild(el('div', 'schedule-cadence', `${describeCron(schedule.cron)} · ${schedule.cron}`))
+  const last = el('div')
+  last.appendChild(el('div', 'schedule-label', t('schedules.lastRun')))
+  const state = scheduleState(schedule)
+  const lastValue = !schedule.enabled
+    ? state.label
+    : schedule.last_fired ? `${displayTime(schedule.last_fired)} · ${state.label}` : t('schedules.neverRun')
+  last.appendChild(el('div', `schedule-value ${state.tone}`, schedule.last_error || lastValue))
+  const next = el('div')
+  next.appendChild(el('div', 'schedule-label', t('schedules.nextRun')))
+  next.appendChild(el('div', 'schedule-value tnum', schedule.next_run ? displayTime(schedule.next_run) : '—'))
+  card.append(identity, last, next)
+  return card
 }
 
 function buildSchedules (data) {
   const wrap = el('div')
-  if (!data) {
-    wrap.appendChild(el('p', 'empty', t('schedules.readFailed')))
-    return wrap
-  }
-  wrap.appendChild(
-    el('p', 'empty', data.daemon_running ? t('schedules.daemonOn') : t('schedules.daemonOff'))
-  )
-  const table = el('table')
-  const head = el('tr')
-  for (const h of [t('schedules.colTask'), t('schedules.colCron'), t('schedules.colStatus'), t('schedules.colNext')]) {
-    head.appendChild(el('th', null, h))
-  }
-  table.appendChild(head)
-  for (const s of data.schedules || []) {
-    const tr = el('tr')
-    tr.appendChild(el('td', null, s.name))
-    tr.appendChild(el('td', 'c', s.cron))
-    tr.appendChild(el('td', null, s.enabled ? s.last_status : t('schedules.disabled')))
-    tr.appendChild(el('td', 'c', s.next_run || '—'))
-    table.appendChild(tr)
-  }
-  wrap.appendChild(table)
+  if (!data) return el('p', 'empty', t('schedules.readFailed'))
+  wrap.appendChild(el('div', `status-banner ${data.daemon_running ? 'on' : ''}`, data.daemon_running ? t('schedules.daemonOn') : t('schedules.daemonOff')))
+  const list = el('div', 'schedule-list')
+  for (const schedule of data.schedules || []) list.appendChild(buildScheduleCard(schedule))
+  if (!list.children.length) list.appendChild(el('p', 'empty', t('tasks.noneScheduled')))
+  wrap.appendChild(list)
+  const button = el('button', 'task-action', t('schedules.viewRuns'))
+  button.onclick = () => navigateView('tasks')
+  wrap.appendChild(button)
   return wrap
 }
 
@@ -487,28 +637,6 @@ const openBrowser = () =>
       browserObserver = new ResizeObserver(syncBrowserBounds)
       browserObserver.observe(browserBox)
       return wrap
-    }
-  })
-
-// One viewer instance, reused: it owns blob URLs that must be revoked on
-// switch, and rebuilding it each time would leak them.
-let artifactViewer = null
-
-const openReports = () =>
-  pane.open({
-    key: 'reports',
-    title: t('tab.reports'),
-    glyph: '▦',
-    onClose: () => artifactViewer && artifactViewer.dispose(),
-    build: async () => {
-      if (!artifactViewer) {
-        artifactViewer = window.createArtifactViewer({
-          call: collect,
-          onError: (message) => sysLine(message, true)
-        })
-      }
-      await artifactViewer.refresh()
-      return artifactViewer.node
     }
   })
 
@@ -1152,10 +1280,28 @@ setOv.onclick = (e) => { if (e.target === setOv) closeSettings() }
 // title/sub are i18n keys, not literal text, so a language switch re-resolves
 // them on the next render rather than freezing whatever language loaded first.
 const PAGES = {
+  tasks: {
+    titleKey: 'tasks.heading',
+    subKey: 'tasks.pageSub',
+    wide: true,
+    build: async () => {
+      const [approvals, schedules] = await Promise.all([
+        collect('approve_list'),
+        collect('schedules')
+      ])
+      return buildTasks(approvals, schedules)
+    }
+  },
   approvals: {
     titleKey: 'nav.approvals',
     subKey: 'approvals.pageSub',
-    build: async () => buildApprovals(await collect('approve_list'))
+    build: async () => {
+      const [approvals, account] = await Promise.all([
+        collect('approve_list'),
+        collect('account')
+      ])
+      return buildApprovals(approvals, account)
+    }
   },
   schedules: {
     titleKey: 'schedules.heading',
@@ -1165,10 +1311,17 @@ const PAGES = {
   portfolio: {
     titleKey: 'tab.charts',
     subKey: 'portfolio.pageSub',
+    wide: true,
     build: async () => {
       const data = await collect('portfolio')
       return window.WyckoffCharts.renderCharts((data && data.portfolio) || {})
     }
+  },
+  reports: {
+    titleKey: 'nav.reports',
+    subKey: 'reports.pageSub',
+    wide: true,
+    build: buildReportPage
   }
 }
 
@@ -1176,8 +1329,27 @@ const page = document.getElementById('page')
 const pageBody = document.getElementById('page-body')
 let pageToken = 0
 let activePage = null
+let pageCleanup = null
+
+async function buildReportPage () {
+  const viewer = window.createArtifactViewer({
+    call: collect,
+    onError: (message) => sysLine(message, true)
+  })
+  await viewer.refresh()
+  const wrap = el('div', 'report-page')
+  wrap.appendChild(viewer.node)
+  return { node: wrap, dispose: viewer.dispose }
+}
+
+function clearPage () {
+  if (pageCleanup) pageCleanup()
+  pageCleanup = null
+}
 
 function showChat () {
+  pageToken += 1
+  clearPage()
   activePage = null
   page.hidden = true
   stream.hidden = false
@@ -1189,26 +1361,42 @@ async function showPage (name) {
   activePage = name
   stream.hidden = true
   page.hidden = false
+  page.classList.toggle('wide', Boolean(spec.wide))
   document.getElementById('page-title').textContent = t(spec.titleKey)
   document.getElementById('page-sub').textContent = t(spec.subKey)
+  clearPage()
   pageBody.replaceChildren(el('p', 'empty', t('tab.loading')))
   // Guard against a slower earlier page painting over a newer one.
   const token = ++pageToken
-  const node = await spec.build()
-  if (token !== pageToken) return
+  const built = await spec.build()
+  if (token !== pageToken) {
+    if (built && built.dispose) built.dispose()
+    return
+  }
+  const node = built && built.node ? built.node : built
+  pageCleanup = built && built.dispose ? built.dispose : null
   pageBody.replaceChildren(node)
 }
 
-for (const nav of document.querySelectorAll('.nv')) {
-  nav.onclick = () => {
-    for (const other of document.querySelectorAll('.nv')) other.classList.remove('on')
-    nav.classList.add('on')
-    const view = nav.dataset.view
-    if (view === 'chat') showChat()
-    else showPage(view)
+function selectNav (view) {
+  for (const nav of document.querySelectorAll('.nv')) {
+    nav.classList.toggle('on', nav.dataset.view === view)
   }
 }
-document.querySelector('.nv').classList.add('on')
+
+function navigateView (view) {
+  selectNav(view)
+  if (view === 'chat') showChat()
+  else showPage(view)
+}
+
+for (const nav of document.querySelectorAll('.nv')) nav.onclick = () => navigateView(nav.dataset.view)
+selectNav('chat')
+
+document.getElementById('btn-new-analysis').onclick = () => {
+  navigateView('chat')
+  input.focus()
+}
 
 btnSend.onclick = send
 btnRestart.onclick = () => window.wyckoff.restart()
@@ -1237,7 +1425,7 @@ openBtn.onclick = (e) => {
 }
 
 const menuAction = (fn) => () => { setOpenMenu(false); fn() }
-document.getElementById('mi-reports').onclick = menuAction(openReports)
+document.getElementById('mi-reports').onclick = menuAction(() => navigateView('reports'))
 document.getElementById('mi-browser').onclick = menuAction(openBrowser)
 document.getElementById('mi-pane').onclick = menuAction(() => {
   if (win.classList.contains('pane-on')) pane.closeAll()
@@ -1246,10 +1434,7 @@ document.getElementById('mi-pane').onclick = menuAction(() => {
 // The chip is a shortcut to the approvals page; keep the sidebar in sync so
 // the highlighted nav item always matches what is on screen.
 document.getElementById('pending-chip').onclick = () => {
-  for (const nav of document.querySelectorAll('.nv')) {
-    nav.classList.toggle('on', nav.dataset.view === 'approvals')
-  }
-  showPage('approvals')
+  navigateView('approvals')
 }
 
 input.addEventListener('keydown', (e) => {
@@ -1312,14 +1497,55 @@ function buildWelcomeCards () {
   }
 }
 
+function welcomeMetric (label, value, view) {
+  const button = el('button', 'wel-metric')
+  button.appendChild(el('b', 'tnum', String(value)))
+  button.appendChild(el('span', null, label))
+  button.onclick = () => navigateView(view)
+  return button
+}
+
+function attentionAction (text, action) {
+  const button = el('button', null, text)
+  button.onclick = action
+  return button
+}
+
+function buildTodayOverview ({ positions, pending, noStop, schedules }) {
+  const enabled = (schedules.schedules || []).filter((item) => item.enabled).length
+  const overview = document.getElementById('wel-overview')
+  overview.replaceChildren(
+    welcomeMetric(t('welcome.positionsMetric'), positions.length, 'portfolio'),
+    welcomeMetric(t('welcome.approvalsMetric'), pending, 'approvals'),
+    welcomeMetric(t('welcome.schedulesMetric'), enabled, 'tasks'),
+    welcomeMetric(t('welcome.riskMetric'), noStop, 'portfolio')
+  )
+
+  const attention = document.getElementById('wel-attention')
+  attention.replaceChildren(el('div', 'wel-attention-title', t('welcome.needsAttention')))
+  if (pending) attention.appendChild(attentionAction(t('welcome.approvalAttention', { count: pending }), () => navigateView('approvals')))
+  if (noStop) {
+    attention.appendChild(attentionAction(t('welcome.stopAttention', { count: noStop }), () => {
+      input.value = t('prompt.stops')
+      input.focus()
+      input.dispatchEvent(new Event('input'))
+    }))
+  }
+  if (enabled && !schedules.daemon_running) {
+    attention.appendChild(attentionAction(t('welcome.schedulerAttention'), () => navigateView('schedules')))
+  }
+  attention.hidden = attention.children.length === 1
+}
+
 /** Summarise real state; never invent numbers when a call fails. */
 async function loadWelcome () {
   document.getElementById('wel-greet').textContent = greeting()
   buildWelcomeCards()
 
-  const [approvals, pf] = await Promise.all([
+  const [approvals, pf, schedules] = await Promise.all([
     collect('approve_list').catch(() => null),
-    collect('portfolio').catch(() => null)
+    collect('portfolio').catch(() => null),
+    collect('schedules').catch(() => null)
   ])
   // The user may have started chatting while these were in flight.
   if (chatting) return
@@ -1334,6 +1560,7 @@ async function loadWelcome () {
   parts.push(pending ? t('welcome.pending', { count: pending }) : t('welcome.noPending'))
 
   document.getElementById('wel-sum').textContent = parts.join(' · ')
+  buildTodayOverview({ positions, pending, noStop, schedules: schedules || { schedules: [] } })
 }
 
 // ---- account menu ----------------------------------------------------------
@@ -1433,7 +1660,7 @@ window.addEventListener('keydown', (e) => {
     else setSide(win.classList.contains('side-off'))
   } else if (key === 'r' && !e.altKey) {
     e.preventDefault()
-    openReports()
+    navigateView('reports')
   } else if (key === 't' && !e.altKey) {
     e.preventDefault()
     openBrowser()
