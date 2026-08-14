@@ -22,6 +22,18 @@ from integrations.chart_annotations import (
 )
 
 
+def _canonical_symbol(code: Any) -> str:
+    """收成规范码；认不出返回空串。
+
+    必须和 cli.ipc.methods._chart_frame 用同一套正规化：标注按 symbol 存，
+    图表按正规化后的 symbol 查。两边不一致时 agent 存进 "aapl"、图表查
+    "AAPL.US"，标注就静默消失 —— 图少画一层，而且不报错。
+    """
+    from core.portfolio_symbol import normalize_portfolio_code
+
+    return normalize_portfolio_code(str(code or "").strip())
+
+
 def annotate_chart(
     code: str,
     annotations: list[Any] | None = None,
@@ -46,9 +58,9 @@ def annotate_chart(
 
     日期用 YYYY-MM-DD，价格用数字。
     """
-    symbol = str(code or "").strip()
+    symbol = _canonical_symbol(code)
     if not symbol:
-        return {"error": "缺少 code"}
+        return {"error": f"认不出这个代码：{str(code or '').strip()}"}
     chart_id = make_chart_id(symbol, timeframe)
     verb = str(action or "draw").strip().lower()
 

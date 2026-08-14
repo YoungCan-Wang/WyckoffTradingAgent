@@ -313,6 +313,20 @@ html.dark .topbtn:hover { background: var(--hover); }
 .menu-i.danger .menu-g { color: #c14a3d; }
 .menu-k { margin-left: auto; color: var(--tx3); font-size: 11px; }
 
+/* 代码输入浮层：借用 .menu 的外壳，只是内容换成一个输入框。 */
+.symbox { padding: 10px; min-width: 236px; }
+.symbox-label { color: var(--tx3); font-size: 11px; margin-bottom: 6px; }
+.symbox-row { display: flex; gap: 6px; }
+.symbox-row input {
+  flex: 1; min-width: 0; padding: 6px 8px; font: inherit; font-size: 12.5px;
+  border: 1px solid var(--line); border-radius: 7px;
+  background: var(--paper); color: var(--tx);
+}
+.symbox-row input:focus { outline: none; border-color: var(--tx3); }
+.symbox-row .b { white-space: nowrap; }
+.symbox-hint { margin-top: 6px; color: var(--tx3); font-size: 10.5px; line-height: 1.45; }
+.symbox-hint.bad { color: var(--dn-ink); }
+
 /* Pending-approval count stays visible with the sidebar closed. */
 .chip {
   -webkit-app-region: no-drag;

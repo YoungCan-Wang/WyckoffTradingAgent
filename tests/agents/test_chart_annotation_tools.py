@@ -121,3 +121,42 @@ class TestRegistration:
         entry = next(t for t in TOOL_SCHEMAS if t["name"] == "annotate_chart")
         enum = entry["parameters"]["properties"]["annotations"]["items"]["properties"]["type"]["enum"]
         assert set(enum) == set(ca.REQUIRED)
+
+
+class TestSymbolAgreement:
+    """标注按 symbol 存、图表按正规化后的 symbol 查，两边必须用同一套规则。
+
+    不一致的症状是标注静默消失（图少画一层但不报错），所以这里把契约钉住。
+    """
+
+    def test_stores_under_the_normalized_symbol(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(ca, "STORE_PATH", tmp_path / "annotations.json")
+        annotate_chart(
+            code="aapl",
+            annotations=[{"type": "marker", "date": "2026-01-05", "price": 10.0, "label": "spring"}],
+        )
+
+        # agent 传小写裸 ticker，落盘的 chart_id 用规范码。
+        assert "AAPL.US" in ca.STORE_PATH.read_text(encoding="utf-8")
+
+    def test_chart_query_finds_annotations_written_with_loose_input(self, tmp_path, monkeypatch) -> None:
+        """端到端：agent 用 '700.HK' 写，图表用 '700.hk' 查，也要对上。"""
+        from cli.ipc import methods
+
+        monkeypatch.setattr(ca, "STORE_PATH", tmp_path / "annotations.json")
+        annotate_chart(
+            code="700.HK",
+            annotations=[{"type": "marker", "date": "2026-01-05", "price": 10.0, "label": "spring"}],
+        )
+
+        found = methods._annotations_payload("00700.HK")
+
+        assert len(found) == 1
+        assert found[0]["label"] == "spring"
+
+    def test_unrecognized_code_is_refused(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(ca, "STORE_PATH", tmp_path / "annotations.json")
+        result = annotate_chart(code="not a code!", annotations=[])
+
+        assert "认不出" in result["error"]
+        assert not ca.STORE_PATH.exists()

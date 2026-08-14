@@ -162,3 +162,71 @@ class TestChartData:
 
     def test_registered_in_methods_table(self) -> None:
         assert methods.METHODS["chart_data"] is methods.chart_data
+
+
+class TestSymbolNormalization:
+    """用户现在能手输代码，所以图表也要走持仓账本那套正规化。"""
+
+    def test_lowercase_us_ticker_is_normalized(self, stub_hist) -> None:
+        calls, _fake_get = stub_hist
+
+        result = _run({"symbol": "aapl", "days": 5})
+
+        # 传给数据源的是规范码，不是用户原样输入。
+        assert calls[0]["symbol"] == "AAPL.US"
+        assert result["symbol"] == "AAPL.US"
+
+    def test_short_hk_code_is_padded(self, stub_hist) -> None:
+        calls, _fake_get = stub_hist
+
+        _run({"symbol": "700.HK", "days": 5})
+
+        assert calls[0]["symbol"] == "00700.HK"
+
+    def test_a_share_code_passes_through(self, stub_hist) -> None:
+        calls, _fake_get = stub_hist
+
+        _run({"symbol": "600519", "days": 5})
+
+        assert calls[0]["symbol"] == "600519"
+
+    def test_whitespace_is_trimmed(self, stub_hist) -> None:
+        calls, _fake_get = stub_hist
+
+        _run({"symbol": "  600519  ", "days": 5})
+
+        assert calls[0]["symbol"] == "600519"
+
+    def test_unrecognized_symbol_is_rejected_before_fetching(self, stub_hist) -> None:
+        """认不出的代码不该打到数据源 —— 那样错误会变成含糊的「取不到行情」。"""
+        calls, _fake_get = stub_hist
+
+        with pytest.raises(methods.MethodError) as error:
+            _run({"symbol": "not a code!", "days": 5})
+
+        assert error.value.code == "invalid_params"
+        assert calls == []
+
+    def test_bare_short_digits_are_rejected(self, stub_hist) -> None:
+        """裸 1-5 位数字会和残缺 A 股码混淆，正规化那层故意不接受。"""
+        calls, _fake_get = stub_hist
+
+        with pytest.raises(methods.MethodError):
+            _run({"symbol": "123", "days": 5})
+
+        assert calls == []
+
+    def test_missing_symbol_still_reported(self, stub_hist) -> None:
+        with pytest.raises(methods.MethodError) as error:
+            _run({"days": 5})
+        assert error.value.code == "invalid_params"
+
+    def test_wyckoff_events_shares_the_normalization(self, stub_hist, monkeypatch) -> None:
+        """两个方法共用 _chart_frame，正规化不该只在其中一个生效。"""
+        calls, _fake_get = stub_hist
+        monkeypatch.setattr("core.event_replay.replay_events", lambda *a, **k: [])
+
+        result = list(methods.wyckoff_events({"symbol": "aapl", "days": 5}))[0]
+
+        assert calls[0]["symbol"] == "AAPL.US"
+        assert result["symbol"] == "AAPL.US"

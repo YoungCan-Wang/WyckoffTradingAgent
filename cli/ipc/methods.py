@@ -160,11 +160,17 @@ def chart_data(params: dict[str, Any]) -> Iterator[Event]:
 def _chart_frame(params: dict[str, Any], *, adjust: str = "qfq") -> tuple[str, Any]:
     from datetime import date, timedelta
 
+    from core.portfolio_symbol import normalize_portfolio_code
     from integrations.stock_hist_repository import get_stock_hist, normalize_hist_df
 
-    symbol = str(params.get("symbol") or "").strip()
-    if not symbol:
+    raw_symbol = str(params.get("symbol") or "").strip()
+    if not raw_symbol:
         raise MethodError("invalid_params", "缺少 symbol")
+    # 用户现在能手输代码，不再只有 agent 传规范码进来。复用持仓账本那套
+    # 正规化规则，而不是在图表这边另写一份 —— 两份规则迟早会漂移。
+    symbol = normalize_portfolio_code(raw_symbol)
+    if not symbol:
+        raise MethodError("invalid_params", f"认不出这个代码：{raw_symbol}")
     days = _clamp_int(params.get("days"), DEFAULT_OHLCV_DAYS, 2, MAX_OHLCV_DAYS)
     end = date.today()
     start = end - timedelta(days=int(days * 1.6) + 40)

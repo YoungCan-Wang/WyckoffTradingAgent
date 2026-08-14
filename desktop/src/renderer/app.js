@@ -755,9 +755,17 @@ const openKline = (symbol) =>
       wrap.appendChild(el('p', 'empty', t('kline.loading')))
       // Bars and annotations share one fetched frame, so price and structure
       // cannot drift across two upstream snapshots or consume quota twice.
-      const data = await collect('chart_data', { symbol, days: 320 }).catch(() => null)
+      // callWithError 而不是 collect：用户现在能手输代码，「认不出这个代码」
+      // 和「这只票没有行情」得说清楚，一律显示「加载失败」等于把线索丢了。
+      let data = null
+      let failure = ''
+      try {
+        data = await callWithError('chart_data', { symbol, days: 320 })
+      } catch (err) {
+        failure = (err && err.message) || ''
+      }
       if (!data || !data.bars) {
-        wrap.replaceChildren(el('p', 'empty', t('kline.failed')))
+        wrap.replaceChildren(el('p', 'empty', failure || t('kline.failed')))
         return wrap
       }
       wrap.replaceChildren(klineHeader(symbol, data.bars))
@@ -1513,7 +1521,67 @@ openBtn.onclick = (e) => {
   setOpenMenu(openMenu.hidden)
 }
 
+// ---- 手动打开 K 线图 -------------------------------------------------------
+// 图表原本只有 agent 能开（annotate_chart 执行时顺带开一个 tab），所以用户想
+// 单纯看某只票的图，得先设法让模型去标注它。这里补上直接的入口。
+
+let symBox = null
+
+function closeSymBox () {
+  // 按 DOM 查而不是只看 symBox：浮层要到下一帧才登记，这中间也得能关掉。
+  for (const node of document.querySelectorAll('.symbox')) node.remove()
+  symBox = null
+}
+
+function openSymBox () {
+  closeSymBox()
+  const box = el('div', 'menu symbox')
+  box.appendChild(el('div', 'symbox-label', t('chart.promptLabel')))
+  const row = el('div', 'symbox-row')
+  const input = el('input')
+  input.type = 'text'
+  input.placeholder = t('chart.placeholder')
+  input.setAttribute('aria-label', t('chart.promptLabel'))
+  const go = el('button', 'b pri', t('chart.open'))
+  go.type = 'button'
+  row.append(input, go)
+  box.appendChild(row)
+  const hint = el('p', 'symbox-hint', t('chart.hint'))
+  box.appendChild(hint)
+
+  const submit = () => {
+    const raw = input.value.trim()
+    if (!raw) return
+    // 只挡明显不可能的输入，真正的代码规则由后端那份正规化决定 ——
+    // 在这里复刻一套正则，两份规则迟早会不一致。
+    if (!/^[A-Za-z0-9.]{1,12}$/.test(raw)) {
+      hint.className = 'symbox-hint bad'
+      hint.textContent = t('chart.badSymbol')
+      return
+    }
+    closeSymBox()
+    setPane(true)
+    openKline(raw.toUpperCase())
+  }
+  go.onclick = submit
+  input.onkeydown = (e) => {
+    if (e.key === 'Enter') submit()
+    if (e.key === 'Escape') closeSymBox()
+  }
+  // 点浮层内部不该把它关掉（下面挂了全局关闭）。
+  box.onclick = (e) => e.stopPropagation()
+
+  document.body.appendChild(box)
+  const r = openBtn.getBoundingClientRect()
+  const left = Math.min(r.right - box.offsetWidth, window.innerWidth - box.offsetWidth - 8)
+  box.style.left = `${Math.max(8, left)}px`
+  box.style.top = `${r.bottom + 6}px`
+  symBox = box
+  input.focus()
+}
+
 const menuAction = (fn) => () => { setOpenMenu(false); fn() }
+document.getElementById('mi-chart').onclick = menuAction(openSymBox)
 document.getElementById('mi-reports').onclick = menuAction(() => navigateView('reports'))
 document.getElementById('mi-browser').onclick = menuAction(openBrowser)
 document.getElementById('mi-pane').onclick = menuAction(() => {
@@ -1718,6 +1786,7 @@ window.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return
   // Innermost layer first: the modal sits above the menus.
   if (!setOv.hidden) closeSettings()
+  else if (document.querySelector('.symbox')) closeSymBox()
   else if (!acctMenu.hidden) setMenu(false)
   else if (!openMenu.hidden) setOpenMenu(false)
 })
@@ -1734,8 +1803,14 @@ const togglePane = () => {
 
 // Dismiss the open menu on any outside click, like the account menu.
 window.addEventListener('click', () => { if (!openMenu.hidden) setOpenMenu(false) })
+// 点外面关掉浮层。要排除浮层自身和打开它的那个菜单项：打开它的那次 click
+// 仍在往 window 冒泡（菜单本身靠这次冒泡关闭），否则浮层会开了就立刻被关。
+window.addEventListener('click', (e) => {
+  if (e.target.closest && e.target.closest('.symbox, #mi-chart')) return
+  closeSymBox()
+})
 
-// Cmd/Ctrl shortcuts: B sidebar, ⌥B pane, R reports, T browser, , settings.
+// Cmd/Ctrl shortcuts: B sidebar, ⌥B pane, R reports, T browser, K chart, , settings.
 window.addEventListener('keydown', (e) => {
   if (!(e.metaKey || e.ctrlKey)) return
   const key = e.key.toLowerCase()
@@ -1753,6 +1828,9 @@ window.addEventListener('keydown', (e) => {
   } else if (key === 't' && !e.altKey) {
     e.preventDefault()
     openBrowser()
+  } else if (key === 'k' && !e.altKey) {
+    e.preventDefault()
+    openSymBox()
   }
 })
 
