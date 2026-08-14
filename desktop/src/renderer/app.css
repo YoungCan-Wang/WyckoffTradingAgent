@@ -647,7 +647,8 @@ html.dark .seg-b.on { background: #34394322; background-color: #383e48; }
 .status-banner.on::before { background: var(--dn); }
 .schedule-list { display: flex; flex-direction: column; gap: 8px; }
 .schedule-card {
-  display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(150px, .8fr) minmax(160px, .8fr);
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(150px, .8fr) minmax(160px, .8fr) auto;
   gap: 18px; align-items: center; padding: 13px 14px;
   border: 1px solid var(--line); border-radius: 10px; background: var(--paper);
 }
@@ -655,6 +656,20 @@ html.dark .seg-b.on { background: #34394322; background-color: #383e48; }
 .schedule-cadence { margin-top: 2px; color: var(--tx3); font: 10.5px/1.4 var(--mono); }
 .schedule-label { color: var(--tx3); font-size: 10.5px; }
 .schedule-value { margin-top: 2px; color: var(--tx2); font-size: 11.5px; }
+.schedule-rerun {
+  padding: 5px 11px; font-size: 11.5px; white-space: nowrap;
+  border: 1px solid var(--line); border-radius: 7px;
+  background: var(--paper); color: var(--tx); cursor: pointer;
+}
+.schedule-rerun:hover:not(:disabled) { background: var(--hover); }
+.schedule-rerun:disabled { opacity: .55; cursor: default; }
+/* 重跑结果就近显示：跨过整行贴在卡片下沿，不用把用户送去别的视图看结果。 */
+.schedule-rerun-note {
+  grid-column: 1 / -1; margin-top: 2px; padding-left: 9px;
+  border-left: 2px solid var(--clay-soft);
+  font-size: 11.5px; line-height: 1.5; color: var(--tx2);
+}
+.schedule-rerun-note.failed { border-left-color: var(--dn-soft); color: var(--dn-ink); }
 .schedule-value.failed { color: var(--up-ink); }
 .report-page { height: calc(100vh - 180px); min-height: 520px; }
 .report-page .vwrap {

@@ -389,6 +389,31 @@ async function collect (method, params) {
   })
 }
 
+/**
+ * 与 collect 同样等一轮结束，但把 error 事件带回来而不是当成空结果。
+ *
+ * collect 在失败时返回 null，调用方分不清「成功但无数据」和「被拒绝」。
+ * 对重跑这类会改变状态的调用，把 already_running 显示成「完成」是错的。
+ */
+function callWithError (method, params) {
+  return new Promise((resolve, reject) => {
+    window.wyckoff.call(method, params).then((res) => {
+      if (!res.ok) return reject(new Error(res.error || 'call failed'))
+      let payload = null
+      let failure = null
+      const off = window.wyckoff.onEvent((event) => {
+        if (event.id !== res.id) return
+        if (event.type === 'result') payload = event
+        if (event.type === 'error') failure = new Error(event.message || event.code || 'failed')
+        if (event.type === 'end') {
+          off()
+          failure ? reject(failure) : resolve(payload)
+        }
+      })
+    }, reject)
+  })
+}
+
 async function refreshApprovals () {
   const data = await collect('approve_list')
   const badge = document.getElementById('approval-count')
@@ -553,8 +578,49 @@ function buildScheduleCard (schedule) {
   const next = el('div')
   next.appendChild(el('div', 'schedule-label', t('schedules.nextRun')))
   next.appendChild(el('div', 'schedule-value tnum', schedule.next_run ? displayTime(schedule.next_run) : '—'))
-  card.append(identity, last, next)
+  card.append(identity, last, next, rerunButton(schedule, card))
   return card
+}
+
+/**
+ * 手动重跑。只在配了动作时给按钮 —— 没有 action 的任务点了必然报错。
+ *
+ * 重跑要跑完整一轮 agent（可能几分钟），所以按钮立刻禁用并就地显示进度，
+ * 而不是把用户丢去别的视图猜有没有在跑。
+ */
+function rerunButton (schedule, card) {
+  const button = el('button', 'schedule-rerun', t('schedules.rerun'))
+  button.type = 'button'
+  if (!schedule.id) button.disabled = true
+  button.onclick = async () => {
+    button.disabled = true
+    button.textContent = t('schedules.rerunning')
+    const note = el('p', 'schedule-rerun-note', t('schedules.rerunStarted', { name: schedule.name }))
+    const old = card.querySelector('.schedule-rerun-note')
+    if (old) old.remove()
+    card.appendChild(note)
+    try {
+      const res = await callWithError('schedule_run', { id: schedule.id })
+      // ok=false 是「跑完了但失败」，与传输层异常不同，两者都要说清楚。
+      if (res && res.ok === false) {
+        note.className = 'schedule-rerun-note failed'
+        note.textContent = t('schedules.rerunFailed', { error: res.error || '' })
+      } else {
+        const queued = (res && res.queued) || []
+        note.textContent = queued.length
+          ? t('schedules.rerunQueued', { count: queued.length })
+          : t('schedules.rerunDone')
+      }
+    } catch (err) {
+      note.className = 'schedule-rerun-note failed'
+      note.textContent = t('schedules.rerunFailed', { error: (err && err.message) || String(err) })
+    }
+    button.disabled = false
+    button.textContent = t('schedules.rerun')
+    // 重跑可能产生新审批，侧栏计数要跟上。
+    refreshApprovals()
+  }
+  return button
 }
 
 function buildSchedules (data) {

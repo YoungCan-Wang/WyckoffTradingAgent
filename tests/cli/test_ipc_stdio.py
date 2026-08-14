@@ -281,3 +281,120 @@ class TestMethodTable:
 
         with pytest.raises(MethodError):
             list(dispatch("nope", {}))
+
+
+class TestScheduleRun:
+    """手动重跑失败的定时任务。"""
+
+    @pytest.fixture
+    def sched(self, monkeypatch):
+        from cli import scheduler
+        from cli.ipc import methods
+
+        items = [
+            scheduler.Schedule(id="s1", name="收盘复盘", cron="30 15 * * 1-5", action="复盘今天"),
+            scheduler.Schedule(id="s2", name="空动作", cron="0 9 * * *", action="  "),
+        ]
+        monkeypatch.setattr(methods, "_rerunning", set())
+        monkeypatch.setattr("cli.scheduler.load_schedules", lambda: items)
+        return items
+
+    def _run(self, monkeypatch, result):
+        from cli.ipc import methods
+
+        calls: list[tuple[str, str, str]] = []
+
+        def fake_run_once(action, *, source="cli", schedule_id="", db_path=None):
+            calls.append((action, source, schedule_id))
+            return result
+
+        monkeypatch.setattr("cli.headless.run_once", fake_run_once)
+        events = list(methods.schedule_run({"id": "s1"}))
+        return events, calls
+
+    def test_runs_the_configured_action(self, sched, monkeypatch):
+        from cli.headless import HeadlessResult
+
+        events, calls = self._run(monkeypatch, HeadlessResult(ok=True, text="done"))
+
+        assert calls == [("复盘今天", "manual", "s1")]
+        assert events[-1]["ok"] is True
+
+    def test_marks_source_manual_not_daemon(self, sched, monkeypatch):
+        """人点的重跑要能和无人值守跑出来的区分开。"""
+        from cli.headless import HeadlessResult
+
+        _events, calls = self._run(monkeypatch, HeadlessResult(ok=True))
+
+        assert calls[0][1] == "manual"
+
+    def test_surfaces_queued_approvals(self, sched, monkeypatch):
+        from cli.headless import HeadlessResult
+
+        events, _calls = self._run(monkeypatch, HeadlessResult(ok=True, queued=["a1", "a2"]))
+
+        assert events[-1]["queued"] == ["a1", "a2"]
+
+    def test_failure_is_reported_not_raised(self, sched, monkeypatch):
+        """跑完但失败要带回错误文本，不能当成成功。"""
+        from cli.headless import HeadlessResult
+
+        events, _calls = self._run(monkeypatch, HeadlessResult(ok=False, error="数据源超时"))
+
+        assert events[-1]["ok"] is False
+        assert "数据源超时" in events[-1]["error"]
+
+    def test_does_not_touch_last_status(self, sched, monkeypatch):
+        """last_status 记录排程自动执行的结果，手动重跑不该覆盖它。"""
+        from cli.headless import HeadlessResult
+
+        sched[0].last_status = "failed"
+        sched[0].last_error = "数据源超时"
+        self._run(monkeypatch, HeadlessResult(ok=True))
+
+        assert sched[0].last_status == "failed"
+        assert sched[0].last_error == "数据源超时"
+
+    def test_unknown_id(self, sched):
+        from cli.ipc.methods import MethodError, schedule_run
+
+        with pytest.raises(MethodError) as error:
+            list(schedule_run({"id": "nope"}))
+        assert error.value.code == "not_found"
+
+    def test_missing_id(self, sched):
+        from cli.ipc.methods import MethodError, schedule_run
+
+        with pytest.raises(MethodError) as error:
+            list(schedule_run({}))
+        assert error.value.code == "invalid_params"
+
+    def test_empty_action_is_rejected_before_running(self, sched):
+        from cli.ipc.methods import MethodError, schedule_run
+
+        with pytest.raises(MethodError) as error:
+            list(schedule_run({"id": "s2"}))
+        assert error.value.code == "invalid_params"
+
+    def test_concurrent_rerun_is_refused(self, sched, monkeypatch):
+        """同一个任务并行跑两轮会写重复的审批和记录。"""
+        from cli.ipc import methods
+
+        monkeypatch.setattr(methods, "_rerunning", {"s1"})
+
+        with pytest.raises(methods.MethodError) as error:
+            list(methods.schedule_run({"id": "s1"}))
+        assert error.value.code == "already_running"
+
+    def test_lock_is_released_after_a_failed_run(self, sched, monkeypatch):
+        """run_once 抛异常也要放锁，否则这个任务再也点不动。"""
+        from cli.ipc import methods
+
+        def boom(*_args, **_kwargs):
+            raise RuntimeError("provider down")
+
+        monkeypatch.setattr("cli.headless.run_once", boom)
+        with pytest.raises(RuntimeError):
+            list(methods.schedule_run({"id": "s1"}))
+
+        assert "s1" not in methods._rerunning

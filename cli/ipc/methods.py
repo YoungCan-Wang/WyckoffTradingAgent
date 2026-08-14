@@ -10,6 +10,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -267,6 +268,49 @@ def schedules(_params: dict[str, Any]) -> Iterator[Event]:
         schedules=schedule_status(load_schedules()),
         daemon_running=is_daemon_running(),
     )
+
+
+# 正在手动重跑的 schedule id。重跑要跑完整一轮 agent（可能几分钟），期间用户
+# 很容易再点一次；同一个任务并行跑两轮会写重复的审批和记录。
+_rerunning: set[str] = set()
+_rerun_lock = threading.Lock()
+
+
+def schedule_run(params: dict[str, Any]) -> Iterator[Event]:
+    """手动重跑一个定时任务。用于失败后重试，不改动它的 cron 与下次触发时间。"""
+    from cli.headless import run_once
+    from cli.scheduler import load_schedules
+
+    schedule_id = str(params.get("id") or "").strip()
+    if not schedule_id:
+        raise MethodError("invalid_params", "缺少 id")
+
+    schedule = next((s for s in load_schedules() if s.id == schedule_id), None)
+    if schedule is None:
+        raise MethodError("not_found", f"找不到定时任务 {schedule_id}")
+    if not schedule.action.strip():
+        raise MethodError("invalid_params", f"{schedule.name} 没有配置要执行的动作")
+
+    with _rerun_lock:
+        if schedule_id in _rerunning:
+            raise MethodError("already_running", f"{schedule.name} 正在运行，请等这一轮结束")
+        _rerunning.add(schedule_id)
+
+    try:
+        yield {"type": "progress", "message": f"正在重跑：{schedule.name}"}
+        # source="manual" 而不是 "daemon"：这一轮产生的审批要能看出是人点的，
+        # 否则事后分不清哪些是无人值守跑出来的。
+        result = run_once(schedule.action, source="manual", schedule_id=schedule_id)
+    finally:
+        with _rerun_lock:
+            _rerunning.discard(schedule_id)
+
+    # 不回写 last_status：那几个字段记录的是排程自动执行的结果，手动重跑覆盖它
+    # 会让「上次自动跑成功了吗」这个问题再也答不上来。
+    if not result.ok:
+        yield _ok(ok=False, error=result.error[:500], queued=list(result.queued), name=schedule.name)
+        return
+    yield _ok(ok=True, queued=list(result.queued), name=schedule.name)
 
 
 def account(_params: dict[str, Any]) -> Iterator[Event]:
@@ -677,6 +721,7 @@ METHODS: dict[str, Callable[[dict[str, Any]], Iterator[Event]]] = {
     "ohlcv": ohlcv,
     "wyckoff_events": wyckoff_events,
     "schedules": schedules,
+    "schedule_run": schedule_run,
     "mcp_list": mcp_list,
     "account": account,
     "sign_out": sign_out,

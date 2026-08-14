@@ -81,7 +81,7 @@
 
     // 审批
     'approvals.heading': '待批准操作',
-    'approvals.empty': '无待批准项',
+    'approvals.empty': '无待批准项。定时任务或 agent 的写操作需要确认时，会出现在这里。',
     'approvals.defaultItem': '待批准操作',
     'approvals.submitted': '已提交审批，尚未执行。',
     'approvals.tierConfirm': '需二次确认',
@@ -154,6 +154,12 @@
     'schedules.neverRun': '尚未运行',
     'schedules.nextRun': '下次运行',
     'schedules.viewRuns': '查看任务运行',
+    'schedules.rerun': '立即重跑',
+    'schedules.rerunning': '运行中…',
+    'schedules.rerunStarted': '正在重跑 {name}，这一轮可能要几分钟。',
+    'schedules.rerunDone': '重跑完成，没有需要审批的操作。',
+    'schedules.rerunQueued': '重跑完成，产生 {count} 项待审批操作。',
+    'schedules.rerunFailed': '重跑失败：{error}',
 
     // 持仓 / 图表
     'portfolio.pageSub': '当前持仓、风险敞口与净值走势。',
@@ -457,7 +463,7 @@
     'action.back': 'Back',
 
     'approvals.heading': 'Pending approvals',
-    'approvals.empty': 'Nothing to approve',
+    'approvals.empty': 'Nothing to approve. Write operations from schedules or the agent show up here when they need confirmation.',
     'approvals.defaultItem': 'Pending action',
     'approvals.submitted': 'Submitted for approval, not yet executed.',
     'approvals.tierConfirm': 'Needs confirmation',
@@ -528,6 +534,12 @@
     'schedules.neverRun': 'Never run',
     'schedules.nextRun': 'Next run',
     'schedules.viewRuns': 'View task runs',
+    'schedules.rerun': 'Run now',
+    'schedules.rerunning': 'Running…',
+    'schedules.rerunStarted': 'Rerunning {name}. This can take a few minutes.',
+    'schedules.rerunDone': 'Rerun finished with nothing to approve.',
+    'schedules.rerunQueued': 'Rerun finished and queued {count} approval(s).',
+    'schedules.rerunFailed': 'Rerun failed: {error}',
 
     'portfolio.pageSub': 'Current holdings, risk exposure and equity curve.',
     'reports.pageSub': 'Browse AI reports, imported files and saved research in one place.',
