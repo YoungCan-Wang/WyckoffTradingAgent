@@ -51,6 +51,8 @@ class DaemonGuard:
             schedule_id=self._schedule_id,
             summary=approval_queue.summarize(name, args),
             user_id=self._user_id,
+            risk_reason=approval_policy.explain(name, args, self._nav),
+            nav_ratio=approval_policy.nav_ratio(args, self._nav),
             db_path=self._db_path,
         )
         self.queued.append(approval_id)

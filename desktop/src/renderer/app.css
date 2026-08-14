@@ -429,6 +429,15 @@ html.dark .berr-b { background: var(--paper2); }
 .card .r1 .tg.confirm { color: var(--up-ink); background: var(--up-soft); }
 .card .r1 .tg.review { color: var(--clay-ink); background: var(--clay-soft); }
 .card .r1 .tg { padding: 2px 7px; border-radius: 999px; }
+/* 档位理由：比正文轻一档，但比 .sub 显眼，因为它是做决定要看的那句。 */
+.card .approval-why {
+  margin: 7px 0 0;
+  padding-left: 9px;
+  border-left: 2px solid var(--clay-soft);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--tx);
+}
 .approval-evidence {
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px 14px; margin-top: 12px; padding-top: 11px; border-top: 1px solid var(--line2);

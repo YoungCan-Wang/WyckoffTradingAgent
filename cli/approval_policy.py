@@ -28,6 +28,52 @@ def notional(args: dict[str, Any]) -> float:
     return abs(shares * price)
 
 
+def explain(tool_name: str, args: dict[str, Any], nav: float = 0.0) -> str:
+    """为什么是这个档位 —— 给人看的一句话，界面上代替心算。
+
+    与 classify 分开：档位决定放行，理由只用于展示。理由缺失或算错都不该
+    影响闸门，所以这里只读同一批规则，不参与判定。
+    """
+    if tool_name in AUTO_TOOLS:
+        return "reason.auto_narrow_tool"
+    if str(args.get("action") or "").strip().lower() in DESTRUCTIVE_ACTIONS:
+        return "reason.destructive_action"
+    if tool_name == "record_trade_fill" and str(args.get("side") or "").strip().lower() == "sell":
+        return "reason.destructive_action"
+
+    items = args.get("items")
+    if isinstance(items, list) and items:
+        if any(not isinstance(item, dict) for item in items):
+            return "reason.batch_malformed"
+        if any(str(i.get("action") or "").strip().lower() in DESTRUCTIVE_ACTIONS for i in items):
+            return "reason.destructive_action"
+        if any(_over_nav_threshold(i, nav) for i in items):
+            return "reason.over_nav"
+        if nav > 0 and sum(notional(i) for i in items) > nav * CONFIRM_NAV_RATIO:
+            return "reason.batch_over_nav"
+        return "reason.write_tool"
+
+    if _over_nav_threshold(args, nav):
+        return "reason.over_nav"
+    if notional(args) > 0 and nav <= 0:
+        # 拿不到净值就无法判断占比，只能按普通审批处理 —— 说清楚，
+        # 否则用户会以为系统认定这笔金额不大。
+        return "reason.nav_unknown"
+    return "reason.write_tool"
+
+
+def nav_ratio(args: dict[str, Any], nav: float) -> float:
+    """这笔操作占净值的比例；批量取合计。拿不到净值或金额时返回 0。"""
+    if nav <= 0:
+        return 0.0
+    items = args.get("items")
+    if isinstance(items, list) and items:
+        total = sum(notional(i) for i in items if isinstance(i, dict))
+    else:
+        total = notional(args)
+    return total / nav if total else 0.0
+
+
 def classify(tool_name: str, args: dict[str, Any], nav: float = 0.0) -> str:
     """返回 auto / review / confirm。daemon 只放行 auto。"""
     if tool_name in AUTO_TOOLS:

@@ -53,6 +53,8 @@ def approve_list(_params: dict[str, Any]) -> Iterator[Event]:
             "schedule_id": item.schedule_id,
             "created_at": item.created_at,
             "args": aq.sanitized_args(item.args),
+            "risk_reason": item.risk_reason,
+            "nav_ratio": item.nav_ratio,
         }
         for item in aq.list_pending()
         if aq.owner_matches(item, current_user)

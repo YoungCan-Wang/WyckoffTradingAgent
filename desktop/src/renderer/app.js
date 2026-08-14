@@ -203,6 +203,27 @@ function evidenceItem (label, value) {
   return item
 }
 
+/**
+ * 「为什么需要你确认」——把后端算好的档位理由翻成一句话。
+ *
+ * 后端存的是 i18n key 而不是成句文本，所以中英切换不会漏出另一种语言。
+ * 认不出的 key 一律返回空串：宁可不解释，也不要显示 'reason.foo' 这种内部标识。
+ */
+function riskReasonText (item) {
+  const key = String(item.risk_reason || '')
+  if (!key.startsWith('reason.')) return ''
+  const name = key.slice('reason.'.length)
+  const known = ['destructive_action', 'over_nav', 'batch_over_nav', 'batch_malformed',
+    'nav_unknown', 'write_tool', 'auto_narrow_tool']
+  if (!known.includes(name)) return ''
+  const ratio = Number(item.nav_ratio) || 0
+  // 占比只在与阈值相关的理由里才有意义，别给「清仓」硬贴一个百分比。
+  if ((name === 'over_nav' || name === 'batch_over_nav') && ratio > 0) {
+    return t(`approvals.reason.${name}`, { pct: (ratio * 100).toFixed(1) })
+  }
+  return t(`approvals.reason.${name}`)
+}
+
 function approvalEvidence (item, context) {
   const grid = el('div', 'approval-evidence')
   if (context.account) grid.appendChild(evidenceItem(t('approvals.account'), context.account))
@@ -221,6 +242,8 @@ function approvalCard (item, context = {}) {
   const tone = ['confirm', 'review'].includes(item.risk) ? item.risk : ''
   r1.appendChild(el('span', `tg ${tone}`, tier))
   card.appendChild(r1)
+  const why = riskReasonText(item)
+  if (why) card.appendChild(el('p', 'approval-why', why))
   card.appendChild(el('p', 'sub', t('approvals.submitted')))
   if (item.created_at || item.source || item.tool_name || context.account) {
     card.appendChild(approvalEvidence(item, context))

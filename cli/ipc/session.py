@@ -96,9 +96,10 @@ class DesktopSession:
     def _confirm(self, name: str, args: dict[str, Any]) -> dict[str, str]:
         """写操作入待批准队列，由前端的审批卡决定，不阻塞当前轮。"""
         from cli import approval_queue as aq
-        from cli.approval_policy import classify
+        from cli.approval_policy import classify, explain, nav_ratio
 
-        risk = classify(name, args, self._nav())
+        nav = self._nav()
+        risk = classify(name, args, nav)
         approval_id = aq.enqueue(
             name,
             args,
@@ -106,6 +107,8 @@ class DesktopSession:
             source="desktop",
             summary=aq.summarize(name, args),
             user_id=self._user_id,
+            risk_reason=explain(name, args, nav),
+            nav_ratio=nav_ratio(args, nav),
         )
         self._pending_confirms.append({"id": approval_id, "tool": name, "risk": risk})
         return {

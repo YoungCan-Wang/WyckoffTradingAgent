@@ -27,7 +27,8 @@ FAILED = "failed"
 
 _COLS = (
     "id, created_at, source, schedule_id, tool_name, args_json,"
-    " summary, risk, status, decided_at, executed_at, result_json, user_id"
+    " summary, risk, status, decided_at, executed_at, result_json, user_id,"
+    " risk_reason, nav_ratio"
 )
 
 _SCHEMA = """
@@ -44,7 +45,9 @@ CREATE TABLE IF NOT EXISTS approvals (
     decided_at TEXT NOT NULL DEFAULT '',
     executed_at TEXT NOT NULL DEFAULT '',
     result_json TEXT NOT NULL DEFAULT '',
-    user_id TEXT NOT NULL DEFAULT ''
+    user_id TEXT NOT NULL DEFAULT '',
+    risk_reason TEXT NOT NULL DEFAULT '',
+    nav_ratio REAL NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, created_at);
 """
@@ -65,6 +68,10 @@ class PendingApproval:
     executed_at: str = ""
     result_json: str = ""
     user_id: str = ""
+    # 入队当时算好的档位理由与净值占比。不在展示时重算：净值天天变，
+    # 用今天的净值解释昨天的判定，会出现「占 3%」配 confirm 档的自相矛盾。
+    risk_reason: str = ""
+    nav_ratio: float = 0.0
 
     @property
     def args(self) -> dict[str, Any]:
@@ -90,13 +97,16 @@ def enqueue(
     schedule_id: str = "",
     summary: str = "",
     user_id: str = "",
+    risk_reason: str = "",
+    nav_ratio: float = 0.0,
     db_path: Path | None = None,
 ) -> str:
     approval_id = uuid.uuid4().hex[:10]
     with _connect(db_path) as conn:
         conn.execute(
             "INSERT INTO approvals (id, created_at, source, schedule_id, tool_name,"
-            " args_json, summary, risk, status, user_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            " args_json, summary, risk, status, user_id, risk_reason, nav_ratio)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 approval_id,
                 _utcnow().isoformat(timespec="seconds"),
@@ -108,6 +118,8 @@ def enqueue(
                 risk,
                 PENDING,
                 str(user_id or ""),
+                str(risk_reason or ""),
+                float(nav_ratio or 0.0),
             ),
         )
     return approval_id
@@ -226,6 +238,10 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE approvals ADD COLUMN result_json TEXT NOT NULL DEFAULT ''")
     if "user_id" not in columns:
         conn.execute("ALTER TABLE approvals ADD COLUMN user_id TEXT NOT NULL DEFAULT ''")
+    if "risk_reason" not in columns:
+        conn.execute("ALTER TABLE approvals ADD COLUMN risk_reason TEXT NOT NULL DEFAULT ''")
+    if "nav_ratio" not in columns:
+        conn.execute("ALTER TABLE approvals ADD COLUMN nav_ratio REAL NOT NULL DEFAULT 0")
 
 
 def _utcnow() -> datetime:

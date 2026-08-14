@@ -157,3 +157,34 @@ class TestExecutionAudit:
 
         assert aq.get(approval_id, db_path=db).status == aq.FAILED
         assert aq.decide(approval_id, approved=True, db_path=db) is None
+
+
+class TestRiskReason:
+    """档位理由随记录存下来，展示时不重算。"""
+
+    def test_round_trips(self, db):
+        approval_id = _enqueue(db, risk_reason="reason.over_nav", nav_ratio=0.062)
+        record = aq.get(approval_id, db_path=db)
+        assert record.risk_reason == "reason.over_nav"
+        assert record.nav_ratio == pytest.approx(0.062)
+
+    def test_survives_list_pending(self, db):
+        _enqueue(db, risk_reason="reason.destructive_action")
+        assert aq.list_pending(db_path=db)[0].risk_reason == "reason.destructive_action"
+
+    def test_defaults_are_empty_not_null(self, db):
+        """老调用方不传理由也要能工作，读出来是空串而不是 None。"""
+        record = aq.get(_enqueue(db), db_path=db)
+        assert record.risk_reason == ""
+        assert record.nav_ratio == 0.0
+
+    def test_migrates_existing_db_missing_the_columns(self, db):
+        """已经在用的库要能加列，而不是启动就崩。"""
+        _enqueue(db)
+        with sqlite3.connect(db) as conn:
+            conn.execute("ALTER TABLE approvals DROP COLUMN risk_reason")
+            conn.execute("ALTER TABLE approvals DROP COLUMN nav_ratio")
+
+        fresh = _enqueue(db, risk_reason="reason.write_tool")
+        assert aq.get(fresh, db_path=db).risk_reason == "reason.write_tool"
+        assert len(aq.list_pending(db_path=db)) == 2

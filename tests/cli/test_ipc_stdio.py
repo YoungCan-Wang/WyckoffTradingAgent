@@ -214,6 +214,29 @@ class TestApprovalOwnership:
 
         assert [item["id"] for item in result["items"]] == [own]
 
+    def test_list_exposes_the_risk_reason(self, tmp_path, monkeypatch):
+        """界面要显示「为什么需要确认」，这两个字段必须过 IPC 边界。"""
+        from cli import approval_queue as aq
+        from cli import auth
+        from cli.ipc import methods
+
+        monkeypatch.setattr(aq, "DB_PATH", tmp_path / "approvals.db")
+        aq.enqueue(
+            "update_portfolio",
+            {"action": "add", "shares": 100, "cost_price": 1452.0},
+            risk="confirm",
+            source="desktop",
+            user_id="user-a",
+            risk_reason="reason.over_nav",
+            nav_ratio=0.145,
+        )
+        monkeypatch.setattr(auth, "load_session", lambda: {"user_id": "user-a"})
+
+        item = list(methods.approve_list({}))[0]["items"][0]
+
+        assert item["risk_reason"] == "reason.over_nav"
+        assert item["nav_ratio"] == pytest.approx(0.145)
+
 
 class TestEventProjection:
     def test_only_whitelisted_fields_pass(self):
