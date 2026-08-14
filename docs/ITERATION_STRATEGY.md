@@ -232,6 +232,45 @@ beta；spring 是唯一统计上非零者且为负，六重比较下刚好压 Bo
 3. **接线顺序**：observation → shadow 排序对照 →（通过后）才改正式候选/AI 池/OMS。现成的 `external_capital` 与 `candidate_shadow_score` 已停在第 1～2 步，下一步是把 outcomes 样本跑够，而不是再写拉取代码。
 4. **摩擦门槛**：10 日持有下 1% 双边摩擦约合每年 24pct；新特征的毛 alpha 若撑不过摩擦，不值得高换手执行。
 
+#### 2026-08-14：signal health 与资金佐证的前瞻检验（可复算）
+
+复算脚本 `scripts/evaluate_capital_context_alpha.py`，结果 `docs/evidence/capital_context_alpha_h5.json`。
+数据来自生产库：12,635 行 `signal_health_daily` × 27,240 行 `signal_outcomes` × 5,453 行
+`signal_observations`，窗口 2026-05-25 ~ 2026-08-06。方法与回撤消融一致：只用事件日**之前**的
+health（`allow_exact_matches=False`，否则是未来信息）、按交易日等权、同日内配对剥离市场水温、
+随机负控制在日内打乱标签。
+
+**HEALTHY 不能用作晋级判据。** 全样本基线 T+5 为 −4.60%、胜率 30.4%，而分档结果是：
+
+| 事件前 health_state | n | 前瞻 T+5 | 胜率 |
+| --- | ---: | ---: | ---: |
+| HEALTHY | 133 | **−12.74%** | 12.0% |
+| WATCH | 174 | −4.51% | 23.0% |
+| DECAYED | 627 | −5.47% | 20.9% |
+| INSUFFICIENT | 1,303 | −2.87% | 39.6% |
+
+同日配对差 −2.82pct，配对 bootstrap 95% CI [−5.22, −0.26] 不跨 0。health 的历史
+`avg_return_pct` 与实际前瞻收益相关系数 **−0.116** —— 呈均值回复而非延续，「最近表现好」
+反而预示回落。据此 `FUNNEL_DYNAMIC_SHADOW_PROMOTION` 默认改为 `0`，shadow 退回文档原本
+要求的 `score_only`：照算照记，不占 Step3 席位。
+
+**但样本仍薄，结论是「无正向证据」而非「已证否」**：HEALTHY 仅 133 个事件，其中 `launchpad`
+占 75.9%（101 个），剔除它后配对差变为 +1.18 且 CI [−5.63, +8.73] 跨 0。脚本已内置
+`dominant_signal_check`，每次重跑都会报告这一项。
+
+**资金佐证目前无法评估。** 5,453 条 observation 里只有 3 条带 `source_context`（覆盖率
+0.06%），远低于 30 的最小分组要求。根因有三：AkShare 融资融券接口频繁 `Connection reset`
+（本 PR 已改为 Tushare 主源 + AkShare 兜底）、龙虎榜每天全市场仅约百只上榜与候选池交集本就小、
+以及取数上限被卡在 20 只。已将 `FUNNEL_EXTERNAL_CAPITAL_MAX_SYMBOLS` 与
+`FUNNEL_DYNAMIC_SHADOW_CONTEXT_CANDIDATES` 放宽到 400 —— 六个资金源都是「按交易日整表拉一次、
+本地按代码匹配」，取数成本与标的数无关，卡 20 只是白丢样本（逐标的的只有 tick，另有独立限流）。
+
+样本积累预期：融资融券覆盖两市全部标的（实测 `rows=1980`），接口稳定后命中率应接近 100%，
+最快攒够；龙虎榜命中率约为候选池的 3%，按每天百余只候选估算，需 30 个交易日以上才有百例，
+要到可分辨 ±1.5pct 带宽的量级需半年以上。**检验目标不应设为「资金佐证带来正收益」**——在整体
+负 alpha 的样本上更现实的问题是「它能否改善下行或缩小亏损」，这正是回撤门槛那件事的教训：
+一个指标在方向上无用，在波动/下行维度上仍可能有区分力。
+
 ### 路径 B：换问题形式（不再做「每日择一只做 10 日波段」）
 
 现有问题是：每天从 L4 形态池里挑票 → 持有约 10 日 → 靠双边交易赚钱。摩擦把几乎为零的 alpha 打成亏损。换问题形式 = 换**决策对象、持有期或比较方式**，例如：

@@ -13,7 +13,20 @@ from workflows.daily_signal_observations import build_external_capital_context_m
 
 
 def _enabled() -> bool:
-    return os.getenv("FUNNEL_DYNAMIC_SHADOW_PROMOTION", "1").strip().lower() not in {"0", "false", "no", "off"}
+    """晋级默认关闭：影子分照算照记，但不占 Step3 席位。
+
+    晋级判据是「信号 health 为 HEALTHY」，而生产数据不支持这个前提。用事件日之前的
+    health 做前瞻检验（12,635 行 health × 27,240 行 outcome）：HEALTHY 的前瞻 T+5 为
+    −12.74%，是四档里最差的（WATCH −4.51%、DECAYED −5.48%、INSUFFICIENT −2.87%）；
+    同一交易日内配对后差值仍为 −2.82pct、配对 bootstrap 95% CI [−5.22, −0.26]；
+    health 的历史统计与实际前瞻收益相关系数 −0.116，呈均值回复而非延续。
+
+    docs/ITERATION_STRATEGY.md 的接线纪律也要求 shadow 停在「score_only」，
+    「lift 稳定为正才考虑升成排序键」——该条件尚未满足。样本仍薄（HEALTHY 仅 133 个
+    事件、其中 launchpad 占 101 个，剔除后差值落回噪声），所以结论是「无正向证据」
+    而非「已证否」；等样本跑够并复算转正后再开。
+    """
+    return os.getenv("FUNNEL_DYNAMIC_SHADOW_PROMOTION", "0").strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _health_for_signal(health_map: dict[Any, dict], signal: str, regime: str) -> dict:
@@ -83,7 +96,8 @@ def _score_candidates(step2_details: dict) -> list[str]:
 
 
 def _external_context_candidates(step2_details: dict) -> list[str]:
-    limit = max(int(float(os.getenv("FUNNEL_DYNAMIC_SHADOW_CONTEXT_CANDIDATES", "20"))), 1)
+    """资金上下文的取数范围。与 FUNNEL_EXTERNAL_CAPITAL_MAX_SYMBOLS 同因放宽到 400。"""
+    limit = max(int(float(os.getenv("FUNNEL_DYNAMIC_SHADOW_CONTEXT_CANDIDATES", "400"))), 1)
     return _score_candidates(step2_details)[:limit]
 
 

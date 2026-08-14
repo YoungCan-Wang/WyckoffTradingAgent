@@ -29,10 +29,12 @@ _HARD_RISK_TAGS = {
 
 @dataclass(frozen=True)
 class DynamicShadowConfig:
+    # 以下阈值均为**未经校准的初始值**，不是实测结论：min_base_score / min_dynamic_score
+    # 所依赖的 candidate_shadow_score_v3 是新增评分，生产无历史分布可比；min_health_samples=30
+    # 在现有 84 行 HEALTHY 里只拦掉 11.9%，边际作用有限。晋级默认关闭，等样本跑够再校准。
     min_base_score: float = 65.0
     min_dynamic_score: float = 75.0
     min_health_samples: int = 30
-    min_health_weight: float = 0.9
     min_springboard_conditions: int = 2
     require_stock_capital: bool = False
 
@@ -44,7 +46,6 @@ def dynamic_shadow_config_from_env() -> DynamicShadowConfig:
         min_base_score=env_float("FUNNEL_DYNAMIC_SHADOW_MIN_BASE_SCORE", 65.0),
         min_dynamic_score=env_float("FUNNEL_DYNAMIC_SHADOW_MIN_SCORE", 75.0),
         min_health_samples=env_int("FUNNEL_DYNAMIC_SHADOW_MIN_SAMPLES", 30, minimum=1),
-        min_health_weight=env_float("FUNNEL_DYNAMIC_SHADOW_MIN_HEALTH_WEIGHT", 0.9),
         min_springboard_conditions=env_int("FUNNEL_DYNAMIC_SHADOW_MIN_SPRINGBOARD", 2, minimum=0),
         require_stock_capital=env_bool("FUNNEL_DYNAMIC_SHADOW_REQUIRE_STOCK_CAPITAL", False),
     )
@@ -85,9 +86,9 @@ def _promotion_checks(
     return {
         "base_score": base_score >= config.min_base_score,
         "dynamic_score": dynamic_score >= config.min_dynamic_score,
-        "signal_health": state == "HEALTHY"
-        and int(_number(health.get("sample_count"))) >= config.min_health_samples
-        and _number(health.get("weight_multiplier"), 0.0) >= config.min_health_weight,
+        # 不再叠加 weight_multiplier 门槛：实测 84 行 HEALTHY 的 weight_multiplier 全为 1.0，
+        # 该条件恒真，留着会让人误以为有三重把关。样本量仍由 min_health_samples 单独把关。
+        "signal_health": state == "HEALTHY" and int(_number(health.get("sample_count"))) >= config.min_health_samples,
         "springboard_structure": int(_number(springboard.get("springboard_met_count")))
         >= config.min_springboard_conditions,
         "stock_specific_capital": bool(providers) or not config.require_stock_capital,

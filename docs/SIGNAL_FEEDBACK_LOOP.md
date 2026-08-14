@@ -202,7 +202,9 @@ L4/形态观察样本中最多取 `FUNNEL_EXTERNAL_CAPITAL_MAX_SYMBOLS` 只，�
 
 ### 动态影子晋级
 
-`FUNNEL_DYNAMIC_SHADOW_PROMOTION=1` 时，Step2.75 会在正式漏斗候选之外，对当日 `review_triggers` 计算动态影子分。默认门槛为：基础影子分至少 65、动态分至少 75、对应 regime 的 5 日信号健康样本至少 30 且状态为 `HEALTHY`、健康权重至少 0.9、起跳板至少满足 2 个条件、没有失败突破/供应压力等硬风险。满足全部条件的候选最多补 1 个 Step3 复核席位。
+`FUNNEL_DYNAMIC_SHADOW_PROMOTION` **默认为 `0`（晋级关闭）**：影子分照算、照写 observation，但不占 Step3 席位。原因是晋级判据「信号 health 为 `HEALTHY`」缺少正向前瞻证据——实测 HEALTHY 的前瞻 T+5 为 −12.74%，是四档中最差，同日配对差 −2.82pct、95% CI [−5.22, −0.26]，且 health 历史统计与实际前瞻收益相关系数 −0.116（均值回复）。复算见 `scripts/evaluate_capital_context_alpha.py`，详细口径记在 `docs/ITERATION_STRATEGY.md`。
+
+置为 `1` 后，Step2.75 会在正式漏斗候选之外对当日 `review_triggers` 计算动态影子分，门槛为：基础影子分至少 65、动态分至少 75、对应 regime 的 5 日信号健康样本至少 30 且状态为 `HEALTHY`、起跳板至少满足 2 个条件、没有失败突破/供应压力等硬风险；满足全部条件的候选最多补 1 个 Step3 复核席位。这些数值均为**未经校准的初始值**，不是实测结论——`min_base_score`/`min_dynamic_score` 依赖的 `candidate_shadow_score_v3` 是新增评分、生产无历史分布可比，`min_health_samples=30` 在现有 84 行 HEALTHY 里只拦掉 11.9%。原先叠加的「健康权重至少 0.9」已移除：实测 84 行 HEALTHY 的 `weight_multiplier` 全为 1.0，该条件恒真。
 
 这里的“晋级”只表示获得 Step3 LLM 复核资格，不写正式推荐，不产生 OMS 买单，也不绕过 `SURVIVED → VALIDATED → OMS_APPROVED`。资金数据默认是稀疏加分项；设置 `FUNNEL_DYNAMIC_SHADOW_REQUIRE_STOCK_CAPITAL=1` 后才会成为硬门槛。市场级 `northbound_market` 不算个股外部证据覆盖，避免用同一条市场背景虚增所有候选的数据完整度。
 
