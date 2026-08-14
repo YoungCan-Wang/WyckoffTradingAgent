@@ -686,6 +686,27 @@ def test_veto_only_policy_downgrades_external_attack_to_probe():
     assert "不得把外部新仓升级为ATTACK" in decisions[0].reason
 
 
+def test_high_drawdown_candidate_downgrades_add_on_attack_to_probe():
+    position = PositionItem(code="000001", name="平安银行", cost=9.0, buy_dt="2026-05-10", shares=1000)
+
+    decisions = complete_step4_decisions(
+        [_decision("ATTACK", is_add_on=True)],
+        PortfolioState(free_cash=50000, total_equity=100000, positions=[position]),
+        {
+            "000001": CandidateMeta(
+                code="000001",
+                name="平安银行",
+                risk_factors=("60日高波动(25.0%)",),
+            )
+        },
+        "NEUTRAL",
+        step4.Step4RuntimeConfig(),
+    )
+
+    assert decisions[0].action == "PROBE"
+    assert "只允许PROBE试仓" in decisions[0].reason
+
+
 def test_candidate_guard_blocks_unlabeled_policy_buy_before_market_fetch():
     decision = DecisionItem(
         code="300750",

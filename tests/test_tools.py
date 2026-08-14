@@ -1964,6 +1964,22 @@ class TestCandidateRanker:
         assert penalty.iloc[1] == 0.0
         assert abs(penalty.iloc[2] - 0.4) < 1e-9
 
+    def test_drawdown_penalty_only_applies_to_trend_continuation(self):
+        from core.candidate_ranker import _drawdown_risk_penalty_series
+
+        frame = pd.DataFrame(
+            {
+                "drawdown60": [15.0, 25.0, 35.0, 35.0],
+                "l2_channel": ["趋势延续", "趋势延续", "趋势延续", "主升通道"],
+            }
+        )
+
+        penalty = _drawdown_risk_penalty_series(frame)
+
+        assert penalty.iloc[0] == 0.0
+        assert 0.0 < penalty.iloc[1] < penalty.iloc[2]
+        assert penalty.iloc[3] == 0.0
+
 
 # ── tools/market_regime ──
 

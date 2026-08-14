@@ -47,6 +47,21 @@ def test_build_candidate_meta_map_keeps_capital_migration_bonus_and_source() -> 
     assert meta.next_step == "生成 AI 研报并结合持仓形成攻防决策"
 
 
+def test_build_candidate_meta_map_surfaces_persisted_candidate_risk() -> None:
+    meta_map = build_candidate_meta_map(
+        [
+            {
+                "code": "000001",
+                "name": "平安银行",
+                "candidate_risk": "仍需 confirmed 确认 / 60日深回撤(35.0%)",
+            }
+        ],
+        positions=[],
+    )
+
+    assert meta_map["000001"].risk_factors == ("仍需 confirmed 确认 / 60日深回撤(35.0%)",)
+
+
 def test_candidate_context_line_exposes_score_source_and_capital_migration() -> None:
     line = candidate_context_line(
         {

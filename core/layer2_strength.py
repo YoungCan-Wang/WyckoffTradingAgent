@@ -9,6 +9,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from core.trend_drawdown_risk import max_drawdown_pct
+
 
 @dataclass(frozen=True)
 class BenchmarkContext:
@@ -366,8 +368,7 @@ def trend_continuation_channel_ok(
         return False
     if rps_slow is None or rps_slow < cfg.trend_cont_rps_slow_min:
         return False
-    drawdown_ok = _trend_drawdown_ok(close, int(cfg.trend_cont_drawdown_window), float(cfg.trend_cont_max_drawdown_pct))
-    return drawdown_ok and _trend_volume_ok(df_sorted, float(cfg.trend_cont_vol_ratio_min))
+    return _trend_volume_ok(df_sorted, float(cfg.trend_cont_vol_ratio_min))
 
 
 def _symbol_state(df_sorted: pd.DataFrame, cfg: Any, bench_ctx: BenchmarkContext) -> Layer2SymbolState:
@@ -533,16 +534,8 @@ def _rs_structural_bypass_ok(
     if ret20 is None or ret20 < float(cfg.rs_structural_bypass_ret20_floor):
         return False
     bias50 = abs(state.last_close / float(state.last_ma_short) - 1.0)
-    drawdown = _max_drawdown_pct(state.close, int(cfg.trend_cont_drawdown_window))
+    drawdown = max_drawdown_pct(state.close, int(cfg.trend_cont_drawdown_window))
     return bias50 <= 0.12 and (drawdown is None or drawdown <= 18.0) and _rs_structural_volume_ok(df_sorted)
-
-
-def _max_drawdown_pct(close: pd.Series, window: int) -> float | None:
-    recent = pd.to_numeric(close, errors="coerce").dropna().tail(max(int(window), 2))
-    if len(recent) < 2:
-        return None
-    drawdown = (recent - recent.cummax()) / recent.cummax() * 100.0
-    return abs(float(drawdown.min()))
 
 
 def _rs_structural_volume_ok(df_sorted: pd.DataFrame) -> bool:
@@ -689,14 +682,6 @@ def _breakout_volume_ok(df_sorted: pd.DataFrame, cfg: Any) -> bool:
     recent_vol = float(vol.tail(ret_window).mean())
     ref_vol = float(vol.tail(ref_window).iloc[:-ret_window].mean())
     return ref_vol > 0 and recent_vol / ref_vol >= cfg.breakout_accel_vol_ratio
-
-
-def _trend_drawdown_ok(close: pd.Series, window: int, max_drawdown_pct: float) -> bool:
-    recent_close = close.tail(max(int(window), 10))
-    if len(recent_close) < 10:
-        return False
-    drawdown = (recent_close - recent_close.cummax()) / recent_close.cummax() * 100.0
-    return abs(float(drawdown.min())) < max_drawdown_pct
 
 
 def _trend_volume_ok(df_sorted: pd.DataFrame, min_ratio: float) -> bool:
@@ -1009,7 +994,7 @@ def _diagnose_rs_div(
 
 
 def _diagnose_trend_cont(
-    cfg: Any, df_sorted: pd.DataFrame, close_series: pd.Series, rps_slow: float | None, state: Any
+    cfg: Any, df_sorted: pd.DataFrame, _close_series: pd.Series, rps_slow: float | None, state: Any
 ) -> tuple[float, list[str]]:
     if not getattr(cfg, "enable_trend_cont_channel", True):
         return 999.0, ["通道未启用"]
@@ -1025,12 +1010,6 @@ def _diagnose_trend_cont(
         gaps.append((thresh_rps - val_rps) / thresh_rps)
         fail.append(f"RPS(slow)不足: 当前 {val_rps:.1f}, 阈值 {thresh_rps:.1f}, 差距 {thresh_rps - val_rps:.1f}")
 
-    drawdown_ok = _trend_drawdown_ok(
-        close_series, int(cfg.trend_cont_drawdown_window), float(cfg.trend_cont_max_drawdown_pct)
-    )
-    if not drawdown_ok:
-        gaps.append(0.4)
-        fail.append("趋势回撤超标: 未通过")
     if not _trend_volume_ok(df_sorted, float(cfg.trend_cont_vol_ratio_min)):
         gaps.append(0.4)
         fail.append("成交量不合规: 未通过")

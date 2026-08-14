@@ -12,6 +12,7 @@ from core.candidate_lanes import build_l1_candidate_lane_entries, merge_candidat
 from core.candidate_ranker import rank_l3_candidates
 from core.funnel_theme import strategic_bypass_seed_codes
 from core.mainline_engine import mainline_candidate_entries
+from core.trend_drawdown_risk import annotate_trend_drawdown_risk
 from core.wyckoff_engine import (
     FunnelConfig,
     build_candidate_entries,
@@ -157,6 +158,7 @@ def build_candidate_outputs(
         max_count=layers.mainline_ai_cap,
     )
     candidate_entries = merge_candidate_entries(candidate_entries, lane_entries, mainline_entries)
+    annotate_trend_drawdown_risk(candidate_entries, all_df_map, layers.l2_channel_map)
     ranked_l3_symbols, l3_score_map = rank_l3_candidates(
         l3_symbols=layers.l3_passed,
         df_map=all_df_map,

@@ -11,6 +11,7 @@ import pandas as pd
 from core._price_math import to_numeric as _to_numeric
 from core.candidate_policy import candidate_score_value
 from core.sector_rotation import SECTOR_STATE_SCORE_BONUS
+from core.trend_drawdown_risk import classify_trend_drawdown, classify_trend_drawdown_pct
 
 # ── 全局常量 ──
 
@@ -90,9 +91,11 @@ def _trigger_score_map(triggers: dict[str, list[tuple[str, float]]]) -> dict[str
     return score_map
 
 
-def _candidate_metrics(df: pd.DataFrame | None) -> tuple[float | None, float | None, float | None, float | None]:
+def _candidate_metrics(
+    df: pd.DataFrame | None,
+) -> tuple[float | None, float | None, float | None, float | None, float | None]:
     if df is None or df.empty:
-        return None, None, None, None
+        return None, None, None, None, None
     frame = df.sort_values("date")
     close = pd.to_numeric(frame.get("close"), errors="coerce")
     volume = pd.to_numeric(frame.get("volume"), errors="coerce")
@@ -104,6 +107,7 @@ def _candidate_metrics(df: pd.DataFrame | None) -> tuple[float | None, float | N
         calc_close_return_pct(close, 5),
         calc_close_return_pct(close, 3),
         min_vol_ratio_5d,
+        (risk.drawdown_pct if (risk := classify_trend_drawdown(close)) else None),
     )
 
 
@@ -120,7 +124,7 @@ def _candidate_rank_rows(
     rotation_map = sector_rotation_map or {}
     for code in l3_symbols:
         industry = str(sector_map.get(code, "") or "未知行业")
-        ret20, ret5, ret3, min_vol_ratio_5d = _candidate_metrics(df_map.get(code))
+        ret20, ret5, ret3, min_vol_ratio_5d, drawdown60 = _candidate_metrics(df_map.get(code))
         rows.append(
             {
                 "code": code,
@@ -129,6 +133,7 @@ def _candidate_rank_rows(
                 "ret5": ret5,
                 "ret3": ret3,
                 "min_vol_ratio_5d": min_vol_ratio_5d,
+                "drawdown60": drawdown60,
                 "trigger_score": candidate_score_value(trigger_score_map.get(code)),
                 "l2_channel": str(channel_map.get(code, "") or "未标注通道"),
                 "sector_state": str((rotation_map.get(industry, {}) or {}).get("state", "") or ""),
@@ -164,6 +169,7 @@ def _add_watch_score(rank_df: pd.DataFrame, top_sectors: list[str]) -> pd.DataFr
     rank_df["hot_bonus"] = rank_df["industry"].isin(hot_sector_set).astype(float) * 0.02
     rank_df["sector_bonus"] = rank_df["sector_state"].map(lambda x: float(SECTOR_STATE_SCORE_BONUS.get(str(x), 0.0)))
     rank_df["extension_penalty"] = _extension_penalty_series(rank_df)
+    rank_df["drawdown_risk_penalty"] = _drawdown_risk_penalty_series(rank_df)
     rank_df["watch_score"] = (
         0.25 * rank_df["q20"]
         + 0.20 * rank_df["q5"]
@@ -173,6 +179,7 @@ def _add_watch_score(rank_df: pd.DataFrame, top_sectors: list[str]) -> pd.DataFr
         + rank_df["hot_bonus"]
         + rank_df["sector_bonus"]
         - rank_df["extension_penalty"]
+        - rank_df["drawdown_risk_penalty"]
     )
     return rank_df
 
@@ -189,6 +196,13 @@ def _numeric_rank_column(rank_df: pd.DataFrame, column: str) -> pd.Series:
     if column not in rank_df:
         return pd.Series(0.0, index=rank_df.index)
     return pd.to_numeric(rank_df[column], errors="coerce").fillna(0.0)
+
+
+def _drawdown_risk_penalty_series(rank_df: pd.DataFrame) -> pd.Series:
+    drawdown = _numeric_rank_column(rank_df, "drawdown60")
+    values = drawdown.map(lambda value: classify_trend_drawdown_pct(value).rank_penalty)
+    is_trend_cont = rank_df["l2_channel"].astype(str).str.contains("趋势延续", regex=False)
+    return values.where(is_trend_cont, 0.0)
 
 
 def rank_l3_candidates(
@@ -208,6 +222,7 @@ def rank_l3_candidates(
       + 0.20 * dry_q (缩量程度) + 0.30 * trigger_q (Wyckoff 触发强度)
       + hot_bonus (热门板块) + sector_bonus (板块轮动状态)
       - extension_penalty (短线过热/加速延展)
+      - drawdown_risk_penalty (60 日历史波动风险，非准入门槛)
     """
     if not l3_symbols:
         return ([], {})
