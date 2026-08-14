@@ -35,7 +35,7 @@ from core.mainline_engine import MainlineEngineConfig, build_mainline_candidates
 from core.price_targets import compute_price_targets
 from core.theme_activity import build_theme_activity_snapshot
 from core.theme_radar import normalize_theme_name
-from core.trend_drawdown_risk import annotate_trend_drawdown_risk
+from core.trend_drawdown_risk import TREND_DRAWDOWN_WINDOW, annotate_trend_drawdown_risk
 
 logger = logging.getLogger(__name__)
 
@@ -191,7 +191,9 @@ class FunnelConfig:
     # 60 日最大回撤仅作风险分层，不再一票否决。
     enable_trend_cont_channel: bool = True
     trend_cont_rps_slow_min: float = 75.0  # RPS120 >= 此值
-    trend_cont_drawdown_window: int = 60  # 回撤计算窗口（交易日）
+    # 回撤计算窗口（交易日）。默认值取自 core.trend_drawdown_risk 的同名常量，
+    # 避免风险标签与 RS 结构旁路各用一个「60 日」而改一处不同步。
+    trend_cont_drawdown_window: int = TREND_DRAWDOWN_WINDOW
     trend_cont_vol_ratio_min: float = 0.70  # 近5日均量 / 20日均量，过滤缩量趋势末端
 
     # Layer 2 加速突破通道（Breakout Acceleration Channel）

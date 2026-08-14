@@ -9,6 +9,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from core.trend_drawdown_risk import max_drawdown_pct
+
 
 @dataclass(frozen=True)
 class BenchmarkContext:
@@ -532,16 +534,8 @@ def _rs_structural_bypass_ok(
     if ret20 is None or ret20 < float(cfg.rs_structural_bypass_ret20_floor):
         return False
     bias50 = abs(state.last_close / float(state.last_ma_short) - 1.0)
-    drawdown = _max_drawdown_pct(state.close, int(cfg.trend_cont_drawdown_window))
+    drawdown = max_drawdown_pct(state.close, int(cfg.trend_cont_drawdown_window))
     return bias50 <= 0.12 and (drawdown is None or drawdown <= 18.0) and _rs_structural_volume_ok(df_sorted)
-
-
-def _max_drawdown_pct(close: pd.Series, window: int) -> float | None:
-    recent = pd.to_numeric(close, errors="coerce").dropna().tail(max(int(window), 2))
-    if len(recent) < 2:
-        return None
-    drawdown = (recent - recent.cummax()) / recent.cummax() * 100.0
-    return abs(float(drawdown.min()))
 
 
 def _rs_structural_volume_ok(df_sorted: pd.DataFrame) -> bool:

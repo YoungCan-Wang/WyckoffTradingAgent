@@ -53,13 +53,13 @@ def test_build_candidate_meta_map_surfaces_persisted_candidate_risk() -> None:
             {
                 "code": "000001",
                 "name": "平安银行",
-                "candidate_risk": "仍需 confirmed 确认 / 60日极高波动(35.0%)",
+                "candidate_risk": "仍需 confirmed 确认 / 60日深回撤(35.0%)",
             }
         ],
         positions=[],
     )
 
-    assert meta_map["000001"].risk_factors == ("仍需 confirmed 确认 / 60日极高波动(35.0%)",)
+    assert meta_map["000001"].risk_factors == ("仍需 confirmed 确认 / 60日深回撤(35.0%)",)
 
 
 def test_candidate_context_line_exposes_score_source_and_capital_migration() -> None:

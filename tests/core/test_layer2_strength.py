@@ -131,7 +131,7 @@ def test_trend_drawdown_becomes_candidate_risk_metadata() -> None:
     annotate_trend_drawdown_risk(entries, {"000001": frame}, {"000001": "趋势延续"})
 
     assert risk is not None and risk.drawdown_pct >= 30.0
-    assert "60日极高波动" in entries[0]["risk"]
+    assert "60日深回撤" in entries[0]["risk"]
     assert entries[0]["metrics"]["trend_drawdown60_pct"] >= 30.0
 
 
@@ -139,6 +139,27 @@ def test_trend_drawdown_penalty_starts_at_high_risk_boundary() -> None:
     assert classify_trend_drawdown_pct(19.99).rank_penalty == 0.0
     assert classify_trend_drawdown_pct(20.0).rank_penalty == 0.02
     assert classify_trend_drawdown_pct(30.0).rank_penalty == 0.04
+
+
+def test_trend_drawdown_labels_match_measured_semantics() -> None:
+    """标签必须只声称数据支持的那件事。
+
+    实测（scripts/ablate_trend_drawdown_gate.py）：20% 处分离的是波动（+2.22pct，随机
+    带宽 [−0.43,+0.22]）；20–30% 与 >=30% 的波动差落在随机带宽内不可分，可分的是下行
+    （MAE 差 −0.996pct）。故第二档是「深回撤」而非「极高波动」。
+    """
+    assert classify_trend_drawdown_pct(25.0).label.startswith("60日高波动")
+    assert classify_trend_drawdown_pct(35.0).label.startswith("60日深回撤")
+    assert "极高波动" not in classify_trend_drawdown_pct(35.0).label
+    assert classify_trend_drawdown_pct(15.0).label == ""
+
+
+def test_trend_drawdown_window_shared_with_funnel_config() -> None:
+    """风险标签与 RS 结构旁路必须共用同一个「60 日」，否则改一处不同步。"""
+    from core.trend_drawdown_risk import TREND_DRAWDOWN_WINDOW
+    from core.wyckoff_engine import FunnelConfig
+
+    assert FunnelConfig().trend_cont_drawdown_window == TREND_DRAWDOWN_WINDOW
 
 
 def test_diagnose_layer2_symbol_failure(monkeypatch) -> None:
