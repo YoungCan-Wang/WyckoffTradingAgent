@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
-import { MISSING_BUY_DT_ERROR, normalizeBuyDate, parsePortfolioInput, positionWriteRecord, savePosition } from './portfolio'
+import {
+  MISSING_BUY_DT_ERROR,
+  normalizeBuyDate,
+  parsePortfolioInput,
+  positionWriteRecord,
+  savePortfolio,
+  savePosition,
+} from './portfolio'
 
 describe('portfolio API input', () => {
   it('accepts a valid user portfolio', () => {
@@ -166,5 +173,70 @@ describe('savePosition', () => {
     const error = await savePosition(supabase, 'USER_LIVE:u', position, 'add')
     expect(error).toBe(MISSING_BUY_DT_ERROR)
     expect(insert).not.toHaveBeenCalled()
+  })
+})
+
+function mockSavePortfolioClient(existingCodes: string[]) {
+  const deleted: string[] = []
+  const inserted: unknown[] = []
+  const cashUpdates: unknown[] = []
+
+  const supabase = {
+    from(table: string) {
+      if (table === 'portfolio_positions') {
+        return {
+          select: () => ({
+            eq: async () => ({ data: existingCodes.map((code) => ({ code })), error: null }),
+          }),
+          insert: async (row: unknown) => {
+            inserted.push(row)
+            return { error: null }
+          },
+          update: () => ({
+            eq: () => ({
+              eq: () => ({
+                select: async () => ({ data: [{ code: 'x' }], error: null }),
+              }),
+            }),
+          }),
+          delete: () => ({
+            eq: () => ({
+              eq: async (_field: string, code: string) => {
+                deleted.push(code)
+                return { error: null }
+              },
+            }),
+          }),
+        }
+      }
+      return {
+        update: (row: unknown) => ({
+          eq: () => ({
+            select: async () => {
+              cashUpdates.push(row)
+              return { data: [{ portfolio_id: 'USER_LIVE:u' }], error: null }
+            },
+          }),
+        }),
+        insert: async () => ({ error: null }),
+      }
+    },
+  }
+
+  return { supabase: supabase as never, deleted, inserted, cashUpdates }
+}
+
+describe('savePortfolio', () => {
+  it('does not delete or mutate cash when a replacement add lacks buy_dt', async () => {
+    const { supabase, deleted, inserted, cashUpdates } = mockSavePortfolioClient(['AAPL.US'])
+    const error = await savePortfolio(supabase, 'u', {
+      free_cash: 12_000,
+      positions: [{ code: 'TSLA.US', name: 'Tesla', shares: 5, cost_price: 250, buy_dt: null }],
+    })
+
+    expect(error).toBe(MISSING_BUY_DT_ERROR)
+    expect(deleted).toEqual([])
+    expect(inserted).toEqual([])
+    expect(cashUpdates).toEqual([])
   })
 })

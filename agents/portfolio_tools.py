@@ -605,10 +605,11 @@ def _apply_portfolio_action(
 
 
 def _validate_position_amounts(shares: int, cost_price: float) -> dict | None:
-    if float(shares) < 0:
-        return {"error": "shares 不能为负数"}
-    if float(cost_price) < 0:
-        return {"error": "cost_price 不能为负数"}
+    """只在 add/update 写入路径调用；remove 走 _remove_position，不经过这里。"""
+    if float(shares) <= 0:
+        return {"error": "shares 必须大于 0"}
+    if float(cost_price) <= 0:
+        return {"error": "cost_price 必须大于 0"}
     return None
 
 
