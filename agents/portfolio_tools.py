@@ -180,7 +180,7 @@ def _update_portfolio_batch(
     ok_messages: list[str] = []
     failures: list[dict[str, Any]] = []
     for index, raw in enumerate(items):
-        row = _batch_item_row(index, raw, failures)
+        row = _batch_item_row(index, raw, failures, action=action)
         if row is None:
             continue
         msg = _apply_portfolio_action(
@@ -218,10 +218,16 @@ def _update_portfolio_batch(
     return summary
 
 
-def _batch_item_row(index: int, raw: Any, failures: list[dict[str, Any]]) -> dict[str, Any] | None:
+def _batch_item_row(
+    index: int, raw: Any, failures: list[dict[str, Any]], *, action: str = "add"
+) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         failures.append({"index": index, "error": "item 必须是对象"})
         return None
+    # remove 只按 code 清仓，股数与成本无意义；只有 add/update 才要求显式股数，
+    # 否则省略会被当成 0 静默清零仓位。
+    if action == "remove":
+        return _batch_row(raw, shares=0, cost_price=0.0)
     if "shares" not in raw or "cost_price" not in raw:
         failures.append({"index": index, "code": raw.get("code"), "error": "shares/cost_price 不能省略"})
         return None
@@ -231,6 +237,10 @@ def _batch_item_row(index: int, raw: Any, failures: list[dict[str, Any]]) -> dic
     except (TypeError, ValueError):
         failures.append({"index": index, "code": raw.get("code"), "error": "shares/cost_price 无效"})
         return None
+    return _batch_row(raw, shares=shares, cost_price=cost_price)
+
+
+def _batch_row(raw: dict[str, Any], *, shares: int, cost_price: float) -> dict[str, Any]:
     return {
         "code": str(raw.get("code") or "").strip(),
         "name": str(raw.get("name") or "").strip(),
@@ -595,6 +605,7 @@ def _apply_portfolio_action(
 
 
 def _validate_position_amounts(shares: int, cost_price: float) -> dict | None:
+    """只在 add/update 写入路径调用；remove 走 _remove_position，不经过这里。"""
     if float(shares) <= 0:
         return {"error": "shares 必须大于 0"}
     if float(cost_price) <= 0:

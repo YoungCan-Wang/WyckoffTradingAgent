@@ -14,6 +14,28 @@ def test_pr_policy_accepts_bilingual_summary_and_validation():
     assert result.ok is True
 
 
+def test_pr_policy_accepts_slash_separated_bilingual_headings():
+    """``## Summary / 变更摘要`` 曾被当成单个标题名而误判缺少章节（PR #266 因此 CI 红）。"""
+    body = "## Summary / 变更摘要\n\n- fix\n\n## Validation / 验证\n\n- pytest"
+
+    assert validate_policy(body, ["agents/portfolio_tools.py"]).ok is True
+
+
+def test_pr_policy_accepts_pipe_separated_bilingual_headings():
+    body = "## Summary | 变更摘要\n\n- fix\n\n## Validation ｜ 验证\n\n- pytest"
+
+    assert validate_policy(body, ["agents/portfolio_tools.py"]).ok is True
+
+
+def test_pr_policy_still_rejects_missing_sections_after_split():
+    """拆分不能放宽判定：真的缺章节仍须 FAIL。"""
+    result = validate_policy("## Notes / 备注\n\n- nothing", ["agents/portfolio_tools.py"])
+
+    assert result.ok is False
+    assert any("Summary" in item for item in result.failures)
+    assert any("Validation" in item for item in result.failures)
+
+
 def test_pr_policy_blocks_logs_and_secret_like_body():
     body = "## Summary\n\nUses Bearer eyJabc.def.ghi\n\n## Validation\n\n- pytest"
 

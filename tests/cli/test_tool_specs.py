@@ -14,7 +14,19 @@ from cli.tools import (
     TOOL_SPECS,
     ToolRegistry,
     ask_user_question,
+    stringify_json_schema_descriptions,
 )
+
+
+def _iter_descriptions(node):
+    if isinstance(node, dict):
+        if "description" in node:
+            yield node["description"]
+        for value in node.values():
+            yield from _iter_descriptions(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _iter_descriptions(item)
 
 
 def test_tool_specs_cover_all_public_schemas():
@@ -22,6 +34,21 @@ def test_tool_specs_cover_all_public_schemas():
 
     assert set(TOOL_SPECS) == schema_names
     assert "ask_user" not in schema_names
+
+
+def test_tool_schema_descriptions_are_strings():
+    """NVIDIA / Cohere 会拒掉 description 为 array 的 JSON Schema；括号尾逗号就会变成 tuple。"""
+    for schema in TOOL_SCHEMAS:
+        for description in _iter_descriptions(schema):
+            assert isinstance(description, str), schema["name"]
+    items = next(s for s in TOOL_SCHEMAS if s["name"] == "update_portfolio")["parameters"]["properties"]["items"]
+    assert isinstance(items["description"], str)
+    assert "批量 add/update/remove" in items["description"]
+    coerced = stringify_json_schema_descriptions({"description": ("a", "b")})
+    assert coerced["description"] == "a b"
+    for schema in ToolRegistry().schemas():
+        for description in _iter_descriptions(schema):
+            assert isinstance(description, str), schema.get("name")
 
 
 def test_legacy_tool_sets_are_derived_from_specs():
