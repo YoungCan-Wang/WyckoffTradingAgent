@@ -133,6 +133,26 @@ def test_update_portfolio_batch_rejects_empty_items():
     assert "非空" in result["error"]
 
 
+def test_update_portfolio_batch_remove_needs_only_code(monkeypatch, tmp_path):
+    """remove 按 code 清仓，股数/成本无意义；要求它们会让批量清仓整批失败。"""
+    from agents import portfolio_tools
+    from integrations import local_db
+
+    _isolate_local_db(monkeypatch, tmp_path)
+    monkeypatch.setattr(portfolio_tools, "has_cloud", lambda _ctx=None: False)
+    monkeypatch.setattr(portfolio_tools, "_portfolio_id", lambda _ctx=None: "LOCAL")
+    monkeypatch.setattr(portfolio_tools, "code_to_name", lambda code: code)
+
+    portfolio_tools.update_portfolio(
+        action="add",
+        items=[{"code": "600519", "name": "贵州茅台", "shares": 100, "cost_price": 1500, "buy_dt": "2026-07-01"}],
+    )
+    removed = portfolio_tools.update_portfolio(action="remove", items=[{"code": "600519"}])
+
+    assert removed.get("success") is True, removed
+    assert local_db.load_portfolio("LOCAL")["positions"] == []
+
+
 def test_update_portfolio_brief_lines_for_batch():
     lines = tool_result_brief_lines(
         "update_portfolio",
