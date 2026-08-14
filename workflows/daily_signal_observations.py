@@ -59,11 +59,14 @@ def build_external_capital_context_map(
     codes = _external_capital_codes(step2_details, ai_codes)
     if not codes:
         return {}
-    # 上限 20 -> 400：龙虎榜/融资融券/大宗交易/资金流等六个源都是「按交易日整表拉一次、
-    # 本地按代码匹配」，取数成本与标的数无关，卡 20 只会白丢样本。实测 5,453 条 observation
-    # 里只有 3 条带资金特征（0.1%），而龙虎榜每天全市场仅约 100 只上榜、与候选池交集本就小，
-    # 再叠加 20 的上限就几乎攒不到样本。逐标的的只有 tick 一路，它由 TICK_MAX_SYMBOLS 单独限流。
-    max_symbols = _env_int("FUNNEL_EXTERNAL_CAPITAL_MAX_SYMBOLS", 400, minimum=1)
+    # 上限 20 -> 150。原因两面：
+    # 放宽——龙虎榜/融资融券/大宗交易/资金流等六个源都是「按交易日整表拉一次、本地按代码
+    # 匹配」，Tushare 调用次数与标的数无关，卡 20 纯属白丢样本（实测 5,453 条 observation
+    # 里只有 3 条带资金特征，0.06%）。逐标的的只有 tick，由 TICK_MAX_SYMBOLS 单独限流。
+    # 但不取全量——资金片段会写进 features_json，中位 570B/行，是实打实的 Supabase 存储成本。
+    # 实测每日不重复候选中位 116、p90 148、最大 165，150 覆盖 90% 的交易日；再往上只多摊到
+    # 尾部的低分候选，样本价值低而每行都要付存储。
+    max_symbols = _env_int("FUNNEL_EXTERNAL_CAPITAL_MAX_SYMBOLS", 150, minimum=1)
     include_tick = _env_flag("FUNNEL_EXTERNAL_CAPITAL_TICK_CONTEXT")
     tick_max = _env_int("FUNNEL_EXTERNAL_CAPITAL_TICK_MAX_SYMBOLS", 3, minimum=0)
     tick_min = _env_float("FUNNEL_EXTERNAL_CAPITAL_TICK_MIN_AMOUNT_YUAN", 1_000_000.0)

@@ -96,8 +96,12 @@ def _score_candidates(step2_details: dict) -> list[str]:
 
 
 def _external_context_candidates(step2_details: dict) -> list[str]:
-    """资金上下文的取数范围。与 FUNNEL_EXTERNAL_CAPITAL_MAX_SYMBOLS 同因放宽到 400。"""
-    limit = max(int(float(os.getenv("FUNNEL_DYNAMIC_SHADOW_CONTEXT_CANDIDATES", "400"))), 1)
+    """资金上下文取数范围，与 FUNNEL_EXTERNAL_CAPITAL_MAX_SYMBOLS 同口径（150）。
+
+    两者必须一致：不一致会让同一批候选在两条路径下拿到不同的资金覆盖面，
+    后续统计就分不清「没命中」和「没去取」。
+    """
+    limit = max(int(float(os.getenv("FUNNEL_DYNAMIC_SHADOW_CONTEXT_CANDIDATES", "150"))), 1)
     return _score_candidates(step2_details)[:limit]
 
 

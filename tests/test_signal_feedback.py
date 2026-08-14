@@ -388,6 +388,38 @@ def test_daily_job_builds_external_capital_context_map(monkeypatch):
     assert got["000001"]["margin"]["margin_balance"] == 1
 
 
+def test_capital_context_caps_stay_in_sync():
+    """两条路径的资金取数上限必须一致。
+
+    不一致会让同一批候选拿到不同的资金覆盖面，后续统计分不清「没命中」和「没去取」。
+    默认 150：实测每日不重复候选中位 116、p90 148，覆盖 90% 交易日；再往上只为尾部
+    低分候选付 features_json 的存储成本（资金片段中位 570B/行）。
+    """
+    from integrations import external_capital_context
+    from workflows import daily_signal_observations, dynamic_shadow_promotion
+
+    triggers = {"sos": [(f"{600000 + i:06d}", float(1000 - i)) for i in range(400)]}
+    step2 = {"review_triggers": triggers, "selected_for_ai": []}
+
+    shadow_codes = dynamic_shadow_promotion._external_context_candidates(dict(step2))
+
+    captured: dict[str, list[str]] = {}
+
+    def fake_build(codes, _trade_date, **_kwargs):
+        captured["codes"] = list(codes)
+        return {}
+
+    original = external_capital_context.build_external_capital_context
+    external_capital_context.build_external_capital_context = fake_build
+    try:
+        daily_signal_observations.build_external_capital_context_map(dict(step2), [], None, trade_date="2026-06-12")
+    finally:
+        external_capital_context.build_external_capital_context = original
+
+    assert len(shadow_codes) == 150
+    assert len(captured["codes"]) == 150
+
+
 def test_external_capital_context_falls_back_to_formal_observation_codes(monkeypatch):
     from integrations import external_capital_context
     from workflows import daily_signal_observations
