@@ -374,6 +374,9 @@ def _portfolio_view(portfolio_id: str, state: dict) -> dict:
             "shares": p.get("shares", 0),
             "cost_price": p.get("cost", p.get("cost_price", 0)),
             "buy_dt": p.get("buy_dt", ""),
+            # stop_loss 是存储列，view 里漏掉会让模型把每一只都报成「未设止损」
+            # —— 这是个风控数字，不能靠字段缺失去推断。
+            "stop_loss": p.get("stop_loss"),
         }
         for p in state.get("positions", [])
     ]

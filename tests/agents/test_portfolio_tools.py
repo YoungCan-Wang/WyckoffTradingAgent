@@ -61,3 +61,38 @@ class TestFetchIntradayIfExtremeDay:
         df = _df([10.0, 9.0])
         result = portfolio_tools._fetch_intraday_if_extreme_day("600519", df)
         assert result is None
+
+
+class TestPortfolioViewStopLoss:
+    """view 必须带出 stop_loss。
+
+    模型只能看到工具返回的字段：漏掉它，「哪些持仓没设止损」就会全部答错，
+    而且答得很自信 —— 这是风控数字，不能靠字段缺失去推断。
+    """
+
+    def test_view_includes_stop_loss(self) -> None:
+        state = {
+            "positions": [{"code": "002270", "name": "A", "shares": 100, "cost": 30.0, "stop_loss": 27.5}],
+            "free_cash": 1000.0,
+        }
+        view = portfolio_tools._portfolio_view("pid", state)
+        assert view["positions"][0]["stop_loss"] == 27.5
+
+    def test_missing_stop_loss_stays_none_not_zero(self) -> None:
+        """真的没设过要是 None；给成 0 会被读成「止损价 0 元」。"""
+        state = {"positions": [{"code": "002270", "shares": 100, "cost": 30.0}], "free_cash": 0}
+        view = portfolio_tools._portfolio_view("pid", state)
+        assert view["positions"][0]["stop_loss"] is None
+
+    def test_stop_loss_survives_the_tool_boundary(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """端到端走 portfolio(mode="view")：TUI 与 MCP 都经过这条路径。"""
+        state = {
+            "positions": [{"code": "002270", "shares": 100, "cost": 30.0, "stop_loss": 27.5}],
+            "free_cash": 0,
+        }
+        monkeypatch.setattr(portfolio_tools, "_portfolio_id", lambda _ctx: "pid")
+        monkeypatch.setattr(portfolio_tools, "_load_portfolio_state", lambda _pid, _ctx: state)
+
+        result = portfolio_tools.portfolio(mode="view")
+
+        assert result["positions"][0]["stop_loss"] == 27.5

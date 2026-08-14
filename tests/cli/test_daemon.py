@@ -57,6 +57,10 @@ class TestSingleInstance:
         lock.write_text("99999", encoding="utf-8")
         assert daemon.is_daemon_running(lock) is False
 
+    def test_main_loop_has_distinct_lock_busy_exit_code(self, lock):
+        with daemon.single_instance_lock(lock):
+            assert daemon.main_loop(lock_path=lock, poll_seconds=0) == daemon.LOCK_BUSY_EXIT_CODE
+
 
 class TestDueSchedules:
     def _sched(self, **kwargs):
