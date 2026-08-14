@@ -149,6 +149,7 @@ def prepare_funnel_job_data(
             all_df_map,
             [bench_df, smallcap_df],
             window.end_trade_date,
+            excluded_symbols=fetch_stats.get("suspended_symbols") or [],
         )
     snapshot_dir = dump_full_fetch_snapshot(
         enabled=FUNNEL_EXPORT_FULL_FETCH,
@@ -238,6 +239,9 @@ def _fetch_progress_summary(fetch_stats: dict, all_df_map: dict[str, pd.DataFram
     fail = int(fetch_stats.get("fetch_fail", 0) or 0)
     mismatch = int(fetch_stats.get("fetch_date_mismatch", 0) or 0)
     parts = [f"成功={ok}", f"失败={fail}"]
+    excluded = int(fetch_stats.get("excluded_non_trading", 0) or 0)
+    if excluded:
+        parts.append(f"停牌/非交易={excluded}")
     if mismatch:
         parts.append(f"日期不匹配={mismatch}")
     return "，".join(parts)
@@ -427,7 +431,11 @@ def _load_historical_metadata(as_of_date: str, cfg: FunnelConfig) -> tuple[list[
         )
     ths_events = {"trade_date": as_of_date, "events": []}
     event_heat = []
-    hot_concepts = detect_theme_lines(min_days=cfg.theme_line_min_days, as_of_date=as_of_date)
+    hot_concepts = detect_theme_lines(
+        min_days=cfg.theme_line_min_days,
+        as_of_date=as_of_date,
+        history=concept_history,
+    )
     return concept_heat, ths_events, event_heat, concept_history, hot_concepts
 
 
@@ -442,12 +450,28 @@ def _load_live_metadata(as_of_date: str, cfg: FunnelConfig) -> tuple[list[dict],
     heat_for_history = merge_concept_heat(concept_heat, event_heat)
     if heat_for_history:
         update_concept_heat_history(as_of_date, heat_for_history, top_n=cfg.theme_line_top_n)
-    concept_history = stale_json_cache(CONCEPT_HEAT_HISTORY, {})
-    if not isinstance(concept_history, dict):
-        concept_history = {}
+    local_history = stale_json_cache(CONCEPT_HEAT_HISTORY, {})
+    if not isinstance(local_history, dict):
+        local_history = {}
+    concept_history = _load_remote_concept_history(as_of_date)
+    concept_history.update(local_history)
     concept_history = {d: v for d, v in concept_history.items() if d <= as_of_date}
-    hot_concepts = detect_theme_lines(min_days=cfg.theme_line_min_days, as_of_date=as_of_date)
+    hot_concepts = detect_theme_lines(
+        min_days=cfg.theme_line_min_days,
+        as_of_date=as_of_date,
+        history=concept_history,
+    )
     return concept_heat, ths_events, event_heat, concept_history, hot_concepts
+
+
+def _load_remote_concept_history(as_of_date: str) -> dict[str, dict]:
+    try:
+        from integrations.supabase_concept_heat import load_concept_heat_history_from_supabase
+
+        return load_concept_heat_history_from_supabase(limit_days=30, as_of_date=as_of_date)
+    except Exception as exc:
+        logger.warning("实时概念热度历史读取失败，降级本地缓存: %s", exc)
+        return {}
 
 
 def _load_ths_hot_events() -> tuple[dict[str, Any], list[dict]]:

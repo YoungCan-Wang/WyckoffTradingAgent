@@ -1,0 +1,101 @@
+{
+  "horizon_days": 5,
+  "window": {
+    "start": "2026-05-25",
+    "end": "2026-08-06"
+  },
+  "matured_outcomes": 4753,
+  "baseline_ret": -4.6013,
+  "baseline_win_rate_pct": 30.36,
+  "health": {
+    "matched_outcomes": 2237,
+    "by_state": {
+      "DECAYED": {
+        "n": 627,
+        "ret": -5.4745,
+        "win_rate_pct": 20.89
+      },
+      "HEALTHY": {
+        "n": 133,
+        "ret": -12.7379,
+        "win_rate_pct": 12.03
+      },
+      "INSUFFICIENT": {
+        "n": 1303,
+        "ret": -2.8702,
+        "win_rate_pct": 39.6
+      },
+      "WATCH": {
+        "n": 174,
+        "ret": -4.5082,
+        "win_rate_pct": 22.99
+      }
+    },
+    "contrast": {
+      "label": "HEALTHY vs 其他",
+      "n_treated": 133,
+      "n_control": 2104,
+      "treated_ret": -12.7379,
+      "control_ret": -3.8169,
+      "raw_diff": -8.9209,
+      "paired_days": 6,
+      "paired_diff": -2.8225,
+      "paired_bootstrap_95ci": [
+        -5.2173,
+        -0.2631
+      ],
+      "intraday_shuffle_band": [
+        -8.1298,
+        -4.5296
+      ],
+      "paired_diff_inside_noise": false,
+      "verdict": "负向、超出噪声（不可用于晋级）"
+    },
+    "dominant_signal_check": {
+      "dominant_signal": "launchpad",
+      "share_pct": 75.94,
+      "excluding_dominant": {
+        "label": "HEALTHY vs 其他（剔除 launchpad）",
+        "n_treated": 32,
+        "n_control": 1936,
+        "treated_ret": -8.7368,
+        "control_ret": -3.6903,
+        "raw_diff": -5.0465,
+        "paired_days": 6,
+        "paired_diff": 1.1786,
+        "paired_bootstrap_95ci": [
+          -5.6254,
+          8.7256
+        ],
+        "intraday_shuffle_band": [
+          -12.8992,
+          -1.3626
+        ],
+        "paired_diff_inside_noise": false,
+        "verdict": "超出噪声但 CI 跨 0：处于噪声边缘，不足以支持接线"
+      }
+    },
+    "correlation_history_vs_forward": {
+      "n": 1566,
+      "corr_history_avg_return_vs_forward": -0.1159,
+      "reading": "负值意味着历史统计好的信号后续更可能回落（均值回复），不宜用于晋级"
+    }
+  },
+  "capital_context": {
+    "observations": 5453,
+    "with_capital": 3,
+    "coverage_pct": 0.06,
+    "provider_combinations": {
+      "lhb": 2,
+      "margin": 1
+    },
+    "joined_outcomes": 4887,
+    "contrast": {
+      "label": "带资金佐证 vs 不带",
+      "verdict": "样本不足",
+      "n_treated": 2,
+      "n_control": 4885,
+      "min_group": 30
+    }
+  }
+}

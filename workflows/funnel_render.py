@@ -286,6 +286,10 @@ def _data_quality_report_lines(metrics: dict) -> list[str]:
     source_counts = quality.get("ohlcv_source_counts") or {}
     sources = ", ".join(f"{source}={count}" for source, count in source_counts.items()) or "unknown=0"
     financial_coverage = _percent(coverage.get("financial")) if quality.get("financial_requested") else "未纳入量价漏斗"
+    history_days = int(metrics.get("concept_history_days") or 0)
+    min_days = int(metrics.get("concept_history_min_days") or 0)
+    latest_history = str(metrics.get("concept_history_latest_date") or "无")
+    history_state = "足够" if min_days and history_days >= min_days else "不足"
     rejection_parts = []
     for layer, item in (metrics.get("layer_rejections") or {}).items():
         label = str(layer).replace("layer", "L")
@@ -295,9 +299,13 @@ def _data_quality_report_lines(metrics: dict) -> list[str]:
         )
     return [
         f"**数据质量**: {status}/{readiness} | OHLCV {_percent(coverage.get('ohlcv'))} | "
-        f"市值 {_percent(coverage.get('market_cap'))} | 财务 {financial_coverage} | 原因 {reasons}",
+        f"市值 {_percent(coverage.get('market_cap'))} | 换手 {_percent(coverage.get('turnover'))} | "
+        f"行业 {_percent(coverage.get('sector'))} | 概念 {_percent(coverage.get('concept'))} | "
+        f"财务 {financial_coverage} | 原因 {reasons}",
         f"**样本与来源**: RPS universe={int(metrics.get('rps_universe_count') or 0)} | OHLCV {sources}",
         f"**逐层淘汰**: {'；'.join(rejection_parts) or '无'}",
+        f"**概念连续性**: 历史{history_days}日/{history_state} | 最新{latest_history} | "
+        f"连续主题{len(metrics.get('theme_lines') or [])}条",
     ]
 
 
@@ -823,6 +831,11 @@ def _build_modern_card_lines(ctx: Any, selection: FunnelAiSelection) -> list[str
             (
                 f"**候选血缘**: 正式L4 {counts['hit_selected']} / 阶段补位 {counts['l3_only']} / "
                 f"主线 {counts['mainline_selected']} / 旁路 {counts['bypass_selected'] + counts['strategic_selected']}"
+            ),
+            (
+                f"**概念连续性**: 历史{int(ctx.metrics.get('concept_history_days') or 0)}日 / "
+                f"连续主题{len(ctx.metrics.get('theme_lines') or [])}条 / "
+                f"最新{ctx.metrics.get('concept_history_latest_date') or '无'}"
             ),
             "完整 L4、主线池、ETF 与逐层淘汰明细保留在结构化运行数据中；推送仅展开入表形态。",
         ]

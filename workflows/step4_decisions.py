@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 
@@ -66,6 +67,7 @@ def complete_step4_decisions(
             )
         )
     decisions = _attach_candidate_meta(decisions, candidate_meta_map)
+    decisions = _limit_high_drawdown_attacks(decisions, candidate_meta_map)
     held_codes = {p.code for p in portfolio.positions}
     decisions = _limit_ai_candidate_upgrades(decisions, held_codes)
     kept_decisions, dropped, max_new_names = trim_new_buy_decisions(
@@ -100,6 +102,27 @@ def _limit_ai_candidate_upgrades(
             out.append(decision)
             continue
         reason = "AI候选审计不得把外部新仓升级为ATTACK"
+        detail = f"{decision.reason}；{reason}" if decision.reason else reason
+        out.append(replace(decision, action="PROBE", reason=detail))
+    return out
+
+
+# 「极高波动」是改名前的标签；库里与在途候选可能仍带它，漏配会让 OMS 少做一次降级。
+_DRAWDOWN_RISK_MARKERS = re.compile(r"60日(?:高波动|深回撤|极高波动)")
+
+
+def _limit_high_drawdown_attacks(
+    decisions: list[DecisionItem],
+    candidate_meta_map: dict[str, CandidateMeta],
+) -> list[DecisionItem]:
+    out: list[DecisionItem] = []
+    for decision in decisions:
+        meta = candidate_meta_map.get(decision.code)
+        high_drawdown = meta and any(_DRAWDOWN_RISK_MARKERS.search(risk) for risk in meta.risk_factors)
+        if decision.action != "ATTACK" or not high_drawdown:
+            out.append(decision)
+            continue
+        reason = "趋势60日回撤显示波动与下行偏大，只允许PROBE试仓"
         detail = f"{decision.reason}；{reason}" if decision.reason else reason
         out.append(replace(decision, action="PROBE", reason=detail))
     return out

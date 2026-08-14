@@ -57,12 +57,23 @@ class PolicyResult:
     warnings: tuple[str, ...]
 
 
+_HEADING_SPLIT_RE = re.compile(r"[/|｜、]|\s+/\s+")
+
+
 def _heading_names(body: str) -> set[str]:
+    """标题名集合；双语标题按分隔符拆开分别登记。
+
+    ``## Summary / 变更摘要`` 此前被当成单个名字 ``summary / 变更摘要``，与
+    SUMMARY_HEADINGS 精确匹配失败，导致合规的双语 PR 被判缺少章节。
+    """
     headings: set[str] = set()
     for line in body.splitlines():
         match = re.match(r"^\s{0,3}#{1,6}\s+(.+?)\s*$", line)
-        if match:
-            headings.add(match.group(1).strip().lower())
+        if not match:
+            continue
+        raw = match.group(1).strip().lower()
+        headings.add(raw)
+        headings.update(part.strip() for part in _HEADING_SPLIT_RE.split(raw) if part.strip())
     return headings
 
 

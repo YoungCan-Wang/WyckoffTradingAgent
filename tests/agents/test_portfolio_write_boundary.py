@@ -106,24 +106,32 @@ def test_portfolio_admin_fallback_rejects_cli_context(monkeypatch):
     assert "server_job" in msg
 
 
-def test_update_portfolio_rejects_negative_shares():
+def test_update_portfolio_rejects_non_positive_shares():
     from agents.portfolio_tools import update_portfolio
 
-    result = update_portfolio(
+    negative = update_portfolio(
         action="add", code="000001", name="平安银行", shares=-100, cost_price=10.0, buy_dt="2026-07-01"
     )
-
-    assert result["error"] == "shares 不能为负数"
-
-
-def test_update_portfolio_rejects_negative_cost_price():
-    from agents.portfolio_tools import update_portfolio
-
-    result = update_portfolio(
-        action="add", code="000001", name="平安银行", shares=100, cost_price=-1.0, buy_dt="2026-07-01"
+    zero = update_portfolio(
+        action="add", code="000001", name="平安银行", shares=0, cost_price=10.0, buy_dt="2026-07-01"
     )
 
-    assert result["error"] == "cost_price 不能为负数"
+    assert negative["error"] == "shares 必须大于 0"
+    assert zero["error"] == "shares 必须大于 0"
+
+
+def test_update_portfolio_rejects_non_positive_cost_price():
+    from agents.portfolio_tools import update_portfolio
+
+    negative = update_portfolio(
+        action="add", code="000001", name="平安银行", shares=100, cost_price=-1.0, buy_dt="2026-07-01"
+    )
+    zero = update_portfolio(
+        action="add", code="000001", name="平安银行", shares=100, cost_price=0.0, buy_dt="2026-07-01"
+    )
+
+    assert negative["error"] == "cost_price 必须大于 0"
+    assert zero["error"] == "cost_price 必须大于 0"
 
 
 def test_update_portfolio_rejects_negative_free_cash():

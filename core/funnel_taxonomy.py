@@ -25,6 +25,7 @@ SOURCE_LABELS = {
     "markup": "主升阶段补位",
     "accum_c": "吸筹确认补位",
     "signal_confirmed": "跨日确认",
+    "dynamic_shadow_promotion": "动态影子晋级",
 }
 
 LANE_LABELS = {

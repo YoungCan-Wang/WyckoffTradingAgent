@@ -180,7 +180,7 @@ def _update_portfolio_batch(
     ok_messages: list[str] = []
     failures: list[dict[str, Any]] = []
     for index, raw in enumerate(items):
-        row = _batch_item_row(index, raw, failures)
+        row = _batch_item_row(index, raw, failures, action=action)
         if row is None:
             continue
         msg = _apply_portfolio_action(
@@ -218,16 +218,29 @@ def _update_portfolio_batch(
     return summary
 
 
-def _batch_item_row(index: int, raw: Any, failures: list[dict[str, Any]]) -> dict[str, Any] | None:
+def _batch_item_row(
+    index: int, raw: Any, failures: list[dict[str, Any]], *, action: str = "add"
+) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         failures.append({"index": index, "error": "item 必须是对象"})
         return None
+    # remove 只按 code 清仓，股数与成本无意义；只有 add/update 才要求显式股数，
+    # 否则省略会被当成 0 静默清零仓位。
+    if action == "remove":
+        return _batch_row(raw, shares=0, cost_price=0.0)
+    if "shares" not in raw or "cost_price" not in raw:
+        failures.append({"index": index, "code": raw.get("code"), "error": "shares/cost_price 不能省略"})
+        return None
     try:
-        shares = int(raw.get("shares") or 0)
-        cost_price = float(raw.get("cost_price") or 0)
+        shares = int(raw["shares"])
+        cost_price = float(raw["cost_price"])
     except (TypeError, ValueError):
         failures.append({"index": index, "code": raw.get("code"), "error": "shares/cost_price 无效"})
         return None
+    return _batch_row(raw, shares=shares, cost_price=cost_price)
+
+
+def _batch_row(raw: dict[str, Any], *, shares: int, cost_price: float) -> dict[str, Any]:
     return {
         "code": str(raw.get("code") or "").strip(),
         "name": str(raw.get("name") or "").strip(),
@@ -361,8 +374,8 @@ def _portfolio_view(portfolio_id: str, state: dict) -> dict:
             "shares": p.get("shares", 0),
             "cost_price": p.get("cost", p.get("cost_price", 0)),
             "buy_dt": p.get("buy_dt", ""),
-            # stop_loss 是存储列，view 里漏掉会让「无止损」统计把每一只都
-            # 误判成缺止损 —— 这是个风控数字，不能靠缺省值推断。
+            # stop_loss 是存储列，view 里漏掉会让模型把每一只都报成「未设止损」
+            # —— 这是个风控数字，不能靠字段缺失去推断。
             "stop_loss": p.get("stop_loss"),
         }
         for p in state.get("positions", [])
@@ -595,10 +608,11 @@ def _apply_portfolio_action(
 
 
 def _validate_position_amounts(shares: int, cost_price: float) -> dict | None:
-    if float(shares) < 0:
-        return {"error": "shares 不能为负数"}
-    if float(cost_price) < 0:
-        return {"error": "cost_price 不能为负数"}
+    """只在 add/update 写入路径调用；remove 走 _remove_position，不经过这里。"""
+    if float(shares) <= 0:
+        return {"error": "shares 必须大于 0"}
+    if float(cost_price) <= 0:
+        return {"error": "cost_price 必须大于 0"}
     return None
 
 

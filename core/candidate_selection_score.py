@@ -9,9 +9,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from core.dynamic_shadow_score import DynamicShadowConfig, build_dynamic_shadow_score
 from utils.safe import parse_cn_num
 
-CANDIDATE_SHADOW_SCORE_VERSION = "candidate_shadow_score_v2"
+CANDIDATE_SHADOW_SCORE_VERSION = "candidate_shadow_score_v3"
 
 _ACCUM_SIGNALS = {"spring", "lps", "compression"}
 
@@ -120,13 +121,8 @@ def _springboard_component(springboard: dict[str, Any]) -> tuple[float, list[str
     return component, tags
 
 
-def _external_capital_component(source_context: dict[str, Any]) -> tuple[float, list[str], list[str]]:
-    if not source_context:
-        return 0.0, [], []
-    score = 0.0
-    positive = []
-    negative = []
-
+def _lhb_capital_score(source_context: dict[str, Any]) -> tuple[float, list[str], list[str]]:
+    score, positive, negative = 0.0, [], []
     lhb = source_context.get("lhb") or {}
     lhb_net = parse_cn_num(lhb.get("net_buy")) if isinstance(lhb, dict) else None
     if lhb_net is not None and lhb_net > 0:
@@ -134,6 +130,24 @@ def _external_capital_component(source_context: dict[str, Any]) -> tuple[float, 
         positive.append("lhb_net_buy")
     elif lhb_net is not None and lhb_net < 0:
         negative.append("lhb_net_sell")
+    if isinstance(lhb, dict):
+        institution_net = parse_cn_num(lhb.get("institution_net_buy"))
+        connect_net = parse_cn_num(lhb.get("connect_seat_net_buy"))
+        if institution_net is not None and institution_net > 0:
+            score += 1.5
+            positive.append("institution_net_buy")
+        elif institution_net is not None and institution_net < 0:
+            negative.append("institution_net_sell")
+        if connect_net is not None and connect_net > 0:
+            score += 1.0
+            positive.append("connect_seat_net_buy")
+        elif connect_net is not None and connect_net < 0:
+            negative.append("connect_seat_net_sell")
+    return score, positive, negative
+
+
+def _margin_block_score(source_context: dict[str, Any]) -> tuple[float, list[str], list[str]]:
+    score, positive, negative = 0.0, [], []
 
     margin = source_context.get("margin") or {}
     if isinstance(margin, dict):
@@ -158,6 +172,11 @@ def _external_capital_component(source_context: dict[str, Any]) -> tuple[float, 
                 positive.append("block_trade_premium")
             elif discount is not None and discount <= -3:
                 negative.append("block_trade_discount")
+    return score, positive, negative
+
+
+def _flow_capital_score(source_context: dict[str, Any]) -> tuple[float, list[str], list[str]]:
+    score, positive, negative = 0.0, [], []
 
     tick = source_context.get("tick_large_order") or {}
     tick_net = parse_cn_num(tick.get("large_net_amount_yuan")) if isinstance(tick, dict) else None
@@ -166,6 +185,37 @@ def _external_capital_component(source_context: dict[str, Any]) -> tuple[float, 
         positive.append("large_order_net_buy")
     elif tick_net is not None and tick_net < 0:
         negative.append("large_order_net_sell")
+
+    moneyflow = source_context.get("stock_moneyflow") or {}
+    moneyflow_net = parse_cn_num(moneyflow.get("net_amount_wan")) if isinstance(moneyflow, dict) else None
+    if moneyflow_net is not None and moneyflow_net > 0:
+        score += 1.5
+        positive.append("stock_moneyflow_net_buy")
+    elif moneyflow_net is not None and moneyflow_net < 0:
+        negative.append("stock_moneyflow_net_sell")
+
+    connect = source_context.get("hsgt_top10") or {}
+    connect_net = parse_cn_num(connect.get("net_amount")) if isinstance(connect, dict) else None
+    if connect_net is not None and connect_net > 0:
+        score += 1.0
+        positive.append("hsgt_top10_net_buy")
+    elif connect_net is not None and connect_net < 0:
+        negative.append("hsgt_top10_net_sell")
+
+    return score, positive, negative
+
+
+def _external_capital_component(source_context: dict[str, Any]) -> tuple[float, list[str], list[str]]:
+    if not source_context:
+        return 0.0, [], []
+    parts = (
+        _lhb_capital_score(source_context),
+        _margin_block_score(source_context),
+        _flow_capital_score(source_context),
+    )
+    score = sum(part[0] for part in parts)
+    positive = [tag for part in parts for tag in part[1]]
+    negative = [tag for part in parts for tag in part[2]]
 
     return round(min(score, 8.0), 1), positive, negative
 
@@ -178,6 +228,8 @@ def score_candidate_shadow(
     footprint: dict[str, Any] | None = None,
     springboard: dict[str, Any] | None = None,
     source_context: dict[str, Any] | None = None,
+    health_context: dict[str, Any] | None = None,
+    dynamic_config: DynamicShadowConfig | None = None,
 ) -> dict[str, Any]:
     """Build a compact, deterministic candidate-quality score."""
 
@@ -198,10 +250,20 @@ def score_candidate_shadow(
         "risk_penalty": risk_penalty,
     }
     total = round(max(0.0, min(100.0, sum(components.values()))), 1)
+    grade = _grade(total)
+    dynamic = build_dynamic_shadow_score(
+        base_score=total,
+        base_grade=grade,
+        health=health_context,
+        springboard=springboard,
+        source_context=source_context,
+        negative_tags=_unique(negative),
+        config=dynamic_config,
+    )
     return {
         "version": CANDIDATE_SHADOW_SCORE_VERSION,
         "score": total,
-        "grade": _grade(total),
+        "grade": grade,
         "components": components,
         "positive_tags": _unique(positive),
         "negative_tags": _unique(negative),
@@ -209,4 +271,5 @@ def score_candidate_shadow(
             "trigger_score": round(_num(trigger_score), 4),
             "priority_score": round(_num(priority_score), 4),
         },
+        "dynamic": dynamic,
     }

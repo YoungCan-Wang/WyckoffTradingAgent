@@ -35,6 +35,8 @@ CANDIDATE_ATTRIBUTION_COLUMNS = (
     "stock_role_score",
     "quality_score",
     "timing_score",
+    "dynamic_shadow_score",
+    "dynamic_shadow_promotion",
 )
 
 

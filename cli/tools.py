@@ -292,7 +292,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "type": "array",
                     "description": (
                         "批量 add/update/remove：一次传入多只。"
-                        "每项含 code；add/update 另需 shares、cost_price；add 必须有合法 buy_dt，update 改股数/成本时不要传 buy_dt，且不会在空账本新建。",
+                        "每项含 code；add/update 另需 shares、cost_price；add 必须有合法 buy_dt，update 改股数/成本时不要传 buy_dt，且不会在空账本新建。"
                     ),
                     "items": {
                         "type": "object",
@@ -726,6 +726,19 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 ]
 
 
+def stringify_json_schema_descriptions(node: Any) -> Any:
+    """JSON Schema 的 description 必须是 string；括号里多一个逗号就会变成 tuple。"""
+    if isinstance(node, dict):
+        out = {key: stringify_json_schema_descriptions(value) for key, value in node.items()}
+        desc = out.get("description")
+        if isinstance(desc, (list, tuple)):
+            out["description"] = " ".join(str(item) for item in desc)
+        return out
+    if isinstance(node, list):
+        return [stringify_json_schema_descriptions(item) for item in node]
+    return node
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     """Runtime behavior metadata for one tool."""
@@ -1021,10 +1034,10 @@ class ToolRegistry:
     def schemas(self, allowed_tools: set[str] | tuple[str, ...] | None = None) -> list[dict[str, Any]]:
         """返回工具 JSON Schema；allowed_tools 存在时只暴露当前 workflow 范围。"""
         merged = TOOL_SCHEMAS + self._external_schemas()
-        if not allowed_tools:
-            return merged
-        allowed = set(allowed_tools)
-        return [schema for schema in merged if schema["name"] in allowed]
+        if allowed_tools:
+            allowed = set(allowed_tools)
+            merged = [schema for schema in merged if schema["name"] in allowed]
+        return [stringify_json_schema_descriptions(schema) for schema in merged]
 
     def has_tool(self, name: str) -> bool:
         return name in self._tools or self._external_tool(name) is not None

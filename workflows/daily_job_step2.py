@@ -101,6 +101,7 @@ def _prepare_step3_review_input(step2: Step2StageResult, trade_mode: MarketTrade
         "action": trade_mode.action,
         "reason": trade_mode.reason,
     }
+    promoted = _prepare_dynamic_shadow_review(step2, cfg)
     step2.details["step3_symbols_info"] = (
         daily_persistence.step3_review_symbols(
             step2.symbols_info,
@@ -115,12 +116,31 @@ def _prepare_step3_review_input(step2: Step2StageResult, trade_mode: MarketTrade
         f"raw={len(step2.symbols_info)}, "
         f"funnel_selected={len(step2.details.get('selected_for_ai', []) or [])}, "
         f"signal_confirmed={len(step2.details.get('signal_confirmed_selected', []) or [])}, "
+        f"dynamic_shadow_promoted={len(promoted)}, "
         f"step3_input={len(step2.details['step3_symbols_info'])}, "
         f"trade_mode={trade_mode.mode}",
         cfg.logs_path,
     )
     if not trade_mode.allow_recommendation_write:
         log_line(f"Step2.8 市场闸门: {trade_mode.action}，推荐表仅写观察候选", cfg.logs_path)
+
+
+def _prepare_dynamic_shadow_review(step2: Step2StageResult, cfg: DailyJobConfig) -> list[dict]:
+    try:
+        from workflows.dynamic_shadow_promotion import prepare_dynamic_shadow_promotions
+
+        promoted = prepare_dynamic_shadow_promotions(
+            step2.details,
+            str((step2.benchmark_context or {}).get("regime") or "NEUTRAL"),
+            trade_date=latest_trade_date_str(),
+            logs_path=cfg.logs_path,
+            log_fn=log_line,
+        )
+        log_line(f"Step2.75 动态影子晋级: eligible={len(promoted)}（仅增加 Step3 复核资格）", cfg.logs_path)
+        return promoted
+    except Exception as exc:
+        log_line(f"Step2.75 动态影子晋级失败（已降级）: {exc}", cfg.logs_path)
+        return []
 
 
 def persist_step2_observations(step2: Step2StageResult, cfg: DailyJobConfig) -> None:
