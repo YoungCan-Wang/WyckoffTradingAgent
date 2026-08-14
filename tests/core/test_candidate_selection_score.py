@@ -33,7 +33,7 @@ def test_candidate_shadow_score_rewards_confirmed_breakout_setup():
         },
     )
 
-    assert score["version"] == "candidate_shadow_score_v2"
+    assert score["version"] == "candidate_shadow_score_v3"
     assert score["grade"] == "B"
     assert score["score"] >= 65
     assert score["components"]["funnel"] == 27.6
@@ -42,6 +42,8 @@ def test_candidate_shadow_score_rewards_confirmed_breakout_setup():
     assert "springboard_structure_ready" in score["positive_tags"]
     assert "lhb_net_buy" in score["positive_tags"]
     assert score["negative_tags"] == []
+    assert score["dynamic"]["promotion"]["eligible"] is False
+    assert "signal_health" in score["dynamic"]["promotion"]["blockers"]
 
 
 def test_candidate_shadow_score_penalizes_failed_breakout_supply():
@@ -113,3 +115,30 @@ def test_candidate_shadow_score_sanitizes_nonfinite_inputs():
     assert score["score_inputs"] == {"trigger_score": 0.0, "priority_score": 0.0}
     assert score["positive_tags"] == []
     assert score["negative_tags"] == []
+
+
+def test_dynamic_shadow_score_becomes_step3_eligible_with_healthy_evidence():
+    score = score_candidate_shadow(
+        signal_type="sos",
+        trigger_score=90.0,
+        footprint={
+            "bias": "demand",
+            "breakout_quality_score": 90,
+            "absorption_score": 85,
+            "dry_up_score": 75,
+            "reclaim_score": 80,
+        },
+        springboard={"springboard_met_count": 3, "springboard_a": True, "springboard_b": True},
+        source_context={"stock_moneyflow": {"net_amount_wan": 800.0}},
+        health_context={
+            "health_state": "HEALTHY",
+            "sample_count": 48,
+            "weight_multiplier": 1.0,
+            "regime": "NEUTRAL",
+            "horizon_days": 5,
+        },
+    )
+
+    assert score["dynamic"]["score"] > score["score"]
+    assert score["dynamic"]["promotion"]["eligible"] is True
+    assert score["dynamic"]["stock_capital_providers"] == ["stock_moneyflow"]

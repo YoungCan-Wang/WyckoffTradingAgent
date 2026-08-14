@@ -588,6 +588,8 @@ def _pool_fetch_metrics(inputs: FunnelMetricsInputs) -> dict:
         "end_trade_date": inputs.window.end_trade_date.isoformat(),
         "fetch_ok": int(inputs.fetch_stats.get("fetch_ok", len(inputs.all_df_map)) or 0),
         "fetch_fail": int(inputs.fetch_stats.get("fetch_fail", 0) or 0),
+        "fetch_raw_missing": int(inputs.fetch_stats.get("raw_fetch_missing", 0) or 0),
+        "fetch_excluded_non_trading": int(inputs.fetch_stats.get("excluded_non_trading", 0) or 0),
         "fetch_date_mismatch": int(inputs.fetch_stats.get("fetch_date_mismatch", 0) or 0),
         "fetch_spot_patched": int(inputs.fetch_stats.get("fetch_spot_patched", 0) or 0),
         "financial_metrics_requested": bool(inputs.financial_metrics_requested),
@@ -606,6 +608,10 @@ def _data_quality_metrics(inputs: FunnelMetricsInputs) -> dict:
         inputs.financial_map,
         financial_requested=inputs.financial_metrics_requested,
         expected_trade_date=getattr(window, "end_trade_date", None),
+        excluded_symbols=getattr(inputs, "fetch_stats", {}).get("suspended_symbols") or [],
+        sector_map=getattr(inputs.ref_data, "sector_map", None),
+        concept_map=getattr(inputs.ref_data, "concept_map", None),
+        turnover_expected=True,
     )
     coverage = quality["coverage"]
     return {
@@ -615,6 +621,9 @@ def _data_quality_metrics(inputs: FunnelMetricsInputs) -> dict:
         "ohlcv_coverage": coverage["ohlcv"],
         "market_cap_coverage": coverage["market_cap"],
         "financial_coverage": coverage["financial"],
+        "turnover_coverage": coverage.get("turnover", 0.0),
+        "sector_coverage": coverage.get("sector", 0.0),
+        "concept_coverage": coverage.get("concept", 0.0),
         "ohlcv_source_counts": quality["ohlcv_source_counts"],
         "ohlcv_source_ratios": quality["ohlcv_source_ratios"],
     }
@@ -667,6 +676,7 @@ def _theme_metrics(inputs: FunnelMetricsInputs, ranked_l3_symbols: list[str]) ->
         theme_radar=layers.theme_radar_current,
         theme_activity=theme_activity,
     )
+    history_dates = sorted(ref_data.concept_heat_history)
     return {
         "concept_heat": concept_heat[:20],
         "concept_heat_full": concept_heat,
@@ -677,6 +687,9 @@ def _theme_metrics(inputs: FunnelMetricsInputs, ranked_l3_symbols: list[str]) ->
         "theme_activity_summary": summarize_theme_activity(theme_activity),
         "capital_migration": capital_migration,
         "theme_lines": ref_data.hot_concepts,
+        "concept_history_days": len(history_dates),
+        "concept_history_latest_date": history_dates[-1] if history_dates else "",
+        "concept_history_min_days": inputs.cfg.theme_line_min_days,
         "theme_radar": layers.theme_radar,
         "theme_radar_current": layers.theme_radar_current,
         "theme_radar_source": layers.theme_radar_source,

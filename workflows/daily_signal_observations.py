@@ -59,7 +59,11 @@ def build_external_capital_context_map(
     codes = _external_capital_codes(step2_details, ai_codes)
     if not codes:
         return {}
-    max_symbols = _env_int("FUNNEL_EXTERNAL_CAPITAL_MAX_SYMBOLS", 20, minimum=1)
+    # 上限 20 -> 400：龙虎榜/融资融券/大宗交易/资金流等六个源都是「按交易日整表拉一次、
+    # 本地按代码匹配」，取数成本与标的数无关，卡 20 只会白丢样本。实测 5,453 条 observation
+    # 里只有 3 条带资金特征（0.1%），而龙虎榜每天全市场仅约 100 只上榜、与候选池交集本就小，
+    # 再叠加 20 的上限就几乎攒不到样本。逐标的的只有 tick 一路，它由 TICK_MAX_SYMBOLS 单独限流。
+    max_symbols = _env_int("FUNNEL_EXTERNAL_CAPITAL_MAX_SYMBOLS", 400, minimum=1)
     include_tick = _env_flag("FUNNEL_EXTERNAL_CAPITAL_TICK_CONTEXT")
     tick_max = _env_int("FUNNEL_EXTERNAL_CAPITAL_TICK_MAX_SYMBOLS", 3, minimum=0)
     tick_min = _env_float("FUNNEL_EXTERNAL_CAPITAL_TICK_MIN_AMOUNT_YUAN", 1_000_000.0)
@@ -83,6 +87,32 @@ def build_external_capital_context_map(
     except Exception as exc:
         _log(log_fn, f"外部资金佐证失败（已降级）: {exc}", logs_path)
         return {}
+
+
+def load_dynamic_shadow_health_map(regime: str) -> dict[Any, dict[str, Any]]:
+    if os.getenv("FUNNEL_DYNAMIC_SHADOW_PROMOTION", "1").strip().lower() in {"0", "false", "no", "off"}:
+        return {}
+    try:
+        from core.signal_feedback import normalize_signal_type
+        from integrations.supabase_signal_feedback import load_signal_health_snapshot
+
+        rows = load_signal_health_snapshot(market="cn")
+    except Exception:
+        return {}
+    horizon = _env_int("FUNNEL_DYNAMIC_SHADOW_HORIZON", 5, minimum=1)
+    regime_key = str(regime or "NEUTRAL").strip().upper()
+    out: dict[Any, dict[str, Any]] = {}
+    for row in rows:
+        if int(row.get("horizon_days") or 0) != horizon:
+            continue
+        signal = normalize_signal_type(row.get("signal_type"))
+        row_regime = str(row.get("regime") or "ALL").strip().upper() or "ALL"
+        if not signal or row_regime not in {regime_key, "ALL"}:
+            continue
+        out[(signal, row_regime)] = row
+        if row_regime == regime_key or signal not in out:
+            out[signal] = row
+    return out
 
 
 def build_signal_observation_rows(
@@ -116,6 +146,8 @@ def build_signal_observation_rows(
         selection_mode_map=_signal_observation_selection_mode_map(step2_details),
         policy_version=f"dynamic:{os.getenv('FUNNEL_DYNAMIC_POLICY', 'off')}",
         rank_map={str(code): idx + 1 for idx, code in enumerate(selected_for_ai)},
+        health_context_map=step2_details.get("dynamic_shadow_health_map") or {},
+        dynamic_promotion_map=_dynamic_promotion_map(step2_details),
     )
 
 
@@ -142,6 +174,8 @@ def build_shadow_observation_rows(step2_details: dict, regime: str, *, trade_dat
         entry_quality_map=build_entry_quality_map(step2_details),
         selection_mode="shadow",
         policy_version=f"dynamic:{os.getenv('FUNNEL_DYNAMIC_POLICY', 'off')}",
+        health_context_map=step2_details.get("dynamic_shadow_health_map") or {},
+        dynamic_promotion_map=_dynamic_promotion_map(step2_details),
     )
 
 
@@ -178,7 +212,17 @@ def build_external_seed_signal_rows(step2_details: dict, regime: str, *, trade_d
         entry_quality_map=build_entry_quality_map(step2_details),
         selection_mode="external_seed_shadow",
         policy_version=f"external_seed:{metrics.get('external_seed_source') or 'external'}",
+        health_context_map=step2_details.get("dynamic_shadow_health_map") or {},
+        dynamic_promotion_map=_dynamic_promotion_map(step2_details),
     )
+
+
+def _dynamic_promotion_map(step2_details: dict) -> dict[str, dict[str, Any]]:
+    return {
+        _last_six_digits(row.get("code")): row
+        for row in step2_details.get("dynamic_shadow_promoted", []) or []
+        if _last_six_digits(row.get("code"))
+    }
 
 
 def persist_external_seed_observations(
@@ -222,6 +266,7 @@ def persist_signal_observations(
         from integrations.supabase_signal_feedback import upsert_signal_observations
 
         regime = str((benchmark_context or {}).get("regime") or "NEUTRAL")
+        step2_details.setdefault("dynamic_shadow_health_map", load_dynamic_shadow_health_map(regime))
         if "source_context_map" not in step2_details:
             step2_details["source_context_map"] = build_external_capital_context_map(
                 step2_details,
@@ -278,34 +323,23 @@ def build_springboard_map(step2_details: dict) -> dict[str, dict]:
     return out
 
 
-def _ai_selected_trigger_items(step2_details: dict, ai_codes: list[str]) -> list[tuple[str, str, float]]:
-    target_order: list[str] = []
-    for raw in list(step2_details.get("selected_for_ai", []) or []) + list(ai_codes or []):
-        code = str(raw or "").strip()
-        if code and code not in target_order:
-            target_order.append(code)
-    if not target_order:
-        return []
-    items: list[tuple[str, str, float]] = []
-    for signal_type, hits in _primary_observation_triggers(step2_details).items():
-        sig = str(signal_type or "").strip().lower()
-        if not sig:
-            continue
-        items.extend(
-            (sig, code, _safe_float(score)) for code, score in hits or [] if str(code or "").strip() in target_order
-        )
-    return items
-
-
 def _external_capital_codes(step2_details: dict, ai_codes: list[str]) -> list[str]:
     ordered: list[str] = []
     for raw in list(step2_details.get("selected_for_ai", []) or []) + list(ai_codes or []):
         code = str(raw or "").strip()
         if code and code not in ordered:
             ordered.append(code)
-    if ordered:
-        return ordered
-    return list(dict.fromkeys(code for _sig, code, _score in _ai_selected_trigger_items(step2_details, ai_codes)))
+    ranked: dict[str, float] = {}
+    triggers = _primary_observation_triggers(step2_details) or step2_details.get("formal_triggers") or {}
+    for hits in triggers.values():
+        for raw_code, raw_score in hits or []:
+            code = str(raw_code or "").strip()
+            if code:
+                ranked[code] = max(ranked.get(code, float("-inf")), _safe_float(raw_score))
+    for code in sorted(ranked, key=lambda candidate: ranked[candidate], reverse=True):
+        if code not in ordered:
+            ordered.append(code)
+    return ordered
 
 
 def _observation_context(step2_details: dict) -> tuple[dict, dict, dict, dict, dict, dict, dict, dict]:
@@ -424,12 +458,14 @@ def _signal_observation_source_map(step2_details: dict) -> dict[str, str]:
     external_codes = {str(c).strip() for c in step2_details.get("external_seed_selected", []) if str(c).strip()}
     candidate_codes = {str(row.get("code", "")).strip() for row in step2_details.get("candidate_entries", []) or []}
     mainline_codes = {str(row.get("code", "")).strip() for row in step2_details.get("mainline_candidates", []) or []}
+    dynamic_codes = {str(row.get("code", "")).strip() for row in step2_details.get("dynamic_shadow_promoted", []) or []}
     source_map = {code: "l2_bypass_shadow" for code in bypass_pool}
     source_map.update({code: "strategic_l2_bypass_shadow" for code in strategic_pool})
     source_map.update({code: "candidate_lane" for code in candidate_codes})
     source_map.update({code: "mainline" for code in mainline_codes})
     source_map.update({code: "l2_bypass" for code in bypass_codes})
     source_map.update({code: "strategic_l2_bypass" for code in strategic_codes})
+    source_map.update({code: "dynamic_shadow_promotion" for code in dynamic_codes})
     source_map.update(
         {code: f"external_seed:{metrics.get('external_seed_source') or 'external'}" for code in external_codes}
     )
@@ -445,12 +481,14 @@ def _signal_observation_selection_mode_map(step2_details: dict) -> dict[str, str
     }
     candidate_codes = {str(row.get("code", "")).strip() for row in step2_details.get("candidate_entries", []) or []}
     mainline_codes = {str(row.get("code", "")).strip() for row in step2_details.get("mainline_candidates", []) or []}
+    dynamic_codes = {str(row.get("code", "")).strip() for row in step2_details.get("dynamic_shadow_promoted", []) or []}
     out = {code: "l2_bypass_shadow" for code in bypass_pool}
     out.update({code: "strategic_l2_bypass_shadow" for code in strategic_pool})
     out.update({code: "candidate_lane_shadow" for code in candidate_codes})
     out.update({code: "mainline_shadow" for code in mainline_codes})
     out.update({code: "l2_bypass" for code in bypass_selected})
     out.update({code: "strategic_l2_bypass" for code in strategic_selected})
+    out.update({code: "dynamic_shadow_promotion" for code in dynamic_codes})
     return out
 
 

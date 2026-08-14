@@ -25,7 +25,8 @@ flowchart TB
         S2["Step2 Wyckoff Funnel<br/>workflows/wyckoff_funnel.py"]
         S25["Step2.5 信号确认<br/>pending → survived / confirmed / expired"]
         S26["Step2.6 推荐写库<br/>recommendation_tracking"]
-        S27["Step2.7 起跳板/候选影子评分"]
+        S27["Step2.7 起跳板评分"]
+        S275["Step2.75 动态影子评分<br/>满足门槛者最多补 1 个 Step3 复核席位"]
         S3["Step3 批量 AI 研报<br/>workflows/step3_batch_report.py"]
         S4["Step4 私人 OMS 再平衡<br/>workflows/step4_rebalancer.py"]
     end
@@ -83,7 +84,7 @@ flowchart TD
 
     S25["Step2.5: run_step2_5()<br/>signal_pending 确认"] --> S26
     S26["Step2.6: prepare_recommendation_payload<br/>→ recommendation_tracking<br/>推荐价=首次推荐日收盘"] --> S27
-    S27["Step2.7: score_springboard_abc<br/>起跳板/候选影子评分"] --> S3
+    S27["Step2.7: score_springboard_abc<br/>起跳板评分"] --> S275["Step2.75: dynamic shadow<br/>health 校准 + 晋级清单"] --> S3
 
     S3["Step3: run_step3()<br/>批量 AI 研报"] --> MARK["mark_ai_recommendations<br/>标记起跳板"]
     MARK --> OBS["写 signal_observations<br/>L4 观察样本"]
@@ -486,6 +487,7 @@ flowchart LR
 
 ```
 TickFlow (优先, qfq 前复权)
+  ↓ 批量结果仅部分缺失：先剔除当日停牌，仅对其余缺口回补
   ↓ 失败
 Tushare
   ↓ 失败
@@ -496,7 +498,12 @@ Baostock
 efinance
 ```
 
-- 批量参数：`BATCH_SIZE=200`，`MAX_WORKERS=4`，320 交易日窗口
+- ETF/LOF 旁路若股票日线接口缺失，再用 Tushare `fund_daily` 补齐，不混入 A 股股票行情池。
+- 上证/创业板基准使用 Tushare → AkShare → Baostock，Baostock 是不依赖东方财富网页链的第三层备源。
+- 数据质量同时报告原始全池覆盖与“应交易覆盖”；当日确认停牌不算数据源失败。换手率、行业映射和概念映射也有独立覆盖率门槛，避免元数据降级为空后静默改变 L1/L3。
+- 概念连续性读取 Supabase `concept_heat_history` 的最近交易日历史，并报告历史天数、最新日期和连续主题数；历史充足但连续主题为 0 表示题材轮动未形成连续线，不等于数据为空。
+
+- 批量大小、并发和超时由工作流环境变量控制；生产当前按批拉取约 320 个交易日窗口。
 - 快照：`data/funnel_snapshots/`（供回测离线使用）
 
 ---

@@ -182,7 +182,7 @@ def test_build_signal_observations_marks_selection_and_source():
     assert lineage["sources"]["external_capital"]["providers"] == ["lhb", "margin"]
     assert lineage["sources"]["selection"]["candidate_rank"] == 1
     shadow_score = first["features_json"]["candidate_shadow_score"]
-    assert shadow_score["version"] == "candidate_shadow_score_v2"
+    assert shadow_score["version"] == "candidate_shadow_score_v3"
     assert shadow_score["components"]["funnel"] == 26.4
     assert shadow_score["components"]["springboard"] == 12.0
     assert "springboard_structure_ready" in shadow_score["positive_tags"]
@@ -386,6 +386,28 @@ def test_daily_job_builds_external_capital_context_map(monkeypatch):
     assert captured["tick_max_symbols"] == 3
     assert captured["tick_min_amount_yuan"] == 1_000_000
     assert got["000001"]["margin"]["margin_balance"] == 1
+
+
+def test_external_capital_context_falls_back_to_formal_observation_codes(monkeypatch):
+    from integrations import external_capital_context
+    from workflows import daily_signal_observations
+
+    captured = {}
+
+    def fake_build(codes, _trade_date, **_kwargs):
+        captured["codes"] = codes
+        return {code: {"stock_moneyflow": {"net_amount_wan": 1}} for code in codes}
+
+    monkeypatch.setattr(external_capital_context, "build_external_capital_context", fake_build)
+    got = daily_signal_observations.build_external_capital_context_map(
+        {"formal_triggers": {"sos": [("000001", 5.0), ("000002", 8.0)]}},
+        [],
+        None,
+        trade_date="2026-06-12",
+    )
+
+    assert captured["codes"] == ["000002", "000001"]
+    assert set(got) == {"000001", "000002"}
 
 
 def test_price_action_footprint_marks_breakout_and_supply_pressure():
