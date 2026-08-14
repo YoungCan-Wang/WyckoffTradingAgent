@@ -18,8 +18,13 @@ from integrations import chart_annotations as ca
 
 @pytest.fixture(autouse=True)
 def isolated_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """标注写在 tmp 下，测试不碰用户真实的 ~/.wyckoff。"""
+    """标注写在 tmp 下，测试不碰用户真实的 ~/.wyckoff。
+
+    同时假装有渲染端：这些用例测的是存储与校验，不是环境门禁。门禁本身在
+    TestRendererGate 里单独测，那里显式关掉它。
+    """
     monkeypatch.setattr(ca, "STORE_PATH", tmp_path / "annotations.json")
+    monkeypatch.setattr(ca, "_renderer_available", True)
 
 
 def _rect():
@@ -160,3 +165,57 @@ class TestSymbolAgreement:
 
         assert "认不出" in result["error"]
         assert not ca.STORE_PATH.exists()
+
+
+class TestRendererGate:
+    """没有界面能显示标注时，draw 必须明确拒绝。
+
+    症状很隐蔽：写盘是成功的，所以模型会回「已经在图上标好了」，而 CLI/TUI
+    用户根本没有那张图。宁可拒绝并指路到能在终端里出结论的工具。
+    """
+
+    @pytest.fixture(autouse=True)
+    def headless(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(ca, "_renderer_available", False)
+
+    def test_draw_is_refused(self) -> None:
+        result = annotate_chart("600519", [_rect()])
+        assert "只能在 Wyckoff 桌面应用" in result["error"]
+        assert "drawn" not in result
+
+    def test_refusal_points_at_a_real_tool(self) -> None:
+        """指路到不存在的工具比不指路更糟 —— 模型会去调然后报错。"""
+        from cli.tools import TOOL_SCHEMAS
+
+        hint = annotate_chart("600519", [_rect()])["hint"]
+        names = {t["name"] for t in TOOL_SCHEMAS}
+        assert any(name in hint for name in names)
+
+    def test_nothing_is_written(self) -> None:
+        annotate_chart("600519", [_rect()])
+        assert not ca.STORE_PATH.exists()
+
+    def test_list_still_works(self) -> None:
+        """读不会造成「我画好了」的假象，不该被挡。"""
+        result = annotate_chart("600519", action="list")
+        assert result["count"] == 0
+        assert "error" not in result
+
+    def test_clear_still_works(self) -> None:
+        """清空同理：它不会让模型误报已完成。"""
+        result = annotate_chart("600519", action="clear")
+        assert "error" not in result
+
+    def test_ipc_serve_opens_the_gate(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """桌面端那条路径必须真的打开门禁，否则整个功能在真机上是坏的。"""
+        monkeypatch.setattr(ca, "_renderer_available", False)
+        import cli.ipc.stdio as stdio
+
+        monkeypatch.setattr(stdio, "_install_stdout_guard", lambda: None)
+        monkeypatch.setattr(stdio, "_setup_logging", lambda _v: None)
+        monkeypatch.setattr(stdio, "_emit", lambda _e: None)
+        monkeypatch.setattr(stdio.sys, "stdin", iter([]))
+
+        stdio.serve()
+
+        assert ca.renderer_available() is True

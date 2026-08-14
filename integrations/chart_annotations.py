@@ -24,6 +24,22 @@ from typing import Any
 
 STORE_PATH = Path.home() / ".wyckoff" / "annotations.json"
 
+# 只有桌面端的渲染层能把标注画出来。CLI/TUI/MCP 下写入会成功但没人看得见，
+# 模型却会把它当成「已经画好了」汇报给用户 —— 那是在报告一件没发生的事。
+# 由 cli.ipc.stdio.serve() 在启动时打开，因为 `cli ipc` 是唯一带渲染端的入口。
+_renderer_available = False
+
+
+def set_renderer_available(available: bool) -> None:
+    """声明当前进程有能显示标注的界面。"""
+    global _renderer_available
+    _renderer_available = bool(available)
+
+
+def renderer_available() -> bool:
+    return _renderer_available
+
+
 MAX_PER_CHART = 60
 MAX_TEXT = 60
 MAX_CHARTS = 200

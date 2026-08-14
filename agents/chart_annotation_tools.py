@@ -34,6 +34,23 @@ def _canonical_symbol(code: Any) -> str:
     return normalize_portfolio_code(str(code or "").strip())
 
 
+def _no_renderer_error() -> dict[str, Any] | None:
+    """没有界面能显示标注时，返回明确的不可用；能显示则返回 None。
+
+    只挡 draw。写入本身会成功，但 CLI/TUI/MCP 下没人看得见，模型会把它当成
+    「已经画好了」汇报 —— 那是在报告一件用户根本看不到的事。宁可明确拒绝，
+    并指路到能在终端里得到结论的工具。
+    """
+    from integrations.chart_annotations import renderer_available
+
+    if renderer_available():
+        return None
+    return {
+        "error": "图表标注只能在 Wyckoff 桌面应用中使用：当前环境没有能显示标注的界面。",
+        "hint": "命令行环境请改用 wyckoff_diagnose 或 analyze_stock(mode='diagnose') —— 结论会以文字返回。",
+    }
+
+
 def annotate_chart(
     code: str,
     annotations: list[Any] | None = None,
@@ -73,6 +90,9 @@ def annotate_chart(
 
     if verb != "draw":
         return {"error": f"不支持的 action: {verb}；可用 draw / list / clear"}
+
+    if (blocked := _no_renderer_error()) is not None:
+        return blocked
 
     items = annotations or []
     if not isinstance(items, list):

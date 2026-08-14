@@ -94,6 +94,10 @@ def serve(*, verbose: bool = False) -> int:
     """读 stdin 每一行，处理后把事件写回 stdout。EOF 即退出。"""
     _install_stdout_guard()
     _setup_logging(verbose)
+    # 这条路径下有渲染标注的界面；annotate_chart 据此决定是否放行。
+    from integrations.chart_annotations import set_renderer_available
+
+    set_renderer_available(True)
     logger.info("ipc stdio server started")
     _emit({"type": "ready", "protocol": PROTOCOL_VERSION})
 
