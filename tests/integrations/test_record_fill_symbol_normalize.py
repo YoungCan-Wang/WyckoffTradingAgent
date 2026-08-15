@@ -99,22 +99,22 @@ def test_record_fill_rejects_foreign_when_fx_missing(monkeypatch):
     fill = Fill(code="AAPL.US", side="buy", shares=1, price=200.0, trade_date="20260815", name="")
     called = {"cash": False}
 
+    def fake_cash(*_args, **_kwargs):
+        called["cash"] = True
+        return True, "ok"
+
     monkeypatch.setattr(sp, "_resolve_write_client", lambda client, _action: client or object())
     monkeypatch.setattr(
         sp,
         "load_portfolio_state",
         lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("缺汇率时不得读仓")),
     )
-    monkeypatch.setattr(
-        sp,
-        "_fill_fx_to_cny",
-        lambda _code: (_ for _ in ()).throw(ValueError("缺少 USD->CNY 汇率，拒绝回填以免把外币金额写入人民币现金")),
-    )
-    monkeypatch.setattr(
-        sp,
-        "update_free_cash",
-        lambda *_a, **_k: called.__setitem__("cash", True) or (True, "ok"),
-    )
+
+    def missing_fx(_code: str) -> float:
+        raise ValueError("缺少 USD->CNY 汇率，拒绝回填以免把外币金额写入人民币现金")
+
+    monkeypatch.setattr(sp, "_fill_fx_to_cny", missing_fx)
+    monkeypatch.setattr(sp, "update_free_cash", fake_cash)
 
     result = sp.record_fill("USER_LIVE:u1", fill, client=object())
 

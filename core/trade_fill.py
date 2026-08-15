@@ -107,8 +107,7 @@ def _apply_buy(
     )
     fx_note = f"，汇率 {fx_to_cny:.6f}" if fx_to_cny != 1.0 else ""
     note = (
-        f"{fill.code} 买入 {fill.shares} 股 @ {fill.price:.3f}，"
-        f"费用 {fee:.2f}{fx_note}，持仓 {prev_shares} → {shares}"
+        f"{fill.code} 买入 {fill.shares} 股 @ {fill.price:.3f}，费用 {fee:.2f}{fx_note}，持仓 {prev_shares} → {shares}"
     )
     return FillResult(merged, cash - outlay_cny, fee * fx_to_cny, None, note)
 
