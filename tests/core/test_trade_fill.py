@@ -84,6 +84,37 @@ def test_buying_beyond_available_cash_is_rejected():
         apply_fill(None, 5_000.0, Fill("000001", "buy", 1000, 10.0, "20260710"), FREE)
 
 
+def test_us_buy_converts_cash_to_cny_but_keeps_native_cost():
+    """美元报价若直接扣人民币现金，10 股 @$200 只会少约 ¥2,000，真实应约 ¥14,000。"""
+    result = apply_fill(
+        None,
+        50_000.0,
+        Fill("AAPL.US", "buy", 10, 200.0, "20260815", name="Apple"),
+        FREE,
+        fx_to_cny=7.0,
+    )
+
+    assert result.holding is not None
+    assert result.holding.cost_price == pytest.approx(200.0)
+    assert result.cash == pytest.approx(50_000.0 - 14_000.0)
+    assert result.fee == pytest.approx(0.0)
+
+
+def test_us_sell_credits_cny_cash_and_reports_cny_pnl():
+    holding = Holding(code="AAPL.US", name="Apple", shares=10, cost_price=180.0, buy_dt="20260101")
+    result = apply_fill(holding, 1_000.0, Fill("AAPL.US", "sell", 5, 200.0, "20260815"), FREE, fx_to_cny=7.0)
+
+    assert result.holding is not None
+    assert result.holding.shares == 5
+    assert result.cash == pytest.approx(1_000.0 + 7_000.0)
+    assert result.realized_pnl == pytest.approx((200.0 - 180.0) * 5 * 7.0)
+
+
+def test_missing_fx_rate_is_rejected():
+    with pytest.raises(ValueError, match="汇率"):
+        apply_fill(None, 50_000.0, Fill("AAPL.US", "buy", 1, 200.0, "20260815"), FREE, fx_to_cny=0.0)
+
+
 @pytest.mark.parametrize(
     ("side", "shares", "price"),
     [("short", 100, 10.0), ("buy", 0, 10.0), ("buy", -100, 10.0), ("buy", 100, 0.0)],
