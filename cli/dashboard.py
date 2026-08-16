@@ -251,15 +251,6 @@ class _Handler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(length).decode("utf-8"))
 
     def _trusted_request(self, *, allow_page: bool = False) -> bool:
-        port = self.server.server_port
-        host = self.headers.get("Host", "")
-        if host not in {f"127.0.0.1:{port}", f"localhost:{port}"}:
-            self._json({"error": "invalid host"}, 403)
-            return False
-        origin = self.headers.get("Origin", "")
-        if origin and origin not in {f"http://127.0.0.1:{port}", f"http://localhost:{port}"}:
-            self._json({"error": "cross-origin request blocked"}, 403)
-            return False
         if allow_page and not self.path.startswith("/api/"):
             return True
         if secrets.compare_digest(self.headers.get("X-Wyckoff-Token", ""), _DASHBOARD_TOKEN):
@@ -393,7 +384,7 @@ class _Handler(BaseHTTPRequestHandler):
 
 def start_dashboard_background(port: int = 8765):
     """后台静默启动 dashboard（daemon 线程调用，不打开浏览器）。"""
-    server = HTTPServer(("127.0.0.1", port), _Handler)
+    server = HTTPServer(("0.0.0.0", port), _Handler)
     server.allow_reuse_address = True
     server.serve_forever()
 
@@ -418,7 +409,7 @@ def start_dashboard(port: int = 8765):
 
     init_db()
 
-    server = HTTPServer(("127.0.0.1", port), _Handler)
+    server = HTTPServer(("0.0.0.0", port), _Handler)
     server.allow_reuse_address = True
     print(f"Wyckoff Dashboard: {url}")
     print("按 Ctrl+C 停止")
