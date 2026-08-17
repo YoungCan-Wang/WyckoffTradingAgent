@@ -91,14 +91,23 @@ def _apply_buy(holding: Holding | None, cash: float, fill: Fill, gross: float, f
 
 
 def _later_buy_dt(existing: str, incoming: str) -> str:
-    """保留较晚的建仓日；无法解析的一侧退让给可解析侧。"""
-    old = parse_buy_dt(existing)
-    new = parse_buy_dt(incoming)
-    if old is None:
-        return str(incoming or "").strip() or str(existing or "").strip()
+    """取较晚的建仓日；成交日缺失时返回空串，交由写入层保留库内原值。
+
+    返回空串而非回填 ``existing``：``update_position`` 的契约是「空 buy_dt 保留原日期」，
+    靠上层剪掉空值实现。若在此处回写同一个值，payload 就会显式带上 buy_dt，
+    绕过那条边界约束（tests/agents/test_portfolio_write_boundary.py 会拦）。
+    功能上两者等价，但不写字段更保守——不碰库里的值。
+    """
+    incoming_text = str(incoming or "").strip()
+    existing_text = str(existing or "").strip()
+    new = parse_buy_dt(incoming_text)
     if new is None:
-        return str(existing or "").strip()
-    return str(incoming).strip() if new.date() >= old.date() else str(existing).strip()
+        # 成交日缺失或不可解析：不改动建仓日。
+        return ""
+    old = parse_buy_dt(existing_text)
+    if old is None:
+        return incoming_text
+    return incoming_text if new.date() >= old.date() else existing_text
 
 
 def _apply_sell(holding: Holding | None, cash: float, fill: Fill, gross: float, fee: float) -> FillResult:
