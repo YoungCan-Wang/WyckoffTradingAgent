@@ -229,10 +229,11 @@ watch_score = 0.25 × q20 + 0.20 × q5 + 0.05 × q3
 | **Springboard ABC** | 右侧信号三项确认 | 对 SOS / EVR 和趋势候选的成交量、价格与支撑确认。普通弱确认至少 2/3，纯 SOS 正式候选要求 3/3 |
 | **DETECTED / SURVIVED / VALIDATED / OMS_APPROVED** | 候选状态链 | 依次表示当日结构命中、跨日未失效、需求已经确认、OMS 最终核准。库内 `confirmed` 是 `VALIDATED` 的兼容值；前两层不可下单 |
 | **ATR 止损放宽** | ATR Stop Relaxation | 持仓诊断中，根据波动率在上限内降低固定止损线，避免正常洗盘误杀；它只放宽、不收紧，也不取消硬止损 |
-| **可卖股数** | Sellable Shares | A 股 T+1 下当日实际能卖出的股数。持仓无分笔明细，买入日期等于当前交易日时整个仓位记为 0，EXIT/TRIM 与强制止损离场都会被拒并顺延到下一交易日 |
+| **可卖股数** | Sellable Shares | A 股 T+1 下当日实际能卖出的股数。持仓无分笔明细，买入日期等于当前交易日时整个仓位记为 0，EXIT/TRIM 与强制止损离场都会被拒并顺延到下一交易日。港股 / 美股为 T+0，同日买入仍可卖，不得套用 A 股冻结 |
 | **持仓代码** | Portfolio Symbol | 持仓账本 `portfolio_positions.code`：A 股 6 位数字、港股 `NNNNN.HK`、美股 `TICKER.US`（TickFlow 标准）。CLI/Web 写入前规范化；漏斗 OMS 买入空间仍以 A 股为主 |
 | **OMS 整手** | OMS Lot Size | Step4 下单取整单位：A 股 100 股，港美 1 股。港美持仓进入 OMS 后不得再套用 A 股 100 股门槛，否则小仓位止损强制 EXIT 与止损落库会失效 |
 | **OMS 人民币口径** | OMS CNY Cash Path | Step4 的 `total_equity` / `free_cash` / 工单 `amount` 按人民币计；港美报价与止损间距先乘汇率再定仓与回笼，避免把美元/港元裸加进人民币预算 |
+| **成交回填汇率** | Trade Fill FX | `record_trade_fill` / `portfolio fill` 对港美成交按报价币→CNY 汇率改 `free_cash`，成本价仍记本币；缺汇率 fail-closed，禁止把外币名义金额写入人民币现金 |
 | **LLM 决策注释** | LLM Decision Note | `llmdoc/` 中经过版本控制、按工作流/股票代码/有效期选择的咨询性上下文；只能提醒模型复核遗漏风险，不得覆盖实时数据、硬止损、市场闸门、候选准入或 OMS |
 
 ---

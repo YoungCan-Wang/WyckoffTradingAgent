@@ -79,10 +79,13 @@ wyckoff portfolio fill 600519 --side buy  --shares 100 --price 1680 --date 20260
 也可以直接对 Agent 说「我卖了 603661 六百股，成交 27.69」，走 `record_trade_fill` 工具。
 回填会按成交增量摊薄成本价、扣掉佣金印花税、卖光时清仓，并给出已实现盈亏；
 新仓回填必须带合法成交日（用作 `buy_dt`），已有仓空日期不会覆盖原建仓日。
+港美成交的报价是外币：回填会按 ECB / `PORTFOLIO_HKD_CNY_RATE` / `PORTFOLIO_USD_CNY_RATE`
+折成人民币后再改 `free_cash`；缺汇率时整笔拒绝，避免把美元/港元直接写进人民币现金。
 `portfolio add` 只插入新仓，必须带合法建仓日 `buy_dt`（YYYYMMDD 或 YYYY-MM-DD），不要拿它记成交，也不要让 Agent 用 `update` 去“补建”空账本里的仓。
 
 Step4 OMS 对港美持仓按 1 股整手处理（A 股仍为 100），止损强制离场与止损落库不再要求满 100 股；
 买卖金额按汇率折成人民币后再改 `free_cash` / 工单占用，避免把美元报价直接套进人民币预算。
+港美为 T+0：同日买入的仓位当日仍可 EXIT / 强制止损，不得套用 A 股 T+1 冻结。
 
 持仓、现金或成交写入完成后，系统会按最新可用行情刷新 `portfolios.total_equity`。港美股默认使用
 ECB 参考汇率折算人民币；券商结算口径不同可配置 `PORTFOLIO_HKD_CNY_RATE` / `PORTFOLIO_USD_CNY_RATE`。

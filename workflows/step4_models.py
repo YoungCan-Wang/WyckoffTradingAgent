@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 
 from core.market_trade_mode import EXECUTE_BLOCK_NEW_BUY_REGIMES
+from core.portfolio_symbol import is_cn_portfolio_code
 from integrations.fetch_a_share_csv import TradingWindow
 
 _TRADE_DAY_FORMATS = ("%Y-%m-%d", "%Y%m%d", "%Y/%m/%d")
@@ -57,8 +58,12 @@ class PositionItem:
         持仓表按代码聚合成一行、没有分笔明细，买入日期等于当前交易日时只能把整个
         仓位视为冻结。买入日期缺失或无法解析时按可卖处理，否则历史脏数据会让持仓
         永远卖不掉。
+
+        港股 / 美股是 T+0，不得套用 A 股冻结；否则同日跌破止损的 EXIT 会被误拒。
         """
         held = max(int(self.shares), 0)
+        if not is_cn_portfolio_code(self.code):
+            return held
         buy_day = parse_trade_day(self.buy_dt)
         today = parse_trade_day(trade_date)
         if buy_day is None or today is None:
