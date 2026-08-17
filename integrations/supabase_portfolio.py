@@ -558,6 +558,20 @@ def _canonicalize_fill(fill: Fill) -> Fill | None:
     )
 
 
+def _fill_fx_to_cny(code: str) -> float:
+    """回填用的报价币→人民币汇率；缺汇率时抛 ValueError，由 record_fill 转成失败结果。"""
+    from core.portfolio_valuation import portfolio_currency
+    from integrations.portfolio_market_value import load_cny_rates
+
+    currency = portfolio_currency(code)
+    if currency == "CNY":
+        return 1.0
+    rate = float(load_cny_rates({currency}).get(currency, 0.0) or 0.0)
+    if rate <= 0:
+        raise ValueError(f"缺少 {currency}->CNY 汇率，拒绝回填以免把外币金额写入人民币现金")
+    return rate
+
+
 def _find_position_for_fill(positions: list[dict[str, Any]], code: str) -> dict[str, Any] | None:
     from core.portfolio_symbol import normalize_portfolio_code
 
@@ -573,11 +587,15 @@ def record_fill(portfolio_id: str, fill: Fill, client: Client | None = None) -> 
 
     先读当前状态再算，所以必须串行调用；同一账户并发回填会互相覆盖。人工录入的
     使用场景下这个约束是成立的，换成自动对接券商前需要改成带版本号的乐观锁。
+
+    港美报价是外币、``free_cash`` 是人民币：落库前必须拿到正汇率，否则拒绝回填，
+    避免把美元/港元名义金额直接写入人民币现金。
     """
     fill = _canonicalize_fill(fill)
     if fill is None:
         return FillWriteResult(False, "无效的股票代码：A股用6位数字，港股用00700.HK，美股用AAPL.US")
     try:
+        fx_to_cny = _fill_fx_to_cny(fill.code)
         client = _resolve_write_client(client, "record trade fill")
         state = load_portfolio_state(portfolio_id, client=client)
         if state is None:
@@ -594,7 +612,7 @@ def record_fill(portfolio_id: str, fill: Fill, client: Client | None = None) -> 
             if row
             else None
         )
-        result = apply_fill(holding, float(state["free_cash"]), fill)
+        result = apply_fill(holding, float(state["free_cash"]), fill, fx_to_cny=fx_to_cny)
     except ValueError as exc:
         return FillWriteResult(False, str(exc))
     except Exception as exc:

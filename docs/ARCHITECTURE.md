@@ -907,7 +907,9 @@ Web 个股、持仓和股票对抗分析保存历史时写入 `meta`：输入快
 每天重发一次，`daily_nav` 也会长期偏离真实账户。`code` 支持 A 股 6 位、港股 `NNNNN.HK`、美股 `TICKER.US`（TickFlow 标准码）；CLI/Web 写入前会规范化大小写与港股补零。
 
 - `core/trade_fill.py` 是纯计算：按成交增量摊薄成本价（含佣金）、扣双边费用、卖光时清仓、
-  给出已实现盈亏。`integrations.supabase_portfolio.record_fill` 负责落库，先读后写，需串行调用。
+  给出已实现盈亏。成本价按标的本币计；`free_cash` 按人民币计，港美回填必须乘
+  `PORTFOLIO_*_CNY_RATE` / ECB 参考汇率后改现金，缺汇率则拒绝写入。
+  `integrations.supabase_portfolio.record_fill` 负责落库，先读后写，需串行调用。
   已有持仓走 update（空 `buy_dt` 不覆盖原建仓日）；新仓走 insert，必须有合法 `YYYYMMDD` / `YYYY-MM-DD`，
   禁止插入无日期多头。
 - 入口：CLI `wyckoff portfolio fill`、MCP/Agent 工具 `record_trade_fill`。
