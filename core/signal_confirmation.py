@@ -177,6 +177,10 @@ _CONFIRM_DISPATCH = {
 }
 
 
+# 走 compute_support_level 的 default 分支（近 20 日最低价）——起跳板 C 需要真支撑口径。
+_SPRINGBOARD_SUPPORT_SIGNAL = "__springboard_support__"
+
+
 def compute_support_level(
     df: pd.DataFrame,
     signal_type: str,
@@ -300,7 +304,14 @@ def score_springboard_abc(
     last_cp = _metric(close_pos.loc[last_idx])
     b = bool(last_vr is not None and last_cp is not None and last_vr >= 1.5 and last_cp > 70)
 
-    support = compute_support_level(df, signal_type, window)
+    # C 要测的是「低点反复受支撑考验」，所以基准必须是支撑位。
+    # compute_support_level 对 sos 返回的是 21 日最高价（突破参考位／阻力位），
+    # 拿最低价去比它在语义上不成立：实测 sos 的 C 命中率 45.8%、其余信号 96.9%，
+    # 差异并非结构差别而是口径污染——那 8.8% 的样本命中与否纯属偶然。
+    # 故 C 统一用「近 20 日最低价」这一真支撑口径，与 signal_type 无关。
+    # 注意不改 compute_support_level 本身：它同时供 support_level 输出与盘中诊断使用，
+    # 改动会波及止损参考位，需另行评估。
+    support = compute_support_level(df, _SPRINGBOARD_SUPPORT_SIGNAL, window)
     tol = support * 0.05
     touches, evidence = _springboard_evidence(df_s, vol_ratio, close_pos, low, support, tol, window)
     c = touches >= 2
