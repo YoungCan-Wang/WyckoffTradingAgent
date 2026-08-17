@@ -15,9 +15,29 @@ def test_invalid_premarket_regime_fails_closed() -> None:
     assert resolve_effective_market_regime("NEUTRAL", "typo") == "UNKNOWN"
 
 
-def test_missing_premarket_regime_fails_closed() -> None:
+def test_missing_premarket_falls_back_to_benchmark() -> None:
+    """缺失是系统故障，不是市场信号，不该冒充风险事件。
+
+    normalize_premarket_regime 仍把缺失归一化为 UNKNOWN（它只描述单个字段），
+    但 resolve_effective_market_regime 回落到 benchmark 单独判定。
+    实测 60 个交易日里 2026-07-20/07-21 两天因此被误禁买。
+    """
     assert normalize_premarket_regime(None) == "UNKNOWN"
-    assert resolve_effective_market_regime("NEUTRAL", None) == "UNKNOWN"
+    assert resolve_effective_market_regime("NEUTRAL", None) == "NEUTRAL"
+    assert resolve_effective_market_regime("NEUTRAL", "") == "NEUTRAL"
+    assert resolve_effective_market_regime("NEUTRAL", "   ") == "NEUTRAL"
+
+
+def test_missing_premarket_does_not_loosen_strict_benchmark() -> None:
+    """回落不等于放行：benchmark 本身禁买时仍然禁买。"""
+    for regime in ("CRASH", "RISK_OFF", "BLACK_SWAN", "BEAR_REBOUND"):
+        assert resolve_effective_market_regime(regime, None) == regime
+
+
+def test_explicit_unknown_still_fails_closed() -> None:
+    """盘前模型明确给出 UNKNOWN（看不清）与拼写错误（数据不可信）都该收紧。"""
+    assert resolve_effective_market_regime("NEUTRAL", "UNKNOWN") == "UNKNOWN"
+    assert resolve_effective_market_regime("NEUTRAL", "typo") == "UNKNOWN"
 
 
 def test_repair_stages_survive_normal_premarket_merge() -> None:
