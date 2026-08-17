@@ -1,0 +1,81 @@
+{
+  "records": 20,
+  "codes": 10,
+  "overall": {
+    "label": "全部",
+    "n": 20,
+    "after_pct": 16.2222,
+    "excess_pct": 13.2563,
+    "sold_correctly": 1
+  },
+  "by_origin": [
+    {
+      "label": "模型判断",
+      "n": 6,
+      "after_pct": 8.8556,
+      "excess_pct": 6.1022,
+      "sold_correctly": 1
+    },
+    {
+      "label": "止损驱动",
+      "n": 14,
+      "after_pct": 19.3794,
+      "excess_pct": 16.5582,
+      "sold_correctly": 0
+    }
+  ],
+  "by_sequence": [
+    {
+      "label": "首次触发",
+      "n": 10,
+      "after_pct": 14.7362,
+      "excess_pct": 12.8023,
+      "sold_correctly": 1
+    },
+    {
+      "label": "重复触发",
+      "n": 10,
+      "after_pct": 17.7083,
+      "excess_pct": 13.6649,
+      "sold_correctly": 0
+    }
+  ],
+  "by_stop_band": [
+    {
+      "label": "倒挂 0~5%",
+      "n": 4,
+      "after_pct": 20.8349,
+      "excess_pct": 22.8242,
+      "sold_correctly": 0
+    },
+    {
+      "label": "倒挂 5~20%",
+      "n": 2,
+      "after_pct": 4.751,
+      "excess_pct": 2.3524,
+      "sold_correctly": 0
+    },
+    {
+      "label": "无止损信息",
+      "n": 7,
+      "after_pct": 11.4011,
+      "excess_pct": 8.4417,
+      "sold_correctly": 1
+    },
+    {
+      "label": "止损低于现价",
+      "n": 2,
+      "after_pct": 21.3,
+      "excess_pct": 16.6909,
+      "sold_correctly": 0
+    },
+    {
+      "label": "陈旧 >20%",
+      "n": 5,
+      "after_pct": 21.8392,
+      "excess_pct": 17.2437,
+      "sold_correctly": 0
+    }
+  ],
+  "reading": "after_pct 为卖出后价格变化：负值=卖对了（避开下跌），正值=卖早了。excess_pct 已扣同期基准。样本不足时不要据此改风控。"
+}

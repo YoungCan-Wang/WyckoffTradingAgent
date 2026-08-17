@@ -1,0 +1,66 @@
+name: Daily NAV Snapshot
+
+# 净值是账户事实，不该因为漏斗或 Step4 失败而缺失。
+# 实测 daily_nav 曾缺 2026-08-07 / 08-10 / 08-17 三个交易日（覆盖率 77%）：
+# 08-10 被 FUNNEL_DATA_FRESHNESS_HARD_FAIL 拦下（那是故意的护栏），08-07 与 08-17 压根没触发。
+# 根因是净值快照挂在 Step4 的工单写入之后，信号链路一挂账户估值就跟着消失。
+# 本作业独立运行，与漏斗成败无关。
+on:
+  schedule:
+    # UTC 08:05 周一至周五 = 北京时间 16:05，A 股收盘后、早于其它盘后任务。
+    - cron: "5 8 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "交易日 YYYY-MM-DD，留空取当天"
+        default: ""
+      apply:
+        description: "true 才写库"
+        default: "true"
+
+concurrency:
+  group: nav-snapshot-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONUNBUFFERED: "1"
+      WYCKOFF_WRITE_CONTEXT: "server_job"
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      SUPABASE_USER_ID: ${{ secrets.SUPABASE_USER_ID }}
+      TICKFLOW_API_KEY: ${{ secrets.TICKFLOW_API_KEY }}
+      TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+      TZ: Asia/Shanghai
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Record NAV snapshot
+        run: |
+          python scripts/nav_snapshot_job.py \
+            ${{ github.event.inputs.date && format('--date {0}', github.event.inputs.date) || '' }} \
+            ${{ github.event.inputs.apply == 'false' && '' || '--apply' }}
+
+      - name: Report NAV gaps (last 30 days)
+        if: always()
+        run: |
+          START=$(date -d '30 days ago' +%Y-%m-%d)
+          END=$(date +%Y-%m-%d)
+          python scripts/nav_snapshot_job.py --check "$START" "$END"

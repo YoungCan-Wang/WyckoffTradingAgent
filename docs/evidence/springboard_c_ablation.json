@@ -1,0 +1,141 @@
+{
+  "events": 14676,
+  "symbols": 300,
+  "window": {
+    "start": "2026-05-25",
+    "end": "2026-07-31"
+  },
+  "note": "sos 的 support 取 21 日最高价（阻力位），语义上不适用低点触碰支撑；本报告统一用近 20 日最低价口径，sos 需单独处理，不要用本结论直接调 sos。",
+  "variants": {
+    "fixed_5pct": {
+      "label": "固定 5%（现状）",
+      "n_hit": 14388,
+      "n_miss": 288,
+      "hit_rate_pct": 98.04,
+      "hit_ret": -0.5519,
+      "miss_ret": -0.5061,
+      "paired_diff": 0.3717,
+      "paired_days": 42,
+      "paired_positive_pct": 47.62,
+      "noise_band": [
+        -2.0805,
+        0.2492
+      ],
+      "inside_noise": false,
+      "verdict": "正贡献、超出噪声"
+    },
+    "atr_k0.3": {
+      "label": "ATR×0.3",
+      "n_hit": 10874,
+      "n_miss": 3802,
+      "hit_rate_pct": 74.09,
+      "hit_ret": -0.8272,
+      "miss_ret": 0.1425,
+      "paired_diff": -0.9697,
+      "paired_days": 49,
+      "paired_positive_pct": 22.45,
+      "noise_band": [
+        -0.1391,
+        0.1937
+      ],
+      "inside_noise": false,
+      "verdict": "负贡献、超出噪声"
+    },
+    "atr_k0.5": {
+      "label": "ATR×0.5",
+      "n_hit": 12829,
+      "n_miss": 1847,
+      "hit_rate_pct": 87.41,
+      "hit_ret": -0.6936,
+      "miss_ret": 0.4013,
+      "paired_diff": -1.0948,
+      "paired_days": 49,
+      "paired_positive_pct": 28.57,
+      "noise_band": [
+        -0.2164,
+        0.2861
+      ],
+      "inside_noise": false,
+      "verdict": "负贡献、超出噪声"
+    },
+    "atr_k0.75": {
+      "label": "ATR×0.75",
+      "n_hit": 14032,
+      "n_miss": 644,
+      "hit_rate_pct": 95.61,
+      "hit_ret": -0.5839,
+      "miss_ret": 0.5286,
+      "paired_diff": -1.1125,
+      "paired_days": 49,
+      "paired_positive_pct": 28.57,
+      "noise_band": [
+        -0.7249,
+        0.3072
+      ],
+      "inside_noise": false,
+      "verdict": "负贡献、超出噪声"
+    },
+    "atr_k1.0": {
+      "label": "ATR×1.0",
+      "n_hit": 14512,
+      "n_miss": 164,
+      "hit_rate_pct": 98.88,
+      "hit_ret": -0.5336,
+      "miss_ret": 1.1048,
+      "paired_diff": -1.4313,
+      "paired_days": 45,
+      "paired_positive_pct": 44.44,
+      "noise_band": [
+        -3.2371,
+        0.7976
+      ],
+      "inside_noise": true,
+      "verdict": "落在噪声带内：无区分力"
+    },
+    "atr_k1.5": {
+      "label": "ATR×1.5",
+      "verdict": "样本不足",
+      "hit_rate_pct": 99.88,
+      "n_hit": 14659,
+      "n_miss": 17
+    }
+  },
+  "out_of_sample_paired_diff": {
+    "fixed_5pct": {
+      "in_sample": -1.8404,
+      "out_of_sample": 2.0308
+    },
+    "atr_k0.3": {
+      "in_sample": -0.0675,
+      "out_of_sample": -1.8357
+    },
+    "atr_k0.5": {
+      "in_sample": 0.1457,
+      "out_of_sample": -2.2857
+    },
+    "atr_k0.75": {
+      "in_sample": 0.3461,
+      "out_of_sample": -2.5127
+    },
+    "atr_k1.0": {
+      "in_sample": -0.382,
+      "out_of_sample": -2.3495
+    },
+    "atr_k1.5": {
+      "in_sample": null,
+      "out_of_sample": null
+    }
+  },
+  "split_date": "2026-06-29",
+  "hit_rate_summary": {
+    "fixed_5pct": 98.04,
+    "atr_k0.3": 74.09,
+    "atr_k0.5": 87.41,
+    "atr_k0.75": 95.61,
+    "atr_k1.0": 98.88,
+    "atr_k1.5": 99.88
+  },
+  "median_touch_context": {
+    "target": "命中率应显著低于现状的 92%，否则仍是恒真标签"
+  }
+}

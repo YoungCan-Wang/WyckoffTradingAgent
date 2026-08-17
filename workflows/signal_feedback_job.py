@@ -226,5 +226,7 @@ def _outcome_row(obs: dict[str, Any], outcome) -> dict[str, Any]:
         "horizon_days": outcome.horizon,
         "status": outcome.status,
         "return_pct": outcome.return_pct,
+        # 不写 net_return_pct：线上 signal_outcomes 无该列，写未知键会让整批 upsert 失败。
+        # 净收益在读取侧由 core.trade_friction.net_return_pct 换算，口径一致且无需迁移。
         "max_drawdown_pct": outcome.max_drawdown_pct,
     }

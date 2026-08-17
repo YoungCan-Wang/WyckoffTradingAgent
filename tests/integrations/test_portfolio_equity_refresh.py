@@ -35,7 +35,7 @@ def test_refresh_portfolio_total_equity_persists_latest_multi_market_value(monke
     }
     client = _UpdateClient()
     monkeypatch.setattr(supabase_portfolio, "load_portfolio_state", lambda *_args, **_kwargs: state)
-    monkeypatch.setattr(supabase_portfolio, "_portfolio_tickflow_key", lambda *_args: "key")
+    monkeypatch.setattr(supabase_portfolio, "portfolio_tickflow_key", lambda *_args: "key")
     monkeypatch.setattr(
         portfolio_market_value,
         "load_portfolio_marks",
@@ -55,7 +55,7 @@ def test_refresh_does_not_overwrite_total_when_a_quote_is_missing(monkeypatch) -
     state = {"free_cash": 25_000, "positions": [{"code": "600519", "shares": 10}]}
     client = _UpdateClient()
     monkeypatch.setattr(supabase_portfolio, "load_portfolio_state", lambda *_args, **_kwargs: state)
-    monkeypatch.setattr(supabase_portfolio, "_portfolio_tickflow_key", lambda *_args: "key")
+    monkeypatch.setattr(supabase_portfolio, "portfolio_tickflow_key", lambda *_args: "key")
     monkeypatch.setattr(portfolio_market_value, "load_portfolio_marks", lambda *_args: ({}, {"CNY": 1}))
 
     result = supabase_portfolio.refresh_portfolio_total_equity("USER_LIVE:u1", client=client)  # type: ignore[arg-type]

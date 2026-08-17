@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from core._price_math import to_numeric as _to_numeric
+from core.trade_friction import net_return_pct
 
 
 @dataclass(frozen=True)
@@ -16,6 +17,9 @@ class HorizonOutcome:
     status: str
     return_pct: float | None
     max_drawdown_pct: float | None
+    # 扣除双边交易成本后的收益。return_pct 保持毛收益不动，便于与历史数据对比；
+    # 所有「这个信号值不值得做」的判断都应该看 net_return_pct。
+    net_return_pct: float | None = None
 
 
 @dataclass(frozen=True)
@@ -82,7 +86,13 @@ def _horizon_outcome(
     min_path_price = min(base_price, float(path.min()) if not path.empty else float(future_close))
     ret = (float(future_close) - base_price) / base_price * 100.0
     mdd = (min_path_price - base_price) / base_price * 100.0
-    return HorizonOutcome(horizon=horizon, status="done", return_pct=float(ret), max_drawdown_pct=float(mdd))
+    return HorizonOutcome(
+        horizon=horizon,
+        status="done",
+        return_pct=float(ret),
+        max_drawdown_pct=float(mdd),
+        net_return_pct=net_return_pct(float(ret)),
+    )
 
 
 def _horizon_outcomes(

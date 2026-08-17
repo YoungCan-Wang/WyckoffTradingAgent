@@ -35,6 +35,8 @@ from typing import Any
 import _bootstrap  # noqa: F401
 import pandas as pd
 
+from core.trade_friction import net_return_pct, round_trip_cost_pct
+
 MIN_GROUP = 30
 BOOTSTRAP_ROUNDS = 2000
 CONTROL_SEEDS = 20
@@ -218,6 +220,10 @@ def build_report(
         "window": {"start": str(matured.trade_date.min()), "end": str(matured.trade_date.max())},
         "matured_outcomes": len(matured),
         "baseline_ret": None if _day_weighted(matured) is None else round(_day_weighted(matured), 4),
+        # 净收益：signal_outcomes.return_pct 是毛收益，不含佣金/印花税/过户费/滑点。
+        # 判断「值不值得做」必须看这一行。
+        "baseline_net_ret": net_return_pct(_day_weighted(matured)),
+        "round_trip_cost_pct": round(round_trip_cost_pct(), 4),
         "baseline_win_rate_pct": round(100.0 * float((matured.return_pct > 0).mean()), 2),
         "health": {
             "matched_outcomes": len(merged),

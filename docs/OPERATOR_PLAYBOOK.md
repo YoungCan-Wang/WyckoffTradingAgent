@@ -85,6 +85,7 @@ wyckoff portfolio fill 600519 --side buy  --shares 100 --price 1680 --date 20260
 
 Step4 OMS 对港美持仓按 1 股整手处理（A 股仍为 100），止损强制离场与止损落库不再要求满 100 股；
 买卖金额按汇率折成人民币后再改 `free_cash` / 工单占用，避免把美元报价直接套进人民币预算。
+港美为 T+0：同日买入的仓位当日仍可 EXIT / 强制止损，不得套用 A 股 T+1 冻结。
 
 持仓、现金或成交写入完成后，系统会按最新可用行情刷新 `portfolios.total_equity`。港美股默认使用
 ECB 参考汇率折算人民币；券商结算口径不同可配置 `PORTFOLIO_HKD_CNY_RATE` / `PORTFOLIO_USD_CNY_RATE`。
