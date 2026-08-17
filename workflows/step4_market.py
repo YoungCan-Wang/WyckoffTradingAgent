@@ -31,7 +31,19 @@ def normalize_premarket_regime(raw: object) -> str:
 
 
 def resolve_effective_market_regime(benchmark_regime: object, premarket_regime: object) -> str:
+    """收盘态与盘前态取更严者。
+
+    ``premarket`` **完全缺失**（None/空串）时不再拉成 UNKNOWN，而是回落到 benchmark
+    单独判定——「上游任务没跑」是系统故障，不是市场信号，把两者混为一谈会让取数失败
+    冒充风险事件。真实的 ``"UNKNOWN"`` 判定与拼写错误仍然 fail-closed：前者是盘前
+    模型明确给出的「看不清」，后者说明数据不可信，两种都该收紧。
+
+    实测 60 个交易日里，2026-07-20 与 07-21 两天 benchmark 为 NEUTRAL（放行）却因
+    premarket 缺失被降级为 UNKNOWN 而禁买。
+    """
     benchmark_norm = normalize_benchmark_regime(benchmark_regime)
+    if not clean_text(premarket_regime):
+        return benchmark_norm
     premarket_norm = normalize_premarket_regime(premarket_regime)
     return stricter_market_regime(benchmark_norm, premarket_norm)
 

@@ -1,0 +1,65 @@
+name: Regime Forward Evaluation
+
+# 市场水温（regime）判定的前瞻检验。
+# 起因：10 笔 EXIT/清仓建议里 9 笔卖在阶段底部，其中一批理由是「CRASH 环境下无保留价值」，
+# 而实测 CRASH 之后市场偏涨（超基准 +1.12pct、p=0.015）。三个月样本说不了话，
+# 所以每周重跑一次，看结论能否跨周期稳定，再决定要不要动生产开关。
+on:
+  schedule:
+    # UTC 周六 01:40 = 北京时间周六 09:40。周末跑：本周数据已收全，且不与工作日任务争资源。
+    - cron: "40 1 * * 6"
+  workflow_dispatch:
+    inputs:
+      horizon:
+        description: "前瞻交易日数"
+        default: "5"
+      index:
+        description: "主指数代码"
+        default: "000001"
+
+concurrency:
+  group: regime-forward-eval-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONUNBUFFERED: "1"
+      # 只读 market_signal_daily 与指数行情，不写库；故不设 WYCKOFF_WRITE_CONTEXT。
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+      FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+      TZ: Asia/Shanghai
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Evaluate regime forward returns
+        run: |
+          python scripts/evaluate_regime_forward.py \
+            --horizon "${{ github.event.inputs.horizon || '5' }}" \
+            --index "${{ github.event.inputs.index || '000001' }}"
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: regime-forward-evidence
+          path: docs/evidence/regime_forward_h*.json
+          if-no-files-found: warn
