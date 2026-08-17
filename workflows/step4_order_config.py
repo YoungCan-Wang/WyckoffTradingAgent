@@ -44,12 +44,38 @@ def _env_stop_mode(name: str, default: str) -> str:
 
 
 def _env_regime_set(name: str, default: str) -> frozenset[str]:
+    """解析禁买水温集合。
+
+    ``EXECUTE_BLOCK_NEW_BUY_REGIMES`` 无条件并入，所以单改 env 无法放开其中任何一档；
+    但那个集合同时被 AI 复核、推荐写入与横幅文案消费（实测直接改它会连带影响 30 个用例），
+    因此放开只在**下单闸门**这一层做，用 ``STEP4_BUY_ALLOW_REGIMES`` 显式豁免。
+
+    2026-08-17 联动实测（水温 × 严格候选，54 个交易日，候选 T+5 相对同日全市场）：
+
+    | 水温 | 天数 | 超额 | 为正 |
+    |---|---:|---:|---:|
+    | RISK_ON | 3 | +6.07pct | 3/3 |
+    | BEAR_REBOUND | 4 | +4.08pct | 4/4 |
+    | NEUTRAL | 12 | −4.35pct | 3/12 |
+
+    现状放行档（NEUTRAL/CAUTION）13 天超额 −4.62pct、bootstrap 95% CI [−6.99, −2.33]；
+    换成 BEAR_REBOUND/RISK_ON 后 7 天超额 +4.93pct、CI [+3.18, +6.65]，两个区间不重叠。
+    RISK_ON/BEAR_REBOUND 样本仅 3~4 天，故做成**可关的显式开关**而非改默认策略常量，
+    并保留 NEUTRAL 于禁买（它证据最强：CI [−6.80, −2.07] 不跨 0，且大盘侧独立同向 p=0.011）。
+    """
     values = {
         item.strip().upper()
         for item in os.getenv(name, default).split(",")
         if item.strip() and item.strip().upper() != "COOLDOWN"
     }
-    return frozenset(values | set(EXECUTE_BLOCK_NEW_BUY_REGIMES))
+    merged = values | set(EXECUTE_BLOCK_NEW_BUY_REGIMES)
+    return frozenset(merged - _env_buy_allow_regimes())
+
+
+def _env_buy_allow_regimes() -> set[str]:
+    """从禁买名单里豁免的水温。留空表示沿用原有全部禁买。"""
+    raw = os.getenv("STEP4_BUY_ALLOW_REGIMES", "").strip()
+    return {item.strip().upper() for item in raw.split(",") if item.strip()}
 
 
 def _clamp01(value: float) -> float:
