@@ -6,6 +6,7 @@ import logging
 
 from core.market_trade_mode import (
     EXECUTE_BLOCK_NEW_BUY_REGIMES,
+    PREMARKET_DATA_GAP,
     normalize_regime,
     stricter_market_regime,
 )
@@ -42,7 +43,10 @@ def resolve_effective_market_regime(benchmark_regime: object, premarket_regime: 
     premarket 缺失被降级为 UNKNOWN 而禁买。
     """
     benchmark_norm = normalize_benchmark_regime(benchmark_regime)
-    if not clean_text(premarket_regime):
+    raw = clean_text(premarket_regime).upper()
+    # 两类「拿不到数据」都回落：字段为空（盘前任务没跑）与 DATA_GAP（任务跑了但
+    # A50/VIX 取数失败）。此前只处理前者，导致「跑了反而更严格」的不一致。
+    if not raw or raw == PREMARKET_DATA_GAP:
         return benchmark_norm
     premarket_norm = normalize_premarket_regime(premarket_regime)
     return stricter_market_regime(benchmark_norm, premarket_norm)

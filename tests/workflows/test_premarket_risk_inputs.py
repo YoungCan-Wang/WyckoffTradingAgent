@@ -1,6 +1,7 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from core.market_trade_mode import PREMARKET_DATA_GAP
 from workflows import premarket_risk_inputs as inputs
 from workflows.premarket_risk_inputs import PremarketRiskConfig
 
@@ -52,15 +53,40 @@ def test_judge_regime_risk_off_on_moderate_a50_or_vix_stress():
     assert any("VIX涨幅" in reason for reason in reasons)
 
 
-def test_judge_regime_missing_benign_input_fails_closed():
+def test_judge_regime_missing_benign_input_reports_data_gap():
+    """取数失败返回 DATA_GAP，不再与「盘前明确看不清」的 UNKNOWN 混用。
+
+    此前两者共用 UNKNOWN，使外部数据源抖动冒充风险事件（实测 A50 缺失率 13.3%、
+    VIX 10.0%）。更荒谬的是不一致：盘前任务压根没跑会回落 benchmark 从而放行，
+    而任务跑了但拉不到数据反而禁买。下游 resolve_effective_market_regime 现在把
+    DATA_GAP 与「字段为空」同等对待。
+    """
     regime, reasons = inputs.judge_regime(
         {"pct_chg": "0.2"},
         {"close": None, "pct_chg": None},
         _config(),
     )
 
-    assert regime == "UNKNOWN"
+    assert regime == PREMARKET_DATA_GAP
     assert "VIX 数据缺失" in reasons[0]
+
+
+def test_data_gap_falls_back_to_benchmark_but_keeps_real_risk():
+    from workflows.step4_market import resolve_effective_market_regime
+
+    # 取数失败：回落收盘态，不再无故禁买。
+    assert resolve_effective_market_regime("BEAR_REBOUND", PREMARKET_DATA_GAP) == "BEAR_REBOUND"
+    # 盘前明确判定危险：照旧收紧。
+    assert resolve_effective_market_regime("BEAR_REBOUND", "UNKNOWN") == "UNKNOWN"
+    assert resolve_effective_market_regime("BEAR_REBOUND", "BLACK_SWAN") == "BLACK_SWAN"
+    # 回落不等于放行：收盘态本身禁买时仍然禁买。
+    assert resolve_effective_market_regime("CRASH", PREMARKET_DATA_GAP) == "CRASH"
+
+
+def test_hard_block_survives_missing_input():
+    """A50 触发硬阈值时即使 VIX 缺失也必须给出 BLACK_SWAN，不能退化为 DATA_GAP。"""
+    regime, _ = inputs.judge_regime({"pct_chg": "-3.0"}, {"close": None, "pct_chg": None}, _config())
+    assert regime != PREMARKET_DATA_GAP
 
 
 def test_judge_regime_keeps_observed_hard_block_when_other_input_is_missing():
