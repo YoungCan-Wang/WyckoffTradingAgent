@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from core.buy_dt import parse_buy_dt
 from core.cash_portfolio import CashPortfolioConfig, calc_trade_cost
 
 BUY = "buy"
@@ -76,15 +77,37 @@ def _apply_buy(holding: Holding | None, cash: float, fill: Fill, gross: float, f
     # 买入均价含手续费，卖出时算出的已实现盈亏才是到手的钱。
     prev_cost = (holding.cost_price * prev_shares) if holding else 0.0
     shares = prev_shares + fill.shares
+    # T+1 以最近一次买入为准；乱序回填更早成交日不得把 buy_dt 往回拨，否则当日加仓会被误判可卖。
+    prev_buy_dt = holding.buy_dt if holding else ""
     merged = Holding(
         code=fill.code,
         name=fill.name or (holding.name if holding else ""),
         shares=shares,
         cost_price=(prev_cost + outlay) / shares,
-        buy_dt=fill.trade_date,
+        buy_dt=_later_buy_dt(prev_buy_dt, fill.trade_date),
     )
     note = f"{fill.code} 买入 {fill.shares} 股 @ {fill.price:.3f}，费用 {fee:.2f}，持仓 {prev_shares} → {shares}"
     return FillResult(merged, cash - outlay, fee, None, note)
+
+
+def _later_buy_dt(existing: str, incoming: str) -> str:
+    """取较晚的建仓日；成交日缺失时返回空串，交由写入层保留库内原值。
+
+    返回空串而非回填 ``existing``：``update_position`` 的契约是「空 buy_dt 保留原日期」，
+    靠上层剪掉空值实现。若在此处回写同一个值，payload 就会显式带上 buy_dt，
+    绕过那条边界约束（tests/agents/test_portfolio_write_boundary.py 会拦）。
+    功能上两者等价，但不写字段更保守——不碰库里的值。
+    """
+    incoming_text = str(incoming or "").strip()
+    existing_text = str(existing or "").strip()
+    new = parse_buy_dt(incoming_text)
+    if new is None:
+        # 成交日缺失或不可解析：不改动建仓日。
+        return ""
+    old = parse_buy_dt(existing_text)
+    if old is None:
+        return incoming_text
+    return incoming_text if new.date() >= old.date() else existing_text
 
 
 def _apply_sell(holding: Holding | None, cash: float, fill: Fill, gross: float, fee: float) -> FillResult:
