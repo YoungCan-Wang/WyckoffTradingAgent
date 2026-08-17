@@ -365,7 +365,7 @@ def refresh_portfolio_total_equity(
             return EquityRefreshResult(False, None, f"未找到组合 {portfolio_id}")
         positions = list(state.get("positions") or [])
         if positions:
-            api_key = _portfolio_tickflow_key(portfolio_id, client)
+            api_key = portfolio_tickflow_key(portfolio_id, client)
             if not api_key:
                 return EquityRefreshResult(False, None, "未配置 TickFlow API Key")
             prices, rates = load_portfolio_marks(positions, api_key)
@@ -380,7 +380,7 @@ def refresh_portfolio_total_equity(
         return EquityRefreshResult(False, None, str(exc))
 
 
-def _portfolio_tickflow_key(portfolio_id: str, client: Client) -> str:
+def portfolio_tickflow_key(portfolio_id: str, client: Client) -> str:
     fallback = os.getenv("TICKFLOW_API_KEY", "").strip()
     prefix, separator, user_id = str(portfolio_id or "").partition(":")
     if prefix != "USER_LIVE" or not separator or not user_id:
