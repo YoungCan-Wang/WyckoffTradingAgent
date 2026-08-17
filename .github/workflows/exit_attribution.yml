@@ -1,0 +1,63 @@
+name: Exit Attribution
+
+# 卖出建议归因：系统建议卖出之后，那些票涨了还是跌了。
+# 2026-08-17 首轮（20 次建议 / 10 只票）：卖出后 +16.22%、超额 +13.26pct、**卖对 1/20**。
+# 两个机制假设被数据否掉——「陈旧止损是主因」（倒挂 0~5% 也错 20.83%）与
+# 「重复触发是主因」（首次已错 14.74%）。20 次里 4 次挤在 07-30 同一天而那天是阶段底部，
+# 故更像同一次市场时机误判的多次表现，而非机制缺陷。
+# 样本撑不起改风控代码，所以每周重跑，等跨越不同市场环境后再重判。
+on:
+  schedule:
+    # UTC 周六 02:10 = 北京时间周六 10:10，紧随 regime 前瞻检验之后。
+    - cron: "10 2 * * 6"
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "回看天数"
+        default: "60"
+
+concurrency:
+  group: exit-attribution-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONUNBUFFERED: "1"
+      # 只读 trade_orders 与行情，不写库；故不设 WYCKOFF_WRITE_CONTEXT。
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+      TICKFLOW_API_KEY: ${{ secrets.TICKFLOW_API_KEY }}
+      FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+      TZ: Asia/Shanghai
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Evaluate exit attribution
+        run: |
+          python scripts/evaluate_exit_attribution.py --days "${{ github.event.inputs.days || '60' }}"
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: exit-attribution-evidence
+          path: docs/evidence/exit_attribution.json
+          if-no-files-found: warn
