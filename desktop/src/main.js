@@ -11,8 +11,11 @@ const { PRINT_WEB_PREFERENCES, blockPrintNetwork } = require('./print-security')
 // src/ -> desktop/ -> repo root
 const REPO_ROOT = path.resolve(__dirname, '..', '..')
 
-if (!require('node:fs').existsSync(path.join(REPO_ROOT, 'cli'))) {
-  // Wrong root means the Python child can never start; fail loudly now.
+// 分发版没有仓库：Python 是打包进 resources/ 的自包含二进制，REPO_ROOT 只是
+// 个占位。开发时这个断言很有价值（根目录算错的话 Python 子进程永远起不来，
+// 早失败好过后面莫名其妙），但打包后必须放行 —— 否则主进程在这里就抛异常，
+// 窗口起来了却什么都没初始化，而且异常被 Electron 吞掉、日志里什么都没有。
+if (!app.isPackaged && !require('node:fs').existsSync(path.join(REPO_ROOT, 'cli'))) {
   throw new Error(`repo root looks wrong: ${REPO_ROOT} (no cli/ directory)`)
 }
 
@@ -152,6 +155,13 @@ function startBridge (browserEndpoint) {
  * own .venv still works.
  */
 function startDaemon () {
+  // 打包版暂不支持定时任务：daemon 走的是 `python -m cli daemon`，而分发包里
+  // 只有 IPC 那个入口的二进制，没有可用的 cli 模块。明确不启动并说明原因，
+  // 比让它 spawn 失败后静默重试好 —— 后者在界面上表现为「定时任务开着但从不跑」。
+  if (app.isPackaged) {
+    console.log('[daemon] 打包版尚未内置调度进程，定时任务需要在命令行运行 wyckoff daemon')
+    return
+  }
   daemon = new DaemonRunner({
     repoRoot: REPO_ROOT,
     python: bridge.pythonPath(),

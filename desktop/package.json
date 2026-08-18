@@ -7,9 +7,47 @@
   "scripts": {
     "start": "electron .",
     "start:debug": "electron . --inspect",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "build:py": "../scripts/build_python_ipc.sh",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
   },
   "devDependencies": {
-    "electron": "38.2.2"
+    "electron": "38.2.2",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.youngcan.wyckoff",
+    "productName": "Wyckoff",
+    "files": [
+      "src/**/*",
+      "!test/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../dist/python/wyckoff-ipc",
+        "to": "wyckoff-ipc"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.finance",
+      "target": [
+        "dmg"
+      ],
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Office"
+    }
   }
 }

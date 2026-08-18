@@ -99,3 +99,11 @@ wiki_repo_new/
 # Electron 桌面端依赖
 desktop/node_modules/
 desktop/dist/
+
+# 打包构建环境（本地生成，100M+，勿入库）
+.build-venv/
+
+# build/ 那条通用规则会误伤 electron-builder 的签名配置目录 ——
+# entitlements 是必须入库的配置，不是产物。
+!desktop/build/
+!desktop/build/**

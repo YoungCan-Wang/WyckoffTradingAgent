@@ -37,6 +37,17 @@ class PythonBridge {
   }
 
   /**
+   * 打包后的自包含 IPC 二进制，由 PyInstaller 产出、electron-builder 放进
+   * resources/。存在即说明这是分发版：用户机器上没有仓库也没有 venv。
+   */
+  bundledBinary () {
+    if (!process.resourcesPath) return ''
+    const name = IS_WINDOWS ? 'wyckoff-ipc.exe' : 'wyckoff-ipc'
+    const candidate = path.join(process.resourcesPath, 'wyckoff-ipc', name)
+    return fs.existsSync(candidate) ? candidate : ''
+  }
+
+  /**
    * Prefer the repo venv. WYCKOFF_PYTHON overrides it, which is what makes a
    * git worktree usable — a worktree has no .venv of its own, and falling back
    * to a bare system python means the child dies instantly on missing deps.
@@ -62,12 +73,17 @@ class PythonBridge {
   start () {
     if (this.child) return
     this.stopping = false
-    const python = this.pythonPath()
+    // 分发版优先用打包好的二进制；开发时它不存在，走仓库 venv + `-m cli ipc`。
+    const bundled = this.bundledBinary()
+    const python = bundled || this.pythonPath()
     this.lastPython = python
+    const args = bundled ? [] : ['-m', 'cli', 'ipc']
+    // 打包后没有仓库可言，用二进制所在目录当 cwd。
+    const cwd = bundled ? path.dirname(bundled) : this.repoRoot
 
     // No shell: avoids Windows quoting/injection issues entirely.
-    this.child = spawn(python, ['-m', 'cli', 'ipc'], {
-      cwd: this.repoRoot,
+    this.child = spawn(python, args, {
+      cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
       env: {
