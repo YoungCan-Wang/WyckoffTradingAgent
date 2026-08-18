@@ -36,6 +36,27 @@ class TestMarketOf:
         assert market_of(None) == CN
 
 
+class TestPublishedRates:
+    """费率与公开来源对齐，避免手抄漂移。"""
+
+    def test_hk_misc_rate_equals_sum_of_three_levies(self):
+        from core.market_trade_cost import HK_FEES
+
+        # HKEX 通函：SFC 交易征费 0.0027% + AFRC 0.00015% + 交易所交易费 0.00565%，均 per side。
+        assert HK_FEES.misc_rate_both_sides == pytest.approx(0.000027 + 0.0000015 + 0.0000565)
+
+    def test_hk_stamp_duty_is_ten_bps(self):
+        from core.market_trade_cost import HK_FEES
+
+        assert HK_FEES.stamp_duty_rate == pytest.approx(0.001)
+        assert HK_FEES.stamp_duty_both_sides is True
+
+    def test_us_has_no_stamp_duty(self):
+        from core.market_trade_cost import US_FEES
+
+        assert US_FEES.stamp_duty_rate == 0.0
+
+
 class TestStampDutySides:
     def test_a_share_stamp_duty_is_sell_only(self):
         buy = single_side_cost(20_000.0, side="buy", market=CN)
