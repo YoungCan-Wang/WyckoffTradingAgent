@@ -178,6 +178,16 @@ def _merge_live_benchmark(
     row["premarket_regime"] = premarket_regime
 
 
+def _premarket_label_for_report(raw_premarket: object) -> str:
+    """报告用盘前标签：保留 DATA_GAP/空缺，勿在 resolve 之前压成 UNKNOWN。"""
+    raw = clean_text(raw_premarket).upper()
+    if not raw:
+        return ""
+    if raw == PREMARKET_DATA_GAP:
+        return PREMARKET_DATA_GAP
+    return normalize_premarket_regime(raw_premarket)
+
+
 def build_market_guardrail(
     *,
     trade_date: str,
@@ -187,12 +197,18 @@ def build_market_guardrail(
 ) -> tuple[str, str, str]:
     row = dict(market_signal_row or {})
     benchmark_regime, readiness = _benchmark_regime_and_readiness(row, benchmark_context, trade_date)
-    premarket_regime = normalize_premarket_regime(row.get("premarket_regime"))
-    effective_regime = resolve_effective_market_regime(benchmark_regime, premarket_regime)
+    # 必须把原始盘前值交给 resolve：normalize 会把 DATA_GAP/空值压成 UNKNOWN，
+    # 从而让「取数失败 / 任务没跑 → 回落 benchmark」的修复在生产入口失效。
+    raw_premarket = row.get("premarket_regime")
+    effective_regime = resolve_effective_market_regime(benchmark_regime, raw_premarket)
+    premarket_regime = _premarket_label_for_report(raw_premarket)
     enforced_blocks = set(buy_block_regimes) | set(EXECUTE_BLOCK_NEW_BUY_REGIMES)
-    gaps = missing_market_inputs(row.get("benchmark_regime"), row.get("premarket_regime"), readiness, benchmark_context)
+    gaps = missing_market_inputs(row.get("benchmark_regime"), raw_premarket, readiness, benchmark_context)
+    # 只有真正因此禁买时才归因于数据缺失，避免回落后已放行仍写「禁买源自…」。
     missing_inputs = (
-        describe_market_gaps(gaps) if data_gap_blocks_buying(benchmark_regime, gaps, enforced_blocks) else []
+        describe_market_gaps(gaps)
+        if effective_regime in enforced_blocks and data_gap_blocks_buying(benchmark_regime, gaps, enforced_blocks)
+        else []
     )
     if missing_inputs:
         logger.warning(
@@ -213,7 +229,7 @@ def build_market_guardrail(
         trade_date=trade_date,
         effective_regime=effective_regime,
         benchmark_regime=benchmark_regime,
-        premarket_regime=premarket_regime,
+        premarket_regime=premarket_regime or "(missing)",
         readiness=readiness,
         benchmark_context=benchmark_context,
         missing_inputs=missing_inputs,
@@ -228,7 +244,7 @@ def build_market_guardrail(
     if posture_name:
         system_market_view += f" / {posture_name}"
     view_parts = [f"收盘={benchmark_regime}"]
-    if premarket_regime != "NORMAL":
+    if premarket_regime and premarket_regime != "NORMAL":
         view_parts.append(f"盘前={premarket_regime}")
     if missing_inputs:
         view_parts.append("⛑️ 禁买源自数据缺失：" + "、".join(missing_inputs))
