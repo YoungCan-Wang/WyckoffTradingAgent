@@ -851,17 +851,22 @@ function buildSection (sec, data) {
     wrap.appendChild(el('p', 'empty', t('daemon.readSettingsFailed')))
     return wrap
   }
-  if (sec === 'appearance') return buildAppearance(wrap, data)
-  if (sec === 'behavior') return buildBehavior(wrap, data)
-  if (sec === 'tone') return buildTone(wrap, data)
-  if (sec === 'models') return buildModelsTab(wrap, data)
-  if (sec === 'daemon') return buildDaemon(wrap)
+  // 三个一级栏目，每个里面按内容再分栏。
+  if (sec === 'general') {
+    buildAppearance(wrap, data)
+    return buildBehavior(wrap, data)
+  }
+  if (sec === 'agent') {
+    buildTone(wrap, data)
+    buildModelsTab(wrap, data)
+    return buildDaemon(wrap)
+  }
   return buildAccountSec(wrap)
 }
 
 /** Scheduling status. The daemon's lifetime follows this app by design. */
 function buildDaemon (wrap) {
-  // 导航已写「定时任务」，不重复。
+  wrap.appendChild(el('h3', 'sec', t('settings.daemon')))
   wrap.appendChild(el('p', 'dlg-sub', t('schedules.daemonNote')))
   const host = el('div')
   host.appendChild(el('p', 'empty', t('common.loading')))
@@ -965,15 +970,13 @@ function langRow () {
 }
 
 function buildAppearance (wrap, data) {
-  // 不再重复一遍「外观」：左边导航已经写着它了，页头再写一次没有信息量。
-  // 面板里的标题留给真正的内容分类。
-  wrap.appendChild(el('h3', 'sec', t('appearance.groupLanguage')))
+  // 「外观」现在是「通用」页里的一栏，所以标题回来了 —— 它不再和导航项重名。
+  wrap.appendChild(el('h3', 'sec', t('settings.appearance')))
 
   // Language is a client-only preference (localStorage), so it saves through
   // i18n rather than the server round-trip the other rows use.
   wrap.appendChild(langRow())
 
-  wrap.appendChild(el('h3', 'sec', t('appearance.groupDisplay')))
   wrap.appendChild(segRow(t('appearance.theme'), 'desktop_appearance', data.desktop_appearance,
     [['system', t('appearance.themeSystem')], ['light', t('appearance.themeLight')], ['dark', t('appearance.themeDark')]],
     t('appearance.themeHint')))
@@ -1007,12 +1010,10 @@ function buildAppearance (wrap, data) {
 }
 
 function buildBehavior (wrap, data) {
-  wrap.appendChild(el('h3', 'sec', t('behavior.groupInput')))
+  wrap.appendChild(el('h3', 'sec', t('settings.behavior')))
   wrap.appendChild(segRow(t('behavior.sendMode'), 'desktop_send_on_enter', data.desktop_send_on_enter,
     [[true, t('behavior.sendEnter')], [false, t('behavior.sendCmdEnter')]],
     t('behavior.sendHint')))
-
-  wrap.appendChild(el('h3', 'sec', t('behavior.groupMotion')))
   wrap.appendChild(segRow(t('behavior.motion'), 'desktop_reduce_motion', data.desktop_reduce_motion,
     [[false, t('behavior.motionNormal')], [true, t('behavior.motionReduced')]]))
   return wrap
@@ -1029,7 +1030,7 @@ const TONES = [
 ]
 
 function buildTone (wrap, data) {
-  // 只有一类内容，不需要分类标题 —— 加了就是白占一层。说明文字保留。
+  wrap.appendChild(el('h3', 'sec', t('settings.tone')))
   wrap.appendChild(el('p', 'dlg-sub', t('tone.note')))
 
   const box = el('div', 'tone-l')
@@ -1108,7 +1109,8 @@ function buildAccountSec (wrap) {
 async function refreshModels () {
   setData = await collect('settings_get').catch(() => null)
   if (!setData || setOv.hidden) return
-  showSection('models')
+  // 模型现在在「智能体」页里，重绘整页。
+  showSection('agent')
 }
 
 function buildModels (wrap, data) {
@@ -1360,7 +1362,7 @@ async function openSettings (sec) {
   // Refetch each time: the CLI can change config behind the app's back.
   setData = await collect('settings_get').catch(() => null)
   if (setOv.hidden) return
-  showSection(sec || 'appearance')
+  showSection(sec || 'general')
 }
 
 /** Load appearance before the user opens settings, so launch honours it. */
@@ -1855,7 +1857,7 @@ i18n.onChange(() => {
   // The open settings section (labels, options, the language row itself).
   if (!setOv.hidden) {
     const active = document.querySelector('.dlg-n.on')
-    showSection(active ? active.dataset.sec : 'appearance')
+    showSection(active ? active.dataset.sec : 'general')
   }
   // The active destination page (title, subtitle, body).
   if (activePage) showPage(activePage)

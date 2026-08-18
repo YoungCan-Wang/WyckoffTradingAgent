@@ -104,16 +104,12 @@
      never disturbs whatever report the user is reading. -->
 <div class="ov" id="set-ov" hidden>
   <div class="dlg" role="dialog" aria-modal="true" data-i18n-aria-label="settings.title" aria-label="设置">
+    <!-- 三个一级栏目。原先的 6 个二级项（外观/行为/语气/模型/定时/登录）
+         下沉成各页内部的分栏标题 —— 导航只回答「哪一类」，页内才回答「哪一项」。 -->
     <nav class="dlg-nav">
-      <div class="dlg-gt" data-i18n="settings.groupGeneral">通用</div>
-      <button class="dlg-n on" data-sec="appearance" data-i18n="settings.appearance">外观</button>
-      <button class="dlg-n" data-sec="behavior" data-i18n="settings.behavior">行为</button>
-      <div class="dlg-gt" data-i18n="settings.groupAgent">智能体</div>
-      <button class="dlg-n" data-sec="tone" data-i18n="settings.tone">回复语气</button>
-      <button class="dlg-n" data-sec="models" data-i18n="settings.models">模型与数据</button>
-      <button class="dlg-n" data-sec="daemon" data-i18n="settings.daemon">定时任务</button>
-      <div class="dlg-gt" data-i18n="settings.groupAccount">账号</div>
-      <button class="dlg-n" data-sec="account" data-i18n="settings.account">登录信息</button>
+      <button class="dlg-n on" data-sec="general" data-i18n="settings.groupGeneral">通用</button>
+      <button class="dlg-n" data-sec="agent" data-i18n="settings.groupAgent">智能体</button>
+      <button class="dlg-n" data-sec="account" data-i18n="settings.groupAccount">账号</button>
     </nav>
     <div class="dlg-main">
       <button class="dlg-x" id="set-close" data-i18n-aria-label="action.close" aria-label="关闭">✕</button>
