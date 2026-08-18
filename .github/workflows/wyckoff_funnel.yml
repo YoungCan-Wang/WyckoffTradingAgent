@@ -104,10 +104,19 @@ jobs:
       FUNNEL_MAX_STRUCTURE_STOP_PCT: "12.0"
       FUNNEL_AI_RISK_OFF_TREND: "0"
       FUNNEL_AI_RISK_OFF_ACCUM: "0"
+      # NEUTRAL 已于 #280 并入禁买（超额 -4.35pct、CI [-6.80,-2.07] 不跨 0），
+      # 配额保留用于 shadow 对照，不占正式推荐。
       FUNNEL_AI_NEUTRAL_TREND: "5"
       FUNNEL_AI_NEUTRAL_ACCUM: "1"
-      FUNNEL_AI_BEAR_REBOUND_TREND: "0"
-      FUNNEL_AI_BEAR_REBOUND_ACCUM: "0"
+      # BEAR_REBOUND 的 AI 配额由 0 -> 5/1，与其买入闸门放开对齐。
+      # 此前不一致：#280 把 BEAR_REBOUND 移出禁买名单（联动实测超额 +4.08pct、4/4 为正），
+      # 但该档 AI 配额仍是 0，候选进了池子也拿不到复核席位——2026-08-17 那天池内 4 只
+      # 候选（大北农/南方精工/宿迁联盛/新相微）次日全涨 9.7%~10.1%，而 AI 正式推荐 0 只。
+      FUNNEL_AI_BEAR_REBOUND_TREND: "5"
+      FUNNEL_AI_BEAR_REBOUND_ACCUM: "1"
+      # PANIC_REPAIR 单独成族并保持 0：超额 -4.09pct，与 BEAR_REBOUND 方向相反。
+      FUNNEL_AI_PANIC_REPAIR_TREND: "0"
+      FUNNEL_AI_PANIC_REPAIR_ACCUM: "0"
       FUNNEL_L2_BYPASS_AI_ENABLED: "0"
       FUNNEL_STRATEGIC_L2_BYPASS_AI_CAP: "2"
       FUNNEL_THEME_RADAR_PROMOTE_CAP: "2"

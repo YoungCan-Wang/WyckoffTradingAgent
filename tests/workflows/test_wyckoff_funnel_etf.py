@@ -685,13 +685,19 @@ def test_loss_guard_bear_rebound_bans_pure_lps_even_with_score():
     assert dropped == {"单LPS仅观察": 1}
 
 
-def test_select_base_ai_candidates_repair_mode_uses_empty_base_quota(monkeypatch):
+def test_select_base_ai_candidates_observe_only_regime_yields_empty(monkeypatch):
+    """闸门关闭的水温（allow_ai_review=False）不产生任何 AI 候选。
+
+    原用例用 BEAR_REBOUND 断言空结果，但该档已依联动实测（+4.08pct、4/4 为正）放开
+    配额与买入闸门。PANIC_REPAIR 虽同为零配额，其 allow_ai_review 仍为 True、
+    走的是 repair_review 路径，不适合守这条语义；RISK_OFF 才是 observe_only。
+    """
     monkeypatch.delenv("FUNNEL_AI_TOTAL_CAP", raising=False)
     selected, trend, accum, score_map, ai_policy, use_full = funnel_ai_selection.select_base_ai_candidates(
         metrics={},
         triggers={"sos": [("000001", 3.0)]},
         l3_ranked_symbols=["000001"],
-        regime="BEAR_REBOUND",
+        regime="RISK_OFF",
         sector_map={},
         benchmark_context={},
         formal_sorted_codes=["000001"],
@@ -703,8 +709,10 @@ def test_select_base_ai_candidates_repair_mode_uses_empty_base_quota(monkeypatch
     assert selected == []
     assert trend == []
     assert accum == []
-    assert score_map == {"000001": 25.0}
-    assert ai_policy["total_cap"] == 8
+    # 闸门关闭走提前返回，不计算评分。
+    assert score_map == {}
+    # observe_only 走 override_total_cap=0。
+    assert ai_policy["total_cap"] == 0
     assert ai_policy["trend_quota"] == 0
     assert ai_policy["accum_quota"] == 0
     assert use_full is False
