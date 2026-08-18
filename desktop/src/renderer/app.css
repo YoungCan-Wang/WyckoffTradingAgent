@@ -262,7 +262,8 @@ html.dark .topbtn:hover { background: var(--hover); }
   box-shadow: 0 22px 60px rgba(0, 0, 0, .26);
 }
 .dlg-nav {
-  width: 194px; flex: none; padding: 16px 10px;
+  /* 收成三项后不再需要挤：顶部留白从 16 加到 26，与右侧首个分栏标题大致齐平。 */
+  width: 194px; flex: none; padding: 26px 10px;
   background: var(--paper2); border-right: 1px solid var(--line);
   overflow-y: auto;
 }
@@ -271,10 +272,13 @@ html.dark .topbtn:hover { background: var(--hover); }
   text-transform: uppercase; letter-spacing: .5px;
 }
 .dlg-n {
+  /* 三项之间给足呼吸感：字号 13 → 12.5，行间靠 margin 而非 padding，
+     这样选中态的背景块不会显得过高。 */
   width: 100%; text-align: left; border: 0; background: none;
-  font: inherit; font-size: 13px; color: var(--tx2);
+  font: inherit; font-size: 12.5px; color: var(--tx2);
   padding: 7px 9px; border-radius: 8px; cursor: pointer;
 }
+.dlg-n + .dlg-n { margin-top: 4px; }
 .dlg-n:hover { background: var(--hover); }
 .dlg-n.on { background: var(--active); color: var(--tx); font-weight: 600; }
 .dlg-main { flex: 1; min-width: 0; position: relative; display: flex; }
@@ -568,6 +572,12 @@ h3.sec ~ h3.sec { margin-top: 26px; }
   display: flex; align-items: center; gap: 10px;
   padding: 8px 0; border-bottom: 1px solid var(--line2);
 }
+/* .srow 带下边框，紧跟其后的说明文字或按钮会被那条线压住 ——
+   账号页的「退出登录会清除…」和定时任务页的「刷新状态」都是这么重叠的。
+   给这两类兄弟元素留出间距，而不是逐处加 margin。 */
+.srow + .dlg-sub { margin-top: 12px; }
+.srow + button,
+.dlg-sub + button { margin-top: 14px; }
 .slab { flex: 1; min-width: 0; font-size: 13px; }
 .sel, .num {
   font: inherit; font-size: 12.5px; color: var(--tx);

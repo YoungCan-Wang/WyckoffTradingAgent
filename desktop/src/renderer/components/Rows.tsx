@@ -19,9 +19,11 @@ export function Row ({ label, hint, children, note, noteIsError }: RowProps) {
       <div className="sleft">
         <span className="slab">{label}</span>
         {hint ? <span className="shint">{hint}</span> : null}
-        {note ? <span className={noteIsError ? 'snote err' : 'snote'}>{note}</span> : null}
       </div>
       {children}
+      {/* .snote 是 flex:none，设计成 .srow 的直接子元素（控件右侧），
+          放进 .sleft 会变成纵向堆叠、位置不对。与 vanilla 版一致。 */}
+      {note ? <span className={noteIsError ? 'snote err' : 'snote'}>{note}</span> : null}
     </div>
   )
 }
