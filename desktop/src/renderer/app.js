@@ -1710,11 +1710,30 @@ function closeModelMenu () {
   mdlBtn.setAttribute('aria-expanded', 'false')
 }
 
+/**
+ * 打开菜单，并按可用空间决定向下还是向上。
+ *
+ * 默认向下；只有当下方装不下、而上方装得下时才翻上去。欢迎页输入框在
+ * 屏幕中部，向下有充足空间；开始对话后输入框贴到底部，下方只剩 18px。
+ * 两处都不该被裁，所以按实测决定而不是写死一个方向。
+ */
+function openModelMenu () {
+  mdlMenu.classList.remove('up')
+  mdlMenu.hidden = false
+  mdlBtn.setAttribute('aria-expanded', 'true')
+
+  // 必须在可见之后量：hidden 元素的高度是 0。
+  const btnBox = mdlBtn.getBoundingClientRect()
+  const needed = mdlMenu.offsetHeight + 6
+  const below = window.innerHeight - btnBox.bottom
+  const above = btnBox.top
+  if (below < needed && above >= needed) mdlMenu.classList.add('up')
+}
+
 mdlBtn.onclick = (e) => {
   e.stopPropagation()
-  const open = mdlMenu.hidden
-  mdlMenu.hidden = !open
-  mdlBtn.setAttribute('aria-expanded', String(open))
+  if (mdlMenu.hidden) openModelMenu()
+  else closeModelMenu()
 }
 
 // 点外部或按 Esc 关闭。捕获阶段监听 document，避免菜单里的点击冒泡后自关。
