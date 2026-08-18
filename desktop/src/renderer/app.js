@@ -1718,7 +1718,7 @@ function closeModelMenu () {
  * 两处都不该被裁，所以按实测决定而不是写死一个方向。
  */
 function openModelMenu () {
-  mdlMenu.classList.remove('up')
+  mdlMenu.classList.remove('up', 'fits')
   mdlMenu.hidden = false
   mdlBtn.setAttribute('aria-expanded', 'true')
 
@@ -1728,6 +1728,15 @@ function openModelMenu () {
   const below = window.innerHeight - btnBox.bottom
   const above = btnBox.top
   if (below < needed && above >= needed) mdlMenu.classList.add('up')
+
+  // 装得下就收掉滚动槽。scrollHeight 含 padding，留 2px 容差避免因
+  // 亚像素舍入而误判成需要滚动。
+  if (mdlMenu.scrollHeight <= mdlMenu.clientHeight + 2) mdlMenu.classList.add('fits')
+
+  // 打开时把当前选中项滚进视野 —— 12 个模型时选中的那个可能在列表底部，
+  // 打开却停在顶部，看起来像没有选中任何模型。
+  const active = mdlMenu.querySelector('.mdl-o.on')
+  if (active) active.scrollIntoView({ block: 'nearest' })
 }
 
 mdlBtn.onclick = (e) => {

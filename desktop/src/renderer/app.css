@@ -522,10 +522,19 @@ html.dark .berr-b { background: var(--paper2); }
    那时由 JS 加 .up 翻上去 —— 见 openModelMenu。 */
 .mdl-menu {
   position: absolute; right: 0; top: calc(100% + 6px); z-index: 30;
-  min-width: 240px; max-width: 340px; max-height: 320px; overflow-y: auto;
+  min-width: 240px; max-width: 340px; max-height: 320px;
+  /* scroll 而不是 auto：模型多到需要滚动时，要能看见滚动条才知道下面还有。
+     auto 在 macOS 上默认隐藏滚动条，列表看起来就像到底了。 */
+  overflow-y: scroll;
+  /* contain：滚到尽头时不要把滚动传给后面的对话流 —— 否则在菜单里滚两下，
+     背景的消息列表跟着动，菜单还盖在上面，看着像界面错乱。 */
+  overscroll-behavior: contain;
   padding: 5px; background: var(--paper); border: 1px solid var(--line);
   border-radius: 10px; box-shadow: 0 12px 30px rgba(0, 0, 0, .12);
 }
+/* 少量模型时不该出现无用的滚动槽。用 hidden 而非 visible ——
+   visible 会让 max-height 失效，内容多时直接溢出到菜单外面。 */
+.mdl-menu.fits { overflow-y: hidden; }
 .mdl-menu.up { top: auto; bottom: calc(100% + 6px); }
 .mdl-o {
   display: block; width: 100%; text-align: left; border: 0; background: none;
