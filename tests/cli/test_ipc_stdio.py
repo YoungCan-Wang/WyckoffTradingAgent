@@ -398,3 +398,107 @@ class TestScheduleRun:
             list(methods.schedule_run({"id": "s1"}))
 
         assert "s1" not in methods._rerunning
+
+
+class TestStdoutGuardAtFdLevel:
+    """协议通道必须在 fd 层隔离，不只是换 sys.stdout。
+
+    原生扩展（pandas/numpy/lxml）会直接 write(1, ...)，子进程也会继承 fd 1。
+    这两种写入绕过 sys.stdout，落进协议流会让前端 JSON.parse 当场失败 ——
+    而且是概率性的，打包分发后基本无法排查。
+    """
+
+    def _run(self, body: str, tmp_path) -> tuple[str, str]:
+        """在子进程里装好守卫再执行 body，分别返回 stdout / stderr。
+
+        走脚本文件而不是 -c：body 里有多行代码，也更贴近真实启动方式。
+        sys.path 要显式插 REPO —— venv 装的是主检出，worktree 的 cli.ipc
+        不在默认搜索路径里。
+        """
+        script = tmp_path / "probe.py"
+        script.write_text(
+            "import os, sys\n"
+            f"sys.path.insert(0, {REPO!r})\n"
+            "from cli.ipc.stdio import _install_stdout_guard, _emit\n"
+            "_install_stdout_guard()\n" + body + "\n_emit({'type': 'result', 'ok': True})\n",
+            encoding="utf-8",
+        )
+        out = subprocess.run(
+            [sys.executable, str(script)],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=REPO,
+        )
+        return out.stdout, out.stderr
+
+    def test_raw_fd_write_cannot_reach_the_protocol(self, tmp_path) -> None:
+        stdout, stderr = self._run("os.write(1, b'RAW-FD-LEAK\\n')", tmp_path)
+        assert "RAW-FD-LEAK" not in stdout
+        assert "RAW-FD-LEAK" in stderr
+        # 协议本身仍要通。
+        assert '"ok": true' in stdout
+
+    def test_subprocess_output_cannot_reach_the_protocol(self, tmp_path) -> None:
+        """子进程继承 fd 1；dup2 之后它继承到的是 stderr。"""
+        stdout, _stderr = self._run("os.system('echo FROM-SUBPROCESS')", tmp_path)
+        assert "FROM-SUBPROCESS" not in stdout
+        assert '"ok": true' in stdout
+
+    def test_python_print_still_goes_to_stderr(self, tmp_path) -> None:
+        stdout, stderr = self._run("print('business output')", tmp_path)
+        assert "business output" not in stdout
+        assert "business output" in stderr
+
+    def test_every_protocol_line_is_valid_json(self, tmp_path) -> None:
+        """前端逐行 parse，混进一行非 JSON 整条连接就废了。"""
+        stdout, _stderr = self._run("os.write(1, b'noise\\n'); print('more noise'); os.system('echo shell')", tmp_path)
+        for line in stdout.splitlines():
+            if line.strip():
+                json.loads(line)
+
+    def test_guard_is_idempotent(self, tmp_path) -> None:
+        """serve() 可能被重复调用；第二次不该再 dup 一层。"""
+        stdout, _stderr = self._run(
+            "from cli.ipc.stdio import _install_stdout_guard as g\n"
+            "a = g(); b = g()\n"
+            "assert a is b, 'guard must return the same channel'",
+            tmp_path,
+        )
+        assert '"ok": true' in stdout
+
+
+class TestAskUserWithoutTty:
+    """没有终端时 ask_user_question 不能去读 stdin。
+
+    IPC 下 stdin 是协议输入流：input() 会吞掉一帧然后永久阻塞工作线程，
+    表现为界面卡死且无从排查。
+    """
+
+    def test_refuses_instead_of_blocking(self, monkeypatch) -> None:
+        import io
+
+        from cli import tools
+
+        monkeypatch.setattr(tools.sys, "stdin", io.StringIO('{"id":"1","method":"health"}\n'))
+
+        def boom(*_a, **_k):
+            raise AssertionError("input() must not be called without a tty")
+
+        monkeypatch.setattr("builtins.input", boom)
+        result = tools.ask_user_question("要不要买入？")
+
+        assert "无法向用户提问" in result["error"]
+        assert "hint" in result
+
+    def test_protocol_stdin_is_not_consumed(self, monkeypatch) -> None:
+        """拒绝之后协议输入必须原封不动。"""
+        import io
+
+        from cli import tools
+
+        stream = io.StringIO('{"id":"1","method":"health"}\n')
+        monkeypatch.setattr(tools.sys, "stdin", stream)
+        tools.ask_user_question("问题")
+
+        assert stream.read() == '{"id":"1","method":"health"}\n'

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import sys
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -841,6 +842,16 @@ def ask_user_question(
         except Exception as e:
             logger.error("ask_user_question_callback failed", exc_info=True)
             return {"error": f"无法获取用户答复: {e}"}
+
+    # 没有终端就别问：桌面端 / daemon / MCP 的 stdin 不是人在打字。IPC 下它
+    # 更是协议输入流，input() 会吞掉一帧协议然后永久阻塞工作线程 —— 表现为
+    # 界面直接卡死，而且看不出原因。宁可让模型拿到「问不了」自己决定。
+    if not sys.stdin or not sys.stdin.isatty():
+        logger.warning("ask_user_question with no callback and no tty; refusing to block on stdin")
+        return {
+            "error": "当前环境无法向用户提问（没有交互终端，也没有注册提问回调）。",
+            "hint": "请基于已有信息继续，或在回复里说明需要用户补充什么。",
+        }
 
     # Headless fallback: stdin
     print(f"\n💬 Agent 提问: {question}")

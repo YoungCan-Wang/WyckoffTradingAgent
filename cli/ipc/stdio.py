@@ -1,14 +1,15 @@
 """stdio JSON-RPC 传输 — Electron spawn 这个进程，用管道通信。
 
-stdout 是协议通道，任何 print() 都会污染它。AGENTS.md 允许 cli/ 用 print()
-做用户输出，所以启动时必须把 sys.stdout 换掉：业务代码继续 print，
-内容被重定向到 stderr，只有协议行能走真正的 stdout。
+stdout 是协议通道，任何写入都会污染它。AGENTS.md 允许 cli/ 用 print() 做用户
+输出，而原生扩展还会绕过 Python 直接 write(1, ...)。所以启动时在 fd 层隔离：
+协议搬到一个私有 fd，fd 1 改指向 stderr。见 _install_stdout_guard。
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, wait
@@ -26,11 +27,36 @@ _protocol_out: TextIO | None = None
 
 
 def _install_stdout_guard() -> TextIO:
-    """把真正的 stdout 抢下来做协议通道，业务 print() 改去 stderr。"""
+    """把协议通道搬到一个私有 fd，然后让 fd 1 指向 stderr。
+
+    只换 sys.stdout 不够：那只挡得住 Python 层的 print()。pandas / numpy / lxml
+    这些原生扩展会直接 write(1, ...)，绕过 sys.stdout 落进协议通道，前端
+    JSON.parse 当场失败。而且是概率性的、极难复现 —— 打包分发后在用户机器上
+    偶发崩溃，基本无法排查。
+
+    所以在 fd 层做：dup 出一个私有 fd 专供协议，再把 fd 1 dup2 成 stderr。
+    这样任何人往 fd 1 写都只会进 stderr，物理上到不了协议通道。
+    """
     global _protocol_out
     if _protocol_out is not None:
         return _protocol_out
-    _protocol_out = sys.stdout
+
+    try:
+        original = sys.stdout.fileno()
+        stderr_fd = sys.stderr.fileno()
+    except (AttributeError, OSError, ValueError):
+        # stdout/stderr 被替换成非真实文件对象（测试、嵌入式场景）。
+        # 退回只换 sys.stdout：仍挡住 print()，但 fd 层无从下手。
+        _protocol_out = sys.stdout
+        sys.stdout = sys.stderr
+        return _protocol_out
+
+    sys.stdout.flush()
+    private_fd = os.dup(original)
+    _protocol_out = os.fdopen(private_fd, "w", encoding="utf-8", closefd=False)
+    # fd 1 从此是 stderr 的别名；C 层直写也只能到日志里。
+    os.dup2(stderr_fd, original)
+    # sys.stdout 仍指向 fd 1，现在那已经是 stderr，print() 自然去日志。
     sys.stdout = sys.stderr
     return _protocol_out
 
