@@ -861,7 +861,7 @@ function buildSection (sec, data) {
 
 /** Scheduling status. The daemon's lifetime follows this app by design. */
 function buildDaemon (wrap) {
-  wrap.appendChild(el('h3', 'sec', t('schedules.heading')))
+  // 导航已写「定时任务」，不重复。
   wrap.appendChild(el('p', 'dlg-sub', t('schedules.daemonNote')))
   const host = el('div')
   host.appendChild(el('p', 'empty', t('common.loading')))
@@ -965,12 +965,15 @@ function langRow () {
 }
 
 function buildAppearance (wrap, data) {
-  wrap.appendChild(el('h3', 'sec', t('appearance.heading')))
+  // 不再重复一遍「外观」：左边导航已经写着它了，页头再写一次没有信息量。
+  // 面板里的标题留给真正的内容分类。
+  wrap.appendChild(el('h3', 'sec', t('appearance.groupLanguage')))
 
   // Language is a client-only preference (localStorage), so it saves through
   // i18n rather than the server round-trip the other rows use.
   wrap.appendChild(langRow())
 
+  wrap.appendChild(el('h3', 'sec', t('appearance.groupDisplay')))
   wrap.appendChild(segRow(t('appearance.theme'), 'desktop_appearance', data.desktop_appearance,
     [['system', t('appearance.themeSystem')], ['light', t('appearance.themeLight')], ['dark', t('appearance.themeDark')]],
     t('appearance.themeHint')))
@@ -1004,10 +1007,12 @@ function buildAppearance (wrap, data) {
 }
 
 function buildBehavior (wrap, data) {
-  wrap.appendChild(el('h3', 'sec', t('behavior.heading')))
+  wrap.appendChild(el('h3', 'sec', t('behavior.groupInput')))
   wrap.appendChild(segRow(t('behavior.sendMode'), 'desktop_send_on_enter', data.desktop_send_on_enter,
     [[true, t('behavior.sendEnter')], [false, t('behavior.sendCmdEnter')]],
     t('behavior.sendHint')))
+
+  wrap.appendChild(el('h3', 'sec', t('behavior.groupMotion')))
   wrap.appendChild(segRow(t('behavior.motion'), 'desktop_reduce_motion', data.desktop_reduce_motion,
     [[false, t('behavior.motionNormal')], [true, t('behavior.motionReduced')]]))
   return wrap
@@ -1024,7 +1029,7 @@ const TONES = [
 ]
 
 function buildTone (wrap, data) {
-  wrap.appendChild(el('h3', 'sec', t('tone.heading')))
+  // 只有一类内容，不需要分类标题 —— 加了就是白占一层。说明文字保留。
   wrap.appendChild(el('p', 'dlg-sub', t('tone.note')))
 
   const box = el('div', 'tone-l')
@@ -1079,7 +1084,7 @@ function buildModelsTab (wrap, data) {
 }
 
 function buildAccountSec (wrap) {
-  wrap.appendChild(el('h3', 'sec', t('signin.heading')))
+  // 单一内容，无需分类标题。
   const row = el('div', 'srow')
   row.appendChild(el('span', 'slab', t('signin.current')))
   row.appendChild(el('span', signedIn ? 'ok' : 'miss', acctEmail || t('account.signedOut')))

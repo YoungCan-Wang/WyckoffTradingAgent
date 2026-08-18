@@ -259,7 +259,8 @@
     'chat.pendingCount': '{count} 待批',
 
     // 设置：外观
-    'appearance.heading': '外观',
+    'appearance.groupLanguage': '语言',
+    'appearance.groupDisplay': '显示',
     'appearance.theme': '主题',
     'appearance.themeSystem': '跟随系统',
     'appearance.themeLight': '浅色',
@@ -276,7 +277,8 @@
     'appearance.languageHint': '默认跟随系统语言，可在此手动指定',
 
     // 行为
-    'behavior.heading': '行为',
+    'behavior.groupInput': '输入',
+    'behavior.groupMotion': '动效',
     'behavior.sendMode': '发送方式',
     'behavior.sendEnter': 'Enter 发送',
     'behavior.sendCmdEnter': '⌘Enter 发送',
@@ -286,7 +288,6 @@
     'behavior.motionReduced': '减少',
 
     // 回复语气
-    'tone.heading': '回复语气',
     'tone.note': '只影响表达方式。风险提示、证据要求与分析纪律始终生效，不受此设置影响。',
     'tone.default': '默认',
     'tone.defaultDesc': '与终端版一致：直截了当，亮明威科夫身份',
@@ -327,7 +328,6 @@
     'datasource.notConfigured': '未配置',
 
     // 登录信息
-    'signin.heading': '登录信息',
     'signin.current': '当前账号',
     'signin.signoutNote': '退出登录会清除本地会话与保存的凭据，下次启动需要重新登录。',
     'signin.signout': '退出登录',
@@ -638,8 +638,8 @@
     'chat.openedRight': '{title} opened on the right →',
     'chat.sendFailed': 'Send failed',
     'chat.pendingCount': '{count} pending',
-
-    'appearance.heading': 'Appearance',
+    'appearance.groupLanguage': 'Language',
+    'appearance.groupDisplay': 'Display',
     'appearance.theme': 'Theme',
     'appearance.themeSystem': 'System',
     'appearance.themeLight': 'Light',
@@ -654,8 +654,8 @@
     'appearance.fontScale': 'Font size',
     'appearance.language': 'Language',
     'appearance.languageHint': 'Follows the system language by default; override here',
-
-    'behavior.heading': 'Behavior',
+    'behavior.groupInput': 'Input',
+    'behavior.groupMotion': 'Motion',
     'behavior.sendMode': 'Send with',
     'behavior.sendEnter': 'Enter',
     'behavior.sendCmdEnter': '⌘Enter',
@@ -663,8 +663,6 @@
     'behavior.motion': 'Motion',
     'behavior.motionNormal': 'Normal',
     'behavior.motionReduced': 'Reduced',
-
-    'tone.heading': 'Reply tone',
     'tone.note': 'Affects wording only. Risk warnings, evidence requirements and analytical discipline always apply, regardless of this setting.',
     'tone.default': 'Default',
     'tone.defaultDesc': 'Same as the terminal build: direct, explicitly a Wyckoff analyst',
@@ -701,8 +699,6 @@
     'datasource.note': 'Keys live in the ~/.wyckoff config file; only their presence is shown here.',
     'datasource.configured': 'Configured',
     'datasource.notConfigured': 'Not configured',
-
-    'signin.heading': 'Sign-in info',
     'signin.current': 'Current account',
     'signin.signoutNote': 'Signing out clears the local session and saved credentials; the next launch requires signing in again.',
     'signin.signout': 'Sign out',
