@@ -55,7 +55,10 @@ def test_record_fill_buy_matches_existing_hk_despite_case_and_padding(monkeypatc
     assert captured["position"]["code"] == "00700.HK"
     assert captured["position"]["shares"] == 1100
     assert captured["position"]["name"] == "腾讯控股"
-    assert captured["cash"] == pytest.approx(100_000.0 - 100 * 300.0 * 0.92)
+    # 港股买入含费用（印花税 0.1% 双边 + 佣金 + 杂费），故现金比毛额少扣一点。
+    gross_cny = 100 * 300.0 * 0.92
+    assert captured["cash"] < 100_000.0 - gross_cny
+    assert captured["cash"] == pytest.approx(100_000.0 - gross_cny, rel=0.002)
 
 
 def test_record_fill_rejects_invalid_code_before_write(monkeypatch):
@@ -92,7 +95,10 @@ def test_record_fill_sell_matches_us_bare_ticker(monkeypatch):
     assert captured["writer"] == "update_position"
     assert captured["position"]["code"] == "AAPL.US"
     assert captured["position"]["shares"] == 5
-    assert captured["cash"] == pytest.approx(1_000.0 + 5 * 200.0 * 7.0)
+    # 美股卖出扣 SEC 规费与 FINRA TAF 后入账，金额很小但不为零。
+    gross_cny = 5 * 200.0 * 7.0
+    assert captured["cash"] < 1_000.0 + gross_cny
+    assert captured["cash"] == pytest.approx(1_000.0 + gross_cny, rel=0.001)
 
 
 def test_record_fill_rejects_foreign_when_fx_missing(monkeypatch):

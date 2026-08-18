@@ -131,13 +131,46 @@ def test_us_buy_converts_cash_to_cny_but_keeps_native_cost():
 
 
 def test_us_sell_credits_cny_cash_and_reports_cny_pnl():
+    """美股卖出：现金按汇率入账，费用按美股费率以美元计后折人民币。
+
+    此前非人民币成交一律不计费，故本用例原先断言零费用。现按市场计费——美股无印花税，
+    卖出侧有 SEC 规费与按股数计的 FINRA TAF，金额很小但不应为零。
+    """
     holding = Holding(code="AAPL.US", name="Apple", shares=10, cost_price=180.0, buy_dt="20260101")
     result = apply_fill(holding, 1_000.0, Fill("AAPL.US", "sell", 5, 200.0, "20260815"), FREE, fx_to_cny=7.0)
 
     assert result.holding is not None
     assert result.holding.shares == 5
-    assert result.cash == pytest.approx(1_000.0 + 7_000.0)
-    assert result.realized_pnl == pytest.approx((200.0 - 180.0) * 5 * 7.0)
+    # 毛收入 1000 美元 -> 7000 人民币，减去折算后的费用。
+    assert result.cash == pytest.approx(1_000.0 + 7_000.0 - result.fee, rel=1e-9)
+    assert 0.0 < result.fee < 1.0
+    # 已实现盈亏为净额：毛利 700 元减去费用，这才是到手的钱。
+    assert result.realized_pnl == pytest.approx((200.0 - 180.0) * 5 * 7.0 - result.fee, rel=1e-9)
+
+
+def test_hk_stamp_duty_applies_to_both_sides():
+    """港股印花税 0.1% 买卖双边都征，与 A 股只收卖出侧不同。"""
+    buy = apply_fill(None, 100_000.0, Fill("06881.HK", "buy", 1000, 7.0, "20260815"), FREE, fx_to_cny=0.92)
+    sell = apply_fill(
+        Holding(code="06881.HK", name="中国银河", shares=1000, cost_price=7.0, buy_dt="20260101"),
+        0.0,
+        Fill("06881.HK", "sell", 1000, 7.0, "20260815"),
+        FREE,
+        fx_to_cny=0.92,
+    )
+
+    assert buy.fee > 0.0
+    assert sell.fee > 0.0
+    # 同等金额下双边费用应接近（卖出侧无额外单边税项）。
+    assert buy.fee == pytest.approx(sell.fee, rel=0.01)
+
+
+def test_hk_fee_is_materially_higher_than_a_share():
+    """回归：港股成本显著高于 A 股，不能再被当成零。"""
+    hk = apply_fill(None, 100_000.0, Fill("06881.HK", "buy", 1000, 20.0, "20260815"), FREE, fx_to_cny=1.0)
+    cn = apply_fill(None, 100_000.0, Fill("600519", "buy", 1000, 20.0, "20260815"), FREE)
+
+    assert hk.fee > cn.fee * 2
 
 
 def test_missing_fx_rate_is_rejected():

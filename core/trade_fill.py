@@ -14,6 +14,7 @@ from dataclasses import dataclass
 
 from core.buy_dt import parse_buy_dt
 from core.cash_portfolio import CashPortfolioConfig, calc_trade_cost
+from core.market_trade_cost import CN, market_of, single_side_cost
 
 BUY = "buy"
 SELL = "sell"
@@ -73,14 +74,27 @@ def apply_fill(
     rate = float(fx_to_cny)
     if rate <= 0:
         raise ValueError("缺少有效汇率，无法把成交金额折成人民币现金")
-    cfg = config or CashPortfolioConfig()
     gross = fill.shares * fill.price
-    # A 股费用模型（最低佣金/印花税/过户费）只适用于人民币成交；港美暂不计费，
-    # 避免把「最低 5 元」误当成 5 美元从本币成本里摊进去。
-    fee = calc_trade_cost(gross, cfg, side=fill.side) if rate == 1.0 else 0.0
+    fee = _fill_fee(fill, gross, config)
     if fill.side == BUY:
         return _apply_buy(holding, cash, fill, gross, fee, rate)
     return _apply_sell(holding, cash, fill, gross, fee, rate)
+
+
+def _fill_fee(fill: Fill, gross: float, config: CashPortfolioConfig | None) -> float:
+    """单边费用，以**成交货币**计（港股得港币、美股得美元），由调用方乘汇率折人民币。
+
+    此前非人民币成交直接把费用置零，港美因此完全不计费、已实现盈亏偏乐观。现按标的
+    所属市场计费——分市场是必须的：港股印花税 0.1% 买卖**双边**（A 股 0.05% 只收卖出侧），
+    美股无印花税但卖出侧有 SEC 规费与按**股数**计的 FINRA TAF。
+
+    显式传入的 ``config`` 仍然优先且只作用于 A 股：它是调用方（含测试）指定的人民币
+    费率覆盖，把它套到港美会重现「最低 5 元当成 5 美元」那类单位错误。
+    """
+    market = market_of(fill.code)
+    if market == CN and config is not None:
+        return calc_trade_cost(gross, config, side=fill.side)
+    return single_side_cost(gross, side=fill.side, market=market, shares=fill.shares)
 
 
 def _apply_buy(
