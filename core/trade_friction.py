@@ -20,6 +20,7 @@ T+20 −16.23% 都是**未扣成本**的数字，真实更差。
 from __future__ import annotations
 
 from core.cash_portfolio import CashPortfolioConfig, calc_trade_cost
+from core.market_trade_cost import CN, market_of, single_side_cost
 
 DEFAULT_SLIPPAGE_BPS_PER_SIDE = 5.0
 # 每笔按此名义金额估算佣金最低收费的影响。A 股佣金常有 5 元门槛，
@@ -49,14 +50,21 @@ def slippage_bps_per_side() -> float:
 def round_trip_cost_pct(
     notional: float = DEFAULT_NOTIONAL_YUAN,
     config: CashPortfolioConfig | None = None,
+    *,
+    code: str = "",
 ) -> float:
     """一次完整买卖的成本占名义金额的百分比。
 
-    含买入佣金+过户费、卖出佣金+过户费+印花税，以及双边滑点。
+    ``code`` 决定市场：给出港美代码时按对应费率算，缺省按 A 股。此前只有 A 股口径，
+    港美标的的净收益会低估成本——港股双边印花税 0.1% 使其往返成本约为 A 股的 3.6 倍。
+    显式传入的 ``config`` 仍优先，且只适用于 A 股（它是人民币费率覆盖）。
     """
-    cfg = config or CashPortfolioConfig()
     gross = max(float(notional), 1.0)
-    fees = calc_trade_cost(gross, cfg, side="buy") + calc_trade_cost(gross, cfg, side="sell")
+    market = market_of(code) if code else CN
+    if market == CN and config is not None:
+        fees = calc_trade_cost(gross, config, side="buy") + calc_trade_cost(gross, config, side="sell")
+    else:
+        fees = single_side_cost(gross, side="buy", market=market) + single_side_cost(gross, side="sell", market=market)
     slippage = gross * (slippage_bps_per_side() / 10_000.0) * 2.0
     return (fees + slippage) / gross * 100.0
 
@@ -66,11 +74,12 @@ def net_return_pct(
     *,
     notional: float = DEFAULT_NOTIONAL_YUAN,
     config: CashPortfolioConfig | None = None,
+    code: str = "",
 ) -> float | None:
-    """毛收益 -> 扣除双边成本后的净收益（百分数）。"""
+    """毛收益 -> 扣除双边成本后的净收益（百分数）。``code`` 用于选市场费率。"""
     if gross_return_pct is None:
         return None
-    return round(float(gross_return_pct) - round_trip_cost_pct(notional, config), 6)
+    return round(float(gross_return_pct) - round_trip_cost_pct(notional, config, code=code), 6)
 
 
 def friction_breakdown(
