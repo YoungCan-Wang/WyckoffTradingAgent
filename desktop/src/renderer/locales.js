@@ -26,7 +26,7 @@
     'nav.tasks': '任务运行',
     'nav.reports': '报告',
     'nav.approvals': '审批',
-    'nav.schedules': '定时',
+    'nav.schedules': '定时任务',
     'nav.portfolio': '持仓',
 
     // 顶栏 / 打开菜单
@@ -422,7 +422,7 @@
     'nav.tasks': 'Tasks / Runs',
     'nav.reports': 'Reports',
     'nav.approvals': 'Approvals',
-    'nav.schedules': 'Schedule',
+    'nav.schedules': 'Scheduled tasks',
     'nav.portfolio': 'Holdings',
 
     'menu.open': 'Open',
