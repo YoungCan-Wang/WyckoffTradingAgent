@@ -162,5 +162,9 @@
 <script src="viewer.js"></script>
 <script src="tabs.js"></script>
 <script src="app.js"></script>
+<!-- React 侧。放在 app.js 之后：app.js 定义 showSection，React 只提供
+     被它调用的挂载函数。type=module 的脚本天然 defer，所以 window.WyckoffReact
+     在首次打开设置前一定就绪。Vite 构建时这一行会被换成带 hash 的产物。 -->
+<script type="module" src="./main.tsx"></script>
 </body>
 </html>

@@ -1348,7 +1348,18 @@ function showSection (sec) {
   for (const b of document.querySelectorAll('.dlg-n')) {
     b.classList.toggle('on', b.dataset.sec === sec)
   }
-  setBody.replaceChildren(buildSection(sec, setData))
+  // 迁移期：已搬到 React 的 section 交给它渲染，其余仍走手写 DOM。
+  // 两边共用 #set-body，所以切换时必须先卸载 React，否则它会和
+  // replaceChildren 抢同一个容器 —— React 以为自己的节点还在，
+  // 下一次 render 时报 NotFoundError。
+  const react = window.WyckoffReact
+  if (react && react.handles(sec)) {
+    setBody.replaceChildren()
+    react.mountSettings(setBody, sec)
+  } else {
+    if (react) react.unmountSettings(setBody)
+    setBody.replaceChildren(buildSection(sec, setData))
+  }
   setBody.scrollTop = 0
 }
 

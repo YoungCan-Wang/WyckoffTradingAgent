@@ -5,16 +5,24 @@
   "description": "Wyckoff 读盘室桌面端",
   "main": "src/main.js",
   "scripts": {
-    "start": "electron .",
+    "start": "npm run build:ui && electron .",
     "start:debug": "electron . --inspect",
     "test": "node --test test/*.test.js",
     "build:py": "../scripts/build_python_ipc.sh",
-    "pack": "electron-builder --dir",
-    "dist": "electron-builder"
+    "pack": "npm run build:ui && electron-builder --dir",
+    "dist": "npm run build:ui && electron-builder",
+    "typecheck": "tsc -b",
+    "build:ui": "vite build",
+    "dev:ui": "vite"
   },
   "devDependencies": {
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^4.7.0",
     "electron": "38.2.2",
-    "electron-builder": "^26.0.12"
+    "electron-builder": "^26.0.12",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.3"
   },
   "build": {
     "appId": "com.youngcan.wyckoff",
@@ -50,5 +58,9 @@
       ],
       "category": "Office"
     }
+  },
+  "dependencies": {
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
   }
 }

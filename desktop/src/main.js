@@ -102,7 +102,16 @@ function createWindow () {
     console.error(`[renderer] load failed: ${desc} (${code})`)
   })
 
-  mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'))
+  // 优先加载 Vite 产物（含 React）。没构建过就退回源目录 —— 那份仍能跑，
+  // 只是 React 接管的屏会缺失。这样「忘了 build」表现为部分功能缺失并有
+  // 明确日志，而不是白屏。
+  const built = path.join(__dirname, 'renderer', 'dist', 'index.html')
+  if (fs.existsSync(built)) {
+    mainWindow.loadFile(built)
+  } else {
+    console.warn('[renderer] 未找到构建产物，回退到源目录；先跑 npm run build:ui')
+    mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'))
+  }
 
   // Launched from a terminal, macOS gives the window no activation, so it opens
   // behind whatever is in front. Claim focus once the content is ready.
