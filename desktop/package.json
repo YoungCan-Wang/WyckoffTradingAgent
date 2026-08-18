@@ -19,6 +19,7 @@
   "build": {
     "appId": "com.youngcan.wyckoff",
     "productName": "Wyckoff",
+    "icon": "build/icon.png",
     "files": [
       "src/**/*",
       "!test/**/*"

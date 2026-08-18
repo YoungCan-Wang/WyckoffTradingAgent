@@ -10,6 +10,7 @@ const { PRINT_WEB_PREFERENCES, blockPrintNetwork } = require('./print-security')
 
 // src/ -> desktop/ -> repo root
 const REPO_ROOT = path.resolve(__dirname, '..', '..')
+const DEV_ICON = path.join(__dirname, '..', 'build', 'icon.png')
 
 // 分发版没有仓库：Python 是打包进 resources/ 的自包含二进制，REPO_ROOT 只是
 // 个占位。开发时这个断言很有价值（根目录算错的话 Python 子进程永远起不来，
@@ -76,6 +77,7 @@ function createWindow () {
 
   mainWindow = new BrowserWindow({
     ...(onScreen ? saved : { width, height, center: true }),
+    ...(!app.isPackaged ? { icon: DEV_ICON } : {}),
     minWidth: Math.min(1100, width),
     minHeight: Math.min(700, height),
     title: 'Wyckoff 读盘室',
@@ -240,6 +242,7 @@ async function exportPdf (payload) {
 }
 
 app.whenReady().then(async () => {
+  if (!app.isPackaged && process.platform === 'darwin') app.dock.setIcon(DEV_ICON)
   createWindow()
   const endpoint = await createBrowserHost()
   startBridge(endpoint)
