@@ -66,7 +66,14 @@
           <div class="comp" id="comp">
             <textarea id="input" rows="1" data-i18n-placeholder="composer.placeholder" placeholder="随便问……"></textarea>
             <div class="cr">
-              <span class="mdl">claude-opus-5 <i>Max</i></span>
+              <!-- 模型选择器。标签与菜单都由 app.js 从 settings_get 填充；
+                   这里不写死任何模型名。 -->
+              <div class="mdl-pick" id="mdl-pick">
+                <button class="mdl" id="mdl-btn" type="button" aria-haspopup="listbox" aria-expanded="false">
+                  <span id="mdl-name"></span>
+                </button>
+                <div class="mdl-menu" id="mdl-menu" role="listbox" hidden></div>
+              </div>
               <button class="send" id="btn-send">↑</button>
             </div>
           </div>

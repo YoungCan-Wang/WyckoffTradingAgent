@@ -1108,7 +1108,11 @@ function buildAccountSec (wrap) {
  */
 async function refreshModels () {
   setData = await collect('settings_get').catch(() => null)
-  if (!setData || setOv.hidden) return
+  if (!setData) return
+  // 输入框的选择器要跟着更新，且与设置面板是否打开无关 —— 在设置页里
+  // 换了默认模型，关掉设置后输入框上必须已经是新的那个。
+  paintModelPicker()
+  if (setOv.hidden) return
   // 模型现在在「智能体」页里，重绘整页。
   showSection('agent')
 }
@@ -1380,6 +1384,9 @@ async function openSettings (sec) {
 async function loadAppearance () {
   setData = await collect('settings_get').catch(() => null)
   applyAppearance(setData)
+  // 同一份数据里就有 models / default_model，顺手把选择器画上，
+  // 不必为它再发一次 settings_get。
+  paintModelPicker()
 }
 
 for (const btn of document.querySelectorAll('.dlg-n')) {
@@ -1639,6 +1646,88 @@ function greeting () {
   return t('welcome.evening')
 }
 
+/* ---- 输入框里的模型选择器 ----
+ *
+ * 显示当前默认模型，点开可切换，也能直接跳到设置页新增。选中即写入
+ * default_model —— 与设置页「设为默认」是同一个动作，不引入第二套语义。
+ */
+
+const mdlPick = document.getElementById('mdl-pick')
+const mdlBtn = document.getElementById('mdl-btn')
+const mdlName = document.getElementById('mdl-name')
+const mdlMenu = document.getElementById('mdl-menu')
+
+/** 一个模型的展示名：优先 provider 给的短名，退回 id。 */
+function modelLabel (m) {
+  return m.model || m.id
+}
+
+function paintModelPicker () {
+  if (!setData) return
+  const models = Array.isArray(setData.models) ? setData.models : []
+  const current = models.find((m) => m.id === setData.default_model)
+  // 没配过模型时不显示假名字，给一句能点的提示。
+  mdlName.textContent = current ? modelLabel(current) : t('composer.noModel')
+  mdlBtn.title = current ? (current.id || '') : t('composer.noModelHint')
+
+  mdlMenu.replaceChildren()
+  if (!models.length) {
+    mdlMenu.appendChild(el('div', 'mdl-empty', t('composer.noModelHint')))
+  }
+  for (const m of models) {
+    const opt = el('button', m.id === setData.default_model ? 'mdl-o on' : 'mdl-o')
+    opt.type = 'button'
+    opt.setAttribute('role', 'option')
+    opt.setAttribute('aria-selected', String(m.id === setData.default_model))
+    opt.appendChild(el('span', null, modelLabel(m)))
+    const sub = [m.provider_name, m.id !== modelLabel(m) ? m.id : null].filter(Boolean).join(' · ')
+    if (sub) opt.appendChild(el('span', 'msub', sub))
+    opt.onclick = async () => {
+      closeModelMenu()
+      if (m.id === setData.default_model) return
+      const res = await collect('settings_set', { key: 'default_model', value: m.id })
+      if (!res) {
+        sysLine(t('composer.modelSwitchFailed'), true)
+        return
+      }
+      await refreshModels()
+    }
+    mdlMenu.appendChild(opt)
+  }
+
+  const add = el('button', 'mdl-add', t('composer.addModel'))
+  add.type = 'button'
+  add.onclick = () => {
+    closeModelMenu()
+    // 模型配置在「智能体」页；直接落到那一栏，省得用户自己找。
+    openSettings('agent')
+  }
+  mdlMenu.appendChild(add)
+}
+
+function closeModelMenu () {
+  mdlMenu.hidden = true
+  mdlBtn.setAttribute('aria-expanded', 'false')
+}
+
+mdlBtn.onclick = (e) => {
+  e.stopPropagation()
+  const open = mdlMenu.hidden
+  mdlMenu.hidden = !open
+  mdlBtn.setAttribute('aria-expanded', String(open))
+}
+
+// 点外部或按 Esc 关闭。捕获阶段监听 document，避免菜单里的点击冒泡后自关。
+document.addEventListener('click', (e) => {
+  if (!mdlMenu.hidden && !mdlPick.contains(e.target)) closeModelMenu()
+})
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !mdlMenu.hidden) {
+    closeModelMenu()
+    e.stopPropagation()
+  }
+})
+
 /** Move the composer to the bottom and hide the welcome block. Idempotent. */
 function enterChat () {
   if (chatting) return
@@ -1860,6 +1949,8 @@ i18n.applyDom()
 i18n.onChange(() => {
   // The header chip embeds a translated word ("待批"/"pending"); repaint it.
   refreshApprovals()
+  // 选择器里的「未配置模型」「新增模型」都是译文。
+  paintModelPicker()
   // Welcome greeting + cards, unless the user has already started chatting.
   if (!chatting) {
     document.getElementById('wel-greet').textContent = greeting()

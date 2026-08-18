@@ -49,6 +49,10 @@
     'tooltip.restart': '重启 Python 服务',
     // 输入区
     'composer.placeholder': '随便问……',
+    'composer.noModel': '未配置模型',
+    'composer.noModelHint': '还没有配置模型，点「新增模型」去设置',
+    'composer.addModel': '+ 新增模型…',
+    'composer.modelSwitchFailed': '切换模型失败，配置没有改动。',
 
     // 后端错误空态（人话，无 code/venv 术语；技术细节只进日志）
     'action.retry': '重试',
@@ -442,6 +446,10 @@
     'tooltip.pending': 'View pending approvals',
     'tooltip.restart': 'Restart Python service',
     'composer.placeholder': 'Ask anything…',
+    'composer.noModel': 'No model',
+    'composer.noModelHint': 'No model configured yet — use “Add model” to set one up',
+    'composer.addModel': '+ Add model…',
+    'composer.modelSwitchFailed': 'Could not switch model; settings unchanged.',
 
     'action.retry': 'Retry',
     'backendError.spawn_failed.title': "The backend didn't start",

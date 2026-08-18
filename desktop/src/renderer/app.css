@@ -503,8 +503,44 @@ html.dark .berr-b { background: var(--paper2); }
 }
 #input::placeholder { color: #a9a6a0; }
 .cr { display: flex; align-items: center; padding: 6px 10px 10px; }
-.mdl { margin-left: auto; font-size: 12.5px; color: var(--tx2); }
-.mdl i { font-style: normal; }
+
+/* ---- 输入框里的模型选择器 ---- */
+.mdl-pick { margin-left: auto; position: relative; }
+.mdl {
+  display: flex; align-items: center; gap: 5px;
+  border: 0; background: none; font: inherit; font-size: 12.5px;
+  color: var(--tx2); padding: 3px 6px; border-radius: 7px; cursor: pointer;
+}
+.mdl:hover { background: var(--hover); color: var(--tx); }
+.mdl::after {
+  content: '⌄'; font-size: 11px; color: var(--tx3); line-height: 1;
+  /* ⌄ 的字形基线偏下，微调回视觉中线 */
+  transform: translateY(-1px);
+}
+.mdl i { font-style: normal; color: var(--tx3); }
+/* 菜单向上弹：输入框贴着窗口底部时向下会被裁掉。 */
+.mdl-menu {
+  position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 30;
+  min-width: 240px; max-width: 340px; max-height: 320px; overflow-y: auto;
+  padding: 5px; background: var(--paper); border: 1px solid var(--line);
+  border-radius: 10px; box-shadow: 0 12px 30px rgba(0, 0, 0, .12);
+}
+.mdl-o {
+  display: block; width: 100%; text-align: left; border: 0; background: none;
+  font: inherit; font-size: 12.5px; color: var(--tx); cursor: pointer;
+  padding: 6px 8px; border-radius: 7px;
+}
+.mdl-o:hover { background: var(--hover); }
+.mdl-o.on { background: var(--active); font-weight: 600; }
+.mdl-o .msub { display: block; font-size: 11px; color: var(--tx3); margin-top: 1px; }
+.mdl-add {
+  display: block; width: 100%; text-align: left; border: 0; background: none;
+  font: inherit; font-size: 12.5px; color: var(--tx2); cursor: pointer;
+  padding: 6px 8px; border-radius: 7px; margin-top: 4px;
+  border-top: 1px solid var(--line2);
+}
+.mdl-add:hover { background: var(--hover); color: var(--tx); }
+.mdl-empty { padding: 6px 8px; font-size: 11.5px; color: var(--tx3); }
 .send {
   width: 26px; height: 26px; margin-left: 9px;
   border-radius: 8px; background: #f0eeE9;
