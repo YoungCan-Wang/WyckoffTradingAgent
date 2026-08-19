@@ -11,6 +11,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { SettingsPanel } from './components/SettingsPanel'
 import { TrackingPage } from './components/TrackingPage'
 import { AttributionPage } from './components/AttributionPage'
+import { PortfolioPage } from './components/PortfolioPage'
 
 const roots = new WeakMap<Element, Root>()
 
@@ -93,6 +94,7 @@ declare global {
       /** 整页视图：返回 PAGES 约定的 { node, dispose }。 */
       trackingPage: () => { node: HTMLElement; dispose: () => void }
       attributionPage: () => { node: HTMLElement; dispose: () => void }
+      portfolioPage: () => { node: HTMLElement; dispose: () => void }
     }
   }
 }
@@ -107,5 +109,6 @@ window.WyckoffReact = {
   setHooks,
   handles: (section: string) => MIGRATED.has(section),
   trackingPage: () => mountPage(<TrackingPage />),
-  attributionPage: () => mountPage(<AttributionPage />)
+  attributionPage: () => mountPage(<AttributionPage />),
+  portfolioPage: () => mountPage(<PortfolioPage />)
 }

@@ -83,13 +83,15 @@ _STOPS_MAX_ITEMS = 200
 
 def set_stop_loss(
     code: str = "",
-    stop_loss: float = 0,
+    stop_loss: float | None = 0,
     items: list[dict[str, Any]] | None = None,
     tool_context: ToolContext | None = None,
 ) -> dict:
     """只设置持仓止损价，不能改股数、成本或现金。
 
     安全性来自这个工具能做的事很窄，而不是来自调用方检查了参数。
+
+    传 stop_loss=None 表示清除该持仓的止损；0 或负数仍视为无效价格而报错。
     """
     try:
         rows, error = _normalize_stop_rows(code, stop_loss, items)
@@ -149,8 +151,15 @@ def _normalize_stop_rows(
         normalized = normalize_portfolio_code(str(item.get("code") or ""))
         if not normalized:
             return [], {"error": f"第 {index} 项股票代码无效: {item.get('code')}"}
+        # 显式的 None 表示「清除止损」——存储层一直支持 null，只是这里以前
+        # 一律 float() 把它堵成了「无效」，于是止损填错了没法单独去掉。
+        # 注意 0 和负数仍然是错误：那不是「清除」，是无效价格。
+        raw_stop = item.get("stop_loss")
+        if raw_stop is None:
+            rows.append({"code": normalized, "stop_loss": None})
+            continue
         try:
-            price = float(item.get("stop_loss"))
+            price = float(raw_stop)
         except (TypeError, ValueError):
             return [], {"error": f"{normalized} 的 stop_loss 无效"}
         if price <= 0:

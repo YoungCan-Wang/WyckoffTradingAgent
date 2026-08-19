@@ -39,7 +39,11 @@ export interface Bounds {
 }
 
 export interface WyckoffBridge {
-  call: (method: string, params?: Record<string, unknown>) => Promise<{ ok: boolean; id?: string }>
+  /** ok:false 时带 error（主进程的 py:call 在方法名非法或桥未就绪时返回）。 */
+  call: (
+    method: string,
+    params?: Record<string, unknown>
+  ) => Promise<{ ok: boolean; id?: string; error?: string }>
   filePath: (file: File) => string
   browser: {
     show: (bounds?: Bounds) => Promise<unknown>
@@ -52,6 +56,32 @@ export interface WyckoffBridge {
   restart: () => Promise<{ ok: boolean }>
   onEvent: (handler: (event: PyEvent) => void) => () => void
   onStatus: (handler: (status: PyStatus) => void) => () => void
+}
+
+/**
+ * 一条持仓。字段与 portfolio(mode="view") 返回的完全一致 —— 只有这六个。
+ *
+ * 注意没有 sector：图表里的行业分布在缺它时会退化成按名称分组（charts.js
+ * 的 deriveSectors），那是刻意的降级，不是缺字段的 bug。
+ */
+export interface Position {
+  code: string
+  name: string
+  shares: number
+  /** 云端层内部叫 cost，但视图层统一转成 cost_price，读写一致。 */
+  cost_price: number
+  buy_dt: string
+  /** null 表示没设止损 —— 与 0 不是一回事。 */
+  stop_loss: number | null
+}
+
+export interface Portfolio {
+  positions: Position[]
+  free_cash: number
+  total_equity?: number
+  position_count?: number
+  /** 后端算估值的时间，不是缓存时间 —— 两者要分开显示。 */
+  valuation_updated_at?: string
 }
 
 /** 一个已配置的模型。字段与 settings_get 里构造的字典一一对应。 */
@@ -97,5 +127,12 @@ declare global {
   interface Window {
     wyckoff: WyckoffBridge
     WyckoffI18n: I18n
+    /** charts.js（vanilla）：把持仓渲染成 KPI + SVG 图表 + 表格。 */
+    WyckoffCharts: {
+      /** withTable:false 时不画只读持仓表（持仓页自己有可编辑的那张）。 */
+      renderCharts: (portfolio: unknown, options?: { withTable?: boolean }) => HTMLElement
+    }
+    /** app.js 注册的「在产物面板打开 K 线」。可能尚未就绪，调用前判空。 */
+    WyckoffOpenKline?: (code: string) => void
   }
 }

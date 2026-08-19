@@ -27,3 +27,36 @@ export function collect (method: string, params?: Record<string, unknown>): Prom
     })
   })
 }
+
+/**
+ * 同上，但失败时抛出后端给的错误消息。
+ *
+ * 写操作必须用这个：collect() 把一切失败压成 null，于是「股数必须大于 0」
+ * 和「网络断了」在界面上长得一样。后端的校验消息本身就是最好的提示文案，
+ * 不该被吞掉再由前端编一句含糊的话。
+ */
+export function callWithError (
+  method: string,
+  params?: Record<string, unknown>
+): Promise<PyEvent | null> {
+  return window.wyckoff.call(method, params).then((res) => {
+    if (!res.ok) throw new Error(String(res.error || `调用 ${method} 失败`))
+    if (!res.id) throw new Error(`调用 ${method} 没有返回流 id`)
+    return new Promise<PyEvent | null>((resolve, reject) => {
+      let payload: PyEvent | null = null
+      let failure: Error | null = null
+      const off = window.wyckoff.onEvent((event) => {
+        if (event.id !== res.id) return
+        if (event.type === 'result') payload = event
+        if (event.type === 'error') {
+          failure = new Error(String(event.message || event.error || `${method} 失败`))
+        }
+        if (event.type === 'end') {
+          off()
+          if (failure) reject(failure)
+          else resolve(payload)
+        }
+      })
+    })
+  })
+}

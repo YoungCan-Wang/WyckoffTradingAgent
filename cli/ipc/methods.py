@@ -111,6 +111,89 @@ def portfolio(_params: dict[str, Any]) -> Iterator[Event]:
     yield _ok(portfolio=portfolio_tool(mode="view", tool_context=get_session().tool_context))
 
 
+# 桌面端允许的持仓写入动作。
+#
+# 刻意不含 delete_records：它删的是推荐跟踪表而不是持仓，而且在算出
+# portfolio_id 之前就 return 了——压根没有用户隔离。放进持仓编辑入口是错的。
+_PORTFOLIO_ACTIONS = frozenset({"add", "update", "remove", "set_cash"})
+
+
+def _portfolio_write_failed(result: dict[str, Any]) -> str:
+    """
+    判断一次写入是否失败，失败则返回原因。
+
+    不能只看 success：批量部分失败时它仍然是 True，还带着非空 failures。
+    只认 success 会把「3 条里错了 2 条」报成成功。
+    """
+    if not isinstance(result, dict):
+        return "写入返回了意外的结果"
+    if result.get("error"):
+        return str(result["error"])
+    if int(result.get("failed_count") or 0) > 0:
+        failures = result.get("failures")
+        return f"部分写入失败: {failures}" if failures else "部分写入失败"
+    return ""
+
+
+def portfolio_edit(params: dict[str, Any]) -> Iterator[Event]:
+    """
+    手动增删改持仓。
+
+    这条路径**不经过审批闸门**——闸门是 ToolRegistry 里的 _confirm_callback，
+    只拦 agent 提出的写操作。用户在界面上直接点的改动就是用户的意图，再让他
+    审批一次自己等于没有意义。agent 走的仍是原来那条要审批的路。
+    """
+    from agents.portfolio_tools import update_portfolio
+    from cli.ipc.session import get_session
+
+    action = str(params.get("action") or "").strip().lower()
+    if action not in _PORTFOLIO_ACTIONS:
+        raise MethodError("invalid_params", f"不支持的持仓操作: {action or '(空)'}")
+
+    result = update_portfolio(
+        action=action,
+        code=str(params.get("code") or ""),
+        name=str(params.get("name") or ""),
+        shares=int(params.get("shares") or 0),
+        cost_price=float(params.get("cost_price") or 0),
+        buy_dt=str(params.get("buy_dt") or ""),
+        free_cash=float(params.get("free_cash") or 0),
+        tool_context=get_session().tool_context,
+    )
+    failure = _portfolio_write_failed(result)
+    if failure:
+        raise MethodError("portfolio_write_failed", failure)
+    yield _ok(**result)
+
+
+def portfolio_set_stop(params: dict[str, Any]) -> Iterator[Event]:
+    """
+    设置或清除止损价。
+
+    stop_loss 传 null 表示清除。用 'stop_loss' in params 区分「没传」和「传了
+    null」—— params.get() 两者都是 None，直接用会把漏传当成清除。
+    """
+    from agents.portfolio_tools import set_stop_loss
+    from cli.ipc.session import get_session
+
+    code = str(params.get("code") or "")
+    if not code:
+        raise MethodError("invalid_params", "需要 code")
+    if "stop_loss" not in params:
+        raise MethodError("invalid_params", "需要 stop_loss（传 null 表示清除）")
+
+    raw = params.get("stop_loss")
+    result = set_stop_loss(
+        code=code,
+        stop_loss=None if raw is None else float(raw),
+        tool_context=get_session().tool_context,
+    )
+    failure = _portfolio_write_failed(result)
+    if failure:
+        raise MethodError("portfolio_write_failed", failure)
+    yield _ok(**result)
+
+
 def tracking(params: dict[str, Any]) -> Iterator[Event]:
     """
     推荐跟踪。与持仓同理：必须带上会话上下文，否则读不到用户自己的云端记录，
@@ -766,6 +849,8 @@ METHODS: dict[str, Callable[[dict[str, Any]], Iterator[Event]]] = {
     "approve_list": approve_list,
     "approve_decide": approve_decide,
     "portfolio": portfolio,
+    "portfolio_edit": portfolio_edit,
+    "portfolio_set_stop": portfolio_set_stop,
     "tracking": tracking,
     "attribution": attribution,
     "chart_data": chart_data,

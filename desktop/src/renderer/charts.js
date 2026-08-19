@@ -246,7 +246,14 @@ function deriveSectors (positions) {
 /**
  * Build the portfolio data view. `data` is the payload from IPC.
  */
-function renderCharts (data) {
+/**
+ * KPI + 图表 + 持仓表。
+ *
+ * options.withTable=false 时不画持仓表 —— 持仓页自己有一张可编辑的表，
+ * 两张都画会出现两份数据，改了上面那张下面那张还是旧的。
+ */
+function renderCharts (data, options) {
+  const withTable = !options || options.withTable !== false
   const root = el('div', 'dview')
   const positions = (data && data.positions) || []
 
@@ -285,7 +292,7 @@ function renderCharts (data) {
   charts.append(left, right)
   root.appendChild(charts)
 
-  root.appendChild(holdingsTable(positions))
+  if (withTable) root.appendChild(holdingsTable(positions))
   root.appendChild(el('div', 'dnote', t('charts.note')))
   return root
 }

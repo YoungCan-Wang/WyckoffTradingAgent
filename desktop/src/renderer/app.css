@@ -553,6 +553,27 @@ html.dark .berr-b { background: var(--paper2); }
 .mdl-add:hover { background: var(--hover); color: var(--tx); }
 .mdl-empty { padding: 6px 8px; font-size: 11.5px; color: var(--tx3); }
 
+/* ---- 持仓页：刷新条与行内编辑 ---- */
+.pbar {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
+}
+.pbar-t { flex: 1; font-size: 12px; color: var(--tx3); }
+.pbar-err {
+  margin: 0 0 12px; padding: 8px 11px; border-radius: 8px;
+  background: var(--warn-bg, #fdf3e7); color: var(--tx);
+  font-size: 12.5px; line-height: 1.6;
+}
+/* 编辑行的输入框：窄且右对齐，与它替代的数字单元格视觉一致 */
+.pin {
+  width: 84px; padding: 4px 6px; text-align: right;
+  border: 1px solid var(--d-line, var(--line)); border-radius: 6px;
+  background: transparent; color: inherit; font: inherit; font-size: 12px;
+}
+.pacts { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
+.pedit td { vertical-align: middle; }
+.pcash { margin-top: 14px; gap: 10px; }
+.pcash b { font-variant-numeric: tabular-nums; }
+
 /* ---- 跟踪页 ---- */
 .trk-note {
   margin: 10px 0 0; font-size: 11.5px; color: var(--tx3); line-height: 1.6;

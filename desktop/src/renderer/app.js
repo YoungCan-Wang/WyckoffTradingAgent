@@ -1002,10 +1002,8 @@ const PAGES = {
     titleKey: 'tab.charts',
     subKey: 'portfolio.pageSub',
     wide: true,
-    build: async () => {
-      const data = await collect('portfolio')
-      return window.WyckoffCharts.renderCharts((data && data.portfolio) || {})
-    }
+    // React 接管：加了本地缓存与行内增删改，图表仍由 charts.js 生成。
+    build: async () => window.WyckoffReact.portfolioPage()
   },
   reports: {
     titleKey: 'nav.reports',
