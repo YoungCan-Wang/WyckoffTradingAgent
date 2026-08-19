@@ -552,6 +552,49 @@ html.dark .berr-b { background: var(--paper2); }
 }
 .mdl-add:hover { background: var(--hover); color: var(--tx); }
 .mdl-empty { padding: 6px 8px; font-size: 11.5px; color: var(--tx3); }
+
+/* ---- 跟踪页 ---- */
+.trk-note {
+  margin: 10px 0 0; font-size: 11.5px; color: var(--tx3); line-height: 1.6;
+}
+.trk-count { margin-left: 8px; font-weight: 400; color: var(--tx3); font-size: 11.5px; }
+.trk-code {
+  font-variant-numeric: tabular-nums; color: var(--tx3);
+  font-size: 12px; margin-right: 7px;
+}
+.trk-name { font-weight: 600; }
+.trk-move {
+  font-variant-numeric: tabular-nums; font-weight: 600; font-size: 12.5px;
+}
+/* A 股惯例：红涨绿跌。缺失与 0 都不着色，避免「没数据」看起来像有涨跌。 */
+.trk-up { color: var(--up); }
+.trk-down { color: var(--dn); }
+.trk-flat { color: var(--tx3); }
+
+/* ---- 归因页 ---- */
+.attr-source {
+  margin-bottom: 14px; padding: 8px 11px; border-radius: 8px;
+  background: var(--warn-bg, #fdf3e7); color: var(--tx2);
+  font-size: 12px; line-height: 1.6;
+}
+.attr-head {
+  display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px;
+}
+.attr-head b { font-size: 15px; }
+.attr-head span { font-size: 12px; color: var(--tx3); }
+.attr-summary {
+  margin: 0 0 4px; font-size: 13px; line-height: 1.7; color: var(--tx);
+}
+.attr-note {
+  margin: 8px 0 0; font-size: 12px; line-height: 1.65; color: var(--tx3);
+}
+.attr-field {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 0; border-bottom: 1px solid var(--line2);
+  font-size: 12.5px;
+}
+.attr-field span { flex: 1; color: var(--tx2); }
+.attr-field b { font-weight: 600; }
 .send {
   width: 26px; height: 26px; margin-left: 9px;
   border-radius: 8px; background: #f0eeE9;

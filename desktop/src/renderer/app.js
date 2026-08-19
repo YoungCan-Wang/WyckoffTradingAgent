@@ -1504,6 +1504,19 @@ const PAGES = {
     subKey: 'reports.pageSub',
     wide: true,
     build: buildReportPage
+  },
+  // 这两页由 React 渲染。它们返回的 { node, dispose } 正是 showPage 已有的
+  // 约定，dispose 用来 unmount React root —— 不卸载会在页面切换后泄漏。
+  tracking: {
+    titleKey: 'tracking.heading',
+    subKey: 'tracking.pageSub',
+    wide: true,
+    build: async () => window.WyckoffReact.trackingPage()
+  },
+  attribution: {
+    titleKey: 'attribution.heading',
+    subKey: 'attribution.pageSub',
+    build: async () => window.WyckoffReact.attributionPage()
   }
 }
 

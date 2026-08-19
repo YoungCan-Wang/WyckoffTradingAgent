@@ -111,6 +111,40 @@ def portfolio(_params: dict[str, Any]) -> Iterator[Event]:
     yield _ok(portfolio=portfolio_tool(mode="view", tool_context=get_session().tool_context))
 
 
+def tracking(params: dict[str, Any]) -> Iterator[Event]:
+    """
+    推荐跟踪。与持仓同理：必须带上会话上下文，否则读不到用户自己的云端记录，
+    只能拿到本地缓存（缺 mfe/mae 列，最高/最低会是空的）。
+
+    query_history 内建云端 + 本地回退，这里不重复实现读取顺序。
+    """
+    from agents.history_tools import query_history
+    from cli.ipc.session import get_session
+
+    limit = _clamp_int(params.get("limit"), 30, 1, 50)
+    result = query_history(source="recommendation", limit=limit, tool_context=get_session().tool_context)
+    if "error" in result:
+        raise MethodError("tracking_failed", str(result["error"]))
+    yield _ok(**result)
+
+
+def attribution(params: dict[str, Any]) -> Iterator[Event]:
+    """
+    策略归因报告。全局数据（按 market 过滤，不分用户），但仍传上下文 ——
+    有登录态时用用户客户端读，没有才退到匿名客户端。
+
+    上限 10：这是按天累积的报告，翻更多没有意义，界面也只展示最新一份加历史列表。
+    """
+    from agents.history_tools import query_history
+    from cli.ipc.session import get_session
+
+    limit = _clamp_int(params.get("limit"), 5, 1, 10)
+    result = query_history(source="attribution", limit=limit, tool_context=get_session().tool_context)
+    if "error" in result:
+        raise MethodError("attribution_failed", str(result["error"]))
+    yield _ok(**result)
+
+
 # 日线上限：一屏 K 线图看不了更多，且列式 payload 也要有个封顶。
 MAX_OHLCV_DAYS = 1200
 DEFAULT_OHLCV_DAYS = 320
@@ -732,6 +766,8 @@ METHODS: dict[str, Callable[[dict[str, Any]], Iterator[Event]]] = {
     "approve_list": approve_list,
     "approve_decide": approve_decide,
     "portfolio": portfolio,
+    "tracking": tracking,
+    "attribution": attribution,
     "chart_data": chart_data,
     "ohlcv": ohlcv,
     "wyckoff_events": wyckoff_events,
