@@ -83,9 +83,7 @@ def _load_remote_recommendations(
 ) -> list[dict]:
     from integrations.supabase_recommendation import load_recommendation_tracking
 
-    records = (
-        load_recommendation_tracking(limit=limit, client=get_user_client(tool_context), market=market) or []
-    )
+    records = load_recommendation_tracking(limit=limit, client=get_user_client(tool_context), market=market) or []
     # 只回写 A 股：本地那张表就是 A 股的缓存，把美股行塞进去会污染 A 股结果，
     # 而且下次 A 股走本地优先时会读到美股的票。
     if records and str(market or "cn").strip().lower() == "cn":
