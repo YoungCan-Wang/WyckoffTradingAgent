@@ -371,6 +371,7 @@
     'datasource.notConfigured': '未配置',
 
     // 登录信息
+    'signin.readFailed': '读取账号状态失败',
     'signin.current': '当前账号',
     'signin.signoutNote': '退出登录会清除本地会话与保存的凭据，下次启动需要重新登录。',
     'signin.signout': '退出登录',
@@ -785,6 +786,7 @@
     'datasource.note': 'Keys live in the ~/.wyckoff config file; only their presence is shown here.',
     'datasource.configured': 'Configured',
     'datasource.notConfigured': 'Not configured',
+    'signin.readFailed': 'Could not read account status',
     'signin.current': 'Current account',
     'signin.signoutNote': 'Signing out clears the local session and saved credentials; the next launch requires signing in again.',
     'signin.signout': 'Sign out',

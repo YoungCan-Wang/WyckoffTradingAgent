@@ -54,9 +54,19 @@ export interface WyckoffBridge {
   onStatus: (handler: (status: PyStatus) => void) => () => void
 }
 
+/** 一个已配置的模型。字段与 settings_get 里构造的字典一一对应。 */
+export interface ModelEntry {
+  id: string
+  model: string
+  provider_name: string
+  /** 不是机密（密钥才是），用来区分同名的自建端点。 */
+  base_url: string
+  has_key: boolean
+}
+
 /** 设置面板读到的配置。字段名与 Python 侧 settings_get 一一对应。 */
 export interface Settings {
-  models: Array<{ id: string; provider?: string; role?: string }>
+  models: ModelEntry[]
   default_model: string
   fallback_model: string
   stream_chunk_timeout_seconds: number

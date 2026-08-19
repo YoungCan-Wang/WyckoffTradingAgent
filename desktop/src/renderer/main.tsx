@@ -14,13 +14,41 @@ import { AttributionPage } from './components/AttributionPage'
 
 const roots = new WeakMap<Element, Root>()
 
+/**
+ * app.js 传进来的回调。系统消息要进对话流、退出登录要刷新侧栏并关掉面板，
+ * 这些 DOM 还不属于 React，所以由它继续拥有。
+ */
+export interface SettingsHooks {
+  onMessage: (text: string, isError?: boolean) => void
+  onSignOut: () => void
+  /** 配置变了要通知 app.js：输入框的模型选择器还在它手里。 */
+  onConfigChanged: () => void
+}
+
+let hooks: SettingsHooks = {
+  onMessage: () => {},
+  onSignOut: () => {},
+  onConfigChanged: () => {}
+}
+
+function setHooks (next: Partial<SettingsHooks>) {
+  hooks = { ...hooks, ...next }
+}
+
 function mountSettings (host: HTMLElement, section: string) {
   let root = roots.get(host)
   if (!root) {
     root = createRoot(host)
     roots.set(host, root)
   }
-  root.render(<SettingsPanel section={section} />)
+  root.render(
+    <SettingsPanel
+      section={section}
+      onMessage={hooks.onMessage}
+      onSignOut={hooks.onSignOut}
+      onConfigChanged={hooks.onConfigChanged}
+    />
+  )
 }
 
 /** 交还给 vanilla 渲染前必须卸载，否则 React 和手写 DOM 会抢同一个容器。 */
@@ -60,6 +88,8 @@ declare global {
       unmountSettings: typeof unmountSettings
       /** app.js 用它判断某个 section 是否已经迁到 React。 */
       handles: (section: string) => boolean
+      /** app.js 注入它仍拥有的动作（系统消息、退出登录）。 */
+      setHooks: typeof setHooks
       /** 整页视图：返回 PAGES 约定的 { node, dispose }。 */
       trackingPage: () => { node: HTMLElement; dispose: () => void }
       attributionPage: () => { node: HTMLElement; dispose: () => void }
@@ -67,11 +97,14 @@ declare global {
   }
 }
 
-const MIGRATED = new Set(['general'])
+// 设置面板三页全部迁完。等对话流等其余界面也搬完，这个集合和 app.js 里的
+// 分派分支就可以一起删掉。
+const MIGRATED = new Set(['general', 'agent', 'account'])
 
 window.WyckoffReact = {
   mountSettings,
   unmountSettings,
+  setHooks,
   handles: (section: string) => MIGRATED.has(section),
   trackingPage: () => mountPage(<TrackingPage />),
   attributionPage: () => mountPage(<AttributionPage />)

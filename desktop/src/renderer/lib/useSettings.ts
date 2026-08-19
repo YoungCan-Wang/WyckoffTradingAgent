@@ -50,5 +50,6 @@ export function useSettings () {
     return false
   }, [data, flash])
 
-  return { data, loading, notes, save, reload }
+  // flash 也暴露出去：数字输入越界这类校验失败不经过 save，但仍要在行上提示。
+  return { data, loading, notes, save, reload, flash }
 }

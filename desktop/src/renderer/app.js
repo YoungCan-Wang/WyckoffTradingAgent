@@ -863,516 +863,26 @@ osDark.addEventListener('change', () => {
   if (!setData || (setData.desktop_appearance || 'system') === 'system') applyAppearance(setData)
 })
 
-/** One settings section. Sections render on demand from cached data. */
-function buildSection (sec, data) {
-  const wrap = el('div')
-  if (!data) {
-    wrap.appendChild(el('p', 'empty', t('daemon.readSettingsFailed')))
-    return wrap
-  }
-  // 三个一级栏目，每个里面按内容再分栏。
-  if (sec === 'general') {
-    buildAppearance(wrap, data)
-    return buildBehavior(wrap, data)
-  }
-  if (sec === 'agent') {
-    buildTone(wrap, data)
-    buildModelsTab(wrap, data)
-    return buildDaemon(wrap)
-  }
-  return buildAccountSec(wrap)
-}
 
-/** Scheduling status. The daemon's lifetime follows this app by design. */
-function buildDaemon (wrap) {
-  wrap.appendChild(secHead('settings.daemon'))
-  wrap.appendChild(el('p', 'dlg-sub', t('schedules.daemonNote')))
-  const host = el('div')
-  host.appendChild(el('p', 'empty', t('common.loading')))
-  wrap.appendChild(host)
 
-  const render = async () => {
-    const st = await collect('daemon_status').catch(() => null)
-    host.replaceChildren()
-    if (!st) {
-      host.appendChild(el('p', 'empty', t('schedules.statusReadFailed')))
-      return
-    }
-
-    const live = el('div', 'srow')
-    const left = el('div', 'sleft')
-    left.appendChild(el('span', 'slab', t('daemon.schedProcess')))
-    left.appendChild(el('span', 'shint', st.running ? t('daemon.running') : t('daemon.notRunning')))
-    live.appendChild(left)
-    live.appendChild(el('span', st.running ? 'ok' : 'miss', st.running ? t('daemon.stateRunning') : t('daemon.stateStopped')))
-    host.appendChild(live)
-
-    // Surfaced only when present: a leftover launchd service would run tasks
-    // even with the app closed, contradicting the intended model.
-    if (st.installed) {
-      const warn = el('div', 'srow')
-      const wl = el('div', 'sleft')
-      wl.appendChild(el('span', 'slab', t('daemon.autostart')))
-      wl.appendChild(el('span', 'shint', t('daemon.autostartDetected')))
-      warn.appendChild(wl)
-      host.appendChild(warn)
-
-      const btn = el('button', 'wel-c', t('daemon.removeAutostart'))
-      btn.onclick = async () => {
-        if (!window.confirm(t('daemon.removeConfirm'))) return
-        btn.disabled = true
-        btn.textContent = t('daemon.processing')
-        const res = await collect('daemon_uninstall').catch(() => null)
-        if (!res) sysLine(t('daemon.removeFailed'), true)
-        await render()
-      }
-      host.appendChild(btn)
-    }
-
-    const refresh = el('button', 'wel-c', t('daemon.refresh'))
-    refresh.onclick = () => render()
-    host.appendChild(refresh)
-  }
-
-  render()
-  return wrap
-}
-
-/**
- * 一个分栏标题。把 i18n key 记在 data-sec-key 上，showSection 的 anchor
- * 才能可靠地找到它 —— 靠文本匹配会在英文界面失效。
- */
-function secHead (key) {
-  const h = el('h3', 'sec', t(key))
-  h.dataset.secKey = key
-  return h
-}
-
-/** Persist one key, echo the outcome, and re-apply appearance immediately. */
-async function saveKey (row, key, value) {
-  if (setData) setData[key] = value
-  applyAppearance(setData)
-  const res = await collect('settings_set', { key, value })
-  note(row, res ? t('common.saved') : t('common.saveFailed'), !res)
-  return Boolean(res)
-}
-
-/** Segmented control: a small set of mutually exclusive choices. */
-function segRow (label, key, current, choices, sub) {
-  const row = el('div', 'srow')
-  const left = el('div', 'sleft')
-  left.appendChild(el('span', 'slab', label))
-  if (sub) left.appendChild(el('span', 'shint', sub))
-  row.appendChild(left)
-  const seg = el('div', 'seg')
-  for (const [value, text] of choices) {
-    const btn = el('button', value === current ? 'seg-b on' : 'seg-b', text)
-    btn.onclick = async () => {
-      for (const other of seg.querySelectorAll('.seg-b')) other.classList.remove('on')
-      btn.classList.add('on')
-      await saveKey(row, key, value)
-    }
-    seg.appendChild(btn)
-  }
-  row.appendChild(seg)
-  return row
-}
-
-/** Language row: a segmented control over the supported locales. */
-function langRow () {
-  const choices = i18n.available().map((code) => [code, t(`lang.${code}`)])
-  const row = segRow(t('appearance.language'), '__lang__', i18n.getLang(), choices, t('appearance.languageHint'))
-  // segRow wires each button to saveKey; rebind to i18n instead. The buttons
-  // are the only .seg-b children of this row.
-  const buttons = [...row.querySelectorAll('.seg-b')]
-  buttons.forEach((btn, index) => {
-    const code = choices[index][0]
-    btn.onclick = () => {
-      for (const other of buttons) other.classList.remove('on')
-      btn.classList.add('on')
-      // Switching re-renders the whole settings body (and the app) in the new
-      // language via the i18n change listener registered below.
-      i18n.setLang(code)
-    }
-  })
-  return row
-}
-
-function buildAppearance (wrap, data) {
-  // 「外观」现在是「通用」页里的一栏，所以标题回来了 —— 它不再和导航项重名。
-  wrap.appendChild(secHead('settings.appearance'))
-
-  // Language is a client-only preference (localStorage), so it saves through
-  // i18n rather than the server round-trip the other rows use.
-  wrap.appendChild(langRow())
-
-  wrap.appendChild(segRow(t('appearance.theme'), 'desktop_appearance', data.desktop_appearance,
-    [['system', t('appearance.themeSystem')], ['light', t('appearance.themeLight')], ['dark', t('appearance.themeDark')]],
-    t('appearance.themeHint')))
-  wrap.appendChild(segRow(t('appearance.font'), 'desktop_font_family', data.desktop_font_family,
-    [['sans', t('appearance.fontSans')], ['serif', t('appearance.fontSerif')]]))
-  wrap.appendChild(segRow(t('appearance.density'), 'desktop_density', data.desktop_density,
-    [['cozy', t('appearance.densityCozy')], ['compact', t('appearance.densityCompact')]]))
-
-  // A slider gives live feedback; the value is clamped server-side too.
-  const row = el('div', 'srow')
-  const left = el('div', 'sleft')
-  left.appendChild(el('span', 'slab', t('appearance.fontScale')))
-  const pct = el('span', 'shint', `${data.desktop_font_scale}%`)
-  left.appendChild(pct)
-  row.appendChild(left)
-  const rng = el('input', 'rng')
-  rng.type = 'range'
-  rng.min = '80'
-  rng.max = '140'
-  rng.step = '5'
-  rng.value = String(data.desktop_font_scale)
-  rng.oninput = () => {
-    pct.textContent = `${rng.value}%`
-    // Preview while dragging without writing to disk on every step.
-    root.style.setProperty('--fs', `${(13.5 * Number(rng.value)) / 100}px`)
-  }
-  rng.onchange = () => saveKey(row, 'desktop_font_scale', Number(rng.value))
-  row.appendChild(rng)
-  wrap.appendChild(row)
-  return wrap
-}
-
-function buildBehavior (wrap, data) {
-  wrap.appendChild(secHead('settings.behavior'))
-  wrap.appendChild(segRow(t('behavior.sendMode'), 'desktop_send_on_enter', data.desktop_send_on_enter,
-    [[true, t('behavior.sendEnter')], [false, t('behavior.sendCmdEnter')]],
-    t('behavior.sendHint')))
-  wrap.appendChild(segRow(t('behavior.motion'), 'desktop_reduce_motion', data.desktop_reduce_motion,
-    [[false, t('behavior.motionNormal')], [true, t('behavior.motionReduced')]]))
-  return wrap
-}
-
-// tone id -> i18n key stems; label/desc resolved at render so a language switch
-// re-reads them rather than freezing the load-time language.
-const TONES = [
-  ['default', 'tone.default', 'tone.defaultDesc'],
-  ['brief', 'tone.brief', 'tone.briefDesc'],
-  ['detailed', 'tone.detailed', 'tone.detailedDesc'],
-  ['evidence', 'tone.evidence', 'tone.evidenceDesc'],
-  ['custom', 'tone.custom', 'tone.customDesc']
-]
-
-function buildTone (wrap, data) {
-  wrap.appendChild(secHead('settings.tone'))
-  wrap.appendChild(el('p', 'dlg-sub', t('tone.note')))
-
-  const box = el('div', 'tone-l')
-  const custom = el('div', 'tone-c')
-  const ta = el('textarea', 'tone-t')
-  ta.rows = 4
-  ta.maxLength = 600
-  ta.placeholder = t('tone.customPlaceholder')
-  ta.value = data.desktop_tone_custom || ''
-
-  const syncCustom = (tone) => { custom.hidden = tone !== 'custom' }
-
-  for (const [value, labelKey, descKey] of TONES) {
-    const opt = el('button', value === data.desktop_tone ? 'tone-o on' : 'tone-o')
-    opt.appendChild(el('span', 'tone-n', t(labelKey)))
-    opt.appendChild(el('span', 'tone-d', t(descKey)))
-    opt.onclick = async () => {
-      for (const other of box.querySelectorAll('.tone-o')) other.classList.remove('on')
-      opt.classList.add('on')
-      syncCustom(value)
-      await saveKey(box, 'desktop_tone', value)
-    }
-    box.appendChild(opt)
-  }
-  wrap.appendChild(box)
-
-  const save = el('button', 'wel-c', t('tone.saveCustom'))
-  save.onclick = () => saveKey(custom, 'desktop_tone_custom', ta.value)
-  custom.appendChild(ta)
-  custom.appendChild(save)
-  syncCustom(data.desktop_tone)
-  wrap.appendChild(custom)
-  return wrap
-}
-
-/** Models, data sources and timeouts — one tab, they are all "what it runs on". */
-function buildModelsTab (wrap, data) {
-  buildModels(wrap, data)
-
-  wrap.appendChild(secHead('timeout.heading'))
-  wrap.appendChild(el('p', 'dlg-sub', t('timeout.note')))
-  wrap.appendChild(numRow(t('timeout.stream'), 'stream_chunk_timeout_seconds',
-    data.stream_chunk_timeout_seconds, 10, 600))
-  wrap.appendChild(numRow(t('timeout.tool'), 'tool_timeout_seconds',
-    data.tool_timeout_seconds, 5, 300))
-
-  wrap.appendChild(secHead('datasource.heading'))
-  wrap.appendChild(el('p', 'dlg-sub', t('datasource.note')))
-  wrap.appendChild(keyRow('TickFlow', data.has_tickflow_key))
-  wrap.appendChild(keyRow('Tushare', data.has_tushare_token))
-  return wrap
-}
-
-function buildAccountSec (wrap) {
-  // 单一内容，无需分类标题。
-  const row = el('div', 'srow')
-  row.appendChild(el('span', 'slab', t('signin.current')))
-  row.appendChild(el('span', signedIn ? 'ok' : 'miss', acctEmail || t('account.signedOut')))
-  wrap.appendChild(row)
-  if (signedIn) {
-    wrap.appendChild(el('p', 'dlg-sub', t('signin.signoutNote')))
-    const btn = el('button', 'wel-c', t('signin.signout'))
-    btn.onclick = () => { closeSettings(); doSignOut() }
-    wrap.appendChild(btn)
-  } else {
-    wrap.appendChild(el('p', 'dlg-sub', t('signin.reloginHint')))
-  }
-  return wrap
-}
 
 /**
  * Reload settings and repaint the whole section. Repainting via showSection
  * rather than a captured host element: role changes alter tags on OTHER rows
  * too, and a stale host reference silently no-ops after a section switch.
  */
+/**
+ * 重读配置并刷新输入框的模型选择器。
+ *
+ * 设置面板不用管：那边由 React 自己 reload 重渲染。以前这里会强制
+ * showSection('agent')，现在那样做只会白重挂一次 React 并丢掉滚动位置。
+ */
 async function refreshModels () {
   setData = await collect('settings_get').catch(() => null)
   if (!setData) return
-  // 输入框的选择器要跟着更新，且与设置面板是否打开无关 —— 在设置页里
-  // 换了默认模型，关掉设置后输入框上必须已经是新的那个。
   paintModelPicker()
-  if (setOv.hidden) return
-  // 模型现在在「智能体」页里，重绘整页。保住滚动位置：在「模型」栏点
-  // 「设为默认」后跳回页首，会把用户正在看的那一行甩出视野。
-  const keep = setBody.scrollTop
-  showSection('agent')
-  setBody.scrollTop = keep
 }
 
-function buildModels (wrap, data) {
-  wrap.appendChild(secHead('models.heading'))
-  wrap.appendChild(el('p', 'dlg-sub', t('models.note')))
-  const host = el('div')
-  wrap.appendChild(host)
-  buildModelList(host, data)
-  return wrap
-}
-
-function buildModelList (host, data) {
-  // With 11 configured models an unfiltered list scrolls for three screens and
-  // buries the only two rows that matter. Show the active pair, fold the rest.
-  const active = data.models.filter((m) => m.id === data.default_model || m.id === data.fallback_model)
-  const rest = data.models.filter((m) => m.id !== data.default_model && m.id !== data.fallback_model)
-
-  for (const m of active) host.appendChild(modelRow(m, data))
-
-  if (rest.length) {
-    const more = el('div', 'mmore')
-    const toggle = el('button', 'mtoggle', t('models.others', { count: rest.length }))
-    const list = el('div')
-    list.hidden = true
-    toggle.onclick = () => {
-      list.hidden = !list.hidden
-      toggle.textContent = list.hidden ? t('models.others', { count: rest.length }) : t('models.othersCollapse')
-      toggle.classList.toggle('open', !list.hidden)
-    }
-    for (const m of rest) list.appendChild(modelRow(m, data))
-    more.appendChild(toggle)
-    more.appendChild(list)
-    host.appendChild(more)
-  }
-
-  host.appendChild(addModelForm())
-}
-
-/** One model: identity, role buttons, connectivity test, delete. */
-function modelRow (m, data) {
-  const row = el('div', 'mrow')
-  const isDefault = m.id === data.default_model
-  const isFallback = m.id === data.fallback_model
-
-  const info = el('div', 'minfo')
-  const title = el('div', 'mtitle')
-  title.appendChild(el('span', 'mid', m.id))
-  if (isDefault) title.appendChild(el('span', 'tag pri', t('models.tagDefault')))
-  if (isFallback) title.appendChild(el('span', 'tag alt', t('models.tagFallback')))
-  if (!m.has_key) title.appendChild(el('span', 'tag warn', t('models.tagNoKey')))
-  info.appendChild(title)
-  const sub = [m.provider_name, m.model, m.base_url].filter(Boolean).join(' · ')
-  const subEl = el('span', 'msub', sub)
-  // Ellipsised in CSS, so expose the full value on hover.
-  subEl.title = sub
-  info.appendChild(subEl)
-  row.appendChild(info)
-
-  const acts = el('div', 'macts')
-
-  // Only the roles this model does NOT hold get a button. With 11 models,
-  // showing all four actions per row put 44 buttons on one page — the two
-  // that matter (which is primary, which is backup) drowned in noise.
-  if (!isDefault) {
-    const btn = el('button', 'mbtn', t('models.setDefault'))
-    btn.onclick = async () => {
-      const res = await collect('settings_set', { key: 'default_model', value: m.id })
-      if (!res) { note(row, t('models.saveFailed'), true); return }
-      await refreshModels()
-    }
-    acts.appendChild(btn)
-  }
-  if (!isFallback && !isDefault) {
-    const btn = el('button', 'mbtn', t('models.setFallback'))
-    btn.onclick = async () => {
-      const res = await collect('settings_set', { key: 'fallback_model', value: m.id })
-      if (!res) { note(row, t('models.saveFailed'), true); return }
-      await refreshModels()
-    }
-    acts.appendChild(btn)
-  }
-
-  // Connectivity test: a real request, so the result is trustworthy.
-  const test = el('button', 'mbtn', t('models.test'))
-  test.onclick = async () => {
-    test.disabled = true
-    test.textContent = t('models.testing')
-    const res = await collect('model_test', { id: m.id }).catch(() => null)
-    test.disabled = false
-    test.textContent = t('models.test')
-    if (!res) { note(row, t('models.testFailed'), true); return }
-    if (res.connected) note(row, t('models.connected', { ms: res.latency_ms }), false)
-    else note(row, res.error || t('models.disconnected'), true)
-  }
-  acts.appendChild(test)
-
-  // In-use models are deliberately not deletable: removing the model a running
-  // analysis depends on fails mid-flight. Switch roles first.
-  if (!isDefault && !isFallback) {
-    const del = el('button', 'mbtn danger', t('models.delete'))
-    del.onclick = async () => {
-      if (!window.confirm(t('models.deleteConfirm', { id: m.id }))) return
-      const res = await collect('model_remove', { id: m.id }).catch(() => null)
-      if (!res) { note(row, t('models.deleteFailed'), true); return }
-      await refreshModels()
-    }
-    acts.appendChild(del)
-  }
-
-  row.appendChild(acts)
-  return row
-}
-
-/** Collapsed by default: adding a model is occasional, not the main task. */
-function addModelForm () {
-  const box = el('div', 'madd')
-  const toggle = el('button', 'wel-c', t('models.addCustom'))
-  const form = el('div', 'mform')
-  form.hidden = true
-  toggle.onclick = () => {
-    form.hidden = !form.hidden
-    toggle.textContent = form.hidden ? t('models.addCustom') : t('models.cancelAdd')
-  }
-  box.appendChild(toggle)
-
-  const fields = {}
-  const field = (key, label, placeholder) => {
-    const f = el('div', 'mfield')
-    f.appendChild(el('label', 'mflab', label))
-    const inp = el('input', 'mfin')
-    inp.placeholder = placeholder
-    fields[key] = inp
-    f.appendChild(inp)
-    return f
-  }
-
-  const prov = el('div', 'mfield')
-  prov.appendChild(el('label', 'mflab', 'Provider'))
-  const sel = el('select', 'sel')
-  for (const p of ['openai', 'gemini', 'claude']) {
-    const opt = el('option', null, p)
-    opt.value = p
-    sel.appendChild(opt)
-  }
-  prov.appendChild(sel)
-
-  form.appendChild(field('id', t('models.fieldId'), t('models.fieldIdPlaceholder')))
-  form.appendChild(prov)
-  form.appendChild(field('model', t('models.fieldModel'), t('models.fieldModelPlaceholder')))
-  form.appendChild(field('api_key', 'API Key', 'sk-…'))
-  form.appendChild(field('base_url', t('models.fieldBaseUrl'), t('models.fieldBaseUrlPlaceholder')))
-
-  const submit = el('button', 'wel-c', t('models.saveTest'))
-  submit.onclick = async () => {
-    const payload = {
-      id: fields.id.value.trim(),
-      provider_name: sel.value,
-      model: fields.model.value.trim(),
-      api_key: fields.api_key.value.trim(),
-      base_url: fields.base_url.value.trim()
-    }
-    if (!payload.id || !payload.model || !payload.api_key) {
-      note(form, t('models.required'), true)
-      return
-    }
-    submit.disabled = true
-    submit.textContent = t('models.saving')
-    const saved = await collect('model_add', payload).catch(() => null)
-    if (!saved) {
-      submit.disabled = false
-      submit.textContent = t('models.saveTest')
-      note(form, t('models.saveCheckFields'), true)
-      return
-    }
-    // Test right after saving: a model that cannot connect is worse than none,
-    // because it will silently fail mid-analysis.
-    submit.textContent = t('models.testingConn')
-    const res = await collect('model_test', { id: payload.id }).catch(() => null)
-    submit.disabled = false
-    submit.textContent = t('models.saveTest')
-    if (res && res.connected) sysLine(t('models.addedConnected', { id: payload.id, ms: res.latency_ms }))
-    else sysLine(t('models.savedButFailed', { id: payload.id, error: (res && res.error) || t('models.unknownError') }), true)
-    await refreshModels()
-  }
-  form.appendChild(submit)
-  box.appendChild(form)
-  return box
-}
-
-function note (row, text, isError) {
-  const old = row.querySelector('.snote')
-  if (old) old.remove()
-  const tag = el('span', isError ? 'snote err' : 'snote', text)
-  row.appendChild(tag)
-  setTimeout(() => tag.remove(), 2200)
-}
-
-function numRow (label, key, value, min, max) {
-  const row = el('div', 'srow')
-  row.appendChild(el('span', 'slab', label))
-  const inp = el('input', 'num')
-  inp.type = 'number'
-  inp.value = String(value)
-  inp.min = String(min)
-  inp.max = String(max)
-  inp.onchange = async () => {
-    const n = Number(inp.value)
-    // Clamp locally so the backend never sees an out-of-range value.
-    if (!Number.isFinite(n) || n < min || n > max) {
-      inp.value = String(value)
-      note(row, t('common.range', { min, max }), true)
-      return
-    }
-    const res = await collect('settings_set', { key, value: n })
-    note(row, res ? t('common.saved') : t('common.saveFailed'), !res)
-  }
-  row.appendChild(inp)
-  return row
-}
-
-function keyRow (label, present) {
-  const row = el('div', 'srow')
-  row.appendChild(el('span', 'slab', label))
-  row.appendChild(el('span', present ? 'ok' : 'miss', present ? t('datasource.configured') : t('datasource.notConfigured')))
-  return row
-}
 
 // ---- settings modal --------------------------------------------------------
 
@@ -1390,19 +900,9 @@ function showSection (sec, anchor) {
   for (const b of document.querySelectorAll('.dlg-n')) {
     b.classList.toggle('on', b.dataset.sec === sec)
   }
-  // 迁移期：已搬到 React 的 section 交给它渲染，其余仍走手写 DOM。
-  // 两边共用 #set-body，所以切换时必须先卸载 React，否则它会和
-  // replaceChildren 抢同一个容器 —— React 以为自己的节点还在，
-  // 下一次 render 时报 NotFoundError。
-  const react = window.WyckoffReact
-  if (react && react.handles(sec)) {
-    setBody.replaceChildren()
-    react.mountSettings(setBody, sec)
-  } else {
-    if (react) react.unmountSettings(setBody)
-    setBody.replaceChildren(buildSection(sec, setData))
-  }
-  // anchor 指定了分栏就把它滚到顶部，否则回到页面开头。
+  // 三页全部由 React 渲染，不再需要分派分支。
+  window.WyckoffReact.mountSettings(setBody, sec)
+  // 无锚点时立刻回到顶部；有锚点则等标题出现（见 scrollToAnchor 的重试）。
   scrollToAnchor(anchor)
 }
 
@@ -1410,13 +910,19 @@ function showSection (sec, anchor) {
  * 把指定分栏滚到内容区顶部。找不到就回到开头 —— 宁可停在顶部，
  * 也不要因为 key 写错而停在一个看不出所以然的位置。
  */
-function scrollToAnchor (anchor) {
+function scrollToAnchor (anchor, attempt = 0) {
   if (!anchor) {
     setBody.scrollTop = 0
     return
   }
   const head = setBody.querySelector(`.sec[data-sec-key="${anchor}"]`)
   if (!head) {
+    // React 渲染是异步的，而且分栏标题要等组件内部读完设置才出现，
+    // 所以一帧不够。重试有限次数，超时就老实回到顶部。
+    if (attempt < 20) {
+      requestAnimationFrame(() => scrollToAnchor(anchor, attempt + 1))
+      return
+    }
     setBody.scrollTop = 0
     return
   }
@@ -1433,11 +939,13 @@ function closeSettings () {
 
 async function openSettings (sec, anchor) {
   setOv.hidden = false
-  setBody.replaceChildren(el('p', 'empty', t('common.loading')))
-  // Refetch each time: the CLI can change config behind the app's back.
-  setData = await collect('settings_get').catch(() => null)
-  if (setOv.hidden) return
+  // 不要在这里 replaceChildren：#set-body 由 React root 拥有，从外面摘掉它的
+  // 节点会让下一次 render 报 NotFoundError。加载态由 React 自己显示。
   showSection(sec || 'general', anchor)
+  // 面板内容归 React，但输入框的模型选择器仍读 setData，所以这里补一次。
+  // 放在 showSection 之后：先让面板出现，再回填选择器。
+  setData = await collect('settings_get').catch(() => null)
+  paintModelPicker()
 }
 
 /** Load appearance before the user opens settings, so launch honours it. */
@@ -2042,6 +1550,16 @@ window.addEventListener('keydown', (e) => {
     openSymBox()
   }
 })
+
+// React 侧需要用到的、仍归 app.js 拥有的动作：系统消息要进对话流，
+// 退出登录要刷新侧栏并关掉设置面板。
+if (window.WyckoffReact) {
+  window.WyckoffReact.setHooks({
+    onMessage: (text, isError) => sysLine(text, Boolean(isError)),
+    onSignOut: () => { closeSettings(); doSignOut() },
+    onConfigChanged: () => { refreshModels() }
+  })
+}
 
 // Paint the static HTML in the resolved language before anything else shows.
 i18n.applyDom()

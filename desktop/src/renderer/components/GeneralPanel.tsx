@@ -1,5 +1,5 @@
 /** 「通用」页：外观 + 行为两栏。 */
-import { Row, Seg, Range } from './Rows'
+import { Row, Seg, Range, SecHead } from './Rows'
 import { applyAppearance, previewFontScale } from '../lib/appearance'
 import type { Settings } from '../types'
 
@@ -30,7 +30,7 @@ export function GeneralPanel ({ data, notes, save }: Props) {
 
   return (
     <>
-      <h3 className="sec">{t('settings.appearance')}</h3>
+      <SecHead k="settings.appearance" />
 
       <Row label={t('appearance.language')} hint={t('appearance.languageHint')}>
         <Seg
@@ -87,16 +87,18 @@ export function GeneralPanel ({ data, notes, save }: Props) {
         note={note('desktop_font_scale')?.text}
         noteIsError={note('desktop_font_scale')?.error}
       >
+        {/* 边界与步长必须与 vanilla 版一致：80–140，步长 5。 */}
         <Range
           value={data.desktop_font_scale}
           min={80}
-          max={130}
+          max={140}
+          step={5}
           onPreview={previewFontScale}
           onCommit={(v) => void saveAndApply('desktop_font_scale', v)}
         />
       </Row>
 
-      <h3 className="sec">{t('settings.behavior')}</h3>
+      <SecHead k="settings.behavior" />
 
       <Row
         label={t('behavior.sendMode')}
