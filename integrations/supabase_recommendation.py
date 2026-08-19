@@ -11,6 +11,21 @@ from integrations.supabase_base import create_read_client
 
 logger = logging.getLogger(__name__)
 
+# 市场 -> 表名。三个市场是三张独立的表，不是同一张表里的一个字段，
+# 所以「切市场」等于换表重查，不能在客户端过滤。
+#
+# 用白名单映射而不是拼字符串：market 来自前端，拼进表名等于把表名交给调用方。
+RECOMMENDATION_TABLES = {
+    "cn": TABLE_RECOMMENDATION_TRACKING,
+    "us": f"{TABLE_RECOMMENDATION_TRACKING}_us",
+    "hk": f"{TABLE_RECOMMENDATION_TRACKING}_hk",
+}
+
+
+def recommendation_table(market: str = "cn") -> str:
+    """认不出的市场退回 cn —— 宁可显示 A 股，也不要去查一张不存在的表。"""
+    return RECOMMENDATION_TABLES.get(str(market or "cn").strip().lower(), TABLE_RECOMMENDATION_TRACKING)
+
 
 def fetch_recommendation_tracking_records(
     client,
@@ -55,17 +70,18 @@ def upsert_recommendation_tracking_price_updates(client, updates: list[dict[str,
     return written
 
 
-def load_recommendation_tracking(limit: int = 1000, client=None) -> list[dict[str, Any]]:
+def load_recommendation_tracking(limit: int = 1000, client=None, market: str = "cn") -> list[dict[str, Any]]:
+    """
+    读某个市场的推荐跟踪记录。
+
+    美股/港股表只有 34 列（CN 有 76），没有 candidate_* 那一组。缺列不是错误，
+    调用方按缺省处理即可 —— 不要为了对齐而伪造字段。
+    """
+    table = recommendation_table(market)
     try:
         db = client or create_read_client()
-        resp = (
-            db.table(TABLE_RECOMMENDATION_TRACKING)
-            .select("*")
-            .order("recommend_date", desc=True)
-            .limit(limit)
-            .execute()
-        )
+        resp = db.table(table).select("*").order("recommend_date", desc=True).limit(limit).execute()
         return resp.data or []
     except Exception as exc:
-        logger.warning("load_recommendation_tracking failed: %s", exc)
+        logger.warning("load_recommendation_tracking(%s) failed: %s", table, exc)
         return []

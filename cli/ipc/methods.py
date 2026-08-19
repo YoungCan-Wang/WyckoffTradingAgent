@@ -204,8 +204,20 @@ def tracking(params: dict[str, Any]) -> Iterator[Event]:
     from agents.history_tools import query_history
     from cli.ipc.session import get_session
 
-    limit = _clamp_int(params.get("limit"), 30, 1, 50)
-    result = query_history(source="recommendation", limit=limit, tool_context=get_session().tool_context)
+    from integrations.supabase_recommendation import RECOMMENDATION_TABLES
+
+    # 三个市场是三张表，切市场必须重查。在这里就把市场收敛到白名单里 ——
+    # 让未知值一路传到下游再兜底，中间任何一环拿它拼表名都会成为漏洞。
+    market = str(params.get("market") or "cn").strip().lower()
+    if market not in RECOMMENDATION_TABLES:
+        market = "cn"
+    limit = _clamp_int(params.get("limit"), 200, 1, 200)
+    result = query_history(
+        source="recommendation",
+        limit=limit,
+        tool_context=get_session().tool_context,
+        market=market,
+    )
     if "error" in result:
         raise MethodError("tracking_failed", str(result["error"]))
     yield _ok(**result)

@@ -35,10 +35,17 @@ def captured(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     class FakeSession:
         tool_context = sentinel
 
-    def fake_query(source: str, limit: int = 20, tool_context: Any = None, **_kw: Any) -> dict[str, Any]:
+    def fake_query(
+        source: str,
+        limit: int = 20,
+        tool_context: Any = None,
+        market: str = "cn",
+        **_kw: Any,
+    ) -> dict[str, Any]:
         seen["source"] = source
         seen["limit"] = limit
         seen["tool_context"] = tool_context
+        seen["market"] = market
         return {"total": 0, "records": []}
 
     monkeypatch.setattr("agents.history_tools.query_history", fake_query)
@@ -62,7 +69,7 @@ class TestAuthContext:
 class TestLimitClamping:
     @pytest.mark.parametrize(
         ("given", "expected"),
-        [(None, 30), (1, 1), (50, 50), (999, 50), (0, 1), (-5, 1), ("abc", 30)],
+        [(None, 200), (1, 1), (200, 200), (999, 200), (0, 1), (-5, 1), ("abc", 200)],
     )
     def test_tracking_limit(self, captured: dict[str, Any], given: Any, expected: int) -> None:
         _result("tracking", {"limit": given})
@@ -75,6 +82,83 @@ class TestLimitClamping:
     def test_attribution_limit(self, captured: dict[str, Any], given: Any, expected: int) -> None:
         _result("attribution", {"limit": given})
         assert captured["limit"] == expected
+
+
+class TestMarketRouting:
+    """三个市场是三张表，切市场必须换表重查，不能在客户端过滤。"""
+
+    @pytest.mark.parametrize(
+        ("given", "expected"),
+        [("cn", "cn"), ("us", "us"), ("hk", "hk"), ("US", "us"), ("  hk  ", "hk")],
+    )
+    def test_market_is_passed_through(self, captured: dict[str, Any], given: str, expected: str) -> None:
+        _result("tracking", {"market": given})
+        assert captured["market"] == expected
+
+    @pytest.mark.parametrize("given", ["", None, "bogus", "cn; drop table", "recommendation_tracking_us"])
+    def test_unknown_market_falls_back_to_cn(self, captured: dict[str, Any], given: Any) -> None:
+        """认不出的市场退回 cn —— 绝不能拿它去拼表名。"""
+        _result("tracking", {"market": given})
+        assert captured["market"] == "cn"
+
+    def test_default_is_cn(self, captured: dict[str, Any]) -> None:
+        _result("tracking")
+        assert captured["market"] == "cn"
+
+
+class TestTableWhitelist:
+    def test_only_three_tables(self) -> None:
+        from integrations.supabase_recommendation import RECOMMENDATION_TABLES, recommendation_table
+
+        assert set(RECOMMENDATION_TABLES) == {"cn", "us", "hk"}
+        assert recommendation_table("us").endswith("_us")
+        assert recommendation_table("hk").endswith("_hk")
+
+    @pytest.mark.parametrize("evil", ["", "bogus", "cn'; --", "../other"])
+    def test_never_builds_arbitrary_table_name(self, evil: str) -> None:
+        """表名只能来自白名单映射，任何输入都不该拼出新表名。"""
+        from integrations.supabase_recommendation import RECOMMENDATION_TABLES, recommendation_table
+
+        assert recommendation_table(evil) in RECOMMENDATION_TABLES.values()
+
+
+class TestLocalCacheIsolation:
+    """本地 SQLite 只缓存 A 股；美股/港股既不能读它也不能写它。"""
+
+    def test_non_cn_skips_local_cache(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from agents import history_tools as H
+
+        def boom(*_a: Any, **_kw: Any) -> list[dict[str, Any]]:
+            raise AssertionError("美股不该读 A 股的本地缓存")
+
+        monkeypatch.setattr(H, "_load_local_recommendations", boom)
+        monkeypatch.setattr(H, "_load_remote_recommendations", lambda *_a, **_kw: [{"code": "AAPL.US"}])
+        out = H._query_recommendation(10, None, market="us")
+        assert out["market"] == "us"
+
+    def test_non_cn_does_not_write_local_cache(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from agents import history_tools as H
+
+        wrote: list[Any] = []
+        monkeypatch.setattr(H, "_cache_recommendations", lambda rows: wrote.append(rows))
+        monkeypatch.setattr(
+            "integrations.supabase_recommendation.load_recommendation_tracking",
+            lambda **_kw: [{"code": "AAPL.US"}],
+        )
+        H._load_remote_recommendations(10, None, market="us")
+        assert wrote == [], "美股行写进 A 股缓存会污染 A 股结果"
+
+    def test_cn_still_writes_local_cache(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from agents import history_tools as H
+
+        wrote: list[Any] = []
+        monkeypatch.setattr(H, "_cache_recommendations", lambda rows: wrote.append(rows))
+        monkeypatch.setattr(
+            "integrations.supabase_recommendation.load_recommendation_tracking",
+            lambda **_kw: [{"code": "600519"}],
+        )
+        H._load_remote_recommendations(10, None, market="cn")
+        assert len(wrote) == 1
 
 
 class TestErrorSurfacing:

@@ -49,3 +49,17 @@ export function clearCache (): void {
     /* 同上，忽略 */
   }
 }
+
+/**
+ * 会改动持仓的工具。对话里跑了它们，缓存就是脏的。
+ *
+ * 这三个都在 cli/tools.py 里标了 requires_approval，但仍要在 tool_start 时
+ * 就作废缓存：审批可能被「本次会话总是允许」放行，那条路径不产生审批事件。
+ * 多清一次缓存的代价只是下次进页面重拉一遍，漏清一次的代价是你看着错的持仓
+ * 做决定。
+ */
+const PORTFOLIO_WRITE_TOOLS = new Set(['update_portfolio', 'set_stop_loss', 'record_trade_fill'])
+
+export function isPortfolioWriteTool (name: string): boolean {
+  return PORTFOLIO_WRITE_TOOLS.has(String(name || ''))
+}

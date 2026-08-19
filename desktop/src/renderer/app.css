@@ -574,22 +574,54 @@ html.dark .berr-b { background: var(--paper2); }
 .pcash { margin-top: 14px; gap: 10px; }
 .pcash b { font-variant-numeric: tabular-nums; }
 
-/* ---- 跟踪页 ---- */
-.trk-note {
-  margin: 10px 0 0; font-size: 11.5px; color: var(--tx3); line-height: 1.6;
+/* ---- 跟踪页：市场页签 + 筛选条 + 可排序表 ---- */
+.trk-tabs { display: flex; gap: 4px; margin-bottom: 14px; }
+.trk-tab {
+  padding: 5px 14px; border: 1px solid var(--line); border-radius: 7px;
+  background: transparent; color: var(--tx2); font: inherit; font-size: 12.5px;
+  cursor: pointer;
 }
-.trk-count { margin-left: 8px; font-weight: 400; color: var(--tx3); font-size: 11.5px; }
-.trk-code {
-  font-variant-numeric: tabular-nums; color: var(--tx3);
-  font-size: 12px; margin-right: 7px;
+.trk-tab:hover { background: var(--hover); }
+.trk-tab.on { background: var(--active); color: var(--tx); font-weight: 600; }
+
+.trk-bar {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap;
 }
-.trk-name { font-weight: 600; }
-.trk-move {
-  font-variant-numeric: tabular-nums; font-weight: 600; font-size: 12.5px;
+.trk-search {
+  flex: 1; min-width: 160px; padding: 5px 9px;
+  border: 1px solid var(--line); border-radius: 7px;
+  background: transparent; color: inherit; font: inherit; font-size: 12.5px;
 }
-/* A 股惯例：红涨绿跌。缺失与 0 都不着色，避免「没数据」看起来像有涨跌。 */
-.trk-up { color: var(--up); }
-.trk-down { color: var(--dn); }
+.trk-check {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 12px; color: var(--tx2); white-space: nowrap; cursor: pointer;
+}
+.trk-count { font-size: 11.5px; color: var(--tx3); white-space: nowrap; }
+.trk-note { margin: 10px 0 0; font-size: 11.5px; color: var(--tx3); line-height: 1.6; }
+
+/* 表格：等宽数字右对齐，表头吸顶（行多时仍看得见列名） */
+.trk-tbl { margin-top: 14px; overflow-x: auto; }
+.trk-tbl table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.trk-tbl th, .trk-tbl td {
+  padding: 7px 10px; text-align: left; border-bottom: 1px solid var(--line2);
+  white-space: nowrap;
+}
+.trk-tbl th {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--paper); color: var(--tx3);
+  font-weight: 600; font-size: 11.5px;
+}
+.trk-tbl th.sortable { cursor: pointer; user-select: none; }
+.trk-tbl th.sortable:hover { color: var(--tx); }
+.trk-tbl td.r, .trk-tbl th.r { text-align: right; font-variant-numeric: tabular-nums; }
+.trk-tbl td.c { font-family: var(--mono); font-size: 11.5px; color: var(--tx2); }
+.trk-tbl td.dim { color: var(--tx3); font-size: 11.5px; }
+.trk-tbl tr:hover td { background: var(--hover); }
+.trk-arrow { margin-left: 4px; color: var(--clay); }
+
+/* A 股惯例：红涨绿跌。0 与缺失都不着色。 */
+.trk-up { color: var(--up); font-weight: 600; }
+.trk-down { color: var(--dn); font-weight: 600; }
 .trk-flat { color: var(--tx3); }
 
 /* ---- 归因页 ---- */

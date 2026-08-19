@@ -75,6 +75,18 @@ function sysLine (text, isError) {
   append(el('div', isError ? 'sys err' : 'sys', text))
 }
 
+/**
+ * 对话里跑了改持仓的工具 → 作废持仓页的本地缓存。
+ *
+ * 两处都要挂：tool_start（覆盖「本次会话总是允许」这类不产生审批事件的路径）
+ * 和审批执行成功之后。宁可多清一次（代价是下次进页面重拉），也不要漏清 ——
+ * 漏清意味着你对着已经过时的持仓做决定。
+ */
+function invalidatePortfolioIfWrite (toolName) {
+  const react = window.WyckoffReact
+  if (react && react.invalidatePortfolioCache) react.invalidatePortfolioCache(toolName)
+}
+
 function userBubble (text) {
   const msg = el('div', 'msg')
   msg.appendChild(el('span', 'av', t('chat.you')))
@@ -115,6 +127,9 @@ function renderEvent (event) {
       row.appendChild(el('span', 'g', '◈'))
       row.appendChild(el('span', 'nm', event.display_name || event.name || 'tool'))
       turn.bd.appendChild(row)
+      // 改持仓的工具一开跑就把缓存作废：审批可能被「总是允许」放行，
+      // 那条路径没有审批事件可挂。
+      invalidatePortfolioIfWrite(event.name)
       // Drawing on a chart is only useful if the chart is visible, so surface it
       // in the pane. The turn's `end` handler refreshes it once drawing finishes.
       if (event.name === 'annotate_chart') {
@@ -275,6 +290,8 @@ function approvalCard (item, context = {}) {
           : event.status === 'failed' ? t('approvals.failed') : t('approvals.rejected')
         card.appendChild(el('div', event.status === 'failed' ? 'sys err' : 'sys', label))
         refreshApprovals()
+        // 批准执行的是改持仓的工具 → 持仓缓存已过期，作废它。
+        if (event.status === 'executed') invalidatePortfolioIfWrite(item.tool_name || item.tool)
       } else if (event.type === 'error') {
         card.appendChild(el('div', 'sys err', event.message || t('chat.toolFailed')))
       } else if (event.type === 'end') {

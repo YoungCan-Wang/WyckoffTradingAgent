@@ -12,6 +12,7 @@ import { SettingsPanel } from './components/SettingsPanel'
 import { TrackingPage } from './components/TrackingPage'
 import { AttributionPage } from './components/AttributionPage'
 import { PortfolioPage } from './components/PortfolioPage'
+import { clearCache, isPortfolioWriteTool } from './lib/portfolioCache'
 
 const roots = new WeakMap<Element, Root>()
 
@@ -95,6 +96,8 @@ declare global {
       trackingPage: () => { node: HTMLElement; dispose: () => void }
       attributionPage: () => { node: HTMLElement; dispose: () => void }
       portfolioPage: () => { node: HTMLElement; dispose: () => void }
+      /** 对话里跑了改持仓的工具时调用，作废本地缓存。 */
+      invalidatePortfolioCache: (toolName: string) => void
     }
   }
 }
@@ -110,5 +113,8 @@ window.WyckoffReact = {
   handles: (section: string) => MIGRATED.has(section),
   trackingPage: () => mountPage(<TrackingPage />),
   attributionPage: () => mountPage(<AttributionPage />),
-  portfolioPage: () => mountPage(<PortfolioPage />)
+  portfolioPage: () => mountPage(<PortfolioPage />),
+  invalidatePortfolioCache: (toolName: string) => {
+    if (isPortfolioWriteTool(toolName)) clearCache()
+  }
 }
