@@ -950,6 +950,16 @@ class ToolRegistry:
         """统一的 session state，__main__ 和工具共享同一份。"""
         return self._tool_context.state
 
+    @property
+    def tool_context(self) -> ToolContext:
+        """
+        供直接调用工具函数的调用方（如桌面 IPC）传递上下文用。
+
+        不传就等于匿名执行：has_cloud() 恒为 False，已登录用户读不到自己的
+        云端数据，且失败是静默的。
+        """
+        return self._tool_context
+
     def _register_tools(self) -> dict[str, callable]:
         """注册所有工具函数。"""
         from agents.app_browser_tools import app_browser

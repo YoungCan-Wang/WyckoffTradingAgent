@@ -97,9 +97,18 @@ def approve_decide(params: dict[str, Any]) -> Iterator[Event]:
 
 
 def portfolio(_params: dict[str, Any]) -> Iterator[Event]:
-    from agents.portfolio_tools import portfolio as portfolio_tool
+    """
+    持仓视图。必须带上会话的 tool_context —— 否则 has_cloud() 恒为 False，
+    已登录用户的 Supabase 持仓永远读不到，界面会静默显示本地 SQLite 缓存
+    （可能是旧的，也可能是空的），看起来像「持仓丢了」。
 
-    yield _ok(portfolio=portfolio_tool(mode="view"))
+    读取顺序由 portfolio_tools 决定：有 token 就先读 Supabase 并回写本地缓存，
+    没有 token（或云端读失败）才落到本地 SQLite。
+    """
+    from agents.portfolio_tools import portfolio as portfolio_tool
+    from cli.ipc.session import get_session
+
+    yield _ok(portfolio=portfolio_tool(mode="view", tool_context=get_session().tool_context))
 
 
 # 日线上限：一屏 K 线图看不了更多，且列式 payload 也要有个封顶。

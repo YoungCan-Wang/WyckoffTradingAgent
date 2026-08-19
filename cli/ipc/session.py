@@ -133,6 +133,18 @@ class DesktopSession:
         except Exception:
             return 0.0
 
+    @property
+    def tool_context(self) -> Any:
+        """
+        工具执行上下文（含登录 token）。
+
+        直接调用工具函数的 IPC 方法必须把它传下去：没有它，has_cloud() 恒为
+        False，已登录用户的 Supabase 数据永远读不到，界面静默显示本地缓存。
+        """
+        if self._tools is None:
+            return None
+        return self._tools.tool_context
+
     # -- 对话 -----------------------------------------------------------------
 
     def run_turn(self, text: str) -> Iterator[dict[str, Any]]:
