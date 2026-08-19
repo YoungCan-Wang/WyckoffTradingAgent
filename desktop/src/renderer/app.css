@@ -553,26 +553,41 @@ html.dark .berr-b { background: var(--paper2); }
 .mdl-add:hover { background: var(--hover); color: var(--tx); }
 .mdl-empty { padding: 6px 8px; font-size: 11.5px; color: var(--tx3); }
 
-/* ---- 持仓页：刷新条与行内编辑 ---- */
-.pbar {
-  display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
-}
+/* ---- 持仓页：顶部操作条 + 编辑模式 ---- */
+.pbar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
 .pbar-t { flex: 1; font-size: 12px; color: var(--tx3); }
+/* 编辑模式开启时按钮保持按下态，让「现在能改」一眼看得出 */
+.mbtn.on { background: var(--clay-soft); border-color: var(--clay); color: var(--clay-ink); }
+.pbar-hint {
+  margin: 0 0 12px; font-size: 11.5px; color: var(--tx3); line-height: 1.6;
+}
 .pbar-err {
   margin: 0 0 12px; padding: 8px 11px; border-radius: 8px;
   background: var(--warn-bg, #fdf3e7); color: var(--tx);
   font-size: 12.5px; line-height: 1.6;
 }
-/* 编辑行的输入框：窄且右对齐，与它替代的数字单元格视觉一致 */
+
+/* 编辑态的单元格输入框：与它替代的数字右对齐，边框轻到不打断表格的横向节奏 */
 .pin {
-  width: 84px; padding: 4px 6px; text-align: right;
-  border: 1px solid var(--d-line, var(--line)); border-radius: 6px;
-  background: transparent; color: inherit; font: inherit; font-size: 12px;
+  width: 92px; padding: 3px 6px; text-align: right;
+  border: 1px solid var(--line); border-radius: 5px;
+  background: var(--paper); color: inherit; font: inherit; font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
-.pacts { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
-.pedit td { vertical-align: middle; }
+.pin:focus { outline: none; border-color: var(--clay); }
+.pin:disabled { opacity: .55; }
+.pedit.saving { opacity: .6; }
+
+/* 删除键：编辑模式下才出现的一个叉，平时不占视觉重量 */
+.prm {
+  width: 22px; height: 22px; padding: 0; border: 0; border-radius: 5px;
+  background: none; color: var(--tx3); font-size: 15px; line-height: 1;
+  cursor: pointer;
+}
+.prm:hover { background: var(--up-soft); color: var(--up-ink); }
+.prm:disabled { opacity: .4; cursor: default; }
+
 .pcash { margin-top: 14px; gap: 10px; }
-.pcash b { font-variant-numeric: tabular-nums; }
 
 /* ---- 跟踪页：市场页签 + 筛选条 + 可排序表 ---- */
 .trk-tabs { display: flex; gap: 4px; margin-bottom: 14px; }

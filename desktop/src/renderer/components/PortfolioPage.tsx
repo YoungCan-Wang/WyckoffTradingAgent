@@ -24,6 +24,8 @@ const stamp = (raw?: string) => {
 export function PortfolioPage () {
   const { portfolio, savedAt, loading, failed, refresh } = usePortfolio()
   const [busy, setBusy] = useState('')
+  // 编辑模式：整页一个开关，比每行两个按钮安静得多。
+  const [editing, setEditing] = useState(false)
   const [error, setError] = useState('')
   const chartsRef = useRef<HTMLDivElement | null>(null)
 
@@ -74,7 +76,18 @@ export function PortfolioPage () {
         <button type="button" className="mbtn" disabled={Boolean(busy)} onClick={() => void refresh()}>
           {t('portfolio.refresh')}
         </button>
+        {/* 编辑是一个模式开关，不是每行两个按钮 —— 那样按钮会把真正的内容挤到中间。 */}
+        <button
+          type="button"
+          className={editing ? 'mbtn on' : 'mbtn'}
+          disabled={Boolean(busy)}
+          onClick={() => { setEditing(!editing); setError('') }}
+        >
+          {editing ? t('portfolio.doneEditing') : t('portfolio.startEditing')}
+        </button>
       </div>
+
+      {editing ? <p className="pbar-hint">{t('portfolio.editHint')}</p> : null}
 
       {error ? <p className="pbar-err">{error}</p> : null}
 
@@ -84,6 +97,8 @@ export function PortfolioPage () {
         <HoldingsTable
           positions={positions}
           busy={busy}
+          editing={editing}
+          onError={setError}
           onUpdate={(code, shares, costPrice) =>
             write(code, 'portfolio_edit', { action: 'update', code, shares, cost_price: costPrice })}
           onSetStop={(code, stop) =>
@@ -97,71 +112,74 @@ export function PortfolioPage () {
         />
       ) : null}
 
-      <AddPositionForm
-        busy={busy === '__add__'}
-        onAdd={async ({ stop_loss: stop, ...fields }) => {
-          // update_portfolio 的 add 不接受 stop_loss —— 直接连着传会被静默丢掉，
-          // 用户以为止损设上了。所以先建仓，再单独设一次止损。
-          await write('__add__', 'portfolio_edit', { action: 'add', ...fields })
-          if (typeof stop === 'number') {
-            await write('__add__', 'portfolio_set_stop', { code: fields.code, stop_loss: stop })
-          }
-        }}
-      />
-
-      <CashRow
-        value={portfolio.free_cash}
-        busy={busy === '__cash__'}
-        onSave={(free_cash) => write('__cash__', 'portfolio_edit', { action: 'set_cash', free_cash })}
-      />
+      {/* 添加与改现金也只在编辑模式出现：平时看持仓不需要它们占位置。 */}
+      {editing ? (
+        <>
+          <AddPositionForm
+            busy={busy === '__add__'}
+            onAdd={async ({ stop_loss: stop, ...fields }) => {
+              // update_portfolio 的 add 不接受 stop_loss —— 直接连着传会被静默
+              // 丢掉，用户以为止损设上了。所以先建仓，再单独设一次止损。
+              await write('__add__', 'portfolio_edit', { action: 'add', ...fields })
+              if (typeof stop === 'number') {
+                await write('__add__', 'portfolio_set_stop', { code: fields.code, stop_loss: stop })
+              }
+            }}
+          />
+          <CashRow
+            value={portfolio.free_cash}
+            busy={busy === '__cash__'}
+            onSave={(free_cash) => write('__cash__', 'portfolio_edit', { action: 'set_cash', free_cash })}
+            onError={setError}
+          />
+        </>
+      ) : null}
     </>
   )
 }
 
-function CashRow ({ value, busy, onSave }: {
+/**
+ * 现金一行。已经在编辑模式里了，所以直接就是输入框 —— 再套一层「编辑/保存/
+ * 取消」是把同一个开关做两遍。失焦即保存，与持仓行一致。
+ */
+function CashRow ({ value, busy, onSave, onError }: {
   value: number
   busy: boolean
   onSave: (value: number) => Promise<void>
+  onError: (message: string) => void
 }) {
-  const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(String(value ?? 0))
-  const [error, setError] = useState('')
 
-  const submit = async () => {
+  // 保存后重拉会带来新值，同步回输入框。
+  useEffect(() => { setDraft(String(value ?? 0)) }, [value])
+
+  const commit = async () => {
     const next = Number(draft)
-    // 现金可以是 0（满仓），所以只拦负数 —— 与后端的 >= 0 一致。
-    if (!Number.isFinite(next) || next < 0) { setError(t('portfolio.badCash')); return }
-    setError('')
+    if (next === value) return
+    // 现金可以是 0（满仓），只拦负数 —— 与后端的 >= 0 一致。
+    if (!Number.isFinite(next) || next < 0) {
+      setDraft(String(value ?? 0))
+      onError(t('portfolio.badCash'))
+      return
+    }
     await onSave(next)
-    setEditing(false)
   }
 
   return (
     <div className="srow pcash">
       <span className="slab">{t('charts.kpiCash')}</span>
-      {editing ? (
-        <>
-          <input className="pin" value={draft} onChange={(e) => setDraft(e.target.value)} />
-          <button type="button" className="mbtn" disabled={busy} onClick={() => void submit()}>
-            {busy ? t('portfolio.saving') : t('action.save')}
-          </button>
-          <button type="button" className="mbtn" disabled={busy} onClick={() => setEditing(false)}>
-            {t('portfolio.cancel')}
-          </button>
-          {error ? <span className="snote err">{error}</span> : null}
-        </>
-      ) : (
-        <>
-          <b>{Number(value ?? 0).toFixed(2)}</b>
-          <button
-            type="button"
-            className="mbtn"
-            onClick={() => { setDraft(String(value ?? 0)); setEditing(true) }}
-          >
-            {t('portfolio.edit')}
-          </button>
-        </>
-      )}
+      <input
+        className="pin"
+        value={draft}
+        disabled={busy}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => void commit()}
+        onKeyDown={(e) => {
+          if (e.key !== 'Enter') return
+          e.preventDefault()
+          void commit()
+        }}
+      />
     </div>
   )
 }

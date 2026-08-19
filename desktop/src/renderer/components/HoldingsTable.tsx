@@ -1,10 +1,13 @@
 /**
- * 可编辑的持仓表。
+ * 持仓表。只读时就是一张干净的表；进入编辑模式后每行变成输入框。
  *
- * 替代 charts.js 里的只读 holdingsTable —— 那张表的行是可点的（打开 K 线），
- * 所以行内按钮必须 stopPropagation，否则点「删」会同时弹出 K 线图。
+ * 为什么不是每行两个按钮：那样一屏就是十几个「改」「删」，真正的内容（代码、
+ * 盈亏）被按钮挤在中间。编辑是偶发动作，收到顶部一个开关里，平时不占视觉。
+ *
+ * 行本身是可点的（打开 K 线），所以编辑态里的输入框和删除键都要
+ * stopPropagation，否则改个数字会顺带弹出 K 线图。
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { Position } from '../types'
 
 const t = (key: string, params?: Record<string, string | number>) => window.WyckoffI18n.t(key, params)
@@ -15,17 +18,18 @@ const num = (value: number | null | undefined, digits = 2) =>
 
 interface Props {
   positions: Position[]
+  /** 正在写入的那一行的代码；空串表示空闲。 */
   busy: string
-  /** 改股数/成本。空字符串的止损由 onSetStop 单独处理。 */
+  editing: boolean
   onUpdate: (code: string, shares: number, costPrice: number) => Promise<void>
   onSetStop: (code: string, stop: number | null) => Promise<void>
   onRemove: (position: Position) => Promise<void>
   onOpenChart: (code: string) => void
+  onError: (message: string) => void
 }
 
-export function HoldingsTable ({ positions, busy, onUpdate, onSetStop, onRemove, onOpenChart }: Props) {
-  const [editing, setEditing] = useState<string | null>(null)
-
+export function HoldingsTable (props: Props) {
+  const { positions, editing, onOpenChart } = props
   return (
     <div className="dtbl">
       <table>
@@ -36,31 +40,27 @@ export function HoldingsTable ({ positions, busy, onUpdate, onSetStop, onRemove,
             <th>{t('charts.colShares')}</th>
             <th>{t('charts.colCost')}</th>
             <th>{t('charts.colStop')}</th>
-            <th />
+            {editing ? <th /> : null}
           </tr>
           {positions.map((position) =>
-            editing === position.code ? (
-              <EditRow
-                key={position.code}
-                position={position}
-                busy={busy === position.code}
-                onCancel={() => setEditing(null)}
-                onSave={async (shares, cost, stop) => {
-                  await onUpdate(position.code, shares, cost)
-                  // 止损单独一条通道（后端的窄接口），只在真的变了时才发。
-                  if (stop !== position.stop_loss) await onSetStop(position.code, stop)
-                  setEditing(null)
-                }}
-              />
+            editing ? (
+              <EditRow key={position.code} position={position} {...props} />
             ) : (
-              <ViewRow
+              <tr
                 key={position.code}
-                position={position}
-                busy={busy === position.code}
-                onEdit={() => setEditing(position.code)}
-                onRemove={() => void onRemove(position)}
-                onOpenChart={() => onOpenChart(position.code)}
-              />
+                className="dtbl-row"
+                title={t('charts.openChart')}
+                onClick={() => onOpenChart(position.code)}
+              >
+                <td className="c">{position.code}</td>
+                <td>{position.name || DASH}</td>
+                <td>{position.shares}</td>
+                <td>{num(position.cost_price)}</td>
+                {/* 没设止损标红，与迁移前一致 */}
+                <td className={position.stop_loss === null ? 'warnc' : undefined}>
+                  {num(position.stop_loss)}
+                </td>
+              </tr>
             )
           )}
         </tbody>
@@ -69,97 +69,107 @@ export function HoldingsTable ({ positions, busy, onUpdate, onSetStop, onRemove,
   )
 }
 
-function ViewRow ({ position, busy, onEdit, onRemove, onOpenChart }: {
-  position: Position
-  busy: boolean
-  onEdit: () => void
-  onRemove: () => void
-  onOpenChart: () => void
-}) {
+/**
+ * 编辑态的一行。失焦即保存 —— 每行再放一个「保存」按钮就回到了按钮太多的老问题。
+ */
+function EditRow ({ position, busy, onUpdate, onSetStop, onRemove, onError }: Props & { position: Position }) {
+  const [shares, setShares] = useState(String(position.shares))
+  const [cost, setCost] = useState(String(position.cost_price))
+  // 空字符串代表「清除止损」。
+  const [stop, setStop] = useState(position.stop_loss === null ? '' : String(position.stop_loss))
+
+  // 外部数据变了（比如刚保存完重拉）要同步回输入框，否则显示的是旧草稿。
+  useEffect(() => {
+    setShares(String(position.shares))
+    setCost(String(position.cost_price))
+    setStop(position.stop_loss === null ? '' : String(position.stop_loss))
+  }, [position.shares, position.cost_price, position.stop_loss])
+
+  const saving = busy === position.code
+
+  const commitAmounts = async () => {
+    const s = Number(shares)
+    const c = Number(cost)
+    if (s === position.shares && c === position.cost_price) return
+    // 与后端同规则的预校验，只为即时反馈；后端仍会自己校验。
+    if (!Number.isFinite(s) || s <= 0) { setShares(String(position.shares)); onError(t('portfolio.badShares')); return }
+    if (!Number.isFinite(c) || c <= 0) { setCost(String(position.cost_price)); onError(t('portfolio.badCost')); return }
+    await onUpdate(position.code, s, c)
+  }
+
+  const commitStop = async () => {
+    const trimmed = stop.trim()
+    const next = trimmed === '' ? null : Number(trimmed)
+    if (next === position.stop_loss) return
+    // 0 不是「清除」，是无效价格；想清除就把框留空。
+    if (next !== null && (!Number.isFinite(next) || next <= 0)) {
+      setStop(position.stop_loss === null ? '' : String(position.stop_loss))
+      onError(t('portfolio.badStop'))
+      return
+    }
+    await onSetStop(position.code, next)
+  }
+
   return (
-    <tr className="dtbl-row" title={t('charts.openChart')} onClick={onOpenChart}>
+    <tr className={saving ? 'pedit saving' : 'pedit'}>
       <td className="c">{position.code}</td>
       <td>{position.name || DASH}</td>
-      <td>{position.shares}</td>
-      <td>{num(position.cost_price)}</td>
-      {/* 没设止损时标红，与原表一致 */}
-      <td className={position.stop_loss === null ? 'warnc' : undefined}>{num(position.stop_loss)}</td>
-      <td className="pacts">
-        {/* stopPropagation：不然点按钮会连带触发整行的「打开 K 线」 */}
+      <td>
+        <Cell value={shares} onChange={setShares} onCommit={commitAmounts} disabled={saving} />
+      </td>
+      <td>
+        <Cell value={cost} onChange={setCost} onCommit={commitAmounts} disabled={saving} />
+      </td>
+      <td>
+        <Cell
+          value={stop}
+          onChange={setStop}
+          onCommit={commitStop}
+          disabled={saving}
+          placeholder={t('portfolio.stopPlaceholder')}
+        />
+      </td>
+      <td>
         <button
           type="button"
-          className="mbtn"
-          disabled={busy}
-          onClick={(e) => { e.stopPropagation(); onEdit() }}
+          className="prm"
+          disabled={saving}
+          title={t('portfolio.remove')}
+          aria-label={t('portfolio.remove')}
+          onClick={(e) => { e.stopPropagation(); void onRemove(position) }}
         >
-          {t('portfolio.edit')}
-        </button>
-        <button
-          type="button"
-          className="mbtn danger"
-          disabled={busy}
-          onClick={(e) => { e.stopPropagation(); onRemove() }}
-        >
-          {t('portfolio.remove')}
+          ×
         </button>
       </td>
     </tr>
   )
 }
 
-function EditRow ({ position, busy, onCancel, onSave }: {
-  position: Position
-  busy: boolean
-  onCancel: () => void
-  onSave: (shares: number, costPrice: number, stop: number | null) => Promise<void>
+function Cell ({ value, onChange, onCommit, disabled, placeholder }: {
+  value: string
+  onChange: (v: string) => void
+  onCommit: () => void | Promise<void>
+  disabled: boolean
+  placeholder?: string
 }) {
-  const [shares, setShares] = useState(String(position.shares))
-  const [cost, setCost] = useState(String(position.cost_price))
-  // 空字符串代表「清除止损」——后端现在支持 null 了。
-  const [stop, setStop] = useState(position.stop_loss === null ? '' : String(position.stop_loss))
-  const [error, setError] = useState('')
-
-  const submit = async () => {
-    const s = Number(shares)
-    const c = Number(cost)
-    // 与后端同规则的预校验，只为即时反馈；后端仍会自己再校验一遍。
-    if (!Number.isFinite(s) || s <= 0) { setError(t('portfolio.badShares')); return }
-    if (!Number.isFinite(c) || c <= 0) { setError(t('portfolio.badCost')); return }
-    const trimmed = stop.trim()
-    let nextStop: number | null = null
-    if (trimmed) {
-      const parsed = Number(trimmed)
-      // 0 不是「清除」，是无效价格 —— 想清除就把框留空。
-      if (!Number.isFinite(parsed) || parsed <= 0) { setError(t('portfolio.badStop')); return }
-      nextStop = parsed
-    }
-    setError('')
-    await onSave(s, c, nextStop)
-  }
-
   return (
-    <tr className="pedit">
-      <td className="c">{position.code}</td>
-      <td>{position.name || DASH}</td>
-      <td><input className="pin" value={shares} onChange={(e) => setShares(e.target.value)} /></td>
-      <td><input className="pin" value={cost} onChange={(e) => setCost(e.target.value)} /></td>
-      <td>
-        <input
-          className="pin"
-          value={stop}
-          placeholder={t('portfolio.stopPlaceholder')}
-          onChange={(e) => setStop(e.target.value)}
-        />
-      </td>
-      <td className="pacts">
-        <button type="button" className="mbtn" disabled={busy} onClick={() => void submit()}>
-          {busy ? t('portfolio.saving') : t('action.save')}
-        </button>
-        <button type="button" className="mbtn" disabled={busy} onClick={onCancel}>
-          {t('portfolio.cancel')}
-        </button>
-        {error ? <span className="snote err">{error}</span> : null}
-      </td>
-    </tr>
+    <input
+      className="pin"
+      value={value}
+      disabled={disabled}
+      placeholder={placeholder}
+      onClick={(e) => e.stopPropagation()}
+      onChange={(e) => onChange(e.target.value)}
+      onBlur={() => void onCommit()}
+      // 回车即提交：改完一格直接按回车比找鼠标快。
+      //
+      // 直接调 onCommit 而不是 .blur()：靠 blur 间接触发要依赖焦点真的移走，
+      // 而且随后的失焦还会再提交一次（第二次是空操作，但多一次往返）。
+      onKeyDown={(e) => {
+        if (e.key !== 'Enter') return
+        e.preventDefault()
+        void onCommit()
+      }}
+    />
   )
 }
