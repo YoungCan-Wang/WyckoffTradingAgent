@@ -106,17 +106,67 @@ def test_crash_day_missing_premarket_does_not_blame_the_data_pipeline() -> None:
     assert "禁买源自数据缺失" not in market_view
 
 
-def test_buy_block_caused_by_missing_data_says_so_in_guardrail_and_market_view() -> None:
+def test_buy_block_caused_by_missing_benchmark_says_so_in_guardrail_and_market_view() -> None:
+    """收盘基准缺失会落到 UNKNOWN 禁买，应明确归因于数据而非行情。
+
+    盘前缺失已改为回落 benchmark（不再单独禁买），所以归因用例改测 benchmark 空洞。
+    """
     _regime, guardrail_text, market_view = build_market_guardrail(
         trade_date="2026-07-21",
-        benchmark_context={"regime": "NEUTRAL"},
-        market_signal_row={"trade_date": "2026-07-21", "benchmark_regime": "NEUTRAL"},
+        benchmark_context=None,
+        market_signal_row={"trade_date": "2026-07-21", "premarket_regime": "NORMAL"},
         buy_block_regimes={"UNKNOWN"},
     )
 
+    assert _regime == "UNKNOWN"
     assert "数据缺失" in guardrail_text
-    assert "premarket_risk" in guardrail_text
     assert "禁买源自数据缺失" in market_view
+
+
+def test_guardrail_missing_premarket_falls_back_to_benchmark() -> None:
+    """生产入口不得在 resolve 前把空盘前压成 UNKNOWN，否则 #280 修复形同虚设。"""
+    regime, _guardrail_text, market_view = build_market_guardrail(
+        trade_date="2026-07-21",
+        benchmark_context={"regime": "CAUTION"},
+        market_signal_row={"trade_date": "2026-07-21", "benchmark_regime": "CAUTION"},
+        buy_block_regimes={"UNKNOWN", "NEUTRAL", "CRASH", "RISK_OFF", "BLACK_SWAN"},
+    )
+    assert regime == "CAUTION"
+    assert "禁买源自数据缺失" not in market_view
+
+
+def test_guardrail_data_gap_falls_back_like_missing_premarket() -> None:
+    """A50/VIX 取数失败写入 DATA_GAP 时，生产入口须与字段缺失同等回落。"""
+    from core.market_trade_mode import PREMARKET_DATA_GAP
+
+    regime, _guardrail_text, market_view = build_market_guardrail(
+        trade_date="2026-08-18",
+        benchmark_context={"regime": "CAUTION"},
+        market_signal_row={
+            "trade_date": "2026-08-18",
+            "benchmark_regime": "CAUTION",
+            "premarket_regime": PREMARKET_DATA_GAP,
+        },
+        buy_block_regimes={"UNKNOWN", "NEUTRAL", "CRASH", "RISK_OFF", "BLACK_SWAN"},
+    )
+    assert regime == "CAUTION"
+    assert "禁买源自数据缺失" not in market_view
+    assert f"盘前={PREMARKET_DATA_GAP}" in market_view
+
+
+def test_guardrail_explicit_unknown_still_blocks_via_production_entry() -> None:
+    regime, guardrail_text, _market_view = build_market_guardrail(
+        trade_date="2026-08-18",
+        benchmark_context={"regime": "CAUTION"},
+        market_signal_row={
+            "trade_date": "2026-08-18",
+            "benchmark_regime": "CAUTION",
+            "premarket_regime": "UNKNOWN",
+        },
+        buy_block_regimes={"UNKNOWN", "NEUTRAL", "CRASH", "RISK_OFF", "BLACK_SWAN"},
+    )
+    assert regime == "UNKNOWN"
+    assert "一票否决" in guardrail_text
 
 
 def test_buy_block_caused_by_real_market_stress_is_not_blamed_on_data() -> None:
