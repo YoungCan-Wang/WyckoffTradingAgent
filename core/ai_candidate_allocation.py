@@ -571,7 +571,7 @@ def _trigger_score(
     #
     # 注意本函数在回测 tradeable_l4 口径下不被触达（_select_candidate_entries
     # 提前 return），故该调整暂时只影响实盘。回测侧的根因是 detector 原始分数
-    # 单位混用，需独立修复——详见 docs/SCORING_SYSTEM_AUDIT_2026_08.md。
+    # 单位混用问题由回测侧的类内分位归一化独立处理。
     value += 12.0 * _signal_weight(weights, "spring", regime) if code in spring_hits else 0.0
     value += 30.0 * _signal_weight(weights, "lps", regime) if code in lps_hits else 0.0
     value += 12.0 * _signal_weight(weights, "evr", regime) if code in evr_hits else 0.0
