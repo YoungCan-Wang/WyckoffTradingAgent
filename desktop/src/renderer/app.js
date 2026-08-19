@@ -428,12 +428,31 @@ async function refreshApprovals () {
   chip.hidden = !count
 }
 
+/**
+ * 侧栏徽章。两个徽章的口径必须和它们各自那一页的口径一致 ——
+ * 徽章是那页内容的摘要，不是另一套数字。
+ *
+ * 之前两个徽章都显示「定时任务总数」，于是两处对不上：
+ * - 首页「启用计划」只数 enabled 的，两个任务都未启用时显示 0，
+ *   而侧栏徽章显示 2，看着像有两个在跑。
+ * - 「任务运行」页数的是 enabled + 待审批，与总数无关。
+ */
 async function refreshSchedules () {
   const data = await collect('schedules')
   if (!data) return
-  const count = (data.schedules || []).length
-  document.getElementById('schedule-count').textContent = count ? String(count) : ''
-  document.getElementById('task-count').textContent = count ? String(count) : ''
+  const schedules = data.schedules || []
+  const enabled = schedules.filter((item) => item.enabled).length
+  // 只有启用的才算「在跑」；未启用的任务不该催用户去看。
+  document.getElementById('schedule-count').textContent = enabled ? String(enabled) : ''
+
+  // 「任务运行」页把待审批也算进需要处理的量，徽章跟着同一口径。
+  const approvals = await collect('approve_list').catch(() => null)
+  const pending = (approvals && approvals.count) || 0
+  const attention = enabled + pending
+  const badge = document.getElementById('task-count')
+  badge.textContent = attention ? String(attention) : ''
+  // 有待审批时标红：那是真的在等人，跟「有几个计划开着」不同量级。
+  badge.classList.toggle('warn', pending > 0)
 }
 
 // The pane reports how many tabs it holds, so visibility follows content:
