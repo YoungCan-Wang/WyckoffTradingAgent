@@ -656,6 +656,30 @@ html.dark .berr-b { background: var(--paper2); }
 .attr-note {
   margin: 8px 0 0; font-size: 12px; line-height: 1.65; color: var(--tx3);
 }
+/* 调权表：12 条同构记录，对齐才比得出哪个信号更差 */
+.attr-tbl { margin-top: 10px; overflow-x: auto; }
+.attr-tbl table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.attr-tbl th, .attr-tbl td {
+  padding: 6px 10px; text-align: left;
+  border-bottom: 1px solid var(--line2); white-space: nowrap;
+}
+.attr-tbl th { color: var(--tx3); font-weight: 600; font-size: 11.5px; }
+.attr-tbl td.r, .attr-tbl th.r { text-align: right; font-variant-numeric: tabular-nums; }
+.attr-tbl code { font-family: var(--mono); font-size: 11.5px; }
+.attr-tbl .dim { color: var(--tx3); font-size: 11px; }
+.attr-tbl tr:hover td { background: var(--hover); }
+/* 加权/减权用与涨跌一致的色系，不另造一套语义 */
+.aw-up { color: var(--up-ink); font-weight: 600; }
+.aw-down { color: var(--dn-ink); font-weight: 600; }
+
+/* 历史报告：两行式，不复用 .task-row（那是三列网格，首列留给状态点） */
+.attr-hist { margin-top: 8px; }
+.attr-hist-row {
+  display: flex; align-items: baseline; gap: 12px;
+  padding: 7px 0; border-bottom: 1px solid var(--line2); font-size: 12.5px;
+}
+.attr-hist-row span { color: var(--tx3); font-size: 11.5px; }
+
 .attr-field {
   display: flex; align-items: center; gap: 10px;
   padding: 7px 0; border-bottom: 1px solid var(--line2);

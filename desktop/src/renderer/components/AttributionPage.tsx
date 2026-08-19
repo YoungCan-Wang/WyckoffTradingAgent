@@ -32,8 +32,21 @@ interface SignalAction {
   action?: string
   horizon?: string | number
   label?: string
+  target?: string
   weight_multiplier?: number
-  scope?: string
+  /**
+   * scope 是对象而不是字符串（实测始终是空 {}）。以前直接插进模板串，
+   * 于是界面上出现一串 [object Object] —— 现在不显示它，改显示 evidence
+   * 里的样本数与收益，那才是「为什么要调这个权重」的依据。
+   */
+  scope?: Record<string, unknown>
+  evidence?: {
+    count?: number
+    avg_return_pct?: number
+    win_rate_pct?: number
+    big_loss_rate_pct?: number
+    avg_drawdown_pct?: number
+  }
 }
 
 interface AttributionRecord {
@@ -57,6 +70,18 @@ interface AttributionData {
 
 const DASH = '—'
 const text = (value?: string) => (value && value.trim() ? value : DASH)
+
+const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
+const numText = (v: unknown, digits = 2) => (isNum(v) ? v.toFixed(digits) : DASH)
+const pctText = (v: unknown) => (isNum(v) ? `${v > 0 ? '+' : ''}${v.toFixed(2)}%` : DASH)
+/** 胜率这类比例：没有「正负」的含义，所以不带符号。 */
+const rateText = (v: unknown) => (isNum(v) ? `${v.toFixed(1)}%` : DASH)
+
+/** A 股惯例红涨绿跌；0 与缺失不着色。 */
+const moveClass = (v: unknown) => {
+  if (!isNum(v) || v === 0) return ''
+  return v > 0 ? 'trk-up' : 'trk-down'
+}
 
 export function AttributionPage () {
   const { data, loading, failed } = useIpc<AttributionData>('attribution', { limit: 10 })
@@ -120,32 +145,62 @@ export function AttributionPage () {
         {actions.length === 0 ? (
           <p className="attr-note">{t('attribution.noActions')}</p>
         ) : (
-          <div className="task-list">
-            {actions.map((action, index) => (
-              <div className="task-row" key={`${action.label || 'a'}-${index}`}>
-                <div className="task-title">{text(action.label)}</div>
-                <div className="task-meta">
-                  {text(action.action)}
-                  {action.horizon ? ` · h=${action.horizon}` : ''}
-                  {typeof action.weight_multiplier === 'number' ? ` · ×${action.weight_multiplier}` : ''}
-                  {action.scope ? ` · ${action.scope}` : ''}
-                </div>
-              </div>
-            ))}
+          /* 一张小表而不是卡片列表：12 条同构的记录，对齐了才比得出哪个信号更差。 */
+          <div className="attr-tbl">
+            <table>
+              <tbody>
+                <tr>
+                  <th>{t('attribution.signal')}</th>
+                  <th>{t('attribution.actionCol')}</th>
+                  <th className="r">{t('attribution.weight')}</th>
+                  <th className="r">{t('attribution.samples')}</th>
+                  <th className="r">{t('attribution.avgReturn')}</th>
+                  <th className="r">{t('attribution.winRate')}</th>
+                  <th className="r">{t('attribution.drawdown')}</th>
+                </tr>
+                {actions.map((action, index) => {
+                  const ev = action.evidence || {}
+                  return (
+                    <tr key={`${action.label || 'a'}-${index}`}>
+                      <td>
+                        <code>{text(action.label)}</code>
+                        {action.horizon ? <span className="dim"> h={action.horizon}</span> : null}
+                      </td>
+                      <td>
+                        <span className={action.action === 'upweight' ? 'aw-up' : 'aw-down'}>
+                          {t(`attribution.act.${action.action}`)}
+                        </span>
+                      </td>
+                      <td className="r">
+                        {typeof action.weight_multiplier === 'number' ? `×${action.weight_multiplier}` : DASH}
+                      </td>
+                      <td className="r">{numText(ev.count, 0)}</td>
+                      {/* 平均收益与回撤按 A 股惯例红涨绿跌着色 */}
+                      <td className={`r ${moveClass(ev.avg_return_pct)}`}>{pctText(ev.avg_return_pct)}</td>
+                      {/* 胜率是比例不是涨跌：不带正号，一位小数就够 */}
+                      <td className="r">{rateText(ev.win_rate_pct)}</td>
+                      <td className={`r ${moveClass(ev.avg_drawdown_pct)}`}>{pctText(ev.avg_drawdown_pct)}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
           </div>
         )}
       </Section>
 
       {records.length > 1 ? (
         <Section title={t('attribution.history')}>
-          <div className="task-list">
+          {/* 不用 .task-row：那个类是三列网格且首列留给状态点，没有点时
+              标题会被挤进 10px 的轨道里跟副文字叠在一起。 */}
+          <div className="attr-hist">
             {records.slice(1).map((record) => (
-              <div className="task-row" key={record.report_date}>
-                <div className="task-title">{text(record.report_date)}</div>
-                <div className="task-meta">
+              <div className="attr-hist-row" key={record.report_date}>
+                <b>{text(record.report_date)}</b>
+                <span>
                   {text(record.window_start)} ~ {text(record.window_end)}
                   {record.source !== 'remote' ? ` · ${t('attribution.localTag')}` : ''}
-                </div>
+                </span>
               </div>
             ))}
           </div>
