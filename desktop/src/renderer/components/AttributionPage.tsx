@@ -61,7 +61,8 @@ interface AttributionRecord {
    */
   policy_display?: PolicyDisplay
   execution_summary?: ExecutionSummary
-  operator_summary?: string
+  /** 摘要挂在 operations 下面，不在记录顶层。 */
+  operations?: { operator_summary?: string }
   remote_error?: string
   shadow?: { runs?: number; avg_added?: number; avg_removed?: number }
   signal_actions?: SignalAction[]
@@ -123,10 +124,14 @@ export function AttributionPage () {
   const actions = current.signal_actions || []
   const isLocal = current.source !== 'remote'
   const remoteError = current.remote_error || data.remote_error || ''
-  // 摘要：记录自带的优先；只有看最新那份时才回退到顶层 latest_operator_summary
-  // （后端只为最新一份算了它）。
+  // 摘要在 operations.operator_summary，不是记录顶层 —— 读顶层永远是 undefined，
+  // 切到历史日期后摘要会整段消失（最新那份靠顶层 latest_ 兜住了，所以这个错
+  // 只在历史日期上暴露）。
   const isLatest = current.report_date === records[0].report_date
-  const operatorSummary = current.operator_summary || (isLatest ? data.latest_operator_summary : '') || ''
+  const operatorSummary =
+    (current.operations && current.operations.operator_summary) ||
+    (isLatest ? data.latest_operator_summary : '') ||
+    ''
 
   return (
     <>

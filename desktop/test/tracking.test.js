@@ -126,3 +126,37 @@ test('代码显示：A 股补零，其他市场原样', () => {
   assert.equal(displayCode('00700.HK', 'hk'), '00700.HK')
   assert.equal(displayCode('AAPL.US', 'us'), 'AAPL.US')
 })
+
+// ---- 评审 P2-3：真实数据是按 recommend_date 倒序返回的 ----
+// 我原来的测试用了正序输入，所以没发现「只在遇到更晚记录时才合并」这个方向错误。
+
+test('去重：倒序输入（真实返回顺序）也保留最早推荐价', () => {
+  // 后端 order by recommend_date desc —— 第一条已经是最新的
+  const out = dedupeByCode([
+    row({ code: 'A', recommend_date: '20260818', recommend_price: 80, current_price: 90 }),
+    row({ code: 'A', recommend_date: '20260801', recommend_price: 50, current_price: 90 })
+  ])
+  assert.equal(out.length, 1)
+  assert.equal(out[0].recommend_date, '20260818', '展示主体应是最新那条')
+  assert.equal(out[0].recommend_price, 50, '推荐价必须是最早那次的，否则涨跌基准被重置')
+})
+
+test('去重：三条倒序也取最早的推荐价', () => {
+  const out = dedupeByCode([
+    row({ code: 'A', recommend_date: '20260818', recommend_price: 80 }),
+    row({ code: 'A', recommend_date: '20260810', recommend_price: 65 }),
+    row({ code: 'A', recommend_date: '20260801', recommend_price: 50 })
+  ])
+  assert.equal(out[0].recommend_price, 50)
+  assert.equal(out[0].recommend_date, '20260818')
+})
+
+test('去重：正序与倒序输入结果一致', () => {
+  // 顺序不该改变结论 —— 这是这个 bug 的本质
+  const a = row({ code: 'A', recommend_date: '20260818', recommend_price: 80 })
+  const b = row({ code: 'A', recommend_date: '20260801', recommend_price: 50 })
+  const desc = dedupeByCode([a, b])[0]
+  const asc = dedupeByCode([b, a])[0]
+  assert.equal(desc.recommend_price, asc.recommend_price)
+  assert.equal(desc.recommend_date, asc.recommend_date)
+})

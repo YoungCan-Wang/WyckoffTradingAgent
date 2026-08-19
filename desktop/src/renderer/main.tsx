@@ -12,7 +12,7 @@ import { SettingsPanel } from './components/SettingsPanel'
 import { TrackingPage } from './components/TrackingPage'
 import { AttributionPage } from './components/AttributionPage'
 import { PortfolioPage } from './components/PortfolioPage'
-import { clearCache, isPortfolioWriteTool } from './lib/portfolioCache'
+import { clearAllCaches, isPortfolioWriteTool } from './lib/portfolioCache'
 
 const roots = new WeakMap<Element, Root>()
 
@@ -98,7 +98,14 @@ declare global {
       portfolioPage: () => { node: HTMLElement; dispose: () => void }
       /** 对话里跑了改持仓的工具时调用，作废本地缓存。 */
       invalidatePortfolioCache: (toolName: string) => void
+      /** 登录态变化时调用：清掉所有账号的持仓缓存。 */
+      clearPortfolioCaches: () => void
     }
+    /**
+     * app.js 停放 hooks 的地方。两个脚本的执行顺序由 type="module" 决定，
+     * 不能靠「另一方已就绪」的假设来接线。
+     */
+    WyckoffPendingHooks?: Partial<SettingsHooks>
   }
 }
 
@@ -115,6 +122,19 @@ window.WyckoffReact = {
   attributionPage: () => mountPage(<AttributionPage />),
   portfolioPage: () => mountPage(<PortfolioPage />),
   invalidatePortfolioCache: (toolName: string) => {
-    if (isPortfolioWriteTool(toolName)) clearCache()
-  }
+    // 全清而不是只清当前账号：这里拿不到 user_id（同步调用），而缓存本来就是
+    // 可丢的。多清的代价是别的账号下次进页面重拉一次。
+    if (isPortfolioWriteTool(toolName)) clearAllCaches()
+  },
+  clearPortfolioCaches: clearAllCaches
+}
+
+// app.js 是普通脚本，会在这个 type="module" 之前跑完 —— 它那边的
+// `if (window.WyckoffReact)` 恒为假。所以由后就绪的一方（就是这里）主动取：
+// app.js 把 hooks 挂在 WyckoffPendingHooks 上等着。
+//
+// 漏了这一步的后果是静默的：设置页「退出登录」点了没反应，模型改了输入区的
+// 选择器不刷新，因为 React 一直在调默认的空函数。
+if (window.WyckoffPendingHooks) {
+  setHooks(window.WyckoffPendingHooks)
 }

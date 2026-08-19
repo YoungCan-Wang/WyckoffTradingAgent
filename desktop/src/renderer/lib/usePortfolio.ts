@@ -27,9 +27,21 @@ export function usePortfolio (): PortfolioState {
   // 卸载后不再 setState：页面切换比请求返回快时会警告。
   const alive = useRef(true)
 
+  /**
+   * 当前账号。缓存按它分区，所以读缓存之前必须先知道「我是谁」——
+   * 先读缓存再问账号的话，A 退出换 B 登录时 B 会看到 A 的持仓，而且因为命中
+   * 缓存不发请求，这个错永远不会被纠正。
+   */
+  const currentUser = useCallback(async (): Promise<string> => {
+    const res = await collect('account').catch(() => null)
+    return String((res as { user_id?: string } | null)?.user_id || '')
+  }, [])
+
   const fetchFresh = useCallback(async () => {
     setLoading(true)
     setFailed(false)
+    const uid = await currentUser()
+    if (!alive.current) return
     const res = await collect('portfolio').catch(() => null)
     if (!alive.current) return
     const next = res && (res as { portfolio?: Portfolio }).portfolio
@@ -38,25 +50,29 @@ export function usePortfolio (): PortfolioState {
       setLoading(false)
       return
     }
-    const entry = writeCache(next)
+    const entry = writeCache(uid, next)
     setPortfolio(next)
     setSavedAt(entry.savedAt)
     setLoading(false)
-  }, [])
+  }, [currentUser])
 
   useEffect(() => {
     alive.current = true
-    const cached = readCache()
-    if (cached) {
-      // 命中缓存就直接显示，不发 IPC —— 这正是「不要每次都重拉」。
-      setPortfolio(cached.portfolio)
-      setSavedAt(cached.savedAt)
-      setLoading(false)
-    } else {
-      void fetchFresh()
-    }
+    void (async () => {
+      const uid = await currentUser()
+      if (!alive.current) return
+      const cached = readCache(uid)
+      if (cached) {
+        // 命中缓存就直接显示，不发持仓 IPC —— 这正是「不要每次都重拉」。
+        setPortfolio(cached.portfolio)
+        setSavedAt(cached.savedAt)
+        setLoading(false)
+      } else {
+        void fetchFresh()
+      }
+    })()
     return () => { alive.current = false }
-  }, [fetchFresh])
+  }, [fetchFresh, currentUser])
 
   return { portfolio, savedAt, loading, failed, refresh: fetchFresh }
 }

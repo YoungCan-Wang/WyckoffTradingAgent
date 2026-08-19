@@ -1469,11 +1469,23 @@ function setMenu (open) {
   acctMenu.style.top = `${Math.max(8, r.top - acctMenu.offsetHeight - 6)}px`
 }
 
+// 上一次看到的账号。用来发现「换人了」——包括登录、退出、以及换个账号登录。
+let lastUserId = null
+
 async function loadAccount () {
   const data = await collect('account').catch(() => null)
   signedIn = Boolean(data && data.signed_in)
   const email = (data && data.email) || ''
   acctEmail = email
+
+  // 账号变了就清掉持仓缓存。挂在这里而不是只挂退出：登录、换账号登录都会走
+  // loadAccount，只在退出时清会漏掉「A 没退直接登 B」这种路径。
+  const uid = String((data && data.user_id) || '')
+  if (lastUserId !== null && lastUserId !== uid) {
+    const react = window.WyckoffReact
+    if (react && react.clearPortfolioCaches) react.clearPortfolioCaches()
+  }
+  lastUserId = uid
   const label = signedIn ? (email || t('account.signedIn')) : t('account.signedOut')
   const initial = email ? email[0] : '·'
 
@@ -1503,6 +1515,10 @@ async function doSignOut () {
     sysLine(t('signin.signoutFailed'), true)
     return
   }
+  // 退出即清掉所有账号的持仓缓存。缓存虽然已经按 user_id 分区，但登录态一变
+  // 就该清空：留着等于把上一个人的持仓存在这台机器上，换个账号进来就可能看到。
+  const react = window.WyckoffReact
+  if (react && react.clearPortfolioCaches) react.clearPortfolioCaches()
   await loadAccount()
   sysLine(t('signin.signedOutDone'))
 }
@@ -1568,12 +1584,21 @@ window.addEventListener('keydown', (e) => {
 
 // React 侧需要用到的、仍归 app.js 拥有的动作：系统消息要进对话流，
 // 退出登录要刷新侧栏并关掉设置面板。
-if (window.WyckoffReact) {
-  window.WyckoffReact.setHooks({
-    onMessage: (text, isError) => sysLine(text, Boolean(isError)),
-    onSignOut: () => { closeSettings(); doSignOut() },
-    onConfigChanged: () => { refreshModels() }
-  })
+//
+// 不能写成 `if (window.WyckoffReact) setHooks(...)`：app.js 是普通脚本，会在
+// type="module" 的 main.tsx 之前跑完，那个判断恒为假，于是 React 一直用着
+// 默认的空函数 —— 表现为设置页「退出登录」没反应、模型改了输入区不刷新。
+//
+// 改成把 hooks 挂到约定的全局上：谁先就绪都不影响。app.js 先跑就留在这里等
+// React 取；万一将来 React 先就绪，下面那次 setHooks 直接生效。
+const REACT_HOOKS = {
+  onMessage: (text, isError) => sysLine(text, Boolean(isError)),
+  onSignOut: () => { closeSettings(); doSignOut() },
+  onConfigChanged: () => { refreshModels() }
+}
+window.WyckoffPendingHooks = REACT_HOOKS
+if (window.WyckoffReact && window.WyckoffReact.setHooks) {
+  window.WyckoffReact.setHooks(REACT_HOOKS)
 }
 
 // Paint the static HTML in the resolved language before anything else shows.

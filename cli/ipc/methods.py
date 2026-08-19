@@ -118,6 +118,25 @@ def portfolio(_params: dict[str, Any]) -> Iterator[Event]:
 _PORTFOLIO_ACTIONS = frozenset({"add", "update", "remove", "set_cash"})
 
 
+def _exact_shares(raw: Any) -> int:
+    """
+    股数必须是整数，小数一律拒绝。
+
+    原来直接 int(raw)：输入 1.9 会被静默写成 1 —— 悄悄改掉用户填的数字比报错
+    危险得多，他以为记的是 1.9，账面上是 1，对不上账时也查不出是哪一步丢的。
+    即便产品只支持整股，也该说「不行」，而不是替他改。
+    """
+    if raw is None or raw == "":
+        return 0
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        raise MethodError("invalid_params", f"股数不是数字：{raw!r}") from None
+    if value != int(value):
+        raise MethodError("invalid_params", f"股数必须是整数，收到 {raw}")
+    return int(value)
+
+
 def _portfolio_write_failed(result: dict[str, Any]) -> str:
     """
     判断一次写入是否失败，失败则返回原因。
@@ -154,7 +173,7 @@ def portfolio_edit(params: dict[str, Any]) -> Iterator[Event]:
         action=action,
         code=str(params.get("code") or ""),
         name=str(params.get("name") or ""),
-        shares=int(params.get("shares") or 0),
+        shares=_exact_shares(params.get("shares")),
         cost_price=float(params.get("cost_price") or 0),
         buy_dt=str(params.get("buy_dt") or ""),
         free_cash=float(params.get("free_cash") or 0),

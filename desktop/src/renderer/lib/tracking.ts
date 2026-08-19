@@ -45,10 +45,18 @@ export function dedupeByCode (rows: TrackRecord[]): TrackRecord[] {
       byCode.set(key, row)
       continue
     }
-    const newer = String(row.recommend_date || '') > String(prev.recommend_date || '')
-    if (!newer) continue
-    // 换成更新那条，但保留最早的推荐价。
-    byCode.set(key, { ...row, recommend_price: prev.recommend_price ?? row.recommend_price })
+    // 两个方向都要处理。后端按 recommend_date 倒序返回，也就是先遇到的那条
+    // 已经是最新的 —— 只在「后来的更新」时合并，等于永远走不到合并分支，
+    // 最早的推荐价拿不回来，重复推荐会把展示基准重置成最近一次的价格。
+    const date = String(row.recommend_date || '')
+    const prevDate = String(prev.recommend_date || '')
+    // 取更新那条作为展示主体，推荐价取更早那条 —— 那才是「推荐时的价格」。
+    const newer = date > prevDate ? row : prev
+    const older = date > prevDate ? prev : row
+    byCode.set(key, {
+      ...newer,
+      recommend_price: older.recommend_price ?? newer.recommend_price
+    })
   }
   return [...byCode.values()]
 }

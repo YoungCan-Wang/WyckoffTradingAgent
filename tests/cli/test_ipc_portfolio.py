@@ -206,3 +206,40 @@ class TestToolRegistryAccessor:
         from agents.tool_context import has_cloud
 
         assert has_cloud(context) is True
+
+
+class TestSharesMustBeExact:
+    """
+    小数股数要明确拒绝，不能静默截断。
+
+    原来是 int(params["shares"])：输入 1.9 会被悄悄写成 1。改掉用户填的数字比
+    报错危险得多 —— 他以为记的是 1.9，账面是 1，对不上账时也查不出哪一步丢的。
+    """
+
+    @pytest.mark.parametrize("given", [1.9, 0.5, "2.5", -1.5, 100.0001])
+    def test_fractional_is_rejected(self, given: Any) -> None:
+        with pytest.raises(MethodError) as excinfo:
+            list(methods.dispatch("portfolio_edit", {"action": "add", "code": "600519", "shares": given}))
+        assert excinfo.value.code == "invalid_params"
+        assert "整数" in excinfo.value.message
+
+    @pytest.mark.parametrize(("given", "expected"), [(100, 100), ("200", 200), (3.0, 3), ("4.0", 4)])
+    def test_integral_values_pass_through(self, given: Any, expected: int) -> None:
+        """3.0 是整数，只是写成了浮点 —— 这种该放过去。"""
+        from cli.ipc.methods import _exact_shares
+
+        assert _exact_shares(given) == expected
+
+    @pytest.mark.parametrize("given", ["abc", "1e", {}, []])
+    def test_non_numeric_is_rejected(self, given: Any) -> None:
+        from cli.ipc.methods import _exact_shares
+
+        with pytest.raises(MethodError):
+            _exact_shares(given)
+
+    @pytest.mark.parametrize("given", [None, "", 0])
+    def test_missing_becomes_zero(self, given: Any) -> None:
+        """没填就是 0，交给下游按各自的 action 规则校验。"""
+        from cli.ipc.methods import _exact_shares
+
+        assert _exact_shares(given) == 0
