@@ -203,7 +203,6 @@ def tracking(params: dict[str, Any]) -> Iterator[Event]:
     """
     from agents.history_tools import query_history
     from cli.ipc.session import get_session
-
     from integrations.supabase_recommendation import RECOMMENDATION_TABLES
 
     # 三个市场是三张表，切市场必须重查。在这里就把市场收敛到白名单里 ——
