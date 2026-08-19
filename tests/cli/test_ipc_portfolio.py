@@ -243,3 +243,66 @@ class TestSharesMustBeExact:
         from cli.ipc.methods import _exact_shares
 
         assert _exact_shares(given) == 0
+
+
+class TestIdentitySync:
+    """
+    account 每次读磁盘，而 ToolRegistry 是 start() 时用当时的 token 建的。
+    两者分叉时 portfolio 返回的是**上一个账号**的持仓，却会被前端当成当前账号
+    的数据缓存起来 —— 比不隔离更糟，因为看起来是隔离好的。
+    """
+
+    def test_sync_identity_rebuilds_on_account_change(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from cli.ipc import session as S
+
+        sess = S.DesktopSession()
+        sess._user_id = "user-A"
+        sess._tools = object()
+        sess._messages = [{"role": "user", "content": "A 的对话"}]
+        monkeypatch.setattr(S, "_load_session", lambda: {"user_id": "user-B", "access_token": "tokB"})
+
+        assert sess.sync_identity() is True
+        assert sess.user_id == "user-B"
+        # 换人了，上一个账号的历史不能留给新账号
+        assert sess._messages == []
+
+    def test_sync_identity_is_noop_when_same(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """身份没变就别重建：ToolRegistry 带着待审批队列和 MCP 连接。"""
+        from cli.ipc import session as S
+
+        sess = S.DesktopSession()
+        sess._user_id = "user-A"
+        sentinel = object()
+        sess._tools = sentinel
+        sess._messages = [{"role": "user", "content": "保留"}]
+        monkeypatch.setattr(S, "_load_session", lambda: {"user_id": "user-A", "access_token": "tokA"})
+
+        assert sess.sync_identity() is False
+        assert sess._tools is sentinel
+        assert sess._messages != []
+
+    def test_portfolio_reports_account_it_actually_used(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """
+        前端拿这个 user_id 当缓存 key。不回传的话它只能用 account 问来的账号，
+        那正是「key 写着 B、内容是 A」的成因。
+        """
+        calls: list[str] = []
+
+        class FakeSession:
+            tool_context = None
+            user_id = "user-A"
+
+            def sync_identity(self) -> bool:
+                calls.append("synced")
+                return False
+
+        monkeypatch.setattr(
+            "agents.portfolio_tools.portfolio",
+            lambda mode="view", tool_context=None: {"positions": [], "free_cash": 0},
+        )
+        monkeypatch.setattr("cli.ipc.session.get_session", lambda: FakeSession())
+
+        out = _result("portfolio")
+
+        assert calls == ["synced"], "读持仓前必须先对齐身份"
+        assert out["user_id"] == "user-A"

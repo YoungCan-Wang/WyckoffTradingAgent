@@ -160,3 +160,58 @@ test('去重：正序与倒序输入结果一致', () => {
   assert.equal(desc.recommend_price, asc.recommend_price)
   assert.equal(desc.recommend_date, asc.recommend_date)
 })
+
+// ---- 复查 P2-3：换了基准价，涨跌必须跟着重算 ----
+// 只换 recommend_price 会得到自相矛盾的一行：50 → 90 却显示 +12.5%。
+
+test('去重：换基准价后重算涨跌', () => {
+  const out = dedupeByCode([
+    row({ code: 'A', recommend_date: '20260818', recommend_price: 80, current_price: 90, pnl_pct: 12.5 }),
+    row({ code: 'A', recommend_date: '20260801', recommend_price: 50, current_price: 90, pnl_pct: 80 })
+  ])
+  assert.equal(out[0].recommend_price, 50)
+  // (90-50)/50 = +80%，不是后端按 80 算出来的 +12.5%
+  assert.ok(Math.abs(out[0].pnl_pct - 80) < 1e-9, `涨跌是 ${out[0].pnl_pct}，与 50→90 对不上`)
+})
+
+test('去重：换基准后极值置空而不是留旧值', () => {
+  // max/min 是原记录窗口内的极值，换了起点就无从推算 —— 宁可显示破折号
+  const out = dedupeByCode([
+    row({ code: 'A', recommend_date: '20260818', recommend_price: 80, max_pnl_pct: 15, min_pnl_pct: -2 }),
+    row({ code: 'A', recommend_date: '20260801', recommend_price: 50, max_pnl_pct: 40, min_pnl_pct: -5 })
+  ])
+  assert.equal(out[0].max_pnl_pct, null)
+  assert.equal(out[0].min_pnl_pct, null)
+})
+
+test('去重：基准价没变就不动后端算好的字段', () => {
+  const out = dedupeByCode([
+    row({ code: 'A', recommend_date: '20260818', recommend_price: 50, pnl_pct: 80, max_pnl_pct: 40 }),
+    row({ code: 'A', recommend_date: '20260801', recommend_price: 50, pnl_pct: 80, max_pnl_pct: 40 })
+  ])
+  assert.equal(out[0].pnl_pct, 80)
+  assert.equal(out[0].max_pnl_pct, 40, '基准没变时不该把极值抹掉')
+})
+
+test('去重：只有一条推荐时完全不改动', () => {
+  const only = row({ code: 'A', recommend_price: 80, pnl_pct: 12.5, max_pnl_pct: 15 })
+  const out = dedupeByCode([only])
+  assert.equal(out[0].pnl_pct, 12.5)
+  assert.equal(out[0].max_pnl_pct, 15)
+})
+
+test('去重：现价缺失时涨跌置空而不是算出 NaN', () => {
+  const out = dedupeByCode([
+    row({ code: 'A', recommend_date: '20260818', recommend_price: 80, current_price: null }),
+    row({ code: 'A', recommend_date: '20260801', recommend_price: 50, current_price: null })
+  ])
+  assert.equal(out[0].pnl_pct, null)
+})
+
+test('去重：基准价为 0 不产生 Infinity', () => {
+  const out = dedupeByCode([
+    row({ code: 'A', recommend_date: '20260818', recommend_price: 80, current_price: 90 }),
+    row({ code: 'A', recommend_date: '20260801', recommend_price: 0, current_price: 90 })
+  ])
+  assert.equal(out[0].pnl_pct, null, '除以 0 应置空')
+})

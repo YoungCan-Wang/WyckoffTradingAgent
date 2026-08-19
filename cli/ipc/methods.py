@@ -108,7 +108,22 @@ def portfolio(_params: dict[str, Any]) -> Iterator[Event]:
     from agents.portfolio_tools import portfolio as portfolio_tool
     from cli.ipc.session import get_session
 
-    yield _ok(portfolio=portfolio_tool(mode="view", tool_context=get_session().tool_context))
+    session = get_session()
+    # 磁盘上的登录态可能已经变了（换账号登录），而 ToolRegistry 是 start() 时
+    # 建的。不对齐的话这里返回的是上一个账号的持仓 —— 前端会把它当成当前账号的
+    # 数据缓存起来。
+    #
+    # 用 getattr 而不是直接调用：会话还没起来时（或测试里的替身）不该整个面板
+    # 报错，宁可读到匿名结果。
+    sync = getattr(session, "sync_identity", None)
+    if callable(sync):
+        sync()
+    # 回传实际读取所用的账号。前端拿它做缓存 key，绝不能用「它自己以为的」账号：
+    # 那正是缓存 key 写着 B、内容却是 A 的成因。
+    yield _ok(
+        portfolio=portfolio_tool(mode="view", tool_context=session.tool_context),
+        user_id=str(getattr(session, "user_id", "") or ""),
+    )
 
 
 # 桌面端允许的持仓写入动作。

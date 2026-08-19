@@ -1484,6 +1484,10 @@ async function loadAccount () {
   if (lastUserId !== null && lastUserId !== uid) {
     const react = window.WyckoffReact
     if (react && react.clearPortfolioCaches) react.clearPortfolioCaches()
+    // 还要通知已经挂载的页面把 state 也清掉。只清缓存挡得住「下次进页面」，
+    // 挡不住「此刻正看着持仓页」—— 在持仓页上开设置退出登录，关掉设置后
+    // 屏幕上还是上一个账号的仓位。
+    window.dispatchEvent(new CustomEvent('wyckoff:account-changed', { detail: { userId: uid } }))
   }
   lastUserId = uid
   const label = signedIn ? (email || t('account.signedIn')) : t('account.signedOut')

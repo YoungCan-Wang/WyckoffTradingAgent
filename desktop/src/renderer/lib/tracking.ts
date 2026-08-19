@@ -53,12 +53,36 @@ export function dedupeByCode (rows: TrackRecord[]): TrackRecord[] {
     // 取更新那条作为展示主体，推荐价取更早那条 —— 那才是「推荐时的价格」。
     const newer = date > prevDate ? row : prev
     const older = date > prevDate ? prev : row
-    byCode.set(key, {
-      ...newer,
-      recommend_price: older.recommend_price ?? newer.recommend_price
-    })
+    byCode.set(key, withBasePrice(newer, older.recommend_price))
   }
   return [...byCode.values()]
+}
+
+/**
+ * 换掉基准价之后，涨跌必须跟着重算。
+ *
+ * 只换 recommend_price 会得到自相矛盾的一行：基准显示 50、现价 90，涨跌却还是
+ * 后端按 80 算出来的 +12.5%（真实应为 +80%）。而这一行恰恰出现在「重复推荐」
+ * 这个我们想修的场景里 —— 数字对不上账，用户没法判断该信哪个。
+ *
+ * pnl_pct 只依赖现价，能精确重算。max/min 是那条记录窗口内的极值，改了基准和
+ * 起点之后无从推算（中间的价格路径我们没有），所以置空显示破折号 —— 宁可说
+ * 「不知道」，也不要给一个换了基准就不成立的数字。
+ */
+function withBasePrice (record: TrackRecord, basePrice: number | null): TrackRecord {
+  const base = basePrice ?? record.recommend_price
+  // 基准没变（只有一条推荐，或两条价格相同）就原样返回，不动后端算好的字段。
+  if (base === record.recommend_price) return record
+
+  const current = record.current_price
+  const canCompute = isNum(base) && base !== 0 && isNum(current)
+  return {
+    ...record,
+    recommend_price: base,
+    pnl_pct: canCompute ? ((current - base) / base) * 100 : null,
+    max_pnl_pct: null,
+    min_pnl_pct: null
+  }
 }
 
 /**

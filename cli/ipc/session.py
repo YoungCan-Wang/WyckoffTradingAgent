@@ -134,6 +134,49 @@ class DesktopSession:
             return 0.0
 
     @property
+    def user_id(self) -> str:
+        """这个会话的工具实际在用哪个账号 —— 不是磁盘上当前的登录态。"""
+        return self._user_id
+
+    def sync_identity(self) -> bool:
+        """
+        把工具上下文对齐到磁盘上当前的登录态，换了账号返回 True。
+
+        为什么需要它：ToolRegistry 是 start() 时用当时的 token 建的，之后一直
+        不变。而 account 方法每次都读磁盘。两者一旦分叉，portfolio 返回的是
+        **上一个账号**的持仓，却被当成当前账号的数据缓存起来 —— 比不隔离更糟，
+        因为看起来是隔离好的。
+
+        只在身份变化时重建 ToolRegistry：它带着确认回调和 MCP 管理器，无条件
+        重建会把待审批状态和 MCP 连接一起丢掉。
+        """
+        from cli.tools import ToolRegistry
+
+        session = _load_session()
+        next_user = str(session.get("user_id") or "")
+        if next_user == self._user_id:
+            return False
+
+        logger.info("desktop session identity changed; rebuilding tool registry")
+        self._user_id = next_user
+        tools = ToolRegistry(
+            user_id=next_user,
+            access_token=str(session.get("access_token") or ""),
+            refresh_token=str(session.get("refresh_token") or ""),
+        )
+        if self._provider is not None:
+            tools.set_provider(self._provider)
+        tools.set_confirm_callback(self._confirm)
+        tools.set_ask_user_question_callback(self._ask)
+        if self._mcp_manager is not None:
+            tools.set_mcp_manager(self._mcp_manager)
+        self._tools = tools
+        # 换人了，上一个账号的对话历史和待审批不能留给新账号。
+        self._messages = []
+        self._pending_confirms = []
+        return True
+
+    @property
     def tool_context(self) -> Any:
         """
         工具执行上下文（含登录 token）。

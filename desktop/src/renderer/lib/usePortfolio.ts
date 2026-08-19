@@ -31,6 +31,10 @@ export function usePortfolio (): PortfolioState {
    * 当前账号。缓存按它分区，所以读缓存之前必须先知道「我是谁」——
    * 先读缓存再问账号的话，A 退出换 B 登录时 B 会看到 A 的持仓，而且因为命中
    * 缓存不发请求，这个错永远不会被纠正。
+   *
+   * 注意这只用于**读**缓存。写缓存必须用 portfolio 回传的 user_id ——
+   * account 读的是磁盘上的登录态，portfolio 用的是会话里的工具上下文，两者
+   * 可能不是同一个账号。用前者当 key 会把 A 的持仓存成 B 的。
    */
   const currentUser = useCallback(async (): Promise<string> => {
     const res = await collect('account').catch(() => null)
@@ -40,21 +44,21 @@ export function usePortfolio (): PortfolioState {
   const fetchFresh = useCallback(async () => {
     setLoading(true)
     setFailed(false)
-    const uid = await currentUser()
-    if (!alive.current) return
     const res = await collect('portfolio').catch(() => null)
     if (!alive.current) return
-    const next = res && (res as { portfolio?: Portfolio }).portfolio
+    const payload = res as { portfolio?: Portfolio; user_id?: string } | null
+    const next = payload && payload.portfolio
     if (!next) {
       setFailed(true)
       setLoading(false)
       return
     }
-    const entry = writeCache(uid, next)
+    // 用后端回传的账号，不是我们自己问来的那个 —— 这份数据实际属于谁只有它知道。
+    const entry = writeCache(String(payload.user_id || ''), next)
     setPortfolio(next)
     setSavedAt(entry.savedAt)
     setLoading(false)
-  }, [currentUser])
+  }, [])
 
   useEffect(() => {
     alive.current = true
@@ -73,6 +77,23 @@ export function usePortfolio (): PortfolioState {
     })()
     return () => { alive.current = false }
   }, [fetchFresh, currentUser])
+
+  /**
+   * 登录态变了：把已经渲染出来的持仓从 state 里也清掉，然后重拉。
+   *
+   * 只清 localStorage 不够 —— 在持仓页上打开设置、退出登录、关掉设置，页面
+   * 从没卸载过，React state 里还是上一个账号的仓位，一直显示到手动刷新或
+   * 切页面为止。清缓存只挡住了「下次进页面」，挡不住「此刻正看着」。
+   */
+  useEffect(() => {
+    const onIdentityChange = () => {
+      setPortfolio(null)
+      setSavedAt(null)
+      void fetchFresh()
+    }
+    window.addEventListener('wyckoff:account-changed', onIdentityChange)
+    return () => window.removeEventListener('wyckoff:account-changed', onIdentityChange)
+  }, [fetchFresh])
 
   return { portfolio, savedAt, loading, failed, refresh: fetchFresh }
 }
