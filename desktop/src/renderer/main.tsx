@@ -8,11 +8,36 @@
  */
 import type { ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import {
+  Briefcase,
+  CalendarClock,
+  createIcons,
+  FileChartColumnIncreasing,
+  GitBranch,
+  ListChecks,
+  Radar,
+  ShieldCheck,
+  Sparkles
+} from 'lucide'
 import { SettingsPanel } from './components/SettingsPanel'
 import { TrackingPage } from './components/TrackingPage'
 import { AttributionPage } from './components/AttributionPage'
 import { PortfolioPage } from './components/PortfolioPage'
 import { clearAllCaches, isPortfolioWriteTool } from './lib/portfolioCache'
+
+// 与 Web 端共用 Lucide 的细线语言。只传侧栏实际使用的图标，避免整套图标进入包。
+createIcons({
+  icons: {
+    Briefcase,
+    CalendarClock,
+    FileChartColumnIncreasing,
+    GitBranch,
+    ListChecks,
+    Radar,
+    ShieldCheck,
+    Sparkles
+  }
+})
 
 const roots = new WeakMap<Element, Root>()
 

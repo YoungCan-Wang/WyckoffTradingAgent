@@ -169,7 +169,12 @@ body {
 }
 .nv:hover { background: var(--hover); }
 .nv.on { background: var(--active); font-weight: 600; }
-.nv .g { width: 14px; text-align: center; color: #7d7a73; font-size: 12px; }
+.nv .nav-icon {
+  width: 17px; height: 17px; flex: none; color: var(--tx3);
+  stroke-width: 1.7; transition: color .15s ease, transform .15s ease;
+}
+.nv:hover .nav-icon { color: var(--tx2); }
+.nv.on .nav-icon { color: var(--tx); transform: scale(1.03); }
 .nv .n { margin-left: auto; color: var(--tx3); font-size: 11px; }
 .nv .n.warn { color: var(--clay); font-weight: 600; }
 
