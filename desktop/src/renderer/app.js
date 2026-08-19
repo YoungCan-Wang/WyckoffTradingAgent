@@ -12,6 +12,10 @@ const btnSend = document.getElementById('btn-send')
 const btnRestart = document.getElementById('btn-restart')
 const paneBody = document.getElementById('pane-body')
 const win = document.querySelector('.win')
+const sideButton = document.getElementById('btn-side')
+const sideSlot = document.getElementById('side-toggle-slot')
+const threadSideSlot = document.getElementById('thread-toggle-slot')
+const viewTitle = document.getElementById('view-title')
 
 let ready = false
 let busy = false
@@ -28,7 +32,14 @@ window.addEventListener('resize', () => syncBrowserBounds())
 
 function setSide (on) {
   win.classList.toggle('side-off', !on)
-  document.getElementById('btn-side').classList.toggle('on', on)
+  // Codex uses one sidebar control and relocates it with the panel: inside the
+  // sidebar while open, back in the thread toolbar while closed. Keeping one
+  // real button also avoids duplicate tab stops and conflicting active states.
+  const targetSlot = on ? sideSlot : threadSideSlot
+  targetSlot.appendChild(sideButton)
+  const titleKey = on ? 'tooltip.sidebarHide' : 'tooltip.sidebarShow'
+  sideButton.dataset.i18nTitle = titleKey
+  sideButton.title = t(titleKey)
   try { localStorage.setItem(SIDE_KEY, on ? '1' : '0') } catch { /* private mode */ }
   // The sidebar animates; re-sync after the transition settles.
   setTimeout(syncBrowserBounds, 220)
@@ -42,7 +53,13 @@ function setPane (on) {
 }
 
 setSide((() => {
-  try { return localStorage.getItem(SIDE_KEY) === '1' } catch { return false }
+  try {
+    const saved = localStorage.getItem(SIDE_KEY)
+    if (saved !== null) return saved === '1'
+  } catch { /* private mode */ }
+  // A regular desktop window has room for navigation; compact windows start
+  // content-first. Once chosen, the user's preference wins on later launches.
+  return window.innerWidth >= 1180
 })())
 setPane(false)
 
@@ -476,7 +493,13 @@ async function refreshSchedules () {
 // it appears when something opens and disappears when the last tab closes.
 // Every open path gets this for free instead of toggling at each call site.
 const pane = new window.WyckoffTabs.TabPane('tabs', 'pane-body', {
-  onCountChange: (count) => setPane(count > 0)
+  onCountChange: (count) => {
+    const hasArtifacts = count > 0
+    document.getElementById('mi-pane').hidden = !hasArtifacts
+    document.getElementById('pane-menu-sep').hidden = !hasArtifacts
+    if (hasArtifacts) setPane(true)
+    else setPane(false)
+  }
 })
 
 function buildApprovals (data, account) {
@@ -1104,6 +1127,11 @@ function selectNav (view) {
 
 function navigateView (view) {
   selectNav(view)
+  const selected = document.querySelector(`.nv[data-view="${view}"] [data-i18n]`)
+  if (selected) {
+    viewTitle.dataset.i18n = selected.dataset.i18n
+    viewTitle.textContent = t(selected.dataset.i18n)
+  }
   if (view === 'chat') showChat()
   else showPage(view)
 }
@@ -1205,10 +1233,7 @@ const menuAction = (fn) => () => { setOpenMenu(false); fn() }
 document.getElementById('mi-chart').onclick = menuAction(openSymBox)
 document.getElementById('mi-reports').onclick = menuAction(() => navigateView('reports'))
 document.getElementById('mi-browser').onclick = menuAction(openBrowser)
-document.getElementById('mi-pane').onclick = menuAction(() => {
-  if (win.classList.contains('pane-on')) pane.closeAll()
-  else setPane(true)
-})
+document.getElementById('mi-pane').onclick = menuAction(() => togglePane())
 // The chip is a shortcut to the approvals page; keep the sidebar in sync so
 // the highlighted nav item always matches what is on screen.
 document.getElementById('pending-chip').onclick = () => {
@@ -1543,15 +1568,22 @@ window.addEventListener('keydown', (e) => {
   else if (!openMenu.hidden) setOpenMenu(false)
 })
 
-document.getElementById('btn-side').onclick = () =>
+sideButton.onclick = () =>
   setSide(win.classList.contains('side-off'))
 
 const togglePane = () => {
-  // An empty pane holding stale tab headers is worse than no pane, so toggling
-  // off closes its tabs. Reopening comes from content.
-  if (win.classList.contains('pane-on')) pane.closeAll()
-  else setPane(true)
+  if (win.classList.contains('pane-on')) {
+    // Collapsing is reversible: Codex keeps the current artifact around rather
+    // than making a layout control silently destroy the user's tabs.
+    setPane(false)
+    return
+  }
+  if (!pane.count()) return
+  setPane(true)
+  pane.showActive()
 }
+
+document.getElementById('btn-pane').onclick = () => setPane(false)
 
 // Dismiss the open menu on any outside click, like the account menu.
 window.addEventListener('click', () => { if (!openMenu.hidden) setOpenMenu(false) })

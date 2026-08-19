@@ -12,7 +12,10 @@
 <body>
 <div class="win">
   <aside class="side" id="side">
-    <div class="brand">Wyckoff <span class="cv">⌄</span></div>
+    <div class="side-titlebar">
+      <div class="brand">Wyckoff <span class="cv">⌄</span></div>
+      <span class="side-toggle-slot" id="side-toggle-slot"></span>
+    </div>
     <button class="side-new" id="btn-new-analysis" type="button" data-i18n="nav.newAnalysis">开始分析</button>
     <nav class="nav" data-i18n-aria-label="nav.primary" aria-label="主导航">
       <div class="nav-group">
@@ -44,7 +47,13 @@
 
   <main class="thread">
     <header class="ttop">
-      <button class="icb" id="btn-side" data-i18n-title="tooltip.sidebar" title="侧栏 ⌘B">◧</button>
+      <span class="side-toggle-slot" id="thread-toggle-slot">
+        <button class="icb side-toggle" id="btn-side" type="button" data-i18n-title="tooltip.sidebarShow" title="展开侧栏 ⌘B">
+          <i class="side-toggle-open" data-lucide="panel-left-open" aria-hidden="true"></i>
+          <i class="side-toggle-close" data-lucide="panel-left-close" aria-hidden="true"></i>
+        </button>
+      </span>
+      <div class="ttitle" id="view-title" data-i18n="nav.today">今天</div>
       <div class="tools">
         <button class="chip" id="pending-chip" hidden data-i18n-title="tooltip.pending" title="查看待批准操作"></button>
         <!-- A backend-status dot lives here only while the local Python process
@@ -103,7 +112,12 @@
   </main>
 
   <aside class="pane" id="pane">
-    <div class="tabs" id="tabs"></div>
+    <div class="pane-top">
+      <div class="tabs" id="tabs"></div>
+      <button class="icb pane-toggle" id="btn-pane" type="button" data-i18n-title="tooltip.paneHide" title="收起产物面板 ⌘⌥B">
+        <i data-lucide="panel-right-close" aria-hidden="true"></i>
+      </button>
+    </div>
     <div class="pane-body" id="pane-body"></div>
   </aside>
 </div>
@@ -139,8 +153,8 @@
   <button class="menu-i" id="mi-browser" role="menuitem">
     <span class="menu-g">◍</span><span data-i18n="menu.browser">浏览器</span><span class="menu-k">⌘T</span>
   </button>
-  <div class="menu-sep"></div>
-  <button class="menu-i" id="mi-pane" role="menuitem">
+  <div class="menu-sep" id="pane-menu-sep" hidden></div>
+  <button class="menu-i" id="mi-pane" role="menuitem" hidden>
     <span class="menu-g">◨</span><span data-i18n="menu.pane">产物面板</span><span class="menu-k">⌘⌥B</span>
   </button>
 </div>

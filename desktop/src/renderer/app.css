@@ -146,8 +146,15 @@ body {
 .win.side-off .side {
   width: 0; border-right: 0; opacity: 0; pointer-events: none;
 }
-.brand { padding: 34px 16px 10px; font-size: 14.5px; font-weight: 600; }
+.side-titlebar {
+  min-height: 62px; padding: 34px 10px 8px 16px;
+  display: flex; align-items: center; gap: 8px;
+  -webkit-app-region: drag;
+}
+.brand { flex: 1; min-width: 0; font-size: 14.5px; font-weight: 600; }
 .brand .cv { color: var(--tx3); font-size: 10px; font-weight: 400; }
+.side-toggle-slot { display: inline-flex; align-items: center; flex: none; }
+.side-toggle-slot:empty { display: none; }
 .side-new {
   margin: 0 10px 14px; padding: 8px 11px; border: 1px solid var(--line);
   border-radius: 8px; background: var(--paper); color: var(--tx);
@@ -212,6 +219,10 @@ body {
   border-bottom: 1px solid var(--line2);
   -webkit-app-region: drag;
 }
+.ttitle {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--tx2); font-size: 12.5px; font-weight: 600;
+}
 .ttop h2 {
   margin: 0; font: 600 14px/1.3 inherit;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -237,6 +248,16 @@ body {
   -webkit-app-region: no-drag; line-height: 1;
 }
 .icb:hover { color: var(--tx); background: #edece7; }
+html.dark .icb:hover { background: var(--hover); }
+.side-toggle,
+.pane-toggle {
+  width: 28px; height: 28px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.side-toggle svg,
+.pane-toggle svg { width: 16px; height: 16px; stroke-width: 1.7; }
+.win:not(.side-off) .side-toggle-open,
+.win.side-off .side-toggle-close { display: none; }
 
 /* "Open" menu trigger. A labelled button reads better than a lone glyph; the
    caret signals it opens a menu. */
@@ -721,12 +742,18 @@ html.dark .berr-b { background: var(--paper2); }
   display: flex; flex-direction: column; background: #fdfcfa;
 }
 .win:not(.pane-on) .pane { display: none; }
-.tabs {
-  display: flex; align-items: flex-end; gap: 1px;
-  padding: 34px 10px 0; min-height: 62px;
+.pane-top {
+  min-height: 62px; padding-right: 10px;
+  display: flex; align-items: flex-end; flex: none;
   border-bottom: 1px solid var(--line); background: var(--side);
-  flex: none;
+  -webkit-app-region: drag;
 }
+.tabs {
+  min-width: 0; flex: 1;
+  display: flex; align-items: flex-end; gap: 1px;
+  padding: 34px 0 0 10px;
+}
+.pane-toggle { margin: 0 0 7px 6px; -webkit-app-region: no-drag; }
 .tab {
   display: flex; align-items: center; gap: 6px;
   padding: 7px 12px; font-size: 12.5px; color: var(--tx2);

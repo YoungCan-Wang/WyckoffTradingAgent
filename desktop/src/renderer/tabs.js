@@ -57,6 +57,7 @@ class TabPane {
     const existing = this.tabs.find((tab) => tab.key === key)
     if (existing) {
       existing.spec = spec
+      this.notifyCount()
       this.select(key)
       return key
     }
@@ -163,6 +164,14 @@ class TabPane {
 
   has (key) {
     return this.tabs.some((tab) => tab.key === key)
+  }
+
+  count () {
+    return this.tabs.length
+  }
+
+  showActive () {
+    if (this.activeId) this.select(this.activeId)
   }
 }
 

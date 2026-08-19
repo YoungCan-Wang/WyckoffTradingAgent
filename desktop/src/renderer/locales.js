@@ -46,7 +46,9 @@
     'menu.signout': '退出登录',
 
     // tooltip / 状态
-    'tooltip.sidebar': '侧栏 ⌘B',
+    'tooltip.sidebarShow': '展开侧栏 ⌘B',
+    'tooltip.sidebarHide': '收起侧栏 ⌘B',
+    'tooltip.paneHide': '收起产物面板 ⌘⌥B',
     'tooltip.pending': '查看待批准操作',
     'tooltip.restart': '重启 Python 服务',
     // 输入区
@@ -528,7 +530,9 @@
     'menu.settings': 'Settings',
     'menu.signout': 'Sign out',
 
-    'tooltip.sidebar': 'Sidebar ⌘B',
+    'tooltip.sidebarShow': 'Show sidebar ⌘B',
+    'tooltip.sidebarHide': 'Hide sidebar ⌘B',
+    'tooltip.paneHide': 'Hide artifact panel ⌘⌥B',
     'tooltip.pending': 'View pending approvals',
     'tooltip.restart': 'Restart Python service',
     'composer.placeholder': 'Ask anything…',

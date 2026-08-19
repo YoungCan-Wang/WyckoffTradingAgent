@@ -15,6 +15,9 @@ import {
   FileChartColumnIncreasing,
   GitBranch,
   ListChecks,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
   Radar,
   ShieldCheck,
   Sparkles
@@ -33,6 +36,9 @@ createIcons({
     FileChartColumnIncreasing,
     GitBranch,
     ListChecks,
+    PanelLeftClose,
+    PanelLeftOpen,
+    PanelRightClose,
     Radar,
     ShieldCheck,
     Sparkles
