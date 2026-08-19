@@ -672,13 +672,27 @@ html.dark .berr-b { background: var(--paper2); }
 .aw-up { color: var(--up-ink); font-weight: 600; }
 .aw-down { color: var(--dn-ink); font-weight: 600; }
 
-/* 历史报告：两行式，不复用 .task-row（那是三列网格，首列留给状态点） */
-.attr-hist { margin-top: 8px; }
-.attr-hist-row {
-  display: flex; align-items: baseline; gap: 12px;
-  padding: 7px 0; border-bottom: 1px solid var(--line2); font-size: 12.5px;
+/* 日期页签：20 个日期横排可滚。换行会把页面顶部撑掉两三行，滚动更省高度。 */
+.attr-tabs {
+  display: flex; gap: 3px; margin-bottom: 14px;
+  overflow-x: auto; padding-bottom: 4px;
+  /* 滚动条常驻会压掉一行像素，这里让它只在需要时出现 */
+  scrollbar-width: thin;
 }
-.attr-hist-row span { color: var(--tx3); font-size: 11.5px; }
+.attr-tab {
+  flex: none; padding: 4px 10px;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: transparent; color: var(--tx2);
+  font: inherit; font-size: 11.5px; font-variant-numeric: tabular-nums;
+  white-space: nowrap; cursor: pointer;
+}
+.attr-tab:hover { background: var(--hover); }
+.attr-tab.on {
+  background: var(--clay-soft); border-color: var(--clay);
+  color: var(--clay-ink); font-weight: 600;
+}
+/* 本地报告的小点 */
+.attr-tab i { margin-left: 3px; color: var(--clay); font-style: normal; }
 
 .attr-field {
   display: flex; align-items: center; gap: 10px;

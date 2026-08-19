@@ -191,7 +191,9 @@ def _status_counts(records: list[dict]) -> dict[str, int]:
 
 def _query_attribution(limit: int, tool_context: ToolContext | None = None) -> dict:
     try:
-        rows = _load_attribution_rows(min(max(int(limit), 1), 10), tool_context)
+        # 上限 40（原来是 10）：桌面端现在可以翻看任意一天的完整报告。
+        # 这里和 IPC 层各有一道钳制，只改一处会被另一处静默截断。
+        rows = _load_attribution_rows(min(max(int(limit), 1), 40), tool_context)
         if not rows:
             return {"message": "暂无策略归因报告", "records": []}
         records = [_attribution_record(row) for row in rows]

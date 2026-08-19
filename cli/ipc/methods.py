@@ -227,12 +227,14 @@ def attribution(params: dict[str, Any]) -> Iterator[Event]:
     策略归因报告。全局数据（按 market 过滤，不分用户），但仍传上下文 ——
     有登录态时用用户客户端读，没有才退到匿名客户端。
 
-    上限 10：这是按天累积的报告，翻更多没有意义，界面也只展示最新一份加历史列表。
+    默认 20、上限 40：界面现在可以翻看任意一天的完整报告，不再只展开最新一份，
+    所以原来那个「翻更多没有意义」的上限 10 不再成立。库里按天累积（目前 35 份），
+    40 够覆盖两个多月。
     """
     from agents.history_tools import query_history
     from cli.ipc.session import get_session
 
-    limit = _clamp_int(params.get("limit"), 5, 1, 10)
+    limit = _clamp_int(params.get("limit"), 20, 1, 40)
     result = query_history(source="attribution", limit=limit, tool_context=get_session().tool_context)
     if "error" in result:
         raise MethodError("attribution_failed", str(result["error"]))

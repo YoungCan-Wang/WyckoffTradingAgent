@@ -8,6 +8,7 @@
  * 标签一律用后端算好的 policy_display / execution_summary，前端不重新推导：
  * 那套映射表在 core/strategy_policy_display.py，复制一份到前端必然会分叉。
  */
+import { useState } from 'react'
 import { useIpc } from '../lib/useIpc'
 
 const t = (key: string, params?: Record<string, string | number>) => window.WyckoffI18n.t(key, params)
@@ -54,6 +55,14 @@ interface AttributionRecord {
   window_start: string
   window_end: string
   source: string
+  /**
+   * 每份报告都自带治理与执行摘要 —— 所以历史报告能完整展示，而不只是一行日期。
+   * 之前页面只读顶层的 latest_*，等于把已经拿到的历史数据丢掉了。
+   */
+  policy_display?: PolicyDisplay
+  execution_summary?: ExecutionSummary
+  operator_summary?: string
+  remote_error?: string
   shadow?: { runs?: number; avg_added?: number; avg_removed?: number }
   signal_actions?: SignalAction[]
 }
@@ -77,6 +86,15 @@ const pctText = (v: unknown) => (isNum(v) ? `${v > 0 ? '+' : ''}${v.toFixed(2)}%
 /** 胜率这类比例：没有「正负」的含义，所以不带符号。 */
 const rateText = (v: unknown) => (isNum(v) ? `${v.toFixed(1)}%` : DASH)
 
+/**
+ * 页签上只显示「月-日」：20 个页签横排，年份重复且占宽。
+ * 完整日期在下面的标题里，所以这里省掉不丢信息。
+ */
+const shortDate = (value?: string) => {
+  const m = String(value || '').match(/^(\d{4})-(\d{2}-\d{2})$/)
+  return m ? m[2] : text(value)
+}
+
 /** A 股惯例红涨绿跌；0 与缺失不着色。 */
 const moveClass = (v: unknown) => {
   if (!isNum(v) || v === 0) return ''
@@ -84,7 +102,10 @@ const moveClass = (v: unknown) => {
 }
 
 export function AttributionPage () {
-  const { data, loading, failed } = useIpc<AttributionData>('attribution', { limit: 10 })
+  // 20 份约两个月。每份都带完整的治理/调权/shadow，所以切日期不用重新请求。
+  const { data, loading, failed } = useIpc<AttributionData>('attribution', { limit: 20 })
+  // 选中的报告日期。null = 还没选过，用最新那份。
+  const [picked, setPicked] = useState<string | null>(null)
 
   if (loading) return <p className="empty">{t('tab.loading')}</p>
   if (failed) return <p className="empty">{t('attribution.readFailed')}</p>
@@ -92,33 +113,62 @@ export function AttributionPage () {
   const records = (data && data.records) || []
   if (!data || !records.length) return <p className="empty">{t('attribution.empty')}</p>
 
-  const latest = records[0]
-  const policy = data.latest_policy_display || {}
-  const execution = data.latest_execution_summary || {}
-  const shadow = latest.shadow || {}
-  const actions = latest.signal_actions || []
-  const isLocal = (data.latest_source || latest.source) !== 'remote'
+  // 选中的那份可能已经不在列表里（重拉后日期变了），退回最新一份。
+  const current = records.find((r) => r.report_date === picked) || records[0]
+  // 全部读当前这份，而不是顶层的 latest_* —— 否则切到 8-15 时头部换了、
+  // 下面的治理数字还是 8-19 的，这种「一半新一半旧」比读不到更危险。
+  const policy = current.policy_display || {}
+  const execution = current.execution_summary || {}
+  const shadow = current.shadow || {}
+  const actions = current.signal_actions || []
+  const isLocal = current.source !== 'remote'
+  const remoteError = current.remote_error || data.remote_error || ''
+  // 摘要：记录自带的优先；只有看最新那份时才回退到顶层 latest_operator_summary
+  // （后端只为最新一份算了它）。
+  const isLatest = current.report_date === records[0].report_date
+  const operatorSummary = current.operator_summary || (isLatest ? data.latest_operator_summary : '') || ''
 
   return (
     <>
+      {/*
+        日期页签。每份报告的数据早就在 records 里了，所以切换是纯本地的，不发请求。
+        横向可滚：20 个日期放不进一行，但换行会把页面顶部撑掉两三行。
+      */}
+      {records.length > 1 ? (
+        <div className="attr-tabs">
+          {records.map((record) => (
+            <button
+              key={record.report_date}
+              type="button"
+              className={record.report_date === current.report_date ? 'attr-tab on' : 'attr-tab'}
+              onClick={() => setPicked(record.report_date)}
+            >
+              {shortDate(record.report_date)}
+              {/* 本地报告标一下，免得以为看的是云端结果 */}
+              {record.source !== 'remote' ? <i>·</i> : null}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
       {/* 数据来源必须显式说明：本地报告或云端读失败时，用户不该以为看的是最新云端结果 */}
-      {isLocal || data.remote_error ? (
+      {isLocal || remoteError ? (
         <div className="attr-source">
           {isLocal ? t('attribution.localSource') : ''}
-          {data.remote_error ? ` ${t('attribution.remoteError', { error: data.remote_error })}` : ''}
+          {remoteError ? ` ${t('attribution.remoteError', { error: remoteError })}` : ''}
         </div>
       ) : null}
 
       <div className="attr-head">
-        <b>{text(latest.report_date)}</b>
+        <b>{text(current.report_date)}</b>
         <span>
-          {t('attribution.window')} {text(latest.window_start)} ~ {text(latest.window_end)}
+          {t('attribution.window')} {text(current.window_start)} ~ {text(current.window_end)}
         </span>
       </div>
 
       {/* 提示词要求：先给这句人话摘要，再给拆解 */}
-      {data.latest_operator_summary ? (
-        <p className="attr-summary">{data.latest_operator_summary}</p>
+      {operatorSummary ? (
+        <p className="attr-summary">{operatorSummary}</p>
       ) : null}
 
       <Section title={t('attribution.governance')}>
@@ -189,23 +239,6 @@ export function AttributionPage () {
         )}
       </Section>
 
-      {records.length > 1 ? (
-        <Section title={t('attribution.history')}>
-          {/* 不用 .task-row：那个类是三列网格且首列留给状态点，没有点时
-              标题会被挤进 10px 的轨道里跟副文字叠在一起。 */}
-          <div className="attr-hist">
-            {records.slice(1).map((record) => (
-              <div className="attr-hist-row" key={record.report_date}>
-                <b>{text(record.report_date)}</b>
-                <span>
-                  {text(record.window_start)} ~ {text(record.window_end)}
-                  {record.source !== 'remote' ? ` · ${t('attribution.localTag')}` : ''}
-                </span>
-              </div>
-            ))}
-          </div>
-        </Section>
-      ) : null}
     </>
   )
 }

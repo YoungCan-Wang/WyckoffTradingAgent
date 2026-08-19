@@ -77,11 +77,49 @@ class TestLimitClamping:
 
     @pytest.mark.parametrize(
         ("given", "expected"),
-        [(None, 5), (1, 1), (10, 10), (99, 10), (0, 1), ("x", 5)],
+        [(None, 20), (1, 1), (10, 10), (40, 40), (99, 40), (0, 1), ("x", 20)],
     )
     def test_attribution_limit(self, captured: dict[str, Any], given: Any, expected: int) -> None:
+        """默认 20、上限 40：界面能翻看任意一天的完整报告，不再只展开最新一份。"""
         _result("attribution", {"limit": given})
         assert captured["limit"] == expected
+
+    def test_attribution_limit_not_capped_downstream(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """
+        IPC 层和 _query_attribution 各有一道钳制。只改一处会被另一处静默截断成
+        10 —— 界面拿到的报告份数少于它请求的，而且没有任何报错。
+        """
+        from agents import history_tools as H
+
+        seen: dict[str, Any] = {}
+
+        def fake_load(limit: int, _ctx: Any) -> list[dict[str, Any]]:
+            seen["limit"] = limit
+            return []
+
+        monkeypatch.setattr(H, "_load_attribution_rows", fake_load)
+        H._query_attribution(40, None)
+        assert seen["limit"] == 40, "下游把 40 截断了"
+
+    def test_attribution_history_records_are_complete(self) -> None:
+        """
+        历史报告必须自带 policy_display / execution_summary / shadow ——
+        界面靠它们渲染完整报告。只回摘要的话历史页签点开是空的。
+        """
+        from agents.history_tools import _attribution_record
+
+        row = {
+            "report_date": "2026-08-15",
+            "window_start": "2026-06-16",
+            "window_end": "2026-08-15",
+            "policy_governor": {},
+            "execution_state": {},
+            "shadow_summary": {"runs": 7},
+            "signal_actions": [],
+        }
+        record = _attribution_record(row)
+        for key in ("policy_display", "execution_summary", "shadow", "signal_actions"):
+            assert key in record, f"历史记录缺 {key}，页签点开会是空的"
 
 
 class TestMarketRouting:
