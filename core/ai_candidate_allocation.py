@@ -15,11 +15,20 @@ ACCUM_CHANNEL_TAGS = {"潜伏通道", "吸筹通道", "地量蓄势", "暗中护
 HIT_KEYS = ("sos", "spring", "lps", "evr", "compression", "trend_pullback")
 BLOCKED_EXIT_SIGNALS = {"stop_loss", "distribution_warning", "upthrust_warning"}
 DEFAULT_AI_QUOTA_BY_FAMILY: dict[str, tuple[int, int]] = {
-    # RISK_ON 保留研究/shadow 候选；正式推荐和下单由市场闸门禁止。
+    # RISK_ON 保留研究/shadow 候选。联动实测该档超额 +6.07pct（3/3 为正），
+    # 买入闸门已于 #280 放开。
     "RISK_ON": (5, 1),
-    "BEAR_REBOUND": (0, 0),
+    # BEAR_REBOUND 由 (0,0) 改为 (5,1)，与其买入闸门放开对齐。
+    # 此前不一致：#280 依联动实测（超额 +4.08pct、4/4 为正）把它移出禁买名单，
+    # 但配额仍是 0——候选进了池子也拿不到复核席位。2026-08-17 那天池内 4 只候选
+    # （大北农/南方精工/宿迁联盛/新相微）次日全涨 9.7%~10.1%，而 AI 正式推荐 0 只。
+    "BEAR_REBOUND": (5, 1),
+    # PANIC_REPAIR 单独成族并保持 0：其超额为 -4.09pct，与 BEAR_REBOUND 方向相反，
+    # 此前两者共用一个配额家族会让证据互相污染。
+    "PANIC_REPAIR": (0, 0),
     "RISK_OFF": (0, 0),
-    # NEUTRAL: 主线/趋势主导，Accum 仅保留观察残量。
+    # NEUTRAL: 已于 #280 并入禁买（超额 -4.35pct、CI [-6.80,-2.07] 不跨 0）；
+    # 配额保留供 shadow 对照，正式推荐与下单由闸门拦住。
     "NEUTRAL": (5, 1),
 }
 
@@ -562,7 +571,7 @@ def _trigger_score(
     #
     # 注意本函数在回测 tradeable_l4 口径下不被触达（_select_candidate_entries
     # 提前 return），故该调整暂时只影响实盘。回测侧的根因是 detector 原始分数
-    # 单位混用，需独立修复——详见 docs/SCORING_SYSTEM_AUDIT_2026_08.md。
+    # 单位混用问题由回测侧的类内分位归一化独立处理。
     value += 12.0 * _signal_weight(weights, "spring", regime) if code in spring_hits else 0.0
     value += 30.0 * _signal_weight(weights, "lps", regime) if code in lps_hits else 0.0
     value += 12.0 * _signal_weight(weights, "evr", regime) if code in evr_hits else 0.0
@@ -638,8 +647,12 @@ def _allocation_policy(raw: dict[str, int | str]) -> AllocationPolicy:
 def _quota_family(regime_norm: str) -> str:
     if regime_norm == "RISK_ON":
         return "RISK_ON"
-    if regime_norm in {"BEAR_REBOUND", "PANIC_REPAIR"}:
+    # BEAR_REBOUND 与 PANIC_REPAIR 拆开：实测超额 +4.08pct vs -4.09pct，方向相反，
+    # 共用一个配额家族会让两者的证据互相污染。
+    if regime_norm == "BEAR_REBOUND":
         return "BEAR_REBOUND"
+    if regime_norm == "PANIC_REPAIR":
+        return "PANIC_REPAIR"
     if regime_norm in {"RISK_OFF", "CRASH", "BLACK_SWAN"}:
         return "RISK_OFF"
     return "NEUTRAL"

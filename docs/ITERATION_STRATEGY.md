@@ -234,7 +234,7 @@ beta；spring 是唯一统计上非零者且为负，六重比较下刚好压 Bo
 
 #### 2026-08-14：signal health 与资金佐证的前瞻检验（可复算）
 
-复算脚本 `scripts/evaluate_capital_context_alpha.py`，结果 `docs/evidence/capital_context_alpha_h5.json`。
+复算脚本 `scripts/evaluate_capital_context_alpha.py`，结果默认写入被忽略的 `artifacts/evidence/`。
 数据来自生产库：12,635 行 `signal_health_daily` × 27,240 行 `signal_outcomes` × 5,453 行
 `signal_observations`，窗口 2026-05-25 ~ 2026-08-06。方法与回撤消融一致：只用事件日**之前**的
 health（`allow_exact_matches=False`，否则是未来信息）、按交易日等权、同日内配对剥离市场水温、
@@ -614,8 +614,8 @@ benchmark」，**该结论是错的**。那批 `updated_at` 全为 `2026-08-05T0
 #### 20% 回撤门槛的因子消融（可复算）
 
 复算脚本 `scripts/ablate_trend_drawdown_gate.py`；汇总结果随本仓提交于
-`docs/evidence/trend_drawdown_ablation_2026-08-14.json`，10,692 行事件明细因体积（1.1MB）与
-`artifacts/` 已被 gitignore 而留在本地，重跑脚本即可再生成。样本：355 只标的、108 个交易日、**10,692 个事件**，窗口
+完整结果与 10,692 行事件明细默认写入被忽略的 `artifacts/`，重跑脚本即可再生成。样本：355 只标的、
+108 个交易日、**10,692 个事件**，窗口
 2026-02-01 ~ 2026-07-25。方法沿用本文既有教训：按交易日等权（先日内均值再跨日均值）、
 交易日聚类 bootstrap、随机负控制在**每个交易日内**打乱分组标签以保留聚类结构。
 

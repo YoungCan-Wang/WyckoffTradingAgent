@@ -23,7 +23,7 @@
 用法::
 
     python scripts/ablate_springboard_c.py --start 2026-05-25 --end 2026-08-07 \
-        --max-symbols 300 --out docs/evidence
+        --max-symbols 300 --out artifacts/evidence
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--start", default="2026-05-25", help="事件区间起始")
     parser.add_argument("--end", default="2026-08-07", help="事件区间结束")
     parser.add_argument("--max-symbols", type=int, default=300, help="抽样标的上限")
-    parser.add_argument("--out", default="docs/evidence", help="输出目录")
+    parser.add_argument("--out", default="artifacts/evidence", help="输出目录")
     return parser.parse_args()
 
 

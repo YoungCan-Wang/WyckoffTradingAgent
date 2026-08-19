@@ -35,10 +35,27 @@ class TestAllocateAiCandidates:
         assert policy["trend_quota"] == 1
         assert policy["accum_quota"] == 2
 
-    def test_bear_rebound_default_quota_blocks_ai_candidates(self):
+    def test_bear_rebound_default_quota_allows_ai_candidates(self):
+        """BEAR_REBOUND 配额由 0 改为 5/1，与其买入闸门放开对齐。
+
+        此前不一致：#280 依联动实测（超额 +4.08pct、4/4 为正）把 BEAR_REBOUND 移出
+        禁买名单，但 AI 配额仍是 0——候选进了池子也拿不到复核席位。2026-08-17 那天
+        池内 4 只候选次日全涨 9.7%~10.1%，而 AI 正式推荐 0 只。
+        """
         policy = resolve_ai_candidate_policy("BEAR_REBOUND")
 
         assert policy["quota_family"] == "BEAR_REBOUND"
+        assert policy["trend_quota"] == 5
+        assert policy["accum_quota"] == 1
+
+    def test_panic_repair_is_its_own_family_and_stays_blocked(self):
+        """PANIC_REPAIR 与 BEAR_REBOUND 拆开：超额 -4.09pct vs +4.08pct，方向相反。
+
+        共用一个配额家族会让两者的证据互相污染。
+        """
+        policy = resolve_ai_candidate_policy("PANIC_REPAIR")
+
+        assert policy["quota_family"] == "PANIC_REPAIR"
         assert policy["trend_quota"] == 0
         assert policy["accum_quota"] == 0
 

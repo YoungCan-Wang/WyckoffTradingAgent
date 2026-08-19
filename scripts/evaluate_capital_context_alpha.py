@@ -21,7 +21,7 @@
 
 用法::
 
-    python scripts/evaluate_capital_context_alpha.py --horizon 5 --out docs/evidence
+    python scripts/evaluate_capital_context_alpha.py --horizon 5 --out artifacts/evidence
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ CONTROL_SEEDS = 20
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="资金佐证 / 信号 health 的前瞻 alpha 检验")
     parser.add_argument("--horizon", type=int, default=5, help="前瞻天数，对应 signal_outcomes.horizon_days")
-    parser.add_argument("--out", default="docs/evidence", help="结果输出目录")
+    parser.add_argument("--out", default="artifacts/evidence", help="结果输出目录")
     return parser.parse_args()
 
 

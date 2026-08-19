@@ -175,7 +175,17 @@ class FunnelConfig:
     enable_dry_vol_channel: bool = True
     dry_vol_lookback: int = 10  # 在最近 N 日内寻找地量
     dry_vol_ref_window: int = 250  # 地量参考窗口（年维度）
-    dry_vol_quantile: float = 0.05  # 地量标准：低于年内成交量的 5% 分位数
+    # 地量标准：低于年内成交量的 N 分位。0.05 -> 0.20 以提高召回。
+    # 实测（近10日最小量 <= 250日 q 分位，叠加 price_from_low<=0.35，全市场逐日 T+5
+    # 相对同日全市场超额）：
+    #   q=0.05 日均命中 1278  超额 +0.54pct   （原值）
+    #   q=0.10 日均命中 1810  超额 +0.62pct
+    #   q=0.20 日均命中 2590  超额 +0.65pct   （最优，取此值）
+    #   q=0.30 日均命中 3176  超额 +0.63pct
+    # 四档全为正超额、55% 的交易日为正，故这条通道不该删；放宽反而略优。
+    # 注意增益仅 +0.11pct，小于单次往返成本 0.202%——放宽的目的是**提高召回**
+    # （让技术面强势股先进池子，人工二次确认），不是靠这 0.11pct 赚钱。
+    dry_vol_quantile: float = 0.20
     dry_vol_price_from_low_max: float = 0.35  # 位阶保护：现价 <= 年内低点 +35%
 
     # Layer 2 暗中护盘通道（RS Divergence Channel）
