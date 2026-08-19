@@ -256,6 +256,23 @@ def tracking(params: dict[str, Any]) -> Iterator[Event]:
     yield _ok(**result)
 
 
+def attribution_dates(params: dict[str, Any]) -> Iterator[Event]:
+    """
+    报告日期列表，不含正文。
+
+    页签只需要日期。整份报告约 14 KB，把 20 份正文一起拉下来要 8 秒 —— 页签
+    却只用到其中两三个字段。这条走一次窄 select，页签能立刻出来。
+    """
+    from agents.history_tools import attribution_dates as load_dates
+    from cli.ipc.session import get_session
+
+    limit = _clamp_int(params.get("limit"), 60, 1, 200)
+    result = load_dates(limit=limit, tool_context=get_session().tool_context)
+    if "error" in result:
+        raise MethodError("attribution_failed", str(result["error"]))
+    yield _ok(**result)
+
+
 def attribution(params: dict[str, Any]) -> Iterator[Event]:
     """
     策略归因报告。全局数据（按 market 过滤，不分用户），但仍传上下文 ——
@@ -268,8 +285,16 @@ def attribution(params: dict[str, Any]) -> Iterator[Event]:
     from agents.history_tools import query_history
     from cli.ipc.session import get_session
 
-    limit = _clamp_int(params.get("limit"), 20, 1, 40)
-    result = query_history(source="attribution", limit=limit, tool_context=get_session().tool_context)
+    # 默认只拉 1 份：整份报告约 14 KB，一次 20 份要 8 秒。页签用
+    # attribution_dates 单独取（只两列），正文按翻到哪页再取哪页。
+    limit = _clamp_int(params.get("limit"), 1, 1, 40)
+    report_date = str(params.get("report_date") or "").strip()
+    result = query_history(
+        source="attribution",
+        limit=limit,
+        tool_context=get_session().tool_context,
+        report_date=report_date,
+    )
     if "error" in result:
         raise MethodError("attribution_failed", str(result["error"]))
     yield _ok(**result)
@@ -900,6 +925,7 @@ METHODS: dict[str, Callable[[dict[str, Any]], Iterator[Event]]] = {
     "portfolio_set_stop": portfolio_set_stop,
     "tracking": tracking,
     "attribution": attribution,
+    "attribution_dates": attribution_dates,
     "chart_data": chart_data,
     "ohlcv": ohlcv,
     "wyckoff_events": wyckoff_events,

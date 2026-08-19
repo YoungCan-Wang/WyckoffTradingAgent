@@ -40,12 +40,14 @@ def captured(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         limit: int = 20,
         tool_context: Any = None,
         market: str = "cn",
+        report_date: str = "",
         **_kw: Any,
     ) -> dict[str, Any]:
         seen["source"] = source
         seen["limit"] = limit
         seen["tool_context"] = tool_context
         seen["market"] = market
+        seen["report_date"] = report_date
         return {"total": 0, "records": []}
 
     monkeypatch.setattr("agents.history_tools.query_history", fake_query)
@@ -77,12 +79,57 @@ class TestLimitClamping:
 
     @pytest.mark.parametrize(
         ("given", "expected"),
-        [(None, 20), (1, 1), (10, 10), (40, 40), (99, 40), (0, 1), ("x", 20)],
+        [(None, 1), (1, 1), (10, 10), (40, 40), (99, 40), (0, 1), ("x", 1)],
     )
     def test_attribution_limit(self, captured: dict[str, Any], given: Any, expected: int) -> None:
-        """默认 20、上限 40：界面能翻看任意一天的完整报告，不再只展开最新一份。"""
+        """
+        默认只拉 1 份。整份报告约 14 KB，一次 20 份要 8 秒 —— 页签用
+        attribution_dates 单独取，正文按翻到哪页取哪页。
+        """
         _result("attribution", {"limit": given})
         assert captured["limit"] == expected
+
+    def test_attribution_passes_report_date(self, captured: dict[str, Any]) -> None:
+        """指定日期才能做到「一次只拉一页」。"""
+        _result("attribution", {"report_date": "2026-08-13"})
+        assert captured["report_date"] == "2026-08-13"
+
+    def test_attribution_date_narrows_to_single_row(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """给了日期就只该取一行，limit 再大也不该多取。"""
+        from agents import history_tools as H
+
+        seen: dict[str, Any] = {}
+
+        def fake_load(limit: int, _ctx: Any, report_date: str = "") -> list[dict[str, Any]]:
+            seen["limit"] = limit
+            seen["report_date"] = report_date
+            return []
+
+        monkeypatch.setattr(H, "_load_attribution_rows", fake_load)
+        H._query_attribution(40, None, report_date="2026-08-13")
+        assert seen["limit"] == 1, "指定日期时多取了"
+        assert seen["report_date"] == "2026-08-13"
+
+    def test_attribution_local_row_excluded_for_specific_date(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """
+        本地那份是最新报告的缓存，不对应任意历史日期。掺进来会让某个历史页签
+        显示成另一天的内容。
+        """
+        from agents import history_tools as H
+
+        monkeypatch.setattr(H, "_load_remote_attribution_rows", lambda *a, **k: [])
+        called: list[str] = []
+        monkeypatch.setattr(
+            H,
+            "_load_local_attribution_row",
+            lambda: called.append("local") or {"report_date": "2026-08-19"},
+        )
+
+        H._load_attribution_rows(1, None, report_date="2026-08-13")
+        assert called == [], "指定日期时不该掺本地那份"
+
+        H._load_attribution_rows(1, None)
+        assert called == ["local"], "不指定日期时本地那份仍要参与"
 
     def test_attribution_limit_not_capped_downstream(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """
@@ -93,7 +140,7 @@ class TestLimitClamping:
 
         seen: dict[str, Any] = {}
 
-        def fake_load(limit: int, _ctx: Any) -> list[dict[str, Any]]:
+        def fake_load(limit: int, _ctx: Any, report_date: str = "") -> list[dict[str, Any]]:
             seen["limit"] = limit
             return []
 
@@ -239,3 +286,50 @@ class TestRegistration:
     @pytest.mark.parametrize("method", ["tracking", "attribution"])
     def test_registered(self, method: str) -> None:
         assert method in methods.METHODS
+
+
+class TestAttributionDates:
+    """
+    只取日期的轻量接口。整份报告约 14 KB，页签却只用到日期 —— 拉 20 份正文
+    要 8 秒 / 174 KB，而日期列表只有 3 KB。
+    """
+
+    def test_registered(self) -> None:
+        assert "attribution_dates" in methods.METHODS
+
+    @pytest.mark.parametrize(
+        ("given", "expected"),
+        [(None, 60), (1, 1), (200, 200), (999, 200), (0, 1), ("x", 60)],
+    )
+    def test_limit_clamped(self, monkeypatch: pytest.MonkeyPatch, given: Any, expected: int) -> None:
+        seen: dict[str, Any] = {}
+
+        def fake_dates(limit: int = 60, tool_context: Any = None) -> dict[str, Any]:
+            seen["limit"] = limit
+            return {"total": 0, "dates": []}
+
+        monkeypatch.setattr("agents.history_tools.attribution_dates", fake_dates)
+        _result("attribution_dates", {"limit": given})
+        assert seen["limit"] == expected
+
+    def test_returns_dates_without_bodies(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """回的必须只有日期字段 —— 带上正文就失去了这条接口的意义。"""
+        monkeypatch.setattr(
+            "agents.history_tools.attribution_dates",
+            lambda limit=60, tool_context=None: {
+                "total": 1,
+                "dates": [{"report_date": "2026-08-19", "window_start": "a", "window_end": "b"}],
+            },
+        )
+        out = _result("attribution_dates", {})
+        assert out["total"] == 1
+        assert set(out["dates"][0]) == {"report_date", "window_start", "window_end"}
+
+    def test_error_is_surfaced(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "agents.history_tools.attribution_dates",
+            lambda limit=60, tool_context=None: {"error": "boom"},
+        )
+        with pytest.raises(MethodError) as excinfo:
+            list(methods.dispatch("attribution_dates", {}))
+        assert "boom" in str(excinfo.value)

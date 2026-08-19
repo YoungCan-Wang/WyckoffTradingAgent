@@ -8,7 +8,8 @@
  * 标签一律用后端算好的 policy_display / execution_summary，前端不重新推导：
  * 那套映射表在 core/strategy_policy_display.py，复制一份到前端必然会分叉。
  */
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { collect } from '../lib/ipc'
 import { useIpc } from '../lib/useIpc'
 
 const t = (key: string, params?: Record<string, string | number>) => window.WyckoffI18n.t(key, params)
@@ -102,55 +103,105 @@ const moveClass = (v: unknown) => {
   return v > 0 ? 'trk-up' : 'trk-down'
 }
 
+interface DateEntry {
+  report_date: string
+  window_start: string
+  window_end: string
+}
+
+interface DatesData {
+  total?: number
+  dates?: DateEntry[]
+}
+
 export function AttributionPage () {
-  // 20 份约两个月。每份都带完整的治理/调权/shadow，所以切日期不用重新请求。
-  const { data, loading, failed } = useIpc<AttributionData>('attribution', { limit: 20 })
-  // 选中的报告日期。null = 还没选过，用最新那份。
+  // 只拉日期列表（约 3 KB）。整份报告约 14 KB，20 份一起拉要 8 秒 —— 页签
+  // 只用得到日期，正文按翻到哪一页再取哪一页。
+  const { data: index, loading: indexLoading, failed: indexFailed } =
+    useIpc<DatesData>('attribution_dates', { limit: 60 })
+
   const [picked, setPicked] = useState<string | null>(null)
+  // 已取回的报告，按日期存。翻回看过的那页是瞬时的，不再请求。
+  const [cache, setCache] = useState<Record<string, AttributionRecord>>({})
+  const [loadError, setLoadError] = useState('')
+  /**
+   * 已经取过（或正在取）的日期。用 ref 而不是 state：它只用来去重，
+   * 放进 state 会触发重渲染 → effect 依赖变化 → 取消刚发出的那次请求，
+   * 结果永远停在「读取中」。
+   */
+  const requested = useRef<Set<string>>(new Set())
+  // 顶层 latest_* 只对最新那份有效，取到时一并留下。
+  const [latestExtras, setLatestExtras] = useState<AttributionData>({})
+  const alive = useRef(true)
+  useEffect(() => () => { alive.current = false }, [])
 
-  if (loading) return <p className="empty">{t('tab.loading')}</p>
-  if (failed) return <p className="empty">{t('attribution.readFailed')}</p>
+  const dates = (index && index.dates) || []
+  const current = picked || (dates.length ? dates[0].report_date : '')
+  const record = current ? cache[current] : undefined
 
-  const records = (data && data.records) || []
-  if (!data || !records.length) return <p className="empty">{t('attribution.empty')}</p>
+  /**
+   * 翻到哪一页就取哪一页。
+   *
+   * 依赖只有 current 和 latestDate —— 刻意不放 cache：写缓存会改 state，
+   * 若它在依赖里，effect 会重跑并清理掉刚发出的请求，页面永远停在「读取中」。
+   * 去重靠 requested（ref，不参与渲染）。
+   */
+  const latestDate = dates.length ? dates[0].report_date : ''
+  useEffect(() => {
+    if (!current || requested.current.has(current)) return
+    requested.current.add(current)
+    setLoadError('')
+    void (async () => {
+      const res = await collect('attribution', { report_date: current }).catch(() => null)
+      if (!alive.current) return
+      const payload = res as AttributionData | null
+      const got = payload && payload.records && payload.records[0]
+      if (!got) {
+        // 取失败就把标记撤掉，下次点这个页签可以重试。
+        requested.current.delete(current)
+        setLoadError(t('attribution.readFailed'))
+        return
+      }
+      setCache((prev) => ({ ...prev, [current]: got }))
+      if (current === latestDate) setLatestExtras(payload || {})
+    })()
+  }, [current, latestDate])
 
-  // 选中的那份可能已经不在列表里（重拉后日期变了），退回最新一份。
-  const current = records.find((r) => r.report_date === picked) || records[0]
-  // 全部读当前这份，而不是顶层的 latest_* —— 否则切到 8-15 时头部换了、
-  // 下面的治理数字还是 8-19 的，这种「一半新一半旧」比读不到更危险。
-  const policy = current.policy_display || {}
-  const execution = current.execution_summary || {}
-  const shadow = current.shadow || {}
-  const actions = current.signal_actions || []
-  const isLocal = current.source !== 'remote'
-  const remoteError = current.remote_error || data.remote_error || ''
-  // 摘要在 operations.operator_summary，不是记录顶层 —— 读顶层永远是 undefined，
-  // 切到历史日期后摘要会整段消失（最新那份靠顶层 latest_ 兜住了，所以这个错
-  // 只在历史日期上暴露）。
-  const isLatest = current.report_date === records[0].report_date
+  if (indexLoading) return <p className="empty">{t('tab.loading')}</p>
+  if (indexFailed) return <p className="empty">{t('attribution.readFailed')}</p>
+  if (!dates.length) return <p className="empty">{t('attribution.empty')}</p>
+
+  const meta = dates.find((d) => d.report_date === current)
+  const policy = (record && record.policy_display) || {}
+  const execution = (record && record.execution_summary) || {}
+  const shadow = (record && record.shadow) || {}
+  const actions = (record && record.signal_actions) || []
+  const isLocal = Boolean(record) && record!.source !== 'remote'
+  const remoteError = (record && record.remote_error) || ''
+  const isLatest = current === dates[0].report_date
   const operatorSummary =
-    (current.operations && current.operations.operator_summary) ||
-    (isLatest ? data.latest_operator_summary : '') ||
+    (record && record.operations && record.operations.operator_summary) ||
+    (isLatest ? latestExtras.latest_operator_summary : '') ||
     ''
 
   return (
     <>
       {/*
-        日期页签。每份报告的数据早就在 records 里了，所以切换是纯本地的，不发请求。
-        横向可滚：20 个日期放不进一行，但换行会把页面顶部撑掉两三行。
+        日期页签。日期列表单独取（约 3 KB），正文按翻到哪页取哪页并缓存 ——
+        翻回看过的那页是瞬时的。横向可滚：换行会把页面顶部撑掉两三行。
       */}
-      {records.length > 1 ? (
+      {dates.length > 1 ? (
         <div className="attr-tabs">
-          {records.map((record) => (
+          {dates.map((entry) => (
             <button
-              key={record.report_date}
+              key={entry.report_date}
               type="button"
-              className={record.report_date === current.report_date ? 'attr-tab on' : 'attr-tab'}
-              onClick={() => setPicked(record.report_date)}
+              className={entry.report_date === current ? 'attr-tab on' : 'attr-tab'}
+              onClick={() => setPicked(entry.report_date)}
             >
-              {shortDate(record.report_date)}
-              {/* 本地报告标一下，免得以为看的是云端结果 */}
-              {record.source !== 'remote' ? <i>·</i> : null}
+              {shortDate(entry.report_date)}
+              {/* 已取回过的标一个点 —— 让「哪几页是现成的」看得出来 */}
+              {cache[entry.report_date] ? <i>·</i> : null}
             </button>
           ))}
         </div>
@@ -164,13 +215,22 @@ export function AttributionPage () {
         </div>
       ) : null}
 
+      {/* 头部用日期列表里的窗口信息 —— 正文还在路上时也能立刻显示 */}
       <div className="attr-head">
-        <b>{text(current.report_date)}</b>
+        <b>{text(current)}</b>
         <span>
-          {t('attribution.window')} {text(current.window_start)} ~ {text(current.window_end)}
+          {t('attribution.window')} {text(meta && meta.window_start)} ~ {text(meta && meta.window_end)}
         </span>
       </div>
 
+      {/*
+        正文还在取：只显示一行「加载中」，不要把上一页的数字留在屏幕上 ——
+        那会让人以为看的是当前这天的报告。
+      */}
+      {!record ? (
+        <p className="empty">{loadError || t('tab.loading')}</p>
+      ) : (
+      <>
       {/* 提示词要求：先给这句人话摘要，再给拆解 */}
       {operatorSummary ? (
         <p className="attr-summary">{operatorSummary}</p>
@@ -243,7 +303,8 @@ export function AttributionPage () {
           </div>
         )}
       </Section>
-
+      </>
+      )}
     </>
   )
 }
