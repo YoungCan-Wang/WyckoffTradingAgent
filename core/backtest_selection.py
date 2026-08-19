@@ -83,7 +83,7 @@ def combine_trigger_scores(
     candidate_entries 的 0~100 刻度，最后乘治理权重取 max。分位是无量纲量，
     消除单位差异；类型内部的相对排序完全保留。
 
-    详见 docs/SCORING_SYSTEM_AUDIT_2026_08.md。
+    该归一化只消除类型间量纲差异，不改变类型内排序。
     """
     reason_map: dict[str, list[str]] = {}
     score_map: dict[str, float] = {}

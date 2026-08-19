@@ -19,7 +19,7 @@ import pandas as pd
 
 from core.regime_forward_eval import MIN_REGIME_DAYS, RegimeReport, evaluate_regimes
 
-EVIDENCE_DIR = Path("docs/evidence")
+EVIDENCE_DIR = Path("artifacts/evidence")
 
 
 def parse_args() -> argparse.Namespace:

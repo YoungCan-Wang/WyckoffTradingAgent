@@ -41,7 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="卖出建议归因")
     parser.add_argument("--days", type=int, default=60, help="回看天数")
     parser.add_argument("--portfolio-id", default="", help="限定组合，留空则全部")
-    parser.add_argument("--out", default="docs/evidence", help="输出目录")
+    parser.add_argument("--out", default="artifacts/evidence", help="输出目录")
     parser.add_argument("--no-notify", action="store_true", help="不推飞书")
     return parser.parse_args()
 
