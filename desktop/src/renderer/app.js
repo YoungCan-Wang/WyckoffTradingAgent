@@ -866,7 +866,7 @@ function buildSection (sec, data) {
 
 /** Scheduling status. The daemon's lifetime follows this app by design. */
 function buildDaemon (wrap) {
-  wrap.appendChild(el('h3', 'sec', t('settings.daemon')))
+  wrap.appendChild(secHead('settings.daemon'))
   wrap.appendChild(el('p', 'dlg-sub', t('schedules.daemonNote')))
   const host = el('div')
   host.appendChild(el('p', 'empty', t('common.loading')))
@@ -917,6 +917,16 @@ function buildDaemon (wrap) {
 
   render()
   return wrap
+}
+
+/**
+ * 一个分栏标题。把 i18n key 记在 data-sec-key 上，showSection 的 anchor
+ * 才能可靠地找到它 —— 靠文本匹配会在英文界面失效。
+ */
+function secHead (key) {
+  const h = el('h3', 'sec', t(key))
+  h.dataset.secKey = key
+  return h
 }
 
 /** Persist one key, echo the outcome, and re-apply appearance immediately. */
@@ -971,7 +981,7 @@ function langRow () {
 
 function buildAppearance (wrap, data) {
   // 「外观」现在是「通用」页里的一栏，所以标题回来了 —— 它不再和导航项重名。
-  wrap.appendChild(el('h3', 'sec', t('settings.appearance')))
+  wrap.appendChild(secHead('settings.appearance'))
 
   // Language is a client-only preference (localStorage), so it saves through
   // i18n rather than the server round-trip the other rows use.
@@ -1010,7 +1020,7 @@ function buildAppearance (wrap, data) {
 }
 
 function buildBehavior (wrap, data) {
-  wrap.appendChild(el('h3', 'sec', t('settings.behavior')))
+  wrap.appendChild(secHead('settings.behavior'))
   wrap.appendChild(segRow(t('behavior.sendMode'), 'desktop_send_on_enter', data.desktop_send_on_enter,
     [[true, t('behavior.sendEnter')], [false, t('behavior.sendCmdEnter')]],
     t('behavior.sendHint')))
@@ -1030,7 +1040,7 @@ const TONES = [
 ]
 
 function buildTone (wrap, data) {
-  wrap.appendChild(el('h3', 'sec', t('settings.tone')))
+  wrap.appendChild(secHead('settings.tone'))
   wrap.appendChild(el('p', 'dlg-sub', t('tone.note')))
 
   const box = el('div', 'tone-l')
@@ -1070,14 +1080,14 @@ function buildTone (wrap, data) {
 function buildModelsTab (wrap, data) {
   buildModels(wrap, data)
 
-  wrap.appendChild(el('h3', 'sec', t('timeout.heading')))
+  wrap.appendChild(secHead('timeout.heading'))
   wrap.appendChild(el('p', 'dlg-sub', t('timeout.note')))
   wrap.appendChild(numRow(t('timeout.stream'), 'stream_chunk_timeout_seconds',
     data.stream_chunk_timeout_seconds, 10, 600))
   wrap.appendChild(numRow(t('timeout.tool'), 'tool_timeout_seconds',
     data.tool_timeout_seconds, 5, 300))
 
-  wrap.appendChild(el('h3', 'sec', t('datasource.heading')))
+  wrap.appendChild(secHead('datasource.heading'))
   wrap.appendChild(el('p', 'dlg-sub', t('datasource.note')))
   wrap.appendChild(keyRow('TickFlow', data.has_tickflow_key))
   wrap.appendChild(keyRow('Tushare', data.has_tushare_token))
@@ -1113,12 +1123,15 @@ async function refreshModels () {
   // 换了默认模型，关掉设置后输入框上必须已经是新的那个。
   paintModelPicker()
   if (setOv.hidden) return
-  // 模型现在在「智能体」页里，重绘整页。
+  // 模型现在在「智能体」页里，重绘整页。保住滚动位置：在「模型」栏点
+  // 「设为默认」后跳回页首，会把用户正在看的那一行甩出视野。
+  const keep = setBody.scrollTop
   showSection('agent')
+  setBody.scrollTop = keep
 }
 
 function buildModels (wrap, data) {
-  wrap.appendChild(el('h3', 'sec', t('models.heading')))
+  wrap.appendChild(secHead('models.heading'))
   wrap.appendChild(el('p', 'dlg-sub', t('models.note')))
   const host = el('div')
   wrap.appendChild(host)
@@ -1348,7 +1361,13 @@ const setOv = document.getElementById('set-ov')
 const setBody = document.getElementById('set-body')
 let setData = null
 
-function showSection (sec) {
+/**
+ * 显示某个设置页。anchor 是可选的分栏标题 i18n key —— 给了就把那一栏滚到
+ * 顶部，而不是停在页面开头。
+ *
+ * 用 key 而不是下标或文本：下标会随分栏增减而错位，文本在英文界面下对不上。
+ */
+function showSection (sec, anchor) {
   for (const b of document.querySelectorAll('.dlg-n')) {
     b.classList.toggle('on', b.dataset.sec === sec)
   }
@@ -1364,20 +1383,42 @@ function showSection (sec) {
     if (react) react.unmountSettings(setBody)
     setBody.replaceChildren(buildSection(sec, setData))
   }
-  setBody.scrollTop = 0
+  // anchor 指定了分栏就把它滚到顶部，否则回到页面开头。
+  scrollToAnchor(anchor)
+}
+
+/**
+ * 把指定分栏滚到内容区顶部。找不到就回到开头 —— 宁可停在顶部，
+ * 也不要因为 key 写错而停在一个看不出所以然的位置。
+ */
+function scrollToAnchor (anchor) {
+  if (!anchor) {
+    setBody.scrollTop = 0
+    return
+  }
+  const head = setBody.querySelector(`.sec[data-sec-key="${anchor}"]`)
+  if (!head) {
+    setBody.scrollTop = 0
+    return
+  }
+  // offsetTop 是相对定位父级的，这里用两者的 rect 差值，不依赖布局层级。
+  const delta = head.getBoundingClientRect().top - setBody.getBoundingClientRect().top
+  // 减掉标题自身的上边距，让它真正贴顶而不是半截露在外面。
+  const pad = parseFloat(getComputedStyle(head).marginTop) || 0
+  setBody.scrollTop += delta - pad
 }
 
 function closeSettings () {
   setOv.hidden = true
 }
 
-async function openSettings (sec) {
+async function openSettings (sec, anchor) {
   setOv.hidden = false
   setBody.replaceChildren(el('p', 'empty', t('common.loading')))
   // Refetch each time: the CLI can change config behind the app's back.
   setData = await collect('settings_get').catch(() => null)
   if (setOv.hidden) return
-  showSection(sec || 'general')
+  showSection(sec || 'general', anchor)
 }
 
 /** Load appearance before the user opens settings, so launch honours it. */
@@ -1699,8 +1740,9 @@ function paintModelPicker () {
   add.type = 'button'
   add.onclick = () => {
     closeModelMenu()
-    // 模型配置在「智能体」页；直接落到那一栏，省得用户自己找。
-    openSettings('agent')
+    // 落到「智能体」页并把「模型」那一栏滚到顶部 —— 这个入口就是为了加模型，
+    // 停在页首的「回复语气」等于还要用户自己找一遍。
+    openSettings('agent', 'models.heading')
   }
   mdlMenu.appendChild(add)
 }
