@@ -143,3 +143,18 @@ test('审批理由白名单与后端保持同步', () => {
     assert.equal(hits, 2, `approvals.reason.${name} 应中英各一条，实际 ${hits} 条`)
   }
 })
+
+test('Windows 目标同时覆盖 x64 与 arm64', () => {
+  // Apple Silicon 上的 Windows 虚拟机一律是 ARM 版。只出 x64 的话本地验证只能
+  // 过 Prism 模拟跑 —— 测出来的性能和部分原生行为不代表真实 x64 机器。
+  // （NSIS 会把两个架构合进同一个安装包，所以产物里没有单独的 *arm64*.exe。）
+  const win = pkg.build && pkg.build.win
+  assert.ok(win, '缺 build.win')
+  const arches = new Set()
+  for (const target of win.target || []) {
+    if (typeof target === 'string') continue
+    for (const a of target.arch || []) arches.add(a)
+  }
+  assert.ok(arches.has('x64'), 'Windows 目标缺 x64')
+  assert.ok(arches.has('arm64'), 'Windows 目标缺 arm64（虚拟机验证会退化成模拟运行）')
+})

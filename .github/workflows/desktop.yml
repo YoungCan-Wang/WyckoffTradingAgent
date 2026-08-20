@@ -89,6 +89,8 @@ jobs:
         run: npx --no-install electron-builder --win --publish never
 
       # 结构自检：安装包和解包目录都要在，且 exe 名字对得上。
+      # x64 与 arm64 都要出：Apple Silicon 上的 Windows 虚拟机全是 ARM 版，
+      # 只出 x64 的话本地验证只能过 Prism 模拟跑，测不到原生 arm64 的行为。
       - name: Verify artifacts
         shell: bash
         run: |
@@ -97,7 +99,10 @@ jobs:
           test -d dist/win-unpacked || { echo "缺 win-unpacked"; exit 1; }
           test -f "dist/win-unpacked/Wyckoff.exe" || { echo "缺 Wyckoff.exe"; exit 1; }
           ls dist/*.exe >/dev/null 2>&1 || { echo "缺 NSIS 安装包"; exit 1; }
-          echo "打包结构检查通过"
+          # NSIS 把两个架构合进**同一个**安装包，所以不存在 *arm64*.exe ——
+          # 要验 arm64 有没有真的打出来，看解包目录。
+          test -f "dist/win-arm64-unpacked/Wyckoff.exe" || { echo "缺 arm64 产物"; exit 1; }
+          echo "打包结构检查通过（x64 + arm64）"
 
       # 上传产物：真正的运行时验证要人在一台 Windows 机器上装一次、点一遍。
       # CI 只能保证「打得出来」。
