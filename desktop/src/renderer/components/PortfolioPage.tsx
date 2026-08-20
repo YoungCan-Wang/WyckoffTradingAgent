@@ -155,6 +155,16 @@ function CashRow ({ value, busy, onSave, onError }: {
   useEffect(() => { setDraft(String(value ?? 0)) }, [value])
 
   const commit = async () => {
+    // 空串必须先拦掉：Number('') === 0，会通过下面的「有限且 >= 0」检查，然后
+    // 把现金**静默写成 ¥0**。而这一行是失焦即存的，所以「全选删除准备重输 ->
+    // 点了别处」这个完全正常的操作就会清空账户现金。
+    //
+    // 空输入的语义是「我还没填」，不是「零」。想记 0 的人会真的打一个 0。
+    // 持仓行因为 shares <= 0 被拦住，唯独现金允许 0，于是漏在这里。
+    if (!draft.trim()) {
+      setDraft(String(value ?? 0))
+      return
+    }
     const next = Number(draft)
     if (next === value) return
     // 现金可以是 0（满仓），只拦负数 —— 与后端的 >= 0 一致。

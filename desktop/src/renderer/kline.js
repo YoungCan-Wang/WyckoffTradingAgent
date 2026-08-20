@@ -7,7 +7,7 @@
  * 就是几千个 DOM 节点，缩放平移会掉帧；而标注层的防重叠与文字测量算法本身
  * 也是 canvas 2D 的。
  *
- * 对外的坐标契约只有 timeToX / priceToY 两个函数。标注层只依赖它们，不关心
+ * 对外的坐标契约是 timeToX / locateTime / priceToY。标注层只依赖它们，不关心
  * 图怎么画，所以换渲染方式不会牵动标注。
  *
  * A 股约定：红涨绿跌（与美股相反）。颜色从 CSS 变量读 —— canvas 认不了
@@ -49,7 +49,8 @@ function fmtVol (v) {
 /**
  * @param {{bars: object}} opts bars 为列式 {date,open,high,low,close,volume}
  * @returns {{node: HTMLElement, draw: Function, dispose: Function,
- *            addPainter: Function, timeToX: Function, priceToY: Function,
+ *            addPainter: Function, timeToX: Function, locateTime: Function,
+ *            priceToY: Function,
  *            visibleRange: Function}}
  */
 function createKlineChart (opts) {
@@ -98,7 +99,17 @@ function createKlineChart (opts) {
       if (a != null && a > hi) hi = a
       if (b != null && b < lo) lo = b
     }
-    if (!(lo < hi)) return { lo: 0, hi: 1 }
+    // 可见区间价格全相等（一字板、停牌横盘）时 hi === lo，没有区间可言。
+    // 原来返回 {lo:0, hi:1}：**丢掉了真实价位**，于是 priceToY(10) 会算成
+    // m.y + (1 - 10/1) * m.h —— 远在画布上方，整屏 K 线消失，看起来像没数据。
+    // 改成围绕真实价格造一个人工区间，图上会显示一条水平的一字线，价格轴上的
+    // 刻度也仍然是真的。
+    if (!(lo < hi)) {
+      const level = isFinite(lo) ? lo : (isFinite(hi) ? hi : 0)
+      // 用 1% 而不是固定值：不同价位的票（3 元 / 1500 元）都要得到合理的留白。
+      const span = Math.max(Math.abs(level) * 0.01, 0.01)
+      return { lo: level - span, hi: level + span }
+    }
     const pad = (hi - lo) * 0.04
     return { lo: lo - pad, hi: hi + pad }
   }
@@ -127,6 +138,28 @@ function createKlineChart (opts) {
   const timeToX = (date) => {
     const i = indexOfDate.get(String(date))
     return i === undefined ? null : barToX(i)
+  }
+
+  /**
+   * 定位一个日期，并且说清楚「没有坐标」是哪一种没有。
+   *
+   * timeToX 把三件事压成同一个 null：日期不在数据集里、K 线在可见区间左边、
+   * 在右边。调用方只能猜，而标注绘制猜错了就会画出横贯全图的幻影矩形
+   * （两端都在左侧屏外时，start 被当成「出左边」夹到左边界、end 被当成
+   * 「出右边」夹到右边界）。
+   *
+   * @returns {{ x: number|null, side: 'in'|'left'|'right'|'unknown' }}
+   */
+  const locateTime = (date) => {
+    const i = indexOfDate.get(String(date))
+    if (i === undefined) return { x: null, projectedX: null, side: 'unknown' }
+    // 屏外那一头的**真实**坐标（可以是负数或超出右边界）。趋势线要靠它保持
+    // 正确的角度：把出屏的端点夹到边界会把线掰弯，而趋势线的用途恰恰是延伸
+    // 到屏外。画布本身会裁剪，不需要我们先夹。
+    const projectedX = mainBox().x + (i - from + 0.5) * step()
+    if (i < from) return { x: null, projectedX, side: 'left' }
+    if (i >= to) return { x: null, projectedX, side: 'right' }
+    return { x: projectedX, projectedX, side: 'in' }
   }
 
   const visibleRange = () => ({ from, to })
@@ -258,7 +291,7 @@ function createKlineChart (opts) {
     // 标注在蜡烛之上、十字线之下。
     for (const paint of painters) {
       try {
-        paint({ ctx, width: W, height: H, theme, mainBox: mainBox(), timeToX, priceToY, visibleRange })
+        paint({ ctx, width: W, height: H, theme, mainBox: mainBox(), timeToX, locateTime, priceToY, visibleRange })
       } catch (err) {
         // 一个标注画错不该让整张图空掉。
         console.error('[kline] painter failed:', err && err.message)
@@ -374,6 +407,7 @@ function createKlineChart (opts) {
     refreshTheme,
     addPainter: (fn) => { painters.push(fn); draw() },
     timeToX,
+    locateTime,
     priceToY,
     visibleRange
   }

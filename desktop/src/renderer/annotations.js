@@ -81,7 +81,27 @@ function layoutChips (chips, height) {
         top = prev.top + CHIP_H + CHIP_GAP
       }
     }
-    top = Math.max(EDGE, Math.min(height - CHIP_H - EDGE, top))
+    const bottomLimit = height - CHIP_H - EDGE
+    if (top > bottomLimit) {
+      // 到底了就改成往**上**让位，而不是夹回底边。
+      //
+      // 原来无条件 clamp 到 bottomLimit：底部挤了几个芯片时，它们全被夹到同一个
+      // y，防重叠白做了 —— 而这恰恰是重叠最容易发生的地方（价格轴附近标注密集）。
+      top = bottomLimit
+      let guard = placed.length + 1
+      while (guard-- > 0) {
+        const hit = placed.find((prev) =>
+          chip.left < prev.left + prev.width + CHIP_GAP &&
+          prev.left < chip.left + chip.width + CHIP_GAP &&
+          Math.abs(top - prev.top) < CHIP_H + CHIP_GAP
+        )
+        if (!hit) break
+        top = hit.top - CHIP_H - CHIP_GAP
+        // 上下都排不开就接受重叠 —— 画到框外更糟。
+        if (top < EDGE) { top = EDGE; break }
+      }
+    }
+    top = Math.max(EDGE, Math.min(bottomLimit, top))
     placed.push({ ...chip, top })
   }
   return placed
@@ -193,9 +213,19 @@ function createAnnotationPainter (data) {
     ctx.save()
     ctx.font = FONT
     // 4) agent 画的标注。和自动识别的部分同层，但用强调色区分来源。
+    //
+    // 形状本身必须裁在主图内：price_line 只校验价格能否换算成 y，不管这个 y
+    // 有没有落在可见区间里，超出时那条虚线会横穿成交量副图和日期轴。趋势线
+    // 现在也用屏外的真实坐标画（保持角度），同样依赖这个裁剪。
+    // 芯片不在这层 —— 它们收进 chips，等裁剪解除后再统一画。
+    ctx.save()
+    ctx.beginPath()
+    ctx.rect(view.mainBox.x, view.mainBox.y, view.mainBox.w, view.mainBox.h)
+    ctx.clip()
     for (const item of drawn) {
       drawAgentShape(ctx, item, view, theme, chips)
     }
+    ctx.restore()
 
     // 标签最后画，且统一走一次防重叠 —— 这样芯片总在线条之上，也不会互相压。
     for (const chip of layoutChips(clampChips(chips, width), view.height)) drawChip(ctx, chip)
@@ -208,20 +238,33 @@ function createAnnotationPainter (data) {
  * 颜色优先用标注自带的 color，否则用强调色。
  */
 function drawAgentShape (ctx, item, view, theme, chips) {
-  const { mainBox, timeToX, priceToY } = view
+  const { mainBox, priceToY } = view
   const color = item.color || theme.accent
   const label = item.label || item.text || ''
   const right = mainBox.x + mainBox.w
+  // locateTime 会说明「没有坐标」是哪一种：不在数据集里 / 在可见区间左边 / 右边。
+  // 老的 timeToX 把三者压成同一个 null，下面的夹边逻辑就只能靠猜。
+  const locate = view.locateTime || ((date) => {
+    const x = view.timeToX(date)
+    return { x, side: x == null ? 'unknown' : 'in' }
+  })
 
   if (item.type === 'rectangle') {
-    const x1 = timeToX(item.start_date)
-    const x2 = timeToX(item.end_date)
+    const a = locate(item.start_date)
+    const b = locate(item.end_date)
     const yHi = priceToY(item.high)
     const yLo = priceToY(item.low)
     if (yHi == null || yLo == null) return
-    // 一端在屏外就夹到边界；两端都在同一侧屏外时整块不可见，直接跳过。
-    const left = x1 == null ? mainBox.x : x1
-    const rightEdge = x2 == null ? right : x2
+    // 日期压根不在数据里就别猜位置 —— 画出来的是一块凭空的矩形。
+    if (a.side === 'unknown' || b.side === 'unknown') return
+    // 两端都在同一侧屏外 ⇒ 整块不可见。
+    //
+    // 这是幻影矩形的根源：以前 start 为 null 就当「出左边」夹到左边界、end 为
+    // null 就当「出右边」夹到右边界，于是两端都在左边时反而被夹成横贯全图。
+    // 默认视窗 120 根、数据 320 根，用户滚离标注区必然触发。
+    if (a.side === b.side && a.side !== 'in') return
+    const left = a.side === 'in' ? a.x : mainBox.x
+    const rightEdge = b.side === 'in' ? b.x : right
     if (rightEdge <= mainBox.x || left >= right) return
     ctx.fillStyle = withAlpha(color, 0.1)
     ctx.fillRect(left, yHi, Math.max(1, rightEdge - left), Math.max(1, yLo - yHi))
@@ -248,11 +291,19 @@ function drawAgentShape (ctx, item, view, theme, chips) {
   }
 
   if (item.type === 'trendline') {
-    const x1 = timeToX(item.start_date)
-    const x2 = timeToX(item.end_date)
+    const a = locate(item.start_date)
+    const b = locate(item.end_date)
     const y1 = priceToY(item.start_price)
     const y2 = priceToY(item.end_price)
-    if (x1 == null || x2 == null || y1 == null || y2 == null) return
+    if (y1 == null || y2 == null) return
+    if (a.side === 'unknown' || b.side === 'unknown') return
+    if (a.side === b.side && a.side !== 'in') return
+    // 与矩形相反的毛病：以前任一端出屏，整条线就消失 —— 而趋势线的用途恰恰是
+    // 延伸到屏外。用端点的**真实**坐标（可以是负数或超出右边界）画，画布自己会
+    // 裁剪，线的角度保持正确。把出屏端夹到边界反而会把线掰弯。
+    const x1 = a.projectedX
+    const x2 = b.projectedX
+    if (x1 == null || x2 == null) return
     ctx.strokeStyle = withAlpha(color, 0.85)
     ctx.lineWidth = 1.5
     ctx.beginPath()

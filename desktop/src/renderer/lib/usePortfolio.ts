@@ -26,6 +26,8 @@ export function usePortfolio (): PortfolioState {
   const [failed, setFailed] = useState(false)
   // 卸载后不再 setState：页面切换比请求返回快时会警告。
   const alive = useRef(true)
+  // 单调递增的请求序号，见 fetchFresh 里的说明。
+  const requestSeq = useRef(0)
 
   /**
    * 当前账号。缓存按它分区，所以读缓存之前必须先知道「我是谁」——
@@ -42,10 +44,19 @@ export function usePortfolio (): PortfolioState {
   }, [])
 
   const fetchFresh = useCallback(async () => {
+    // 请求序号：只有最后一次发出的请求可以写 state。
+    //
+    // 账号切换时 onIdentityChange 会 setPortfolio(null) 再重新拉；此时上一个
+    // 账号的请求可能还在路上，晚一步回来就把**旧账号的持仓渲染到新账号界面上**
+    // —— 缓存层专门防的事，React state 这条路原来没防。
+    // （只有 alive 标志不够：它只区分「组件还在吗」，不区分「这是第几次请求」。）
+    const seq = ++requestSeq.current
+    const stale = () => !alive.current || seq !== requestSeq.current
+
     setLoading(true)
     setFailed(false)
     const res = await collect('portfolio').catch(() => null)
-    if (!alive.current) return
+    if (stale()) return
     const payload = res as { portfolio?: Portfolio; user_id?: string } | null
     const next = payload && payload.portfolio
     if (!next) {
@@ -53,6 +64,7 @@ export function usePortfolio (): PortfolioState {
       setLoading(false)
       return
     }
+    if (stale()) return
     // 用后端回传的账号，不是我们自己问来的那个 —— 这份数据实际属于谁只有它知道。
     const entry = writeCache(String(payload.user_id || ''), next)
     setPortfolio(next)

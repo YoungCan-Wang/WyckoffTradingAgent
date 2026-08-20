@@ -705,6 +705,8 @@ html.dark .berr-b { background: var(--paper2); }
 .attr-tbl tr:hover td { background: var(--hover); }
 /* 加权/减权用与涨跌一致的色系，不另造一套语义 */
 .aw-up { color: var(--up-ink); font-weight: 600; }
+/* 未知动作：不涂成加权也不涂成减权，见 AttributionPage 的 actionClass。 */
+.aw-neutral { color: var(--d-tx2); }
 .aw-down { color: var(--dn-ink); font-weight: 600; }
 
 /* 日期页签：20 个日期横排可滚。换行会把页面顶部撑掉两三行，滚动更省高度。 */

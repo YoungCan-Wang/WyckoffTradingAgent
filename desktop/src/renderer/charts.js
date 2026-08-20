@@ -19,6 +19,8 @@ const DOWN = '#2f9e5f'
 const MUTED = '#5a6472'
 const WARN = '#e0a458'
 const SECTOR_COLORS = [UP, WARN, '#4a90d9', DOWN, MUTED]
+// 环形图最多列这么多个桶；其余的并不消失，只是不单独占一段。
+const TOP_BUCKETS = 5
 
 const el = (tag, cls, text) => {
   const node = document.createElement(tag)
@@ -37,10 +39,6 @@ const svg = (tag, attrs) => {
 
 const fmtMoney = (value) =>
   `¥${Number(value || 0).toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`
-
-const fmtPct = (value) => `${value >= 0 ? '+' : ''}${Number(value || 0).toFixed(2)}%`
-
-const signClass = (value) => (value >= 0 ? 'up' : 'dn')
 
 function card(title, note) {
   const node = el('div', 'dcard')
@@ -61,8 +59,17 @@ function kpi (label, value, meta, cls) {
 }
 
 function sectorDonut (grouping) {
-  const sectors = grouping.items
-  const total = sectors.reduce((sum, s) => sum + s.weight, 0) || 1
+  // 被截断时补一段「其他」：否则环形图只画到前 5 名之和，剩下一大截空白既
+  // 不解释也不可点，看起来像画错了。补上之后环是满的，而每一段的百分比仍然
+  // 是相对全部持仓的真实占比。
+  const rest = grouping.truncated
+    ? grouping.total - grouping.items.reduce((sum, item) => sum + item.weight, 0)
+    : 0
+  const sectors = rest > 0
+    ? [...grouping.items, { name: t('charts.otherBucket'), weight: rest, isRest: true }]
+    : grouping.items
+  // 用全部持仓的合计，不是这 5 个的合计 —— 见 deriveSectors 里的说明。
+  const total = grouping.total || sectors.reduce((sum, s) => sum + s.weight, 0) || 1
   const node = grouping.hasSector
     ? card(t('charts.sectorTitle'), t('charts.sectorSub', { count: sectors.length }))
     : card(t('charts.concentrationTitle'), t('charts.concentrationSub', { count: sectors.length }))
@@ -79,7 +86,7 @@ function sectorDonut (grouping) {
     group.appendChild(
       svg('circle', {
         r: radius,
-        stroke: SECTOR_COLORS[index % SECTOR_COLORS.length],
+        stroke: sector.isRest ? MUTED : SECTOR_COLORS[index % SECTOR_COLORS.length],
         'stroke-dasharray': `${dash.toFixed(1)} ${(circumference - dash).toFixed(1)}`,
         transform: `rotate(${offset.toFixed(1)})`
       })
@@ -108,7 +115,7 @@ function sectorDonut (grouping) {
   sectors.forEach((sector, index) => {
     const row = el('div')
     const swatch = el('i')
-    swatch.style.background = SECTOR_COLORS[index % SECTOR_COLORS.length]
+    swatch.style.background = sector.isRest ? MUTED : SECTOR_COLORS[index % SECTOR_COLORS.length]
     row.appendChild(swatch)
     row.appendChild(document.createTextNode(`${sector.name} `))
     row.appendChild(el('b', null, `${((sector.weight / total) * 100).toFixed(1)}%`))
@@ -168,11 +175,17 @@ function deriveSectors (positions) {
     const value = Number(position.shares || 0) * Number(position.cost_price || 0)
     buckets.set(key, (buckets.get(key) || 0) + value)
   }
-  const items = [...buckets.entries()]
+  const ranked = [...buckets.entries()]
     .map(([name, weight]) => ({ name, weight }))
     .sort((a, b) => b.weight - a.weight)
-    .slice(0, 5)
-  return { items, hasSector }
+  // 合计必须在截断**之前**算。
+  //
+  // 原来是先 slice(0,5) 再对这 5 个求和，于是百分比按「前 5 名之和」算：
+  // 10 只等权持仓每只显示 20%，而真实占比是 10%。在一个反复强调「不发明数字」
+  // 的文件里，集中度这个数字本身是错的 —— 而且是往高报，正好会让人以为
+  // 集中度风险比实际更大。
+  const total = ranked.reduce((sum, item) => sum + item.weight, 0)
+  return { items: ranked.slice(0, TOP_BUCKETS), hasSector, total, truncated: ranked.length > TOP_BUCKETS }
 }
 
 /**

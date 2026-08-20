@@ -287,6 +287,11 @@ const openKline = (symbol) =>
       const chart = window.WyckoffKline.createKlineChart({ bars: data.bars })
       chart.addPainter(window.WyckoffAnnotations.createAnnotationPainter(data))
       wrap.appendChild(chart.node)
+      // 再 dispose 一次：开头那次是在 await 之前跑的，两次 build 交错时它们都
+      // 会看到空的 map，然后后者的 set 直接覆盖前者 —— 被覆盖的那个图表实例
+      // 没人 dispose，它的 ResizeObserver 和 window 级 mouseup 监听器就漏了。
+      // （tabs.js 的 renderToken 只阻止旧节点上屏，不阻止 build 跑完并改 map。）
+      disposeChart(symbol)
       liveCharts.set(symbol, chart)
       // Canvas colours are resolved once, so a theme switch needs a repaint.
       requestAnimationFrame(() => chart.resize())
@@ -350,6 +355,10 @@ function applyAppearance (cfg) {
   const scale = Number(c.desktop_font_scale) || 100
   root.style.setProperty('--fs', `${(13.5 * scale) / 100}px`)
   sendOnEnter = c.desktop_send_on_enter !== false
+  // canvas 认不了 CSS 变量，主题色是开图时解析成字面色存下来的 —— 不主动通知，
+  // 已经打开的图会一直用旧配色。而芯片每次绘制都实时读 class，于是同一张图上
+  // 混着深浅两套皮肤。
+  for (const chart of liveCharts.values()) chart.refreshTheme && chart.refreshTheme()
 }
 
 // Following the OS means reacting to it changing while the app is open.
@@ -467,17 +476,19 @@ window.WyckoffShell = {
     wrap.appendChild(viewer.node)
     return { node: wrap, dispose: viewer.dispose }
   },
-  /** 启动时与设置改动后都要应用外观。 */
+  /**
+   * 启动时与设置改动后都要应用外观。
+   *
+   * 由这里统一广播 settings-changed —— 谁调 loadAppearance，所有关心配置的地方
+   * 就都会跟上（对话流的「回车发送」判断靠它）。以前那个事件只在 AgentPanel 的
+   * onConfigChanged 里发，于是从「通用」页改行为类设置的人拿不到通知。
+   */
   loadAppearance: async () => {
     setData = await collect('settings_get').catch(() => null)
     applyAppearance(setData)
+    window.dispatchEvent(new Event('wyckoff:settings-changed'))
   }
 }
-
-// 跟随系统就要响应它在运行期间的变化。
-osDark.addEventListener('change', () => {
-  if (!setData || (setData.desktop_appearance || 'system') === 'system') applyAppearance(setData)
-})
 
 // 面板宽度：窗口变化时重新夹一次，并同步原生 view 的几何。
 window.addEventListener('resize', () => {

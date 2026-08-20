@@ -14,11 +14,25 @@ interface Props {
 export function GeneralPanel ({ data, notes, save }: Props) {
   const note = (key: keyof Settings) => notes[String(key)]
 
-  // 外观类改动要立刻落到 DOM，不能等下一次读配置。
+  /**
+   * 改一个设置项，并让命令式那侧也跟上。
+   *
+   * shell.js 自己存了一份配置快照（setData）和一份 sendOnEnter。以前这里只调
+   * React 的 applyAppearance（纯 DOM 操作），那份快照就一直是旧的，于是：
+   *
+   * - 「Cmd+Enter 发送」改了不生效 —— 发送键的判断读的是 shell.js 那份；
+   * - OS 深浅色一变，osDark 监听器拿着过期快照重新应用，把用户刚选的主题**打回**。
+   *
+   * 所以每次成功保存都通知一次 shell.js 重新读配置。失败则回滚 DOM。
+   */
   const saveAndApply = async <K extends keyof Settings>(key: K, value: Settings[K]) => {
     applyAppearance({ ...data, [key]: value })
     const ok = await save(key, value)
-    if (!ok) applyAppearance(data)
+    if (!ok) {
+      applyAppearance(data)
+      return
+    }
+    await window.WyckoffShell?.loadAppearance?.()
   }
 
   const i18n = window.WyckoffI18n
@@ -109,7 +123,7 @@ export function GeneralPanel ({ data, notes, save }: Props) {
         <Seg
           value={data.desktop_send_on_enter}
           choices={[[true, t('behavior.sendEnter')], [false, t('behavior.sendCmdEnter')]]}
-          onPick={(v) => void save('desktop_send_on_enter', v)}
+          onPick={(v) => void saveAndApply('desktop_send_on_enter', v)}
         />
       </Row>
 

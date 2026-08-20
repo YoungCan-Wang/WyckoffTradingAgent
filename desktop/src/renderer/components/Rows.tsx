@@ -2,7 +2,7 @@
  * 设置行的基础组件。类名沿用原来的 CSS（.srow/.sleft/.slab/.seg…）——
  * 这次只换渲染方式，视觉必须一模一样，才能逐屏对比验证没搬坏。
  */
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 
 interface RowProps {
   label: string
@@ -52,6 +52,13 @@ interface NumProps {
  */
 export function Num ({ value, min, max, onCommit, onRangeError }: NumProps) {
   const [draft, setDraft] = useState(String(value))
+  // prop 变了就同步草稿。
+  //
+  // 后端拒绝一个**在合法区间内**的值时，useSettings 会把 data 回滚，但输入框
+  // 仍然显示那个被拒的数字 —— 用户看到的是「我改了，而且看起来生效了」。
+  // 越界那条路径本来就回填了原值，漏的是这条。
+  // （CashRow 里有同样的 effect，这里缺。）
+  useEffect(() => { setDraft(String(value)) }, [value])
   return (
     <input
       className="num"

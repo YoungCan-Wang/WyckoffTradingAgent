@@ -24,7 +24,13 @@ interface AccountData {
 }
 
 /** 一项的决策结果。null = 还没决策。 */
-type Outcome = { kind: 'ok' | 'err'; text: string } | null
+/**
+ * 一项审批的结果。
+ *
+ * retryable 区分「决策完成了（不管批还是拒）」和「这次调用没走通」——
+ * 后者不是决策，按钮必须留着，否则这笔待批资金操作只能靠刷新页面再试。
+ */
+type Outcome = { kind: 'ok' | 'err'; text: string; retryable?: boolean } | null
 
 export function ApprovalsPage () {
   const { data, loading, failed, reload } = useIpc<ApprovalsData>('approve_list')
@@ -41,12 +47,20 @@ export function ApprovalsPage () {
     )
     const errText = (res as { __error?: string } | null)?.__error
     if (errText) {
-      setOutcome((prev) => ({ ...prev, [item.id]: { kind: 'err', text: errText } }))
+      setOutcome((prev) => ({ ...prev, [item.id]: { kind: 'err', text: errText, retryable: true } }))
       setBusy((prev) => ({ ...prev, [item.id]: false }))
       return
     }
     const payload = (res || {}) as { status?: string; succeeded?: boolean }
     const status = String(payload.status || '')
+    // 没有 status 意味着这次调用压根没走通（collect 失败时返回 null 而不是抛错）。
+    // 原来这种情况落到 else 分支被标成「已拒绝」—— 把一个**没有发生的决策**
+    // 报告成已完成，而且按钮随之消失，这笔待批操作再也点不了。
+    if (!status) {
+      setOutcome((prev) => ({ ...prev, [item.id]: { kind: 'err', text: t('approvals.callFailed'), retryable: true } }))
+      setBusy((prev) => ({ ...prev, [item.id]: false }))
+      return
+    }
     // 只看 call 成功会把「执行了但失败」报成成功 —— status 才是真相。
     const label = status === 'executed' ? t('approvals.executed')
       : status === 'failed' ? t('approvals.failed')
@@ -150,10 +164,15 @@ function ApprovalCard ({ item, accountLabel, busy, outcome, onDecide }: CardProp
         </details>
       ) : null}
 
-      {/* 决策后按钮消失：同一项不该能批两次 */}
+      {/*
+        决策后按钮消失：同一项不该能批两次。
+        但「调用没走通」不是决策 —— 那种情况要留着按钮，否则这笔待批资金操作
+        只能靠刷新页面才能再试一次。
+      */}
       {outcome ? (
         <div className={outcome.kind === 'err' ? 'sys err' : 'sys'}>{outcome.text}</div>
-      ) : (
+      ) : null}
+      {!outcome || outcome.retryable ? (
         <div className="btns">
           <button type="button" className="b pri" disabled={busy} onClick={() => onDecide(item, true)}>
             {busy ? t('approvals.deciding') : t('action.approve')}
@@ -162,7 +181,7 @@ function ApprovalCard ({ item, accountLabel, busy, outcome, onDecide }: CardProp
             {t('action.reject')}
           </button>
         </div>
-      )}
+      ) : null}
     </div>
   )
 }

@@ -17,7 +17,8 @@ interface Props {
 
 export function ApprovalCardInline ({ event, onDecided }: Props) {
   const [busy, setBusy] = useState(false)
-  const [outcome, setOutcome] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
+  // retryable：区分「决策完成」和「这次调用没走通」。后者要留着按钮。
+  const [outcome, setOutcome] = useState<{ kind: 'ok' | 'err'; text: string; retryable?: boolean } | null>(null)
 
   const item: ApprovalItem = {
     id: String(event.id || ''),
@@ -36,11 +37,18 @@ export function ApprovalCardInline ({ event, onDecided }: Props) {
     )
     const errText = (res as { __error?: string } | null)?.__error
     if (errText) {
-      setOutcome({ kind: 'err', text: errText })
+      setOutcome({ kind: 'err', text: errText, retryable: true })
       setBusy(false)
       return
     }
     const status = String(((res || {}) as { status?: string }).status || '')
+    // 没有 status 就是这次调用压根没走通（collect 失败返回 null 而不是抛错）。
+    // 落到下面的 else 会被标成「已拒绝」—— 报告一个没有发生的决策。
+    if (!status) {
+      setOutcome({ kind: 'err', text: t('approvals.callFailed'), retryable: true })
+      setBusy(false)
+      return
+    }
     // 只看调用成功会把「执行了但失败」报成成功。
     const label = status === 'executed' ? t('approvals.executed')
       : status === 'failed' ? t('approvals.failed')
@@ -73,7 +81,9 @@ export function ApprovalCardInline ({ event, onDecided }: Props) {
       ) : null}
       {outcome ? (
         <div className={outcome.kind === 'err' ? 'sys err' : 'sys'}>{outcome.text}</div>
-      ) : (
+      ) : null}
+      {/* 调用没走通不是决策 —— 留着按钮，否则只能刷新页面才能再试 */}
+      {!outcome || outcome.retryable ? (
         <div className="btns">
           <button type="button" className="b pri" disabled={busy} onClick={() => decide(true)}>
             {busy ? t('approvals.deciding') : t('action.approve')}
@@ -82,7 +92,7 @@ export function ApprovalCardInline ({ event, onDecided }: Props) {
             {t('action.reject')}
           </button>
         </div>
-      )}
+      ) : null}
     </div>
   )
 }

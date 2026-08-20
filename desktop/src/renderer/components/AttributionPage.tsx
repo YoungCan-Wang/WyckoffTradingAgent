@@ -103,6 +103,28 @@ const moveClass = (v: unknown) => {
   return v > 0 ? 'trk-up' : 'trk-down'
 }
 
+/**
+ * 动作文案。未知动作显示原值，不显示 i18n 键。
+ *
+ * i18n.t 缺 key 时返回键本身，所以后端加了新动作、前端还没翻译时，界面上会
+ * 出现 `attribution.act.rebalance` 这种内部标识 —— 用户看到的是一串代码。
+ * 同项目的 riskReasonText 对未知 key 就是返回空串的，这里补上同样的防护。
+ */
+const KNOWN_ACTIONS = new Set(['upweight', 'downweight'])
+const actionText = (action?: string) => {
+  const key = String(action || '').trim()
+  if (!key) return DASH
+  return KNOWN_ACTIONS.has(key) ? t(`attribution.act.${key}`) : key
+}
+
+/** 只有明确是加权才用上涨色；未知动作不该被涂成「减权」。 */
+const actionClass = (action?: string) => {
+  const key = String(action || '').trim()
+  if (key === 'upweight') return 'aw-up'
+  if (key === 'downweight') return 'aw-down'
+  return 'aw-neutral'
+}
+
 interface DateEntry {
   report_date: string
   window_start: string
@@ -132,6 +154,13 @@ export function AttributionPage () {
   const requested = useRef<Set<string>>(new Set())
   const alive = useRef(true)
   useEffect(() => () => { alive.current = false }, [])
+  /**
+   * 当前选中的日期，供异步回调读取。
+   *
+   * 闭包里的 current 是发起那次请求时的值；晚归的失败要判断「我这个日期还是
+   * 用户正在看的吗」，必须读一个**当下**的值，所以用 ref 而不是闭包变量。
+   */
+  const currentRef = useRef('')
 
   const dates = (index && index.dates) || []
   const current = picked || (dates.length ? dates[0].report_date : '')
@@ -145,22 +174,26 @@ export function AttributionPage () {
    * 去重靠 requested（ref，不参与渲染）。
    */
   const latestDate = dates.length ? dates[0].report_date : ''
+  currentRef.current = current
   useEffect(() => {
     if (!current || requested.current.has(current)) return
     requested.current.add(current)
     setLoadError('')
     void (async () => {
-      const res = await collect('attribution', { report_date: current }).catch(() => null)
+      const asked = current
+      const res = await collect('attribution', { report_date: asked }).catch(() => null)
       if (!alive.current) return
       const payload = res as AttributionData | null
       const got = payload && payload.records && payload.records[0]
       if (!got) {
         // 取失败就把标记撤掉，下次点这个页签可以重试。
-        requested.current.delete(current)
-        setLoadError(t('attribution.readFailed'))
+        requested.current.delete(asked)
+        // 但只有它仍然是当前选中的日期才显示错误 —— 否则「日期 A 请求失败晚归」
+        // 会把错误显示在用户已经切过去的日期 B 头上，看起来是 B 坏了。
+        if (asked === currentRef.current) setLoadError(t('attribution.readFailed'))
         return
       }
-      setCache((prev) => ({ ...prev, [current]: got }))
+      setCache((prev) => ({ ...prev, [asked]: got }))
     })()
   }, [current, latestDate])
 
@@ -175,7 +208,13 @@ export function AttributionPage () {
   const actions = (record && record.signal_actions) || []
   const isLocal = Boolean(record) && record!.source !== 'remote'
   const remoteError = (record && record.remote_error) || ''
-  const operatorSummary = [policy.status, policy.mode_recommendation, execution.summary]
+  // 提示词要求先给一句人话摘要，后端就是为此产出 operator_summary 的。
+  // 原来这里完全没读它，直接用 policy/execution 拼一个替身 —— 类型里声明了、
+  // 注释里也写了要用，但代码把真货丢了。真货缺失时才退回拼凑。
+  const realSummary = String(
+    (record && record.operations && record.operations.operator_summary) || ''
+  ).trim()
+  const operatorSummary = realSummary || [policy.status, policy.mode_recommendation, execution.summary]
     .filter((value, index, all) => Boolean(value) && all.indexOf(value) === index)
     .slice(0, 2)
     .join(' · ')
@@ -278,8 +317,8 @@ export function AttributionPage () {
                         {action.horizon ? <span className="dim"> h={action.horizon}</span> : null}
                       </td>
                       <td>
-                        <span className={action.action === 'upweight' ? 'aw-up' : 'aw-down'}>
-                          {t(`attribution.act.${action.action}`)}
+                        <span className={actionClass(action.action)}>
+                          {actionText(action.action)}
                         </span>
                       </td>
                       <td className="r">
