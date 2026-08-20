@@ -7,6 +7,7 @@
 import { useEffect, useRef } from 'react'
 import type { Turn, Block } from '../lib/chat'
 import { ApprovalCardInline } from './ApprovalCardInline'
+import { Markdown } from './Markdown'
 
 const t = (key: string, params?: Record<string, string | number>) => window.WyckoffI18n.t(key, params)
 
@@ -79,7 +80,9 @@ function BlockView (
     case 'thinking':
       return <div className="think">{block.text}</div>
     case 'text':
-      return <p>{block.text}</p>
+      // 模型的正文是 markdown（列表、粗体、代码、表格），原样输出会看到
+      // 满屏的 ** 和 -。
+      return <Markdown source={block.text} />
     case 'tool':
       return (
         <div className="tool">

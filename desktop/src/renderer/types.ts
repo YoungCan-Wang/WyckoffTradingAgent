@@ -140,5 +140,14 @@ declare global {
     }
     /** app.js 注册的「在产物面板打开 K 线」。可能尚未就绪，调用前判空。 */
     WyckoffOpenKline?: (code: string) => void
+    /**
+     * md.js（vanilla）：把 markdown 渲染成 DOM 节点。
+     *
+     * 逐节点建树、从不用 innerHTML —— 模型输出可能带引用来的任意网页文本，
+     * 这是那份实现的核心安全约束，所以对话流复用它而不是另写一份。
+     */
+    WyckoffMd: {
+      renderMarkdown: (source: string, meta?: string) => HTMLElement
+    }
   }
 }

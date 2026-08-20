@@ -1137,9 +1137,9 @@ html.dark .mfin { background: var(--paper2); }
   padding-bottom: 5px; border-bottom: 1px solid var(--line2);
 }
 .doc h3 { margin: 16px 0 6px; font: 600 13.5px/1.4 inherit; }
-.doc p { margin: 0 0 10px; font-size: 13.5px; color: #3a3830; }
+.doc p { margin: 0 0 10px; font-size: 13.5px; color: var(--tx); }
 .doc table { margin: 6px 0 14px; }
-.doc ul, .doc ol { margin: 0 0 12px; padding-left: 19px; font-size: 13.5px; color: #3a3830; }
+.doc ul, .doc ol { margin: 0 0 12px; padding-left: 19px; font-size: 13.5px; color: var(--tx); }
 .doc li { margin-bottom: 4px; }
 .doc code {
   background: #f2f0eb; border: 1px solid var(--line); border-radius: 4px;
@@ -1264,3 +1264,11 @@ html.dark .mfin { background: var(--paper2); }
   margin: 6px 0 0; text-align: center;
   color: var(--tx3); font-size: 11.5px;
 }
+
+/* 对话流里的 markdown。复用 .doc 的排版，只压掉为报告面板设计的外边距 ——
+   气泡里第一行不该先空一截，最后一段也不该拖一条尾巴。 */
+.md > .doc > :first-child { margin-top: 0; }
+.md > .doc > :last-child { margin-bottom: 0; }
+/* 报告标题在对话里过大：这是一段回答，不是一篇文档。 */
+.md > .doc h1 { font-size: 16px; margin: 10px 0 6px; }
+.md > .doc h2 { font-size: 14.5px; }

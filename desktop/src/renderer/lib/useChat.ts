@@ -29,6 +29,17 @@ export function useChat (ready: boolean): ChatApi {
   // 事件到达时要改「当前活跃的那一轮」，用 ref 拿最新值 —— 闭包里读 state
   // 会读到订阅建立时的旧值。
   const liveIds = useRef<Set<string>>(new Set())
+  /**
+   * send 还在等 {ok,id} 期间到达的事件，按 id 暂存。
+   *
+   * 桥一收到请求就同步开始推事件，而 id 要跨进程回来 —— 所以头几个 delta
+   * 一定早于我们建这一轮。它们既进不了 liveIds 判断（那时还没登记），也找不到
+   * 对应的 turn，于是被静默丢掉：正文从中间某句开始，前面的段落和列表项凭空
+   * 消失（界面上看不出丢了东西，这是最糟的一点）。
+   */
+  const pendingEvents = useRef<Map<string, Array<Record<string, unknown>>>>(new Map())
+  /** 有 send 在飞行中 —— 此时遇到不认识的 id 要缓存，而不是丢掉。 */
+  const sendInFlight = useRef(0)
 
   const invalidateOnTool = useCallback((toolName: string) => {
     if (!isPortfolioWriteTool(toolName)) return
@@ -38,8 +49,18 @@ export function useChat (ready: boolean): ChatApi {
   useEffect(() => {
     const off = window.wyckoff.onEvent((event) => {
       const id = String(event.id || '')
-      if (!id || !liveIds.current.has(id)) return
+      if (!id) return
       const type = String(event.type || '')
+      if (!liveIds.current.has(id)) {
+        // 不是我们在等的流。但如果此刻有 send 在飞行，这可能正是它的前几个
+        // 事件（id 还没回来）—— 缓存等回放。缓存只在飞行期间增长，send 一
+        // 落地就会取走或清掉，不会无界堆积。
+        if (!sendInFlight.current) return
+        const list = pendingEvents.current.get(id) || []
+        list.push(event)
+        pendingEvents.current.set(id, list)
+        return
+      }
 
       if (type === 'tool_start') {
         // 改持仓的工具一开跑就作废缓存：审批可能被「本次会话总是允许」放行，
@@ -112,7 +133,10 @@ export function useChat (ready: boolean): ChatApi {
     const body = text.trim()
     if (!body || busy || !ready) return
     setBusy(true)
-    const res = await window.wyckoff.call('chat', { text: body })
+    sendInFlight.current += 1
+    const res = await window.wyckoff.call('chat', { text: body }).finally(() => {
+      sendInFlight.current -= 1
+    })
     if (!res.ok || !res.id) {
       // 用户那句话仍要留在流里，否则他会以为自己没发出去。
       setTurns((prev) => [...prev, {
@@ -130,6 +154,15 @@ export function useChat (ready: boolean): ChatApi {
     const id = String(res.id)
     liveIds.current.add(id)
     setTurns((prev) => [...prev, { id, user: body, blocks: [], live: true }])
+    // 回放 await 期间缓存下来的事件，然后把缓存清空 —— 没被认领的那些属于
+    // 页面调用（它们有自己的订阅），留着只会占内存。
+    const early = pendingEvents.current.get(id)
+    pendingEvents.current.clear()
+    if (early?.length) {
+      setTurns((prev) => prev.map((x) => (
+        x.id === id ? early.reduce((acc, e) => applyEvent(acc, e), x) : x
+      )))
+    }
   }, [busy, ready])
 
   return { turns, busy, started: turns.length > 0, send, sysLine, invalidateOnTool }
