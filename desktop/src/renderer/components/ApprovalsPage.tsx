@@ -134,7 +134,7 @@ function ApprovalCard ({ item, accountLabel, busy, outcome, onDecide }: CardProp
       <p className="sub">{t('approvals.submitted')}</p>
 
       {showEvidence ? (
-        <div className="evidence">
+        <div className="approval-evidence">
           <Evidence label={t('approvals.tool')} value={item.tool_name || item.tool} />
           <Evidence label={t('approvals.source')} value={item.source} />
           <Evidence label={t('approvals.schedule')} value={item.schedule_id} />

@@ -68,7 +68,7 @@ export function AccountMenu (
     <div className="menu" role="menu" ref={box}>
       <div className="menu-hd">
         <span className="ava">{initial}</span>
-        <span className="menu-email">{label}</span>
+        <span className="menu-em">{label}</span>
       </div>
       <button
         className="menu-i"
