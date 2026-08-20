@@ -174,6 +174,13 @@ class BrowserHost {
   }
 
   eval (wc, code) {
+    // 从未导航过的 view 上 executeJavaScript **永不 resolve**（Electron 43 实测；
+    // 38 上也一样）。withTimeout 能兜住，但那是白等 15 秒才报一句
+    // 「script timed out」—— 而这个状态是当下就能知道的：还没有页面，自然没有
+    // 正文可读、没有元素可点。直接说清楚。
+    if (!wc.getURL()) {
+      return Promise.reject(new Error('browser has no page yet — navigate first'))
+    }
     // userGesture=false：不给页面借 Agent 之手触发需要用户手势的能力。
     return this.withTimeout(wc.executeJavaScript(code, false), ACTION_TIMEOUT_MS, 'script timed out')
   }

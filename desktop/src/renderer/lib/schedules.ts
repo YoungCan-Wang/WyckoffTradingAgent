@@ -72,7 +72,12 @@ export function describeCron (cron?: string): string {
 /** 后端认可的风险理由。白名单之外的一律不显示 —— 别把内部代号漏给用户。 */
 const KNOWN_REASONS = new Set([
   'destructive_action', 'over_nav', 'batch_over_nav', 'batch_malformed',
-  'nav_unknown', 'write_tool', 'auto_narrow_tool'
+  'nav_unknown', 'write_tool', 'auto_narrow_tool',
+  // 清除止损（cli/approval_policy.py 里升到 REVIEW 档时新增的）。
+  // 白名单是「不把内部代号漏给用户」的防线，代价是后端加了理由、这里忘了加，
+  // 那条理由就**静默消失** —— 而这一条恰恰是最需要说清楚的：审批卡上不写明
+  // 「这会移除止损保护」，用户就不知道自己在批什么。
+  'clears_stop_loss'
 ])
 
 export function riskReasonText (item: ApprovalItem): string {

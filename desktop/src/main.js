@@ -49,6 +49,8 @@ let mainWindow = null
 let bridge = null
 let daemon = null
 let browser = null
+// 上次导出 PDF 选的目录。Electron 43 起操作系统不再跨次记住它，见 exportPdf。
+let lastExportDir = ''
 // Python reaches ready in ~1s, which can beat the renderer's listener
 // registration. Without replay that status is lost and the UI sits on
 // "连接中…" forever, never issuing a single call.
@@ -95,8 +97,18 @@ function createWindow () {
 
   // Renderer errors are invisible from the terminal otherwise, which makes a
   // blank window impossible to diagnose.
-  mainWindow.webContents.on('console-message', (_e, level, message, line, source) => {
-    if (level >= 2) console.error(`[renderer] ${message} (${source}:${line})`)
+  //
+  // 用 Event 对象那套签名，不用尾部的位置参数（35.0 起已废弃）。
+  //
+  // 两套目前都还在发，但位置参数里的 level 是数字、Event 上的是字符串
+  // （'info' | 'warning' | 'error' | 'debug'，注意**没有** verbose）。等哪天
+  // 兼容层被摘掉，`level >= 2` 会恒为 false —— 渲染端的错误日志是诊断白屏的
+  // 唯一手段，静默丢掉最糟。
+  mainWindow.webContents.on('console-message', (details) => {
+    const level = String((details && details.level) || '')
+    if (level !== 'warning' && level !== 'error') return
+    const where = `${details.sourceId || '?'}:${details.lineNumber ?? '?'}`
+    console.error(`[renderer] ${details.message} (${where})`)
   })
   mainWindow.webContents.on('did-fail-load', (_e, code, desc) => {
     console.error(`[renderer] load failed: ${desc} (${code})`)
@@ -212,11 +224,15 @@ async function exportPdf (payload) {
   const html = payload && payload.wrap ? await wrapForPrint(body, name) : body
   const defaultName = name + '.pdf'
 
+  // Electron 43 起：defaultPath 不带目录时一律落到「下载」，而且**操作系统不再
+  // 记住上次用的目录**。导出多份报告到同一个文件夹是常态，所以自己记一下 ——
+  // 否则每次都要重新翻目录。
   const target = await dialog.showSaveDialog(mainWindow, {
-    defaultPath: defaultName,
+    defaultPath: lastExportDir ? path.join(lastExportDir, defaultName) : defaultName,
     filters: [{ name: 'PDF', extensions: ['pdf'] }]
   })
   if (target.canceled || !target.filePath) return { ok: false, canceled: true }
+  lastExportDir = path.dirname(target.filePath)
 
   const win = new BrowserWindow({
     show: false,
