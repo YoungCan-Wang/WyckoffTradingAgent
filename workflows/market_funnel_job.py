@@ -325,8 +325,10 @@ def run_market_funnel(
     write_market_funnel_output(runtime.output_path, result)
     write_market_funnel_report(report_path, result)
     write_tracking_candidates_if_enabled(candidates, runtime.spec.key)
-    if runtime.spec.key == "hk":
-        send_market_funnel_notification(os.getenv("FEISHU_WEBHOOK_URL", ""), result)
+    # 港美一视同仁推送。通知内容本身与市场无关（标题取 result.label、正文走
+    # render_market_funnel_report），此前只给港股发是历史遗留，不是设计取舍。
+    # webhook 未配置时 send_market_funnel_notification 自己会跳过并打印。
+    send_market_funnel_notification(os.getenv("FEISHU_WEBHOOK_URL", ""), result)
     print(
         f"[market-funnel] done ok={result['ok']} market={runtime.spec.key} "
         f"quotes={len(quotes)} selected={len(symbols)} fetched={len(df_map)} "
