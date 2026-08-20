@@ -73,6 +73,11 @@ const ICONS = {
 
 const refreshIcons = () => createIcons({ icons: ICONS })
 refreshIcons()
+/**
+ * 组件挂载后要再跑一次：lucide 只替换调用那一刻 DOM 里的占位符，
+ * React 后来插入的 data-lucide 不会自动变成 svg。
+ */
+window.WyckoffIcons = { render: refreshIcons }
 
 const roots = new WeakMap<Element, Root>()
 
@@ -195,6 +200,8 @@ declare global {
     WyckoffChat?: { sysLine: (text: string, isError?: boolean) => void }
     /** app.js 停放会话区容器的地方。 */
     WyckoffPendingChatHost?: HTMLElement
+    /** 把新插入的 data-lucide 占位符换成 svg。 */
+    WyckoffIcons?: { render: () => void }
   }
 }
 

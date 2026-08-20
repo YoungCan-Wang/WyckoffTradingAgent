@@ -19,8 +19,6 @@ let browserBox = null
 let browserObserver = null
 
 let ready = false
-let busy = false
-const turns = new Map()
 
 // Panels start closed so the conversation owns the window, as in ChatGPT and
 // Claude desktop. Sidebar choice persists; the artifact pane does not — it is
@@ -129,119 +127,23 @@ const el = (tag, cls, text) => {
   return node
 }
 
-const atBottom = () => stream.scrollHeight - stream.scrollTop - stream.clientHeight < 60
 
 // Messages go into .inner, which is width-capped and centred; #stream itself
 // is the scroll container. Appending straight to #stream would bypass that cap.
 const thread = document.querySelector('.thread')
 
-function invalidatePortfolioIfWrite (toolName) {
-  const react = window.WyckoffReact
-  if (react && react.invalidatePortfolioCache) react.invalidatePortfolioCache(toolName)
-}
-
-function displayTime (value) {
-  if (!value) return '—'
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString(i18n.getLang())
-}
-
-function evidenceItem (label, value) {
-  const item = el('div', 'evidence-item')
-  item.appendChild(el('span', null, label))
-  item.appendChild(el('b', null, value || '—'))
-  return item
-}
 
 /**
- * 「为什么需要你确认」——把后端算好的档位理由翻成一句话。
+ * 系统提示行 —— 转发给 React 的对话流。
  *
- * 后端存的是 i18n key 而不是成句文本，所以中英切换不会漏出另一种语言。
- * 认不出的 key 一律返回空串：宁可不解释，也不要显示 'reason.foo' 这种内部标识。
+ * app.js 不再拥有对话渲染，但退出登录、浏览器打开失败这类动作仍在这里，
+ * 它们的提示要出现在同一条流里。React 尚未挂载时退回 console：宁可只进日志，
+ * 也不要抛异常打断动作本身。
  */
-function riskReasonText (item) {
-  const key = String(item.risk_reason || '')
-  if (!key.startsWith('reason.')) return ''
-  const name = key.slice('reason.'.length)
-  const known = ['destructive_action', 'over_nav', 'batch_over_nav', 'batch_malformed',
-    'nav_unknown', 'write_tool', 'auto_narrow_tool']
-  if (!known.includes(name)) return ''
-  const ratio = Number(item.nav_ratio) || 0
-  // 占比只在与阈值相关的理由里才有意义，别给「清仓」硬贴一个百分比。
-  if ((name === 'over_nav' || name === 'batch_over_nav') && ratio > 0) {
-    return t(`approvals.reason.${name}`, { pct: (ratio * 100).toFixed(1) })
-  }
-  return t(`approvals.reason.${name}`)
-}
-
-function approvalEvidence (item, context) {
-  const grid = el('div', 'approval-evidence')
-  if (context.account) grid.appendChild(evidenceItem(t('approvals.account'), context.account))
-  grid.appendChild(evidenceItem(t('approvals.source'), item.source || t('tasks.sourceApproval')))
-  grid.appendChild(evidenceItem(t('approvals.requestedAt'), displayTime(item.created_at)))
-  grid.appendChild(evidenceItem(t('approvals.tool'), item.tool_name || item.tool))
-  if (item.schedule_id) grid.appendChild(evidenceItem(t('approvals.schedule'), item.schedule_id))
-  return grid
-}
-
-function approvalCard (item, context = {}) {
-  const card = el('div', 'card')
-  const r1 = el('div', 'r1')
-  r1.appendChild(el('b', null, item.summary || item.tool || item.tool_name || t('approvals.defaultItem')))
-  const tier = { confirm: t('approvals.tierConfirm'), review: t('approvals.tierReview') }[item.risk] || item.risk || ''
-  const tone = ['confirm', 'review'].includes(item.risk) ? item.risk : ''
-  r1.appendChild(el('span', `tg ${tone}`, tier))
-  card.appendChild(r1)
-  const why = riskReasonText(item)
-  if (why) card.appendChild(el('p', 'approval-why', why))
-  card.appendChild(el('p', 'sub', t('approvals.submitted')))
-  if (item.created_at || item.source || item.tool_name || context.account) {
-    card.appendChild(approvalEvidence(item, context))
-  }
-  if (item.args && Object.keys(item.args).length) {
-    const details = el('details', 'approval-args')
-    details.appendChild(el('summary', null, t('approvals.exactChange')))
-    details.appendChild(el('pre', null, JSON.stringify(item.args, null, 2)))
-    card.appendChild(details)
-  }
-
-  const btns = el('div', 'btns')
-  const ok = el('button', 'b pri', t('action.approve'))
-  const no = el('button', 'b', t('action.reject'))
-  btns.append(ok, no)
-  card.appendChild(btns)
-
-  const decide = async (approved) => {
-    ok.disabled = no.disabled = true
-    const res = await window.wyckoff.call('approve_decide', { id: item.id, approved })
-    if (!res.ok) {
-      card.appendChild(el('div', 'sys err', res.error || t('approvals.callFailed')))
-      return
-    }
-    const off = window.wyckoff.onEvent((event) => {
-      if (event.id !== res.id) return
-      if (event.type === 'result') {
-        const label = event.status === 'executed' ? t('approvals.executed')
-          : event.status === 'failed' ? t('approvals.failed') : t('approvals.rejected')
-        card.appendChild(el('div', event.status === 'failed' ? 'sys err' : 'sys', label))
-        refreshApprovals()
-        // 批准执行的是改持仓的工具 → 持仓缓存已过期，作废它。
-        if (event.status === 'executed') invalidatePortfolioIfWrite(item.tool_name || item.tool)
-      } else if (event.type === 'error') {
-        card.appendChild(el('div', 'sys err', event.message || t('chat.toolFailed')))
-      } else if (event.type === 'end') {
-        off()
-      }
-    })
-  }
-  ok.onclick = () => decide(true)
-  no.onclick = () => decide(false)
-  return card
-}
-
-function setBusy (value) {
-  busy = value
-  // 发送按钮的禁用由 React 侧根据 status 自己判断
+function sysLine (text, isError) {
+  const chat = window.WyckoffChat
+  if (chat && chat.sysLine) chat.sysLine(text, Boolean(isError))
+  else console[isError ? 'error' : 'log'](text)
 }
 
 // Backend-error empty state: one plain-language line + a retry button, shown
@@ -397,209 +299,6 @@ const pane = new window.WyckoffTabs.TabPane('tabs', 'pane-body', {
     else setPane(false)
   }
 })
-
-function buildApprovals (data, account) {
-  const wrap = el('div')
-  if (!data || !data.count) {
-    wrap.appendChild(el('p', 'empty', t('approvals.empty')))
-    const button = el('button', 'task-action', t('approvals.viewSchedules'))
-    button.onclick = () => navigateView('schedules')
-    wrap.appendChild(button)
-    return wrap
-  }
-  const accountLabel = account ? (account.signed_in ? account.email : t('account.signedOut')) : null
-  for (const item of data.items) wrap.appendChild(approvalCard(item, { account: accountLabel }))
-  return wrap
-}
-
-const failedStatus = (value) => /fail|error|失败|异常/i.test(String(value || ''))
-const successStatus = (value) => /success|complete|done|ok|成功|完成/i.test(String(value || ''))
-
-function scheduleState (schedule) {
-  if (!schedule.enabled) return { tone: '', label: t('tasks.statusDisabled') }
-  if (failedStatus(schedule.last_status) || schedule.last_error) return { tone: 'failed', label: t('tasks.statusFailed') }
-  if (successStatus(schedule.last_status)) return { tone: 'success', label: t('tasks.statusSuccess') }
-  return { tone: '', label: t('tasks.statusEnabled') }
-}
-
-function describeCron (cron) {
-  const parts = String(cron || '').trim().split(/\s+/)
-  if (parts.length !== 5) return t('schedules.rawCron', { cron })
-  const [minute, hour, , , weekday] = parts
-  if (/^\*\/\d+$/.test(minute) && hour === '*') {
-    return t('schedules.everyMinutes', { count: minute.slice(2) })
-  }
-  if (/^\d+$/.test(minute) && /^\d+$/.test(hour)) {
-    const time = `${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`
-    if (weekday === '1-5') return t('schedules.everyWeekday', { time })
-    if (weekday === '*') return t('schedules.everyDay', { time })
-  }
-  return t('schedules.rawCron', { cron })
-}
-
-function taskMetric (value, label) {
-  const card = el('div', 'task-metric')
-  card.appendChild(el('b', 'tnum', String(value)))
-  card.appendChild(el('span', null, label))
-  return card
-}
-
-function taskRow ({ tone, title, meta, state, time, action, onAction }) {
-  const row = el('div', 'task-row')
-  row.appendChild(el('span', `task-dot ${tone || ''}`))
-  const body = el('div')
-  body.appendChild(el('div', 'task-title', title))
-  body.appendChild(el('div', 'task-meta', meta))
-  row.appendChild(body)
-  const side = el('div', 'task-side')
-  side.appendChild(el('span', 'task-state', state))
-  side.appendChild(el('span', 'task-time', time || '—'))
-  if (action) {
-    const button = el('button', 'task-action', action)
-    button.onclick = onAction
-    side.appendChild(button)
-  }
-  row.appendChild(side)
-  return row
-}
-
-function taskSection (title, count) {
-  const section = el('section', 'task-section')
-  const head = el('div', 'task-section-h')
-  head.appendChild(el('h2', null, title))
-  head.appendChild(el('span', 'tnum', String(count)))
-  section.appendChild(head)
-  const list = el('div', 'task-list')
-  section.appendChild(list)
-  return { section, list }
-}
-
-function buildTasks (approvals, data) {
-  const wrap = el('div')
-  const schedules = (data && data.schedules) || []
-  const pending = (approvals && approvals.items) || []
-  const enabled = schedules.filter((item) => item.enabled)
-  const issues = schedules.filter((item) => item.enabled && (failedStatus(item.last_status) || item.last_error))
-  const metrics = el('div', 'task-metrics')
-  if (enabled.length) metrics.appendChild(taskMetric(enabled.length, t('tasks.enabled')))
-  if (pending.length) metrics.appendChild(taskMetric(pending.length, t('tasks.pending')))
-  if (issues.length) metrics.appendChild(taskMetric(issues.length, t('tasks.issues')))
-  wrap.appendChild(el(
-    'div',
-    `status-banner ${data && data.daemon_running ? 'on' : ''}`,
-    data && data.daemon_running ? t('schedules.daemonOn') : t('schedules.daemonOff')
-  ))
-  if (metrics.children.length) wrap.appendChild(metrics)
-
-  const attention = taskSection(t('tasks.attention'), pending.length + issues.length)
-  if (!pending.length && !issues.length) attention.list.appendChild(el('p', 'empty', t('tasks.noneAttention')))
-  for (const item of pending) attention.list.appendChild(approvalTaskRow(item))
-  for (const item of issues) attention.list.appendChild(scheduleTaskRow(item, true))
-  wrap.appendChild(attention.section)
-
-  const scheduled = taskSection(t('tasks.scheduled'), schedules.length)
-  if (!schedules.length) scheduled.list.appendChild(el('p', 'empty', t('tasks.noneScheduled')))
-  for (const item of schedules) scheduled.list.appendChild(scheduleTaskRow(item, false))
-  wrap.appendChild(scheduled.section)
-  return wrap
-}
-
-function approvalTaskRow (item) {
-  const meta = [t('tasks.sourceApproval'), item.tool_name, item.source].filter(Boolean).join(' · ')
-  return taskRow({
-    tone: 'pending', title: item.summary || item.tool_name || t('approvals.defaultItem'), meta,
-    state: t('tasks.statusPending'), time: displayTime(item.created_at),
-    action: t('tasks.openApprovals'), onAction: () => navigateView('approvals')
-  })
-}
-
-function scheduleTaskRow (schedule, issue) {
-  const state = scheduleState(schedule)
-  const last = schedule.last_fired ? t('tasks.lastRun', { time: displayTime(schedule.last_fired) }) : t('tasks.neverRun')
-  return taskRow({
-    tone: issue ? 'failed' : state.tone, title: schedule.name, meta: `${t('tasks.sourceSchedule')} · ${describeCron(schedule.cron)} · ${last}`,
-    state: state.label, time: schedule.next_run ? t('tasks.nextRun', { time: displayTime(schedule.next_run) }) : '—',
-    action: t('tasks.openSchedules'), onAction: () => navigateView('schedules')
-  })
-}
-
-function buildScheduleCard (schedule) {
-  const card = el('div', 'schedule-card')
-  const identity = el('div')
-  identity.appendChild(el('div', 'schedule-name', schedule.name))
-  identity.appendChild(el('div', 'schedule-cadence', `${describeCron(schedule.cron)} · ${schedule.cron}`))
-  const last = el('div')
-  last.appendChild(el('div', 'schedule-label', t('schedules.lastRun')))
-  const state = scheduleState(schedule)
-  const lastValue = !schedule.enabled
-    ? state.label
-    : schedule.last_fired ? `${displayTime(schedule.last_fired)} · ${state.label}` : t('schedules.neverRun')
-  last.appendChild(el('div', `schedule-value ${state.tone}`, schedule.last_error || lastValue))
-  const next = el('div')
-  next.appendChild(el('div', 'schedule-label', t('schedules.nextRun')))
-  next.appendChild(el('div', 'schedule-value tnum', schedule.next_run ? displayTime(schedule.next_run) : '—'))
-  card.append(identity, last, next, rerunButton(schedule, card))
-  return card
-}
-
-/**
- * 手动重跑。只在配了动作时给按钮 —— 没有 action 的任务点了必然报错。
- *
- * 重跑要跑完整一轮 agent（可能几分钟），所以按钮立刻禁用并就地显示进度，
- * 而不是把用户丢去别的视图猜有没有在跑。
- */
-function rerunButton (schedule, card) {
-  const label = schedule.last_fired ? t('schedules.rerun') : t('schedules.runOnce')
-  const button = el('button', 'schedule-rerun', label)
-  button.type = 'button'
-  if (!schedule.id) button.disabled = true
-  button.onclick = async () => {
-    button.disabled = true
-    button.textContent = t('schedules.rerunning')
-    const note = el('p', 'schedule-rerun-note', t('schedules.rerunStarted', { name: schedule.name }))
-    const old = card.querySelector('.schedule-rerun-note')
-    if (old) old.remove()
-    card.appendChild(note)
-    try {
-      const res = await callWithError('schedule_run', { id: schedule.id })
-      // ok=false 是「跑完了但失败」，与传输层异常不同，两者都要说清楚。
-      if (res && res.ok === false) {
-        note.className = 'schedule-rerun-note failed'
-        note.textContent = t('schedules.rerunFailed', { error: res.error || '' })
-      } else {
-        const queued = (res && res.queued) || []
-        note.textContent = queued.length
-          ? t('schedules.rerunQueued', { count: queued.length })
-          : t('schedules.rerunDone')
-      }
-    } catch (err) {
-      note.className = 'schedule-rerun-note failed'
-      note.textContent = t('schedules.rerunFailed', { error: (err && err.message) || String(err) })
-    }
-    button.disabled = false
-    button.textContent = label
-    // 重跑可能产生新审批，侧栏计数要跟上。
-    refreshApprovals()
-  }
-  return button
-}
-
-function buildSchedules (data) {
-  const wrap = el('div')
-  if (!data) return el('p', 'empty', t('schedules.readFailed'))
-  wrap.appendChild(el('div', `status-banner ${data.daemon_running ? 'on' : ''}`, data.daemon_running ? t('schedules.daemonOn') : t('schedules.daemonOff')))
-  const list = el('div', 'schedule-list')
-  for (const schedule of data.schedules || []) list.appendChild(buildScheduleCard(schedule))
-  if (!list.children.length) list.appendChild(el('p', 'empty', t('tasks.noneScheduled')))
-  wrap.appendChild(list)
-  const button = el('button', 'task-action', t('schedules.viewRuns'))
-  button.onclick = () => navigateView('tasks')
-  wrap.appendChild(button)
-  return wrap
-}
-
-// 审批 / 定时 / 持仓 render as destination pages (see PAGES below), not as
-// artifact-pane tabs. The pane is for what the agent produces.
 
 const openReport = (title, source, meta) =>
   pane.open({
@@ -1000,7 +699,7 @@ let pageCleanup = null
 async function buildReportPage () {
   const viewer = window.createArtifactViewer({
     call: collect,
-    onError: (message) => window.WyckoffChat?.sysLine?.(message, true)
+    onError: (message) => sysLine(message, true)
   })
   await viewer.refresh()
   const wrap = el('div', 'report-page')
