@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "description": "Wyckoff 读盘室桌面端",
+  "author": "YoungCan Wang",
   "main": "src/main.js",
   "scripts": {
     "start": "npm run build:ui && electron .",
