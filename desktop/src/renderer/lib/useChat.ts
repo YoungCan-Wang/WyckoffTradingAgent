@@ -124,8 +124,12 @@ export function useChat (ready: boolean): ChatApi {
       setBusy(false)
       return
     }
-    liveIds.current.add(res.id)
-    setTurns((prev) => [...prev, { id: res.id as string, user: body, blocks: [], live: true }])
+    // 必须 String()：桥回的 id 是**数字**（python-bridge 用自增计数器），而
+    // 事件分发那边比的是 String(event.id)。混着用会让 Set.has('9') 对 9 恒为
+    // 假 —— 每条事件都被丢掉，界面永远停在「正在思考…」。
+    const id = String(res.id)
+    liveIds.current.add(id)
+    setTurns((prev) => [...prev, { id, user: body, blocks: [], live: true }])
   }, [busy, ready])
 
   return { turns, busy, started: turns.length > 0, send, sysLine, invalidateOnTool }

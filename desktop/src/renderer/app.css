@@ -377,6 +377,10 @@ html.dark .topbtn:hover { background: var(--hover); }
 .tscroll > .inner, .comp > .inner { max-width: 720px; margin: 0 auto; width: 100%; }
 
 .tscroll { flex: 1; overflow-y: auto; padding: 16px 18px; }
+/* 会话态：#stream 是 flex 列，消息块吃掉剩余高度，输入区被 margin-top:auto
+   推到底部。少了这一句，输入框会浮在最后一条消息下面而不是贴底。 */
+.tscroll { display: flex; flex-direction: column; }
+.tscroll > .inner { flex: 0 0 auto; }
 .tscroll .inner { max-width: 720px; margin: 0 auto; }
 
 /* Welcome state: greeting + composer + suggestions, vertically centred. The
@@ -1245,10 +1249,15 @@ html.dark .mfin { background: var(--paper2); }
 /* 会话区由 React 渲染后，输入区在两种状态下的容器。
    欢迎态时输入区在 .wel-in 内部居中；开聊后贴在滚动区下方。 */
 .comp-bottom {
+  /* 钉在滚动区底部。sticky 在这里不管用：内容不满一屏时它就跟在最后一条
+     消息后面浮在中间。用 margin-top:auto 把它推到底 —— #stream 是 flex 列，
+     消息块吃掉剩余空间。 */
+  margin-top: auto;
   position: sticky; bottom: 0; z-index: 2;
   padding: 8px 0 14px;
   background: linear-gradient(to bottom, transparent, var(--paper) 28%);
 }
+.comp-bottom > .comp { max-width: 720px; margin: 0 auto; }
 /* 还在跑但一个字都没来 —— 给个占位，别让界面看起来卡死 */
 .chat-wait { color: var(--tx3); font-size: 12.5px; }
 .chat-offline {

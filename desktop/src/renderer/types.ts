@@ -6,9 +6,15 @@
  * 静默拿到 undefined。
  */
 
-/** Python 侧回来的一条事件。type 决定还有哪些字段。 */
+/**
+ * Python 侧回来的一条事件。type 决定还有哪些字段。
+ *
+ * id 是**数字**：python-bridge.js 用自增计数器发号。这里以前写成 string，
+ * 于是把它塞进 Set<string> 再用 String(event.id) 去查恒为假 —— 事件全被丢掉，
+ * 而 tsc 因为类型撒了谎完全没报警。要比就两边都 String()。
+ */
 export interface PyEvent {
-  id?: string
+  id?: string | number
   type:
     | 'ready'
     | 'result'
@@ -43,7 +49,7 @@ export interface WyckoffBridge {
   call: (
     method: string,
     params?: Record<string, unknown>
-  ) => Promise<{ ok: boolean; id?: string; error?: string }>
+  ) => Promise<{ ok: boolean; id?: string | number; error?: string }>
   filePath: (file: File) => string
   browser: {
     show: (bounds?: Bounds) => Promise<unknown>

@@ -73,7 +73,12 @@ export function ChatView () {
       <div className="inner" id="stream-inner">
         <ChatStream turns={chat.turns} onApprovalDecided={chat.invalidateOnTool} />
       </div>
-      {/* 开聊后输入区贴底 */}
+      {/*
+        输入区钉在会话区底部。
+        用 fixed-to-bottom 的 flex 项而不是 sticky：这两块都是滚动容器
+        (#stream) 的直接子元素，消息不满一屏时 sticky 不生效，输入框会跟在
+        最后一条消息后面浮在中间，下方留一大片空白。
+      */}
       <div className="comp-bottom">
         <Composer
           value={draft}
