@@ -1,0 +1,66 @@
+name: Wyckoff Purity Eval
+
+# 威科夫纯度检验：原版事件覆盖率 + 原生事件 vs 均线叠加，跨 T+5/10/20/40。
+# 起因是一个理论质疑：威科夫原版没有均线概念，而本仓 core/ 里 bias_200 出现 81 次、
+# ma_long 92 次，同时原版吸筹阶段前四步（PS/SC/AR/ST）一次都没实现。
+#
+# 首轮（2026-08-20，498 个交易日 / 269 万行 / 5602 只）结论：偏离原版的方向是对的。
+#   SOS+MA200  T+5 +0.43(57%)  T+40 -0.68   ← 唯一正贡献，且只存在于 T+5
+#   Spring     T+5 -0.49(33%)  T+20 -1.06
+#   SC抛售高潮  T+5 -0.71       T+40 -3.83   ← 原版缺失事件，最差
+# 即「补全威科夫原版不会带来正收益」，42.9% 覆盖率不是缺陷。
+#
+# 每月重跑的意义在于盯住那个唯一的正 alpha 会不会衰减，而不是重复验证已知结论。
+on:
+  schedule:
+    # UTC 每月 1 日 03:10 = 北京时间当日 11:10。跨 2 年行情，跑一次约 25 分钟，故按月而非按周。
+    - cron: "10 3 1 * *"
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "行情起始日（需留足 210 日预热）"
+        default: "2024-08-01"
+
+concurrency:
+  group: wyckoff-purity-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      PYTHONUNBUFFERED: "1"
+      # 只读行情，不写库；故不设 WYCKOFF_WRITE_CONTEXT。
+      TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+      FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+      TZ: Asia/Shanghai
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Evaluate Wyckoff purity
+        run: |
+          python scripts/evaluate_wyckoff_purity.py --start "${{ github.event.inputs.start || '2024-08-01' }}"
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wyckoff-purity-evidence
+          path: docs/evidence/wyckoff_purity.json
+          if-no-files-found: warn
