@@ -38,7 +38,14 @@ jobs:
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       SUPABASE_USER_ID: ${{ secrets.SUPABASE_USER_ID }}
       STEP4_BUY_HARD_STOP_ENABLED: "1"
-      STEP4_BUY_HARD_STOP_PCT: "12.0"
+      # 止损 12% -> 5%。生产回测（66 交易日/123 笔/含真实成本）四档单调：
+      #   无止损  总收益 -16.49%  夏普 -1.965  回撤 -24.69%  VaR95 -22.14%
+      #   -12%    总收益  -5.71%  夏普 -0.794  回撤 -14.51%  VaR95 -12.18%（原实盘值）
+      #   -8%     总收益  +0.04%  夏普 -0.068  回撤 -10.22%  VaR95  -9.70%
+      #   -5%     总收益  +7.31%  夏普 +0.871  回撤  -7.25%  VaR95  -9.69%
+      # 代价是胜率由 46.34% 降到 37.40%——机制是用更多小亏换掉少数巨亏，
+      # 收益来自「没有大亏」而非「多赚」，故执行纪律不能中途干预。
+      STEP4_BUY_HARD_STOP_PCT: "5.0"
       STEP4_BUY_STOP_MODE: "floor"
       STEP4_PROBE_BUDGET_LIMIT: "0.10"
       STEP4_ATTACK_BUDGET_LIMIT: "0.20"
