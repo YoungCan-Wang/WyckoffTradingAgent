@@ -1,0 +1,74 @@
+{
+  "window": "2026-05-06~2026-08-15",
+  "trading_days": 66,
+  "trades": 124,
+  "engine": "scripts/backtest_runner.py (production FunnelConfig)",
+  "friction": {
+    "buy_pct": 0.026,
+    "sell_pct": 0.176
+  },
+  "exit": "sltp with stop=0 -> all time_exit",
+  "overall": {
+    "win_rate_pct": 47.58,
+    "mean_pct": -1.969,
+    "total_pct": -16.49,
+    "sharpe": -1.965,
+    "max_drawdown_pct": -24.69,
+    "var95_pct": -22.141
+  },
+  "by_trigger": {
+    "evr(确认)": {
+      "trades": 59.0,
+      "mean_pct": -2.2992,
+      "median_pct": -0.9257,
+      "win_rate_pct": 45.7627
+    },
+    "sos(确认)": {
+      "trades": 24.0,
+      "mean_pct": -4.9157,
+      "median_pct": -11.0356,
+      "win_rate_pct": 33.3333
+    },
+    "spring(确认)": {
+      "trades": 40.0,
+      "mean_pct": 0.0506,
+      "median_pct": 0.3984,
+      "win_rate_pct": 57.5
+    },
+    "trend_pullback(确认)": {
+      "trades": 1.0,
+      "mean_pct": 7.4029,
+      "median_pct": 7.4029,
+      "win_rate_pct": 100.0
+    }
+  },
+  "by_track": {
+    "Accum": {
+      "trades": 39.0,
+      "mean_pct": 0.5138,
+      "median_pct": 0.4301,
+      "win_rate_pct": 58.9744
+    },
+    "Trend": {
+      "trades": 85.0,
+      "mean_pct": -3.1087,
+      "median_pct": -2.6485,
+      "win_rate_pct": 42.3529
+    }
+  },
+  "by_regime": {
+    "CAUTION": {
+      "trades": 9.0,
+      "mean_pct": 6.9852,
+      "median_pct": 3.0972,
+      "win_rate_pct": 66.6667
+    },
+    "NEUTRAL": {
+      "trades": 115.0,
+      "mean_pct": -2.6702,
+      "median_pct": -0.9257,
+      "win_rate_pct": 46.087
+    }
+  },
+  "note": "用生产代码与真实成本跑出的首份可信归因。此前多轮手写近似口径的结论（尤其「SOS 是唯一正 alpha」）与本结果相反，应作废。"
+}
