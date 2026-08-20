@@ -19,6 +19,7 @@ import json
 import math
 import os
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -124,6 +125,18 @@ def load_all(path: Path | None = None) -> dict[str, list[dict[str, Any]]]:
     return {str(k): v for k, v in raw.items() if isinstance(v, list)}
 
 
+# 读-改-写要串起来。
+#
+# _write 用 os.replace 保证「单次写」原子（进程被杀不会留下截断的 JSON），但
+# replace()/clear() 是「读整个 store → 改一个键 → 写回」三步，中间没有任何东西
+# 阻止另一个线程插进来：两个 IPC 线程同时改**不同图表**时，后写的那份是基于自己
+# 读到的旧快照，会把先写的那张图的标注整个抹掉。
+#
+# IPC 侧是 ThreadPoolExecutor(max_workers=4)，同进程内的线程 —— 一个模块级
+# threading.Lock 就够。（跨进程要文件锁，但这个 store 只有本进程写。）
+_STORE_LOCK = threading.Lock()
+
+
 def load(chart_id: str, path: Path | None = None) -> list[dict[str, Any]]:
     return load_all(path).get(chart_id, [])
 
@@ -138,24 +151,27 @@ def replace(chart_id: str, items: list[Any], path: Path | None = None) -> list[d
     cleaned = [validate(item) for item in items]
 
     target = path or STORE_PATH
-    store = load_all(target)
-    if cleaned:
-        store[chart_id] = cleaned
-    else:
-        store.pop(chart_id, None)
-    # 图太多就丢最早的键，存储不该无限长。
-    if len(store) > MAX_CHARTS:
-        for key in list(store)[: len(store) - MAX_CHARTS]:
-            store.pop(key, None)
-    _write(target, store)
+    # 校验放在锁外（纯计算，不碰 store），锁只圈住真正的读-改-写。
+    with _STORE_LOCK:
+        store = load_all(target)
+        if cleaned:
+            store[chart_id] = cleaned
+        else:
+            store.pop(chart_id, None)
+        # 图太多就丢最早的键，存储不该无限长。
+        if len(store) > MAX_CHARTS:
+            for key in list(store)[: len(store) - MAX_CHARTS]:
+                store.pop(key, None)
+        _write(target, store)
     return cleaned
 
 
 def clear(chart_id: str, path: Path | None = None) -> int:
     target = path or STORE_PATH
-    store = load_all(target)
-    removed = len(store.pop(chart_id, []))
-    _write(target, store)
+    with _STORE_LOCK:
+        store = load_all(target)
+        removed = len(store.pop(chart_id, []))
+        _write(target, store)
     return removed
 
 

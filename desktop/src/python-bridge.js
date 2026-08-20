@@ -9,6 +9,9 @@ const IS_WINDOWS = process.platform === 'win32'
 const READY_TIMEOUT_MS = 60_000
 const RESTART_DELAY_MS = 1_500
 const MAX_RESTARTS = 5
+// SIGTERM 之后等多久改用 SIGKILL。够 Python 跑完 atexit/落盘，又不至于让退出
+// 卡住太久 —— 应用退出时用户已经点了关闭。
+const SIGKILL_DELAY_MS = 3_000
 
 /**
  * Owns the long-lived Python child. The 6s agent-stack import is paid once here,
@@ -174,8 +177,15 @@ class PythonBridge {
 
     const { id } = message
     if (id !== undefined && id !== null) {
+      if (message.type === 'end') {
+        const entry = this.pending.get(id)
+        if (entry) clearTimeout(entry.timer)
+        this.pending.delete(id)
+      } else {
+        // 流式请求会连着发很多事件；每一个都说明它还活着，重置静默计时。
+        this.touchPending(id)
+      }
       this.onEvent(message)
-      if (message.type === 'end') this.pending.delete(id)
     }
   }
 
@@ -223,21 +233,63 @@ class PythonBridge {
   failPending (code, message) {
     // Every request must terminate exactly once; otherwise collect() and chat
     // streams in the renderer retain callbacks forever after a process change.
-    for (const id of this.pending.keys()) {
+    for (const [id, entry] of this.pending) {
+      // 先摘计时器：否则进程重启之后它还会给同一个 id 再补一次 error/end
+      if (entry && entry.timer) clearTimeout(entry.timer)
       this.onEvent({ id, type: 'error', code, message })
       this.onEvent({ id, type: 'end' })
     }
     this.pending.clear()
   }
 
+  /**
+   * 一轮请求的**静默**超时：多久没有任何事件才算它挂了。
+   *
+   * 刻意不是「总时长」上限：对话和漏斗本来就可能跑十几分钟，按总时长砍会把
+   * 正常的长任务杀掉。这里要抓的是另一种情况 —— 请求发出去之后再也没有任何
+   * 动静（Python 侧卡在某个无限等待的网络调用上，进程还活着）。
+   *
+   * 那种情况下 pending 里的 id 永远不删、事件流永不发 end，前端永久转圈；
+   * 而 Python 侧是 ThreadPoolExecutor(max_workers=4)，几个挂起的请求就占满
+   * 线程池，之后所有请求静默排队。原来只有进程退出/重启才会清理。
+   */
+  static IDLE_TIMEOUT_MS = 180_000
+
   send (method, params) {
     if (!this.child || !this.ready || !this.child.stdin.writable) {
       return { ok: false, error: 'Python 尚未就绪' }
     }
     const id = this.nextId++
-    this.pending.set(id, method)
+    this.pending.set(id, { method, timer: this.armIdleTimer(id, method) })
     this.child.stdin.write(`${JSON.stringify({ id, method, params: params || {} })}\n`)
     return { ok: true, id }
+  }
+
+  /** 起一个静默计时器；每来一个事件就由 touchPending 重置。 */
+  armIdleTimer (id, method) {
+    return setTimeout(() => {
+      const entry = this.pending.get(id)
+      if (!entry) return
+      this.pending.delete(id)
+      const seconds = Math.round(PythonBridge.IDLE_TIMEOUT_MS / 1000)
+      this.onStatus({ state: 'log', message: `[bridge] ${method} (#${id}) ${seconds}s 无响应，判定为挂起` })
+      // 必须补上 end：前端的那一轮靠它收尾，只发 error 会留下永久转圈的 UI。
+      this.onEvent({
+        id,
+        type: 'error',
+        code: 'request_timeout',
+        message: `${method} 超过 ${seconds} 秒没有任何响应，已放弃这一轮`
+      })
+      this.onEvent({ id, type: 'end' })
+    }, PythonBridge.IDLE_TIMEOUT_MS)
+  }
+
+  /** 收到该 id 的任何事件都重置它的静默计时器。 */
+  touchPending (id) {
+    const entry = this.pending.get(id)
+    if (!entry) return
+    clearTimeout(entry.timer)
+    entry.timer = this.armIdleTimer(id, entry.method)
   }
 
   stop () {
@@ -264,10 +316,25 @@ class PythonBridge {
     setTimeout(() => {
       if (!this.child) return
       if (IS_WINDOWS) {
+        // /f 本身就是强杀，没有再升级的余地。
         spawn('taskkill', ['/pid', String(child.pid), '/f', '/t'], { windowsHide: true })
-      } else {
-        child.kill('SIGTERM')
+        return
       }
+      child.kill('SIGTERM')
+      // SIGTERM 是「请你退」，Python 卡在原生代码里（C 扩展、阻塞的 socket
+      // 读）时收不到、也就不会退 —— 只发一次等于留下孤儿进程。给它一段时间
+      // 自己走，然后强杀。
+      setTimeout(() => {
+        // exit 事件会把 this.child 置空；还在就说明 SIGTERM 没起作用。
+        if (this.child !== child && this.child !== null) return
+        if (child.exitCode !== null || child.signalCode !== null) return
+        this.onStatus({ state: 'log', message: `[bridge] SIGTERM 未生效，改用 SIGKILL 回收 pid=${child.pid}` })
+        try {
+          child.kill('SIGKILL')
+        } catch {
+          /* 已经没了 */
+        }
+      }, SIGKILL_DELAY_MS)
     }, 1_000)
   }
 

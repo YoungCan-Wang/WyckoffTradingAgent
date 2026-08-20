@@ -13,6 +13,12 @@ const IS_WINDOWS = process.platform === 'win32'
 // 退出即失败说明环境不对（缺依赖、路径错），重试只是空转。
 const MAX_RESTARTS = 3
 const RESTART_DELAY_MS = 2_000
+// 存活超过这个时长的那次退出，不计入「连续失败」预算。
+// 取 5 分钟：足够区分「起来就崩」和「跑了一阵偶发退出」，又不至于让真正的
+// 崩溃循环靠慢速崩溃绕过预算。
+const HEALTHY_UPTIME_MS = 5 * 60_000
+// SIGTERM 之后多久改用 SIGKILL。daemon 要释放文件锁，给的时间比 bridge 宽一点。
+const SIGKILL_DELAY_MS = 5_000
 const LOCK_BUSY_EXIT_CODE = 75
 
 class DaemonRunner {
@@ -76,8 +82,23 @@ class DaemonRunner {
       return
     }
 
+    // 健康跑够久就把预算还回去。
+    //
+    // 原来 restarts 只增不减：应用开着几小时、期间偶发退出三次（各自都成功恢复
+    // 了），第三次之后就**永久**不再调度，而且 activate 也救不回来 —— 用户看到
+    // 的是「定时任务今天以后就不跑了」，没有任何提示。
+    //
+    // MAX_RESTARTS 想拦的是「起来就崩」的循环，不是「跑了很久偶尔退一次」。
+    // 用存活时长区分这两者：撑过 HEALTHY_UPTIME_MS 的那次退出，说明进程本身
+    // 是好的，不该计入连续失败。（python-bridge 靠 ready 握手复位，daemon
+    // 没有握手，只能看时长。）
+    const uptime = this.startedAt ? Date.now() - this.startedAt : 0
+    if (uptime >= HEALTHY_UPTIME_MS) {
+      this.restarts = 0
+    }
+
     if (this.restarts >= MAX_RESTARTS) {
-      this.onLog(`定时调度多次退出（code=${code} signal=${signal}），已停止重试。`)
+      this.onLog(`定时调度连续 ${MAX_RESTARTS} 次启动后很快退出（code=${code} signal=${signal}），已停止重试。`)
       return
     }
     this.restarts += 1
@@ -96,6 +117,17 @@ class DaemonRunner {
     } else {
       // SIGTERM：daemon 装了信号处理，会释放文件锁后干净退出。
       child.kill('SIGTERM')
+      // 但它可能正卡在一轮任务的原生调用里收不到信号。不强杀的话文件锁不释放，
+      // 下次启动会撞 LOCK_BUSY 然后「让位」—— 表现为定时任务再也不跑。
+      setTimeout(() => {
+        if (child.exitCode !== null || child.signalCode !== null) return
+        this.onLog('定时调度未响应 SIGTERM，改用 SIGKILL 回收。')
+        try {
+          child.kill('SIGKILL')
+        } catch {
+          /* 已经没了 */
+        }
+      }, SIGKILL_DELAY_MS)
     }
   }
 }

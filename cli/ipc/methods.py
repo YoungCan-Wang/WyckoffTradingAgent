@@ -836,6 +836,31 @@ _SETTABLE_KEYS = frozenset(
     {"theme", "stream_chunk_timeout_seconds", "tool_timeout_seconds"} | set(DESKTOP_APPEARANCE_DEFAULTS)
 )
 
+# 超时类键的合法区间（秒）。
+#
+# 上界不是洁癖：这两个值决定「等多久算卡住」，写成 0 会让每次调用立刻超时、
+# 写成 10 天等于没有超时 —— 两种都能让应用看起来坏掉，而用户改不回来（见
+# _coerge 兜底那段注释：坏值会让整个设置页读不出来）。
+_TIMEOUT_BOUNDS = {
+    "stream_chunk_timeout_seconds": (5, 1800),
+    "tool_timeout_seconds": (5, 1800),
+}
+
+# theme 只有这两种。它不在 DESKTOP_APPEARANCE_DEFAULTS 里（那套是 desktop_ 前缀
+# 的外观键），所以要单独列，否则会掉进「没有校验规则」的兜底里。
+_THEME_CHOICES = frozenset({"light", "dark"})
+
+
+def _coerce_timeout(key: str, value: Any) -> int:
+    low, high = _TIMEOUT_BOUNDS[key]
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        raise MethodError("invalid_value", f"{key} 需为整数秒，收到 {value!r}") from None
+    if not low <= seconds <= high:
+        raise MethodError("invalid_value", f"{key} 需在 {low}~{high} 秒之间，收到 {seconds}")
+    return seconds
+
 
 def _coerce_desktop_value(key: str, value: Any) -> Any:
     """把前端传来的值收敛到合法范围，非法就抛错而不是静默写坏配置。"""
@@ -856,7 +881,18 @@ def _coerce_desktop_value(key: str, value: Any) -> Any:
     if key == "desktop_tone_custom":
         # 会拼进系统提示词，必须限长，否则可挤掉真正的指令。
         return str(value or "")[:_TONE_CUSTOM_MAX]
-    return value
+    if key in _TIMEOUT_BOUNDS:
+        return _coerce_timeout(key, value)
+    if key == "theme":
+        text = str(value or "")
+        if text not in _THEME_CHOICES:
+            raise MethodError("invalid_value", f"theme 不接受的值: {text}")
+        return text
+    # 兜底不能是 return value：那样任何新加进 _SETTABLE_KEYS 又忘了写分支的键
+    # 都会被原样写进配置。这两个超时键就是这么漏的 —— 存进一个非整数之后，
+    # settings_get 的 int(...) 会抛 ValueError，**整个设置页读不出来**，
+    # 而且用户没法从界面上改回去（读不出来就渲染不了表单）。
+    raise MethodError("invalid_key", f"{key} 没有对应的校验规则，拒绝写入")
 
 
 def settings_set(params: dict[str, Any]) -> Iterator[Event]:
