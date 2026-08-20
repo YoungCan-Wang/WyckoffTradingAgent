@@ -14,6 +14,27 @@ const MAX_RESTARTS = 5
 const SIGKILL_DELAY_MS = 3_000
 
 /**
+ * Windows 上强杀整棵进程树。
+ *
+ * 必须挂 error 监听：spawn 失败（taskkill 不在 PATH、被组策略拦下、进程已经
+ * 没了）会**异步**发 error 事件，没人接就是未捕获异常 —— 在主进程里等于整个
+ * 应用崩掉。而这条路径只在 Windows 上跑，我们平时全在 macOS 上测，
+ * 崩了也看不见。
+ *
+ * 回收失败本身不值得打扰用户：应用正在退出，最坏结果是留一个孤儿进程。
+ */
+function killTreeWindows (pid, onLog) {
+  try {
+    const proc = spawn('taskkill', ['/pid', String(pid), '/f', '/t'], { windowsHide: true })
+    proc.on('error', (err) => {
+      if (onLog) onLog(`taskkill 失败（pid=${pid}）: ${err.message}`)
+    })
+  } catch (err) {
+    if (onLog) onLog(`taskkill 无法启动（pid=${pid}）: ${err.message}`)
+  }
+}
+
+/**
  * Owns the long-lived Python child. The 6s agent-stack import is paid once here,
  * not per request — that is the entire reason for a resident process.
  */
@@ -317,7 +338,7 @@ class PythonBridge {
       if (!this.child) return
       if (IS_WINDOWS) {
         // /f 本身就是强杀，没有再升级的余地。
-        spawn('taskkill', ['/pid', String(child.pid), '/f', '/t'], { windowsHide: true })
+        killTreeWindows(child.pid, (m) => this.onStatus({ state: 'log', message: `[bridge] ${m}` }))
         return
       }
       child.kill('SIGTERM')
@@ -365,7 +386,7 @@ class PythonBridge {
       }
       // Reap the old process regardless of its state.
       if (IS_WINDOWS) {
-        spawn('taskkill', ['/pid', String(old.pid), '/f', '/t'], { windowsHide: true })
+        killTreeWindows(old.pid, (m) => this.onStatus({ state: 'log', message: `[bridge] ${m}` }))
       } else {
         try { old.kill('SIGTERM') } catch { /* already dead */ }
       }

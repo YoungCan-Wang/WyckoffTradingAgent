@@ -1,0 +1,111 @@
+name: Desktop
+
+# 桌面端此前完全没有 CI —— ci.yml 的 paths 里连 desktop/** 都没有。
+#
+# 而这个应用有一整套**只在 Windows 上执行**的代码：taskkill 回收进程树、
+# .venv/Scripts/python.exe 的解释器布局、wyckoff-ipc.exe 的二进制名。开发全在
+# macOS 上做，那些分支从来没有真正跑过。所以这里的重点不是「再跑一遍单元测试」，
+# 而是**在真的 Windows 机器上打一次包**。
+#
+# 打完包不等于验证了运行时：GitHub 的 windows runner 没有交互式桌面会话，
+# 起 Electron 窗口并不可靠。所以这里只保证「能打出来、结构对、平台分支进得去」，
+# 真正的手动冒烟仍然要在一台 Windows 机器上做（见 job 末尾的产物上传）。
+
+on:
+  push:
+    branches: [main, feature/visible]
+    paths:
+      - "desktop/**"
+      - ".github/workflows/desktop.yml"
+  pull_request:
+    branches: [main, feature/visible]
+    paths:
+      - "desktop/**"
+      - ".github/workflows/desktop.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # 单元测试与类型检查在三个平台都跑。
+  # 跨平台跑是有意义的：测试里有路径拼接、也有读源码做静态断言的用例，
+  # Windows 的 \ 分隔符与 CRLF 都可能让它们表现不同。
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Unit tests
+        run: npm test
+      - name: Build renderer
+        run: npm run build:ui
+
+  # 真的在 Windows 上打一次包。这是这个 workflow 存在的主要理由。
+  package-windows:
+    runs-on: windows-latest
+    needs: test
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install
+        run: npm ci
+      - name: Build renderer
+        run: npm run build:ui
+
+      # 刻意不跑 build:py（PyInstaller 打 Python 二进制）：那是另一条独立的链，
+      # 失败原因也完全不同。这一步要回答的是「electron-builder 能不能在 Windows
+      # 上把 Electron 43 打成 NSIS 安装包」。
+      # extraResources 指向的 ../dist/python 不存在时 builder 会报错，所以放一个
+      # 占位文件 —— 打包结构照样验证得到。
+      - name: Stub the Python payload
+        shell: bash
+        run: |
+          mkdir -p ../dist/python/wyckoff-ipc
+          echo "placeholder for CI packaging check" > ../dist/python/wyckoff-ipc/wyckoff-ipc.exe
+
+      - name: Package (nsis)
+        run: npx --no-install electron-builder --win --publish never
+
+      # 结构自检：安装包和解包目录都要在，且 exe 名字对得上。
+      - name: Verify artifacts
+        shell: bash
+        run: |
+          set -e
+          ls -la dist/
+          test -d dist/win-unpacked || { echo "缺 win-unpacked"; exit 1; }
+          test -f "dist/win-unpacked/Wyckoff.exe" || { echo "缺 Wyckoff.exe"; exit 1; }
+          ls dist/*.exe >/dev/null 2>&1 || { echo "缺 NSIS 安装包"; exit 1; }
+          echo "打包结构检查通过"
+
+      # 上传产物：真正的运行时验证要人在一台 Windows 机器上装一次、点一遍。
+      # CI 只能保证「打得出来」。
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wyckoff-windows-installer
+          path: |
+            desktop/dist/*.exe
+            desktop/dist/*.blockmap
+          retention-days: 14
+          if-no-files-found: error
