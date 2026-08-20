@@ -130,6 +130,9 @@ body {
 }
 
 .win { display: flex; height: 100vh; }
+/* React 的挂载点不该成为一层布局盒子：contents 让它的子元素（侧栏、会话区）
+   直接作为 .win 的 flex 项参与布局。少了这一句，两者会上下堆叠。 */
+.shell-root { display: contents; }
 
 /* Both side panels collapse, matching ChatGPT / Claude desktop: the
    conversation owns the window and panels are summoned, not permanent. */
