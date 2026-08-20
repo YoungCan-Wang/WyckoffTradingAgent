@@ -40,6 +40,7 @@ import { AttributionPage } from './components/AttributionPage'
 import { ApprovalsPage } from './components/ApprovalsPage'
 import { TasksPage } from './components/TasksPage'
 import { SchedulesPage } from './components/SchedulesPage'
+import { ChatView } from './components/ChatView'
 import { PortfolioPage } from './components/PortfolioPage'
 import { clearAllCaches, isPortfolioWriteTool } from './lib/portfolioCache'
 
@@ -158,6 +159,7 @@ declare global {
       approvalsPage: () => { node: HTMLElement; dispose: () => void }
       tasksPage: () => { node: HTMLElement; dispose: () => void }
       schedulesPage: () => { node: HTMLElement; dispose: () => void }
+      mountChat: (host: HTMLElement) => () => void
       /** 对话里跑了改持仓的工具时调用，作废本地缓存。 */
       invalidatePortfolioCache: (toolName: string) => void
       /** 登录态变化时调用：清掉所有账号的持仓缓存。 */
@@ -178,7 +180,21 @@ declare global {
       refreshApprovals?: () => void
       refreshSchedules?: () => void
       openKline?: (code: string) => void
+      /** 把报告送去产物面板。 */
+      openReport?: (title: string, body: string) => void
+      /** 这一轮画过标注的图要再刷一次 —— 标注写在图建好之后。 */
+      refreshCharts?: (codes: string[]) => void
+      /** 打开设置并滚到某一栏。 */
+      openSettings?: (section: string, anchor?: string) => void
+      /** 系统提示行写进对话流。 */
+      sysLine?: (text: string, isError?: boolean) => void
+      /** 「回车发送」设置项的当前值。 */
+      getSendOnEnter?: () => boolean
     }
+    /** React 侧暴露给 app.js 的对话入口（反向）。 */
+    WyckoffChat?: { sysLine: (text: string, isError?: boolean) => void }
+    /** app.js 停放会话区容器的地方。 */
+    WyckoffPendingChatHost?: HTMLElement
   }
 }
 
@@ -197,6 +213,12 @@ window.WyckoffReact = {
   approvalsPage: () => mountPage(<ApprovalsPage />),
   tasksPage: () => mountPage(<TasksPage />),
   schedulesPage: () => mountPage(<SchedulesPage />),
+  /** 会话区（欢迎页 + 对话流 + 输入区）。挂在 #stream 里，长驻不卸载。 */
+  mountChat: (host: HTMLElement) => {
+    const root = createRoot(host)
+    root.render(<ChatView />)
+    return () => root.unmount()
+  },
   invalidatePortfolioCache: (toolName: string) => {
     // 全清而不是只清当前账号：这里拿不到 user_id（同步调用），而缓存本来就是
     // 可丢的。多清的代价是别的账号下次进页面重拉一次。
@@ -214,4 +236,11 @@ window.WyckoffRefreshIcons = refreshIcons
 // 选择器不刷新，因为 React 一直在调默认的空函数。
 if (window.WyckoffPendingHooks) {
   setHooks(window.WyckoffPendingHooks)
+}
+
+// app.js 先跑完时会把会话区容器停在这里等 React 来接（同 hooks 的握手理由：
+// 普通脚本一定早于 type="module"）。
+if (window.WyckoffPendingChatHost) {
+  window.WyckoffReact.mountChat(window.WyckoffPendingChatHost)
+  delete window.WyckoffPendingChatHost
 }

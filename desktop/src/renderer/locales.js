@@ -353,6 +353,8 @@
     'chat.errored': '出错了',
     'chat.report': '研报',
     'chat.openedRight': '{title} 已在右边打开 →',
+    'chat.thinking': '正在思考…',
+    'chat.offline': '后台服务未就绪，暂时无法发送。',
     'chat.sendFailed': '发送失败',
     'chat.pendingCount': '{count} 待批',
 
@@ -833,6 +835,8 @@
     'chat.errored': 'Something went wrong',
     'chat.report': 'Report',
     'chat.openedRight': '{title} opened on the right →',
+    'chat.thinking': 'Thinking…',
+    'chat.offline': 'Backend not ready — sending is disabled.',
     'chat.sendFailed': 'Send failed',
     'chat.pendingCount': '{count} pending',
     'appearance.groupLanguage': 'Language',

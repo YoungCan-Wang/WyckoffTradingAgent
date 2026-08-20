@@ -66,40 +66,12 @@
       </div>
     </header>
 
-    <section class="tscroll" id="stream">
-      <!-- Welcome state owns the composer until the first message is sent. -->
-      <div class="wel" id="welcome">
-        <div class="wel-in">
-          <h1 class="wel-t" id="wel-greet">Wyckoff 读盘室</h1>
-          <p class="wel-s" id="wel-sum"></p>
-          <!-- The composer starts here and is MOVED (not cloned) to the bottom
-               host on first send, so listeners and typed text survive. -->
-          <div class="comp" id="comp">
-            <textarea id="input" rows="1" data-i18n-placeholder="composer.placeholder" placeholder="随便问……"></textarea>
-            <div class="cr">
-              <!-- 模型选择器。标签与菜单都由 app.js 从 settings_get 填充；
-                   这里不写死任何模型名。 -->
-              <div class="mdl-pick" id="mdl-pick">
-                <button class="mdl" id="mdl-btn" type="button" aria-haspopup="listbox" aria-expanded="false">
-                  <span id="mdl-name"></span>
-                </button>
-                <div class="mdl-menu" id="mdl-menu" role="listbox" hidden></div>
-              </div>
-              <button class="send" id="btn-send" data-i18n-aria-label="action.send" aria-label="发送"><i data-lucide="arrow-up" aria-hidden="true"></i></button>
-            </div>
-          </div>
-          <div class="wel-overview" id="wel-overview"></div>
-          <div class="wel-attention" id="wel-attention" hidden></div>
-          <div class="wel-label" data-i18n="welcome.quickStart">快速开始</div>
-          <div class="wel-g" id="wel-cards"></div>
-        </div>
-      </div>
-      <div class="inner" id="stream-inner"></div>
-    </section>
+    <!-- 会话区（欢迎页 + 对话流 + 输入区）整块由 React 渲染。
+         这里只留挂载点：静态骨架与 React 各画一半会让两边抢同一个 DOM。 -->
+    <section class="tscroll" id="stream"></section>
 
-    <!-- Destination pages (审批 / 定时 / 持仓). These are places you navigate
-         to, so they own the main area — the right pane stays reserved for
-         artifacts the agent produces. -->
+    <!-- 目标页面（审批 / 定时 / 持仓 / 跟踪 / 归因 / 报告）。它们是「导航过去」
+         的地方，所以占据主区；右侧面板留给 agent 产出的东西。 -->
     <section class="page" id="page" hidden>
       <div class="page-in">
         <h1 class="page-t" id="page-title"></h1>
@@ -107,8 +79,6 @@
         <div id="page-body"></div>
       </div>
     </section>
-
-    <div id="comp-host-bottom"></div>
   </main>
 
   <div class="pane-resizer" id="pane-resizer" role="separator" aria-orientation="vertical" data-i18n-aria-label="action.resizePane" aria-label="调整产物面板宽度" aria-valuemin="360" tabindex="0"></div>

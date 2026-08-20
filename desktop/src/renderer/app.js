@@ -7,8 +7,6 @@ const t = (key, params) => i18n.t(key, params)
 i18n.setLang(i18n.resolveInitial(), { persist: false })
 
 const stream = document.getElementById('stream')
-const input = document.getElementById('input')
-const btnSend = document.getElementById('btn-send')
 const btnRestart = document.getElementById('btn-restart')
 const paneBody = document.getElementById('pane-body')
 const win = document.querySelector('.win')
@@ -135,152 +133,11 @@ const atBottom = () => stream.scrollHeight - stream.scrollTop - stream.clientHei
 
 // Messages go into .inner, which is width-capped and centred; #stream itself
 // is the scroll container. Appending straight to #stream would bypass that cap.
-const streamInner = document.getElementById('stream-inner')
 const thread = document.querySelector('.thread')
-// Declared before append() runs: it calls enterChat() on the first message.
-let chatting = false
 
-function append (node) {
-  const stick = atBottom()
-  // Any real content ends the welcome state, whichever path produced it.
-  enterChat()
-  streamInner.appendChild(node)
-  if (stick) stream.scrollTop = stream.scrollHeight
-  return node
-}
-
-function sysLine (text, isError) {
-  append(el('div', isError ? 'sys err' : 'sys', text))
-}
-
-/**
- * 对话里跑了改持仓的工具 → 作废持仓页的本地缓存。
- *
- * 两处都要挂：tool_start（覆盖「本次会话总是允许」这类不产生审批事件的路径）
- * 和审批执行成功之后。宁可多清一次（代价是下次进页面重拉），也不要漏清 ——
- * 漏清意味着你对着已经过时的持仓做决定。
- */
 function invalidatePortfolioIfWrite (toolName) {
   const react = window.WyckoffReact
   if (react && react.invalidatePortfolioCache) react.invalidatePortfolioCache(toolName)
-}
-
-function userBubble (text) {
-  const msg = el('div', 'msg')
-  msg.appendChild(el('span', 'av', t('chat.you')))
-  const bd = el('div', 'bd')
-  bd.appendChild(el('p', null, text))
-  msg.appendChild(bd)
-  append(msg)
-}
-
-function newTurn (id) {
-  const msg = el('div', 'msg a')
-  msg.appendChild(el('span', 'av', '✳'))
-  const bd = el('div', 'bd')
-  msg.appendChild(bd)
-  append(msg)
-  const turn = { bd, think: null, text: null }
-  turns.set(id, turn)
-  return turn
-}
-
-function renderEvent (event) {
-  const turn = turns.get(event.id)
-  if (!turn) return
-
-  switch (event.type) {
-    case 'thinking_delta':
-      if (!turn.think) turn.think = turn.bd.appendChild(el('div', 'think'))
-      turn.think.textContent += event.text || ''
-      break
-
-    case 'text_delta':
-      if (!turn.text) turn.text = turn.bd.appendChild(el('p'))
-      turn.text.textContent += event.text || ''
-      break
-
-    case 'tool_start': {
-      const row = el('div', 'tool')
-      row.appendChild(el('span', 'g', '◈'))
-      row.appendChild(el('span', 'nm', event.display_name || event.name || 'tool'))
-      turn.bd.appendChild(row)
-      // 改持仓的工具一开跑就把缓存作废：审批可能被「总是允许」放行，
-      // 那条路径没有审批事件可挂。
-      invalidatePortfolioIfWrite(event.name)
-      // Drawing on a chart is only useful if the chart is visible, so surface it
-      // in the pane. The turn's `end` handler refreshes it once drawing finishes.
-      if (event.name === 'annotate_chart') {
-        const code = event.args && event.args.code
-        if (code) {
-          // Remember it so `end` only refetches when drawing actually happened —
-          // a blind refresh on every turn would re-pull 320 bars each message.
-          turn.drewCharts = turn.drewCharts || new Set()
-          turn.drewCharts.add(String(code))
-          openKline(String(code))
-          turn.bd.appendChild(openedNote(`${code} ${t('kline.title')}`))
-        }
-      }
-      break
-    }
-
-    case 'tool_error':
-      turn.bd.appendChild(el('div', 'sys err', `${event.name || t('chat.tool')}：${event.error || t('chat.toolFailed')}`))
-      break
-
-    case 'approval_pending':
-      turn.bd.appendChild(approvalCard(event))
-      refreshApprovals()
-      break
-
-    case 'error':
-      turn.bd.appendChild(el('div', 'sys err', event.message || t('chat.errored')))
-      break
-
-    case 'done': {
-      const body = event.text || (turn.text ? turn.text.textContent : '')
-      if (!turn.text && event.text) {
-        turn.bd.appendChild(el('p', null, event.text))
-      }
-      // A report-shaped reply belongs in the artifact pane, not the chat column.
-      if (looksLikeReport(body)) {
-        const title = reportTitle(body)
-        openReport(title, body, new Date().toLocaleString('zh-CN'))
-        turn.bd.appendChild(openedNote(title))
-        if (turn.text) turn.text.remove()
-      }
-      break
-    }
-
-    case 'end':
-      turns.delete(event.id)
-      setBusy(false)
-      // Only refetch charts this turn actually drew on — the annotation was
-      // written after the tab first built, so it needs one more pass.
-      refreshDrawnCharts(turn.drewCharts)
-      break
-  }
-  if (atBottom()) stream.scrollTop = stream.scrollHeight
-}
-
-/** Long, structured replies read better as a document than as a chat bubble. */
-function looksLikeReport (text) {
-  if (!text || text.length < 400) return false
-  const hasHeading = /^#{1,3}\s+\S/m.test(text)
-  const hasTable = /^\|.*\|$/m.test(text)
-  return hasHeading || hasTable
-}
-
-function reportTitle (text) {
-  const heading = text.match(/^#\s+(.+)$/m) || text.match(/^##\s+(.+)$/m)
-  const raw = heading ? heading[1].trim() : t('chat.report')
-  return raw.length > 18 ? `${raw.slice(0, 18)}…` : raw
-}
-
-function openedNote (title) {
-  const note = el('div', 'sys')
-  note.textContent = t('chat.openedRight', { title })
-  return note
 }
 
 function displayTime (value) {
@@ -384,7 +241,7 @@ function approvalCard (item, context = {}) {
 
 function setBusy (value) {
   busy = value
-  btnSend.disabled = value || !ready
+  // 发送按钮的禁用由 React 侧根据 status 自己判断
 }
 
 // Backend-error empty state: one plain-language line + a retry button, shown
@@ -407,17 +264,14 @@ function showBackendError (reason) {
   const retry = el('button', 'berr-b', t('action.retry'))
   retry.onclick = () => { clearBackendError(); window.wyckoff.restart() }
   box.appendChild(retry)
-  document.getElementById('welcome').hidden = true
-  streamInner.hidden = true
+  document.getElementById('stream').hidden = true
   box.hidden = false
 }
 
 function clearBackendError () {
   const box = document.getElementById('backend-error')
   if (box) box.hidden = true
-  streamInner.hidden = false
-  // Welcome reappears only if the conversation has not started.
-  if (!chatting) document.getElementById('welcome').hidden = false
+  document.getElementById('stream').hidden = false
 }
 
 function setStatus (payload) {
@@ -425,7 +279,6 @@ function setStatus (payload) {
 
   const wasReady = ready
   ready = payload.state === 'ready'
-  btnSend.disabled = !ready || busy
 
   // A healthy local backend is the default expectation, so we never advertise
   // it. The restart button (with a coloured dot) surfaces ONLY when the process
@@ -441,7 +294,6 @@ function setStatus (payload) {
     // starts, so a restart mid-conversation does not disturb the transcript.
     loadAccount()
     loadAppearance()
-    if (!wasReady && !chatting) loadWelcome()
   } else if (payload.state === 'error') {
     // A calm empty state with a retry action — never raw diagnostics. The
     // technical detail already went to the logs from the main process.
@@ -449,23 +301,6 @@ function setStatus (payload) {
   }
   // starting / restarting / stopped stay silent: the header status dot already
   // reflects them, and auto-restart is in flight.
-}
-
-async function send () {
-  const text = input.value.trim()
-  if (!text || busy || !ready) return
-  input.value = ''
-  input.style.height = 'auto'
-  userBubble(text)
-  setBusy(true)
-
-  const res = await window.wyckoff.call('chat', { text })
-  if (!res.ok) {
-    sysLine(res.error || t('chat.sendFailed'), true)
-    setBusy(false)
-    return
-  }
-  newTurn(res.id)
 }
 
 async function collect (method, params) {
@@ -984,7 +819,7 @@ osDark.addEventListener('change', () => {
 async function refreshModels () {
   setData = await collect('settings_get').catch(() => null)
   if (!setData) return
-  paintModelPicker()
+  window.dispatchEvent(new Event('wyckoff:models-changed'))
 }
 
 
@@ -1072,7 +907,7 @@ async function openSettings (sec, anchor) {
   // 面板内容归 React，但输入框的模型选择器仍读 setData，所以这里补一次。
   // 放在 showSection 之后：先让面板出现，再回填选择器。
   setData = await collect('settings_get').catch(() => null)
-  paintModelPicker()
+  window.dispatchEvent(new Event('wyckoff:models-changed'))
 }
 
 /** Load appearance before the user opens settings, so launch honours it. */
@@ -1081,7 +916,7 @@ async function loadAppearance () {
   applyAppearance(setData)
   // 同一份数据里就有 models / default_model，顺手把选择器画上，
   // 不必为它再发一次 settings_get。
-  paintModelPicker()
+  window.dispatchEvent(new Event('wyckoff:models-changed'))
 }
 
 for (const btn of document.querySelectorAll('.dlg-n')) {
@@ -1165,7 +1000,7 @@ let pageCleanup = null
 async function buildReportPage () {
   const viewer = window.createArtifactViewer({
     call: collect,
-    onError: (message) => sysLine(message, true)
+    onError: (message) => window.WyckoffChat?.sysLine?.(message, true)
   })
   await viewer.refresh()
   const wrap = el('div', 'report-page')
@@ -1231,10 +1066,8 @@ selectNav('chat')
 
 document.getElementById('btn-new-analysis').onclick = () => {
   navigateView('chat')
-  input.focus()
 }
 
-btnSend.onclick = send
 btnRestart.onclick = () => window.wyckoff.restart()
 
 // Reports, browser and the artifact pane are content the agent produces, not
@@ -1353,7 +1186,6 @@ function openSymBox () {
   box.style.left = `${Math.max(8, left)}px`
   box.style.top = `${r.bottom + 6}px`
   symBox = box
-  input.focus()
 }
 
 const menuAction = (fn) => () => { setOpenMenu(false); fn() }
@@ -1365,243 +1197,6 @@ document.getElementById('mi-pane').onclick = menuAction(() => togglePane())
 // the highlighted nav item always matches what is on screen.
 document.getElementById('pending-chip').onclick = () => {
   navigateView('approvals')
-}
-
-input.addEventListener('keydown', (e) => {
-  if (e.key !== 'Enter') return
-  // Two modes: Enter sends (Shift+Enter for newline), or Cmd/Ctrl+Enter sends
-  // and a bare Enter inserts a newline. These orders touch money, so the user
-  // picks which one is harder to trigger by accident.
-  const shouldSend = sendOnEnter ? !e.shiftKey && !e.metaKey && !e.ctrlKey : e.metaKey || e.ctrlKey
-  if (!shouldSend) return
-  e.preventDefault()
-  send()
-})
-input.addEventListener('input', () => {
-  input.style.height = 'auto'
-  input.style.height = `${Math.min(input.scrollHeight, 160)}px`
-})
-
-/**
- * Welcome state. The composer sits inside it, centred, until the first message;
- * then the SAME node moves to the bottom host and the thread starts scrolling.
- */
-function greeting () {
-  const h = new Date().getHours()
-  if (h < 6) return t('welcome.night')
-  if (h < 12) return t('welcome.morning')
-  if (h < 18) return t('welcome.afternoon')
-  return t('welcome.evening')
-}
-
-/* ---- 输入框里的模型选择器 ----
- *
- * 显示当前默认模型，点开可切换，也能直接跳到设置页新增。选中即写入
- * default_model —— 与设置页「设为默认」是同一个动作，不引入第二套语义。
- */
-
-const mdlPick = document.getElementById('mdl-pick')
-const mdlBtn = document.getElementById('mdl-btn')
-const mdlName = document.getElementById('mdl-name')
-const mdlMenu = document.getElementById('mdl-menu')
-
-/** 一个模型的展示名：优先 provider 给的短名，退回 id。 */
-function modelLabel (m) {
-  return m.model || m.id
-}
-
-function paintModelPicker () {
-  if (!setData) return
-  const models = Array.isArray(setData.models) ? setData.models : []
-  const current = models.find((m) => m.id === setData.default_model)
-  // 没配过模型时不显示假名字，给一句能点的提示。
-  mdlName.textContent = current ? modelLabel(current) : t('composer.noModel')
-  mdlBtn.title = current ? (current.id || '') : t('composer.noModelHint')
-
-  mdlMenu.replaceChildren()
-  if (!models.length) {
-    mdlMenu.appendChild(el('div', 'mdl-empty', t('composer.noModelHint')))
-  }
-  for (const m of models) {
-    const opt = el('button', m.id === setData.default_model ? 'mdl-o on' : 'mdl-o')
-    opt.type = 'button'
-    opt.setAttribute('role', 'option')
-    opt.setAttribute('aria-selected', String(m.id === setData.default_model))
-    opt.appendChild(el('span', null, modelLabel(m)))
-    const sub = [m.provider_name, m.id !== modelLabel(m) ? m.id : null].filter(Boolean).join(' · ')
-    if (sub) opt.appendChild(el('span', 'msub', sub))
-    opt.onclick = async () => {
-      closeModelMenu()
-      if (m.id === setData.default_model) return
-      const res = await collect('settings_set', { key: 'default_model', value: m.id })
-      if (!res) {
-        sysLine(t('composer.modelSwitchFailed'), true)
-        return
-      }
-      await refreshModels()
-    }
-    mdlMenu.appendChild(opt)
-  }
-
-  const add = el('button', 'mdl-add', t('composer.addModel'))
-  add.type = 'button'
-  add.onclick = () => {
-    closeModelMenu()
-    // 落到「智能体」页并把「模型」那一栏滚到顶部 —— 这个入口就是为了加模型，
-    // 停在页首的「回复语气」等于还要用户自己找一遍。
-    openSettings('agent', 'models.heading')
-  }
-  mdlMenu.appendChild(add)
-}
-
-function closeModelMenu () {
-  mdlMenu.hidden = true
-  mdlBtn.setAttribute('aria-expanded', 'false')
-}
-
-/**
- * 打开菜单，并按可用空间决定向下还是向上。
- *
- * 默认向下；只有当下方装不下、而上方装得下时才翻上去。欢迎页输入框在
- * 屏幕中部，向下有充足空间；开始对话后输入框贴到底部，下方只剩 18px。
- * 两处都不该被裁，所以按实测决定而不是写死一个方向。
- */
-function openModelMenu () {
-  mdlMenu.classList.remove('up', 'fits')
-  mdlMenu.hidden = false
-  mdlBtn.setAttribute('aria-expanded', 'true')
-
-  // 必须在可见之后量：hidden 元素的高度是 0。
-  const btnBox = mdlBtn.getBoundingClientRect()
-  const needed = mdlMenu.offsetHeight + 6
-  const below = window.innerHeight - btnBox.bottom
-  const above = btnBox.top
-  if (below < needed && above >= needed) mdlMenu.classList.add('up')
-
-  // 装得下就收掉滚动槽。scrollHeight 含 padding，留 2px 容差避免因
-  // 亚像素舍入而误判成需要滚动。
-  if (mdlMenu.scrollHeight <= mdlMenu.clientHeight + 2) mdlMenu.classList.add('fits')
-
-  // 打开时把当前选中项滚进视野 —— 12 个模型时选中的那个可能在列表底部，
-  // 打开却停在顶部，看起来像没有选中任何模型。
-  const active = mdlMenu.querySelector('.mdl-o.on')
-  if (active) active.scrollIntoView({ block: 'nearest' })
-}
-
-mdlBtn.onclick = (e) => {
-  e.stopPropagation()
-  if (mdlMenu.hidden) openModelMenu()
-  else closeModelMenu()
-}
-
-// 点外部或按 Esc 关闭。捕获阶段监听 document，避免菜单里的点击冒泡后自关。
-document.addEventListener('click', (e) => {
-  if (!mdlMenu.hidden && !mdlPick.contains(e.target)) closeModelMenu()
-})
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && !mdlMenu.hidden) {
-    closeModelMenu()
-    e.stopPropagation()
-  }
-})
-
-/** Move the composer to the bottom and hide the welcome block. Idempotent. */
-function enterChat () {
-  if (chatting) return
-  chatting = true
-  document.getElementById('comp-host-bottom').appendChild(document.getElementById('comp'))
-  thread.classList.add('chatting')
-}
-
-// [labelKey, promptKey]; resolved at render so the cards follow the language.
-const PROMPTS = [
-  ['prompt.todayName', 'prompt.today'],
-  ['prompt.holdingsName', 'prompt.holdings'],
-  ['prompt.stopsName', 'prompt.stops'],
-  ['prompt.reviewName', 'prompt.review']
-]
-
-function buildWelcomeCards () {
-  const grid = document.getElementById('wel-cards')
-  grid.replaceChildren()
-  for (const [labelKey, promptKey] of PROMPTS) {
-    const prompt = t(promptKey)
-    const btn = el('button', 'wel-c', t(labelKey))
-    btn.title = prompt
-    // Prefill rather than send: these touch money, so the user presses send.
-    btn.onclick = () => {
-      input.value = prompt
-      input.focus()
-      input.dispatchEvent(new Event('input'))
-    }
-    grid.appendChild(btn)
-  }
-}
-
-function welcomeMetric (label, value, view) {
-  const button = el('button', 'wel-metric')
-  button.appendChild(el('b', 'tnum', String(value)))
-  button.appendChild(el('span', null, label))
-  button.onclick = () => navigateView(view)
-  return button
-}
-
-function attentionAction (text, action) {
-  const button = el('button', null, text)
-  button.onclick = action
-  return button
-}
-
-function buildTodayOverview ({ positions, pending, noStop, schedules }) {
-  const enabled = (schedules.schedules || []).filter((item) => item.enabled).length
-  const overview = document.getElementById('wel-overview')
-  overview.replaceChildren(
-    welcomeMetric(t('welcome.positionsMetric'), positions.length, 'portfolio'),
-    welcomeMetric(t('welcome.approvalsMetric'), pending, 'approvals'),
-    welcomeMetric(t('welcome.schedulesMetric'), enabled, 'tasks'),
-    welcomeMetric(t('welcome.riskMetric'), noStop, 'portfolio')
-  )
-
-  const attention = document.getElementById('wel-attention')
-  attention.replaceChildren(el('div', 'wel-attention-title', t('welcome.needsAttention')))
-  if (pending) attention.appendChild(attentionAction(t('welcome.approvalAttention', { count: pending }), () => navigateView('approvals')))
-  if (noStop) {
-    attention.appendChild(attentionAction(t('welcome.stopAttention', { count: noStop }), () => {
-      input.value = t('prompt.stops')
-      input.focus()
-      input.dispatchEvent(new Event('input'))
-    }))
-  }
-  if (enabled && !schedules.daemon_running) {
-    attention.appendChild(attentionAction(t('welcome.schedulerAttention'), () => navigateView('schedules')))
-  }
-  attention.hidden = attention.children.length === 1
-}
-
-/** Summarise real state; never invent numbers when a call fails. */
-async function loadWelcome () {
-  document.getElementById('wel-greet').textContent = greeting()
-  buildWelcomeCards()
-
-  const [approvals, pf, schedules] = await Promise.all([
-    collect('approve_list').catch(() => null),
-    collect('portfolio').catch(() => null),
-    collect('schedules').catch(() => null)
-  ])
-  // The user may have started chatting while these were in flight.
-  if (chatting) return
-
-  const parts = []
-  const pending = approvals && approvals.count ? approvals.count : 0
-  const positions = (pf && pf.portfolio && pf.portfolio.positions) || []
-  const noStop = positions.filter((p) => p.stop_loss === null || p.stop_loss === undefined).length
-
-  parts.push(positions.length ? t('welcome.holding', { count: positions.length }) : t('welcome.noHolding'))
-  if (noStop) parts.push(t('welcome.noStop', { count: noStop }))
-  parts.push(pending ? t('welcome.pending', { count: pending }) : t('welcome.noPending'))
-
-  document.getElementById('wel-sum').textContent = parts.join(' · ')
-  buildTodayOverview({ positions, pending, noStop, schedules: schedules || { schedules: [] } })
 }
 
 // ---- account menu ----------------------------------------------------------
@@ -1780,7 +1375,12 @@ window.WyckoffApp = {
   navigate: (view) => navigateView(view),
   refreshApprovals: () => { void refreshApprovals() },
   refreshSchedules: () => { void refreshSchedules() },
-  openKline: (code) => openKline(String(code))
+  openKline: (code) => openKline(String(code)),
+  openReport: (title, body) => openReport(title, body, new Date().toLocaleString(i18n.getLang())),
+  refreshCharts: (codes) => refreshDrawnCharts(new Set(codes || [])),
+  openSettings: (section, anchor) => { void openSettings(section, anchor) },
+  sysLine: (text, isError) => sysLine(text, Boolean(isError)),
+  getSendOnEnter: () => sendOnEnter
 }
 
 window.WyckoffPendingHooks = REACT_HOOKS
@@ -1797,12 +1397,7 @@ i18n.onChange(() => {
   // The header chip embeds a translated word ("待批"/"pending"); repaint it.
   refreshApprovals()
   // 选择器里的「未配置模型」「新增模型」都是译文。
-  paintModelPicker()
-  // Welcome greeting + cards, unless the user has already started chatting.
-  if (!chatting) {
-    document.getElementById('wel-greet').textContent = greeting()
-    buildWelcomeCards()
-  }
+  window.dispatchEvent(new Event('wyckoff:models-changed'))
   // The open settings section (labels, options, the language row itself).
   if (!setOv.hidden) {
     const active = document.querySelector('.dlg-n.on')
@@ -1812,9 +1407,15 @@ i18n.onChange(() => {
   if (activePage) showPage(activePage)
 })
 
-window.wyckoff.onEvent(renderEvent)
+// 会话区整块交给 React（欢迎页 + 对话流 + 输入区）。
+if (window.WyckoffReact && window.WyckoffReact.mountChat) {
+  window.WyckoffReact.mountChat(document.getElementById('stream'))
+} else {
+  // React 尚未就绪（普通脚本先跑）—— 留个信号让它自己来接。
+  window.WyckoffPendingChatHost = document.getElementById('stream')
+}
+
 window.wyckoff.onStatus(setStatus)
-setBusy(false)
 
 // Python may have reached ready before this listener existed; pull the current
 // status so the UI does not sit on "连接中…" with no calls ever issued.
