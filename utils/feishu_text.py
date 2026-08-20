@@ -59,12 +59,62 @@ def _split_table_row(stripped: str) -> list[str]:
     return [cell.strip() for cell in stripped.strip("|").split("|")]
 
 
+# 序号类列名：它们的值直接做行首标号，不重复打印列名（"#: 1" 这种噪音占了整行开头）。
+_INDEX_HEADERS = frozenset({"#", "序号", "Rank", "rank", "No", "no", "No.", "排名"})
+# 标识类列名：值本身自解释（代码/名称），做行首标题，不加"代码: "前缀。
+_IDENTITY_HEADERS = frozenset(
+    {"代码", "名称", "Code", "code", "Name", "name", "symbol", "Symbol", "标的", "概念", "Strategy", "策略"}
+)
+
+
 def _table_block_to_lines(header: list[str], rows: list[list[str]]) -> list[str]:
+    """把 markdown 表格拍平成飞书卡片可读的行。
+
+    飞书 lark_md 不支持表格，必须拍平。原实现把每格都写成 `列名: 值` 再用「，」连起来，
+    于是 30 行候选每行都重复一遍表头，读起来是一大坨 `#: 1，代码: X，名称: Y，分数: Z`，
+    在手机上会折成三四行。
+
+    这里改成「标题行 + 指标尾」：序号与标识列（代码/名称）直接做行首并加粗，其余列才带列名。
+    列宽差异很大（4~11 列，横跨 7 份报告），所以规则必须是通用的，不能对某张表硬编码。
+    """
     out: list[str] = []
+    index_cols = [i for i, name in enumerate(header) if name in _INDEX_HEADERS]
+    identity_cols = [i for i, name in enumerate(header) if name in _IDENTITY_HEADERS]
     for row in rows:
-        cells = [f"{name}: {row[idx]}" if idx < len(row) else f"{name}: -" for idx, name in enumerate(header)]
-        out.append("- " + "，".join(cells))
+        if _is_placeholder_row(row):
+            out.append(f"- {_placeholder_text(row)}")
+            continue
+        lead = [row[i] for i in index_cols if i < len(row) and row[i] not in ("", "-")]
+        names = [row[i] for i in identity_cols if i < len(row) and row[i] not in ("", "-")]
+        rest = [
+            f"{name}: {row[i]}"
+            for i, name in enumerate(header)
+            if i not in index_cols and i not in identity_cols and i < len(row) and row[i] != ""
+        ]
+        prefix = f"{lead[0]}. " if lead else ""
+        title = " · ".join(names)
+        if not title and not prefix:
+            # 没有序号也没有标识列（如筛选概览的「环节/数量」、signal_feedback 的 Grade 表、
+            # 市场闸门表）：保持原来的 `列名: 值，列名: 值` 单行格式不动。
+            # 这类表通常只有 2~4 列、本来就一行读完，改它没有收益，只会让 diff 变大。
+            # 硬造一个空标题行还会多出一条 "- -" 噪音。
+            cells = [f"{name}: {row[idx]}" if idx < len(row) else f"{name}: -" for idx, name in enumerate(header)]
+            out.append("- " + "，".join(cells))
+            continue
+        head = f"**{prefix}{title}**" if title else f"**{prefix.rstrip('. ')}**"
+        out.append(f"- {head}" + (f"\n  {' | '.join(rest)}" if rest else ""))
     return out
+
+
+def _is_placeholder_row(row: list[str]) -> bool:
+    """空表占位行形如 `| - | - | - | 本次无候选 |`：全是 '-' 只剩一句说明。"""
+    meaningful = [cell for cell in row if cell not in ("", "-")]
+    return len(meaningful) <= 1 and len(row) > 1
+
+
+def _placeholder_text(row: list[str]) -> str:
+    meaningful = [cell for cell in row if cell not in ("", "-")]
+    return meaningful[0] if meaningful else "-"
 
 
 def _consume_table(lines: list[str], start: int) -> tuple[list[str], int]:

@@ -37,8 +37,11 @@ def test_normalize_lark_md_handles_multiple_tables_and_plain_text():
         ]
     )
     result = normalize_lark_md(content)
-    assert "- #: 1，代码: 01336.HK，分数: 0.71" in result
+    # 带序号/代码列的表改成「标题行 + 指标尾」，不再逐格重复表头（见 test_feishu_table_flatten）。
+    assert "- **1. 01336.HK**" in result
+    assert "分数: 0.71" in result
     assert "普通说明文字保持不变" in result
+    # 无序号无标识列的表（触发分布）保持原单行格式。
     assert "- 触发: LPS（缩量回踩），数量: 11" in result
 
 
