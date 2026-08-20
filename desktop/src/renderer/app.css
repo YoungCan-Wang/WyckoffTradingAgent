@@ -1176,14 +1176,6 @@ html.dark .mfin { background: var(--paper2); }
 .k .m.up { color: var(--up); } .k .m.dn { color: var(--dn); } .k .m.wn { color: var(--clay); }
 
 .dph { padding: 26px 4px 30px; }
-.dph-t { color: var(--d-tx2); font-size: 13px; margin-bottom: 5px; }
-.dph-s { color: var(--d-tx3); font-size: 11.5px; line-height: 1.7; max-width: 380px; }
-.dnav-gap {
-  display: flex; align-items: center; justify-content: space-between; gap: 18px;
-  margin-bottom: 9px; padding: 10px 13px; border: 1px solid var(--d-line);
-  border-radius: 9px; background: var(--d-card);
-}
-.dnav-state { flex: none; color: var(--d-tx3); font-size: 10.5px; }
 
 .dcharts { display: flex; gap: 9px; }
 .dcard {

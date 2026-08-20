@@ -1,7 +1,7 @@
 'use strict'
 
 /**
- * Dark data view: nav curve + sector donut + holdings table.
+ * Dark data view: sector donut + holdings table.
  *
  * A-share convention throughout: RED is up, GREEN is down. The reference kit
  * used the US convention (green up); following it here would invert every
@@ -42,22 +42,6 @@ const fmtPct = (value) => `${value >= 0 ? '+' : ''}${Number(value || 0).toFixed(
 
 const signClass = (value) => (value >= 0 ? 'up' : 'dn')
 
-/** Curve path from a series of values, scaled to the viewBox. */
-function linePath (values, box) {
-  if (!values.length) return ''
-  const min = Math.min(...values)
-  const max = Math.max(...values)
-  const span = max - min || 1
-  const stepX = (box.w - box.left - 8) / Math.max(values.length - 1, 1)
-  return values
-    .map((value, index) => {
-      const x = box.left + index * stepX
-      const y = box.top + (1 - (value - min) / span) * box.h
-      return `${index === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`
-    })
-    .join(' ')
-}
-
 function card(title, note) {
   const node = el('div', 'dcard')
   const head = el('div', 'h')
@@ -73,59 +57,6 @@ function kpi (label, value, meta, cls) {
   node.appendChild(el('div', 't', label))
   node.appendChild(el('div', `v ${cls || ''}`.trim(), value))
   if (meta) node.appendChild(el('div', `m ${cls || ''}`.trim(), meta))
-  return node
-}
-
-/**
- * Placeholder until a daily-nav endpoint exists. Plotting per-position cost
- * basis here would look like a time series while being nothing of the kind —
- * a chart that invites a wrong reading is worse than an honest gap.
- */
-function navPlaceholder () {
-  const node = el('div', 'dnav-gap')
-  const copy = el('div')
-  copy.appendChild(el('div', 'dph-t', t('charts.equityEmpty')))
-  copy.appendChild(el('div', 'dph-s', t('charts.equityHint')))
-  node.appendChild(copy)
-  node.appendChild(el('span', 'dnav-state', t('charts.equitySubPending')))
-  return node
-}
-
-function navChart (series, benchmark) {
-  const node = card(t('charts.equityTitle'), t('charts.equitySubReady'))
-  const box = { w: 560, h: 150, top: 18, left: 42 }
-  const chart = svg('svg', { viewBox: `0 0 ${box.w} 190`, class: 'chart' })
-
-  for (let i = 0; i <= 4; i += 1) {
-    const y = box.top + (box.h / 4) * i
-    chart.appendChild(svg('line', { x1: box.left, y1: y, x2: box.w - 8, y2: y, stroke: 'var(--d-line)' }))
-  }
-
-  if (benchmark && benchmark.length) {
-    chart.appendChild(
-      svg('path', {
-        d: linePath(benchmark, box),
-        fill: 'none',
-        stroke: MUTED,
-        'stroke-width': 1.6,
-        'stroke-dasharray': '4 3'
-      })
-    )
-  }
-  chart.appendChild(
-    svg('path', { d: linePath(series, box), fill: 'none', stroke: UP, 'stroke-width': 2 })
-  )
-  node.appendChild(chart)
-
-  const legend = el('div', 'lg')
-  for (const [color, label] of [[UP, t('charts.legendPortfolio')], [MUTED, t('charts.legendBenchmark')]]) {
-    const row = el('div')
-    const swatch = el('i')
-    swatch.style.background = color
-    row.append(swatch, document.createTextNode(label))
-    legend.appendChild(row)
-  }
-  node.appendChild(legend)
   return node
 }
 
@@ -284,8 +215,6 @@ function renderCharts (data, options) {
       missingStops ? 'wn' : null)
   )
   root.appendChild(kpis)
-
-  root.appendChild(navPlaceholder())
 
   const charts = el('div', 'dcharts single')
   const right = sectorDonut(deriveSectors(positions))
