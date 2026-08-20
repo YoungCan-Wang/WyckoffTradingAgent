@@ -19,7 +19,8 @@ const LEGACY_SCRIPTS = [
   'annotations.js',
   'viewer.js',
   'tabs.js',
-  'app.js',
+  // app.js 已拆：外壳归 React（main.tsx），命令式部分留在 shell.js
+  'shell.js',
   'print.css'
 ]
 

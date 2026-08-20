@@ -41,6 +41,7 @@ import { ApprovalsPage } from './components/ApprovalsPage'
 import { TasksPage } from './components/TasksPage'
 import { SchedulesPage } from './components/SchedulesPage'
 import { ChatView } from './components/ChatView'
+import { App } from './components/App'
 import { PortfolioPage } from './components/PortfolioPage'
 import { clearAllCaches, isPortfolioWriteTool } from './lib/portfolioCache'
 
@@ -202,6 +203,23 @@ declare global {
     WyckoffPendingChatHost?: HTMLElement
     /** 把新插入的 data-lucide 占位符换成 svg。 */
     WyckoffIcons?: { render: () => void }
+    /**
+     * 命令式外壳（shell.js）：产物面板、K 线、内置浏览器、外观。
+     * 这些不用 React —— canvas 绘图、原生 view 几何、sandbox iframe 都是
+     * 命令式的，套一层壳不会让代码更好。
+     */
+    WyckoffShell?: {
+      openReport?: (title: string, body: string) => void
+      openKline?: (symbol: string) => void
+      refreshCharts?: (codes: string[]) => void
+      promptKline?: () => void
+      openBrowser?: () => void
+      togglePane?: () => void
+      syncBrowser?: () => void
+      getSendOnEnter?: () => boolean
+      buildReportPage?: () => Promise<{ node: HTMLElement; dispose?: () => void }>
+      loadAppearance?: () => Promise<void>
+    }
   }
 }
 
@@ -251,3 +269,7 @@ if (window.WyckoffPendingChatHost) {
   window.WyckoffReact.mountChat(window.WyckoffPendingChatHost)
   delete window.WyckoffPendingChatHost
 }
+
+// 外壳整块由 React 渲染。shell.js（命令式模块）先跑完，所以这里能直接用它。
+const shellHost = document.getElementById('root')
+if (shellHost) createRoot(shellHost).render(<App />)

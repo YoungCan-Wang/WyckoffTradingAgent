@@ -89,6 +89,8 @@ export function Sidebar (
                   key={item.view}
                   className={item.view === active ? 'nv on' : 'nv'}
                   type="button"
+                  /* 与语言无关的选择器 —— 测试和探针都不该依赖译文 */
+                  data-view={item.view}
                   onClick={() => onNavigate(item.view)}
                 >
                   <i className="nav-icon" data-lucide={item.icon} aria-hidden="true" />

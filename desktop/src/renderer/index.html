@@ -10,76 +10,11 @@
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
+<!-- 外壳（侧栏 / 顶栏 / 会话 / 目标页面 / 菜单 / 设置弹窗）全部由 React 渲染。
+     产物面板留在这里：它的内容由命令式模块画（canvas 图表、原生浏览器 view、
+     sandbox iframe），React 只负责调用它们。 -->
 <div class="win">
-  <aside class="side" id="side">
-    <div class="side-titlebar">
-      <div class="brand">Wyckoff <i class="cv" data-lucide="chevron-down" aria-hidden="true"></i></div>
-      <span class="side-toggle-slot" id="side-toggle-slot"></span>
-    </div>
-    <button class="side-new" id="btn-new-analysis" type="button" data-i18n="nav.newAnalysis">开始分析</button>
-    <nav class="nav" data-i18n-aria-label="nav.primary" aria-label="主导航">
-      <div class="nav-group">
-        <div class="nav-label" data-i18n="nav.groupWork">工作</div>
-        <button class="nv" type="button" data-view="chat"><i class="nav-icon" data-lucide="sparkles" aria-hidden="true"></i><span data-i18n="nav.today">今天</span></button>
-        <button class="nv" type="button" data-view="tasks"><i class="nav-icon" data-lucide="list-checks" aria-hidden="true"></i><span data-i18n="nav.tasks">任务运行</span><span class="n" id="task-count"></span></button>
-        <button class="nv" type="button" data-view="approvals"><i class="nav-icon" data-lucide="shield-check" aria-hidden="true"></i><span data-i18n="nav.approvals">审批</span><span class="n" id="approval-count"></span></button>
-      </div>
-      <div class="nav-group">
-        <div class="nav-label" data-i18n="nav.groupDomain">业务</div>
-        <button class="nv" type="button" data-view="portfolio"><i class="nav-icon" data-lucide="briefcase" aria-hidden="true"></i><span data-i18n="nav.portfolio">持仓</span></button>
-        <button class="nv" type="button" data-view="schedules"><i class="nav-icon" data-lucide="calendar-clock" aria-hidden="true"></i><span data-i18n="nav.schedules">定时任务</span><span class="n" id="schedule-count"></span></button>
-        <button class="nv" type="button" data-view="tracking"><i class="nav-icon" data-lucide="radar" aria-hidden="true"></i><span data-i18n="nav.tracking">跟踪</span></button>
-        <button class="nv" type="button" data-view="attribution"><i class="nav-icon" data-lucide="git-branch" aria-hidden="true"></i><span data-i18n="nav.attribution">归因</span></button>
-      </div>
-      <div class="nav-group">
-        <div class="nav-label" data-i18n="nav.groupLibrary">资料库</div>
-        <button class="nv" type="button" data-view="reports"><i class="nav-icon" data-lucide="file-chart-column-increasing" aria-hidden="true"></i><span data-i18n="nav.reports">报告</span></button>
-      </div>
-    </nav>
-    <div class="side-foot">
-      <button class="acct" id="btn-acct" aria-haspopup="menu" aria-expanded="false">
-        <span class="ava" id="acct-ava">·</span>
-        <span class="acct-n" id="acct-name">未登录</span>
-        <i class="acct-cv" data-lucide="chevron-down" aria-hidden="true"></i>
-      </button>
-    </div>
-  </aside>
-
-  <main class="thread">
-    <header class="ttop">
-      <span class="side-toggle-slot" id="thread-toggle-slot">
-        <button class="icb side-toggle" id="btn-side" type="button" data-i18n-title="tooltip.sidebarShow" title="展开侧栏 ⌘B">
-          <i class="side-toggle-open" data-lucide="panel-left-open" aria-hidden="true"></i>
-          <i class="side-toggle-close" data-lucide="panel-left-close" aria-hidden="true"></i>
-        </button>
-      </span>
-      <div class="ttitle" id="view-title" data-i18n="nav.today">今天</div>
-      <div class="tools">
-        <button class="chip" id="pending-chip" hidden data-i18n-title="tooltip.pending" title="查看待批准操作"></button>
-        <!-- A backend-status dot lives here only while the local Python process
-             is NOT ready (starting / stopped / error); once ready it is hidden,
-             so a healthy backend is never advertised. -->
-        <button class="icb" id="btn-restart" hidden data-i18n-title="tooltip.restart" title="重启 Python 服务"><i data-lucide="refresh-cw" aria-hidden="true"></i></button>
-        <button class="topbtn" id="btn-open" aria-haspopup="menu" aria-controls="open-menu" aria-expanded="false">
-          <i class="topbtn-g" data-lucide="plus" aria-hidden="true"></i><span data-i18n="menu.open">打开</span><i class="topbtn-cv" data-lucide="chevron-down" aria-hidden="true"></i>
-        </button>
-      </div>
-    </header>
-
-    <!-- 会话区（欢迎页 + 对话流 + 输入区）整块由 React 渲染。
-         这里只留挂载点：静态骨架与 React 各画一半会让两边抢同一个 DOM。 -->
-    <section class="tscroll" id="stream"></section>
-
-    <!-- 目标页面（审批 / 定时 / 持仓 / 跟踪 / 归因 / 报告）。它们是「导航过去」
-         的地方，所以占据主区；右侧面板留给 agent 产出的东西。 -->
-    <section class="page" id="page" hidden>
-      <div class="page-in">
-        <h1 class="page-t" id="page-title"></h1>
-        <p class="page-s" id="page-sub"></p>
-        <div id="page-body"></div>
-      </div>
-    </section>
-  </main>
+  <div id="root"></div>
 
   <div class="pane-resizer" id="pane-resizer" role="separator" aria-orientation="vertical" data-i18n-aria-label="action.resizePane" aria-label="调整产物面板宽度" aria-valuemin="360" tabindex="0"></div>
   <aside class="pane" id="pane">
@@ -93,60 +28,6 @@
   </aside>
 </div>
 
-<!-- Settings modal: left nav + right panel over a dimmed backdrop, closed by
-     the X, backdrop click, or Esc. Kept out of the artifact pane so opening it
-     never disturbs whatever report the user is reading. -->
-<div class="ov" id="set-ov" hidden>
-  <div class="dlg" role="dialog" aria-modal="true" data-i18n-aria-label="settings.title" aria-label="设置">
-    <!-- 三个一级栏目。原先的 6 个二级项（外观/行为/语气/模型/定时/登录）
-         下沉成各页内部的分栏标题 —— 导航只回答「哪一类」，页内才回答「哪一项」。 -->
-    <nav class="dlg-nav">
-      <button class="dlg-n on" data-sec="general" data-i18n="settings.groupGeneral">通用</button>
-      <button class="dlg-n" data-sec="agent" data-i18n="settings.groupAgent">智能体</button>
-      <button class="dlg-n" data-sec="account" data-i18n="settings.groupAccount">账号</button>
-    </nav>
-    <div class="dlg-main">
-      <button class="dlg-x" id="set-close" data-i18n-aria-label="action.close" aria-label="关闭"><i data-lucide="x" aria-hidden="true"></i></button>
-      <div class="dlg-body" id="set-body"></div>
-    </div>
-  </div>
-</div>
-
-<!-- "Open" menu. Replaces the row of cryptic glyphs with labelled entries and
-     their shortcuts, the way Codex surfaces the same actions. -->
-<div class="menu" id="open-menu" role="menu" hidden>
-  <button class="menu-i" id="mi-reports" role="menuitem">
-    <i class="menu-g" data-lucide="file-text" aria-hidden="true"></i><span data-i18n="menu.reports">报告库</span><span class="menu-k">⌘R</span>
-  </button>
-  <button class="menu-i" id="mi-chart" role="menuitem">
-    <i class="menu-g" data-lucide="chart-candlestick" aria-hidden="true"></i><span data-i18n="menu.chart">K 线图</span><span class="menu-k">⌘K</span>
-  </button>
-  <button class="menu-i" id="mi-browser" role="menuitem">
-    <i class="menu-g" data-lucide="globe-2" aria-hidden="true"></i><span data-i18n="menu.browser">浏览器</span><span class="menu-k">⌘T</span>
-  </button>
-  <div class="menu-sep" id="pane-menu-sep" hidden></div>
-  <button class="menu-i" id="mi-pane" role="menuitem" hidden>
-    <i class="menu-g" data-lucide="panel-right-open" aria-hidden="true"></i><span data-i18n="menu.pane">产物面板</span><span class="menu-k">⌘⌥B</span>
-  </button>
-</div>
-
-<!-- Account menu. Anchored above the account row, dismissed by outside click
-     or Esc. Hidden until opened so it never steals the first tab stop. -->
-<div class="menu" id="acct-menu" role="menu" hidden>
-  <div class="menu-hd">
-    <span class="ava" id="menu-ava">·</span>
-    <span class="menu-em" id="menu-email">未登录</span>
-  </div>
-  <div class="menu-sep"></div>
-  <button class="menu-i" id="mi-settings" role="menuitem">
-    <i class="menu-g" data-lucide="settings" aria-hidden="true"></i><span data-i18n="menu.settings">设置</span><span class="menu-k">⌘,</span>
-  </button>
-  <button class="menu-i danger" id="mi-signout" role="menuitem">
-    <i class="menu-g" data-lucide="log-out" aria-hidden="true"></i><span data-i18n="menu.signout">退出登录</span>
-  </button>
-</div>
-
-<!-- locales before i18n before everything else: app.js calls t() at module load. -->
 <script src="locales.js"></script>
 <script src="i18n.js"></script>
 <script src="md.js"></script>
@@ -155,10 +36,10 @@
 <script src="annotations.js"></script>
 <script src="viewer.js"></script>
 <script src="tabs.js"></script>
-<script src="app.js"></script>
-<!-- React 侧。放在 app.js 之后：app.js 定义 showSection，React 只提供
-     被它调用的挂载函数。type=module 的脚本天然 defer，所以 window.WyckoffReact
-     在首次打开设置前一定就绪。Vite 构建时这一行会被换成带 hash 的产物。 -->
+<script src="shell.js"></script>
+<!-- React 侧。放在 shell.js 之后：shell.js 挂好 window.WyckoffShell，
+     React 外壳调用它来开图表/浏览器/报告面板。type=module 天然 defer，
+     所以 shell.js 一定先跑完。Vite 构建时这一行会换成带 hash 的产物。 -->
 <script type="module" src="./main.tsx"></script>
 </body>
 </html>
