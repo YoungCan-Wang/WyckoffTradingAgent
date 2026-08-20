@@ -4,11 +4,11 @@ import pytest
 
 from cli.approval_policy import (
     AUTO,
+    AUTO_TOOLS,
     CONFIRM,
     REVIEW,
     classify,
     explain,
-    is_auto_tool,
     nav_ratio,
     notional,
 )
@@ -22,15 +22,30 @@ class TestAutoTier:
         args = {"items": [{"code": "002270", "stop_loss": 33.15}] * 50}
         assert classify("set_stop_loss", args) == AUTO
 
-    def test_auto_rests_on_tool_identity_not_field_check(self):
-        """set_stop_loss 不接受 shares/cost_price，所以无需靠参数检查保证安全。"""
+    def test_auto_needs_both_tool_identity_and_a_safe_arg_shape(self):
+        """光看工具名不够了 —— 还要看这组参数是哪个方向。
+
+        原来这条测试叫 test_auto_rests_on_tool_identity_not_field_check，断言
+        「不接受 shares/cost_price 所以无需检查参数」。在 set_stop_loss 支持
+        stop_loss=None 清除止损之后，那个前提就不成立了：同一个工具既能加一道
+        保护也能撤掉一道，风险方向相反。
+        """
         import inspect
 
         from agents.portfolio_tools import set_stop_loss
 
+        # 窄接口仍然是前提之一：它确实不能动股数/成本/现金
         params = set(inspect.signature(set_stop_loss).parameters)
         assert params == {"code", "stop_loss", "items", "tool_context"}
-        assert is_auto_tool("set_stop_loss")
+
+        # 但「在 AUTO_TOOLS 里」不再等于放行
+        assert "set_stop_loss" in AUTO_TOOLS
+        assert classify("set_stop_loss", {"code": "002270", "stop_loss": None}) == REVIEW
+
+    def test_batch_cannot_smuggle_a_clear(self):
+        """批量把动作藏在数组里，只查顶层字段会漏 —— 撤掉多只票的止损更该拦。"""
+        args = {"items": [{"code": "A", "stop_loss": 33.15}, {"code": "B", "stop_loss": None}]}
+        assert classify("set_stop_loss", args) == REVIEW
 
     def test_update_portfolio_is_never_auto(self):
         assert classify("update_portfolio", {"code": "002270", "shares": 500}) != AUTO

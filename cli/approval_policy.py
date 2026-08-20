@@ -8,8 +8,13 @@ AUTO = "auto"
 REVIEW = "review"
 CONFIRM = "confirm"
 
-# 无人时可自动执行的工具。安全性来自工具本身能做的事很窄——set_stop_loss
-# 不接受股数、成本、现金参数——而不是来自这里检查了参数字段。
+# 无人时可自动执行的工具。安全性原本来自「工具本身能做的事很窄」——
+# set_stop_loss 不接受股数、成本、现金参数。
+#
+# 但这个前提已经不完整了：set_stop_loss 现在支持 stop_loss=None **清除**止损。
+# 「设置一道保护」和「移除一道保护」的风险完全不同方向，不该共享档位 ——
+# 否则 daemon 可以在无人值守时自动执行 agent 提出的「把止损撤掉」。
+# 所以 AUTO 现在要看参数，见 _is_auto_safe()。
 AUTO_TOOLS = frozenset({"set_stop_loss"})
 
 # 名义金额超过净值这个比例，要二次确认而不是普通审批。
@@ -17,6 +22,48 @@ CONFIRM_NAV_RATIO = 0.05
 
 # 清仓、批量删记录这类不可逆动作，一律二次确认。
 DESTRUCTIVE_ACTIONS = frozenset({"sell", "remove", "delete", "clear", "delete_records"})
+
+
+def _entry_clears_stop_loss(entry: dict[str, Any]) -> bool:
+    """单条参数是不是在清除止损。
+
+    工具约定 stop_loss=None 表示清除。注意不能只用 entry.get("stop_loss") is None
+    来判断 —— 那样「压根没传这个字段」也会被当成清除。没传是参数不全，交给下游
+    报错，不该在这里升档。
+    """
+    if "stop_loss" not in entry:
+        return False
+    raw = entry.get("stop_loss")
+    if raw is None:
+        return True
+    # 空串同样被下游当成「没有值」，一并视为清除。
+    return isinstance(raw, str) and not raw.strip()
+
+
+def _clears_stop_loss(args: dict[str, Any]) -> bool:
+    """这次 set_stop_loss 调用里是否**有任何一条**在清除止损。
+
+    必须逐条看 items：set_stop_loss 支持批量，而批量把真实动作藏在数组里，
+    只查顶层字段的话 {"items": [{"code": "A", "stop_loss": None}]} 会被判成
+    低风险 —— 一次撤掉多只票的止损，反而比单只更容易溜过去。
+    （同一个坑 update_portfolio 那边已经用 _classify_batch 处理过了。）
+    """
+    items = args.get("items")
+    if isinstance(items, list) and items:
+        return any(
+            not isinstance(entry, dict) or _entry_clears_stop_loss(entry)
+            for entry in items
+        )
+    return _entry_clears_stop_loss(args)
+
+
+def _is_auto_safe(tool_name: str, args: dict[str, Any]) -> bool:
+    """工具在 AUTO 名单里，且这组参数确实是低风险的那一半。"""
+    if tool_name not in AUTO_TOOLS:
+        return False
+    if tool_name == "set_stop_loss" and _clears_stop_loss(args):
+        return False
+    return True
 
 
 def notional(args: dict[str, Any]) -> float:
@@ -34,8 +81,10 @@ def explain(tool_name: str, args: dict[str, Any], nav: float = 0.0) -> str:
     与 classify 分开：档位决定放行，理由只用于展示。理由缺失或算错都不该
     影响闸门，所以这里只读同一批规则，不参与判定。
     """
-    if tool_name in AUTO_TOOLS:
+    if _is_auto_safe(tool_name, args):
         return "reason.auto_narrow_tool"
+    if tool_name in AUTO_TOOLS:
+        return "reason.clears_stop_loss"
     if str(args.get("action") or "").strip().lower() in DESTRUCTIVE_ACTIONS:
         return "reason.destructive_action"
     if tool_name == "record_trade_fill" and str(args.get("side") or "").strip().lower() == "sell":
@@ -76,8 +125,12 @@ def nav_ratio(args: dict[str, Any], nav: float) -> float:
 
 def classify(tool_name: str, args: dict[str, Any], nav: float = 0.0) -> str:
     """返回 auto / review / confirm。daemon 只放行 auto。"""
-    if tool_name in AUTO_TOOLS:
+    if _is_auto_safe(tool_name, args):
         return AUTO
+    if tool_name in AUTO_TOOLS:
+        # 在 AUTO 名单里却没通过参数检查 —— 目前只有「清除止损」这一种：
+        # 移除风控保护要人过一眼，但它不动仓位也不花钱，REVIEW 足够。
+        return REVIEW
     if tool_name == "record_trade_fill":
         if str(args.get("side") or "").strip().lower() == "sell":
             return CONFIRM
@@ -114,10 +167,6 @@ def _classify_batch(items: list[Any], nav: float) -> str:
 
 def _over_nav_threshold(args: dict[str, Any], nav: float) -> bool:
     return nav > 0 and notional(args) > nav * CONFIRM_NAV_RATIO
-
-
-def is_auto_tool(tool_name: str) -> bool:
-    return tool_name in AUTO_TOOLS
 
 
 def _as_float(value: Any) -> float | None:

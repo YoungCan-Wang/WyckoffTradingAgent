@@ -29,6 +29,8 @@ class BrowserHost {
     this.port = 0
     this.bounds = { x: 0, y: 0, width: 0, height: 0 }
     this.visible = false
+    // 发起请求的那个 session；ensureView 建视图时赋值。校验域名要用它解析。
+    this.session = null
   }
 
   /** 懒创建：不打开浏览器就不该有额外进程和内存开销。 */
@@ -46,19 +48,38 @@ class BrowserHost {
       }
     })
     const wc = this.view.webContents
+    // 校验必须用**这个 session** 解析域名：它和随后真正发起连接的是同一个
+    // host resolver，解析结果进同一份 DNS 缓存。用 Node 的 dns.lookup 校验
+    // 等于「各自解析一次」，短 TTL 域名可以在两次解析之间把地址换成内网。
+    this.session = wc.session
     wc.session.webRequest.onBeforeRequest((details, callback) => {
-      if (!/^https?:/i.test(details.url)) return callback({})
-      validatePublicHttpUrl(details.url)
+      // 只放行 http(s)。以前对其他 scheme 一律 callback({})，等于把 file:
+      // about: blob: data: 全放过 —— 这个视图没有 preload、开了 sandbox，
+      // 读到本地文件也没有通往应用的桥，但没有理由把这扇门留着。
+      // devtools: 例外：不放行会让开发者工具自己打不开。
+      if (/^(devtools|chrome-extension):/i.test(details.url)) return callback({})
+      if (!/^https?:/i.test(details.url)) {
+        this.onLog(`浏览器已拦截非 http(s) 请求: ${details.url.slice(0, 80)}`)
+        return callback({ cancel: true })
+      }
+      validatePublicHttpUrl(details.url, this.session)
         .then(() => callback({}))
         .catch((err) => {
           this.onLog(`浏览器导航已拦截: ${err.message}`)
           callback({ cancel: true })
         })
     })
+    // onBeforeRequest 之外再加一道：某些导航（重定向链、页面内 location 赋值）
+    // 值得在导航层面也拦一次，不把纵深防御全押在 Chromium 的默认策略上。
+    wc.on('will-navigate', (event, url) => {
+      if (/^https?:/i.test(url)) return
+      event.preventDefault()
+      this.onLog(`浏览器已拦截非 http(s) 导航: ${String(url).slice(0, 80)}`)
+    })
     // 页面里的 window.open / target=_blank 一律在当前视图导航，
     // 不允许它凭空造出没有这些限制的新窗口。
     wc.setWindowOpenHandler(({ url }) => {
-      validatePublicHttpUrl(url)
+      validatePublicHttpUrl(url, this.session)
         .then((safeUrl) => wc.loadURL(safeUrl))
         .catch((err) => this.onLog(`浏览器弹窗导航已拦截: ${err.message}`))
       return { action: 'deny' }
@@ -94,7 +115,7 @@ class BrowserHost {
     const wc = this.ensureView().webContents
 
     if (action === 'navigate') {
-      const url = await validatePublicHttpUrl(params.url)
+      const url = await validatePublicHttpUrl(params.url, this.session)
       await this.withTimeout(wc.loadURL(url), NAV_TIMEOUT_MS, 'navigate timed out')
       return { url: wc.getURL(), title: wc.getTitle() }
     }

@@ -96,6 +96,31 @@ def approve_decide(params: dict[str, Any]) -> Iterator[Event]:
     yield _ok(status="executed" if succeeded else "failed", result=result, succeeded=succeeded)
 
 
+def _synced_session():
+    """
+    取会话，并先把身份对齐到磁盘上的登录态。
+
+    磁盘上的登录态可能已经变了（换账号登录），而 ToolRegistry 是 start() 时建的。
+    不对齐时读操作会返回上一个账号的数据（前端还会把它当成当前账号的内容缓存
+    起来），而**写操作会把新账号的改动落到旧账号的云端** —— 后者更严重，且完全
+    无声。
+
+    所有按账号取数的方法都必须过这里。原先这段逻辑内联在 portfolio() 的函数体
+    里，两条写路径和 tracking/attribution 都漏了 —— 正因为它没有名字，复制不
+    过去就等于忘掉。
+
+    用 getattr 而不是直接调用：会话还没起来时（或测试里的替身）不该让整个面板
+    报错，宁可退回匿名结果。
+    """
+    from cli.ipc.session import get_session
+
+    session = get_session()
+    sync = getattr(session, "sync_identity", None)
+    if callable(sync):
+        sync()
+    return session
+
+
 def portfolio(_params: dict[str, Any]) -> Iterator[Event]:
     """
     持仓视图。必须带上会话的 tool_context —— 否则 has_cloud() 恒为 False，
@@ -106,18 +131,8 @@ def portfolio(_params: dict[str, Any]) -> Iterator[Event]:
     没有 token（或云端读失败）才落到本地 SQLite。
     """
     from agents.portfolio_tools import portfolio as portfolio_tool
-    from cli.ipc.session import get_session
 
-    session = get_session()
-    # 磁盘上的登录态可能已经变了（换账号登录），而 ToolRegistry 是 start() 时
-    # 建的。不对齐的话这里返回的是上一个账号的持仓 —— 前端会把它当成当前账号的
-    # 数据缓存起来。
-    #
-    # 用 getattr 而不是直接调用：会话还没起来时（或测试里的替身）不该整个面板
-    # 报错，宁可读到匿名结果。
-    sync = getattr(session, "sync_identity", None)
-    if callable(sync):
-        sync()
+    session = _synced_session()
     # 回传实际读取所用的账号。前端拿它做缓存 key，绝不能用「它自己以为的」账号：
     # 那正是缓存 key 写着 B、内容却是 A 的成因。
     yield _ok(
@@ -178,7 +193,6 @@ def portfolio_edit(params: dict[str, Any]) -> Iterator[Event]:
     审批一次自己等于没有意义。agent 走的仍是原来那条要审批的路。
     """
     from agents.portfolio_tools import update_portfolio
-    from cli.ipc.session import get_session
 
     action = str(params.get("action") or "").strip().lower()
     if action not in _PORTFOLIO_ACTIONS:
@@ -192,7 +206,7 @@ def portfolio_edit(params: dict[str, Any]) -> Iterator[Event]:
         cost_price=float(params.get("cost_price") or 0),
         buy_dt=str(params.get("buy_dt") or ""),
         free_cash=float(params.get("free_cash") or 0),
-        tool_context=get_session().tool_context,
+        tool_context=_synced_session().tool_context,
     )
     failure = _portfolio_write_failed(result)
     if failure:
@@ -208,7 +222,6 @@ def portfolio_set_stop(params: dict[str, Any]) -> Iterator[Event]:
     null」—— params.get() 两者都是 None，直接用会把漏传当成清除。
     """
     from agents.portfolio_tools import set_stop_loss
-    from cli.ipc.session import get_session
 
     code = str(params.get("code") or "")
     if not code:
@@ -220,7 +233,7 @@ def portfolio_set_stop(params: dict[str, Any]) -> Iterator[Event]:
     result = set_stop_loss(
         code=code,
         stop_loss=None if raw is None else float(raw),
-        tool_context=get_session().tool_context,
+        tool_context=_synced_session().tool_context,
     )
     failure = _portfolio_write_failed(result)
     if failure:
@@ -236,7 +249,6 @@ def tracking(params: dict[str, Any]) -> Iterator[Event]:
     query_history 内建云端 + 本地回退，这里不重复实现读取顺序。
     """
     from agents.history_tools import query_history
-    from cli.ipc.session import get_session
     from integrations.supabase_recommendation import RECOMMENDATION_TABLES
 
     # 三个市场是三张表，切市场必须重查。在这里就把市场收敛到白名单里 ——
@@ -248,7 +260,7 @@ def tracking(params: dict[str, Any]) -> Iterator[Event]:
     result = query_history(
         source="recommendation",
         limit=limit,
-        tool_context=get_session().tool_context,
+        tool_context=_synced_session().tool_context,
         market=market,
     )
     if "error" in result:
@@ -264,10 +276,9 @@ def attribution_dates(params: dict[str, Any]) -> Iterator[Event]:
     却只用到其中两三个字段。这条走一次窄 select，页签能立刻出来。
     """
     from agents.history_tools import attribution_dates as load_dates
-    from cli.ipc.session import get_session
 
     limit = _clamp_int(params.get("limit"), 60, 1, 200)
-    result = load_dates(limit=limit, tool_context=get_session().tool_context)
+    result = load_dates(limit=limit, tool_context=_synced_session().tool_context)
     if "error" in result:
         raise MethodError("attribution_failed", str(result["error"]))
     yield _ok(**result)
@@ -283,7 +294,6 @@ def attribution(params: dict[str, Any]) -> Iterator[Event]:
     40 够覆盖两个多月。
     """
     from agents.history_tools import query_history
-    from cli.ipc.session import get_session
 
     # 默认只拉 1 份：整份报告约 14 KB，一次 20 份要 8 秒。页签用
     # attribution_dates 单独取（只两列），正文按翻到哪页再取哪页。
@@ -292,7 +302,7 @@ def attribution(params: dict[str, Any]) -> Iterator[Event]:
     result = query_history(
         source="attribution",
         limit=limit,
-        tool_context=get_session().tool_context,
+        tool_context=_synced_session().tool_context,
         report_date=report_date,
     )
     if "error" in result:
