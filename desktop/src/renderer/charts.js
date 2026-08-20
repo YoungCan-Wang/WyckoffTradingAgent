@@ -82,11 +82,12 @@ function kpi (label, value, meta, cls) {
  * a chart that invites a wrong reading is worse than an honest gap.
  */
 function navPlaceholder () {
-  const node = card(t('charts.equityTitle'), t('charts.equitySubPending'))
-  const box = el('div', 'dph')
-  box.appendChild(el('div', 'dph-t', t('charts.equityEmpty')))
-  box.appendChild(el('div', 'dph-s', t('charts.equityHint')))
-  node.appendChild(box)
+  const node = el('div', 'dnav-gap')
+  const copy = el('div')
+  copy.appendChild(el('div', 'dph-t', t('charts.equityEmpty')))
+  copy.appendChild(el('div', 'dph-s', t('charts.equityHint')))
+  node.appendChild(copy)
+  node.appendChild(el('span', 'dnav-state', t('charts.equitySubPending')))
   return node
 }
 
@@ -284,12 +285,12 @@ function renderCharts (data, options) {
   )
   root.appendChild(kpis)
 
-  const charts = el('div', 'dcharts')
-  const left = navPlaceholder()
-  left.classList.add('c1')
+  root.appendChild(navPlaceholder())
+
+  const charts = el('div', 'dcharts single')
   const right = sectorDonut(deriveSectors(positions))
   right.classList.add('c2')
-  charts.append(left, right)
+  charts.appendChild(right)
   root.appendChild(charts)
 
   if (withTable) root.appendChild(holdingsTable(positions))

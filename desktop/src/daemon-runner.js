@@ -7,6 +7,7 @@
 // 重启计数；这个是纯后台单向进程，混在一起只会让两种失败模式互相干扰。
 
 const { spawn } = require('node:child_process')
+const path = require('node:path')
 
 const IS_WINDOWS = process.platform === 'win32'
 // 退出即失败说明环境不对（缺依赖、路径错），重试只是空转。
@@ -15,9 +16,11 @@ const RESTART_DELAY_MS = 2_000
 const LOCK_BUSY_EXIT_CODE = 75
 
 class DaemonRunner {
-  constructor ({ repoRoot, python, onLog }) {
+  constructor ({ repoRoot, python, bundledBinary, onLog }) {
     this.repoRoot = repoRoot
-    this.python = python
+    this.command = bundledBinary || python
+    this.args = bundledBinary ? ['--daemon'] : ['-m', 'cli', 'daemon', '--foreground']
+    this.cwd = bundledBinary ? path.dirname(bundledBinary) : repoRoot
     this.onLog = onLog || (() => {})
     this.child = null
     this.restarts = 0
@@ -32,10 +35,9 @@ class DaemonRunner {
     this.startedAt = Date.now()
     this.spawnFailed = false
 
-    // --foreground 让它在前台阻塞跑主循环，由我们持有进程句柄。
-    // 不加这个参数，CLI 只会打印一句「需要 launchd 托管」然后退出。
-    const child = spawn(this.python, ['-m', 'cli', 'daemon', '--foreground'], {
-      cwd: this.repoRoot,
+    // 开发模式给 CLI 传 --foreground；分发版的 --daemon 入口天然前台阻塞。
+    const child = spawn(this.command, this.args, {
+      cwd: this.cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
       env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' }

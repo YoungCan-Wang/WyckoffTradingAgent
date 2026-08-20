@@ -13,7 +13,7 @@
 <div class="win">
   <aside class="side" id="side">
     <div class="side-titlebar">
-      <div class="brand">Wyckoff <span class="cv">⌄</span></div>
+      <div class="brand">Wyckoff <i class="cv" data-lucide="chevron-down" aria-hidden="true"></i></div>
       <span class="side-toggle-slot" id="side-toggle-slot"></span>
     </div>
     <button class="side-new" id="btn-new-analysis" type="button" data-i18n="nav.newAnalysis">开始分析</button>
@@ -40,7 +40,7 @@
       <button class="acct" id="btn-acct" aria-haspopup="menu" aria-expanded="false">
         <span class="ava" id="acct-ava">·</span>
         <span class="acct-n" id="acct-name">未登录</span>
-        <span class="acct-cv">⌄</span>
+        <i class="acct-cv" data-lucide="chevron-down" aria-hidden="true"></i>
       </button>
     </div>
   </aside>
@@ -59,9 +59,9 @@
         <!-- A backend-status dot lives here only while the local Python process
              is NOT ready (starting / stopped / error); once ready it is hidden,
              so a healthy backend is never advertised. -->
-        <button class="icb" id="btn-restart" hidden data-i18n-title="tooltip.restart" title="重启 Python 服务">↻</button>
-        <button class="topbtn" id="btn-open" aria-haspopup="menu" aria-expanded="false">
-          <span class="topbtn-g">＋</span><span data-i18n="menu.open">打开</span><span class="topbtn-cv">⌄</span>
+        <button class="icb" id="btn-restart" hidden data-i18n-title="tooltip.restart" title="重启 Python 服务"><i data-lucide="refresh-cw" aria-hidden="true"></i></button>
+        <button class="topbtn" id="btn-open" aria-haspopup="menu" aria-controls="open-menu" aria-expanded="false">
+          <i class="topbtn-g" data-lucide="plus" aria-hidden="true"></i><span data-i18n="menu.open">打开</span><i class="topbtn-cv" data-lucide="chevron-down" aria-hidden="true"></i>
         </button>
       </div>
     </header>
@@ -85,7 +85,7 @@
                 </button>
                 <div class="mdl-menu" id="mdl-menu" role="listbox" hidden></div>
               </div>
-              <button class="send" id="btn-send">↑</button>
+              <button class="send" id="btn-send" data-i18n-aria-label="action.send" aria-label="发送"><i data-lucide="arrow-up" aria-hidden="true"></i></button>
             </div>
           </div>
           <div class="wel-overview" id="wel-overview"></div>
@@ -111,9 +111,10 @@
     <div id="comp-host-bottom"></div>
   </main>
 
+  <div class="pane-resizer" id="pane-resizer" role="separator" aria-orientation="vertical" data-i18n-aria-label="action.resizePane" aria-label="调整产物面板宽度" aria-valuemin="360" tabindex="0"></div>
   <aside class="pane" id="pane">
     <div class="pane-top">
-      <div class="tabs" id="tabs"></div>
+      <div class="tabs" id="tabs" role="tablist" data-i18n-aria-label="tab.artifacts" aria-label="产物"></div>
       <button class="icb pane-toggle" id="btn-pane" type="button" data-i18n-title="tooltip.paneHide" title="收起产物面板 ⌘⌥B">
         <i data-lucide="panel-right-close" aria-hidden="true"></i>
       </button>
@@ -135,7 +136,7 @@
       <button class="dlg-n" data-sec="account" data-i18n="settings.groupAccount">账号</button>
     </nav>
     <div class="dlg-main">
-      <button class="dlg-x" id="set-close" data-i18n-aria-label="action.close" aria-label="关闭">✕</button>
+      <button class="dlg-x" id="set-close" data-i18n-aria-label="action.close" aria-label="关闭"><i data-lucide="x" aria-hidden="true"></i></button>
       <div class="dlg-body" id="set-body"></div>
     </div>
   </div>
@@ -145,17 +146,17 @@
      their shortcuts, the way Codex surfaces the same actions. -->
 <div class="menu" id="open-menu" role="menu" hidden>
   <button class="menu-i" id="mi-reports" role="menuitem">
-    <span class="menu-g">▦</span><span data-i18n="menu.reports">报告库</span><span class="menu-k">⌘R</span>
+    <i class="menu-g" data-lucide="file-text" aria-hidden="true"></i><span data-i18n="menu.reports">报告库</span><span class="menu-k">⌘R</span>
   </button>
   <button class="menu-i" id="mi-chart" role="menuitem">
-    <span class="menu-g">◫</span><span data-i18n="menu.chart">K 线图</span><span class="menu-k">⌘K</span>
+    <i class="menu-g" data-lucide="chart-candlestick" aria-hidden="true"></i><span data-i18n="menu.chart">K 线图</span><span class="menu-k">⌘K</span>
   </button>
   <button class="menu-i" id="mi-browser" role="menuitem">
-    <span class="menu-g">◍</span><span data-i18n="menu.browser">浏览器</span><span class="menu-k">⌘T</span>
+    <i class="menu-g" data-lucide="globe-2" aria-hidden="true"></i><span data-i18n="menu.browser">浏览器</span><span class="menu-k">⌘T</span>
   </button>
   <div class="menu-sep" id="pane-menu-sep" hidden></div>
   <button class="menu-i" id="mi-pane" role="menuitem" hidden>
-    <span class="menu-g">◨</span><span data-i18n="menu.pane">产物面板</span><span class="menu-k">⌘⌥B</span>
+    <i class="menu-g" data-lucide="panel-right-open" aria-hidden="true"></i><span data-i18n="menu.pane">产物面板</span><span class="menu-k">⌘⌥B</span>
   </button>
 </div>
 
@@ -168,10 +169,10 @@
   </div>
   <div class="menu-sep"></div>
   <button class="menu-i" id="mi-settings" role="menuitem">
-    <span class="menu-g">⚙</span><span data-i18n="menu.settings">设置</span><span class="menu-k">⌘,</span>
+    <i class="menu-g" data-lucide="settings" aria-hidden="true"></i><span data-i18n="menu.settings">设置</span><span class="menu-k">⌘,</span>
   </button>
   <button class="menu-i danger" id="mi-signout" role="menuitem">
-    <span class="menu-g">⇤</span><span data-i18n="menu.signout">退出登录</span>
+    <i class="menu-g" data-lucide="log-out" aria-hidden="true"></i><span data-i18n="menu.signout">退出登录</span>
   </button>
 </div>
 

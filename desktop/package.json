@@ -9,8 +9,9 @@
     "start:debug": "electron . --inspect",
     "test": "node --test test/*.test.js",
     "build:py": "../scripts/build_python_ipc.sh",
-    "pack": "npm run build:ui && electron-builder --dir",
-    "dist": "npm run build:ui && electron-builder",
+    "package:prepare": "npm run build:ui && npm run build:py",
+    "pack": "npm run package:prepare && electron-builder --dir",
+    "dist": "npm run package:prepare && electron-builder",
     "typecheck": "tsc -b",
     "build:ui": "vite build",
     "dev:ui": "vite"

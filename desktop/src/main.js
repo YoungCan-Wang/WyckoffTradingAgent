@@ -166,16 +166,11 @@ function startBridge (browserEndpoint) {
  * own .venv still works.
  */
 function startDaemon () {
-  // 打包版暂不支持定时任务：daemon 走的是 `python -m cli daemon`，而分发包里
-  // 只有 IPC 那个入口的二进制，没有可用的 cli 模块。明确不启动并说明原因，
-  // 比让它 spawn 失败后静默重试好 —— 后者在界面上表现为「定时任务开着但从不跑」。
-  if (app.isPackaged) {
-    console.log('[daemon] 打包版尚未内置调度进程，定时任务需要在命令行运行 wyckoff daemon')
-    return
-  }
+  const bundledBinary = app.isPackaged ? bridge.bundledBinary() : ''
   daemon = new DaemonRunner({
     repoRoot: REPO_ROOT,
     python: bridge.pythonPath(),
+    bundledBinary,
     onLog: (message) => console.log(`[daemon] ${message}`)
   })
   daemon.start()
@@ -310,7 +305,7 @@ app.whenReady().then(async () => {
       // Closing the last macOS window stops all window-owned resources. Restart
       // even if the old child has not emitted exit yet; restart() detaches it.
       bridge.restart()
-      if (!daemon.child) daemon.start()
+      if (daemon && !daemon.child) daemon.start()
     }
   })
 })

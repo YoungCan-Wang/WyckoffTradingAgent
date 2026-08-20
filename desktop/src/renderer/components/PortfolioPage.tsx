@@ -13,6 +13,7 @@ import { AddPositionForm } from './AddPositionForm'
 import type { Position } from '../types'
 
 const t = (key: string, params?: Record<string, string | number>) => window.WyckoffI18n.t(key, params)
+const runHandled = (result: Promise<void>) => { void result.catch(() => {}) }
 
 const clock = (ms: number) => new Date(ms).toLocaleTimeString(window.WyckoffI18n.getLang())
 const stamp = (raw?: string) => {
@@ -173,11 +174,11 @@ function CashRow ({ value, busy, onSave, onError }: {
         value={draft}
         disabled={busy}
         onChange={(e) => setDraft(e.target.value)}
-        onBlur={() => void commit()}
+        onBlur={() => runHandled(commit())}
         onKeyDown={(e) => {
           if (e.key !== 'Enter') return
           e.preventDefault()
-          void commit()
+          runHandled(commit())
         }}
       />
     </div>

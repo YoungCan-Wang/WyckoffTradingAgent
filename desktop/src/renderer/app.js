@@ -16,6 +16,9 @@ const sideButton = document.getElementById('btn-side')
 const sideSlot = document.getElementById('side-toggle-slot')
 const threadSideSlot = document.getElementById('thread-toggle-slot')
 const viewTitle = document.getElementById('view-title')
+const paneResizer = document.getElementById('pane-resizer')
+let browserBox = null
+let browserObserver = null
 
 let ready = false
 let busy = false
@@ -25,10 +28,17 @@ const turns = new Map()
 // Claude desktop. Sidebar choice persists; the artifact pane does not — it is
 // opened by content, and a stale empty pane on launch is just dead space.
 const SIDE_KEY = 'wyckoff.sidebar'
+const PANE_WIDTH_KEY = 'wyckoff.pane.width'
+const MIN_PANE_WIDTH = 360
+const MIN_THREAD_WIDTH = 420
 
 // A sidebar or window change shifts the pane horizontally without resizing the
 // placeholder, so ResizeObserver never fires. Re-sync explicitly.
-window.addEventListener('resize', () => syncBrowserBounds())
+window.addEventListener('resize', () => {
+  const paneWidth = document.getElementById('pane').getBoundingClientRect().width
+  if (paneWidth) setPaneWidth(paneWidth, false)
+  syncBrowserBounds()
+})
 
 function setSide (on) {
   win.classList.toggle('side-off', !on)
@@ -41,6 +51,8 @@ function setSide (on) {
   sideButton.dataset.i18nTitle = titleKey
   sideButton.title = t(titleKey)
   try { localStorage.setItem(SIDE_KEY, on ? '1' : '0') } catch { /* private mode */ }
+  const paneWidth = document.getElementById('pane').getBoundingClientRect().width
+  if (paneWidth) setPaneWidth(paneWidth, false)
   // The sidebar animates; re-sync after the transition settles.
   setTimeout(syncBrowserBounds, 220)
 }
@@ -50,7 +62,55 @@ function setPane (on) {
   // The browser is a native view floating above the DOM; hiding the pane must
   // detach it or it stays visible over the conversation.
   if (!on) window.wyckoff.browser.hide()
+  if (on) requestAnimationFrame(syncBrowserBounds)
 }
+
+function paneWidthLimit () {
+  const sideWidth = win.classList.contains('side-off') ? 0 : document.getElementById('side').offsetWidth
+  return Math.max(MIN_PANE_WIDTH, win.clientWidth - sideWidth - MIN_THREAD_WIDTH)
+}
+
+function setPaneWidth (width, persist = true) {
+  const next = Math.round(Math.min(Math.max(width, MIN_PANE_WIDTH), paneWidthLimit()))
+  win.style.setProperty('--pane-width', `${next}px`)
+  paneResizer.setAttribute('aria-valuenow', String(next))
+  paneResizer.setAttribute('aria-valuemax', String(paneWidthLimit()))
+  if (persist) {
+    try { localStorage.setItem(PANE_WIDTH_KEY, String(next)) } catch { /* private mode */ }
+  }
+  syncBrowserBounds()
+}
+
+function restorePaneWidth () {
+  let saved = 0
+  try { saved = Number(localStorage.getItem(PANE_WIDTH_KEY)) } catch { /* private mode */ }
+  setPaneWidth(saved >= MIN_PANE_WIDTH ? saved : Math.round(window.innerWidth * 0.46), false)
+}
+
+paneResizer.addEventListener('pointerdown', (event) => {
+  event.preventDefault()
+  paneResizer.setPointerCapture(event.pointerId)
+  paneResizer.classList.add('dragging')
+})
+paneResizer.addEventListener('pointermove', (event) => {
+  if (!paneResizer.hasPointerCapture(event.pointerId)) return
+  setPaneWidth(window.innerWidth - event.clientX, false)
+})
+paneResizer.addEventListener('pointerup', (event) => {
+  if (!paneResizer.hasPointerCapture(event.pointerId)) return
+  paneResizer.releasePointerCapture(event.pointerId)
+  paneResizer.classList.remove('dragging')
+  const width = document.getElementById('pane').getBoundingClientRect().width
+  setPaneWidth(width, true)
+})
+paneResizer.addEventListener('keydown', (event) => {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+  event.preventDefault()
+  const current = document.getElementById('pane').getBoundingClientRect().width
+  if (event.key === 'Home') setPaneWidth(MIN_PANE_WIDTH)
+  else if (event.key === 'End') setPaneWidth(paneWidthLimit())
+  else setPaneWidth(current + (event.key === 'ArrowLeft' ? 24 : -24))
+})
 
 setSide((() => {
   try {
@@ -62,6 +122,7 @@ setSide((() => {
   return window.innerWidth >= 1180
 })())
 setPane(false)
+restorePaneWidth()
 
 const el = (tag, cls, text) => {
   const node = document.createElement(tag)
@@ -506,6 +567,9 @@ function buildApprovals (data, account) {
   const wrap = el('div')
   if (!data || !data.count) {
     wrap.appendChild(el('p', 'empty', t('approvals.empty')))
+    const button = el('button', 'task-action', t('approvals.viewSchedules'))
+    button.onclick = () => navigateView('schedules')
+    wrap.appendChild(button)
     return wrap
   }
   const accountLabel = account ? (account.signed_in ? account.email : t('account.signedOut')) : null
@@ -582,13 +646,15 @@ function buildTasks (approvals, data) {
   const enabled = schedules.filter((item) => item.enabled)
   const issues = schedules.filter((item) => item.enabled && (failedStatus(item.last_status) || item.last_error))
   const metrics = el('div', 'task-metrics')
-  metrics.append(
-    taskMetric(enabled.length, t('tasks.enabled')),
-    taskMetric(pending.length, t('tasks.pending')),
-    taskMetric(issues.length, t('tasks.issues')),
-    taskMetric(data && data.daemon_running ? t('tasks.running') : t('tasks.stopped'), t('tasks.runtime'))
-  )
-  wrap.appendChild(metrics)
+  if (enabled.length) metrics.appendChild(taskMetric(enabled.length, t('tasks.enabled')))
+  if (pending.length) metrics.appendChild(taskMetric(pending.length, t('tasks.pending')))
+  if (issues.length) metrics.appendChild(taskMetric(issues.length, t('tasks.issues')))
+  wrap.appendChild(el(
+    'div',
+    `status-banner ${data && data.daemon_running ? 'on' : ''}`,
+    data && data.daemon_running ? t('schedules.daemonOn') : t('schedules.daemonOff')
+  ))
+  if (metrics.children.length) wrap.appendChild(metrics)
 
   const attention = taskSection(t('tasks.attention'), pending.length + issues.length)
   if (!pending.length && !issues.length) attention.list.appendChild(el('p', 'empty', t('tasks.noneAttention')))
@@ -648,7 +714,8 @@ function buildScheduleCard (schedule) {
  * 而不是把用户丢去别的视图猜有没有在跑。
  */
 function rerunButton (schedule, card) {
-  const button = el('button', 'schedule-rerun', t('schedules.rerun'))
+  const label = schedule.last_fired ? t('schedules.rerun') : t('schedules.runOnce')
+  const button = el('button', 'schedule-rerun', label)
   button.type = 'button'
   if (!schedule.id) button.disabled = true
   button.onclick = async () => {
@@ -675,7 +742,7 @@ function rerunButton (schedule, card) {
       note.textContent = t('schedules.rerunFailed', { error: (err && err.message) || String(err) })
     }
     button.disabled = false
-    button.textContent = t('schedules.rerun')
+    button.textContent = label
     // 重跑可能产生新审批，侧栏计数要跟上。
     refreshApprovals()
   }
@@ -703,7 +770,7 @@ const openReport = (title, source, meta) =>
   pane.open({
     key: `md:${title}`,
     title,
-    glyph: '▤',
+    icon: 'file-text',
     build: () => window.WyckoffMd.renderMarkdown(source, meta)
   })
 
@@ -712,9 +779,6 @@ const openReport = (title, source, meta) =>
 // The browser is a native view layered over the window, not a DOM node. This
 // placeholder reserves the space and reports its geometry to the main process;
 // an observer keeps them in sync as the pane resizes.
-let browserBox = null
-let browserObserver = null
-
 function closeBrowser () {
   window.wyckoff.browser.hide()
   if (browserObserver) browserObserver.disconnect()
@@ -738,7 +802,7 @@ const openBrowser = () =>
   pane.open({
     key: 'browser',
     title: t('tab.browser'),
-    glyph: '◍',
+    icon: 'globe-2',
     onHide: () => window.wyckoff.browser.hide(),
     onClose: closeBrowser,
     build: () => {
@@ -803,7 +867,7 @@ const openKline = (symbol) =>
   pane.open({
     key: `kline:${symbol}`,
     title: `${symbol} ${t('kline.title')}`,
-    glyph: '◫',
+    icon: 'chart-candlestick',
     // NOTE: no onHide here — tabs.js fires it on tab *switch* too, and
     // disposing then would force a refetch every time the user switches back.
     // The prior chart is disposed inside build() instead.
@@ -929,6 +993,11 @@ async function refreshModels () {
 const setOv = document.getElementById('set-ov')
 const setBody = document.getElementById('set-body')
 let setData = null
+let settingsOpener = null
+
+const focusableWithin = (root) => [...root.querySelectorAll(
+  'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'
+)].filter((node) => !node.hidden && node.getClientRects().length > 0)
 
 /**
  * 显示某个设置页。anchor 是可选的分栏标题 i18n key —— 给了就把那一栏滚到
@@ -938,7 +1007,9 @@ let setData = null
  */
 function showSection (sec, anchor) {
   for (const b of document.querySelectorAll('.dlg-n')) {
-    b.classList.toggle('on', b.dataset.sec === sec)
+    const selected = b.dataset.sec === sec
+    b.classList.toggle('on', selected)
+    b.setAttribute('aria-current', selected ? 'page' : 'false')
   }
   // 三页全部由 React 渲染，不再需要分派分支。
   window.WyckoffReact.mountSettings(setBody, sec)
@@ -974,14 +1045,30 @@ function scrollToAnchor (anchor, attempt = 0) {
 }
 
 function closeSettings () {
+  if (setOv.hidden) return
   setOv.hidden = true
+  win.inert = false
+  const target = settingsOpener
+  settingsOpener = null
+  if (target && target.isConnected && !target.closest('[hidden]')) target.focus()
 }
 
 async function openSettings (sec, anchor) {
+  if (setOv.hidden) {
+    const active = document.activeElement
+    if (active && document.getElementById('acct-menu').contains(active)) settingsOpener = document.getElementById('btn-acct')
+    else if (active && document.getElementById('open-menu').contains(active)) settingsOpener = document.getElementById('btn-open')
+    else settingsOpener = active
+  }
   setOv.hidden = false
+  win.inert = true
   // 不要在这里 replaceChildren：#set-body 由 React root 拥有，从外面摘掉它的
   // 节点会让下一次 render 报 NotFoundError。加载态由 React 自己显示。
   showSection(sec || 'general', anchor)
+  requestAnimationFrame(() => {
+    const selected = setOv.querySelector('.dlg-n.on')
+    if (selected) selected.focus()
+  })
   // 面板内容归 React，但输入框的模型选择器仍读 setData，所以这里补一次。
   // 放在 showSection 之后：先让面板出现，再回填选择器。
   setData = await collect('settings_get').catch(() => null)
@@ -1003,6 +1090,20 @@ for (const btn of document.querySelectorAll('.dlg-n')) {
 document.getElementById('set-close').onclick = closeSettings
 // Backdrop click closes; clicks inside the dialog must not bubble out to it.
 setOv.onclick = (e) => { if (e.target === setOv) closeSettings() }
+setOv.addEventListener('keydown', (event) => {
+  if (event.key !== 'Tab') return
+  const items = focusableWithin(setOv)
+  if (!items.length) return
+  const first = items[0]
+  const last = items[items.length - 1]
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault()
+    first.focus()
+  }
+})
 
 // Destination pages render into the main area. Previously every nav item threw
 // a panel into the right-hand artifact pane, which turned that pane into a
@@ -1153,6 +1254,32 @@ btnRestart.onclick = () => window.wyckoff.restart()
 const openBtn = document.getElementById('btn-open')
 const openMenu = document.getElementById('open-menu')
 
+const visibleMenuItems = (menu) => [...menu.querySelectorAll('[role="menuitem"]')]
+  .filter((item) => !item.hidden && !item.disabled)
+
+function handleMenuKeys (event, menu, trigger, close) {
+  const items = visibleMenuItems(menu)
+  const current = items.indexOf(document.activeElement)
+  let target = -1
+  if (event.key === 'ArrowDown') target = current < 0 ? 0 : (current + 1) % items.length
+  else if (event.key === 'ArrowUp') target = current < 0 ? items.length - 1 : (current - 1 + items.length) % items.length
+  else if (event.key === 'Home') target = 0
+  else if (event.key === 'End') target = items.length - 1
+  else if (event.key === 'Escape') {
+    event.preventDefault()
+    close()
+    trigger.focus()
+    return
+  } else if (event.key === 'Tab') {
+    close()
+    return
+  } else return
+  if (items[target]) {
+    event.preventDefault()
+    items[target].focus()
+  }
+}
+
 function setOpenMenu (open) {
   openMenu.hidden = !open
   openBtn.classList.toggle('on', open)
@@ -1163,12 +1290,23 @@ function setOpenMenu (open) {
   const left = Math.min(r.right - openMenu.offsetWidth, window.innerWidth - openMenu.offsetWidth - 8)
   openMenu.style.left = `${Math.max(8, left)}px`
   openMenu.style.top = `${r.bottom + 6}px`
+  const first = visibleMenuItems(openMenu)[0]
+  if (first) first.focus()
 }
 
 openBtn.onclick = (e) => {
   e.stopPropagation()
   setOpenMenu(openMenu.hidden)
 }
+openBtn.onkeydown = (event) => {
+  if (!['ArrowDown', 'ArrowUp'].includes(event.key)) return
+  event.preventDefault()
+  setOpenMenu(true)
+  const items = visibleMenuItems(openMenu)
+  const target = event.key === 'ArrowUp' ? items[items.length - 1] : items[0]
+  if (target) target.focus()
+}
+openMenu.addEventListener('keydown', (event) => handleMenuKeys(event, openMenu, openBtn, () => setOpenMenu(false)))
 
 // ---- 手动打开 K 线图 -------------------------------------------------------
 // 图表原本只有 agent 能开（annotate_chart 执行时顺带开一个 tab），所以用户想
@@ -1492,6 +1630,8 @@ function setMenu (open) {
   const r = acctBtn.getBoundingClientRect()
   acctMenu.style.left = `${Math.max(8, r.left + 6)}px`
   acctMenu.style.top = `${Math.max(8, r.top - acctMenu.offsetHeight - 6)}px`
+  const first = visibleMenuItems(acctMenu)[0]
+  if (first) first.focus()
 }
 
 // 上一次看到的账号。用来发现「换人了」——包括登录、退出、以及换个账号登录。
@@ -1530,6 +1670,15 @@ acctBtn.onclick = (e) => {
   e.stopPropagation()
   setMenu(acctMenu.hidden)
 }
+acctBtn.onkeydown = (event) => {
+  if (!['ArrowDown', 'ArrowUp'].includes(event.key)) return
+  event.preventDefault()
+  setMenu(true)
+  const items = visibleMenuItems(acctMenu)
+  const target = event.key === 'ArrowUp' ? items[items.length - 1] : items[0]
+  if (target) target.focus()
+}
+acctMenu.addEventListener('keydown', (event) => handleMenuKeys(event, acctMenu, acctBtn, () => setMenu(false)))
 
 document.getElementById('mi-settings').onclick = () => {
   setMenu(false)

@@ -19,10 +19,10 @@ fi
 version="$("$BASE_PYTHON" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
 case "$version" in
   3.1[1-9]|3.[2-9][0-9]) ;;
-  *) echo "构建需要 Python 3.11+，当前是 $version（$BASE_PYTHON）" >&2; exit 1 ;;
+  *) echo "构建需要 Python 3.11+，当前是 ${version}（${BASE_PYTHON}）" >&2; exit 1 ;;
 esac
 
-echo "==> 构建环境：$BUILD_VENV （基于 $BASE_PYTHON, $version）"
+echo "==> 构建环境：$BUILD_VENV （基于 $BASE_PYTHON, ${version}）"
 if [[ ! -x "$BUILD_VENV/bin/python" ]]; then
   "$BASE_PYTHON" -m venv "$BUILD_VENV"
 fi
@@ -40,10 +40,16 @@ rm -rf "$OUT_DIR"
 BIN="$OUT_DIR/wyckoff-ipc/wyckoff-ipc"
 [[ -x "$BIN" ]] || { echo "产物缺失：$BIN" >&2; exit 1; }
 
-# 冒烟：打包成功不等于能跑。真跑一次协议握手，失败就别让它进安装包。
+# 冒烟：打包成功不等于能跑。协议和调度入口都真跑一次，失败就别让它进安装包。
 echo "==> 冒烟测试"
 reply="$(printf '%s\n' '{"id":"smoke","method":"health","params":{}}' '__shutdown__' | "$BIN" 2>/dev/null | head -1)"
 case "$reply" in
-  *'"type": "ready"'*) echo "==> OK  $(du -sh "$OUT_DIR/wyckoff-ipc" | cut -f1)  $BIN" ;;
+  *'"type": "ready"'*) ;;
   *) echo "冒烟失败，首行不是 ready：$reply" >&2; exit 1 ;;
+esac
+
+daemon_reply="$("$BIN" --daemon --status 2>/dev/null)"
+case "$daemon_reply" in
+  daemon:*) echo "==> OK  $(du -sh "$OUT_DIR/wyckoff-ipc" | cut -f1)  $BIN" ;;
+  *) echo "调度入口冒烟失败：$daemon_reply" >&2; exit 1 ;;
 esac

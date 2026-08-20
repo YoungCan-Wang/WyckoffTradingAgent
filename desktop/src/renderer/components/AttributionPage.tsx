@@ -130,8 +130,6 @@ export function AttributionPage () {
    * 结果永远停在「读取中」。
    */
   const requested = useRef<Set<string>>(new Set())
-  // 顶层 latest_* 只对最新那份有效，取到时一并留下。
-  const [latestExtras, setLatestExtras] = useState<AttributionData>({})
   const alive = useRef(true)
   useEffect(() => () => { alive.current = false }, [])
 
@@ -163,7 +161,6 @@ export function AttributionPage () {
         return
       }
       setCache((prev) => ({ ...prev, [current]: got }))
-      if (current === latestDate) setLatestExtras(payload || {})
     })()
   }, [current, latestDate])
 
@@ -178,11 +175,10 @@ export function AttributionPage () {
   const actions = (record && record.signal_actions) || []
   const isLocal = Boolean(record) && record!.source !== 'remote'
   const remoteError = (record && record.remote_error) || ''
-  const isLatest = current === dates[0].report_date
-  const operatorSummary =
-    (record && record.operations && record.operations.operator_summary) ||
-    (isLatest ? latestExtras.latest_operator_summary : '') ||
-    ''
+  const operatorSummary = [policy.status, policy.mode_recommendation, execution.summary]
+    .filter((value, index, all) => Boolean(value) && all.indexOf(value) === index)
+    .slice(0, 2)
+    .join(' · ')
 
   return (
     <>
@@ -197,11 +193,11 @@ export function AttributionPage () {
               key={entry.report_date}
               type="button"
               className={entry.report_date === current ? 'attr-tab on' : 'attr-tab'}
+              title={entry.report_date}
+              aria-pressed={entry.report_date === current}
               onClick={() => setPicked(entry.report_date)}
             >
               {shortDate(entry.report_date)}
-              {/* 已取回过的标一个点 —— 让「哪几页是现成的」看得出来 */}
-              {cache[entry.report_date] ? <i>·</i> : null}
             </button>
           ))}
         </div>

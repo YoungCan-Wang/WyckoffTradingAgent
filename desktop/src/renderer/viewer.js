@@ -123,8 +123,12 @@
     const root = el('div', 'vwrap')
     const listCol = el('div', 'vlist')
     const bodyCol = el('div', 'vbody')
-    root.appendChild(listCol)
-    root.appendChild(bodyCol)
+    const fileInput = document.createElement('input')
+    fileInput.type = 'file'
+    fileInput.multiple = true
+    fileInput.accept = '.md,.markdown,.html,.htm,.pdf,.txt,.log,.json,.csv'
+    fileInput.hidden = true
+    root.append(listCol, bodyCol, fileInput)
 
     let items = []
     let activeRel = null
@@ -155,10 +159,7 @@
 
     const renderList = () => {
       listCol.replaceChildren()
-      if (!items.length) {
-        listCol.appendChild(el('p', 'empty', t('viewer.empty')))
-        return
-      }
+      if (!items.length) return
       for (const item of items) {
         const row = el('button', item.rel_path === activeRel ? 'vitem on' : 'vitem')
         row.appendChild(el('span', 'vi-name', item.name))
@@ -175,9 +176,48 @@
       }
     }
 
+    const renderEmpty = () => {
+      root.classList.add('is-empty')
+      const empty = el('div', 'vempty')
+      const icon = el('i', 'vempty-icon')
+      icon.dataset.lucide = 'folder-open'
+      icon.setAttribute('aria-hidden', 'true')
+      const title = el('h2', null, t('viewer.emptyTitle'))
+      const hint = el('p', null, t('viewer.emptyHint'))
+      const button = el('button', 'vimport', t('viewer.import'))
+      button.type = 'button'
+      button.onclick = () => fileInput.click()
+      empty.append(icon, title, hint, button)
+      bodyCol.replaceChildren(empty)
+      if (window.WyckoffRefreshIcons) window.WyckoffRefreshIcons()
+    }
+
+    const importFiles = async (files) => {
+      if (!files.length) return
+      let last = null
+      for (const file of files) {
+        const source = window.wyckoff.filePath ? window.wyckoff.filePath(file) : file.path
+        if (!source) {
+          deps.onError(t('viewer.dropPathFailed'))
+          continue
+        }
+        const res = await deps.call('artifact_import', { source })
+        if (res) last = res.rel_path
+        else deps.onError(t('viewer.importFailed', { name: file.name }))
+      }
+      fileInput.value = ''
+      await refresh(last)
+    }
+
     const refresh = async (selectRel) => {
       const res = await deps.call('artifact_list')
       items = (res && res.items) || []
+      root.classList.toggle('is-empty', !items.length)
+      if (!items.length) {
+        renderList()
+        renderEmpty()
+        return
+      }
       const firstPreview = items.find((item) => item.kind !== 'unsupported')
       const target = selectRel || activeRel || (firstPreview && firstPreview.rel_path)
       const exists = items.some((i) => i.rel_path === target)
@@ -196,22 +236,9 @@
     root.addEventListener('drop', async (event) => {
       event.preventDefault()
       root.classList.remove('drop')
-      const files = [...(event.dataTransfer?.files || [])]
-      if (!files.length) return
-      let last = null
-      for (const file of files) {
-        // sandbox 下渲染进程拿不到真实路径以外的东西；path 由 Electron 提供。
-        const source = window.wyckoff.filePath ? window.wyckoff.filePath(file) : file.path
-        if (!source) {
-          deps.onError(t('viewer.dropPathFailed'))
-          continue
-        }
-        const res = await deps.call('artifact_import', { source })
-        if (res) last = res.rel_path
-        else deps.onError(t('viewer.importFailed', { name: file.name }))
-      }
-      await refresh(last)
+      await importFiles([...(event.dataTransfer?.files || [])])
     })
+    fileInput.addEventListener('change', () => importFiles([...(fileInput.files || [])]))
 
     return {
       node: root,

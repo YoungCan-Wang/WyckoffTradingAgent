@@ -12,6 +12,9 @@ import type { Position } from '../types'
 
 const t = (key: string, params?: Record<string, string | number>) => window.WyckoffI18n.t(key, params)
 const DASH = '—'
+const runHandled = (result: void | Promise<void>) => {
+  void Promise.resolve(result).catch(() => {})
+}
 
 const num = (value: number | null | undefined, digits = 2) =>
   typeof value === 'number' && Number.isFinite(value) ? value.toFixed(digits) : DASH
@@ -46,13 +49,18 @@ export function HoldingsTable (props: Props) {
             editing ? (
               <EditRow key={position.code} position={position} {...props} />
             ) : (
-              <tr
-                key={position.code}
-                className="dtbl-row"
-                title={t('charts.openChart')}
-                onClick={() => onOpenChart(position.code)}
-              >
-                <td className="c">{position.code}</td>
+              <tr key={position.code}>
+                <td className="c">
+                  <button
+                    type="button"
+                    className="chart-link"
+                    title={t('charts.openChart')}
+                    aria-label={`${position.code} ${t('charts.openChart')}`}
+                    onClick={() => onOpenChart(position.code)}
+                  >
+                    {position.code}
+                  </button>
+                </td>
                 <td>{position.name || DASH}</td>
                 <td>{position.shares}</td>
                 <td>{num(position.cost_price)}</td>
@@ -136,7 +144,7 @@ function EditRow ({ position, busy, onUpdate, onSetStop, onRemove, onError }: Pr
           disabled={saving}
           title={t('portfolio.remove')}
           aria-label={t('portfolio.remove')}
-          onClick={(e) => { e.stopPropagation(); void onRemove(position) }}
+          onClick={(e) => { e.stopPropagation(); runHandled(onRemove(position)) }}
         >
           ×
         </button>
@@ -160,7 +168,7 @@ function Cell ({ value, onChange, onCommit, disabled, placeholder }: {
       placeholder={placeholder}
       onClick={(e) => e.stopPropagation()}
       onChange={(e) => onChange(e.target.value)}
-      onBlur={() => void onCommit()}
+      onBlur={() => runHandled(onCommit())}
       // 回车即提交：改完一格直接按回车比找鼠标快。
       //
       // 直接调 onCommit 而不是 .blur()：靠 blur 间接触发要依赖焦点真的移走，
@@ -168,7 +176,7 @@ function Cell ({ value, onChange, onCommit, disabled, placeholder }: {
       onKeyDown={(e) => {
         if (e.key !== 'Enter') return
         e.preventDefault()
-        void onCommit()
+        runHandled(onCommit())
       }}
     />
   )

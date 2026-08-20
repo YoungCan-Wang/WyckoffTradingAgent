@@ -87,6 +87,8 @@
 
     // 通用动作
     'action.close': '关闭',
+    'action.send': '发送',
+    'action.resizePane': '调整产物面板宽度',
     'action.save': '保存',
     'action.approve': '批准并执行',
     'action.reject': '拒绝',
@@ -96,6 +98,7 @@
     // 审批
     'approvals.heading': '待批准操作',
     'approvals.empty': '无待批准项。定时任务或 agent 的写操作需要确认时，会出现在这里。',
+    'approvals.viewSchedules': '查看定时任务',
     'approvals.defaultItem': '待批准操作',
     'approvals.submitted': '已提交审批，尚未执行。',
     'approvals.tierConfirm': '需二次确认',
@@ -169,6 +172,7 @@
     'schedules.nextRun': '下次运行',
     'schedules.viewRuns': '查看任务运行',
     'schedules.rerun': '立即重跑',
+    'schedules.runOnce': '立即运行',
     'schedules.rerunning': '运行中…',
     'schedules.rerunStarted': '正在重跑 {name}，这一轮可能要几分钟。',
     'schedules.rerunDone': '重跑完成，没有需要审批的操作。',
@@ -300,6 +304,9 @@
     'viewer.loading': '读取中…',
     'viewer.readFailed': '无法读取该文件',
     'viewer.empty': '暂无报告。拖入文件，或让 AI 生成一份。',
+    'viewer.emptyTitle': '还没有报告',
+    'viewer.emptyHint': '导入 Markdown、HTML、PDF 或文本文件，也可以让 AI 生成一份。',
+    'viewer.import': '导入报告',
     'viewer.pickHint': '选择左侧的报告查看',
     'viewer.unsupported': '不支持预览',
     'viewer.dropPathFailed': '无法读取拖入文件的路径',
@@ -333,6 +340,7 @@
     // tab / 通用
     'tab.reports': '报告',
     'tab.browser': '浏览器',
+    'tab.artifacts': '产物',
     'tab.charts': '净值与仓位',
     'tab.loading': '读取中…',
     'tab.loadFailed': '加载失败：{error}',
@@ -566,6 +574,8 @@
     'settings.account': 'Sign-in info',
 
     'action.close': 'Close',
+    'action.send': 'Send',
+    'action.resizePane': 'Resize artifact panel',
     'action.save': 'Save',
     'action.approve': 'Approve & run',
     'action.reject': 'Reject',
@@ -574,6 +584,7 @@
 
     'approvals.heading': 'Pending approvals',
     'approvals.empty': 'Nothing to approve. Write operations from schedules or the agent show up here when they need confirmation.',
+    'approvals.viewSchedules': 'View schedules',
     'approvals.defaultItem': 'Pending action',
     'approvals.submitted': 'Submitted for approval, not yet executed.',
     'approvals.tierConfirm': 'Needs confirmation',
@@ -644,7 +655,8 @@
     'schedules.neverRun': 'Never run',
     'schedules.nextRun': 'Next run',
     'schedules.viewRuns': 'View task runs',
-    'schedules.rerun': 'Run now',
+    'schedules.rerun': 'Run again',
+    'schedules.runOnce': 'Run now',
     'schedules.rerunning': 'Running…',
     'schedules.rerunStarted': 'Rerunning {name}. This can take a few minutes.',
     'schedules.rerunDone': 'Rerun finished with nothing to approve.',
@@ -774,6 +786,9 @@
     'viewer.loading': 'Loading…',
     'viewer.readFailed': 'Could not read this file',
     'viewer.empty': 'No reports yet. Drop a file in, or have the AI generate one.',
+    'viewer.emptyTitle': 'No reports yet',
+    'viewer.emptyHint': 'Import Markdown, HTML, PDF, or text, or ask the AI to create one.',
+    'viewer.import': 'Import report',
     'viewer.pickHint': 'Pick a report on the left to view',
     'viewer.unsupported': 'Preview not supported',
     'viewer.dropPathFailed': 'Could not read the dropped file path',
@@ -805,6 +820,7 @@
 
     'tab.reports': 'Reports',
     'tab.browser': 'Browser',
+    'tab.artifacts': 'Artifacts',
     'tab.charts': 'Equity & holdings',
     'tab.loading': 'Loading…',
     'tab.loadFailed': 'Load failed: {error}',

@@ -48,7 +48,7 @@ class TabPane {
   /**
    * @param {object} spec
    *  - title: label text
-   *  - glyph: leading icon
+   *  - icon: Lucide icon name
    *  - build: () => Node | Promise<Node>
    *  - key:   optional identity; same key replaces instead of duplicating
    */
@@ -147,19 +147,46 @@ class TabPane {
     for (const tab of this.tabs) {
       const isActive = tab.key === this.activeId
       const node = el('div', `tab${isActive ? ' on' : ''}`)
-      node.appendChild(el('span', 'g', tab.spec.glyph || '▤'))
-      node.appendChild(el('span', 'nm', tab.spec.title))
+      const select = el('button', 'tab-main')
+      select.type = 'button'
+      select.setAttribute('role', 'tab')
+      select.setAttribute('aria-selected', isActive ? 'true' : 'false')
+      select.tabIndex = isActive ? 0 : -1
+      const icon = el('i', 'g')
+      icon.dataset.lucide = tab.spec.icon || 'file-text'
+      icon.setAttribute('aria-hidden', 'true')
+      select.appendChild(icon)
+      select.appendChild(el('span', 'nm', tab.spec.title))
+      select.onclick = () => this.select(tab.key)
+      select.onkeydown = (event) => {
+        if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return
+        event.preventDefault()
+        const index = this.tabs.findIndex((item) => item.key === tab.key)
+        const delta = event.key === 'ArrowRight' ? 1 : -1
+        const next = this.tabs[(index + delta + this.tabs.length) % this.tabs.length]
+        if (next) this.select(next.key).then(() => {
+          const active = this.strip.querySelector('[role="tab"][aria-selected="true"]')
+          if (active) active.focus()
+        })
+      }
+      node.appendChild(select)
       if (!tab.spec.pinned) {
-        const close = el('span', 'x', '✕')
+        const close = el('button', 'x')
+        close.type = 'button'
+        close.setAttribute('aria-label', t('action.close'))
+        const closeIcon = el('i')
+        closeIcon.dataset.lucide = 'x'
+        closeIcon.setAttribute('aria-hidden', 'true')
+        close.appendChild(closeIcon)
         close.onclick = (event) => {
           event.stopPropagation()
           this.close(tab.key)
         }
         node.appendChild(close)
       }
-      node.onclick = () => this.select(tab.key)
       this.strip.appendChild(node)
     }
+    if (window.WyckoffRefreshIcons) window.WyckoffRefreshIcons()
   }
 
   has (key) {

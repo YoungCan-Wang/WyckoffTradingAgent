@@ -9,18 +9,30 @@
 import type { ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import {
+  ArrowUp,
   Briefcase,
   CalendarClock,
+  ChartCandlestick,
+  ChevronDown,
   createIcons,
+  FileText,
   FileChartColumnIncreasing,
+  FolderOpen,
   GitBranch,
+  Globe2,
   ListChecks,
+  LogOut,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
+  PanelRightOpen,
+  Plus,
   Radar,
+  RefreshCw,
+  Settings,
   ShieldCheck,
-  Sparkles
+  Sparkles,
+  X
 } from 'lucide'
 import { SettingsPanel } from './components/SettingsPanel'
 import { TrackingPage } from './components/TrackingPage'
@@ -28,22 +40,35 @@ import { AttributionPage } from './components/AttributionPage'
 import { PortfolioPage } from './components/PortfolioPage'
 import { clearAllCaches, isPortfolioWriteTool } from './lib/portfolioCache'
 
-// 与 Web 端共用 Lucide 的细线语言。只传侧栏实际使用的图标，避免整套图标进入包。
-createIcons({
-  icons: {
-    Briefcase,
-    CalendarClock,
-    FileChartColumnIncreasing,
-    GitBranch,
-    ListChecks,
-    PanelLeftClose,
-    PanelLeftOpen,
-    PanelRightClose,
-    Radar,
-    ShieldCheck,
-    Sparkles
-  }
-})
+// 与 Web 端共用 Lucide 的细线语言。只传桌面 chrome 实际使用的图标，避免整套进入包。
+const ICONS = {
+  ArrowUp,
+  Briefcase,
+  CalendarClock,
+  ChartCandlestick,
+  ChevronDown,
+  FileText,
+  FileChartColumnIncreasing,
+  FolderOpen,
+  GitBranch,
+  Globe2,
+  ListChecks,
+  LogOut,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
+  Plus,
+  Radar,
+  RefreshCw,
+  Settings,
+  ShieldCheck,
+  Sparkles,
+  X
+}
+
+const refreshIcons = () => createIcons({ icons: ICONS })
+refreshIcons()
 
 const roots = new WeakMap<Element, Root>()
 
@@ -132,6 +157,7 @@ declare global {
       /** 登录态变化时调用：清掉所有账号的持仓缓存。 */
       clearPortfolioCaches: () => void
     }
+    WyckoffRefreshIcons: () => void
     /**
      * app.js 停放 hooks 的地方。两个脚本的执行顺序由 type="module" 决定，
      * 不能靠「另一方已就绪」的假设来接线。
@@ -159,6 +185,7 @@ window.WyckoffReact = {
   },
   clearPortfolioCaches: clearAllCaches
 }
+window.WyckoffRefreshIcons = refreshIcons
 
 // app.js 是普通脚本，会在这个 type="module" 之前跑完 —— 它那边的
 // `if (window.WyckoffReact)` 恒为假。所以由后就绪的一方（就是这里）主动取：
