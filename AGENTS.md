@@ -62,6 +62,43 @@ pnpm --filter @wyckoff/api test
 
 6. **No debug artifacts** — Don't commit `console.log`, `breakpoint()`, `TODO/FIXME`, temporary dumps, or `print("debug")`-style traces. In `core/`, `integrations/`, `tools/`, and `agents/`, use logging instead of print-style diagnostics. In `scripts/` and `cli/`, user-facing progress/output via `print()` is allowed.
 
+## Strategy Evidence Rules (策略结论的证据要求)
+
+These exist because ad-hoc reimplementations of production signal logic produced three
+wrong conclusions in a single day (2026-08-20): the dry-volume channel was nearly deleted
+based on a hand-rolled "20-day min volume / 60-day mean" proxy when production uses a
+250-day quantile; Spring was judged MA-damaged from an 11-symbol/day sample; and SOS was
+reported at +0.43pct excess when a consistent-universe rerun showed −0.80pct. Each time
+the error direction favored acting. So:
+
+1. **Never hand-roll a proxy for production signal logic** — To evaluate a gate or signal,
+   drive it through the production path (`scripts/backtest_runner.py`, `core/backtest_replay.py`,
+   `scripts/diagnose_funnel_recall.py`) so the tested definition is the shipped definition.
+   If a proxy is unavoidable, state it as a proxy in the output and never let it justify a
+   parameter change on its own.
+
+2. **Report net of cost, and state the universe** — Gross excess is not a result. Subtract
+   `core.trade_friction.round_trip_cost_pct()` (currently ~0.202% A-share round trip) and
+   print the per-day candidate count. A conclusion whose gain is smaller than the cost is
+   not actionable no matter how clean the sign.
+
+3. **Watch for survivorship from `dropna`** — Joining many indicator columns silently drops
+   symbols that lack any one of them, and the dropped set is usually not random. Log the
+   surviving universe size per day; if two runs of the "same" rule differ several-fold in
+   hit count, treat both as void until reconciled.
+
+4. **Beta is not alpha** — Absolute return rising with holding period while excess stays
+   negative means the signal is only capturing market drift. Say so explicitly rather than
+   quoting the absolute number.
+
+5. **One segment is not evidence** — A single market phase (e.g. a rally) cannot establish
+   a directional claim. Require the sign to hold across regimes, or label the finding as
+   segment-specific. `45%–55%` of days positive is noise, not direction.
+
+6. **Prefer "no change" when the evidence is self-contradictory** — Reversing an earlier
+   measurement is normal; acting on the reversal within the same session is not. Record the
+   correction, keep production as-is, and let the scheduled evaluators accumulate samples.
+
 ## Gate Levels
 
 - **Fast gate (local/default)**: `.venv/bin/ruff check .`, `.venv/bin/ruff format --check .`, `.venv/bin/python scripts/quality_gate.py --check-functions`, and focused tests for touched code.
