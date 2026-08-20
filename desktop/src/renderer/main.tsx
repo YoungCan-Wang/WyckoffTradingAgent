@@ -37,6 +37,9 @@ import {
 import { SettingsPanel } from './components/SettingsPanel'
 import { TrackingPage } from './components/TrackingPage'
 import { AttributionPage } from './components/AttributionPage'
+import { ApprovalsPage } from './components/ApprovalsPage'
+import { TasksPage } from './components/TasksPage'
+import { SchedulesPage } from './components/SchedulesPage'
 import { PortfolioPage } from './components/PortfolioPage'
 import { clearAllCaches, isPortfolioWriteTool } from './lib/portfolioCache'
 
@@ -152,6 +155,9 @@ declare global {
       trackingPage: () => { node: HTMLElement; dispose: () => void }
       attributionPage: () => { node: HTMLElement; dispose: () => void }
       portfolioPage: () => { node: HTMLElement; dispose: () => void }
+      approvalsPage: () => { node: HTMLElement; dispose: () => void }
+      tasksPage: () => { node: HTMLElement; dispose: () => void }
+      schedulesPage: () => { node: HTMLElement; dispose: () => void }
       /** 对话里跑了改持仓的工具时调用，作废本地缓存。 */
       invalidatePortfolioCache: (toolName: string) => void
       /** 登录态变化时调用：清掉所有账号的持仓缓存。 */
@@ -163,6 +169,16 @@ declare global {
      * 不能靠「另一方已就绪」的假设来接线。
      */
     WyckoffPendingHooks?: Partial<SettingsHooks>
+    /**
+     * 仍归 app.js 拥有的动作（路由、侧栏计数、开图）。React 页面通过它回调，
+     * 等 app.js 拆完这个桥也会一起消失。
+     */
+    WyckoffApp?: {
+      navigate?: (view: string) => void
+      refreshApprovals?: () => void
+      refreshSchedules?: () => void
+      openKline?: (code: string) => void
+    }
   }
 }
 
@@ -178,6 +194,9 @@ window.WyckoffReact = {
   trackingPage: () => mountPage(<TrackingPage />),
   attributionPage: () => mountPage(<AttributionPage />),
   portfolioPage: () => mountPage(<PortfolioPage />),
+  approvalsPage: () => mountPage(<ApprovalsPage />),
+  tasksPage: () => mountPage(<TasksPage />),
+  schedulesPage: () => mountPage(<SchedulesPage />),
   invalidatePortfolioCache: (toolName: string) => {
     // 全清而不是只清当前账号：这里拿不到 user_id（同步调用），而缓存本来就是
     // 可丢的。多清的代价是别的账号下次进页面重拉一次。

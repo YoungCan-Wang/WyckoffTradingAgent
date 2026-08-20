@@ -1111,33 +1111,22 @@ setOv.addEventListener('keydown', (event) => {
 // title/sub are i18n keys, not literal text, so a language switch re-resolves
 // them on the next render rather than freezing whatever language loaded first.
 const PAGES = {
+  // 三页都由 React 渲染，各自管自己的请求与刷新。
   tasks: {
     titleKey: 'tasks.heading',
     subKey: 'tasks.pageSub',
     wide: true,
-    build: async () => {
-      const [approvals, schedules] = await Promise.all([
-        collect('approve_list'),
-        collect('schedules')
-      ])
-      return buildTasks(approvals, schedules)
-    }
+    build: async () => window.WyckoffReact.tasksPage()
   },
   approvals: {
     titleKey: 'nav.approvals',
     subKey: 'approvals.pageSub',
-    build: async () => {
-      const [approvals, account] = await Promise.all([
-        collect('approve_list'),
-        collect('account')
-      ])
-      return buildApprovals(approvals, account)
-    }
+    build: async () => window.WyckoffReact.approvalsPage()
   },
   schedules: {
     titleKey: 'schedules.heading',
     subKey: 'schedules.pageSub',
-    build: async () => buildSchedules(await collect('schedules'))
+    build: async () => window.WyckoffReact.schedulesPage()
   },
   portfolio: {
     titleKey: 'tab.charts',
@@ -1781,6 +1770,19 @@ const REACT_HOOKS = {
   onSignOut: () => { closeSettings(); doSignOut() },
   onConfigChanged: () => { refreshModels() }
 }
+/**
+ * React 页面要用到的、仍归 app.js 拥有的动作。
+ *
+ * 与 REACT_HOOKS 同理，挂全局而不是靠「对方已就绪」——两个脚本的执行顺序由
+ * type="module" 决定，靠假设接线会静默失效。
+ */
+window.WyckoffApp = {
+  navigate: (view) => navigateView(view),
+  refreshApprovals: () => { void refreshApprovals() },
+  refreshSchedules: () => { void refreshSchedules() },
+  openKline: (code) => openKline(String(code))
+}
+
 window.WyckoffPendingHooks = REACT_HOOKS
 if (window.WyckoffReact && window.WyckoffReact.setHooks) {
   window.WyckoffReact.setHooks(REACT_HOOKS)
