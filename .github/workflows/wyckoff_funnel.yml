@@ -87,6 +87,11 @@ jobs:
       STEP4_BUY_BLOCK_REGIMES: "UNKNOWN,NEUTRAL,PANIC_REPAIR,RISK_OFF,CRASH,BLACK_SWAN"
       # 联动实测放开：BEAR_REBOUND 超额 +4.08pct(4/4 为正)、RISK_ON +6.07pct(3/3)。
       STEP4_BUY_ALLOW_REGIMES: "BEAR_REBOUND,RISK_ON"
+      # 按买点类型禁买。生产回测（66 交易日/124 笔/含真实成本）归因：
+      # evr -2.30%(胜率45.8%)、sos -4.92%(33.3%，中位-11.04%)、spring +0.05%(57.5%)。
+      # 变体 G（剔除 evr+sos）每项指标优于基线：总收益 -15.82%→-6.31%、
+      # 回撤 -23.91%→-13.14%、夏普 -2.066→-1.207、胜率 47.97%→50.00%。
+      STEP4_BLOCK_BUY_SIGNAL_TYPES: "evr,sos"
       STEP4_REQUIRE_CONFIRMED_BUY_CANDIDATE: "1"
       # AI 候选选择：按可交易 L4 收口，避免裸 SOS/EVR 噪声直接进入执行链路。
       FUNNEL_AI_SELECTION_MODE: ${{ vars.FUNNEL_AI_SELECTION_MODE || 'tradeable_l4' }}
