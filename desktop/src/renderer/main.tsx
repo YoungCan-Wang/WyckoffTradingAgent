@@ -212,7 +212,8 @@ declare global {
       openReport?: (title: string, body: string) => void
       openKline?: (symbol: string) => void
       refreshCharts?: (codes: string[]) => void
-      promptKline?: () => void
+      /** anchor：触发菜单的按钮，浮层定位到它下方。 */
+      promptKline?: (anchor?: HTMLElement) => void
       openBrowser?: () => void
       togglePane?: () => void
       syncBrowser?: () => void

@@ -373,7 +373,7 @@ function closeSymBox () {
   symBox = null
 }
 
-function openSymBox () {
+function openSymBox (anchor) {
   closeSymBox()
   const box = el('div', 'menu symbox')
   box.appendChild(el('div', 'symbox-label', t('chart.promptLabel')))
@@ -412,11 +412,17 @@ function openSymBox () {
   box.onclick = (e) => e.stopPropagation()
 
   document.body.appendChild(box)
-  const r = openBtn.getBoundingClientRect()
+  // 锚点由 React 传进来 —— 顶栏那个「打开」按钮现在是 React 组件，
+  // 这里引用不到。拿不到锚点时退到顶栏下方居中，别抛错。
+  const r = anchor && anchor.getBoundingClientRect
+    ? anchor.getBoundingClientRect()
+    : { right: window.innerWidth / 2 + box.offsetWidth / 2, bottom: 56 }
   const left = Math.min(r.right - box.offsetWidth, window.innerWidth - box.offsetWidth - 8)
   box.style.left = `${Math.max(8, left)}px`
   box.style.top = `${r.bottom + 6}px`
+  input.focus()
   symBox = box
+  armSymBoxDismiss()
 }
 
 const togglePane = () => {
@@ -445,7 +451,7 @@ window.WyckoffShell = {
   openReport: (title, body) => openReport(title, body, new Date().toLocaleString(i18n.getLang())),
   openKline: (symbol) => openKline(String(symbol)),
   refreshCharts: (codes) => refreshDrawnCharts(new Set(codes || [])),
-  promptKline: () => openSymBox(),
+  promptKline: (anchor) => openSymBox(anchor),
   openBrowser: () => openBrowser(),
   togglePane: () => togglePane(),
   syncBrowser: () => syncBrowserBounds(),
@@ -495,8 +501,18 @@ window.addEventListener('keydown', (e) => {
   else if (key === 'k' && !e.altKey) { e.preventDefault(); openSymBox() }
 })
 
-// 点外面关掉 K 线输入浮层。要排除浮层自身：打开它的那次 click 仍在冒泡。
-window.addEventListener('click', (e) => {
-  if (e.target.closest && e.target.closest('.symbox')) return
-  closeSymBox()
-})
+/*
+ * 点外面关掉 K 线输入浮层。
+ *
+ * 注册在下一帧：打开浮层的那次 click 还在冒泡，同一轮里挂监听会立刻收到它，
+ * 于是浮层刚建好就被自己关掉 —— 表现是「点 K 线图毫无反应」。
+ * （排除浮层自身仍然要做：里面的输入框和按钮点了不该关。）
+ */
+function armSymBoxDismiss () {
+  const onDocClick = (e) => {
+    if (e.target.closest && e.target.closest('.symbox')) return
+    closeSymBox()
+    window.removeEventListener('click', onDocClick)
+  }
+  requestAnimationFrame(() => window.addEventListener('click', onDocClick))
+}

@@ -168,7 +168,7 @@ export function App () {
 
   const menuEntries: MenuEntry[] = [
     { id: 'reports', icon: 'file-text', labelKey: 'menu.reports', shortcut: '⌘R', onPick: () => navigate('reports') },
-    { id: 'chart', icon: 'chart-candlestick', labelKey: 'menu.chart', shortcut: '⌘K', onPick: () => window.WyckoffShell?.promptKline?.() },
+    { id: 'chart', icon: 'chart-candlestick', labelKey: 'menu.chart', shortcut: '⌘K', onPick: (anchor) => window.WyckoffShell?.promptKline?.(anchor) },
     { id: 'browser', icon: 'globe-2', labelKey: 'menu.browser', shortcut: '⌘T', onPick: () => window.WyckoffShell?.openBrowser?.() },
     { id: 'pane', icon: 'panel-right-open', labelKey: 'menu.pane', shortcut: '⌘⌥B', separated: true, onPick: () => window.WyckoffShell?.togglePane?.() }
   ]

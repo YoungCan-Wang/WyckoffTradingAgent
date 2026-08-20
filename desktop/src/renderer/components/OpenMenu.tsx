@@ -13,7 +13,11 @@ export interface MenuEntry {
   icon: string
   labelKey: string
   shortcut: string
-  onPick: () => void
+  /**
+   * anchor 是触发菜单的那个按钮 —— 需要在它下方定位浮层的项（K 线输入框）
+   * 要用它。命令式那侧引用不到 React 渲染的按钮。
+   */
+  onPick: (anchor: HTMLElement) => void
   hidden?: boolean
   /** 前面加一条分隔线。 */
   separated?: boolean
@@ -82,7 +86,7 @@ export function OpenMenu ({ anchor, entries, onClose }: Props) {
             className="menu-i"
             role="menuitem"
             type="button"
-            onClick={() => { onClose(); e.onPick() }}
+            onClick={() => { onClose(); e.onPick(anchor) }}
           >
             <i className="menu-g" data-lucide={e.icon} aria-hidden="true" />
             <span>{t(e.labelKey)}</span>
