@@ -506,11 +506,6 @@ window.addEventListener('resize', () => {
   syncBrowserBounds()
 })
 
-document.getElementById('btn-pane').onclick = () => setPane(false)
-
-restorePaneWidth()
-setPane(false)
-
 // ⌘K / ⌘T / ⌘⌥B：这三个开的都是命令式面板，所以快捷键留在这里。
 // ⌘B（侧栏）、⌘R（报告库）、⌘,（设置）归 React。
 window.addEventListener('keydown', (e) => {

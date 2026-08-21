@@ -389,6 +389,15 @@ class PythonBridge {
         killTreeWindows(old.pid, (m) => this.onStatus({ state: 'log', message: `[bridge] ${m}` }))
       } else {
         try { old.kill('SIGTERM') } catch { /* already dead */ }
+        // 和 stop() 一样要升级到 SIGKILL：卡在原生调用里的 Python 收不到
+        // SIGTERM，只发一次就会留下孤儿 —— 而它还攥着旧的登录身份和文件锁，
+        // 下一个进程起来后两者并存。restart() 是用户点「重启」时走的路径,
+        // 恰恰常用在「桥卡住了」的时候，也就是最可能收不到信号的时候。
+        setTimeout(() => {
+          if (old.exitCode !== null || old.signalCode !== null) return
+          this.onStatus({ state: 'log', message: `[bridge] 重启：SIGTERM 未生效，改用 SIGKILL 回收 pid=${old.pid}` })
+          try { old.kill('SIGKILL') } catch { /* 已经没了 */ }
+        }, SIGKILL_DELAY_MS)
       }
     }
     // Give a live child a moment to exit before respawning; a dead/never-started

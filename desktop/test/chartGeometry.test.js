@@ -137,3 +137,33 @@ test('一字板时价格轴仍围绕真实价位，而不是 0~1', () => {
   // 真实价位附近应该单调：略高的价格 y 更小（画得更靠上）
   assert.ok(chart.priceToY(1501) < y, '价格轴方向反了')
 })
+
+test('价格格式化对 null / NaN 不抛异常', () => {
+  // _columnar 会把 NaN 换成 None -> JSON null（停牌、缺列都会产生）。
+  // Math.abs(null) === 0 会绕过 >= 100 的阈值判断，直接走到 null.toFixed()。
+  // 画蜡烛的循环有判空，读数条（syncReadout）没有 —— 悬停到这样的 K 线时
+  // mousemove 会持续抛 TypeError。
+  const src = readFileSync(R('kline.js'), 'utf8')
+  const line = src.match(/const fmtPrice = .*/)
+  assert.ok(line, '找不到 fmtPrice')
+  const fmtPrice = new Function(`${line[0]}; return fmtPrice`)()
+
+  for (const bad of [null, undefined, NaN, Infinity]) {
+    assert.doesNotThrow(() => fmtPrice(bad), `fmtPrice(${bad}) 抛异常了`)
+    assert.equal(typeof fmtPrice(bad), 'string', '缺值也要返回字符串')
+  }
+  // 正常值的格式不能被改坏：高价一位小数、低价两位
+  assert.equal(fmtPrice(1500), '1500.0')
+  assert.equal(fmtPrice(12.345), '12.35')
+})
+
+test('悬停到缺值 K 线时读数条不炸', () => {
+  const kline = loadKline()
+  // 中间那根全是 null —— 停牌日的真实形状
+  const bars = makeBars(40, (i) => 10 + i * 0.1)
+  for (const key of ['open', 'high', 'low', 'close']) bars[key][20] = null
+  const chart = kline.createKlineChart({ bars })
+  // priceToY 对 null 返回 null（本来就有防护），这里验的是格式化那条路径
+  assert.equal(chart.priceToY(bars.close[20]), null)
+  assert.doesNotThrow(() => chart.draw(), '含缺值的 K 线绘制不该抛异常')
+})

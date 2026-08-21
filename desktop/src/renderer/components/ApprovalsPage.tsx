@@ -82,11 +82,24 @@ export function ApprovalsPage () {
     reload()
   }, [reload])
 
-  if (loading) return <p className="empty">{t('tab.loading')}</p>
+  // 只在**首次**加载时整页显示「加载中」。
+  //
+  // decide() 之后要 reload 才能刷掉已决策的项，而 reload 会把 loading 打回 true
+  // —— 原来这一行会把整个列表（连同刚写好的「执行失败」文案）一起卸载，用户只
+  // 看到列表少了一项，**看不到失败信息**。而这一页自己的设计目标就是「执行了但
+  // 失败要明说失败」。
+  // SchedulesPage 用页面级 notes 解决过同一个问题，但那边的项重跑后还在列表里；
+  // 审批项一旦决策就离开待批列表，所以还需要下面的 decided 横幅。
+  if (loading && !data) return <p className="empty">{t('tab.loading')}</p>
   if (failed) return <p className="empty">{t('approvals.callFailed')}</p>
 
   const items = (data && data.items) || []
-  if (!items.length) {
+  // 已经决策、但已从待批列表消失的那些 —— 它们的结果仍要留在屏幕上。
+  const pendingIds = new Set(items.map((i) => i.id))
+  const decided = Object.entries(outcome).filter(
+    ([id, out]) => out && !out.retryable && !pendingIds.has(id)
+  )
+  if (!items.length && !decided.length) {
     return (
       <>
         <p className="empty">{t('approvals.empty')}</p>
@@ -116,6 +129,15 @@ export function ApprovalsPage () {
           outcome={outcome[item.id] || null}
           onDecide={decide}
         />
+      ))}
+      {/*
+        刚决策完、已经离开待批列表的那些结果。
+        「已执行」也保留：用户需要确认自己那一下真的生效了，而不是列表少一项。
+      */}
+      {decided.map(([id, out]) => (
+        <div key={`done-${id}`} className={out!.kind === 'err' ? 'sys err' : 'sys'}>
+          {out!.text}
+        </div>
       ))}
     </div>
   )

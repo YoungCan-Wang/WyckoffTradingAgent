@@ -126,3 +126,66 @@ def test_no_per_account_method_reads_tool_context_unsynced():
     src = inspect.getsource(methods)
     offenders = [line.strip() for line in src.splitlines() if "tool_context=get_session()" in line]
     assert offenders == [], f"这些地方绕过了 _synced_session(): {offenders}"
+
+
+def test_sync_identity_does_not_block_on_an_in_flight_turn(monkeypatch):
+    """对话进行中不该被身份对齐挂住。
+
+    run_turn 持 _turn_lock 贯穿整个流式输出（可能几分钟）。如果 sync_identity
+    无条件等锁，一次读持仓就会挂到对话结束，而它期间不发任何事件 —— 直接撞上
+    python-bridge 的静默超时，表现为「读持仓卡死」。
+
+    这条锁住「拿不到锁就跳过」：宁可晚一次对齐，不要卡住一个读请求。
+    """
+    import threading
+
+    from cli.ipc.session import DesktopSession
+
+    session = DesktopSession()
+    session._user_id = "old-user"
+    # 模拟另一个线程正在跑一轮对话
+    session._turn_lock.acquire()
+    try:
+        done = threading.Event()
+        result: list[bool] = []
+
+        def call_sync():
+            result.append(session.sync_identity())
+            done.set()
+
+        worker = threading.Thread(target=call_sync, daemon=True)
+        worker.start()
+        # 立刻返回，不是等到锁释放
+        assert done.wait(timeout=2.0), "sync_identity 被进行中的对话挂住了"
+        assert result == [False], "拿不到锁时应返回 False（跳过重建）"
+        # 关键：身份没被改动，那一轮仍然用它起始的账号跑完
+        assert session._user_id == "old-user"
+    finally:
+        session._turn_lock.release()
+
+
+def test_sync_identity_still_rebuilds_when_no_turn_is_running(monkeypatch, tmp_path):
+    """别把上一条的「跳过」写成了「永不对齐」。"""
+    from cli.ipc import session as session_mod
+
+    monkeypatch.setattr(
+        session_mod, "_load_session", lambda: {"user_id": "new-user", "access_token": "", "refresh_token": ""}
+    )
+
+    class FakeRegistry:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def set_provider(self, _p): ...
+        def set_confirm_callback(self, _c): ...
+        def set_ask_user_question_callback(self, _c): ...
+        def set_mcp_manager(self, _m): ...
+
+    monkeypatch.setattr("cli.tools.ToolRegistry", FakeRegistry)
+
+    s = session_mod.DesktopSession()
+    s._user_id = "old-user"
+    s._messages = [{"role": "user", "content": "上一个账号的话"}]
+    assert s.sync_identity() is True
+    assert s._user_id == "new-user"
+    assert s._messages == [], "换人了，上一个账号的历史不能留下"

@@ -38,7 +38,10 @@ function readTheme () {
   }
 }
 
-const fmtPrice = (v) => (Math.abs(v) >= 100 ? v.toFixed(1) : v.toFixed(2))
+// 判空不是多余的：_columnar 会把 NaN 换成 None -> JSON null（停牌、缺列都会），
+// 而 Math.abs(null) === 0 会绕过阈值判断、直接走到 null.toFixed() 抛 TypeError。
+// 画蜡烛的循环有判空，读数条没有 —— 悬停到这样的 K 线时 mousemove 会持续报错。
+const fmtPrice = (v) => (v == null || !isFinite(v) ? '—' : Math.abs(v) >= 100 ? v.toFixed(1) : v.toFixed(2))
 
 function fmtVol (v) {
   if (v >= 1e8) return `${(v / 1e8).toFixed(1)}亿`

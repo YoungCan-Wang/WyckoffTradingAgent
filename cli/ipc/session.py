@@ -162,7 +162,29 @@ class DesktopSession:
 
         只在身份变化时重建 ToolRegistry：它带着确认回调和 MCP 管理器，无条件
         重建会把待审批状态和 MCP 连接一起丢掉。
+
+        并发安全：这个方法会清空 _messages 和 _pending_confirms，而 run_turn
+        正在流式产出时也在读写它们。对话进行中另一个进程改了登录态（登录/登出）
+        时，若在这里直接重建，那一轮的回复会 append 进新账号的空历史，且该轮
+        入队的审批不会发出 approval_pending 事件（审批仍在队列里，只是界面不弹）。
+
+        但**不能无条件等锁**：run_turn 持锁贯穿整个流式输出（可能几分钟），
+        一次读持仓就会挂到对话结束，期间不发任何事件 —— 直接撞上桥的静默超时，
+        表现为「读持仓卡死」。那是把罕见竞态换成了常见卡顿。
+
+        所以用非阻塞获取：拿不到锁说明正有一轮在跑，此时**跳过重建**并返回
+        False。代价是那一轮继续用旧账号的 registry 跑完（它本来就是用那个身份
+        起的，自身一致），下一次调用自然会对齐。
         """
+        if not self._turn_lock.acquire(blocking=False):
+            logger.info("skip identity sync: a turn is in flight")
+            return False
+        try:
+            return self._sync_identity_locked()
+        finally:
+            self._turn_lock.release()
+
+    def _sync_identity_locked(self) -> bool:
         from cli.tools import ToolRegistry
 
         session = _load_session()

@@ -52,7 +52,12 @@ def call(action: str, **params: Any) -> dict[str, Any]:
         return {"error": f"不支持的动作: {action}（可选: {', '.join(sorted(ACTIONS))}）"}
 
     # SSRF 防线：Agent 的目标 URL 来自模型，必须挡掉内网地址与非标端口。
-    # Electron 侧只校验 scheme，真正的地址判断在这里做。
+    #
+    # 这是**两道**独立防线中的一道，不是唯一一道 —— desktop/src/public-url.js
+    # 也做完整校验，而且用 session.resolveHost 把解析结果钉死给实际连接
+    # （消掉 DNS rebinding 的 TOCTOU）。这里保留同样的检查是因为 CLI/MCP 路径
+    # 不经过 Electron。
+    # （原注释写「Electron 侧只校验 scheme」，那是早期状态，已不成立。）
     if action == "navigate":
         checked = validate_public_http_url(str(params.get("url") or ""))
         if isinstance(checked, dict):
