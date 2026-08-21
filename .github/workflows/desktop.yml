@@ -7,9 +7,8 @@ name: Desktop
 # macOS 上做，那些分支从来没有真正跑过。所以这里的重点不是「再跑一遍单元测试」，
 # 而是**在真的 Windows 机器上打一次包**。
 #
-# 打完包不等于验证了运行时：GitHub 的 windows runner 没有交互式桌面会话，
-# 起 Electron 窗口并不可靠。所以这里只保证「能打出来、结构对、平台分支进得去」，
-# 真正的手动冒烟仍然要在一台 Windows 机器上做（见 job 末尾的产物上传）。
+# Playwright 会启动真实 Electron 窗口验证渲染外壳；NSIS 安装、Python payload 与
+# 退出后的 Python 进程状态仍需在 Windows 安装包上手动冒烟。
 
 on:
   push:
@@ -56,6 +55,34 @@ jobs:
         run: npm test
       - name: Build renderer
         run: npm run build:ui
+
+      # 真的把应用起起来点一遍。
+      #
+      # 我一开始判断「CI 没有交互式桌面会话，验不了运行时」—— 那是错的：
+      # Playwright 的 _electron.launch 能起真进程真窗口，拿到渲染端 DOM。
+      # Linux 上需要 xvfb 提供虚拟显示；Windows/macOS runner 直接跑。
+      #
+      # 这一步在 Windows 上跑，才是「Windows 分支真的执行过」的第一手证据。
+      - name: E2E smoke (Linux 需要虚拟显示)
+        if: runner.os == 'Linux'
+        run: xvfb-run --auto-servernum node test/e2e/smoke.mjs
+      - name: E2E smoke
+        if: runner.os != 'Linux'
+        run: node test/e2e/smoke.mjs
+
+      # 开发态没有打包后的 Python payload；这里只检查 Electron 外壳能完整退出。
+      - name: 检查 Electron 残留进程（Windows）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Start-Sleep -Seconds 6
+          $left = Get-Process -Name electron -ErrorAction SilentlyContinue
+          if ($left) {
+            Write-Host "退出后仍有 electron 进程残留："
+            $left | Format-Table Id, ProcessName
+            exit 1
+          }
+          Write-Host "无残留进程"
 
   # 真的在 Windows 上打一次包。这是这个 workflow 存在的主要理由。
   package-windows:

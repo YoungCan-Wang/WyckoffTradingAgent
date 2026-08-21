@@ -9,9 +9,15 @@ macOS 上做，那些分支从来没真正跑过 —— 已经因此漏过一个
 
 | 层 | 保证 | 保证不了 |
 |---|---|---|
-| `npm test`（本机） | 平台分支的静态形状对 | 那些分支真的跑得通 |
-| Windows CI（`.github/workflows/desktop.yml`） | 在真 Windows 上**打得出包** | 窗口能不能出来（runner 无交互式桌面会话） |
-| 本地 Windows 虚拟机 | 装上、点一遍、退出无残留 | 真实 x64 机器的性能（见下面的架构说明） |
+| `npm test` | 平台分支的静态形状对 | 那些分支真的跑得通 |
+| `npm run test:e2e`（Playwright 起真 Electron） | 窗口出来、八个页面切得动、菜单点得开、无渲染端报错 | 安装包装完之后的行为 |
+| Windows CI | **在真 Windows 上跑上面那套 e2e**，加打包与 Electron 退出检查 | 打包后的 Python 子进程回收、真实 x64 性能 |
+| 本地虚拟机（可选） | 装完的包能点、注册表与开始菜单项对 | 同上 |
+
+**修正一处早先的判断**：我一度说「CI 没有交互式桌面会话，验不了运行时，必须人去
+Windows 上点一遍」。那是错的 —— Playwright 的 `_electron.launch` 能在 CI 里起真
+进程真窗口并拿到 DOM，Linux 上套一层 `xvfb-run` 即可。所以**手动冒烟不再是必须**，
+它退化成「装包路径」的补充验证。
 
 ## 架构：Apple Silicon 上只能测 arm64
 
@@ -68,20 +74,26 @@ Windows 里配 Node/Python/Git 快得多。
 （`scripts/build_python_ipc.sh` 是 bash 脚本，Windows 上在 Git Bash 里跑，
 或写一份 PowerShell 版本）。占位文件只能验 Electron 的打包与启动结构。
 
-## 手动冒烟清单
+## 手动冒烟清单（可选）
+
+前四条 CI 里的 e2e 已经自动跑了（真 Windows runner 上）。这份清单只在两种情况下
+需要人工走：**要验安装包本身的行为**（NSIS 注册表、开始菜单项、卸载），
+或者 **CI 报了红要复现**。
 
 装完那个 `Wyckoff Setup <版本>.exe` 之后，按顺序点：
 
 - [ ] **窗口出现**，标题「Wyckoff 读盘室」，不是白屏
 - [ ] **左下角状态不卡在「连接中…」** —— 卡住说明 Python 桥没握手成功，
       去看 `%APPDATA%\Wyckoff\logs`（或从终端启动看 stderr）
-- [ ] 七个页面都能进：对话 / 任务 / 审批 / 持仓 / 定时 / 跟踪 / 归因
+- [ ] 八个页面都能进：对话 / 任务 / 审批 / 持仓 / 定时 / 跟踪 / 归因 / 报告
 - [ ] 打开菜单 → **K 线图**，输入 `600519`，图能画出来
 - [ ] 打开菜单 → **浏览器**，导航一个网址，然后点 ✕ 能关掉
 - [ ] 持仓页进编辑模式，改一次现金 → 能保存
 - [ ] **退出应用后打开任务管理器，确认没有残留的 `wyckoff-ipc.exe`**
 
 最后一条最关键 —— 那正是 `killTreeWindows()` 修的东西，而它在 macOS 上根本不执行。
+CI 里有一步 pwsh 检查残留的 electron 进程，覆盖了同一条链的一部分；但打包版跑的是
+`wyckoff-ipc.exe` 而不是开发时的 `python.exe`，所以装包之后再看一眼仍然有价值。
 
 ## 已知的 Windows 专属风险点
 

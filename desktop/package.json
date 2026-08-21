@@ -15,7 +15,8 @@
     "dist": "npm run package:prepare && electron-builder",
     "typecheck": "tsc -b",
     "build:ui": "vite build",
-    "dev:ui": "vite"
+    "dev:ui": "vite",
+    "test:e2e": "npm run build:ui && node test/e2e/smoke.mjs"
   },
   "devDependencies": {
     "@types/react": "^19.2.18",
@@ -23,6 +24,7 @@
     "@vitejs/plugin-react": "^4.7.0",
     "electron": "43.4.1",
     "electron-builder": "^26.0.12",
+    "playwright": "1.62.1",
     "typescript": "^5.9.3",
     "vite": "^6.4.3"
   },
