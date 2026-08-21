@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from core.market_trade_mode import EXECUTE_BLOCK_NEW_BUY_REGIMES
+from core.market_trade_mode import EXECUTE_BLOCK_NEW_BUY_REGIMES, buy_allow_regimes_from_env
 from utils.env import env_bool as _env_bool
 from utils.env import env_float as _env_float
 from utils.env import env_int as _env_int
@@ -48,7 +48,8 @@ def _env_regime_set(name: str, default: str) -> frozenset[str]:
 
     ``EXECUTE_BLOCK_NEW_BUY_REGIMES`` 无条件并入，所以单改 env 无法放开其中任何一档；
     但那个集合同时被 AI 复核、推荐写入与横幅文案消费（实测直接改它会连带影响 30 个用例），
-    因此放开只在**下单闸门**这一层做，用 ``STEP4_BUY_ALLOW_REGIMES`` 显式豁免。
+    因此放开走 ``STEP4_BUY_ALLOW_REGIMES`` 显式豁免，并须贯穿：OMS ``buy_block_regimes``、
+    ``max_new_buy_names``、guardrail 文案、以及 ``resolve_market_trade_mode`` 的推荐写入开关。
 
     2026-08-17 联动实测（水温 × 严格候选，54 个交易日，候选 T+5 相对同日全市场）：
 
@@ -69,13 +70,7 @@ def _env_regime_set(name: str, default: str) -> frozenset[str]:
         if item.strip() and item.strip().upper() != "COOLDOWN"
     }
     merged = values | set(EXECUTE_BLOCK_NEW_BUY_REGIMES)
-    return frozenset(merged - _env_buy_allow_regimes())
-
-
-def _env_buy_allow_regimes() -> set[str]:
-    """从禁买名单里豁免的水温。留空表示沿用原有全部禁买。"""
-    raw = os.getenv("STEP4_BUY_ALLOW_REGIMES", "").strip()
-    return {item.strip().upper() for item in raw.split(",") if item.strip()}
+    return frozenset(merged - buy_allow_regimes_from_env())
 
 
 def _clamp01(value: float) -> float:

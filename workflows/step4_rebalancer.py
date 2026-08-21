@@ -289,7 +289,11 @@ def _prepare_step4_input_context(
         total_equity=payloads.total_equity,
         candidate_codes=payloads.candidate_codes,
         allowed_codes=payloads.allowed_codes,
-        max_new_buy_names=_parser_max_new_buy_names(market_regime, runtime_config.new_buy_limits),
+        max_new_buy_names=_parser_max_new_buy_names(
+            market_regime,
+            runtime_config.new_buy_limits,
+            order_config.buy_block_regimes,
+        ),
         positions_payload=payloads.positions_payload,
         candidate_payload=payloads.candidate_payload,
         position_failures=payloads.position_failures,
@@ -491,6 +495,7 @@ def _run_step4_decision_flow(
         context.candidate_meta_map,
         context.market_regime,
         options.runtime_config,
+        options.order_config.buy_block_regimes,
     )
     backfill_step4_decision_market_data(
         decisions,

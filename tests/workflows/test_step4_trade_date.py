@@ -934,6 +934,15 @@ def test_max_new_buy_names_blocks_bear_rebound() -> None:
     assert max_new_buy_names("CAUTION", limits) == 1
 
 
+def test_max_new_buy_names_respects_oms_buy_block_regimes() -> None:
+    limits = NewBuyLimits(caution=3, neutral=2)
+    oms_blocked = frozenset({"UNKNOWN", "NEUTRAL", "PANIC_REPAIR", "RISK_OFF", "CRASH", "BLACK_SWAN"})
+
+    assert max_new_buy_names("BEAR_REBOUND", limits, oms_blocked) == 2
+    assert max_new_buy_names("RISK_ON", limits, oms_blocked) == 2
+    assert max_new_buy_names("NEUTRAL", limits, oms_blocked) == 0
+
+
 def test_confirmed_repair_allows_small_probe_but_blocks_attack() -> None:
     engine = WyckoffOrderEngine(
         total_equity=100000,

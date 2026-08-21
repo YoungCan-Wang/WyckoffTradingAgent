@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 
 from core.market_trade_mode import (
-    EXECUTE_BLOCK_NEW_BUY_REGIMES,
     PREMARKET_DATA_GAP,
     normalize_regime,
     stricter_market_regime,
@@ -202,7 +201,9 @@ def build_market_guardrail(
     raw_premarket = row.get("premarket_regime")
     effective_regime = resolve_effective_market_regime(benchmark_regime, raw_premarket)
     premarket_regime = _premarket_label_for_report(raw_premarket)
-    enforced_blocks = set(buy_block_regimes) | set(EXECUTE_BLOCK_NEW_BUY_REGIMES)
+    # buy_block_regimes 已是 EXECUTE∪BLOCK−ALLOW；不得再并回 EXECUTE，否则
+    # STEP4_BUY_ALLOW_REGIMES 豁免会被横幅/提示文案重新否决。
+    enforced_blocks = set(buy_block_regimes)
     gaps = missing_market_inputs(row.get("benchmark_regime"), raw_premarket, readiness, benchmark_context)
     # 只有真正因此禁买时才归因于数据缺失，避免回落后已放行仍写「禁买源自…」。
     missing_inputs = (

@@ -201,12 +201,14 @@ def _live_buy_block_regimes() -> frozenset[str]:
     """
     import os
 
+    from core.market_trade_mode import buy_allow_regimes_from_env
+
     def _parse(name: str) -> set[str]:
         raw = os.getenv(name, "").strip()
         return {item.strip().upper() for item in raw.split(",") if item.strip()}
 
     blocked = _parse("STEP4_BUY_BLOCK_REGIMES") or set(EXECUTE_BLOCK_NEW_BUY_REGIMES)
-    return frozenset(blocked - _parse("STEP4_BUY_ALLOW_REGIMES"))
+    return frozenset(blocked - buy_allow_regimes_from_env())
 
 
 def _validate_dates_and_trade_params(

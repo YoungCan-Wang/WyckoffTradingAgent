@@ -78,9 +78,20 @@ def _dedupe_decisions(decisions: list[DecisionItem]) -> list[DecisionItem]:
     return [selected[code] for code in order]
 
 
-def max_new_buy_names(market_regime: str, limits: NewBuyLimits) -> int:
+def max_new_buy_names(
+    market_regime: str,
+    limits: NewBuyLimits,
+    buy_block_regimes: frozenset[str] | set[str] | None = None,
+) -> int:
+    """组合级新开仓名额。
+
+    默认仍按 ``EXECUTE_BLOCK_NEW_BUY_REGIMES``；生产路径须传入与 OMS 相同的
+    ``buy_block_regimes``（已含 ``STEP4_BUY_ALLOW_REGIMES`` 豁免），否则 ALLOW
+    在 OMS 层放开后会被这里的硬编码禁买集合再次压成 0。
+    """
     regime = normalize_regime(clean_text(market_regime))
-    if regime in EXECUTE_BLOCK_NEW_BUY_REGIMES:
+    blocked = frozenset(buy_block_regimes) if buy_block_regimes is not None else EXECUTE_BLOCK_NEW_BUY_REGIMES
+    if regime in blocked:
         return 0
     if regime in PROBE_ONLY_REGIMES:
         return max(min(limits.caution, 1), 0)
@@ -92,8 +103,9 @@ def trim_new_buy_decisions(
     held_codes: set[str],
     market_regime: str,
     limits: NewBuyLimits,
+    buy_block_regimes: frozenset[str] | set[str] | None = None,
 ) -> tuple[list[DecisionItem], list[str], int]:
-    max_new_names = max_new_buy_names(market_regime, limits)
+    max_new_names = max_new_buy_names(market_regime, limits, buy_block_regimes)
     new_buys = [
         dec
         for dec in decisions

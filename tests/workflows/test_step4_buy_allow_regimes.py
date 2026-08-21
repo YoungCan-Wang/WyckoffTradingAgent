@@ -2,12 +2,16 @@
 
 背景：``EXECUTE_BLOCK_NEW_BUY_REGIMES`` 被无条件并入禁买集合，所以单改
 ``STEP4_BUY_BLOCK_REGIMES`` 无法放开其中任何一档。而那个常量同时被 AI 复核、
-推荐写入与横幅文案消费（直接改它会连带影响 30 个用例），因此放开只在下单闸门这层做。
+推荐写入与横幅文案消费（直接改它会连带影响 30 个用例），因此放开走显式豁免，
+并须贯穿 OMS、max_new_buy_names、guardrail 与 trade_mode 推荐写入开关。
 """
 
 from __future__ import annotations
 
-from core.market_trade_mode import EXECUTE_BLOCK_NEW_BUY_REGIMES
+from core.market_trade_mode import EXECUTE_BLOCK_NEW_BUY_REGIMES, resolve_market_trade_mode
+from workflows.step4_decision_parser import max_new_buy_names
+from workflows.step4_market import build_market_guardrail
+from workflows.step4_models import NewBuyLimits
 from workflows.step4_order_config import step4_order_config_from_env
 
 ALL_REGIMES = frozenset(
@@ -87,3 +91,42 @@ def test_unknown_token_in_allow_is_ignored(monkeypatch):
     """写错档位名不该意外放开任何东西。"""
     blocked = _blocked(monkeypatch, allow="TYPO_REGIME")
     assert EXECUTE_BLOCK_NEW_BUY_REGIMES <= blocked
+
+
+def test_production_allow_opens_max_new_buy_names(monkeypatch):
+    blocked = _blocked(
+        monkeypatch,
+        allow="BEAR_REBOUND,RISK_ON",
+        block="UNKNOWN,NEUTRAL,PANIC_REPAIR,RISK_OFF,CRASH,BLACK_SWAN",
+    )
+    limits = NewBuyLimits(caution=3, neutral=2)
+
+    assert max_new_buy_names("BEAR_REBOUND", limits, blocked) == 2
+    assert max_new_buy_names("RISK_ON", limits, blocked) == 2
+    assert max_new_buy_names("NEUTRAL", limits, blocked) == 0
+    assert max_new_buy_names("BEAR_REBOUND", limits) == 0
+
+
+def test_production_allow_opens_trade_mode_write(monkeypatch):
+    _blocked(monkeypatch, allow="BEAR_REBOUND,RISK_ON")
+
+    assert resolve_market_trade_mode("BEAR_REBOUND").allow_recommendation_write is True
+    assert resolve_market_trade_mode("RISK_ON").allow_recommendation_write is True
+    assert resolve_market_trade_mode("PANIC_REPAIR").allow_recommendation_write is False
+
+
+def test_guardrail_does_not_reblock_allowed_regime(monkeypatch):
+    blocked = _blocked(
+        monkeypatch,
+        allow="BEAR_REBOUND,RISK_ON",
+        block="UNKNOWN,NEUTRAL,PANIC_REPAIR,RISK_OFF,CRASH,BLACK_SWAN",
+    )
+    _regime, guardrail_text, _view = build_market_guardrail(
+        trade_date="2026-08-21",
+        benchmark_context={"regime": "BEAR_REBOUND"},
+        market_signal_row={"trade_date": "2026-08-21", "benchmark_regime": "BEAR_REBOUND"},
+        buy_block_regimes=set(blocked),
+    )
+
+    assert _regime == "BEAR_REBOUND"
+    assert "一票否决" not in guardrail_text

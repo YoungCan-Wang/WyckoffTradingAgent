@@ -45,6 +45,7 @@ def complete_step4_decisions(
     candidate_meta_map: dict[str, CandidateMeta],
     market_regime: str,
     runtime_config: Step4RuntimeConfig,
+    buy_block_regimes: frozenset[str] | set[str] | None = None,
 ) -> list[DecisionItem]:
     mentioned_codes = {d.code for d in decisions}
     for position in portfolio.positions:
@@ -75,6 +76,7 @@ def complete_step4_decisions(
         held_codes=held_codes,
         market_regime=market_regime,
         limits=runtime_config.new_buy_limits,
+        buy_block_regimes=buy_block_regimes,
     )
     if dropped:
         logger.info(
