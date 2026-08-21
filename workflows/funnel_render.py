@@ -12,7 +12,6 @@ from core.candidate_tracks import candidate_entry_key
 from core.execution_playbook import funnel_playbook_lines
 from core.funnel_etf import append_etf_section
 from core.funnel_sections import score_star
-from core.market_trade_mode import resolve_market_trade_mode
 from core.signal_confirmation import compute_support_level, score_springboard_abc
 from core.strategy_policy_display import format_policy_meta_text, format_policy_weight_text
 from core.theme_radar import summarize_theme_radar, summarize_theme_rotation
@@ -31,6 +30,7 @@ from workflows.funnel_settings import (
     FUNNEL_MAINLINE_DISPLAY_LIMIT,
     FUNNEL_TRACKING_SHAPE_DISPLAY_LIMIT,
 )
+from workflows.step4_order_config import resolve_live_market_trade_mode
 
 
 @dataclass(frozen=True)
@@ -172,14 +172,14 @@ def _market_report_lines(benchmark_context: dict | None) -> tuple[str, str, str,
 
 
 def _trade_mode_report_line(regime: str) -> str:
-    mode = resolve_market_trade_mode(regime)
+    mode = resolve_live_market_trade_mode(regime)
     return f"{mode.label} | {mode.action} | {mode.reason}"
 
 
 def _execution_decision_line(regime: str, selected_count: int, data_quality: dict | None = None) -> str:
     if (data_quality or {}).get("trade_readiness") == "observe_only":
         return "数据质量降级；候选仅供 shadow 观察，禁止正式推荐、写入执行清单或新开仓。"
-    mode = resolve_market_trade_mode(regime)
+    mode = resolve_live_market_trade_mode(regime)
     if not mode.allow_ai_review:
         return "禁止新仓；候选仅影子观察，优先处理持仓风控；不从本报告选择买入标的。"
     if mode.mode == "overheat_shadow" or (
@@ -200,7 +200,7 @@ def _execution_decision_line(regime: str, selected_count: int, data_quality: dic
 
 
 def _today_conclusion_line(ctx: Any, selected_count: int) -> str:
-    mode = resolve_market_trade_mode(ctx.regime)
+    mode = resolve_live_market_trade_mode(ctx.regime)
     if _data_quality_observe_only(getattr(ctx, "metrics", None)):
         conclusion = "数据质量降级，仅观察"
     elif not mode.allow_ai_review or mode.mode == "overheat_shadow":
@@ -237,7 +237,7 @@ def _first_non_empty_reason_group(*groups: object) -> list[str]:
 
 
 def _tomorrow_action_line(ctx: Any, selected_count: int) -> str:
-    mode = resolve_market_trade_mode(ctx.regime)
+    mode = resolve_live_market_trade_mode(ctx.regime)
     if _data_quality_observe_only(getattr(ctx, "metrics", None)):
         action = "禁止正式推荐和新仓；修复数据覆盖后重新运行漏斗，不使用本次候选下单。"
     elif not mode.allow_ai_review:
@@ -381,7 +381,7 @@ def _top_summary_lines(ctx: Any, selected_count: int, money_line: str) -> list[s
 def _rotation_gate_line(ctx: Any, snapshot: dict[str, Any]) -> str:
     if not snapshot.get("rotation_watch"):
         return ""
-    mode = resolve_market_trade_mode(ctx.regime)
+    mode = resolve_live_market_trade_mode(ctx.regime)
     if not mode.allow_recommendation_write:
         return "⚠️ 已发现短周期轮动，但市场闸门关闭；保留观察提示，不写正式推荐、不自动下单。"
     return "⚠️ 短周期轮动仅是研究提示，不改变正式候选、市场闸门或 OMS 执行条件。"
@@ -441,7 +441,7 @@ def _reference_support_level(ctx: Any, code: str) -> float | None:
 
 def _top_candidate_list_lines(ctx: Any, selection: FunnelAiSelection) -> list[str]:
     selected_for_ai = selection.selected_for_ai
-    mode = resolve_market_trade_mode(ctx.regime)
+    mode = resolve_live_market_trade_mode(ctx.regime)
     lines = [
         f"**【✅ 今日候选清单】{len(selected_for_ai)} 只**",
         _candidate_list_note(

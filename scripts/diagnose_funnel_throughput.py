@@ -88,13 +88,12 @@ def _load_regimes() -> dict[str, str]:
 def _limits_for(regime: str) -> dict[str, Any]:
     """当日实际生效的限制值。这些才是「卡在哪」的候选答案。"""
     from core.ai_candidate_allocation import resolve_ai_candidate_policy
-    from core.market_trade_mode import resolve_market_trade_mode
     from workflows.ai_candidate_allocation_config import ai_candidate_allocation_config_from_env
-    from workflows.step4_order_config import step4_order_config_from_env
+    from workflows.step4_order_config import resolve_live_market_trade_mode, step4_order_config_from_env
 
     config = ai_candidate_allocation_config_from_env()
     policy = resolve_ai_candidate_policy(regime, config=config)
-    mode = resolve_market_trade_mode(regime)
+    mode = resolve_live_market_trade_mode(regime)
     selection_mode = os.getenv("FUNNEL_AI_SELECTION_MODE", "tradeable_l4")
     return {
         "regime": regime,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, replace
 
 # 硬防守：不送 AI、不写推荐、不新开（与历史 RISK_OFF/CRASH 一致）。
@@ -92,12 +91,6 @@ def _confirmed_repair_trade_mode(regime: str) -> MarketTradeMode:
     )
 
 
-def buy_allow_regimes_from_env() -> frozenset[str]:
-    """读 STEP4_BUY_ALLOW_REGIMES。留空=不豁免，保持策略常量原语义。"""
-    raw = os.getenv("STEP4_BUY_ALLOW_REGIMES", "").strip()
-    return frozenset(item.strip().upper() for item in raw.split(",") if item.strip())
-
-
 def apply_buy_allow_regimes(mode: MarketTradeMode, allow_regimes: frozenset[str] | set[str]) -> MarketTradeMode:
     """执行层豁免：打开推荐写入，使候选能进入 Step4 下单。
 
@@ -105,6 +98,8 @@ def apply_buy_allow_regimes(mode: MarketTradeMode, allow_regimes: frozenset[str]
     ``allow_recommendation_write=False`` 仍会把候选标成 ``new_buy_allowed=false`` /
     ``repair_review_only``，``max_new_buy_names`` 也仍按硬编码禁买集合归零——
     生产开了 ALLOW 却买不进去。这里只翻执行相关开关，不改策略常量本身。
+
+    core 不读 env：由 workflows 解析后显式传入（见 architecture boundaries）。
     """
     if mode.regime not in allow_regimes or mode.allow_recommendation_write:
         return mode
@@ -185,5 +180,5 @@ def resolve_market_trade_mode(
     *,
     buy_allow_regimes: frozenset[str] | set[str] | None = None,
 ) -> MarketTradeMode:
-    allow = buy_allow_regimes_from_env() if buy_allow_regimes is None else frozenset(buy_allow_regimes)
+    allow = frozenset() if buy_allow_regimes is None else frozenset(buy_allow_regimes)
     return apply_buy_allow_regimes(_base_market_trade_mode(normalize_regime(regime)), allow)

@@ -9,7 +9,7 @@ from typing import Any
 
 from core.candidate_metadata import build_candidate_metadata_map, code6
 from core.mainline_engine import TRADEABLE_MAINLINE_STATUSES
-from core.market_trade_mode import MarketTradeMode, resolve_market_trade_mode
+from core.market_trade_mode import MarketTradeMode
 from core.signal_feedback import signal_track
 from integrations.recommendation_payload import (
     mark_ai_recommendations,
@@ -19,6 +19,7 @@ from integrations.recommendation_payload import (
 )
 from integrations.supabase_market_signal import upsert_market_signal_daily
 from utils.safe import safe_float as _safe_float
+from workflows.step4_order_config import resolve_live_market_trade_mode
 from workflows.step4_pipeline import TZ, is_confirmed_step4_candidate
 from workflows.step4_text import clean_text as _clean_text
 
@@ -107,7 +108,7 @@ def recommendation_write_symbols(
     benchmark_context: dict | None = None,
     trade_mode: MarketTradeMode | None = None,
 ) -> list[dict]:
-    mode = trade_mode or resolve_market_trade_mode((benchmark_context or {}).get("regime"))
+    mode = trade_mode or resolve_live_market_trade_mode((benchmark_context or {}).get("regime"))
     rows = [_tracking_symbol(item, mode) for item in symbols_info if is_recommendation_tracking_candidate(item)]
     if step2_details:
         rows.extend(_springboard_tracking_symbols(step2_details, mode))

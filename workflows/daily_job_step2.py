@@ -6,9 +6,10 @@ from datetime import datetime
 
 import workflows.daily_job_persistence as daily_persistence
 import workflows.daily_signal_observations as signal_observations
-from core.market_trade_mode import MarketTradeMode, resolve_market_trade_mode
+from core.market_trade_mode import MarketTradeMode
 from workflows.daily_job_common import Step2StageResult, log_line
 from workflows.daily_job_runtime import DailyJobConfig
+from workflows.step4_order_config import resolve_live_market_trade_mode
 from workflows.step4_pipeline import TZ, latest_trade_date_str
 
 
@@ -60,7 +61,7 @@ def run_step2_stage(run_step2, webhook: str, preview_only: bool, logs_path: str 
 
 
 def persist_step2_outputs(step2: Step2StageResult, cfg: DailyJobConfig) -> tuple[int | None, list[dict], bool]:
-    trade_mode = resolve_market_trade_mode((step2.benchmark_context or {}).get("regime"))
+    trade_mode = resolve_live_market_trade_mode((step2.benchmark_context or {}).get("regime"))
     persistence_ok = True
     if not step2.blocking_failure and step2.benchmark_context:
         persistence_ok = daily_persistence.persist_benchmark_context(

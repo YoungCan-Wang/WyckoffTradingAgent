@@ -12,7 +12,7 @@ from core.market_trade_mode import EXECUTE_BLOCK_NEW_BUY_REGIMES, resolve_market
 from workflows.step4_decision_parser import max_new_buy_names
 from workflows.step4_market import build_market_guardrail
 from workflows.step4_models import NewBuyLimits
-from workflows.step4_order_config import step4_order_config_from_env
+from workflows.step4_order_config import resolve_live_market_trade_mode, step4_order_config_from_env
 
 ALL_REGIMES = frozenset(
     {
@@ -110,9 +110,11 @@ def test_production_allow_opens_max_new_buy_names(monkeypatch):
 def test_production_allow_opens_trade_mode_write(monkeypatch):
     _blocked(monkeypatch, allow="BEAR_REBOUND,RISK_ON")
 
-    assert resolve_market_trade_mode("BEAR_REBOUND").allow_recommendation_write is True
-    assert resolve_market_trade_mode("RISK_ON").allow_recommendation_write is True
-    assert resolve_market_trade_mode("PANIC_REPAIR").allow_recommendation_write is False
+    assert resolve_live_market_trade_mode("BEAR_REBOUND").allow_recommendation_write is True
+    assert resolve_live_market_trade_mode("RISK_ON").allow_recommendation_write is True
+    assert resolve_live_market_trade_mode("PANIC_REPAIR").allow_recommendation_write is False
+    # core 默认不读 env；未显式注入时行为不变
+    assert resolve_market_trade_mode("BEAR_REBOUND").allow_recommendation_write is False
 
 
 def test_guardrail_does_not_reblock_allowed_regime(monkeypatch):

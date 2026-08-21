@@ -9,9 +9,9 @@ from core.candidate_policy import candidate_score_value
 from core.candidate_tracks import candidate_entry_track
 from core.funnel_report import build_symbol_report_row, candidate_reason_text
 from core.funnel_taxonomy import source_label
-from core.market_trade_mode import resolve_market_trade_mode
 from workflows.funnel_ai_selection import FunnelAiSelection
 from workflows.funnel_settings import FUNNEL_L2_BYPASS_AI_CAP, FUNNEL_STRATEGIC_L2_BYPASS_AI_CAP
+from workflows.step4_order_config import resolve_live_market_trade_mode
 
 
 def context_regime(ctx: Any) -> str:
@@ -121,7 +121,7 @@ def funnel_run_details(
     title: str,
     symbols: list[dict],
 ) -> dict:
-    trade_mode = resolve_market_trade_mode(context_regime(ctx))
+    trade_mode = resolve_live_market_trade_mode(context_regime(ctx))
     trade_mode_payload = _trade_mode_payload(ctx, trade_mode)
     return {
         "metrics": ctx.metrics,

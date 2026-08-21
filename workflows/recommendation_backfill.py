@@ -13,7 +13,6 @@ from typing import Any
 
 import workflows.daily_signal_observations as signal_observations
 from core.constants import TABLE_RECOMMENDATION_TRACKING
-from core.market_trade_mode import resolve_market_trade_mode
 from core.recommendation_payload import (
     ai_code_ints,
     build_recommendation_payload,
@@ -42,6 +41,7 @@ from workflows.daily_job_step2 import (
     run_springboard_scoring,
 )
 from workflows.daily_job_step3 import parse_step3_springboards
+from workflows.step4_order_config import resolve_live_market_trade_mode
 
 
 @dataclass(frozen=True)
@@ -140,7 +140,7 @@ def _prepare_symbols_for_recommendation(
 ) -> Any:
     run_signal_confirmation(symbols_info, details, benchmark_context, None, dry_run=True)
     run_springboard_scoring(symbols_info, details)
-    trade_mode = resolve_market_trade_mode((benchmark_context or {}).get("regime"))
+    trade_mode = resolve_live_market_trade_mode((benchmark_context or {}).get("regime"))
     return trade_mode
 
 

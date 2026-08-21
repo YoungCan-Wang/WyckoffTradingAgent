@@ -29,7 +29,6 @@ from core.funnel_selection import (
     split_selected_tracks,
 )
 from core.funnel_theme import apply_theme_bonus_to_scores, promote_theme_l4_for_ai
-from core.market_trade_mode import resolve_market_trade_mode
 from core.strategy_policy_display import policy_weight_rows
 from core.wyckoff_engine import FunnelResult
 from integrations.supabase_signal_feedback import (
@@ -51,6 +50,7 @@ from workflows.funnel_settings import (
     FUNNEL_STRATEGIC_L2_BYPASS_AI_ENABLED,
     FUNNEL_THEME_RADAR_PROMOTE_CAP,
 )
+from workflows.step4_order_config import resolve_live_market_trade_mode
 from workflows.strategy_attribution_policy import attribution_weights_for_funnel, load_attribution_policy_snapshot
 
 SHADOW_POLICY_SCHEMA_VERSION = "shadow_policy_v2"
@@ -82,7 +82,7 @@ def select_base_ai_candidates(
 ) -> tuple[list[str], list[str], list[str], dict[str, float], dict, bool]:
     dynamic_config = dynamic_policy_config_from_env()
     allocation_config = ai_candidate_allocation_config_from_env()
-    trade_mode = resolve_market_trade_mode(regime)
+    trade_mode = resolve_live_market_trade_mode(regime)
     if not trade_mode.allow_ai_review:
         ai_policy = resolve_ai_candidate_policy(regime, override_total_cap=0, config=allocation_config)
         ai_policy.update(
@@ -139,7 +139,7 @@ def promote_review_candidates(
     regime: str,
     capital_migration_bonus_map: dict[str, float] | None = None,
 ) -> tuple[int, int, int, int]:
-    trade_mode = resolve_market_trade_mode(regime)
+    trade_mode = resolve_live_market_trade_mode(regime)
     if not use_full_ai_selection:
         apply_theme_bonus_to_scores(score_map, theme_bonus_map)
         apply_theme_bonus_to_scores(score_map, capital_migration_bonus_map or {})

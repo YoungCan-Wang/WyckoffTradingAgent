@@ -4,11 +4,22 @@ from __future__ import annotations
 
 import os
 
-from core.market_trade_mode import EXECUTE_BLOCK_NEW_BUY_REGIMES, buy_allow_regimes_from_env
+from core.market_trade_mode import EXECUTE_BLOCK_NEW_BUY_REGIMES, MarketTradeMode, resolve_market_trade_mode
 from utils.env import env_bool as _env_bool
 from utils.env import env_float as _env_float
 from utils.env import env_int as _env_int
 from workflows.step4_models import Step4OrderConfig
+
+
+def buy_allow_regimes_from_env() -> frozenset[str]:
+    """读 STEP4_BUY_ALLOW_REGIMES。留空=不豁免，保持策略常量原语义。"""
+    raw = os.getenv("STEP4_BUY_ALLOW_REGIMES", "").strip()
+    return frozenset(item.strip().upper() for item in raw.split(",") if item.strip())
+
+
+def resolve_live_market_trade_mode(regime: str | None) -> MarketTradeMode:
+    """生产路径：把 ALLOW 显式注入 core，避免 core 读 env。"""
+    return resolve_market_trade_mode(regime, buy_allow_regimes=buy_allow_regimes_from_env())
 
 
 def step4_order_config_from_env() -> Step4OrderConfig:
