@@ -109,6 +109,9 @@ class BacktestReplayConfig:
     enforce_confirmed_loss_guard: bool = False
     market_breadth_calculator: MarketBreadthCalculator | None = None
     market_regime_analyzer: MarketRegimeAnalyzer | None = None
+    # 小盘基准（默认创业板指）。缺它则 CRASH/PANIC_REPAIR 少一条判据，
+    # 防守档会塌成 NEUTRAL——见 _analyze_market_regime 的说明。
+    smallcap_bench_df: pd.DataFrame | None = None
     a_share_entry_research: AShareEntryResearchPolicy = field(default_factory=AShareEntryResearchPolicy)
 
 
@@ -424,9 +427,16 @@ def _build_day_context(
     bench_slice = _history_tail(bench_df, signal_date, config.trading_days)
     if not day_df_map or len(bench_slice) < base_cfg.ma_long:
         return None
+    smallcap_slice = (
+        _history_tail(config.smallcap_bench_df, signal_date, config.trading_days)
+        if config.smallcap_bench_df is not None
+        else None
+    )
+    if smallcap_slice is not None and smallcap_slice.empty:
+        smallcap_slice = None
     day_cfg = replace(base_cfg)
     breadth = _calculate_market_breadth(day_df_map, config)
-    bench_context = _analyze_market_regime(bench_slice, day_cfg, breadth, config)
+    bench_context = _analyze_market_regime(bench_slice, day_cfg, breadth, config, smallcap_slice)
     result = run_funnel(
         all_symbols=list(day_df_map.keys()),
         df_map=day_df_map,
@@ -466,9 +476,19 @@ def _analyze_market_regime(
     day_cfg: FunnelConfig,
     breadth: dict,
     config: BacktestReplayConfig,
+    smallcap_slice: pd.DataFrame | None = None,
 ) -> dict:
+    """按日判定水温。
+
+    smallcap_slice 此前硬传 None，导致 tools/market_regime.py 里依赖小盘的判据
+    （CRASH 的 crash_small_day_drop_pct、PANIC_REPAIR 的 panic_repair_small_rebound_pct）
+    永远不成立：生产库中的 CRASH 13 天 / RISK_OFF 15 天 / PANIC_REPAIR 4 天 / RISK_ON 5 天
+    在回测里全部塌成 NEUTRAL 或 CAUTION，24 个重叠日仅 14 天判定一致（58%）。
+    后果是任何按水温分档的回测结论都不可信——例如防守档流动性门槛改动，
+    因该档在回测中从不出现而完全测不出差别。
+    """
     analyzer = config.market_regime_analyzer or analyze_benchmark_and_tune_cfg
-    return analyzer(bench_slice, None, day_cfg, breadth=breadth)
+    return analyzer(bench_slice, smallcap_slice, day_cfg, breadth=breadth)
 
 
 def _day_df_map(

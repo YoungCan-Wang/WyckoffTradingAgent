@@ -318,18 +318,34 @@ def _print_fail_samples(fail_samples: list[str]) -> None:
             print(f"  - {item}")
 
 
-def _fetch_benchmark(prefetch_start: str, end_s: str) -> pd.DataFrame | None:
-    bench_main = None
+def _fetch_index_with_fallback(code: str, label: str, prefetch_start: str, end_s: str) -> pd.DataFrame | None:
     try:
-        bench_main = fetch_index_akshare("000001", prefetch_start, end_s)
-        print(f"[snapshot] 大盘指数 via akshare: {len(bench_main)} rows")
-    except Exception as e1:
-        print(f"[snapshot] akshare 大盘失败: {e1}, fallback fetch_index_hist")
+        frame = fetch_index_akshare(code, prefetch_start, end_s)
+        print(f"[snapshot] {label}({code}) via akshare: {len(frame)} rows")
+        return frame
+    except Exception as primary_error:
+        print(f"[snapshot] akshare {label} 失败: {primary_error}, fallback fetch_index_hist")
         try:
-            bench_main = fetch_index_hist("000001", prefetch_start, end_s)
-        except Exception as e2:
-            print(f"[snapshot] 大盘指数全部失败（不阻塞）: {e2}")
-    return bench_main
+            return fetch_index_hist(code, prefetch_start, end_s)
+        except Exception as fallback_error:
+            print(f"[snapshot] {label} 全部失败（不阻塞）: {fallback_error}")
+            return None
+
+
+def _fetch_benchmark(prefetch_start: str, end_s: str) -> pd.DataFrame | None:
+    return _fetch_index_with_fallback("000001", "大盘指数", prefetch_start, end_s)
+
+
+def _fetch_smallcap_benchmark(prefetch_start: str, end_s: str, code: str = "399006") -> pd.DataFrame | None:
+    """小盘基准（默认创业板指 399006）。
+
+    缺它会让回测无法判出防守档：tools/market_regime.py 的 CRASH 判据之一是
+    smallcap_day_drop <= crash_small_day_drop_pct，PANIC_REPAIR 也依赖
+    panic_repair_small_rebound_pct。此前 core/backtest_replay.py 把 smallcap_df 硬传 None，
+    结果生产库里的 CRASH/RISK_OFF/PANIC_REPAIR/RISK_ON 在回测里全部塌成 NEUTRAL/CAUTION
+    ——24 个重叠日只有 14 天判定一致。
+    """
+    return _fetch_index_with_fallback(code, "小盘基准", prefetch_start, end_s)
 
 
 def _name_map(raw_pool: list[dict]) -> dict[str, str]:
@@ -396,6 +412,8 @@ def _write_snapshot_outputs(
     raw_pool: list[dict],
     bench_main: pd.DataFrame | None,
     meta: dict[str, int | str],
+    *,
+    bench_small: pd.DataFrame | None = None,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -406,6 +424,10 @@ def _write_snapshot_outputs(
     if bench_main is not None and not bench_main.empty:
         bench_main.to_csv(out_dir / "benchmark_main.csv", index=False)
         print(f"[snapshot] benchmark_main.csv: {len(bench_main)} rows")
+
+    if bench_small is not None and not bench_small.empty:
+        bench_small.to_csv(out_dir / "benchmark_smallcap.csv", index=False)
+        print(f"[snapshot] benchmark_smallcap.csv: {len(bench_small)} rows")
 
     names = _name_map(raw_pool)
     _write_json(out_dir / "name_map.json", names)
@@ -453,6 +475,7 @@ def run_snapshot_fetch(args) -> int:
     }
     out_dir = Path(args.output_dir)
     bench_main = _fetch_benchmark(date_range.prefetch_start, date_range.end)
-    _write_snapshot_outputs(out_dir, all_frames, raw_pool, bench_main, meta)
+    bench_small = _fetch_smallcap_benchmark(date_range.prefetch_start, date_range.end)
+    _write_snapshot_outputs(out_dir, all_frames, raw_pool, bench_main, meta, bench_small=bench_small)
     print(f"[snapshot] Done! 成功率: {ok}/{len(symbols)} ({100 * ok / len(symbols):.1f}%)")
     return 0

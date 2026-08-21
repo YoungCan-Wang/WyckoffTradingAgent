@@ -6,6 +6,8 @@ from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 
+import pandas as pd
+
 from core.a_share_entry_research import AShareEntryResearchPolicy
 from core.ai_candidate_allocation import AiCandidateAllocationConfig
 from core.backtest_execution import ExitSimulationConfig, IntradayPriceFetcher
@@ -52,6 +54,8 @@ class BacktestRunInput:
     funnel_config_overrides: dict[str, object] = field(default_factory=dict)
     market_breadth_calculator: MarketBreadthCalculator | None = None
     market_regime_analyzer: MarketRegimeAnalyzer | None = None
+    # 小盘基准；缺失时防守档判据退化，见 core/backtest_replay._analyze_market_regime。
+    smallcap_bench_df: pd.DataFrame | None = None
     candidate_policy: CandidatePolicyConfig = field(default_factory=CandidatePolicyConfig)
     ai_allocation: AiCandidateAllocationConfig = field(default_factory=AiCandidateAllocationConfig)
     concept_map: dict[str, list[str]] = field(default_factory=dict)
@@ -260,6 +264,7 @@ def _replay_config(
         intraday_entry_price_fetcher=params.intraday_entry_price_fetcher,
         market_breadth_calculator=params.market_breadth_calculator,
         market_regime_analyzer=params.market_regime_analyzer,
+        smallcap_bench_df=getattr(params, "smallcap_bench_df", None),
         exit=params.exit_config,
         candidate_policy=params.candidate_policy,
         ai_allocation=params.ai_allocation,
