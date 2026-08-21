@@ -412,9 +412,7 @@ def load_backtest_history(
         if smallcap_df is None or smallcap_df.empty:
             # 旧快照没有该文件；在线补拉，拉不到则退化为 None 并在下游记录。
             smallcap_df = _fetch_smallcap_online(start_dt, end_dt)
-        return BacktestHistory(
-            all_df_map, bench_df, [], snapshot_rows_total, True, smallcap_bench_df=smallcap_df
-        )
+        return BacktestHistory(all_df_map, bench_df, [], snapshot_rows_total, True, smallcap_bench_df=smallcap_df)
 
     logger.info("开始拉取历史日线: symbols=%d, workers=%s", len(symbols), max_workers)
     if progress is not None:
