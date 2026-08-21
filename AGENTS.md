@@ -99,6 +99,14 @@ the error direction favored acting. So:
    measurement is normal; acting on the reversal within the same session is not. Record the
    correction, keep production as-is, and let the scheduled evaluators accumulate samples.
 
+7. **Single-change evidence only shortlists; the final config must come from a combined
+   run** — Testing "this one change vs none" misses interactions between changes. On
+   2026-08-21 two independently-validated changes cancelled out: blocking `evr`/`sos`
+   alone moved total return −15.82%→−6.31%, tightening the stop 12%→5% alone moved
+   −5.71%→+7.31%, but stacking both gave −0.14% — 7.45pct worse than the stop alone,
+   because both target the same failure (Trend-track losses) and the freed slots went to
+   weaker second-tier Accum candidates. Ship the ablation, not the sum of the parts.
+
 ## Gate Levels
 
 - **Fast gate (local/default)**: `.venv/bin/ruff check .`, `.venv/bin/ruff format --check .`, `.venv/bin/python scripts/quality_gate.py --check-functions`, and focused tests for touched code.

@@ -1,0 +1,103 @@
+{
+  "window": "2026-05-06~2026-08-15",
+  "trading_days": 66,
+  "engine": "scripts/backtest_runner.py (production FunnelConfig)",
+  "friction": {
+    "buy_pct": 0.026,
+    "sell_pct": 0.176
+  },
+  "results": [
+    {
+      "config": "baseline_no_stop",
+      "trades": "124",
+      "win_rate": "47.58",
+      "mean_pct": "-1.969",
+      "total_pct": "-16.49",
+      "sharpe": "-1.965",
+      "calmar": "-2.318",
+      "max_dd_pct": "-24.69",
+      "var95_pct": "-22.141",
+      "trend_mean": "-3.109",
+      "accum_mean": "0.514"
+    },
+    {
+      "config": "variant_A",
+      "trades": "123",
+      "win_rate": "47.97",
+      "mean_pct": "-2.017",
+      "total_pct": "-15.82",
+      "sharpe": "-2.066",
+      "calmar": "-2.297",
+      "max_dd_pct": "-23.91",
+      "var95_pct": "-22.199",
+      "trend_mean": "-3.618",
+      "accum_mean": "1.187"
+    },
+    {
+      "config": "block_evr_sos",
+      "trades": "106",
+      "win_rate": "50.00",
+      "mean_pct": "-1.075",
+      "total_pct": "-6.31",
+      "sharpe": "-1.207",
+      "calmar": "-1.669",
+      "max_dd_pct": "-13.14",
+      "var95_pct": "-17.092",
+      "trend_mean": "-4.582",
+      "accum_mean": "0.183"
+    },
+    {
+      "config": "stop_only_12pct",
+      "trades": "123",
+      "win_rate": "46.34",
+      "mean_pct": "-1.108",
+      "total_pct": "-5.71",
+      "sharpe": "-0.794",
+      "calmar": "-1.368",
+      "max_dd_pct": "-14.51",
+      "var95_pct": "-12.178",
+      "trend_mean": "-2.278",
+      "accum_mean": "1.232"
+    },
+    {
+      "config": "stop_only_8pct",
+      "trades": "123",
+      "win_rate": "43.09",
+      "mean_pct": "-0.501",
+      "total_pct": "0.04",
+      "sharpe": "-0.068",
+      "calmar": "0.014",
+      "max_dd_pct": "-10.22",
+      "var95_pct": "-9.703",
+      "trend_mean": "-1.588",
+      "accum_mean": "1.673"
+    },
+    {
+      "config": "stop_only_5pct",
+      "trades": "123",
+      "win_rate": "37.40",
+      "mean_pct": "-0.205",
+      "total_pct": "7.31",
+      "sharpe": "0.871",
+      "calmar": "3.502",
+      "max_dd_pct": "-7.25",
+      "var95_pct": "-9.686",
+      "trend_mean": "-1.196",
+      "accum_mean": "1.776"
+    },
+    {
+      "config": "combined_block_and_stop5",
+      "trades": "106",
+      "win_rate": "43.40",
+      "mean_pct": "-0.295",
+      "total_pct": "-0.14",
+      "sharpe": "-0.122",
+      "calmar": "-0.044",
+      "max_dd_pct": "-11.09",
+      "var95_pct": "-6.767",
+      "trend_mean": "-2.815",
+      "accum_mean": "0.610"
+    }
+  ],
+  "conclusion": "单项最优是「仅止损 -5%」（总收益 +7.31%、夏普 +0.871）。禁 evr/sos 单独亦改善（-15.82%->-6.31%），但与止损叠加后降至 -0.14%——两者解决同一问题（Trend 亏损），重复用药。故仅保留止损 5%，撤销 evr/sos 禁买。"
+}
