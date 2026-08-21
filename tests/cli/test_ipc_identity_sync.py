@@ -29,6 +29,9 @@ class FakeSession:
     def sync_identity(self) -> None:
         self.synced += 1
 
+    def run_turn(self, text: str):
+        yield {"type": "done", "text": text, "synced": self.synced}
+
     @property
     def tool_context(self):
         # 记录每次读取时已经同步过几次 —— 0 就说明顺序错了
@@ -105,6 +108,13 @@ def test_read_path_still_syncs(fake_session, monkeypatch):
     assert all(seen >= 1 for seen in fake_session.context_reads)
 
 
+def test_chat_syncs_identity_before_running_turn(fake_session):
+    events = list(methods.METHODS["chat"]({"text": "hello"}))
+
+    assert fake_session.synced == 1
+    assert events == [{"type": "done", "text": "hello", "synced": 1}]
+
+
 def test_no_per_account_method_reads_tool_context_unsynced():
     """穷举：源码里不该再有绕过 _synced_session 的 tool_context 取用。
 
@@ -114,6 +124,5 @@ def test_no_per_account_method_reads_tool_context_unsynced():
     import inspect
 
     src = inspect.getsource(methods)
-    # 允许 chat()：它走 session.run_turn，同步在会话内部完成
     offenders = [line.strip() for line in src.splitlines() if "tool_context=get_session()" in line]
     assert offenders == [], f"这些地方绕过了 _synced_session(): {offenders}"

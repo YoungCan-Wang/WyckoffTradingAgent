@@ -170,6 +170,11 @@ class TestPortfolioSetStop:
         _result("portfolio_set_stop", {"code": "600519", "stop_loss": None})
         assert captured["stop_loss"] is None
 
+    @pytest.mark.parametrize("blank", ["", "   "])
+    def test_blank_clears_stop(self, captured: dict[str, Any], blank: str) -> None:
+        _result("portfolio_set_stop", {"code": "600519", "stop_loss": blank})
+        assert captured["stop_loss"] is None
+
     def test_number_sets_stop(self, captured: dict[str, Any]) -> None:
         _result("portfolio_set_stop", {"code": "600519", "stop_loss": 1550.5})
         assert captured["stop_loss"] == 1550.5
@@ -184,6 +189,12 @@ class TestPortfolioSetStop:
     def test_requires_code(self, captured: dict[str, Any]) -> None:
         with pytest.raises(MethodError):
             list(methods.dispatch("portfolio_set_stop", {"stop_loss": 10}))
+
+    def test_rejects_non_numeric_stop(self, captured: dict[str, Any]) -> None:
+        with pytest.raises(MethodError) as excinfo:
+            list(methods.dispatch("portfolio_set_stop", {"code": "600519", "stop_loss": "abc"}))
+        assert excinfo.value.code == "invalid_params"
+        assert "stop_loss" not in captured
 
 
 class TestWriteMethodsRegistered:

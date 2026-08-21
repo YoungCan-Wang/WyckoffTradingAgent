@@ -230,9 +230,14 @@ def portfolio_set_stop(params: dict[str, Any]) -> Iterator[Event]:
         raise MethodError("invalid_params", "需要 stop_loss（传 null 表示清除）")
 
     raw = params.get("stop_loss")
+    clears_stop = raw is None or (isinstance(raw, str) and not raw.strip())
+    try:
+        stop_loss = None if clears_stop else float(raw)
+    except (TypeError, ValueError) as exc:
+        raise MethodError("invalid_params", "stop_loss 需为数字或 null") from exc
     result = set_stop_loss(
         code=code,
-        stop_loss=None if raw is None else float(raw),
+        stop_loss=stop_loss,
         tool_context=_synced_session().tool_context,
     )
     failure = _portfolio_write_failed(result)
@@ -959,9 +964,7 @@ def chat(params: dict[str, Any]) -> Iterator[Event]:
     if not text:
         raise MethodError("invalid_params", "缺少 text")
 
-    from cli.ipc.session import get_session
-
-    session = get_session()
+    session = _synced_session()
     yield from session.run_turn(text)
 
 

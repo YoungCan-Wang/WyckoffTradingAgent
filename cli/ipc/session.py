@@ -142,7 +142,7 @@ class DesktopSession:
         try:
             from cli.headless import current_nav
 
-            return current_nav()
+            return current_nav(self._tools)
         except Exception:
             return 0.0
 

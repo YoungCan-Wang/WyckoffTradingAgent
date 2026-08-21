@@ -170,6 +170,29 @@ class TestMethodErrors:
 
 
 class TestApprovalOwnership:
+    def test_approval_nav_uses_session_tool_registry(self, tmp_path, monkeypatch):
+        from cli import approval_queue as aq
+        from cli.ipc.session import DesktopSession
+
+        monkeypatch.setattr(aq, "DB_PATH", tmp_path / "approvals.db")
+        registry = object()
+        seen: list[object] = []
+        monkeypatch.setattr(
+            "cli.headless.current_nav",
+            lambda tools: seen.append(tools) or 1_000.0,
+        )
+        session = DesktopSession()
+        session._tools = registry
+        session._confirm(
+            "update_portfolio",
+            {"action": "add", "code": "600519", "shares": 10, "cost_price": 10},
+        )
+
+        record = aq.list_pending()[0]
+        assert seen == [registry]
+        assert record.risk == "confirm"
+        assert record.nav_ratio == pytest.approx(0.1)
+
     def test_desktop_approval_records_the_current_user(self, tmp_path, monkeypatch):
         from cli import approval_queue as aq
         from cli.ipc.session import DesktopSession

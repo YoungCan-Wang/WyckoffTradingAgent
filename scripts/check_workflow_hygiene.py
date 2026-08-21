@@ -91,8 +91,7 @@ def _check_action_versions(path: Path, data: dict[str, Any]) -> list[str]:
             major = int(ref[1:].split(".")[0])
             if major < minimum:
                 failures.append(
-                    f"{path}: job {job_name} 用了 {uses}，"
-                    f"低于要求的 {action}@v{minimum}（Node 20 运行时已废弃）"
+                    f"{path}: job {job_name} 用了 {uses}，低于要求的 {action}@v{minimum}（Node 20 运行时已废弃）"
                 )
     return failures
 
