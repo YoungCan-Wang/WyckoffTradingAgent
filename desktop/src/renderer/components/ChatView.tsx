@@ -18,17 +18,16 @@ export function ChatView () {
   const [sendOnEnter, setSendOnEnter] = useState(true)
   const chat = useChat(ready)
 
-  // 桥的状态：没 ready 时禁用发送，并让 app.js 那边显示后端错误空态。
+  // 桥没 ready 时禁用发送，避免请求在重启或停止阶段静默失败。
   useEffect(() => {
     let alive = true
     void window.wyckoff.status().then((s) => {
       if (alive) setReady(s.state === 'ready')
     })
-    window.wyckoff.onStatus((s) => {
-      if (s.state === 'ready') setReady(true)
-      if (s.state === 'error' || s.state === 'starting') setReady(false)
+    const off = window.wyckoff.onStatus((s) => {
+      if (s.state !== 'log') setReady(s.state === 'ready')
     })
-    return () => { alive = false }
+    return () => { alive = false; off() }
   }, [])
 
   // 「回车发送」是设置项，改了要立刻生效。
@@ -42,7 +41,7 @@ export function ChatView () {
     return () => window.removeEventListener('wyckoff:settings-changed', read)
   }, [])
 
-  // app.js 仍拥有的动作要能往对话流里写系统提示（退出登录、切模型失败）。
+  // 让设置、退出登录等外壳动作能往对话流里写系统提示。
   useEffect(() => {
     window.WyckoffChat = { sysLine: chat.sysLine }
     return () => { delete window.WyckoffChat }

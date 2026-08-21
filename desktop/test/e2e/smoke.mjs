@@ -1,23 +1,15 @@
-// 真的把应用启起来点一遍。
-//
-// 这份存在的理由：我先前判断「CI 验不了运行时，必须人去 Windows 上点」——
-// 那个判断是错的。Playwright 的 _electron.launch 能在 CI 里起真进程、真窗口，
-// 拿到渲染端的 DOM。所以那些 Windows 专属分支不必只靠人肉冒烟。
-//
-// 与其他测试的分工：
-// - test/*.test.js 是纯函数与静态形状（不起进程）
-// - 这份起真 Electron，验「窗口出来了、页面切得动、菜单点得开」
-// - 仍然验不了的：装完之后的安装包行为（NSIS 注册表、开始菜单项）
-//
-// 刻意不 stub Python：这里要验的是外壳能不能起来。Python 缺失时状态栏会停在
-// 「连接中」，那不影响本轮断言 —— 反倒是真实分发场景的下限。
+// 启动真实 Electron 进程验证渲染外壳。安装器和打包后的 Python payload
+// 仍由 Windows 安装包冒烟覆盖。
 import { _electron as electron } from 'playwright'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import { tmpdir } from 'node:os'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const APP_DIR = join(HERE, '..', '..')
+const PROFILE_DIR = await mkdtemp(join(tmpdir(), 'wyckoff-e2e-'))
 
 const VIEWS = ['chat', 'tasks', 'approvals', 'portfolio', 'schedules', 'tracking', 'attribution', 'reports']
 
@@ -34,7 +26,7 @@ const check = (name, fn) => {
 }
 
 const app = await electron.launch({
-  args: [APP_DIR],
+  args: [APP_DIR, `--user-data-dir=${PROFILE_DIR}`],
   // CI 的 Windows/Linux runner 没有 GPU；不关掉会在启动阶段卡住或刷一堆警告。
   env: { ...process.env, ELECTRON_DISABLE_GPU: '1' }
 })
@@ -52,6 +44,8 @@ win.on('console', (msg) => {
 win.on('pageerror', (err) => consoleErrors.push(`pageerror: ${err.message}`))
 
 await win.waitForLoadState('domcontentloaded')
+await win.evaluate(() => localStorage.setItem('wyckoff.sidebar', '0'))
+await win.reload({ waitUntil: 'domcontentloaded' })
 
 writeLine('冒烟检查：')
 
@@ -60,7 +54,19 @@ await win.waitForSelector('.win', { timeout: 20_000 })
 const title = await win.title()
 check('窗口标题正确', () => assert.match(title, /Wyckoff/))
 
-// 2) 侧栏导航渲染出来了（React 接管的部分）
+// CI 的默认窗口小于 1180px，侧栏会按产品规则收起；先从真实入口展开。
+//
+// 这条是 Windows runner 上真红过一次才补的：侧栏默认是否展开看窗口宽度
+// （>= 1180 才开），而窗口宽度取自 `min(1480, 屏幕宽 - 40)`。无头虚拟显示分辨率
+// 偏小 → 侧栏收起 → `.nv` 永远等不到。本机 1430px 一直是绿的，所以只有真
+// Windows CI 能暴露它 —— 应用本身没问题（收起时切换按钮会移到顶栏），是测试
+// 假设了「侧栏总是开着」。
+if (await win.locator('.nv').count() === 0) {
+  const toggle = win.locator('.side-toggle')
+  const toggleCount = await toggle.count()
+  check('收起侧栏有展开入口', () => assert.equal(toggleCount, 1))
+  if (toggleCount === 1) await toggle.click()
+}
 await win.waitForSelector('.nv', { timeout: 20_000 })
 const navCount = await win.locator('.nv').count()
 check('侧栏导航完整', () => assert.equal(navCount, VIEWS.length))
@@ -87,9 +93,7 @@ for (const view of VIEWS) {
 // 4) 「打开」菜单能弹出 —— 这条曾经因为 openBtn 未定义而整个失效
 await win.locator('.nv[data-view="chat"]').click()
 await win.waitForTimeout(300)
-// 按类名定位，不用 .first() —— 侧栏的账号按钮也是 haspopup=menu，
-// 取第一个会点到那个，然后断言「菜单项 >= 3」在只有「设置/退出登录」的
-// 账号菜单上失败。（第一版就是这么错的。）
+// 账号按钮也有 aria-haspopup="menu"，所以用顶栏按钮类名消除歧义。
 const openBtn = win.locator('.topbtn[aria-haspopup="menu"]')
 if (await openBtn.count() > 0) {
   await openBtn.click()
@@ -112,7 +116,8 @@ if (await openBtn.count() > 0) {
 check('渲染端无未预期报错', () =>
   assert.deepEqual(consoleErrors, [], `报错: ${consoleErrors.join(' | ')}`))
 } finally {
-await app.close()
+  await app.close()
+  await rm(PROFILE_DIR, { recursive: true, force: true })
 }
 
 writeLine(failures ? `\n*** ${failures} 项失败 ***` : '\n全部通过')

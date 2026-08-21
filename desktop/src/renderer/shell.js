@@ -103,21 +103,7 @@ const el = (tag, cls, text) => {
 // Messages go into .inner, which is width-capped and centred; #stream itself
 
 
-async function collect (method, params) {
-  const res = await window.wyckoff.call(method, params)
-  if (!res.ok) return null
-  return new Promise((resolve) => {
-    let payload = null
-    const off = window.wyckoff.onEvent((event) => {
-      if (event.id !== res.id) return
-      if (event.type === 'result') payload = event
-      if (event.type === 'end') {
-        off()
-        resolve(payload)
-      }
-    })
-  })
-}
+const collect = (method, params) => streamCall(method, params, false)
 
 /**
  * 与 collect 同样等一轮结束，但把 error 事件带回来而不是当成空结果。
@@ -126,21 +112,45 @@ async function collect (method, params) {
  * 对重跑这类会改变状态的调用，把 already_running 显示成「完成」是错的。
  */
 function callWithError (method, params) {
+  return streamCall(method, params, true)
+}
+
+/** 先订阅再发请求，避免快速的 result/end 抢在 invoke 回包前到达。 */
+function streamCall (method, params, rejectBackendError) {
   return new Promise((resolve, reject) => {
+    let requestId = null
+    let payload = null
+    let failure = null
+    const early = []
+
+    const finish = (event) => {
+      if (String(event.id ?? '') !== String(requestId ?? '')) return
+      if (event.type === 'result') payload = event
+      if (event.type === 'error') failure = new Error(event.message || event.code || 'failed')
+      if (event.type !== 'end') return
+      off()
+      if (rejectBackendError && failure) reject(failure)
+      else resolve(payload)
+    }
+
+    const off = window.wyckoff.onEvent((event) => {
+      if (requestId === null) early.push(event)
+      else finish(event)
+    })
+
     window.wyckoff.call(method, params).then((res) => {
-      if (!res.ok) return reject(new Error(res.error || 'call failed'))
-      let payload = null
-      let failure = null
-      const off = window.wyckoff.onEvent((event) => {
-        if (event.id !== res.id) return
-        if (event.type === 'result') payload = event
-        if (event.type === 'error') failure = new Error(event.message || event.code || 'failed')
-        if (event.type === 'end') {
-          off()
-          failure ? reject(failure) : resolve(payload)
-        }
-      })
-    }, reject)
+      if (!res.ok || !res.id) {
+        off()
+        if (rejectBackendError) reject(new Error(res.error || 'call failed'))
+        else resolve(null)
+        return
+      }
+      requestId = res.id
+      for (const event of early) finish(event)
+    }, (error) => {
+      off()
+      reject(error)
+    })
   })
 }
 
@@ -299,8 +309,7 @@ const openKline = (symbol) =>
     }
   })
 
-// charts.js 的持仓行需要它，但 charts.js 先于 app.js 加载，所以挂到 window
-// 而不是反向 import。
+// charts.js 的持仓行需要它；通过 window 暴露，避免普通脚本反向 import 模块。
 window.WyckoffOpenKline = (symbol) => openKline(symbol)
 
 /**

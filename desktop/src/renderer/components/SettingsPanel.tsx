@@ -8,7 +8,7 @@ const t = (key: string) => window.WyckoffI18n.t(key)
 
 interface Props {
   section: string
-  /** app.js 侧的动作：系统消息与退出登录仍由它拥有（要动侧栏和对话流）。 */
+  /** 外壳动作：系统消息、退出登录与配置刷新。 */
   onMessage: (text: string, isError?: boolean) => void
   onSignOut: () => void
   onConfigChanged: () => void
@@ -17,8 +17,7 @@ interface Props {
 export function SettingsPanel ({ section, onMessage, onSignOut, onConfigChanged }: Props) {
   const { data, loading, notes, save, reload, flash } = useSettings()
 
-  // 模型的角色变更、新增、删除都要让输入框上的选择器跟着变 ——
-  // 那个控件还在 app.js 手里，靠这个回调通知它重画。
+  // 模型的角色变更、新增、删除都要让输入框上的选择器跟着变。
   const reloadAll = async () => {
     await reload()
     onConfigChanged()

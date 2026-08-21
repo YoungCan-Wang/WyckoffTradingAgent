@@ -115,9 +115,5 @@ def test_no_per_account_method_reads_tool_context_unsynced():
 
     src = inspect.getsource(methods)
     # 允许 chat()：它走 session.run_turn，同步在会话内部完成
-    offenders = [
-        line.strip()
-        for line in src.splitlines()
-        if "tool_context=get_session()" in line
-    ]
+    offenders = [line.strip() for line in src.splitlines() if "tool_context=get_session()" in line]
     assert offenders == [], f"这些地方绕过了 _synced_session(): {offenders}"

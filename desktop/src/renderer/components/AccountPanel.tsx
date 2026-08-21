@@ -1,9 +1,8 @@
 /**
  * 「账号」页。
  *
- * 自己读一次 account 而不是复用 app.js 里的模块级变量：那份状态还要驱动侧栏
- * 底部，跨模块共享容易读到过期值。退出登录仍交回 app.js —— 它要同时刷新侧栏
- * 和关掉设置面板，那些 DOM 还不属于 React。
+ * 自己读一次 account，避免设置页复用外壳状态时拿到过期账号。退出动作交回
+ * App，统一刷新侧栏、缓存和弹窗状态。
  */
 import { useEffect, useState } from 'react'
 import { collect } from '../lib/ipc'

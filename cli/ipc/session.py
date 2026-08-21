@@ -100,17 +100,30 @@ class DesktopSession:
 
         nav = self._nav()
         risk = classify(name, args, nav)
+        summary = aq.summarize(name, args)
+        reason = explain(name, args, nav)
+        ratio = nav_ratio(args, nav)
         approval_id = aq.enqueue(
             name,
             args,
             risk=risk,
             source="desktop",
-            summary=aq.summarize(name, args),
+            summary=summary,
             user_id=self._user_id,
-            risk_reason=explain(name, args, nav),
-            nav_ratio=nav_ratio(args, nav),
+            risk_reason=reason,
+            nav_ratio=ratio,
         )
-        self._pending_confirms.append({"id": approval_id, "tool": name, "risk": risk})
+        self._pending_confirms.append(
+            {
+                "approval_id": approval_id,
+                "tool_name": name,
+                "summary": summary,
+                "risk": risk,
+                "args": args,
+                "risk_reason": reason,
+                "nav_ratio": ratio,
+            }
+        )
         return {
             "action": "queued",
             "message": (

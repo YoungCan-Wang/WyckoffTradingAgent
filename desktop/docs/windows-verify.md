@@ -14,10 +14,9 @@ macOS 上做，那些分支从来没真正跑过 —— 已经因此漏过一个
 | Windows CI | **在真 Windows 上跑上面那套 e2e**，加打包与 Electron 退出检查 | 打包后的 Python 子进程回收、真实 x64 性能 |
 | 本地虚拟机（可选） | 装完的包能点、注册表与开始菜单项对 | 同上 |
 
-**修正一处早先的判断**：我一度说「CI 没有交互式桌面会话，验不了运行时，必须人去
-Windows 上点一遍」。那是错的 —— Playwright 的 `_electron.launch` 能在 CI 里起真
-进程真窗口并拿到 DOM，Linux 上套一层 `xvfb-run` 即可。所以**手动冒烟不再是必须**，
-它退化成「装包路径」的补充验证。
+Playwright 的 `_electron.launch` 能在 CI 启动真实进程和窗口；Linux 使用
+`xvfb-run` 提供虚拟显示。安装器注册、打包后的 Python payload 和退出回收仍需
+Windows 安装包验证。
 
 ## 架构：Apple Silicon 上只能测 arm64
 

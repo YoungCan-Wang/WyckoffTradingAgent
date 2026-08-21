@@ -46,11 +46,70 @@ export function useChat (ready: boolean): ChatApi {
     window.WyckoffReact?.clearPortfolioCaches?.()
   }, [])
 
+  const handleLiveEvent = useCallback((event: Record<string, unknown>) => {
+    const id = String(event.id || '')
+    const type = String(event.type || '')
+    if (type === 'tool_start') {
+      // 改持仓的工具一开跑就作废缓存：审批可能被「本次会话总是允许」放行，
+      // 那条路径不产生审批事件，只能挂在这里。
+      invalidateOnTool(String(event.name || ''))
+      const code = (event.args as { code?: string } | undefined)?.code
+      if (String(event.name || '') === 'annotate_chart' && code) {
+        window.WyckoffApp?.openKline?.(String(code))
+        setTurns((prev) => prev.map((x) => (
+          x.id === id
+            ? { ...x, drewCharts: [...(x.drewCharts || []), String(code)] }
+            : x
+        )))
+      }
+    }
+
+    if (type === 'approval_pending') window.WyckoffApp?.refreshApprovals?.()
+
+    if (type === 'done') {
+      setTurns((prev) => prev.map((x) => {
+        if (x.id !== id) return x
+        const body = finalText(x, event.text ? String(event.text) : undefined)
+        // 报告形态的回复送去产物面板，对话里只留一行「已在右侧打开」。
+        if (looksLikeReport(body)) {
+          const title = reportTitle(body, t('chat.report'))
+          window.WyckoffApp?.openReport?.(title, body)
+          return {
+            ...x,
+            blocks: [
+              ...x.blocks.filter((b) => b.kind !== 'text'),
+              { kind: 'note', text: t('chat.openedRight', { title }) }
+            ]
+          }
+        }
+        // done 带了完整文本而流式一个字都没来（非流式模型）：补上。
+        if (event.text && !x.blocks.some((b) => b.kind === 'text')) {
+          return { ...x, blocks: [...x.blocks, { kind: 'text', text: String(event.text) }] }
+        }
+        return x
+      }))
+      return
+    }
+
+    if (type === 'end') {
+      liveIds.current.delete(id)
+      setBusy(false)
+      setTurns((prev) => prev.map((x) => {
+        if (x.id !== id) return x
+        // 标注是在图建好之后写的，所以这一轮画过的图要再刷一次。
+        if (x.drewCharts?.length) window.WyckoffApp?.refreshCharts?.(x.drewCharts)
+        return { ...x, live: false }
+      }))
+      return
+    }
+
+    setTurns((prev) => prev.map((x) => (x.id === id ? applyEvent(x, event) : x)))
+  }, [invalidateOnTool])
+
   useEffect(() => {
     const off = window.wyckoff.onEvent((event) => {
       const id = String(event.id || '')
       if (!id) return
-      const type = String(event.type || '')
       if (!liveIds.current.has(id)) {
         // 不是我们在等的流。但如果此刻有 send 在飞行，这可能正是它的前几个
         // 事件（id 还没回来）—— 缓存等回放。缓存只在飞行期间增长，send 一
@@ -61,65 +120,10 @@ export function useChat (ready: boolean): ChatApi {
         pendingEvents.current.set(id, list)
         return
       }
-
-      if (type === 'tool_start') {
-        // 改持仓的工具一开跑就作废缓存：审批可能被「本次会话总是允许」放行，
-        // 那条路径不产生审批事件，只能挂在这里。
-        invalidateOnTool(String(event.name || ''))
-        const code = (event.args as { code?: string } | undefined)?.code
-        if (String(event.name || '') === 'annotate_chart' && code) {
-          window.WyckoffApp?.openKline?.(String(code))
-          setTurns((prev) => prev.map((x) => (
-            x.id === id
-              ? { ...x, drewCharts: [...(x.drewCharts || []), String(code)] }
-              : x
-          )))
-        }
-      }
-
-      if (type === 'approval_pending') window.WyckoffApp?.refreshApprovals?.()
-
-      if (type === 'done') {
-        setTurns((prev) => prev.map((x) => {
-          if (x.id !== id) return x
-          const body = finalText(x, event.text ? String(event.text) : undefined)
-          // 报告形态的回复送去产物面板，对话里只留一行「已在右侧打开」。
-          if (looksLikeReport(body)) {
-            const title = reportTitle(body, t('chat.report'))
-            window.WyckoffApp?.openReport?.(title, body)
-            return {
-              ...x,
-              blocks: [
-                ...x.blocks.filter((b) => b.kind !== 'text'),
-                { kind: 'note', text: t('chat.openedRight', { title }) }
-              ]
-            }
-          }
-          // done 带了完整文本而流式一个字都没来（非流式模型）：补上。
-          if (event.text && !x.blocks.some((b) => b.kind === 'text')) {
-            return { ...x, blocks: [...x.blocks, { kind: 'text', text: String(event.text) }] }
-          }
-          return x
-        }))
-        return
-      }
-
-      if (type === 'end') {
-        liveIds.current.delete(id)
-        setBusy(false)
-        setTurns((prev) => prev.map((x) => {
-          if (x.id !== id) return x
-          // 标注是在图建好之后写的，所以这一轮画过的图要再刷一次。
-          if (x.drewCharts?.length) window.WyckoffApp?.refreshCharts?.(x.drewCharts)
-          return { ...x, live: false }
-        }))
-        return
-      }
-
-      setTurns((prev) => prev.map((x) => (x.id === id ? applyEvent(x, event) : x)))
+      handleLiveEvent(event)
     })
     return off
-  }, [invalidateOnTool])
+  }, [handleLiveEvent])
 
   const sysLine = useCallback((text: string, isError = false) => {
     setTurns((prev) => [...prev, {
@@ -159,11 +163,9 @@ export function useChat (ready: boolean): ChatApi {
     const early = pendingEvents.current.get(id)
     pendingEvents.current.clear()
     if (early?.length) {
-      setTurns((prev) => prev.map((x) => (
-        x.id === id ? early.reduce((acc, e) => applyEvent(acc, e), x) : x
-      )))
+      for (const event of early) handleLiveEvent(event)
     }
-  }, [busy, ready])
+  }, [busy, ready, handleLiveEvent])
 
   return { turns, busy, started: turns.length > 0, send, sysLine, invalidateOnTool }
 }

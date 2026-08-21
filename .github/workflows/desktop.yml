@@ -56,13 +56,7 @@ jobs:
       - name: Build renderer
         run: npm run build:ui
 
-      # 真的把应用起起来点一遍。
-      #
-      # 我一开始判断「CI 没有交互式桌面会话，验不了运行时」—— 那是错的：
-      # Playwright 的 _electron.launch 能起真进程真窗口，拿到渲染端 DOM。
-      # Linux 上需要 xvfb 提供虚拟显示；Windows/macOS runner 直接跑。
-      #
-      # 这一步在 Windows 上跑，才是「Windows 分支真的执行过」的第一手证据。
+      # Linux 需要虚拟显示；Windows/macOS runner 可直接启动 Electron。
       - name: E2E smoke (Linux 需要虚拟显示)
         if: runner.os == 'Linux'
         run: xvfb-run --auto-servernum node test/e2e/smoke.mjs

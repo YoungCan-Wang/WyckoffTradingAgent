@@ -70,7 +70,9 @@ def _emit(payload: dict[str, Any]) -> None:
 
 
 def _respond(request_id: Any, event: dict[str, Any]) -> None:
-    _emit({"id": request_id, **event})
+    # 传输层 id 必须始终是请求流 id。业务事件若也有 id，不能覆盖它；否则前端
+    # 无法把事件分发给发起调用的那一轮。业务标识使用 approval_id 等专用字段。
+    _emit({**event, "id": request_id})
 
 
 def _handle_line(raw: str) -> None:

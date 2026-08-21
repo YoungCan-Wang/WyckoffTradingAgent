@@ -857,6 +857,10 @@ def _coerce_timeout(key: str, value: Any) -> int:
         seconds = int(value)
     except (TypeError, ValueError):
         raise MethodError("invalid_value", f"{key} 需为整数秒，收到 {value!r}") from None
+    if isinstance(value, float) and not value.is_integer():
+        raise MethodError("invalid_value", f"{key} 需为整数秒，收到 {value!r}")
+    if isinstance(value, str) and value.strip() != str(seconds):
+        raise MethodError("invalid_value", f"{key} 需为整数秒，收到 {value!r}")
     if not low <= seconds <= high:
         raise MethodError("invalid_value", f"{key} 需在 {low}~{high} 秒之间，收到 {seconds}")
     return seconds

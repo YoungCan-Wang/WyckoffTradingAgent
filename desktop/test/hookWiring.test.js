@@ -1,15 +1,7 @@
 'use strict'
 
-// 命令式模块（shell.js）与 React（main.tsx）的接线不能依赖执行顺序。
-//
-// index.html 里 shell.js 是普通脚本、main.tsx 是 type="module"，后者一定后
-// 执行。所以在 shell.js 里写 `if (window.WyckoffReact) …` 恒为假 —— 曾经
-// 因此让设置页「退出登录」点了没反应，而且完全静默。
-//
-// 这组测试锁住「谁先就绪都能接上」，并且直接检查 index.html 的脚本类型，
-// 免得将来有人把 shell.js 也改成 module 后以为可以省掉这套握手。
-//
-// （app.js 已拆分：外壳归 React，命令式部分留在 shell.js。）
+// shell.js 先注册命令式能力，main.tsx 再挂 React 外壳。两边只通过显式的
+// window.WyckoffShell 接口交互，不保留旧 app.js 的双向挂载协议。
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const { readFileSync } = require('node:fs')
@@ -36,41 +28,9 @@ test('shell.js 只通过 window.WyckoffShell 暴露自己，不反向假设 Reac
   assert.ok(src.includes('window.WyckoffShell'), 'shell.js 应把自己挂到 WyckoffShell 供 React 调用')
 })
 
-test('main.tsx 挂好 WyckoffReact 之后才去取停放的 hooks', () => {
+test('React 入口不保留已删除 app.js 的挂载协议', () => {
   const src = readFileSync(R('main.tsx'), 'utf8')
-  assert.ok(src.includes('WyckoffPendingHooks'), 'main.tsx 没去取 pending hooks')
-  assert.ok(
-    src.indexOf('window.WyckoffReact =') < src.indexOf('window.WyckoffPendingHooks'),
-    '应先挂好 WyckoffReact 再取 pending hooks'
-  )
-})
-
-test('模拟真实加载顺序：app.js 先跑，hooks 仍能接上', () => {
-  // 只验握手协议本身，不加载真实模块（它们依赖大量 DOM）
-  const win = {}
-  // 1) app.js 先执行：停放 hooks，此时 WyckoffReact 还不存在
-  const hooks = { onSignOut: () => 'signed-out' }
-  win.WyckoffPendingHooks = hooks
-  if (win.WyckoffReact && win.WyckoffReact.setHooks) win.WyckoffReact.setHooks(hooks)
-  assert.equal(win.WyckoffReact, undefined, '前提：此时 React 还没就绪')
-
-  // 2) main.tsx 后执行：挂好自己再取走
-  let live = { onSignOut: () => 'default-noop' }
-  win.WyckoffReact = { setHooks: (next) => { live = { ...live, ...next } } }
-  if (win.WyckoffPendingHooks) win.WyckoffReact.setHooks(win.WyckoffPendingHooks)
-
-  assert.equal(live.onSignOut(), 'signed-out', 'hooks 没接上，退出登录会没反应')
-})
-
-test('反向顺序也要成立：React 先就绪', () => {
-  const win = {}
-  let live = { onSignOut: () => 'default-noop' }
-  win.WyckoffReact = { setHooks: (next) => { live = { ...live, ...next } } }
-  if (win.WyckoffPendingHooks) win.WyckoffReact.setHooks(win.WyckoffPendingHooks)
-
-  const hooks = { onSignOut: () => 'signed-out' }
-  win.WyckoffPendingHooks = hooks
-  if (win.WyckoffReact && win.WyckoffReact.setHooks) win.WyckoffReact.setHooks(hooks)
-
-  assert.equal(live.onSignOut(), 'signed-out')
+  for (const legacy of ['WyckoffPendingHooks', 'WyckoffPendingChatHost', 'mountSettings', 'mountChat']) {
+    assert.ok(!src.includes(legacy), `仍残留旧外壳协议 ${legacy}`)
+  }
 })

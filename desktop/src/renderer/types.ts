@@ -138,7 +138,7 @@ declare global {
       /** withTable:false 时不画只读持仓表（持仓页自己有可编辑的那张）。 */
       renderCharts: (portfolio: unknown, options?: { withTable?: boolean }) => HTMLElement
     }
-    /** app.js 注册的「在产物面板打开 K 线」。可能尚未就绪，调用前判空。 */
+    /** React 外壳注册的「在产物面板打开 K 线」。可能尚未就绪，调用前判空。 */
     WyckoffOpenKline?: (code: string) => void
     /**
      * md.js（vanilla）：把 markdown 渲染成 DOM 节点。

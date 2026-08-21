@@ -98,12 +98,13 @@ export function App () {
       wasReady = true
     }
     void window.wyckoff.status().then((s) => apply(s.state))
-    window.wyckoff.onStatus((s) => {
+    const off = window.wyckoff.onStatus((s) => {
       if (s.state === 'log') return
       // 对话进行中重启不该打断记录，所以只在进入 ready 的那次拉数据。
       if (s.state === 'ready' && wasReady) { setBackendState('ready'); return }
       apply(s.state)
     })
+    return off
   }, [refreshCounts, loadAccount])
 
   const navigate = useCallback((next: string) => {
@@ -138,8 +139,7 @@ export function App () {
     window.WyckoffChat?.sysLine?.(t('signin.signedOutDone'))
   }, [closeSettings, loadAccount])
 
-  // app.js 时代的 WyckoffApp 桥继续保留：命令式模块（K 线、报告面板）与
-  // React 页面互相回调都走它。
+  // 命令式模块（K 线、报告面板）与 React 页面互相回调都走这一条窄桥。
   useEffect(() => {
     window.WyckoffApp = {
       navigate,

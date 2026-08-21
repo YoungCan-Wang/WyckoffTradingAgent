@@ -55,6 +55,23 @@ class TestProtocol:
         ids = [e.get("id") for e in _protocol_lines(result.stdout) if "id" in e]
         assert set(ids) == {"a", "b"}
 
+    def test_business_event_cannot_override_stream_id(self):
+        setup = "\n".join(
+            [
+                "from cli.ipc import methods",
+                "def event_with_id(_params):",
+                '    yield {"type": "approval_pending", "id": "approval-1", "approval_id": "approval-1"}',
+                'methods.METHODS["event_with_id"] = event_with_id',
+            ]
+        )
+        result = _run_ipc(
+            '{"id":"stream-7","method":"event_with_id"}\n__shutdown__\n',
+            extra_setup=setup,
+        )
+        event = next(e for e in _protocol_lines(result.stdout) if e.get("type") == "approval_pending")
+        assert event["id"] == "stream-7"
+        assert event["approval_id"] == "approval-1"
+
     def test_unknown_method_is_error_not_crash(self):
         result = _run_ipc('{"id":1,"method":"nope"}\n__shutdown__\n')
         events = _protocol_lines(result.stdout)
@@ -174,10 +191,12 @@ class TestApprovalOwnership:
         session._confirm("update_portfolio", {"code": "600519", "action": "buy"})
         session._confirm("set_stop_loss", {"code": "600519", "price": 1400})
 
-        assert [item["tool"] for item in session._pending_confirms] == [
+        assert [item["tool_name"] for item in session._pending_confirms] == [
             "update_portfolio",
             "set_stop_loss",
         ]
+        assert all(item["approval_id"] for item in session._pending_confirms)
+        assert session._pending_confirms[0]["args"] == {"code": "600519", "action": "buy"}
 
     def test_mismatched_account_cannot_approve(self, tmp_path, monkeypatch):
         from cli import approval_queue as aq

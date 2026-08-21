@@ -31,11 +31,19 @@ test('有 send 在飞行时，未知 id 的事件要缓存而不是丢弃', () =
 
 test('id 回来后要回放缓存的事件', () => {
   assert.match(SRC, /const early = pendingEvents\.current\.get\(id\)/, '应取出该 id 缓存的事件')
-  assert.match(SRC, /early\.reduce\(\(acc, e\) => applyEvent\(acc, e\), x\)/, '应按顺序逐条回放')
+  assert.match(SRC, /for \(const event of early\) handleLiveEvent\(event\)/, '应走正常事件处理器逐条回放')
   // 顺序很重要：先建 turn 再回放，否则 map 又找不到它
   const addIdx = SRC.indexOf('liveIds.current.add(id)')
   const replayIdx = SRC.indexOf('const early = pendingEvents.current.get(id)')
   assert.ok(addIdx > 0 && replayIdx > addIdx, '必须先登记并建好 turn，再回放')
+})
+
+test('早到的终止与审批事件不能退化成普通文本合并', () => {
+  assert.match(SRC, /const handleLiveEvent = useCallback/, '正常事件处理应有可复用入口')
+  assert.ok(
+    !/early\.reduce\([\s\S]{0,120}applyEvent/.test(SRC),
+    'applyEvent 不处理 done/end 的生命周期；用它回放会永久卡在正在思考'
+  )
 })
 
 test('飞行计数在失败路径上也要归零', () => {

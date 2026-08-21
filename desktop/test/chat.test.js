@@ -68,9 +68,10 @@ test('工具失败与普通错误分开', () => {
 
 test('审批事件整条留着 —— 卡片要用里面的参数', () => {
   const s = applyEvent(turn(), {
-    type: 'approval_pending', id: 'ap1', summary: '卖出', args: { code: '600519' }
+    type: 'approval_pending', id: 7, approval_id: 'ap1', summary: '卖出', args: { code: '600519' }
   })
   assert.equal(s.blocks[0].kind, 'approval')
+  assert.equal(s.blocks[0].event.approval_id, 'ap1')
   assert.equal(s.blocks[0].event.args.code, '600519')
 })
 

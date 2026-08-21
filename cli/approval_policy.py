@@ -50,10 +50,7 @@ def _clears_stop_loss(args: dict[str, Any]) -> bool:
     """
     items = args.get("items")
     if isinstance(items, list) and items:
-        return any(
-            not isinstance(entry, dict) or _entry_clears_stop_loss(entry)
-            for entry in items
-        )
+        return any(not isinstance(entry, dict) or _entry_clears_stop_loss(entry) for entry in items)
     return _entry_clears_stop_loss(args)
 
 

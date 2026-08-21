@@ -24,7 +24,7 @@ def test_valid_timeout_passes_through(key):
 
 
 @pytest.mark.parametrize("key", TIMEOUT_KEYS)
-@pytest.mark.parametrize("bad", ["abc", "", None, 3.7, [], {}])
+@pytest.mark.parametrize("bad", ["abc", "", "10.5", None, 3.7, 10.7, [], {}])
 def test_non_integer_timeout_is_rejected(key, bad):
     """这才是原来的杀伤点：坏值存进去之后设置页整页读不出来。"""
     with pytest.raises(MethodError):

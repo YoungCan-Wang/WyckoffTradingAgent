@@ -21,7 +21,7 @@ export function ApprovalCardInline ({ event, onDecided }: Props) {
   const [outcome, setOutcome] = useState<{ kind: 'ok' | 'err'; text: string; retryable?: boolean } | null>(null)
 
   const item: ApprovalItem = {
-    id: String(event.id || ''),
+    id: String(event.approval_id || ''),
     tool_name: String(event.tool_name || event.tool || ''),
     summary: String(event.summary || ''),
     risk: String(event.risk || ''),

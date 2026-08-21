@@ -1,8 +1,7 @@
 /**
  * 把外观设置落到 <html> 的 class / CSS 变量上。
  *
- * 与 vanilla 版 applyAppearance 行为一致，且仍由它在 app.js 里被调用 ——
- * 迁移期间两边都要能生效，所以这里导出成纯函数，不绑定 React 生命周期。
+ * shell.js 与设置预览都会调用，所以保持为不绑定 React 生命周期的纯函数。
  */
 import type { Settings } from '../types'
 
