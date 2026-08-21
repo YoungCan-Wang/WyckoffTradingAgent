@@ -42,6 +42,8 @@ class BacktestHistory:
     failures: list[str]
     snapshot_rows_total: int = 0
     snapshot_used: bool = False
+    # 小盘基准；缺失时 CRASH/PANIC_REPAIR 判据退化，防守档会塌成 NEUTRAL。
+    smallcap_bench_df: pd.DataFrame | None = None
 
 
 @dataclass(frozen=True)
@@ -165,8 +167,16 @@ def load_snapshot_hist_map(
     return out, total_rows
 
 
+def load_snapshot_smallcap_benchmark(snapshot_dir: Path) -> pd.DataFrame | None:
+    """小盘基准。缺失返回 None——旧快照没有这个文件，此时防守档判据会退化。"""
+    return _load_snapshot_index(snapshot_dir / "benchmark_smallcap.csv")
+
+
 def load_snapshot_benchmark(snapshot_dir: Path) -> pd.DataFrame | None:
-    bench_path = snapshot_dir / "benchmark_main.csv"
+    return _load_snapshot_index(snapshot_dir / "benchmark_main.csv")
+
+
+def _load_snapshot_index(bench_path: Path) -> pd.DataFrame | None:
     if not bench_path.exists():
         return None
     out = pd.read_csv(bench_path, low_memory=False)
@@ -395,10 +405,16 @@ def load_backtest_history(
         if not all_df_map:
             raise RuntimeError(f"快照无可用历史数据: {snapshot_dir}")
         bench_df = load_snapshot_benchmark(snapshot_dir)
+        smallcap_df = load_snapshot_smallcap_benchmark(snapshot_dir)
         logger.info("快照载入完成: ok=%d, rows=%d", len(all_df_map), snapshot_rows_total)
         if bench_df is None or bench_df.empty:
             bench_df = fetch_benchmark_hist(benchmark, start_dt, end_dt)
-        return BacktestHistory(all_df_map, bench_df, [], snapshot_rows_total, True)
+        if smallcap_df is None or smallcap_df.empty:
+            # 旧快照没有该文件；在线补拉，拉不到则退化为 None 并在下游记录。
+            smallcap_df = _fetch_smallcap_online(start_dt, end_dt)
+        return BacktestHistory(
+            all_df_map, bench_df, [], snapshot_rows_total, True, smallcap_bench_df=smallcap_df
+        )
 
     logger.info("开始拉取历史日线: symbols=%d, workers=%s", len(symbols), max_workers)
     if progress is not None:
@@ -407,4 +423,18 @@ def load_backtest_history(
     logger.info("历史拉取完成: ok=%d, fail=%d", len(all_df_map), len(failures))
     if progress is not None:
         progress("拉取完成", f"成功={len(all_df_map)}", 0.4)
-    return BacktestHistory(all_df_map, fetch_benchmark_hist(benchmark, start_dt, end_dt), failures)
+    return BacktestHistory(
+        all_df_map,
+        fetch_benchmark_hist(benchmark, start_dt, end_dt),
+        failures,
+        smallcap_bench_df=_fetch_smallcap_online(start_dt, end_dt),
+    )
+
+
+def _fetch_smallcap_online(start_dt, end_dt, code: str = "399006") -> pd.DataFrame | None:
+    """在线补拉小盘基准。失败返回 None——不应因此中断回测。"""
+    try:
+        return fetch_benchmark_hist(code, start_dt, end_dt)
+    except Exception as exc:  # noqa: BLE001 - 缺小盘只降级判据，不阻塞
+        logger.warning("小盘基准拉取失败，防守档判据将退化: %s", exc)
+        return None

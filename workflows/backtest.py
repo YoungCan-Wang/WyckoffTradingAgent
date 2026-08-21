@@ -304,6 +304,7 @@ def _load_prepared_data(
     return BacktestPreparedData(
         all_df_map=history.all_df_map,
         bench_df=history.bench_df,
+        smallcap_bench_df=history.smallcap_bench_df,
         name_map=universe.name_map,
         market_cap_map=metadata.market_cap_map,
         sector_map=metadata.sector_map,
