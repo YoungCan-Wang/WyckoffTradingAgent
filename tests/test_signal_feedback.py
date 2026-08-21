@@ -487,6 +487,37 @@ def test_score_springboard_abc_returns_persistable_metadata():
     assert result["evidence"]["b_last"]["date"] == "2026-05-25"
 
 
+def test_springboard_c_uses_support_not_resistance_for_sos():
+    """C 的基准必须是支撑位。
+
+    compute_support_level 对 sos 返回 21 日最高价（阻力位），拿最低价比它语义不成立：
+    实测 sos 的 C 命中率 45.8%、其余信号 96.9%，差异来自口径污染而非结构差别。
+    修正后 sos 与 trend_pullback 应得到同一个 support。
+    """
+    from core.signal_confirmation import compute_support_level
+
+    dates = pd.date_range("2026-05-01", periods=40, freq="D")
+    lows = [10.0 + (i % 5) * 0.1 for i in range(40)]
+    df = pd.DataFrame(
+        {
+            "date": dates,
+            "open": [12.0] * 40,
+            "high": [13.0 + i * 0.05 for i in range(40)],
+            "low": lows,
+            "close": [12.5] * 40,
+            "volume": [100.0] * 40,
+        }
+    )
+
+    sos_result = score_springboard_abc(df, "sos")
+    trend_result = score_springboard_abc(df, "trend_pullback")
+
+    # 两者的 C 基准一致，不再随 signal_type 漂移。
+    assert sos_result["support"] == trend_result["support"]
+    # 且明显低于旧口径（21 日最高价）。
+    assert sos_result["support"] < compute_support_level(df, "sos")
+
+
 def test_signal_feedback_upsert_errors_propagate(monkeypatch):
     from integrations import supabase_signal_feedback
 

@@ -7,6 +7,7 @@ import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from core.a_share_entry_research import normalized_signal_type
 from integrations.fetch_a_share_csv import resolve_trading_window
 from integrations.supabase_portfolio import load_portfolio_state
 from tools.report_parser import extract_invalidated_codes
@@ -148,11 +149,38 @@ def _is_false_like(value: object) -> bool:
     return isinstance(value, str) and value.strip().lower() in {"false", "0", "no", "n", "off"}
 
 
+def _blocked_buy_signal_types() -> frozenset[str]:
+    """按信号类型禁买。留空=不过滤（默认，保持原行为）。
+
+    生产回测（scripts/backtest_runner.py，66 个交易日 / 124 笔 / 含真实成本）按买点归因：
+
+        evr   59 笔  -2.30%  胜率 45.8%
+        sos   24 笔  -4.92%  胜率 33.3%（中位 -11.04%）
+        spring 40 笔 +0.05%  胜率 57.5%
+
+    变体对比同区间（G = 剔除 evr 与 sos）在每个指标上都优于基线 A：
+    总收益 -15.82% -> -6.31%、最大回撤 -23.91% -> -13.14%、夏普 -2.066 -> -1.207、
+    胜率 47.97% -> 50.00%。机制上是把 Trend 成交从 82 笔压到 28 笔，席位让给 Accum
+    （Accum 41 -> 78 笔），而 Trend 整体 -3.62% / Accum +1.19%。
+
+    默认仍为空：core/a_share_entry_research.py 的注释要求「生产采用需跨周期与
+    walk-forward 证据」，而上述证据只覆盖 2026-05~08 单段行情。故做成显式开关，
+    由运维在拿到跨周期证据后开启，而不是改默认行为悄悄生效。
+    """
+    raw = os.getenv("STEP4_BLOCK_BUY_SIGNAL_TYPES", "").strip()
+    return frozenset(normalized_signal_type(item) for item in raw.split(",") if item.strip())
+
+
 def _rule_eligible_step4_candidate(item: dict) -> bool:
     if not is_confirmed_step4_candidate(item):
         return False
     if _is_false_like(item.get("new_buy_allowed")) or _is_false_like(item.get("label_ready")):
         return False
+    blocked_signals = _blocked_buy_signal_types()
+    if blocked_signals:
+        signal = normalized_signal_type(item.get("signal_type") or item.get("trigger"))
+        if signal in blocked_signals:
+            return False
     readiness = str(item.get("trade_readiness") or "").strip().lower()
     if readiness in _RULE_BLOCKED_READINESS:
         return False

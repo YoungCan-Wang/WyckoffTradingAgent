@@ -32,6 +32,36 @@ def test_buy_more_averages_the_cost_and_refreshes_buy_date():
     assert result.holding.buy_dt == "20260715"
 
 
+def test_missing_fill_date_leaves_buy_dt_untouched():
+    """成交日缺失时返回空串，交由写入层保留库内原值。
+
+    不能回填 existing：update_position 的契约是「空 buy_dt 保留原日期」，靠上层剪掉
+    空值实现；显式回写同一个值会让 payload 带上 buy_dt，绕过该边界约束。
+    """
+    held = Holding(code="000001", name="平安银行", shares=1000, cost_price=10.0, buy_dt="20260101")
+
+    result = apply_fill(held, 50_000.0, Fill("000001", "buy", 100, 10.0, ""), FREE)
+
+    assert result.holding.shares == 1100
+    assert result.holding.buy_dt == ""
+
+
+def test_first_buy_without_existing_date_uses_fill_date():
+    result = apply_fill(None, 50_000.0, Fill("000001", "buy", 100, 10.0, "20260715"), FREE)
+
+    assert result.holding.buy_dt == "20260715"
+
+
+def test_older_addon_fill_does_not_regress_buy_dt():
+    """乱序回填更早成交日不得把 buy_dt 拨回，否则当日加仓会被误判可卖。"""
+    held = Holding(code="000001", name="平安银行", shares=1000, cost_price=10.0, buy_dt="20260715")
+
+    result = apply_fill(held, 50_000.0, Fill("000001", "buy", 500, 11.0, "20260701"), FREE)
+
+    assert result.holding.shares == 1500
+    assert result.holding.buy_dt == "20260715"
+
+
 def test_cost_basis_absorbs_the_commission():
     cfg = CashPortfolioConfig(commission_rate=0.0003, min_commission=5.0, transfer_fee_rate=0.0, stamp_duty_rate=0.0)
 
@@ -82,6 +112,70 @@ def test_selling_without_a_position_is_rejected():
 def test_buying_beyond_available_cash_is_rejected():
     with pytest.raises(ValueError, match="现金不足"):
         apply_fill(None, 5_000.0, Fill("000001", "buy", 1000, 10.0, "20260710"), FREE)
+
+
+def test_us_buy_converts_cash_to_cny_but_keeps_native_cost():
+    """美元报价若直接扣人民币现金，10 股 @$200 只会少约 ¥2,000，真实应约 ¥14,000。"""
+    result = apply_fill(
+        None,
+        50_000.0,
+        Fill("AAPL.US", "buy", 10, 200.0, "20260815", name="Apple"),
+        FREE,
+        fx_to_cny=7.0,
+    )
+
+    assert result.holding is not None
+    assert result.holding.cost_price == pytest.approx(200.0)
+    assert result.cash == pytest.approx(50_000.0 - 14_000.0)
+    assert result.fee == pytest.approx(0.0)
+
+
+def test_us_sell_credits_cny_cash_and_reports_cny_pnl():
+    """美股卖出：现金按汇率入账，费用按美股费率以美元计后折人民币。
+
+    此前非人民币成交一律不计费，故本用例原先断言零费用。现按市场计费——美股无印花税，
+    卖出侧有 SEC 规费与按股数计的 FINRA TAF，金额很小但不应为零。
+    """
+    holding = Holding(code="AAPL.US", name="Apple", shares=10, cost_price=180.0, buy_dt="20260101")
+    result = apply_fill(holding, 1_000.0, Fill("AAPL.US", "sell", 5, 200.0, "20260815"), FREE, fx_to_cny=7.0)
+
+    assert result.holding is not None
+    assert result.holding.shares == 5
+    # 毛收入 1000 美元 -> 7000 人民币，减去折算后的费用。
+    assert result.cash == pytest.approx(1_000.0 + 7_000.0 - result.fee, rel=1e-9)
+    assert 0.0 < result.fee < 1.0
+    # 已实现盈亏为净额：毛利 700 元减去费用，这才是到手的钱。
+    assert result.realized_pnl == pytest.approx((200.0 - 180.0) * 5 * 7.0 - result.fee, rel=1e-9)
+
+
+def test_hk_stamp_duty_applies_to_both_sides():
+    """港股印花税 0.1% 买卖双边都征，与 A 股只收卖出侧不同。"""
+    buy = apply_fill(None, 100_000.0, Fill("06881.HK", "buy", 1000, 7.0, "20260815"), FREE, fx_to_cny=0.92)
+    sell = apply_fill(
+        Holding(code="06881.HK", name="中国银河", shares=1000, cost_price=7.0, buy_dt="20260101"),
+        0.0,
+        Fill("06881.HK", "sell", 1000, 7.0, "20260815"),
+        FREE,
+        fx_to_cny=0.92,
+    )
+
+    assert buy.fee > 0.0
+    assert sell.fee > 0.0
+    # 同等金额下双边费用应接近（卖出侧无额外单边税项）。
+    assert buy.fee == pytest.approx(sell.fee, rel=0.01)
+
+
+def test_hk_fee_is_materially_higher_than_a_share():
+    """回归：港股成本显著高于 A 股，不能再被当成零。"""
+    hk = apply_fill(None, 100_000.0, Fill("06881.HK", "buy", 1000, 20.0, "20260815"), FREE, fx_to_cny=1.0)
+    cn = apply_fill(None, 100_000.0, Fill("600519", "buy", 1000, 20.0, "20260815"), FREE)
+
+    assert hk.fee > cn.fee * 2
+
+
+def test_missing_fx_rate_is_rejected():
+    with pytest.raises(ValueError, match="汇率"):
+        apply_fill(None, 50_000.0, Fill("AAPL.US", "buy", 1, 200.0, "20260815"), FREE, fx_to_cny=0.0)
 
 
 @pytest.mark.parametrize(

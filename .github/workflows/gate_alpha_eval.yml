@@ -1,0 +1,61 @@
+name: Gate Alpha Eval
+
+# 门槛层 alpha 检验：L3 题材共振 + 止损参考价陈旧度。
+# 首轮（2026-08-20，130 个交易日 / 107 万行行情）：
+#   题材共振 topN=5（生产值）差值 -0.59pct，越热越差；放宽到 topN=20 才转正 +0.14pct。
+#   止损各偏离档超额 -0.40 / -0.42 / -0.22 / +0.05，前三档为负说明止损触发后确实继续跑输。
+# 两条都未落到参数改动：题材层增益小于单次往返成本 0.202%；止损仅最陈旧档轻微为正。
+# 每周重跑的意义在于让这两个结论跨越更多行情段后再判，而不是靠单段拍板。
+on:
+  schedule:
+    # UTC 周六 02:40 = 北京时间周六 10:40，紧随 regime 与卖出归因之后。
+    - cron: "40 2 * * 6"
+  workflow_dispatch:
+    inputs:
+      horizon:
+        description: "前瞻交易日数"
+        default: "5"
+
+concurrency:
+  group: gate-alpha-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONUNBUFFERED: "1"
+      # 只读行情与行业映射，不写库；故不设 WYCKOFF_WRITE_CONTEXT。
+      TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+      TICKFLOW_API_KEY: ${{ secrets.TICKFLOW_API_KEY }}
+      FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+      TZ: Asia/Shanghai
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Evaluate gate alpha
+        run: |
+          python scripts/evaluate_gate_alpha.py --horizon "${{ github.event.inputs.horizon || '5' }}"
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gate-alpha-evidence
+          path: docs/evidence/gate_alpha_h*.json
+          if-no-files-found: warn

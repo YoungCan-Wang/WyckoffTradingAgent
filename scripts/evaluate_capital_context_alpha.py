@@ -21,7 +21,7 @@
 
 用法::
 
-    python scripts/evaluate_capital_context_alpha.py --horizon 5 --out docs/evidence
+    python scripts/evaluate_capital_context_alpha.py --horizon 5 --out artifacts/evidence
 """
 
 from __future__ import annotations
@@ -35,6 +35,8 @@ from typing import Any
 import _bootstrap  # noqa: F401
 import pandas as pd
 
+from core.trade_friction import net_return_pct, round_trip_cost_pct
+
 MIN_GROUP = 30
 BOOTSTRAP_ROUNDS = 2000
 CONTROL_SEEDS = 20
@@ -43,7 +45,7 @@ CONTROL_SEEDS = 20
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="资金佐证 / 信号 health 的前瞻 alpha 检验")
     parser.add_argument("--horizon", type=int, default=5, help="前瞻天数，对应 signal_outcomes.horizon_days")
-    parser.add_argument("--out", default="docs/evidence", help="结果输出目录")
+    parser.add_argument("--out", default="artifacts/evidence", help="结果输出目录")
     return parser.parse_args()
 
 
@@ -218,6 +220,10 @@ def build_report(
         "window": {"start": str(matured.trade_date.min()), "end": str(matured.trade_date.max())},
         "matured_outcomes": len(matured),
         "baseline_ret": None if _day_weighted(matured) is None else round(_day_weighted(matured), 4),
+        # 净收益：signal_outcomes.return_pct 是毛收益，不含佣金/印花税/过户费/滑点。
+        # 判断「值不值得做」必须看这一行。
+        "baseline_net_ret": net_return_pct(_day_weighted(matured)),
+        "round_trip_cost_pct": round(round_trip_cost_pct(), 4),
         "baseline_win_rate_pct": round(100.0 * float((matured.return_pct > 0).mean()), 2),
         "health": {
             "matched_outcomes": len(merged),

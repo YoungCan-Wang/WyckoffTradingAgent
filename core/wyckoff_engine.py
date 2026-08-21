@@ -175,7 +175,17 @@ class FunnelConfig:
     enable_dry_vol_channel: bool = True
     dry_vol_lookback: int = 10  # 在最近 N 日内寻找地量
     dry_vol_ref_window: int = 250  # 地量参考窗口（年维度）
-    dry_vol_quantile: float = 0.05  # 地量标准：低于年内成交量的 5% 分位数
+    # 地量标准：低于年内成交量的 N 分位。0.05 -> 0.20 以提高召回。
+    # 实测（近10日最小量 <= 250日 q 分位，叠加 price_from_low<=0.35，全市场逐日 T+5
+    # 相对同日全市场超额）：
+    #   q=0.05 日均命中 1278  超额 +0.54pct   （原值）
+    #   q=0.10 日均命中 1810  超额 +0.62pct
+    #   q=0.20 日均命中 2590  超额 +0.65pct   （最优，取此值）
+    #   q=0.30 日均命中 3176  超额 +0.63pct
+    # 四档全为正超额、55% 的交易日为正，故这条通道不该删；放宽反而略优。
+    # 注意增益仅 +0.11pct，小于单次往返成本 0.202%——放宽的目的是**提高召回**
+    # （让技术面强势股先进池子，人工二次确认），不是靠这 0.11pct 赚钱。
+    dry_vol_quantile: float = 0.20
     dry_vol_price_from_low_max: float = 0.35  # 位阶保护：现价 <= 年内低点 +35%
 
     # Layer 2 暗中护盘通道（RS Divergence Channel）
@@ -185,6 +195,18 @@ class FunnelConfig:
     rs_div_stock_window: int = 20  # 个股同期窗口
     rs_div_bench_ref_window: int = 60  # 大盘新低对比的参考窗口（近 60 日）
     rs_div_price_from_low_max: float = 0.50  # 位阶保护：现价 <= 年内低点 +50%
+    # 量能分歧判据：大盘放量而个股缩量。此前这两个系数硬编码在
+    # core/layer2_strength.py 的 _rs_divergence_volume_ok 里，既不能调也不能关。
+    #
+    # 实测（两年 / 100 个大盘创 60 日新低的交易日）：大盘近 20 日均量 > 前 40 日均量 ×1.2
+    # 的满足天数为 **0 天（0.0%）**，导致「暗中护盘」通道在生产回测 66 个交易日里命中恒为 0。
+    # 原因是指数成交量是 5000+ 只股票的加总，20 日尺度上被平滑，不会像个股那样放量 20%；
+    # 该阈值对个股合理、对指数不合理。
+    #
+    # 本次仅提取为可配置字段，默认值保持 1.2 / 0.8 不变（即通道仍失效），
+    # 以便后续单独扫描合理档位——先让它可调，再依证据定值。
+    rs_div_bench_vol_expand_ratio: float = 1.2  # 大盘放量倍数下限
+    rs_div_stock_vol_shrink_ratio: float = 0.8  # 个股缩量倍数上限
 
     # Layer 2 趋势延续通道（Trend Continuation Channel）
     # 已确认多头且 RPS 极强的趋势股，不受 bias_200 上限约束。

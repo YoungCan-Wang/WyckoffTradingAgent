@@ -15,9 +15,9 @@ from workflows.backtest_walk_forward import build_walk_forward_validation
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Update docs/BACKTEST_MARKET_REPORT.md from backtest grid artifacts.")
+    parser = argparse.ArgumentParser(description="Build a market backtest report from backtest grid artifacts.")
     parser.add_argument("--artifacts-dir", default="artifacts", help="Directory containing backtest-grid-* artifacts")
-    parser.add_argument("--output", default="docs/BACKTEST_MARKET_REPORT.md", help="Report markdown path")
+    parser.add_argument("--output", default="artifacts/BACKTEST_MARKET_REPORT.md", help="Report markdown path")
     parser.add_argument("--confirmation-output", default="", help="Optional machine-readable confirmation JSON path")
     parser.add_argument("--run-url", default="", help="GitHub Actions run URL")
     parser.add_argument("--generated-at", default="", help="Override generated timestamp")

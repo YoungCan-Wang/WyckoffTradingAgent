@@ -79,12 +79,29 @@ jobs:
       RAG_SEMANTIC_PROVIDER: ${{ vars.RAG_SEMANTIC_PROVIDER || secrets.RAG_SEMANTIC_PROVIDER || 'efficiency' }}
       # 实盘风控：ATR/结构止损优先，-12% 仅灾难地板；非主线 5 日时间管理见 holding_time_policy
       STEP4_BUY_HARD_STOP_ENABLED: "1"
-      STEP4_BUY_HARD_STOP_PCT: "12.0"
+      # 止损 12% -> 5%。生产回测（66 交易日/123 笔/含真实成本）四档单调：
+      #   无止损  总收益 -16.49%  夏普 -1.965  回撤 -24.69%  VaR95 -22.14%
+      #   -12%    总收益  -5.71%  夏普 -0.794  回撤 -14.51%  VaR95 -12.18%（原实盘值）
+      #   -8%     总收益  +0.04%  夏普 -0.068  回撤 -10.22%  VaR95  -9.70%
+      #   -5%     总收益  +7.31%  夏普 +0.871  回撤  -7.25%  VaR95  -9.69%
+      # 代价是胜率由 46.34% 降到 37.40%——机制是用更多小亏换掉少数巨亏，
+      # 收益来自「没有大亏」而非「多赚」，故执行纪律不能中途干预。
+      STEP4_BUY_HARD_STOP_PCT: "5.0"
       STEP4_BUY_STOP_MODE: "floor"
       STEP4_PROBE_BUDGET_LIMIT: "0.10"
       STEP4_REPAIR_PROBE_BUDGET_LIMIT: "0.05"
       STEP4_ATTACK_BUDGET_LIMIT: "0.20"
-      STEP4_BUY_BLOCK_REGIMES: "UNKNOWN,RISK_ON,BEAR_REBOUND,PANIC_REPAIR,RISK_OFF,CRASH,BLACK_SWAN"
+      STEP4_BUY_BLOCK_REGIMES: "UNKNOWN,NEUTRAL,PANIC_REPAIR,RISK_OFF,CRASH,BLACK_SWAN"
+      # 联动实测放开：BEAR_REBOUND 超额 +4.08pct(4/4 为正)、RISK_ON +6.07pct(3/3)。
+      STEP4_BUY_ALLOW_REGIMES: "BEAR_REBOUND,RISK_ON"
+      # 留空：叠加验证显示该改动与 5% 止损重复用药。同区间 66 交易日：
+      #   仅止损 -5%          总收益 +7.31%  夏普 +0.871  Accum +1.776
+      #   禁 evr/sos + 止损5%  总收益 -0.14%  夏普 -0.122  Accum +0.610
+      # 两者单独都改善（禁 evr/sos 单独 -15.82%->-6.31%），但叠加后差 7.45pct。
+      # 原因：两个改动解决的是同一个问题（Trend 类亏损）。止损已把 Trend 从
+      # -3.109 控到 -1.196，此时再砍 Trend 只是把席位让给排名更靠后的次级 Accum
+      # 候选，Accum 均值因此从 +1.776 掉到 +0.610。开关保留，需要时可再开。
+      STEP4_BLOCK_BUY_SIGNAL_TYPES: ""
       STEP4_REQUIRE_CONFIRMED_BUY_CANDIDATE: "1"
       # AI 候选选择：按可交易 L4 收口，避免裸 SOS/EVR 噪声直接进入执行链路。
       FUNNEL_AI_SELECTION_MODE: ${{ vars.FUNNEL_AI_SELECTION_MODE || 'tradeable_l4' }}
@@ -102,10 +119,19 @@ jobs:
       FUNNEL_MAX_STRUCTURE_STOP_PCT: "12.0"
       FUNNEL_AI_RISK_OFF_TREND: "0"
       FUNNEL_AI_RISK_OFF_ACCUM: "0"
+      # NEUTRAL 已于 #280 并入禁买（超额 -4.35pct、CI [-6.80,-2.07] 不跨 0），
+      # 配额保留用于 shadow 对照，不占正式推荐。
       FUNNEL_AI_NEUTRAL_TREND: "5"
       FUNNEL_AI_NEUTRAL_ACCUM: "1"
-      FUNNEL_AI_BEAR_REBOUND_TREND: "0"
-      FUNNEL_AI_BEAR_REBOUND_ACCUM: "0"
+      # BEAR_REBOUND 的 AI 配额由 0 -> 5/1，与其买入闸门放开对齐。
+      # 此前不一致：#280 把 BEAR_REBOUND 移出禁买名单（联动实测超额 +4.08pct、4/4 为正），
+      # 但该档 AI 配额仍是 0，候选进了池子也拿不到复核席位——2026-08-17 那天池内 4 只
+      # 候选（大北农/南方精工/宿迁联盛/新相微）次日全涨 9.7%~10.1%，而 AI 正式推荐 0 只。
+      FUNNEL_AI_BEAR_REBOUND_TREND: "5"
+      FUNNEL_AI_BEAR_REBOUND_ACCUM: "1"
+      # PANIC_REPAIR 单独成族并保持 0：超额 -4.09pct，与 BEAR_REBOUND 方向相反。
+      FUNNEL_AI_PANIC_REPAIR_TREND: "0"
+      FUNNEL_AI_PANIC_REPAIR_ACCUM: "0"
       FUNNEL_L2_BYPASS_AI_ENABLED: "0"
       FUNNEL_STRATEGIC_L2_BYPASS_AI_CAP: "2"
       FUNNEL_THEME_RADAR_PROMOTE_CAP: "2"

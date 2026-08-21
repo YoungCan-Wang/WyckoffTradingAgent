@@ -1,0 +1,112 @@
+{
+  "theme_resonance": [
+    {
+      "label": "topN=3",
+      "days": 130,
+      "avg_group_size": 139.1,
+      "inside_ret": -1.2853,
+      "outside_ret": -0.353,
+      "excess": -0.9323,
+      "positive_day_pct": 43.1,
+      "is_production": false,
+      "verdict": "负贡献"
+    },
+    {
+      "label": "topN=5",
+      "days": 130,
+      "avg_group_size": 240.7,
+      "inside_ret": -0.9513,
+      "outside_ret": -0.3636,
+      "excess": -0.5876,
+      "positive_day_pct": 48.5,
+      "is_production": true,
+      "verdict": "为正日占比接近随机：无方向性"
+    },
+    {
+      "label": "topN=8",
+      "days": 130,
+      "avg_group_size": 395.5,
+      "inside_ret": -0.5967,
+      "outside_ret": -0.377,
+      "excess": -0.2197,
+      "positive_day_pct": 52.3,
+      "is_production": false,
+      "verdict": "为正日占比接近随机：无方向性"
+    },
+    {
+      "label": "topN=12",
+      "days": 130,
+      "avg_group_size": 628.5,
+      "inside_ret": -0.3989,
+      "outside_ret": -0.4054,
+      "excess": 0.0065,
+      "positive_day_pct": 55.4,
+      "is_production": false,
+      "verdict": "正贡献"
+    },
+    {
+      "label": "topN=20",
+      "days": 130,
+      "avg_group_size": 1051.1,
+      "inside_ret": -0.3069,
+      "outside_ret": -0.4448,
+      "excess": 0.1379,
+      "positive_day_pct": 56.2,
+      "is_production": false,
+      "verdict": "正贡献"
+    }
+  ],
+  "stop_loss_staleness": [
+    {
+      "label": "0~15%",
+      "days": 130,
+      "avg_group_size": 538.9,
+      "inside_ret": -0.7508,
+      "outside_ret": -0.354,
+      "excess": -0.3968,
+      "positive_day_pct": 46.2,
+      "is_production": false,
+      "verdict": "为正日占比接近随机：无方向性"
+    },
+    {
+      "label": "15~30%",
+      "days": 130,
+      "avg_group_size": 1678.4,
+      "inside_ret": -0.7754,
+      "outside_ret": -0.354,
+      "excess": -0.4214,
+      "positive_day_pct": 29.2,
+      "is_production": false,
+      "verdict": "负贡献"
+    },
+    {
+      "label": "30~50%",
+      "days": 130,
+      "avg_group_size": 1301.8,
+      "inside_ret": -0.575,
+      "outside_ret": -0.354,
+      "excess": -0.2209,
+      "positive_day_pct": 40.0,
+      "is_production": false,
+      "verdict": "负贡献"
+    },
+    {
+      "label": ">50%",
+      "days": 130,
+      "avg_group_size": 859.8,
+      "inside_ret": -0.3058,
+      "outside_ret": -0.354,
+      "excess": 0.0482,
+      "positive_day_pct": 45.4,
+      "is_production": false,
+      "verdict": "为正日占比接近随机：无方向性"
+    }
+  ],
+  "production": {
+    "top_n_sectors": 5,
+    "trailing_drawdown_pct": -10.0,
+    "recent_high_window": 60
+  },
+  "reading": "excess 为相对同日全市场的超额。题材层正值=该层有效；止损档**负值=止损正确**（卖出后确实跑输），正值=卖早了。",
+  "horizon_days": 5
+}

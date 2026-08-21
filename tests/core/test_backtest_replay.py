@@ -790,8 +790,8 @@ def test_confirmed_codes_apply_risk_guards_not_observe_only() -> None:
 def test_enforce_confirmed_loss_guard_flag_exists() -> None:
     """开关默认关闭：机制已就位但 pure_*_min_score 阈值方向是反的。
 
-    见 docs/SCORING_SYSTEM_AUDIT_2026_08.md——被"低分 XXX"拦掉的标的反而更好
-    （+0.075%/37.9% vs 放行 -2.777%/23.1%，Welch t=-4.51）。打开会用方向错误的
+    历史推演显示被"低分 XXX"拦掉的标的反而更好（+0.075%/37.9% vs 放行
+    -2.777%/23.1%，Welch t=-4.51）。打开会用方向错误的
     阈值污染回测结论，修好分数体系后再开。
     """
     cfg = _config()

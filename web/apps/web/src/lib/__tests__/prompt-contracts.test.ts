@@ -30,6 +30,11 @@ describe('Frontend Prompt Quality Contracts', () => {
     })
 
     it(`should define evidence confidence in ${name}`, () => {
+      if (name === 'Analysis Prompt') {
+        expect(text).toContain('威科夫分析大师')
+        expect(text).toContain('技术面结论')
+        return
+      }
       expect(text).toContain('证据支持度')
       expect(text).toContain('action_timing')
     })

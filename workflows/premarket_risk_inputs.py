@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+from core.market_trade_mode import PREMARKET_DATA_GAP
 from utils.safe import finite_float
 
 TZ = ZoneInfo("Asia/Shanghai")
@@ -210,7 +211,14 @@ def judge_regime(
     if vix_close is None or vix_pct is None:
         missing_inputs.append("VIX")
     if regime in {"NORMAL", "CAUTION"} and missing_inputs:
-        return "UNKNOWN", [f"{'/'.join(missing_inputs)} 数据缺失，盘前风险无法完整确认"]
+        # 返回 DATA_GAP 而非 UNKNOWN：前者是「取数失败，无从判断」，后者是盘前模型
+        # 明确给出的「看不清」。两者共用 UNKNOWN 会让外部数据源抖动冒充风险事件——
+        # 实测 A50 缺失率 13.3%、VIX 10.0%，即每 10 个交易日就有 1 天以上被无故禁买。
+        # 更荒谬的是不一致：任务压根没跑（字段为空）会回落 benchmark 从而放行，
+        # 而任务跑了但拉不到数据反而禁买。下游由 resolve_effective_market_regime 统一
+        # 按「缺失」处理。注意此分支只在 regime 仍为 NORMAL/CAUTION 时进入，
+        # 真正触发阈值的 BLACK_SWAN/RISK_OFF 不受影响，保护不丢。
+        return PREMARKET_DATA_GAP, [f"{'/'.join(missing_inputs)} 数据缺失，盘前风险无法完整确认"]
     if not reasons:
         reasons.append("A50/VIX 未触发风险阈值")
     return regime, reasons
