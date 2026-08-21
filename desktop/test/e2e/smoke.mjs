@@ -118,19 +118,27 @@ if (await openBtn.count() > 0) {
 await win.locator('.acct').click()
 await win.locator('.menu-i').first().click()
 await win.locator('.dlg').waitFor({ state: 'visible' })
+const modalFocused = await win.waitForFunction(
+  () => document.activeElement?.classList.contains('dlg-n'),
+  undefined,
+  { timeout: 5_000 }
+).then(() => true, () => false)
 const modalState = await win.evaluate(() => ({
   dialogInert: document.querySelector('.dlg')?.inert,
-  backgroundInert: document.querySelector('.thread')?.inert,
-  focused: document.activeElement?.classList.contains('dlg-n')
+  backgroundInert: document.querySelector('.thread')?.inert
 }))
 check('设置弹窗可聚焦且只冻结背景', () => {
   assert.equal(modalState.dialogInert, false)
   assert.equal(modalState.backgroundInert, true)
-  assert.equal(modalState.focused, true)
+  assert.equal(modalFocused, true)
 })
 await win.keyboard.press('Escape')
 await win.locator('.dlg').waitFor({ state: 'hidden' })
-const restored = await win.evaluate(() => document.activeElement?.classList.contains('acct'))
+const restored = await win.waitForFunction(
+  () => document.activeElement?.classList.contains('acct'),
+  undefined,
+  { timeout: 5_000 }
+).then(() => true, () => false)
 check('关闭设置后焦点回到账号按钮', () => assert.equal(restored, true))
 
 check('渲染端无未预期报错', () =>
