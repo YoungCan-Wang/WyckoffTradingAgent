@@ -158,10 +158,20 @@ jobs:
           pattern: wyckoff-windows-*
           merge-multiple: true
           path: roundtrip-by-pattern/
+      # 不写死内部层级：upload 的 path 是 `desktop/dist/*.exe`（相对仓库根），
+      # 所以产物里会保留 `dist/` 这一层 —— 第一版校验直接找 `*.exe` 因此红了。
+      # 那是我的校验写错，不是 v8 的行为变化。用 find 递归找,不依赖具体层级。
       - name: Verify roundtrip
         shell: bash
         run: |
           set -e
-          ls roundtrip-by-name/*.exe >/dev/null || { echo "按名字取回失败"; exit 1; }
-          ls roundtrip-by-pattern/*.exe >/dev/null || { echo "按 pattern 取回失败"; exit 1; }
+          for dir in roundtrip-by-name roundtrip-by-pattern; do
+            found=$(find "$dir" -name '*.exe' | head -1)
+            if [ -z "$found" ]; then
+              echo "$dir 里没找到 .exe，实际内容："
+              find "$dir" -type f | head -10
+              exit 1
+            fi
+            echo "$dir -> $found"
+          done
           echo "download-artifact@v8 往返正常（按名字 + 按 pattern）"
