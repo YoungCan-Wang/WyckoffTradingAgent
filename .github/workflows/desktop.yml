@@ -128,6 +128,7 @@ jobs:
       # 上传产物：真正的运行时验证要人在一台 Windows 机器上装一次、点一遍。
       # CI 只能保证「打得出来」。
       - uses: actions/upload-artifact@v7
+        id: upload
         with:
           name: wyckoff-windows-installer
           path: |
@@ -135,3 +136,32 @@ jobs:
             desktop/dist/*.blockmap
           retention-days: 14
           if-no-files-found: error
+
+      # download-artifact@v8 的往返校验。
+      #
+      # 升级时 v8 是唯一没被真实 CI 跑到的 action —— 用它的三个 workflow 是
+      # backtest_grid（跑满 4 小时）、backtest_trigger_calibration 和
+      # pypi_patch_release（一触发就真发包）。为了验一个 action 去跑那些，代价
+      # 与收益完全不成比例。
+      #
+      # 所以在这里借已经上传的产物做一次往返：按名字取一次、按 pattern 取一次，
+      # 正好覆盖 backtest_grid 的两种用法。v8 起摘要不匹配默认报错，这一步也就
+      # 顺带验了「v8 读 v7 上传的产物」这条组合。
+      - name: Roundtrip check for download-artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: wyckoff-windows-installer
+          path: roundtrip-by-name/
+      - name: Roundtrip check by pattern
+        uses: actions/download-artifact@v8
+        with:
+          pattern: wyckoff-windows-*
+          merge-multiple: true
+          path: roundtrip-by-pattern/
+      - name: Verify roundtrip
+        shell: bash
+        run: |
+          set -e
+          ls roundtrip-by-name/*.exe >/dev/null || { echo "按名字取回失败"; exit 1; }
+          ls roundtrip-by-pattern/*.exe >/dev/null || { echo "按 pattern 取回失败"; exit 1; }
+          echo "download-artifact@v8 往返正常（按名字 + 按 pattern）"
