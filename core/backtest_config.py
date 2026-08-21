@@ -197,7 +197,12 @@ def _live_buy_block_regimes() -> frozenset[str]:
     以后运维改闸门，回测自动跟上，无需再动代码。
 
     直接解析 env 而不复用 workflows.step4_order_config：core 层不得依赖 workflows
-    （tests/test_architecture_boundaries.py 强制这条方向）。
+    （tests/test_architecture_boundaries.py 强制这条方向）。但必须复刻它的语义——
+    ``EXECUTE_BLOCK_NEW_BUY_REGIMES`` **无条件并入** BLOCK，再由 ALLOW 显式豁免。
+
+    此前误写成 ``BLOCK or 默认集``（取其一而非并集），导致默认集独有的档位在回测里
+    仍可买：例如 RISK_ON 只在默认集、不在生产 BLOCK env 里，实盘因并入而禁买，
+    回测却放行——恰好是需要验证的那一档。
     """
     import os
 
@@ -205,7 +210,7 @@ def _live_buy_block_regimes() -> frozenset[str]:
         raw = os.getenv(name, "").strip()
         return {item.strip().upper() for item in raw.split(",") if item.strip()}
 
-    blocked = _parse("STEP4_BUY_BLOCK_REGIMES") or set(EXECUTE_BLOCK_NEW_BUY_REGIMES)
+    blocked = _parse("STEP4_BUY_BLOCK_REGIMES") | set(EXECUTE_BLOCK_NEW_BUY_REGIMES)
     return frozenset(blocked - _parse("STEP4_BUY_ALLOW_REGIMES"))
 
 
