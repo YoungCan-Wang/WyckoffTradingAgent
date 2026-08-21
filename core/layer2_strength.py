@@ -670,7 +670,10 @@ def _rs_divergence_volume_ok(df_sorted: pd.DataFrame, bench_sorted: pd.DataFrame
     stock_ref_vol = stock_vol.tail(cfg.rs_div_bench_ref_window).iloc[: -cfg.rs_div_stock_window].mean()
     if bench_ref_vol <= 0 or stock_ref_vol <= 0:
         return True
-    return bench_recent_vol > bench_ref_vol * 1.2 and stock_recent_vol < stock_ref_vol * 0.8
+    expand = float(getattr(cfg, "rs_div_bench_vol_expand_ratio", 1.2))
+    shrink = float(getattr(cfg, "rs_div_stock_vol_shrink_ratio", 0.8))
+    # 显式转 bool：pandas 聚合返回 numpy.bool_，会让调用方的 `is True` 判断意外失败。
+    return bool(bench_recent_vol > bench_ref_vol * expand and stock_recent_vol < stock_ref_vol * shrink)
 
 
 def _breakout_volume_ok(df_sorted: pd.DataFrame, cfg: Any) -> bool:

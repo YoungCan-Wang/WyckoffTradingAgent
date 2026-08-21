@@ -195,6 +195,18 @@ class FunnelConfig:
     rs_div_stock_window: int = 20  # 个股同期窗口
     rs_div_bench_ref_window: int = 60  # 大盘新低对比的参考窗口（近 60 日）
     rs_div_price_from_low_max: float = 0.50  # 位阶保护：现价 <= 年内低点 +50%
+    # 量能分歧判据：大盘放量而个股缩量。此前这两个系数硬编码在
+    # core/layer2_strength.py 的 _rs_divergence_volume_ok 里，既不能调也不能关。
+    #
+    # 实测（两年 / 100 个大盘创 60 日新低的交易日）：大盘近 20 日均量 > 前 40 日均量 ×1.2
+    # 的满足天数为 **0 天（0.0%）**，导致「暗中护盘」通道在生产回测 66 个交易日里命中恒为 0。
+    # 原因是指数成交量是 5000+ 只股票的加总，20 日尺度上被平滑，不会像个股那样放量 20%；
+    # 该阈值对个股合理、对指数不合理。
+    #
+    # 本次仅提取为可配置字段，默认值保持 1.2 / 0.8 不变（即通道仍失效），
+    # 以便后续单独扫描合理档位——先让它可调，再依证据定值。
+    rs_div_bench_vol_expand_ratio: float = 1.2  # 大盘放量倍数下限
+    rs_div_stock_vol_shrink_ratio: float = 0.8  # 个股缩量倍数上限
 
     # Layer 2 趋势延续通道（Trend Continuation Channel）
     # 已确认多头且 RPS 极强的趋势股，不受 bias_200 上限约束。
