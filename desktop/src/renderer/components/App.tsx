@@ -113,6 +113,11 @@ export function App () {
     setAcctAnchor(null)
   }, [])
 
+  const newAnalysis = useCallback(() => {
+    navigate('chat')
+    void window.WyckoffChat?.newAnalysis()
+  }, [navigate])
+
   const openSettings = useCallback((section = 'general', anchor?: string) => {
     opener.current = (document.activeElement as HTMLElement) || null
     setSettings({ open: true, section, anchor })
@@ -180,6 +185,7 @@ export function App () {
         <Sidebar
           active={view}
           onNavigate={navigate}
+          onNewAnalysis={newAnalysis}
           counts={counts}
           accountLabel={account.signedIn ? (account.email || t('account.signedIn')) : t('account.signedOut')}
           accountInitial={account.email ? account.email[0] : '·'}

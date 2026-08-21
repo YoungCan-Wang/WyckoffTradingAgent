@@ -272,13 +272,16 @@ class DesktopSession:
             self._messages = self._messages[-MAX_HISTORY_MESSAGES:]
 
     def reset(self) -> None:
-        self._messages.clear()
+        with self._turn_lock:
+            self._messages.clear()
+            self._pending_confirms.clear()
 
 
 # 只透传前端要渲染的字段，避免把内部结构和凭据带出去。
 _PASSTHROUGH = {
     "text_delta": ("text",),
-    "thinking_delta": ("text",),
+    # 模型的内部推理不跨 IPC 边界；前端只展示稳定的正文与工具状态。
+    "thinking_delta": (),
     "tool_start": ("name", "display_name", "args"),
     "tool_calls": ("names",),
     "tool_error": ("name", "error"),

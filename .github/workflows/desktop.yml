@@ -7,19 +7,37 @@ name: Desktop
 # macOS 上做，那些分支从来没有真正跑过。所以这里的重点不是「再跑一遍单元测试」，
 # 而是**在真的 Windows 机器上打一次包**。
 #
-# Playwright 会启动真实 Electron 窗口验证渲染外壳；NSIS 安装、Python payload 与
-# 退出后的 Python 进程状态仍需在 Windows 安装包上手动冒烟。
+# Playwright 启动真实 Electron 窗口；打包任务再构建并运行真实 Python payload，
+# 产出的 EXE / DMG 才能作为候选安装包，而不是只验证 electron-builder 的空壳。
 
 on:
   push:
     branches: [main, feature/visible]
     paths:
       - "desktop/**"
+      - "cli/**"
+      - "integrations/**"
+      - "agents/**"
+      - "core/**"
+      - "tools/**"
+      - "packaging/**"
+      - "scripts/build_python_ipc.*"
+      - "pyproject.toml"
+      - "uv.lock"
       - ".github/workflows/desktop.yml"
   pull_request:
     branches: [main, feature/visible]
     paths:
       - "desktop/**"
+      - "cli/**"
+      - "integrations/**"
+      - "agents/**"
+      - "core/**"
+      - "tools/**"
+      - "packaging/**"
+      - "scripts/build_python_ipc.*"
+      - "pyproject.toml"
+      - "uv.lock"
       - ".github/workflows/desktop.yml"
 
 permissions:
@@ -78,9 +96,18 @@ jobs:
           }
           Write-Host "无残留进程"
 
-  # 真的在 Windows 上打一次包。这是这个 workflow 存在的主要理由。
+  # 每个架构都在同架构 runner 上构建 PyInstaller payload；不能把一份 x64
+  # Python 目录同时塞进 x64 / arm64 Electron 壳里。
   package-windows:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            os: windows-latest
+          - arch: arm64
+            os: windows-11-arm
+    runs-on: ${{ matrix.os }}
     needs: test
     defaults:
       run:
@@ -90,91 +117,111 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          architecture: ${{ matrix.arch }}
       - name: Install
         run: npm ci
-      - name: Build renderer
-        run: npm run build:ui
+      - name: Build and smoke-test Python payload
+        run: python ../scripts/build_python_ipc.py
 
-      # 刻意不跑 build:py（PyInstaller 打 Python 二进制）：那是另一条独立的链，
-      # 失败原因也完全不同。这一步要回答的是「electron-builder 能不能在 Windows
-      # 上把 Electron 43 打成 NSIS 安装包」。
-      # extraResources 指向的 ../dist/python 不存在时 builder 会报错，所以放一个
-      # 占位文件 —— 打包结构照样验证得到。
-      - name: Stub the Python payload
-        shell: bash
+      - name: Package NSIS (${{ matrix.arch }})
+        run: npx --no-install electron-builder --win --${{ matrix.arch }} --publish never
+
+      - name: Verify bundled runtime and installer
+        shell: pwsh
         run: |
-          mkdir -p ../dist/python/wyckoff-ipc
-          echo "placeholder for CI packaging check" > ../dist/python/wyckoff-ipc/wyckoff-ipc.exe
+          $unpacked = if ('${{ matrix.arch }}' -eq 'arm64') { 'dist/win-arm64-unpacked' } else { 'dist/win-unpacked' }
+          $app = Join-Path $unpacked 'Wyckoff.exe'
+          $ipc = Join-Path $unpacked 'resources/wyckoff-ipc/wyckoff-ipc.exe'
+          if (-not (Test-Path $app)) { throw "missing packaged app: $app" }
+          if (-not (Test-Path $ipc)) { throw "missing bundled IPC: $ipc" }
+          $health = ('{"id":"smoke","method":"health","params":{}}', '__shutdown__') | & $ipc
+          if (-not ($health -match '"type": "ready"')) { throw "packaged IPC health smoke failed: $health" }
+          $daemon = & $ipc --daemon --status
+          if (-not ($daemon -match '^daemon:')) { throw "packaged daemon smoke failed: $daemon" }
+          $installer = Get-ChildItem "dist/*-${{ matrix.arch }}.exe"
+          if (-not $installer) { throw "missing NSIS installer for ${{ matrix.arch }}" }
+          $installer | Format-Table Name, Length
 
-      - name: Package (nsis)
-        run: npx --no-install electron-builder --win --publish never
-
-      # 结构自检：安装包和解包目录都要在，且 exe 名字对得上。
-      # x64 与 arm64 都要出：Apple Silicon 上的 Windows 虚拟机全是 ARM 版，
-      # 只出 x64 的话本地验证只能过 Prism 模拟跑，测不到原生 arm64 的行为。
-      - name: Verify artifacts
-        shell: bash
-        run: |
-          set -e
-          ls -la dist/
-          test -d dist/win-unpacked || { echo "缺 win-unpacked"; exit 1; }
-          test -f "dist/win-unpacked/Wyckoff.exe" || { echo "缺 Wyckoff.exe"; exit 1; }
-          ls dist/*.exe >/dev/null 2>&1 || { echo "缺 NSIS 安装包"; exit 1; }
-          # NSIS 把两个架构合进**同一个**安装包，所以不存在 *arm64*.exe ——
-          # 要验 arm64 有没有真的打出来，看解包目录。
-          test -f "dist/win-arm64-unpacked/Wyckoff.exe" || { echo "缺 arm64 产物"; exit 1; }
-          echo "打包结构检查通过（x64 + arm64）"
-
-      # 上传产物：真正的运行时验证要人在一台 Windows 机器上装一次、点一遍。
-      # CI 只能保证「打得出来」。
       - uses: actions/upload-artifact@v7
-        id: upload
         with:
-          name: wyckoff-windows-installer
+          name: wyckoff-windows-${{ matrix.arch }}-unsigned
           path: |
-            desktop/dist/*.exe
-            desktop/dist/*.blockmap
+            desktop/dist/*-${{ matrix.arch }}.exe
+            desktop/dist/*-${{ matrix.arch }}.exe.blockmap
           retention-days: 14
           if-no-files-found: error
 
-      # download-artifact@v8 的往返校验。
-      #
-      # 升级时 v8 是唯一没被真实 CI 跑到的 action —— 用它的三个 workflow 是
-      # backtest_grid（跑满 4 小时）、backtest_trigger_calibration 和
-      # pypi_patch_release（一触发就真发包）。为了验一个 action 去跑那些，代价
-      # 与收益完全不成比例。
-      #
-      # 所以在这里借已经上传的产物做一次往返：按名字取一次、按 pattern 取一次，
-      # 正好覆盖 backtest_grid 的两种用法。v8 起摘要不匹配默认报错，这一步也就
-      # 顺带验了「v8 读 v7 上传的产物」这条组合。
-      - name: Roundtrip check for download-artifact
-        uses: actions/download-artifact@v8
+  package-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            os: macos-latest
+          - arch: x64
+            os: macos-15-intel
+    runs-on: ${{ matrix.os }}
+    needs: test
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          name: wyckoff-windows-installer
-          # 显式带 desktop/ 前缀：action 的 path 相对**仓库根**，而下面的校验
-          # 脚本受 job 级 defaults.run.working-directory: desktop 影响。
-          # 不对齐就会「下载成功、校验却找不到」—— 第二版就是这么红的。
-          path: desktop/roundtrip-by-name/
-      - name: Roundtrip check by pattern
-        uses: actions/download-artifact@v8
+          node-version: "22"
+      - uses: actions/setup-python@v7
         with:
-          pattern: wyckoff-windows-*
-          merge-multiple: true
-          path: desktop/roundtrip-by-pattern/
-      # 不写死内部层级：upload 的 path 是 `desktop/dist/*.exe`（相对仓库根），
-      # 所以产物里会保留 `dist/` 这一层 —— 第一版校验直接找 `*.exe` 因此红了。
-      # 那是我的校验写错，不是 v8 的行为变化。用 find 递归找,不依赖具体层级。
-      - name: Verify roundtrip
+          python-version: "3.11"
+          architecture: ${{ matrix.arch }}
+      - name: Install
+        run: npm ci
+      - name: Build and smoke-test Python payload
+        run: python ../scripts/build_python_ipc.py
+      - name: Package DMG (${{ matrix.arch }})
+        run: npx --no-install electron-builder --mac --${{ matrix.arch }} --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          WYCKOFF_ADHOC_SIGN: "1"
+      - name: Verify app, bundled runtime, signature, and DMG
         shell: bash
         run: |
           set -e
-          for dir in roundtrip-by-name roundtrip-by-pattern; do
-            found=$(find "$dir" -name '*.exe' | head -1)
-            if [ -z "$found" ]; then
-              echo "$dir 里没找到 .exe，实际内容："
-              find "$dir" -type f | head -10
-              exit 1
-            fi
-            echo "$dir -> $found"
-          done
-          echo "download-artifact@v8 往返正常（按名字 + 按 pattern）"
+          app=$(find dist -path '*/Wyckoff.app' -type d | head -1)
+          test -n "$app" || { echo "missing Wyckoff.app"; exit 1; }
+          ipc="$app/Contents/Resources/wyckoff-ipc/wyckoff-ipc"
+          test -x "$ipc" || { echo "missing bundled IPC: $ipc"; exit 1; }
+          reply=$(printf '%s\n' '{"id":"smoke","method":"health","params":{}}' '__shutdown__' | "$ipc")
+          echo "$reply" | grep -q '"type": "ready"'
+          codesign --verify --deep --strict "$app"
+          dmg=$(find dist -maxdepth 1 -name '*-${{ matrix.arch }}.dmg' | head -1)
+          test -n "$dmg" || { echo "missing DMG for ${{ matrix.arch }}"; exit 1; }
+          hdiutil verify "$dmg"
+          ls -lh "$dmg"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wyckoff-macos-${{ matrix.arch }}-adhoc
+          path: |
+            desktop/dist/*-${{ matrix.arch }}.dmg
+            desktop/dist/*-${{ matrix.arch }}.dmg.blockmap
+          retention-days: 14
+          if-no-files-found: error
+
+  verify-artifact-roundtrip:
+    runs-on: ubuntu-latest
+    needs: [package-windows, package-macos]
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: wyckoff-*
+          merge-multiple: true
+          path: candidates/
+      - name: Verify all four candidate installers survived upload/download
+        run: |
+          set -e
+          find candidates -maxdepth 2 -type f -print
+          test "$(find candidates -name '*.exe' | wc -l)" -eq 2
+          test "$(find candidates -name '*.dmg' | wc -l)" -eq 2

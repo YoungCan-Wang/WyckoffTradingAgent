@@ -9,7 +9,7 @@
     "start": "npm run build:ui && electron .",
     "start:debug": "electron . --inspect",
     "test": "node --test test/*.test.js",
-    "build:py": "../scripts/build_python_ipc.sh",
+    "build:py": "node ../scripts/run_build_python_ipc.cjs",
     "package:prepare": "npm run build:ui && npm run build:py",
     "pack": "npm run package:prepare && electron-builder --dir",
     "dist": "npm run package:prepare && electron-builder",
@@ -31,6 +31,8 @@
   "build": {
     "appId": "com.youngcan.wyckoff",
     "productName": "Wyckoff",
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "afterPack": "build/after-pack.cjs",
     "icon": "build/icon.png",
     "files": [
       "src/**/*",

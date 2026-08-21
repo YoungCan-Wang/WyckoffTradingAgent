@@ -93,7 +93,10 @@ declare global {
       getSendOnEnter?: () => boolean
     }
     /** 设置、模型切换等动作往对话流写系统提示。 */
-    WyckoffChat?: { sysLine: (text: string, isError?: boolean) => void }
+    WyckoffChat?: {
+      sysLine: (text: string, isError?: boolean) => void
+      newAnalysis: () => Promise<boolean>
+    }
     /** 把新插入的 data-lucide 占位符换成 svg。 */
     WyckoffIcons?: { render: () => void }
     /**

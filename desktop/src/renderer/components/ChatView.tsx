@@ -43,9 +43,16 @@ export function ChatView () {
 
   // 让设置、退出登录等外壳动作能往对话流里写系统提示。
   useEffect(() => {
-    window.WyckoffChat = { sysLine: chat.sysLine }
+    window.WyckoffChat = {
+      sysLine: chat.sysLine,
+      newAnalysis: async () => {
+        const reset = await chat.reset()
+        if (reset) setDraft('')
+        return reset
+      }
+    }
     return () => { delete window.WyckoffChat }
-  }, [chat.sysLine])
+  }, [chat.sysLine, chat.reset])
 
   const send = () => {
     const text = draft

@@ -968,9 +968,17 @@ def chat(params: dict[str, Any]) -> Iterator[Event]:
     yield from session.run_turn(text)
 
 
+def chat_reset(_params: dict[str, Any]) -> Iterator[Event]:
+    """开始一段不继承旧消息与待审批状态的新分析。"""
+    session = _synced_session()
+    session.reset()
+    yield _ok(reset=True)
+
+
 METHODS: dict[str, Callable[[dict[str, Any]], Iterator[Event]]] = {
     "health": health,
     "chat": chat,
+    "chat_reset": chat_reset,
     "approve_list": approve_list,
     "approve_decide": approve_decide,
     "portfolio": portfolio,

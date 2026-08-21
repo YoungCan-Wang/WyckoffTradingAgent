@@ -118,6 +118,12 @@ wyckoff dashboard  # 启动本地可视化面板
 
 形态复盘页按数据库实际存在的最近 30 个复盘交易日读取数据：“复盘记录”保留窗口内的数据源行数，“总入选次数”按唯一的股票+入选日统计，“覆盖股票数”和涨跌幅摘要则按股票代码去重。
 
+### Desktop（候选版）
+
+Electron 桌面端把 Agent 对话、审批、持仓、定时任务、跟踪归因、报告和 K 线放进同一个本地工作台，支持 Windows x64/arm64 与 macOS Intel/Apple Silicon。
+
+当前 PR/CI 会生成带真实 Python 运行时的 EXE 和 DMG 候选包；它们用于干净机器验收，不是公开下载。正式发布将统一放在 [GitHub Releases](https://github.com/YoungCan-Wang/WyckoffTradingAgent/releases)，不会把 14 天过期的 Actions Artifact 当下载站。签名、安装验收与发布清单见 [docs/DESKTOP_RELEASE.md](docs/DESKTOP_RELEASE.md)。
+
 ### Streamlit MVP 已下线
 
 Streamlit 已经不再迭代维护，主分支已全面移除 Streamlit 运行代码。相关代码仍保留在 `release/streamlit` 分支；Streamlit MVP 时期的产品架构和效果图见 [docs/STREAMLIT_MVP_ARCHITECTURE.md](docs/STREAMLIT_MVP_ARCHITECTURE.md)。

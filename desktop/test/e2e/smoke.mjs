@@ -54,6 +54,18 @@ await win.waitForSelector('.win', { timeout: 20_000 })
 const title = await win.title()
 check('窗口标题正确', () => assert.match(title, /Wyckoff/))
 
+const looseList = await win.evaluate(() => {
+  const root = window.WyckoffMd.renderMarkdown('1. 第一项\n\n2. 第二项\n\n3. 第三项')
+  return {
+    orderedLists: root.querySelectorAll('ol').length,
+    items: [...root.querySelectorAll('li')].map((item) => item.textContent)
+  }
+})
+check('Markdown 松散有序列表保持连续', () => {
+  assert.equal(looseList.orderedLists, 1)
+  assert.deepEqual(looseList.items, ['第一项', '第二项', '第三项'])
+})
+
 // CI 的默认窗口小于 1180px，侧栏会按产品规则收起；先从真实入口展开。
 //
 // 这条是 Windows runner 上真红过一次才补的：侧栏默认是否展开看窗口宽度

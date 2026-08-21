@@ -101,7 +101,15 @@ function buildList (lines, start, ordered) {
   const re = ordered ? RE.ol : RE.li
   while (index < lines.length) {
     const match = lines[index].match(re)
-    if (!match) break
+    if (!match) {
+      // 模型常输出 loose list（每个序号之间空一行）；空行后的同类项仍属于
+      // 同一个列表，不能拆成三个都从 1 开始的 <ol>。
+      if (!lines[index].trim() && lines[index + 1]?.match(re)) {
+        index += 1
+        continue
+      }
+      break
+    }
     inline(list.appendChild(el('li')), match[1])
     index += 1
   }

@@ -70,6 +70,10 @@ Modern React SPA with AI Agent chat, portfolio management, funnel screening, rec
 
 The pattern-review page reads the latest 30 review dates present in the database. The record count preserves source rows, the total-selection count uses unique symbol-date occurrences, and covered-stock and return summaries are deduplicated by symbol.
 
+### Desktop candidate
+
+The Electron desktop workspace brings Agent chat, approvals, portfolio, schedules, tracking, attribution, reports, and K-line charts into one local application. CI builds real Windows x64/arm64 installers and macOS Intel/Apple Silicon DMGs with the bundled Python runtime. These are temporary test candidates; signed public downloads belong on [GitHub Releases](https://github.com/YoungCan-Wang/WyckoffTradingAgent/releases). See [DESKTOP_RELEASE.md](DESKTOP_RELEASE.md) for packaging, signing, clean-machine acceptance, and release requirements.
+
 **Streamlit MVP retired**: Streamlit is no longer maintained on `main`. The historical runtime code is preserved on the `release/streamlit` branch, and the MVP product architecture/screenshots are archived in [STREAMLIT_MVP_ARCHITECTURE.md](STREAMLIT_MVP_ARCHITECTURE.md).
 
 ## Features

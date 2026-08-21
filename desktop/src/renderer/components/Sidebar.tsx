@@ -44,6 +44,7 @@ const GROUPS: Array<{ labelKey: string; items: NavItem[] }> = [
 interface Props {
   active: string
   onNavigate: (view: string) => void
+  onNewAnalysis: () => void
   counts: { approvals: number; schedules: number }
   accountLabel: string
   accountInitial: string
@@ -53,7 +54,7 @@ interface Props {
 }
 
 export function Sidebar (
-  { active, onNavigate, counts, accountLabel, accountInitial, onAccountClick, toggleSlot }: Props
+  { active, onNavigate, onNewAnalysis, counts, accountLabel, accountInitial, onAccountClick, toggleSlot }: Props
 ) {
   const root = useRef<HTMLElement>(null)
   // lucide 只替换当前 DOM 里的占位符，所以每次结构变化后要再跑一次。
@@ -74,7 +75,7 @@ export function Sidebar (
         <span className="side-toggle-slot">{toggleSlot}</span>
       </div>
 
-      <button className="side-new" type="button" onClick={() => onNavigate('chat')}>
+      <button className="side-new" type="button" onClick={onNewAnalysis}>
         {t('nav.newAnalysis')}
       </button>
 

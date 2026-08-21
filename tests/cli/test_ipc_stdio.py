@@ -303,6 +303,11 @@ class TestEventProjection:
         out = _project({"type": "done", "text": "done", "rounds": 2, "streamed": True})
         assert out == {"type": "done", "text": "done", "rounds": 2}
 
+    def test_thinking_text_does_not_cross_the_desktop_boundary(self):
+        from cli.ipc.session import _project
+
+        assert _project({"type": "thinking_delta", "text": "private chain of thought"}) == {"type": "thinking_delta"}
+
 
 class TestMethodTable:
     def test_all_methods_are_generators(self):
@@ -316,7 +321,15 @@ class TestMethodTable:
     def test_expected_methods_present(self):
         from cli.ipc.methods import METHODS
 
-        assert {"health", "chat", "approve_list", "approve_decide", "portfolio", "schedules"} <= set(METHODS)
+        assert {
+            "health",
+            "chat",
+            "chat_reset",
+            "approve_list",
+            "approve_decide",
+            "portfolio",
+            "schedules",
+        } <= set(METHODS)
 
     def test_dispatch_rejects_unknown(self):
         from cli.ipc.methods import MethodError, dispatch

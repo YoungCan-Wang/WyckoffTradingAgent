@@ -55,3 +55,20 @@ test('report empty state has an explicit file import action', () => {
   assert.match(viewer, /t\('viewer\.import'\)/)
   assert.match(viewer, /fileInput\.click\(\)/)
 })
+
+test('new analysis resets the backend session instead of only navigating', () => {
+  const app = source('components/App.tsx')
+  const sidebar = source('components/Sidebar.tsx')
+  const chat = source('lib/useChat.ts')
+  assert.match(sidebar, /onClick=\{onNewAnalysis\}/)
+  assert.match(app, /navigate\('chat'\)[\s\S]*WyckoffChat\?\.newAnalysis\(\)/)
+  assert.match(chat, /collect\('chat_reset'\)/)
+  assert.match(chat, /setTurns\(\[\]\)/)
+})
+
+test('model picker keeps the last successful settings while remounting', () => {
+  const picker = source('components/ModelPicker.tsx')
+  assert.match(picker, /let cachedSettings: Settings \| null = null/)
+  assert.match(picker, /useState<Settings \| null>\(cachedSettings\)/)
+  assert.match(picker, /if \(res\) \{[\s\S]*cachedSettings =/)
+})

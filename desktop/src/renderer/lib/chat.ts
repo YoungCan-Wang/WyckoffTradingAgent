@@ -9,7 +9,6 @@
 
 /** 一轮里的一个块。type 决定怎么渲染。 */
 export type Block =
-  | { kind: 'thinking'; text: string }
   | { kind: 'text'; text: string }
   | { kind: 'tool'; name: string; display: string }
   | { kind: 'toolError'; name: string; error: string }
@@ -33,7 +32,7 @@ export function pushBlock (blocks: Block[], next: Block): Block[] {
   const last = blocks[blocks.length - 1]
   if (
     last &&
-    (next.kind === 'text' || next.kind === 'thinking') &&
+    next.kind === 'text' &&
     last.kind === next.kind
   ) {
     // 合并而不是新建：每个 delta 一个块会产出几百个 <p>。
@@ -75,7 +74,8 @@ export function applyEvent (turn: Turn, event: Record<string, unknown>): Turn {
 
   switch (type) {
     case 'thinking_delta':
-      return { ...turn, blocks: pushBlock(turn.blocks, { kind: 'thinking', text: str(event.text) }) }
+      // 内部推理不是用户正文。即使旧后端仍发该事件，也绝不渲染。
+      return turn
     case 'text_delta':
       return { ...turn, blocks: pushBlock(turn.blocks, { kind: 'text', text: str(event.text) }) }
     case 'tool_start':

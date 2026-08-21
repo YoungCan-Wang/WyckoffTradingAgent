@@ -18,7 +18,7 @@
     // 侧边栏导航
     'nav.chat': '会话',
     'nav.primary': '主导航',
-    'nav.newAnalysis': '开始分析',
+    'nav.newAnalysis': '新建分析',
     'nav.groupWork': '工作',
     'nav.groupDomain': '业务',
     'nav.groupLibrary': '资料库',
@@ -353,6 +353,7 @@
     'chat.thinking': '正在思考…',
     'chat.offline': '后台服务未就绪，暂时无法发送。',
     'chat.sendFailed': '发送失败',
+    'chat.resetFailed': '新建分析失败，请重试。',
     'chat.pendingCount': '{count} 待批',
 
     // 设置：外观
@@ -512,7 +513,7 @@
 
     'nav.chat': 'Chat',
     'nav.primary': 'Primary navigation',
-    'nav.newAnalysis': 'Start analysis',
+    'nav.newAnalysis': 'New analysis',
     'nav.groupWork': 'Work',
     'nav.groupDomain': 'Domain',
     'nav.groupLibrary': 'Library',
@@ -832,6 +833,7 @@
     'chat.thinking': 'Thinking…',
     'chat.offline': 'Backend not ready — sending is disabled.',
     'chat.sendFailed': 'Send failed',
+    'chat.resetFailed': 'Could not start a new analysis. Try again.',
     'chat.pendingCount': '{count} pending',
     'appearance.groupLanguage': 'Language',
     'appearance.groupDisplay': 'Display',

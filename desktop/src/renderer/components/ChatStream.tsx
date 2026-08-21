@@ -77,8 +77,6 @@ function BlockView (
   { block, onApprovalDecided }: { block: Block; onApprovalDecided: (n: string) => void }
 ) {
   switch (block.kind) {
-    case 'thinking':
-      return <div className="think">{block.text}</div>
     case 'text':
       // 模型的正文是 markdown（列表、粗体、代码、表格），原样输出会看到
       // 满屏的 ** 和 -。

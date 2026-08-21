@@ -9,6 +9,7 @@ import {
   applyEvent, finalText, looksLikeReport, reportTitle, isPortfolioWriteTool,
   type Turn
 } from './chat'
+import { collect } from './ipc'
 
 const t = (key: string, params?: Record<string, string | number>) => window.WyckoffI18n.t(key, params)
 
@@ -18,6 +19,8 @@ export interface ChatApi {
   /** 有过任何一轮 = 欢迎页该让位给对话 */
   started: boolean
   send: (text: string) => Promise<void>
+  /** 清掉前后端会话历史，开始一段独立分析。 */
+  reset: () => Promise<boolean>
   /** 系统提示行（退出登录、切模型失败之类）也进对话流。 */
   sysLine: (text: string, isError?: boolean) => void
   invalidateOnTool: (toolName: string) => void
@@ -167,5 +170,19 @@ export function useChat (ready: boolean): ChatApi {
     }
   }, [busy, ready, handleLiveEvent])
 
-  return { turns, busy, started: turns.length > 0, send, sysLine, invalidateOnTool }
+  const reset = useCallback(async () => {
+    if (busy || !ready) return false
+    const result = await collect('chat_reset').catch(() => null)
+    if (!result) {
+      sysLine(t('chat.resetFailed'), true)
+      return false
+    }
+    liveIds.current.clear()
+    pendingEvents.current.clear()
+    setTurns([])
+    setBusy(false)
+    return true
+  }, [busy, ready, sysLine])
+
+  return { turns, busy, started: turns.length > 0, send, reset, sysLine, invalidateOnTool }
 }

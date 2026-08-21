@@ -11,9 +11,10 @@ import type { Settings, ModelEntry } from '../types'
 const t = (key: string) => window.WyckoffI18n.t(key)
 
 const label = (m: ModelEntry) => m.model || m.id
+let cachedSettings: Settings | null = null
 
 export function ModelPicker () {
-  const [data, setData] = useState<Settings | null>(null)
+  const [data, setData] = useState<Settings | null>(cachedSettings)
   const [open, setOpen] = useState(false)
   const [up, setUp] = useState(false)
   const btn = useRef<HTMLButtonElement>(null)
@@ -21,7 +22,10 @@ export function ModelPicker () {
 
   const load = async () => {
     const res = await collect('settings_get').catch(() => null)
-    if (res) setData(res as unknown as Settings)
+    if (res) {
+      cachedSettings = res as unknown as Settings
+      setData(cachedSettings)
+    }
   }
   useEffect(() => { void load() }, [])
 

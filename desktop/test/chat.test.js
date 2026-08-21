@@ -26,11 +26,12 @@ test('文字增量合并成一个块', () => {
   assert.equal(s.blocks[0].text, '你好世界')
 })
 
-test('思考与正文是两个块，不互相污染', () => {
+test('模型内部思考不进入用户可见块', () => {
   let s = turn()
   s = applyEvent(s, { type: 'thinking_delta', text: '想一下' })
   s = applyEvent(s, { type: 'text_delta', text: '结论' })
-  assert.deepEqual(s.blocks.map((b) => b.kind), ['thinking', 'text'])
+  assert.deepEqual(s.blocks.map((b) => b.kind), ['text'])
+  assert.equal(s.blocks[0].text, '结论')
 })
 
 test('工具行打断文字后，后续文字是新块', () => {
@@ -103,7 +104,7 @@ test('最终正文：done 带的优先', () => {
   assert.equal(finalText(s), '流式的')
 })
 
-test('最终正文：只拼文字块，不含思考', () => {
+test('最终正文不含思考', () => {
   let s = turn()
   s = applyEvent(s, { type: 'thinking_delta', text: '内心戏' })
   s = applyEvent(s, { type: 'text_delta', text: '正文' })
