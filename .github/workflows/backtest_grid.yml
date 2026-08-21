@@ -253,6 +253,22 @@ jobs:
       FUNNEL_AI_NEUTRAL_TREND: "5"
       FUNNEL_AI_NEUTRAL_ACCUM: "1"
 
+      # 与实盘漏斗对齐的判定类配置。回测 live 闸门现直接读 STEP4_BUY_BLOCK_REGIMES /
+      # STEP4_BUY_ALLOW_REGIMES（见 core/backtest_config._live_buy_block_regimes），
+      # 此前用硬编码集合，方向与实盘恰好相反：回测禁 BEAR_REBOUND/RISK_ON 而放行 NEUTRAL，
+      # 实盘正相反，导致两者成交的交易日几乎不重叠。
+      # 允许用 repository variable 覆盖，便于运维调参而不必改代码。
+      STEP4_BUY_BLOCK_REGIMES: ${{ vars.STEP4_BUY_BLOCK_REGIMES || 'UNKNOWN,NEUTRAL,PANIC_REPAIR,RISK_OFF,CRASH,BLACK_SWAN' }}
+      STEP4_BUY_ALLOW_REGIMES: ${{ vars.STEP4_BUY_ALLOW_REGIMES || 'BEAR_REBOUND,RISK_ON' }}
+      STEP4_BLOCK_BUY_SIGNAL_TYPES: ${{ vars.STEP4_BLOCK_BUY_SIGNAL_TYPES || '' }}
+      FUNNEL_DYNAMIC_POLICY: ${{ vars.FUNNEL_DYNAMIC_POLICY || 'shadow' }}
+      FUNNEL_DYNAMIC_POLICY_HORIZON: "5"
+      FUNNEL_DEFENSIVE_FORCE_QUOTA: "1"
+      FUNNEL_MAX_STRUCTURE_STOP_PCT: "12.0"
+      FUNNEL_THEME_RADAR_PROMOTE_CAP: "2"
+      FUNNEL_L2_BYPASS_AI_ENABLED: "0"
+      FUNNEL_STRATEGIC_L2_BYPASS_AI_CAP: "2"
+
     steps:
       - name: Resolve period dates
         id: period
