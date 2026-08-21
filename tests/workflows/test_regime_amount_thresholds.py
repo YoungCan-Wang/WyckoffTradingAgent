@@ -1,14 +1,15 @@
 """Tests for regime-tiered liquidity thresholds.
 
-2026-08-20 复盘：8/19 水温为 CRASH，流动性门槛 12000 万把 73/200 只涨停股拦在 L1 之外，
-其中神州细胞（11949.7万）、南模生物（11945.7万）差不到 55 万。
+这些门槛是**死配置**：CRASH 与深度 RISK_OFF 都在 STEP4_BUY_BLOCK_REGIMES 里，
+那些档位下压根不下单，门槛因此不参与任何成交决策，只影响候选池规模。
 
-实测（466 个交易日 / 全市场 20 日均额分档，T+5 净超额已扣 0.202% 往返成本）显示
-抬高门槛没有选股优势——4000 万 -0.24、8000 万 -0.31、12000 万 -0.35，单调递减；
-被砍掉的 11000~12000 万边缘区间单独看是 -0.20，反而优于 12000 档整体。
+#295 曾依「全市场分档实测门槛越高净超额越差」把 12000/10000 下调到 8000，
+但该测试未叠加禁买闸门。修复回测小盘基准（#299）后重跑对照：门槛 8000 与 12000/10000
+两组的成交笔数、胜率、总收益、夏普、回撤、VaR95、Trend/Accum 分层**全部一字不差**
+（103 笔 / 33.01% / +5.72% / 0.714 / -7.25% / -8.881%）。故已恢复原值。
 
-故 CRASH 与深度 RISK_OFF 统一下调至 8000（与 RISK_OFF 齐平）。保留 8000 而非降到
-默认 4000，是因为该测试未建模低流动性票的滑点差异——门槛的真实价值在滑点保护。
+这些用例守的是「恢复后的值」与「防守档比常规档更严」这条设计意图，
+以及门槛本身的健壮性——而不是任何收益主张。
 """
 
 from __future__ import annotations
@@ -36,31 +37,30 @@ def _clear_env(monkeypatch):
         monkeypatch.delenv(key, raising=False)
 
 
-class TestDefaults:
-    def test_crash_lowered_to_8000(self):
-        assert market_regime_config_from_env().crash_min_avg_amount_wan == pytest.approx(8000.0)
+class TestRestoredDefaults:
+    def test_crash_restored_to_12000(self):
+        assert market_regime_config_from_env().crash_min_avg_amount_wan == pytest.approx(12000.0)
 
-    def test_risk_off_deep_lowered_to_8000(self):
-        assert market_regime_config_from_env().risk_off_deep_min_avg_amount_wan == pytest.approx(8000.0)
+    def test_risk_off_deep_restored_to_10000(self):
+        assert market_regime_config_from_env().risk_off_deep_min_avg_amount_wan == pytest.approx(10000.0)
 
-    def test_defensive_tiers_no_longer_exceed_risk_off(self):
-        """防守档不再比 RISK_OFF 更严——那是本次改动的核心。"""
+    def test_tiers_get_stricter_as_risk_rises(self):
+        """设计意图：越危险的档位要求越高的流动性。"""
         config = market_regime_config_from_env()
-        assert config.crash_min_avg_amount_wan <= config.risk_off_min_avg_amount_wan
-        assert config.risk_off_deep_min_avg_amount_wan <= config.risk_off_min_avg_amount_wan
+        assert (
+            config.panic_repair_min_avg_amount_wan
+            <= config.risk_off_min_avg_amount_wan
+            <= config.risk_off_deep_min_avg_amount_wan
+            <= config.crash_min_avg_amount_wan
+        )
 
-    def test_still_above_engine_default(self):
-        """仍高于 FunnelConfig 默认 4000：保留对真正低流动性标的的滑点保护。"""
+    def test_all_above_engine_default(self):
         from core.wyckoff_engine import FunnelConfig
 
+        base = FunnelConfig().min_avg_amount_wan
         config = market_regime_config_from_env()
-        assert config.crash_min_avg_amount_wan > FunnelConfig().min_avg_amount_wan
-
-    def test_the_2026_08_20_edge_cases_would_now_pass(self):
-        """神州细胞 11949.7万 / 南模生物 11945.7万 在新门槛下应放行。"""
-        threshold = market_regime_config_from_env().crash_min_avg_amount_wan
-        for observed_wan in (11949.7, 11945.7, 11790.3, 11731.8, 11108.0):
-            assert observed_wan >= threshold
+        for key in _AMOUNT_KEYS:
+            assert getattr(config, key) > base, key
 
 
 class TestEnvOverride:
@@ -68,13 +68,13 @@ class TestEnvOverride:
         monkeypatch.setenv("FUNNEL_CRASH_MIN_AVG_AMOUNT_WAN", "15000")
         assert market_regime_config_from_env().crash_min_avg_amount_wan == pytest.approx(15000.0)
 
-    def test_can_restore_previous_behaviour(self, monkeypatch):
-        """可回退：设回 12000/10000 即恢复改动前行为。"""
-        monkeypatch.setenv("FUNNEL_CRASH_MIN_AVG_AMOUNT_WAN", "12000")
-        monkeypatch.setenv("FUNNEL_RISK_OFF_DEEP_MIN_AVG_AMOUNT_WAN", "10000")
+    def test_can_experiment_with_lower_tiers(self, monkeypatch):
+        """仍可通过 env 试验更低门槛——只是别指望它改变成交结果。"""
+        monkeypatch.setenv("FUNNEL_CRASH_MIN_AVG_AMOUNT_WAN", "8000")
+        monkeypatch.setenv("FUNNEL_RISK_OFF_DEEP_MIN_AVG_AMOUNT_WAN", "8000")
         config = market_regime_config_from_env()
-        assert config.crash_min_avg_amount_wan == pytest.approx(12000.0)
-        assert config.risk_off_deep_min_avg_amount_wan == pytest.approx(10000.0)
+        assert config.crash_min_avg_amount_wan == pytest.approx(8000.0)
+        assert config.risk_off_deep_min_avg_amount_wan == pytest.approx(8000.0)
 
     def test_all_amount_thresholds_are_positive(self):
         config = market_regime_config_from_env()
