@@ -151,13 +151,16 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: wyckoff-windows-installer
-          path: roundtrip-by-name/
+          # 显式带 desktop/ 前缀：action 的 path 相对**仓库根**，而下面的校验
+          # 脚本受 job 级 defaults.run.working-directory: desktop 影响。
+          # 不对齐就会「下载成功、校验却找不到」—— 第二版就是这么红的。
+          path: desktop/roundtrip-by-name/
       - name: Roundtrip check by pattern
         uses: actions/download-artifact@v8
         with:
           pattern: wyckoff-windows-*
           merge-multiple: true
-          path: roundtrip-by-pattern/
+          path: desktop/roundtrip-by-pattern/
       # 不写死内部层级：upload 的 path 是 `desktop/dist/*.exe`（相对仓库根），
       # 所以产物里会保留 `dist/` 这一层 —— 第一版校验直接找 `*.exe` 因此红了。
       # 那是我的校验写错，不是 v8 的行为变化。用 find 递归找,不依赖具体层级。
