@@ -82,7 +82,7 @@ jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 """.lstrip(),
         encoding="utf-8",
     )
@@ -110,7 +110,7 @@ jobs:
     steps:
       - name: Prepare logs dir
         run: mkdir -p logs
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: logs
           path: logs/*

@@ -165,12 +165,12 @@ jobs:
             echo "BT_START=$(TZ=Asia/Shanghai date -d '-6 months -1 day' +%Y-%m-%d)" >> "$GITHUB_ENV"
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.period.outputs.active == 'true'
 
       - name: Set up Python
         if: steps.period.outputs.active == 'true'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: "pip"
@@ -196,7 +196,7 @@ jobs:
 
       - name: Upload snapshot
         if: steps.period.outputs.active == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: backtest-snapshot-${{ steps.period.outputs.period_key }}
           path: snapshot_data/*
@@ -310,12 +310,12 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.period.outputs.active == 'true'
 
       - name: Set up Python
         if: steps.period.outputs.active == 'true'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: "pip"
@@ -328,7 +328,7 @@ jobs:
 
       - name: Download snapshot
         if: steps.period.outputs.active == 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: backtest-snapshot-${{ steps.period.outputs.period_key }}
           path: snapshot_data/
@@ -381,7 +381,7 @@ jobs:
 
       - name: Upload artifacts
         if: always() && steps.period.outputs.active == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: backtest-grid-${{ steps.period.outputs.period_key }}-${{ github.run_number }}
           path: ${{ env.OUT_ROOT }}/**
@@ -456,12 +456,12 @@ jobs:
             echo "BT_START=$(TZ=Asia/Shanghai date -d '-6 months -1 day' +%Y-%m-%d)" >> "$GITHUB_ENV"
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.period.outputs.active == 'true'
 
       - name: Set up Python
         if: steps.period.outputs.active == 'true'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: "pip"
@@ -474,7 +474,7 @@ jobs:
 
       - name: Download snapshot
         if: steps.period.outputs.active == 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: backtest-snapshot-${{ steps.period.outputs.period_key }}
           path: snapshot_data/
@@ -543,7 +543,7 @@ jobs:
 
       - name: Upload strategy artifact
         if: always() && steps.period.outputs.active == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: backtest-strategy-${{ steps.period.outputs.period_key }}-${{ matrix.variant_set }}-${{ github.run_number }}
           path: ${{ env.OUT_DIR }}/**
@@ -602,22 +602,22 @@ jobs:
             echo "BT_START=$(TZ=Asia/Shanghai date -d '-6 months -1 day' +%Y-%m-%d)" >> "$GITHUB_ENV"
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts/
           pattern: backtest-grid-*
 
       - name: Download strategy comparison artifacts
         if: ${{ inputs.run_strategy_compare }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts/
           pattern: backtest-strategy-*
@@ -659,7 +659,7 @@ jobs:
 
       - name: Upload market backtest report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: backtest-market-report-${{ github.run_number }}
           path: |
