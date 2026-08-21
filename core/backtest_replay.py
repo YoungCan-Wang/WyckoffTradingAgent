@@ -112,6 +112,9 @@ class BacktestReplayConfig:
     # 小盘基准（默认创业板指）。缺它则 CRASH/PANIC_REPAIR 少一条判据，
     # 防守档会塌成 NEUTRAL——见 _analyze_market_regime 的说明。
     smallcap_bench_df: pd.DataFrame | None = None
+    # live 模式下的禁买水温集合。留空则回退到 EXECUTE_BLOCK_NEW_BUY_REGIMES（旧行为）；
+    # 由调用方注入实盘的 STEP4_BUY_BLOCK_REGIMES 以保证回测与实盘闸门一致。
+    buy_block_regimes: frozenset[str] = frozenset()
     a_share_entry_research: AShareEntryResearchPolicy = field(default_factory=AShareEntryResearchPolicy)
 
 
@@ -310,7 +313,8 @@ def _apply_execution_gates(
     selected: _RankedSelection | None,
     config: BacktestReplayConfig,
 ) -> tuple[_ExecutionGateResult, int]:
-    if selected is not None and not _execution_regime_allows(ctx.regime, config.execution_regime_gate):
+    blocked = config.buy_block_regimes or None
+    if selected is not None and not _execution_regime_allows(ctx.regime, config.execution_regime_gate, blocked):
         return _ExecutionGateResult(None, True), len(selected.codes)
     if selected is None:
         return _ExecutionGateResult(None, False), 0
@@ -372,13 +376,24 @@ def _trade_context(ctx: _DayContext) -> _TradeContext:
     return _TradeContext(ctx.idx, ctx.signal_date, ctx.entry_target_date, ctx.regime)
 
 
-def _execution_regime_allows(regime: str, mode: str) -> bool:
+def _execution_regime_allows(regime: str, mode: str, blocked: frozenset[str] | None = None) -> bool:
+    """回测的下单闸门。
+
+    `live` 模式此前用硬编码的 EXECUTE_BLOCK_NEW_BUY_REGIMES，与实盘的
+    STEP4_BUY_BLOCK_REGIMES 不一致，且方向恰好相反：
+
+        回测禁买  BEAR_REBOUND / RISK_ON（实测超额 +4.08 / +6.07pct，实盘已放开）
+        回测放行  NEUTRAL（实测超额 -4.35pct，实盘已禁买）
+
+    后果是回测只在 NEUTRAL 下单、实盘恰好不在 NEUTRAL 下单，两者成交的交易日几乎不重叠，
+    任何按水温分档的回测结论都无法映射到实盘。现改为接受实盘同一份禁买集合。
+    """
     normalized = normalize_regime(regime)
     if mode == "off":
         return True
     if mode == "neutral_only":
         return normalized == "NEUTRAL"
-    return normalized not in EXECUTE_BLOCK_NEW_BUY_REGIMES
+    return normalized not in (blocked if blocked is not None else EXECUTE_BLOCK_NEW_BUY_REGIMES)
 
 
 def _limit_probe_only_selection(
