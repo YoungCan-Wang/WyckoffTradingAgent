@@ -96,18 +96,11 @@ jobs:
           }
           Write-Host "无残留进程"
 
-  # 每个架构都在同架构 runner 上构建 PyInstaller payload；不能把一份 x64
-  # Python 目录同时塞进 x64 / arm64 Electron 壳里。
+  # Windows ARM64 is not a release target yet: the locked cryptography dependency
+  # no longer publishes win_arm64 wheels, so a reproducible frozen runtime is not
+  # available without maintaining a native OpenSSL toolchain.
   package-windows:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x64
-            os: windows-latest
-          - arch: arm64
-            os: windows-11-arm
-    runs-on: ${{ matrix.os }}
+    runs-on: windows-latest
     needs: test
     defaults:
       run:
@@ -120,19 +113,19 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
-          architecture: ${{ matrix.arch }}
+          architecture: x64
       - name: Install
         run: npm ci
       - name: Build and smoke-test Python payload
         run: python ../scripts/build_python_ipc.py
 
-      - name: Package NSIS (${{ matrix.arch }})
-        run: npx --no-install electron-builder --win --${{ matrix.arch }} --publish never
+      - name: Package NSIS (x64)
+        run: npx --no-install electron-builder --win --x64 --publish never
 
       - name: Verify bundled runtime and installer
         shell: pwsh
         run: |
-          $unpacked = if ('${{ matrix.arch }}' -eq 'arm64') { 'dist/win-arm64-unpacked' } else { 'dist/win-unpacked' }
+          $unpacked = 'dist/win-unpacked'
           $app = Join-Path $unpacked 'Wyckoff.exe'
           $ipc = Join-Path $unpacked 'resources/wyckoff-ipc/wyckoff-ipc.exe'
           if (-not (Test-Path $app)) { throw "missing packaged app: $app" }
@@ -141,16 +134,16 @@ jobs:
           if (-not ($health -match '"type": "ready"')) { throw "packaged IPC health smoke failed: $health" }
           $daemon = & $ipc --daemon --status
           if (-not ($daemon -match '^daemon:')) { throw "packaged daemon smoke failed: $daemon" }
-          $installer = Get-ChildItem "dist/*-${{ matrix.arch }}.exe"
-          if (-not $installer) { throw "missing NSIS installer for ${{ matrix.arch }}" }
+          $installer = Get-ChildItem "dist/*-x64.exe"
+          if (-not $installer) { throw "missing NSIS installer for x64" }
           $installer | Format-Table Name, Length
 
       - uses: actions/upload-artifact@v7
         with:
-          name: wyckoff-windows-${{ matrix.arch }}-unsigned
+          name: wyckoff-windows-x64-unsigned
           path: |
-            desktop/dist/*-${{ matrix.arch }}.exe
-            desktop/dist/*-${{ matrix.arch }}.exe.blockmap
+            desktop/dist/*-x64.exe
+            desktop/dist/*-x64.exe.blockmap
           retention-days: 14
           if-no-files-found: error
 
@@ -219,9 +212,9 @@ jobs:
           pattern: wyckoff-*
           merge-multiple: true
           path: candidates/
-      - name: Verify all four candidate installers survived upload/download
+      - name: Verify all three candidate installers survived upload/download
         run: |
           set -e
           find candidates -maxdepth 2 -type f -print
-          test "$(find candidates -name '*.exe' | wc -l)" -eq 2
+          test "$(find candidates -name '*.exe' | wc -l)" -eq 1
           test "$(find candidates -name '*.dmg' | wc -l)" -eq 2

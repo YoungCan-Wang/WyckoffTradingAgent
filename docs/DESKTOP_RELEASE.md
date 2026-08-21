@@ -4,14 +4,18 @@ The desktop app ships as a self-contained Electron application with a bundled Py
 
 ## Outputs
 
-The `Desktop` workflow builds and smoke-tests four candidate installers on native GitHub-hosted runners:
+The `Desktop` workflow builds and smoke-tests three candidate installers on native GitHub-hosted runners:
 
 | Platform | Architecture | Candidate artifact |
 |---|---|---|
 | Windows | x64 | NSIS `.exe` |
-| Windows | arm64 | NSIS `.exe` |
 | macOS | Intel x64 | `.dmg` |
 | macOS | Apple Silicon arm64 | `.dmg` |
+
+Windows ARM64 is not a supported release target yet. The locked `cryptography`
+dependency does not publish `win_arm64` wheels, so CI cannot currently create a
+reproducible self-contained Python runtime for that architecture without adding
+and maintaining a native OpenSSL build toolchain.
 
 Each job runs the bundled `wyckoff-ipc` health and daemon entrypoints from the packaged application before upload. Candidate artifacts are retained for 14 days and are intended for maintainer testing, not as the public download channel.
 
@@ -30,11 +34,11 @@ GitHub Releases is the public distribution and changelog surface. Workflow artif
 
 Before publishing a release:
 
-1. Merge only after all required PR checks, including all four package jobs, are successful.
+1. Merge only after all required PR checks, including all three package jobs, are successful.
 2. Install each candidate on a clean machine of the matching architecture. Verify first launch, model setup, a two-turn chat, K-line opening, settings, quit, and relaunch.
 3. Sign Windows executables with an Authenticode certificate. Unsigned candidates show an unknown-publisher warning and are not official releases.
 4. Sign macOS builds with a Developer ID Application certificate, notarize them, and staple the ticket. Ad-hoc signed CI candidates are not official releases.
-5. Create a versioned GitHub Release such as `desktop-v0.1.0`, attach both Windows installers and both DMGs, publish release notes, checksums, screenshots, supported systems, and known limitations.
+5. Create a versioned GitHub Release such as `desktop-v0.1.0`, attach the Windows installer and both DMGs, publish release notes, checksums, screenshots, supported systems, and known limitations.
 6. Link the latest GitHub Release from the repository README and announcement copy. Documentation may explain the release, but it must not act as binary storage.
 
 ## Required signing configuration

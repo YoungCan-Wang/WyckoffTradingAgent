@@ -153,10 +153,9 @@ test('审批理由白名单与后端保持同步', () => {
   }
 })
 
-test('Windows 目标同时覆盖 x64 与 arm64', () => {
-  // Apple Silicon 上的 Windows 虚拟机一律是 ARM 版。只出 x64 的话本地验证只能
-  // 过 Prism 模拟跑 —— 测出来的性能和部分原生行为不代表真实 x64 机器。
-  // （NSIS 会把两个架构合进同一个安装包，所以产物里没有单独的 *arm64*.exe。）
+test('Windows 目标只声明可复现构建的 x64', () => {
+  // cryptography 已停止发布 win_arm64 wheel。恢复 ARM64 目标前，必须先有
+  // 可维护的原生 OpenSSL 构建链并让完整冻结运行时在对应 runner 上通过。
   const win = pkg.build && pkg.build.win
   assert.ok(win, '缺 build.win')
   const arches = new Set()
@@ -165,5 +164,5 @@ test('Windows 目标同时覆盖 x64 与 arm64', () => {
     for (const a of target.arch || []) arches.add(a)
   }
   assert.ok(arches.has('x64'), 'Windows 目标缺 x64')
-  assert.ok(arches.has('arm64'), 'Windows 目标缺 arm64（虚拟机验证会退化成模拟运行）')
+  assert.equal(arches.has('arm64'), false, '不能宣称尚未通过冻结运行时构建的 Windows ARM64')
 })
