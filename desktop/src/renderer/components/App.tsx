@@ -122,7 +122,8 @@ export function App () {
     setSettings((s) => ({ ...s, open: false, anchor: undefined }))
     const target = opener.current
     opener.current = null
-    if (target?.isConnected) target.focus()
+    // 先让 React 卸掉弹窗并解除背景 inert，再把焦点还给触发控件。
+    requestAnimationFrame(() => { if (target?.isConnected) target.focus() })
   }, [])
 
   const signOut = useCallback(async () => {

@@ -13,11 +13,16 @@ test('settings dialog traps focus, makes the app inert, and restores its opener'
   // 背景 inert、Tab 在弹窗内环形、关闭后焦点还给打开它的控件。
   const dlg = source('components/SettingsModal.tsx')
   const app = source('components/App.tsx')
-  assert.match(dlg, /shell\.inert = true/)
-  assert.match(dlg, /shell\.inert = false/)
+  assert.match(dlg, /\.side, \.thread, \.pane-resizer, \.pane/)
+  assert.match(dlg, /node\.inert = open/)
+  assert.doesNotMatch(dlg, /querySelector<HTMLElement>\('\.win'\)/)
   assert.match(dlg, /e\.key !== 'Tab'/)
   assert.match(app, /opener/)
-  assert.match(app, /target\?\.isConnected\) target\.focus\(\)/)
+  assert.match(app, /requestAnimationFrame\(\(\) => \{ if \(target\?\.isConnected\) target\.focus\(\) \}\)/)
+
+  // 设置入口如果来自会卸载的菜单项，必须先把焦点放回稳定触发按钮。
+  assert.match(source('components/AccountMenu.tsx'), /anchor\.focus\(\)[\s\S]*onSettings\(\)/)
+  assert.match(source('components/ModelPicker.tsx'), /btn\.current\?\.focus\(\)[\s\S]*openSettings/)
 })
 
 test('open and account menus implement desktop keyboard navigation', () => {

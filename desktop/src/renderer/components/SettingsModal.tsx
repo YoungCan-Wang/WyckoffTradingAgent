@@ -1,8 +1,8 @@
 /**
  * 设置弹窗：左侧三个栏目 + 右侧面板。
  *
- * 打开时把主界面设为 inert —— 否则背景里的按钮仍能被 Tab 到，键盘用户会
- * 「掉出」这个模态框。关闭时焦点还给打开它的那个控件。
+ * 打开时把背景区域设为 inert —— 否则背景里的按钮仍能被 Tab 到，键盘用户会
+ * 「掉出」这个模态框。弹窗本身也在 .win 内，不能直接把整个 .win 设为 inert。
  */
 import { useEffect, useRef } from 'react'
 import { SettingsPanel } from './SettingsPanel'
@@ -37,15 +37,12 @@ export function SettingsModal (
 
   // 打开时禁用背景交互并把焦点移进来。
   useEffect(() => {
-    const shell = document.querySelector<HTMLElement>('.win')
-    if (!shell) return
-    if (open) {
-      shell.inert = true
-      requestAnimationFrame(() => nav.current?.querySelector<HTMLElement>('.dlg-n.on')?.focus())
-    } else {
-      shell.inert = false
-    }
-    return () => { shell.inert = false }
+    const background = [...document.querySelectorAll<HTMLElement>(
+      '.side, .thread, .pane-resizer, .pane'
+    )]
+    for (const node of background) node.inert = open
+    if (open) requestAnimationFrame(() => nav.current?.querySelector<HTMLElement>('.dlg-n.on')?.focus())
+    return () => { for (const node of background) node.inert = false }
   }, [open])
 
   /**

@@ -36,7 +36,7 @@ try {
 const consoleErrors = []
 const win = await app.firstWindow()
 win.on('console', (msg) => {
-  if (msg.type() !== 'error') return
+  if (msg.type() !== 'error' && !/MaxListenersExceededWarning/.test(msg.text())) return
   const text = msg.text()
   if (/Content-Security-Policy|ERR_CONNECTION|favicon/i.test(text)) return
   consoleErrors.push(text.slice(0, 200))
@@ -108,10 +108,30 @@ if (await openBtn.count() > 0) {
     await win.waitForTimeout(600)
     const box = await win.locator('.symbox').count()
     check('K 线输入浮层出现', () => assert.equal(box, 1, `symbox 数量 ${box}`))
+    await win.keyboard.press('Escape')
   }
 } else {
   check('打开菜单能弹出', () => assert.fail('找不到菜单按钮'))
 }
+
+// 6) 设置弹窗只冻结背景，不能把自己也变成 inert；关闭后焦点回到账号按钮。
+await win.locator('.acct').click()
+await win.locator('.menu-i').first().click()
+await win.locator('.dlg').waitFor({ state: 'visible' })
+const modalState = await win.evaluate(() => ({
+  dialogInert: document.querySelector('.dlg')?.inert,
+  backgroundInert: document.querySelector('.thread')?.inert,
+  focused: document.activeElement?.classList.contains('dlg-n')
+}))
+check('设置弹窗可聚焦且只冻结背景', () => {
+  assert.equal(modalState.dialogInert, false)
+  assert.equal(modalState.backgroundInert, true)
+  assert.equal(modalState.focused, true)
+})
+await win.keyboard.press('Escape')
+await win.locator('.dlg').waitFor({ state: 'hidden' })
+const restored = await win.evaluate(() => document.activeElement?.classList.contains('acct'))
+check('关闭设置后焦点回到账号按钮', () => assert.equal(restored, true))
 
 check('渲染端无未预期报错', () =>
   assert.deepEqual(consoleErrors, [], `报错: ${consoleErrors.join(' | ')}`))

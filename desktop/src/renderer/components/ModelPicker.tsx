@@ -119,6 +119,8 @@ export function ModelPicker () {
           className="mdl-add"
           onClick={() => {
             setOpen(false)
+            // 下拉项即将卸载，先把焦点放回仍存在的模型按钮，供设置弹窗关闭时恢复。
+            btn.current?.focus()
             // 直接落到「模型」那一栏 —— 停在页首等于还要用户自己找一遍
             window.WyckoffApp?.openSettings?.('agent', 'models.heading')
           }}

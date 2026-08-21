@@ -2,6 +2,17 @@
 
 const { contextBridge, ipcRenderer, webUtils } = require('electron')
 
+// 渲染端每个流都会临时订阅事件；把它们汇总到一个真正的 ipcRenderer 监听器，
+// 避免首页并发请求超过 EventEmitter 默认上限而误报内存泄漏。
+const eventHandlers = new Set()
+const statusHandlers = new Set()
+ipcRenderer.on('py:event', (_evt, payload) => {
+  for (const handler of eventHandlers) handler(payload)
+})
+ipcRenderer.on('py:status', (_evt, payload) => {
+  for (const handler of statusHandlers) handler(payload)
+})
+
 // The only surface the renderer gets. No fs, no child_process, no ipcRenderer.
 contextBridge.exposeInMainWorld('wyckoff', {
   call: (method, params) => ipcRenderer.invoke('py:call', method, params),
@@ -29,13 +40,11 @@ contextBridge.exposeInMainWorld('wyckoff', {
   status: () => ipcRenderer.invoke('py:status'),
   restart: () => ipcRenderer.invoke('py:restart'),
   onEvent: (handler) => {
-    const listener = (_evt, payload) => handler(payload)
-    ipcRenderer.on('py:event', listener)
-    return () => ipcRenderer.removeListener('py:event', listener)
+    eventHandlers.add(handler)
+    return () => eventHandlers.delete(handler)
   },
   onStatus: (handler) => {
-    const listener = (_evt, payload) => handler(payload)
-    ipcRenderer.on('py:status', listener)
-    return () => ipcRenderer.removeListener('py:status', listener)
+    statusHandlers.add(handler)
+    return () => statusHandlers.delete(handler)
   }
 })

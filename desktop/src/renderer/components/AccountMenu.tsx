@@ -74,7 +74,13 @@ export function AccountMenu (
         className="menu-i"
         role="menuitem"
         type="button"
-        onClick={() => { onClose(); onSettings() }}
+        onClick={() => {
+          // 菜单项会随 onClose 卸载；先把焦点还给稳定的账号按钮，设置弹窗
+          // 才能记住正确的关闭后返回点。
+          anchor.focus()
+          onClose()
+          onSettings()
+        }}
       >
         <i className="menu-g" data-lucide="settings" aria-hidden="true" />
         <span>{t('menu.settings')}</span>

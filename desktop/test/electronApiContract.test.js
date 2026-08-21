@@ -109,6 +109,15 @@ test('渲染进程的安全开关没被放松', () => {
   assert.ok(!/preload\s*:/.test(codeOnly), '内置浏览器视图不该有 preload')
 })
 
+test('preload 用单个 IPC 监听器分发 Python 事件', () => {
+  const preload = readFileSync(D('src', 'preload.js'), 'utf8')
+  assert.match(preload, /const eventHandlers = new Set\(\)/)
+  assert.match(preload, /ipcRenderer\.on\('py:event'/)
+  assert.match(preload, /eventHandlers\.add\(handler\)/)
+  assert.match(preload, /eventHandlers\.delete\(handler\)/)
+  assert.doesNotMatch(preload, /onEvent:[\s\S]{0,160}ipcRenderer\.on\('py:event'/)
+})
+
 test('审批理由白名单与后端保持同步', () => {
   // 白名单挡的是「别把内部代号漏给用户」，代价是后端新增理由、前端忘了加，
   // 那条理由就**静默消失**。升级时发现的真实漏洞：clears_stop_loss 在后端和
