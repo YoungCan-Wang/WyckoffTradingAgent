@@ -91,7 +91,15 @@ jobs:
       STEP4_ATTACK_BUDGET_LIMIT: "0.20"
       STEP4_BUY_BLOCK_REGIMES: "UNKNOWN,NEUTRAL,PANIC_REPAIR,RISK_OFF,CRASH,BLACK_SWAN"
       # 联动实测放开：BEAR_REBOUND 超额 +4.08pct(4/4 为正)、RISK_ON +6.07pct(3/3)。
-      STEP4_BUY_ALLOW_REGIMES: "BEAR_REBOUND,RISK_ON"
+      # RISK_ON 已从豁免名单移除（移除后自动回落到代码默认禁买集）。
+      # 此前依「联动实测 +6.07pct（3/3 为正）」放开，但那只有 3 个样本日。
+      # 两次独立的跨周期回测均显示该档为负，且样本在扩大后更差：
+      #   2026-08-21 六个月网格：4 笔  胜率 25.0%  均收 -2.96%
+      #   2026-08-22 六周期网格：6 笔  胜率 16.7%  均收 -5.03%（中位 -6.81%）
+      # 回测生成的交易手册亦明确写「RISK_ON 禁止新仓｜生产市场闸门固定禁止，
+      # 不以近期样本收益解禁」。样本仍偏小（6 笔），但两次同向为负、方向与放开依据相反，
+      # 且禁买是保守侧，故先恢复禁买。
+      STEP4_BUY_ALLOW_REGIMES: "BEAR_REBOUND"
       # 留空：叠加验证显示该改动与 5% 止损重复用药。同区间 66 交易日：
       #   仅止损 -5%          总收益 +7.31%  夏普 +0.871  Accum +1.776
       #   禁 evr/sos + 止损5%  总收益 -0.14%  夏普 -0.122  Accum +0.610
