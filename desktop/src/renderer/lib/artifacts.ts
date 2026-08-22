@@ -34,6 +34,22 @@ export interface ChatArtifact {
 }
 
 /**
+ * 产物 id = `轮次:调用`。
+ *
+ * **轮次用前端已知的 IPC 流 id,不是后端自己编的序号。** 后端拿不到传输层的
+ * 请求 id（那在 stdio 层注入），它曾经自己编过一个 `turn-N` —— 而前端的
+ * `turn.id` 是流 id（数字，如 '17'）。两个命名空间，`startsWith('17:')` 恒为
+ * 假，于是对话里的产物卡片**一张都不显示**、报告去重也永不生效。
+ *
+ * 两侧的单测当时全绿：它们各自造 id 各自验，从没让真实的两端拼一次。
+ */
+export function artifactId (turnId: string, callId: string): string {
+  // callId 缺失时仍带轮次前缀：宁可同轮多次调用互相覆盖，也不能产出前缀对不上
+  // 的 id —— 后者会让卡片静默消失，比覆盖难查得多。
+  return `${turnId}:${callId || 'call'}`
+}
+
+/**
  * 把后端事件解析成产物；不是产物事件则返回 null。
  *
  * 刻意宽松：字段缺失时返回 null 而不是抛错。事件来自另一个进程，
@@ -41,10 +57,12 @@ export interface ChatArtifact {
  */
 export function parseArtifactEvent (event: Record<string, unknown>): ChatArtifact | null {
   if (String(event.type || '') !== 'chat_artifact') return null
-  // 注意读的是 artifact_id 而不是 id：传输层会把 event.id 覆盖成请求流 id。
-  const id = String(event.artifact_id || '')
+  // event.id 是传输层塞的请求流 id —— 它正是这一轮的 turn.id。
+  // 后端只给 artifact_call_id，轮次由这里拼上。
+  const turnId = String(event.id || '')
   const kind = String(event.kind || '')
-  if (!id || !(ARTIFACT_KINDS as readonly string[]).includes(kind)) return null
+  if (!turnId || !(ARTIFACT_KINDS as readonly string[]).includes(kind)) return null
+  const id = artifactId(turnId, String(event.artifact_call_id || ''))
   const status = String(event.status || '') === 'failed' ? 'failed' : 'ready'
   const payload = event.payload
   return {
@@ -74,7 +92,7 @@ export function mergeArtifact (list: ChatArtifact[], next: ChatArtifact): ChatAr
 /** 报告不走工具，所以由前端在 done 时合成一个产物。 */
 export function reportArtifact (turnId: string, title: string, body: string): ChatArtifact {
   return {
-    id: `${turnId}:report`,
+    id: artifactId(turnId, 'report'),
     kind: 'report',
     title,
     status: 'ready',

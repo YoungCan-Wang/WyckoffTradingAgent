@@ -42,27 +42,27 @@ def _event(**overrides):
 
 def test_save_report_is_a_report_artifact():
     assert _ARTIFACT_TOOLS["save_report"] == "report"
-    assert _chat_artifact(_event(), "turn-7")["kind"] == "report"
+    assert _chat_artifact(_event())["kind"] == "report"
 
 
 def test_body_comes_from_args_not_result():
     """工具返回值刻意不含正文 —— 那会把刚写的报告回灌进模型上下文。"""
-    out = _chat_artifact(_event(), "turn-7")
+    out = _chat_artifact(_event())
     assert out["payload"]["body"] == "# 标题\n\n正文"
 
 
 def test_path_comes_from_result_so_the_report_can_be_reopened():
     """path 是落盘后才知道的；带上它，关掉页签后能从报告库找回同一份。"""
-    assert _chat_artifact(_event(), "turn-7")["payload"]["path"] == "20260822-1-x.md"
+    assert _chat_artifact(_event())["payload"]["path"] == "20260822-1-x.md"
 
 
 def test_missing_title_or_body_is_not_an_artifact():
-    assert _chat_artifact(_event(args={"title": "x"}), "turn-7") is None
-    assert _chat_artifact(_event(args={"markdown": "y"}), "turn-7") is None
+    assert _chat_artifact(_event(args={"title": "x"})) is None
+    assert _chat_artifact(_event(args={"markdown": "y"})) is None
 
 
 def test_write_failure_becomes_a_failed_artifact():
-    out = _chat_artifact(_event(status="error", result={"error": "写入失败"}), "turn-7")
+    out = _chat_artifact(_event(status="error", result={"error": "写入失败"}))
     assert out["status"] == "failed"
 
 

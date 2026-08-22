@@ -31,8 +31,6 @@ class DesktopSession:
         self._pending_confirms: list[dict[str, Any]] = []
         self._user_id = ""
         self._turn_lock = threading.RLock()
-        # 产物 id 的轮次序号。自增而非时间戳：同一毫秒的两轮会撞。
-        self._turn_seq = 0
         self.ready_error = ""
 
     # -- 初始化 ---------------------------------------------------------------
@@ -254,18 +252,13 @@ class DesktopSession:
             str(config.get("desktop_tone_custom") or ""),
         )
 
-        # 产物 id 要在一轮内稳定、跨轮唯一。用自增计数器而不是时间戳：
-        # 同一毫秒内的两轮会撞。
-        self._turn_seq += 1
-        turn_id = f"turn-{self._turn_seq}"
-
         try:
             for event in runtime.run_stream(list(self._messages), prompt):
                 yield _project(event)
                 # 工具成功之后才发产物事件 —— 据 tool_start 开面板会在失败时
                 # 留下一个空面板。
                 if isinstance(event, dict) and event.get("type") in ("tool_result", "tool_error"):
-                    artifact = _chat_artifact(event, turn_id)
+                    artifact = _chat_artifact(event)
                     if artifact is not None:
                         yield artifact
                 if isinstance(event, dict) and event.get("type") == "done":
@@ -329,9 +322,15 @@ _ARTIFACT_TOOLS = {
 }
 
 
-def _chat_artifact(event: dict[str, Any], turn_id: str) -> dict[str, Any] | None:
+def _chat_artifact(event: dict[str, Any]) -> dict[str, Any] | None:
     """
     把 tool_result / tool_error 翻译成产物事件；不是产物则返回 None。
+
+    **只给 call_id，不拼轮次前缀。** 这一层拿不到传输层的请求 id（那在 stdio
+    层注入），所以曾经自己编了个 `turn-N` 序号 —— 而前端的 `turn.id` 是 IPC
+    请求流 id（数字，如 17）。两个命名空间，`startsWith('17:')` 恒为假，于是
+    对话里的产物卡片**一张都不显示**，报告去重也永远不生效。而两侧各自的
+    单测都是绿的：它们各自造 id 各自验，从没让真实的两端拼一次。
 
     为什么翻译在这一层，而不是 runtime：runtime 是 CLI / TUI / 桌面共用的，
     「右侧面板」是桌面独有的概念。而且工具结果里可能带凭据和内部结构，
@@ -351,8 +350,8 @@ def _chat_artifact(event: dict[str, Any], turn_id: str) -> dict[str, Any] | None
     result = result if isinstance(result, dict) else {}
     failed = str(event.get("status") or "") == "error" or bool(result.get("error"))
 
-    # id 用 tool_call_id：同一次调用重复投影时天然去重。缺失时退回工具名 ——
-    # 那样同一轮的多次调用会互相覆盖，但比没有 id（前端无法去重）好。
+    # 只带 call_id：轮次前缀由前端用它已知的 stream id 拼（见上面 docstring）。
+    # 缺失时退回工具名 —— 同一轮多次调用会互相覆盖，但比没有标识好。
     call_id = str(event.get("tool_call_id") or name)
 
     if kind == "kline":
@@ -368,8 +367,8 @@ def _chat_artifact(event: dict[str, Any], turn_id: str) -> dict[str, Any] | None
             "type": "chat_artifact",
             # 刻意不叫 "id"：传输层会把 event["id"] 覆盖成请求流 id
             # （stdio.py 的既有约定，审批事件同理改用 approval_id）。
-            # 用 id 的话产物标识会被冲掉，前端就没法按它去重。
-            "artifact_id": f"{turn_id}:{call_id}",
+            # 前端读 event.id 拿轮次、读这个字段拿调用，两者拼成产物 id。
+            "artifact_call_id": call_id,
             "kind": "kline",
             "title": symbol,
             "status": "failed" if failed else "ready",
@@ -387,7 +386,7 @@ def _chat_artifact(event: dict[str, Any], turn_id: str) -> dict[str, Any] | None
             return None
         return {
             "type": "chat_artifact",
-            "artifact_id": f"{turn_id}:{call_id}",
+            "artifact_call_id": call_id,
             "kind": "dashboard",
             "title": title,
             "status": "failed" if failed else "ready",
@@ -404,7 +403,7 @@ def _chat_artifact(event: dict[str, Any], turn_id: str) -> dict[str, Any] | None
             return None
         return {
             "type": "chat_artifact",
-            "artifact_id": f"{turn_id}:{call_id}",
+            "artifact_call_id": call_id,
             "kind": "report",
             "title": title,
             "status": "failed" if failed else "ready",

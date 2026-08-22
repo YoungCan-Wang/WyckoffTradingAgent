@@ -29,13 +29,15 @@ const { decideAutoOpen, resetForTurn, MIN_SPLIT_WIDTH } = load('autoOpen.ts')
 const READY = { id: 't1:c1', kind: 'kline', title: '600519', status: 'ready', payload: {} }
 const IDLE = { openedThisTurn: false, dismissedThisTurn: false, viewing: null, width: 1400 }
 
-test('解析产物事件读的是 artifact_id,不是 id', () => {
-  // 传输层会把 event.id 覆盖成请求流 id;读 id 会拿到错的东西
+test('产物 id = 传输层的流 id + 后端给的 call_id', () => {
+  // 轮次来自 event.id（那就是 turn.id）,调用来自 artifact_call_id。
+  // 后端不再自己编 turn-N —— 那会和前端的流 id 落在两个命名空间。
   const a = parseArtifactEvent({
-    type: 'chat_artifact', artifact_id: 't1:c1', kind: 'kline', title: '600519',
-    status: 'ready', payload: { symbol: '600519' }, id: 'stream-9'
+    type: 'chat_artifact', id: '17', artifact_call_id: 'c1', kind: 'kline',
+    title: '600519', status: 'ready', payload: { symbol: '600519' }
   })
-  assert.equal(a.id, 't1:c1', '应该用 artifact_id')
+  assert.equal(a.id, '17:c1')
+  assert.ok(a.id.startsWith('17:'), '必须能和 turn.id 前缀匹配')
 })
 
 test('不是产物事件就返回 null,不抛错', () => {
@@ -43,7 +45,7 @@ test('不是产物事件就返回 null,不抛错', () => {
   for (const bad of [
     { type: 'text_delta', text: 'x' },
     { type: 'chat_artifact' },
-    { type: 'chat_artifact', artifact_id: 'x', kind: 'unknown-kind' },
+    { type: 'chat_artifact', id: '17', kind: 'unknown-kind' },
     {}
   ]) {
     assert.doesNotThrow(() => parseArtifactEvent(bad))
@@ -230,7 +232,7 @@ test('产物类型清单只有一处,避免「加一半」', () => {
 
 test('dashboard 事件能被解析出来', () => {
   const a = parseArtifactEvent({
-    type: 'chat_artifact', artifact_id: 't1:d1', kind: 'dashboard',
+    type: 'chat_artifact', id: '17', artifact_call_id: 'd1', kind: 'dashboard',
     title: '行业分布', status: 'ready', payload: { html: '<p>x</p>' }
   })
   assert.ok(a, 'dashboard 应被识别为合法产物')

@@ -39,7 +39,7 @@ def test_html_comes_from_args_not_result():
         "tool_call_id": "c1",
         "status": "ok",
     }
-    out = _chat_artifact(event, "turn-1")
+    out = _chat_artifact(event)
     assert out["kind"] == "dashboard"
     assert out["payload"]["html"] == INTERACTIVE
 
