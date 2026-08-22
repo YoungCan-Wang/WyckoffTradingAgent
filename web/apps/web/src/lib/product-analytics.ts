@@ -1,12 +1,14 @@
 const CF_BEACON_ID = 'cf-web-analytics'
 const CLARITY_SCRIPT_ID = 'ms-clarity'
+export const DEFAULT_CLARITY_PROJECT_ID = 'y6albpfin1'
 
 export function cloudflareWebAnalyticsToken(): string {
   return String(import.meta.env.VITE_CF_WEB_ANALYTICS_TOKEN || '').trim()
 }
 
 export function clarityProjectId(): string {
-  return String(import.meta.env.VITE_CLARITY_PROJECT_ID || '').trim()
+  const configured = String(import.meta.env.VITE_CLARITY_PROJECT_ID || '').trim()
+  return configured || DEFAULT_CLARITY_PROJECT_ID
 }
 
 export function installCloudflareWebAnalytics(doc?: Document): void {

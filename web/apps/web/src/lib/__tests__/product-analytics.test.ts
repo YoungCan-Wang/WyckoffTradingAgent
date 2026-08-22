@@ -17,13 +17,17 @@ describe('product analytics installers', () => {
     expect(doc.scripts).toHaveLength(1)
   })
 
-  it('does not inject Clarity for non-configured or empty users', () => {
+  it('does not inject Clarity for empty users', () => {
     const doc = fakeDocument()
-    installWhitelistClarity('user-1', doc as unknown as Document)
-    expect(doc.getElementById('ms-clarity')).toBeUndefined()
-    vi.stubEnv('VITE_CLARITY_PROJECT_ID', 'clarity-id')
     installWhitelistClarity('', doc as unknown as Document)
     expect(doc.getElementById('ms-clarity')).toBeUndefined()
+  })
+
+  it('uses the production Clarity project when no env override is set', () => {
+    const doc = fakeDocument()
+    const win = {} as Window
+    installWhitelistClarity('user-1', doc as unknown as Document, win)
+    expect(doc.getElementById('ms-clarity')?.src).toContain('clarity.ms/tag/y6albpfin1')
   })
 
   it('loads Clarity only once and identifies the whitelist user', () => {
