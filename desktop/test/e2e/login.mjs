@@ -40,7 +40,7 @@ write('登录闸门：')
   await win.waitForSelector('.login-card', { timeout: 25000 })
   const state = await win.evaluate(() => ({
     login: !!document.querySelector('.login-card'),
-    sidebar: !!document.getElementById('side'),
+    sidebar: !!document.querySelector('.thread'),
     focused: document.activeElement?.id || '',
     disabled: !!document.querySelector('.login-go')?.disabled
   }))
@@ -48,7 +48,16 @@ write('登录闸门：')
   check('工作台不同时存在（取代，不是叠层）', () => assert.equal(state.sidebar, false))
   check('自动聚焦邮箱输入框', () => assert.equal(state.focused, 'login-email'))
 
-  // 空表单不该静默
+  // 空表单不该静默。
+  //
+  // 但**必须先等后端就绪**：CI 诊断显示 `submitDisabled: true`、提示语是
+  // 「正在启动本地服务」—— `submit()` 开头就 `if (!backendReady) return`，
+  // 所以那时提交表单什么都不会发生，测的是一个不可能通过的状态。
+  // 本机 Python 起得快所以一直是绿的。
+  const ready = await win.locator('.login-go:not([disabled])')
+    .waitFor({ state: 'visible', timeout: 60_000 })
+    .then(() => true, () => false)
+  check('后端就绪后允许提交', () => assert.equal(ready, true))
   await win.evaluate(() => {
     const form = document.querySelector('.login-card')
     form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
@@ -93,13 +102,16 @@ write('登录闸门：')
   while (Date.now() - started < 20000) {
     const s = await win.evaluate(() => ({
       login: !!document.querySelector('.login-card'),
-      sidebar: !!document.getElementById('side')
+      sidebar: !!document.querySelector('.thread')
     })).catch(() => null)
     if (s?.login) sawLogin = true
     if (s?.sidebar) break
     await win.waitForTimeout(120)
   }
-  const workbench = await win.evaluate(() => !!document.getElementById('side'))
+  // 判据用 `.thread` 而不是 `#side`：CI 诊断显示 shellChildren 是
+  // ["sr-only","thread"] —— 窄窗口（968px < 1180）下侧栏按产品规则收起，
+  // `#side` 压根不渲染。工作台是否出现应该看主区，不是看侧栏。
+  const workbench = await win.evaluate(() => !!document.querySelector('.thread'))
   if (!workbench) {
     const st = await win.evaluate(() => ({
       loginCard: !!document.querySelector('.login-card'),
