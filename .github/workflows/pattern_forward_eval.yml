@@ -1,0 +1,104 @@
+name: Pattern Forward Evaluation
+
+# 形态前瞻收益检验：某类票「抓到了」到底赚不赚钱。
+#
+# 起因是一个具体质疑：每天都有「前一日平淡、当日大涨 7%+、次日未高开」的票，
+# 为什么漏斗抓不到。首轮（2026-08-22，498 个交易日 / 2.3 万只次 / 扣 0.202% 成本）
+# 九档阈值组合**全为负超额**且随收紧单调恶化：
+#
+#   开盘缺口<=  当日涨幅>=  日均只数   净超额   为正日
+#       4%         7%         84     -0.71     39%
+#       3%         8%         60     -0.82     41%
+#       2%        10%         28     -0.98     39%
+#
+# 对照同期全市场 T+5 为 +0.44%——买这批票不如随便买。故未据此放宽任何通道门槛。
+#
+# 每周重跑的意义在于：若哪天该形态的超额转正并稳定过 0.202% 成本门槛，才值得
+# 为它开通道；在此之前每次「感觉漏了机会」都能由数据当场否掉，而不必凭直觉改参数。
+#
+# 与 diagnose_funnel_recall.py 互补——那个按代码逐票查「为什么没进候选池」，
+# 这个按形态口径查「这类票值不值得进」。
+on:
+  schedule:
+    # UTC 周六 04:10 = 北京时间周六 12:10。排在 regime_forward_eval(09:40)、
+    # gate_alpha_eval(10:40)、purity_eval(11:10) 之后，避免同时抢 Tushare 配额。
+    - cron: "10 4 * * 6"
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "行情起始（需留 210 日预热）"
+        default: "2024-08-01"
+      sweep_gap:
+        description: "扫开盘缺口上限 %，逗号分隔"
+        default: "2,3,4"
+      sweep_return:
+        description: "扫当日涨幅下限 %，逗号分隔"
+        default: "7,8,10"
+      horizons:
+        description: "持有期（交易日），逗号分隔"
+        default: "5,10"
+      with_intraday:
+        description: "附带日内对照（未来函数，仅参考）"
+        type: boolean
+        default: false
+
+concurrency:
+  group: pattern-forward-eval-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      PYTHONUNBUFFERED: "1"
+      # 只读行情，不写库；故不设 WYCKOFF_WRITE_CONTEXT。
+      TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+      FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+      TZ: Asia/Shanghai
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Evaluate pattern forward returns
+        env:
+          # inputs 先落 env 再进 shell，避免表达式直接拼进命令行（check_workflow_hygiene 要求）。
+          IN_START: ${{ inputs.start || '2024-08-01' }}
+          IN_SWEEP_GAP: ${{ inputs.sweep_gap || '2,3,4' }}
+          IN_SWEEP_RETURN: ${{ inputs.sweep_return || '7,8,10' }}
+          IN_HORIZONS: ${{ inputs.horizons || '5,10' }}
+          IN_WITH_INTRADAY: ${{ inputs.with_intraday }}
+        run: |
+          EXTRA=()
+          if [ "$IN_WITH_INTRADAY" = "true" ]; then
+            EXTRA+=(--with-intraday)
+          fi
+          python scripts/evaluate_pattern_forward.py \
+            --start "$IN_START" \
+            --sweep-gap "$IN_SWEEP_GAP" \
+            --sweep-return "$IN_SWEEP_RETURN" \
+            --horizons "$IN_HORIZONS" \
+            --json-out docs/evidence/pattern_forward_eval.json \
+            "${EXTRA[@]}"
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pattern-forward-eval
+          path: docs/evidence/pattern_forward_eval.json
+          if-no-files-found: warn
