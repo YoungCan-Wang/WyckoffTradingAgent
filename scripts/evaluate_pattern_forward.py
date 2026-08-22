@@ -53,6 +53,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--with-intraday", action="store_true", help="附带日内对照（未来函数）")
     parser.add_argument("--cache", default="", help="行情缓存 CSV，跳过在线取数")
     parser.add_argument("--json-out", default="", help="结构化结果输出路径")
+    parser.add_argument("--no-notify", action="store_true", help="不推飞书")
     return parser.parse_args()
 
 
@@ -196,6 +197,7 @@ def main() -> int:
     gaps = [float(x) for x in args.sweep_gap.split(",") if x.strip()] or [args.open_gap_max]
     rets = [float(x) for x in args.sweep_return.split(",") if x.strip()] or [args.day_return_min]
     payload: list[dict] = []
+    sections: list[str] = []
     for gap in gaps:
         for ret in rets:
             spec = PatternSpec(
@@ -206,13 +208,31 @@ def main() -> int:
                 horizons=horizons,
             )
             report, extra = evaluate(market, spec, with_intraday=args.with_intraday)
+            text = render(report, extra)
             print()
-            print(render(report, extra))
+            print(text)
+            sections.append(text)
             payload.append({**report.as_dict(), **extra})
     if args.json_out:
         Path(args.json_out).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"\n[pattern] 已写 {args.json_out}")
+    if not args.no_notify:
+        _notify(sections)
     return 0
+
+
+def _notify(sections: list[str]) -> None:
+    import os
+
+    webhook = os.getenv("FEISHU_WEBHOOK_URL", "").strip()
+    if not webhook:
+        print("[pattern] 未配置 FEISHU_WEBHOOK_URL，跳过推送")
+        return
+    from utils.feishu import send_feishu_notification
+
+    title = f"形态前瞻检验｜{pd.Timestamp.now().strftime('%Y-%m-%d')}"
+    ok = send_feishu_notification(webhook, title, "\n\n---\n\n".join(sections))
+    print("[pattern] feishu sent" if ok else "[pattern] feishu failed")
 
 
 if __name__ == "__main__":
