@@ -66,6 +66,10 @@ flowchart TB
 
 ---
 
+回放 / `END_CALENDAR_DAY` 模式下，A 股漏斗会按 `as_of` 裁切日线（必须有当日 bar）以及带 `filed_date` / `announce_date` 的财务记录；无日期的财务在回放中直接丢弃，避免把“今天才知道的财报”写进历史日。这不改变当日实盘漏斗阈值。
+
+---
+
 ## 二、主入口：`daily_job.py` 完整执行链
 
 **触发**：`.github/workflows/wyckoff_funnel.yml` → `python scripts/daily_job.py`
