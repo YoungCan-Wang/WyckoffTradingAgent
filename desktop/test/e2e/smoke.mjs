@@ -101,6 +101,23 @@ if (await win.locator('.nv').count() === 0) {
   const appeared = await toggle.first()
     .waitFor({ state: 'visible', timeout: 20_000 })
     .then(() => true, () => false)
+  if (!appeared) {
+    // 失败时把实际 DOM 状态打出来。这条在 CI 上红过三次，每次只报
+    // 「false !== true」—— 那不足以判断是登录页拦住了、React 没挂完，
+    // 还是窗口尺寸导致侧栏形态不同。**断言失败却不说现场，等于让下一次
+    // 排查从零开始。**
+    const state = await win.evaluate(() => ({
+      loginCard: !!document.querySelector('.login-card'),
+      win: !!document.querySelector('.win'),
+      shellRoot: !!document.querySelector('.shell-root'),
+      side: !!document.getElementById('side'),
+      sideToggle: document.querySelectorAll('.side-toggle').length,
+      nv: document.querySelectorAll('.nv').length,
+      innerWidth: window.innerWidth,
+      bodyLen: (document.body.innerHTML || '').length
+    })).catch((err) => ({ evalFailed: String(err).slice(0, 120) }))
+    writeLine(`  诊断: ${JSON.stringify(state)}`)
+  }
   check('收起侧栏有展开入口', () => assert.equal(appeared, true))
   if (appeared) await toggle.first().click()
 }
