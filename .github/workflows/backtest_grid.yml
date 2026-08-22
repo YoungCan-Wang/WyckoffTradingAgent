@@ -270,7 +270,10 @@ jobs:
       # 实盘正相反，导致两者成交的交易日几乎不重叠。
       # 允许用 repository variable 覆盖，便于运维调参而不必改代码。
       STEP4_BUY_BLOCK_REGIMES: ${{ vars.STEP4_BUY_BLOCK_REGIMES || 'UNKNOWN,NEUTRAL,PANIC_REPAIR,RISK_OFF,CRASH,BLACK_SWAN' }}
-      STEP4_BUY_ALLOW_REGIMES: ${{ vars.STEP4_BUY_ALLOW_REGIMES || 'BEAR_REBOUND,RISK_ON' }}
+      # fallback 必须与生产两个 workflow 保持一致（当前 BEAR_REBOUND）。
+      # PR #305 把 RISK_ON 移出豁免时漏改此处，导致 run 32537955220 的回测仍放行 RISK_ON
+      # 并产生 6 笔成交（胜率 16.7%、均收 -5.03%），与实盘口径不符。
+      STEP4_BUY_ALLOW_REGIMES: ${{ vars.STEP4_BUY_ALLOW_REGIMES || 'BEAR_REBOUND' }}
       STEP4_BLOCK_BUY_SIGNAL_TYPES: ${{ vars.STEP4_BLOCK_BUY_SIGNAL_TYPES || '' }}
       FUNNEL_DYNAMIC_POLICY: ${{ vars.FUNNEL_DYNAMIC_POLICY || 'shadow' }}
       FUNNEL_DYNAMIC_POLICY_HORIZON: "5"
