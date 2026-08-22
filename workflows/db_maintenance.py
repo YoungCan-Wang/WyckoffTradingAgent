@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from core.constants import (
     TABLE_DAILY_NAV,
     TABLE_EXTERNAL_SEED_OBSERVATIONS,
+    TABLE_FACTOR_IC_DAILY,
     TABLE_MARKET_SIGNAL_DAILY,
     TABLE_RECOMMENDATION_TRACKING,
     TABLE_RECOMMENDATION_TRACKING_HK,
@@ -44,6 +45,9 @@ CLEANUP_RULES: list[tuple[str, str, int, str]] = [
     (TABLE_MARKET_SIGNAL_DAILY, "trade_date", _int_env("DB_MARKET_SIGNAL_RETENTION_DAYS", 180), "iso_date"),
     (TABLE_DAILY_NAV, "trade_date", 15, "iso_date"),
     (TABLE_EXTERNAL_SEED_OBSERVATIONS, "trade_date", _int_env("FUNNEL_EXTERNAL_SEED_RETENTION_DAYS", 180), "iso_date"),
+    # 因子 IC 每周一行/因子，量很小；留 365 天以便观察方向是否跨年稳定——
+    # 该表的价值恰在长期趋势，删太早就失去意义。
+    (TABLE_FACTOR_IC_DAILY, "eval_date", _int_env("DB_FACTOR_IC_RETENTION_DAYS", 365), "iso_date"),
 ]
 RECOMMENDATION_KEEP_DATES = _int_env("DB_RECOMMENDATION_KEEP_DATES", 30)
 RECOMMENDATION_DATE_PAGE_SIZE = 1000
