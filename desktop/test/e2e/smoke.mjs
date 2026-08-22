@@ -3,7 +3,7 @@
 import { _electron as electron } from 'playwright'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
-import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -13,25 +13,16 @@ const PROFILE_DIR = await mkdtemp(join(tmpdir(), 'wyckoff-e2e-'))
 
 // 这份测的是**工作台**，所以要一个已登录的环境。
 //
-// 未登录时登录页会取代整个工作台（那是刻意的：用户可能把模型和数据源都配在
-// 云端，不登录界面会显示「未配置模型」）。CI 上没有任何 session，于是所有
-// 侧栏/导航断言都会撞在登录页上 —— 我加登录闸门时漏了这条，三个 test job
-// 全红在「收起侧栏有展开入口」。
+// 未登录时登录页取代整个工作台（刻意如此：用户可能把模型和数据源都配在云端，
+// 不登录界面会显示「未配置模型」）。CI 上没有账号，于是所有侧栏断言都撞在
+// 登录页上。
 //
-// 用假 session 而不是真登录：CI 里不该有账号密码，而 account 方法只看
-// access_token 是否存在。登录本身由 test/e2e/login.mjs 单独验。
-const FAKE_HOME = await mkdtemp(join(tmpdir(), 'wyckoff-e2e-home-'))
-await mkdir(join(FAKE_HOME, '.wyckoff'), { recursive: true })
-await writeFile(
-  join(FAKE_HOME, '.wyckoff', 'session.json'),
-  JSON.stringify({
-    user_id: 'e2e-smoke-user',
-    email: 'smoke@example.com',
-    access_token: 'e2e-fake-token',
-    refresh_token: 'e2e-fake-refresh'
-  }),
-  'utf8'
-)
+// 用环境变量旁路，**不是**伪造 session 文件：假 token 会被 `restore_session`
+// 拿去问 Supabase，被判 invalid 就 `clear_session()` —— CI 上稳定回到登录页。
+// 那条路我试了三次才查明白（本机不复现：那里的网络错误走「保留 session」分支，
+// CI 上则命中「无效凭据」分支）。
+//
+// 登录本身由 test/e2e/login.mjs 验，那份**不设**这个变量。
 
 const VIEWS = ['chat', 'tasks', 'approvals', 'portfolio', 'schedules', 'tracking', 'attribution', 'reports']
 
@@ -50,14 +41,7 @@ const check = (name, fn) => {
 const app = await electron.launch({
   args: [APP_DIR, `--user-data-dir=${PROFILE_DIR}`],
   // CI 的 Windows/Linux runner 没有 GPU；不关掉会在启动阶段卡住或刷一堆警告。
-  // HOME/USERPROFILE 指向假家目录，让应用读到上面那份 session（Windows 上
-  // 用 USERPROFILE，只设 HOME 不生效）。
-  env: {
-    ...process.env,
-    ELECTRON_DISABLE_GPU: '1',
-    HOME: FAKE_HOME,
-    USERPROFILE: FAKE_HOME
-  }
+  env: { ...process.env, ELECTRON_DISABLE_GPU: '1', WYCKOFF_E2E_FAKE_SIGNIN: '1' }
 })
 
 try {
@@ -199,7 +183,6 @@ check('渲染端无未预期报错', () =>
 } finally {
   await app.close()
   await rm(PROFILE_DIR, { recursive: true, force: true })
-  await rm(FAKE_HOME, { recursive: true, force: true })
 }
 
 writeLine(failures ? `\n*** ${failures} 项失败 ***` : '\n全部通过')

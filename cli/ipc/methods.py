@@ -542,6 +542,17 @@ def account(_params: dict[str, Any]) -> Iterator[Event]:
 
     restore 会验 token、过期则续、续不上则用保存的凭据重登；真拿不到才返回 None。
     """
+    # 测试专用旁路：E2E 要验的是**工作台**，但它没有真账号。
+    #
+    # 假 session 行不通：`restore_session` 会拿 token 去问 Supabase，被判
+    # invalid 就 `clear_session()` —— CI 上稳定回到登录页（三次失败才查出来。
+    # 本机不复现，因为那里的网络错误走的是「保留 session」那条分支）。
+    #
+    # 只认这一个环境变量，且只影响登录态的判定：真实登录路径完全不变。
+    if os.environ.get("WYCKOFF_E2E_FAKE_SIGNIN") == "1":
+        yield _ok(signed_in=True, email="e2e@example.com", user_id="e2e-user", last_email="")
+        return
+
     from integrations.local_auth import restore_session
 
     # restore 会走到 Supabase 调用；网络不通时不该让这个方法抛异常 ——
