@@ -32,16 +32,31 @@ export function LoginScreen ({ collect, onSignedIn, backendReady, initialEmail =
   const [email, setEmail] = useState(initialEmail)
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
+  // 用户动过输入框之后就不再接受外部同步 —— 不能冲掉他正在打的字。
+  const [touched, setTouched] = useState(false)
   const [error, setError] = useState('')
   const emailRef = useRef<HTMLInputElement>(null)
   const pwRef = useRef<HTMLInputElement>(null)
 
+  // `initialEmail` **是晚到的**：它来自 `account`，而那要等 Python 后端起来
+  // （打包后要几秒）。`useState(initialEmail)` 只读首次挂载时的值，所以预填
+  // 永远不生效 —— 实测打包版：后端 3 秒就绪、提示语变了，邮箱框仍然是空的。
+  //
+  // 只在用户还没动过输入框时同步（`touched` 为假）：否则后端慢一点回来会把
+  // 用户正在输入的邮箱冲掉，那比不预填糟得多。
+  useEffect(() => {
+    if (initialEmail && !touched) setEmail(initialEmail)
+  }, [initialEmail, touched])
+
   // 邮箱已预填时把焦点给密码框 —— 用户要填的是那个。
   // 焦点落在一个已填好的字段上，用户得先按一次 Tab，是无谓的一步。
+  //
+  // 同样要等 initialEmail 到位才决定焦点；它变化时这个 effect 会重跑。
   useEffect(() => {
+    if (touched) return
     if (initialEmail) pwRef.current?.focus()
     else emailRef.current?.focus()
-  }, [initialEmail])
+  }, [initialEmail, touched])
 
   const submit = async (event?: React.FormEvent) => {
     event?.preventDefault()
@@ -97,7 +112,7 @@ export function LoginScreen ({ collect, onSignedIn, backendReady, initialEmail =
           spellCheck={false}
           value={email}
           disabled={busy}
-          onChange={(e) => setEmail(e.target.value)}
+          onChange={(e) => { setTouched(true); setEmail(e.target.value) }}
         />
 
         <label className="login-l" htmlFor="login-pw">{t('login.password')}</label>

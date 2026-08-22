@@ -112,3 +112,22 @@ test('E2E 旁路在渲染侧，且只认精确的 "1"', () => {
   // 旁路只影响登录态；不能顺手跳过后端状态机或改动登录方法
   assert.ok(!/e2eFakeSignin[\s\S]{0,200}auth_login/.test(app), '旁路不该碰真实登录路径')
 })
+
+test('initialEmail 晚到也要生效 —— useState 只读首次挂载值', () => {
+  // 实测打包版：后端 3 秒就绪、提示语都变了，邮箱框仍然空的。
+  // 因为 initialEmail 来自 account（要等 Python 起来），而 useState(initialEmail)
+  // 只取挂载那一刻的值。少了这个同步 effect，预填在打包后永远不生效。
+  const login = SRC('components/LoginScreen.tsx')
+  assert.match(login, /if \(initialEmail && !touched\) setEmail\(initialEmail\)/,
+    '缺少跟随晚到 prop 的同步')
+  assert.match(login, /\}, \[initialEmail, touched\]\)/, 'effect 要依赖 initialEmail')
+})
+
+test('用户动过输入框后不再被外部同步冲掉', () => {
+  // 后端慢一点回来时把用户正在输入的邮箱替换掉，比不预填糟得多。
+  const login = SRC('components/LoginScreen.tsx')
+  assert.match(login, /setTouched\(true\); setEmail\(e\.target\.value\)/,
+    '输入时要标记 touched')
+  // 焦点决策同样要尊重 touched，否则会在用户打字时抢走焦点
+  assert.match(login, /if \(touched\) return/, '焦点 effect 要跳过已交互状态')
+})
