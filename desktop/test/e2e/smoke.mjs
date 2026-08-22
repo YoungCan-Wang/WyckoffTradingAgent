@@ -114,7 +114,14 @@ if (await win.locator('.nv').count() === 0) {
       sideToggle: document.querySelectorAll('.side-toggle').length,
       nv: document.querySelectorAll('.nv').length,
       innerWidth: window.innerWidth,
-      bodyLen: (document.body.innerHTML || '').length
+      bodyLen: (document.body.innerHTML || '').length,
+      // 顶栏在不在、shell 下挂了什么 —— sideToggle=0 但 shellRoot=true 时，
+      // 需要知道是顶栏没渲染还是按钮被条件挡掉了。
+      topbar: !!document.querySelector('.top'),
+      thread: !!document.querySelector('.thread'),
+      shellChildren: [...(document.querySelector('.shell-root')?.children || [])]
+        .map((el) => el.className || el.tagName).slice(0, 6),
+      icb: document.querySelectorAll('.icb').length
     })).catch((err) => ({ evalFailed: String(err).slice(0, 120) }))
     writeLine(`  诊断: ${JSON.stringify(state)}`)
   }
