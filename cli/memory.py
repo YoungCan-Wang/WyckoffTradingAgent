@@ -610,6 +610,12 @@ def build_memory_context(
             return ""
 
         lines = _build_recall_lines(memories, personas, prefs, max_chars_per_memory)
+        from cli.context_layers import default_skill_docs, render_layered_docs
+
+        layered = render_layered_docs(default_skill_docs(), user_message, budget_chars=400)
+        if layered:
+            lines.append("# 分层技能")
+            lines.append(layered)
         if archives:
             lines.append("# 压缩归档")
             lines.extend(archives)
