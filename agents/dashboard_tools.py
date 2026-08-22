@@ -40,6 +40,11 @@ MAX_HTML_BYTES = 512 * 1024
 _UNSAFE_NAME = re.compile(r"[^0-9A-Za-z一-鿿 _-]+")
 
 
+def _user_id(tool_context: Any) -> str:
+    """同 report_artifact_tools：产物按账号隔离，拿不到身份落 __anon__。"""
+    return str(getattr(tool_context, "user_id", "") or "")
+
+
 def _slug(title: str) -> str:
     cleaned = _UNSAFE_NAME.sub("", title).strip().strip(".")
     cleaned = re.sub(r"\s+", "-", cleaned)
@@ -84,15 +89,16 @@ def render_dashboard(
     try:
         from integrations.report_store import ensure_reports_dir, resolve_inside_reports
 
-        ensure_reports_dir()
+        uid = _user_id(tool_context)
+        ensure_reports_dir(uid)
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         slug = _slug(name)
         rel = f"{stamp}-{slug}.dash.html"
-        target = resolve_inside_reports(rel)
+        target = resolve_inside_reports(rel, uid)
         seq = 2
         while target.exists():
             rel = f"{stamp}-{slug}-{seq}.dash.html"
-            target = resolve_inside_reports(rel)
+            target = resolve_inside_reports(rel, uid)
             seq += 1
         target.write_text(body, encoding="utf-8")
     except Exception:

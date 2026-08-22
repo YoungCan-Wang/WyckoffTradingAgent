@@ -39,6 +39,14 @@ MAX_REPORT_BYTES = 256 * 1024
 _UNSAFE_NAME = re.compile(r"[^0-9A-Za-z一-鿿 _-]+")
 
 
+def _user_id(tool_context: Any) -> str:
+    """从 tool_context 取账号 id；拿不到就当未登录（落 __anon__ 分区）。
+
+    产物必须按账号隔离 —— 绝不能因为拿不到身份就落回共享的根目录。
+    """
+    return str(getattr(tool_context, "user_id", "") or "")
+
+
 def _slug(title: str) -> str:
     cleaned = _UNSAFE_NAME.sub("", title).strip().strip(".")
     cleaned = re.sub(r"\s+", "-", cleaned)
@@ -86,13 +94,14 @@ def save_report(
     slug = _slug(name)
 
     try:
-        ensure_reports_dir()
+        uid = _user_id(tool_context)
+        ensure_reports_dir(uid)
         rel = f"{stamp}-{slug}.md"
-        target = resolve_inside_reports(rel)
+        target = resolve_inside_reports(rel, uid)
         seq = 2
         while target.exists():
             rel = f"{stamp}-{slug}-{seq}.md"
-            target = resolve_inside_reports(rel)
+            target = resolve_inside_reports(rel, uid)
             seq += 1
         target.write_text(body, encoding="utf-8")
     except ReportPathError as exc:

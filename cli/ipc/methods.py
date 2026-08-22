@@ -546,9 +546,13 @@ def account(_params: dict[str, Any]) -> Iterator[Event]:
 
 
 def artifact_list(_params: dict[str, Any]) -> Iterator[Event]:
-    """列出报告目录里可预览的产物。"""
+    """列出**当前账号的**报告产物。
+
+    身份从会话取，不接受前端传参：那等于让渲染层决定读谁的报告。
+    """
     from cli.ipc.artifacts import list_artifacts
 
+    user_id = _synced_session().user_id
     items = [
         {
             "name": a.name,
@@ -557,7 +561,7 @@ def artifact_list(_params: dict[str, Any]) -> Iterator[Event]:
             "size": a.size,
             "modified_at": a.modified_at,
         }
-        for a in list_artifacts()
+        for a in list_artifacts(user_id)
     ]
     yield _ok(items=items, count=len(items))
 
@@ -567,7 +571,8 @@ def artifact_read(params: dict[str, Any]) -> Iterator[Event]:
     from cli.ipc.artifacts import ArtifactError, read_artifact
 
     try:
-        yield _ok(**read_artifact(str(params.get("path") or "")))
+        # 同 artifact_list：身份来自会话，不是前端参数。
+        yield _ok(**read_artifact(str(params.get("path") or ""), _synced_session().user_id))
     except ArtifactError as exc:
         raise MethodError(exc.code, str(exc)) from exc
 
@@ -577,7 +582,7 @@ def artifact_import(params: dict[str, Any]) -> Iterator[Event]:
     from cli.ipc.artifacts import ArtifactError, import_file
 
     try:
-        artifact = import_file(str(params.get("source") or ""))
+        artifact = import_file(str(params.get("source") or ""), _synced_session().user_id)
     except ArtifactError as exc:
         raise MethodError(exc.code, str(exc)) from exc
 

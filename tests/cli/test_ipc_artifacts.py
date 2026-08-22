@@ -20,7 +20,12 @@ def reports(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     root.mkdir()
     # 路径的 owner 是存储层（agents 不能依赖 cli，所以两边共用它）
     monkeypatch.setattr(_store, "REPORTS_DIR", root)
-    return root
+    # 返回**分区**目录：产物现在按账号分子目录，这些测试不传 user_id
+    # 所以落在 __anon__ 下。逃逸校验的基准也是分区目录 ——
+    # 那正是「Bob 传 Alice 分区下的相对路径」被挡住的原因。
+    scoped = root / _store.ANON_PARTITION
+    scoped.mkdir(parents=True, exist_ok=True)
+    return scoped
 
 
 class TestPathContainment:

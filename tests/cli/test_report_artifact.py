@@ -24,7 +24,9 @@ def reports(tmp_path, monkeypatch):
     """
     root = tmp_path / "reports"
     monkeypatch.setattr(_store, "REPORTS_DIR", root)
-    return root
+    # 返回**分区**目录：这些测试不传 tool_context，所以产物落在 __anon__ 下。
+    # 返回根目录会让 `reports / out["path"]` 拼错 —— 产物已按账号分子目录。
+    return root / _store.ANON_PARTITION
 
 
 def _event(**overrides):

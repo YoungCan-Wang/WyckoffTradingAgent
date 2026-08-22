@@ -60,8 +60,8 @@ class Artifact:
     modified_at: float
 
 
-def ensure_reports_dir() -> Path:
-    return _store.ensure_reports_dir()
+def ensure_reports_dir(user_id: str = "") -> Path:
+    return _store.ensure_reports_dir(user_id)
 
 
 def kind_for(path: Path) -> str:
@@ -75,7 +75,7 @@ def kind_for(path: Path) -> str:
     return KIND_BY_SUFFIX.get(path.suffix.lower(), "unsupported")
 
 
-def resolve_inside_reports(rel_path: str) -> Path:
+def resolve_inside_reports(rel_path: str, user_id: str = "") -> Path:
     """把前端给的相对路径收敛到报告目录内。
 
     实现在 integrations/report_store.py —— 两处各写一份路径校验，迟早会有一处
@@ -83,16 +83,26 @@ def resolve_inside_reports(rel_path: str) -> Path:
     调用点（IPC 方法）不必认识存储层的异常。
     """
     try:
-        return _store.resolve_inside_reports(rel_path)
+        return _store.resolve_inside_reports(rel_path, user_id)
     except _store.ReportPathError as exc:
         raise ArtifactError(exc.code, exc.message) from exc
 
 
-def list_artifacts() -> list[Artifact]:
-    """按修改时间倒序列出报告。最新生成的排最前。"""
-    root = ensure_reports_dir()
+def list_artifacts(user_id: str = "") -> list[Artifact]:
+    """按修改时间倒序列出**该账号的**报告。最新生成的排最前。
+
+    扫两处：账号分区，以及根目录下的历史文件（加账号隔离之前落在那里的）。
+    历史文件不迁移也不隐藏 —— 报告是用户资产，因为改了存储布局就让人找不到
+    是不可接受的。但它们对所有账号可见，这是历史遗留，新写入一律进分区。
+    """
+    scoped = ensure_reports_dir(user_id)
+    root = _store.reports_dir()
     items: list[Artifact] = []
-    for path in root.rglob("*"):
+    # 账号分区里的全部 + 根目录下的散文件（不含其他账号的子目录）
+    candidates = list(scoped.rglob("*"))
+    if root.exists():
+        candidates += [p for p in root.iterdir() if p.is_file()]
+    for path in candidates:
         if not path.is_file() or path.name.startswith("."):
             continue
         try:
@@ -112,9 +122,9 @@ def list_artifacts() -> list[Artifact]:
     return items
 
 
-def read_artifact(rel_path: str) -> dict[str, object]:
+def read_artifact(rel_path: str, user_id: str = "") -> dict[str, object]:
     """读取单个报告。文本原样返回，PDF 返回 base64。"""
-    path = resolve_inside_reports(rel_path)
+    path = resolve_inside_reports(rel_path, user_id)
     if not path.is_file():
         raise ArtifactError("not_found", f"找不到文件: {rel_path}")
 
@@ -147,11 +157,13 @@ def read_artifact(rel_path: str) -> dict[str, object]:
     }
 
 
-def import_file(source: str) -> Artifact:
-    """把外部文件复制进报告目录。
+def import_file(source: str, user_id: str = "") -> Artifact:
+    """把外部文件复制进**当前账号的**报告目录。
 
     复制而非引用：容器只信任报告目录内的文件，这样预览路径永远只有一条，
     也不会因为原文件被移动而失效。
+
+    导入也要分区：否则 Alice 拖进来的文件会出现在 Bob 的报告库里。
     """
     src = Path(source).expanduser()
     if not src.is_file():
@@ -164,7 +176,7 @@ def import_file(source: str) -> Artifact:
     if size > limit:
         raise ArtifactError("too_large", "文件过大，无法导入预览")
 
-    root = ensure_reports_dir()
+    root = ensure_reports_dir(user_id)
     target = root / src.name
     # 不覆盖同名文件：拖进来的报告可能和已有的重名但内容不同。
     if target.exists():
