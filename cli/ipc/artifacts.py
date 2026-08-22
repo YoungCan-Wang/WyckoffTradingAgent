@@ -65,6 +65,13 @@ def ensure_reports_dir() -> Path:
 
 
 def kind_for(path: Path) -> str:
+    # `.dash.html` 是可交互面板，不能当静态 html 渲染。
+    #
+    # 报告库的 html 走 `sandbox=""` 的 iframe（不给 allow-scripts）—— 面板用那条
+    # 路径打开会变成死页面：按钮点不动、图表不画，而且**没有任何提示**。
+    # 静默降级比明确不支持更糟，所以单独一个 kind，由桌面端走隔离视图。
+    if path.name.lower().endswith(".dash.html"):
+        return "dashboard"
     return KIND_BY_SUFFIX.get(path.suffix.lower(), "unsupported")
 
 

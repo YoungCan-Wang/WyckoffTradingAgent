@@ -20,6 +20,7 @@
     markdown: 'viewer.kindMarkdown',
     html: 'viewer.kindHtml',
     pdf: 'viewer.kindPdf',
+    dashboard: 'viewer.kindDashboard',
     text: 'viewer.kindText',
     unsupported: 'viewer.kindFile'
   }
@@ -59,6 +60,27 @@
     liveUrls.push(url)
     frame.src = url
     return frame
+  }
+
+  /**
+   * 可交互面板：这里**不渲染**，只给一个「在面板里打开」的入口。
+   *
+   * 为什么不直接渲染：报告库这一页在主文档里，而面板需要执行 JS。给它
+   * allow-scripts 就等于在主界面里执行模型代码 —— 那正是隔离视图存在的理由。
+   * 所以交给 shell 的 openArtifact 走 artifact-host（独立 session、无网络）。
+   */
+  function renderDashboardLink (payload) {
+    const wrap = el('div', 'vdash')
+    wrap.appendChild(el('p', 'empty', t('viewer.dashboardHint')))
+    const open = el('button', 'task-action', t('viewer.openDashboard'))
+    open.onclick = () => window.WyckoffShell?.openArtifact?.({
+      id: `lib:${payload.path || payload.name || ''}`,
+      kind: 'dashboard',
+      title: String(payload.name || t('artifact.panel')),
+      payload: { html: String(payload.content || '') }
+    })
+    wrap.appendChild(open)
+    return wrap
   }
 
   function renderPdf (b64) {
@@ -111,6 +133,7 @@
     }
     if (payload.kind === 'html') return renderHtml(payload.content)
     if (payload.kind === 'pdf') return renderPdf(payload.content)
+    if (payload.kind === 'dashboard') return renderDashboardLink(payload)
     return renderText(payload.content)
   }
 

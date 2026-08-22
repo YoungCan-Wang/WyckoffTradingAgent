@@ -26,6 +26,8 @@ K 线图能表达的东西是固定的（蜡烛 + 几种标注）。但有些结
 from __future__ import annotations
 
 import logging
+import re
+from datetime import datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -33,6 +35,15 @@ logger = logging.getLogger(__name__)
 # HTML 体积上限。模型偶尔会把一整个库内联进来，那样事件会很大而且渲染很慢。
 # 512 KiB 足够放一个自绘的图表 + 内嵌数据，又不至于把 IPC 通道堵住。
 MAX_HTML_BYTES = 512 * 1024
+
+# 文件名允许的字符。与 report_artifact_tools 一致 —— 报告库是给人看的，中文保留。
+_UNSAFE_NAME = re.compile(r"[^0-9A-Za-z一-鿿 _-]+")
+
+
+def _slug(title: str) -> str:
+    cleaned = _UNSAFE_NAME.sub("", title).strip().strip(".")
+    cleaned = re.sub(r"\s+", "-", cleaned)
+    return cleaned[:60] or "dashboard"
 
 
 def render_dashboard(
@@ -63,11 +74,38 @@ def render_dashboard(
             )
         }
 
+    # 落盘，让面板在刷新窗口、重启应用之后还能找回来。
+    #
+    # 文件名用 .dash.html 而不是 .html：报告库把 `.html` 当**静态文档**渲染
+    # （`sandbox=""`，不给 allow-scripts）。一个可交互面板用那条路径打开会变成
+    # 一张死页面 —— 按钮点不动、图表不画，而且**没有任何提示**。
+    # 静默降级比不持久化更糟，所以用自己的后缀，由桌面端走隔离视图重开。
+    rel = ""
+    try:
+        from integrations.report_store import ensure_reports_dir, resolve_inside_reports
+
+        ensure_reports_dir()
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        slug = _slug(name)
+        rel = f"{stamp}-{slug}.dash.html"
+        target = resolve_inside_reports(rel)
+        seq = 2
+        while target.exists():
+            rel = f"{stamp}-{slug}-{seq}.dash.html"
+            target = resolve_inside_reports(rel)
+            seq += 1
+        target.write_text(body, encoding="utf-8")
+    except Exception:
+        # 落盘失败不该让面板打不开 —— 那是「能用但关掉就没了」vs「压根没有」。
+        logger.warning("dashboard persist failed", exc_info=True)
+        rel = ""
+
     # 返回值刻意不含 html：工具结果会进模型上下文，把刚生成的几百 KB 回灌一遍
     # 既浪费 token 又可能挤掉真正的对话历史。前端从产物事件拿 HTML。
     return {
         "rendered": True,
         "title": name,
         "bytes": size,
+        "path": rel,
         "note": "面板已在桌面端右侧打开。它是隔离渲染的，拿不到实时数据，也不能联网。",
     }
