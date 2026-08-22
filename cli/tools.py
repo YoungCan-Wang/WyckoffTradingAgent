@@ -321,6 +321,22 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "parameters": {"type": "object", "properties": {}},
     },
     {
+        "name": "ptc_summarize",
+        "description": (
+            "程序化工具调用：在无 import/无网络的沙箱里对 JSON payload 跑一段 Python，"
+            "只把摘要回给模型。用于先算完再解释，禁止把全市场原始行情塞进上下文。"
+            "代码必须把结论放进变量 result；不能 import、不能访问属性。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "source": {"type": "string", "description": "短 Python 脚本，把结论赋给 result"},
+                "payload_json": {"type": "string", "description": "可选 JSON 对象字符串，在脚本里叫 data"},
+            },
+            "required": ["source"],
+        },
+    },
+    {
         "name": "wyckoff_diagnose",
         "description": (
             "单股 Wyckoff 结构诊断（纯引擎计算，比 analyze_stock 更底层）。"
@@ -692,6 +708,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "set_stop_loss": ToolSpec("set_stop_loss", "设置止损价", requires_approval=True),
     "market_regime": ToolSpec("market_regime", "市况判定"),
     "wyckoff_diagnose": ToolSpec("wyckoff_diagnose", "结构诊断"),
+    "ptc_summarize": ToolSpec("ptc_summarize", "沙箱摘要", concurrency_safe=True),
     "intraday_analysis": ToolSpec("intraday_analysis", "盘中分析"),
     "intraday_rescue_check": ToolSpec("intraday_rescue_check", "中周期结构"),
     "record_trade_fill": ToolSpec("record_trade_fill", "成交回填", requires_approval=True),
@@ -868,6 +885,7 @@ class ToolRegistry:
             intraday_analysis,
             intraday_rescue_check,
             market_regime,
+            ptc_summarize,
             wyckoff_diagnose,
         )
         from agents.history_tools import query_history
@@ -905,6 +923,7 @@ class ToolRegistry:
             "record_trade_fill": record_trade_fill,
             "market_regime": market_regime,
             "wyckoff_diagnose": wyckoff_diagnose,
+            "ptc_summarize": ptc_summarize,
             "intraday_analysis": intraday_analysis,
             "intraday_rescue_check": intraday_rescue_check,
             "run_backtest": run_backtest,

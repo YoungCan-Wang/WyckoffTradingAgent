@@ -110,6 +110,21 @@ def intraday_rescue_check(code: str, tool_context: ToolContext | None = None) ->
         return {"error": str(e)}
 
 
+def ptc_summarize(source: str, payload_json: str = "") -> dict:
+    """在无网络沙箱里对 payload 做程序化计算，只回摘要给模型。"""
+    from json import loads
+
+    from core.ptc_summary import run_ptc
+
+    try:
+        payload = loads(payload_json) if str(payload_json or "").strip() else {}
+    except Exception:
+        return {"error": "payload_json 不是合法 JSON"}
+    if not isinstance(payload, dict):
+        return {"error": "payload_json 必须是对象"}
+    return run_ptc(source, payload)
+
+
 def _tickflow_client(tool_context: ToolContext | None) -> tuple[Any, dict | None]:
     from integrations.tickflow_client import TickFlowClient
 
