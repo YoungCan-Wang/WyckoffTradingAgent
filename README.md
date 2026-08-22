@@ -114,9 +114,13 @@ wyckoff dashboard  # 启动本地可视化面板
 |:---:|:---:|
 | <img src="docs/screenshots/web-portfolio.png" width="450" /> | <img src="docs/screenshots/web-analysis-redacted.png" width="450" /> |
 
+| 新闻打点（300684 本地验收） |
+|:---:|
+| <img src="docs/screenshots/news-chart-overlay.png" width="900" /> |
+
 </details>
 
-形态复盘页按数据库实际存在的最近 30 个复盘交易日读取数据：“复盘记录”保留窗口内的数据源行数，“总入选次数”按唯一的股票+入选日统计，“覆盖股票数”和涨跌幅摘要则按股票代码去重。服务端报错进 Cloudflare Workers Logs（约 3 天）；页面 PV/UV 用 Web Analytics；白名单用户的点击热力图走 Clarity 项目 `y6albpfin1`。这三样都不写业务库。
+形态复盘页按数据库实际存在的最近 30 个复盘交易日读取数据：“复盘记录”保留窗口内的数据源行数，“总入选次数”按唯一的股票+入选日统计，“覆盖股票数”和涨跌幅摘要则按股票代码去重。单股分析页会把规则过滤后的关键新闻打到 K 线上，只作读盘解释，不改变漏斗候选。服务端报错进 Cloudflare Workers Logs（约 3 天）；页面 PV/UV 用 Web Analytics；白名单用户的点击热力图走 Clarity 项目 `y6albpfin1`。这三样都不写业务库。
 
 ### Streamlit MVP 已下线
 
