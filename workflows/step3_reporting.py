@@ -162,7 +162,19 @@ def _build_final_content(
         content += f"\n\n**获取失败**: {', '.join(f'{s}({e})' for s, e in failed)}"
     if model_footer:
         content += f"\n\n---\n{model_footer}"
+    debate = _debate_overlay(selected_df)
+    if debate:
+        content += f"\n\n{debate}"
     return content
+
+
+def _debate_overlay(selected_df: pd.DataFrame) -> str:
+    from core.step3_debate import build_debate_record, debate_block
+
+    if selected_df is None or selected_df.empty:
+        return ""
+    records = [build_debate_record(row) for row in selected_df.to_dict(orient="records")]
+    return debate_block(records)
 
 
 def build_model_footer(
