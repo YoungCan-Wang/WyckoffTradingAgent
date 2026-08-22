@@ -1,8 +1,9 @@
 """因子 IC 评估结果落库。
 
 只写 factor_ic_daily 一张表，按 (eval_date, factor_name, horizon, segment) upsert，
-重跑同一天会覆盖而非累积。表 DDL 见 docs/sql/factor_ic_daily.sql——Python SDK 走 REST
-不支持 DDL，需在 Supabase SQL Editor 手工执行一次。
+重跑同一天会覆盖而非累积。建表语句由 `python scripts/print_factor_ic_ddl.py` 输出——
+本项目不保留 .sql 文件，且 Python SDK 走 REST 不支持 DDL，故 schema 变更需人工在
+Supabase SQL Editor 执行一次。
 
 落库的意义在于跨期对比：IC 单期值不构成证据，关键是 ic_ir 与方向一致性。
 2026-08-22 首轮 19 个因子-前瞻组合在 3 段样本上方向全一致且全为负，是当日唯一

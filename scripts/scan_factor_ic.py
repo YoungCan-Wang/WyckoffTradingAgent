@@ -56,10 +56,23 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_market(cache: str, start: str) -> pd.DataFrame:
+    """读行情。兼容两种列名：tushare 原始（ts_code/trade_date/vol）与
+    backtest 快照 hist_full.csv.gz（symbol/date/volume）——后者是 CI 里的实际来源。"""
     if not cache or not Path(cache).exists():
         raise SystemExit("请用 --cache 指定行情 CSV（可复用 backtest 快照的 hist_full）")
-    frame = pd.read_csv(cache, dtype={"ts_code": str, "trade_date": str})
-    frame["d"] = pd.to_datetime(frame.trade_date, format="%Y%m%d")
+    frame = pd.read_csv(cache, dtype={"ts_code": str, "symbol": str, "trade_date": str}, low_memory=False)
+    if "ts_code" not in frame.columns and "symbol" in frame.columns:
+        frame = frame.rename(columns={"symbol": "ts_code"})
+    if "vol" not in frame.columns and "volume" in frame.columns:
+        frame = frame.rename(columns={"volume": "vol"})
+    if "trade_date" in frame.columns:
+        frame["d"] = pd.to_datetime(frame.trade_date, format="%Y%m%d", errors="coerce")
+    else:
+        frame["d"] = pd.to_datetime(frame["date"], errors="coerce")
+    missing = {"ts_code", "open", "close", "high", "low", "vol", "amount"} - set(frame.columns)
+    if missing:
+        raise SystemExit(f"行情缺少必要列: {sorted(missing)}")
+    frame = frame.dropna(subset=["d"])
     frame = frame[frame.d >= pd.Timestamp(start)]
     return frame.sort_values(["ts_code", "d"])
 
@@ -125,11 +138,13 @@ def evaluate(
     open_: pd.DataFrame,
     horizons: tuple[int, ...],
     min_amount_wan: float,
+    liquidity_wan: pd.DataFrame,
     date_slice: tuple[int, int] | None = None,
 ) -> list[FactorICResult]:
     dates = list(close.index)
     lo, hi = date_slice or (WARMUP, len(dates) - max(horizons) - 2)
-    amt20 = factors["turnover_amt"] / 10.0
+    # 流动性面板单独传入：--factors 过滤后 turnover_amt 可能不在 factors 里。
+    amt20 = liquidity_wan
     out: list[FactorICResult] = []
     for name, panel in factors.items():
         for horizon in horizons:
@@ -190,6 +205,8 @@ def main() -> int:
     market = load_market(args.cache, args.start)
     print(f"[ic] 行情 {len(market):,} 行 / {market.ts_code.nunique()} 只")
     factors, close, open_ = build_factors(market)
+    # 在 --factors 过滤之前留存流动性面板，否则过滤掉 turnover_amt 会导致门槛无法计算。
+    liquidity = factors["turnover_amt"] / 10.0
     if args.factors:
         keep = {x.strip() for x in args.factors.split(",") if x.strip()}
         missing = keep - set(factors)
@@ -200,7 +217,7 @@ def main() -> int:
 
     payload: dict[str, object] = {}
     sections: list[str] = []
-    full = evaluate(factors, close, open_, horizons, args.min_amount_wan)
+    full = evaluate(factors, close, open_, horizons, args.min_amount_wan, liquidity)
     text = render(full, "因子 IC 全样本扫描")
     print("\n" + text)
     sections.append(text)
@@ -217,7 +234,7 @@ def main() -> int:
         segments = []
         for k in range(args.walk_forward):
             s0, s1 = lo + k * step, (lo + (k + 1) * step) if k < args.walk_forward - 1 else hi
-            seg = evaluate(factors, close, open_, horizons, args.min_amount_wan, (s0, s1))
+            seg = evaluate(factors, close, open_, horizons, args.min_amount_wan, liquidity, (s0, s1))
             seg_rows = [r.as_dict() for r in seg]
             segments.append(seg_rows)
             label = f"{dates[s0].date()}~{dates[s1 - 1].date()}"

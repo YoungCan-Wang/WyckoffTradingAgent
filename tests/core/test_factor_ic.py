@@ -111,3 +111,43 @@ class TestRetention:
         assert kind == "iso_date"
         # 该表价值在长期趋势，留存不应过短。
         assert ttl >= 180
+
+
+class TestSchema:
+    """schema 以 Python 常量版本化（本项目不留 .sql），故需测试防漂移。"""
+
+    def test_ddl_is_idempotent(self):
+        from core.factor_ic_schema import build_ddl
+
+        ddl = build_ddl()
+        assert "create table if not exists" in ddl
+        assert ddl.count("create index if not exists") == 2
+
+    def test_unique_key_matches_upsert_conflict_target(self):
+        """DDL 的唯一约束必须与 save_factor_ic_rows 的 on_conflict 一致，否则重跑会累积。"""
+        from pathlib import Path
+
+        from core.factor_ic_schema import UNIQUE_KEY
+
+        source = Path("integrations/supabase_factor_ic.py").read_text(encoding="utf-8")
+        assert f'on_conflict="{",".join(UNIQUE_KEY)}"' in source
+
+    def test_payload_keys_match_columns(self):
+        """写入的字段集必须等于建表字段集（除 created_at 由 default 填）。"""
+        import re
+        from pathlib import Path
+
+        from core.factor_ic_schema import payload_keys
+
+        source = Path("integrations/supabase_factor_ic.py").read_text(encoding="utf-8")
+        # 取 payload 列表推导整段：不能按第一个 "]" 截断，因为体内有 row["name"] 之类下标。
+        block = source.split("payload = [")[1].split("for row in rows")[0]
+        written = set(re.findall(r'^\s+"(\w+)":', block, re.M))
+        assert written == set(payload_keys()), sorted(written ^ set(payload_keys()))
+
+    def test_no_sql_files_in_repo(self):
+        """本项目不允许 .sql 文件——quality_gate 也会拦，这里双保险。"""
+        import subprocess
+
+        out = subprocess.run(["git", "ls-files", "*.sql"], capture_output=True, text=True, check=False)
+        assert out.stdout.strip() == "", f"发现 .sql 文件: {out.stdout}"
