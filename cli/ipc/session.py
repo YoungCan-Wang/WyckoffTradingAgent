@@ -31,6 +31,8 @@ class DesktopSession:
         self._pending_confirms: list[dict[str, Any]] = []
         self._user_id = ""
         self._turn_lock = threading.RLock()
+        # 产物 id 的轮次序号。自增而非时间戳：同一毫秒的两轮会撞。
+        self._turn_seq = 0
         self.ready_error = ""
 
     # -- 初始化 ---------------------------------------------------------------
@@ -252,9 +254,20 @@ class DesktopSession:
             str(config.get("desktop_tone_custom") or ""),
         )
 
+        # 产物 id 要在一轮内稳定、跨轮唯一。用自增计数器而不是时间戳：
+        # 同一毫秒内的两轮会撞。
+        self._turn_seq += 1
+        turn_id = f"turn-{self._turn_seq}"
+
         try:
             for event in runtime.run_stream(list(self._messages), prompt):
                 yield _project(event)
+                # 工具成功之后才发产物事件 —— 据 tool_start 开面板会在失败时
+                # 留下一个空面板。
+                if isinstance(event, dict) and event.get("type") in ("tool_result", "tool_error"):
+                    artifact = _chat_artifact(event, turn_id)
+                    if artifact is not None:
+                        yield artifact
                 if isinstance(event, dict) and event.get("type") == "done":
                     reply = str(event.get("text") or "")
                     if reply:
@@ -302,6 +315,65 @@ def _project(event: Any) -> dict[str, Any]:
     if fields is None:
         return {"type": kind}
     return {"type": kind, **{k: event.get(k) for k in fields if event.get(k) is not None}}
+
+
+# 哪些工具会产出「右侧面板里能打开的东西」，以及它算哪一类产物。
+#
+# 只有这张表里的工具才会生成产物事件 —— 白名单而非黑名单：新增工具默认不产出
+# 产物，需要时显式登记。反过来（默认产出、遇到不想要的再排除）会让每个新工具
+# 都可能意外弹开面板。
+_ARTIFACT_TOOLS = {"annotate_chart": "kline"}
+
+
+def _chat_artifact(event: dict[str, Any], turn_id: str) -> dict[str, Any] | None:
+    """
+    把 tool_result / tool_error 翻译成产物事件；不是产物则返回 None。
+
+    为什么翻译在这一层，而不是 runtime：runtime 是 CLI / TUI / 桌面共用的，
+    「右侧面板」是桌面独有的概念。而且工具结果里可能带凭据和内部结构，
+    这里是既有的安全边界 —— 按 kind 白名单挑字段，绝不整个透传 result。
+
+    为什么用 tool_result 而不是 tool_start：tool_start 时工具还没成功，
+    据它开面板会在失败时留下一个空面板（这正是旧实现的毛病）。
+    """
+    name = str(event.get("name") or "")
+    kind = _ARTIFACT_TOOLS.get(name)
+    if kind is None:
+        return None
+
+    args = event.get("args")
+    args = args if isinstance(args, dict) else {}
+    result = event.get("result")
+    result = result if isinstance(result, dict) else {}
+    failed = str(event.get("status") or "") == "error" or bool(result.get("error"))
+
+    # id 用 tool_call_id：同一次调用重复投影时天然去重。缺失时退回工具名 ——
+    # 那样同一轮的多次调用会互相覆盖，但比没有 id（前端无法去重）好。
+    call_id = str(event.get("tool_call_id") or name)
+
+    if kind == "kline":
+        symbol = str(args.get("code") or "").strip()
+        if not symbol:
+            return None
+        # list / clear 不是「画了一张图」，不该弹开面板。
+        # 这条是旧实现漏掉的：action=list 也会开图。
+        action = str(args.get("action") or "draw").strip().lower()
+        if action != "draw":
+            return None
+        return {
+            "type": "chat_artifact",
+            # 刻意不叫 "id"：传输层会把 event["id"] 覆盖成请求流 id
+            # （stdio.py 的既有约定，审批事件同理改用 approval_id）。
+            # 用 id 的话产物标识会被冲掉，前端就没法按它去重。
+            "artifact_id": f"{turn_id}:{call_id}",
+            "kind": "kline",
+            "title": symbol,
+            "status": "failed" if failed else "ready",
+            # payload 只带重新打开这张图所必需的字段，不带标注内容本体 ——
+            # 图自己会去后端取，事件里重复塞一份只会让每次工具调用都拖着几 KB。
+            "payload": {"symbol": symbol, "timeframe": str(args.get("timeframe") or "1d")},
+        }
+    return None
 
 
 def _load_session() -> dict[str, Any]:
