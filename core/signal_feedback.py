@@ -563,6 +563,9 @@ def _health_row(
     win_rate = float(sum(1 for r in returns if r > 0) / len(returns) * 100.0) if returns else None
     avg_ret = float(mean(returns)) if returns else None
     state, weight, reason = classify_health(len(returns), win_rate, avg_ret, min_samples=min_samples)
+    from core.signal_decay import decay_fields_from_returns
+
+    decay = decay_fields_from_returns(returns)
     return {
         "market": market,
         "as_of_date": as_of_date,
@@ -578,6 +581,10 @@ def _health_row(
         "health_state": state,
         "weight_multiplier": weight,
         "reason": reason,
+        "ic": decay.get("ic"),
+        "sharpe": decay.get("sharpe"),
+        "decay_lifecycle": decay.get("decay_lifecycle"),
+        "decay_reason": decay.get("decay_reason"),
         "updated_at": datetime.now(UTC).isoformat(),
     }
 
@@ -740,7 +747,7 @@ def build_signal_registry_updates(
                 "signal_type": signal_type,
                 "track": row.get("track") or signal_track(signal_type),
                 "regime": key[1],
-                "status": next_status.get(signal_type, "ACTIVE"),
+                "status": _status_with_decay(next_status.get(signal_type, "ACTIVE"), row),
                 "weight_multiplier": row.get("weight_multiplier") or 1.0,
                 "sample_count": row.get("sample_count") or 0,
                 "win_rate_pct": row.get("win_rate_pct"),
@@ -760,3 +767,9 @@ def build_signal_registry_updates(
         )
     )
     return updates
+
+
+def _status_with_decay(status: str, row: dict[str, Any]) -> str:
+    from core.signal_decay import registry_status_for_decay
+
+    return registry_status_for_decay(str(row.get("decay_lifecycle") or "monitoring"), status)
