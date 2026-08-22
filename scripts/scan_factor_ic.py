@@ -1,0 +1,291 @@
+"""扫描生产在用指标的 IC：哪些真有预测力，哪些是噪声。
+
+在改动八通道阈值之前跑它。生产漏斗全是阈值门（`rank(axis=1)` 在 core/ 零命中），
+门槛线上的票本质随机、参数必然过拟合（walk-forward 1/16）、且只能过滤不能排序。
+IC 用横截面秩相关衡量预测力，不需要切点。
+
+因子池取自生产实际计算的字段（core/wyckoff_engine.py 与 core/layer2_strength.py
+里出现的 ret3/5/20/60/120、rps_fast/slow、turnover、vol_ratio、bias、dry_vol 等），
+而非凭空构造——避免测了一堆生产用不上的东西。
+
+用法::
+
+    # 全因子扫描，T+5 与 T+10
+    python scripts/scan_factor_ic.py --cache /tmp/hist_2y.csv
+
+    # 只看某几个因子
+    python scripts/scan_factor_ic.py --factors dry_vol_q250,ret20,rps_slow
+
+    # 滚动窗口验证（按 AGENTS.md 规则 7：全样本最优不算证据）
+    python scripts/scan_factor_ic.py --walk-forward 4
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+import _bootstrap  # noqa: F401
+import numpy as np
+import pandas as pd
+
+from core.factor_ic import (
+    MIN_CROSS_SECTION,
+    FactorICResult,
+    composite_weights,
+    summarize_ic,
+)
+
+WARMUP = 260
+QUANTILE_GROUPS = 5
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="生产指标 IC 扫描")
+    p.add_argument("--cache", default="", help="行情 CSV（含 ts_code,trade_date,open,close,high,low,vol,amount）")
+    p.add_argument("--start", default="2024-08-01")
+    p.add_argument("--horizons", default="5,10", help="前瞻期，逗号分隔")
+    p.add_argument("--factors", default="", help="只测这些因子，逗号分隔；留空=全部")
+    p.add_argument("--min-amount-wan", type=float, default=8000.0, help="流动性门槛，与生产 RISK_OFF 档一致")
+    p.add_argument("--walk-forward", type=int, default=0, help="切成 N 段分别评估，检查跨段稳定性")
+    p.add_argument("--json-out", default="")
+    p.add_argument("--no-notify", action="store_true")
+    p.add_argument("--save-db", action="store_true", help="落库到 factor_ic_daily")
+    return p.parse_args()
+
+
+def load_market(cache: str, start: str) -> pd.DataFrame:
+    if not cache or not Path(cache).exists():
+        raise SystemExit("请用 --cache 指定行情 CSV（可复用 backtest 快照的 hist_full）")
+    frame = pd.read_csv(cache, dtype={"ts_code": str, "trade_date": str})
+    frame["d"] = pd.to_datetime(frame.trade_date, format="%Y%m%d")
+    frame = frame[frame.d >= pd.Timestamp(start)]
+    return frame.sort_values(["ts_code", "d"])
+
+
+def build_factors(market: pd.DataFrame) -> tuple[dict[str, pd.DataFrame], pd.DataFrame, pd.DataFrame]:
+    """构造与生产同名的因子面板。
+
+    所有因子只用 T 日及之前的数据，前瞻收益用 T+1 开盘买入，避免用到未来信息。
+    """
+    piv = {
+        c: market.pivot_table(index="d", columns="ts_code", values=c)
+        for c in ("close", "open", "high", "low", "vol", "amount")
+    }
+    close, open_, high, low, vol, amount = (piv[k] for k in ("close", "open", "high", "low", "vol", "amount"))
+
+    factors: dict[str, pd.DataFrame] = {}
+    # 动量族：生产的 ret3/5/20/60/120
+    for win in (3, 5, 20, 60, 120):
+        factors[f"ret{win}"] = close.pct_change(win, fill_method=None) * 100
+    # 相对强弱：生产的 rps_fast / rps_slow 用横截面分位，这里同构
+    factors["rps_fast"] = (close.pct_change(20, fill_method=None) * 100).rank(axis=1, pct=True) * 100
+    factors["rps_slow"] = (close.pct_change(60, fill_method=None) * 100).rank(axis=1, pct=True) * 100
+    # 量能族：dry_vol 生产用 250 日分位（PR 早前把默认从 0.05 放宽到 0.20）
+    v20 = vol.rolling(20).mean()
+    factors["dry_vol_q250"] = v20.rolling(250).rank(pct=True) * 100
+    factors["vol_ratio"] = vol / v20
+    factors["turnover_amt"] = amount.rolling(20).mean()
+    # 位阶与乖离：生产的 bias_200、位阶保护
+    ma200 = close.rolling(200).mean()
+    factors["bias_200"] = (close / ma200 - 1) * 100
+    ma20 = close.rolling(20).mean()
+    factors["bias_20"] = (close / ma20 - 1) * 100
+    lo250 = low.rolling(250).min()
+    factors["price_from_low250"] = (close / lo250 - 1) * 100
+    hi60 = high.rolling(60).max()
+    factors["dist_to_high60"] = (close / hi60 - 1) * 100
+    # 波动与形态
+    factors["amplitude60"] = (hi60 / low.rolling(60).min() - 1) * 100
+    rng = high - low
+    factors["close_position"] = ((close - low) / rng.where(rng > 0)) * 100
+    return factors, close, open_
+
+
+def _daily_ic(fac: pd.Series, fwd: pd.Series, mask: pd.Series) -> tuple[float | None, float | None]:
+    """单日 Rank IC 与分位单调性。"""
+    frame = pd.DataFrame({"f": fac, "r": fwd})[mask].dropna()
+    if len(frame) < MIN_CROSS_SECTION or frame.f.nunique() < QUANTILE_GROUPS:
+        return None, None
+    # 秩相关 = 对秩取 Pearson，与 Spearman 等价；避免引入 scipy 依赖。
+    ic = frame.f.rank().corr(frame.r.rank())
+    try:
+        groups = pd.qcut(frame.f.rank(method="first"), QUANTILE_GROUPS, labels=False)
+        means = frame.groupby(groups).r.mean()
+        mono = means.rank().corr(pd.Series(means.index, index=means.index).rank()) if len(means) >= 3 else None
+    except ValueError:
+        mono = None
+    return (None if ic is None or ic != ic else float(ic)), (None if mono is None or mono != mono else float(mono))
+
+
+def evaluate(
+    factors: dict[str, pd.DataFrame],
+    close: pd.DataFrame,
+    open_: pd.DataFrame,
+    horizons: tuple[int, ...],
+    min_amount_wan: float,
+    date_slice: tuple[int, int] | None = None,
+) -> list[FactorICResult]:
+    dates = list(close.index)
+    lo, hi = date_slice or (WARMUP, len(dates) - max(horizons) - 2)
+    amt20 = factors["turnover_amt"] / 10.0
+    out: list[FactorICResult] = []
+    for name, panel in factors.items():
+        for horizon in horizons:
+            ics: list[float] = []
+            monos: list[float] = []
+            widths: list[float] = []
+            for i in range(lo, hi):
+                exit_idx = i + 1 + horizon
+                if exit_idx >= len(dates):
+                    break
+                entry = open_.iloc[i + 1]
+                fwd = (close.iloc[exit_idx] / entry - 1) * 100
+                liquid = (amt20.iloc[i] >= min_amount_wan) & entry.notna() & (entry > 0)
+                ic, mono = _daily_ic(panel.iloc[i], fwd, liquid)
+                if ic is None:
+                    continue
+                ics.append(ic)
+                widths.append(float(liquid.sum()))
+                if mono is not None:
+                    monos.append(mono)
+            out.append(summarize_ic(name, horizon, ics, widths, monos))
+    return out
+
+
+def render(results: list[FactorICResult], title: str) -> str:
+    rows = sorted(results, key=lambda r: -(abs(r.ic_ir) if r.ic_ir is not None else 0))
+    lines = [
+        f"**{title}**",
+        "",
+        "| 因子 | 前瞻 | 天数 | 截面宽 | Rank IC | IC_IR | 为正% | 单调性 | 判定 |",
+        "| --- | --: | --: | --: | --: | --: | --: | --: | --- |",
+    ]
+    for r in rows:
+        if r.rank_ic is None:
+            lines.append(f"| {r.name} | T+{r.horizon} | {r.days} | — | — | — | — | — | {r.verdict} |")
+            continue
+        ir = f"{r.ic_ir:+.2f}" if r.ic_ir is not None else "—"
+        mono = f"{r.monotonicity:+.2f}" if r.monotonicity is not None else "—"
+        lines.append(
+            f"| {r.name} | T+{r.horizon} | {r.days} | {r.avg_universe:.0f} | {r.rank_ic:+.4f} | "
+            f"{ir} | {r.positive_ratio:.0f}% | {mono} | {r.verdict} |"
+        )
+    usable = [r for r in results if r.useful]
+    lines += ["", f"可用因子 {len(usable)} / {len(results)}"]
+    weights = composite_weights(results)
+    if weights:
+        lines += ["", "**建议合成权重**（按 |IC_IR|，负号表示反向使用）", ""]
+        for name, weight in sorted(weights.items(), key=lambda kv: -abs(kv[1])):
+            lines.append(f"- `{name}` {weight:+.4f}")
+    else:
+        lines += ["", "无因子通过可用门槛（|IC|>=0.02 且 |IC_IR|>=0.30 且非无方向性）。"]
+    return "\n".join(lines)
+
+
+def main() -> int:
+    args = parse_args()
+    horizons = tuple(int(x) for x in args.horizons.split(",") if x.strip())
+    market = load_market(args.cache, args.start)
+    print(f"[ic] 行情 {len(market):,} 行 / {market.ts_code.nunique()} 只")
+    factors, close, open_ = build_factors(market)
+    if args.factors:
+        keep = {x.strip() for x in args.factors.split(",") if x.strip()}
+        missing = keep - set(factors)
+        if missing:
+            raise SystemExit(f"未知因子: {sorted(missing)}；可选 {sorted(factors)}")
+        factors = {k: v for k, v in factors.items() if k in keep}
+    print(f"[ic] 因子 {len(factors)} 个 × 前瞻 {horizons}")
+
+    payload: dict[str, object] = {}
+    sections: list[str] = []
+    full = evaluate(factors, close, open_, horizons, args.min_amount_wan)
+    text = render(full, "因子 IC 全样本扫描")
+    print("\n" + text)
+    sections.append(text)
+    full_rows = [r.as_dict() for r in full]
+    payload["full"] = full_rows
+    dates = list(close.index)
+    win = (str(dates[WARMUP].date()), str(dates[-1].date()))
+    if args.save_db:
+        _save(full_rows, "full", win, composite_weights(full))
+
+    if args.walk_forward > 1:
+        lo, hi = WARMUP, len(dates) - max(horizons) - 2
+        step = (hi - lo) // args.walk_forward
+        segments = []
+        for k in range(args.walk_forward):
+            s0, s1 = lo + k * step, (lo + (k + 1) * step) if k < args.walk_forward - 1 else hi
+            seg = evaluate(factors, close, open_, horizons, args.min_amount_wan, (s0, s1))
+            seg_rows = [r.as_dict() for r in seg]
+            segments.append(seg_rows)
+            label = f"{dates[s0].date()}~{dates[s1 - 1].date()}"
+            if args.save_db:
+                _save(
+                    seg_rows, f"seg{k + 1}", (str(dates[s0].date()), str(dates[s1 - 1].date())), composite_weights(seg)
+                )
+            text = render(seg, f"分段 {k + 1}/{args.walk_forward}　{label}")
+            print("\n" + text)
+            sections.append(text)
+        payload["segments"] = segments
+        stable = _stability(payload)
+        print("\n" + stable)
+        sections.append(stable)
+
+    if args.json_out:
+        Path(args.json_out).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"\n[ic] 已写 {args.json_out}")
+    if not args.no_notify:
+        _notify(sections)
+    return 0
+
+
+def _stability(payload: dict[str, object]) -> str:
+    """跨段方向一致性——这才是能不能用的关键，而非全样本 IC 高低。"""
+    segments = payload.get("segments") or []
+    if not segments:
+        return ""
+    keys = {(r["name"], r["horizon"]) for r in segments[0]}
+    lines = ["**跨段稳定性**", "", "| 因子 | 前瞻 | 方向一致 | 各段 IC |", "| --- | --: | --: | --- |"]
+    for name, horizon in sorted(keys):
+        vals = []
+        for seg in segments:
+            hit = next((r for r in seg if r["name"] == name and r["horizon"] == horizon), None)
+            vals.append(hit.get("rank_ic") if hit else None)
+        clean = [v for v in vals if v is not None]
+        if len(clean) < 2:
+            continue
+        same = sum(1 for v in clean if v > 0)
+        consistent = max(same, len(clean) - same)
+        lines.append(
+            f"| {name} | T+{horizon} | {consistent}/{len(clean)} | " + " ".join(f"{v:+.3f}" for v in clean) + " |"
+        )
+    lines += ["", "方向一致数 = 各段 IC 同号的最大计数。全段同号才说明因子稳定，否则属拟合。"]
+    return "\n".join(lines)
+
+
+def _save(rows: list[dict], segment: str, window: tuple[str, str], weights: dict[str, float]) -> None:
+    from integrations.supabase_factor_ic import save_factor_ic_rows
+
+    written = save_factor_ic_rows(rows, segment=segment, window_start=window[0], window_end=window[1], weights=weights)
+    print(f"[ic] 落库 {segment}: {written}/{len(rows)} 行")
+
+
+def _notify(sections: list[str]) -> None:
+    import os
+
+    webhook = os.getenv("FEISHU_WEBHOOK_URL", "").strip()
+    if not webhook:
+        print("[ic] 未配置 FEISHU_WEBHOOK_URL，跳过推送")
+        return
+    from utils.feishu import send_feishu_notification
+
+    title = f"因子 IC 扫描｜{pd.Timestamp.now().strftime('%Y-%m-%d')}"
+    ok = send_feishu_notification(webhook, title, "\n\n---\n\n".join(s for s in sections if s))
+    print("[ic] feishu sent" if ok else "[ic] feishu failed")
+
+
+if __name__ == "__main__":
+    _ = np  # numpy 由 pandas 间接需要，显式引用避免 lint 误删
+    raise SystemExit(main())
