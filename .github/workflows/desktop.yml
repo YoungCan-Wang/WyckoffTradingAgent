@@ -82,6 +82,16 @@ jobs:
         if: runner.os != 'Linux'
         run: node test/e2e/smoke.mjs
 
+      # 可交互产物宿主的安全验证。这个视图**执行模型生成的代码**,所以每次改动
+      # 都要在真 Electron 上重验一遍：JS 能跑、网络出不去、拿不到宿主 API。
+      # 静态断言验不了这些 —— CSP 是否生效、fetch 是否真被拦都是运行期行为。
+      - name: 产物宿主安全验证（Linux 需要虚拟显示）
+        if: runner.os == 'Linux'
+        run: xvfb-run --auto-servernum node test/e2e/artifact-host.mjs
+      - name: 产物宿主安全验证
+        if: runner.os != 'Linux'
+        run: node test/e2e/artifact-host.mjs
+
       # 开发态没有打包后的 Python payload；这里只检查 Electron 外壳能完整退出。
       - name: 检查 Electron 残留进程（Windows）
         if: runner.os == 'Windows'

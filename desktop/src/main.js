@@ -6,6 +6,7 @@ const fs = require('node:fs')
 const { PythonBridge } = require('./python-bridge')
 const { DaemonRunner } = require('./daemon-runner')
 const { BrowserHost } = require('./browser-host')
+const { ArtifactHost } = require('./artifact-host')
 const { PRINT_WEB_PREFERENCES, blockPrintNetwork } = require('./print-security')
 
 // src/ -> desktop/ -> repo root
@@ -49,6 +50,7 @@ let mainWindow = null
 let bridge = null
 let daemon = null
 let browser = null
+let artifactHost = null
 // 上次导出 PDF 选的目录。Electron 43 起操作系统不再跨次记住它，见 exportPdf。
 let lastExportDir = ''
 // Python reaches ready in ~1s, which can beat the renderer's listener
@@ -284,6 +286,39 @@ app.whenReady().then(async () => {
     if (browser) browser.setBounds(bounds)
     return { ok: true }
   })
+  // 可交互产物：独立 session + 阻断一切网络的 WebContentsView。
+  //
+  // 和内置浏览器共用几何镜像的模式（视图不是 DOM 节点，布局要显式同步），
+  // 但安全策略相反：那边访问外网不执行我们的代码，这边执行模型的代码但
+  // 一个字节都不出网。
+  ipcMain.handle('artifact:load', async (_evt, html) => {
+    if (!artifactHost) return { ok: false, error: 'artifact host unavailable' }
+    try {
+      await artifactHost.load(String(html || ''))
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: err.message }
+    }
+  })
+  ipcMain.handle('artifact:show', (_evt, bounds) => {
+    if (!artifactHost) return { ok: false }
+    artifactHost.setBounds(bounds)
+    artifactHost.show()
+    return { ok: true }
+  })
+  ipcMain.handle('artifact:hide', () => {
+    if (artifactHost) artifactHost.hide()
+    return { ok: true }
+  })
+  ipcMain.handle('artifact:bounds', (_evt, bounds) => {
+    if (artifactHost) artifactHost.setBounds(bounds)
+    return { ok: true }
+  })
+  ipcMain.handle('artifact:destroy', () => {
+    if (artifactHost) artifactHost.destroy()
+    return { ok: true }
+  })
+
   ipcMain.handle('browser:run', async (_evt, action, params) => {
     if (!browser) return { ok: false, error: 'browser unavailable' }
     try {
@@ -330,6 +365,11 @@ async function createBrowserHost () {
   browser = new BrowserHost({
     window: mainWindow,
     onLog: (message) => console.log(`[browser] ${message}`)
+  })
+  // 可交互产物宿主。不需要 start()（没有控制口）—— 视图本身仍是懒创建的。
+  artifactHost = new ArtifactHost({
+    window: mainWindow,
+    onLog: (message) => console.log(`[artifact] ${message}`)
   })
   try {
     return await browser.start()

@@ -28,6 +28,17 @@ contextBridge.exposeInMainWorld('wyckoff', {
   },
   // In-app browser. The view is a native WebContentsView, so the renderer can
   // only place it and issue whitelisted actions — it never gets the contents.
+  /**
+   * 可交互产物视图。和 browser 一样是原生 view —— 渲染层负责把几何镜像过来。
+   * 页面本身没有 preload，拿不到这个通道；只有主界面能驱动它。
+   */
+  artifact: {
+    load: (html) => ipcRenderer.invoke('artifact:load', html),
+    show: (bounds) => ipcRenderer.invoke('artifact:show', bounds),
+    hide: () => ipcRenderer.invoke('artifact:hide'),
+    setBounds: (bounds) => ipcRenderer.invoke('artifact:bounds', bounds),
+    destroy: () => ipcRenderer.invoke('artifact:destroy')
+  },
   browser: {
     show: (bounds) => ipcRenderer.invoke('browser:show', bounds),
     hide: () => ipcRenderer.invoke('browser:hide'),
