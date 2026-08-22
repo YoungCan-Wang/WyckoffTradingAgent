@@ -252,6 +252,7 @@ watch_score = 0.25 × q20 + 0.20 × q5 + 0.05 × q3
 | **前复权 (qfq)** | 以最新价格为基准向前调整历史价格，消除分红送股导致的价格跳空。回测默认使用前复权数据 |
 | **外部资金佐证** | 正式候选的 observation 特征：龙虎榜及机构/沪深股通席位、融资融券、大宗交易、个股资金流和沪深股通十大成交。只用于解释与 outcome 复盘，不直接改变漏斗、推荐或 OMS。`north_money` 当前按发布金额保存，不解释为北向净买入。 |
 | **应交易覆盖率** | OHLCV 质量门的分母为股票池减去当日确认停牌标的；停牌缺 K 线单列为非交易排除，不再记作接口失败。原始全池缺口仍保留为 `raw_ohlcv` / `fetch_raw_missing` 供审计；换手率、行业和概念映射另有覆盖门槛。 |
+| **脏 K 线守卫** | 入口层丢掉结构不可能的 bar：`high<low`、最高价低于实体、最低价高于实体、价格非正、成交量为负。默认 `OHLCV_DIRTY_BAR_GUARD=1`。它不改漏斗阈值，只拒绝脏数据进入漏斗 / 诊断 / 回测。 |
 
 ## 11. 信号反馈闭环
 
@@ -390,7 +391,7 @@ flowchart LR
 |------|------|
 | **两个方向** | `mcp_server.py` 是本项目**作为 server** 被 Claude Desktop / Cursor 连接；`cli/mcp_client.py` 是本项目**作为客户端**去连第三方 server。两者工具集不同、审批路径不同，不要混谈。 |
 | **配置即信任边界** | 接入一个外部 server 等于允许在本机 spawn 它的命令。因此 `~/.wyckoff/mcp_servers.json` 只由用户手写，模型不能新增 server，新增条目默认 `enabled: false`；文件权限固定为 0600。 |
-| **工具前缀** | 外部工具统一命名 `mcp__<server>__<tool>`，避免与原生 31 个工具撞名。前缀在读写判定时会被剥掉，所以 server 名叫 `deploy` 不会让它的只读工具被误判为写。 |
+| **工具前缀** | 外部工具统一命名 `mcp__<server>__<tool>`，避免与原生工具撞名。前缀在读写判定时会被剥掉，所以 server 名叫 `deploy` 不会让它的只读工具被误判为写。 |
 | **写工具启发式** | MCP 的 `annotations` 是可选的，server 不保证声明副作用。判定顺序：`readOnlyHint=True` → 读；`destructiveHint=True` → 写；工具名含 create/delete/update/send/deploy 等动词 → 写；**其余一律按写**。判错代价不对称：把读当写只多一次确认，把写当读是静默执行了副作用。 |
 | **外部工具永不 auto** | 外部写工具映射到 `review` 档，进待批准队列。`AUTO_TOOLS` 只含 `set_stop_loss`，daemon 无人监督时不会执行任何第三方写入。 |
 | **失败隔离** | 某个 server 连不上（命令不存在、进程立刻退出、协议超时）只把它自己标为不可用，不影响原生工具和其他 server。SDK 的失败以 `ExceptionGroup` / `FileNotFoundError` 形式抛出，不总是 `McpError`，所以捕获必须宽。 |

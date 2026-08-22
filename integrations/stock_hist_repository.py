@@ -36,7 +36,10 @@ def normalize_hist_df(df: pd.DataFrame) -> pd.DataFrame:
             out[col] = pd.to_numeric(out[col], errors="coerce")
     if "date" in out.columns:
         out["date"] = out["date"].astype(str)
-    return out
+    from core.ohlc_guard import sanitize_ohlcv_frame
+
+    kept, _reasons = sanitize_ohlcv_frame(out)
+    return kept
 
 
 def denormalize_hist_df(df: pd.DataFrame) -> pd.DataFrame:

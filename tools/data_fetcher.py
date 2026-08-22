@@ -39,10 +39,26 @@ def fetch_all_ohlcv(
         batch_sleep=batch_sleep,
     )
     if batch_result is not None:
-        return _complete_partial_batch(
-            batch_result,
-            symbols,
-            window,
+        return _guard_ohlcv(
+            _complete_partial_batch(
+                batch_result,
+                symbols,
+                window,
+                enforce_target_trade_date=enforce_target_trade_date,
+                batch_size=batch_size,
+                max_workers=max_workers,
+                batch_timeout=batch_timeout,
+                batch_sleep=batch_sleep,
+                executor_mode=executor_mode,
+                direct_source=direct_source,
+                runtime_config=runtime_config,
+            )
+        )
+
+    return _guard_ohlcv(
+        ohlcv_fallback_fetcher.fetch_ohlcv_fallback(
+            symbols=symbols,
+            window=window,
             enforce_target_trade_date=enforce_target_trade_date,
             batch_size=batch_size,
             max_workers=max_workers,
@@ -52,19 +68,14 @@ def fetch_all_ohlcv(
             direct_source=direct_source,
             runtime_config=runtime_config,
         )
-
-    return ohlcv_fallback_fetcher.fetch_ohlcv_fallback(
-        symbols=symbols,
-        window=window,
-        enforce_target_trade_date=enforce_target_trade_date,
-        batch_size=batch_size,
-        max_workers=max_workers,
-        batch_timeout=batch_timeout,
-        batch_sleep=batch_sleep,
-        executor_mode=executor_mode,
-        direct_source=direct_source,
-        runtime_config=runtime_config,
     )
+
+
+def _guard_ohlcv(result: tuple[dict[str, pd.DataFrame], dict]) -> tuple[dict[str, pd.DataFrame], dict]:
+    from core.ohlc_guard import sanitize_ohlcv_map
+
+    df_map, stats = result
+    return sanitize_ohlcv_map(df_map, stats)
 
 
 def _complete_partial_batch(
