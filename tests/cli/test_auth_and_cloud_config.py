@@ -121,6 +121,53 @@ class TestCloudConfigPull:
         assert len(entries) == 1, "同 provider+model 被加了两遍"
         assert entries[0]["api_key"] == "LOCAL", "本地的 key 被云端覆盖了"
 
+    def test_merge_is_a_union_not_a_replace(self, store, cloud):
+        """本地模型一个都不能丢。
+
+        用真实数据验过：本地 13 个 + 云端 4 个 = 17 个。这里用一个缩小版守住
+        同一条性质 —— 「拉云端配置」听起来很容易被实现成「用云端覆盖本地」，
+        那会让用户在这台机器上攒的模型列表凭空消失。
+        """
+        for i in range(3):
+            la.save_model_entry(
+                {"id": f"local-{i}", "provider_name": "openai", "model": f"local-model-{i}", "api_key": "K"}
+            )
+        before = {(c["provider_name"], c["model"]) for c in la.load_model_configs()}
+
+        cc.pull_cloud_config("u1", "tok")
+
+        after = {(c["provider_name"], c["model"]) for c in la.load_model_configs()}
+        assert before <= after, f"本地模型丢了: {before - after}"
+        assert len(after) == len(before) + 3, "云端的三个（deepseek 半配置除外）该都进来"
+
+    def test_same_model_under_different_provider_is_kept(self, store, cloud):
+        """同一个模型名跑在不同 provider 下是两条：端点和 key 都不一样。
+
+        真实例子（来自实际配置）：`openai/deepseek-v4-flash` 走 OpenAI 兼容端点，
+        `deepseek/deepseek-v4-flash` 走原生端点。判重键必须含 provider，
+        只按 model 名去重会把其中一条吞掉。
+
+        这里用 fixture 里配全的 gemini 模型名来构造这个情形。
+        """
+        shared = CLOUD_ROW["gemini_model"]
+        la.save_model_entry({"id": "local-compat", "provider_name": "openai", "model": shared, "api_key": "COMPAT"})
+        cc.pull_cloud_config("u1", "tok")
+        rows = [c for c in la.load_model_configs() if c["model"] == shared]
+        assert len(rows) == 2, "同名不同 provider 被误当成重复"
+        assert {c["provider_name"] for c in rows} == {"openai", "gemini"}
+
+    def test_local_default_is_not_hijacked(self, store, cloud):
+        """本地已有模型时不改默认 —— 那是用户自己选的。
+
+        只有本地一个模型都没有时才用云端的 chat_provider 设默认，
+        否则界面会一直显示「未配置模型」。
+        """
+        la.save_model_entry({"id": "mine", "provider_name": "openai", "model": "my-pick", "api_key": "K"})
+        la.set_default_model("mine")
+        cc.pull_cloud_config("u1", "tok")
+        config = json.loads(la.CONFIG_FILE.read_text(encoding="utf-8"))
+        assert config["default"] == "mine", "云端抢走了用户选的默认模型"
+
     def test_missing_row_is_not_an_error(self, store, monkeypatch):
         """云端没配过不是错误，只是没东西可拉。"""
         monkeypatch.setattr(cc, "_fetch_settings", lambda *_a: None)
