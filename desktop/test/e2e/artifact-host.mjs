@@ -12,6 +12,7 @@ import { mkdtemp, rm, readFile } from 'node:fs/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { createSocket } from 'node:dgram'
 
 const APP_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const PROFILE = await mkdtemp(join(tmpdir(), 'wyckoff-artifact-'))
@@ -165,12 +166,60 @@ try {
   }, ARTIFACT_CSP)
   check('模型自带宽松 CSP 无法放开网络', () => assert.equal(override.net, 'blocked'))
 
+  const source = await readFile(join(APP_DIR, 'src', 'artifact-host.js'), 'utf8')
+
+  // --- WebRTC：onBeforeRequest 管不到的一条外泄通道 ---
+  //
+  // `webRequest` 只看 HTTP 栈，WebRTC 走 UDP 直接绕过。所以这条**不能**用
+  // 「webRequest 有没有看到请求」来验 —— 那恰恰是它看不见的。
+  // 用一个本机 UDP 监听器当假 STUN 服务器，数**真的收到几个包**。
+  //
+  // 实测过：不设策略时收到 4 个包（ICE 候选里带本机内网 IP），
+  // `disable_non_proxied_udp` 之后 0 个。
+  const sock = createSocket('udp4')
+  let udpPackets = 0
+  sock.on('message', () => { udpPackets += 1 })
+  await new Promise((r) => sock.bind(0, '127.0.0.1', r))
+  const stunPort = sock.address().port
+
+  await app.evaluate(async ({ WebContentsView, session }, { port, csp }) => {
+    const part = 'artifact-rtc-e2e'
+    const ses = session.fromPartition(part)
+    ses.webRequest.onBeforeRequest((d, cb) => cb({ cancel: !/^(devtools|data):/i.test(d.url) }))
+    const v = new WebContentsView({
+      webPreferences: {
+        sandbox: true, contextIsolation: true, nodeIntegration: false,
+        javascript: true, partition: part
+      }
+    })
+    // 与 ArtifactHost 同一条策略
+    v.webContents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp')
+    const doc = '<!doctype html><html><head>'
+      + '<meta http-equiv="Content-Security-Policy" content="' + csp + '">'
+      + '</head><body><scr' + 'ipt>'
+      + 'try{const pc=new RTCPeerConnection({iceServers:[{urls:"stun:127.0.0.1:' + port + '"}]});'
+      + 'pc.createDataChannel("x");pc.createOffer().then(x=>pc.setLocalDescription(x)).catch(()=>{});}catch(e){}'
+      + '</scr' + 'ipt></body></html>'
+    await v.webContents.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(doc))
+    await new Promise((r) => setTimeout(r, 3000))
+    v.webContents.close()
+  }, { port: stunPort, csp: ARTIFACT_CSP })
+  sock.close()
+
+  check('WebRTC 发不出 UDP 包（STUN 外泄通道）', () =>
+    assert.equal(udpPackets, 0, `收到 ${udpPackets} 个 UDP 包 —— 数据能绕过 webRequest 外泄`))
+
+  check('真实宿主设了 WebRTC 策略', () => {
+    const src2 = source
+    assert.match(src2, /setWebRTCIPHandlingPolicy\('disable_non_proxied_udp'\)/,
+      'artifact-host 必须禁掉非代理 UDP')
+  })
+
   // --- 真实类的配置必须和上面验过的策略一致 ---
   //
   // 上面为了能在 app.evaluate 里跑,自己重建了一份 webPreferences。若
   // ArtifactHost 的真实配置漂移了（比如有人给它加了 preload,或去掉
   // partition）,那些验证就不再代表产品行为。这里把两者绑在一起。
-  const source = await readFile(join(APP_DIR, 'src', 'artifact-host.js'), 'utf8')
   const prefs = source.match(/webPreferences: \{[\s\S]*?\}/)[0]
   // 只看代码不看注释 —— 那里有一句「无 preload」的说明,是应该保留的。
   const prefsCode = prefs.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n')

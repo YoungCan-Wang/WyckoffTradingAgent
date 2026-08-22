@@ -30,6 +30,9 @@
  *
  *  - 独立 partition：cookie / localStorage 与主应用和内置浏览器都不共享
  *  - onBeforeRequest 取消**所有** http(s)：外泄没有出口
+ *  - `disable_non_proxied_udp`：WebRTC 走 UDP，`webRequest` 看不到它 ——
+ *    少了这一条，模型 HTML 能用 STUN/TURN 把数据发出去（实测收到过 4 个 UDP
+ *    包，而 webRequest 一个请求都没看到）
  *  - 无 preload：没有通往应用的桥（拿不到 window.wyckoff / require）
  *  - setWindowOpenHandler 一律 deny：不允许造一个没有这些限制的新窗口
  *  - will-navigate 只放行 data:：页面不能把自己导航到别处
@@ -84,6 +87,19 @@ class ArtifactHost {
       }
     })
     const wc = this.view.webContents
+
+    // WebRTC 是 onBeforeRequest **管不到**的一条外泄通道。
+    //
+    // `webRequest` 只看 HTTP 栈；WebRTC 走 UDP，直接绕过。实测（用本机 UDP
+    // 监听器当假 STUN 服务器）：不设策略时收到 **4 个包**，ICE 候选里带着本机
+    // 内网 IP，而 webRequest 一个请求都没看到。也就是说持仓数据能靠 STUN/TURN
+    // 发出去 —— fetch/img 那两道防线完全没覆盖这条路。
+    //
+    // `disable_non_proxied_udp` 是最强档：没有代理时不允许任何非代理 UDP。
+    // 实测同一个探针在启用后收到 **0 个包**。
+    //
+    // 产物只需要展示，压根没有 P2P 需求，所以这里不存在「关了会坏什么」。
+    wc.setWebRTCIPHandlingPolicy('disable_non_proxied_udp')
 
     // 核心防线：一切 http(s) 一律取消。
     //
