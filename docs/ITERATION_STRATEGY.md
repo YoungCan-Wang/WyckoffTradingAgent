@@ -222,7 +222,7 @@ beta；spring 是唯一统计上非零者且为负，六重比较下刚好压 Bo
 |--------|----------|----------|
 | 龙虎榜 / 融资融券 / 大宗 | `integrations/external_capital_context.py` 已按需拉取，写入 `signal_observations.features_json.source_context` | 已是 observation，**禁止**直接改候选池；先用 outcomes 测「有净买 vs 无」的 alpha |
 | 候选影子分 | `candidate_shadow_score` 已合成外部资金等组件 | 继续走 `evaluate_recommendation_events` 的 top-k lift；lift 稳定为正才考虑升成排序键 |
-| 新闻 / 舆情 | `rag_veto`（AkShare 个股新闻）+ CLI `browser_research`（本机 CDP） | 可先做事件日前后的异常收益，而不是再加一层形态阈值 |
+| 新闻 / 舆情 | `rag_veto`（AkShare 个股新闻）+ CLI `browser_research`（本机 CDP）+ 单股分析页新闻打点 | 图表叠加只做读盘解释；要找 alpha 仍须先做事件日前后的异常收益，而不是再加一层形态阈值 |
 | 财报 / 公告时点 | 尚未系统接入回测 | 事件研究：公告日 T 的 N 日前瞻，相对同日全市场 |
 
 接入纪律（和 Android 里「先离线 A/B，再上线 Feature Flag」同一套）：

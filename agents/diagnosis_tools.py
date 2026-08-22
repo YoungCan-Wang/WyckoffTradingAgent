@@ -125,6 +125,25 @@ def _diagnosis_result(code: str, cost: float, end_date: date, buy_dt: str = "") 
     )
     if hist_hints:
         payload["tickflow_limit_hint"] = hist_hints[0]
+    return _attach_chart_news_events(payload, code, df)
+
+
+def _attach_chart_news_events(payload: dict[str, Any], code: str, df) -> dict[str, Any]:
+    try:
+        from integrations.stock_news_events import load_news_chart_events
+
+        dates = [str(value)[:10] for value in df["date"].tolist()] if "date" in df.columns else []
+        events = (
+            load_news_chart_events(code, dates[0], dates[-1], dates, name=str(payload.get("name") or ""))
+            if len(dates) >= 2
+            else []
+        )
+    except Exception:
+        logger.debug("chart news overlay failed for %s", code, exc_info=True)
+        return payload
+    if events:
+        payload["chart_news_events"] = events
+        payload["chart_news_note"] = "读盘叠加层，不改变漏斗候选"
     return payload
 
 

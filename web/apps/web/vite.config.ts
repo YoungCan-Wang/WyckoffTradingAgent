@@ -147,8 +147,24 @@ function appVersionPlugin(): Plugin {
   }
 }
 
+function newsEventsPlugin(): Plugin {
+  return {
+    name: 'news-events',
+    configureServer(server) {
+      server.middlewares.use('/api/news-events', async (req, res) => {
+        const { handleNewsEventsRequest } = await import('../../packages/shared/src/news-chart-events')
+        const request = new Request(`http://${req.headers.host || 'localhost'}${req.url || '/api/news-events'}`)
+        const response = await handleNewsEventsRequest(request)
+        res.statusCode = response.status
+        res.setHeader('content-type', 'application/json; charset=utf-8')
+        res.end(await response.text())
+      })
+    },
+  }
+}
+
 export default defineConfig({
-  plugins: [react(), tailwindcss(), llmProxyPlugin(), marketDataPlugin(), appVersionPlugin()],
+  plugins: [react(), tailwindcss(), llmProxyPlugin(), marketDataPlugin(), appVersionPlugin(), newsEventsPlugin()],
   define: {
     __APP_VERSION__: JSON.stringify(BUILD_VERSION),
   },
