@@ -62,6 +62,17 @@ write('登录闸门：')
   // 先 await 出结果再进同步的 check：`check` 不会 await 回调，传 async 函数
   // 会让断言的 Promise 逃出它的 try/catch —— 失败变成未捕获拒绝，进程带着
   // 「全部通过」的输出非零退出（实测遇到过一次这种自相矛盾的结果）。
+  if (!hasError) {
+    const st = await win.evaluate(() => ({
+      loginCard: !!document.querySelector('.login-card'),
+      errEl: !!document.querySelector('.login-err'),
+      emailVal: document.getElementById('login-email')?.value ?? null,
+      pwVal: (document.getElementById('login-pw')?.value ?? '').length,
+      submitDisabled: document.querySelector('.login-go')?.disabled,
+      hintText: document.querySelector('.login-hint')?.textContent?.slice(0, 40)
+    })).catch((e) => ({ evalFailed: String(e).slice(0, 100) }))
+    write(`  诊断(空表单): ${JSON.stringify(st)}`)
+  }
   check('空表单给出可见错误', () => assert.equal(hasError, true))
   await app.close()
 }
@@ -89,6 +100,16 @@ write('登录闸门：')
     await win.waitForTimeout(120)
   }
   const workbench = await win.evaluate(() => !!document.getElementById('side'))
+  if (!workbench) {
+    const st = await win.evaluate(() => ({
+      loginCard: !!document.querySelector('.login-card'),
+      shellChildren: [...(document.querySelector('.shell-root')?.children || [])]
+        .map((el) => el.className || el.tagName).slice(0, 4),
+      bypass: !!window.wyckoff?.e2eFakeSignin,
+      innerWidth: window.innerWidth
+    })).catch((e) => ({ evalFailed: String(e).slice(0, 100) }))
+    write(`  诊断(已登录): ${JSON.stringify(st)}`)
+  }
   check('已登录时工作台出现', () => assert.equal(workbench, true))
   check('已登录时从未闪过登录页', () => assert.equal(sawLogin, false))
   await app.close()
