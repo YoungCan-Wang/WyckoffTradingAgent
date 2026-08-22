@@ -15,6 +15,12 @@ ipcRenderer.on('py:status', (_evt, payload) => {
 
 // The only surface the renderer gets. No fs, no child_process, no ipcRenderer.
 contextBridge.exposeInMainWorld('wyckoff', {
+  // E2E 专用：让渲染层跳过登录闸门。
+  //
+  // **必须在这一侧**：这个标志原来放在 Python 的 `account` 方法里，但 CI 上
+  // Python payload 压根不存在 —— 后端起不来，那个分支永远不会被执行。
+  // 诊断输出显示界面停在登录页（shellChildren: ["login-wrap"]）。
+  e2eFakeSignin: process.env.WYCKOFF_E2E_FAKE_SIGNIN === '1',
   call: (method, params) => ipcRenderer.invoke('py:call', method, params),
   // Electron removed File.path from sandboxed renderers; this is the sanctioned
   // replacement. It only reads a path the user themselves dragged in — it

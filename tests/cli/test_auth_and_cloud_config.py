@@ -274,29 +274,3 @@ class TestAuthMethodsAreExposed:
 
         events = list(auth_login({"email": "a@b.c", "password": "secret-pw"}))
         assert "secret-pw" not in json.dumps(events)
-
-
-class TestE2EBypassIsContained:
-    """E2E 旁路不能泄漏到真实使用。"""
-
-    def test_bypass_requires_exact_env_value(self, store, monkeypatch):
-        """只认 "1"。真机上不会碰巧设成这个值，而模糊匹配（truthy）会让
-        `WYCKOFF_E2E_FAKE_SIGNIN=0` 也生效 —— 那种旁路迟早出事。
-        """
-        import cli.ipc.methods as m
-
-        monkeypatch.setattr("integrations.local_auth.restore_session", lambda: None)
-        for value in ("0", "", "true", "yes"):
-            monkeypatch.setenv("WYCKOFF_E2E_FAKE_SIGNIN", value)
-            assert list(m.account({}))[0]["signed_in"] is False, f"{value!r} 不该启用旁路"
-
-        monkeypatch.setenv("WYCKOFF_E2E_FAKE_SIGNIN", "1")
-        assert list(m.account({}))[0]["signed_in"] is True
-
-    def test_bypass_does_not_touch_real_login(self, store, monkeypatch):
-        """旁路只影响登录态判定；auth_login 仍走真实路径。"""
-        import cli.ipc.methods as m
-
-        monkeypatch.setenv("WYCKOFF_E2E_FAKE_SIGNIN", "1")
-        with pytest.raises(m.MethodError):
-            list(m.auth_login({"email": "", "password": ""}))

@@ -45,6 +45,8 @@ export interface Bounds {
 }
 
 export interface WyckoffBridge {
+  /** E2E 专用：跳过登录闸门（由 WYCKOFF_E2E_FAKE_SIGNIN=1 置真）。 */
+  e2eFakeSignin?: boolean
   /** ok:false 时带 error（主进程的 py:call 在方法名非法或桥未就绪时返回）。 */
   call: (
     method: string,

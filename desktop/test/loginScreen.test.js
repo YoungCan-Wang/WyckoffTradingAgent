@@ -100,3 +100,15 @@ test('last_email 来自 account，不是前端自己存的', () => {
   assert.match(app, /initialEmail=\{account\.lastEmail\}/)
   assert.ok(!/localStorage.*email/i.test(SRC('components/LoginScreen.tsx')), '邮箱不该存在渲染层')
 })
+
+test('E2E 旁路在渲染侧，且只认精确的 "1"', () => {
+  // 这个旁路最初放在 Python 的 account 方法里 —— 但 CI 上没有 Python payload，
+  // 后端起不来，那个分支永远不会被执行。诊断显示界面停在登录页。
+  // 判断必须在渲染侧才有效。
+  const preload = readFileSync(join(__dirname, '..', 'src', 'preload.js'), 'utf8')
+  assert.match(preload, /WYCKOFF_E2E_FAKE_SIGNIN === '1'/, '必须精确比较 "1"')
+  const app = SRC('components/App.tsx')
+  assert.match(app, /window\.wyckoff\?\.e2eFakeSignin/, 'App 应读渲染侧的标志')
+  // 旁路只影响登录态；不能顺手跳过后端状态机或改动登录方法
+  assert.ok(!/e2eFakeSignin[\s\S]{0,200}auth_login/.test(app), '旁路不该碰真实登录路径')
+})

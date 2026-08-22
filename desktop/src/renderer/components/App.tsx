@@ -85,6 +85,16 @@ export function App () {
     //
     // 后端起不来是真实场景（安装不完整、Python 崩了），那时用户该看到登录页
     // 或错误态，不该看到一片空白。所以 catch 分支也走 setAccount。
+    // E2E 旁路：CI 上没有 Python payload，后端起不来 —— 所以这个判断**必须**
+    // 在渲染侧。放在 Python 的 account 方法里时它永远不会被执行（诊断显示界面
+    // 停在登录页），因为那个方法压根没被调到。
+    if (window.wyckoff?.e2eFakeSignin) {
+      setAccount({
+        signedIn: true, email: 'e2e@example.com', userId: 'e2e-user',
+        checked: true, lastEmail: ''
+      })
+      return
+    }
     const data = await collect('account').catch(() => null)
     const d = (data || {}) as { signed_in?: boolean; email?: string; user_id?: string; last_email?: string }
     const uid = String(d.user_id || '')
