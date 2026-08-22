@@ -53,11 +53,15 @@ write('登录闸门：')
     const form = document.querySelector('.login-card')
     form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
   })
-  await win.waitForTimeout(300)
+  // 等条件而不是等固定时长：300ms 在本机够（偶发失败过一次），在 CI runner
+  // 上稳定不够 —— 提交表单要过一轮 React 状态更新。固定 sleep 的测试
+  // 「本机绿、CI 红」，而调大数字只是把不确定性推远一点。
+  const hasError = await win.locator('.login-err')
+    .waitFor({ state: 'visible', timeout: 10_000 })
+    .then(() => true, () => false)
   // 先 await 出结果再进同步的 check：`check` 不会 await 回调，传 async 函数
   // 会让断言的 Promise 逃出它的 try/catch —— 失败变成未捕获拒绝，进程带着
   // 「全部通过」的输出非零退出（实测遇到过一次这种自相矛盾的结果）。
-  const hasError = await win.evaluate(() => !!document.querySelector('.login-err'))
   check('空表单给出可见错误', () => assert.equal(hasError, true))
   await app.close()
 }
