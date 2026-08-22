@@ -152,8 +152,13 @@ jobs:
           # 渲染层产物必须在包里（同 macOS 那条：漏掉 build:ui 会让应用回退到
           # 没有 React 的源 index.html，界面白屏而后端一切正常）。
           $asar = Join-Path $unpacked 'resources/app.asar'
-          $packed = npx --yes @electron/asar list $asar
+          # 路径分隔符不写死：asar list 在 macOS 上给正斜杠，Windows 上未必
+          # （第一版用 '/src/renderer/dist/...' 在 Windows 上恒不匹配，把一个
+          # 打包成功的包报成缺文件）。统一成正斜杠再比。
+          $packed = (npx --yes @electron/asar list $asar) -replace '\\', '/'
           if (-not ($packed -match '/src/renderer/dist/index\.html')) {
+            Write-Host "asar 里的 renderer 相关条目（诊断用）："
+            $packed | Where-Object { $_ -match 'renderer' } | Select-Object -First 10
             throw "包里缺少 renderer/dist —— 启动会白屏"
           }
           if (-not ($packed -match '/src/renderer/dist/assets/.*\.js')) {
