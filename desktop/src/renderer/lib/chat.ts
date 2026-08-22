@@ -15,6 +15,17 @@ export type Block =
   | { kind: 'approval'; event: Record<string, unknown> }
   | { kind: 'error'; message: string }
   | { kind: 'note'; text: string }
+  /**
+   * 送去右侧面板的产物（目前只有报告）。
+   *
+   * **必须带着 body**：原来这条路径是 `blocks.filter(b => b.kind !== 'text')`
+   * 把正文整块滤掉、只留一句「已在右侧打开」。于是 openReport 一旦失败（渲染
+   * 抛异常、面板被关），模型生成的完整正文就**彻底没了** —— 那一轮回复只剩一
+   * 行提示，重开无门，只能重新问一遍。
+   *
+   * 留着 body 还顺带解决了「关掉页签后找不回来」：卡片上的按钮可以拿它重开。
+   */
+  | { kind: 'artifact'; artifactKind: 'report'; title: string; body: string }
 
 export interface Turn {
   id: string

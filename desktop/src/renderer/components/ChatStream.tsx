@@ -73,6 +73,28 @@ export function ChatStream ({ turns, onApprovalDecided }: Props) {
   )
 }
 
+/**
+ * 送去右侧面板的产物在对话里留下的卡片。
+ *
+ * 存在的理由是「找得回来」：原来这里是一行纯文本「已在右侧打开 →」，用户关掉
+ * 页签之后没有任何入口，只能重新问一遍模型。正文存在 block 里，所以重开不需要
+ * 再走一次模型，面板渲染失败也不会丢东西。
+ */
+function ArtifactCard ({ title, body }: { title: string; body: string }) {
+  return (
+    <div className="sys art-card">
+      <span className="art-title">{title}</span>
+      <button
+        type="button"
+        className="task-action"
+        onClick={() => window.WyckoffApp?.openReport?.(title, body)}
+      >
+        {t('chat.reopen')}
+      </button>
+    </div>
+  )
+}
+
 function BlockView (
   { block, onApprovalDecided }: { block: Block; onApprovalDecided: (n: string) => void }
 ) {
@@ -98,6 +120,8 @@ function BlockView (
       return <div className="sys err">{block.message || t('chat.errored')}</div>
     case 'note':
       return <div className="sys">{block.text}</div>
+    case 'artifact':
+      return <ArtifactCard title={block.title} body={block.body} />
     case 'approval':
       return <ApprovalCardInline event={block.event} onDecided={onApprovalDecided} />
     default:

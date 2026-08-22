@@ -73,7 +73,12 @@ export function useChat (ready: boolean): ChatApi {
       setTurns((prev) => prev.map((x) => {
         if (x.id !== id) return x
         const body = finalText(x, event.text ? String(event.text) : undefined)
-        // 报告形态的回复送去产物面板，对话里只留一行「已在右侧打开」。
+        // 报告形态的回复送去产物面板，对话里留一张能重新打开的卡片。
+        //
+        // 原来是 `blocks.filter(b => b.kind !== 'text')` —— 把正文**整块滤掉**。
+        // openReport 一旦失败（渲染抛异常、面板被关），模型生成的完整正文就彻底
+        // 没了，那一轮只剩一句「已在右侧打开」，而那行是纯文本、不可点。
+        // 现在把正文存进 artifact 块：面板出问题不丢东西，关掉页签也能重开。
         if (looksLikeReport(body)) {
           const title = reportTitle(body, t('chat.report'))
           window.WyckoffApp?.openReport?.(title, body)
@@ -81,7 +86,7 @@ export function useChat (ready: boolean): ChatApi {
             ...x,
             blocks: [
               ...x.blocks.filter((b) => b.kind !== 'text'),
-              { kind: 'note', text: t('chat.openedRight', { title }) }
+              { kind: 'artifact', artifactKind: 'report', title, body }
             ]
           }
         }

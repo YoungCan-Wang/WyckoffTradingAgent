@@ -1266,3 +1266,8 @@ html.dark .mfin { background: var(--paper2); }
 /* 报告标题在对话里过大：这是一段回答，不是一篇文档。 */
 .md > .doc h1 { font-size: 16px; margin: 10px 0 6px; }
 .md > .doc h2 { font-size: 14.5px; }
+
+/* 对话里的产物卡片：借 .sys 的低调配色，只把布局改成一行。
+   刻意不引入彩色卡片体系 —— 这一屏的设计基调是安静。 */
+.art-card { display: flex; align-items: center; gap: 8px; }
+.art-card .art-title { color: var(--tx2); }
