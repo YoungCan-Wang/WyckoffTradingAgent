@@ -73,6 +73,36 @@ class TestLogoutClearsCredentials:
         assert not la.SESSION_FILE.exists()
         assert la.auto_relogin() is None, "凭据没清干净，会被自动登回去"
 
+    def test_logout_keeps_last_email_for_prefill(self, store):
+        """`last_email` 刻意保留 —— 它是「你是谁」，不是凭据。
+
+        拆成两个键才能让「清凭据」和「记住是谁」互不干扰：`email` 参与
+        auto_relogin 所以必须清，`last_email` 只用于下次登录页预填邮箱。
+        拿到它并不代表能登录。
+        """
+        la.save_config_key("email", "a@b.c")
+        la.save_config_key("password", "secret")
+        la.save_config_key("last_email", "a@b.c")
+
+        la.logout()
+
+        config = json.loads(la.CONFIG_FILE.read_text(encoding="utf-8"))
+        assert config.get("last_email") == "a@b.c", "预填邮箱不该被清"
+        assert not config.get("email"), "email 必须清 —— 它能自动登录"
+        assert la.auto_relogin() is None, "保留 last_email 不能让退出失效"
+
+    def test_account_exposes_last_email_but_never_password(self, store, monkeypatch):
+        """登录页要拿到预填邮箱；密码绝不能经这条路出去。"""
+        import cli.ipc.methods as m
+
+        la.save_config_key("last_email", "a@b.c")
+        la.save_config_key("password", "top-secret")
+        monkeypatch.setattr("integrations.local_auth.restore_session", lambda: None)
+
+        event = list(m.account({}))[0]
+        assert event["last_email"] == "a@b.c"
+        assert "top-secret" not in json.dumps(event)
+
     def test_logout_keeps_unrelated_config(self, store):
         """清凭据不该顺手清掉主题、模型这些无关配置。"""
         la.save_config_key("theme", "dark")

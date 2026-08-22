@@ -50,6 +50,10 @@ def login(email: str, password: str) -> dict[str, Any]:
     save_session(data)
     save_config_key("email", email)
     save_config_key("password", password)
+    # 单独记一份**不参与自动登录**的邮箱：退出登录会清掉 email/password
+    # （否则会被静默登回去），但下次登录页仍该预填邮箱 —— 那是便利，不是凭据。
+    # 拆成两个键才能让「清凭据」和「记住是谁」互不干扰。
+    save_config_key("last_email", email)
     return data
 
 
@@ -105,8 +109,9 @@ def logout() -> None:
     来源。清掉凭据只让它拿不到东西，不会改变续期逻辑本身。
     """
     clear_session()
-    # 两个键一起清：只清 password 会留一个孤立的 email，下次登录界面预填一个
-    # 无法自动登录的邮箱，比什么都不留更让人困惑。
+    # 只清这两个 —— `last_email` 刻意保留，它不能用来登录，只用于下次预填邮箱。
+    # 清 email 和 password 两个而不只是 password：留一个能自动登录的孤立 email
+    # 会让「退出」名不副实。
     for key in ("email", "password"):
         try:
             save_config_key(key, "")

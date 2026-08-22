@@ -82,3 +82,21 @@ test('两种语言都补齐了登录文案', () => {
     assert.equal(hits, 2, `${key} 应在 zh 和 en 各出现一次，实际 ${hits}`)
   }
 })
+
+test('登录页预填邮箱但绝不预填密码', () => {
+  // 邮箱是「你是谁」，记住它是便利；密码是凭据，预填等于让「退出登录」名不副实。
+  const login = SRC('components/LoginScreen.tsx')
+  assert.match(login, /useState\(initialEmail\)/, '邮箱应用 initialEmail 初始化')
+  assert.match(login, /const \[password, setPassword\] = useState\(''\)/, '密码必须初始为空')
+  // 预填后焦点该给密码框 —— 落在已填好的字段上等于逼用户多按一次 Tab
+  assert.match(login, /if \(initialEmail\) pwRef\.current\?\.focus\(\)/)
+})
+
+test('last_email 来自 account，不是前端自己存的', () => {
+  // 存在渲染层（localStorage）会和后端的登录态分叉：退出登录清了后端凭据，
+  // 前端却还记着，两边说法不一致。
+  const app = SRC('components/App.tsx')
+  assert.match(app, /last_email\?: string/, 'account 响应里应有 last_email')
+  assert.match(app, /initialEmail=\{account\.lastEmail\}/)
+  assert.ok(!/localStorage.*email/i.test(SRC('components/LoginScreen.tsx')), '邮箱不该存在渲染层')
+})

@@ -551,10 +551,21 @@ def account(_params: dict[str, Any]) -> Iterator[Event]:
     except Exception:
         logger.warning("session restore failed", exc_info=True)
         session = {}
+    # last_email 只用于登录页预填。它**不是**凭据：退出登录会清掉 email/password
+    # 而刻意保留它，所以拿到它并不代表能登录。
+    from integrations.local_auth import load_config
+
+    last_email = ""
+    try:
+        last_email = str((load_config() or {}).get("last_email") or "")
+    except Exception:
+        logger.debug("last_email read failed", exc_info=True)
+
     yield _ok(
         signed_in=bool(session.get("access_token")),
         email=str(session.get("email") or ""),
         user_id=str(session.get("user_id") or ""),
+        last_email=last_email,
     )
 
 

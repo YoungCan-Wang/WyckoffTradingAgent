@@ -19,19 +19,29 @@ interface Props {
   onSignedIn: (info: { email: string; synced?: Record<string, unknown> }) => void
   /** 后端还没就绪时禁用提交 —— 否则点了没反应，看起来像卡死。 */
   backendReady: boolean
+  /**
+   * 上次登录用的邮箱，用于预填。
+   *
+   * **只预填邮箱，永不预填密码。** 邮箱是「你是谁」，记住它是便利；密码是凭据，
+   * 预填它等于让「退出登录」名不副实（那正是我刚修过的一个 bug 的方向）。
+   */
+  initialEmail?: string
 }
 
-export function LoginScreen ({ collect, onSignedIn, backendReady }: Props) {
-  const [email, setEmail] = useState('')
+export function LoginScreen ({ collect, onSignedIn, backendReady, initialEmail = '' }: Props) {
+  const [email, setEmail] = useState(initialEmail)
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const emailRef = useRef<HTMLInputElement>(null)
+  const pwRef = useRef<HTMLInputElement>(null)
 
-  // 进来就聚焦邮箱：这一屏只有一件事可做。
+  // 邮箱已预填时把焦点给密码框 —— 用户要填的是那个。
+  // 焦点落在一个已填好的字段上，用户得先按一次 Tab，是无谓的一步。
   useEffect(() => {
-    emailRef.current?.focus()
-  }, [])
+    if (initialEmail) pwRef.current?.focus()
+    else emailRef.current?.focus()
+  }, [initialEmail])
 
   const submit = async (event?: React.FormEvent) => {
     event?.preventDefault()
@@ -88,6 +98,7 @@ export function LoginScreen ({ collect, onSignedIn, backendReady }: Props) {
         <label className="login-l" htmlFor="login-pw">{t('login.password')}</label>
         <input
           id="login-pw"
+          ref={pwRef}
           className="login-i"
           type="password"
           autoComplete="current-password"

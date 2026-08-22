@@ -46,7 +46,7 @@ export function App () {
   const [counts, setCounts] = useState({ approvals: 0, schedules: 0 })
   // checked 区分「查过了、确实没登录」与「还没查」。少了它，已登录用户在
   // account 返回之前会先闪一下登录页 —— 那比慢一点更糟。
-  const [account, setAccount] = useState({ signedIn: false, email: '', userId: '', checked: false })
+  const [account, setAccount] = useState({ signedIn: false, email: '', userId: '', checked: false, lastEmail: '' })
   const [openAnchor, setOpenAnchor] = useState<HTMLElement | null>(null)
   const [acctAnchor, setAcctAnchor] = useState<HTMLElement | null>(null)
   const [settings, setSettings] = useState<{ open: boolean; section: string; anchor?: string }>(
@@ -77,7 +77,7 @@ export function App () {
 
   const loadAccount = useCallback(async () => {
     const data = await collect('account').catch(() => null)
-    const d = (data || {}) as { signed_in?: boolean; email?: string; user_id?: string }
+    const d = (data || {}) as { signed_in?: boolean; email?: string; user_id?: string; last_email?: string }
     const uid = String(d.user_id || '')
     // 账号变了就清缓存 + 通知已挂载的页面清 state。只清缓存挡得住「下次进页面」，
     // 挡不住「此刻正看着持仓页」。
@@ -86,7 +86,13 @@ export function App () {
       window.dispatchEvent(new CustomEvent('wyckoff:account-changed', { detail: { userId: uid } }))
     }
     lastUser.current = uid
-    setAccount({ signedIn: Boolean(d.signed_in), email: String(d.email || ''), userId: uid, checked: true })
+    setAccount({
+      signedIn: Boolean(d.signed_in),
+      email: String(d.email || ''),
+      userId: uid,
+      checked: true,
+      lastEmail: String(d.last_email || '')
+    })
   }, [])
 
   // 桥的状态机。ready 的那一刻才去拉侧栏计数与账号。
@@ -212,6 +218,7 @@ export function App () {
         collect={collect}
         onSignedIn={onSignedIn}
         backendReady={backendState === 'ready'}
+        initialEmail={account.lastEmail}
       />
     )
   }
