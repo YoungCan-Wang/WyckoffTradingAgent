@@ -144,6 +144,16 @@ jobs:
           if (-not ($health -match '"type": "ready"')) { throw "packaged IPC health smoke failed: $health" }
           $daemon = & $ipc --daemon --status
           if (-not ($daemon -match '^daemon:')) { throw "packaged daemon smoke failed: $daemon" }
+          # 渲染层产物必须在包里（同 macOS 那条：根 .gitignore 的 `dist/`
+          # 会让 Vite 产物被静默排除，导致界面白屏而后端正常）。
+          $asar = Join-Path $unpacked 'resources/app.asar'
+          $packed = npx --yes @electron/asar list $asar
+          if (-not ($packed -match '/src/renderer/dist/index\.html')) {
+            throw "包里缺少 renderer/dist —— 启动会白屏"
+          }
+          if (-not ($packed -match '/src/renderer/dist/assets/.*\.js')) {
+            throw "包里缺少前端 JS bundle"
+          }
           $installer = Get-ChildItem "dist/*-x64.exe"
           if (-not $installer) { throw "missing NSIS installer for x64" }
           $installer | Format-Table Name, Length
@@ -199,6 +209,19 @@ jobs:
           test -x "$ipc" || { echo "missing bundled IPC: $ipc"; exit 1; }
           reply=$(printf '%s\n' '{"id":"smoke","method":"health","params":{}}' '__shutdown__' | "$ipc")
           echo "$reply" | grep -q '"type": "ready"'
+          # 渲染层产物必须在包里。
+          #
+          # 根 .gitignore 有一条全局 `dist/`，而 electron-builder 默认尊重
+          # .gitignore —— Vite 产物曾被静默排除，尽管它匹配 `src/**/*`。
+          # 后果是应用回退到源 index.html（那份没有 React）：**整个界面白屏**，
+          # 而 Python 后端一切正常、日志里没有任何错误。
+          # 只有装完打开才看得见，所以这条检查必须在打包 job 里。
+          npx --yes @electron/asar list "$app/Contents/Resources/app.asar" \
+            | grep -q '/src/renderer/dist/index.html' \
+            || { echo "包里缺少 renderer/dist —— 启动会白屏"; exit 1; }
+          npx --yes @electron/asar list "$app/Contents/Resources/app.asar" \
+            | grep -qE '/src/renderer/dist/assets/.*\.js' \
+            || { echo "包里缺少前端 JS bundle"; exit 1; }
           codesign --verify --deep --strict "$app"
           dmg=$(find dist -maxdepth 1 -name '*-${{ matrix.arch }}.dmg' | head -1)
           test -n "$dmg" || { echo "missing DMG for ${{ matrix.arch }}"; exit 1; }

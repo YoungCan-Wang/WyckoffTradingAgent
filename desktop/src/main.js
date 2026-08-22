@@ -116,12 +116,31 @@ function createWindow () {
     console.error(`[renderer] load failed: ${desc} (${code})`)
   })
 
-  // 优先加载 Vite 产物（含 React）。没构建过就退回源目录 —— 那份仍能跑，
-  // 只是 React 接管的屏会缺失。这样「忘了 build」表现为部分功能缺失并有
-  // 明确日志，而不是白屏。
+  // 优先加载 Vite 产物（含 React）；开发时没构建过就退回源目录。
+  //
+  // 那句「回退仍能跑、只是缺几屏」曾经写在这里,但**实测是白屏** —— 界面主体
+  // 现在全由 React 渲染,源 index.html 只是个空壳。所以：
+  //
+  // 分发版里回退**不是可接受的降级,是致命错误**。它只会发生在打包配置漏掉
+  // dist 的时候（根 .gitignore 有全局 `dist/`,而 electron-builder 默认尊重
+  // 它 —— 真的发生过）。那种情况下用户看到一个纯白窗口,后端一切正常、日志
+  // 里没有任何报错,完全无法自行判断。
+  //
+  // 与其静默白屏,不如在窗口里直接说清楚出了什么事。
   const built = path.join(__dirname, 'renderer', 'dist', 'index.html')
   if (fs.existsSync(built)) {
     mainWindow.loadFile(built)
+  } else if (app.isPackaged) {
+    console.error('[renderer] 打包产物缺少 renderer/dist —— 这是打包配置错误')
+    const msg =
+      '<!doctype html><meta charset="utf-8">' +
+      '<div style="font:14px/1.7 -apple-system,sans-serif;padding:40px;color:#26251f">' +
+      '<h2 style="margin:0 0 12px">这个安装包不完整</h2>' +
+      '<p>界面资源（renderer/dist）没有被打进应用，所以窗口是空的。' +
+      '这是构建问题，不是你的配置问题 —— 后台服务本身是正常的。</p>' +
+      '<p style="color:#6f6d66">请到项目 Issues 反馈，并附上这个版本号。</p>' +
+      '</div>'
+    mainWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(msg))
   } else {
     console.warn('[renderer] 未找到构建产物，回退到源目录；先跑 npm run build:ui')
     mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'))
