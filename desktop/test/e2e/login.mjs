@@ -4,7 +4,7 @@
 // 2. 已登录时**不闪**登录页 —— 那需要真实的异步时序，静态断言测不出来
 import { _electron as electron } from 'playwright'
 import assert from 'node:assert/strict'
-import { mkdtemp, writeFile, mkdir } from 'node:fs/promises'
+import { mkdtemp, mkdir } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -17,11 +17,16 @@ const check = (name, fn) => {
   try { fn(); write(`  ok   ${name}`) } catch (err) { failures += 1; write(`  FAIL ${name}: ${err.message}`) }
 }
 
-async function launch (home) {
+async function launch (home, signedIn = false) {
   const profile = await mkdtemp(join(tmpdir(), 'wyckoff-login-'))
   return electron.launch({
     args: [APP_DIR, `--user-data-dir=${profile}`],
-    env: { ...process.env, ELECTRON_DISABLE_GPU: '1', ...(home ? { HOME: home } : {}) }
+    env: {
+      ...process.env,
+      ELECTRON_DISABLE_GPU: '1',
+      ...(home ? { HOME: home, USERPROFILE: home } : {}),
+      ...(signedIn ? { WYCKOFF_E2E_FAKE_SIGNIN: '1' } : {})
+    }
   })
 }
 
@@ -49,8 +54,11 @@ write('登录闸门：')
     form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
   })
   await win.waitForTimeout(300)
-  check('空表单给出可见错误', async () =>
-    assert.equal(await win.evaluate(() => !!document.querySelector('.login-err')), true))
+  // 先 await 出结果再进同步的 check：`check` 不会 await 回调，传 async 函数
+  // 会让断言的 Promise 逃出它的 try/catch —— 失败变成未捕获拒绝，进程带着
+  // 「全部通过」的输出非零退出（实测遇到过一次这种自相矛盾的结果）。
+  const hasError = await win.evaluate(() => !!document.querySelector('.login-err'))
+  check('空表单给出可见错误', () => assert.equal(hasError, true))
   await app.close()
 }
 
@@ -58,13 +66,11 @@ write('登录闸门：')
 {
   const home = await mkdtemp(join(tmpdir(), 'wyckoff-home2-'))
   await mkdir(join(home, '.wyckoff'), { recursive: true })
-  // 伪造一个 session：account 方法只看 access_token 是否存在
-  await writeFile(
-    join(home, '.wyckoff', 'session.json'),
-    JSON.stringify({ user_id: 'e2e-user', email: 'e2e@example.com', access_token: 'fake', refresh_token: 'fake' }),
-    'utf8'
-  )
-  const app = await launch(home)
+  // 伪造 session 文件在 CI 上不可靠：`restore_session` 会拿假 token 去问
+  // Supabase，被判 invalid 就 clear_session，于是「已登录」这一半永远测不到。
+  // 所以这里改用 smoke 同一个环境变量旁路。**上半段（未登录）刻意不设它**，
+  // 那才是真实的登录闸门。
+  const app = await launch(home, true)
   const win = await app.firstWindow()
   // 一进来就轮询：如果登录页曾经出现过，这里能抓到
   let sawLogin = false
@@ -78,8 +84,8 @@ write('登录闸门：')
     if (s?.sidebar) break
     await win.waitForTimeout(120)
   }
-  check('已登录时工作台出现', async () =>
-    assert.equal(await win.evaluate(() => !!document.getElementById('side')), true))
+  const workbench = await win.evaluate(() => !!document.getElementById('side'))
+  check('已登录时工作台出现', () => assert.equal(workbench, true))
   check('已登录时从未闪过登录页', () => assert.equal(sawLogin, false))
   await app.close()
 }

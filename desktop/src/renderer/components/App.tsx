@@ -76,6 +76,15 @@ export function App () {
   }, [])
 
   const loadAccount = useCallback(async () => {
+    // 拿不到后端时也必须把 checked 置真。
+    //
+    // `checked` 为假时整个应用刻意什么都不渲染（避免已登录用户闪一下登录页），
+    // 而这个函数只在桥进入 ready 时被调 —— 后端起不来的话 `checked` 永远是假，
+    // **界面永久空白**。CI 上就是这样：没有 Python payload，`.shell-root` 挂上了
+    // 但里面是空的（诊断显示 shellChildren: []），侧栏和顶栏一个都没有。
+    //
+    // 后端起不来是真实场景（安装不完整、Python 崩了），那时用户该看到登录页
+    // 或错误态，不该看到一片空白。所以 catch 分支也走 setAccount。
     const data = await collect('account').catch(() => null)
     const d = (data || {}) as { signed_in?: boolean; email?: string; user_id?: string; last_email?: string }
     const uid = String(d.user_id || '')
@@ -94,6 +103,21 @@ export function App () {
       lastEmail: String(d.last_email || '')
     })
   }, [])
+
+  // 登录态必须**独立于后端状态**查一次。
+  //
+  // 它原来只在桥进入 ready 时才查，而 `account.checked` 为假时整个应用刻意什么
+  // 都不渲染（避免已登录用户闪一下登录页）。两条合起来的后果：后端起不来时
+  // **界面永久空白** —— `.shell-root` 挂上了但里面是空的。
+  //
+  // CI 上稳定复现（没有 Python payload），诊断显示 `shellChildren: []`、
+  // topbar/thread 都不存在。这不只是测试问题：安装不完整或 Python 崩掉时，
+  // 用户会看到一片空白而不是登录页或错误态。
+  //
+  // 所以这里无条件查一次；ready 之后再查一次（那时才可能有真实 session）。
+  useEffect(() => {
+    void loadAccount()
+  }, [loadAccount])
 
   // 桥的状态机。ready 的那一刻才去拉侧栏计数与账号。
   useEffect(() => {
