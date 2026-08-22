@@ -31,7 +31,7 @@ test('artifact 块带着正文,不是只带标题', () => {
 })
 
 test('done 时把正文交给 artifact 块,而不是丢掉', () => {
-  const branch = USE_CHAT.match(/if \(looksLikeReport\(body\)\)[\s\S]*?\n        \}/)
+  const branch = USE_CHAT.match(/looksLikeReport\(body\)\) \{[\s\S]*?\n        \}/)
   assert.ok(branch, '找不到报告分支')
   assert.match(
     branch[0],

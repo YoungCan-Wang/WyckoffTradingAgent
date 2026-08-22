@@ -322,7 +322,11 @@ def _project(event: Any) -> dict[str, Any]:
 # 只有这张表里的工具才会生成产物事件 —— 白名单而非黑名单：新增工具默认不产出
 # 产物，需要时显式登记。反过来（默认产出、遇到不想要的再排除）会让每个新工具
 # 都可能意外弹开面板。
-_ARTIFACT_TOOLS = {"annotate_chart": "kline", "render_dashboard": "dashboard"}
+_ARTIFACT_TOOLS = {
+    "annotate_chart": "kline",
+    "render_dashboard": "dashboard",
+    "save_report": "report",
+}
 
 
 def _chat_artifact(event: dict[str, Any], turn_id: str) -> dict[str, Any] | None:
@@ -387,9 +391,27 @@ def _chat_artifact(event: dict[str, Any], turn_id: str) -> dict[str, Any] | None
             "kind": "dashboard",
             "title": title,
             "status": "failed" if failed else "ready",
-            # 这是唯一一种 payload 带内容本体的产物：面板不能联网，数据必须
-            # 在生成时嵌进 HTML，所以没有「让它自己去取」的选项。
+            # 面板不能联网，数据必须在生成时嵌进 HTML，所以没有「让它自己去取」
+            # 的选项 —— payload 只能带内容本体。
             "payload": {"html": html},
+        }
+
+    if kind == "report":
+        title = str(args.get("title") or "").strip()
+        body = str(args.get("markdown") or "")
+        rel = str(result.get("path") or "")
+        if not title or not body.strip():
+            return None
+        return {
+            "type": "chat_artifact",
+            "artifact_id": f"{turn_id}:{call_id}",
+            "kind": "report",
+            "title": title,
+            "status": "failed" if failed else "ready",
+            # body 从 args 取：工具返回值刻意不含正文（那会把报告回灌进模型
+            # 上下文）。path 从 result 取 —— 它是落盘之后才知道的，带上它前端
+            # 才能在关掉页签后从报告库找回同一份。
+            "payload": {"body": body, "path": rel},
         }
     return None
 

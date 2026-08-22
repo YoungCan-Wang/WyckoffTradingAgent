@@ -11,13 +11,15 @@ from pathlib import Path
 import pytest
 
 from cli.ipc import artifacts as art
+from integrations import report_store as _store
 
 
 @pytest.fixture
 def reports(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     root = tmp_path / "reports"
     root.mkdir()
-    monkeypatch.setattr(art, "REPORTS_DIR", root)
+    # 路径的 owner 是存储层（agents 不能依赖 cli，所以两边共用它）
+    monkeypatch.setattr(_store, "REPORTS_DIR", root)
     return root
 
 

@@ -141,7 +141,7 @@ test('tool_start 不再直接开 K 线图', () => {
 
 test('报告也走注册表,不绕过自动展开策略', () => {
   const useChat = SRC('lib/useChat.ts')
-  const branch = useChat.match(/if \(looksLikeReport\(body\)\)[\s\S]*?\n        \}/)
+  const branch = useChat.match(/if \(!toolMadeReport && looksLikeReport\(body\)\)[\s\S]*?\n        \}/)
   assert.ok(branch, '找不到报告分支')
   assert.match(branch[0], /artifactsApi\.add\(reportArtifact\(/, '报告应进注册表')
   assert.ok(
@@ -272,4 +272,21 @@ test('dashBox 声明在模块顶层,不在使用点之后', () => {
     declAt < topLevelCall,
     `dashBox 声明(${declAt}) 必须早于顶层 setPane(false)(${topLevelCall})，否则 TDZ 会打挂整个 shell.js`
   )
+})
+
+test('工具产出报告时,不再靠文本猜一遍', () => {
+  // 少了这个判断,一份 save_report 存下的报告会被打开两次：一次来自产物事件,
+  // 一次来自 looksLikeReport 猜中同一段正文（模型通常也会把正文说出来）。
+  const useChat = SRC('lib/useChat.ts')
+  assert.match(useChat, /const toolMadeReport = artifactsApi\.artifacts\.some/, '缺少去重判断')
+  assert.match(useChat, /!toolMadeReport && looksLikeReport\(body\)/, '猜测路径要让位于事件')
+})
+
+test('looksLikeReport 仍保留为兼容回退,不是被删掉', () => {
+  // 老模型不调 save_report,工具之外直接产出的长文本也仍要能被识别。
+  // 「消掉猜测」是让它退居次席,不是移除。
+  const useChat = SRC('lib/useChat.ts')
+  assert.match(useChat, /looksLikeReport/, 'looksLikeReport 不该被删除')
+  const chat = SRC('lib/chat.ts')
+  assert.match(chat, /export function looksLikeReport/)
 })

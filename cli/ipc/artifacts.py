@@ -12,7 +12,17 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-REPORTS_DIR = Path.home() / ".wyckoff" / "reports"
+from integrations import report_store as _store
+
+# 路径与解析的**唯一** owner 是 integrations/report_store.py。
+#
+# 报告目录是存储，CLI / MCP / 桌面都可能读写它，不该由桌面端的产物容器定义；
+# 而且 agents/ 不允许依赖 cli/（架构边界测试守着），save_report 这个工具必须能
+# 从库层拿到同一份路径逻辑。
+#
+# 这里刻意**不**再定义 REPORTS_DIR：两处各持一份常量时，monkeypatch 只改到一份，
+# 于是「测试看起来在改路径、实际读的还是真实家目录」。要覆盖路径请打
+# integrations.report_store.REPORTS_DIR。
 
 # 能在容器里渲染的类型。Word 需要额外解析库，暂不声明支持——列出但标记
 # 为不可预览，比渲染出一堆乱码好。
@@ -51,8 +61,7 @@ class Artifact:
 
 
 def ensure_reports_dir() -> Path:
-    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    return REPORTS_DIR
+    return _store.ensure_reports_dir()
 
 
 def kind_for(path: Path) -> str:
@@ -62,20 +71,14 @@ def kind_for(path: Path) -> str:
 def resolve_inside_reports(rel_path: str) -> Path:
     """把前端给的相对路径收敛到报告目录内。
 
-    用 resolve() 后再比对前缀，可同时挡掉 ``..`` 与符号链接逃逸——只检查
-    字符串里有没有 ".." 是不够的。
+    实现在 integrations/report_store.py —— 两处各写一份路径校验，迟早会有一处
+    漏掉符号链接或 ".."。这里只把异常类型翻成本模块的 ArtifactError，让既有
+    调用点（IPC 方法）不必认识存储层的异常。
     """
-    raw = (rel_path or "").strip()
-    if not raw:
-        raise ArtifactError("invalid_path", "缺少文件路径")
-    if Path(raw).is_absolute():
-        raise ArtifactError("invalid_path", "只接受报告目录内的相对路径")
-
-    root = ensure_reports_dir().resolve()
-    target = (root / raw).resolve()
-    if target != root and root not in target.parents:
-        raise ArtifactError("outside_root", "路径超出报告目录")
-    return target
+    try:
+        return _store.resolve_inside_reports(rel_path)
+    except _store.ReportPathError as exc:
+        raise ArtifactError(exc.code, exc.message) from exc
 
 
 def list_artifacts() -> list[Artifact]:

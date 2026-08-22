@@ -86,17 +86,26 @@ export function useChat (ready: boolean): ChatApi {
       setTurns((prev) => prev.map((x) => {
         if (x.id !== id) return x
         const body = finalText(x, event.text ? String(event.text) : undefined)
-        // 报告形态的回复送去产物面板，对话里留一张能重新打开的卡片。
+        // 这一轮已经有工具产出过报告 → 不要再靠文本猜一遍。
         //
-        // 原来是 `blocks.filter(b => b.kind !== 'text')` —— 把正文**整块滤掉**。
-        // openReport 一旦失败（渲染抛异常、面板被关），模型生成的完整正文就彻底
-        // 没了，那一轮只剩一句「已在右侧打开」，而那行是纯文本、不可点。
-        // 现在把正文存进 artifact 块：面板出问题不丢东西，关掉页签也能重开。
-        if (looksLikeReport(body)) {
+        // 少了这个判断，一份用 save_report 存下的报告会被打开**两次**：一次来自
+        // 产物事件，一次来自 looksLikeReport 猜中同一段正文（模型通常会把报告
+        // 正文也说出来）。两个页签、内容相同、key 不同。
+        //
+        // looksLikeReport 现在只是**兼容回退**：老模型不会调 save_report，
+        // 工具之外直接产出的长文本也仍然靠它识别。有事件时以事件为准。
+        const toolMadeReport = artifactsApi.artifacts.some(
+          (a) => a.kind === 'report' && a.id.startsWith(`${id}:`)
+        )
+        if (!toolMadeReport && looksLikeReport(body)) {
           const title = reportTitle(body, t('chat.report'))
           // 走注册表而不是直接 openReport：自动展开策略（一轮只开第一个、
           // 用户关过不再弹、窄窗口不分栏）对报告和 K 线应当一致。
           // 直接调 openReport 会绕过那些规则。
+          //
+          // 正文同时存进 artifact 块（下面那个 blocks）：原来这里是
+          // `blocks.filter(b => b.kind !== 'text')` 把正文整块滤掉，面板渲染
+          // 一失败就彻底丢了。现在留着，卡片能拿它重开。
           artifactsApi.add(reportArtifact(id, title, body))
           return {
             ...x,

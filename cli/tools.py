@@ -322,6 +322,26 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "parameters": {"type": "object", "properties": {}},
     },
     {
+        "name": "save_report",
+        "description": (
+            "把一份写好的 markdown 报告存进报告库，并在桌面端右侧打开。"
+            "关掉页签后可从报告库重新打开，重启应用也还在。"
+            "\n\n"
+            "什么时候用：产出了一份**成篇的**分析（有标题、分节、结论），"
+            "希望它能被留存和回看。"
+            "什么时候**不要**用：普通回答、几句话的结论、一次性的数据查询 —— "
+            "那些直接说就行，不要为一段话造一份报告。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "报告标题，同时用于文件名"},
+                "markdown": {"type": "string", "description": "报告正文（markdown）"},
+            },
+            "required": ["title", "markdown"],
+        },
+    },
+    {
         "name": "render_dashboard",
         "description": (
             "在桌面端右侧渲染一个可交互的 HTML 面板（可筛选的表格、自绘图表、对比视图）。"
@@ -804,6 +824,9 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     # 同样纯展示。渲染在隔离视图里（无网络、无宿主 API），所以模型生成的
     # HTML/JS 能执行也不需要审批 —— 它做不了任何有副作用的事。
     "render_dashboard": ToolSpec("render_dashboard", "渲染面板"),
+    # 写文件，但写的是报告库里的一份 markdown —— 不动持仓、不下单，
+    # 路径收敛在 ~/.wyckoff/reports 之内，所以不需要审批。
+    "save_report": ToolSpec("save_report", "保存报告"),
     "intraday_analysis": ToolSpec("intraday_analysis", "盘中分析"),
     "intraday_rescue_check": ToolSpec("intraday_rescue_check", "中周期结构"),
     "record_trade_fill": ToolSpec("record_trade_fill", "成交回填", requires_approval=True),
@@ -1011,6 +1034,7 @@ class ToolRegistry:
         from agents.market_tools import get_market_history, get_market_overview
         from agents.portfolio_tools import portfolio, record_trade_fill, set_stop_loss, update_portfolio
         from agents.recommendation_tools import evaluate_recommendation_events
+        from agents.report_artifact_tools import save_report
         from agents.report_tools import generate_ai_report
         from agents.research_tools import research_hypothesis
         from agents.screen_tools import screen_stocks
@@ -1043,6 +1067,7 @@ class ToolRegistry:
             "wyckoff_diagnose": wyckoff_diagnose,
             "annotate_chart": annotate_chart,
             "render_dashboard": render_dashboard,
+            "save_report": save_report,
             "intraday_analysis": intraday_analysis,
             "intraday_rescue_check": intraday_rescue_check,
             "run_backtest": run_backtest,
