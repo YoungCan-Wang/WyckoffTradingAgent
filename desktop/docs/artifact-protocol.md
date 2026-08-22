@@ -45,7 +45,7 @@
 ```json
 {
   "type": "chat_artifact",
-  "id": "turn-42:call_7",
+  "artifact_id": "turn-42:call_7",
   "kind": "kline",
   "title": "600519",
   "status": "ready",
@@ -53,7 +53,10 @@
 }
 ```
 
-- `id` = `tool_call_id`。同一个工具调用重复投影时天然去重。
+- `artifact_id` = `turnId:tool_call_id`。同一个工具调用重复投影时天然去重。
+  **刻意不叫 `id`**：传输层会把 `event["id"]` 覆盖成请求流 id（stdio.py 的既有
+  约定，审批事件当初也因此改用 `approval_id`）。叫 id 的话产物标识会被冲掉，
+  前端就没法按它去重 —— 我写这层时就先踩了一次。
 - `status`：`ready` | `failed`。**没有 `pending`** —— 见下面。
 - `payload` 按 kind 白名单，不同 kind 各自挑字段。
 
