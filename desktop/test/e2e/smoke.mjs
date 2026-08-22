@@ -3,13 +3,35 @@
 import { _electron as electron } from 'playwright'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const APP_DIR = join(HERE, '..', '..')
 const PROFILE_DIR = await mkdtemp(join(tmpdir(), 'wyckoff-e2e-'))
+
+// 这份测的是**工作台**，所以要一个已登录的环境。
+//
+// 未登录时登录页会取代整个工作台（那是刻意的：用户可能把模型和数据源都配在
+// 云端，不登录界面会显示「未配置模型」）。CI 上没有任何 session，于是所有
+// 侧栏/导航断言都会撞在登录页上 —— 我加登录闸门时漏了这条，三个 test job
+// 全红在「收起侧栏有展开入口」。
+//
+// 用假 session 而不是真登录：CI 里不该有账号密码，而 account 方法只看
+// access_token 是否存在。登录本身由 test/e2e/login.mjs 单独验。
+const FAKE_HOME = await mkdtemp(join(tmpdir(), 'wyckoff-e2e-home-'))
+await mkdir(join(FAKE_HOME, '.wyckoff'), { recursive: true })
+await writeFile(
+  join(FAKE_HOME, '.wyckoff', 'session.json'),
+  JSON.stringify({
+    user_id: 'e2e-smoke-user',
+    email: 'smoke@example.com',
+    access_token: 'e2e-fake-token',
+    refresh_token: 'e2e-fake-refresh'
+  }),
+  'utf8'
+)
 
 const VIEWS = ['chat', 'tasks', 'approvals', 'portfolio', 'schedules', 'tracking', 'attribution', 'reports']
 
@@ -28,7 +50,14 @@ const check = (name, fn) => {
 const app = await electron.launch({
   args: [APP_DIR, `--user-data-dir=${PROFILE_DIR}`],
   // CI 的 Windows/Linux runner 没有 GPU；不关掉会在启动阶段卡住或刷一堆警告。
-  env: { ...process.env, ELECTRON_DISABLE_GPU: '1' }
+  // HOME/USERPROFILE 指向假家目录，让应用读到上面那份 session（Windows 上
+  // 用 USERPROFILE，只设 HOME 不生效）。
+  env: {
+    ...process.env,
+    ELECTRON_DISABLE_GPU: '1',
+    HOME: FAKE_HOME,
+    USERPROFILE: FAKE_HOME
+  }
 })
 
 try {
@@ -44,13 +73,19 @@ win.on('console', (msg) => {
 win.on('pageerror', (err) => consoleErrors.push(`pageerror: ${err.message}`))
 
 await win.waitForLoadState('domcontentloaded')
+// 先等界面真的起来，再动 localStorage —— reload 后同样要重新等异步账号检查。
+await win.waitForSelector('.win', { timeout: 30_000 })
 await win.evaluate(() => localStorage.setItem('wyckoff.sidebar', '0'))
 await win.reload({ waitUntil: 'domcontentloaded' })
 
 writeLine('冒烟检查：')
 
 // 1) 窗口真的有内容，不是白屏
-await win.waitForSelector('.win', { timeout: 20_000 })
+//
+// 等 `.win` 而不是 `domcontentloaded`：账号态是异步查的，`account.checked` 为假
+// 时刻意什么都不渲染（否则已登录用户会先闪一下登录页）。所以 DOM 就绪的那一刻
+// 页面还是空的 —— 我加登录闸门后这里三个平台全红，正是因为紧接着就找 `.nv`。
+await win.waitForSelector('.win', { timeout: 30_000 })
 const title = await win.title()
 check('窗口标题正确', () => assert.match(title, /Wyckoff/))
 
@@ -73,11 +108,17 @@ check('Markdown 松散有序列表保持连续', () => {
 // 偏小 → 侧栏收起 → `.nv` 永远等不到。本机 1430px 一直是绿的，所以只有真
 // Windows CI 能暴露它 —— 应用本身没问题（收起时切换按钮会移到顶栏），是测试
 // 假设了「侧栏总是开着」。
+//
+// 用 waitFor 而不是立刻 count()：`.win` 出现时 React 才刚开始挂子树，那一刻
+// `.side-toggle` 还是 0 个。原来的 count() 查得太早，读到 0 就直接判失败 ——
+// 我加登录闸门（账号态异步查完才渲染）之后这个时间差变大，三个平台全红。
 if (await win.locator('.nv').count() === 0) {
   const toggle = win.locator('.side-toggle')
-  const toggleCount = await toggle.count()
-  check('收起侧栏有展开入口', () => assert.equal(toggleCount, 1))
-  if (toggleCount === 1) await toggle.click()
+  const appeared = await toggle.first()
+    .waitFor({ state: 'visible', timeout: 20_000 })
+    .then(() => true, () => false)
+  check('收起侧栏有展开入口', () => assert.equal(appeared, true))
+  if (appeared) await toggle.first().click()
 }
 await win.waitForSelector('.nv', { timeout: 20_000 })
 const navCount = await win.locator('.nv').count()
@@ -158,6 +199,7 @@ check('渲染端无未预期报错', () =>
 } finally {
   await app.close()
   await rm(PROFILE_DIR, { recursive: true, force: true })
+  await rm(FAKE_HOME, { recursive: true, force: true })
 }
 
 writeLine(failures ? `\n*** ${failures} 项失败 ***` : '\n全部通过')
