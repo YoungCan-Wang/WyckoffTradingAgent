@@ -58,7 +58,17 @@ export function decideAutoOpen (artifact: ChatArtifact, state: AutoOpenState): A
   return { open: true, announce: artifact.title }
 }
 
-/** 新一轮开始：重置本轮的「已展开」与「用户关过」。 */
+/**
+ * 新一轮开始：重置本轮的「已展开」与「用户关过」。
+ *
+ * **`viewing` 也要清掉。** 我原来刻意保留它，注释写着「viewing 是跨轮状态」——
+ * 那个判断是错的，而且后果比看起来严重：自动展开时会把 viewing 设成刚开的那个
+ * 产物，于是下一轮的新产物永远撞在「正在看别的」上。实测结果是
+ * **整个会话只有第一轮会自动展开**，除非用户手动关掉全部页签。
+ *
+ * 「不要切走用户正在看的东西」这条规则的本意是**同一轮内**别打断 —— 用户刚点开
+ * A，同轮的 B 不该抢走。跨轮不成立：用户又发了一句话，那是新的意图。
+ */
 export function resetForTurn (state: AutoOpenState): AutoOpenState {
-  return { ...state, openedThisTurn: false, dismissedThisTurn: false }
+  return { ...state, openedThisTurn: false, dismissedThisTurn: false, viewing: null }
 }

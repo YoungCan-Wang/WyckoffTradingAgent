@@ -117,11 +117,28 @@ test('「用户关过」优先于「已经开过」', () => {
   assert.equal(d.reason, 'dismissed')
 })
 
-test('新一轮重置本轮状态,但保留用户正在看什么', () => {
+test('新一轮把 viewing 一起清掉 —— 否则自动展开只生效一次', () => {
+  // 我原来刻意保留 viewing（注释写着「跨轮状态」）。那个判断错了：
+  // 自动展开会把 viewing 设成刚开的产物,于是下一轮的新产物恒撞
+  // 「正在看别的」—— 整个会话只有第一轮会自动展开。
   const next = resetForTurn({ openedThisTurn: true, dismissedThisTurn: true, viewing: 'x', width: 1400 })
   assert.equal(next.openedThisTurn, false)
   assert.equal(next.dismissedThisTurn, false)
-  assert.equal(next.viewing, 'x', 'viewing 是跨轮状态,不该被重置')
+  assert.equal(next.viewing, null, 'viewing 必须清掉,否则后续轮次再也不自动展开')
+})
+
+test('连续两轮都能自动展开（跨轮回归）', () => {
+  // 这条是上面那个 bug 的行为级复现：只断言 resetForTurn 的字段不够,
+  // 要真的走一遍「第一轮开 → 设 viewing → 新轮 → 第二轮还能开」。
+  let st = { openedThisTurn: false, dismissedThisTurn: false, viewing: null, width: 1400 }
+  const A = { id: '17:c1', kind: 'kline', title: 'A', status: 'ready', payload: {} }
+  assert.equal(decideAutoOpen(A, st).open, true, '第一轮该开')
+  // useArtifacts 在真的打开时会设这两个字段
+  st = { ...st, openedThisTurn: true, viewing: A.id }
+  st = resetForTurn(st)
+  const B = { id: '18:c1', kind: 'kline', title: 'B', status: 'ready', payload: {} }
+  const d = decideAutoOpen(B, st)
+  assert.equal(d.open, true, `第二轮也该开,实际 skip:${d.reason}`)
 })
 
 // ---- 接线（静态断言：这些是容易在重构里悄悄退化的连接点）----
@@ -181,13 +198,25 @@ test('宣告区对读屏可见,但视觉上不占位', () => {
   assert.match(rule[0], /clip:/, '应该用裁剪把它移出视觉流')
 })
 
-test('K 线产物在对话里有卡片 —— 否则第二三只票没有入口', () => {
+test('三种 kind 的产物在对话里都有卡片', () => {
+  // 一轮只自动展开第一个,而任何产物关掉页签后都需要重开入口。
+  // 原来只渲染 kline —— save_report / render_dashboard 产出的东西在对话里
+  // 没有任何痕迹,关掉就找不回来。这是同一个疏漏犯第二次。
   const stream = SRC('components/ChatStream.tsx')
-  assert.match(stream, /function KlineCard/, '缺少 K 线卡片')
+  assert.match(stream, /function ArtifactChip/, '缺少产物卡片')
   assert.match(stream, /a\.id\.startsWith\(`\$\{turn\.id\}:`\)/, '卡片要按轮次筛选')
-  const card = stream.match(/function KlineCard[\s\S]*?\n\}/)[0]
+  // 不该再按 kind 过滤掉任何产物
+  assert.ok(
+    !/kind === 'kline' && a\.id\.startsWith/.test(stream),
+    '还在只渲染 kline —— 报告和面板会没有入口'
+  )
+  // 三种 kind 都要有标签
+  const labels = stream.match(/KIND_LABEL[\s\S]*?\}/)[0]
+  for (const k of ['kline', 'report', 'dashboard']) {
+    assert.match(labels, new RegExp(`${k}:`), `KIND_LABEL 缺 ${k}`)
+  }
+  const card = stream.match(/function ArtifactChip[\s\S]*?\n\}/)[0]
   assert.match(card, /onOpen\?\.\(artifact\)/, '卡片要能打开对应产物')
-  // 失败的产物不给「打开」按钮 —— 点了也没东西看
   assert.match(card, /failed \? null :/, '失败态不该有打开按钮')
 })
 

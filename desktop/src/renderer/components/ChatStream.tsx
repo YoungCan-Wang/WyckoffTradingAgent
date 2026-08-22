@@ -61,9 +61,9 @@ export function ChatStream ({ turns, artifacts, onApprovalDecided, onOpenArtifac
               <span className="av">✳</span>
               <div className="bd">
                 {(artifacts || [])
-                  .filter((a) => a.kind === 'kline' && a.id.startsWith(`${turn.id}:`))
+                  .filter((a) => a.id.startsWith(`${turn.id}:`))
                   .map((a) => (
-                    <KlineCard key={a.id} artifact={a} onOpen={onOpenArtifact} />
+                    <ArtifactChip key={a.id} artifact={a} onOpen={onOpenArtifact} />
                   ))}
                 {turn.blocks.map((b, i) => (
                   <BlockView key={i} block={b} onApprovalDecided={onApprovalDecided} />
@@ -90,20 +90,29 @@ export function ChatStream ({ turns, artifacts, onApprovalDecided, onOpenArtifac
  * 再走一次模型，面板渲染失败也不会丢东西。
  */
 /**
- * K 线产物在对话里的卡片。
+ * 产物在对话里的卡片 —— **三种 kind 都要有**。
  *
- * 为什么必需：一轮只自动展开第一个产物,后续的只进注册表。没有卡片的话
- * 第二、三只票**根本没有入口** —— 那是旧实现最彻底的问题（drewCharts
- * 只被写入、没有任何组件读它,对话里连一行痕迹都不留）。
+ * 为什么必需：一轮只自动展开第一个产物,后续的只进注册表；而任何产物关掉页签后
+ * 也需要重开入口。原来只渲染 kline，于是 `save_report` / `render_dashboard`
+ * 产出的东西在对话里没有任何痕迹 —— 关掉就找不回来了。
+ *
+ * 这是同一个疏漏犯第二次：我给 K 线修过「产物没有入口」，加新 kind 时又只顾了
+ * kline。所以这里按 kind 查标签而不是写死，新增 kind 只需加一条 KIND_LABEL。
  */
-function KlineCard (
+const KIND_LABEL: Record<string, string> = {
+  kline: 'artifact.chart',
+  report: 'artifact.reportKind',
+  dashboard: 'artifact.panel'
+}
+
+function ArtifactChip (
   { artifact, onOpen }: { artifact: ChatArtifact; onOpen?: (a: ChatArtifact) => void }
 ) {
   const failed = artifact.status === 'failed'
   return (
     <div className={failed ? 'sys err art-card' : 'sys art-card'}>
       <span className="art-title">{artifact.title}</span>
-      <span>{failed ? t('artifact.failed') : t('artifact.chart')}</span>
+      <span>{failed ? t('artifact.failed') : t(KIND_LABEL[artifact.kind] || 'artifact.chart')}</span>
       {failed ? null : (
         <button type="button" className="task-action" onClick={() => onOpen?.(artifact)}>
           {t('chat.reopen')}

@@ -155,7 +155,7 @@ jobs:
           # 路径分隔符不写死：asar list 在 macOS 上给正斜杠，Windows 上未必
           # （第一版用 '/src/renderer/dist/...' 在 Windows 上恒不匹配，把一个
           # 打包成功的包报成缺文件）。统一成正斜杠再比。
-          $packed = (npx --yes @electron/asar list $asar) -replace '\\', '/'
+          $packed = (npx --no-install @electron/asar list $asar) -replace '\\', '/'
           if (-not ($packed -match '/src/renderer/dist/index\.html')) {
             Write-Host "asar 里的 renderer 相关条目（诊断用）："
             $packed | Where-Object { $_ -match 'renderer' } | Select-Object -First 10
@@ -229,10 +229,10 @@ jobs:
           # index.html —— 那份没有 React，**整个界面白屏**，而 Python 后端一切
           # 正常、日志里没有任何错误，用户完全无法判断。
           # 只有装完打开才看得见，所以这条检查必须在打包 job 里，不能放单测。
-          npx --yes @electron/asar list "$app/Contents/Resources/app.asar" \
+          npx --no-install @electron/asar list "$app/Contents/Resources/app.asar" \
             | grep -q '/src/renderer/dist/index.html' \
             || { echo "包里缺少 renderer/dist —— 启动会白屏"; exit 1; }
-          npx --yes @electron/asar list "$app/Contents/Resources/app.asar" \
+          npx --no-install @electron/asar list "$app/Contents/Resources/app.asar" \
             | grep -qE '/src/renderer/dist/assets/.*\.js' \
             || { echo "包里缺少前端 JS bundle"; exit 1; }
           codesign --verify --deep --strict "$app"

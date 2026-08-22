@@ -300,6 +300,36 @@ _PASSTHROUGH = {
 }
 
 
+# 单个字段经 IPC 的上限。
+#
+# 工具自己会拒绝超限的正文（render_dashboard 512 KiB、save_report 256 KiB），
+# 但那只挡住了落盘 —— `tool_start` 的 args 里带着模型刚写的**完整** html/markdown，
+# 失败的 chat_artifact 也带 payload。也就是说超限内容仍会原样经过 IPC 通道
+# （实测 524289 和 262145 字节都过去了）。
+#
+# 上限设在这里，比工具的阈值略宽：这一层的目的不是替工具做业务校验，而是保证
+# 一个失控的字段（模型内联了整个图表库）不会把 stdio 通道堵住。
+MAX_IPC_FIELD_BYTES = 768 * 1024
+
+# 可能很大的字段。只裁这些，不做通用遍历 —— 通用遍历要么漏掉嵌套结构，
+# 要么把每个事件都变成一次深拷贝。
+_LARGE_FIELDS = ("args", "text", "result")
+
+
+def _cap(value: Any) -> Any:
+    """把过大的字符串截断，并留一个明确的标记。
+
+    截断而不是丢弃：前端拿到「前 768 KiB + 已截断」仍能显示个大概，而整个字段
+    消失会让人以为工具什么都没返回。
+    """
+    if isinstance(value, str) and len(value.encode("utf-8")) > MAX_IPC_FIELD_BYTES:
+        clipped = value.encode("utf-8")[:MAX_IPC_FIELD_BYTES].decode("utf-8", "ignore")
+        return clipped + "\n\n…（内容过大，已在 IPC 层截断）"
+    if isinstance(value, dict):
+        return {k: _cap(v) for k, v in value.items()}
+    return value
+
+
 def _project(event: Any) -> dict[str, Any]:
     if not isinstance(event, dict):
         return {"type": "unknown"}
@@ -307,7 +337,13 @@ def _project(event: Any) -> dict[str, Any]:
     fields = _PASSTHROUGH.get(kind)
     if fields is None:
         return {"type": kind}
-    return {"type": kind, **{k: event.get(k) for k in fields if event.get(k) is not None}}
+    out: dict[str, Any] = {"type": kind}
+    for key in fields:
+        value = event.get(key)
+        if value is None:
+            continue
+        out[key] = _cap(value) if key in _LARGE_FIELDS else value
+    return out
 
 
 # 哪些工具会产出「右侧面板里能打开的东西」，以及它算哪一类产物。
@@ -392,7 +428,7 @@ def _chat_artifact(event: dict[str, Any]) -> dict[str, Any] | None:
             "status": "failed" if failed else "ready",
             # 面板不能联网，数据必须在生成时嵌进 HTML，所以没有「让它自己去取」
             # 的选项 —— payload 只能带内容本体。
-            "payload": {"html": html},
+            "payload": {"html": _cap(html)},
         }
 
     if kind == "report":
@@ -410,7 +446,7 @@ def _chat_artifact(event: dict[str, Any]) -> dict[str, Any] | None:
             # body 从 args 取：工具返回值刻意不含正文（那会把报告回灌进模型
             # 上下文）。path 从 result 取 —— 它是落盘之后才知道的，带上它前端
             # 才能在关掉页签后从报告库找回同一份。
-            "payload": {"body": body, "path": rel},
+            "payload": {"body": _cap(body), "path": rel},
         }
     return None
 

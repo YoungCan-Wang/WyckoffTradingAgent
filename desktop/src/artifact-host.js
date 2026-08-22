@@ -33,6 +33,8 @@
  *  - `disable_non_proxied_udp`：WebRTC 走 UDP，`webRequest` 看不到它 ——
  *    少了这一条，模型 HTML 能用 STUN/TURN 把数据发出去（实测收到过 4 个 UDP
  *    包，而 webRequest 一个请求都没看到）
+ *  - 权限一律拒绝：Electron 默认**批准**未配置处理器的请求（实测拿到过
+ *    notifications / geolocation，还能全屏）
  *  - 无 preload：没有通往应用的桥（拿不到 window.wyckoff / require）
  *  - setWindowOpenHandler 一律 deny：不允许造一个没有这些限制的新窗口
  *  - will-navigate 只放行 data:：页面不能把自己导航到别处
@@ -100,6 +102,24 @@ class ArtifactHost {
     //
     // 产物只需要展示，压根没有 P2P 需求，所以这里不存在「关了会坏什么」。
     wc.setWebRTCIPHandlingPolicy('disable_non_proxied_udp')
+
+    // 权限一律拒绝。
+    //
+    // Electron 的默认行为是**批准**未配置处理器的权限请求（官方安全文档明确写
+    // 了这点）。实测：不设处理器时 notifications / geolocation 都返回 granted，
+    // 页面还能让窗口全屏。产物只需要画东西，没有一项权限是它该有的。
+    //
+    // 两个 handler 都要设：request 管「弹窗式请求」，check 管
+    // `navigator.permissions.query` 这类静默查询 —— 只设前者会让页面查到
+    // 「granted」然后直接用。
+    wc.session.setPermissionRequestHandler((_webContents, permission, callback) => {
+      this.onLog(`产物已拒绝权限请求: ${permission}`)
+      callback(false)
+    })
+    wc.session.setPermissionCheckHandler((_webContents, permission) => {
+      this.onLog(`产物已拒绝权限检查: ${permission}`)
+      return false
+    })
 
     // 核心防线：一切 http(s) 一律取消。
     //
