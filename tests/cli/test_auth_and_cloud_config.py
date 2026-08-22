@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -134,6 +135,39 @@ class TestCloudConfigPull:
 
         monkeypatch.setattr("integrations.supabase_base.create_user_client", boom)
         assert cc.pull_cloud_config("u1", "tok")["available"] is False
+
+
+class TestAccountRestoresSession:
+    """account 必须走 restore，不能只读文件。"""
+
+    def test_account_uses_restore_not_plain_load(self):
+        """`load_session()` 只读文件：不续期、也不用已保存的凭据重登。
+
+        CLI 启动走 restore，桌面端原来走 load —— 于是同一台机器上 CLI 已登录而
+        桌面端显示未登录；token 过期后桌面端也会把用户踢回登录页，
+        而它本来能自己续上。
+        """
+        source = Path("cli/ipc/methods.py").read_text(encoding="utf-8")
+        body = source[source.index("def account(") :]
+        body = body[: body.index("\ndef ")]
+        assert "restore_session" in body, "account 应该用 restore_session"
+        # 只看代码，不看注释与 docstring —— 那里正解释着「为什么不用 load_session」，
+        # 一条把说明文字也当违规的断言会逼人删掉有用的注释。
+        code = "\n".join(
+            line for line in body.splitlines() if not line.strip().startswith("#") and "`load_session()`" not in line
+        )
+        assert "load_session(" not in code, "load_session 不会续期，别用它判断登录态"
+
+    def test_restore_failure_reports_signed_out_not_an_error(self, store, monkeypatch):
+        """网络不通时界面需要一个明确的「未登录」，而不是错误弹窗。"""
+        import cli.ipc.methods as m
+
+        monkeypatch.setattr(
+            "integrations.local_auth.restore_session",
+            lambda: (_ for _ in ()).throw(RuntimeError("network down")),
+        )
+        events = list(m.account({}))
+        assert events[0]["signed_in"] is False
 
 
 class TestAuthMethodsAreExposed:

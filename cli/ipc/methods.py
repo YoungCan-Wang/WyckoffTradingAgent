@@ -533,14 +533,27 @@ def schedule_run(params: dict[str, Any]) -> Iterator[Event]:
 
 
 def account(_params: dict[str, Any]) -> Iterator[Event]:
-    """当前登录态。绝不返回 token 或密码，只返回身份标识。"""
-    from integrations.local_auth import load_session
+    """当前登录态。绝不返回 token 或密码，只返回身份标识。
 
-    session = load_session() or {}
-    email = str(session.get("email") or "")
+    用 `restore_session()` 而不是 `load_session()`：后者只是读一下文件，
+    **不会**续期、也不会用已保存的凭据重登。CLI 启动走 restore，桌面端原来走
+    load —— 于是同一台机器上 CLI 已登录而桌面端显示未登录；token 过期后桌面端
+    也会直接把用户踢回登录页，而它本来能自己续上。
+
+    restore 会验 token、过期则续、续不上则用保存的凭据重登；真拿不到才返回 None。
+    """
+    from integrations.local_auth import restore_session
+
+    # restore 会走到 Supabase 调用；网络不通时不该让这个方法抛异常 ——
+    # 界面需要一个明确的「未登录」，而不是一个错误弹窗。
+    try:
+        session = restore_session() or {}
+    except Exception:
+        logger.warning("session restore failed", exc_info=True)
+        session = {}
     yield _ok(
         signed_in=bool(session.get("access_token")),
-        email=email,
+        email=str(session.get("email") or ""),
         user_id=str(session.get("user_id") or ""),
     )
 
