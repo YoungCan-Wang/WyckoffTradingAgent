@@ -48,37 +48,25 @@ write('登录闸门：')
   check('工作台不同时存在（取代，不是叠层）', () => assert.equal(state.sidebar, false))
   check('自动聚焦邮箱输入框', () => assert.equal(state.focused, 'login-email'))
 
-  // 空表单不该静默。
+  // 空表单不该静默 —— 而且**不该依赖后端就绪**。
   //
-  // 但**必须先等后端就绪**：CI 诊断显示 `submitDisabled: true`、提示语是
-  // 「正在启动本地服务」—— `submit()` 开头就 `if (!backendReady) return`，
-  // 所以那时提交表单什么都不会发生，测的是一个不可能通过的状态。
-  // 本机 Python 起得快所以一直是绿的。
-  const ready = await win.locator('.login-go:not([disabled])')
-    .waitFor({ state: 'visible', timeout: 60_000 })
-    .then(() => true, () => false)
-  check('后端就绪后允许提交', () => assert.equal(ready, true))
+  // CI 上没有 Python payload，后端永远不会 ready（等 60 秒也不行）。原来的
+  // `submit()` 先查 backendReady 再校验字段，所以那时提交空表单没有任何反馈。
+  // 那本身是个 UX 缺陷（后端启动的几秒正是用户第一次尝试的时刻），已修好：
+  // 字段校验现在在前面。这条测试因此也能在无后端的环境里跑。
   await win.evaluate(() => {
     const form = document.querySelector('.login-card')
     form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
   })
-  // 等条件而不是等固定时长：300ms 在本机够（偶发失败过一次），在 CI runner
-  // 上稳定不够 —— 提交表单要过一轮 React 状态更新。固定 sleep 的测试
-  // 「本机绿、CI 红」，而调大数字只是把不确定性推远一点。
   const hasError = await win.locator('.login-err')
     .waitFor({ state: 'visible', timeout: 10_000 })
     .then(() => true, () => false)
-  // 先 await 出结果再进同步的 check：`check` 不会 await 回调，传 async 函数
-  // 会让断言的 Promise 逃出它的 try/catch —— 失败变成未捕获拒绝，进程带着
-  // 「全部通过」的输出非零退出（实测遇到过一次这种自相矛盾的结果）。
   if (!hasError) {
     const st = await win.evaluate(() => ({
       loginCard: !!document.querySelector('.login-card'),
       errEl: !!document.querySelector('.login-err'),
       emailVal: document.getElementById('login-email')?.value ?? null,
-      pwVal: (document.getElementById('login-pw')?.value ?? '').length,
-      submitDisabled: document.querySelector('.login-go')?.disabled,
-      hintText: document.querySelector('.login-hint')?.textContent?.slice(0, 40)
+      submitDisabled: document.querySelector('.login-go')?.disabled
     })).catch((e) => ({ evalFailed: String(e).slice(0, 100) }))
     write(`  诊断(空表单): ${JSON.stringify(st)}`)
   }

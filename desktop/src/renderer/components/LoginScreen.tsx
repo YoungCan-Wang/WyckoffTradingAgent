@@ -45,12 +45,17 @@ export function LoginScreen ({ collect, onSignedIn, backendReady, initialEmail =
 
   const submit = async (event?: React.FormEvent) => {
     event?.preventDefault()
-    if (busy || !backendReady) return
+    if (busy) return
+    // 字段校验放在 backendReady 之前：「请填写邮箱和密码」不需要后端。
+    //
+    // 原来顺序相反，于是后端还在启动时提交空表单**完全没有反馈** —— 用户看到
+    // 的是点了没反应。而后端启动要几秒，那正是用户第一次尝试的时刻。
     const mail = email.trim()
     if (!mail || !password) {
       setError(t('login.needBoth'))
       return
     }
+    if (!backendReady) return
     setBusy(true)
     setError('')
     try {
