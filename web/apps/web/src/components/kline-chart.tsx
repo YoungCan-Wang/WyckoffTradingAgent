@@ -27,10 +27,17 @@ interface WyckoffMarkerInput {
   position: 'aboveBar' | 'belowBar'
 }
 
+interface NewsMarkerInput {
+  date: string
+  sentiment: 'bullish' | 'bearish' | 'mixed' | 'unknown'
+  label: string
+}
+
 interface KlineChartProps {
   data: KlineRow[]
   height?: number
   wyckoffMarkers?: WyckoffMarkerInput[]
+  newsMarkers?: NewsMarkerInput[]
   tradingRange?: { support: number; resistance: number }
   stage?: string
   showIndicators?: boolean
@@ -61,7 +68,7 @@ interface ChartRefs {
 
 type ChartTheme = ReturnType<typeof readChartTheme>
 
-export function KlineChart({ data, height = 400, wyckoffMarkers, tradingRange, stage, showIndicators = false, onBarClick }: KlineChartProps) {
+export function KlineChart({ data, height = 400, wyckoffMarkers, newsMarkers, tradingRange, stage, showIndicators = false, onBarClick }: KlineChartProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRefs = useRef<ChartRefs | null>(null)
   const themeRef = useRef(readChartTheme())
@@ -69,7 +76,7 @@ export function KlineChart({ data, height = 400, wyckoffMarkers, tradingRange, s
   const [indicators, setIndicators] = useState({ boll: false, rsi: false, macd: false })
 
   useChartInit(containerRef, chartRefs, themeRef, height)
-  useChartData(chartRefs, themeRef, data, wyckoffMarkers, tradingRange)
+  useChartData(chartRefs, themeRef, data, wyckoffMarkers, newsMarkers, tradingRange)
   useChartSelection(chartRefs, onBarClick)
   useBollingerOverlay(chartRefs, data, indicators.boll)
 
@@ -87,7 +94,7 @@ export function KlineChart({ data, height = 400, wyckoffMarkers, tradingRange, s
       {showIndicators && <IndicatorBar indicators={indicators} setIndicators={setIndicators} />}
       {indicators.rsi && <RSISubChart closes={closes} dates={dates} />}
       {indicators.macd && <MACDSubChart closes={closes} dates={dates} />}
-      <ChartLegend boll={indicators.boll} wyckoffMarkers={!!wyckoffMarkers} />
+      <ChartLegend boll={indicators.boll} wyckoffMarkers={!!wyckoffMarkers} newsMarkers={!!newsMarkers?.length} />
     </div>
   )
 }
@@ -144,6 +151,7 @@ function useChartData(
   themeRef: React.MutableRefObject<ChartTheme>,
   data: KlineRow[],
   wyckoffMarkers: WyckoffMarkerInput[] | undefined,
+  newsMarkers: NewsMarkerInput[] | undefined,
   tradingRange: { support: number; resistance: number } | undefined,
 ) {
   useEffect(() => {
@@ -159,13 +167,13 @@ function useChartData(
     refs.ma20.setData(movingAverage(data, 20))
     refs.ma50.setData(movingAverage(data, 50))
     refs.volume.setData(volumes)
-    const markers = wyckoffMarkers ? toSeriesMarkers(wyckoffMarkers) : buildMarkers(data)
+    const markers = [...(wyckoffMarkers ? toSeriesMarkers(wyckoffMarkers) : buildMarkers(data)), ...toNewsMarkers(newsMarkers)]
     if (refs.markers) refs.markers.setMarkers(markers)
     else refs.markers = createSeriesMarkers(refs.candle, markers)
     refs.candle.priceLines().forEach((line) => refs.candle.removePriceLine(line))
     addPriceLines(refs.candle, tradingRange ?? buildPriceLevels(data), theme)
     refs.chart.timeScale().fitContent()
-  }, [chartRefs, themeRef, data, wyckoffMarkers, tradingRange])
+  }, [chartRefs, themeRef, data, wyckoffMarkers, newsMarkers, tradingRange])
 }
 
 function useBollingerOverlay(chartRefs: React.MutableRefObject<ChartRefs | null>, data: KlineRow[], active: boolean) {
@@ -208,13 +216,14 @@ function IndicatorBar({ indicators, setIndicators }: { indicators: { boll: boole
   )
 }
 
-function ChartLegend({ boll, wyckoffMarkers }: { boll: boolean; wyckoffMarkers: boolean }) {
+function ChartLegend({ boll, wyckoffMarkers, newsMarkers }: { boll: boolean; wyckoffMarkers: boolean; newsMarkers: boolean }) {
   return (
     <div className="flex flex-wrap gap-3 text-[11px] text-muted-foreground">
       <Legend color="#f59e0b" label="MA5" />
       <Legend color="#2563eb" label="MA20" />
       <Legend color="#7c3aed" label="MA50" />
       {boll && <Legend color="#94a3b8" label="BOLL" />}
+      {newsMarkers && <Legend color="#0f766e" label="新闻" />}
       {wyckoffMarkers ? (
         <>
           <Legend color="#f59e0b" label="Spring" />
@@ -379,6 +388,17 @@ function toSeriesMarkers(markers: WyckoffMarkerInput[]): SeriesMarker<Time>[] {
     const style = MARKER_STYLES[m.type] ?? { shape: 'circle' as const, color: '#6b7280' }
     return { time: m.date as Time, position: m.position, shape: style.shape, color: style.color, text: m.label, size: 1.2 }
   })
+}
+
+function toNewsMarkers(markers: NewsMarkerInput[] | undefined): SeriesMarker<Time>[] {
+  return (markers || []).map((marker) => ({
+    time: marker.date as Time,
+    position: 'aboveBar',
+    shape: 'square',
+    color: marker.sentiment === 'bullish' ? '#ef4444' : marker.sentiment === 'bearish' ? '#10b981' : '#0f766e',
+    text: marker.label,
+    size: 1,
+  }))
 }
 
 function buildMarkers(data: KlineRow[]): SeriesMarker<Time>[] {
