@@ -545,6 +545,61 @@ def account(_params: dict[str, Any]) -> Iterator[Event]:
     )
 
 
+def auth_login(params: dict[str, Any]) -> Iterator[Event]:
+    """邮箱密码登录。与 CLI 同一条路径、同一份 session 文件。
+
+    密码只在这个进程里存在一次：它从 IPC 参数进来，交给 Supabase，然后由
+    local_auth 写进 `~/.wyckoff/wyckoff.json`（0600）供 auto_relogin 用。
+    **绝不 log、绝不回传**给渲染层 —— 那份 json 是 CLI 早就有的行为，
+    但日志和 IPC 响应是新增面，不能顺手扩大暴露。
+
+    登录成功后拉一次云端配置：用户可能把模型和数据源都配在 web 端，
+    不拉下来的话桌面端登录了却还是「未配置模型」。
+    """
+    from integrations.local_auth import login
+
+    email = str(params.get("email") or "").strip()
+    password = str(params.get("password") or "")
+    if not email or not password:
+        raise MethodError("invalid_params", "需要邮箱和密码")
+
+    try:
+        session = login(email, password)
+    except Exception as exc:  # supabase 的异常类型随版本变，不按类型分支
+        # 区分「密码不对」和「连不上」—— 两者的下一步动作完全不同，
+        # 统一报「登录失败」会让用户反复试密码而其实是网络问题。
+        text = str(exc).lower()
+        if "invalid" in text or "credential" in text or "password" in text:
+            raise MethodError("bad_credentials", "邮箱或密码不正确") from None
+        logger.warning("desktop login failed", exc_info=True)
+        raise MethodError("login_failed", "登录没能完成，请检查网络后重试") from None
+
+    # 登录换了身份，常驻会话的 ToolRegistry 必须跟着重建，
+    # 否则这一轮之后的工具还在用上一个账号的 token。
+    _synced_session()
+
+    from cli.ipc.cloud_config import pull_cloud_config
+
+    pulled = pull_cloud_config(session.get("user_id", ""), session.get("access_token", ""))
+    yield _ok(
+        signed_in=True,
+        email=str(session.get("email") or ""),
+        user_id=str(session.get("user_id") or ""),
+        # 拉下来几项配置。前端据此决定要不要提示「已同步云端配置」。
+        synced=pulled,
+    )
+
+
+def auth_logout(_params: dict[str, Any]) -> Iterator[Event]:
+    """退出登录。清掉 session 与自动重登凭据。"""
+    from integrations.local_auth import logout
+
+    logout()
+    # 同上：身份变了要重建 registry，否则退出后工具还拿着旧 token 读云端。
+    _synced_session()
+    yield _ok(signed_in=False)
+
+
 def artifact_list(_params: dict[str, Any]) -> Iterator[Event]:
     """列出**当前账号的**报告产物。
 
@@ -999,6 +1054,8 @@ METHODS: dict[str, Callable[[dict[str, Any]], Iterator[Event]]] = {
     "schedule_run": schedule_run,
     "mcp_list": mcp_list,
     "account": account,
+    "auth_login": auth_login,
+    "auth_logout": auth_logout,
     "sign_out": sign_out,
     "artifact_list": artifact_list,
     "artifact_read": artifact_read,

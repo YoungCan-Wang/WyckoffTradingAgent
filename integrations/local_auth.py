@@ -92,7 +92,26 @@ def restore_session() -> dict[str, Any] | None:
 
 
 def logout() -> None:
+    """退出登录：清 session **并**清掉自动重登凭据。
+
+    只删 session 文件是不够的：`login()` 会把邮箱和明文密码写进 config 供
+    `auto_relogin()` 用，而 `agents/tool_context.py` 在 token 失效时会调它 ——
+    于是「退出登录」之后的下一次工具调用会把用户**静默登回去**（实测复现）。
+
+    用户点退出就是要退出。所以这里把凭据一起清掉，即便代价是 CLI / daemon
+    在显式退出后也需要重新登录 —— 那比「退了但没退」正确。
+
+    注意 `auto_relogin` 仍然保留：它是 token 过期时的续期路径，不是登录态的
+    来源。清掉凭据只让它拿不到东西，不会改变续期逻辑本身。
+    """
     clear_session()
+    # 两个键一起清：只清 password 会留一个孤立的 email，下次登录界面预填一个
+    # 无法自动登录的邮箱，比什么都不留更让人困惑。
+    for key in ("email", "password"):
+        try:
+            save_config_key(key, "")
+        except OSError:
+            logger.warning("failed to clear stored credential: %s", key, exc_info=True)
 
 
 def clear_session() -> None:
