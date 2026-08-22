@@ -85,7 +85,11 @@ export function AccountMenu (
         <i className="menu-g" data-lucide="settings" aria-hidden="true" />
         <span>{t('menu.settings')}</span>
       </button>
-      {/* 没有会话时「退出登录」没有意义 */}
+      {/*
+        未登录时这个菜单原来只剩「设置」—— 是条死路：看到「未登录」却没有任何
+        登录入口。现在登录本身由登录页承担（未登录时它取代整个工作台），所以
+        这里不重复放登录表单，只保证「退出登录」不会在未登录时出现。
+      */}
       {signedIn ? (
         <button
           className="menu-i"

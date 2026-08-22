@@ -7,6 +7,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { collect } from '../lib/ipc'
+import { LoginScreen } from './LoginScreen'
 import { Sidebar } from './Sidebar'
 import { TopBar } from './TopBar'
 import { OpenMenu, type MenuEntry } from './OpenMenu'
@@ -43,7 +44,9 @@ export function App () {
   })
   const [backendState, setBackendState] = useState('starting')
   const [counts, setCounts] = useState({ approvals: 0, schedules: 0 })
-  const [account, setAccount] = useState({ signedIn: false, email: '', userId: '' })
+  // checked 区分「查过了、确实没登录」与「还没查」。少了它，已登录用户在
+  // account 返回之前会先闪一下登录页 —— 那比慢一点更糟。
+  const [account, setAccount] = useState({ signedIn: false, email: '', userId: '', checked: false })
   const [openAnchor, setOpenAnchor] = useState<HTMLElement | null>(null)
   const [acctAnchor, setAcctAnchor] = useState<HTMLElement | null>(null)
   const [settings, setSettings] = useState<{ open: boolean; section: string; anchor?: string }>(
@@ -83,7 +86,7 @@ export function App () {
       window.dispatchEvent(new CustomEvent('wyckoff:account-changed', { detail: { userId: uid } }))
     }
     lastUser.current = uid
-    setAccount({ signedIn: Boolean(d.signed_in), email: String(d.email || ''), userId: uid })
+    setAccount({ signedIn: Boolean(d.signed_in), email: String(d.email || ''), userId: uid, checked: true })
   }, [])
 
   // 桥的状态机。ready 的那一刻才去拉侧栏计数与账号。
@@ -178,6 +181,40 @@ export function App () {
     { id: 'browser', icon: 'globe-2', labelKey: 'menu.browser', shortcut: '⌘T', onPick: () => window.WyckoffShell?.openBrowser?.() },
     { id: 'pane', icon: 'panel-right-open', labelKey: 'menu.pane', shortcut: '⌘⌥B', separated: true, onPick: () => window.WyckoffShell?.togglePane?.() }
   ]
+
+  const onSignedIn = useCallback(
+    async (info: { email: string; synced?: Record<string, unknown> }) => {
+      // 重新走一遍 loadAccount 而不是直接 setAccount：那条路径还负责清跨账号
+      // 缓存并广播 account-changed，绕过去会让上一个账号的持仓留在界面上。
+      await loadAccount()
+      await refreshCounts()
+      const synced = info.synced as { models?: string[]; data_sources?: string[] } | undefined
+      const count = (synced?.models?.length || 0) + (synced?.data_sources?.length || 0)
+      if (count > 0) {
+        // 用 WyckoffChat.sysLine —— 与本文件里其它系统提示同一条路径。
+        window.WyckoffChat?.sysLine?.(t('login.syncedPrefix') + count + t('login.syncedSuffix'))
+      }
+    },
+    [loadAccount, refreshCounts]
+  )
+
+  // 未登录时登录页取代整个工作台。
+  //
+  // 为什么是「取代」而不是弹窗：登录是进入应用的前置条件。用户可能把模型和行情
+  // 数据源都配在云端，没登录时那些配置拉不下来 —— 界面会显示「未配置模型」，
+  // 看起来像应用坏了。
+  //
+  // `checked` 之前什么都不渲染：已登录用户不该先闪一下登录页。
+  if (!account.checked) return null
+  if (!account.signedIn) {
+    return (
+      <LoginScreen
+        collect={collect}
+        onSignedIn={onSignedIn}
+        backendReady={backendState === 'ready'}
+      />
+    )
+  }
 
   return (
     <>

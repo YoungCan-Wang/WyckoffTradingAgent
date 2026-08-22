@@ -16,7 +16,7 @@
     "typecheck": "tsc -b",
     "build:ui": "vite build",
     "dev:ui": "vite",
-    "test:e2e": "npm run build:ui && node test/e2e/smoke.mjs && node test/e2e/artifact-host.mjs"
+    "test:e2e": "npm run build:ui && node test/e2e/smoke.mjs && node test/e2e/artifact-host.mjs && node test/e2e/login.mjs"
   },
   "devDependencies": {
     "@electron/asar": "4.3.0",

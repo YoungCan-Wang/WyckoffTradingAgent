@@ -92,6 +92,15 @@ jobs:
         if: runner.os != 'Linux'
         run: node test/e2e/artifact-host.mjs
 
+      # 登录闸门。两件事只有起真窗口才验得了：未登录时登录页**取代**工作台，
+      # 以及已登录时**不闪**登录页（后者依赖真实的异步时序）。
+      - name: 登录闸门验证（Linux 需要虚拟显示）
+        if: runner.os == 'Linux'
+        run: xvfb-run --auto-servernum node test/e2e/login.mjs
+      - name: 登录闸门验证
+        if: runner.os != 'Linux'
+        run: node test/e2e/login.mjs
+
       # 开发态没有打包后的 Python payload；这里只检查 Electron 外壳能完整退出。
       - name: 检查 Electron 残留进程（Windows）
         if: runner.os == 'Windows'
