@@ -121,3 +121,70 @@ test('新一轮重置本轮状态,但保留用户正在看什么', () => {
   assert.equal(next.dismissedThisTurn, false)
   assert.equal(next.viewing, 'x', 'viewing 是跨轮状态,不该被重置')
 })
+
+// ---- 接线（静态断言：这些是容易在重构里悄悄退化的连接点）----
+
+const SRC = (rel) => readFileSync(R(...rel.split('/')), 'utf8')
+
+test('tool_start 不再直接开 K 线图', () => {
+  // 旧实现在 tool_start 就 openKline —— 工具还没成功,失败会留空面板;
+  // 而且 action=list 也会弹开图表页。现在由 tool_result 之后的产物事件决定。
+  const useChat = SRC('lib/useChat.ts')
+  const block = useChat.match(/if \(type === 'tool_start'\)[\s\S]*?\n    \}/)
+  assert.ok(block, '找不到 tool_start 分支')
+  // 只看代码,不看注释 —— 注释里解释「旧实现在这里 openKline」是应该保留的
+  const codeOnly = block[0].split('\n').filter((l) => !l.trim().startsWith('//')).join('\n')
+  assert.ok(!/openKline/.test(codeOnly), 'tool_start 里不该再调 openKline')
+  // 但缓存失效必须留着 —— 那条路径和产物无关
+  assert.match(block[0], /invalidateOnTool/, '改持仓的工具仍要作废缓存')
+})
+
+test('报告也走注册表,不绕过自动展开策略', () => {
+  const useChat = SRC('lib/useChat.ts')
+  const branch = useChat.match(/if \(looksLikeReport\(body\)\)[\s\S]*?\n        \}/)
+  assert.ok(branch, '找不到报告分支')
+  assert.match(branch[0], /artifactsApi\.add\(reportArtifact\(/, '报告应进注册表')
+  assert.ok(
+    !/WyckoffApp\?\.openReport/.test(branch[0]),
+    '直接调 openReport 会绕过「一轮只开第一个」「用户关过不再弹」等规则'
+  )
+})
+
+test('shell 提供统一的 openArtifact 入口', () => {
+  const shell = SRC('shell.js')
+  assert.match(shell, /function openArtifact/, '缺少统一入口')
+  assert.match(shell, /openArtifact: \(artifact\)/, '没挂到 WyckoffShell 上')
+  // 两种 kind 都要能路由
+  const fn = shell.match(/function openArtifact[\s\S]*?\n\}/)[0]
+  assert.match(fn, /kind === 'kline'/)
+  assert.match(fn, /kind === 'report'/)
+})
+
+test('自动展开时宣告给读屏,且不移动焦点', () => {
+  const app = SRC('components/App.tsx')
+  assert.match(app, /id="artifact-live"/, '缺少 aria-live 宣告区')
+  assert.match(app, /aria-live="polite"/, '应为 polite —— 这是提示不是警报')
+  const hook = SRC('lib/useArtifacts.ts')
+  assert.match(hook, /getElementById\('artifact-live'\)/)
+  // 宣告不能顺手把焦点抢过去
+  assert.ok(!/\.focus\(\)/.test(hook), '自动展开不该移动焦点（用户可能正在打字）')
+})
+
+test('宣告区对读屏可见,但视觉上不占位', () => {
+  // 用 display:none 会让读屏也读不到 —— 那样这块就白加了
+  const css = SRC('app.css')
+  const rule = css.match(/\.sr-only \{[\s\S]*?\}/)
+  assert.ok(rule, '缺少 .sr-only 样式')
+  assert.ok(!/display:\s*none/.test(rule[0]), 'display:none 会让读屏也读不到')
+  assert.match(rule[0], /clip:/, '应该用裁剪把它移出视觉流')
+})
+
+test('K 线产物在对话里有卡片 —— 否则第二三只票没有入口', () => {
+  const stream = SRC('components/ChatStream.tsx')
+  assert.match(stream, /function KlineCard/, '缺少 K 线卡片')
+  assert.match(stream, /a\.id\.startsWith\(`\$\{turn\.id\}:`\)/, '卡片要按轮次筛选')
+  const card = stream.match(/function KlineCard[\s\S]*?\n\}/)[0]
+  assert.match(card, /onOpen\?\.\(artifact\)/, '卡片要能打开对应产物')
+  // 失败的产物不给「打开」按钮 —— 点了也没东西看
+  assert.match(card, /failed \? null :/, '失败态不该有打开按钮')
+})

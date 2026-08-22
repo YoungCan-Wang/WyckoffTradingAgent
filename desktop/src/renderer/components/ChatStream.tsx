@@ -6,6 +6,7 @@
  */
 import { useEffect, useRef } from 'react'
 import type { Turn, Block } from '../lib/chat'
+import type { ChatArtifact } from '../lib/artifacts'
 import { ApprovalCardInline } from './ApprovalCardInline'
 import { Markdown } from './Markdown'
 
@@ -13,10 +14,13 @@ const t = (key: string, params?: Record<string, string | number>) => window.Wyck
 
 interface Props {
   turns: Turn[]
+  /** 本会话的产物 —— 按轮次筛出来渲染成可点的卡片。 */
+  artifacts?: ChatArtifact[]
+  onOpenArtifact?: (artifact: ChatArtifact) => void
   onApprovalDecided: (toolName: string) => void
 }
 
-export function ChatStream ({ turns, onApprovalDecided }: Props) {
+export function ChatStream ({ turns, artifacts, onApprovalDecided, onOpenArtifact }: Props) {
   const endRef = useRef<HTMLDivElement>(null)
   const scroller = useRef<HTMLElement | null>(null)
   // 到达时是否贴着底部 —— 决定这次要不要跟随
@@ -56,6 +60,11 @@ export function ChatStream ({ turns, onApprovalDecided }: Props) {
             <div className="msg a">
               <span className="av">✳</span>
               <div className="bd">
+                {(artifacts || [])
+                  .filter((a) => a.kind === 'kline' && a.id.startsWith(`${turn.id}:`))
+                  .map((a) => (
+                    <KlineCard key={a.id} artifact={a} onOpen={onOpenArtifact} />
+                  ))}
                 {turn.blocks.map((b, i) => (
                   <BlockView key={i} block={b} onApprovalDecided={onApprovalDecided} />
                 ))}
@@ -80,6 +89,30 @@ export function ChatStream ({ turns, onApprovalDecided }: Props) {
  * 页签之后没有任何入口，只能重新问一遍模型。正文存在 block 里，所以重开不需要
  * 再走一次模型，面板渲染失败也不会丢东西。
  */
+/**
+ * K 线产物在对话里的卡片。
+ *
+ * 为什么必需：一轮只自动展开第一个产物,后续的只进注册表。没有卡片的话
+ * 第二、三只票**根本没有入口** —— 那是旧实现最彻底的问题（drewCharts
+ * 只被写入、没有任何组件读它,对话里连一行痕迹都不留）。
+ */
+function KlineCard (
+  { artifact, onOpen }: { artifact: ChatArtifact; onOpen?: (a: ChatArtifact) => void }
+) {
+  const failed = artifact.status === 'failed'
+  return (
+    <div className={failed ? 'sys err art-card' : 'sys art-card'}>
+      <span className="art-title">{artifact.title}</span>
+      <span>{failed ? t('artifact.failed') : t('artifact.chart')}</span>
+      {failed ? null : (
+        <button type="button" className="task-action" onClick={() => onOpen?.(artifact)}>
+          {t('chat.reopen')}
+        </button>
+      )}
+    </div>
+  )
+}
+
 function ArtifactCard ({ title, body }: { title: string; body: string }) {
   return (
     <div className="sys art-card">

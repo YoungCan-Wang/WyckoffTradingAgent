@@ -10,6 +10,8 @@ import {
   type Turn
 } from './chat'
 import { collect } from './ipc'
+import { reportArtifact, type ChatArtifact } from './artifacts'
+import { useArtifacts } from './useArtifacts'
 
 const t = (key: string, params?: Record<string, string | number>) => window.WyckoffI18n.t(key, params)
 
@@ -24,9 +26,14 @@ export interface ChatApi {
   /** 系统提示行（退出登录、切模型失败之类）也进对话流。 */
   sysLine: (text: string, isError?: boolean) => void
   invalidateOnTool: (toolName: string) => void
+  /** 本会话的全部产物 —— 对话卡片与页签共用同一份数据。 */
+  artifacts: ChatArtifact[]
+  /** 用户主动打开某个产物。 */
+  openArtifact: (artifact: ChatArtifact) => void
 }
 
 export function useChat (ready: boolean): ChatApi {
+  const artifactsApi = useArtifacts()
   const [turns, setTurns] = useState<Turn[]>([])
   const [busy, setBusy] = useState(false)
   // 事件到达时要改「当前活跃的那一轮」，用 ref 拿最新值 —— 闭包里读 state
@@ -56,9 +63,15 @@ export function useChat (ready: boolean): ChatApi {
       // 改持仓的工具一开跑就作废缓存：审批可能被「本次会话总是允许」放行，
       // 那条路径不产生审批事件，只能挂在这里。
       invalidateOnTool(String(event.name || ''))
+      // 刻意**不**在这里开 K 线图。
+      //
+      // 旧实现在 tool_start 就 openKline：工具还没成功,失败会留一个空面板;
+      // 而且 action=list（只是列出标注）也会弹开图表页。现在由后端在
+      // tool_result 之后发 chat_artifact 事件,useArtifacts 据它决定是否展开。
+      //
+      // drewCharts 仍要记：标注是在图建好之后写的,end 时要刷新一次。
       const code = (event.args as { code?: string } | undefined)?.code
       if (String(event.name || '') === 'annotate_chart' && code) {
-        window.WyckoffApp?.openKline?.(String(code))
         setTurns((prev) => prev.map((x) => (
           x.id === id
             ? { ...x, drewCharts: [...(x.drewCharts || []), String(code)] }
@@ -81,7 +94,10 @@ export function useChat (ready: boolean): ChatApi {
         // 现在把正文存进 artifact 块：面板出问题不丢东西，关掉页签也能重开。
         if (looksLikeReport(body)) {
           const title = reportTitle(body, t('chat.report'))
-          window.WyckoffApp?.openReport?.(title, body)
+          // 走注册表而不是直接 openReport：自动展开策略（一轮只开第一个、
+          // 用户关过不再弹、窄窗口不分栏）对报告和 K 线应当一致。
+          // 直接调 openReport 会绕过那些规则。
+          artifactsApi.add(reportArtifact(id, title, body))
           return {
             ...x,
             blocks: [
@@ -112,7 +128,7 @@ export function useChat (ready: boolean): ChatApi {
     }
 
     setTurns((prev) => prev.map((x) => (x.id === id ? applyEvent(x, event) : x)))
-  }, [invalidateOnTool])
+  }, [invalidateOnTool, artifactsApi])
 
   useEffect(() => {
     const off = window.wyckoff.onEvent((event) => {
@@ -164,6 +180,8 @@ export function useChat (ready: boolean): ChatApi {
     // 事件分发那边比的是 String(event.id)。混着用会让 Set.has('9') 对 9 恒为
     // 假 —— 每条事件都被丢掉，界面永远停在「正在思考…」。
     const id = String(res.id)
+    // 新一轮：重置「本轮已展开」与「本轮关过」——上一轮的关闭不该影响这一轮。
+    artifactsApi.beginTurn()
     liveIds.current.add(id)
     setTurns((prev) => [...prev, { id, user: body, blocks: [], live: true }])
     // 回放 await 期间缓存下来的事件，然后把缓存清空 —— 没被认领的那些属于
@@ -189,5 +207,15 @@ export function useChat (ready: boolean): ChatApi {
     return true
   }, [busy, ready, sysLine])
 
-  return { turns, busy, started: turns.length > 0, send, reset, sysLine, invalidateOnTool }
+  return {
+    turns,
+    busy,
+    started: turns.length > 0,
+    send,
+    reset,
+    sysLine,
+    invalidateOnTool,
+    artifacts: artifactsApi.artifacts,
+    openArtifact: artifactsApi.open
+  }
 }

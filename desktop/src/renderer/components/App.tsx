@@ -181,6 +181,12 @@ export function App () {
 
   return (
     <>
+      {/*
+        产物自动展开时宣告给读屏。
+        刻意**不移动焦点**：用户可能正在输入框里打字,抢焦点是最糟的打断。
+        polite 而不是 assertive —— 这是提示,不是警报。
+      */}
+      <div id="artifact-live" className="sr-only" aria-live="polite" role="status" />
       {sideOpen ? (
         <Sidebar
           active={view}

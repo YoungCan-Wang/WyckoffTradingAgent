@@ -465,7 +465,34 @@ document.getElementById('btn-pane').onclick = () => setPane(false)
  * 产物面板与绘图的入口。React 侧只调用它，不碰这些模块的内部 ——
  * 它们各自管着 canvas 上下文、原生 view 句柄或 iframe，跨边界操作会漏资源。
  */
+/**
+ * 统一的产物打开入口。
+ *
+ * 收口 openKline / openReport：调用方只需要说「打开这个产物」,不需要知道
+ * K 线走 canvas、报告走 markdown 渲染器。哪种 kind 用哪个渲染器是这里的事。
+ *
+ * 收口的实际好处是「打开哪个产物」变成了数据 —— 对话里的卡片、页签、
+ * 自动展开都能拿同一个 artifact 对象说话,不再各自记住该调哪个函数。
+ */
+function openArtifact (artifact) {
+  if (!artifact || typeof artifact !== 'object') return
+  const payload = artifact.payload || {}
+  if (artifact.kind === 'kline') {
+    const symbol = String(payload.symbol || artifact.title || '')
+    if (symbol) openKline(symbol)
+    return
+  }
+  if (artifact.kind === 'report') {
+    openReport(
+      String(artifact.title || ''),
+      String(payload.body || ''),
+      new Date().toLocaleString(i18n.getLang())
+    )
+  }
+}
+
 window.WyckoffShell = {
+  openArtifact: (artifact) => openArtifact(artifact),
   openReport: (title, body) => openReport(title, body, new Date().toLocaleString(i18n.getLang())),
   openKline: (symbol) => openKline(String(symbol)),
   refreshCharts: (codes) => refreshDrawnCharts(new Set(codes || [])),

@@ -105,6 +105,16 @@ declare global {
      * 命令式的，套一层壳不会让代码更好。
      */
     WyckoffShell?: {
+      /**
+       * 统一的产物打开入口。收口 openKline / openReport —— 调用方只说
+       * 「打开这个产物」,哪种 kind 用哪个渲染器由 shell 决定。
+       */
+      openArtifact?: (artifact: {
+        id: string
+        kind: string
+        title: string
+        payload: Record<string, unknown>
+      }) => void
       openReport?: (title: string, body: string) => void
       openKline?: (symbol: string) => void
       refreshCharts?: (codes: string[]) => void

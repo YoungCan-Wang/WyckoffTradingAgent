@@ -77,7 +77,12 @@ export function ChatView () {
   return (
     <>
       <div className="inner" id="stream-inner">
-        <ChatStream turns={chat.turns} onApprovalDecided={chat.invalidateOnTool} />
+        <ChatStream
+          turns={chat.turns}
+          artifacts={chat.artifacts}
+          onApprovalDecided={chat.invalidateOnTool}
+          onOpenArtifact={chat.openArtifact}
+        />
       </div>
       {/*
         输入区钉在会话区底部。

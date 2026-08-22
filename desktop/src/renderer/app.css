@@ -1271,3 +1271,10 @@ html.dark .mfin { background: var(--paper2); }
    刻意不引入彩色卡片体系 —— 这一屏的设计基调是安静。 */
 .art-card { display: flex; align-items: center; gap: 8px; }
 .art-card .art-title { color: var(--tx2); }
+
+/* 只给读屏,视觉上不占位。
+   用裁剪而不是 display:none —— 后者会让读屏也读不到。 */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
