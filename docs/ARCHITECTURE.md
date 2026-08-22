@@ -107,6 +107,8 @@ Worker 负责鉴权、输入校验、队列控制面和 HMAC 签名。Vercel Nod
 
 前端的 `web/apps/web/src/lib/api-url.ts` 统一生成 chat、portfolio 和 settings 的后端地址。本地开发默认连接 `http://127.0.0.1:8787`，生产默认连接 `https://wyckoff-api.yongkai-wang.workers.dev`；部署环境可用公开的构建变量 `VITE_API_URL` 覆盖地址。该变量只包含公开服务地址，不能放 Token。
 
+**免费可观测（不写 Supabase）**：`wyckoff-api` 在 `wrangler.toml` 打开 Workers Logs。未捕获 500 会打一条 `worker_error` JSON（`requestId`、方法、路径、已鉴权则带 `userId`），脱敏后不含 Token。查日志：Cloudflare Dashboard → Workers & Pages → `wyckoff-api` → Logs，免费档约留 3 天。页面 PV/UV 用 Cloudflare Web Analytics：优先在 Pages 项目打开；若要用脚本注入，给 Pages 构建加上公开变量 `VITE_CF_WEB_ANALYTICS_TOKEN`。按钮点击/热力图可选 Microsoft Clarity：给 Pages 构建加上公开变量 `VITE_CLARITY_PROJECT_ID` 后，只对有效白名单用户加载脚本。这两类变量都是前端公开 ID，不是密钥，不要写进 `wrangler secret`。
+
 每次 `main` 上的 CI 成功后，`Web deployment health` 工作流会从 GitHub runner 轮询 Worker 的公开 `/api/health` 与 Pages 的 `/chat`，直到两者同时通过；也可在 Actions 页面手动运行。它只验证部署可达性，不会调用需要登录的聊天、持仓或沙箱端点，也不会创建沙箱。
 
 本地开发可复制 `web/apps/api/.dev.vars.example` 为 `.dev.vars`。首次部署异步 Agent 前，先在 `web/apps/api/` 创建两个队列，再部署 Worker：`pnpm exec wrangler queues create wyckoff-agent-runs`、`pnpm exec wrangler queues create wyckoff-agent-runs-dlq`、`pnpm run deploy`。部署时不要把密钥写入 `wrangler.toml`：在 Vercel 项目将 `SANDBOX_BRIDGE_SECRET` 写入 production 环境变量，并在 `web/apps/api/` 下分别执行 `pnpm exec wrangler secret put CHAT_TOOL_APPROVAL_SECRET`、`pnpm exec wrangler secret put UPSTASH_REDIS_REST_URL`、`pnpm exec wrangler secret put UPSTASH_REDIS_REST_TOKEN` 和 `pnpm exec wrangler secret put SANDBOX_BRIDGE_SECRET`。Vercel bridge 在生产环境由平台 OIDC 自动获取短期 Sandbox 凭据，Cloudflare Worker 不再保留 Vercel Access Token。
