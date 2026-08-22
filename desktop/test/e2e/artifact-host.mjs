@@ -9,7 +9,7 @@
 import { _electron as electron } from 'playwright'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm, readFile } from 'node:fs/promises'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -37,9 +37,14 @@ try {
   await app.firstWindow()
   write('可交互产物宿主：')
 
-  // 真实的 CSP 常量从模块里读（fs 在 evaluate 外可用）,确保验的是产品用的那份。
-  const { ARTIFACT_CSP } = await import(join(APP_DIR, 'src', 'artifact-host.js'))
-    .then((m) => m.default || m)
+  // 真实的 CSP 常量从模块里读，确保验的是产品用的那份。
+  //
+  // 必须 pathToFileURL：Windows 上 `import('D:\\...')` 会抛
+  // ERR_UNSUPPORTED_ESM_URL_SCHEME（"Received protocol 'd:'"）——
+  // 盘符被当成了 URL scheme。macOS/Linux 上恰好能用，所以这类问题只有真的在
+  // Windows 上跑才会暴露。
+  const mod = await import(pathToFileURL(join(APP_DIR, 'src', 'artifact-host.js')).href)
+  const { ARTIFACT_CSP } = mod.default || mod
 
   // 在主进程里驱动宿主并读回页面内的探针结果。
   // app.evaluate 的作用域里没有 require,所以用注入的 electron 模块按同一套
