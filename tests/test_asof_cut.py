@@ -4,7 +4,7 @@ from datetime import date
 
 import pandas as pd
 
-from core.asof_cut import cut_financial_map, cut_dated_records, cut_ohlcv_to_as_of
+from core.asof_cut import cut_dated_records, cut_financial_map, cut_ohlcv_to_as_of
 
 
 def test_ohlcv_requires_exact_as_of_bar():
