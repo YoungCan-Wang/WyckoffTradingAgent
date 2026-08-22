@@ -188,3 +188,24 @@ test('K 线产物在对话里有卡片 —— 否则第二三只票没有入口'
   // 失败的产物不给「打开」按钮 —— 点了也没东西看
   assert.match(card, /failed \? null :/, '失败态不该有打开按钮')
 })
+
+test('淘汰页签时不能淘汰用户正在看的那个', () => {
+  // 产物可以连着来（一轮画多只票）。正在读的图被悄悄换掉是最费解的失败 ——
+  // 用户没做任何操作,内容就变了。
+  const tabs = SRC('tabs.js')
+  const evict = tabs.match(/if \(this\.tabs\.length > MAX_TABS\)[\s\S]*?\n    \}/)
+  assert.ok(evict, '找不到淘汰逻辑')
+  assert.match(evict[0], /tab\.key !== this\.activeId/, '淘汰候选要排除当前查看的页签')
+})
+
+test('面板宽度按产物类型分别记忆', () => {
+  // K 线要横向空间看趋势,报告是竖排文本 —— 共用一个宽度时,看完图再看报告
+  // 会觉得行太长（或反之图被压扁）。
+  const shell = SRC('shell.js')
+  assert.match(shell, /KIND_WIDTH_RATIO/, '缺少按类型的默认比例')
+  assert.match(shell, /kline: 0\.52/)
+  assert.match(shell, /report: 0\.46/)
+  assert.match(shell, /function applyKindWidth/, '打开产物时要套用对应宽度')
+  // 手动拖过的宽度是明确偏好,不该被下次自动展开覆盖
+  assert.match(shell, /localStorage\.setItem\(kindWidthKey\(currentPaneKind\)/, '拖动后要记到类型名下')
+})

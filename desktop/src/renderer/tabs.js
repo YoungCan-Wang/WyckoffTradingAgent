@@ -63,13 +63,19 @@ class TabPane {
     }
 
     this.tabs.push({ key, spec })
-    // Drop the oldest non-pinned tab rather than letting the strip overflow.
+    // 超出上限时淘汰最老的一个,而不是让页签条溢出。
+    //
+    // **不能淘汰用户正在看的那个**：产物可以连着来（一轮画多只票）,正在读的
+    // 图被悄悄换掉是最费解的一种失败 —— 用户没做任何操作,内容就变了。
+    // 现在对话里每个产物都有卡片,被淘汰的那个仍然点得回来,所以淘汰本身可以
+    // 接受;把当前查看的排除掉就够了。
     if (this.tabs.length > MAX_TABS) {
-      const victim = this.tabs.findIndex((tab) => !tab.spec.pinned && tab.key !== key)
+      const victim = this.tabs.findIndex(
+        (tab) => !tab.spec.pinned && tab.key !== key && tab.key !== this.activeId
+      )
       if (victim !== -1) {
         const [removed] = this.tabs.splice(victim, 1)
         this.dispose(removed)
-        if (this.activeId === removed.key) this.activeId = null
       }
     }
     this.notifyCount()

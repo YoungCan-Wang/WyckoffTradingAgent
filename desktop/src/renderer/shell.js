@@ -27,6 +27,10 @@ let sendOnEnter = true
 const PANE_WIDTH_KEY = 'wyckoff.pane.width'
 const MIN_PANE_WIDTH = 360
 const MIN_THREAD_WIDTH = 420
+// 按产物类型分别记宽度：K 线要横向空间看趋势,报告是竖排文本,窄一点更好读。
+// 两者共用一个宽度时,看完图再看报告会觉得文字行太长（或反之图被压扁）。
+const KIND_WIDTH_RATIO = { kline: 0.52, report: 0.46 }
+const kindWidthKey = (kind) => `${PANE_WIDTH_KEY}.${kind}`
 
 
 // ---- 面板宽度与侧栏 --------------------------------------------------------
@@ -63,6 +67,25 @@ function restorePaneWidth () {
   setPaneWidth(saved >= MIN_PANE_WIDTH ? saved : Math.round(window.innerWidth * 0.46), false)
 }
 
+/**
+ * 切到某类产物时套用它自己记住的宽度。
+ *
+ * 只在用户**没有**为这一类手动拖过时才用默认比例 —— 手动拖过的宽度是明确的
+ * 偏好,不该被下一次自动展开覆盖。
+ */
+function applyKindWidth (kind) {
+  const ratio = KIND_WIDTH_RATIO[kind]
+  if (!ratio) return
+  let saved = 0
+  try { saved = Number(localStorage.getItem(kindWidthKey(kind))) } catch { /* private mode */ }
+  const target = saved >= MIN_PANE_WIDTH ? saved : Math.round(window.innerWidth * ratio)
+  currentPaneKind = kind
+  setPaneWidth(target, false)
+}
+
+/** 当前面板显示的是哪类产物 —— 拖动时据它决定把宽度记到哪个键。 */
+let currentPaneKind = ''
+
 paneResizer.addEventListener('pointerdown', (event) => {
   event.preventDefault()
   paneResizer.setPointerCapture(event.pointerId)
@@ -78,6 +101,10 @@ paneResizer.addEventListener('pointerup', (event) => {
   paneResizer.classList.remove('dragging')
   const width = document.getElementById('pane').getBoundingClientRect().width
   setPaneWidth(width, true)
+  // 手动拖过就是明确的偏好,记到当前产物类型名下,下次打开同类沿用。
+  if (currentPaneKind) {
+    try { localStorage.setItem(kindWidthKey(currentPaneKind), String(Math.round(width))) } catch { /* private mode */ }
+  }
 })
 paneResizer.addEventListener('keydown', (event) => {
   if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
@@ -476,6 +503,7 @@ document.getElementById('btn-pane').onclick = () => setPane(false)
  */
 function openArtifact (artifact) {
   if (!artifact || typeof artifact !== 'object') return
+  applyKindWidth(String(artifact.kind || ''))
   const payload = artifact.payload || {}
   if (artifact.kind === 'kline') {
     const symbol = String(payload.symbol || artifact.title || '')
