@@ -11,7 +11,17 @@
  * 两者是不同的东西，共用一个名字会让 artifact 在代码里同时指两件事。
  */
 
-export type ArtifactKind = 'kline' | 'report'
+/**
+ * 产物类型的**唯一**清单。
+ *
+ * 类型和运行期校验都从这里派生 —— 加新 kind 时只改这一处。
+ * 原来校验里写着 `kind !== 'kline' && kind !== 'report'`，加 dashboard 时
+ * 我改了后端、shell、宽度表，却漏了那一行 —— 事件被静默丢掉，面板压根不开，
+ * 而且没有任何报错。这种「加一半」正是重复清单的必然结果。
+ */
+export const ARTIFACT_KINDS = ['kline', 'report', 'dashboard'] as const
+
+export type ArtifactKind = (typeof ARTIFACT_KINDS)[number]
 export type ArtifactStatus = 'ready' | 'failed'
 
 export interface ChatArtifact {
@@ -34,12 +44,12 @@ export function parseArtifactEvent (event: Record<string, unknown>): ChatArtifac
   // 注意读的是 artifact_id 而不是 id：传输层会把 event.id 覆盖成请求流 id。
   const id = String(event.artifact_id || '')
   const kind = String(event.kind || '')
-  if (!id || (kind !== 'kline' && kind !== 'report')) return null
+  if (!id || !(ARTIFACT_KINDS as readonly string[]).includes(kind)) return null
   const status = String(event.status || '') === 'failed' ? 'failed' : 'ready'
   const payload = event.payload
   return {
     id,
-    kind,
+    kind: kind as ArtifactKind,
     title: String(event.title || ''),
     status,
     payload: (payload && typeof payload === 'object' ? payload : {}) as Record<string, unknown>

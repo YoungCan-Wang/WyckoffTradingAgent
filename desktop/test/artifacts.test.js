@@ -209,3 +209,67 @@ test('面板宽度按产物类型分别记忆', () => {
   // 手动拖过的宽度是明确偏好,不该被下次自动展开覆盖
   assert.match(shell, /localStorage\.setItem\(kindWidthKey\(currentPaneKind\)/, '拖动后要记到类型名下')
 })
+
+test('产物类型清单只有一处,避免「加一半」', () => {
+  // 加 dashboard 时我改了后端、shell、宽度表,却漏了 parseArtifactEvent 里
+  // 那行 `kind !== 'kline' && kind !== 'report'` —— 事件被静默丢掉,面板压根
+  // 不开,而且没有任何报错。重复清单必然导致这种漏改。
+  const src = SRC('lib/artifacts.ts')
+  assert.match(src, /export const ARTIFACT_KINDS/, '缺少统一清单')
+  assert.match(src, /ARTIFACT_KINDS as readonly string\[\]\)\.includes\(kind\)/, '校验应从清单派生')
+  // 不该再有写死的 kind 比较。只看代码 —— 注释里引用旧写法是有意保留的说明。
+  const codeOnly = src.split('\n').filter((l) => {
+    const t = l.trim()
+    return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*')
+  }).join('\n')
+  assert.ok(
+    !/kind !== '[a-z]+' && kind !== '[a-z]+'/.test(codeOnly),
+    '还有写死的 kind 白名单 —— 加新类型时会漏改'
+  )
+})
+
+test('dashboard 事件能被解析出来', () => {
+  const a = parseArtifactEvent({
+    type: 'chat_artifact', artifact_id: 't1:d1', kind: 'dashboard',
+    title: '行业分布', status: 'ready', payload: { html: '<p>x</p>' }
+  })
+  assert.ok(a, 'dashboard 应被识别为合法产物')
+  assert.equal(a.kind, 'dashboard')
+  assert.equal(a.payload.html, '<p>x</p>')
+})
+
+test('shell 能路由 dashboard,且宽度与 K 线同档', () => {
+  const shell = SRC('shell.js')
+  const fn = shell.match(/function openArtifact[\s\S]*?\n\}/)[0]
+  assert.match(fn, /kind === 'dashboard'/, 'openArtifact 要能路由 dashboard')
+  // 面板通常是表格/图表,需要横向空间
+  assert.match(shell, /dashboard: 0\.52/)
+})
+
+test('收起面板时两个原生 view 都要摘掉', () => {
+  // 浏览器和可交互面板都浮在 DOM 之上。漏掉任何一个都表现为
+  // 「面板关了但内容还飘在会话上」—— DOM 容器已不可见,view 却还在。
+  const shell = SRC('shell.js')
+  const setPane = shell.match(/function setPane \([\s\S]*?\n\}/)[0]
+  assert.match(setPane, /browser\.hide\(\)/)
+  assert.match(setPane, /artifact\.hide\(\)/, '收起面板时没有摘掉可交互产物视图')
+})
+
+test('dashBox 声明在模块顶层,不在使用点之后', () => {
+  // 真实踩过的坑：顶层的 setPane(false) 会调 syncDashBounds(),而 let 有 TDZ。
+  // 声明放在后面会让整个 shell.js 抛 "Cannot access 'dashBox' before
+  // initialization" —— window.WyckoffShell 压根不被赋值,K 线/报告/面板全打不开,
+  // 而且渲染端只有一行看起来无关的报错。
+  const shell = SRC('shell.js')
+  const declAt = shell.indexOf('let dashBox')
+  assert.ok(declAt > 0, '找不到 dashBox 声明')
+  // 关键是「顶层立即执行的那句」在声明之后 —— setPane(false) 是模块顶层调用,
+  // 它会走到 syncDashBounds()。函数定义本身出现在哪不重要（提升到函数作用域）,
+  // 重要的是 let 的 TDZ。
+  const topLevelCall = shell.indexOf('\nsetPane(false)')
+  assert.ok(topLevelCall > 0, '找不到顶层的 setPane(false)')
+  assert.ok(
+    declAt < topLevelCall,
+    `dashBox 声明(${declAt}) 必须早于顶层 setPane(false)(${topLevelCall})，否则 TDZ 会打挂整个 shell.js`
+  )
+})

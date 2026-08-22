@@ -19,6 +19,12 @@ const paneBody = document.getElementById('pane-body')
 const paneResizer = document.getElementById('pane-resizer')
 let browserBox = null
 let browserObserver = null
+// 声明必须在这里而不是「可交互产物面板」那一节：模块顶层的 setPane(false) 会
+// 调用 syncDashBounds()，而 let 有 TDZ —— 声明在后面会让整个 shell.js 抛
+// 「Cannot access 'dashBox' before initialization」，于是 window.WyckoffShell
+// 压根不会被赋值，K 线、报告、面板全都打不开。
+let dashBox = null
+let dashObserver = null
 let setData = null
 let sendOnEnter = true
 
@@ -29,7 +35,7 @@ const MIN_PANE_WIDTH = 360
 const MIN_THREAD_WIDTH = 420
 // 按产物类型分别记宽度：K 线要横向空间看趋势,报告是竖排文本,窄一点更好读。
 // 两者共用一个宽度时,看完图再看报告会觉得文字行太长（或反之图被压扁）。
-const KIND_WIDTH_RATIO = { kline: 0.52, report: 0.46 }
+const KIND_WIDTH_RATIO = { kline: 0.52, report: 0.46, dashboard: 0.52 }
 const kindWidthKey = (kind) => `${PANE_WIDTH_KEY}.${kind}`
 
 
@@ -37,10 +43,14 @@ const kindWidthKey = (kind) => `${PANE_WIDTH_KEY}.${kind}`
 
 function setPane (on) {
   win.classList.toggle('pane-on', Boolean(on))
-  // The browser is a native view floating above the DOM; hiding the pane must
-  // detach it or it stays visible over the conversation.
-  if (!on) window.wyckoff.browser.hide()
-  if (on) requestAnimationFrame(syncBrowserBounds)
+  // 浏览器和可交互面板都是浮在 DOM 之上的原生 view：收起面板时必须把它们摘掉，
+  // 否则会继续盖在会话上（DOM 里的容器已经不可见了，view 却还在）。
+  // 漏掉任何一个都表现为「面板关了但内容还在飘着」。
+  if (!on) {
+    window.wyckoff.browser.hide()
+    window.wyckoff.artifact.hide()
+  }
+  if (on) requestAnimationFrame(() => { syncBrowserBounds(); syncDashBounds() })
 }
 
 function paneWidthLimit () {
@@ -59,6 +69,7 @@ function setPaneWidth (width, persist = true) {
     try { localStorage.setItem(PANE_WIDTH_KEY, String(next)) } catch { /* private mode */ }
   }
   syncBrowserBounds()
+  syncDashBounds()
 }
 
 function restorePaneWidth () {
@@ -202,6 +213,58 @@ const openReport = (title, source, meta) =>
   })
 
 
+
+// ---- 可交互产物面板 --------------------------------------------------------
+
+// 和内置浏览器同构：视图是浮在窗口上的原生 view，DOM 里只有一个占位盒子负责
+// 上报几何。差别在安全策略 —— 那边访问外网不执行我们的代码，这边执行模型的
+// 代码但一个字节都不出网（见 src/artifact-host.js）。
+function syncDashBounds () {
+  if (!dashBox || !dashBox.isConnected) return
+  const r = dashBox.getBoundingClientRect()
+  if (r.width < 2 || r.height < 2) return
+  window.wyckoff.artifact.setBounds({
+    x: Math.round(r.left),
+    y: Math.round(r.top),
+    width: Math.round(r.width),
+    height: Math.round(r.height)
+  })
+}
+
+function closeDashboard () {
+  window.wyckoff.artifact.destroy()
+  if (dashObserver) dashObserver.disconnect()
+  dashObserver = null
+  dashBox = null
+}
+
+const openDashboard = (title, html) =>
+  pane.open({
+    key: `dash:${title}`,
+    title,
+    icon: 'layout-dashboard',
+    onHide: () => window.wyckoff.artifact.hide(),
+    onClose: closeDashboard,
+    build: async () => {
+      const box = el('div', 'dashbox')
+      dashBox = box
+      // 视图要等盒子进 DOM 拿到尺寸之后再显示，否则几何是 0×0。
+      requestAnimationFrame(async () => {
+        const res = await window.wyckoff.artifact.load(html)
+        if (!res.ok) {
+          window.WyckoffApp?.sysLine?.(t('artifact.renderFailed', { error: res.error || '' }), true)
+          return
+        }
+        syncDashBounds()
+        await window.wyckoff.artifact.show(box.getBoundingClientRect())
+        syncDashBounds()
+        if (dashObserver) dashObserver.disconnect()
+        dashObserver = new ResizeObserver(syncDashBounds)
+        dashObserver.observe(box)
+      })
+      return box
+    }
+  })
 
 // ---- in-app browser --------------------------------------------------------
 
@@ -516,6 +579,10 @@ function openArtifact (artifact) {
       String(payload.body || ''),
       new Date().toLocaleString(i18n.getLang())
     )
+    return
+  }
+  if (artifact.kind === 'dashboard') {
+    openDashboard(String(artifact.title || ''), String(payload.html || ''))
   }
 }
 

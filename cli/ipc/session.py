@@ -322,7 +322,7 @@ def _project(event: Any) -> dict[str, Any]:
 # 只有这张表里的工具才会生成产物事件 —— 白名单而非黑名单：新增工具默认不产出
 # 产物，需要时显式登记。反过来（默认产出、遇到不想要的再排除）会让每个新工具
 # 都可能意外弹开面板。
-_ARTIFACT_TOOLS = {"annotate_chart": "kline"}
+_ARTIFACT_TOOLS = {"annotate_chart": "kline", "render_dashboard": "dashboard"}
 
 
 def _chat_artifact(event: dict[str, Any], turn_id: str) -> dict[str, Any] | None:
@@ -372,6 +372,24 @@ def _chat_artifact(event: dict[str, Any], turn_id: str) -> dict[str, Any] | None
             # payload 只带重新打开这张图所必需的字段，不带标注内容本体 ——
             # 图自己会去后端取，事件里重复塞一份只会让每次工具调用都拖着几 KB。
             "payload": {"symbol": symbol, "timeframe": str(args.get("timeframe") or "1d")},
+        }
+
+    if kind == "dashboard":
+        # HTML 从 args 取而不是 result：工具返回值刻意不含 html（那会把几百 KB
+        # 回灌进模型上下文）。args 里是模型刚写的那一份，正是要渲染的东西。
+        html = str(args.get("html") or "")
+        title = str(args.get("title") or "").strip()
+        if not html.strip() or not title:
+            return None
+        return {
+            "type": "chat_artifact",
+            "artifact_id": f"{turn_id}:{call_id}",
+            "kind": "dashboard",
+            "title": title,
+            "status": "failed" if failed else "ready",
+            # 这是唯一一种 payload 带内容本体的产物：面板不能联网，数据必须
+            # 在生成时嵌进 HTML，所以没有「让它自己去取」的选项。
+            "payload": {"html": html},
         }
     return None
 

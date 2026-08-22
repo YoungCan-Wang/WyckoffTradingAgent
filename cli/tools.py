@@ -322,6 +322,35 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "parameters": {"type": "object", "properties": {}},
     },
     {
+        "name": "render_dashboard",
+        "description": (
+            "在桌面端右侧渲染一个可交互的 HTML 面板（可筛选的表格、自绘图表、对比视图）。"
+            "只在 Wyckoff 桌面应用里可用。纯展示，不动持仓也不下单。"
+            "\n\n"
+            "适合 K 线图表达不了的形状：行业分布、多因子对比、可排序候选列表。"
+            "简单结论直接用文字说，不要为一句话造一个面板。"
+            "\n\n"
+            "重要约束：面板在隔离视图里渲染，**不能联网、拿不到实时数据**。"
+            "要展示什么就把数据直接写进 HTML。"
+            "不要引用外部 CDN（<script src>、<link href> 一律加载失败），"
+            "用原生 canvas/svg/CSS 自绘。内联 <script> 与 <style> 可以正常执行。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "面板标题，显示在页签上"},
+                "html": {
+                    "type": "string",
+                    "description": (
+                        "面板的 HTML 片段（body 内容，不要写 <html>/<head>）。"
+                        "可含内联 <style> 与 <script>。数据要嵌在里面。"
+                    ),
+                },
+            },
+            "required": ["title", "html"],
+        },
+    },
+    {
         "name": "annotate_chart",
         "description": (
             "把分析结论画到桌面端 K 线图上（吸筹区、支撑阻力、spring 标记等）。"
@@ -772,6 +801,9 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     # 纯展示：不动持仓、不下单，所以不需要审批。
     # 存储是一个原子替换的 JSON 文件；并发写会彼此覆盖，因此不能批内并行。
     "annotate_chart": ToolSpec("annotate_chart", "标注图表"),
+    # 同样纯展示。渲染在隔离视图里（无网络、无宿主 API），所以模型生成的
+    # HTML/JS 能执行也不需要审批 —— 它做不了任何有副作用的事。
+    "render_dashboard": ToolSpec("render_dashboard", "渲染面板"),
     "intraday_analysis": ToolSpec("intraday_analysis", "盘中分析"),
     "intraday_rescue_check": ToolSpec("intraday_rescue_check", "中周期结构"),
     "record_trade_fill": ToolSpec("record_trade_fill", "成交回填", requires_approval=True),
@@ -966,6 +998,7 @@ class ToolRegistry:
         from agents.backtest_tools import run_backtest
         from agents.browser_tools import browser_research
         from agents.chart_annotation_tools import annotate_chart
+        from agents.dashboard_tools import render_dashboard
         from agents.diagnosis_tools import analyze_stock
         from agents.engine_tools import (
             intraday_analysis,
@@ -1009,6 +1042,7 @@ class ToolRegistry:
             "market_regime": market_regime,
             "wyckoff_diagnose": wyckoff_diagnose,
             "annotate_chart": annotate_chart,
+            "render_dashboard": render_dashboard,
             "intraday_analysis": intraday_analysis,
             "intraday_rescue_check": intraday_rescue_check,
             "run_backtest": run_backtest,
