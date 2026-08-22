@@ -36,8 +36,7 @@
     "icon": "build/icon.png",
     "files": [
       "src/**/*",
-      "!test/**/*",
-      "src/renderer/dist/**/*"
+      "!test/**/*"
     ],
     "extraResources": [
       {

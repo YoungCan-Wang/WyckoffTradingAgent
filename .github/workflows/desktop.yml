@@ -126,6 +126,11 @@ jobs:
           architecture: x64
       - name: Install
         run: npm ci
+      # 必须在这里构建前端：`npm run build:ui` 只在 test job 里跑过，而那是
+      # **另一个 runner**，产物不共享。少了这一步 dist 压根不存在，打出来的包
+      # 回退到源 index.html —— 那份没有 React，装完是纯白屏。
+      - name: Build renderer
+        run: npm run build:ui
       - name: Build and smoke-test Python payload
         run: python ../scripts/build_python_ipc.py
 
@@ -144,8 +149,8 @@ jobs:
           if (-not ($health -match '"type": "ready"')) { throw "packaged IPC health smoke failed: $health" }
           $daemon = & $ipc --daemon --status
           if (-not ($daemon -match '^daemon:')) { throw "packaged daemon smoke failed: $daemon" }
-          # 渲染层产物必须在包里（同 macOS 那条：根 .gitignore 的 `dist/`
-          # 会让 Vite 产物被静默排除，导致界面白屏而后端正常）。
+          # 渲染层产物必须在包里（同 macOS 那条：漏掉 build:ui 会让应用回退到
+          # 没有 React 的源 index.html，界面白屏而后端一切正常）。
           $asar = Join-Path $unpacked 'resources/app.asar'
           $packed = npx --yes @electron/asar list $asar
           if (-not ($packed -match '/src/renderer/dist/index\.html')) {
@@ -192,6 +197,9 @@ jobs:
           architecture: ${{ matrix.arch }}
       - name: Install
         run: npm ci
+      # 同上：前端产物必须在这个 runner 上构建，test job 的产物到不了这里。
+      - name: Build renderer
+        run: npm run build:ui
       - name: Build and smoke-test Python payload
         run: python ../scripts/build_python_ipc.py
       - name: Package DMG (${{ matrix.arch }})
@@ -211,11 +219,11 @@ jobs:
           echo "$reply" | grep -q '"type": "ready"'
           # 渲染层产物必须在包里。
           #
-          # 根 .gitignore 有一条全局 `dist/`，而 electron-builder 默认尊重
-          # .gitignore —— Vite 产物曾被静默排除，尽管它匹配 `src/**/*`。
-          # 后果是应用回退到源 index.html（那份没有 React）：**整个界面白屏**，
-          # 而 Python 后端一切正常、日志里没有任何错误。
-          # 只有装完打开才看得见，所以这条检查必须在打包 job 里。
+          # 真的漏过一次：打包 job 忘了跑 `npm run build:ui`（那一步只在 test
+          # job 里有，而那是**另一个 runner**，产物不共享）。于是应用回退到源
+          # index.html —— 那份没有 React，**整个界面白屏**，而 Python 后端一切
+          # 正常、日志里没有任何错误，用户完全无法判断。
+          # 只有装完打开才看得见，所以这条检查必须在打包 job 里，不能放单测。
           npx --yes @electron/asar list "$app/Contents/Resources/app.asar" \
             | grep -q '/src/renderer/dist/index.html' \
             || { echo "包里缺少 renderer/dist —— 启动会白屏"; exit 1; }
