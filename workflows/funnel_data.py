@@ -633,8 +633,9 @@ def _print_benchmark_gate(benchmark_context: dict) -> None:
     )
 
 
-def _funnel_is_historical(window) -> bool:
-    return (window.end_trade_date < date.today()) or bool((os.getenv("END_CALENDAR_DAY") or "").strip())
+def _funnel_is_historical(_window) -> bool:
+    """只认显式回放。周日定时的 end_trade_date 是上周五，不能因此裁切生产数据。"""
+    return bool((os.getenv("END_CALENDAR_DAY") or "").strip())
 
 
 def _maybe_cut_financial_map(financial_map: dict[str, dict], window) -> dict[str, dict]:

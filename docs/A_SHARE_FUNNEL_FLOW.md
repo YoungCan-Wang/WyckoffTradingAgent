@@ -66,7 +66,7 @@ flowchart TB
 
 ---
 
-回放 / `END_CALENDAR_DAY` 模式下，A 股漏斗会按 `as_of` 裁切日线（必须有当日 bar）以及带 `filed_date` / `announce_date` 的财务记录；无日期的财务在回放中直接丢弃，避免把“今天才知道的财报”写进历史日。这不改变当日实盘漏斗阈值。
+仅当显式设置 `END_CALENDAR_DAY` 时，A 股漏斗才按 `as_of` 裁切日线（必须有当日 bar）以及带 `filed_date` / `announce_date` 的财务记录；无日期的财务在回放中直接丢弃。周日定时漏斗的截止日是上周五，不算回放，不走这条裁切。这不改变当日实盘漏斗阈值。
 
 ---
 
