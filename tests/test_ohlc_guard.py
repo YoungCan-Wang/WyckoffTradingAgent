@@ -15,6 +15,17 @@ def test_clean_bar_has_no_reason():
     assert dirty_bar_reason(pd.Series(_bar())) is None
 
 
+def test_keep_row_nullifies_dirty_values():
+    """单股分析要留日期行，不能把整根 K 线丢掉。"""
+    frame, reasons = sanitize_ohlcv_frame(
+        pd.DataFrame([_bar(open="bad", high=float("inf"), low=float("-inf"), close=float("nan"))]),
+        drop=False,
+    )
+    assert len(frame) == 1
+    assert pd.isna(frame.iloc[0]["close"])
+    assert reasons["nan_ohlc"] == 1
+
+
 def test_high_below_low_is_dropped():
     frame, reasons = sanitize_ohlcv_frame(pd.DataFrame([_bar(), _bar(high=8.0, low=9.5)]))
     assert len(frame) == 1

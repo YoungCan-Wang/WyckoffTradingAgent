@@ -25,15 +25,29 @@ def dirty_bar_reason(row: pd.Series) -> str | None:
     return None
 
 
-def sanitize_ohlcv_frame(df: pd.DataFrame | None) -> tuple[pd.DataFrame, dict[str, int]]:
+def sanitize_ohlcv_frame(df: pd.DataFrame | None, *, drop: bool = True) -> tuple[pd.DataFrame, dict[str, int]]:
     if df is None or df.empty:
         return pd.DataFrame() if df is None else df, {}
     if not set(_OHLC).issubset(df.columns):
         return df, {}
     flags = _dirty_flags(df)
     dirty = flags.any(axis=1)
-    dropped = {name: int(flags[name].sum()) for name in flags.columns if bool(flags[name].any())}
-    return df.loc[~dirty].reset_index(drop=True), dropped
+    reasons = {name: int(flags[name].sum()) for name in flags.columns if bool(flags[name].any())}
+    if drop:
+        return df.loc[~dirty].reset_index(drop=True), reasons
+    return _nullify_dirty_bars(df, dirty), reasons
+
+
+def _nullify_dirty_bars(df: pd.DataFrame, dirty: pd.Series) -> pd.DataFrame:
+    """分析页要留日期行；漏斗批量路径才丢 bar。"""
+    if not dirty.any():
+        return df
+    out = df.copy()
+    for col in _OHLC:
+        out.loc[dirty, col] = pd.NA
+    if "volume" in out.columns:
+        out.loc[dirty, "volume"] = pd.NA
+    return out
 
 
 def sanitize_ohlcv_map(

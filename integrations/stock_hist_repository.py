@@ -38,7 +38,7 @@ def normalize_hist_df(df: pd.DataFrame) -> pd.DataFrame:
         out["date"] = out["date"].astype(str)
     from core.ohlc_guard import sanitize_ohlcv_frame
 
-    kept, _reasons = sanitize_ohlcv_frame(out)
+    kept, _reasons = sanitize_ohlcv_frame(out, drop=False)
     return kept
 
 
