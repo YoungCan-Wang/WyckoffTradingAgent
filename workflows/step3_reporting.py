@@ -169,9 +169,9 @@ def _build_final_content(
 
 
 def _debate_overlay(selected_df: pd.DataFrame) -> str:
-    from core.step3_debate import build_debate_record, debate_block
+    from core.step3_debate import build_debate_record, debate_block, debate_veto_enabled
 
-    if selected_df is None or selected_df.empty:
+    if not debate_veto_enabled() or selected_df is None or selected_df.empty:
         return ""
     records = [build_debate_record(row) for row in selected_df.to_dict(orient="records")]
     return debate_block(records)
