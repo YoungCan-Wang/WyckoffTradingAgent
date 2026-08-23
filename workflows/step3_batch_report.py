@@ -19,6 +19,7 @@ from workflows.step3_inputs import (
 from workflows.step3_llm import call_step3_track_reports, route_label
 from workflows.step3_models import (
     Step3CandidateBundle,
+    Step3LlmResult,
     Step3RagResult,
     Step3RunOptions,
     Step3SelectionState,
@@ -130,13 +131,13 @@ def _run_step3_selection(
     preview_result = maybe_return_step3_preview(options, track_plan.track_requests, WYCKOFF_FUNNEL_SYSTEM_PROMPT)
     if preview_result:
         return preview_result
-    llm_result = call_step3_track_reports(
-        track_plan.track_requests,
-        track_plan.track_inputs,
-        selected_df,
-        options,
-        WYCKOFF_FUNNEL_SYSTEM_PROMPT,
-        report_progress,
+    llm_result = _step3_llm_or_cache(
+        options=options,
+        selected_df=selected_df,
+        rag_lines=rag_result.veto_lines,
+        market_context=market_context,
+        track_plan=track_plan,
+        report_progress=report_progress,
     )
     if not llm_result.ok:
         return (False, llm_result.status, "")
@@ -211,3 +212,49 @@ def run(
         selection=selection,
         report_progress=report_progress,
     )
+
+
+def _step3_llm_or_cache(
+    *,
+    options: Step3RunOptions,
+    selected_df: pd.DataFrame,
+    rag_lines: list[str],
+    market_context,
+    track_plan: Step3TrackPlan,
+    report_progress,
+) -> Step3LlmResult:
+    from core.report_snapshot_cache import (
+        build_step3_snapshot_payload,
+        data_snapshot_hash,
+        default_cache_dir,
+        load_cached_report,
+        selected_rows_from_df,
+        snapshot_cache_enabled,
+        store_cached_report,
+    )
+
+    payload = build_step3_snapshot_payload(
+        trade_date=str(getattr(market_context.window, "end_trade_date", "")),
+        regime=str(market_context.regime or ""),
+        model=options.model,
+        selected_rows=selected_rows_from_df(selected_df),
+        rag_veto_lines=rag_lines,
+    )
+    snapshot = data_snapshot_hash(payload)
+    cache_dir = default_cache_dir()
+    if snapshot_cache_enabled():
+        hit = load_cached_report(snapshot, cache_dir)
+        if hit and hit.get("report"):
+            print(f"[step3] 命中 snapshot cache {snapshot[:24]}")
+            return Step3LlmResult(True, "ok_cache", str(hit["report"]), dict(hit.get("used_models") or {}))
+    result = call_step3_track_reports(
+        track_plan.track_requests,
+        track_plan.track_inputs,
+        selected_df,
+        options,
+        WYCKOFF_FUNNEL_SYSTEM_PROMPT,
+        report_progress,
+    )
+    if result.ok and snapshot_cache_enabled():
+        store_cached_report(snapshot, {"report": result.report, "used_models": result.used_models}, cache_dir)
+    return result
