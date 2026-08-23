@@ -35,18 +35,21 @@ write('登录弹窗：')
 await win.waitForSelector('.thread', { timeout: 30_000 })
 const boot = await win.evaluate(() => ({
   workbench: !!document.querySelector('.thread'),
-  modal: !!document.querySelector('.login-dlg'),
-  acct: document.querySelector('.acct-n')?.textContent || ''
+  modal: !!document.querySelector('.login-dlg')
 }))
 check('未登录也直接进工作台', () => assert.equal(boot.workbench, true))
 check('启动时没有拦路的登录界面', () => assert.equal(boot.modal, false))
-check('账号行显示未登录', () => assert.match(boot.acct, /未登录|Not signed in/))
 
-// 侧栏可能收起 —— 收起时账号行不在，先展开。
+// 账号行在侧栏里，而窄窗口（CI 约 968px < 1180）下侧栏按产品规则收起 ——
+// 必须**先展开再读**。原来在展开之前就读 `.acct-n`，本机宽窗一直是绿的，
+// CI 上读到空字符串。
 if (await win.locator('.acct').count() === 0) {
   await win.locator('.side-toggle').first().waitFor({ state: 'visible', timeout: 20_000 })
   await win.locator('.side-toggle').first().click()
 }
+await win.locator('.acct').waitFor({ state: 'visible', timeout: 20_000 })
+const acctLabel = await win.evaluate(() => document.querySelector('.acct-n')?.textContent || '')
+check('账号行显示未登录', () => assert.match(acctLabel, /未登录|Not signed in/))
 await win.locator('.acct').click()
 const signin = win.locator('[role="menuitem"]', { hasText: /^登录$|^Sign in$/ })
 const hasSignin = await signin.waitFor({ state: 'visible', timeout: 10_000 }).then(() => true, () => false)

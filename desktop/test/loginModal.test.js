@@ -63,11 +63,13 @@ test('账号菜单未登录给「登录」，已登录给「退出登录」', ()
 
 test('关闭后清掉密码与错误', () => {
   // 下次打开不该看到上一次的残留（尤其是密码）
+  // 按 effect 的依赖数组切片，而不是按行顺序匹配 —— 后者对空白和语句次序敏感，
+  // CI 上因为一处换行差异就红了（本机绿）。
   const m = SRC('components/LoginModal.tsx')
-  const cleanup = m.match(/if \(open\) return\n[\s\S]*?\}, \[open\]\)/)
-  assert.ok(cleanup, '缺少关闭时的清理 effect')
-  assert.match(cleanup[0], /setPassword\(''\)/)
-  assert.match(cleanup[0], /setError\(''\)/)
+  const effects = m.split('useEffect(')
+  const cleanup = effects.find((chunk) => /setPassword\(''\)/.test(chunk) && /\}, \[open\]\)/.test(chunk))
+  assert.ok(cleanup, '缺少关闭时清空密码的 effect')
+  assert.match(cleanup, /setError\(''\)/, '同一个 effect 里也要清掉错误')
 })
 
 test('密码不进任何持久化，成功后立刻从 state 清掉', () => {
