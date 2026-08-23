@@ -9,7 +9,7 @@ import pandas as pd
 from core.compliance_report import generate_compliance_brief
 from integrations.llm_client import call_llm
 from workflows.compliance_report_config import compliance_llm_config_from_env
-from workflows.step3_delivery import notify_step3_channels, send_step3_input_preview
+from workflows.step3_delivery import notify_step3_channels, send_step3_input_preview, write_step3_evidence_sidecar
 from workflows.step3_inputs import build_step3_preview_report
 from workflows.step3_llm import route_label
 from workflows.step3_models import Step3LlmResult, Step3RunOptions, Step3TrackInputs
@@ -102,6 +102,12 @@ def send_step3_final_report(
         model_footer=build_model_footer(llm_result, active_tracks, options.model),
     )
     _log_step3_report_stats(content, llm_result, active_tracks, track_inputs, failed, options.model, options.notify)
+    write_step3_evidence_sidecar(
+        codes=selected_codes,
+        veto_lines=rag_veto_lines,
+        prose=content,
+        selected_count=len(selected_codes),
+    )
     if options.notify and not notify_step3_channels(options, _step3_title(benchmark_context), content):
         print("[step3] 飞书推送失败")
         return (False, "feishu_failed", llm_result.report)
