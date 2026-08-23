@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 
 from core.market_trade_mode import (
-    EXECUTE_BLOCK_NEW_BUY_REGIMES,
     PREMARKET_DATA_GAP,
     normalize_regime,
     stricter_market_regime,
@@ -202,7 +201,11 @@ def build_market_guardrail(
     raw_premarket = row.get("premarket_regime")
     effective_regime = resolve_effective_market_regime(benchmark_regime, raw_premarket)
     premarket_regime = _premarket_label_for_report(raw_premarket)
-    enforced_blocks = set(buy_block_regimes) | set(EXECUTE_BLOCK_NEW_BUY_REGIMES)
+    # 直接用 buy_block_regimes——它已由 step4_order_config 完成「默认集并入 BLOCK env
+    # 再由 ALLOW 豁免」的计算。此处若再并一次 EXECUTE_BLOCK_NEW_BUY_REGIMES，
+    # 会把刚豁免掉的档位重新拦回来，使 STEP4_BUY_ALLOW_REGIMES 形同虚设，
+    # 并与已读 ALLOW 的回测闸门（#301/#308）形成「回测能买、实盘买不到」的错位。
+    enforced_blocks = set(buy_block_regimes)
     gaps = missing_market_inputs(row.get("benchmark_regime"), raw_premarket, readiness, benchmark_context)
     # 只有真正因此禁买时才归因于数据缺失，避免回落后已放行仍写「禁买源自…」。
     missing_inputs = (
