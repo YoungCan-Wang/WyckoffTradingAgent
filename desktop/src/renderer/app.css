@@ -1285,15 +1285,25 @@ html.dark .mfin { background: var(--paper2); }
 /* 报告库里的可交互面板：这里只给入口,真正的渲染在隔离视图。 */
 .vdash { padding: 16px; display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
 
-/* 登录页：取代整个工作台，所以是独立的全屏布局而不是叠层。 */
-.login-wrap { display: flex; align-items: center; justify-content: center; height: 100vh; background: var(--paper); -webkit-app-region: drag; }
-.login-card { -webkit-app-region: no-drag; width: 340px; display: flex; flex-direction: column; gap: 8px; padding: 32px; }
-.login-t { margin: 0; font-size: 20px; font-weight: 650; }
-.login-sub { margin: 0 0 12px; font-size: 12.5px; line-height: 1.6; color: var(--tx2); }
-.login-l { font-size: 12px; color: var(--tx2); margin-top: 6px; }
-.login-i { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 13.5px; background: var(--paper2); color: var(--tx); }
+/* 登录弹窗。复用 .ov/.dlg 的遮罩与卡片，只覆盖尺寸和内部排版。 */
+.login-dlg { width: 340px; max-width: calc(100vw - 48px); height: auto; display: block; }
+.login-form { display: flex; flex-direction: column; gap: 6px; padding: 22px 24px 18px; }
+.login-t { margin: 0; font-size: 16px; font-weight: 650; }
+.login-sub { margin: 2px 0 10px; font-size: 12.5px; line-height: 1.55; color: var(--tx2); }
+.login-l { margin-top: 6px; font-size: 12px; color: var(--tx2); }
+.login-i {
+  padding: 7px 10px; border: 1px solid var(--line); border-radius: 7px;
+  font: inherit; font-size: 13px; background: var(--paper); color: var(--tx);
+}
 .login-i:focus { outline: 2px solid var(--clay); outline-offset: -1px; }
-.login-go { margin-top: 14px; padding: 9px; border: 0; border-radius: 8px; background: var(--clay); color: #fff; font-size: 13.5px; cursor: pointer; }
-.login-go:disabled { opacity: .55; cursor: default; }
 .login-err { margin: 8px 0 0; font-size: 12.5px; color: var(--up-ink); }
-.login-hint { margin: 10px 0 0; font-size: 11.5px; color: var(--tx2); }
+.login-acts { display: flex; gap: 8px; margin-top: 16px; }
+.login-cancel, .login-go {
+  flex: 1; padding: 8px; border-radius: 7px; font: inherit; font-size: 13px; cursor: pointer;
+}
+.login-cancel { border: 1px solid var(--line); background: var(--paper); color: var(--tx); }
+.login-cancel:hover:not(:disabled) { background: var(--hover); }
+.login-go { border: 0; background: var(--clay); color: #fff; font-weight: 600; }
+.login-go:hover:not(:disabled) { filter: brightness(.96); }
+.login-cancel:disabled, .login-go:disabled { opacity: .55; cursor: default; }
+.login-hint { margin: 12px 0 0; font-size: 11.5px; color: var(--tx3); }

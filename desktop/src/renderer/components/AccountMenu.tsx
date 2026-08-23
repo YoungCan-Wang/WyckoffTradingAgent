@@ -15,10 +15,12 @@ interface Props {
   onClose: () => void
   onSettings: () => void
   onSignOut: () => void
+  /** 打开登录弹窗。未登录时菜单里那条「登录」调它。 */
+  onSignIn: () => void
 }
 
 export function AccountMenu (
-  { anchor, label, initial, signedIn, onClose, onSettings, onSignOut }: Props
+  { anchor, label, initial, signedIn, onClose, onSettings, onSignOut, onSignIn }: Props
 ) {
   const box = useRef<HTMLDivElement>(null)
 
@@ -70,6 +72,21 @@ export function AccountMenu (
         <span className="ava">{initial}</span>
         <span className="menu-em">{label}</span>
       </div>
+      {/*
+        未登录时给「登录」，已登录时给「退出登录」—— 这个菜单原来**只有**退出
+        登录，于是未登录时点开只剩设置，是条死路。
+      */}
+      {!signedIn ? (
+        <button
+          className="menu-i"
+          role="menuitem"
+          type="button"
+          onClick={() => { onClose(); onSignIn() }}
+        >
+          <i className="menu-g" data-lucide="log-in" aria-hidden="true" />
+          <span>{t('menu.signin')}</span>
+        </button>
+      ) : null}
       <button
         className="menu-i"
         role="menuitem"
@@ -85,11 +102,6 @@ export function AccountMenu (
         <i className="menu-g" data-lucide="settings" aria-hidden="true" />
         <span>{t('menu.settings')}</span>
       </button>
-      {/*
-        未登录时这个菜单原来只剩「设置」—— 是条死路：看到「未登录」却没有任何
-        登录入口。现在登录本身由登录页承担（未登录时它取代整个工作台），所以
-        这里不重复放登录表单，只保证「退出登录」不会在未登录时出现。
-      */}
       {signedIn ? (
         <button
           className="menu-i"

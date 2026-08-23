@@ -1,10 +1,12 @@
-// 登录闸门：只有起真窗口才能验的两件事。
+// 登录弹窗：只有起真窗口才验得了的几件事。
 //
-// 1. 未登录时登录页**取代**工作台（不是叠一层）
-// 2. 已登录时**不闪**登录页 —— 那需要真实的异步时序，静态断言测不出来
+// 1. 启动直接进工作台（未登录**不**拦路）—— 应用不登录也能用
+// 2. 账号行能打开弹窗，弹窗真的居中
+// 3. 打开时背景真的 inert，关闭后真的恢复
+// 4. Esc 真的关得掉
 import { _electron as electron } from 'playwright'
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir } from 'node:fs/promises'
+import { mkdtemp } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -17,103 +19,80 @@ const check = (name, fn) => {
   try { fn(); write(`  ok   ${name}`) } catch (err) { failures += 1; write(`  FAIL ${name}: ${err.message}`) }
 }
 
-async function launch (home, signedIn = false) {
-  const profile = await mkdtemp(join(tmpdir(), 'wyckoff-login-'))
-  return electron.launch({
-    args: [APP_DIR, `--user-data-dir=${profile}`],
-    env: {
-      ...process.env,
-      ELECTRON_DISABLE_GPU: '1',
-      ...(home ? { HOME: home, USERPROFILE: home } : {}),
-      ...(signedIn ? { WYCKOFF_E2E_FAKE_SIGNIN: '1' } : {})
-    }
-  })
+const profile = await mkdtemp(join(tmpdir(), 'wyckoff-login-'))
+const home = await mkdtemp(join(tmpdir(), 'wyckoff-login-home-'))
+const app = await electron.launch({
+  args: [APP_DIR, `--user-data-dir=${profile}`],
+  // 干净的家目录 = 未登录。这一份**刻意不设** WYCKOFF_E2E_FAKE_SIGNIN：
+  // 要验的正是真实的未登录形态。
+  env: { ...process.env, ELECTRON_DISABLE_GPU: '1', HOME: home, USERPROFILE: home }
+})
+const win = await app.firstWindow()
+
+write('登录弹窗：')
+
+// 未登录也要直接进工作台。`.thread` 而不是 `#side`：窄窗口下侧栏按产品规则收起。
+await win.waitForSelector('.thread', { timeout: 30_000 })
+const boot = await win.evaluate(() => ({
+  workbench: !!document.querySelector('.thread'),
+  modal: !!document.querySelector('.login-dlg'),
+  acct: document.querySelector('.acct-n')?.textContent || ''
+}))
+check('未登录也直接进工作台', () => assert.equal(boot.workbench, true))
+check('启动时没有拦路的登录界面', () => assert.equal(boot.modal, false))
+check('账号行显示未登录', () => assert.match(boot.acct, /未登录|Not signed in/))
+
+// 侧栏可能收起 —— 收起时账号行不在，先展开。
+if (await win.locator('.acct').count() === 0) {
+  await win.locator('.side-toggle').first().waitFor({ state: 'visible', timeout: 20_000 })
+  await win.locator('.side-toggle').first().click()
 }
+await win.locator('.acct').click()
+const signin = win.locator('[role="menuitem"]', { hasText: /^登录$|^Sign in$/ })
+const hasSignin = await signin.waitFor({ state: 'visible', timeout: 10_000 }).then(() => true, () => false)
+check('账号菜单里有登录入口', () => assert.equal(hasSignin, true))
 
-write('登录闸门：')
-
-// --- 未登录：登录页接管 ---
-{
-  const home = await mkdtemp(join(tmpdir(), 'wyckoff-home-'))
-  const app = await launch(home)
-  const win = await app.firstWindow()
-  await win.waitForSelector('.login-card', { timeout: 25000 })
-  const state = await win.evaluate(() => ({
-    login: !!document.querySelector('.login-card'),
-    sidebar: !!document.querySelector('.thread'),
-    focused: document.activeElement?.id || '',
-    disabled: !!document.querySelector('.login-go')?.disabled
-  }))
-  check('未登录时显示登录页', () => assert.equal(state.login, true))
-  check('工作台不同时存在（取代，不是叠层）', () => assert.equal(state.sidebar, false))
-  check('自动聚焦邮箱输入框', () => assert.equal(state.focused, 'login-email'))
-
-  // 空表单不该静默 —— 而且**不该依赖后端就绪**。
-  //
-  // CI 上没有 Python payload，后端永远不会 ready（等 60 秒也不行）。原来的
-  // `submit()` 先查 backendReady 再校验字段，所以那时提交空表单没有任何反馈。
-  // 那本身是个 UX 缺陷（后端启动的几秒正是用户第一次尝试的时刻），已修好：
-  // 字段校验现在在前面。这条测试因此也能在无后端的环境里跑。
-  await win.evaluate(() => {
-    const form = document.querySelector('.login-card')
-    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
-  })
-  const hasError = await win.locator('.login-err')
-    .waitFor({ state: 'visible', timeout: 10_000 })
+if (hasSignin) {
+  await signin.click()
+  const opened = await win.locator('.login-dlg').waitFor({ state: 'visible', timeout: 10_000 })
     .then(() => true, () => false)
-  if (!hasError) {
-    const st = await win.evaluate(() => ({
-      loginCard: !!document.querySelector('.login-card'),
-      errEl: !!document.querySelector('.login-err'),
-      emailVal: document.getElementById('login-email')?.value ?? null,
-      submitDisabled: document.querySelector('.login-go')?.disabled
-    })).catch((e) => ({ evalFailed: String(e).slice(0, 100) }))
-    write(`  诊断(空表单): ${JSON.stringify(st)}`)
+  check('点登录打开弹窗', () => assert.equal(opened, true))
+
+  if (opened) {
+    const state = await win.evaluate(() => {
+      const d = document.querySelector('.login-dlg')
+      const r = d.getBoundingClientRect()
+      return {
+        modal: d.getAttribute('aria-modal'),
+        centered: Math.abs((r.left + r.width / 2) - window.innerWidth / 2) < 6,
+        bgInert: document.querySelector('.thread')?.inert === true,
+        focused: document.activeElement?.id || ''
+      }
+    })
+    check('弹窗水平居中', () => assert.equal(state.centered, true))
+    check('标为 aria-modal', () => assert.equal(state.modal, 'true'))
+    check('打开时背景被冻结', () => assert.equal(state.bgInert, true))
+    check('焦点进入弹窗', () => assert.match(state.focused, /^login-/))
+
+    // 空表单要给反馈，且**不依赖后端就绪** —— 字段校验先于 backendReady。
+    await win.evaluate(() => {
+      document.querySelector('.login-form')
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    })
+    const err = await win.locator('.login-err').waitFor({ state: 'visible', timeout: 10_000 })
+      .then(() => true, () => false)
+    check('空表单给出可见错误', () => assert.equal(err, true))
+
+    await win.keyboard.press('Escape')
+    const closed = await win.locator('.login-dlg').waitFor({ state: 'detached', timeout: 10_000 })
+      .then(() => true, () => false)
+    check('Esc 关闭弹窗', () => assert.equal(closed, true))
+    // 关闭后背景必须解除 inert，否则整个界面点不动
+    const restored = await win.evaluate(() => document.querySelector('.thread')?.inert === false)
+    check('关闭后背景恢复可交互', () => assert.equal(restored, true))
   }
-  check('空表单给出可见错误', () => assert.equal(hasError, true))
-  await app.close()
 }
 
-// --- 已登录：不闪登录页 ---
-{
-  const home = await mkdtemp(join(tmpdir(), 'wyckoff-home2-'))
-  await mkdir(join(home, '.wyckoff'), { recursive: true })
-  // 伪造 session 文件在 CI 上不可靠：`restore_session` 会拿假 token 去问
-  // Supabase，被判 invalid 就 clear_session，于是「已登录」这一半永远测不到。
-  // 所以这里改用 smoke 同一个环境变量旁路。**上半段（未登录）刻意不设它**，
-  // 那才是真实的登录闸门。
-  const app = await launch(home, true)
-  const win = await app.firstWindow()
-  // 一进来就轮询：如果登录页曾经出现过，这里能抓到
-  let sawLogin = false
-  const started = Date.now()
-  while (Date.now() - started < 20000) {
-    const s = await win.evaluate(() => ({
-      login: !!document.querySelector('.login-card'),
-      sidebar: !!document.querySelector('.thread')
-    })).catch(() => null)
-    if (s?.login) sawLogin = true
-    if (s?.sidebar) break
-    await win.waitForTimeout(120)
-  }
-  // 判据用 `.thread` 而不是 `#side`：CI 诊断显示 shellChildren 是
-  // ["sr-only","thread"] —— 窄窗口（968px < 1180）下侧栏按产品规则收起，
-  // `#side` 压根不渲染。工作台是否出现应该看主区，不是看侧栏。
-  const workbench = await win.evaluate(() => !!document.querySelector('.thread'))
-  if (!workbench) {
-    const st = await win.evaluate(() => ({
-      loginCard: !!document.querySelector('.login-card'),
-      shellChildren: [...(document.querySelector('.shell-root')?.children || [])]
-        .map((el) => el.className || el.tagName).slice(0, 4),
-      bypass: !!window.wyckoff?.e2eFakeSignin,
-      innerWidth: window.innerWidth
-    })).catch((e) => ({ evalFailed: String(e).slice(0, 100) }))
-    write(`  诊断(已登录): ${JSON.stringify(st)}`)
-  }
-  check('已登录时工作台出现', () => assert.equal(workbench, true))
-  check('已登录时从未闪过登录页', () => assert.equal(sawLogin, false))
-  await app.close()
-}
-
+await app.close()
 write(failures ? `\n*** ${failures} 项失败 ***` : '\n全部通过')
 process.exit(failures ? 1 : 0)

@@ -3,25 +3,22 @@
 
 ## 为什么需要这一步
 
-`desktop/build/icon.png` 是一张**自带白色圆角方块**的成品图：图形画在一个白色
-squircle 上，四角透明。这在 macOS 25 及以前没问题，但 macOS 26 会给所有应用图标
-**再套一层自己的 squircle** —— 于是自带的那层白底缩在系统外形里面，观感就是
-「大灰底 + 小图标」（实测截图确认）。
+`desktop/build/icon-source.png` 是带阴影和圆角底板的品牌母版。打包资产需要先提取
+品牌图形，再把它按统一比例放回干净的亮色底板，避免不同平台缩放结果不一致。
 
-Apple 论坛也写明：macOS 26 强制 squircle，没有合规 AppIcon 资产的第三方应用会
-回退到灰色背景。所以「把图形放大」只是缓解，根因是**图形不该自带外形**。
+实机 DMG 验证还发现：传统 ICNS 只有透明前景时，Finder 会套上灰色兼容底板；
+满画布不透明位图又会留下方形内框。这里因此输出四角透明的亮色 squircle，直接
+得到用户选中的亮白版本。
 
 ## 这个脚本做什么
 
 1. 从原图里识别图形本体（深色折线 + 橙色笔画 + 深色柱条），忽略白色底板
 2. 裁到图形的真实边界
-3. 按目标占比重新居中放到透明画布上
+3. 按目标占比重新居中放到各平台需要的底板上
 
 产出两份：
 
-- `icon-macos.png` —— 无底板、图形占 ~78%，交给 macOS 26 画外形。
-  78% 而不是 94%：系统 squircle 会裁掉四角，留白是**必需的安全区**，
-  塞满会让图形边缘被切。
+- `icon-macos.png` —— 亮色 squircle、图形占 ~62%，供 electron-builder 转 ICNS。
 - `icon.png`（Windows / Linux / 旧 macOS）—— 保留一个自绘 squircle 底板，
   图形占 ~62%。那些平台不套外形，没有底板会让图标浮在桌面上。
 
@@ -44,9 +41,8 @@ except ImportError:  # pragma: no cover - 只在没装 Pillow 的环境
     print("需要 Pillow：uv pip install pillow", file=sys.stderr)
     raise SystemExit(1) from None
 
-# macOS 26 会在图形外面画 squircle，所以图形只能占安全区。
-# 78% 是权衡：再大四角会被系统外形裁到，再小就还是「小图标」。
-MACOS_GLYPH_RATIO = 0.78
+# DMG 中选中的亮色版本使用清晰底板和约 62% 的品牌图形。
+MACOS_GLYPH_RATIO = 0.62
 
 # 其他平台不套外形，我们自己画底板；图形在底板内的占比。
 PLATE_GLYPH_RATIO = 0.62
@@ -117,14 +113,11 @@ def _fit(glyph: Image.Image, canvas: int, ratio: float) -> tuple[Image.Image, tu
 
 
 def render_macos(glyph: Image.Image, canvas: int) -> Image.Image:
-    """无底板：macOS 26 自己画 squircle，我们只提供居中的图形。"""
-    out = Image.new("RGBA", (canvas, canvas), (0, 0, 0, 0))
-    resized, offset = _fit(glyph, canvas, MACOS_GLYPH_RATIO)
-    out.paste(resized, offset, resized)
-    return out
+    """亮色 squircle：避免 Finder 为透明前景套灰色兼容底板。"""
+    return render_plate(glyph, canvas, MACOS_GLYPH_RATIO)
 
 
-def render_plate(glyph: Image.Image, canvas: int) -> Image.Image:
+def render_plate(glyph: Image.Image, canvas: int, ratio: float = PLATE_GLYPH_RATIO) -> Image.Image:
     """带底板：Windows / Linux / 旧 macOS 不套外形，图标需要自己的形状。"""
     out = Image.new("RGBA", (canvas, canvas), (0, 0, 0, 0))
     # squircle 用大圆角矩形近似。真正的 Apple squircle 是超椭圆，
@@ -138,7 +131,7 @@ def render_plate(glyph: Image.Image, canvas: int) -> Image.Image:
         fill=PLATE_COLOR,
     )
     out.alpha_composite(plate)
-    resized, offset = _fit(glyph, canvas, PLATE_GLYPH_RATIO)
+    resized, offset = _fit(glyph, canvas, ratio)
     out.paste(resized, offset, resized)
     return out
 
@@ -164,8 +157,7 @@ def main() -> int:
     mac = render_macos(glyph, args.canvas)
     mac_path = out_dir / "icon-macos.png"
     mac.save(mac_path)
-    box = mac.split()[-1].getbbox()
-    print(f"{mac_path.name}: 图形占 {(box[2] - box[0]) / args.canvas * 100:.0f}%（无底板）")
+    print(f"{mac_path.name}: 亮色底板，图形占 {MACOS_GLYPH_RATIO * 100:.0f}%")
 
     plate = render_plate(glyph, args.canvas)
     plate_path = out_dir / "icon.png"

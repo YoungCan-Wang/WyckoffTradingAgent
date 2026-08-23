@@ -7,7 +7,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { collect } from '../lib/ipc'
-import { LoginScreen } from './LoginScreen'
+import { LoginModal } from './LoginModal'
 import { Sidebar } from './Sidebar'
 import { TopBar } from './TopBar'
 import { OpenMenu, type MenuEntry } from './OpenMenu'
@@ -49,6 +49,7 @@ export function App () {
   const [account, setAccount] = useState({ signedIn: false, email: '', userId: '', checked: false, lastEmail: '' })
   const [openAnchor, setOpenAnchor] = useState<HTMLElement | null>(null)
   const [acctAnchor, setAcctAnchor] = useState<HTMLElement | null>(null)
+  const [loginOpen, setLoginOpen] = useState(false)
   const [settings, setSettings] = useState<{ open: boolean; section: string; anchor?: string }>(
     { open: false, section: 'general' }
   )
@@ -238,24 +239,11 @@ export function App () {
     [loadAccount, refreshCounts]
   )
 
-  // 未登录时登录页取代整个工作台。
+  // 未登录也能用：持仓存本地、模型可本地配。登录只是额外接上云端，
+  // 所以它是侧栏账号行里的一个动作，不是进门必答题。
   //
-  // 为什么是「取代」而不是弹窗：登录是进入应用的前置条件。用户可能把模型和行情
-  // 数据源都配在云端，没登录时那些配置拉不下来 —— 界面会显示「未配置模型」，
-  // 看起来像应用坏了。
-  //
-  // `checked` 之前什么都不渲染：已登录用户不该先闪一下登录页。
+  // 但账号态查明之前仍然不渲染：否则已登录用户会先闪一下「未登录」。
   if (!account.checked) return null
-  if (!account.signedIn) {
-    return (
-      <LoginScreen
-        collect={collect}
-        onSignedIn={onSignedIn}
-        backendReady={backendState === 'ready'}
-        initialEmail={account.lastEmail}
-      />
-    )
-  }
 
   return (
     <>
@@ -304,6 +292,17 @@ export function App () {
         onClose={() => setAcctAnchor(null)}
         onSettings={() => openSettings()}
         onSignOut={() => void signOut()}
+        onSignIn={() => setLoginOpen(true)}
+      />
+
+      {/* 登录弹窗：从侧栏账号行打开。未登录也能用应用，所以它不是进门关卡。 */}
+      <LoginModal
+        open={loginOpen}
+        onClose={() => setLoginOpen(false)}
+        collect={collect}
+        onSignedIn={onSignedIn}
+        backendReady={backendState === 'ready'}
+        initialEmail={account.lastEmail}
       />
       <SettingsModal
         open={settings.open}
