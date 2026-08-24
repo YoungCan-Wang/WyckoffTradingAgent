@@ -21,8 +21,12 @@ export interface ChatApi {
   /** 有过任何一轮 = 欢迎页该让位给对话 */
   started: boolean
   send: (text: string) => Promise<void>
-  /** 清掉前后端会话历史，开始一段独立分析。 */
+  /** 开一段新会话。旧会话留在列表里（原来是把当前会话清空）。 */
   reset: () => Promise<boolean>
+  /** 切到某个历史会话，把它的对话渲染出来。 */
+  loadSession: (id: string) => Promise<boolean>
+  /** 当前会话 id。空串表示后端还没分配。 */
+  sessionId: string
   /** 系统提示行（退出登录、切模型失败之类）也进对话流。 */
   sysLine: (text: string, isError?: boolean) => void
   invalidateOnTool: (toolName: string) => void
@@ -36,6 +40,9 @@ export function useChat (ready: boolean): ChatApi {
   const artifactsApi = useArtifacts()
   const [turns, setTurns] = useState<Turn[]>([])
   const [busy, setBusy] = useState(false)
+  // 当前会话 id。后端在每轮开头回传（chat 的第一个 result 事件），因为用户
+  // 可能在流式输出期间切走 —— 事件得知道往哪条时间线上贴。
+  const [sessionId, setSessionId] = useState('')
   // 事件到达时要改「当前活跃的那一轮」，用 ref 拿最新值 —— 闭包里读 state
   // 会读到订阅建立时的旧值。
   const liveIds = useRef<Set<string>>(new Set())
@@ -156,7 +163,11 @@ export function useChat (ready: boolean): ChatApi {
     if (!body || busy || !ready) return
     setBusy(true)
     sendInFlight.current += 1
-    const res = await window.wyckoff.call('chat', { text: body }).finally(() => {
+    // 带上 session_id：不带的话后端用它自己的「活跃会话」，而前端认为的活跃
+    // 可能已经变了（用户刚点了列表里的另一个会话）—— 那会把这句话写进错的会话。
+    const params: Record<string, unknown> = { text: body }
+    if (sessionId) params.session_id = sessionId
+    const res = await window.wyckoff.call('chat', params).finally(() => {
       sendInFlight.current -= 1
     })
     if (!res.ok || !res.id) {
@@ -185,7 +196,7 @@ export function useChat (ready: boolean): ChatApi {
     if (early?.length) {
       for (const event of early) handleLiveEvent(event)
     }
-  }, [busy, ready, handleLiveEvent])
+  }, [busy, ready, handleLiveEvent, sessionId])
 
   const reset = useCallback(async () => {
     if (busy || !ready) return false
@@ -198,6 +209,37 @@ export function useChat (ready: boolean): ChatApi {
     pendingEvents.current.clear()
     setTurns([])
     setBusy(false)
+    setSessionId(String(result.session_id || ''))
+    return true
+  }, [busy, ready, sysLine])
+
+  const loadSession = useCallback(async (id: string) => {
+    // 一轮还在跑时不切：那一轮的事件会继续按 id 分发到旧 turn 上，而 turns
+    // 已经被替换 —— 事件找不到归属，界面上表现为回复凭空消失。
+    if (busy || !ready || !id) return false
+    const result = await collect('chat_load', { session_id: id }).catch(() => null)
+    if (!result) {
+      sysLine(t('chat.loadFailed'), true)
+      return false
+    }
+    const rows = (result.turns as Array<{ role: string; content: string; at: string }>) || []
+    // 把 user/assistant 交替的扁平记录折回轮次结构。历史只有文本 ——
+    // 工具调用细节留在 scratchpad 里做取证，不重放到界面上。
+    const restored: Turn[] = []
+    for (const row of rows) {
+      if (row.role === 'user') {
+        restored.push({ id: `h${restored.length}`, user: row.content, blocks: [], live: false })
+      } else if (row.content) {
+        const last = restored[restored.length - 1]
+        if (last && !last.blocks.length) last.blocks.push({ kind: 'text', text: row.content })
+        else restored.push({ id: `h${restored.length}`, blocks: [{ kind: 'text', text: row.content }], live: false })
+      }
+    }
+    liveIds.current.clear()
+    pendingEvents.current.clear()
+    setTurns(restored)
+    setBusy(false)
+    setSessionId(id)
     return true
   }, [busy, ready, sysLine])
 
@@ -207,6 +249,8 @@ export function useChat (ready: boolean): ChatApi {
     started: turns.length > 0,
     send,
     reset,
+    loadSession,
+    sessionId,
     sysLine,
     invalidateOnTool,
     artifacts: artifactsApi.artifacts,

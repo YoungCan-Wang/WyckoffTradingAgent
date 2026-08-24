@@ -51,10 +51,15 @@ interface Props {
   onAccountClick: (anchor: HTMLElement) => void
   /** 侧栏展开时开关按钮住在这里；收起时住在顶栏。 */
   toggleSlot: React.ReactNode
+  /** 会话区。作为插槽传进来而不是在这里组装 —— 会话状态属于 App。 */
+  sessionSlot?: React.ReactNode
 }
 
 export function Sidebar (
-  { active, onNavigate, onNewAnalysis, counts, accountLabel, accountInitial, onAccountClick, toggleSlot }: Props
+  {
+    active, onNavigate, onNewAnalysis, counts, accountLabel, accountInitial,
+    onAccountClick, toggleSlot, sessionSlot
+  }: Props
 ) {
   const root = useRef<HTMLElement>(null)
   // lucide 只替换当前 DOM 里的占位符，所以每次结构变化后要再跑一次。
@@ -106,6 +111,9 @@ export function Sidebar (
           </div>
         ))}
       </nav>
+
+      {/* 会话列表在固定入口下方，自己一个滚动区 —— 固定入口不该被会话挤出视野 */}
+      {sessionSlot}
 
       <div className="side-foot">
         <button

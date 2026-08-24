@@ -202,6 +202,25 @@ const restored = await win.waitForFunction(
 ).then(() => true, () => false)
 check('关闭设置后焦点回到账号按钮', () => assert.equal(restored, true))
 
+// 会话列表。CI 上没有 Python payload，所以列表会是空的 —— 能断言的是
+// 「容器渲染了、固定导航没被它挤掉」，切换交互留给本地手验。
+const sessionUi = await win.evaluate(() => ({
+  listMounted: !!document.querySelector('[data-testid="session-list"]'),
+  navIntact: document.querySelectorAll('.nv').length,
+  // 会话区和固定导航必须是两个独立滚动区，否则导航会被会话挤出视野
+  navScrolls: getComputedStyle(document.querySelector('.nav')).overflowY,
+  sessScrolls: (() => {
+    const el = document.querySelector('.sess-scroll')
+    return el ? getComputedStyle(el).overflowY : ''
+  })()
+}))
+check('会话列表已挂载且未挤掉固定导航', () => {
+  assert.equal(sessionUi.listMounted, true)
+  assert.equal(sessionUi.navIntact, VIEWS.length)
+  assert.equal(sessionUi.sessScrolls, 'auto')
+  assert.notEqual(sessionUi.navScrolls, 'auto', '固定导航不该参与滚动')
+})
+
 check('渲染端无未预期报错', () =>
   assert.deepEqual(consoleErrors, [], `报错: ${consoleErrors.join(' | ')}`))
 } finally {

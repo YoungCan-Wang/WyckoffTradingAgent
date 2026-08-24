@@ -96,6 +96,9 @@ declare global {
     WyckoffChat?: {
       sysLine: (text: string, isError?: boolean) => void
       newAnalysis: () => Promise<boolean>
+      /** 切到某个历史会话。会话列表在侧边栏，对话状态在 ChatView。 */
+      loadSession: (id: string) => Promise<boolean>
+      sessionId: () => string
     }
     /** 把新插入的 data-lucide 占位符换成 svg。 */
     WyckoffIcons?: { render: () => void }

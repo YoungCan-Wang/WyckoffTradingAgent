@@ -17,8 +17,11 @@ import { AccountMenu } from './AccountMenu'
 import { SettingsModal } from './SettingsModal'
 import { ChatView } from './ChatView'
 import { PagePane } from './PagePane'
+import SessionList from './SessionList'
 
 const t = (key: string) => window.WyckoffI18n.t(key)
+// 带参版本。会话列表要插条数（「12 条消息」），现有的 t 只接 key。
+const tp = (key: string, params?: Record<string, string>) => window.WyckoffI18n.t(key, params)
 
 const SIDE_KEY = 'wyckoff.sidebar'
 
@@ -36,6 +39,10 @@ const TITLES: Record<string, string> = {
 
 export function App () {
   const [view, setView] = useState('chat')
+  // 当前会话与列表刷新计数。放在 App 而不是 SessionList 里：切换会话要由
+  // 侧边栏发起、由 ChatView 执行，两边都不拥有这个状态。
+  const [activeSession, setActiveSession] = useState('')
+  const [sessionNonce, setSessionNonce] = useState(0)
   const [sideOpen, setSideOpen] = useState(() => {
     try {
       const saved = localStorage.getItem(SIDE_KEY)
@@ -174,9 +181,18 @@ export function App () {
     setAcctAnchor(null)
   }, [])
 
-  const newAnalysis = useCallback(() => {
+  const newAnalysis = useCallback(async () => {
     navigate('chat')
-    void window.WyckoffChat?.newAnalysis()
+    await window.WyckoffChat?.newAnalysis()
+    // 让会话列表重拉：新会话要立刻出现，否则用户以为按钮没生效。
+    setSessionNonce((n) => n + 1)
+    setActiveSession(window.WyckoffChat?.sessionId?.() || '')
+  }, [navigate])
+
+  const switchSession = useCallback(async (id: string) => {
+    navigate('chat')
+    const ok = await window.WyckoffChat?.loadSession(id)
+    if (ok) setActiveSession(id)
   }, [navigate])
 
   const openSettings = useCallback((section = 'general', anchor?: string) => {
@@ -277,6 +293,15 @@ export function App () {
           active={view}
           onNavigate={navigate}
           onNewAnalysis={newAnalysis}
+          sessionSlot={
+            <SessionList
+              activeId={activeSession}
+              onSwitch={switchSession}
+              onNeedNew={newAnalysis}
+              reloadKey={sessionNonce}
+              t={tp}
+            />
+          }
           counts={counts}
           accountLabel={account.signedIn ? (account.email || t('account.signedIn')) : t('account.signedOut')}
           accountInitial={account.email ? account.email[0] : '·'}

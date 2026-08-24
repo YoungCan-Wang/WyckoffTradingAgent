@@ -49,10 +49,18 @@ export function ChatView () {
         const reset = await chat.reset()
         if (reset) setDraft('')
         return reset
-      }
+      },
+      // 会话列表住在侧边栏（App），而对话状态在这里 —— 沿用已有的 window 桥，
+      // 不为此引入全局 store。
+      loadSession: async (id: string) => {
+        const ok = await chat.loadSession(id)
+        if (ok) setDraft('')
+        return ok
+      },
+      sessionId: () => chat.sessionId
     }
     return () => { delete window.WyckoffChat }
-  }, [chat.sysLine, chat.reset])
+  }, [chat.sysLine, chat.reset, chat.loadSession, chat.sessionId])
 
   const send = () => {
     const text = draft
