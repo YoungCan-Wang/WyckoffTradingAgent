@@ -164,38 +164,42 @@ class TestObservationRows:
         assert "ret60" in row["strategy_version"]
 
 
-class TestDailyWorkflow:
-    """影子池已接每日定时——这些用例守住它不会误入下单链路或撞车其它任务。"""
+class TestInlineInFunnel:
+    """影子池已改为在漏斗内联计算（复用 all_df_map），不再有独立 workflow。
 
-    def _workflow(self) -> dict:
+    原独立 workflow 每天自抓 560 天快照，实测 45 分钟；而漏斗本就抓
+    FunnelConfig.trading_days=320 个交易日，足够覆盖最长的 250 日滚动分位。
+    """
+
+    def test_standalone_workflow_removed(self):
         from pathlib import Path
 
-        import yaml
+        assert not Path(".github/workflows/ic_shadow_pool.yml").exists()
 
-        data = yaml.safe_load(Path(".github/workflows/ic_shadow_pool.yml").read_text(encoding="utf-8"))
-        # PyYAML 把 `on:` 解析成布尔 True，这是已知怪癖。
-        return data
+    def test_funnel_computes_shadow_pool(self):
+        from pathlib import Path
 
-    def test_runs_after_main_funnel(self):
-        """必须在主漏斗（北京 17:17 / UTC 9:17）之后，才能用同一交易日的收盘数据。"""
-        data = self._workflow()
-        on = data.get("on") or data.get(True)
-        minute, hour, _dom, _mon, dow = on["schedule"][0]["cron"].split()
-        assert int(hour) > 9 or (int(hour) == 9 and int(minute) > 17)
-        # 与主漏斗同为周日至周四。
-        assert dow == "0-4"
+        src = Path("workflows/wyckoff_funnel.py").read_text(encoding="utf-8")
+        assert "_build_ic_shadow_pool" in src
+        assert 'metrics["ic_shadow"]' in src
 
-    def test_does_not_collide_with_review_replay(self):
-        """review_list_replay 在 UTC 11:25；影子池须早于它，避免争 Tushare 配额。"""
-        data = self._workflow()
-        on = data.get("on") or data.get(True)
-        minute, hour, *_ = on["schedule"][0]["cron"].split()
-        assert (int(hour), int(minute)) < (11, 25)
+    def test_daily_job_persists_shadow_pool(self):
+        from pathlib import Path
 
-    def test_write_context_is_server_job(self):
-        env = self._workflow()["jobs"]["run"]["env"]
-        assert env["WYCKOFF_WRITE_CONTEXT"] == "server_job"
+        src = Path("workflows/daily_job_step3.py").read_text(encoding="utf-8")
+        assert "persist_ic_shadow_pool" in src
 
-    def test_has_timeout(self):
-        """快照抓取 + 打分约 30 分钟；设上限避免卡死占用额度。"""
-        assert self._workflow()["jobs"]["run"]["timeout-minutes"] <= 120
+    def test_funnel_window_covers_longest_factor(self):
+        """漏斗窗口必须够长，否则 dry_vol_q250 的 250 日滚动分位算不出来。"""
+        from core.wyckoff_engine import FunnelConfig
+
+        assert FunnelConfig().trading_days >= 270
+
+    def test_shadow_failure_does_not_break_funnel(self):
+        """影子池是研究支线，异常必须被吞掉。"""
+        from pathlib import Path
+
+        src = Path("workflows/wyckoff_funnel.py").read_text(encoding="utf-8")
+        block = src.split("def _build_ic_shadow_pool")[1].split("def run(")[0]
+        assert "except Exception" in block
+        assert "return []" in block

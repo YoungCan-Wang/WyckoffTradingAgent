@@ -142,3 +142,101 @@ def combine_scores(
         ShadowPick(code=code, score=score, rank=index + 1, factor_ranks=ranks)
         for index, (code, score, ranks) in enumerate(scored[: max(config.top_n, 0)])
     ]
+
+
+def percentiles_from_df_map(
+    df_map: dict,
+    config: ShadowScoreConfig,
+    min_avg_amount_wan: float | None = None,
+) -> dict[str, dict[str, float]]:
+    """直接用漏斗已抓的 df_map 算因子分位，避免为影子池重复抓一次全市场快照。
+
+    原实现是独立 workflow 自己抓 560 天快照，实测每天 45 分钟——而漏斗本就抓了
+    320 个交易日（FunnelConfig.trading_days），足够覆盖影子池最长的 250 日滚动分位
+    （dry_vol_q250 需 250+20）。故改为复用。
+
+    因子口径必须与 scripts/scan_factor_ic.build_factors 保持一致，否则影子池打分
+    与 IC 结论脱节；tests 有用例断言两侧因子名一致。
+    """
+    import pandas as pd
+
+    if not df_map:
+        return {}
+    frames = []
+    for code, df in df_map.items():
+        if df is None or getattr(df, "empty", True):
+            continue
+        frames.append((str(code), df))
+    if not frames:
+        return {}
+
+    def _panel(column: str) -> pd.DataFrame:
+        cols = {}
+        for code, df in frames:
+            if column in df.columns:
+                cols[code] = pd.to_numeric(df[column], errors="coerce").reset_index(drop=True)
+        return pd.DataFrame(cols) if cols else pd.DataFrame()
+
+    close = _panel("close")
+    vol = _panel("volume") if any("volume" in df.columns for _, df in frames) else _panel("vol")
+    amount = _panel("amount")
+    if close.empty:
+        return {}
+
+    threshold = config.min_avg_amount_wan if min_avg_amount_wan is None else min_avg_amount_wan
+    eligible = close.columns
+    if not amount.empty:
+        # 与 scan_factor_ic 同口径：20 日均额（万元），只用截面日之前的数据。
+        amt20 = amount.rolling(20).mean().iloc[-1] / 10000.0
+        eligible = amt20[amt20 >= threshold].index
+
+    panels: dict[str, dict[str, float]] = {}
+    wanted = set(config.normalized())
+    if "ret60" in wanted:
+        panels["ret60"] = _last_percentile(close.pct_change(60, fill_method=None) * 100, eligible)
+    if "ret20" in wanted:
+        panels["ret20"] = _last_percentile(close.pct_change(20, fill_method=None) * 100, eligible)
+    if "dry_vol_q250" in wanted and not vol.empty:
+        v20 = vol.rolling(20).mean()
+        panels["dry_vol_q250"] = _last_percentile(v20.rolling(250).rank(pct=True) * 100, eligible)
+    if "vol_ratio" in wanted and not vol.empty:
+        v20 = vol.rolling(20).mean()
+        panels["vol_ratio"] = _last_percentile(vol / v20.replace(0, float("nan")), eligible)
+    return panels
+
+
+def _last_percentile(panel, eligible) -> dict[str, float]:
+    """取最后一个截面日的横截面分位（0~100）。"""
+    row = panel.iloc[-1].reindex(eligible).dropna()
+    if row.empty:
+        return {}
+    return (row.rank(pct=True) * 100).to_dict()
+
+
+def to_rows(picks: list[ShadowPick], trade_date: str, config: ShadowScoreConfig) -> list[dict]:
+    """转成 signal_observations 行。signal_type 用 ic_shadow 便于与真实买点区分。
+
+    放在 core 而非 scripts：workflows/wyckoff_funnel 要调它，而
+    tests/test_architecture_boundaries 禁止 runtime 层依赖脚本入口。
+    """
+    import json
+
+    return [
+        {
+            "market": "cn",
+            "trade_date": trade_date,
+            "code": pick.code.split(".")[0],
+            "signal_type": SHADOW_SOURCE,
+            "source": SHADOW_SOURCE,
+            "channel": SHADOW_CHANNEL,
+            "candidate_rank": pick.rank,
+            "priority_score": round(pick.score, 4),
+            # 影子池不进推荐、不下单——这两个标记确保下游不会误取。
+            "ai_recommended": False,
+            "selected_for_ai": False,
+            "candidate_status": "shadow_observe",
+            "strategy_version": config.describe(),
+            "features_json": json.dumps(pick.as_features(), ensure_ascii=False),
+        }
+        for pick in picks
+    ]
