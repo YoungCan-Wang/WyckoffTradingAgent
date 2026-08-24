@@ -896,10 +896,46 @@ def run_funnel_job(
         financial_metrics_requested=include_financial_metrics,
     )
     metrics = _build_funnel_metrics(metrics_inputs)
+    metrics["ic_shadow"] = _build_ic_shadow_pool(data)
     _write_review_trace(metrics_inputs, artifacts.layers.triggers, metrics)
     _attach_funnel_debug_context(metrics, metrics_inputs, include_debug_context)
     _log_funnel_summary(metrics, metrics_inputs)
     return artifacts.layers.triggers, metrics
+
+
+def _build_ic_shadow_pool(data) -> list[dict]:
+    """IC 反向打分影子池。复用漏斗已抓的 all_df_map，不再单独抓快照。
+
+    原为独立 workflow，每天自抓 560 天快照耗时 45 分钟；而漏斗本就抓了
+    FunnelConfig.trading_days=320 个交易日，足够覆盖最长的 250 日滚动分位。
+
+    只观察不下单：写入行强制 ai_recommended=False / selected_for_ai=False /
+    candidate_status='shadow_observe'。失败只记日志，绝不影响漏斗主流程。
+    """
+    try:
+        from core.ic_shadow_score import (
+            ShadowScoreConfig,
+            combine_scores,
+            percentiles_from_df_map,
+            to_rows,
+        )
+
+        config = ShadowScoreConfig()
+        panels = percentiles_from_df_map(data.all_df_map, config)
+        if not panels:
+            print("[shadow] 无可用因子面板，跳过")
+            return []
+        picks = combine_scores(panels, config)
+        trade_date = data.window.end_trade_date.isoformat()
+        rows = to_rows(picks, trade_date, config)
+        print(f"[shadow] {trade_date} 选出 {len(rows)} 只（{config.describe()}）")
+        for pick in picks[:5]:
+            detail = " ".join(f"{k}={v:.0f}" for k, v in pick.factor_ranks.items())
+            print(f"[shadow]   #{pick.rank} {pick.code} score={pick.score:+.2f} {detail}")
+        return rows
+    except Exception as exc:  # noqa: BLE001 - 影子池是研究支线，不得影响漏斗
+        print(f"[shadow] 影子池计算失败（不影响漏斗）: {str(exc)[:160]}")
+        return []
 
 
 def run(

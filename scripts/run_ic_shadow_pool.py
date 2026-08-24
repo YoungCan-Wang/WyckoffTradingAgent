@@ -33,12 +33,11 @@ import _bootstrap  # noqa: F401
 import pandas as pd
 
 from core.ic_shadow_score import (
-    SHADOW_CHANNEL,
     SHADOW_SOURCE,
     FactorWeight,
-    ShadowPick,
     ShadowScoreConfig,
     combine_scores,
+    to_rows,
 )
 
 WARMUP = 260
@@ -101,31 +100,6 @@ def compute_percentiles(
             continue
         panels[name] = (row.rank(pct=True) * 100).to_dict()
     return panels, str(dates[idx].date()), len(eligible)
-
-
-def to_rows(picks: list[ShadowPick], trade_date: str, config: ShadowScoreConfig) -> list[dict]:
-    """转成 signal_observations 行。signal_type 用 ic_shadow 便于与真实买点区分。"""
-    import json
-
-    return [
-        {
-            "market": "cn",
-            "trade_date": trade_date,
-            "code": pick.code.split(".")[0],
-            "signal_type": SHADOW_SOURCE,
-            "source": SHADOW_SOURCE,
-            "channel": SHADOW_CHANNEL,
-            "candidate_rank": pick.rank,
-            "priority_score": round(pick.score, 4),
-            # 影子池不进推荐、不下单——这两个标记确保下游不会误取。
-            "ai_recommended": False,
-            "selected_for_ai": False,
-            "candidate_status": "shadow_observe",
-            "strategy_version": config.describe(),
-            "features_json": json.dumps(pick.as_features(), ensure_ascii=False),
-        }
-        for pick in picks
-    ]
 
 
 def main() -> int:
