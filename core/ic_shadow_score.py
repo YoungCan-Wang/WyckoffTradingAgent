@@ -235,6 +235,12 @@ def to_rows(picks: list[ShadowPick], trade_date: str, config: ShadowScoreConfig)
             "ai_recommended": False,
             "selected_for_ai": False,
             "candidate_status": "shadow_observe",
+            # track 是 NOT NULL，仅接受 Trend / Accum。影子池按 IC 反向打分选出的是
+            # 低位缩量股（ret60 与 dry_vol_q250 分位均在个位数），语义上属吸筹，故填 Accum。
+            # 2026-08-24 首次实盘落库因漏填此列被 Postgres 拒绝（not-null violation），
+            # 当时容错生效、漏斗主流程未受影响。
+            "track": "Accum",
+            "stage": "",
             "strategy_version": config.describe(),
             "features_json": json.dumps(pick.as_features(), ensure_ascii=False),
         }
