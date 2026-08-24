@@ -458,7 +458,7 @@
     'signin.reloginHint': '重新登录请用 CLI：python -m cli login',
     'signin.signoutConfirm': '退出登录会清除本地会话与保存的凭据，下次启动需要重新登录。继续？',
     'signin.signoutFailed': '退出登录失败',
-    'signin.signedOutDone': '已退出登录。重新登录请用 CLI：python -m cli login',
+    'signin.signedOutDone': '已退出登录。',
 
     // 模型
     'models.heading': '模型',
@@ -953,7 +953,7 @@
     'signin.reloginHint': 'To sign in again, use the CLI: python -m cli login',
     'signin.signoutConfirm': 'Signing out clears the local session and saved credentials; the next launch requires signing in again. Continue?',
     'signin.signoutFailed': 'Sign out failed',
-    'signin.signedOutDone': 'Signed out. To sign in again, use the CLI: python -m cli login',
+    'signin.signedOutDone': 'Signed out.',
 
     'models.heading': 'Models',
     'models.note': 'The primary model handles chat; the backup takes over if the primary fails. Keys are written only to local config, never sent back.',

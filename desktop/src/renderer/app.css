@@ -1307,3 +1307,24 @@ html.dark .mfin { background: var(--paper2); }
 .login-go:hover:not(:disabled) { filter: brightness(.96); }
 .login-cancel:disabled, .login-go:disabled { opacity: .55; cursor: default; }
 .login-hint { margin: 12px 0 0; font-size: 11.5px; color: var(--tx3); }
+
+/* 全局轻提示。右下角、说完就走 —— 账号反馈不该留在对话流里。 */
+.toast-wrap {
+  position: fixed; right: 18px; bottom: 18px; z-index: 200;
+  display: flex; flex-direction: column; gap: 8px; align-items: flex-end;
+  /* 不拦鼠标：提示浮在界面上，但底下的按钮仍然可点。 */
+  pointer-events: none;
+}
+.toast {
+  max-width: 320px; padding: 9px 13px;
+  background: var(--paper); color: var(--tx);
+  border: 1px solid var(--line); border-radius: 9px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .12);
+  font-size: 12.5px; line-height: 1.5;
+  animation: toast-in .18s ease;
+}
+.toast-err { border-color: var(--up); color: var(--up-ink); }
+.toast-out { animation: toast-out .2s ease forwards; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(6px) } }
+@keyframes toast-out { to { opacity: 0; transform: translateY(4px) } }
+html.dark .toast { background: var(--paper2); }

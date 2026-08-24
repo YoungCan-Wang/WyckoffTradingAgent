@@ -133,3 +133,38 @@ test('E2E 旁路在渲染侧，且只认精确的 "1"', () => {
   assert.match(preload, /WYCKOFF_E2E_FAKE_SIGNIN === '1'/)
   assert.match(SRC('components/App.tsx'), /window\.wyckoff\?\.e2eFakeSignin/)
 })
+
+test('账号反馈走 toast，不塞进对话流', () => {
+  // 对话流是用户与模型的往来记录。「已同步 6 项配置」不属于那段对话，而且
+  // sysLine 会让它永久留在记录里 —— 下次翻历史还在，甚至可能进模型上下文。
+  const app = SRC('components/App.tsx')
+  for (const key of ['login.syncedPrefix', 'signin.signedOutDone', 'signin.signoutFailed']) {
+    const line = app.split('\n').find((l) => l.includes(key))
+    assert.ok(line, `找不到 ${key} 的调用`)
+    assert.ok(!/sysLine/.test(line), `${key} 仍在往对话流塞：${line.trim()}`)
+  }
+  assert.match(app, /<Toast items=\{toasts\}/, '应挂载 Toast')
+})
+
+test('toast 自动消失，且错误态抢断朗读', () => {
+  const toast = SRC('components/Toast.tsx')
+  // 说完就走：不留痕才是这类反馈的正确形态
+  assert.match(toast, /setTimeout/, '缺少自动消失')
+  assert.match(toast, /onExpire\(item\.id\)/, '到期要从列表摘除')
+  // 错误要立刻被念出来（用户会以为已经退出了）；普通提示不打扰
+  assert.match(toast, /item\.error \? 'alert' : 'status'/)
+  assert.match(toast, /item\.error \? 'assertive' : 'polite'/)
+})
+
+test('模型下拉的 fits 类不能写死', () => {
+  // 写死 fits 会让 overflow-y:hidden 永远生效 —— 实测 17 个模型时内容 889px
+  // 挤进 318px，下面的项直接够不着。必须按实测溢出决定。
+  const picker = SRC('components/ModelPicker.tsx')
+  assert.ok(!/'mdl-menu up fits'|'mdl-menu fits'/.test(picker),
+    'fits 不能硬编码在 className 里')
+  assert.match(picker, /node\.scrollHeight <= node\.clientHeight/,
+    '应按实测高度判断是否装得下')
+  // 不能按 models.length 估：每项两行、长 id 会折行，估算必然偏小
+  assert.ok(!/models\.length \* \d+.*setFits|setFits.*models\.length \* \d+/.test(picker),
+    '不该用行高估算代替实测')
+})

@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { collect } from '../lib/ipc'
 import { LoginModal } from './LoginModal'
+import { Toast, type ToastMessage } from './Toast'
 import { Sidebar } from './Sidebar'
 import { TopBar } from './TopBar'
 import { OpenMenu, type MenuEntry } from './OpenMenu'
@@ -50,6 +51,14 @@ export function App () {
   const [openAnchor, setOpenAnchor] = useState<HTMLElement | null>(null)
   const [acctAnchor, setAcctAnchor] = useState<HTMLElement | null>(null)
   const [loginOpen, setLoginOpen] = useState(false)
+  const [toasts, setToasts] = useState<ToastMessage[]>([])
+  // 账号类反馈用轻提示，不塞进对话流 —— 那是用户与模型的往来记录。
+  const toast = useCallback((text: string, error = false) => {
+    setToasts((prev) => [...prev, { id: Date.now() + Math.random(), text, error }])
+  }, [])
+  const dropToast = useCallback((id: number) => {
+    setToasts((prev) => prev.filter((m) => m.id !== id))
+  }, [])
   const [settings, setSettings] = useState<{ open: boolean; section: string; anchor?: string }>(
     { open: false, section: 'general' }
   )
@@ -179,15 +188,15 @@ export function App () {
     if (!window.confirm(t('signin.signoutConfirm'))) return
     const res = await collect('sign_out').catch(() => null)
     if (!res) {
-      window.WyckoffChat?.sysLine?.(t('signin.signoutFailed'), true)
+      toast(t('signin.signoutFailed'), true)
       return
     }
     // 退出即清掉所有账号的持仓缓存 —— 留着等于把上一个人的持仓存在这台机器上。
     window.WyckoffReact?.clearPortfolioCaches?.()
     closeSettings()
     await loadAccount()
-    window.WyckoffChat?.sysLine?.(t('signin.signedOutDone'))
-  }, [closeSettings, loadAccount])
+    toast(t('signin.signedOutDone'))
+  }, [closeSettings, loadAccount, toast])
 
   // 命令式模块（K 线、报告面板）与 React 页面互相回调都走这一条窄桥。
   useEffect(() => {
@@ -232,11 +241,12 @@ export function App () {
       const synced = info.synced as { models?: string[]; data_sources?: string[] } | undefined
       const count = (synced?.models?.length || 0) + (synced?.data_sources?.length || 0)
       if (count > 0) {
-        // 用 WyckoffChat.sysLine —— 与本文件里其它系统提示同一条路径。
-        window.WyckoffChat?.sysLine?.(t('login.syncedPrefix') + count + t('login.syncedSuffix'))
+        // 轻提示而不是对话流：「已同步 N 项配置」不是这段对话的一部分，
+        // 塞进去会永久留在记录里，下次翻历史还在。
+        toast(t('login.syncedPrefix') + count + t('login.syncedSuffix'))
       }
     },
-    [loadAccount, refreshCounts]
+    [loadAccount, refreshCounts, toast]
   )
 
   // 未登录也能用：持仓存本地、模型可本地配。登录只是额外接上云端，
@@ -294,6 +304,8 @@ export function App () {
         onSignOut={() => void signOut()}
         onSignIn={() => setLoginOpen(true)}
       />
+
+      <Toast items={toasts} onExpire={dropToast} />
 
       {/* 登录弹窗：从侧栏账号行打开。未登录也能用应用，所以它不是进门关卡。 */}
       <LoginModal

@@ -17,6 +17,8 @@ export function ModelPicker () {
   const [data, setData] = useState<Settings | null>(cachedSettings)
   const [open, setOpen] = useState(false)
   const [up, setUp] = useState(false)
+  // 内容是否装得下。装得下才隐藏滚动条；装不下必须能滚。
+  const [fits, setFits] = useState(true)
   const btn = useRef<HTMLButtonElement>(null)
   const menu = useRef<HTMLDivElement>(null)
 
@@ -67,6 +69,20 @@ export function ModelPicker () {
     setOpen(!open)
   }
 
+  // 用**实测的** scrollHeight 判定溢出，而不是按 models.length 估行高：
+  // 每项两行文字（名称 + provider·id），长 id 会折行，估算必然偏小。
+  // 打开后量一次；模型列表变化时重量。
+  useEffect(() => {
+    if (!open) return
+    const node = menu.current
+    if (!node) return
+    const measure = () => setFits(node.scrollHeight <= node.clientHeight + 1)
+    measure()
+    // 图标渲染完可能改变行高，下一帧再量一次
+    const raf = requestAnimationFrame(measure)
+    return () => cancelAnimationFrame(raf)
+  }, [open, models.length])
+
   const pick = async (m: ModelEntry) => {
     setOpen(false)
     if (m.id === data?.default_model) return
@@ -96,7 +112,10 @@ export function ModelPicker () {
       </button>
       <div
         ref={menu}
-        className={up ? 'mdl-menu up fits' : 'mdl-menu fits'}
+        // `fits` 关掉滚动条，只在内容真的不溢出时才该加 —— 原来是**无条件写死**的，
+        // 于是 `overflow-y: hidden` 永远生效，模型多到超过 max-height 时下面的项
+        // 直接够不着（实测 17 个模型时列表滚不动，被裁掉一半）。
+        className={[up ? 'mdl-menu up' : 'mdl-menu', fits ? 'fits' : ''].filter(Boolean).join(' ')}
         id="mdl-menu"
         role="listbox"
         hidden={!open}
