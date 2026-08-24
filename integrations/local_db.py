@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 _lock = threading.Lock()
 _conn: sqlite3.Connection | None = None
 
-_SCHEMA_VERSION = 16
+_SCHEMA_VERSION = 17
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -176,6 +176,23 @@ CREATE TABLE IF NOT EXISTS theme_radar_snapshot (
     synced_at TEXT DEFAULT (datetime('now'))
 );
 
+-- 会话级的可变元数据（标题、置顶）。
+--
+-- 单独一张表而不是给 chat_log 加列：chat_log 是 append-only 的消息明细，
+-- 而标题和置顶是整个会话的属性。塞进明细行意味着改标题要 UPDATE 每一行，
+-- 或者约定「取某一行的值」—— 两者都别扭。workflow_run + workflow_event
+-- 是同一个形状的先例。
+--
+-- 没有这张表的会话仍然合法：list 时 LEFT JOIN，标题回落到首条提问。
+CREATE TABLE IF NOT EXISTS chat_session (
+    session_id TEXT PRIMARY KEY,
+    user_id TEXT DEFAULT '',
+    title TEXT DEFAULT '',
+    pinned INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS workflow_run (
     run_id TEXT PRIMARY KEY,
     session_id TEXT DEFAULT '',
@@ -240,6 +257,8 @@ CREATE INDEX IF NOT EXISTS idx_mem_type ON agent_memory(memory_type);
 CREATE INDEX IF NOT EXISTS idx_mem_codes ON agent_memory(codes);
 CREATE INDEX IF NOT EXISTS idx_chatlog_session ON chat_log(session_id);
 CREATE INDEX IF NOT EXISTS idx_chatlog_created ON chat_log(created_at);
+-- 会话列表的默认排序：某账号下，置顶的在前，其余按最近活动倒序。
+CREATE INDEX IF NOT EXISTS idx_chatsess_user ON chat_session(user_id, pinned DESC, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_bg_task_session ON background_task_result(session_id);
 CREATE INDEX IF NOT EXISTS idx_bg_task_created ON background_task_result(created_at);
 CREATE INDEX IF NOT EXISTS idx_theme_radar_synced ON theme_radar_snapshot(synced_at);
@@ -323,12 +342,56 @@ def init_db() -> None:
         # 历史行留空字符串，等于归到未登录分区，不会张冠李戴。
         _ensure_columns(conn, "chat_log", {"user_id": "TEXT DEFAULT ''"})
         conn.execute("CREATE INDEX IF NOT EXISTS idx_chatlog_user ON chat_log(user_id, created_at)")
+    if current < 17:
+        _backfill_chat_sessions(conn)
     if current < _SCHEMA_VERSION:
         conn.execute(
             "INSERT OR REPLACE INTO schema_version(version) VALUES(?)",
             (_SCHEMA_VERSION,),
         )
         conn.commit()
+
+
+def _backfill_chat_sessions(conn: sqlite3.Connection) -> None:
+    """给已经存在的会话补上 chat_session 行。
+
+    库里已经攒了一批对话（桌面端和 TUI 都在写 chat_log），但那时还没有会话表。
+    不回填的话它们在新界面里全是「无标题」，看起来像坏数据。
+
+    标题取首条用户提问截断 —— 和 list_chat_sessions 原来的摘要口径一致，
+    用户能认出来那是自己问过的话。user_id 从消息行里取：同一会话内它是一致的，
+    取 MAX 只是为了在 GROUP BY 里挑一个值。
+
+    整段容错：这是锦上添花的迁移，失败不该让 init_db 挂掉、连库都开不了。
+    """
+    try:
+        existing = {r[0] for r in conn.execute("SELECT session_id FROM chat_session")}
+        rows = conn.execute(
+            """SELECT session_id,
+                      COALESCE(MAX(user_id), '') AS user_id,
+                      MIN(created_at) AS started_at,
+                      MAX(created_at) AS ended_at,
+                      (SELECT content FROM chat_log c2
+                       WHERE c2.session_id = chat_log.session_id AND c2.role = 'user'
+                       ORDER BY c2.created_at ASC LIMIT 1) AS first_user_msg
+               FROM chat_log GROUP BY session_id"""
+        ).fetchall()
+        # 标题在 Python 侧清洗：SQL 的 SUBSTR 会把首条提问后面注入的时间戳
+        # 上下文一起截进标题里。见 clean_session_title。
+        payload = [
+            (r[0], r[1], clean_session_title(r[4] or ""), 0, r[2], r[3])
+            for r in rows
+            if r[0] not in existing
+        ]
+        if payload:
+            conn.executemany(
+                """INSERT OR IGNORE INTO chat_session
+                   (session_id, user_id, title, pinned, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                payload,
+            )
+    except Exception:
+        logger.warning("migration: backfill chat_session failed", exc_info=True)
 
 
 def _ensure_recommendation_tracking_columns(conn: sqlite3.Connection) -> None:
@@ -1574,38 +1637,155 @@ def _research_transition_row(row: sqlite3.Row) -> dict[str, Any]:
 # Chat sessions
 # ---------------------------------------------------------------------------
 
+CHAT_TITLE_MAX = 60
 
-def delete_chat_session(session_id: str) -> int:
+
+def clean_session_title(raw: str) -> str:
+    """把一条用户消息收成能当标题的一行。
+
+    只取第一行：提问文本后面会被追加注入上下文（实测有
+    `\\n\\n[当前北京时间：2026-08-21 16:20（星期五，UTC+8）]`），
+    直接截断会把这坨东西显示在侧边栏里。
+
+    也顺手挡掉系统注入块开头的消息 —— 那种整条都不是用户说的话。
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    first = text.split("\n", 1)[0].strip()
+    if first.startswith("[") or first.startswith("<"):
+        return ""
+    return first[:CHAT_TITLE_MAX]
+
+
+def delete_chat_session(session_id: str, user_id: str | None = None) -> int:
+    """删掉一个会话的消息和元数据。
+
+    传 user_id 就多一道归属校验 —— 否则知道 session_id 就能删别人的会话。
+    和 load_chat_logs 一样用 `is not None`：空串是「未登录分区」这个有效条件。
+    """
     conn = get_db()
+    params: list[Any] = [session_id]
+    guard = ""
+    if user_id is not None:
+        guard = " AND user_id=?"
+        params.append(user_id)
     with conn:
-        cur = conn.execute(
-            "DELETE FROM chat_log WHERE session_id=?",
-            (session_id,),
-        )
+        cur = conn.execute(f"DELETE FROM chat_log WHERE session_id=?{guard}", params)
+        # 元数据跟着走。留下孤立的 chat_session 行会让列表里出现一个点不开的空会话。
+        conn.execute(f"DELETE FROM chat_session WHERE session_id=?{guard}", params)
     return cur.rowcount
 
 
-def list_chat_sessions(limit: int = 50) -> list[dict]:
-    """返回最近的会话列表，每个会话的首条用户消息作为摘要。"""
+def upsert_chat_session(session_id: str, user_id: str = "", title: str = "") -> None:
+    """确保会话有一行元数据，并把 updated_at 推到现在。
+
+    每轮对话都会调它（用于把会话顶到列表最前）。标题只在**为空**时写入 ——
+    否则用户手改的标题会被下一轮的自动标题覆盖掉。
+    """
+    if not session_id:
+        return
     conn = get_db()
+    with conn:
+        conn.execute(
+            """INSERT INTO chat_session (session_id, user_id, title)
+               VALUES (?, ?, ?)
+               ON CONFLICT(session_id) DO UPDATE SET
+                   updated_at = datetime('now'),
+                   title = CASE WHEN chat_session.title = '' THEN excluded.title ELSE chat_session.title END""",
+            (session_id, user_id, clean_session_title(title)),
+        )
+
+
+def rename_chat_session(session_id: str, title: str, user_id: str | None = None) -> bool:
+    """改标题。返回是否真的改到了一行（没改到通常意味着归属不符）。"""
+    clean = (title or "").strip()[:60]
+    if not session_id or not clean:
+        return False
+    conn = get_db()
+    params: list[Any] = [clean, session_id]
+    guard = ""
+    if user_id is not None:
+        guard = " AND user_id=?"
+        params.append(user_id)
+    with conn:
+        cur = conn.execute(
+            f"UPDATE chat_session SET title=?, updated_at=datetime('now') WHERE session_id=?{guard}",
+            params,
+        )
+    return cur.rowcount > 0
+
+
+def set_chat_session_pinned(session_id: str, pinned: bool, user_id: str | None = None) -> bool:
+    """置顶/取消置顶。
+
+    刻意**不动** updated_at：置顶是整理动作，不是「有新活动」。
+    改了它会让一次置顶把会话伪装成刚聊过的。
+    """
+    if not session_id:
+        return False
+    conn = get_db()
+    params: list[Any] = [1 if pinned else 0, session_id]
+    guard = ""
+    if user_id is not None:
+        guard = " AND user_id=?"
+        params.append(user_id)
+    with conn:
+        cur = conn.execute(f"UPDATE chat_session SET pinned=? WHERE session_id=?{guard}", params)
+    return cur.rowcount > 0
+
+
+def list_chat_sessions(limit: int = 50, user_id: str | None = None, search: str = "") -> list[dict]:
+    """返回会话列表：置顶优先，其余按最近活动倒序。
+
+    标题来自 chat_session，没有元数据行时回落到首条用户提问（LEFT JOIN + COALESCE）——
+    这样 TUI 写出来的、以及迁移前的历史会话都仍然显示得出来。
+
+    search 同时匹配标题和消息内容，用 LIKE 而不是 FTS：现有量级（几十个会话）下
+    LIKE 完全够，而 FTS 要建虚表加三个触发器还要回填。等会话过百再说。
+    """
+    conn = get_db()
+    clauses: list[str] = []
+    params: list[Any] = []
+    if user_id is not None:
+        clauses.append("l.user_id=?")
+        params.append(user_id)
+    if search.strip():
+        like = f"%{search.strip()}%"
+        clauses.append("(l.content LIKE ? OR s.title LIKE ?)")
+        params.extend([like, like])
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(limit)
     cur = conn.execute(
-        """SELECT session_id,
-                  MIN(created_at) AS started_at,
-                  MAX(created_at) AS ended_at,
+        f"""SELECT l.session_id,
+                  MIN(l.created_at) AS started_at,
+                  MAX(l.created_at) AS ended_at,
                   COUNT(*) AS msg_count,
-                  SUM(tokens_in) AS total_tokens_in,
-                  SUM(tokens_out) AS total_tokens_out,
-                  MAX(CASE WHEN error != '' THEN error ELSE NULL END) AS last_error,
-                  MAX(CASE WHEN role='assistant' THEN model ELSE NULL END) AS model,
-                  (SELECT content FROM chat_log c2 WHERE c2.session_id=chat_log.session_id AND c2.role='user' ORDER BY c2.created_at ASC LIMIT 1) AS first_user_msg,
-                  SUM(elapsed_s) AS total_elapsed_s
-           FROM chat_log
-           GROUP BY session_id
-           ORDER BY MAX(created_at) DESC
+                  SUM(l.tokens_in) AS total_tokens_in,
+                  SUM(l.tokens_out) AS total_tokens_out,
+                  MAX(CASE WHEN l.error != '' THEN l.error ELSE NULL END) AS last_error,
+                  MAX(CASE WHEN l.role='assistant' THEN l.model ELSE NULL END) AS model,
+                  (SELECT content FROM chat_log c2 WHERE c2.session_id=l.session_id AND c2.role='user'
+                    ORDER BY c2.created_at ASC LIMIT 1) AS first_user_msg,
+                  NULLIF(s.title, '') AS stored_title,
+                  COALESCE(s.pinned, 0) AS pinned,
+                  SUM(l.elapsed_s) AS total_elapsed_s
+           FROM chat_log l
+           LEFT JOIN chat_session s ON s.session_id = l.session_id
+           {where}
+           GROUP BY l.session_id
+           ORDER BY COALESCE(s.pinned, 0) DESC, MAX(l.created_at) DESC
            LIMIT ?""",
-        (limit,),
+        params,
     )
-    return [dict(r) for r in cur.fetchall()]
+    rows: list[dict] = []
+    for raw in cur.fetchall():
+        row = dict(raw)
+        # 标题回落在 Python 侧做而不是 SQL：首条提问后面常带注入的时间戳上下文
+        # （`\n\n[当前北京时间：…]`），在 SQL 里 SUBSTR 会把那坨也显示到侧边栏。
+        row["title"] = row.pop("stored_title", None) or clean_session_title(row.get("first_user_msg") or "")
+        rows.append(row)
+    return rows
 
 
 # ---------------------------------------------------------------------------
