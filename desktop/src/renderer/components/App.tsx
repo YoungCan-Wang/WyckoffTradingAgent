@@ -148,6 +148,10 @@ export function App () {
       void refreshCounts()
       void loadAccount()
       void window.WyckoffShell?.loadAppearance?.()
+      // 通知模型选择器重读配置。它只在挂载时拉一次，而打包后 Python 要几秒才起来
+      // —— 那一次必然落空，然后它再没有第二次机会，界面就永远停在「未配置模型」。
+      // 开发环境后端已经在跑，所以这个缺口一直没露出来。
+      window.dispatchEvent(new Event('wyckoff:models-changed'))
       wasReady = true
     }
     void window.wyckoff.status().then((s) => apply(s.state))

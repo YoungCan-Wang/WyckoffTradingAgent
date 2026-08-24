@@ -191,3 +191,21 @@ test('模型下拉的 fits 类不能写死', () => {
   assert.ok(!/models\.length \* \d+.*setFits|setFits.*models\.length \* \d+/.test(picker),
     '不该用行高估算代替实测')
 })
+
+test('后端 ready 后要通知模型选择器重读', () => {
+  // ModelPicker 只在挂载时 collect 一次（deps 是 []）。打包后 Python 要几秒才起来，
+  // 那一次必然落空，而它没有第二次机会 —— 界面永远停在「未配置模型」，
+  // 尽管 ~/.wyckoff/wyckoff.json 里有 17 个模型、后端也确实返回了 17 个。
+  // 开发环境后端已在运行，所以这个缺口一直没露出来。
+  const app = SRC('components/App.tsx')
+  const applyStart = app.indexOf('const apply = (state: string)')
+  const applyEnd = app.indexOf('wasReady = true', applyStart)
+  assert.ok(applyStart > 0 && applyEnd > applyStart, '找不到 backend status 的 apply()')
+  const body = app.slice(applyStart, applyEnd)
+  assert.match(body, /wyckoff:models-changed/,
+    'ready 时必须广播 models-changed，否则打包版模型列表永远为空')
+
+  // ModelPicker 那一侧要真的在听
+  const picker = SRC('components/ModelPicker.tsx')
+  assert.match(picker, /addEventListener\('wyckoff:models-changed'/)
+})
