@@ -1,6 +1,10 @@
 'use strict'
 
 const { app, BrowserWindow, Menu, clipboard, ipcMain, dialog } = require('electron')
+
+// powerSaveBlocker 的句柄。遥控开启期间持有，关闭时释放 —— 一直挂着会让电脑
+// 永不睡眠，那是在用户没要求的情况下改他的电源行为。
+let keepAwakeId = null
 const path = require('node:path')
 const fs = require('node:fs')
 const { PythonBridge } = require('./python-bridge')
@@ -395,6 +399,31 @@ app.whenReady().then(async () => {
       return { ok: false, error: 'invalid method' }
     }
     return bridge.send(method, params)
+  })
+
+  // 手机遥控期间阻止系统睡眠。
+  //
+  // 实测过三种状态的区别：**锁屏和息屏都不影响** —— 进程照常计数，网络零断连
+  // （锁屏 8 秒期间 12 次请求全部成功）。真正会断连的是**系统睡眠**，那时进程
+  // 被冻结。
+  //
+  // 所以用 'prevent-app-suspension' 而不是 'prevent-display-sleep'：后者连屏幕
+  // 都不让关，白白耗电还烧屏，而屏幕关掉对遥控毫无影响。
+  //
+  // 合盖睡眠挡不住（硬件级），但那时用户就在电脑边，不需要遥控。
+  ipcMain.handle('remote:keepAwake', (_evt, keep) => {
+    const { powerSaveBlocker } = require('electron')
+    if (keep) {
+      if (keepAwakeId === null || !powerSaveBlocker.isStarted(keepAwakeId)) {
+        keepAwakeId = powerSaveBlocker.start('prevent-app-suspension')
+      }
+      return { ok: true, blocking: true }
+    }
+    if (keepAwakeId !== null && powerSaveBlocker.isStarted(keepAwakeId)) {
+      powerSaveBlocker.stop(keepAwakeId)
+    }
+    keepAwakeId = null
+    return { ok: true, blocking: false }
   })
 
   ipcMain.handle('pdf:export', (_evt, payload) => exportPdf(payload))

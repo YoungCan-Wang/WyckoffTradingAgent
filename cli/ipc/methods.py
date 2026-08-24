@@ -1086,6 +1086,123 @@ def chat_reset(_params: dict[str, Any]) -> Iterator[Event]:
     yield _ok(reset=True, session_id=session.session_id)
 
 
+# 云端信箱的地址。与 web 端硬编码的同一个 Worker（web/apps/web/src/lib/api-url.ts）。
+# 允许用环境变量覆盖，好在本地 wrangler dev 上联调。
+REMOTE_API_BASE = os.environ.get("WYCKOFF_API_BASE", "https://wyckoff-api.yongkai-wang.workers.dev")
+
+
+def _remote_ws_url() -> str:
+    base = REMOTE_API_BASE.rstrip("/")
+    scheme = "wss" if base.startswith("https") else "ws"
+    host = base.split("://", 1)[-1]
+    return f"{scheme}://{host}/api/remote/ws"
+
+
+def _remote_credentials() -> tuple[str, str]:
+    """当前登录态里的 token 和 user_id。没登录就没法用遥控。
+
+    直接读库层而不是 session 里那个同名包装：架构边界测试禁止跨模块 import 私有
+    成员（`session._load_session`），而它本来就只是这个函数的一层壳。
+    """
+    from integrations.local_auth import load_session
+
+    session = load_session() or {}
+    return str(session.get("access_token") or ""), str(session.get("user_id") or "")
+
+
+def _remote_http(path: str, method: str = "GET", payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    """调云端的遥控接口（配对、设备列表、撤销）。"""
+    import httpx
+
+    token, _ = _remote_credentials()
+    if not token:
+        raise MethodError("not_signed_in", "远程遥控需要先登录 —— 手机要用同一个账号连上来。")
+    url = f"{REMOTE_API_BASE.rstrip('/')}/api/remote/{path}"
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.request(
+                method, url, headers={"Authorization": f"Bearer {token}"}, json=payload if payload else None
+            )
+    except Exception as exc:
+        raise MethodError("relay_unreachable", f"连不上云端中转：{exc}") from exc
+    if resp.status_code == 403:
+        raise MethodError("not_whitelisted", "这个账号还没开通远程遥控。")
+    if resp.status_code >= 400:
+        raise MethodError("relay_error", f"云端中转返回 {resp.status_code}")
+    try:
+        return dict(resp.json())
+    except Exception:
+        return {}
+
+
+def remote_status(_params: dict[str, Any]) -> Iterator[Event]:
+    """遥控是否已开启、有没有手机连着。"""
+    from cli.ipc.remote import bridge_status
+
+    token, _ = _remote_credentials()
+    yield _ok(**bridge_status(), signed_in=bool(token))
+
+
+def remote_enable(_params: dict[str, Any]) -> Iterator[Event]:
+    """开启遥控：连上云端信箱，并阻止电脑睡眠。
+
+    锁屏/息屏不影响（实测进程与网络都照常），但**系统睡眠**会断连。所以开启期间
+    由前端挂上 powerSaveBlocker —— 那是主进程的能力，这里只负责建连接。
+    """
+    from cli.ipc.remote import start_bridge
+
+    token, user_id = _remote_credentials()
+    if not token or not user_id:
+        raise MethodError("not_signed_in", "远程遥控需要先登录 —— 手机要用同一个账号连上来。")
+    import platform
+
+    label = platform.node() or "电脑"
+    start_bridge(_remote_ws_url(), token, label)
+    yield _ok(enabled=True, label=label)
+
+
+def remote_disable(_params: dict[str, Any]) -> Iterator[Event]:
+    """关闭遥控并踢掉所有已连的手机。
+
+    只断电脑这一端不够：配对码若还没过期，手机能再连回来。所以同时让云端作废
+    配对码并断开全部远程设备。
+    """
+    from cli.ipc.remote import stop_bridge
+
+    stop_bridge()
+    try:
+        _remote_http("revoke", "POST", {"conn_id": "*"})
+    except MethodError:
+        # 云端不可达时本地仍要停掉 —— 用户点了关闭就该关闭。
+        logger.info("remote revoke failed while disabling", exc_info=True)
+    yield _ok(enabled=False)
+
+
+def remote_pair(_params: dict[str, Any]) -> Iterator[Event]:
+    """要一个配对码，前端把它编成二维码。"""
+    data = _remote_http("pair", "POST")
+    code = str(data.get("code") or "")
+    if not code:
+        raise MethodError("relay_error", "云端没有返回配对码")
+    # 手机扫码后打开的地址。带着 code，登录同一账号后即可配对。
+    _, user_id = _remote_credentials()
+    url = f"{REMOTE_API_BASE.rstrip('/')}/m/#code={code}"
+    yield _ok(code=code, url=url, expires_in_ms=int(data.get("expires_in_ms") or 0))
+
+
+def remote_devices(_params: dict[str, Any]) -> Iterator[Event]:
+    """在线设备列表，供设置页显示与断开。"""
+    yield _ok(**_remote_http("devices"))
+
+
+def remote_revoke(params: dict[str, Any]) -> Iterator[Event]:
+    """踢掉一台设备。传 "*" 断开全部并作废配对码。"""
+    conn_id = str(params.get("conn_id") or "").strip()
+    if not conn_id:
+        raise MethodError("invalid_params", "缺少 conn_id")
+    yield _ok(**_remote_http("revoke", "POST", {"conn_id": conn_id}))
+
+
 def chat_sessions(params: dict[str, Any]) -> Iterator[Event]:
     """会话列表：置顶优先，其余按最近活动倒序。"""
     from integrations.local_db import list_chat_sessions
@@ -1172,6 +1289,12 @@ METHODS: dict[str, Callable[[dict[str, Any]], Iterator[Event]]] = {
     "chat_delete": chat_delete,
     "chat_rename": chat_rename,
     "chat_pin": chat_pin,
+    "remote_status": remote_status,
+    "remote_enable": remote_enable,
+    "remote_disable": remote_disable,
+    "remote_pair": remote_pair,
+    "remote_devices": remote_devices,
+    "remote_revoke": remote_revoke,
     "approve_list": approve_list,
     "approve_decide": approve_decide,
     "portfolio": portfolio,

@@ -1459,3 +1459,31 @@ html.dark .toast { background: var(--paper2); }
   color: var(--tx); background: var(--paper2);
   border: 1px solid var(--clay); border-radius: 6px; outline: none;
 }
+
+/* ---- 手机遥控 ---------------------------------------------------------- */
+.rc-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; }
+.rc-state { display: flex; align-items: center; gap: 7px; font-size: 12.5px; }
+/* 灰点=未连接，绿点=已连。状态色不单独承载信息，旁边always有文字。 */
+.rc-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--tx3); flex: none; }
+.rc-dot.on { background: var(--dn); }
+.rc-hint { margin: 2px 0 12px; color: var(--tx2); font-size: 11.5px; line-height: 1.6; }
+.rc-pair { padding: 4px 0 12px; }
+.rc-qr {
+  display: inline-flex; flex-direction: column; align-items: center; gap: 8px;
+  padding: 14px; background: #fff; border: 1px solid var(--line); border-radius: 10px;
+}
+/* 二维码底色必须是纯白：深色模式下把 canvas 放在深底上，扫码识别率会掉。 */
+.rc-qr canvas { display: block; border-radius: 4px; }
+.rc-qr-hint { margin: 0; max-width: 200px; color: var(--tx2); font-size: 11px; line-height: 1.5; text-align: center; }
+.rc-devices { padding-top: 4px; }
+.rc-devices-h {
+  display: flex; align-items: center; justify-content: space-between;
+  padding-bottom: 6px; color: var(--tx3); font-size: 10px;
+  font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+}
+.rc-empty { margin: 0; color: var(--tx3); font-size: 12px; }
+.rc-device {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 7px 0; border-top: 1px solid var(--line2);
+}
+.rc-device-n { font-size: 12.5px; }

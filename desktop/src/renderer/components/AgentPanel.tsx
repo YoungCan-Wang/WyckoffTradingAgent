@@ -5,6 +5,7 @@ import { TonePanel } from './TonePanel'
 import { ModelRow } from './ModelRow'
 import { AddModelForm } from './AddModelForm'
 import { DaemonSection } from './DaemonSection'
+import { RemotePanel } from './RemotePanel'
 import type { Settings } from '../types'
 
 const t = (key: string, params?: Record<string, string | number>) => window.WyckoffI18n.t(key, params)
@@ -92,6 +93,8 @@ export function AgentPanel ({ data, notes, save, reload, onMessage, flash }: Pro
       <Row label="Tushare"><KeyState present={data.has_tushare_token} /></Row>
 
       <DaemonSection onMessage={onMessage} />
+
+      <RemotePanel />
     </>
   )
 }
