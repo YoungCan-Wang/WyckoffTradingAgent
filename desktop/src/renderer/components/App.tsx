@@ -240,11 +240,12 @@ export function App () {
       await refreshCounts()
       const synced = info.synced as { models?: string[]; data_sources?: string[] } | undefined
       const count = (synced?.models?.length || 0) + (synced?.data_sources?.length || 0)
-      if (count > 0) {
-        // 轻提示而不是对话流：「已同步 N 项配置」不是这段对话的一部分，
-        // 塞进去会永久留在记录里，下次翻历史还在。
-        toast(t('login.syncedPrefix') + count + t('login.syncedSuffix'))
-      }
+      // 登录成功**一定**要有反馈。原来只在 count > 0 时提示，云端没配过东西
+      // 或本地已经都有时就完全静默 —— 弹窗一关，用户不知道成了没有。
+      // 同步到东西就顺带报一下数量，那是附加信息，不是提示存在的前提。
+      toast(count > 0
+        ? t('login.okSynced').replace('{count}', String(count))
+        : t('login.ok'))
     },
     [loadAccount, refreshCounts, toast]
   )

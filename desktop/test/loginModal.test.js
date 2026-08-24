@@ -138,12 +138,35 @@ test('账号反馈走 toast，不塞进对话流', () => {
   // 对话流是用户与模型的往来记录。「已同步 6 项配置」不属于那段对话，而且
   // sysLine 会让它永久留在记录里 —— 下次翻历史还在，甚至可能进模型上下文。
   const app = SRC('components/App.tsx')
-  for (const key of ['login.syncedPrefix', 'signin.signedOutDone', 'signin.signoutFailed']) {
+  for (const key of ['login.ok', 'signin.signedOutDone', 'signin.signoutFailed']) {
     const line = app.split('\n').find((l) => l.includes(key))
     assert.ok(line, `找不到 ${key} 的调用`)
     assert.ok(!/sysLine/.test(line), `${key} 仍在往对话流塞：${line.trim()}`)
   }
   assert.match(app, /<Toast items=\{toasts\}/, '应挂载 Toast')
+})
+
+test('登录成功一定有反馈，不因为没同步到东西而静默', () => {
+  // 原来只在 count > 0 时提示：云端没配过、或本地已经都有时完全静默，
+  // 弹窗一关用户不知道成了没有。同步数量是附加信息，不是提示存在的前提。
+  const app = SRC('components/App.tsx')
+  const idx = app.indexOf('const count = (synced?.models')
+  const after = app.slice(idx, idx + 500)
+  assert.ok(!/if \(count > 0\)/.test(after), '不该用 count > 0 当提示的前提')
+  assert.match(after, /login\.ok/, '总要报「已登录」')
+  assert.match(after, /login\.okSynced/, '同步到东西时顺带报数量')
+})
+
+test('toast 顶部居中，且不压顶栏分隔线', () => {
+  // 账号状态是全局的事：右下角会让它像聊天区的附属提示，视线也容易整条漏掉。
+  const css = SRC('app.css')
+  const block = css.slice(css.indexOf('.toast-wrap'), css.indexOf('.toast-wrap') + 400)
+  assert.match(block, /left: 50%/)
+  assert.match(block, /translateX\(-50%\)/)
+  assert.ok(!/bottom:/.test(block), '不该再定位在底部')
+  // 顶栏底边实测 71px；小于它会横跨分隔线，看着像顶栏的一部分
+  const top = Number((block.match(/top: (\d+)px/) || [])[1])
+  assert.ok(top > 71, `top=${top} 会压住顶栏分隔线（底边 71px）`)
 })
 
 test('toast 自动消失，且错误态抢断朗读', () => {

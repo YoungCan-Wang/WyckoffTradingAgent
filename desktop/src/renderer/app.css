@@ -1310,8 +1310,12 @@ html.dark .mfin { background: var(--paper2); }
 
 /* 全局轻提示。右下角、说完就走 —— 账号反馈不该留在对话流里。 */
 .toast-wrap {
-  position: fixed; right: 18px; bottom: 18px; z-index: 200;
-  display: flex; flex-direction: column; gap: 8px; align-items: flex-end;
+  /* 顶部居中：账号状态是全局的事。放右下角会让它看着像聊天区的附属提示，
+     而且视线落点在输入框附近，容易整条被忽略。 */
+  /* 84px 让它整条落在顶栏分隔线（底边 71px）**下方**。52px 时卡片会横跨
+     那条线，看着像顶栏的一部分而不是浮层。 */
+  position: fixed; top: 84px; left: 50%; transform: translateX(-50%); z-index: 200;
+  display: flex; flex-direction: column; gap: 8px; align-items: center;
   /* 不拦鼠标：提示浮在界面上，但底下的按钮仍然可点。 */
   pointer-events: none;
 }
@@ -1325,6 +1329,6 @@ html.dark .mfin { background: var(--paper2); }
 }
 .toast-err { border-color: var(--up); color: var(--up-ink); }
 .toast-out { animation: toast-out .2s ease forwards; }
-@keyframes toast-in { from { opacity: 0; transform: translateY(6px) } }
-@keyframes toast-out { to { opacity: 0; transform: translateY(4px) } }
+@keyframes toast-in { from { opacity: 0; transform: translateY(-6px) } }
+@keyframes toast-out { to { opacity: 0; transform: translateY(-4px) } }
 html.dark .toast { background: var(--paper2); }

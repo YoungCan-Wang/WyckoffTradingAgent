@@ -55,8 +55,8 @@
     'login.failed': '登录没能完成，请检查网络后重试',
     'login.waitingBackend': '正在启动本地服务，稍等一下就能登录。',
     'login.cliHint': '与命令行 wyckoff 共用同一个账号。',
-    'login.syncedPrefix': '已从云端同步 ',
-    'login.syncedSuffix': ' 项配置。',
+    'login.ok': '已登录',
+    'login.okSynced': '已登录 · 同步了 {count} 项云端配置',
     'menu.signin': '登录',
     'menu.signout': '退出登录',
 
@@ -574,8 +574,8 @@
     'login.failed': 'Sign-in did not complete. Check your connection and retry.',
     'login.waitingBackend': 'Starting the local service — you can sign in shortly.',
     'login.cliHint': 'Same account as the wyckoff command line.',
-    'login.syncedPrefix': 'Synced ',
-    'login.syncedSuffix': ' settings from the cloud.',
+    'login.ok': 'Signed in',
+    'login.okSynced': 'Signed in · synced {count} cloud settings',
     'menu.signin': 'Sign in',
     'menu.signout': 'Sign out',
 
