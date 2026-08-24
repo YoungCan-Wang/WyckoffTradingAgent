@@ -459,6 +459,36 @@ html.dark .berr-b { background: var(--paper2); }
 .msg .bd { flex: 1; min-width: 0; }
 .msg p { margin: 1px 0 0; white-space: pre-wrap; word-break: break-word; }
 
+/* 用户提问靠右带浅底,AI 回复全宽不带气泡。
+   这是 ChatGPT / Claude / Gemini 的一致做法,不是 IM 那种左右分栏 ——
+   AI 回复里有 markdown 表格、代码块、工具行和审批卡片,它们是固有宽度内容,
+   压到半宽会直接横向滚动。用户提问是短文本,靠右收窄反而更容易扫。 */
+.msg.u { justify-content: flex-end; }
+.msg.u .av { display: none; }
+.msg.u .bd {
+  flex: 0 1 auto; max-width: 76%;
+  background: var(--hover); border-radius: 12px;
+  padding: 7px 12px;
+}
+.msg.u .bd p { margin: 0; }
+
+/* 回复下方的复制 + 时间。默认只留很淡的时间,hover 到回复上才显出复制按钮 ——
+   一直挂着会让长会话到处是按钮。 */
+.reply-foot {
+  display: flex; align-items: center; gap: 10px;
+  margin-top: 7px; min-height: 18px;
+}
+.reply-copy {
+  border: 0; background: none; padding: 2px 5px; margin-left: -5px;
+  border-radius: 5px; color: var(--tx3); font: inherit; font-size: 11.5px;
+  cursor: pointer; opacity: 0; transition: opacity .13s ease, background .13s ease;
+}
+.msg.a:hover .reply-copy { opacity: 1; }
+/* 键盘可达:只在 hover 时出现的功能对键盘用户等于不存在。 */
+.reply-copy:focus-visible { opacity: 1; outline: 2px solid var(--clay); outline-offset: 1px; }
+.reply-copy:hover { background: var(--hover); color: var(--tx2); }
+.reply-time { color: var(--tx3); font-size: 11px; font-variant-numeric: tabular-nums; }
+
 .think {
   color: var(--tx3); font-size: 12.5px; font-style: italic;
   border-left: 2px solid var(--line); padding-left: 9px; margin: 4px 0 8px;

@@ -177,7 +177,7 @@ export function useChat (ready: boolean): ChatApi {
     // 新一轮：重置「本轮已展开」与「本轮关过」——上一轮的关闭不该影响这一轮。
     artifactsApi.beginTurn()
     liveIds.current.add(id)
-    setTurns((prev) => [...prev, { id, user: body, blocks: [], live: true }])
+    setTurns((prev) => [...prev, { id, user: body, blocks: [], live: true, at: Date.now() }])
     // 回放 await 期间缓存下来的事件，然后把缓存清空 —— 没被认领的那些属于
     // 页面调用（它们有自己的订阅），留着只会占内存。
     const early = pendingEvents.current.get(id)

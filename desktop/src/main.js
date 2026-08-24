@@ -1,6 +1,6 @@
 'use strict'
 
-const { app, BrowserWindow, ipcMain, dialog } = require('electron')
+const { app, BrowserWindow, Menu, clipboard, ipcMain, dialog } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs')
 const { PythonBridge } = require('./python-bridge')
@@ -57,6 +57,47 @@ let lastExportDir = ''
 // registration. Without replay that status is lost and the UI sits on
 // "连接中…" forever, never issuing a single call.
 let lastStatus = { state: 'starting' }
+
+/**
+ * 右键菜单。
+ *
+ * Electron **默认没有任何右键菜单** —— 选中文字右键不出「复制」，这在桌面应用
+ * 里是缺失的基本能力（浏览器里由 Chrome 自己提供，打包成应用之后就没有了）。
+ *
+ * 只做真正需要的几项：
+ * - 有选区 → 复制。输入框里额外给剪切/粘贴。
+ * - 链接 → 复制链接地址。
+ * - 什么都没选中 → 不弹菜单，空菜单比没菜单更让人困惑。
+ *
+ * 用 role 而不是自己调 clipboard：role 自带正确的快捷键显示、禁用态和本地化，
+ * 而且走的是 Chromium 的编辑命令，输入法组字中途也能正确处理。
+ */
+function attachContextMenu (contents) {
+  contents.on('context-menu', (_event, props) => {
+    const items = []
+    const hasSelection = Boolean(String(props.selectionText || '').trim())
+
+    if (props.isEditable) {
+      // 输入框：给全套编辑动作。剪切/复制在没有选区时由 role 自动置灰。
+      items.push({ role: 'cut' }, { role: 'copy' }, { role: 'paste' })
+      items.push({ type: 'separator' }, { role: 'selectAll' })
+    } else if (hasSelection) {
+      items.push({ role: 'copy' }, { type: 'separator' }, { role: 'selectAll' })
+    }
+
+    if (props.linkURL) {
+      if (items.length) items.push({ type: 'separator' })
+      items.push({
+        label: 'Copy Link',
+        click: () => clipboard.writeText(props.linkURL)
+      })
+    }
+
+    // 没有可做的事就不弹 —— 一个只有灰项的菜单没有意义。
+    if (!items.length) return
+    Menu.buildFromTemplate(items).popup({ window: BrowserWindow.fromWebContents(contents) })
+  })
+}
 
 function createWindow () {
   // Size to the PRIMARY display's work area. A hardcoded 1480 was wider than
@@ -115,6 +156,8 @@ function createWindow () {
   mainWindow.webContents.on('did-fail-load', (_e, code, desc) => {
     console.error(`[renderer] load failed: ${desc} (${code})`)
   })
+
+  attachContextMenu(mainWindow.webContents)
 
   // 优先加载 Vite 产物（含 React）；开发时没构建过就退回源目录。
   //

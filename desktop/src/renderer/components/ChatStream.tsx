@@ -4,7 +4,7 @@
  * 滚动跟随只在「本来就在底部」时生效 —— 用户往上翻看历史时，新内容到达
  * 不该把他拽回底部。
  */
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { Turn, Block } from '../lib/chat'
 import type { ChatArtifact } from '../lib/artifacts'
 import { ApprovalCardInline } from './ApprovalCardInline'
@@ -51,7 +51,7 @@ export function ChatStream ({ turns, artifacts, onApprovalDecided, onOpenArtifac
       {turns.map((turn) => (
         <div key={turn.id}>
           {turn.user !== undefined ? (
-            <div className="msg">
+            <div className="msg u">
               <span className="av">{t('chat.you')}</span>
               <div className="bd"><p>{turn.user}</p></div>
             </div>
@@ -77,6 +77,11 @@ export function ChatStream ({ turns, artifacts, onApprovalDecided, onOpenArtifac
                 {turn.live && (!turn.blocks.length || turn.stage) ? (
                   <p className="chat-wait">{waitLabel(turn)}</p>
                 ) : null}
+                {/* 回复结束后的操作栏。跑的过程中不显示 —— 复制一段还在变的
+                    文本没有意义,时间也还没定。 */}
+                {!turn.live && turn.blocks.some((b) => b.kind === 'text') ? (
+                  <ReplyFoot turn={turn} />
+                ) : null}
               </div>
             </div>
           ) : null}
@@ -85,6 +90,66 @@ export function ChatStream ({ turns, artifacts, onApprovalDecided, onOpenArtifac
       <div ref={endRef} />
     </>
   )
+}
+
+/**
+ * 回复下方的操作栏:复制 + 时间。
+ *
+ * 默认只显示时间(很淡),复制按钮 hover 到整条回复上才出现 —— 一直挂着会让
+ * 长会话看起来到处是按钮。但**键盘可达**:focus-visible 时也显示,否则
+ * 只能靠鼠标的功能对键盘用户等于不存在。
+ */
+function ReplyFoot ({ turn }: { turn: Turn }) {
+  const [copied, setCopied] = useState(false)
+
+  const copy = async () => {
+    // 只复制正文,不含工具行/审批卡片 —— 用户要的是回答本身,
+    // 粘出去带一串「✓ 持仓」是噪音。
+    const text = turn.blocks
+      .filter((b) => b.kind === 'text')
+      .map((b) => (b as { text: string }).text)
+      .join('\n\n')
+      .trim()
+    if (!text) return
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+      // 复制成功要有反馈,否则用户不知道成没成,会再点一次。
+      window.setTimeout(() => setCopied(false), 1600)
+    } catch {
+      // 剪贴板被拒(权限/焦点问题):不弹错,静默失败比错误提示更不碍事 ——
+      // 用户还可以选中后右键复制。
+    }
+  }
+
+  return (
+    <div className="reply-foot">
+      <button
+        type="button"
+        className="reply-copy"
+        onClick={copy}
+        aria-label={t('chat.copyReply')}
+      >
+        {copied ? t('chat.copied') : t('chat.copy')}
+      </button>
+      {turn.at ? <span className="reply-time">{formatTime(turn.at)}</span> : null}
+    </div>
+  )
+}
+
+/**
+ * 回复时间。同一天只显示时分;跨天补上日期 —— 昨天的对话显示「14:30」
+ * 会让人误以为是刚才。
+ */
+function formatTime (ts: number): string {
+  const d = new Date(ts)
+  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  const now = new Date()
+  const sameDay = d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  if (sameDay) return hm
+  return `${d.getMonth() + 1}/${d.getDate()} ${hm}`
 }
 
 /**
