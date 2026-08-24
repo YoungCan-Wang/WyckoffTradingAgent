@@ -19,10 +19,20 @@ SANDBOX_BRIDGE_URL = "https://wyckoff-agent-sandbox.vercel.app/api/sandbox-run"
 name = "AGENT_RUN_NOTIFIER"
 class_name = "AgentRunNotifier"
 
+# 手机遥控的信箱：手机与电脑各连一条 WS，由它按 connId 定向转发。
+[[durable_objects.bindings]]
+name = "REMOTE_RELAY"
+class_name = "RemoteRelay"
+
 # SQLite-backed classes are the only Durable Objects available on the free plan.
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["AgentRunNotifier"]
+
+# 新 class 要独立的 tag —— v1 已经部署过，改它会被 Cloudflare 拒绝。
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["RemoteRelay"]
 
 [[queues.producers]]
 queue = "wyckoff-agent-runs"
