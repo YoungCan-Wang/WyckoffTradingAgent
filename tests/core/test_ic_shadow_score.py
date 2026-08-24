@@ -203,3 +203,33 @@ class TestInlineInFunnel:
         block = src.split("def _build_ic_shadow_pool")[1].split("def run(")[0]
         assert "except Exception" in block
         assert "return []" in block
+
+
+class TestRequiredColumns:
+    """signal_observations 的 NOT NULL 列必须齐全。
+
+    2026-08-24 首次实盘落库被 Postgres 拒绝：
+        null value in column "track" violates not-null constraint
+    当时容错生效、漏斗主流程未受影响，但影子样本丢了一天。
+    """
+
+    def _row(self) -> dict:
+        from core.ic_shadow_score import to_rows
+
+        picks = [ShadowPick("002121.SZ", -1.65, 1, {"ret60": 2.0, "dry_vol_q250": 1.0})]
+        return to_rows(picks, "2026-08-24", ShadowScoreConfig())[0]
+
+    def test_track_present_and_valid(self):
+        """track 仅接受 Trend / Accum。影子池选低位缩量股，语义属吸筹。"""
+        assert self._row()["track"] == "Accum"
+
+    def test_no_none_values(self):
+        """任何 None 都可能撞上 NOT NULL 约束。"""
+        nulls = [k for k, v in self._row().items() if v is None]
+        assert not nulls, f"这些字段为 None，可能违反 NOT NULL: {nulls}"
+
+    def test_upsert_conflict_keys_all_present(self):
+        """upsert 的 on_conflict 是 market,trade_date,code,signal_type——缺一个就报错。"""
+        row = self._row()
+        for key in ("market", "trade_date", "code", "signal_type"):
+            assert row.get(key), key
