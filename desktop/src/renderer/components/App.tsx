@@ -6,6 +6,7 @@
  * 它们通过 window.WyckoffShell 暴露给这里调用。
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { clearIpcCache } from '../lib/ipcCache'
 import { collect } from '../lib/ipc'
 import { LoginModal } from './LoginModal'
 import { Toast, type ToastMessage } from './Toast'
@@ -112,6 +113,9 @@ export function App () {
     // 挡不住「此刻正看着持仓页」。
     if (lastUser.current !== null && lastUser.current !== uid) {
       window.WyckoffReact?.clearPortfolioCaches?.()
+      // 跟踪记录、归因报告这些也要清:它们缓存在模块作用域,不随组件卸载消失,
+      // 换账号后不清就会把上一个人的数据显示给新登录的人。
+      clearIpcCache()
       window.dispatchEvent(new CustomEvent('wyckoff:account-changed', { detail: { userId: uid } }))
     }
     lastUser.current = uid

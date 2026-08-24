@@ -136,6 +136,27 @@ interface DatesData {
   dates?: DateEntry[]
 }
 
+/**
+ * 已取回的归因报告正文，按日期存。
+ *
+ * 模块作用域而不是组件 state:归因页是条件渲染的(`view === 'attribution'`),
+ * 切走就卸载,state 里的缓存跟着消失 —— 于是每次回来都要重新拉一遍整份报告
+ * (实测 1.6 秒还在转圈)。提到模块级之后,同一份报告一个应用生命周期内只拉一次。
+ */
+const bodyCache: Record<string, AttributionRecord> = {}
+
+/**
+ * 换账号时丢掉正文缓存。
+ *
+ * 模块级缓存不随组件卸载消失,所以必须显式清 —— 否则 A 退出、B 登录,
+ * B 打开归因页会看到 A 的报告全文。这与持仓缓存分区是同一类问题。
+ *
+ * 监听器注册在模块加载时,不解绑:这份缓存的生命周期就是整个应用。
+ */
+window.addEventListener('wyckoff:account-changed', () => {
+  for (const k of Object.keys(bodyCache)) delete bodyCache[k]
+})
+
 export function AttributionPage () {
   // 只拉日期列表（约 3 KB）。整份报告约 14 KB，20 份一起拉要 8 秒 —— 页签
   // 只用得到日期，正文按翻到哪一页再取哪一页。
@@ -144,14 +165,19 @@ export function AttributionPage () {
 
   const [picked, setPicked] = useState<string | null>(null)
   // 已取回的报告，按日期存。翻回看过的那页是瞬时的，不再请求。
-  const [cache, setCache] = useState<Record<string, AttributionRecord>>({})
+  //
+  // 用模块级 bodyCache 兜底而不是只靠 state:页面是条件渲染的,切走就卸载,
+  // state 里的缓存随之消失 —— 那正是「归因页每次进来都要重新加载」的原因。
+  // state 仍然保留,因为要靠它触发重渲染;它只是 bodyCache 的一份视图。
+  const [cache, setCache] = useState<Record<string, AttributionRecord>>(() => ({ ...bodyCache }))
   const [loadError, setLoadError] = useState('')
   /**
    * 已经取过（或正在取）的日期。用 ref 而不是 state：它只用来去重，
    * 放进 state 会触发重渲染 → effect 依赖变化 → 取消刚发出的那次请求，
    * 结果永远停在「读取中」。
    */
-  const requested = useRef<Set<string>>(new Set())
+  // 用已缓存的日期预填：否则重挂载后会把手上已经有正文的日期再请求一遍。
+  const requested = useRef<Set<string>>(new Set(Object.keys(bodyCache)))
   const alive = useRef(true)
   useEffect(() => () => { alive.current = false }, [])
   /**
@@ -193,6 +219,7 @@ export function AttributionPage () {
         if (asked === currentRef.current) setLoadError(t('attribution.readFailed'))
         return
       }
+      bodyCache[asked] = got
       setCache((prev) => ({ ...prev, [asked]: got }))
     })()
   }, [current, latestDate])

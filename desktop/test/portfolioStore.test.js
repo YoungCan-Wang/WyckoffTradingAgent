@@ -68,3 +68,39 @@ test('加载中与真的没持仓要能区分', () => {
   assert.match(w, /pfUnknown/)
   assert.match(w, /value === null \? '–'/, '未知时显示占位符而不是 0')
 })
+
+test('useIpc 结果跨挂载缓存', () => {
+  // 页面是条件渲染的（view === 'x' ? <Page/> : null），切走就卸载、切回就重挂载。
+  // 没有模块级缓存时那就是每次进页面都重拉 —— 跟踪页 ~200ms 察觉不到，
+  // 归因页 1.6 秒还在转，于是看起来「只有归因有问题」，其实两个都在重请求。
+  const h = CODE('lib/useIpc.ts')
+  assert.match(h, /readIpcCache/, '应读模块级缓存')
+  assert.match(h, /writeIpcCache/, '应写模块级缓存')
+  // 初始 state 就要读缓存：放在 effect 里会先渲染一帧 loading，视觉上仍然「闪一下」
+  const init = h.slice(h.indexOf('useState'), h.indexOf('const [nonce'))
+  assert.match(init, /readIpcCache/,
+    '缓存要在 useState 惰性初始化里读，不能等 effect —— 否则先渲染一帧 loading')
+})
+
+test('空结果也算有效缓存', () => {
+  // 用「取出来是不是 undefined」判断命中的话，成功但无数据的 null 会被当成未命中，
+  // 于是每次进页面都重拉一个注定为空的请求。
+  const c = CODE('lib/ipcCache.ts')
+  assert.match(c, /store\.has\(key\)/, '用 has() 判断命中，不是看值是否为空')
+})
+
+test('归因正文缓存在模块级，不在组件 state', () => {
+  const a = CODE('components/AttributionPage.tsx')
+  assert.match(a, /^const bodyCache/m, '正文缓存必须活过组件卸载')
+  assert.match(a, /new Set\(Object\.keys\(bodyCache\)\)/,
+    '去重集合要用已缓存日期预填，否则重挂载后会把已有正文的日期再请求一遍')
+})
+
+test('换账号时清掉所有模块级缓存', () => {
+  // 模块级缓存不随组件卸载消失 —— 不显式清就会把上一个人的数据给新登录的人
+  const app = CODE('components/App.tsx')
+  assert.match(app, /clearIpcCache\(\)/)
+  const a = CODE('components/AttributionPage.tsx')
+  assert.match(a, /wyckoff:account-changed[\s\S]{0,160}delete bodyCache/,
+    '归因正文也要跨账号清理')
+})
