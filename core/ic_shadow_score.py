@@ -51,21 +51,30 @@ class ShadowScoreConfig:
     """影子池打分配置。默认权重来自 2026-08-22 首轮 IC 扫描的 T+10 结果。
 
     只收录三段方向全一致且通过可用门槛（|IC|>=0.02 且 |IC_IR|>=0.30）的因子。
-    2026-08-22 用生产 FunnelConfig 真实参数重测后，满足两条的恰好是这三个：
-    rps_fast（20 日横截面分位）、ret60、dry_vol_min10_q250（10 日最低量 / 250 日分位）。
 
-    vol_ratio_5_20 虽 IR -0.33 通过门槛，但只有 2/3 段同向，故不纳入——方向不稳的
-    因子进模型等于引入拟合。turnover_amt / bias_200 等为正日占比落在 45~55%
-    噪声带内，按 AGENTS.md 判定为无方向性。
+    **因子名必须与 scripts/scan_factor_ic.build_factors 的键逐字一致**——影子池的分位
+    面板由那个函数产出。2026-08-24 生产失败就源于此：默认权重曾写 dry_vol_min10_q250
+    与 vol_ratio_5_20，而 main 上的键是 dry_vol_q250 / vol_ratio，脚本直接
+    SystemExit「未知因子」。那两个名字来自一个未合并的本地版本，我按它写了权重却没
+    在 main 上验证。tests 现有用例断言两侧键集一致，防止再次漂移。
+
+    用 main 的真实因子定义重测（498 个交易日 / 3 段各约 75 日）后可用的是：
+
+        ret60         IC -0.0350  IR -0.35  三段同号
+        rps_slow      IC -0.0350  IR -0.35  三段同号
+        dry_vol_q250  IC -0.0320  IR -0.32  三段同号
+
+    rps_slow 与 ret60 的 IC 完全相同——前者就是后者的横截面分位，**只取其一**，
+    否则同一信息被计权两次。rps_fast（IR -0.25）、vol_ratio（IR -0.24 且仅 2/3 段
+    同向）未过门槛；turnover_amt / bias_200 / price_from_low250 等为正日占比落在
+    45~55% 噪声带内，按 AGENTS.md 判为无方向性。
     """
 
     weights: tuple[FactorWeight, ...] = (
-        # IC -0.0711 / IR -0.38，各段 -0.084 -0.058 -0.072
-        FactorWeight("rps_fast", -0.38),
-        # IC -0.0692 / IR -0.37，各段 -0.086 -0.051 -0.071
-        FactorWeight("ret60", -0.37),
-        # IC -0.0504 / IR -0.35，各段 -0.070 -0.017 -0.063
-        FactorWeight("dry_vol_min10_q250", -0.35),
+        # IC -0.0350 / IR -0.35，三段方向全一致
+        FactorWeight("ret60", -0.35),
+        # IC -0.0320 / IR -0.32，三段方向全一致
+        FactorWeight("dry_vol_q250", -0.32),
     )
     top_n: int = DEFAULT_TOP_N
     min_avg_amount_wan: float = 8000.0

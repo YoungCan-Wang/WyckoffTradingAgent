@@ -27,9 +27,43 @@ from core.ic_shadow_score import (
 
 
 class TestConfig:
-    def test_defaults_are_the_three_stable_factors(self):
+    def test_default_factor_names_exist_in_scanner(self):
+        """**最关键的一条**：权重里的因子名必须真实存在于 build_factors。
+
+        2026-08-24 生产失败就源于此——默认权重写 dry_vol_min10_q250 / vol_ratio_5_20，
+        而 main 上的键是 dry_vol_q250 / vol_ratio，脚本直接 SystemExit「未知因子」。
+        那两个名字来自未合并的本地版本，我按它写了权重却没在 main 上验证。
+        """
+        import pandas as pd
+
+        from scripts.scan_factor_ic import build_factors
+
+        # 造一份最小行情，只为取出因子键集，不关心数值。
+        dates = pd.date_range("2024-01-01", periods=3, freq="B")
+        frame = pd.DataFrame(
+            {
+                "ts_code": ["000001"] * 3,
+                "d": dates,
+                "open": [10.0] * 3,
+                "close": [10.0] * 3,
+                "high": [10.0] * 3,
+                "low": [10.0] * 3,
+                "vol": [100.0] * 3,
+                "amount": [1000.0] * 3,
+            }
+        )
+        available = set(build_factors(frame)[0])
+        missing = {w.name for w in ShadowScoreConfig().weights} - available
+        assert not missing, f"权重引用了不存在的因子: {sorted(missing)}；可选 {sorted(available)}"
+
+    def test_defaults_are_the_stable_factors(self):
         names = {w.name for w in ShadowScoreConfig().weights}
-        assert names == {"rps_fast", "ret60", "dry_vol_min10_q250"}
+        assert names == {"ret60", "dry_vol_q250"}
+
+    def test_does_not_double_count_ret60_and_rps_slow(self):
+        """rps_slow 就是 ret60 的横截面分位，两者 IC 完全相同，不得同时入选。"""
+        names = {w.name for w in ShadowScoreConfig().weights}
+        assert not {"ret60", "rps_slow"} <= names
 
     def test_all_defaults_are_reverse(self):
         """三个因子 IC 全为负，必须都反向使用。"""
@@ -51,9 +85,8 @@ class TestCombine:
     def _panels(self):
         # A 极弱势极缩量、C 极强势放量——反向打分应把 A 排首位、C 垫底。
         return {
-            "rps_fast": {"A": 3.0, "B": 50.0, "C": 97.0},
             "ret60": {"A": 5.0, "B": 50.0, "C": 95.0},
-            "dry_vol_min10_q250": {"A": 2.0, "B": 50.0, "C": 96.0},
+            "dry_vol_q250": {"A": 2.0, "B": 50.0, "C": 96.0},
         }
 
     def test_weak_and_dry_ranks_first(self):
@@ -70,7 +103,7 @@ class TestCombine:
     def test_drops_codes_missing_any_factor(self):
         """缺值不补 50——否则无信息标的会被抬进 top-N。"""
         panels = self._panels()
-        panels["rps_fast"]["D"] = 1.0  # D 只有一个因子有值
+        panels["ret60"]["D"] = 1.0  # D 只有一个因子有值
         picks = combine_scores(panels, ShadowScoreConfig(top_n=10))
         assert "D" not in {p.code for p in picks}
 
@@ -80,7 +113,8 @@ class TestCombine:
         assert "A" not in {p.code for p in combine_scores(panels, ShadowScoreConfig(top_n=3))}
 
     def test_unknown_factor_ignored(self):
-        picks = combine_scores({"rps_fast": {"A": 1.0}}, ShadowScoreConfig(top_n=3))
+        """只提供部分因子面板时，按可用部分打分（缺全部因子才返回空）。"""
+        picks = combine_scores({"ret60": {"A": 1.0}}, ShadowScoreConfig(top_n=3))
         assert [p.code for p in picks] == ["A"]
 
     def test_no_panels_returns_empty(self):
@@ -117,17 +151,17 @@ class TestObservationRows:
 
         from scripts.run_ic_shadow_pool import to_rows
 
-        pick = ShadowPick("600363.SH", -1.06, 1, {"ret60": 0.0, "rps_fast": 3.0})
+        pick = ShadowPick("600363.SH", -1.06, 1, {"ret60": 0.0, "dry_vol_q250": 3.0})
         payload = json.loads(to_rows([pick], "2026-08-14", ShadowScoreConfig())[0]["features_json"])
         assert payload["ic_shadow_rank"] == 1
-        assert payload["factor_percentiles"]["rps_fast"] == pytest.approx(3.0)
+        assert payload["factor_percentiles"]["dry_vol_q250"] == pytest.approx(3.0)
 
     def test_strategy_version_carries_weights(self):
         """便于事后区分不同权重版本写入的行。"""
         from scripts.run_ic_shadow_pool import to_rows
 
         row = to_rows([ShadowPick("600363.SH", -1.0, 1)], "2026-08-14", ShadowScoreConfig())[0]
-        assert "rps_fast" in row["strategy_version"]
+        assert "ret60" in row["strategy_version"]
 
 
 class TestDailyWorkflow:
