@@ -10,7 +10,6 @@ from core.candidate_metadata import code6
 from core.candidate_ranker import TRIGGER_GROUP_ORDER, TRIGGER_GROUP_TITLES, TRIGGER_LABELS, TRIGGER_SHORT_LABELS
 from core.candidate_tracks import candidate_entry_key
 from core.execution_playbook import funnel_playbook_lines
-from core.funnel_etf import append_etf_section
 from core.funnel_sections import score_star
 from core.market_trade_mode import resolve_market_trade_mode
 from core.signal_confirmation import compute_support_level, score_springboard_abc
@@ -26,7 +25,6 @@ from workflows.funnel_report_payload import (
 )
 from workflows.funnel_settings import (
     FUNNEL_BYPASS_DISPLAY_LIMIT,
-    FUNNEL_ETF_DISPLAY_LIMIT,
     FUNNEL_L2_BYPASS_AI_CAP,
     FUNNEL_MAINLINE_DISPLAY_LIMIT,
     FUNNEL_TRACKING_SHAPE_DISPLAY_LIMIT,
@@ -760,9 +758,6 @@ def _build_legacy_card_lines(ctx: Any, selection: FunnelAiSelection) -> list[str
     governance_line = _policy_governance_line(selection.ai_policy)
     if governance_line:
         lines.insert(-1, governance_line)
-    append_etf_section(lines, ctx.etf_metrics, ctx.etf_candidates, display_limit=FUNNEL_ETF_DISPLAY_LIMIT)
-    if ctx.etf_metrics or ctx.etf_candidates:
-        lines.append("")
     _append_legacy_selected_sections(lines, ctx, selected_for_ai)
     if not selected_for_ai:
         lines.append("无")
@@ -837,7 +832,7 @@ def _build_modern_card_lines(ctx: Any, selection: FunnelAiSelection) -> list[str
                 f"连续主题{len(ctx.metrics.get('theme_lines') or [])}条 / "
                 f"最新{ctx.metrics.get('concept_history_latest_date') or '无'}"
             ),
-            "完整 L4、主线池、ETF 与逐层淘汰明细保留在结构化运行数据中；推送仅展开入表形态。",
+            "完整 L4、主线池与逐层淘汰明细保留在结构化运行数据中；推送仅展开入表形态。",
         ]
     )
     return lines

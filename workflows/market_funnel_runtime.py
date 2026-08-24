@@ -72,16 +72,6 @@ MARKET_SPECS = {
         # $0.5 以下多为流动性枯竭或退市途中的报价噪音，仍然拦掉。
         default_min_quote_price=0.5,
     ),
-    "etf": MarketSpec(
-        key="etf",
-        label="ETF",
-        universe="CN_Fund",
-        symbol_file="etf_cn.txt",
-        benchmark_symbols=(),
-        default_max_symbols=200,
-        default_min_quote_amount=500_000.0,
-        default_min_quote_price=0.0,
-    ),
 }
 
 
