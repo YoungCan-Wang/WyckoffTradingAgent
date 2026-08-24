@@ -23,7 +23,7 @@ function load (rel) {
   return mod.exports
 }
 
-const { parseArtifactEvent, mergeArtifact, reportArtifact } = load('artifacts.ts')
+const { parseArtifactEvent, mergeArtifact } = load('artifacts.ts')
 const { decideAutoOpen, resetForTurn, MIN_SPLIT_WIDTH } = load('autoOpen.ts')
 
 const READY = { id: 't1:c1', kind: 'kline', title: '600519', status: 'ready', payload: {} }
@@ -65,12 +65,6 @@ test('合并按 id 去重,且保持首次出现的位置', () => {
   assert.equal(list[0].status, 'failed', '内容要更新')
 })
 
-test('报告产物带正文,重开不需要再问模型', () => {
-  const a = reportArtifact('turn-3', '600519 结构解读', '正文...')
-  assert.equal(a.kind, 'report')
-  assert.equal(a.payload.body, '正文...')
-  assert.match(a.id, /^turn-3:/)
-})
 
 test('自动展开：ready 且空闲时展开', () => {
   const d = decideAutoOpen(READY, IDLE)
@@ -158,15 +152,23 @@ test('tool_start 不再直接开 K 线图', () => {
   assert.match(block[0], /invalidateOnTool/, '改持仓的工具仍要作废缓存')
 })
 
-test('报告也走注册表,不绕过自动展开策略', () => {
+test('不靠文本长相猜报告', () => {
+  // 原来有条 looksLikeReport() 回退：正文超 400 字且含标题/表格就当报告送去面板，
+  // 并把正文从对话里整块删掉。误判率极高 —— 任何带小标题的正经分析都超 400 字，
+  // 于是用户问「我的持仓怎么了」，得到一个面板而主聊天里一个字都没有。
+  //
+  // 「这是不是一份报告」由产出它的人声明（save_report），不由读者按字数猜。
   const useChat = SRC('lib/useChat.ts')
-  const branch = useChat.match(/if \(!toolMadeReport && looksLikeReport\(body\)\)[\s\S]*?\n        \}/)
-  assert.ok(branch, '找不到报告分支')
-  assert.match(branch[0], /artifactsApi\.add\(reportArtifact\(/, '报告应进注册表')
-  assert.ok(
-    !/WyckoffApp\?\.openReport/.test(branch[0]),
-    '直接调 openReport 会绕过「一轮只开第一个」「用户关过不再弹」等规则'
-  )
+  assert.ok(!/looksLikeReport\(/.test(useChat.replace(/\/\/[^\n]*/g, '')),
+    'done 分支不该再调 looksLikeReport')
+})
+
+test('正文永远留在对话里', () => {
+  // 那条猜测路径用 `.filter(b => b.kind !== 'text')` 把答复搬去了面板。
+  // 用户不该为了看答案去点开右侧。
+  const useChat = SRC('lib/useChat.ts')
+  assert.ok(!/filter\(\(b\) => b\.kind !== 'text'\)/.test(useChat),
+    '不得把 text 块从对话里滤掉 —— 那是对提问的答复')
 })
 
 test('shell 提供统一的 openArtifact 入口', () => {
@@ -305,19 +307,21 @@ test('dashBox 声明在模块顶层,不在使用点之后', () => {
   )
 })
 
-test('工具产出报告时,不再靠文本猜一遍', () => {
-  // 少了这个判断,一份 save_report 存下的报告会被打开两次：一次来自产物事件,
-  // 一次来自 looksLikeReport 猜中同一段正文（模型通常也会把正文说出来）。
-  const useChat = SRC('lib/useChat.ts')
-  assert.match(useChat, /const toolMadeReport = artifactsApi\.artifacts\.some/, '缺少去重判断')
-  assert.match(useChat, /!toolMadeReport && looksLikeReport\(body\)/, '猜测路径要让位于事件')
+test('去重判断随猜测路径一起退场', () => {
+  // 原来需要 toolMadeReport 去重：save_report 存下的报告会被打开两次,一次来自
+  // 产物事件、一次来自 looksLikeReport 猜中同一段正文。
+  //
+  // 猜测路径删掉之后这个判断就没有意义了 —— 只有一条路径产生报告,不会重复。
+  // 留着一个永远为真的 guard 只会让人以为还有第二条路径。
+  const useChat = SRC('lib/useChat.ts').replace(/\/\/[^\n]*/g, '')
+  assert.ok(!/toolMadeReport/.test(useChat), '去重判断应随猜测路径一起移除')
 })
 
-test('looksLikeReport 仍保留为兼容回退,不是被删掉', () => {
-  // 老模型不调 save_report,工具之外直接产出的长文本也仍要能被识别。
-  // 「消掉猜测」是让它退居次席,不是移除。
-  const useChat = SRC('lib/useChat.ts')
-  assert.match(useChat, /looksLikeReport/, 'looksLikeReport 不该被删除')
-  const chat = SRC('lib/chat.ts')
-  assert.match(chat, /export function looksLikeReport/)
+test('报告只能由 save_report 声明', () => {
+  // 之前的决定是「保留 looksLikeReport 作为兼容回退」。那个决定被推翻了:
+  // 它的误判把用户的答复搬进了面板（400 字 + 一个小标题就命中）。
+  // 兼容旧后端不值得用「有时把答案藏起来」来换。
+  const useChat = SRC('lib/useChat.ts').replace(/\/\/[^\n]*/g, '')
+  assert.ok(!/looksLikeReport/.test(useChat),
+    '报告由产出方声明,不由读者按字数猜')
 })

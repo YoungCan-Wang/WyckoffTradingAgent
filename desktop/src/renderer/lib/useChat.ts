@@ -6,11 +6,11 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  applyEvent, finalText, looksLikeReport, reportTitle, isPortfolioWriteTool,
+  applyEvent, isPortfolioWriteTool,
   type Turn
 } from './chat'
 import { collect } from './ipc'
-import { reportArtifact, type ChatArtifact } from './artifacts'
+import { type ChatArtifact } from './artifacts'
 import { useArtifacts } from './useArtifacts'
 
 const t = (key: string, params?: Record<string, string | number>) => window.WyckoffI18n.t(key, params)
@@ -85,36 +85,21 @@ export function useChat (ready: boolean): ChatApi {
     if (type === 'done') {
       setTurns((prev) => prev.map((x) => {
         if (x.id !== id) return x
-        const body = finalText(x, event.text ? String(event.text) : undefined)
-        // 这一轮已经有工具产出过报告 → 不要再靠文本猜一遍。
+        // **刻意不再靠文本长相猜报告。**
         //
-        // 少了这个判断，一份用 save_report 存下的报告会被打开**两次**：一次来自
-        // 产物事件，一次来自 looksLikeReport 猜中同一段正文（模型通常会把报告
-        // 正文也说出来）。两个页签、内容相同、key 不同。
+        // 原来这里有一条 looksLikeReport() 回退：正文超 400 字且含标题或表格，
+        // 就当成报告送去右侧面板,并且 `.filter(b => b.kind !== 'text')`
+        // **把正文从对话里整块删掉**。
         //
-        // looksLikeReport 现在只是**兼容回退**：老模型不会调 save_report，
-        // 工具之外直接产出的长文本也仍然靠它识别。有事件时以事件为准。
-        const toolMadeReport = artifactsApi.artifacts.some(
-          (a) => a.kind === 'report' && a.id.startsWith(`${id}:`)
-        )
-        if (!toolMadeReport && looksLikeReport(body)) {
-          const title = reportTitle(body, t('chat.report'))
-          // 走注册表而不是直接 openReport：自动展开策略（一轮只开第一个、
-          // 用户关过不再弹、窄窗口不分栏）对报告和 K 线应当一致。
-          // 直接调 openReport 会绕过那些规则。
-          //
-          // 正文同时存进 artifact 块（下面那个 blocks）：原来这里是
-          // `blocks.filter(b => b.kind !== 'text')` 把正文整块滤掉，面板渲染
-          // 一失败就彻底丢了。现在留着，卡片能拿它重开。
-          artifactsApi.add(reportArtifact(id, title, body))
-          return {
-            ...x,
-            blocks: [
-              ...x.blocks.filter((b) => b.kind !== 'text'),
-              { kind: 'artifact', artifactKind: 'report', title, body }
-            ]
-          }
-        }
+        // 两个后果,用户都撞上了:
+        //
+        // 1. 误判率极高 —— 任何一段带小标题的正经分析都超过 400 字。用户问
+        //    「我的持仓怎么了」,得到的是一个面板,而主聊天里一个字都没有。
+        // 2. 答复被搬走 —— 那段正文本来就是对提问的回答,尤其当它末尾还写着
+        //    「要不要我再帮你跑一次」时,对话显然没结束,不该被塞进产物面板。
+        //
+        // 「这是不是一份报告」由产出它的人声明(save_report),不由读者按字数猜。
+        // 兼容旧后端不值得用「有时把答案藏起来」来换。
         // done 带了完整文本而流式一个字都没来（非流式模型）：补上。
         if (event.text && !x.blocks.some((b) => b.kind === 'text')) {
           return { ...x, blocks: [...x.blocks, { kind: 'text', text: String(event.text) }] }

@@ -79,21 +79,7 @@ export function pushBlock (blocks: Block[], next: Block): Block[] {
   return [...blocks, next]
 }
 
-/**
- * 长而结构化的回复更适合当文档看，而不是聊天气泡。
- * 判定与 vanilla 版一致：够长 且 有标题或表格。
- */
-export function looksLikeReport (text?: string): boolean {
-  if (!text || text.length < 400) return false
-  return /^#{1,3}\s+\S/m.test(text) || /^\|.*\|$/m.test(text)
-}
 
-/** 报告标题取第一个一级/二级标题，过长截断。 */
-export function reportTitle (text: string, fallback: string): string {
-  const heading = text.match(/^#\s+(.+)$/m) || text.match(/^##\s+(.+)$/m)
-  const raw = heading ? heading[1].trim() : fallback
-  return raw.length > 18 ? `${raw.slice(0, 18)}…` : raw
-}
 
 /** 会改动持仓的工具 —— 跑了它们，持仓缓存就是脏的。 */
 const PORTFOLIO_WRITE_TOOLS = new Set(['update_portfolio', 'set_stop_loss', 'record_trade_fill'])
@@ -157,8 +143,3 @@ export function applyEvent (turn: Turn, event: Record<string, unknown>): Turn {
   }
 }
 
-/** 这一轮最终的正文 —— done 事件带的优先，否则拼已收到的文字块。 */
-export function finalText (turn: Turn, doneText?: string): string {
-  if (doneText) return doneText
-  return turn.blocks.filter((b) => b.kind === 'text').map((b) => (b as { text: string }).text).join('')
-}

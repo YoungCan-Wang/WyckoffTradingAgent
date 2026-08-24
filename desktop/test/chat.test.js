@@ -15,7 +15,7 @@ const js = ts.transpileModule(readFileSync(SRC, 'utf8'), {
 }).outputText
 const mod = { exports: {} }
 new Function('module', 'exports', 'require', js)(mod, mod.exports, require)
-const { applyEvent, looksLikeReport, reportTitle, finalText, isPortfolioWriteTool } = mod.exports
+const { applyEvent, isPortfolioWriteTool } = mod.exports
 
 const turn = () => ({ id: 't1', blocks: [], live: true })
 
@@ -76,40 +76,9 @@ test('审批事件整条留着 —— 卡片要用里面的参数', () => {
   assert.equal(s.blocks[0].event.args.code, '600519')
 })
 
-test('报告判定：短文本不算', () => {
-  assert.equal(looksLikeReport('# 标题\n很短'), false)
-  assert.equal(looksLikeReport(''), false)
-  assert.equal(looksLikeReport(undefined), false)
-})
 
-test('报告判定：够长且有标题或表格', () => {
-  const long = 'x'.repeat(400)
-  assert.equal(looksLikeReport('# 标题\n' + long), true)
-  assert.equal(looksLikeReport('| a | b |\n' + long), true)
-  // 够长但没结构 —— 那就是普通长回复，留在对话里
-  assert.equal(looksLikeReport(long), false)
-})
 
-test('报告标题：取一级标题并截断', () => {
-  assert.equal(reportTitle('# 今日复盘\n正文', '兜底'), '今日复盘')
-  assert.equal(reportTitle('## 二级也行\n正文', '兜底'), '二级也行')
-  assert.equal(reportTitle('没有标题', '兜底'), '兜底')
-  assert.ok(reportTitle('# ' + 'x'.repeat(50), '兜底').endsWith('…'))
-})
 
-test('最终正文：done 带的优先', () => {
-  let s = turn()
-  s = applyEvent(s, { type: 'text_delta', text: '流式的' })
-  assert.equal(finalText(s, '完整的'), '完整的')
-  assert.equal(finalText(s), '流式的')
-})
-
-test('最终正文不含思考', () => {
-  let s = turn()
-  s = applyEvent(s, { type: 'thinking_delta', text: '内心戏' })
-  s = applyEvent(s, { type: 'text_delta', text: '正文' })
-  assert.equal(finalText(s), '正文')
-})
 
 test('改持仓的工具名单', () => {
   for (const n of ['update_portfolio', 'set_stop_loss', 'record_trade_fill']) {

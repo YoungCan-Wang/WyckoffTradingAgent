@@ -30,18 +30,14 @@ test('artifact 块带着正文,不是只带标题', () => {
   assert.match(decl[0], /title: string/)
 })
 
-test('done 时把正文交给 artifact 块,而不是丢掉', () => {
-  const branch = USE_CHAT.match(/looksLikeReport\(body\)\) \{[\s\S]*?\n        \}/)
-  assert.ok(branch, '找不到报告分支')
-  assert.match(
-    branch[0],
-    /kind: 'artifact'[^}]*body/,
-    '正文没有被存进 artifact 块 —— openReport 失败时会彻底丢失'
-  )
-  assert.ok(
-    !/kind: 'note', text: t\('chat\.openedRight'/.test(branch[0]),
-    '还在用不可点的纯文本提示行'
-  )
+test('done 分支不再把正文搬去面板', () => {
+  // 原来这里靠 looksLikeReport() 猜：超 400 字且含标题就当报告，正文
+  // `.filter(b => b.kind !== 'text')` 从对话里删掉。用户问「我的持仓怎么了」，
+  // 结果主聊天空白、答案在右侧面板里 —— 那段正文本来就是对提问的答复。
+  const done = USE_CHAT.slice(USE_CHAT.indexOf("if (type === 'done')"))
+  const code = done.replace(/\/\/[^\n]*/g, '')
+  assert.ok(!/looksLikeReport/.test(code), 'done 分支不该再猜报告')
+  assert.ok(!/kind !== 'text'/.test(code), '不得把正文块滤掉')
 })
 
 test('对话里的卡片能重新打开,且不重新调用模型', () => {

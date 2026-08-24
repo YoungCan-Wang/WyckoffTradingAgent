@@ -89,13 +89,3 @@ export function mergeArtifact (list: ChatArtifact[], next: ChatArtifact): ChatAr
   return copy
 }
 
-/** 报告不走工具，所以由前端在 done 时合成一个产物。 */
-export function reportArtifact (turnId: string, title: string, body: string): ChatArtifact {
-  return {
-    id: artifactId(turnId, 'report'),
-    kind: 'report',
-    title,
-    status: 'ready',
-    payload: { body }
-  }
-}
