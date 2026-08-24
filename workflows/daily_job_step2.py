@@ -31,9 +31,7 @@ def run_step2_stage(run_step2, webhook: str, preview_only: bool, logs_path: str 
     benchmark_context: dict = {}
     step2_details: dict = {}
     try:
-        step2_ok, symbols_info, benchmark_context, step2_details = _run_step2_with_etf_metrics(
-            run_step2, webhook, preview_only
-        )
+        step2_ok, symbols_info, benchmark_context, step2_details = _run_step2(run_step2, webhook, preview_only)
         step2_err = None if step2_ok else "飞书发送失败"
     except Exception as e:
         step2_err = str(e)
@@ -239,11 +237,6 @@ def run_springboard_scoring(symbols_info: list[dict], step2_details: dict) -> in
     return scored
 
 
-def _run_step2_with_etf_metrics(run_step2, webhook: str, preview_only: bool):
-    result = run_step2("" if preview_only else webhook, notify=not preview_only, return_details=True)
-    step2_ok, symbols_info, benchmark_context, step2_details = result
-    if benchmark_context and step2_details:
-        metrics = step2_details.get("metrics", {}) or {}
-        benchmark_context["etf_enhancement"] = metrics.get("etf_enhancement", {}) or {}
-        benchmark_context["etf_candidates"] = metrics.get("etf_candidates", []) or []
-    return step2_ok, symbols_info, benchmark_context, step2_details
+def _run_step2(run_step2, webhook: str, preview_only: bool):
+    """执行 Step2。ETF 增强已于 2026-08-24 从 A 股漏斗移除，故不再注入 etf_* 上下文。"""
+    return run_step2("" if preview_only else webhook, notify=not preview_only, return_details=True)
