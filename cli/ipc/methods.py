@@ -96,9 +96,12 @@ def approve_decide(params: dict[str, Any]) -> Iterator[Event]:
     yield _ok(status="executed" if succeeded else "failed", result=result, succeeded=succeeded)
 
 
-def _synced_session():
+def _synced_session(session_id: str = ""):
     """
     取会话，并先把身份对齐到磁盘上的登录态。
+
+    session_id 为空时取当前活跃的会话（单会话时代的行为）。传了就切过去 ——
+    多会话下每次对话都要说明是哪个会话。
 
     磁盘上的登录态可能已经变了（换账号登录），而 ToolRegistry 是 start() 时建的。
     不对齐时读操作会返回上一个账号的数据（前端还会把它当成当前账号的内容缓存
@@ -114,11 +117,24 @@ def _synced_session():
     """
     from cli.ipc.session import get_session
 
-    session = get_session()
+    # 只在真要切会话时带参数调用。大量既有测试把 get_session 打成零参 lambda
+    # （持仓、跟踪、审批那些路径都不关心会话 id），无条件传参会让它们全炸。
+    session = get_session(session_id) if session_id else get_session()
     sync = getattr(session, "sync_identity", None)
     if callable(sync):
         sync()
     return session
+
+
+def _active_session() -> str:
+    """当前活跃的会话 id。会话层没起来时返回空串而不是抛错。"""
+    try:
+        from cli.ipc.session import active_session_id
+
+        return active_session_id()
+    except Exception:
+        logger.debug("active session lookup failed", exc_info=True)
+        return ""
 
 
 def portfolio(_params: dict[str, Any]) -> Iterator[Event]:
@@ -1048,21 +1064,114 @@ def chat(params: dict[str, Any]) -> Iterator[Event]:
     if not text:
         raise MethodError("invalid_params", "缺少 text")
 
-    session = _synced_session()
+    session = _synced_session(str(params.get("session_id") or ""))
+    # 先告诉前端这一轮归哪个会话 —— 用户可能在流式输出期间切走，事件到达时
+    # 需要知道往哪个会话的时间线上贴。getattr 兜底是给测试替身留的余地。
+    sid = str(getattr(session, "session_id", "") or "")
+    if sid:
+        yield _ok(session_id=sid)
     yield from session.run_turn(text)
 
 
 def chat_reset(_params: dict[str, Any]) -> Iterator[Event]:
-    """开始一段不继承旧消息与待审批状态的新分析。"""
-    session = _synced_session()
-    session.reset()
-    yield _ok(reset=True)
+    """开一个新会话。
+
+    语义变了：原来是把当前会话清空（旧对话就没了）。现在开新的、旧的留在列表里 ——
+    这才是「新分析」该做的事。方法名保留，前端不用改调用点。
+    """
+    from cli.ipc.session import new_session
+
+    _synced_session()  # 先对齐身份，再开会话
+    session = new_session()
+    yield _ok(reset=True, session_id=session.session_id)
+
+
+def chat_sessions(params: dict[str, Any]) -> Iterator[Event]:
+    """会话列表：置顶优先，其余按最近活动倒序。"""
+    from integrations.local_db import list_chat_sessions
+
+    limit = max(1, min(int(params.get("limit") or 60), 200))
+    search = str(params.get("search") or "")
+    rows = list_chat_sessions(limit=limit, user_id=_current_user_id(), search=search)
+    yield _ok(sessions=rows, active=_active_session())
+
+
+def chat_load(params: dict[str, Any]) -> Iterator[Event]:
+    """切到某个会话，返回它的历史消息给前端渲染。
+
+    历史从 chat_log 读（只有 user/assistant 文本），所以前端拿到的是一串
+    简化的轮次，不含工具调用细节 —— 那些留在 scratchpad 里做取证，不重放到界面。
+    """
+    from integrations.local_db import load_chat_logs
+
+    session_id = str(params.get("session_id") or "").strip()
+    if not session_id:
+        raise MethodError("invalid_params", "缺少 session_id")
+
+    user_id = _current_user_id()
+    rows = load_chat_logs(session_id=session_id, limit=400, user_id=user_id)
+    if not rows:
+        # 空结果既可能是「不存在」也可能是「不属于你」。不区分 —— 区分就等于
+        # 告诉调用方「这个 id 存在但你没权限」。
+        raise MethodError("not_found", "会话不存在")
+
+    session = _synced_session(session_id)
+    turns = [
+        {"role": str(r.get("role") or ""), "content": str(r.get("content") or ""), "at": str(r.get("created_at") or "")}
+        for r in rows
+        if r.get("role") in ("user", "assistant") and r.get("content")
+    ]
+    yield _ok(session_id=session.session_id, turns=turns, messages=len(session._messages))
+
+
+def chat_delete(params: dict[str, Any]) -> Iterator[Event]:
+    from cli.ipc.session import active_session_id, drop_session, new_session
+    from integrations.local_db import delete_chat_session
+
+    session_id = str(params.get("session_id") or "").strip()
+    if not session_id:
+        raise MethodError("invalid_params", "缺少 session_id")
+
+    removed = delete_chat_session(session_id, _current_user_id())
+    drop_session(session_id)
+    # 删掉的正是当前会话时要有个落脚处，否则下一轮对话会写进一个刚被删掉的 id。
+    next_id = active_session_id() or new_session().session_id
+    yield _ok(deleted=removed, session_id=next_id)
+
+
+def chat_rename(params: dict[str, Any]) -> Iterator[Event]:
+    from integrations.local_db import rename_chat_session
+
+    session_id = str(params.get("session_id") or "").strip()
+    title = str(params.get("title") or "").strip()
+    if not session_id or not title:
+        raise MethodError("invalid_params", "缺少 session_id 或 title")
+    if not rename_chat_session(session_id, title, _current_user_id()):
+        raise MethodError("not_found", "会话不存在")
+    yield _ok(renamed=True)
+
+
+def chat_pin(params: dict[str, Any]) -> Iterator[Event]:
+    from integrations.local_db import set_chat_session_pinned
+
+    session_id = str(params.get("session_id") or "").strip()
+    if not session_id:
+        raise MethodError("invalid_params", "缺少 session_id")
+    pinned = bool(params.get("pinned"))
+    if not set_chat_session_pinned(session_id, pinned, _current_user_id()):
+        raise MethodError("not_found", "会话不存在")
+    yield _ok(pinned=pinned)
 
 
 METHODS: dict[str, Callable[[dict[str, Any]], Iterator[Event]]] = {
     "health": health,
     "chat": chat,
     "chat_reset": chat_reset,
+    "chat_sessions": chat_sessions,
+    "chat_load": chat_load,
+    "chat_delete": chat_delete,
+    "chat_rename": chat_rename,
+    "chat_pin": chat_pin,
     "approve_list": approve_list,
     "approve_decide": approve_decide,
     "portfolio": portfolio,
