@@ -17,14 +17,27 @@ logger = logging.getLogger(__name__)
 # 与 TUI 一致：多轮对话保留在内存里，前端不必每次重传历史。
 MAX_HISTORY_MESSAGES = 80
 
-_session: DesktopSession | None = None
+# 会话注册表。原来是单例，「新分析」直接清空 _messages —— 旧对话就没了。
+_sessions: dict[str, DesktopSession] = {}
+_active_session_id = ""
 _session_lock = threading.RLock()
+
+# 全局轮次锁：同一时刻只允许一轮对话在跑。
+#
+# 不是为了省资源，而是 ToolRegistry 只有**一个** _confirm_callback 字段
+# （cli/tools.py:845）。多个会话共用一个 registry 时，两轮并发会让后一轮的回调
+# 覆盖前一轮，待审批操作被记到错的会话上。工具还跑在线程池里
+# （runtime.py:1038），所以按线程路由（threading.local）也不成立。
+#
+# 代价是不能同时向两个会话提问 —— 实际上也不会。**切换会话不受这把锁影响**，
+# 那才是必须保证不卡的路径。
+_turn_gate = threading.RLock()
 
 
 class DesktopSession:
     """一个 IPC 进程内的对话状态。审批闸门把写操作交给前端确认。"""
 
-    def __init__(self) -> None:
+    def __init__(self, session_id: str = "") -> None:
         self._messages: list[dict[str, Any]] = []
         self._tools: Any = None
         self._provider: Any = None
@@ -35,10 +48,64 @@ class DesktopSession:
         self.ready_error = ""
         # 会话标识。桌面端原来没有 —— 于是对话既没进 chat_log 也没有 scratchpad，
         # 用户聊了几十轮误关窗口就全没了（TUI 用户不会，因为 TUI 建了这两样）。
-        self._session_id = uuid.uuid4().hex[:12]
+        self._session_id = session_id or uuid.uuid4().hex[:12]
         self._scratchpad: Any = None
         self._model_name = ""
         self._provider_name = ""
+        # 是不是这个会话自己 start() 建的工具环境。共享环境的会话不能停 MCP。
+        self._owns_env = False
+
+    @property
+    def session_id(self) -> str:
+        return self._session_id
+
+    def adopt_env(self, other: DesktopSession) -> None:
+        """复用另一个会话已经建好的工具环境。
+
+        为什么不各建一套:`start()` 要跑 6 秒左右（MCP 启动占大头），新建会话时
+        再等一次是不可接受的。而 provider / ToolRegistry / MCP 本来就跟会话无关 ——
+        它们属于「这个账号在这台机器上」。
+
+        审批回调是唯一的例外:registry 上只有**一个** _confirm_callback 字段，
+        所以每次轮次开始时要重新指向当前会话（见 run_turn 里的 _turn_gate）。
+        """
+        self._tools = other._tools
+        self._provider = other._provider
+        self._mcp_manager = other._mcp_manager
+        self._user_id = other._user_id
+        self._model_name = other._model_name
+        self._provider_name = other._provider_name
+        self.ready_error = other.ready_error
+        self._owns_env = False
+
+    def load_history(self) -> int:
+        """从 chat_log 读回这个会话的历史，填进 _messages。返回消息条数。
+
+        复用 TUI 的整套恢复逻辑（`cli/session_context.py`）:它已经处理了
+        token 预算（28k）和消息数上限（120），并且在拿不到完整快照时降级成
+        纯文本重建 —— 桌面端只存文本，正好走这条路。
+        """
+        try:
+            from cli.session_context import build_resumed_model_context
+            from integrations.local_db import load_chat_logs
+
+            rows = load_chat_logs(session_id=self._session_id, limit=400)
+            if not rows:
+                return 0
+            resumed = build_resumed_model_context(rows)
+            with self._turn_lock:
+                self._messages = list(resumed.messages)
+            logger.info(
+                "resumed session %s: %d rows -> %d messages (%s)",
+                self._session_id,
+                resumed.source_rows,
+                resumed.model_messages,
+                resumed.mode,
+            )
+            return len(self._messages)
+        except Exception:
+            logger.warning("load history failed for %s", self._session_id, exc_info=True)
+            return 0
 
     # -- 初始化 ---------------------------------------------------------------
 
@@ -61,6 +128,7 @@ class DesktopSession:
         if self._provider is None:
             self.ready_error = "no model provider configured"
 
+        self._owns_env = True
         session = _load_session()
         self._user_id = str(session.get("user_id") or "")
         self._tools = ToolRegistry(
@@ -95,12 +163,14 @@ class DesktopSession:
 
     def stop(self) -> None:
         with self._turn_lock:
-            if self._mcp_manager is not None:
+            # 只有建它的会话能停 MCP。多会话共享同一个 manager，每个会话都停一次
+            # 会把别人正在用的连接掐掉（shutdown 时会遍历所有会话调 stop）。
+            if self._mcp_manager is not None and self._owns_env:
                 try:
                     self._mcp_manager.stop()
                 except Exception:
                     logger.debug("mcp stop failed", exc_info=True)
-                self._mcp_manager = None
+            self._mcp_manager = None
 
     # -- 工具闸门 -------------------------------------------------------------
 
@@ -191,9 +261,14 @@ class DesktopSession:
             logger.info("skip identity sync: a turn is in flight")
             return False
         try:
-            return self._sync_identity_locked()
+            changed = self._sync_identity_locked()
         finally:
             self._turn_lock.release()
+        if changed:
+            # 其余会话也得跟上：它们各自持着旧账号建的 registry 引用，只同步这一个
+            # 的话，切过去就会读到上一个账号的持仓 —— 正是读路径一直在防的那件事。
+            _propagate_identity(self)
+        return changed
 
     def _sync_identity_locked(self) -> bool:
         from cli.tools import ToolRegistry
@@ -237,8 +312,25 @@ class DesktopSession:
     # -- 对话 -----------------------------------------------------------------
 
     def run_turn(self, text: str) -> Iterator[dict[str, Any]]:
-        with self._turn_lock:
+        # 全局闸门:共享的 ToolRegistry 只有一个 confirm 回调，两轮并发会串号。
+        # 见 _turn_gate 的说明。切换会话不走这里，所以不受影响。
+        with _turn_gate, self._turn_lock:
+            self._bind_confirm()
             yield from self._run_turn(text)
+
+    def _bind_confirm(self) -> None:
+        """把共享 registry 的审批回调指到这个会话。
+
+        每轮都要重新绑:registry 是所有会话共用的，上一轮可能是别的会话绑的。
+        不绑的话待审批操作会记到错的会话上（界面上表现为审批卡出现在另一个对话里）。
+        """
+        if self._tools is None:
+            return
+        try:
+            self._tools.set_confirm_callback(self._confirm)
+            self._tools.set_ask_user_question_callback(self._ask)
+        except Exception:
+            logger.debug("rebind confirm callback failed", exc_info=True)
 
     def _chatlog_save(self, role: str, content: str, **kwargs: Any) -> None:
         """写一条对话记录。静默失败：留存是附加价值，不该让它拖垮回答。"""
@@ -248,6 +340,19 @@ class DesktopSession:
             save_chat_log(self._session_id, role, content, user_id=self._user_id, **kwargs)
         except Exception:
             logger.debug("chat log save failed", exc_info=True)
+
+    def _touch_session(self, first_text: str) -> None:
+        """保证会话在列表里有一行元数据，并把它顶到最前。
+
+        标题只在为空时写入（见 upsert_chat_session）—— 用户手改过的名字不能被
+        后面每一轮的自动标题覆盖。
+        """
+        try:
+            from integrations.local_db import upsert_chat_session
+
+            upsert_chat_session(self._session_id, self._user_id, first_text)
+        except Exception:
+            logger.debug("touch chat session failed", exc_info=True)
 
     def _ensure_scratchpad(self, user_text: str) -> Any:
         """本轮的 scratchpad（append-only JSONL）。
@@ -278,6 +383,7 @@ class DesktopSession:
         self._pending_confirms.clear()
         self._messages.append({"role": "user", "content": text})
         self._chatlog_save("user", text)
+        self._touch_session(text)
         self._scratchpad = self._ensure_scratchpad(text)
         runtime = AgentRuntime(self._provider, self._tools, scratchpad=self._scratchpad)
 
@@ -322,6 +428,12 @@ class DesktopSession:
     def _trim(self) -> None:
         if len(self._messages) > MAX_HISTORY_MESSAGES:
             self._messages = self._messages[-MAX_HISTORY_MESSAGES:]
+
+    def clear_context(self) -> None:
+        """清掉这个会话的上下文（换账号时用）。"""
+        with self._turn_lock:
+            self._messages.clear()
+            self._pending_confirms.clear()
 
     def reset(self) -> None:
         with self._turn_lock:
@@ -516,18 +628,117 @@ def _load_session() -> dict[str, Any]:
         return {}
 
 
-def get_session() -> DesktopSession:
-    global _session
+def get_session(session_id: str = "") -> DesktopSession:
+    """取一个会话。不传 id 就取当前活跃的（没有就建）。
+
+    第一个会话负责 start()（约 6 秒，MCP 启动占大头）；之后的会话
+    adopt_env() 复用同一套工具环境，所以新建会话是即时的。
+    """
+    global _active_session_id
     with _session_lock:
-        if _session is None:
-            _session = DesktopSession()
-            _session.start()
-        return _session
+        if session_id and session_id in _sessions:
+            _active_session_id = session_id
+            return _sessions[session_id]
+
+        if not _sessions:
+            first = DesktopSession(session_id)
+            first.start()
+            _sessions[first.session_id] = first
+            _active_session_id = first.session_id
+            return first
+
+        if session_id:
+            # 请求一个还没在内存里的会话（比如从列表里点开一个历史会话）。
+            # 建壳子、复用工具环境、把历史读回来。
+            base = _sessions[_active_session_id or next(iter(_sessions))]
+            session = DesktopSession(session_id)
+            session.adopt_env(base)
+            session.load_history()
+            _sessions[session_id] = session
+            _active_session_id = session_id
+            return session
+
+        if _active_session_id not in _sessions:
+            _active_session_id = next(iter(_sessions))
+        return _sessions[_active_session_id]
+
+
+def new_session() -> DesktopSession:
+    """开一个新会话并切过去。旧会话留在内存和 chat_log 里。
+
+    这是「新分析」应有的语义。原来它调 reset() 直接清空 _messages ——
+    旧对话既不在界面上也回不来。
+    """
+    global _active_session_id
+    with _session_lock:
+        base = get_session()  # 确保工具环境已经建好
+        session = DesktopSession()
+        session.adopt_env(base)
+        _sessions[session.session_id] = session
+        _active_session_id = session.session_id
+        _prune_sessions()
+        return session
+
+
+def active_session_id() -> str:
+    with _session_lock:
+        return _active_session_id
+
+
+def drop_session(session_id: str) -> None:
+    """把会话从内存里摘掉（删除会话时用）。不动数据库。"""
+    global _active_session_id
+    with _session_lock:
+        _sessions.pop(session_id, None)
+        if _active_session_id == session_id:
+            _active_session_id = next(iter(_sessions), "")
+
+
+# 内存里最多留几个会话。超出的按插入顺序淘汰最旧的 —— 它们的历史都在
+# chat_log 里，再点开时会重新 load_history()，代价只是一次查库。
+MAX_LIVE_SESSIONS = 12
+
+
+def _prune_sessions() -> None:
+    while len(_sessions) > MAX_LIVE_SESSIONS:
+        for sid in list(_sessions):
+            if sid != _active_session_id:
+                _sessions.pop(sid, None)
+                break
+        else:
+            return
+
+
+def _propagate_identity(base: DesktopSession) -> None:
+    """把刚重建的工具环境推给其余会话，并清掉它们的上下文。
+
+    由 base.sync_identity() 在检测到换账号后调用 —— 调用方（_synced_session）
+    不需要知道有几个会话存在。
+
+    为什么要清:上一个账号的对话历史不能留给新账号。只清当前会话的话，
+    切过去就能看到别人的对话。
+    """
+    with _session_lock:
+        for sid, session in _sessions.items():
+            if sid == base.session_id:
+                continue
+            session.adopt_env(base)
+            session.clear_context()
+
+
+def sync_all_identities() -> bool:
+    """对齐身份。入口保留给不持有会话引用的调用方。"""
+    with _session_lock:
+        if not _sessions:
+            return False
+        base = _sessions[_active_session_id or next(iter(_sessions))]
+    return base.sync_identity()
 
 
 def shutdown_session() -> None:
-    global _session
+    global _active_session_id
     with _session_lock:
-        if _session is not None:
-            _session.stop()
-            _session = None
+        for session in list(_sessions.values()):
+            session.stop()
+        _sessions.clear()
+        _active_session_id = ""
