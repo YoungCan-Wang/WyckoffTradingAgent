@@ -48,7 +48,6 @@ from utils.trading_clock import resolve_end_calendar_day
 from workflows.fetch_runtime_config import fetch_runtime_config_from_env
 from workflows.funnel_config_overrides import apply_funnel_cfg_overrides
 from workflows.funnel_data_quality import assert_funnel_data_freshness
-from workflows.funnel_etf import run_etf_enhancement
 from workflows.funnel_settings import (
     BATCH_SIZE,
     BATCH_SLEEP,
@@ -108,11 +107,6 @@ class FunnelJobData:
     all_df_map: dict[str, pd.DataFrame]
     fetch_stats: dict
     snapshot_dir: str
-    etf_symbols: list[str]
-    etf_sector_map: dict[str, str]
-    etf_df_map: dict[str, pd.DataFrame]
-    etf_l2_passed: list[str]
-    etf_candidates: list[dict]
     benchmark_context: dict
 
 
@@ -161,7 +155,6 @@ def prepare_funnel_job_data(
         bench_df=bench_df,
         smallcap_df=smallcap_df,
     )
-    etf = run_etf_enhancement(cfg, window, bench_df, direct_source=direct_source)
     benchmark_context = _build_benchmark_context(all_df_map, bench_df, smallcap_df, cfg)
     benchmark_context["trade_date"] = window.end_trade_date.isoformat()
     return FunnelJobData(
@@ -174,11 +167,6 @@ def prepare_funnel_job_data(
         all_df_map=all_df_map,
         fetch_stats=fetch_stats,
         snapshot_dir=snapshot_dir,
-        etf_symbols=etf[0],
-        etf_sector_map=etf[1],
-        etf_df_map=etf[2],
-        etf_l2_passed=etf[3],
-        etf_candidates=etf[4],
         benchmark_context=benchmark_context,
     )
 

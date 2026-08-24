@@ -25,7 +25,6 @@ from core.candidate_policy import (
 from core.candidate_tracks import candidate_entry_track
 from core.capital_migration import build_capital_migration_report
 from core.cn_boards import is_main_or_chinext, is_star_or_bse
-from core.funnel_etf import etf_metrics
 from core.funnel_selection import split_selected_tracks
 from core.theme_activity import summarize_theme_activity
 from core.theme_radar import summarize_theme_radar
@@ -83,11 +82,6 @@ class FunnelMetricsInputs:
     layers: FunnelLayerOutputs
     ref_data: FunnelReferenceData
     bench_df: pd.DataFrame | None
-    etf_symbols: list[str]
-    etf_sector_map: dict[str, str]
-    etf_df_map: dict[str, pd.DataFrame]
-    etf_l2_passed: list[str]
-    etf_candidates: list[dict]
     l2_bypass_pool: list[str]
     l2_bypass_triggers: dict[str, list[tuple[str, float]]]
     strategic: FunnelStrategicBypass
@@ -557,7 +551,6 @@ def _build_funnel_metrics(inputs: FunnelMetricsInputs) -> dict:
             financial_requested=inputs.financial_metrics_requested,
         ),
         **_theme_metrics(inputs, ranked_l3_symbols),
-        **_etf_metrics(inputs),
         **_candidate_metrics(inputs, ranked_l3_symbols),
         **_bypass_metrics(inputs),
         **_external_seed_metrics(
@@ -697,19 +690,6 @@ def _theme_metrics(inputs: FunnelMetricsInputs, ranked_l3_symbols: list[str]) ->
     }
 
 
-def _etf_metrics(inputs: FunnelMetricsInputs) -> dict:
-    return {
-        "etf_enhancement": etf_metrics(
-            inputs.etf_symbols,
-            inputs.etf_df_map,
-            inputs.etf_l2_passed,
-            inputs.etf_sector_map,
-            inputs.etf_candidates,
-        ),
-        "etf_candidates": inputs.etf_candidates,
-    }
-
-
 def _candidate_metrics(inputs: FunnelMetricsInputs, ranked_l3_symbols: list[str]) -> dict:
     candidates = inputs.candidates
     return {
@@ -803,9 +783,6 @@ def _build_run_artifacts(data) -> FunnelRunArtifacts:
         window=data.window,
         cfg=data.cfg,
         ref_data=data.ref_data,
-        etf_l2_passed=data.etf_l2_passed,
-        etf_sector_map=data.etf_sector_map,
-        etf_df_map=data.etf_df_map,
         benchmark_context=data.benchmark_context,
     )
     l2_bypass_pool, bypass_triggers = _build_l2_bypass(data, layers)
@@ -906,11 +883,6 @@ def run_funnel_job(
         layers=artifacts.layers,
         ref_data=data.ref_data,
         bench_df=data.bench_df,
-        etf_symbols=data.etf_symbols,
-        etf_sector_map=data.etf_sector_map,
-        etf_df_map=data.etf_df_map,
-        etf_l2_passed=data.etf_l2_passed,
-        etf_candidates=data.etf_candidates,
         l2_bypass_pool=artifacts.l2_bypass_pool,
         l2_bypass_triggers=artifacts.l2_bypass_triggers,
         strategic=artifacts.strategic,
