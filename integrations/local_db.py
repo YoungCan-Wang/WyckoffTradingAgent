@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 _lock = threading.Lock()
 _conn: sqlite3.Connection | None = None
 
-_SCHEMA_VERSION = 15
+_SCHEMA_VERSION = 16
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -317,6 +317,12 @@ def init_db() -> None:
     if current < 13:
         _ensure_recommendation_tracking_columns(conn)
         _ensure_signal_pending_columns(conn)
+    if current < 16:
+        # 对话记录按账号隔离。原来没有这一列，桌面端接上留存之后，两个账号的
+        # 对话会混在同一张表里 —— 和之前修过的「持仓缓存/报告按账号分区」同类。
+        # 历史行留空字符串，等于归到未登录分区，不会张冠李戴。
+        _ensure_columns(conn, "chat_log", {"user_id": "TEXT DEFAULT ''"})
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_chatlog_user ON chat_log(user_id, created_at)")
     if current < _SCHEMA_VERSION:
         conn.execute(
             "INSERT OR REPLACE INTO schema_version(version) VALUES(?)",
@@ -1256,14 +1262,15 @@ def save_chat_log(
     error: str = "",
     tool_calls_json: str = "",
     metadata_json: str = "",
+    user_id: str = "",
 ) -> int:
     conn = get_db()
     with conn:
         cur = conn.execute(
             """INSERT INTO chat_log
                (session_id, role, content, model, provider,
-                tokens_in, tokens_out, elapsed_s, error, tool_calls, metadata)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                tokens_in, tokens_out, elapsed_s, error, tool_calls, metadata, user_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 session_id,
                 role,
@@ -1276,23 +1283,37 @@ def save_chat_log(
                 error,
                 tool_calls_json,
                 metadata_json,
+                user_id,
             ),
         )
         return cur.lastrowid or 0
 
 
-def load_chat_logs(*, session_id: str | None = None, limit: int = 200) -> list[dict]:
+def load_chat_logs(
+    *, session_id: str | None = None, limit: int = 200, user_id: str | None = None
+) -> list[dict]:
+    """读对话记录。
+
+    传 user_id 就按账号过滤 —— 不传保持原有全量语义（TUI 与既有调用方依赖它）。
+    传空字符串是有意义的查询：未登录分区。所以判空要用 `is not None`，
+    用真值判断会把「查未登录的记录」误当成「不过滤」。
+    """
     conn = get_db()
+    clauses: list[str] = []
+    params: list[Any] = []
     if session_id:
-        cur = conn.execute(
-            "SELECT * FROM chat_log WHERE session_id=? ORDER BY created_at ASC LIMIT ?",
-            (session_id, limit),
-        )
-    else:
-        cur = conn.execute(
-            "SELECT * FROM chat_log ORDER BY created_at DESC LIMIT ?",
-            (limit,),
-        )
+        clauses.append("session_id=?")
+        params.append(session_id)
+    if user_id is not None:
+        clauses.append("user_id=?")
+        params.append(user_id)
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    # 指定会话时按时间正序（要按顺序回放）；否则倒序取最近的。
+    order = "ASC" if session_id else "DESC"
+    params.append(limit)
+    cur = conn.execute(
+        f"SELECT * FROM chat_log{where} ORDER BY created_at {order} LIMIT ?", params
+    )
     return [dict(r) for r in cur.fetchall()]
 
 

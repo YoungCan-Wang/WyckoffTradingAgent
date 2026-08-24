@@ -1032,6 +1032,10 @@ class AgentRuntime:
             return False
 
         for call in to_run:
+            if self.scratchpad:
+                self.scratchpad.record_tool_start(
+                    call["name"], call.get("args") or {}, tool_call_id=call["id"]
+                )
             yield self._tool_start_event(call, concurrent=True)
 
         completed: dict[str, dict[str, Any]] = {}
@@ -1154,6 +1158,10 @@ class AgentRuntime:
         call = {**call, "args": prepared.args}
         args = prepared.args
 
+        # 先落意图再执行。顺序很关键：反过来的话，工具执行中途被 kill
+        # 就查不到「这次调用发生过」——而这些工具会真的改持仓、设止损。
+        if self.scratchpad:
+            self.scratchpad.record_tool_start(name, args, tool_call_id=call_id)
         yield self._tool_start_event(call)
         raw = self._execute_tool_call_raw(call, messages)
         yield from self._append_tool_result(
@@ -1323,7 +1331,9 @@ class AgentRuntime:
         status: str,
     ) -> Iterator[RuntimeEvent]:
         if self.scratchpad:
-            self.scratchpad.record_tool_result(name, args, result, duration_ms=elapsed_ms, status=status)
+            self.scratchpad.record_tool_result(
+                name, args, result, duration_ms=elapsed_ms, status=status, tool_call_id=call_id
+            )
 
         content = format_tool_result_for_context(name, call_id, result)
         messages.append(

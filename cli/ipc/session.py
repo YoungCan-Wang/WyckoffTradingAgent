@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import uuid
 from collections.abc import Iterator
 from typing import Any
 
@@ -32,6 +33,12 @@ class DesktopSession:
         self._user_id = ""
         self._turn_lock = threading.RLock()
         self.ready_error = ""
+        # 会话标识。桌面端原来没有 —— 于是对话既没进 chat_log 也没有 scratchpad，
+        # 用户聊了几十轮误关窗口就全没了（TUI 用户不会，因为 TUI 建了这两样）。
+        self._session_id = uuid.uuid4().hex[:12]
+        self._scratchpad: Any = None
+        self._model_name = ""
+        self._provider_name = ""
 
     # -- 初始化 ---------------------------------------------------------------
 
@@ -47,6 +54,10 @@ class DesktopSession:
 
         state = build_provider_state()
         self._provider = state.get("provider")
+        # 存下来给 chat_log 用。done 事件里没有这两个字段（我第一版从 event 里读，
+        # 结果一直写空字符串），provider 状态才是它们的来源。
+        self._model_name = str(state.get("model") or "")
+        self._provider_name = str(state.get("provider_name") or "")
         if self._provider is None:
             self.ready_error = "no model provider configured"
 
@@ -229,6 +240,29 @@ class DesktopSession:
         with self._turn_lock:
             yield from self._run_turn(text)
 
+    def _chatlog_save(self, role: str, content: str, **kwargs: Any) -> None:
+        """写一条对话记录。静默失败：留存是附加价值，不该让它拖垮回答。"""
+        try:
+            from integrations.local_db import save_chat_log
+
+            save_chat_log(self._session_id, role, content, user_id=self._user_id, **kwargs)
+        except Exception:
+            logger.debug("chat log save failed", exc_info=True)
+
+    def _ensure_scratchpad(self, user_text: str) -> Any:
+        """本轮的 scratchpad（append-only JSONL）。
+
+        每轮一份，和 TUI 的做法一致。它是逐事件落盘的，所以进程被 kill 之后
+        磁盘上仍留有「这一轮做了哪些工具、结果是什么」。
+        """
+        try:
+            from cli.scratchpad import AgentScratchpad
+
+            return AgentScratchpad(user_text, session_id=self._session_id)
+        except Exception:
+            logger.debug("scratchpad init failed", exc_info=True)
+            return None
+
     def _run_turn(self, text: str) -> Iterator[dict[str, Any]]:
         if self._tools is None:
             self.start()
@@ -243,7 +277,9 @@ class DesktopSession:
 
         self._pending_confirms.clear()
         self._messages.append({"role": "user", "content": text})
-        runtime = AgentRuntime(self._provider, self._tools)
+        self._chatlog_save("user", text)
+        self._scratchpad = self._ensure_scratchpad(text)
+        runtime = AgentRuntime(self._provider, self._tools, scratchpad=self._scratchpad)
 
         # 每轮重读配置：用户可能刚在设置里改了语气，不该等到重启才生效。
         config = load_config()
@@ -265,6 +301,16 @@ class DesktopSession:
                     reply = str(event.get("text") or "")
                     if reply:
                         self._messages.append({"role": "assistant", "content": reply})
+                        usage = event.get("usage") or {}
+                        self._chatlog_save(
+                            "assistant",
+                            reply,
+                            model=str(getattr(self._provider, "model", "") or self._model_name),
+                            provider=str(getattr(self._provider, "name", "") or self._provider_name),
+                            tokens_in=int(usage.get("input_tokens") or 0),
+                            tokens_out=int(usage.get("output_tokens") or 0),
+                            elapsed_s=float(event.get("elapsed") or 0.0),
+                        )
                     self._trim()
         except Exception as exc:
             logger.exception("chat turn failed")
