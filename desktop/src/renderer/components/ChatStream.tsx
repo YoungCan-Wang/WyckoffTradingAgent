@@ -68,9 +68,14 @@ export function ChatStream ({ turns, artifacts, onApprovalDecided, onOpenArtifac
                 {turn.blocks.map((b, i) => (
                   <BlockView key={i} block={b} onApprovalDecided={onApprovalDecided} />
                 ))}
-                {/* 还在跑但一个字都没来：给个占位，别让界面看起来卡死 */}
-                {turn.live && !turn.blocks.length ? (
-                  <p className="chat-wait">{t('chat.thinking')}</p>
+                {/* 等待提示。两种情况都要有：
+                    - 一个字都没来（原来只覆盖这种）
+                    - 工具跑完、模型继续想下一步 —— 这时 blocks 已有内容，
+                      原来占位就消失了，界面又静下来看着像卡住
+                    文案优先用后端的阶段提示（「正在分析」），比泛泛的
+                    「正在思考」更具体；多轮时带轮次，那是「还在推进」的直接证据。 */}
+                {turn.live && (!turn.blocks.length || turn.stage) ? (
+                  <p className="chat-wait">{waitLabel(turn)}</p>
                 ) : null}
               </div>
             </div>
@@ -80,6 +85,20 @@ export function ChatStream ({ turns, artifacts, onApprovalDecided, onOpenArtifac
       <div ref={endRef} />
     </>
   )
+}
+
+/**
+ * 等待中显示什么。
+ *
+ * 优先后端给的阶段文案:它知道自己在干什么（「正在分析」),而前端只能说
+ * 「正在思考」。第 2 轮起带上轮次 —— 长任务里那是唯一能说明「还在推进、
+ * 不是卡住」的信息。
+ */
+function waitLabel (turn: Turn): string {
+  const stage = String(turn.stage || '').trim()
+  const base = stage || t('chat.thinking')
+  const round = Number(turn.round) || 0
+  return round > 1 ? t('chat.waitRound', { label: base, round }) : base
 }
 
 /**
@@ -146,9 +165,11 @@ function BlockView (
       // 满屏的 ** 和 -。
       return <Markdown source={block.text} />
     case 'tool':
+      // 在跑就转圈，跑完换对勾。原来两种状态长得一模一样，一串工具行躺着不动
+      // 分不清是在干活还是卡住了。
       return (
-        <div className="tool">
-          <span className="g">◈</span>
+        <div className={block.done ? 'tool done' : 'tool running'}>
+          <span className="g" aria-hidden="true">{block.done ? '✓' : '◈'}</span>
           <span className="nm">{block.display}</span>
         </div>
       )

@@ -10,7 +10,7 @@
 /** 一轮里的一个块。type 决定怎么渲染。 */
 export type Block =
   | { kind: 'text'; text: string }
-  | { kind: 'tool'; name: string; display: string }
+  | { kind: 'tool'; name: string; display: string; done?: boolean }
   | { kind: 'toolError'; name: string; error: string }
   | { kind: 'approval'; event: Record<string, unknown> }
   | { kind: 'error'; message: string }
@@ -36,9 +36,35 @@ export interface Turn {
   live: boolean
   /** 这一轮画过的图，end 时要刷新一次（标注是在图建好之后写的）。 */
   drewCharts?: string[]
+  /** 当前阶段文案（后端给的「正在分析」之类）。空 = 没有进行中的阶段。 */
+  stage?: string
+  /** 第几轮。多轮时显示出来，让用户知道它在继续推进而不是卡住。 */
+  round?: number
 }
 
 /** 追加一个块；文字类的合并到末尾同类块上。 */
+/**
+ * 把最后一个同名的未完成工具块标成已完成。
+ *
+ * 从后往前找:同一轮里可能连着调同一个工具（例如两只票各查一次持仓）,
+ * 从前往后会把第二次的结果记到第一次头上,于是第一行提前变对勾、
+ * 第二行永远转圈。
+ *
+ * 找不到就原样返回 —— 有些工具的 tool_result 可能先于 tool_start 到达(重试
+ * 路径),那时不该凭空造一个块出来。
+ */
+export function markToolDone (blocks: Block[], name: string): Block[] {
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i]
+    if (b.kind === 'tool' && b.name === name && !b.done) {
+      const out = blocks.slice()
+      out[i] = { ...b, done: true }
+      return out
+    }
+  }
+  return blocks
+}
+
 export function pushBlock (blocks: Block[], next: Block): Block[] {
   const last = blocks[blocks.length - 1]
   if (
@@ -98,6 +124,21 @@ export function applyEvent (turn: Turn, event: Record<string, unknown>): Turn {
           display: str(event.display_name || event.name || 'tool')
         })
       }
+    case 'stage_start':
+      // 「正在分析」这类阶段提示。模型生成工具调用要十几秒,这段时间原来只有
+      // 一句静止的「正在思考…」—— 有了阶段文案和轮次,等待才有进展感。
+      return { ...turn, stage: str(event.message), round: Number(event.round) || 0 }
+    case 'stage_done':
+      // 阶段结束就清掉:留着会让「正在分析」一直挂在已经进入工具执行的轮次上。
+      return { ...turn, stage: '' }
+    case 'tool_result':
+      // 把对应的工具块标成完成。界面据此把转圈换成对勾 —— 原来 tool_result
+      // 根本不过 IPC 白名单,所以「在跑」和「跑完」长得一模一样,那两行躺着不动
+      // 看着就像卡死了。
+      //
+      // 从后往前找第一个同名未完成块:同一轮可能连着调同一个工具（比如两只票
+      // 各查一次持仓）,从前往后会把第二次的结果记到第一次头上。
+      return { ...turn, blocks: markToolDone(turn.blocks, str(event.name)) }
     case 'tool_error':
       return {
         ...turn,

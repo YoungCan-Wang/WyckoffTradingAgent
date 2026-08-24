@@ -289,8 +289,17 @@ _PASSTHROUGH = {
     # 模型的内部推理不跨 IPC 边界；前端只展示稳定的正文与工具状态。
     "thinking_delta": (),
     "tool_start": ("name", "display_name", "args"),
+    # 只放 name，**不放 result**：界面只需要知道「这一步做完了」好把转圈换成对勾。
+    # 结果正文动辄几十 KB（持仓明细、K 线数据），过河一趟既无用又占带宽，
+    # 而且真正要展示的东西已经走产物事件了。
+    "tool_result": ("name", "display_name"),
     "tool_calls": ("names",),
     "tool_error": ("name", "error"),
+    # 阶段进度。模型生成工具调用要十几到二十几秒，那段时间原来界面上只有一句
+    # 静止的「正在思考…」—— 看着就像卡死。stage_start 自带 message 和 round，
+    # 后端一直在发，只是从没过河。
+    "stage_start": ("stage", "round", "message"),
+    "stage_done": ("stage", "round", "success"),
     "model_start": ("model",),
     "usage": ("input_tokens", "output_tokens"),
     "retry": ("reason",),
