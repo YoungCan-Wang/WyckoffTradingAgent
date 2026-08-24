@@ -96,6 +96,33 @@ export function clearAllCaches (): void {
 }
 
 /**
+ * 只有一个账号的缓存时，直接返回它，不必先问「我是谁」。
+ *
+ * 为什么需要：读缓存前要 await 一次 `account` IPC 来确定分区，而打包后 Python
+ * 冷启动要十几秒 —— 那段时间首页只能显示占位符，明明磁盘上就有上次的持仓。
+ *
+ * 单分区时不存在「拿错账号」的风险：唯一那份就是当前用户的（换账号时
+ * clearAllCaches 已经把旧的清掉了）。多分区就返回 null，老实去问账号 ——
+ * 猜错的代价是把别人的持仓显示出来，不值得。
+ */
+export function readSoleCache (): CachedPortfolio | null {
+  try {
+    const keys: string[] = []
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i)
+      if (k && k.startsWith(PREFIX)) keys.push(k)
+    }
+    if (keys.length !== 1) return null
+    const parsed = JSON.parse(String(localStorage.getItem(keys[0]))) as CachedPortfolio
+    if (!parsed || typeof parsed.savedAt !== 'number' || !parsed.portfolio) return null
+    if (!Array.isArray(parsed.portfolio.positions)) return null
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+/**
  * 会改动持仓的工具。对话里跑了它们，缓存就是脏的。
  *
  * 这三个都在 cli/tools.py 里标了 requires_approval，但仍要在 tool_start 时

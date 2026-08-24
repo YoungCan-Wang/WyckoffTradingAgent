@@ -170,11 +170,11 @@ export function LoginModal ({ open, onClose, collect, onSignedIn, backendReady, 
               {t('login.cancel')}
             </button>
             <button className="login-go" type="submit" disabled={busy}>
-              {busy ? t('login.busy') : t('login.submit')}
+              {/* 转圈而不只是换文字：登录要等网络往返（实测好几秒），
+                  静止的「登录中…」看着像卡死了。 */}
+              {busy ? <><span className="spin" aria-hidden="true" />{t('login.busy')}</> : t('login.submit')}
             </button>
           </div>
-
-          <p className="login-hint">{t('login.cliHint')}</p>
         </form>
       </div>
     </div>

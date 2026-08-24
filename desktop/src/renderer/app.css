@@ -1306,6 +1306,17 @@ html.dark .mfin { background: var(--paper2); }
 .login-go { border: 0; background: var(--clay); color: #fff; font-weight: 600; }
 .login-go:hover:not(:disabled) { filter: brightness(.96); }
 .login-cancel:disabled, .login-go:disabled { opacity: .55; cursor: default; }
+/* 提交按钮里的转圈。登录要等网络往返，静止文案看着像卡死。
+   currentColor 让它自动跟按钮文字同色，换主题不用改。 */
+.login-go { display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
+.spin {
+  width: 12px; height: 12px; flex: none; border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, .4); border-top-color: currentColor;
+  animation: spin .6s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg) } }
+/* 减少动态效果时停下来：转圈是装饰，disabled 状态本身已经表达了「在忙」。 */
+html.no-motion .spin { animation: none; }
 .login-hint { margin: 12px 0 0; font-size: 11.5px; color: var(--tx3); }
 
 /* 全局轻提示。右下角、说完就走 —— 账号反馈不该留在对话流里。 */
