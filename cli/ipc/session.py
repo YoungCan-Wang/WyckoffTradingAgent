@@ -341,6 +341,72 @@ class DesktopSession:
         except Exception:
             logger.debug("chat log save failed", exc_info=True)
 
+    def _maybe_title(self, user_text: str, reply: str) -> None:
+        """第一轮结束后，让模型给这个会话起个短标题。
+
+        为什么不直接用首条提问:提问常常是「我的持仓怎么了」「用一句话说说今天
+        大盘」这种口语，同一个人一周能问五遍，列表里全是重样的条目分不清哪个是
+        哪个。让模型看过问答之后概括一句，才能带上「聊了什么」的信息。
+
+        **在后台线程做**:多一次模型往返要一两秒，挂在 run_turn 里等于每轮
+        对话都慢那么久，而标题只影响侧边栏好不好认。
+
+        只在标题还是自动生成的那一版时才写 —— 用户手改过的名字不能被覆盖
+        （upsert 与 rename 的分工见 integrations/local_db.py）。
+        """
+        if not user_text.strip() or not reply.strip():
+            return
+        threading.Thread(
+            target=self._title_worker,
+            args=(self._session_id, self._user_id, user_text, reply),
+            daemon=True,
+            name="chat-title",
+        ).start()
+
+    def _title_worker(self, session_id: str, user_id: str, user_text: str, reply: str) -> None:
+        from integrations.local_db import list_chat_sessions, rename_chat_session
+
+        try:
+            # 只给第一轮起标题。第二轮之后会话已经有名字了，再改会让用户眼前
+            # 的条目突然变名字。
+            rows = [s for s in list_chat_sessions(limit=200, user_id=user_id) if s["session_id"] == session_id]
+            if not rows or int(rows[0].get("msg_count") or 0) > 2:
+                return
+            # 记下开工时的标题。模型要十几秒才回，这期间用户完全可能自己改名 ——
+            # 不比对就会把他刚起的名字覆盖掉。
+            before = str(rows[0].get("title") or "")
+            title = self._ask_for_title(user_text, reply)
+            if not title:
+                return
+            after = [s for s in list_chat_sessions(limit=200, user_id=user_id) if s["session_id"] == session_id]
+            if after and str(after[0].get("title") or "") != before:
+                logger.info("skip auto title for %s: user renamed it meanwhile", session_id)
+                return
+            rename_chat_session(session_id, title, user_id)
+        except Exception:
+            # 标题是锦上添花。失败就留着首条提问当标题，不影响任何功能。
+            logger.debug("title generation failed", exc_info=True)
+
+    def _ask_for_title(self, user_text: str, reply: str) -> str:
+        if self._provider is None:
+            return ""
+        prompt = (
+            "给这段对话起一个标题，用于会话列表。要求："
+            "只输出标题本身，不要引号、不要标点结尾；"
+            "不超过 16 个字；"
+            "带上具体对象（股票名或代码、主题），不要写成「持仓分析」这种谁都适用的空话。"
+        )
+        # 回复截断:标题只需要知道聊的是什么，把整篇分析发过去纯属浪费 token。
+        body = f"用户：{user_text[:200]}\n\n助手：{reply[:400]}"
+        result = self._provider.chat([{"role": "user", "content": body}], [], system_prompt=prompt)
+        text = ""
+        if isinstance(result, dict):
+            text = str(result.get("text") or result.get("content") or "")
+        else:
+            text = str(result or "")
+        # 模型有时仍会加引号或句号，清掉。
+        return text.strip().strip('"“”\'。.！!').split("\n")[0][:30]
+
     def _touch_session(self, first_text: str) -> None:
         """保证会话在列表里有一行元数据，并把它顶到最前。
 
@@ -417,6 +483,9 @@ class DesktopSession:
                             tokens_out=int(usage.get("output_tokens") or 0),
                             elapsed_s=float(event.get("elapsed") or 0.0),
                         )
+                        # 后台起标题。放在 chat_log 落盘之后 —— worker 要靠
+                        # msg_count 判断这是不是第一轮。
+                        self._maybe_title(text, reply)
                     self._trim()
         except Exception as exc:
             logger.exception("chat turn failed")
