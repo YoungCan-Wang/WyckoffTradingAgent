@@ -219,8 +219,12 @@ export function App () {
     window.WyckoffReact?.clearPortfolioCaches?.()
     closeSettings()
     await loadAccount()
+    // 徽标也得重拉。审批项按账号隔离（approve_list 用 owner_matches 过滤），
+    // 不刷新就会留着上一个账号的数字 —— 实测显示「待审 1」而点进去列表是空的，
+    // 用户只能理解成功能坏了。登录那条路径已经在做，退出这条漏了。
+    await refreshCounts()
     toast(t('signin.signedOutDone'))
-  }, [closeSettings, loadAccount, toast])
+  }, [closeSettings, loadAccount, refreshCounts, toast])
 
   // 命令式模块（K 线、报告面板）与 React 页面互相回调都走这一条窄桥。
   useEffect(() => {
