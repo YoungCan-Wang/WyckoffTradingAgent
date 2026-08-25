@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from utils.feishu_text import normalize_lark_md
+from utils.feishu_text import normalize_lark_md, split_lark_md
 
 
 def test_normalize_lark_md_converts_table_to_bullet_lines():
@@ -49,3 +49,12 @@ def test_normalize_lark_md_ignores_non_table_pipe_lines():
     content = "命令: `a | b`"
     result = normalize_lark_md(content)
     assert result == content
+
+
+def test_split_lark_md_keeps_every_tracking_name_across_chunks():
+    names = [f"{idx:06d} 形态股{idx:02d}" for idx in range(1, 33)]
+    content = "**【🧾 今日形态入表观察】32 只**\n\n" + "\n".join(f"  {name}  A+C  分80.00" for name in names)
+    chunks = split_lark_md(content, max_len=280)
+    assert len(chunks) > 1
+    combined = "".join(chunks)
+    assert all(name in combined for name in names)

@@ -29,6 +29,7 @@ flowchart TB
         S275["Step2.75 动态影子评分<br/>满足门槛者最多补 1 个 Step3 复核席位"]
         S3["Step3 批量 AI 研报<br/>workflows/step3_batch_report.py"]
         S4["Step4 私人 OMS 再平衡<br/>workflows/step4_rebalancer.py"]
+        SH["影子账本 paper<br/>workflows/shadow_ledger_job.py"]
     end
 
     subgraph DOWNSTREAM["⬇️ 下游（漏斗运行后消费）"]
@@ -50,10 +51,12 @@ flowchart TB
     U7 --> S2
 
     S2 --> S25 --> S26 --> S27 --> S3 --> S4
+    S3 --> SH
 
     S2 --> D7
     S3 --> D7
     S4 --> D7
+    SH --> D7
 
     S2 --> D1
     S3 --> D1
@@ -94,10 +97,13 @@ flowchart TD
     MARK --> OBS["写 signal_observations<br/>L4 观察样本"]
 
     S3 --> S4CHK{"Step4 启用?<br/>SUPABASE_USER_ID + TG"}
-    S4CHK -->|跳过| SUM
+    S4CHK -->|跳过| SHADOW
     S4CHK -->|执行| S4
 
-    S4["Step4: 规则准入 + AI风险审计 + OMS<br/>持仓决断 + Telegram"] --> SUM
+    S4["Step4: 规则准入 + AI风险审计 + OMS<br/>持仓决断 + Telegram"] --> SHADOW
+    SHADOW{"漏斗 Step2/3 成功?"} -->|是| PAPER["影子账本 paper<br/>只写 shadow_*，独立飞书卡"]
+    SHADOW -->|否| SUM
+    PAPER --> SUM
     SUM["阶段汇总日志<br/>upload artifacts"] --> END(["exit 0/1"])
 
     STEP2 -->|异常| BLOCK["阻断型失败 exit 1"]
@@ -114,6 +120,20 @@ flowchart TD
 | Step2.6 | `integrations/recommendation_payload.py` | `recommendation_tracking` 写库；`initial_price` 按 code 粘住首次推荐日收盘 |
 | Step3 | `workflows/step3_batch_report.py` | `tools/report_builder.py` |
 | Step4 | `workflows/step4_rebalancer.py` | `core/holding_diagnostic.py` / `core/wyckoff_engine.py` |
+| 影子账本 | `workflows/shadow_ledger_job.py` | `core/shadow_ledger.py`；只写 `shadow_*`，失败不阻断漏斗 |
+
+**影子账本启用步骤**（默认关，`SHADOW_LEDGER_ENABLED=0`）：
+
+1. `python scripts/print_shadow_ledger_ddl.py`，把输出贴到 Supabase SQL Editor 执行一次。
+   DDL 由 `core/shadow_ledger_schema.py` 生成——本仓库禁止 `.sql` 文件（`quality_gate` 会拦），
+   schema 以 Python 常量版本化，与 `core/factor_ic_schema.py` 同一套做法。
+2. 确认 `shadow_account` / `shadow_positions` / `shadow_events` / `shadow_nav_daily` /
+   `shadow_trade_plans` 五张表已建、seed 账户 `USER_SHADOW:*` 存在。
+3. 置 `SHADOW_LEDGER_ENABLED=1`。
+
+未建表就开启只会每天在 summary 里留一行 `failed_soft`（异常被吞，不阻断漏斗），所以默认关，
+让"建表"成为显式的启用动作。买许可复用 `step4_candidate_meta` 的规则准入，与实盘同一套口径；
+写入侧另有 `USER_SHADOW:` 前缀断言，拒绝任何非影子账户。
 
 **推荐价语义**：`recommendation_tracking.initial_price` = 该股票首次 `recommend_date` 的收盘价；同股再次推荐、同日重跑、晚间 reprice/performance 都不得改成新日价。`change_pct` 相对该粘住价；MFE/MAE 仍按该行事件日计算。performance 的 `max_dates` 只限制刷新哪些行，首次推荐日锚点仍按该 code 全量历史计算。存量纠偏入口为 `workflows.recommendation_tracking_reprice.correct_tracking_initial_prices`。
 
@@ -137,7 +157,7 @@ flowchart TD
         P4["拉取基准指数<br/>000001 + 小盘指数"]
         P5["fetch_all_ohlcv 批量拉 K 线<br/>TickFlow → tushare → akshare → baostock → efinance"]
         P6["dump funnel_snapshots<br/>离线快照"]
-        P7["ETF 增强扫描<br/>_run_etf_enhancement"]
+        P7["ETF 已从 A 股漏斗移除<br/>用户卡片不再渲染 ETF"]
         P8["加载 external_seeds<br/>追加到观察池"]
     end
 
@@ -221,9 +241,9 @@ flowchart TD
     R16 -->|覆盖不足| R17 --> R13
 ```
 
-ETF 增强数据保持为独立旁路：ETF 只在 L3 行业/主题共振计算时临时并入局部输入，不写回 A 股
-`all_df_map` 或 `sector_map`。因此市场广度、RPS、资金流和股票候选排序始终只使用 A 股股票池，避免
-ETF 行情重复进入全市场统计；ETF 候选仍可通过 L3 共振进入后续专用展示。
+A 股漏斗已不再注入 ETF 增强上下文。漏斗卡片 `name_map` 只走 A 股 `load_stock_name_map()`，
+不再 `update(load_etf_name_map())`。名称搜索仍用 `search_market_meta` / `load_etf_name_map`。
+用户面向飞书卡、简报和推荐名单不新增或刷新 ETF 名称；历史库行保留，但旧快照里的黄金ETF/粮食ETF 等主题行不再渲染。
 
 ### 正式候选来源
 
@@ -328,7 +348,7 @@ flowchart LR
 - 精简形态观察按股票聚合；两种及以上 A/B/C≥2 的正式 L4 信号显示为“双/多 Wyckoff 形态共振”，入表时保留完整 `signal_types`
 - `STEP3_SKIP_LLM=1` 的输入预演在空候选时静默返回，不发送空研报或合规简报
 - 模型审判不等于执行放行，`confirmed` 仍是 Step4 硬门槛
-- 用户报告保留执行摘要、实际送审清单，以及 A/B/C≥2 且当日写入 `recommendation_tracking` 的精简形态观察（默认最多 20 只）；完整 L4/主线池、逐层计数和证据仍保留在结构化运行数据中。空候选仍发送空集报告并明确区分上游空输入、RAG 全剔除和数据门槛过滤
+- 用户报告保留执行摘要、实际送审清单，以及 A/B/C≥2 且当日写入 `recommendation_tracking` 的全部形态观察；旁路与主线名单同样全部列出，不再写「另 N 只已入表 / 另 N 只略」。名单超长时飞书走 `send_feishu_notification` → `split_lark_md` 多卡（约 2800 字/卡），不为本气泡静默再截断。完整 L4/主线池、逐层计数和证据仍保留在结构化运行数据中。空候选仍发送空集报告并明确区分上游空输入、RAG 全剔除和数据门槛过滤。用户面向卡片与推荐名单不再新增或刷新 ETF 名称（含黄金ETF/粮食ETF 与 159/51/56 基金号段）；历史库行不删。
 
 ---
 
@@ -371,7 +391,11 @@ Step4 以 `trade_orders` 作为幂等事实源。Telegram 超时具有“可能�
 
 ### 回放与确认安全边界
 
-- 显式设置 `END_CALENDAR_DAY` 即进入历史回放模式。Step2/Step3 可以按目标日重放，但任务会在读取实盘持仓、订单或 Step4 Supabase 状态前跳过 Step4，历史结果不会改写当前 OMS。
+- 显式设置 `END_CALENDAR_DAY` 即进入历史回放模式。Step2/Step3 可以按目标日重放，但任务会在读取实盘持仓、订单或 Step4 Supabase 状态前跳过 Step4，历史结果不会改写当前 OMS；影子账本同步跳过，避免回放写 paper 成交。
+
+### 影子账本（paper）
+
+漏斗 Step2/3 成功后，`workflows/shadow_ledger_job.py` 另跑一套纸面账本：买许可与 Step4 规则准入相同，但只写 `shadow_*`。盘后定计划、次日官方开盘价成交，遵守 T+1 / 整手 / 涨跌停 / 费用；失败只记日志，不阻断漏斗。独立飞书卡标题为「影子账本 / paper」，不是实盘，也不是 `ic_shadow`。
 - Step4 新开仓确认采用字段级白名单：接受明确的 `confirmed` 状态、`signal_confirmed` 来源和受控确认标签；只要载荷含 `unconfirmed`、`pending`、`未确认`、`待确认` 或 `观察` 等否定状态，就先行拦截，不再用字符串包含关系推断确认。
 
 ### 报告执行纪律
@@ -502,7 +526,7 @@ Baostock
 efinance
 ```
 
-- ETF/LOF 旁路若股票日线接口缺失，再用 Tushare `fund_daily` 补齐，不混入 A 股股票行情池。
+- A 股漏斗不再拉取或展示 ETF/LOF 旁路；L1 已用 `is_supported_cn_board` 丢掉 51/159/56/513/588。漏斗卡片 `name_map` 不再合并 ETF 名称。用户卡片与推荐名单不刷新 ETF 名称。
 - 上证/创业板基准使用 Tushare → AkShare → Baostock，Baostock 是不依赖东方财富网页链的第三层备源。
 - 数据质量同时报告原始全池覆盖与“应交易覆盖”；当日确认停牌不算数据源失败。换手率、行业映射和概念映射也有独立覆盖率门槛，避免元数据降级为空后静默改变 L1/L3。
 - 概念连续性读取 Supabase `concept_heat_history` 的最近交易日历史，并报告历史天数、最新日期和连续主题数；历史充足但连续主题为 0 表示题材轮动未形成连续线，不等于数据为空。

@@ -40,3 +40,21 @@ def test_deliver_funnel_card_sends_notification_and_keeps_details_shape(monkeypa
         {"selected_for_ai": ["000001"]},
     )
     assert calls == [("https://feishu.example", "标题", "内容")]
+
+
+def test_deliver_funnel_card_forwards_full_name_list_to_feishu_split(monkeypatch):
+    calls: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(delivery, "send_feishu_notification", lambda *args: calls.append(args) or True)
+    names = [f"{idx:06d} 压缩{idx:06d}" for idx in range(1, 33)]
+    content = "**【🧾 今日形态入表观察】32 只**\n" + "\n".join(f"  {name}" for name in names)
+    card = FunnelRenderedCard(
+        title="🔬 Wyckoff Funnel",
+        content=content,
+        symbols=[],
+        benchmark_context={},
+    )
+
+    delivery.deliver_funnel_card(card, webhook_url="https://feishu.example", notify=True)
+
+    assert calls == [("https://feishu.example", "🔬 Wyckoff Funnel", content)]
+    assert all(name in calls[0][2] for name in names)

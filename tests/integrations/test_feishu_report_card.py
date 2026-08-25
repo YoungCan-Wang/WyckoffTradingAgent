@@ -78,3 +78,27 @@ def test_card_chunk_falls_back_to_legacy_layout(monkeypatch):
 
     assert feishu._send_card_chunk("hook", "title", "body", 1, 1) is True
     assert calls == ["rich", "rich", "rich", "legacy"]
+
+
+def test_send_feishu_notification_splits_full_name_list_without_dropping(monkeypatch):
+    from utils import feishu
+
+    names = [f"{idx:06d} 形态股{idx:02d}" for idx in range(1, 33)]
+    listing = "\n".join(f"  {name}  A+C  分80.00  现价12.34  起跳板结构:A+C(2/3)" for name in names)
+    content = "**【🧾 今日形态入表观察】32 只**\n\n" + listing
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setenv("FEISHU_LARK_MAX_LEN", "400")
+    monkeypatch.setattr(feishu.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        feishu,
+        "_post_card",
+        lambda _webhook, title, chunk: sent.append((title, chunk)) or (True, "ok"),
+    )
+
+    ok = feishu.send_feishu_notification("https://example.test/hook", "🔬 Wyckoff Funnel", content)
+
+    assert ok is True
+    assert len(sent) > 1
+    combined = "".join(chunk for _title, chunk in sent)
+    assert all(name in combined for name in names)
+    assert sent[0][0].startswith("🔬 Wyckoff Funnel (1/")

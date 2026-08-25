@@ -30,6 +30,7 @@ def deliver_funnel_card(
     webhook_url: str,
     notify: bool,
 ) -> tuple[bool, list[dict], dict] | tuple[bool, list[dict], dict, dict]:
+    # 全量名单会超过飞书单卡约 2800 字；send_feishu_notification 走 split_lark_md 多卡，禁止在此再截断。
     ok = True if not notify else send_feishu_notification(webhook_url, card.title, card.content)
     if card.details is not None:
         return ok, card.symbols, card.benchmark_context, card.details

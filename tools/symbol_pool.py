@@ -16,18 +16,14 @@ from utils.env import parse_int_env
 
 
 def load_stock_name_map() -> dict[str, str]:
-    """获取全部 A 股 + ETF 代码→名称映射（如失败返回空 dict）。"""
+    """获取 A 股代码→名称映射（如失败返回空 dict）。不含 ETF。"""
     try:
         from integrations.fetch_a_share_csv import get_all_stocks
 
         items = get_all_stocks()
-        result = {x.get("code", ""): x.get("name", "") for x in items if isinstance(x, dict)}
+        return {x.get("code", ""): x.get("name", "") for x in items if isinstance(x, dict)}
     except Exception:
-        result = {}
-    from tools.market_universe_meta import load_etf_name_map
-
-    result.update(load_etf_name_map())
-    return result
+        return {}
 
 
 def _pool_stats(
