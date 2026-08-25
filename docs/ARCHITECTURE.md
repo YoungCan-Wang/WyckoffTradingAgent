@@ -802,7 +802,7 @@ MCP server 走 ToolSurface，没有确认弹窗也没有待批队列。`tools/wr
 
 ### 飞书报告卡片
 
-所有调用 `send_feishu_notification()` 的 Markdown 报告统一经过 `utils/feishu_report_card.py`：自动选择语义标题色、提取摘要区、按标题拆分段落、突出风险提示，并使用宽屏卡片。回测继续使用 `utils/feishu_backtest_card.py` 专用指标卡片；新版通用布局若被飞书拒绝，会自动回退到原单块 Markdown 卡片，避免样式升级影响定时通知可靠性。
+所有调用 `send_feishu_notification()` 的 Markdown 报告统一经过 `utils/feishu_report_card.py`：自动选择语义标题色、提取摘要区、按标题拆分段落、突出风险提示，并使用宽屏卡片。正文超过约 2800 字时由 `split_lark_md` 拆成多条 `(idx/total)` 卡片，漏斗全量名单依赖这条路径，不能为塞进一张卡而丢掉名称。回测继续使用 `utils/feishu_backtest_card.py` 专用指标卡片；新版通用布局若被飞书拒绝，会自动回退到原单块 Markdown 卡片，避免样式升级影响定时通知可靠性。
 
 ### GitHub Actions 主要工作流
 

@@ -165,6 +165,81 @@ def test_tracking_shape_section_deduplicates_and_lists_every_row(monkeypatch) ->
     assert "已入表" not in report
 
 
+def test_tracking_shape_section_lists_all_compression_rows(monkeypatch) -> None:
+    from workflows import funnel_render
+
+    monkeypatch.setattr(
+        funnel_render,
+        "score_springboard_abc",
+        lambda _df, _signal_type: {"grade": "A+C", "met_count": 2},
+    )
+    codes = [f"{idx:06d}" for idx in range(1, 33)]
+    ctx = SimpleNamespace(
+        formal_triggers={"compression": [(code, 70.0) for code in codes]},
+        all_df_map={code: pd.DataFrame({"close": [10.0]}) for code in codes},
+        name_map={code: f"压缩{code}" for code in codes},
+        latest_close_map={},
+        code_to_total_score={code: 70.0 for code in codes},
+    )
+
+    report = "\n".join(funnel_render._tracking_shape_section_lines(ctx, _make_selection([])))
+
+    assert "今日形态入表观察】32 只" in report
+    assert all(f"{code} 压缩{code}" in report for code in codes)
+    assert "另" not in report
+    assert "已入表" not in report
+    assert "略" not in report
+
+
+def test_bypass_and_mainline_card_sections_list_every_name() -> None:
+    from workflows.funnel_render import _append_l2_bypass_card_section, _append_mainline_card_section
+
+    bypass_codes = [f"{idx:06d}" for idx in range(1, 25)]
+    bypass_ctx = SimpleNamespace(
+        l2_bypass_pool=bypass_codes,
+        l2_bypass_ranked=bypass_codes,
+        name_map={code: f"旁路{code}" for code in bypass_codes},
+        bypass_triggers={"sos": [(code, 60.0) for code in bypass_codes]},
+        sector_map={},
+        theme_badge_map={},
+        all_df_map={},
+        code_to_trigger_keys={code: ["sos"] for code in bypass_codes},
+        candidate_entry_map={},
+        mainline_candidate_set=set(),
+    )
+    bypass_lines: list[str] = []
+    _append_l2_bypass_card_section(bypass_lines, bypass_ctx, 0)
+    bypass_report = "\n".join(bypass_lines)
+    assert all(f"{code} 旁路{code}" in bypass_report for code in bypass_codes)
+    assert "略" not in bypass_report
+
+    mainline_rows = [
+        {
+            "code": f"{idx:06d}",
+            "name": f"主线{idx:06d}",
+            "theme": "测试",
+            "status": "主线买点候选",
+            "entry_type": "等待确认",
+            "mainline_score": 0.8,
+            "risk_flags": [],
+            "metrics": {},
+        }
+        for idx in range(1, 12)
+    ]
+    mainline_ctx = SimpleNamespace(
+        mainline_candidates=mainline_rows,
+        mainline_tradeable=mainline_rows,
+        mainline_observe=[],
+        mainline_overheated=[],
+        name_map={},
+    )
+    mainline_lines: list[str] = []
+    _append_mainline_card_section(mainline_lines, mainline_ctx, 0)
+    mainline_report = "\n".join(mainline_lines)
+    assert all(f"{idx:06d} 主线{idx:06d}" in mainline_report for idx in range(1, 12))
+    assert "略" not in mainline_report
+
+
 def test_execution_decision_line_blocks_risk_on_new_buys() -> None:
     from workflows.funnel_render import _execution_decision_line
 
