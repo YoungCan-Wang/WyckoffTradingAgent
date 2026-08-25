@@ -6,33 +6,20 @@
 // 为什么这些验证不能省：这个视图**执行模型生成的代码**。允许执行之后,风险不是
 // 「它能做动画」,而是「它能把持仓数据 fetch 出去」。所以核心防线是阻断网络,
 // 而不是限制语法 —— 下面每一条都在守那道线。
-import { _electron as electron } from 'playwright'
+// 这份也**不能**并进 workbench.mjs：它要在主进程里自建 WebContentsView 和一个
+// 本地 STUN 服务器,是另一套设施,不是同一个窗口里的另一段交互。
 import assert from 'node:assert/strict'
-import { mkdtemp, rm, readFile } from 'node:fs/promises'
-import { fileURLToPath, pathToFileURL } from 'node:url'
-import { dirname, join } from 'node:path'
-import { tmpdir } from 'node:os'
+import { readFile } from 'node:fs/promises'
+import { pathToFileURL } from 'node:url'
+import { join } from 'node:path'
 import { createSocket } from 'node:dgram'
+import { APP_DIR, launchApp, reporter } from './harness.mjs'
 
-const APP_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const PROFILE = await mkdtemp(join(tmpdir(), 'wyckoff-artifact-'))
+// 不要解构 reporter —— failures 是 getter,解构会拍成快照(永远 0)。
+const r = reporter()
+const { write, check } = r
 
-let failures = 0
-const write = (s = '') => process.stdout.write(`${s}\n`)
-const check = (name, fn) => {
-  try {
-    fn()
-    write(`  ok   ${name}`)
-  } catch (err) {
-    failures += 1
-    write(`  FAIL ${name}: ${err.message}`)
-  }
-}
-
-const app = await electron.launch({
-  args: [APP_DIR, `--user-data-dir=${PROFILE}`],
-  env: { ...process.env, ELECTRON_DISABLE_GPU: '1' }
-})
+const { app } = await launchApp({ signedIn: false, tag: 'artifact' })
 
 try {
   await app.firstWindow()
@@ -235,8 +222,6 @@ try {
     assert.match(source, /callback\(\{ cancel: true \}\)/))
 } finally {
   await app.close()
-  await rm(PROFILE, { recursive: true, force: true })
 }
 
-write(failures ? `\n*** ${failures} 项失败 ***` : '\n全部通过')
-process.exitCode = failures ? 1 : 0
+r.finish()

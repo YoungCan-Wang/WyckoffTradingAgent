@@ -81,12 +81,21 @@ jobs:
         run: npm run build:ui
 
       # Linux 需要虚拟显示；Windows/macOS runner 可直接启动 Electron。
-      - name: E2E smoke (Linux 需要虚拟显示)
+      #
+      # workbench.mjs 是原来的 smoke + schedules + archive 三份合并的 ——
+      # 它们要的环境完全一样（已登录 + 干净 HOME），没理由各起一次 Electron。
+      # 顺带一个收获：schedules 和 archive 原先**根本没进 CI**（这里只跑了
+      # smoke），合并之后它们也跟着跑上了。
+      - name: E2E 工作台（Linux 需要虚拟显示）
         if: runner.os == 'Linux'
-        run: xvfb-run --auto-servernum node test/e2e/smoke.mjs
-      - name: E2E smoke
+        run: xvfb-run --auto-servernum node test/e2e/workbench.mjs
+      - name: E2E 工作台
         if: runner.os != 'Linux'
-        run: node test/e2e/smoke.mjs
+        run: node test/e2e/workbench.mjs
+
+      # login.mjs 不在这里 —— 它已经作为下面的「登录闸门验证」跑了一遍。
+      # （未登录形态刻意单独一个进程：它要的就是「没有 WYCKOFF_E2E_FAKE_SIGNIN」
+      # 的启动路径，塞进已登录窗口就验不到了。）
 
       # 可交互产物宿主的安全验证。这个视图**执行模型生成的代码**,所以每次改动
       # 都要在真 Electron 上重验一遍：JS 能跑、网络出不去、拿不到宿主 API。

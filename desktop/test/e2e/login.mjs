@@ -4,29 +4,16 @@
 // 2. 账号行能打开弹窗，弹窗真的居中
 // 3. 打开时背景真的 inert，关闭后真的恢复
 // 4. Esc 真的关得掉
-import { _electron as electron } from 'playwright'
 import assert from 'node:assert/strict'
-import { mkdtemp } from 'node:fs/promises'
-import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
-import { tmpdir } from 'node:os'
+import { launchApp, reporter } from './harness.mjs'
 
-const APP_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
+// 不要把 reporter 解构开 —— failures 是 getter，解构会把它拍成快照（永远 0）。
+const r = reporter()
+const { write, check } = r
 
-let failures = 0
-const write = (s = '') => process.stdout.write(`${s}\n`)
-const check = (name, fn) => {
-  try { fn(); write(`  ok   ${name}`) } catch (err) { failures += 1; write(`  FAIL ${name}: ${err.message}`) }
-}
-
-const profile = await mkdtemp(join(tmpdir(), 'wyckoff-login-'))
-const home = await mkdtemp(join(tmpdir(), 'wyckoff-login-home-'))
-const app = await electron.launch({
-  args: [APP_DIR, `--user-data-dir=${profile}`],
-  // 干净的家目录 = 未登录。这一份**刻意不设** WYCKOFF_E2E_FAKE_SIGNIN：
-  // 要验的正是真实的未登录形态。
-  env: { ...process.env, ELECTRON_DISABLE_GPU: '1', HOME: home, USERPROFILE: home }
-})
+// 干净的家目录 = 未登录。这一份**刻意 signedIn: false**：要验的正是真实的
+// 未登录形态，所以它不能和 workbench.mjs 共用窗口。
+const { app } = await launchApp({ signedIn: false, tag: 'login' })
 const win = await app.firstWindow()
 
 write('登录弹窗：')
@@ -62,6 +49,18 @@ if (hasSignin) {
   check('点登录打开弹窗', () => assert.equal(opened, true))
 
   if (opened) {
+    // 等焦点真的落进弹窗再读 activeElement。
+    //
+    // 这是一个**改动前就存在**的 flake，本机 5 轮里红 4 轮：`waitFor visible` 只
+    // 保证元素可见，而自动聚焦是 React 挂载后的一个 effect，晚一帧才跑。原来
+    // 紧接着就 evaluate，读到的 activeElement 常常还是 body（空字符串），
+    // 报成「焦点进入弹窗失败」。用 waitForFunction 轮询到位再断言。
+    const focusArrived = await win.waitForFunction(
+      () => /^login-/.test(document.activeElement?.id || ''),
+      undefined,
+      { timeout: 5_000 }
+    ).then(() => true, () => false)
+
     const state = await win.evaluate(() => {
       const d = document.querySelector('.login-dlg')
       const r = d.getBoundingClientRect()
@@ -75,7 +74,8 @@ if (hasSignin) {
     check('弹窗水平居中', () => assert.equal(state.centered, true))
     check('标为 aria-modal', () => assert.equal(state.modal, 'true'))
     check('打开时背景被冻结', () => assert.equal(state.bgInert, true))
-    check('焦点进入弹窗', () => assert.match(state.focused, /^login-/))
+    check('焦点进入弹窗', () =>
+      assert.ok(focusArrived, `5s 内焦点没进弹窗，activeElement=${state.focused || '(空)'}`))
 
     // 空表单要给反馈，且**不依赖后端就绪** —— 字段校验先于 backendReady。
     await win.evaluate(() => {
@@ -97,5 +97,4 @@ if (hasSignin) {
 }
 
 await app.close()
-write(failures ? `\n*** ${failures} 项失败 ***` : '\n全部通过')
-process.exit(failures ? 1 : 0)
+r.finish()
