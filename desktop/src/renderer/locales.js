@@ -271,6 +271,10 @@
     // 持仓 / 图表
     'portfolio.pageSub': '当前持仓与风险敞口。',
     'portfolio.readFailed': '读取持仓失败',
+    // 说清「本地数据还在」—— 读失败最容易让人以为持仓丢了。
+    'portfolio.retryHint': '持仓数据没有丢，只是这次没读到。点下面的刷新重试一次。',
+    // 降级提示。说清「本地」和「可能不是最新」——用户得知道差别在哪。
+    'portfolio.localFallback': '云端没连上，显示的是本机数据。如果你在别的设备改过持仓，这里可能不是最新的。',
     'portfolio.refresh': '刷新',
     'portfolio.updatedAt': '数据更新于 {time}',
     'portfolio.justLoaded': '刚刚更新',
@@ -853,6 +857,8 @@
 
     'portfolio.pageSub': 'Current holdings and risk exposure.',
     'portfolio.readFailed': 'Could not load holdings',
+    'portfolio.retryHint': 'Your holdings are still there — this read just failed. Hit refresh to try again.',
+    'portfolio.localFallback': "Cloud unreachable — showing local data. If you changed holdings on another device, this may be out of date.",
     'portfolio.refresh': 'Refresh',
     'portfolio.updatedAt': 'Updated {time}',
     'portfolio.justLoaded': 'Just loaded',

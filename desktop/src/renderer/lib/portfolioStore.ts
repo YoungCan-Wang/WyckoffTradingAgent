@@ -41,6 +41,13 @@ export interface PortfolioSnapshot {
   savedAt: number | null
   loading: boolean
   failed: boolean
+  /**
+   * 后端给的失败原因,空串表示没有具体原因(比如整个调用没回来)。
+   *
+   * 单独一个字段而不是塞进 failed:失败时页面要能说清「云端连不上」还是
+   * 别的什么,而不是一句通用的「读取失败」—— 后者看不出该刷新还是该查网络。
+   */
+  error: string
 }
 
 /**
@@ -54,7 +61,8 @@ let snapshot: PortfolioSnapshot = {
   // 初始是 false 而不是 true:还没人要过数据,不该显示「加载中」。
   // 真正开始拉的时候才置 true。
   loading: false,
-  failed: false
+  failed: false,
+  error: ''
 }
 
 const listeners = new Set<() => void>()
@@ -103,21 +111,35 @@ export async function refresh (): Promise<void> {
   const seq = ++requestSeq
   const stale = () => seq !== requestSeq
 
-  emit({ loading: true, failed: false })
+  emit({ loading: true, failed: false, error: '' })
   const res = await collect('portfolio').catch(() => null)
   if (stale()) return
 
-  const payload = res as { portfolio?: Portfolio; user_id?: string } | null
+  const payload = res as { portfolio?: Portfolio & { error?: string }; user_id?: string } | null
   const next = payload && payload.portfolio
   if (!next) {
-    emit({ loading: false, failed: true })
+    emit({ loading: false, failed: true, error: '' })
+    return
+  }
+  // 后端**成功返回了一个装着错误的对象**：`{portfolio: {error: "..."}}`。
+  //
+  // 这个分支是实测踩出来的：云端 TLS 握手超时时,portfolio 工具返回
+  // `{"portfolio": {"error": "handshake timed out"}}`。它是 truthy,所以原来
+  // 直接当成一份合法持仓存进缓存并渲染 —— 图表拿不到 positions,画出
+  // 「暂无持仓数据」。于是**网络抖一下,你的持仓看起来就清零了**,而且页面
+  // 不提示任何异常,你不知道该点刷新。
+  //
+  // 失败要说是失败。也不写缓存 —— 把错误对象缓存下来,下次进页面连请求都不发。
+  const failure = String(next.error || '')
+  if (failure) {
+    emit({ loading: false, failed: true, error: failure })
     return
   }
   // 用后端回传的账号,不是我们自己问来的那个 —— 这份数据属于谁只有它知道。
   const owner = String(payload.user_id || '')
   knownUser = owner
   const entry = writeCache(owner, next)
-  emit({ portfolio: next, savedAt: entry.savedAt, loading: false, failed: false })
+  emit({ portfolio: next, savedAt: entry.savedAt, loading: false, failed: false, error: '' })
 }
 
 /**
@@ -134,7 +156,7 @@ export async function ensureLoaded (): Promise<void> {
   // 就有上次的持仓。这一步把等待从「十几秒」压到「零」。
   const sole = readSoleCache()
   if (sole) {
-    emit({ portfolio: sole.portfolio, savedAt: sole.savedAt, loading: false, failed: false })
+    emit({ portfolio: sole.portfolio, savedAt: sole.savedAt, loading: false, failed: false, error: '' })
     // 拿到账号后核对一次:分区对不上说明这份不是当前用户的,重拉。
     void (async () => {
       const uid = await currentUser()
@@ -148,7 +170,7 @@ export async function ensureLoaded (): Promise<void> {
   const uid = await currentUser()
   const cached = readCache(uid)
   if (cached) {
-    emit({ portfolio: cached.portfolio, savedAt: cached.savedAt, loading: false, failed: false })
+    emit({ portfolio: cached.portfolio, savedAt: cached.savedAt, loading: false, failed: false, error: '' })
     return
   }
   await refresh()
@@ -162,13 +184,13 @@ export async function ensureLoaded (): Promise<void> {
 export function invalidate (): void {
   knownUser = null
   started = true
-  emit({ portfolio: null, savedAt: null, loading: true, failed: false })
+  emit({ portfolio: null, savedAt: null, loading: true, failed: false, error: '' })
   void refresh()
 }
 
 /** 供测试重置。生产代码不该调。 */
 export function __reset (): void {
-  snapshot = { portfolio: null, savedAt: null, loading: false, failed: false }
+  snapshot = { portfolio: null, savedAt: null, loading: false, failed: false, error: '' }
   listeners.clear()
   knownUser = null
   requestSeq = 0

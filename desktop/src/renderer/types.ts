@@ -92,6 +92,15 @@ export interface Portfolio {
   position_count?: number
   /** 后端算估值的时间，不是缓存时间 —— 两者要分开显示。 */
   valuation_updated_at?: string
+  /**
+   * `'local'` 表示云端读失败、这份来自本地库。只有降级时后端才带这个字段。
+   *
+   * 要显示出来：本地数据可能落后于另一台设备上的改动，用户得知道自己看的
+   * 不是最新的云端状态 —— 而不是以为一切正常。
+   */
+  source?: string
+  /** 降级时云端的失败原因，与 source 一起出现。 */
+  cloud_error?: string
 }
 
 /** 一个已配置的模型。字段与 settings_get 里构造的字典一一对应。 */

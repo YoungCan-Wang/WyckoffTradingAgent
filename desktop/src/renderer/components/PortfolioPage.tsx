@@ -23,7 +23,7 @@ const stamp = (raw?: string) => {
 }
 
 export function PortfolioPage () {
-  const { portfolio, savedAt, loading, failed, refresh } = usePortfolio()
+  const { portfolio, savedAt, loading, failed, error: loadError, refresh } = usePortfolio()
   const [busy, setBusy] = useState('')
   // 编辑模式：整页一个开关，比每行两个按钮安静得多。
   const [editing, setEditing] = useState(false)
@@ -61,7 +61,25 @@ export function PortfolioPage () {
   }
 
   if (loading) return <p className="empty">{t('tab.loading')}</p>
-  if (failed || !portfolio) return <p className="empty">{t('portfolio.readFailed')}</p>
+  // 读失败要给出「怎么办」,不只是「不行」。
+  //
+  // 原来这里只有一句 readFailed,而更糟的是失败常常根本走不到这里:后端云端
+  // 超时会返回 `{portfolio: {error: ...}}`,那是个 truthy 对象,于是被当成
+  // 一份合法持仓渲染,图表画出「暂无持仓数据」—— 网络抖一下看起来就像清仓了。
+  // store 现在把它识别成失败(见 portfolioStore.refresh),这里负责说清楚
+  // 原因并给一个能真正解决问题的按钮。
+  if (failed || !portfolio) {
+    return (
+      <div className="pfail">
+        <p className="empty">{t('portfolio.readFailed')}</p>
+        {loadError ? <p className="pfail-why">{loadError}</p> : null}
+        <p className="pfail-hint">{t('portfolio.retryHint')}</p>
+        <button type="button" className="mbtn" onClick={() => void refresh()}>
+          {t('portfolio.refresh')}
+        </button>
+      </div>
+    )
+  }
 
   const positions = portfolio.positions || []
 
@@ -89,6 +107,16 @@ export function PortfolioPage () {
       </div>
 
       {editing ? <p className="pbar-hint">{t('portfolio.editHint')}</p> : null}
+
+      {/* 降级提示：云端没连上、这份是本地数据。
+          必须说出来 —— 本地库可能落后于另一台设备上的改动,而用户看不出差别,
+          会以为自己在看最新状态。 */}
+      {portfolio.source === 'local' ? (
+        <p className="pbar-warn">
+          {t('portfolio.localFallback')}
+          {portfolio.cloud_error ? ` (${portfolio.cloud_error})` : ''}
+        </p>
+      ) : null}
 
       {error ? <p className="pbar-err">{error}</p> : null}
 

@@ -18,6 +18,8 @@ export interface PortfolioState {
   savedAt: number | null
   loading: boolean
   failed: boolean
+  /** 后端给的失败原因,空串表示没有具体原因。 */
+  error: string
   /** 手动刷新,或写入后强制重拉。 */
   refresh: () => Promise<void>
 }
@@ -41,6 +43,7 @@ export function usePortfolio (): PortfolioState {
     savedAt: snap.savedAt,
     loading: snap.loading,
     failed: snap.failed,
+    error: snap.error,
     refresh
   }
 }

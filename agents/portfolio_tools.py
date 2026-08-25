@@ -332,23 +332,46 @@ def _portfolio_id(tool_context: ToolContext | None) -> str:
 
 
 def _load_portfolio_state(portfolio_id: str, tool_context: ToolContext | None) -> dict | None:
-    state = None
-    if has_cloud(tool_context):
-        from integrations.supabase_portfolio import load_portfolio_state
+    """读持仓：云端优先，云端不行就用本地库。
 
-        client = get_user_client(tool_context)
-        state = with_auth_retry(tool_context, load_portfolio_state, portfolio_id, client=client)
-        if state:
-            _cache_portfolio(portfolio_id, state, "remote")
+    云端那段**必须**包在 try 里。原来没包，于是 `get_user_client()` 的网络异常
+    （实测是 TLS 握手超时）直接穿透出去，下面写好的本地兜底根本没机会执行 ——
+    界面收到一个装着 error 的对象，显示成「暂无持仓数据」，而本地库里 8 只
+    持仓一直都在，7ms 就能读出来。
+
+    「云端挂了」和「你没有持仓」是两件完全不同的事，不能长成一样。
+    """
+    state = None
+    cloud_error = ""
+    if has_cloud(tool_context):
+        try:
+            from integrations.supabase_portfolio import load_portfolio_state
+
+            client = get_user_client(tool_context)
+            state = with_auth_retry(tool_context, load_portfolio_state, portfolio_id, client=client)
+            if state:
+                _cache_portfolio(portfolio_id, state, "remote")
+        except Exception as exc:  # noqa: BLE001 —— 云端任何失败都该落到本地库
+            cloud_error = str(exc) or exc.__class__.__name__
+            logger.warning(
+                "cloud portfolio read failed for %s, falling back to local DB: %s",
+                portfolio_id,
+                cloud_error,
+            )
     if state is not None:
         return state
     try:
         from integrations.local_db import load_portfolio
 
-        return load_portfolio(portfolio_id)
+        local = load_portfolio(portfolio_id)
     except Exception:
         logger.warning("failed to load portfolio %s from local DB", portfolio_id, exc_info=True)
         return None
+    # 标注数据来源：界面要能说清「这是本地数据，云端没连上」。不标的话用户会
+    # 以为看到的是最新的云端持仓，而它可能落后于另一台设备上的改动。
+    if local is not None and cloud_error:
+        local = {**local, "source": "local", "cloud_error": cloud_error}
+    return local
 
 
 def _cache_portfolio(portfolio_id: str, state: dict, source: str) -> None:

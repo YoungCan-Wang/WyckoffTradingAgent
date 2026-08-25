@@ -104,3 +104,38 @@ test('换账号时清掉所有模块级缓存', () => {
   assert.match(a, /wyckoff:account-changed[\s\S]{0,160}delete bodyCache/,
     '归因正文也要跨账号清理')
 })
+
+test('云端失败返回的错误对象不能当成合法持仓', () => {
+  // 实测踩到的：云端 TLS 握手超时时后端返回
+  //   {"portfolio": {"error": "handshake timed out"}}
+  // 那是个 truthy 对象,原来直接 writeCache 并渲染,图表因为没有 positions
+  // 画出「暂无持仓数据」—— 网络抖一下,持仓看起来就清零了,且页面不提示异常。
+  const s = CODE('lib/portfolioStore.ts')
+  assert.match(s, /next\.error/,
+    '必须识别 portfolio.error —— 它是 truthy,不检查就会被当成合法数据')
+  // 失败分支要在 writeCache 之前 return,否则错误对象会进缓存,
+  // 下次进页面连请求都不发。
+  const errAt = s.indexOf('next.error')
+  const cacheAt = s.indexOf('writeCache(owner')
+  assert.ok(errAt !== -1 && cacheAt !== -1 && errAt < cacheAt,
+    '错误检查必须早于 writeCache,否则错误会被缓存下来')
+})
+
+test('失败原因透传到界面，且成功路径会清掉它', () => {
+  const s = CODE('lib/portfolioStore.ts')
+  assert.match(s, /error: failure/, '要把后端原文带给界面')
+  // emit 是浅合并:成功路径不清 error,上一次的失败原因会一直显示在正常数据上。
+  const successEmit = s.match(/emit\(\{ portfolio: next[^}]*\}\)/)
+  assert.ok(successEmit, '找不到成功路径的 emit')
+  assert.match(successEmit[0], /error: ''/, "成功时必须清空 error —— emit 是浅合并")
+})
+
+test('持仓页读失败时给出原因和刷新入口', () => {
+  const p = CODE('components/PortfolioPage.tsx')
+  // 只说「读取失败」不够 —— 用户不知道是该刷新还是该查网络。
+  assert.match(p, /portfolio\.retryHint/, '要告诉用户数据没丢、可以重试')
+  assert.match(p, /loadError/, '要显示后端给的具体原因')
+  // 失败态里必须有一个能真正解决问题的按钮
+  const failBlock = p.slice(p.indexOf('if (failed'), p.indexOf('const positions'))
+  assert.match(failBlock, /refresh\(\)/, '失败态要带刷新按钮')
+})

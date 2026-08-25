@@ -644,6 +644,25 @@ html.dark .berr-b { background: var(--paper2); }
 .pbar-hint {
   margin: 0 0 12px; font-size: 11.5px; color: var(--tx3); line-height: 1.6;
 }
+/* 读取失败的落地态：一句结论 + 后端原文 + 怎么办 + 一个能按的按钮。
+   原来只有一句「读取持仓失败」,看不出该刷新还是该查网络。 */
+.pfail { max-width: 520px; }
+.pfail .empty { margin: 0 0 6px; }
+.pfail-why {
+  margin: 0 0 10px; padding: 7px 10px; border-radius: 7px;
+  background: var(--paper2); color: var(--tx2);
+  font: 11.5px/1.5 var(--mono); word-break: break-word;
+}
+.pfail-hint { margin: 0 0 12px; color: var(--tx2); font-size: 12.5px; line-height: 1.6; }
+
+/* 降级提示:比报错轻,比正常状态重 —— 数据是好的,只是可能不新。 */
+.pbar-warn {
+  margin: 0 0 12px; padding: 8px 11px; border-radius: 8px;
+  background: var(--paper2); color: var(--tx2);
+  border-left: 2px solid var(--clay);
+  font-size: 12.5px; line-height: 1.6;
+}
+
 .pbar-err {
   margin: 0 0 12px; padding: 8px 11px; border-radius: 8px;
   background: var(--warn-bg, #fdf3e7); color: var(--tx);

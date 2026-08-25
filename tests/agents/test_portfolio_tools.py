@@ -113,3 +113,57 @@ class TestPortfolioViewStopLoss:
         result = portfolio_tools.portfolio(mode="view")
 
         assert result["positions"][0]["stop_loss"] == 27.5
+
+
+class TestCloudFailureFallsBackToLocal:
+    """云端读失败必须落到本地库，而不是把异常抛给界面。
+
+    实测踩到的：切到持仓页显示「暂无持仓数据」，而本地库里 8 只持仓一直都在。
+    根因是 `_load_portfolio_state` 里云端那两行**没有包 try**：
+
+        client = get_user_client(tool_context)   # 网络异常直接穿透
+        state = with_auth_retry(...)
+        ...
+        try:                                     # 写好的本地兜底根本到不了
+            return load_portfolio(portfolio_id)
+
+    「云端挂了」和「你没有持仓」是两件完全不同的事。
+    """
+
+    def test_cloud_exception_falls_back_to_local(self, monkeypatch) -> None:
+        import agents.portfolio_tools as pt
+
+        local_state = {"positions": [{"code": "000001", "shares": 100}], "free_cash": 50.0}
+        monkeypatch.setattr(pt, "has_cloud", lambda ctx: True)
+        monkeypatch.setattr(
+            pt, "get_user_client",
+            lambda ctx: (_ for _ in ()).throw(Exception("handshake timed out")),
+        )
+        monkeypatch.setitem(
+            __import__("sys").modules, "integrations.local_db",
+            type("M", (), {"load_portfolio": staticmethod(lambda pid: dict(local_state))}),
+        )
+
+        got = pt._load_portfolio_state("USER_LIVE:x", object())
+
+        assert got is not None, "云端失败时返回了 None —— 本地兜底没生效"
+        assert len(got["positions"]) == 1
+        # 必须标注来源：本地数据可能落后于另一台设备的改动，界面要能说出来
+        assert got.get("source") == "local"
+        assert "handshake timed out" in str(got.get("cloud_error"))
+
+    def test_no_source_tag_when_cloud_was_never_tried(self, monkeypatch) -> None:
+        """未登录时读本地是正常路径，不该标成「降级」。"""
+        import agents.portfolio_tools as pt
+
+        monkeypatch.setattr(pt, "has_cloud", lambda ctx: False)
+        monkeypatch.setitem(
+            __import__("sys").modules, "integrations.local_db",
+            type("M", (), {"load_portfolio": staticmethod(lambda pid: {"positions": [], "free_cash": 0})}),
+        )
+
+        got = pt._load_portfolio_state("USER_LIVE:x", None)
+
+        assert got is not None
+        assert "source" not in got, "没试过云端就不该标降级"
+        assert "cloud_error" not in got
