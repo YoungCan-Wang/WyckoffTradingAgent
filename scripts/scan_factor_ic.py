@@ -113,6 +113,38 @@ def build_factors(market: pd.DataFrame) -> tuple[dict[str, pd.DataFrame], pd.Dat
     factors["amplitude60"] = (hi60 / low.rolling(60).min() - 1) * 100
     rng = high - low
     factors["close_position"] = ((close - low) / rng.where(rng > 0)) * 100
+
+    # --- 量学（A 股本土量价流派）候选因子 ---
+    # 量学与威科夫同源：都主张「量在价先、跟随大资金意图」，只是量学更贴 A 股微观结构
+    # （涨停板制度、散户主导、题材轮动）。这里把它的核心量柱形态做成因子持续观测。
+    #
+    # 2026-08-25 首轮实测（498 个交易日，3 段各约 75 日）：**无一通过可用门槛**——
+    #   vs_multiple_vol（倍量柱）      IC -0.0038  近乎零
+    #   vs_golden_vol（黄金柱）        IC +0.0051  近乎零
+    #   vs_volume_pit（量坑）          方向仅 2/3 段一致
+    #   vs_vol_stair（阶梯量）         方向仅 2/3 段一致
+    #   vs_price_vol_divergence       IC +0.0327 但样本仅 73 天，且拆开四象限后
+    #                                 「涨+缩量」净超额 -0.08、为正日 48%（无方向性），
+    #                                 即它是排序器而非选股器，不可据此建通道
+    # 故只进 scanner 观测、不进生产形态。若某个因子日后转为三段一致且过门槛，再评估。
+    v5 = vol.rolling(5).mean()
+    v10 = vol.rolling(10).mean()
+    prev_vol = vol.shift(1)
+    # 倍量柱：当日量 / 前日量。量学视 >=2 为主力进场。
+    factors["vs_multiple_vol"] = vol / prev_vol.where(prev_vol > 0)
+    # 黄金柱：当日量相对 5 日与 10 日均量中较大者的倍数。
+    golden_base = v5.where(v5 > 0).clip(lower=v10.where(v10 > 0))
+    factors["vs_golden_vol"] = vol / golden_base
+    # 量坑：当日量在近 20 日中的分位，越低越"坑"。
+    factors["vs_volume_pit"] = vol.rolling(20).rank(pct=True) * 100
+    # 阶梯量：5 日均量相对 10 日均量的抬升幅度，衡量量能是否逐级放大。
+    factors["vs_vol_stair"] = (v5 / v10.where(v10 > 0) - 1) * 100
+    # 价量背离：5 日涨幅 × 量能收缩程度。量学认为"涨而缩量"是主力控盘特征。
+    # 注意该构造把「涨+缩量」与「跌+放量」混为同号，判读时须拆象限看。
+    v5_prev = v5.shift(5)
+    factors["vs_price_vol_divergence"] = (close.pct_change(5, fill_method=None) * 100) * (
+        1 - v5 / v5_prev.where(v5_prev > 0)
+    )
     return factors, close, open_
 
 
