@@ -978,12 +978,116 @@ html.dark .seg-b.on { background: #34394322; background-color: #383e48; }
 .status-banner::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--tx3); }
 .status-banner.on::before { background: var(--dn); }
 .schedule-list { display: flex; flex-direction: column; gap: 8px; }
-.schedule-card {
+/* 任务卡和推荐项共用这一套列宽，两个区的列因此真正对齐。
+   后三列必须是**定值**：写成 minmax(150px, .8fr) + auto 的话，每个 grid 容器会按
+   自己的内容独立解析 fr —— 任务卡末列塞四个按钮（234px）把前面挤到最小值，推荐项
+   末列只有「添加」（43px）就把余量摊给中间列。实测两边差出 136/150/160 对
+   297/170/170，只有最外侧边缘看着是齐的。 */
+.sched-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(150px, .8fr) minmax(160px, .8fr) auto;
-  gap: 18px; align-items: center; padding: 13px 14px;
+  grid-template-columns: minmax(0, 1fr) 150px 160px 252px;
+  gap: 18px; align-items: center;
+}
+.schedule-card {
+  padding: 13px 14px;
   border: 1px solid var(--line); border-radius: 10px; background: var(--paper);
 }
+/* 关掉的任务压低视觉重量，但不要淡到读不清 —— 用户还得能看懂自己关了什么。 */
+.schedule-card.off .schedule-name { color: var(--tx2); }
+
+.sched-head { display: flex; justify-content: flex-end; margin-bottom: 10px; }
+.sched-empty { padding: 18px 0; }
+.sched-error {
+  margin-bottom: 10px; padding: 8px 11px;
+  border-left: 2px solid var(--up-soft); border-radius: 0 6px 6px 0;
+  background: var(--paper2); color: var(--up-ink); font-size: 11.5px; line-height: 1.5;
+}
+
+/* 操作区。四个控件挤在一列，靠 6px 的间距分组：开关（状态）| 编辑删除（管理）
+   | 立即运行（执行）。 */
+.sched-ops { display: flex; align-items: center; gap: 6px; justify-content: flex-end; }
+
+/* 主按钮。原来没有这个变体 —— 「新建任务」和「保存」是页面上的主操作，
+   跟「取消」同样的灰边框会让人找不到该点哪个。 */
+.mbtn.primary {
+  background: var(--tx); border-color: var(--tx); color: var(--paper); font-weight: 600;
+}
+.mbtn.primary:hover:not(:disabled) { background: var(--tx2); border-color: var(--tx2); color: var(--paper); }
+.mbtn.primary:disabled { opacity: .4; }
+
+/* 启用开关。
+   高度要和旁边的 .mbtn 对齐。关键是 line-height 而不是 padding：.mbtn 走
+   `font: inherit` 拿到 18.4px 行高，而 flex 容器里如果把文字行高压成 1，
+   算出来会矮 5px —— 实测 23.5 vs 28.4。所以这里显式跟上同一个行高。 */
+.sched-switch {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px 4px 8px; margin-right: 4px;
+  border: 1px solid var(--line); border-radius: 999px;
+  background: var(--paper); color: var(--tx3); font-size: 11.5px; line-height: 18.4px;
+  cursor: pointer; white-space: nowrap;
+}
+.sched-switch:hover:not(:disabled) { background: var(--hover); }
+.sched-switch:disabled { opacity: .55; cursor: default; }
+.sched-knob {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--tx3); transition: background .12s;
+}
+/* 开关上的字。给个下限宽度，否则切换时整颗药丸会跟着字宽跳 ——
+   英文的 On/Off 差一个字母，点一下按钮就横向抖一下，旁边的按钮也跟着挪。 */
+.sched-switch-t { min-width: 2.2em; text-align: left; }
+.sched-switch.on { border-color: var(--up-soft); color: var(--up-ink); }
+.sched-switch.on .sched-knob { background: var(--up-ink); }
+
+/* 已归档会话：计数 + 「全部删除」。两端对齐 —— 按钮贴右边缘，和下面每行的
+   操作列同一侧，视线不用来回跳。 */
+.arch-bar { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+/* 计数继承 .dlg-sub 的负上边距会把它顶歪，这里归零；下边距留给列表。 */
+.arch-bar-n { margin: 0 0 10px; }
+
+/* 推荐区。视觉重量明显低于真任务：没有边框、没有背景、单行。 */
+.sched-suggest { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+.sched-suggest-h { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+.sched-suggest-t { font-size: 11.5px; font-weight: 600; color: var(--tx2); }
+.sched-suggest-s { font-size: 10.5px; color: var(--tx3); }
+/* 左右 padding 与 .schedule-card 对齐。
+   卡片有 1px border 而推荐项没有，所以这里补上那 1px —— 实测不补的话内容左边缘
+   差 459 vs 460。一像素单看不出来，但两列文字并排时眼睛会捕捉到那条不齐的竖线。 */
+.sched-preset { padding: 9px 15px; }
+.sched-preset-cadence { color: var(--tx3); font-size: 11.5px; }
+/* 末列现在是 252px 定值（为了和任务卡的四个按钮对齐），但「添加」不该被拉满整列 ——
+   靠右收窄，右边缘就和上方的「立即运行」在同一条线上。 */
+.sched-preset > .mbtn { justify-self: end; }
+
+/* 编辑表单。展开时替换掉那张卡本身，所以边框和圆角与 .schedule-card 一致 ——
+   位置感不变，只是内容换成了可编辑的。 */
+.sf {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 14px; margin-bottom: 8px;
+  border: 1px solid var(--clay); border-radius: 10px; background: var(--paper);
+}
+/* 标签列固定 76px：四行的输入框左边缘因此在同一条竖线上。
+   这是几何对齐够用的地方 —— 标签都是同样字号的中文，视觉重心和盒子边界一致。 */
+.sf-row { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 12px; align-items: start; }
+.sf-label { padding-top: 5px; font-size: 11.5px; color: var(--tx2); }
+.sf-stack { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.sf-controls { display: flex; align-items: center; gap: 6px; }
+.sf-input {
+  padding: 5px 8px; font: inherit; font-size: 12px; color: var(--tx);
+  border: 1px solid var(--line); border-radius: 7px; background: var(--paper);
+  outline: none; min-width: 0;
+}
+.sf-input:focus { border-color: var(--clay); }
+.sf-textarea { resize: vertical; line-height: 1.5; font-family: inherit; }
+.sf-select {
+  padding: 4px 6px; font: inherit; font-size: 11.5px; color: var(--tx);
+  border: 1px solid var(--line); border-radius: 7px; background: var(--paper); cursor: pointer;
+}
+.sf-colon { color: var(--tx3); font-size: 11.5px; }
+.sf-hint { font-size: 10.5px; line-height: 1.5; color: var(--tx3); }
+.sf-warn { color: var(--up-ink); }
+/* 保存前的确认句。比字段本身重一点 —— 这是用户真正该核对的东西。 */
+.sf-preview { font-size: 12px; font-weight: 600; color: var(--tx); }
+.sf-actions { display: flex; gap: 6px; padding-left: 88px; }
 .schedule-name { font-size: 12.5px; font-weight: 600; }
 .schedule-cadence { margin-top: 2px; color: var(--tx3); font: 10.5px/1.4 var(--mono); }
 .schedule-label { color: var(--tx3); font-size: 10.5px; }

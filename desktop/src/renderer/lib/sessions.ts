@@ -12,6 +12,8 @@ export interface Session {
   session_id: string
   title: string
   pinned: number
+  /** 1 = 已归档，从侧栏收起，只在设置页可见。 */
+  archived?: number
   msg_count: number
   started_at: string
   ended_at: string
@@ -77,13 +79,14 @@ export function relativeTime (iso: string, now = Date.now()): string {
 }
 
 /**
- * 删掉一个会话后该切到哪个。
+ * 一个会话离开列表后该切到哪个。删除和归档共用 —— 对列表来说两者都是「这一行
+ * 不在了」，落脚逻辑完全一样，没必要写两份。
  *
- * 删的不是当前会话时不切（用户只是在整理列表，不该被拽走）。删的是当前会话时
+ * 走的不是当前会话时不切（用户只是在整理列表，不该被拽走）。走的是当前会话时
  * 切到列表里的下一个，没有了就返回空串让调用方开新会话。
  */
-export function nextAfterDelete (rows: Session[], deletedId: string, activeId: string): string {
-  if (deletedId !== activeId) return activeId
-  const remaining = sortSessions(rows).filter((s) => s.session_id !== deletedId)
+export function nextAfterRemoval (rows: Session[], removedId: string, activeId: string): string {
+  if (removedId !== activeId) return activeId
+  const remaining = sortSessions(rows).filter((s) => s.session_id !== removedId)
   return remaining[0]?.session_id || ''
 }

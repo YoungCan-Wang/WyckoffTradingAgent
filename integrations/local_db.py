@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 _lock = threading.Lock()
 _conn: sqlite3.Connection | None = None
 
-_SCHEMA_VERSION = 17
+_SCHEMA_VERSION = 18
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -189,6 +189,9 @@ CREATE TABLE IF NOT EXISTS chat_session (
     user_id TEXT DEFAULT '',
     title TEXT DEFAULT '',
     pinned INTEGER DEFAULT 0,
+    -- 归档 = 从侧栏收起来，但不删。删除是不可逆的，而用户想清理列表时
+    -- 往往并不想丢掉内容 —— 两个动作要分开。
+    archived INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -257,8 +260,9 @@ CREATE INDEX IF NOT EXISTS idx_mem_type ON agent_memory(memory_type);
 CREATE INDEX IF NOT EXISTS idx_mem_codes ON agent_memory(codes);
 CREATE INDEX IF NOT EXISTS idx_chatlog_session ON chat_log(session_id);
 CREATE INDEX IF NOT EXISTS idx_chatlog_created ON chat_log(created_at);
--- 会话列表的默认排序：某账号下，置顶的在前，其余按最近活动倒序。
-CREATE INDEX IF NOT EXISTS idx_chatsess_user ON chat_session(user_id, pinned DESC, updated_at DESC);
+-- 会话列表的默认排序：某账号下先按归档与否分开，再置顶优先，其余按最近活动倒序。
+-- archived 放在最左：侧栏拉未归档、设置页拉已归档，两边都是先按它筛。
+CREATE INDEX IF NOT EXISTS idx_chatsess_user ON chat_session(user_id, archived, pinned DESC, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_bg_task_session ON background_task_result(session_id);
 CREATE INDEX IF NOT EXISTS idx_bg_task_created ON background_task_result(created_at);
 CREATE INDEX IF NOT EXISTS idx_theme_radar_synced ON theme_radar_snapshot(synced_at);
@@ -344,6 +348,19 @@ def init_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_chatlog_user ON chat_log(user_id, created_at)")
     if current < 17:
         _backfill_chat_sessions(conn)
+    if current < 18:
+        # 归档位。历史行默认 0（未归档）—— 升级后侧栏看到的列表和升级前一致。
+        _ensure_columns(conn, "chat_session", {"archived": "INTEGER DEFAULT 0"})
+        # 索引要重建：老库里这个名字已经存在（不带 archived），
+        # 上面 SCHEMA 里的 CREATE INDEX IF NOT EXISTS 对它不生效。
+        try:
+            conn.execute("DROP INDEX IF EXISTS idx_chatsess_user")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_chatsess_user "
+                "ON chat_session(user_id, archived, pinned DESC, updated_at DESC)"
+            )
+        except Exception:
+            logger.warning("migration: rebuild idx_chatsess_user failed", exc_info=True)
     if current < _SCHEMA_VERSION:
         conn.execute(
             "INSERT OR REPLACE INTO schema_version(version) VALUES(?)",
@@ -1677,6 +1694,33 @@ def delete_chat_session(session_id: str, user_id: str | None = None) -> int:
     return cur.rowcount
 
 
+def delete_archived_chat_sessions(user_id: str | None = None) -> int:
+    """删掉**所有**已归档会话的消息和元数据。返回删掉的会话个数。
+
+    走子查询按 archived=1 挑，而不是让调用方传一串 id：
+    前端循环调 N 次单删，中间任何一次失败都会留下删一半的状态。
+
+    只删有 chat_session 行且 archived=1 的。迁移前 TUI 写的会话没有元数据行，
+    list_chat_sessions 用 COALESCE 把它们算作未归档 —— 这里的子查询天然不会
+    碰到它们，两边口径是一致的。**不能**写成 `NOT IN (未归档)`，那会把
+    这些没有元数据行的老会话一起删掉。
+    """
+    conn = get_db()
+    guard = ""
+    params: list[Any] = []
+    if user_id is not None:
+        guard = " AND user_id=?"
+        params.append(user_id)
+    picked = f"SELECT session_id FROM chat_session WHERE archived=1{guard}"
+    with conn:
+        # 先数出个数再删 —— 删完就查不出来了。
+        removed = len(conn.execute(picked, params).fetchall())
+        if removed:
+            conn.execute(f"DELETE FROM chat_log WHERE session_id IN ({picked})", params)
+            conn.execute(f"DELETE FROM chat_session WHERE archived=1{guard}", params)
+    return removed
+
+
 def upsert_chat_session(session_id: str, user_id: str = "", title: str = "") -> None:
     """确保会话有一行元数据，并把 updated_at 推到现在。
 
@@ -1735,7 +1779,31 @@ def set_chat_session_pinned(session_id: str, pinned: bool, user_id: str | None =
     return cur.rowcount > 0
 
 
-def list_chat_sessions(limit: int = 50, user_id: str | None = None, search: str = "") -> list[dict]:
+def set_chat_session_archived(session_id: str, archived: bool, user_id: str | None = None) -> bool:
+    """归档 / 取消归档。
+
+    和 set_chat_session_pinned 一样**不动** updated_at：归档是整理动作，不是新活动。
+    动了它，取消归档后这个会话会插到列表最前面，假装刚聊过。
+
+    归档不碰 pinned：一个置顶会话被归档又恢复，应该回到原来的置顶状态 ——
+    顺手清掉 pinned 等于替用户做了他没要求的决定。
+    """
+    if not session_id:
+        return False
+    conn = get_db()
+    params: list[Any] = [1 if archived else 0, session_id]
+    guard = ""
+    if user_id is not None:
+        guard = " AND user_id=?"
+        params.append(user_id)
+    with conn:
+        cur = conn.execute(f"UPDATE chat_session SET archived=? WHERE session_id=?{guard}", params)
+    return cur.rowcount > 0
+
+
+def list_chat_sessions(
+    limit: int = 50, user_id: str | None = None, search: str = "", archived: bool | None = False
+) -> list[dict]:
     """返回会话列表：置顶优先，其余按最近活动倒序。
 
     标题来自 chat_session，没有元数据行时回落到首条用户提问（LEFT JOIN + COALESCE）——
@@ -1743,6 +1811,11 @@ def list_chat_sessions(limit: int = 50, user_id: str | None = None, search: str 
 
     search 同时匹配标题和消息内容，用 LIKE 而不是 FTS：现有量级（几十个会话）下
     LIKE 完全够，而 FTS 要建虚表加三个触发器还要回填。等会话过百再说。
+
+    archived 默认 False —— 侧栏是最常见的调用方，默认就该只看未归档的。
+    传 True 拿已归档（设置页用），传 None 表示两者都要。
+    用 COALESCE：没有 chat_session 行的历史会话（迁移前 TUI 写的）算未归档，
+    否则它们会因为 archived 是 NULL 而在两个列表里都消失。
     """
     conn = get_db()
     clauses: list[str] = []
@@ -1750,6 +1823,9 @@ def list_chat_sessions(limit: int = 50, user_id: str | None = None, search: str 
     if user_id is not None:
         clauses.append("l.user_id=?")
         params.append(user_id)
+    if archived is not None:
+        clauses.append("COALESCE(s.archived, 0)=?")
+        params.append(1 if archived else 0)
     if search.strip():
         like = f"%{search.strip()}%"
         clauses.append("(l.content LIKE ? OR s.title LIKE ?)")
@@ -1769,6 +1845,7 @@ def list_chat_sessions(limit: int = 50, user_id: str | None = None, search: str 
                     ORDER BY c2.created_at ASC LIMIT 1) AS first_user_msg,
                   NULLIF(s.title, '') AS stored_title,
                   COALESCE(s.pinned, 0) AS pinned,
+                  COALESCE(s.archived, 0) AS archived,
                   SUM(l.elapsed_s) AS total_elapsed_s
            FROM chat_log l
            LEFT JOIN chat_session s ON s.session_id = l.session_id

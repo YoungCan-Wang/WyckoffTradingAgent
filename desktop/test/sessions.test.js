@@ -14,7 +14,7 @@ const js = ts.transpileModule(readFileSync(SRC, 'utf8'), {
 }).outputText
 const mod = { exports: {} }
 new Function('module', 'exports', 'require', js)(mod, mod.exports, require)
-const { displayTitle, sortSessions, filterSessions, relativeTime, nextAfterDelete } = mod.exports
+const { displayTitle, sortSessions, filterSessions, relativeTime, nextAfterRemoval } = mod.exports
 
 const S = (over = {}) => ({
   session_id: 's1', title: '标题', pinned: 0, msg_count: 2,
@@ -106,21 +106,21 @@ test('坏时间戳不抛异常', () => {
   assert.equal(relativeTime('not-a-date'), '')
 })
 
-test('删非当前会话时不切走', () => {
+test('归档/删除的不是当前会话时不切走', () => {
   // 用户在整理列表，不该被拽到别的对话去。
   const rows = [S({ session_id: 'a' }), S({ session_id: 'b' })]
-  assert.equal(nextAfterDelete(rows, 'b', 'a'), 'a')
+  assert.equal(nextAfterRemoval(rows, 'b', 'a'), 'a')
 })
 
-test('删当前会话时切到列表里的下一个', () => {
+test('离开的是当前会话时切到列表里的下一个', () => {
   const rows = [
     S({ session_id: 'a', ended_at: '2026-08-24 10:00:00' }),
     S({ session_id: 'b', ended_at: '2026-08-23 10:00:00' })
   ]
-  assert.equal(nextAfterDelete(rows, 'a', 'a'), 'b')
+  assert.equal(nextAfterRemoval(rows, 'a', 'a'), 'b')
 })
 
-test('删掉最后一个会话时返回空串', () => {
-  // 调用方据此开新会话 —— 不能让下一轮对话写进一个刚被删掉的 id。
-  assert.equal(nextAfterDelete([S({ session_id: 'only' })], 'only', 'only'), '')
+test('列表里最后一个会话离开时返回空串', () => {
+  // 调用方据此开新会话 —— 不能让下一轮对话写进一个已经不在列表里的 id。
+  assert.equal(nextAfterRemoval([S({ session_id: 'only' })], 'only', 'only'), '')
 })

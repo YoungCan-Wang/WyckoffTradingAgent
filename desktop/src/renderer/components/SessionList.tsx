@@ -9,7 +9,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { collect } from '../lib/ipc'
-import { filterSessions, nextAfterDelete, sortSessions, type Session } from '../lib/sessions'
+import { filterSessions, nextAfterRemoval, sortSessions, type Session } from '../lib/sessions'
 import SessionRow from './SessionRow'
 
 interface Props {
@@ -55,10 +55,12 @@ export default function SessionList ({ activeId, onSwitch, onNeedNew, reloadKey,
     void load()
   }
 
-  const remove = async (id: string) => {
-    // 先算好落脚会话再删 —— 删完 rows 就没这一行了，算不出来。
-    const next = nextAfterDelete(rows, id, activeId)
-    await collect('chat_delete', { session_id: id })
+  // 侧栏只提供归档，不提供删除 —— 删除是不可逆的，放在随手可点的悬停按钮上
+  // 太危险。真要删得去设置页的已归档区，那里离手远、且必然先经过归档这一步。
+  const archive = async (id: string) => {
+    // 先算好落脚会话再归档 —— 归档完 rows 就没这一行了，算不出来。
+    const next = nextAfterRemoval(rows, id, activeId)
+    await collect('chat_archive', { session_id: id, archived: true })
     setRows((prev) => prev.filter((s) => s.session_id !== id))
     if (id === activeId) {
       if (next) onSwitch(next)
@@ -97,7 +99,7 @@ export default function SessionList ({ activeId, onSwitch, onNeedNew, reloadKey,
             onOpen={onSwitch}
             onRename={rename}
             onPin={pin}
-            onDelete={remove}
+            onArchive={archive}
             t={t}
           />
         ))}

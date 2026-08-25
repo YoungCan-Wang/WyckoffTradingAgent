@@ -20,8 +20,11 @@ export interface NavItem {
 const GROUPS: Array<{ labelKey: string; items: NavItem[] }> = [
   {
     labelKey: 'nav.groupWork',
+    // 这里**没有**指向 chat 视图的导航项。对话不是一个和「任务运行」「审批」
+    // 并列的目的地，它是这个应用的主界面 —— 用顶部「新建分析」开新的，
+    // 用下面的会话列表回到已有的。放一个「今天」在这里会和会话列表抢同一件事，
+    // 而且那个名字并不按日期筛任何东西，点进去看到的可能是上周的会话。
     items: [
-      { view: 'chat', icon: 'sparkles', labelKey: 'nav.today' },
       { view: 'tasks', icon: 'list-checks', labelKey: 'nav.tasks' },
       { view: 'approvals', icon: 'shield-check', labelKey: 'nav.approvals' }
     ]

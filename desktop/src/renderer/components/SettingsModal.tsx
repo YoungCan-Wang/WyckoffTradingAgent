@@ -12,6 +12,7 @@ const t = (key: string) => window.WyckoffI18n.t(key)
 const SECTIONS: Array<[string, string]> = [
   ['general', 'settings.groupGeneral'],
   ['agent', 'settings.groupAgent'],
+  ['chats', 'settings.groupChats'],
   ['account', 'settings.groupAccount']
 ]
 
@@ -25,10 +26,14 @@ interface Props {
   onMessage: (text: string, isError?: boolean) => void
   onSignOut: () => void
   onConfigChanged: () => void
+  onSessionsChanged: () => void
 }
 
 export function SettingsModal (
-  { open, section, anchor, onSection, onClose, onMessage, onSignOut, onConfigChanged }: Props
+  {
+    open, section, anchor, onSection, onClose, onMessage, onSignOut,
+    onConfigChanged, onSessionsChanged
+  }: Props
 ) {
   const body = useRef<HTMLDivElement>(null)
   const nav = useRef<HTMLElement>(null)
@@ -129,6 +134,7 @@ export function SettingsModal (
               onMessage={onMessage}
               onSignOut={onSignOut}
               onConfigChanged={onConfigChanged}
+              onSessionsChanged={onSessionsChanged}
             />
           </div>
         </div>

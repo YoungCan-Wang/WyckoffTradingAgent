@@ -15,11 +15,11 @@ interface Props {
   onOpen: (id: string) => void
   onRename: (id: string, title: string) => void
   onPin: (id: string, pinned: boolean) => void
-  onDelete: (id: string) => void
+  onArchive: (id: string) => void
   t: (key: string, params?: Record<string, string>) => string
 }
 
-export default function SessionRow ({ session, active, onOpen, onRename, onPin, onDelete, t }: Props) {
+export default function SessionRow ({ session, active, onOpen, onRename, onPin, onArchive, t }: Props) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   const input = useRef<HTMLInputElement | null>(null)
@@ -104,18 +104,16 @@ export default function SessionRow ({ session, active, onOpen, onRename, onPin, 
         >
           <i data-lucide="pencil" aria-hidden="true" />
         </button>
+        {/* 归档不确认：它可逆，去设置页一键就能恢复。真正不可逆的删除只在
+            设置页的已归档区出现，那里才弹 confirm。 */}
         <button
           type="button"
-          className="sess-btn danger"
-          title={t('session.delete')}
-          aria-label={t('session.delete')}
-          onClick={(e) => {
-            e.stopPropagation()
-            // 删除不可撤销，先确认。项目里四处删除都用原生 confirm。
-            if (window.confirm(t('session.deleteConfirm'))) onDelete(session.session_id)
-          }}
+          className="sess-btn"
+          title={t('session.archive')}
+          aria-label={t('session.archive')}
+          onClick={(e) => { e.stopPropagation(); onArchive(session.session_id) }}
         >
-          <i data-lucide="trash-2" aria-hidden="true" />
+          <i data-lucide="archive" aria-hidden="true" />
         </button>
       </div>
     </div>

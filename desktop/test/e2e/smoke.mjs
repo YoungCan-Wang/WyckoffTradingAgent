@@ -24,7 +24,9 @@ const PROFILE_DIR = await mkdtemp(join(tmpdir(), 'wyckoff-e2e-'))
 //
 // 登录本身由 test/e2e/login.mjs 验，那份**不设**这个变量。
 
-const VIEWS = ['chat', 'tasks', 'approvals', 'portfolio', 'schedules', 'tracking', 'attribution', 'reports']
+// 导航里的页面。**不含 chat** —— 对话是主界面，不是和这些并列的目的地，
+// 它的入口是「新建分析」和会话列表。下面单独验它到得了。
+const VIEWS = ['tasks', 'approvals', 'portfolio', 'schedules', 'tracking', 'attribution', 'reports']
 
 let failures = 0
 const writeLine = (value = '') => process.stdout.write(`${value}\n`)
@@ -142,17 +144,20 @@ for (const view of VIEWS) {
   await nav.click()
   await win.waitForTimeout(200)
   const active = await win.locator('.nv.on').getAttribute('data-view')
-  const contentVisible = view === 'chat'
-    ? await win.locator('#stream').isVisible()
-    : await win.locator('.page #page-body').isVisible()
+  const contentVisible = await win.locator('.page #page-body').isVisible()
   check(`页面 ${view} 能打开`, () => {
     assert.equal(active, view)
     assert.equal(contentVisible, true)
   })
 }
 
+// 3b) 对话到得了 —— 它没有导航项，入口是「新建分析」。
+await win.locator('.side-new').click()
+await win.waitForTimeout(500)
+const streamVisible = await win.locator('#stream').isVisible()
+check('对话到得了（走新建分析）', () => assert.equal(streamVisible, true))
+
 // 4) 「打开」菜单能弹出 —— 这条曾经因为 openBtn 未定义而整个失效
-await win.locator('.nv[data-view="chat"]').click()
 await win.waitForTimeout(300)
 // 账号按钮也有 aria-haspopup="menu"，所以用顶栏按钮类名消除歧义。
 const openBtn = win.locator('.topbtn[aria-haspopup="menu"]')

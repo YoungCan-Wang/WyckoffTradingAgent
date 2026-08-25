@@ -33,9 +33,61 @@ test('行内操作按钮阻止冒泡', () => {
   assert.ok(handlers.length >= 2, `期望多处 stopPropagation，实际 ${handlers.length}`)
 })
 
-test('删除前有确认', () => {
-  // 不可撤销。项目里四处删除都用原生 confirm。
-  assert.match(ROW, /window\.confirm\(t\('session\.deleteConfirm'\)\)/)
+test('侧栏只能归档，不能删除', () => {
+  // 删除不可撤销，放在悬停就能点到的位置太容易误触。侧栏给可逆的归档，
+  // 真要删得去设置页 —— 那条路必然先经过归档，等于天然的两段确认。
+  assert.match(ROW, /onArchive\(session\.session_id\)/)
+  assert.doesNotMatch(ROW, /chat_delete|session\.deleteConfirm/)
+  assert.doesNotMatch(LIST, /chat_delete/)
+})
+
+test('导航里没有指向对话的项', () => {
+  // 对话是主界面，不是和「任务运行」「审批」并列的目的地。放一个进去会和
+  // 下面的会话列表抢同一件事，而原来那个「今天」也不按日期筛任何东西。
+  assert.doesNotMatch(SIDE, /view: 'chat'/)
+  assert.doesNotMatch(SIDE, /nav\.today/)
+  // 但顶栏仍要有标题，且入口仍在（新建 + 会话列表）。
+  assert.match(APP, /chat: 'nav\.chat'/)
+  assert.match(SIDE, /onNewAnalysis/)
+  assert.match(SIDE, /sessionSlot/)
+})
+
+test('归档不弹确认 —— 它可逆', () => {
+  // 弹一次没有信息量的确认框，只会训练用户闭眼点确定。
+  assert.doesNotMatch(ROW, /window\.confirm/)
+})
+
+test('设置页的删除仍然要确认', () => {
+  const ARCH = src('renderer', 'components', 'ArchivedChatsPanel.tsx')
+  assert.match(ARCH, /window\.confirm\(t\('session\.deleteConfirm'\)\)/)
+  assert.match(ARCH, /chat_delete/)
+})
+
+test('全部删除走一次 IPC，不在前端循环单删', () => {
+  // 循环里任何一次失败都会留下删一半的状态，而用户以为这是原子的。
+  const ARCH = src('renderer', 'components', 'ArchivedChatsPanel.tsx')
+  assert.match(ARCH, /collect\('chat_delete_archived'\)/)
+  assert.doesNotMatch(ARCH, /for \(const .* of rows\)|rows\.map\(.*chat_delete/)
+})
+
+test('全部删除要确认，且确认文案带上个数', () => {
+  // 「删除全部」不说清是几个，等于让人闭眼点确定。
+  const ARCH = src('renderer', 'components', 'ArchivedChatsPanel.tsx')
+  assert.match(ARCH, /window\.confirm\(t\('session\.deleteAllConfirm', \{ n: String\(n\) \}\)\)/)
+  assert.match(LOCALES, /session\.deleteAllConfirm[^\n]*\{n\}/)
+})
+
+test('全部删除报后端的个数，不报前端以为的', () => {
+  // 并发改动时两者会不一致 —— 说实话。
+  const ARCH = src('renderer', 'components', 'ArchivedChatsPanel.tsx')
+  assert.match(ARCH, /Number\(res\.deleted \?\? 0\)/)
+})
+
+test('清空进行中锁住每一行的按钮', () => {
+  // 只判断「自己那一行在忙」的话，清空期间其他行仍能点，会发出必然失败的请求。
+  const ARCH = src('renderer', 'components', 'ArchivedChatsPanel.tsx')
+  const guards = ARCH.match(/busy === s\.session_id \|\| busy === ALL/g) || []
+  assert.equal(guards.length, 2, `恢复和删除两个按钮都要锁，实际 ${guards.length}`)
 })
 
 test('重命名支持 Esc 放弃', () => {
@@ -98,10 +150,18 @@ test('reset 记下新会话 id', () => {
   assert.match(HOOK, /setSessionId\(String\(result\.session_id \|\| ''\)\)/)
 })
 
-test('删除当前会话时有落脚处', () => {
-  // 不给的话下一轮对话会写进一个刚被删掉的 id。
-  assert.match(LIST, /nextAfterDelete\(rows, id, activeId\)/)
+test('归档当前会话时有落脚处', () => {
+  // 不给的话下一轮对话会写进一个已经从侧栏消失的会话，用户看不见自己说的话。
+  assert.match(LIST, /nextAfterRemoval\(rows, id, activeId\)/)
   assert.match(LIST, /else onNeedNew\(\)/)
+})
+
+test('设置页改动会话后，侧栏和活动会话都重新对齐', () => {
+  // onConfigChanged 刷的是模型与外观，刷不到会话列表 —— 两个回调不能混用。
+  const PANEL = src('renderer', 'components', 'SettingsPanel.tsx')
+  assert.match(PANEL, /onChanged=\{onSessionsChanged\}/)
+  assert.match(APP, /onSessionsChanged=\{sessionsChanged\}/)
+  assert.match(APP, /setActiveSession\(window\.WyckoffChat\?\.sessionId\?\.\(\) \|\| ''\)/)
 })
 
 test('重命名和置顶做乐观更新', () => {

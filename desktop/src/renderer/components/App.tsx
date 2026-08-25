@@ -27,7 +27,9 @@ const SIDE_KEY = 'wyckoff.sidebar'
 
 /** 每个视图的标题 key —— 顶栏用它显示当前位置。 */
 const TITLES: Record<string, string> = {
-  chat: 'nav.today',
+  // chat 没有对应的导航项（对话是主界面，不是并列的目的地），但顶栏仍要有个
+  // 说得过去的标题。用「对话」而不是原来的「今天」：它不按日期筛任何东西。
+  chat: 'nav.chat',
   tasks: 'nav.tasks',
   approvals: 'nav.approvals',
   portfolio: 'nav.portfolio',
@@ -189,6 +191,14 @@ export function App () {
     setActiveSession(window.WyckoffChat?.sessionId?.() || '')
   }, [navigate])
 
+  // 设置页里恢复或删除了归档会话 —— 侧栏那份列表变了，重拉。
+  // 也顺手对齐 activeSession：删掉的可能正是当前会话（先归档、再去设置页删），
+  // 那时后端已经换了落脚会话，前端不同步的话会一直指着一个不存在的 id。
+  const sessionsChanged = useCallback(() => {
+    setSessionNonce((n) => n + 1)
+    setActiveSession(window.WyckoffChat?.sessionId?.() || '')
+  }, [])
+
   const switchSession = useCallback(async (id: string) => {
     navigate('chat')
     const ok = await window.WyckoffChat?.loadSession(id)
@@ -316,7 +326,7 @@ export function App () {
 
       <main className="thread">
         <TopBar
-          titleKey={TITLES[view] || 'nav.today'}
+          titleKey={TITLES[view] || 'nav.chat'}
           pendingCount={counts.approvals}
           backendState={backendState}
           onPendingClick={() => navigate('approvals')}
@@ -367,6 +377,7 @@ export function App () {
           window.dispatchEvent(new Event('wyckoff:settings-changed'))
           void window.WyckoffShell?.loadAppearance?.()
         }}
+        onSessionsChanged={sessionsChanged}
       />
     </>
   )
