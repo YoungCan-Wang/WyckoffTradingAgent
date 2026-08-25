@@ -137,6 +137,10 @@ def prepare_funnel_job_data(
         direct_source=direct_source,
         executor_mode=executor_mode,
     )
+    if _funnel_asof_cut_enabled():
+        from core.asof_cut import cut_ohlcv_map
+
+        all_df_map = cut_ohlcv_map(all_df_map, window.end_trade_date)
     if env_bool("FUNNEL_DATA_FRESHNESS_HARD_FAIL", True):
         assert_funnel_data_freshness(
             pool.symbols,
@@ -357,7 +361,7 @@ def _load_market_metadata(
         concept_map = {}
 
     as_of_date = window.end_trade_date.isoformat()
-    is_historical = (window.end_trade_date < date.today()) or bool((os.getenv("END_CALENDAR_DAY") or "").strip())
+    is_historical = _funnel_uses_historical_metadata(window)
 
     if is_historical:
         concept_heat, ths_events, event_heat, concept_history, hot_concepts = _load_historical_metadata(as_of_date, cfg)
@@ -552,10 +556,13 @@ def _load_reference_data(
         concept_heat_history=concept_history,
         hot_concepts=hot_concepts,
         market_cap_map=market_cap_map,
-        financial_map=(
-            _load_financial_metrics(all_symbols)
-            if include_financial_metrics
-            else _skipped_financial_metrics("聊天快扫已跳过")
+        financial_map=_maybe_cut_financial_map(
+            (
+                _load_financial_metrics(all_symbols)
+                if include_financial_metrics
+                else _skipped_financial_metrics("聊天快扫已跳过")
+            ),
+            window,
         ),
         name_map=_load_stock_names(),
     )
@@ -612,3 +619,21 @@ def _print_benchmark_gate(benchmark_context: dict) -> None:
         f"repair_triggered={benchmark_context.get('repair_triggered')}, "
         f"repair_reasons={benchmark_context.get('repair_reasons')}, tuned={benchmark_context['tuned']}"
     )
+
+
+def _funnel_asof_cut_enabled() -> bool:
+    """K 线/财务时点裁切：只认显式回放。周日定时的截止日是上周五，不能因此裁生产数据。"""
+    return bool((os.getenv("END_CALENDAR_DAY") or "").strip())
+
+
+def _funnel_uses_historical_metadata(window) -> bool:
+    """市值/概念热度：截止日早于今天或显式回放，都走历史接口。"""
+    return window.end_trade_date < date.today() or _funnel_asof_cut_enabled()
+
+
+def _maybe_cut_financial_map(financial_map: dict[str, dict], window) -> dict[str, dict]:
+    if not _funnel_asof_cut_enabled():
+        return financial_map
+    from core.asof_cut import cut_financial_map
+
+    return cut_financial_map(financial_map, window.end_trade_date)

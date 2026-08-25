@@ -66,6 +66,10 @@ flowchart TB
 
 ---
 
+K 线/财务的时点裁切与周末元数据是两件事。仅当显式设置 `END_CALENDAR_DAY` 时，才按 `as_of` 裁切日线（必须有当日 bar）以及带 `filed_date` / `announce_date` 的财务记录；无日期的财务在回放中直接丢弃。周日定时漏斗的截止日是上周五，不算回放，不走这条裁切，但市值/概念热度仍按「截止日早于今天」走历史接口。这不改变当日实盘漏斗阈值。
+
+---
+
 ## 二、主入口：`daily_job.py` 完整执行链
 
 **触发**：`.github/workflows/wyckoff_funnel.yml` → `python scripts/daily_job.py`
