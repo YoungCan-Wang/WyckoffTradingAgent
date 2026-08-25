@@ -78,14 +78,27 @@ def _sanitize_map_body(
     reason_total: Counter[str] = Counter()
     dropped_bars = 0
     for symbol, frame in df_map.items():
+        tip_before = _frame_tip_date(frame)
         kept, reasons = sanitize_ohlcv_frame(frame)
         reason_total.update(reasons)
         dropped_bars += max(len(frame) - len(kept), 0) if frame is not None else 0
         if kept.empty:
             dropped_symbols += 1
             continue
+        # 丢掉最新一根脏 K 后若仍留昨日序列，漏斗会把昨收当今日参与打分/RPS。
+        if tip_before is not None and _frame_tip_date(kept) != tip_before:
+            dropped_symbols += 1
+            reason_total["stale_tip_after_dirty_drop"] += 1
+            continue
         cleaned[symbol] = kept
     return cleaned, dropped_bars, dropped_symbols, reason_total
+
+
+def _frame_tip_date(frame: pd.DataFrame | None) -> object | None:
+    if frame is None or frame.empty or "date" not in frame.columns:
+        return None
+    dates = pd.to_datetime(frame["date"], errors="coerce").dropna()
+    return dates.max().date() if not dates.empty else None
 
 
 def _dirty_flags(df: pd.DataFrame) -> pd.DataFrame:
