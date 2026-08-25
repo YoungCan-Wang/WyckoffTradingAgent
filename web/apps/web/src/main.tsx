@@ -12,6 +12,10 @@ import { ErrorBoundary } from '@/components/error-boundary'
 import { AppUpdateGate } from '@/components/app-update-gate'
 import { PreferencesProvider } from '@/lib/preferences'
 
+// 手机遥控页。独立外壳 —— 不套 AppLayout（那是桌面侧栏布局），也不进 AuthGuard
+// 的重定向流程（未登录时它自己显示「需要重新扫码」而不是跳走）。
+const RemotePage = lazy(() => import('@/routes/remote').then(m => ({ default: m.RemotePage })))
+
 const PortfolioPage = lazy(() => import('@/routes/portfolio').then(m => ({ default: m.PortfolioPage })))
 const TrackingPage = lazy(() => import('@/routes/tracking').then(m => ({ default: m.TrackingPage })))
 const AttributionPage = lazy(() => import('@/routes/attribution').then(m => ({ default: m.AttributionPage })))
@@ -38,6 +42,7 @@ createRoot(document.getElementById('root')!).render(
           <Suspense fallback={<WyckoffLoading />}>
             <Routes>
               <Route path="/login" element={<LoginPage />} />
+              <Route path="/m" element={<RemotePage />} />
               <Route element={<AuthGuard />}>
                 <Route element={<AppLayout />}>
                   <Route index element={<Navigate to="/chat" replace />} />
