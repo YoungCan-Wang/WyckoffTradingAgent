@@ -11,6 +11,12 @@ name: Desktop
 # 产出的 EXE / DMG 才能作为候选安装包，而不是只验证 electron-builder 的空壳。
 
 on:
+  # 手动触发：功能分支上要出候选安装包时用。
+  #
+  # 下面的 push/pull_request 只认 main 和 feature/visible，所以在别的分支上做完
+  # 一个能上手验的功能之后，没有任何办法拿到包 —— 只能先合进去，而「合进去才能验」
+  # 恰好是反的。这个入口让任意分支都能按需出包。
+  workflow_dispatch:
   push:
     branches: [main, feature/visible]
     paths:
