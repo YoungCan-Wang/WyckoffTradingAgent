@@ -84,8 +84,11 @@ jobs:
       #
       # workbench.mjs 是原来的 smoke + schedules + archive 三份合并的 ——
       # 它们要的环境完全一样（已登录 + 干净 HOME），没理由各起一次 Electron。
-      # 顺带一个收获：schedules 和 archive 原先**根本没进 CI**（这里只跑了
-      # smoke），合并之后它们也跟着跑上了。
+      #
+      # 注意：这个 job **不构建 Python payload**，所以 workbench 里依赖后端的
+      # 两段（定时任务、会话）会自己探测后跳过，并在日志里打出 SKIP。这也解释了
+      # schedules/archive 原先为什么不在 CI 里 —— 不是漏加，是在这个 job 里跑不了。
+      # 那两段的完整验证靠本地跑（本地有 .venv）。
       - name: E2E 工作台（Linux 需要虚拟显示）
         if: runner.os == 'Linux'
         run: xvfb-run --auto-servernum node test/e2e/workbench.mjs

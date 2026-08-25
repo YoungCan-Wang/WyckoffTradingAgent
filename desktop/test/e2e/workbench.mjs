@@ -17,7 +17,9 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { launchApp, reporter, seedSessions, openSettings, closeSettings } from './harness.mjs'
+import {
+  launchApp, reporter, seedSessions, openSettings, closeSettings, backendReady
+} from './harness.mjs'
 
 // 导航里的页面。**不含 chat** —— 对话是主界面，不是和这些并列的目的地，
 // 它的入口是「新建分析」和会话列表。下面单独验它到得了。
@@ -192,6 +194,23 @@ try {
   // 下拉框选出来的东西真的存进 schedules.json 变成对的 cron，卡片显示与所选一致，
   // 编辑能把已存的 cron 还原回下拉框，以及两区的列真的对齐（只有量真实布局才算数）。
   r.section('定时任务：')
+
+  // 后面两段（定时任务、会话）都要真后端：任务列表来自 schedules IPC，会话列表
+  // 来自 chat_sessions。CI 的 test job **不构建 Python payload**（只有 package-*
+  // 构建），所以在 CI 上必然拿不到数据。
+  //
+  // 这不是「原来忘了把它们加进 CI」—— 我第一版就是这么以为的，还写进了提交
+  // 说明，结果三个平台全红。真相是它们**在那个 job 里跑不了**。
+  //
+  // 显式探测后端在不在，然后显式跳过并打印。不能静默跳：日志里看不出少验了
+  // 什么的话，「少验」和「验过了」在 CI 上长得一模一样。
+  const hasBackend = await backendReady(win)
+  if (!hasBackend) {
+    r.skip('定时任务', 'Python 后端没起来（CI 的 test job 不构建 payload）')
+    r.skip('会话', '同上 —— 会话列表来自 chat_sessions IPC')
+  }
+
+  if (hasBackend) {
   await win.locator('.nv[data-view="schedules"]').click()
   await win.waitForSelector('[data-testid=schedule-new]', { timeout: 15_000 })
 
@@ -500,6 +519,7 @@ try {
   await closeSettings(win)
   const sidebarLeft = await sessionCount()
   r.check('未归档的会话没被清掉', () => assert.ok(sidebarLeft > 0, '侧栏被清空了'))
+  } // end if (hasBackend)
 
   // ---- 6. 收尾 ------------------------------------------------------------
   // 放最后：前面所有交互产生的报错都算进来。

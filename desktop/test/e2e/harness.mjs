@@ -26,6 +26,7 @@ export const APP_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 /** 计分板。每个入口文件建一个。 */
 export function reporter () {
   let failures = 0
+  const skipped = []
   const write = (s = '') => process.stdout.write(`${s}\n`)
   return {
     write,
@@ -41,9 +42,22 @@ export function reporter () {
         write(`  FAIL ${name}: ${err.message}`)
       }
     },
+    /**
+     * 跳过一整段,并说清为什么。
+     *
+     * 环境不具备时(CI 没有 Python payload)必须走这里,**不能**静默 return ——
+     * 那样日志里看不出少验了什么,而「少验」和「验过了」在 CI 上长得一样。
+     * 跳过不计入失败,但会在末尾汇总。
+     */
+    skip: (name, why) => {
+      skipped.push(name)
+      write(`  SKIP ${name} —— ${why}`)
+    },
     get failures () { return failures },
+    get skipped () { return skipped.slice() },
     finish () {
-      write(failures ? `\n*** ${failures} 项失败 ***` : '\n全部通过')
+      if (skipped.length) write(`\n跳过 ${skipped.length} 段: ${skipped.join('、')}`)
+      write(failures ? `*** ${failures} 项失败 ***` : '全部通过')
       process.exitCode = failures ? 1 : 0
     }
   }
@@ -106,6 +120,25 @@ export async function seedSessions (win, home, rows) {
   // 让侧栏重拉：点一次「新建分析」会触发列表刷新。
   await win.locator('.side-new').click()
   await win.waitForSelector('.sess-row', { timeout: 10_000 })
+}
+
+/**
+ * Python 后端在不在。
+ *
+ * CI 的 test job **不构建 Python payload**（只有 package-* 那两个 job 构建），
+ * 所以任何依赖后端返回数据的断言在 CI 上必然超时。这不是回归，是环境差异 ——
+ * 需要一个明确的探测,而不是拿超时当「大概是没后端」。
+ *
+ * 探的是顶栏那个重启按钮：`.icb.has-dot` 只在 backendState !== 'ready' 时渲染
+ * （见 TopBar.tsx）。等它消失就是后端就绪；一直在就是没后端。
+ *
+ * **不要**把「没后端」静默当成通过。调用方必须显式跳过并打印出来，否则
+ * 真的坏了也会绿。
+ */
+export async function backendReady (win, timeout = 20_000) {
+  return await win.locator('.icb.has-dot')
+    .waitFor({ state: 'detached', timeout })
+    .then(() => true, () => false)
 }
 
 /** 打开设置弹窗的某个分区。账号行点开是菜单，设置项在菜单里。 */
