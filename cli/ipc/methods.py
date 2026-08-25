@@ -6,11 +6,13 @@
 
 from __future__ import annotations
 
+import itertools
 import logging
 import os
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -496,13 +498,193 @@ def _clamp_int(value: Any, default: int, low: int, high: int) -> int:
 
 
 def schedules(_params: dict[str, Any]) -> Iterator[Event]:
-    from cli.daemon import is_daemon_running
-    from cli.scheduler import load_schedules, schedule_status
+    """已有任务 + 可推荐的预置。
 
+    预置一起返回，界面才能在「还没有任何任务」时给出可点的建议。已经添加过的
+    （按 id 判断）从推荐里剔掉 —— 列一个点了会重复的选项等于埋个坑。
+    """
+    from cli.daemon import is_daemon_running
+    from cli.scheduler import DEFAULT_PRESETS, load_schedules, schedule_status
+
+    try:
+        existing = load_schedules()
+    except Exception as exc:
+        # 文件坏了要说出来。返回空列表会让界面显示「还没有任务」，用户新建一个就
+        # 把原来的覆盖掉了。
+        raise MethodError("schedules_unreadable", f"读取定时任务失败：{exc}") from exc
+
+    taken = {s.id for s in existing}
     yield _ok(
-        schedules=schedule_status(load_schedules()),
+        schedules=schedule_status(existing),
+        presets=[
+            {"id": p["id"], "name": p["name"], "cron": p["cron"], "action": p["action"]}
+            for p in DEFAULT_PRESETS
+            if p["id"] not in taken
+        ],
         daemon_running=is_daemon_running(),
     )
+
+
+def _load_for_write() -> list[Any]:
+    """写路径专用的读取。必须在 schedules_lock 里调。"""
+    from cli.scheduler import load_schedules
+
+    try:
+        return load_schedules()
+    except Exception as exc:
+        raise MethodError("schedules_unreadable", f"读取定时任务失败：{exc}") from exc
+
+
+def _checked_cron(cron: str) -> str:
+    """校验 cron，不合法就带上具体原因拒掉。
+
+    一个坏的 cron 不只是它自己不触发 —— `_field_matches` 里的 int() 会抛
+    ValueError，被 daemon 的宽 except 抓住，那一轮**所有**任务都被跳过。
+    所以绝不能让它落盘。
+    """
+    from cli.scheduler import validate_cron
+
+    text = str(cron or "").strip()
+    problem = validate_cron(text)
+    if problem:
+        raise MethodError("invalid_cron", f"触发时间不合法：{problem}")
+    return text
+
+
+def _checked_name(name: str) -> str:
+    text = str(name or "").strip()
+    if not text:
+        raise MethodError("invalid_params", "需要任务名称")
+    return text[:60]
+
+
+def _checked_action(action: str) -> str:
+    text = str(action or "").strip()
+    if not text:
+        raise MethodError("invalid_params", "需要任务内容")
+    return text[:2000]
+
+
+def schedule_create(params: dict[str, Any]) -> Iterator[Event]:
+    """新建一个定时任务。"""
+    from cli.scheduler import Schedule, save_schedules, schedule_status, schedules_lock
+
+    from cli.scheduler import DEFAULT_PRESETS
+
+    name = _checked_name(params.get("name"))
+    cron = _checked_cron(params.get("cron"))
+    action = _checked_action(params.get("action"))
+    # 新建默认**启用**。用户刚填完表单点确定，那个意图就是「让它开始跑」；
+    # 建完还得再点一下开关才生效，只会让人以为没保存成功。
+    enabled = bool(params.get("enabled", True))
+
+    # 从推荐添加时沿用预置的 id。
+    #
+    # 不这样做的话，新任务拿到的是时间戳 id，而 `schedules` 是按 id 把已添加的预置
+    # 从推荐里剔掉的 —— 于是推荐永远不消失，用户可以把同一个预置加进去好几次。
+    # 只认白名单里的 id，别让前端随便指定。
+    preset_ids = {p["id"] for p in DEFAULT_PRESETS}
+    wanted = str(params.get("id") or "").strip()
+    if wanted and wanted not in preset_ids:
+        raise MethodError("invalid_params", "id 只能是预置任务的标识")
+
+    with schedules_lock():
+        current = _load_for_write()
+        if len(current) >= 40:
+            raise MethodError("too_many", "定时任务最多 40 个")
+        taken = {s.id for s in current}
+        if wanted:
+            if wanted in taken:
+                raise MethodError("already_exists", "这个推荐任务已经添加过了")
+            new_id = wanted
+        else:
+            # id 用时间戳而不是 uuid：便于排查问题时对上日志里的时间。
+            # 带上计数后缀防同一毫秒内建两个。
+            base = f"s{int(time.time() * 1000)}"
+            new_id = base if base not in taken else next(
+                f"{base}-{n}" for n in itertools.count(2) if f"{base}-{n}" not in taken
+            )
+        created = Schedule(id=new_id, name=name, cron=cron, action=action, enabled=enabled)
+        current.append(created)
+        save_schedules(current)
+
+    yield _ok(created=schedule_status([created])[0])
+
+
+def schedule_update(params: dict[str, Any]) -> Iterator[Event]:
+    """改一个任务的名称 / 触发时间 / 内容。
+
+    局部更新：用 `"k" in params` 区分「这次不改这个字段」和「显式传了空值」。
+    照 portfolio_set_stop 的先例 —— params.get() 两者都是 None，会把漏传当成清空。
+    """
+    from cli.scheduler import save_schedules, schedule_status, schedules_lock
+
+    schedule_id = str(params.get("id") or "").strip()
+    if not schedule_id:
+        raise MethodError("invalid_params", "需要 id")
+    if not any(k in params for k in ("name", "cron", "action")):
+        raise MethodError("invalid_params", "至少要改一个字段（name / cron / action）")
+
+    with schedules_lock():
+        current = _load_for_write()
+        target = next((s for s in current if s.id == schedule_id), None)
+        if target is None:
+            raise MethodError("not_found", f"没有这个定时任务：{schedule_id}")
+        if "name" in params:
+            target.name = _checked_name(params.get("name"))
+        if "cron" in params:
+            target.cron = _checked_cron(params.get("cron"))
+        if "action" in params:
+            target.action = _checked_action(params.get("action"))
+        save_schedules(current)
+        updated = schedule_status([target])[0]
+
+    yield _ok(updated=updated)
+
+
+def schedule_toggle(params: dict[str, Any]) -> Iterator[Event]:
+    """开启或关闭一个任务。"""
+    from cli.scheduler import save_schedules, schedule_status, schedules_lock
+
+    schedule_id = str(params.get("id") or "").strip()
+    if not schedule_id:
+        raise MethodError("invalid_params", "需要 id")
+    if "enabled" not in params:
+        raise MethodError("invalid_params", "需要 enabled")
+    enabled = bool(params.get("enabled"))
+
+    with schedules_lock():
+        current = _load_for_write()
+        target = next((s for s in current if s.id == schedule_id), None)
+        if target is None:
+            raise MethodError("not_found", f"没有这个定时任务：{schedule_id}")
+        # 开启前再校验一次 cron。老任务可能是 TUI 或手改文件写进来的，
+        # 从没被校验过；带着坏 cron 开启会打死整个调度轮次。
+        if enabled:
+            _checked_cron(target.cron)
+        target.enabled = enabled
+        save_schedules(current)
+        result = schedule_status([target])[0]
+
+    yield _ok(updated=result)
+
+
+def schedule_delete(params: dict[str, Any]) -> Iterator[Event]:
+    """删除一个任务。"""
+    from cli.scheduler import save_schedules, schedules_lock
+
+    schedule_id = str(params.get("id") or "").strip()
+    if not schedule_id:
+        raise MethodError("invalid_params", "需要 id")
+
+    with schedules_lock():
+        current = _load_for_write()
+        remaining = [s for s in current if s.id != schedule_id]
+        if len(remaining) == len(current):
+            raise MethodError("not_found", f"没有这个定时任务：{schedule_id}")
+        save_schedules(remaining)
+
+    yield _ok(deleted=schedule_id)
 
 
 # 正在手动重跑的 schedule id。重跑要跑完整一轮 agent（可能几分钟），期间用户
@@ -1204,12 +1386,21 @@ def remote_revoke(params: dict[str, Any]) -> Iterator[Event]:
 
 
 def chat_sessions(params: dict[str, Any]) -> Iterator[Event]:
-    """会话列表：置顶优先，其余按最近活动倒序。"""
+    """会话列表：置顶优先，其余按最近活动倒序。
+
+    archived 不传 = 只看未归档（侧栏）；传 true = 只看已归档（设置页的管理区）；
+    传 "all" = 两者都要。默认值刻意是「未归档」而不是「全部」——
+    侧栏是最常见的调用方，让它拿到全部会导致归档了却还在原地。
+    """
     from integrations.local_db import list_chat_sessions
 
     limit = max(1, min(int(params.get("limit") or 60), 200))
     search = str(params.get("search") or "")
-    rows = list_chat_sessions(limit=limit, user_id=_current_user_id(), search=search)
+    raw = params.get("archived")
+    archived: bool | None = None if raw == "all" else bool(raw)
+    rows = list_chat_sessions(
+        limit=limit, user_id=_current_user_id(), search=search, archived=archived
+    )
     yield _ok(sessions=rows, active=_active_session())
 
 
@@ -1268,6 +1459,58 @@ def chat_rename(params: dict[str, Any]) -> Iterator[Event]:
     yield _ok(renamed=True)
 
 
+def chat_archive(params: dict[str, Any]) -> Iterator[Event]:
+    """归档 / 取消归档一个会话。
+
+    归档掉的正好是当前会话时，要像 chat_delete 一样给个落脚处 —— 否则下一轮
+    对话会写进一个已经从侧栏消失的会话里，用户看不见自己刚说的话。
+
+    只在**归档**时换落脚点。取消归档不用换：那个会话本来就不是当前会话。
+    """
+    from cli.ipc.session import active_session_id, new_session
+    from integrations.local_db import set_chat_session_archived
+
+    session_id = str(params.get("session_id") or "").strip()
+    if not session_id:
+        raise MethodError("invalid_params", "缺少 session_id")
+    archived = bool(params.get("archived", True))
+    if not set_chat_session_archived(session_id, archived, _current_user_id()):
+        raise MethodError("not_found", "会话不存在")
+
+    next_id = active_session_id()
+    if archived and session_id == next_id:
+        # 不 drop_session：归档不是删除，内容还在，会话对象留着下次恢复能直接接上。
+        next_id = new_session().session_id
+    yield _ok(archived=archived, session_id=next_id or "")
+
+
+def chat_delete_archived(_params: dict[str, Any]) -> Iterator[Event]:
+    """清空已归档会话。不可逆 —— 确认在前端做。
+
+    一次 SQL 删完，不接受 id 列表：让前端循环单删的话，中间失败就留下删一半的
+    状态，而用户以为「全部删除」是原子的。
+
+    删完给个落脚会话。当前会话理论上不该是已归档的（归档时就换过落脚点了），
+    但可能被 TUI 或另一个窗口改过 —— 保持和 chat_delete 一致，别让下一轮对话
+    写进一个刚被删掉的 id。
+    """
+    from cli.ipc.session import active_session_id, new_session
+    from integrations.local_db import delete_archived_chat_sessions, list_chat_sessions
+
+    user_id = _current_user_id()
+    # 先记下哪些会被删，好判断当前会话是否在其中。
+    doomed = {
+        str(r.get("session_id") or "")
+        for r in list_chat_sessions(limit=200, user_id=user_id, archived=True)
+    }
+    removed = delete_archived_chat_sessions(user_id)
+
+    next_id = active_session_id()
+    if not next_id or next_id in doomed:
+        next_id = new_session().session_id
+    yield _ok(deleted=removed, session_id=next_id)
+
+
 def chat_pin(params: dict[str, Any]) -> Iterator[Event]:
     from integrations.local_db import set_chat_session_pinned
 
@@ -1289,6 +1532,8 @@ METHODS: dict[str, Callable[[dict[str, Any]], Iterator[Event]]] = {
     "chat_delete": chat_delete,
     "chat_rename": chat_rename,
     "chat_pin": chat_pin,
+    "chat_archive": chat_archive,
+    "chat_delete_archived": chat_delete_archived,
     "remote_status": remote_status,
     "remote_enable": remote_enable,
     "remote_disable": remote_disable,
@@ -1308,6 +1553,10 @@ METHODS: dict[str, Callable[[dict[str, Any]], Iterator[Event]]] = {
     "wyckoff_events": wyckoff_events,
     "schedules": schedules,
     "schedule_run": schedule_run,
+    "schedule_create": schedule_create,
+    "schedule_update": schedule_update,
+    "schedule_toggle": schedule_toggle,
+    "schedule_delete": schedule_delete,
     "mcp_list": mcp_list,
     "account": account,
     "auth_login": auth_login,

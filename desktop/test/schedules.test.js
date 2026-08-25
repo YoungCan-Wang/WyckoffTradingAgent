@@ -25,7 +25,8 @@ const js = ts.transpileModule(readFileSync(SRC, 'utf8'), {
 }).outputText
 const mod = { exports: {} }
 new Function('module', 'exports', 'require', js)(mod, mod.exports, require)
-const { scheduleState, hasIssue, describeCron, riskReasonText, displayTime } = mod.exports
+const { scheduleState, hasIssue, describeCron, riskReasonText, displayTime,
+        buildCron, parseCron, DEFAULT_CADENCE } = mod.exports
 
 test('状态：未启用不算失败', () => {
   // 这两个混在一起会让「我自己关掉的任务」显示成故障
@@ -114,4 +115,50 @@ test('时间显示：认不出的原样回显而不是 Invalid Date', () => {
   assert.equal(displayTime(undefined), '—')
   assert.equal(displayTime('不是时间'), '不是时间')
   assert.ok(displayTime('2026-08-20T09:31:00+08:00').length > 4)
+})
+
+// 下拉框取值 ↔ cron 互转。
+//
+// 界面上不出现 cron 表达式 —— 用户没有那个能力，也不该有。cron 只是序列化形式，
+// 所以这层转换必须是可靠的往返：编辑一个已有任务时先 parse 再 build，
+// 出来的必须和进去的一样，否则「点开编辑再保存」会悄悄改掉触发时间。
+test('cron：三种重复方式都能编码', () => {
+  assert.equal(buildCron({ repeat: 'weekday', hour: 9, minute: 25 }), '25 9 * * 1-5')
+  assert.equal(buildCron({ repeat: 'weekly', weekday: 5, hour: 16, minute: 0 }), '0 16 * * 5')
+  assert.equal(buildCron({ repeat: 'monthly', monthday: 1, hour: 9, minute: 0 }), '0 9 1 * *')
+})
+
+test('cron：编码时把越界值收进合法区间', () => {
+  // 下拉框不该产出这些，但 buildCron 是公开函数，坏值落盘会打死整个调度轮次
+  assert.equal(buildCron({ repeat: 'weekday', hour: 99, minute: -5 }), '0 23 * * 1-5')
+  assert.equal(buildCron({ repeat: 'monthly', monthday: 99, hour: 9, minute: 0 }), '0 9 31 * *')
+  assert.equal(buildCron({ repeat: 'weekly', weekday: 9, hour: 9, minute: 0 }), '0 9 * * 6')
+})
+
+test('cron：往返不变形', () => {
+  for (const cron of ['25 9 * * 1-5', '0 16 * * 5', '5 15 * * 1-5', '0 9 1 * *', '30 23 28 * *', '0 0 * * 0']) {
+    const parsed = parseCron(cron)
+    assert.ok(parsed, `应该认得 ${cron}`)
+    assert.equal(buildCron(parsed), cron, `${cron} 往返后变了`)
+  }
+})
+
+test('cron：认不出的返回 null 而不是默认值', () => {
+  // 静默改成默认值最糟：用户点开编辑、直接保存，触发时间就被换掉了
+  for (const bad of ['*/15 * * * *', '0 9 * 3 *', '0 9 1 * 5', 'bogus', '', '1 2 3 4', '99 9 * * *']) {
+    assert.equal(parseCron(bad), null, `${bad} 不该被认出`)
+  }
+})
+
+test('cron 描述：每月几号不能说成每天', () => {
+  // monthday 是数字时 weekday 也是 '*'，判定顺序反了就会串
+  assert.match(describeCron('0 9 5 * *'), /everyMonthday/)
+  assert.match(describeCron('0 9 * * *'), /everyDay/)
+  assert.match(describeCron('25 9 * * 1-5'), /everyWeekday/)
+  assert.match(describeCron('0 16 * * 5'), /everyWeekOn/)
+})
+
+test('默认值落在真实用途上', () => {
+  // 09:25 是 A 股开盘前，和两个预置任务一致
+  assert.equal(buildCron(DEFAULT_CADENCE), '25 9 * * 1-5')
 })

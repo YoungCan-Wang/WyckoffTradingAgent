@@ -11,11 +11,21 @@ export interface Schedule {
   id?: string
   name?: string
   cron?: string
+  /** 任务内容（发给 agent 的那句话）。编辑表单要用。 */
+  action?: string
   enabled?: boolean
   last_status?: string
   last_error?: string
   last_fired?: string
   next_run?: string
+}
+
+/** 界面上可推荐、点了才落盘的预置任务。 */
+export interface Preset {
+  id: string
+  name: string
+  cron: string
+  action: string
 }
 
 export interface ApprovalItem {
@@ -57,16 +67,102 @@ export const hasIssue = (s: Schedule) => Boolean(s.enabled && (failedStatus(s.la
 export function describeCron (cron?: string): string {
   const parts = String(cron || '').trim().split(/\s+/)
   if (parts.length !== 5) return t('schedules.rawCron', { cron: String(cron || '') })
-  const [minute, hour, , , weekday] = parts
+  const [minute, hour, monthday, , weekday] = parts
   if (/^\*\/\d+$/.test(minute) && hour === '*') {
     return t('schedules.everyMinutes', { count: minute.slice(2) })
   }
   if (/^\d+$/.test(minute) && /^\d+$/.test(hour)) {
     const time = `${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`
     if (weekday === '1-5') return t('schedules.everyWeekday', { time })
+    // 每月几号要在「每天」之前判：monthday 是具体数字时 weekday 也是 '*'，
+    // 顺序反了会把「每月 5 号」说成「每天」。
+    if (/^\d+$/.test(monthday) && weekday === '*') {
+      return t('schedules.everyMonthday', { day: String(Number(monthday)), time })
+    }
+    if (/^[0-6]$/.test(weekday) && monthday === '*') {
+      return t('schedules.everyWeekOn', { weekday: weekdayName(Number(weekday)), time })
+    }
     if (weekday === '*') return t('schedules.everyDay', { time })
   }
   return t('schedules.rawCron', { cron: String(cron || '') })
+}
+
+/** cron 的星期编号（0=周日）转名字。 */
+export function weekdayName (value: number): string {
+  return t(`schedules.weekday.${value}`)
+}
+
+/** 编辑器里的取值。cron 只是它的序列化形式，界面上不出现。 */
+export type Repeat = 'weekday' | 'weekly' | 'monthly'
+
+export interface Cadence {
+  repeat: Repeat
+  /** repeat === 'weekly' 时用；cron 编号，0=周日 */
+  weekday: number
+  /** repeat === 'monthly' 时用；1-31 */
+  monthday: number
+  hour: number
+  minute: number
+}
+
+export const DEFAULT_CADENCE: Cadence = {
+  repeat: 'weekday',
+  weekday: 5,
+  monthday: 1,
+  // 09:25 —— A 股开盘前，和两个预置任务一致。默认值落在真实用途上，
+  // 用户多半只改分钟不改小时。
+  hour: 9,
+  minute: 25
+}
+
+const clamp = (value: number, lo: number, hi: number) =>
+  Math.min(hi, Math.max(lo, Math.trunc(Number(value) || 0)))
+
+/** 编辑器取值 → cron 字符串。 */
+export function buildCron (c: Cadence): string {
+  const minute = clamp(c.minute, 0, 59)
+  const hour = clamp(c.hour, 0, 23)
+  if (c.repeat === 'monthly') {
+    // 29-31 号遇上没那天的月份会跳过（标准 cron 语义），这是刻意的选择：
+    // 「落到月末」需要改后端匹配逻辑，而跳过更可预测。
+    return `${minute} ${hour} ${clamp(c.monthday, 1, 31)} * *`
+  }
+  if (c.repeat === 'weekly') {
+    return `${minute} ${hour} * * ${clamp(c.weekday, 0, 6)}`
+  }
+  return `${minute} ${hour} * * 1-5`
+}
+
+/**
+ * cron 字符串 → 编辑器取值。认不出返回 null。
+ *
+ * 编辑一个已有任务时用。认不出（比如手改过文件、或 TUI 写的 `*​/15` 形状）就返回
+ * null，界面据此提示「这个时间表不支持在这里编辑」而不是**静默改成默认值** ——
+ * 那样用户点开编辑再保存，触发时间就被悄悄换掉了。
+ */
+export function parseCron (cron?: string): Cadence | null {
+  const parts = String(cron || '').trim().split(/\s+/)
+  if (parts.length !== 5) return null
+  const [minuteRaw, hourRaw, monthdayRaw, monthRaw, weekdayRaw] = parts
+  if (monthRaw !== '*') return null
+  if (!/^\d{1,2}$/.test(minuteRaw) || !/^\d{1,2}$/.test(hourRaw)) return null
+  const minute = Number(minuteRaw)
+  const hour = Number(hourRaw)
+  if (minute > 59 || hour > 23) return null
+
+  const base = { ...DEFAULT_CADENCE, hour, minute }
+  if (monthdayRaw === '*' && weekdayRaw === '1-5') {
+    return { ...base, repeat: 'weekday' }
+  }
+  if (monthdayRaw === '*' && /^[0-6]$/.test(weekdayRaw)) {
+    return { ...base, repeat: 'weekly', weekday: Number(weekdayRaw) }
+  }
+  if (weekdayRaw === '*' && /^\d{1,2}$/.test(monthdayRaw)) {
+    const day = Number(monthdayRaw)
+    if (day < 1 || day > 31) return null
+    return { ...base, repeat: 'monthly', monthday: day }
+  }
+  return null
 }
 
 /** 后端认可的风险理由。白名单之外的一律不显示 —— 别把内部代号漏给用户。 */
