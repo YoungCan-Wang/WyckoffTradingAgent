@@ -31,20 +31,37 @@ def test_dated_records_drop_future_and_undated():
 
 
 def test_funnel_cut_only_when_end_calendar_day_set(monkeypatch):
-    """截止日期早于今天不是回放——否则周日主漏斗会被误裁。"""
+    """截止日期早于今天仍走历史市值/热度，但不裁 K 线/财务。"""
     from types import SimpleNamespace
 
-    from workflows.funnel_data import _funnel_is_historical, _maybe_cut_financial_map
+    from workflows.funnel_data import (
+        _funnel_asof_cut_enabled,
+        _funnel_uses_historical_metadata,
+        _maybe_cut_financial_map,
+    )
 
     window = SimpleNamespace(end_trade_date=date(2026, 5, 22))
     monkeypatch.delenv("END_CALENDAR_DAY", raising=False)
-    assert _funnel_is_historical(window) is False
+    assert _funnel_asof_cut_enabled() is False
+    assert _funnel_uses_historical_metadata(window) is True
     raw = {"000002": {"roe": 20, "filed_date": "2026-08-20"}}
     assert _maybe_cut_financial_map(raw, window) == raw
 
     monkeypatch.setenv("END_CALENDAR_DAY", "2026-05-22")
-    assert _funnel_is_historical(window) is True
+    assert _funnel_asof_cut_enabled() is True
+    assert _funnel_uses_historical_metadata(window) is True
     assert _maybe_cut_financial_map(raw, window) == {}
+
+
+def test_same_day_live_window_skips_historical_metadata(monkeypatch):
+    from types import SimpleNamespace
+
+    from workflows.funnel_data import _funnel_asof_cut_enabled, _funnel_uses_historical_metadata
+
+    monkeypatch.delenv("END_CALENDAR_DAY", raising=False)
+    window = SimpleNamespace(end_trade_date=date.today())
+    assert _funnel_asof_cut_enabled() is False
+    assert _funnel_uses_historical_metadata(window) is False
 
 
 def test_financial_map_fail_closed_without_date():
