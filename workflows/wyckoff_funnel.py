@@ -25,7 +25,6 @@ from core.candidate_policy import (
 from core.candidate_tracks import candidate_entry_track
 from core.capital_migration import build_capital_migration_report
 from core.cn_boards import is_main_or_chinext, is_star_or_bse
-from core.funnel_etf import etf_metrics
 from core.funnel_selection import split_selected_tracks
 from core.theme_activity import summarize_theme_activity
 from core.theme_radar import summarize_theme_radar
@@ -83,11 +82,6 @@ class FunnelMetricsInputs:
     layers: FunnelLayerOutputs
     ref_data: FunnelReferenceData
     bench_df: pd.DataFrame | None
-    etf_symbols: list[str]
-    etf_sector_map: dict[str, str]
-    etf_df_map: dict[str, pd.DataFrame]
-    etf_l2_passed: list[str]
-    etf_candidates: list[dict]
     l2_bypass_pool: list[str]
     l2_bypass_triggers: dict[str, list[tuple[str, float]]]
     strategic: FunnelStrategicBypass
@@ -557,7 +551,6 @@ def _build_funnel_metrics(inputs: FunnelMetricsInputs) -> dict:
             financial_requested=inputs.financial_metrics_requested,
         ),
         **_theme_metrics(inputs, ranked_l3_symbols),
-        **_etf_metrics(inputs),
         **_candidate_metrics(inputs, ranked_l3_symbols),
         **_bypass_metrics(inputs),
         **_external_seed_metrics(
@@ -697,19 +690,6 @@ def _theme_metrics(inputs: FunnelMetricsInputs, ranked_l3_symbols: list[str]) ->
     }
 
 
-def _etf_metrics(inputs: FunnelMetricsInputs) -> dict:
-    return {
-        "etf_enhancement": etf_metrics(
-            inputs.etf_symbols,
-            inputs.etf_df_map,
-            inputs.etf_l2_passed,
-            inputs.etf_sector_map,
-            inputs.etf_candidates,
-        ),
-        "etf_candidates": inputs.etf_candidates,
-    }
-
-
 def _candidate_metrics(inputs: FunnelMetricsInputs, ranked_l3_symbols: list[str]) -> dict:
     candidates = inputs.candidates
     return {
@@ -803,9 +783,6 @@ def _build_run_artifacts(data) -> FunnelRunArtifacts:
         window=data.window,
         cfg=data.cfg,
         ref_data=data.ref_data,
-        etf_l2_passed=data.etf_l2_passed,
-        etf_sector_map=data.etf_sector_map,
-        etf_df_map=data.etf_df_map,
         benchmark_context=data.benchmark_context,
     )
     l2_bypass_pool, bypass_triggers = _build_l2_bypass(data, layers)
@@ -906,11 +883,6 @@ def run_funnel_job(
         layers=artifacts.layers,
         ref_data=data.ref_data,
         bench_df=data.bench_df,
-        etf_symbols=data.etf_symbols,
-        etf_sector_map=data.etf_sector_map,
-        etf_df_map=data.etf_df_map,
-        etf_l2_passed=data.etf_l2_passed,
-        etf_candidates=data.etf_candidates,
         l2_bypass_pool=artifacts.l2_bypass_pool,
         l2_bypass_triggers=artifacts.l2_bypass_triggers,
         strategic=artifacts.strategic,
@@ -924,10 +896,46 @@ def run_funnel_job(
         financial_metrics_requested=include_financial_metrics,
     )
     metrics = _build_funnel_metrics(metrics_inputs)
+    metrics["ic_shadow"] = _build_ic_shadow_pool(data)
     _write_review_trace(metrics_inputs, artifacts.layers.triggers, metrics)
     _attach_funnel_debug_context(metrics, metrics_inputs, include_debug_context)
     _log_funnel_summary(metrics, metrics_inputs)
     return artifacts.layers.triggers, metrics
+
+
+def _build_ic_shadow_pool(data) -> list[dict]:
+    """IC 反向打分影子池。复用漏斗已抓的 all_df_map，不再单独抓快照。
+
+    原为独立 workflow，每天自抓 560 天快照耗时 45 分钟；而漏斗本就抓了
+    FunnelConfig.trading_days=320 个交易日，足够覆盖最长的 250 日滚动分位。
+
+    只观察不下单：写入行强制 ai_recommended=False / selected_for_ai=False /
+    candidate_status='shadow_observe'。失败只记日志，绝不影响漏斗主流程。
+    """
+    try:
+        from core.ic_shadow_score import (
+            ShadowScoreConfig,
+            combine_scores,
+            percentiles_from_df_map,
+            to_rows,
+        )
+
+        config = ShadowScoreConfig()
+        panels = percentiles_from_df_map(data.all_df_map, config)
+        if not panels:
+            print("[shadow] 无可用因子面板，跳过")
+            return []
+        picks = combine_scores(panels, config)
+        trade_date = data.window.end_trade_date.isoformat()
+        rows = to_rows(picks, trade_date, config)
+        print(f"[shadow] {trade_date} 选出 {len(rows)} 只（{config.describe()}）")
+        for pick in picks[:5]:
+            detail = " ".join(f"{k}={v:.0f}" for k, v in pick.factor_ranks.items())
+            print(f"[shadow]   #{pick.rank} {pick.code} score={pick.score:+.2f} {detail}")
+        return rows
+    except Exception as exc:  # noqa: BLE001 - 影子池是研究支线，不得影响漏斗
+        print(f"[shadow] 影子池计算失败（不影响漏斗）: {str(exc)[:160]}")
+        return []
 
 
 def run(

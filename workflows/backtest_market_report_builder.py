@@ -806,10 +806,22 @@ def _build_trade_structure_lines(diagnostics: dict[str, object]) -> list[str]:
     ]
 
 
-def _build_regime_stats_table(regime_stats: list[dict[str, object]]) -> list[str]:
+def _build_regime_stats_table(regime_stats: list[dict[str, object]], scope: str = "") -> list[str]:
+    """按水温分层。
+
+    统计口径是**单个最优参数单元**的成交，不是全部单元的汇总——这里的 regime_stats
+    来自 `read_trades(best.trades_path)`。此前标题未说明，读者会误以为是全局分层：
+    例如报告曾显示 NEUTRAL 14 笔 +3.80%，而 recent_6m 全部 9 个 trades 文件里
+    NEUTRAL 实为 0 笔（该档在禁买名单内），那 14 笔来自 best 所指的另一个周期。
+
+    不改成聚合全部单元，是因为各周期表现差异极大（recent_6m +24% vs
+    sideways_2023 -10.78%），混合平均反而更误导。
+    """
     lines = [
         "",
         "## 市场周期分层",
+        "",
+        f"> 口径：仅统计最优单元{scope} 的成交，非全部参数单元汇总。",
         "",
         "| 周期 | 含义 | 笔数 | 信号期 | 胜率 | 均收 | 中位数 |",
         "|---|---|---:|---|---:|---:|---:|",
@@ -835,8 +847,17 @@ def _build_regime_stats_table(regime_stats: list[dict[str, object]]) -> list[str
     return lines
 
 
-def _build_trigger_stats_table(trigger_stats: list[dict[str, object]]) -> list[str]:
-    lines = ["", "## 信号类型分层", "", "| 信号 | 笔数 | 胜率 | 均收 | 中位数 |", "|---|---:|---:|---:|---:|"]
+def _build_trigger_stats_table(trigger_stats: list[dict[str, object]], scope: str = "") -> list[str]:
+    """按买点类型分层。口径同 _build_regime_stats_table——仅最优单元，非全局。"""
+    lines = [
+        "",
+        "## 信号类型分层",
+        "",
+        f"> 口径：仅统计最优单元{scope} 的成交，非全部参数单元汇总。",
+        "",
+        "| 信号 | 笔数 | 胜率 | 均收 | 中位数 |",
+        "|---|---:|---:|---:|---:|",
+    ]
     for stat in trigger_stats:
         lines.append(
             "| "
@@ -914,8 +935,9 @@ def build_report(cells: list[GridCell], run_url: str = "", generated_at: str = "
 
     lines.extend(["", "## 最优夏普矩阵", "", *_build_matrix(cells, best_sharpe_cell)])
     lines.extend(_build_trade_structure_lines(diagnostics))
-    lines.extend(_build_regime_stats_table(regime_stats))
-    lines.extend(_build_trigger_stats_table(trigger_stats))
+    best_scope = f"（{best.period_key} / {_fmt_param(best)} / {len(best_rows)} 笔）"
+    lines.extend(_build_regime_stats_table(regime_stats, best_scope))
+    lines.extend(_build_trigger_stats_table(trigger_stats, best_scope))
     lines.extend(_build_followup_lines(regime_stats, trigger_stats))
     lines.extend(_build_methodology_notes())
     return "\n".join(lines)

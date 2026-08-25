@@ -125,7 +125,7 @@ def test_installed_runtime_resources_load_from_share_directory(tmp_path: Path) -
 
     assert json.loads(result.stdout) == {
         "changelog": True,
-        "etf_codes": ["512480"],
+        "etf_name": "半导体ETF",
         "external_symbols": ["000001"],
         "hk_symbols": ["00700.HK"],
         "max_ai_candidates": 9,
@@ -149,9 +149,8 @@ os.environ.pop("MARKET_UNIVERSE_DIR", None)
 
 from cli.memory import resolve_stock_codes
 from cli.tui import WyckoffTUI
-from integrations.funnel_etf_data import load_etf_universe
 from integrations.market_universe import load_hk_symbols, load_us_symbols
-from tools.market_universe_meta import load_symbol_name_map
+from tools.market_universe_meta import load_etf_name_map, load_symbol_name_map
 from tools.external_seeds import load_external_seed_config
 from tools.mainline_config import load_mainline_engine_config
 from workflows.market_funnel_runtime import MARKET_SPECS, market_symbol_path
@@ -167,10 +166,9 @@ log = Log()
 WyckoffTUI._show_changelog(object(), log)
 us_symbols, _ = load_us_symbols()
 hk_symbols, _ = load_hk_symbols()
-etf_codes, _ = load_etf_universe()
 print(json.dumps({
     "changelog": any("9.9.9" in line for line in log.lines),
-    "etf_codes": etf_codes,
+    "etf_name": load_etf_name_map().get("512480"),
     "external_symbols": list(load_external_seed_config().symbols),
     "hk_symbols": hk_symbols,
     "max_ai_candidates": load_mainline_engine_config().max_ai_candidates,

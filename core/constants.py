@@ -1,5 +1,6 @@
 # Database Table Names
 TABLE_USER_SETTINGS = "user_settings"
+TABLE_FACTOR_IC_DAILY = "factor_ic_daily"
 TABLE_MARKET_SIGNAL_DAILY = "market_signal_daily"
 TABLE_RECOMMENDATION_TRACKING = "recommendation_tracking"
 TABLE_RECOMMENDATION_TRACKING_US = "recommendation_tracking_us"

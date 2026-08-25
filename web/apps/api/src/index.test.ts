@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { createApiApp } from './app'
 import { app } from './index'
 
 describe('API middleware', () => {
@@ -32,5 +33,17 @@ describe('API middleware', () => {
 
     expect(response.status).toBe(404)
     expect(await response.json()).toMatchObject({ error: 'Not Found' })
+  })
+
+  it('logs unhandled API errors to Workers Logs', async () => {
+    const api = createApiApp()
+    api.get('/api/boom', () => {
+      throw new Error('boom')
+    })
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const response = await api.request('/api/boom')
+    expect(response.status).toBe(500)
+    expect(String(error.mock.calls[0]?.[0])).toContain('"event":"worker_error"')
+    error.mockRestore()
   })
 })

@@ -113,3 +113,11 @@ export {
   isModelContentChunkType,
   isToolBoundaryChunkType,
 } from './model-generation-clock'
+export {
+  classifyHeadline,
+  fetchEastMoneyStockNews,
+  handleNewsEventsRequest,
+  selectNewsChartEvents,
+  snapToSession,
+} from './news-chart-events'
+export type { NewsChartEvent, NewsEventKind, NewsSentiment, RawNewsItem } from './news-chart-events'

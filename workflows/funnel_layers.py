@@ -70,9 +70,6 @@ def run_base_funnel_layers(
     window,
     cfg: FunnelConfig,
     ref_data: FunnelReferenceData,
-    etf_l2_passed: list[str],
-    etf_sector_map: dict[str, str],
-    etf_df_map: dict[str, pd.DataFrame],
     benchmark_context: dict,
 ) -> FunnelLayerOutputs:
     print("[funnel] 开始执行全量漏斗筛选...")
@@ -88,9 +85,6 @@ def run_base_funnel_layers(
         all_df_map,
         cfg,
         ref_data,
-        etf_l2_passed,
-        etf_sector_map,
-        etf_df_map,
         _hot_concepts(ref_data, theme_activity),
         regime=benchmark_context.get("regime"),
         benchmark_context=benchmark_context,
@@ -224,34 +218,27 @@ def _run_sector_layer(
     all_df_map: dict[str, pd.DataFrame],
     cfg: FunnelConfig,
     ref_data: FunnelReferenceData,
-    etf_l2_passed: list[str],
-    etf_sector_map: dict[str, str],
-    etf_df_map: dict[str, pd.DataFrame],
     activity_hot_concepts: list[str],
     regime: str | None = None,
     benchmark_context: dict | None = None,
 ) -> tuple[list[str], list[str], dict]:
-    etf_codes = set(etf_sector_map)
-    layer3_sector_map = {**ref_data.sector_map, **etf_sector_map}
-    layer3_df_map = {**all_df_map, **etf_df_map}
     l3_raw, top_sectors = layer3_sector_resonance(
-        l2_passed + etf_l2_passed,
-        layer3_sector_map,
+        l2_passed,
+        ref_data.sector_map,
         cfg,
-        base_symbols=l1_passed + list(etf_codes & set(etf_df_map)),
-        df_map=layer3_df_map,
+        base_symbols=l1_passed,
+        df_map=all_df_map,
         concept_map=ref_data.concept_map,
         hot_concepts=list(dict.fromkeys([*ref_data.hot_concepts, *activity_hot_concepts])),
     )
     is_repair = regime in {"PANIC_REPAIR", "PANIC_REPAIR_CONFIRMED", "PANIC_REPAIR_INTRADAY", "BEAR_REBOUND"}
     if is_repair:
         print("[funnel] 修复期风格切换第一天，Layer 3 板块共振过滤已从硬过滤降级为加分项。")
-        l3_passed_normal = [s for s in l3_raw if s not in etf_codes]
         if benchmark_context is not None:
-            benchmark_context["l3_passed_normal"] = l3_passed_normal
-        l3_passed = [s for s in l2_passed if s not in etf_codes]
+            benchmark_context["l3_passed_normal"] = list(l3_raw)
+        l3_passed = list(l2_passed)
     else:
-        l3_passed = [s for s in l3_raw if s not in etf_codes]
+        l3_passed = list(l3_raw)
     sector_rotation = analyze_sector_rotation(
         all_df_map,
         ref_data.sector_map,

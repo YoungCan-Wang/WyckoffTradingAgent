@@ -3,6 +3,14 @@ main = "src/index.ts"
 compatibility_date = "2024-12-18"
 compatibility_flags = ["nodejs_compat"]
 
+# Free Workers Logs: ~200k events/day, 3-day retention. No Supabase writes.
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[observability.logs]
+invocation_logs = true
+
 [vars]
 ENVIRONMENT = "production"
 CHAT_DAILY_LIMIT_PER_USER = "80"

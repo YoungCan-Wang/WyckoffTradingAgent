@@ -209,6 +209,26 @@ def cmd_snapshot() -> int:
     return 0
 
 
+def cmd_check_no_sql_files(*, verbose: bool = False) -> int:
+    """本项目不保留 .sql 文件——schema 以 Python 常量版本化，由脚本打印后人工执行。
+
+    这条约束此前只是口头共识、无任何自动检查，结果 2026-08-22 引入了
+    docs/sql/factor_ic_daily.sql 才被发现。改成 CI 拦截。
+    """
+    import subprocess
+
+    out = subprocess.run(["git", "ls-files", "*.sql"], capture_output=True, text=True, check=False).stdout
+    hits = [line for line in out.splitlines() if line.strip()]
+    if hits:
+        print("FAIL: 仓库不应包含 .sql 文件（schema 请用 Python 常量 + 打印脚本）：")
+        for path in hits:
+            print(f"  {path}")
+        return 1
+    if verbose:
+        print("OK: 无 .sql 文件")
+    return 0
+
+
 def cmd_check_functions(*, verbose: bool = False) -> int:
     wl = load_whitelist()
     all_v = scan_py_functions(PY_DIRS) + scan_ts_functions(TS_DIRS)
@@ -297,7 +317,10 @@ def main() -> int:
     if "--ci" in args:
         return cmd_ci(verbose=verbose)
     if "--check-functions" in args:
-        return cmd_check_functions(verbose=verbose)
+        rc = cmd_check_functions(verbose=verbose)
+        return rc or cmd_check_no_sql_files(verbose=verbose)
+    if "--check-no-sql" in args:
+        return cmd_check_no_sql_files(verbose=True)
     print(__doc__)
     return 0
 

@@ -1,0 +1,113 @@
+name: Factor IC Evaluation
+
+# 因子 IC 评估：哪些指标对未来收益真有预测力。
+#
+# 起因：生产漏斗全是阈值门（`rank(axis=1)` 在 core/ 零命中），导致门槛线上的票本质
+# 随机、参数必然过拟合（同期参数网格 walk-forward 仅 1/16 个窗口为正）、且只能过滤
+# 不能排序——而实盘每天只买 1~2 只。
+#
+# 首轮（2026-08-22，498 个交易日 / 日均截面 3916 只）：32 个因子-前瞻组合**全部为负
+# IC**，其中 6 个通过可用门槛；3 段分段中 19 个组合方向全一致。这是当日唯一跨段
+# 稳定的结论，也说明生产四条通道（主升 rps_slow>=75、趋势延续 ret60 高、加速突破
+# ret20>=15% 且放量、点火破局放量破新高）方向都反了。
+#
+#   ret60 / rps_slow  T+10  IC -0.0697  IR -0.37   各段 -0.083 -0.043 -0.083
+#   vol_ratio         T+10  IC -0.0262  IR -0.32   各段 -0.059 -0.016 -0.004
+#   dry_vol_q250      T+10  IC -0.0405  IR -0.31   各段 -0.055 -0.019 -0.049
+#
+# 每周重跑的意义：IC 单期值不构成证据，关键是 ic_ir 与**方向何时开始变化**。
+# 结果落 factor_ic_daily（TTL 365 天，由 db_maintenance 清理）以便跨期对比。
+on:
+  schedule:
+    # UTC 周六 05:10 = 北京时间周六 13:10。排在 pattern_forward_eval(12:10) 之后，
+    # 与其它评估任务错开，避免同时抢 Tushare 配额。
+    - cron: "10 5 * * 6"
+  workflow_dispatch:
+    inputs:
+      horizons:
+        description: "前瞻交易日数，逗号分隔"
+        default: "5,10"
+      walk_forward:
+        description: "分段数（0=只跑全样本）。注意每段需 >=60 个截面日"
+        default: "3"
+      factors:
+        description: "只测这些因子，逗号分隔；留空=全部"
+        default: ""
+      save_db:
+        description: "落库到 factor_ic_daily"
+        type: boolean
+        default: true
+
+concurrency:
+  group: factor-ic-eval-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      PYTHONUNBUFFERED: "1"
+      # 只写 factor_ic_daily 这一张评估表。
+      WYCKOFF_WRITE_CONTEXT: "server_job"
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+      FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+      TZ: Asia/Shanghai
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Fetch market snapshot
+        run: |
+          python scripts/backtest_snapshot_fetch.py \
+            --start 2024-08-01 \
+            --end "$(date +%Y-%m-%d)" \
+            --board all \
+            --output-dir /tmp/ic_snap
+
+      - name: Scan factor IC
+        env:
+          # inputs 先落 env 再进 shell，避免表达式直接拼进命令行。
+          IN_HORIZONS: ${{ inputs.horizons || '5,10' }}
+          IN_WALK_FORWARD: ${{ inputs.walk_forward || '3' }}
+          IN_FACTORS: ${{ inputs.factors }}
+          IN_SAVE_DB: ${{ inputs.save_db }}
+        run: |
+          EXTRA=()
+          if [ -n "$IN_FACTORS" ]; then
+            EXTRA+=(--factors "$IN_FACTORS")
+          fi
+          if [ "$IN_SAVE_DB" != "false" ]; then
+            EXTRA+=(--save-db)
+          fi
+          python scripts/scan_factor_ic.py \
+            --cache /tmp/ic_snap/hist_full.csv.gz \
+            --horizons "$IN_HORIZONS" \
+            --walk-forward "$IN_WALK_FORWARD" \
+            --json-out factor_ic_eval.json \
+            "${EXTRA[@]}"
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: factor-ic-eval
+          path: factor_ic_eval.json
+          if-no-files-found: warn
