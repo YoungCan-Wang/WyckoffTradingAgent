@@ -6,21 +6,22 @@
 `desktop/build/icon-source.png` 是带阴影和圆角底板的品牌母版。打包资产需要先提取
 品牌图形，再把它按统一比例放回干净的亮色底板，避免不同平台缩放结果不一致。
 
-实机 DMG 验证还发现：传统 ICNS 只有透明前景时，Finder 会套上灰色兼容底板；
-满画布不透明位图又会留下方形内框。这里因此输出四角透明的亮色 squircle，直接
-得到用户选中的亮白版本。
+## 两份资产的约束是相反的
+
+macOS 26 会在图标下面垫一层它自己的 squircle（底色是灰的），Windows / Linux
+则什么都不垫。区别只在**边距**，不在圆角 —— 两份都要圆角：
+
+- `icon-macos.png` —— 圆角**铺满整张画布，不留透明边距**。边距是灰边的来源：
+  系统的 squircle 比自绘的白底板大，灰就从边距里透出来。圆角仍要自己画，
+  因为系统不会把 legacy ICNS 位图裁成自己的外形（试过，会变成白色方块）。
+- `icon.png`（Windows / Linux / 旧 macOS）—— 圆角**加 5.5% 边距**。
+  这些平台不套任何外形，边距是图标自己的呼吸空间。
 
 ## 这个脚本做什么
 
 1. 从原图里识别图形本体（深色折线 + 橙色笔画 + 深色柱条），忽略白色底板
 2. 裁到图形的真实边界
-3. 按目标占比重新居中放到各平台需要的底板上
-
-产出两份：
-
-- `icon-macos.png` —— 亮色 squircle、图形占 ~62%，供 electron-builder 转 ICNS。
-- `icon.png`（Windows / Linux / 旧 macOS）—— 保留一个自绘 squircle 底板，
-  图形占 ~62%。那些平台不套外形，没有底板会让图标浮在桌面上。
+3. 按各平台的约束重新居中放到底板上（图形绝对尺寸两份一致，都是 ~62% × 1024）
 
 ## 为什么不用 Icon Composer 直接生成
 
@@ -113,8 +114,54 @@ def _fit(glyph: Image.Image, canvas: int, ratio: float) -> tuple[Image.Image, tu
 
 
 def render_macos(glyph: Image.Image, canvas: int) -> Image.Image:
-    """亮色 squircle：避免 Finder 为透明前景套灰色兼容底板。"""
-    return render_plate(glyph, canvas, MACOS_GLYPH_RATIO)
+    """满画布亮底，**不留透明边距**，也不自绘圆角。
+
+    ## 为什么是满画布
+
+    macOS 26 强制给所有应用图标套它自己的 squircle，底色是灰的。我们原来的资产
+    在白底板外面留了 5.5% 透明边距，而系统的 squircle 比那块白底板大 ——
+    于是那圈灰就从边距里透出来。**灰边不是「图形太小」，是边距漏底。**
+
+    实测（用 NSWorkspace.icon(forFile:) 取系统合成结果，也就是 Dock 真正画的
+    东西，每次换新 bundle id 避开图标缓存）：
+
+    | 资产                        | 中线灰边总宽 |
+    |-----------------------------|--------------|
+    | 留 56px 透明边距（原来）    | 206px        |
+    | 满画布、不留边距（现在）    | 134px        |
+
+    砍掉一半多，但**治不干净**：系统给 legacy ICNS 的内缩量和给自己应用的不一样
+    （Safari 的首个实心像素在 x=168，我们的在 x=100）。要完全消掉需要 macOS 26
+    的新格式 `.icon`，而 Icon Composer 只有 GUI、没有 CLI，进不了这个脚本。
+    那一步留到需要时手工做。
+
+    ## 圆角要留，边距不要留
+
+    这两件事必须分开看，我一开始搞混了：**灰边来自边距，不来自圆角。**
+
+    试过纯满画布（连圆角也不画）—— 灰边同样降到 131px，但系统**不会**把
+    legacy ICNS 位图裁成自己的外形，于是白色方块直接压在灰 squircle 上，
+    四个硬角比原来的灰边更难看。所以圆角得自己画，只是不留边距：
+
+    | 变体                    | 中线灰边 | 四角     |
+    |-------------------------|----------|----------|
+    | 留 56px 边距（原来）    | 206px    | 圆角     |
+    | 满画布、不画圆角        | 131px    | **方角** |
+    | 满画布 + 圆角（现在）   | 131px    | 圆角     |
+    """
+    out = Image.new("RGBA", (canvas, canvas), (0, 0, 0, 0))
+    # margin=0：圆角矩形铺满整张画布，四角之外才是透明的。
+    plate = Image.new("RGBA", (canvas, canvas), (0, 0, 0, 0))
+    ImageDraw.Draw(plate).rounded_rectangle(
+        (0, 0, canvas - 1, canvas - 1),
+        radius=round(canvas * 0.235),
+        fill=PLATE_COLOR,
+    )
+    out.alpha_composite(plate)
+    # 图形绝对尺寸和改动前一致（62% × 1024 ≈ 635px），两份资产也保持一致。
+    resized, offset = _fit(glyph, canvas, MACOS_GLYPH_RATIO)
+    out.paste(resized, offset, resized)
+    return out
 
 
 def render_plate(glyph: Image.Image, canvas: int, ratio: float = PLATE_GLYPH_RATIO) -> Image.Image:
@@ -157,7 +204,7 @@ def main() -> int:
     mac = render_macos(glyph, args.canvas)
     mac_path = out_dir / "icon-macos.png"
     mac.save(mac_path)
-    print(f"{mac_path.name}: 亮色底板，图形占 {MACOS_GLYPH_RATIO * 100:.0f}%")
+    print(f"{mac_path.name}: 圆角铺满画布（无边距），图形占 {MACOS_GLYPH_RATIO * 100:.0f}%")
 
     plate = render_plate(glyph, args.canvas)
     plate_path = out_dir / "icon.png"

@@ -1,7 +1,16 @@
 """应用图标资产的形状约束。
 
-实机 DMG 验证表明，传统 ICNS 只提供透明前景时会显示成灰色兼容底板。打包资产
-必须直接包含亮色 squircle，同时让品牌图形保持足够大且居中。
+两份资产的区别只在**边距**，圆角两份都要：
+
+- `icon-macos.png` —— 圆角铺满画布，**边距为零**。边距是灰边的来源：macOS 26
+  在图标下垫一层它自己的（灰色）squircle，比自绘的白底板大，灰就从边距里
+  透出来。实测 NSWorkspace 合成结果（Dock 真正画的东西）：留 56px 边距时
+  中线灰边 206px，边距归零后 131px。
+- `icon.png` —— 圆角 + 5.5% 边距。Windows / Linux 什么都不垫，边距是图标
+  自己的呼吸空间。
+
+**别把「去边距」做成「去圆角」。** 实测过：系统不会把 legacy ICNS 位图裁成
+自己的外形，去掉圆角会得到一个压在灰 squircle 上的白色方块，比灰边更难看。
 """
 
 from __future__ import annotations
@@ -38,19 +47,40 @@ def test_source_icon_is_kept_for_reproducibility():
     assert (BUILD / "icon-source.png").is_file()
 
 
-def test_macos_icon_has_bright_squircle_plate():
-    """核心约束：亮底要存在，四角要透明，不能退化成灰底或方块。"""
+def test_macos_icon_fills_canvas_without_margin():
+    """macOS 那份：圆角铺满画布，**边距为零**。
+
+    边距是灰边的来源 —— 系统的 squircle 比自绘的白底板大，灰从边距里透出来。
+    所以四条边的中点必须不透明（贴到画布边缘）。
+    """
     image = Image.open(BUILD / "icon-macos.png").convert("RGBA")
     width, height = image.size
     pixels = image.load()
 
-    for x, y in [(2, 2), (width - 3, 2), (2, height - 3), (width - 3, height - 3)]:
-        assert pixels[x, y][3] == 0, f"({x},{y}) 不透明 —— 图标会显示成方块"
-
-    for x, y in [(width // 2, int(height * 0.11)), (int(width * 0.11), height // 2)]:
+    edge_midpoints = [
+        (width // 2, 0),
+        (width // 2, height - 1),
+        (0, height // 2),
+        (width - 1, height // 2),
+    ]
+    for x, y in edge_midpoints:
         r, g, b, a = pixels[x, y]
-        assert a >= 250, f"({x},{y}) 缺少亮色底板"
-        assert min(r, g, b) >= 245, f"({x},{y}) 不够亮"
+        assert a == 255, f"({x},{y}) 透明 —— 有边距，系统的灰会从这里透出来"
+        assert min(r, g, b) >= 245, f"({x},{y}) 不是亮底"
+
+
+def test_macos_icon_still_has_rounded_corners():
+    """圆角要留住。
+
+    盯的是一个我实测踩过的坑：把边距去掉时顺手把圆角也去了，结果系统**不会**
+    把 legacy ICNS 位图裁成自己的外形 —— 白色方块直接压在灰 squircle 上，
+    四个硬角比原来的灰边更难看。灰边来自边距，不来自圆角，两件事要分开。
+    """
+    image = Image.open(BUILD / "icon-macos.png").convert("RGBA")
+    width, height = image.size
+    pixels = image.load()
+    for x, y in [(0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1)]:
+        assert pixels[x, y][3] == 0, f"({x},{y}) 不透明 —— 圆角丢了，会显示成方块"
 
 
 def test_macos_glyph_fills_enough_but_stays_in_safe_area():
@@ -73,7 +103,8 @@ def test_macos_glyph_is_centred():
 def test_other_platforms_keep_a_plate():
     """Windows / Linux / 旧 macOS 不套外形 —— 没有底板图标会浮在桌面上。
 
-    这条和上面那条方向相反，是刻意的：同一张图不能同时满足两边。
+    这条和 macOS 那条方向相反，是刻意的：macOS 要满画布让系统裁，这边要自绘
+    圆角。同一张图不能同时满足两边，所以脚本出两份。
     """
     image = Image.open(BUILD / "icon.png").convert("RGBA")
     width, height = image.size
@@ -83,6 +114,29 @@ def test_other_platforms_keep_a_plate():
     assert pixels[int(width * 0.11), height // 2][3] > 200, "左侧缺少底板"
     # 但四角仍要透明（圆角，不是整块方形）
     assert pixels[2, 2][3] == 0, "四角不透明 —— 那是方形而不是圆角"
+
+
+def test_two_assets_are_not_the_same_file():
+    """两份资产必须真的不同。
+
+    盯的是一个真实发生过的退化：某次「修复」之后两份图变成了逐字节相同
+    （md5 都是 d26d4d12），于是 macOS 拿到的是带透明边距的那版，灰边照旧。
+    约束方向相反的两份图长得一样，只能说明有一边被覆盖了。
+    """
+    mac = (BUILD / "icon-macos.png").read_bytes()
+    other = (BUILD / "icon.png").read_bytes()
+    assert mac != other, "两份资产完全相同 —— 有一边被覆盖了，灰边会回来"
+
+
+def test_glyph_size_matches_across_assets():
+    """图形的绝对尺寸两份要一致，否则同一个应用在不同平台大小不一。"""
+    mac_img, mac_box = _glyph_box(BUILD / "icon-macos.png")
+    other_img, other_box = _glyph_box(BUILD / "icon.png")
+    assert mac_img.size == other_img.size
+    mac_w = mac_box[2] - mac_box[0]
+    other_w = other_box[2] - other_box[0]
+    # 允许 1px 的缩放取整差异。
+    assert abs(mac_w - other_w) <= 1, f"图形宽度不一致: {mac_w} vs {other_w}"
 
 
 def test_packager_uses_verified_macos_icon():
