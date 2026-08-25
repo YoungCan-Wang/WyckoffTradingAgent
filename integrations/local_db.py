@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 _lock = threading.Lock()
 _conn: sqlite3.Connection | None = None
 
-_SCHEMA_VERSION = 18
+_SCHEMA_VERSION = 19
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -109,6 +109,10 @@ CREATE TABLE IF NOT EXISTS market_signal_daily (
 CREATE TABLE IF NOT EXISTS portfolio (
     portfolio_id TEXT PRIMARY KEY,
     free_cash REAL DEFAULT 0,
+    -- 总估值。NULL = 从来没估过（和「估值为 0」不是一回事）。
+    -- valued_at 与 synced_at 分开：估值可能比持仓行更旧。
+    total_equity REAL,
+    valued_at TEXT,
     synced_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -361,6 +365,23 @@ def init_db() -> None:
             )
         except Exception:
             logger.warning("migration: rebuild idx_chatsess_user failed", exc_info=True)
+    if current < 19:
+        # 本地存一份总估值。
+        #
+        # 估值原来只在云端算、也只在云端存，本地 portfolio 表压根没有这一列。
+        # 加了「云端连不上就用本地库」的兜底之后，这暴露成一个新问题：持仓看得到，
+        # 总资产却必然是「—/未估值」—— 估值随云端一起丢了。
+        #
+        # valued_at 单独一列而不是复用 synced_at：后者是持仓行的同步时间，
+        # 而估值可能比持仓更旧（改了持仓但没重新估值）。混用会把一个旧估值
+        # 标成刚算的。
+        #
+        # 没有 DEFAULT：NULL 表示「从来没估过」，和「估值为 0」是两件事。
+        _ensure_columns(
+            conn,
+            "portfolio",
+            {"total_equity": "REAL", "valued_at": "TEXT"},
+        )
     if current < _SCHEMA_VERSION:
         conn.execute(
             "INSERT OR REPLACE INTO schema_version(version) VALUES(?)",
@@ -836,14 +857,46 @@ def load_latest_theme_radar_snapshot() -> dict | None:
 # ---------------------------------------------------------------------------
 
 
-def save_portfolio(portfolio_id: str, free_cash: float, positions: list[dict]) -> None:
+def save_portfolio(
+    portfolio_id: str,
+    free_cash: float,
+    positions: list[dict],
+    total_equity: float | None = None,
+) -> None:
+    """写入持仓快照。
+
+    total_equity 给 None 时**保留库里已有的估值**，不覆盖成 NULL。这一点很关键：
+    这里用的是 INSERT OR REPLACE，整行替换 —— 直接写 NULL 的话，任何一次不带
+    估值的同步（比如改完持仓回写）都会把上次算好的估值抹掉，界面立刻退回
+    「未估值」。而估值是个时点数，旧的仍然有参考价值，标清时间就行。
+    """
     conn = get_db()
+    # 这两列是 v19 加的，而 get_db() **不跑迁移**（只有 init_db() 跑，且是在
+    # 首次建会话时才被调）。所以存在「老库还没升级就先写入」的窗口 —— 不补一下
+    # 就会 OperationalError: no such column，整次缓存失败。实测撞到过。
+    _ensure_columns(conn, "portfolio", {"total_equity": "REAL", "valued_at": "TEXT"})
     with conn:
-        conn.execute(
-            """INSERT OR REPLACE INTO portfolio
-               (portfolio_id, free_cash, synced_at) VALUES (?, ?, datetime('now'))""",
-            (portfolio_id, free_cash),
-        )
+        if total_equity is None:
+            conn.execute(
+                """INSERT INTO portfolio (portfolio_id, free_cash, synced_at)
+                   VALUES (?, ?, datetime('now'))
+                   ON CONFLICT(portfolio_id) DO UPDATE SET
+                     free_cash=excluded.free_cash,
+                     synced_at=excluded.synced_at""",
+                (portfolio_id, free_cash),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO portfolio
+                     (portfolio_id, free_cash, total_equity, valued_at, synced_at)
+                   VALUES (?, ?, ?, datetime('now'), datetime('now'))
+                   ON CONFLICT(portfolio_id) DO UPDATE SET
+                     free_cash=excluded.free_cash,
+                     total_equity=excluded.total_equity,
+                     valued_at=excluded.valued_at,
+                     synced_at=excluded.synced_at""",
+                (portfolio_id, free_cash, float(total_equity)),
+            )
         conn.execute(
             "DELETE FROM portfolio_position WHERE portfolio_id=?",
             (portfolio_id,),
@@ -875,11 +928,21 @@ def load_portfolio(portfolio_id: str) -> dict | None:
     if not row:
         return None
     pos_cur = conn.execute("SELECT * FROM portfolio_position WHERE portfolio_id=?", (portfolio_id,))
-    return {
+    out = {
         "portfolio_id": row["portfolio_id"],
         "free_cash": row["free_cash"],
         "positions": [dict(p) for p in pos_cur.fetchall()],
     }
+    # 估值只在真的存过时才带出来。用 keys() 判断而不是直接取:老库刚升级完
+    # 这两列可能还不存在,直接索引会抛 IndexError。
+    keys = row.keys()
+    if "total_equity" in keys and row["total_equity"] is not None:
+        out["total_equity"] = row["total_equity"]
+        # 界面要能说清「这个估值是什么时候的」—— 一个不标时间的旧估值,
+        # 比不显示更容易误导。
+        if "valued_at" in keys and row["valued_at"]:
+            out["valued_at"] = row["valued_at"]
+    return out
 
 
 def _ensure_local_portfolio(portfolio_id: str) -> None:

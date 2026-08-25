@@ -213,13 +213,32 @@ function renderCharts (data, options) {
     0
   )
   const cash = Number((data && data.free_cash) || 0)
-  const equity = data && data.total_equity ? Number(data.total_equity) : null
+  // `!= null` 而不是真值判断：估值恰好是 0（清仓且无现金）会被真值判断吞掉，
+  // 显示成「未估值」—— 那是「算不出来」的意思，和「算出来是 0」不是一回事。
+  const rawEquity = data ? data.total_equity : null
+  const equity = rawEquity != null && rawEquity !== '' ? Number(rawEquity) : null
+  // 估值时间。SQLite 的 datetime('now') 是 UTC 但不带 Z，直接 new Date() 会被
+  // 当成本地时间、把刚算的估值显示成几小时前 —— 会话列表那边踩过同一个坑。
+  const valuedAt = (() => {
+    const raw = data && data.valuation_updated_at
+    if (!raw) return ''
+    const iso = /Z|[+-]\d\d:?\d\d$/.test(raw) ? raw : String(raw).replace(' ', 'T') + 'Z'
+    const at = new Date(iso)
+    return Number.isNaN(at.getTime()) ? '' : at.toLocaleString(window.WyckoffI18n.getLang())
+  })()
   const missingStops = positions.filter((p) => p.stop_loss === null || p.stop_loss === undefined).length
 
   const kpis = el('div', 'kpis')
   kpis.append(
+    // 副标题分三种：没估值说「未估值」；有估值且带时间说「估值截至 X」
+    // （本地缓存的旧估值必须标时间，否则用户会以为那是刚算的）；有估值但
+    // 没时间就退回持仓只数。
     kpi(t('charts.kpiEquity'), equity === null ? '—' : fmtMoney(equity),
-      equity === null ? t('charts.kpiUnvalued') : t('charts.kpiHolding', { count: positions.length })),
+      equity === null
+        ? t('charts.kpiUnvalued')
+        : valuedAt
+          ? t('charts.kpiValuedAt', { time: valuedAt })
+          : t('charts.kpiHolding', { count: positions.length })),
     // Labelled as cost, so no percentage change is implied.
     kpi(t('charts.kpiCost'), fmtMoney(costBasis), t('charts.kpiCount', { count: positions.length })),
     kpi(t('charts.kpiCash'), fmtMoney(cash), ''),

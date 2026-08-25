@@ -376,6 +376,9 @@
     'charts.kpiEquity': '总资产',
     'charts.kpiUnvalued': '未估值',
     'charts.kpiHolding': '持仓 {count} 只',
+    // 本地缓存的旧估值：必须标时间。一个不标时间的旧估值比不显示更容易误导 ——
+    // 用户会以为那是刚算的。
+    'charts.kpiValuedAt': '估值截至 {time}',
     'charts.kpiCost': '持仓成本',
     'charts.kpiCount': '{count} 只',
     'charts.kpiCash': '可用现金',
@@ -960,6 +963,7 @@
     'charts.kpiEquity': 'Total equity',
     'charts.kpiUnvalued': 'Not valued',
     'charts.kpiHolding': '{count} positions',
+    'charts.kpiValuedAt': 'Valued at {time}',
     'charts.kpiCost': 'Cost basis',
     'charts.kpiCount': '{count} positions',
     'charts.kpiCash': 'Free cash',

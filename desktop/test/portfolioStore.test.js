@@ -139,3 +139,21 @@ test('持仓页读失败时给出原因和刷新入口', () => {
   const failBlock = p.slice(p.indexOf('if (failed'), p.indexOf('const positions'))
   assert.match(failBlock, /refresh\(\)/, '失败态要带刷新按钮')
 })
+
+test('总资产 KPI 不能用真值判断吞掉 0', () => {
+  // 估值恰好是 0（清仓且无现金）在真值判断下会被当成「未估值」——
+  // 「算不出来」和「算出来是 0」是两件事。
+  const c = SRC('charts.js')
+  assert.ok(!/data\.total_equity \?/.test(c),
+    'total_equity 用真值判断会把 0 显示成「未估值」')
+  assert.match(c, /rawEquity != null/, '应该用 != null 判断')
+})
+
+test('本地缓存的旧估值必须标出时间', () => {
+  // 一个不标时间的旧估值比不显示更容易误导：用户会以为那是刚算的。
+  const c = SRC('charts.js')
+  assert.match(c, /kpiValuedAt/, '有时间戳时要显示「估值截至 X」')
+  // SQLite 的 datetime('now') 是 UTC 但不带 Z，直接 new Date() 会差几小时
+  assert.match(c, /replace\(' ', 'T'\) \+ 'Z'/,
+    '无时区标记的时间戳要按 UTC 解读 —— 会话列表那边踩过同一个坑')
+})

@@ -378,10 +378,19 @@ def _cache_portfolio(portfolio_id: str, state: dict, source: str) -> None:
     try:
         from integrations.local_db import save_portfolio
 
+        # 顺手把云端算好的总估值存进本地。
+        #
+        # 估值原来只存在云端,所以「云端连不上就用本地库」那条兜底虽然能给出
+        # 持仓,总资产却必然是「—/未估值」。云端每次读成功都把估值缓存一份,
+        # 断网时就还有个带时间戳的旧估值可看。
+        #
+        # 拿不到就传 None —— save_portfolio 会保留库里已有的那份,而不是覆盖成 NULL。
+        equity = state.get("total_equity")
         save_portfolio(
             portfolio_id,
             float(state.get("free_cash", 0) or 0),
             [_local_position(p) for p in state.get("positions", [])],
+            total_equity=float(equity) if equity is not None else None,
         )
     except Exception:
         logger.warning("failed to cache %s portfolio %s locally", source, portfolio_id, exc_info=True)
@@ -420,7 +429,10 @@ def _portfolio_view(portfolio_id: str, state: dict) -> dict:
     }
     if state.get("total_equity") is not None:
         result["total_equity"] = state["total_equity"]
-        result["valuation_updated_at"] = state.get("updated_at", "")
+        # 云端那份的时间在 updated_at，本地缓存那份在 valued_at（单独一列，
+        # 因为估值可能比持仓行更旧）。两者都要认，否则本地兜底给出的估值
+        # 会显示成「没有时间」—— 一个不标时间的旧估值比不显示更容易误导。
+        result["valuation_updated_at"] = state.get("updated_at") or state.get("valued_at") or ""
     return result
 
 
