@@ -6,7 +6,6 @@
  * 不该由 React 接管），所以它走一个挂载点。
  */
 import { useEffect, useRef } from 'react'
-import { TasksPage } from './TasksPage'
 import { ApprovalsPage } from './ApprovalsPage'
 import { SchedulesPage } from './SchedulesPage'
 import { PortfolioPage } from './PortfolioPage'
@@ -23,7 +22,6 @@ interface Spec {
 }
 
 const SPECS: Record<string, Spec> = {
-  tasks: { titleKey: 'tasks.heading', subKey: 'tasks.pageSub', wide: true },
   approvals: { titleKey: 'nav.approvals', subKey: 'approvals.pageSub' },
   schedules: { titleKey: 'schedules.heading', subKey: 'schedules.pageSub' },
   portfolio: { titleKey: 'tab.charts', subKey: 'portfolio.pageSub', wide: true },
@@ -42,7 +40,6 @@ export function PagePane ({ view }: { view: string }) {
         <h1 className="page-t">{t(spec.titleKey)}</h1>
         <p className="page-s">{t(spec.subKey)}</p>
         <div id="page-body">
-          {view === 'tasks' ? <TasksPage /> : null}
           {view === 'approvals' ? <ApprovalsPage /> : null}
           {view === 'schedules' ? <SchedulesPage /> : null}
           {view === 'portfolio' ? <PortfolioPage /> : null}

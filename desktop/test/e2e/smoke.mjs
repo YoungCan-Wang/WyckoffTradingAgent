@@ -26,7 +26,7 @@ const PROFILE_DIR = await mkdtemp(join(tmpdir(), 'wyckoff-e2e-'))
 
 // 导航里的页面。**不含 chat** —— 对话是主界面，不是和这些并列的目的地，
 // 它的入口是「新建分析」和会话列表。下面单独验它到得了。
-const VIEWS = ['tasks', 'approvals', 'portfolio', 'schedules', 'tracking', 'attribution', 'reports']
+const VIEWS = ['approvals', 'portfolio', 'schedules', 'tracking', 'attribution', 'reports']
 
 let failures = 0
 const writeLine = (value = '') => process.stdout.write(`${value}\n`)

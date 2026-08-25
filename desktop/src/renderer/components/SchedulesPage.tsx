@@ -172,13 +172,6 @@ export function SchedulesPage () {
         </div>
       ) : null}
 
-      <button
-        type="button"
-        className="task-action"
-        onClick={() => window.WyckoffApp?.navigate?.('tasks')}
-      >
-        {t('schedules.viewRuns')}
-      </button>
     </>
   )
 }

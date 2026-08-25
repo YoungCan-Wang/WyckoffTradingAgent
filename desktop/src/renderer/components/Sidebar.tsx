@@ -20,27 +20,34 @@ export interface NavItem {
 const GROUPS: Array<{ labelKey: string; items: NavItem[] }> = [
   {
     labelKey: 'nav.groupWork',
-    // 这里**没有**指向 chat 视图的导航项。对话不是一个和「任务运行」「审批」
-    // 并列的目的地，它是这个应用的主界面 —— 用顶部「新建分析」开新的，
-    // 用下面的会话列表回到已有的。放一个「今天」在这里会和会话列表抢同一件事，
-    // 而且那个名字并不按日期筛任何东西，点进去看到的可能是上周的会话。
+    // 这里**没有**指向 chat 视图的导航项。对话不是一个和「审批」并列的目的地，
+    // 它是这个应用的主界面 —— 用顶部「新建分析」开新的，用下面的会话列表回到
+    // 已有的。放一个「今天」在这里会和会话列表抢同一件事，而且那个名字并不按
+    // 日期筛任何东西，点进去看到的可能是上周的会话。
+    //
+    // 也没有「任务运行」。它读的是 approve_list + schedules 这两个接口的汇总，
+    // 每一行的按钮都只是「去审批页」「去定时任务页」—— 自己不能批准也不能改
+    // 任务。三个入口里它是唯一没有独有能力的那个,那些计数已经由下面的徽标
+    // 和各自页面给出。
+    // 「审批」和「定时任务」放一起:都是要你动手的运维项,而且定时任务跑出来的
+    // 写操作正是审批的来源。删掉「任务运行」之后「工作」只剩审批一项 ——
+    // 一项的分组不是分组,那个标题纯属白占 18px。
     items: [
-      { view: 'tasks', icon: 'list-checks', labelKey: 'nav.tasks' },
-      { view: 'approvals', icon: 'shield-check', labelKey: 'nav.approvals' }
+      { view: 'approvals', icon: 'shield-check', labelKey: 'nav.approvals' },
+      { view: 'schedules', icon: 'calendar-clock', labelKey: 'nav.schedules' }
     ]
   },
   {
     labelKey: 'nav.groupDomain',
+    // 剩下三项是「看数据」,不需要你动手。
     items: [
       { view: 'portfolio', icon: 'briefcase', labelKey: 'nav.portfolio' },
-      { view: 'schedules', icon: 'calendar-clock', labelKey: 'nav.schedules' },
       { view: 'tracking', icon: 'radar', labelKey: 'nav.tracking' },
-      { view: 'attribution', icon: 'git-branch', labelKey: 'nav.attribution' }
+      { view: 'attribution', icon: 'git-branch', labelKey: 'nav.attribution' },
+      // 报告原来自成一个「资料库」分组。同样是一项撑一个标题 —— 归到「业务」
+      // 里,它和跟踪/归因一样是只读的看数据。
+      { view: 'reports', icon: 'file-chart-column-increasing', labelKey: 'nav.reports' }
     ]
-  },
-  {
-    labelKey: 'nav.groupLibrary',
-    items: [{ view: 'reports', icon: 'file-chart-column-increasing', labelKey: 'nav.reports' }]
   }
 ]
 

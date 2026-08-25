@@ -167,16 +167,19 @@ body {
 /* 固定入口不滚：它们是常驻导航，被会话列表挤出视野就等于没有。
    会话列表自己一个滚动区（.sess-scroll）。 */
 .nav { padding: 0 7px; flex: none; }
-.nav-group + .nav-group { margin-top: 16px; }
+/* 分组间距与行高都收紧过一轮：导航是七个固定入口,高度基本不变,而会话列表
+   是无上限增长的那一侧 —— 省下来的每一像素都归会话。收紧幅度刻意保守
+   (行高 34→31,分组间距 16→10),再往下压导航会开始显得挤。 */
+.nav-group + .nav-group { margin-top: 10px; }
 .nav-label {
-  padding: 0 9px 4px; color: var(--tx3); font-size: 10px;
+  padding: 0 9px 2px; color: var(--tx3); font-size: 10px;
   font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
 }
 .nv {
   width: 100%; border: 0; background: none; color: var(--tx); text-align: left;
-  font: 13px/1.6 var(--ui);
+  font: 13px/1.5 var(--ui);
   display: flex; align-items: center; gap: 9px;
-  min-height: 34px; padding: 6px 9px; border-radius: 7px;
+  min-height: 31px; padding: 5px 9px; border-radius: 7px;
   cursor: pointer; user-select: none;
 }
 .nv:hover { background: var(--hover); }
@@ -951,21 +954,10 @@ html.dark .seg-b.on { background: #34394322; background-color: #383e48; }
 .task-section-h { display: flex; align-items: center; margin-bottom: 9px; }
 .task-section-h h2 { margin: 0; font-size: 13px; font-weight: 600; }
 .task-section-h span { margin-left: auto; color: var(--tx3); font-size: 11px; }
-.task-list { display: flex; flex-direction: column; gap: 7px; }
-.task-row {
-  display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; gap: 12px;
-  align-items: center; min-height: 66px; padding: 10px 12px;
-  border: 1px solid var(--line); border-radius: 10px; background: var(--paper);
-}
-.task-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--tx3); }
-.task-dot.pending { background: var(--clay); }
-.task-dot.success { background: var(--dn); }
-.task-dot.failed { background: var(--up); }
-.task-title { color: var(--tx); font-size: 12.5px; font-weight: 600; }
-.task-meta { margin-top: 2px; color: var(--tx3); font-size: 10.75px; }
-.task-side { text-align: right; }
-.task-state { display: block; color: var(--tx2); font-size: 11px; font-weight: 600; }
-.task-time { display: block; margin-top: 2px; color: var(--tx3); font: 10.5px/1.4 var(--mono); }
+/* .task-row / .task-dot / .task-title / .task-meta / .task-side / .task-state /
+   .task-time / .task-list 随「任务运行」页一起删掉了 —— 只有那页用它们。
+   留下的 .task-metric(s)、.task-section(-h)、.task-action 仍被跟踪页、归因页、
+   审批页和对话流复用。 */
 .task-action {
   margin-top: 7px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px;
   background: var(--paper); color: var(--tx2); font: 11px/1.2 var(--ui); cursor: pointer;
@@ -1506,10 +1498,10 @@ html.dark .toast { background: var(--paper2); }
    默认 min-height:auto，不设它的话内容会把容器撑破而不是出现滚动条。 */
 .sess-wrap {
   flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column;
-  margin-top: 14px; padding: 0 7px;
+  margin-top: 10px; padding: 0 7px;
   border-top: 1px solid var(--line);
 }
-.sess-head { display: flex; flex-direction: column; gap: 4px; padding-top: 10px; }
+.sess-head { display: flex; flex-direction: column; gap: 3px; padding-top: 8px; }
 .sess-search {
   margin: 0 6px 6px; padding: 4px 8px; font: inherit; font-size: 11px;
   color: var(--tx); background: var(--paper2); border: 1px solid var(--line);
@@ -1526,8 +1518,10 @@ html.dark .toast { background: var(--paper2); }
 .sess-row:hover { background: var(--hover); }
 .sess-row.on { background: var(--active); }
 .sess-open {
+  /* 竖直 padding 收到 5px:一行 48→44px,同样高度能多放一条。再往下压两行
+     文字就会贴在一起,标题和时间读起来会开始费劲。 */
   flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px;
-  padding: 6px 9px; background: none; border: 0; cursor: pointer;
+  padding: 5px 9px; background: none; border: 0; cursor: pointer;
   text-align: left; font: inherit; color: var(--tx);
 }
 .sess-title {

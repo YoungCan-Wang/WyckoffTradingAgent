@@ -30,7 +30,6 @@ const TITLES: Record<string, string> = {
   // chat 没有对应的导航项（对话是主界面，不是并列的目的地），但顶栏仍要有个
   // 说得过去的标题。用「对话」而不是原来的「今天」：它不按日期筛任何东西。
   chat: 'nav.chat',
-  tasks: 'nav.tasks',
   approvals: 'nav.approvals',
   portfolio: 'nav.portfolio',
   schedules: 'nav.schedules',
