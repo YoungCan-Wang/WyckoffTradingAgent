@@ -43,12 +43,35 @@ _NOISE_KEYWORDS = (
     "标普",
     "纳指",
     "日经",
+    "ETF",
 )
+
+_ETF_NAME_MARKERS = ("ETF", "黄金ETF", "粮食ETF")
+
+
+def is_etf_code(code: str) -> bool:
+    """A 股场内基金常见号段：159xxx / 51xxxx / 56xxxx。"""
+    digits = "".join(ch for ch in str(code or "") if ch.isdigit())
+    if len(digits) < 6:
+        return False
+    six = digits[:6]
+    return six.startswith(("159", "51", "56"))
+
+
+def is_etf_display_name(name: str) -> bool:
+    upper = str(name or "").strip().upper()
+    return any(marker.upper() in upper for marker in _ETF_NAME_MARKERS)
+
+
+def is_user_facing_etf(code: str = "", name: str = "") -> bool:
+    return is_etf_code(code) or is_etf_display_name(name) or is_etf_display_name(code)
 
 
 def is_actionable_theme_name(name: str) -> bool:
     cleaned = str(name or "").strip()
     if not cleaned or cleaned in _NOISE_EXACT:
+        return False
+    if is_etf_display_name(cleaned):
         return False
     upper = cleaned.upper()
     return not any(keyword.upper() in upper for keyword in _NOISE_KEYWORDS)

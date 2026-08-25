@@ -10,7 +10,7 @@ import pandas as pd
 
 from core._price_math import clamp as _clamp
 from core._price_math import sort_by_date_if_needed
-from core.concept_filters import is_actionable_theme_name
+from core.concept_filters import is_actionable_theme_name, is_user_facing_etf
 from core.theme_radar import normalize_theme_name
 
 
@@ -57,7 +57,8 @@ def build_theme_activity_snapshot(
 
 
 def summarize_theme_activity(snapshot: dict[str, Any], limit: int = 6) -> str:
-    themes = list(snapshot.get("themes") or [])[:limit]
+    themes = [row for row in (snapshot.get("themes") or []) if not is_user_facing_etf(name=str(row.get("theme") or ""))]
+    themes = themes[:limit]
     if not themes:
         return "无明显全市场主题异动"
     return "；".join(

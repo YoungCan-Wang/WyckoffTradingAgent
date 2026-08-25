@@ -133,14 +133,13 @@ def test_tracking_shape_section_lists_only_abc_rows_written_for_tracking(monkeyp
     assert "不是买入清单" in report
 
 
-def test_tracking_shape_section_deduplicates_and_reports_display_limit(monkeypatch) -> None:
+def test_tracking_shape_section_deduplicates_and_lists_every_row(monkeypatch) -> None:
     from workflows import funnel_render
 
     def fake_score(_df: pd.DataFrame, signal_type: str) -> dict:
         return {"grade": "A+B+C", "met_count": 3} if signal_type == "sos" else {"grade": "A+C", "met_count": 2}
 
     monkeypatch.setattr(funnel_render, "score_springboard_abc", fake_score)
-    monkeypatch.setattr(funnel_render, "FUNNEL_TRACKING_SHAPE_DISPLAY_LIMIT", 1)
     ctx = SimpleNamespace(
         formal_triggers={
             "sos": [("000001", 90.0)],
@@ -161,8 +160,9 @@ def test_tracking_shape_section_deduplicates_and_reports_display_limit(monkeypat
     assert lines[0] == "**【🧾 今日形态入表观察】2 只**"
     assert "双/多 Wyckoff 形态共振（1）" in report
     assert "000001 三项通过  SOS(A+B+C)+LPS(A+C)" in report
-    assert "000002" not in report
-    assert "另 1 只已入表" in report
+    assert "000002 两项通过  A+C" in report
+    assert "另" not in report
+    assert "已入表" not in report
 
 
 def test_execution_decision_line_blocks_risk_on_new_buys() -> None:

@@ -272,6 +272,7 @@ flowchart LR
 | **Outcome** | Observation 之后 1/3/5/10/20 日的收益和最大回撤，落在 `signal_outcomes`。 |
 | **Health** | 按信号类型聚合后的胜率、均值收益、样本数和权重，落在 `signal_health_daily`。 |
 | **动态影子晋级** | 将当日候选的基础影子分与同信号、同水温的历史健康度合成动态分；通过结构、样本和风险清单后，只获得 Step3 复核席位，不等于正式推荐、跨日确认或 OMS 买入许可。 |
+| **影子账本 (paper shadow ledger)** | 漏斗成功后的纸面对照账户，账户号 `USER_SHADOW:<uuid>`。盘后按 Step4 同口径买许可写下夜 `next_open` 计划，次日开盘价成交，遵守 T+1 / 整手 / 涨跌停 / 费用。只写 `shadow_*` 表，绝不写 `USER_LIVE` 的 `portfolios` / `portfolio_positions` / `trade_orders` / `daily_nav`。飞书卡标题必须带「影子账本 / paper」，与 `ic_shadow`、动态影子分不是同一概念。 |
 | **Registry** | 信号生命周期表，控制信号是 `ACTIVE`、`WATCH`、`EXPERIMENTAL` 还是 `RETIRED`。信号级 `status` 以全局行（`regime=""` / `ALL`）为准；regime 拆分行只承载精确权重并跟随全局生命周期。 |
 | **Shadow Run** | 动态策略旁路演练：真实推荐不变，只记录动态策略会新增或移除哪些候选。 |
 | **Dynamic Policy** | 根据信号健康度、registry 和市场广度，动态调整 Trend / Accum 候选配额。 |

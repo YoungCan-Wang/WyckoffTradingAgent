@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from core.candidate_ranker import TRIGGER_LABELS
+from core.concept_filters import is_user_facing_etf
 from utils.feishu import send_feishu_notification
 
 
@@ -102,7 +103,12 @@ def _trigger_block(metrics: dict[str, Any]) -> list[str]:
 
 def _candidate_block(candidates: list[dict[str, Any]]) -> list[str]:
     rows = []
-    for index, item in enumerate(candidates[:30], start=1):
+    visible = [
+        item
+        for item in candidates
+        if not is_user_facing_etf(str(item.get("symbol") or item.get("code") or ""), str(item.get("name") or ""))
+    ]
+    for index, item in enumerate(visible[:30], start=1):
         triggers = " / ".join(str(x) for x in item.get("triggers", [])) or "-"
         rows.append(
             "| "
@@ -120,7 +126,11 @@ def _candidate_block(candidates: list[dict[str, Any]]) -> list[str]:
 
 def _trend_watch_block(metrics: dict[str, Any]) -> list[str]:
     rows = []
-    trend_rows = metrics.get("trend_watch_rows") or metrics.get("leader_radar_rows") or []
+    trend_rows = [
+        item
+        for item in (metrics.get("trend_watch_rows") or metrics.get("leader_radar_rows") or [])
+        if not is_user_facing_etf(str(item.get("code") or ""), str(item.get("name") or ""))
+    ]
     for index, item in enumerate(trend_rows[:10], start=1):
         rows.append(
             "| "
