@@ -1,13 +1,16 @@
 /**
- * 会话列表里的一行：点击切换，悬停出操作。
+ * 会话列表里的一行：点击切换，悬停出操作，右键出菜单。
  *
- * 行内操作而不是右键菜单：这个项目里没有自绘上下文菜单的先例（OpenMenu 是
- * anchor 定位，不是坐标），照 ModelRow 的 .macts 模式做，少引一套范式。
+ * 两个入口都留着,不是重复:
+ * - 悬停按钮是**可发现性** —— 新用户不会去猜某处能右键。
+ * - 右键是**效率** —— 侧栏只有 224px 宽,三个 22px 的图标挤在标题右边,
+ *   在窄侧栏里点中它们要瞄。右键给的是一个有文字标签的大目标。
  *
  * 重命名用行内输入而不是弹窗 —— 改标题是轻动作，弹个模态框太重。
  */
 import { useEffect, useRef, useState } from 'react'
 import { displayTitle, relativeTime, type Session } from '../lib/sessions'
+import ContextMenu, { type ContextItem } from './ContextMenu'
 
 interface Props {
   session: Session
@@ -22,6 +25,7 @@ interface Props {
 export default function SessionRow ({ session, active, onOpen, onRename, onPin, onArchive, t }: Props) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
+  const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null)
   const input = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
@@ -39,6 +43,29 @@ export default function SessionRow ({ session, active, onOpen, onRename, onPin, 
     // 空标题会让条目看不出是什么；没改动就不必往返一趟。
     if (next && next !== displayTitle(session, '')) onRename(session.session_id, next)
   }
+
+  // 右键菜单项。和悬停按钮走同一批回调 —— 两个入口不该有行为差异。
+  const menuItems: ContextItem[] = [
+    {
+      id: 'rename',
+      icon: 'pencil',
+      label: t('session.rename'),
+      onPick: startRename
+    },
+    {
+      id: 'pin',
+      icon: session.pinned ? 'pin-off' : 'pin',
+      label: session.pinned ? t('session.unpin') : t('session.pin'),
+      onPick: () => onPin(session.session_id, !session.pinned)
+    },
+    {
+      id: 'archive',
+      icon: 'archive',
+      label: t('session.archive'),
+      separated: true,
+      onPick: () => onArchive(session.session_id)
+    }
+  ]
 
   if (editing) {
     return (
@@ -67,6 +94,13 @@ export default function SessionRow ({ session, active, onOpen, onRename, onPin, 
       data-session={session.session_id}
       /* 与语言无关的选择器，供测试和 e2e 用 */
       data-active={active ? '1' : '0'}
+      onContextMenu={(e) => {
+        // preventDefault 挡掉浏览器默认菜单。主进程那个原生菜单不会和它撞 ——
+        // main.js 的 attachContextMenu 只在有选区/链接/可编辑区时才 popup,
+        // 会话行三样都没有,它会提前 return。
+        e.preventDefault()
+        setMenuAt({ x: e.clientX, y: e.clientY })
+      }}
     >
       <button
         type="button"
@@ -116,6 +150,8 @@ export default function SessionRow ({ session, active, onOpen, onRename, onPin, 
           <i data-lucide="archive" aria-hidden="true" />
         </button>
       </div>
+
+      <ContextMenu at={menuAt} items={menuItems} onClose={() => setMenuAt(null)} />
     </div>
   )
 }

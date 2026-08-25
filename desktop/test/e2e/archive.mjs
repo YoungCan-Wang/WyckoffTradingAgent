@@ -103,6 +103,70 @@ check('侧栏行上没有删除按钮', () => {
   assert.ok(!rowActions.some((l) => l.includes('删除')), `实际: ${rowActions.join('/')}`)
 })
 
+// ---- 右键菜单 -------------------------------------------------------------
+// 悬停按钮之外的第二个入口。侧栏只有 224px 宽，三个 22px 图标挤在标题右边
+// 要瞄着点；右键给的是带文字标签的大目标。
+await win.locator('.sess-row').first().click({ button: 'right' })
+await win.waitForTimeout(500)
+const ctxItems = await win.evaluate(() => {
+  const m = document.querySelector('[data-context-menu]')
+  if (!m) return null
+  const box = m.getBoundingClientRect()
+  return {
+    labels: [...m.querySelectorAll('[role="menuitem"]')].map((n) => n.textContent.trim()),
+    // 菜单必须完整落在窗口内 —— 贴边右键时要朝反方向翻，不能钳到边上盖住那一行
+    inViewport: box.left >= 0 && box.top >= 0 &&
+      box.right <= window.innerWidth && box.bottom <= window.innerHeight,
+    // 焦点要落在第一项：首帧菜单是 visibility:hidden（要先量尺寸），而隐藏元素
+    // 不可聚焦，所以这里实际在验「量完尺寸后又聚焦了一次」
+    focused: m.contains(document.activeElement)
+  }
+})
+check('右键弹出菜单', () => {
+  assert.ok(ctxItems, '右键没有出菜单')
+  assert.deepEqual(ctxItems.labels, ['重命名', '置顶', '归档会话'])
+})
+check('右键菜单不出界', () => assert.ok(ctxItems.inViewport))
+check('右键菜单自动聚焦第一项', () => assert.ok(ctxItems.focused, '键盘用户会开着菜单却按不动'))
+
+await win.keyboard.press('Escape')
+await win.waitForTimeout(300)
+// 先 await 出结果再进 check：check 是同步的（只 try/catch 一次 fn() 调用），
+// 传 async 回调的话断言会在它记完 ok 之后才 reject —— 那种测试永远绿。
+const afterEsc = await win.evaluate(() => !!document.querySelector('[data-context-menu]'))
+check('Esc 关掉右键菜单', () => assert.ok(!afterEsc))
+
+// 列表滚动时菜单要关掉 —— 它是 fixed 定位的，页面一动就指错行了。
+//
+// 这里必须先确认列表**真的能滚**。上面只种了 3 条会话,scrollHeight 等于
+// clientHeight,`scrollTop += 120` 是空操作、不触发 scroll 事件 —— 那样测出来的
+// 「菜单还开着」是测具本身的问题,不是组件的。用 CSS 把可视高度压到能滚为止。
+await win.evaluate(() => {
+  const s = document.querySelector('.sess-scroll')
+  s.style.maxHeight = '80px'
+})
+await win.waitForTimeout(200)
+const canScroll = await win.evaluate(() => {
+  const s = document.querySelector('.sess-scroll')
+  return s.scrollHeight > s.clientHeight
+})
+check('会话列表能滚动（后一条用例的前提）', () => assert.ok(canScroll))
+
+await win.locator('.sess-row').first().click({ button: 'right' })
+await win.waitForTimeout(400)
+await win.evaluate(() => { document.querySelector('.sess-scroll').scrollTop += 40 })
+await win.waitForTimeout(400)
+const afterScroll = await win.evaluate(() => !!document.querySelector('[data-context-menu]'))
+check('滚动时关掉右键菜单', () => assert.ok(!afterScroll, '菜单还开着,但已经指错行了'))
+// 还原,别把改过的高度留给后面的用例。
+await win.evaluate(() => { document.querySelector('.sess-scroll').style.maxHeight = '' })
+
+// 保证后面的用例从「没有菜单」开始:菜单是 fixed 定位、z-index 40,留着会挡住
+// 下面要点的归档按钮(Playwright 会报 intercepts pointer events)。
+await win.keyboard.press('Escape')
+await win.evaluate(() => { document.querySelector('.sess-scroll').scrollTop = 0 })
+await win.waitForTimeout(300)
+
 // 归档掉第一条，它要从侧栏消失。
 const firstId = await win.locator('.sess-row').first().getAttribute('data-session')
 const countBefore = await sessionCount()
