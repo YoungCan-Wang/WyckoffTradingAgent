@@ -92,3 +92,42 @@ def resolve_inside_reports(rel_path: str, user_id: str = "") -> Path:
     if target != root and root not in target.parents:
         raise ReportPathError("outside_root", "路径超出报告目录")
     return target
+
+
+def resolve_for_read(rel_path: str, user_id: str = "") -> Path:
+    """解析**读取**路径：先账号分区，找不到再看根目录下的历史散文件。
+
+    为什么需要它：`list_artifacts` 同时列出账号分区和根目录的历史文件，且
+    `rel_path` 是**相对根目录**算的；而 `resolve_inside_reports` 把路径收敛到
+    **账号分区内**。两个基准不一致，于是根目录那些加账号隔离之前落下的报告
+    「列得出来、打不开」—— 点进去只有一句「无法读取该文件」。实测复现过。
+
+    写入路径**不走这里**，仍然只认账号分区（见 dashboard_tools /
+    report_artifact_tools）：新文件一律进分区，历史遗留只是要能读。
+
+    兜底刻意只放行**根目录下的直接文件**，不放行子目录：
+    `reports/<别人的uid>/x.md` 这种形式必须继续被挡掉，否则这个兜底就成了
+    绕过账号隔离的后门 —— 那正是分区当初要解决的问题。
+    """
+    raw = (rel_path or "").strip()
+    if not raw:
+        raise ReportPathError("invalid_path", "缺少文件路径")
+    if Path(raw).is_absolute():
+        raise ReportPathError("invalid_path", "只接受报告目录内的相对路径")
+
+    scoped = resolve_inside_reports(raw, user_id)
+    if scoped.is_file():
+        return scoped
+
+    # 历史文件：只可能是根目录下的一层，不含分隔符。用 Path(raw).name 比对而
+    # 不是「拼上去再 resolve」—— 后者遇到 "../x" 会先逃出去再落回来看着合法。
+    if Path(raw).name != raw:
+        return scoped  # 带路径分隔符 → 不是历史散文件，维持分区结果（不存在）
+
+    root = reports_dir().resolve()
+    legacy = (root / raw).resolve()
+    if legacy.parent != root:
+        raise ReportPathError("outside_root", "路径超出报告目录")
+    if legacy.is_file():
+        return legacy
+    return scoped

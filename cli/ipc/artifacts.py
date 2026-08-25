@@ -88,6 +88,17 @@ def resolve_inside_reports(rel_path: str, user_id: str = "") -> Path:
         raise ArtifactError(exc.code, exc.message) from exc
 
 
+def resolve_for_read(rel_path: str, user_id: str = "") -> Path:
+    """读取用的路径解析：账号分区优先，回落到根目录的历史散文件。
+
+    同上，只翻译异常类型。为什么读写用不同的解析规则见 report_store.resolve_for_read。
+    """
+    try:
+        return _store.resolve_for_read(rel_path, user_id)
+    except _store.ReportPathError as exc:
+        raise ArtifactError(exc.code, exc.message) from exc
+
+
 def list_artifacts(user_id: str = "") -> list[Artifact]:
     """按修改时间倒序列出**该账号的**报告。最新生成的排最前。
 
@@ -123,8 +134,13 @@ def list_artifacts(user_id: str = "") -> list[Artifact]:
 
 
 def read_artifact(rel_path: str, user_id: str = "") -> dict[str, object]:
-    """读取单个报告。文本原样返回，PDF 返回 base64。"""
-    path = resolve_inside_reports(rel_path, user_id)
+    """读取单个报告。文本原样返回，PDF 返回 base64。
+
+    用 resolve_for_read 而不是 resolve_inside_reports：列表会把根目录下的历史
+    文件也列出来（rel_path 相对根目录），而后者只认账号分区，两个基准不一致
+    会让那些文件「列得出来、打不开」。读取放行历史散文件，写入仍然只进分区。
+    """
+    path = resolve_for_read(rel_path, user_id)
     if not path.is_file():
         raise ArtifactError("not_found", f"找不到文件: {rel_path}")
 
