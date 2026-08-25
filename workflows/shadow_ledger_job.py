@@ -7,10 +7,21 @@ from datetime import date, datetime
 from core.concept_filters import is_user_facing_etf
 from core.market_trade_mode import resolve_market_trade_mode
 from core.shadow_ledger import SHADOW_ACCOUNT_ID, ShadowBook, ShadowPlan, ShadowSession, book_nav, run_shadow_session
+from utils.env import env_bool
 from utils.feishu import send_feishu_notification
 from workflows.daily_job_common import log_line, stage_summary
 from workflows.daily_job_runtime import DailyJobConfig
-from workflows.step4_pipeline import TZ, _step4_candidate_meta, latest_trade_date_str
+from workflows.step4_pipeline import TZ, latest_trade_date_str, step4_candidate_meta
+
+
+def shadow_ledger_enabled() -> bool:
+    """影子账本总开关，默认关。
+
+    它依赖 supabase/migrations/20260825_shadow_ledger.sql 建的五张表；迁移未 apply 时
+    每次运行都会走到 except 分支记一行 failed_soft。默认关掉，让"建表"成为显式的启用
+    动作，而不是让漏斗 summary 每天多一条噪音。
+    """
+    return env_bool("SHADOW_LEDGER_ENABLED", False)
 
 
 def run_shadow_ledger_stage(
@@ -22,6 +33,9 @@ def run_shadow_ledger_stage(
     benchmark_context: dict,
 ) -> dict:
     t0 = datetime.now(TZ)
+    if not shadow_ledger_enabled():
+        log_line("影子账本: 跳过（SHADOW_LEDGER_ENABLED=0）", cfg.logs_path)
+        return stage_summary("影子账本", "skipped (disabled)")
     if cfg.preview_only or cfg.historical_replay:
         reason = "preview" if cfg.preview_only else "replay"
         log_line(f"影子账本: 跳过（{reason}）", cfg.logs_path)
@@ -111,7 +125,7 @@ def _persist_session(session: ShadowSession) -> None:
 
 
 def _buy_candidates(symbols_info: list[dict], step3_report_text: str) -> list[dict]:
-    selected, _blocked = _step4_candidate_meta(symbols_info, [], step3_report_text)
+    selected, _blocked = step4_candidate_meta(symbols_info, [], step3_report_text)
     return [
         item for item in selected if not is_user_facing_etf(str(item.get("code") or ""), str(item.get("name") or ""))
     ]

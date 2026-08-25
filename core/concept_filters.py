@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from core.cn_boards import is_supported_cn_board
+
 _NOISE_EXACT = frozenset(
     {
         "昨日涨停",
@@ -50,12 +52,17 @@ _ETF_NAME_MARKERS = ("ETF", "黄金ETF", "粮食ETF")
 
 
 def is_etf_code(code: str) -> bool:
-    """A 股场内基金常见号段：159xxx / 51xxxx / 56xxxx。"""
+    """非 A 股交易板段的 6 位代码即视为场内基金（ETF/LOF）。
+
+    原实现枚举 ETF 号段（159/51/56），漏了科创 50 ETF 的 588 段——实测 588000 会被判成
+    普通股票混进用户面卡片。号段黑名单每新增一类基金就得补一次，因此改成复用
+    ``is_supported_cn_board`` 的白名单取反：A 股板段（600/601/603/605/000/001/002/003/
+    300/301/688/689 与北交所）之外的 6 位代码，在展示层一律当基金处理。
+    """
     digits = "".join(ch for ch in str(code or "") if ch.isdigit())
     if len(digits) < 6:
         return False
-    six = digits[:6]
-    return six.startswith(("159", "51", "56"))
+    return not is_supported_cn_board(digits[:6])
 
 
 def is_etf_display_name(name: str) -> bool:

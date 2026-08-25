@@ -122,6 +122,19 @@ flowchart TD
 | Step4 | `workflows/step4_rebalancer.py` | `core/holding_diagnostic.py` / `core/wyckoff_engine.py` |
 | 影子账本 | `workflows/shadow_ledger_job.py` | `core/shadow_ledger.py`；只写 `shadow_*`，失败不阻断漏斗 |
 
+**影子账本启用步骤**（默认关，`SHADOW_LEDGER_ENABLED=0`）：
+
+1. `python scripts/print_shadow_ledger_ddl.py`，把输出贴到 Supabase SQL Editor 执行一次。
+   DDL 由 `core/shadow_ledger_schema.py` 生成——本仓库禁止 `.sql` 文件（`quality_gate` 会拦），
+   schema 以 Python 常量版本化，与 `core/factor_ic_schema.py` 同一套做法。
+2. 确认 `shadow_account` / `shadow_positions` / `shadow_events` / `shadow_nav_daily` /
+   `shadow_trade_plans` 五张表已建、seed 账户 `USER_SHADOW:*` 存在。
+3. 置 `SHADOW_LEDGER_ENABLED=1`。
+
+未建表就开启只会每天在 summary 里留一行 `failed_soft`（异常被吞，不阻断漏斗），所以默认关，
+让"建表"成为显式的启用动作。买许可复用 `step4_candidate_meta` 的规则准入，与实盘同一套口径；
+写入侧另有 `USER_SHADOW:` 前缀断言，拒绝任何非影子账户。
+
 **推荐价语义**：`recommendation_tracking.initial_price` = 该股票首次 `recommend_date` 的收盘价；同股再次推荐、同日重跑、晚间 reprice/performance 都不得改成新日价。`change_pct` 相对该粘住价；MFE/MAE 仍按该行事件日计算。performance 的 `max_dates` 只限制刷新哪些行，首次推荐日锚点仍按该 code 全量历史计算。存量纠偏入口为 `workflows.recommendation_tracking_reprice.correct_tracking_initial_prices`。
 
 **强势股复盘证据**：生产漏斗在同轮 L1-L4 计算结束后，将逐股阶段、淘汰原因、候选车道、配置摘要和代码版本写入压缩 `review_trace_YYYYMMDD.json.gz`。该文件不含 OHLCV，随现有 Daily Job artifact 上传；19:25 Review 按前一交易日精确匹配成功运行的 trace，因此归因反映当时真实代码与配置，不依赖 Supabase，也不会被后来改动的策略重写历史。
