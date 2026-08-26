@@ -21,11 +21,15 @@ from utils.safe import finite_float, safe_float
 
 logger = logging.getLogger(__name__)
 
-# RLock 而不是 Lock：init_db() 现在整段持锁（防止后台同步线程与 close 打架），
-# 而它内部会调 get_db()，后者在首次建连时**也要拿这把锁**。用普通 Lock 会在
-# 冷启动时自锁死。
+# RLock 而不是 Lock：init_db() 整段持锁，而它内部会调 get_db()。
 _lock = threading.RLock()
-_conn: sqlite3.Connection | None = None
+
+# 连接是**每线程一条**的（见 get_db 的说明：共享一条会段错误）。
+_local = threading.local()
+
+# 连接「代号」。reset_connection() 把它 +1，各线程下次 get_db() 发现自己那条
+# 是旧代的就重建 —— 这样换库不需要去碰别的线程的连接对象。
+_generation = 0
 
 _SCHEMA_VERSION = 19
 
@@ -303,47 +307,75 @@ END;
 
 
 def get_db() -> sqlite3.Connection:
-    global _conn
-    if _conn is not None:
-        return _conn
-    with _lock:
-        if _conn is not None:
-            return _conn
-        db_path = core_constants.LOCAL_DB_PATH
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(db_path), check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=3000")
-        _conn = conn
-        return _conn
+    """本线程的数据库连接。
+
+    ## 为什么是**每线程一条**，而不是全进程共享一条
+
+    原来是共享一条 + `check_same_thread=False`。那等于让 78 个调用点在多个线程里
+    并发操作同一个 sqlite3 对象，而它们都不持锁 —— 症状是随机的：
+
+    - `cannot commit - no transaction is active`（两个线程的事务边界互相踩）
+    - `executescript returned NULL without setting an exception`
+    - 最糟的一种：另一个线程把连接 close 掉，剩下的在已释放句柄上跑 →
+      **段错误**（CI 上 exit 139，复审也独立复现了两次）
+
+    加锁修不动这个：调用点是 `conn = get_db()` 然后各自 execute，锁不住「拿到
+    之后」那段。给 78 处逐个包锁，漏一个就等于没修。
+
+    每线程一条连接从根上消掉共享：各线程有自己的事务边界和语句，谁也关不掉别人的。
+    SQLite 本身支持多连接并发（WAL 模式下读写还能并行），跨进程都行，跨线程更没问题。
+    表级的写冲突由 `busy_timeout` 处理。
+
+    代价是每个线程首次访问要建一次连接（约 0.1ms，还有一次 WAL pragma），
+    以及连接数等于活跃线程数 —— 这个进程里线程是个位数，可以忽略。
+    """
+    conn = getattr(_local, "conn", None)
+    if conn is not None and getattr(_local, "generation", -1) == _generation:
+        return conn
+
+    db_path = core_constants.LOCAL_DB_PATH
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    # check_same_thread 保持默认的 True：现在每个线程用自己的连接，
+    # 不再需要关掉这道保护 —— 留着它能在将来有人又跨线程传连接时立刻报错。
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=3000")
+    _local.conn = conn
+    _local.generation = _generation
+    return conn
 
 
 def reset_connection() -> None:
-    """关掉并丢弃共享连接。**只给测试用。**
+    """丢弃共享连接，下次 `get_db()` 会重新建一条。**只给测试用。**
 
-    为什么要有这个函数：测试之间需要换库（monkeypatch LOCAL_DB_PATH），做法是
-    把 `_conn` 关掉再置 None。但 `sync_all_background()` 会在**后台线程**里跑
-    `init_db()`，用的是同一个 `_conn` —— 一边在 `conn.execute()`，另一边
-    `conn.close()`，sqlite3 在这种情况下是**未定义行为，会直接 segfault**
-    （不是抛异常，所以 pytest 也捕获不到）。
+    ## 为什么**不** close()
 
-    CI 上实测崩过：
-        Fatal Python error: Segmentation fault
-        Current thread ...: local_db.py in _ensure_signal_pending_columns
-                            sync.py in _run  ← 后台同步线程
-        Thread ...:         test_background_results.py in _reset_local_db  ← 主线程 close
+    测试之间要换库（monkeypatch LOCAL_DB_PATH），得让 `_conn` 失效。直觉做法是
+    `_conn.close()` 再置 None —— 但那会 segfault：
 
-    持 `_lock` 就能把两者排开：init_db 里的建表/迁移也走同一把锁。
+    `get_db()` 把连接对象**直接交出去**，然后几十处调用点各自 `conn.execute(...)`，
+    全都不持锁。后台同步线程（`sync_all_background`）正是这样在用它。此时另一个
+    线程 close 掉同一个对象，sqlite3 就在一个已释放的句柄上继续跑 —— **未定义
+    行为，直接段错误，不是抛异常**，所以 pytest 拦不住、本地也难复现。
+
+    我上一版只给 `init_db()` 和这个函数加了锁。那只排开了「两个 init_db」，
+    而真正的冲突是「close vs 任意一处普通读写」—— 复审指出后本地 5/5 复现了
+    exit 139。给每个调用点加锁不可行：几十处，漏一个就等于没修。
+
+    ## 做法：推进「代号」，让各线程自己换连接
+
+    连接现在是**每线程一条**（见 get_db）。这里只把全局代号 +1：其他线程下次
+    调 `get_db()` 时发现手里那条是旧代的，自己重建一条。
+
+    **绝不去 close 别的线程的连接** —— 那正是段错误的来源。旧连接在最后一个
+    引用消失时由 GC 安全回收（sqlite3 的析构会等自己的语句结束）。
     """
-    global _conn
+    global _generation
     with _lock:
-        if _conn is not None:
-            try:
-                _conn.close()
-            except Exception:
-                logger.debug("reset_connection: close failed", exc_info=True)
-        _conn = None
+        _generation += 1
+    # 本线程那条直接丢引用即可（别的线程靠代号自己换）。
+    _local.conn = None
 
 
 def init_db() -> None:
