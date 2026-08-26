@@ -320,60 +320,106 @@ class TestIdentitySync:
 
 
 class TestIdentityMustBeAlignedBeforeWriting:
-    """身份没对齐时,写操作必须拒绝,不能静默写到上一个账号。
+    """身份没对齐时写操作必须拒绝 —— 但**正常情况不能被拒**。
 
-    复审发现的 P1。`sync_identity()` 在对话进行中拿不到锁会**跳过对齐**并返回
-    False —— 那是刻意的（run_turn 持锁贯穿整个流式输出,阻塞等锁会挂到对话结束、
-    撞上桥的静默超时）。但 `_synced_session` 原来是 `sync()` 裸调,返回值丢掉了。
+    这组测试用**真实的 DesktopSession**,不用手写替身。上一版我用了
+    `sync_identity` 返回 True/False 的假会话,结果没发现真实契约完全不同:
+    它返回的是 `changed`,`False` 同时表示「账号本来就一致」(最常见) 和
+    「锁忙、跳过对齐」(危险)。把所有 False 当未对齐 → **所有正常的持仓写入
+    都报 identity_busy**。
 
-    后果:此刻的写操作用**上一个账号**的 ToolRegistry 和 token,把新账号的改动
-    落到旧账号的云端,且完全无声。改动一旦落错账户没法自动撤回,所以写操作
-    宁可拒绝。
+    替身模拟不出真实返回契约,所以这里不用替身。
     """
 
-    def _session(self, aligned: bool):
-        class S:
-            tool_context = object()
-            user_id = "alice"
+    def _session(self, session_user: str, disk_user: str, lock_busy: bool = False):
+        """真实的 DesktopSession,只替掉磁盘读取和 registry 重建。"""
+        import threading
 
-            def sync_identity(self_inner):
-                return aligned
+        from cli.ipc.session import DesktopSession
 
-        return S()
+        s = DesktopSession.__new__(DesktopSession)
+        s._turn_lock = threading.RLock()
+        s._user_id = session_user
+        s._tools = object()
+        s._sync_identity_locked = lambda: False
+        if lock_busy:
+            # 另一个线程持锁 = 对话进行中。必须在别的线程里拿,
+            # RLock 对同一线程是可重入的,自己拿了测不出「锁忙」。
+            ready = threading.Event()
+            threading.Thread(target=lambda: (s._turn_lock.acquire(), ready.set(), None), daemon=True).start()
+            ready.wait(timeout=2)
+        return s, disk_user
 
-    def test_write_refuses_when_sync_was_skipped(self, monkeypatch) -> None:
+    def _patched(self, monkeypatch, session, disk_user):
+        monkeypatch.setattr("cli.ipc.session._load_session", lambda: {"user_id": disk_user})
+        monkeypatch.setattr("cli.ipc.session.get_session", lambda *a, **k: session)
+
+    def test_same_account_idle_is_allowed(self, monkeypatch) -> None:
+        """最常见的情况:同账号、锁空闲。**必须放行** —— 这条是上一版的回归。"""
         from cli.ipc import methods as M
 
-        monkeypatch.setattr("cli.ipc.session.get_session", lambda *a, **k: self._session(False))
-        with pytest.raises(M.MethodError) as excinfo:
-            M._write_session()
-        assert excinfo.value.code == "identity_busy"
-        # 文案要说清「没有执行」—— 用户得知道要重试,而不是以为改成功了
-        assert "没有执行" in excinfo.value.message
+        s, disk = self._session("alice", "alice")
+        self._patched(monkeypatch, s, disk)
+        assert M._sync_ok(s) is True, "同账号稳定态被判成未对齐 —— 正常写入会全被拒"
+        assert M._write_session() is s
 
-    def test_write_proceeds_when_aligned(self, monkeypatch) -> None:
-        from cli.ipc import methods as M
+    def test_same_account_while_turn_in_flight_is_allowed(self, monkeypatch) -> None:
+        """锁忙但账号本来就一致 —— 也该放行。
 
-        monkeypatch.setattr("cli.ipc.session.get_session", lambda *a, **k: self._session(True))
-        assert M._write_session() is not None
-
-    def test_read_still_works_when_sync_was_skipped(self, monkeypatch) -> None:
-        """读操作**不能**跟着拒绝。
-
-        读退回旧数据虽然不理想,但可恢复（下一次调用自然对齐）；而拒绝读会让
-        界面在切换账号的那一两秒里整片报错 —— 那是把罕见竞态换成了常见故障。
+        跳过对齐不等于身份错了:那一轮用的 registry 和磁盘上是同一个账号,
+        写入是安全的。这里拒绝就变成「对话期间不能改持仓」。
         """
         from cli.ipc import methods as M
 
-        monkeypatch.setattr("cli.ipc.session.get_session", lambda *a, **k: self._session(False))
-        assert M._synced_session() is not None, "读路径不该因为身份未对齐而失败"
+        s, disk = self._session("alice", "alice", lock_busy=True)
+        self._patched(monkeypatch, s, disk)
+        assert M._sync_ok(s) is True
 
-    def test_missing_sync_identity_counts_as_aligned(self, monkeypatch) -> None:
-        """没有 sync_identity 的替身视为已对齐 —— 大量既有测试是这种形态。"""
+    def test_account_changed_but_sync_skipped_is_refused(self, monkeypatch) -> None:
+        """真正危险的那种:磁盘上已经换成 bob,而会话还在用 alice 的 registry。"""
         from cli.ipc import methods as M
 
+        s, disk = self._session("alice", "bob", lock_busy=True)
+        self._patched(monkeypatch, s, disk)
+        assert M._sync_ok(s) is False, "身份确实错位却放行了 —— 会写到旧账号"
+        with pytest.raises(M.MethodError) as excinfo:
+            M._write_session()
+        assert excinfo.value.code == "identity_busy"
+        assert "没有执行" in excinfo.value.message
+
+    def test_unreadable_disk_session_does_not_block(self, monkeypatch) -> None:
+        """磁盘登录态读不出来时不阻断 —— 否则「文件暂时读不了」升级成「功能不可用」。"""
+        from cli.ipc import methods as M
+
+        s, _ = self._session("alice", "alice")
         monkeypatch.setattr(
-            "cli.ipc.session.get_session",
-            lambda *a, **k: type("S", (), {"tool_context": object()})(),
+            "cli.ipc.session._load_session",
+            lambda: (_ for _ in ()).throw(OSError("disk gone")),
         )
+        monkeypatch.setattr("cli.ipc.session.get_session", lambda *a, **k: s)
+        assert M._sync_ok(s) is True
+
+    def test_read_path_never_refuses(self, monkeypatch) -> None:
+        """读路径不跟着拒绝:拒绝读会让切账号那一两秒界面整片报错。"""
+        from cli.ipc import methods as M
+
+        s, disk = self._session("alice", "bob", lock_busy=True)
+        self._patched(monkeypatch, s, disk)
+        assert M._synced_session() is not None
+
+    def test_legacy_stub_without_identity_aligned_is_allowed(self, monkeypatch) -> None:
+        """只有 sync_identity 的老替身视为已对齐,且仍要调它保持副作用。"""
+        from cli.ipc import methods as M
+
+        calls = []
+
+        class Stub:
+            tool_context = object()
+
+            def sync_identity(self):
+                calls.append(1)
+                return False  # 老替身的返回值不该被当成安全信号
+
+        monkeypatch.setattr("cli.ipc.session.get_session", lambda *a, **k: Stub())
         assert M._write_session() is not None
+        assert calls == [1], "仍要调 sync_identity 保持原有副作用"

@@ -81,6 +81,16 @@ let requestSeq = 0
 /** 是否已经有人触发过加载 —— 避免多个组件同时挂载时重复拉。 */
 let started = false
 
+/**
+ * 账号不匹配时是否已经自动重试过。
+ *
+ * 只重试一次:后端的身份同步在长对话期间可能连续几次都返回旧账号,不设上限
+ * 就是个无限请求循环 —— 比显示一次错数据更糟。
+ */
+let mismatchRetried = false
+
+const t = (key: string) => window.WyckoffI18n.t(key)
+
 function emit (next: Partial<PortfolioSnapshot>): void {
   snapshot = { ...snapshot, ...next }
   for (const fn of listeners) fn()
@@ -137,6 +147,31 @@ export async function refresh (): Promise<void> {
   }
   // 用后端回传的账号,不是我们自己问来的那个 —— 这份数据属于谁只有它知道。
   const owner = String(payload.user_id || '')
+
+  // **核对这份数据是不是当前账号的。**
+  //
+  // 后端的身份同步在对话进行中会跳过对齐（拿不到锁），此时 portfolio 返回的
+  // 可能是**上一个账号**的持仓 —— 而它带回来的 user_id 也如实是上一个账号。
+  // 原来这里无条件 writeCache(owner) 然后渲染:缓存分区是对的（不会张冠李戴），
+  // 但**界面上摆的是别人的仓位**,而且看不出异常。
+  //
+  // 拿它和我们已知的当前账号比:不一致就当作一次失败,提示重试,并且不渲染。
+  // 缓存仍然按真实 owner 写入 —— 那份数据本身是有效的,只是不属于现在这个人。
+  if (knownUser !== null && knownUser !== '' && owner !== '' && owner !== knownUser) {
+    writeCache(owner, next)
+    // 只自动重试一次。递归 refresh 不设上限的话，后端如果一直返回旧账号
+    // （比如那一轮对话很长），这里就是个无限请求循环 —— 比显示错数据更糟。
+    if (!mismatchRetried) {
+      mismatchRetried = true
+      void refresh()
+      return
+    }
+    mismatchRetried = false
+    emit({ loading: false, failed: true, error: t('portfolio.accountMismatch') })
+    return
+  }
+  mismatchRetried = false
+
   knownUser = owner
   const entry = writeCache(owner, next)
   emit({ portfolio: next, savedAt: entry.savedAt, loading: false, failed: false, error: '' })
@@ -195,4 +230,5 @@ export function __reset (): void {
   knownUser = null
   requestSeq = 0
   started = false
+  mismatchRetried = false
 }

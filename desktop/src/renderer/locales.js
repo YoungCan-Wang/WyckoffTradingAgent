@@ -275,6 +275,9 @@
     'portfolio.retryHint': '持仓数据没有丢，只是这次没读到。点下面的刷新重试一次。',
     // 降级提示。说清「本地」和「可能不是最新」——用户得知道差别在哪。
     'portfolio.localFallback': '云端没连上，显示的是本机数据。如果你在别的设备改过持仓，这里可能不是最新的。',
+    // 后端返回的是另一个账号的持仓（身份同步在长对话期间被跳过）。
+    // 宁可什么都不显示,也不能把别人的仓位摆在这个人面前。
+    'portfolio.accountMismatch': '正在切换账号，这次读到的不是当前账户的持仓。点刷新重试一次。',
     'portfolio.refresh': '刷新',
     'portfolio.updatedAt': '数据更新于 {time}',
     'portfolio.justLoaded': '刚刚更新',
@@ -862,6 +865,7 @@
     'portfolio.readFailed': 'Could not load holdings',
     'portfolio.retryHint': 'Your holdings are still there — this read just failed. Hit refresh to try again.',
     'portfolio.localFallback': "Cloud unreachable — showing local data. If you changed holdings on another device, this may be out of date.",
+    'portfolio.accountMismatch': 'Account is switching — these holdings belong to a different account. Hit refresh to retry.',
     'portfolio.refresh': 'Refresh',
     'portfolio.updatedAt': 'Updated {time}',
     'portfolio.justLoaded': 'Just loaded',

@@ -241,6 +241,34 @@ class DesktopSession:
         """这个会话的工具实际在用哪个账号 —— 不是磁盘上当前的登录态。"""
         return self._user_id
 
+    def identity_aligned(self) -> bool:
+        """工具上下文是否**确实**对齐到了磁盘上的登录态。
+
+        为什么单独一个方法：`sync_identity()` 返回的是「账号有没有变」(changed)，
+        而 `False` 同时covers两种完全不同的情况 ——
+
+          1. 账号本来就一致，无需变更（**绝大多数调用都是这个**）
+          2. 对话进行中拿不到锁，**跳过了对齐**（此刻用的还是旧账号）
+
+        调用方要判断的是「现在能不能安全地写」，那个语义 `changed` 答不了。
+        我上一版让调用方拿 `sync_identity()` 的返回值当对齐信号，结果稳定态下
+        (同账号、锁空闲) 也被判成未对齐 —— **所有正常的持仓写入都报
+        identity_busy**。这是把两个不同的问题挤进一个 bool 的必然结果。
+
+        所以这里明确回答对齐问题：先尝试同步（拿不到锁就跳过），然后**直接比对**
+        会话当前的 _user_id 和磁盘上的 user_id。比对结果不依赖锁抢到没抢到 ——
+        锁忙但账号本来就一致时，答案仍然是「已对齐」，那种情况写入是安全的。
+        """
+        self.sync_identity()
+        try:
+            disk_user = str((_load_session() or {}).get("user_id") or "")
+        except Exception:
+            # 读不到磁盘登录态时不阻断写操作：那会让「本地文件暂时读不了」
+            # 升级成「功能不可用」。同步本身已经尽力了。
+            logger.debug("identity_aligned: cannot read disk session", exc_info=True)
+            return True
+        return disk_user == self._user_id
+
     def sync_identity(self) -> bool:
         """
         把工具上下文对齐到磁盘上当前的登录态，换了账号返回 True。
@@ -414,7 +442,7 @@ class DesktopSession:
         else:
             text = str(result or "")
         # 模型有时仍会加引号或句号，清掉。
-        return text.strip().strip('"“”\'。.！!').split("\n")[0][:30]
+        return text.strip().strip("\"“”'。.！!").split("\n")[0][:30]
 
     def _touch_session(self, first_text: str) -> None:
         """保证会话在列表里有一行元数据，并把它顶到最前。

@@ -131,26 +131,27 @@ def _synced_session(session_id: str = ""):
 def _sync_ok(session) -> bool:
     """身份是否已对齐到磁盘上的登录态。
 
-    `sync_identity()` 在对话进行中拿不到锁时会**跳过对齐**并返回 False（那是
-    刻意的：run_turn 持锁贯穿整个流式输出，阻塞等锁会挂到对话结束、撞上桥的
-    静默超时）。但返回值原先被丢掉了 —— `_synced_session` 是 `sync()` 裸调。
+    问 `identity_aligned()`，**不要**拿 `sync_identity()` 的返回值当信号：后者
+    返回的是「账号有没有变」(changed)，而 `False` 同时表示「账号本来就一致」
+    （最常见）和「锁忙、跳过了对齐」（危险）。
 
-    后果是此刻的读写仍用**上一个账号**的 ToolRegistry 和 token。读操作会把旧
-    账号的数据当成当前账号的缓存起来；写操作更糟，会把新账号的改动落到旧账号
-    的云端，且完全无声。
+    我上一版正是这么错的 —— 把所有 `False` 当成未对齐，于是稳定态下
+    (同账号、锁空闲) `_sync_ok` 也返回 False，**所有正常的持仓写入都报
+    identity_busy**。实测复现过。教训是：安全判断要问「现在对齐了吗」，
+    而不是从一个语义不同的 bool 去推。
 
-    没有 sync_identity 的替身（大量既有测试）视为已对齐 —— 它们本来就不涉及
-    账号切换。
-
-    **只有显式返回 False 才算「跳过了对齐」。** 返回 None 也当成已对齐：真实
-    实现返回 bool，但既有测试里的替身有的写成 `-> None`。把 None 当失败会让写
-    操作在那些替身下全部拒绝 —— 那是拿「测试替身的返回类型」当安全信号，
-    既误伤又给不出真正的保护。
+    没有 identity_aligned 的替身（大量既有测试）视为已对齐 —— 它们本来就不
+    涉及账号切换。但仍要调一次 sync_identity 保持原有副作用。
     """
+    aligned = getattr(session, "identity_aligned", None)
+    if callable(aligned):
+        return bool(aligned())
+    # 老形态的替身：只有 sync_identity。调它保持副作用，然后视为已对齐 ——
+    # 这些替身压根不模拟账号切换，拿它们的返回值当安全信号只会误伤。
     sync = getattr(session, "sync_identity", None)
-    if not callable(sync):
-        return True
-    return sync() is not False
+    if callable(sync):
+        sync()
+    return True
 
 
 def _write_session(session_id: str = ""):
@@ -168,8 +169,7 @@ def _write_session(session_id: str = ""):
     if not _sync_ok(session):
         raise MethodError(
             "identity_busy",
-            "正在切换账号，这次没能确认是哪个账户。请稍等一下再试 —— "
-            "为避免把改动写到上一个账号，本次操作没有执行。",
+            "正在切换账号，这次没能确认是哪个账户。请稍等一下再试 —— 为避免把改动写到上一个账号，本次操作没有执行。",
         )
     return session
 
@@ -645,8 +645,10 @@ def schedule_create(params: dict[str, Any]) -> Iterator[Event]:
             # id 用时间戳而不是 uuid：便于排查问题时对上日志里的时间。
             # 带上计数后缀防同一毫秒内建两个。
             base = f"s{int(time.time() * 1000)}"
-            new_id = base if base not in taken else next(
-                f"{base}-{n}" for n in itertools.count(2) if f"{base}-{n}" not in taken
+            new_id = (
+                base
+                if base not in taken
+                else next(f"{base}-{n}" for n in itertools.count(2) if f"{base}-{n}" not in taken)
             )
         created = Schedule(id=new_id, name=name, cron=cron, action=action, enabled=enabled)
         current.append(created)
@@ -899,11 +901,16 @@ def artifact_read(params: dict[str, Any]) -> Iterator[Event]:
 
 
 def artifact_import(params: dict[str, Any]) -> Iterator[Event]:
-    """把用户拖进来的文件复制到报告目录。"""
+    """把用户拖进来的文件复制到报告目录。
+
+    走 _write_session：这是**写操作**（往账号分区里复制文件）。用
+    _synced_session 的话，身份错位时会把文件写进上一个账号的分区 ——
+    用户以为导入到自己名下，实际进了别人的目录，而且完全无声。
+    """
     from cli.ipc.artifacts import ArtifactError, import_file
 
     try:
-        artifact = import_file(str(params.get("source") or ""), _synced_session().user_id)
+        artifact = import_file(str(params.get("source") or ""), _write_session().user_id)
     except ArtifactError as exc:
         raise MethodError(exc.code, str(exc)) from exc
 
@@ -1442,9 +1449,7 @@ def chat_sessions(params: dict[str, Any]) -> Iterator[Event]:
     search = str(params.get("search") or "")
     raw = params.get("archived")
     archived: bool | None = None if raw == "all" else bool(raw)
-    rows = list_chat_sessions(
-        limit=limit, user_id=_current_user_id(), search=search, archived=archived
-    )
+    rows = list_chat_sessions(limit=limit, user_id=_current_user_id(), search=search, archived=archived)
     yield _ok(sessions=rows, active=_active_session())
 
 
@@ -1543,10 +1548,7 @@ def chat_delete_archived(_params: dict[str, Any]) -> Iterator[Event]:
 
     user_id = _current_user_id()
     # 先记下哪些会被删，好判断当前会话是否在其中。
-    doomed = {
-        str(r.get("session_id") or "")
-        for r in list_chat_sessions(limit=200, user_id=user_id, archived=True)
-    }
+    doomed = {str(r.get("session_id") or "") for r in list_chat_sessions(limit=200, user_id=user_id, archived=True)}
     removed = delete_archived_chat_sessions(user_id)
 
     next_id = active_session_id()
