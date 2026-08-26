@@ -82,10 +82,42 @@ class TestBackpressure:
     """stdio 靠管道阻塞天然限流；WebSocket 的 send 不阻塞，得自己做。"""
 
     def _stalled_box(self) -> R._Outbox:
-        # 发送端永不消费：模拟弱网下队列堆积
+        """发送端永不消费：模拟弱网下队列堆积。
+
+        `sent` 记下 pump 已经取走、正卡在 send 里的那条。**必须把它算进「没丢」**
+        —— 它不在队列里，但也没有被丢弃，只是在途。
+        """
         blocked = threading.Event()
-        box = R._Outbox(lambda _raw: blocked.wait())
+        sent: list[str] = []
+
+        def stalled_send(raw: str) -> None:
+            sent.append(raw)
+            blocked.wait()
+
+        box = R._Outbox(stalled_send)
+        box.in_flight = sent  # type: ignore[attr-defined]
         return box
+
+    @staticmethod
+    def _queued_kinds(box: R._Outbox) -> list[str]:
+        """在锁内快照队列里的事件类型。
+
+        **必须持锁 + 拷一份**。直接迭代 `box._queue` 有两个问题，都是竞态：
+
+        1. pump 线程会 `popleft()`，迭代中途改 deque 直接抛
+           `RuntimeError: deque mutated during iteration`；
+        2. 更隐蔽的是 pump 可能已经把**队首**取走送进阻塞的 send —— 那条事件
+           既不在队列里也没发出去，断言 `'approval_pending' in kinds` 就假失败。
+
+        这就是 CI 上这条测试长期红、本地却绿的原因：本地 40 次全过，把
+        `sys.setswitchinterval` 调小（模拟 CI 更粗糙的调度）后 40 次全红。
+        产品代码没问题，是测试读了一个正在被另一个线程改的结构。
+        """
+        with box._lock:
+            raws = list(box._queue)
+        # 加上 pump 已取走、正卡在 send 里的那条：它没丢，只是在途。
+        raws = list(getattr(box, "in_flight", [])) + raws
+        return [json.loads(r).get("type") for r in raws]
 
     def test_queue_is_bounded(self):
         box = self._stalled_box()
@@ -104,7 +136,7 @@ class TestBackpressure:
             for i in range(R.MAX_QUEUED + 300):
                 box.put({"id": 1, "type": "text_delta", "text": f"{i}"})
             box.put({"id": 1, "type": "done", "text": "结论"})
-            kinds = [json.loads(r).get("type") for r in box._queue]
+            kinds = self._queued_kinds(box)
             assert "done" in kinds
             assert "approval_pending" in kinds
             assert box._dropped > 0
@@ -117,7 +149,10 @@ class TestBackpressure:
         try:
             for i in range(R.MAX_QUEUED + 50):
                 box.put({"id": 1, "type": "text_delta", "text": f"seq{i}"})
-            remaining = [json.loads(r).get("text") for r in box._queue]
+            # 只看队列,**不**算 in_flight:这条测的是「淘汰时先丢队首」,
+            # 而 pump 取走队首也是一种「离开队列」—— 两者都满足这条的语义。
+            with box._lock:
+                remaining = [json.loads(r).get("text") for r in list(box._queue)]
             assert "seq0" not in remaining
             assert f"seq{R.MAX_QUEUED + 49}" in remaining
         finally:
