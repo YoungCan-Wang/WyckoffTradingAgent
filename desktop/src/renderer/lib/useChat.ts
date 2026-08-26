@@ -198,6 +198,35 @@ export function useChat (ready: boolean): ChatApi {
     }
   }, [busy, ready, handleLiveEvent, sessionId])
 
+  /**
+   * 换账号：把这一侧的全部轮次状态清空。
+   *
+   * 之前**完全没有**这段 —— useChat 里 `account-changed` 出现 0 次,而 App.tsx
+   * 派发了它,持仓和归因都接了,只有对话没接。后果有两层:
+   *
+   * 1. 上一个账号的 turns 和产物继续显示给新登录的人;
+   * 2. 更严重的是 `sessionId` 也留着,新账号发消息时把它带上,后端据此恢复
+   *    历史 —— 那是跨账号泄漏的触发路径(后端那侧已按 user_id 过滤,
+   *    但两处都该修:少了这里,界面上仍然摆着上一个人的对话)。
+   *
+   * 不调 chat_reset：那是个 IPC 往返,而这里要的是**立刻**清干净。后端的会话
+   * 由 sync_all_identities 负责重建,两侧各管自己那一半。
+   */
+  const clearForAccountChange = useCallback(() => {
+    liveIds.current.clear()
+    pendingEvents.current.clear()
+    sendInFlight.current = 0
+    setTurns([])
+    setBusy(false)
+    setSessionId('')
+    artifactsApi.reset()
+  }, [artifactsApi])
+
+  useEffect(() => {
+    window.addEventListener('wyckoff:account-changed', clearForAccountChange)
+    return () => window.removeEventListener('wyckoff:account-changed', clearForAccountChange)
+  }, [clearForAccountChange])
+
   const reset = useCallback(async () => {
     if (busy || !ready) return false
     const result = await collect('chat_reset').catch(() => null)

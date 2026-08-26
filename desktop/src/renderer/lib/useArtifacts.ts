@@ -21,6 +21,14 @@ export interface ArtifactsApi {
   beginTurn: () => void
   /** 前端合成的产物（报告不走工具,由 done 时合成）。 */
   add: (artifact: ChatArtifact) => void
+  /**
+   * 清空全部产物与自动展开状态。换账号时用。
+   *
+   * 与 beginTurn 的区别：那个只重置「本轮」的展开/关闭标记,产物列表照留
+   * （同一个人的上一轮产物仍然该看得到）。换账号要连列表一起清 ——
+   * 上一个账号的报告和面板不能留在新登录的人眼前。
+   */
+  reset: () => void
 }
 
 export function useArtifacts (): ArtifactsApi {
@@ -89,5 +97,20 @@ export function useArtifacts (): ArtifactsApi {
     return () => window.removeEventListener('wyckoff:artifacts', onCount)
   }, [])
 
-  return { artifacts, open, beginTurn, add }
+  // 换账号：产物列表和自动展开状态一起清,并让面板收起。
+  //
+  // 也要发一次 wyckoff:artifacts count=0 —— 面板是独立组件,不清它的话上一个
+  // 账号的报告页签会继续挂在那儿。
+  const reset = useCallback(() => {
+    setArtifacts([])
+    auto.current = {
+      openedThisTurn: false,
+      dismissedThisTurn: false,
+      viewing: null,
+      width: auto.current.width
+    }
+    window.dispatchEvent(new CustomEvent('wyckoff:artifacts', { detail: { count: 0 } }))
+  }, [])
+
+  return { artifacts, open, beginTurn, add, reset }
 }

@@ -89,7 +89,16 @@ class DesktopSession:
             from cli.session_context import build_resumed_model_context
             from integrations.local_db import load_chat_logs
 
-            rows = load_chat_logs(session_id=self._session_id, limit=400)
+            # **必须**带 user_id：只按 session_id 查会跨账号。前端切账号后如果
+            # sessionId 没清（那是另一个 bug，见 useChat 的 account-changed 处理），
+            # 新账号会拿着旧 session_id 过来，这里就把上一个账号的对话装进模型
+            # 上下文 —— UI 那侧的账号过滤挡不住它，因为泄漏发生在模型输入里。
+            #
+            # 已构造数据复现过：不带 user_id 读到 1 条 Alice 的记录，
+            # 带 user_id='bob' 读到 0 条。
+            #
+            # 写入侧（save_chat_log）一直是带 user_id 的，只有这条恢复路径漏了。
+            rows = load_chat_logs(session_id=self._session_id, limit=400, user_id=self._user_id)
             if not rows:
                 return 0
             resumed = build_resumed_model_context(rows)

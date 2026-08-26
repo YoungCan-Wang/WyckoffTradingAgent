@@ -171,3 +171,50 @@ def test_shutdown_empties_the_registry(registry):
     registry.shutdown_session()
     assert registry._sessions == {}
     assert registry.active_session_id() == ""
+
+
+class TestResumeIsAccountScoped:
+    """恢复历史会话必须按账号过滤,否则跨账号泄漏到**模型上下文**里。
+
+    这条是复审发现的 P1。`load_history` 原来只按 session_id 查:
+
+        rows = load_chat_logs(session_id=self._session_id, limit=400)
+
+    前端切账号后如果 sessionId 没清(那是另一个 bug),新账号会带着旧 session_id
+    过来,于是上一个账号的对话被装进模型上下文。UI 那侧的账号过滤挡不住它 ——
+    泄漏发生在模型输入里,界面上根本看不见。
+
+    写入侧(save_chat_log)一直带 user_id,只有这条恢复路径漏了。
+    """
+
+    def test_resume_skips_other_accounts_rows(self, registry, monkeypatch) -> None:
+        seen: dict = {}
+
+        def fake_load(*, session_id=None, limit=200, user_id=None):
+            seen.update(session_id=session_id, user_id=user_id)
+            # 模拟库里只有 alice 的记录:按 bob 过滤应该拿到空
+            if user_id == "alice":
+                return [{"role": "user", "content": "Alice 的机密持仓分析"}]
+            return []
+
+        monkeypatch.setattr("integrations.local_db.load_chat_logs", fake_load)
+
+        session = registry.DesktopSession("shared-sid")
+        session.start()
+        session._user_id = "bob"          # 当前登录的是 bob
+        restored = session.load_history()
+
+        assert seen["user_id"] == "bob", f"没有按账号过滤,实际传了 {seen['user_id']!r}"
+        assert restored == 0, "拿到了别人的历史 —— 那会进模型上下文"
+
+    def test_resume_still_works_for_own_rows(self, registry, monkeypatch) -> None:
+        """过滤不能把自己的历史也挡掉 —— 那是另一种坏法。"""
+        monkeypatch.setattr(
+            "integrations.local_db.load_chat_logs",
+            lambda *, session_id=None, limit=200, user_id=None: (
+                [{"role": "user", "content": "我自己的对话"}] if user_id == "alice" else []
+            ),
+        )
+        session = registry.DesktopSession("my-sid")
+        session.start()          # fake_start 把 _user_id 设成 alice
+        assert session.load_history() > 0, "自己的历史应该恢复得回来"
