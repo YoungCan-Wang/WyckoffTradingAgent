@@ -128,6 +128,52 @@ def _synced_session(session_id: str = ""):
     return session
 
 
+def _sync_ok(session) -> bool:
+    """身份是否已对齐到磁盘上的登录态。
+
+    `sync_identity()` 在对话进行中拿不到锁时会**跳过对齐**并返回 False（那是
+    刻意的：run_turn 持锁贯穿整个流式输出，阻塞等锁会挂到对话结束、撞上桥的
+    静默超时）。但返回值原先被丢掉了 —— `_synced_session` 是 `sync()` 裸调。
+
+    后果是此刻的读写仍用**上一个账号**的 ToolRegistry 和 token。读操作会把旧
+    账号的数据当成当前账号的缓存起来；写操作更糟，会把新账号的改动落到旧账号
+    的云端，且完全无声。
+
+    没有 sync_identity 的替身（大量既有测试）视为已对齐 —— 它们本来就不涉及
+    账号切换。
+
+    **只有显式返回 False 才算「跳过了对齐」。** 返回 None 也当成已对齐：真实
+    实现返回 bool，但既有测试里的替身有的写成 `-> None`。把 None 当失败会让写
+    操作在那些替身下全部拒绝 —— 那是拿「测试替身的返回类型」当安全信号，
+    既误伤又给不出真正的保护。
+    """
+    sync = getattr(session, "sync_identity", None)
+    if not callable(sync):
+        return True
+    return sync() is not False
+
+
+def _write_session(session_id: str = ""):
+    """写操作专用：身份没对齐就**拒绝执行**。
+
+    写操作不能「先做了再说」—— 落到旧账号云端的改动没法自动撤回。宁可让用户
+    看到一句「正在切换账号，请重试」，也不要静默写错账户。
+
+    读操作不走这里：它们退回旧数据虽然不理想，但可恢复（下一次调用自然对齐），
+    而拒绝读会让界面在切换账号的那一两秒里整片报错。
+    """
+    from cli.ipc.session import get_session
+
+    session = get_session(session_id) if session_id else get_session()
+    if not _sync_ok(session):
+        raise MethodError(
+            "identity_busy",
+            "正在切换账号，这次没能确认是哪个账户。请稍等一下再试 —— "
+            "为避免把改动写到上一个账号，本次操作没有执行。",
+        )
+    return session
+
+
 def _active_session() -> str:
     """当前活跃的会话 id。会话层没起来时返回空串而不是抛错。"""
     try:
@@ -224,7 +270,7 @@ def portfolio_edit(params: dict[str, Any]) -> Iterator[Event]:
         cost_price=float(params.get("cost_price") or 0),
         buy_dt=str(params.get("buy_dt") or ""),
         free_cash=float(params.get("free_cash") or 0),
-        tool_context=_synced_session().tool_context,
+        tool_context=_write_session().tool_context,
     )
     failure = _portfolio_write_failed(result)
     if failure:
@@ -256,7 +302,7 @@ def portfolio_set_stop(params: dict[str, Any]) -> Iterator[Event]:
     result = set_stop_loss(
         code=code,
         stop_loss=stop_loss,
-        tool_context=_synced_session().tool_context,
+        tool_context=_write_session().tool_context,
     )
     failure = _portfolio_write_failed(result)
     if failure:

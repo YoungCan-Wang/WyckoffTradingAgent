@@ -317,3 +317,63 @@ class TestIdentitySync:
 
         assert calls == ["synced"], "读持仓前必须先对齐身份"
         assert out["user_id"] == "user-A"
+
+
+class TestIdentityMustBeAlignedBeforeWriting:
+    """身份没对齐时,写操作必须拒绝,不能静默写到上一个账号。
+
+    复审发现的 P1。`sync_identity()` 在对话进行中拿不到锁会**跳过对齐**并返回
+    False —— 那是刻意的（run_turn 持锁贯穿整个流式输出,阻塞等锁会挂到对话结束、
+    撞上桥的静默超时）。但 `_synced_session` 原来是 `sync()` 裸调,返回值丢掉了。
+
+    后果:此刻的写操作用**上一个账号**的 ToolRegistry 和 token,把新账号的改动
+    落到旧账号的云端,且完全无声。改动一旦落错账户没法自动撤回,所以写操作
+    宁可拒绝。
+    """
+
+    def _session(self, aligned: bool):
+        class S:
+            tool_context = object()
+            user_id = "alice"
+
+            def sync_identity(self_inner):
+                return aligned
+
+        return S()
+
+    def test_write_refuses_when_sync_was_skipped(self, monkeypatch) -> None:
+        from cli.ipc import methods as M
+
+        monkeypatch.setattr("cli.ipc.session.get_session", lambda *a, **k: self._session(False))
+        with pytest.raises(M.MethodError) as excinfo:
+            M._write_session()
+        assert excinfo.value.code == "identity_busy"
+        # 文案要说清「没有执行」—— 用户得知道要重试,而不是以为改成功了
+        assert "没有执行" in excinfo.value.message
+
+    def test_write_proceeds_when_aligned(self, monkeypatch) -> None:
+        from cli.ipc import methods as M
+
+        monkeypatch.setattr("cli.ipc.session.get_session", lambda *a, **k: self._session(True))
+        assert M._write_session() is not None
+
+    def test_read_still_works_when_sync_was_skipped(self, monkeypatch) -> None:
+        """读操作**不能**跟着拒绝。
+
+        读退回旧数据虽然不理想,但可恢复（下一次调用自然对齐）；而拒绝读会让
+        界面在切换账号的那一两秒里整片报错 —— 那是把罕见竞态换成了常见故障。
+        """
+        from cli.ipc import methods as M
+
+        monkeypatch.setattr("cli.ipc.session.get_session", lambda *a, **k: self._session(False))
+        assert M._synced_session() is not None, "读路径不该因为身份未对齐而失败"
+
+    def test_missing_sync_identity_counts_as_aligned(self, monkeypatch) -> None:
+        """没有 sync_identity 的替身视为已对齐 —— 大量既有测试是这种形态。"""
+        from cli.ipc import methods as M
+
+        monkeypatch.setattr(
+            "cli.ipc.session.get_session",
+            lambda *a, **k: type("S", (), {"tool_context": object()})(),
+        )
+        assert M._write_session() is not None
