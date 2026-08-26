@@ -20,9 +20,8 @@ def _bars() -> dict[str, pd.DataFrame]:
     }
 
 
-def test_next_open_fill_requires_prior_day_plan_and_uses_official_open() -> None:
-    as_of = date(2026, 8, 20)
-    plan = ShadowPlan(
+def _buy_plan(as_of: date) -> ShadowPlan:
+    return ShadowPlan(
         plan_key=plan_key("USER_SHADOW:test", as_of, "buy", "000001"),
         code="000001",
         name="平安银行",
@@ -32,10 +31,13 @@ def test_next_open_fill_requires_prior_day_plan_and_uses_official_open() -> None
         shares_hint=1000,
         reason="confirmed",
     )
-    same_day = try_fill_plan(ShadowBook(), plan, _bars(), as_of)
-    assert same_day is not None
-    assert same_day.status == "skipped"
-    assert same_day.fill_reason == "lookahead_blocked"
+
+
+def test_next_open_fill_requires_prior_day_plan_and_uses_official_open() -> None:
+    as_of = date(2026, 8, 20)
+    plan = _buy_plan(as_of)
+    # 信号日当天不可成交：返回 None，保留 planned，避免同日重跑写成 skipped 落库。
+    assert try_fill_plan(ShadowBook(), plan, _bars(), as_of) is None
 
     session = run_shadow_session(
         ShadowBook(),
@@ -52,6 +54,23 @@ def test_next_open_fill_requires_prior_day_plan_and_uses_official_open() -> None
     assert filled.entry_price == 10.50
     assert filled.qty >= 100
     assert session.book.positions["000001"].sellable_shares == 0
+
+
+def test_same_day_rerun_keeps_tonight_plans_unfilled() -> None:
+    """同日第二次跑会话不得把今夜计划放进 fills（否则 upsert 会改成 skipped）。"""
+    as_of = date(2026, 8, 20)
+    plan = _buy_plan(as_of)
+    session = run_shadow_session(
+        ShadowBook(),
+        [plan],
+        [],
+        _bars(),
+        as_of,
+        account_id="USER_SHADOW:test",
+        allow_new_buys=False,
+    )
+    assert session.fills == []
+    assert plan.status == "planned"
 
 
 def test_shadow_account_guard_rejects_user_live() -> None:
