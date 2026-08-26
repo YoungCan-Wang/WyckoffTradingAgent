@@ -33,7 +33,15 @@ export function usePortfolio (): PortfolioState {
   // 登录态变化 → 作废并重拉。监听放在 hook 里而不是 store 模块顶层:
   // 模块顶层注册的监听器永远不会解绑,测试之间会互相污染。
   useEffect(() => {
-    const onIdentityChange = () => invalidate()
+    // **必须把事件里的 userId 传下去。** 只调 invalidate() 会让 store 失去
+    // 核对基准 —— 后端此刻若锁忙、返回上一个账号的持仓，就会被直接渲染。
+    // 事件一直带着这个字段（App.tsx 派发时就放进去了），是这里丢掉了。
+    //
+    // 空串（退出登录）也要传:那是「应该看到未登录的持仓」，不是「不知道」。
+    const onIdentityChange = (event: Event) => {
+      const detail = (event as CustomEvent).detail as { userId?: string } | undefined
+      invalidate(typeof detail?.userId === 'string' ? detail.userId : null)
+    }
     window.addEventListener('wyckoff:account-changed', onIdentityChange)
     return () => window.removeEventListener('wyckoff:account-changed', onIdentityChange)
   }, [])

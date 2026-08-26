@@ -72,8 +72,29 @@ const listeners = new Set<() => void>()
  *
  * 记在内存里,是为了消掉「切回持仓页又转一次圈」:第一次要 await account IPC,
  * 之后直接命中,`getSnapshot()` 同步就能给出缓存里的持仓,一帧都不闪。
+ *
+ * `null` = 还不知道自己是谁;`''` = 确定是未登录。两者必须分开 —— 见 expectedUser。
  */
 let knownUser: string | null = null
+
+/**
+ * 这一刻**应该**看到谁的持仓。`null` 表示不知道。
+ *
+ * 为什么不能只用 knownUser：`invalidate()`（换账号时调）会把它置成 null 来
+ * 强制重拉,那正好**关掉了账号核对** —— 而换账号恰恰是最需要核对的时刻。
+ * 后端如果此刻锁忙、返回上一个账号的持仓,就会被直接渲染出来。
+ *
+ * 所以从 `account-changed` 事件里把新 userId 接过来单独记着。它跟
+ * knownUser 的区别是：
+ *
+ * - knownUser 是「我上次拿到的数据属于谁」，会被 refresh 覆盖
+ * - expectedUser 是「我现在应该是谁」，只在账号真的变化时更新
+ *
+ * 空串是**有意义的值**（退出登录后应该看到「无账号」的持仓，也就是本地那份）。
+ * 用 null 表示未知，才能把「未登录」和「还不知道」区分开 —— 原来的
+ * `knownUser !== ''` 判断把退出登录的场景整个漏掉了。
+ */
+let expectedUser: string | null = null
 
 /** 单调递增请求号:只有最后一次发出的请求可以写状态。见 fetchFresh。 */
 let requestSeq = 0
@@ -152,12 +173,21 @@ export async function refresh (): Promise<void> {
   //
   // 后端的身份同步在对话进行中会跳过对齐（拿不到锁），此时 portfolio 返回的
   // 可能是**上一个账号**的持仓 —— 而它带回来的 user_id 也如实是上一个账号。
-  // 原来这里无条件 writeCache(owner) 然后渲染:缓存分区是对的（不会张冠李戴），
-  // 但**界面上摆的是别人的仓位**,而且看不出异常。
+  // 不核对就直接渲染:缓存分区是对的（不会张冠李戴），但**界面上摆的是别人的
+  // 仓位**,而且看不出异常。
   //
-  // 拿它和我们已知的当前账号比:不一致就当作一次失败,提示重试,并且不渲染。
-  // 缓存仍然按真实 owner 写入 —— 那份数据本身是有效的,只是不属于现在这个人。
-  if (knownUser !== null && knownUser !== '' && owner !== '' && owner !== knownUser) {
+  // 基准优先用 expectedUser（`account-changed` 事件里的新账号），退回 knownUser。
+  // 我上一版只看 knownUser，有两个洞，都是复审指出来的：
+  //
+  //   1. invalidate() 把 knownUser 置 null 来强制重拉，于是**换账号那一刻**
+  //      核对被整个跳过 —— 而那正是最需要它的时候；
+  //   2. `knownUser !== ''` 把退出登录也漏了：预期账号是空串，
+  //      后端却返回 alice 的持仓，一样被放行。
+  //
+  // 现在用 `!= null` 判空，空串照样参与比较。缓存仍按真实 owner 写入 ——
+  // 那份数据本身有效，只是不属于现在这个人。
+  const expected = expectedUser !== null ? expectedUser : knownUser
+  if (expected !== null && owner !== expected) {
     writeCache(owner, next)
     // 只自动重试一次。递归 refresh 不设上限的话，后端如果一直返回旧账号
     // （比如那一轮对话很长），这里就是个无限请求循环 —— 比显示错数据更糟。
@@ -173,6 +203,10 @@ export async function refresh (): Promise<void> {
   mismatchRetried = false
 
   knownUser = owner
+  // 核对通过了,把预期也对齐到实到的账号。不清的话 expectedUser 会一直钉在
+  // 换账号那一刻的值上,而 knownUser 之后可能正常演进(比如首次登录时
+  // 从空串变成真实 uid),两者就会开始互相矛盾。
+  expectedUser = owner
   const entry = writeCache(owner, next)
   emit({ portfolio: next, savedAt: entry.savedAt, loading: false, failed: false, error: '' })
 }
@@ -216,8 +250,15 @@ export async function ensureLoaded (): Promise<void> {
  *
  * 只清 localStorage 不够 —— 正在看着的界面上,React 里还是上一个账号的仓位。
  */
-export function invalidate (): void {
+export function invalidate (nextUser?: string | null): void {
   knownUser = null
+  // 记下「现在应该是谁」。**必须接这个参数** —— 只清 knownUser 的话，
+  // 下一次 refresh 就没有基准可比，后端锁忙返回旧账号时会被直接渲染出来。
+  //
+  // `undefined`（调用方没传）→ null，表示不知道，退回旧行为；
+  // 空串是有意义的值（退出登录），照样存进去参与比较。
+  expectedUser = nextUser === undefined ? null : nextUser
+  mismatchRetried = false
   started = true
   emit({ portfolio: null, savedAt: null, loading: true, failed: false, error: '' })
   void refresh()
@@ -228,6 +269,7 @@ export function __reset (): void {
   snapshot = { portfolio: null, savedAt: null, loading: false, failed: false, error: '' }
   listeners.clear()
   knownUser = null
+  expectedUser = null
   requestSeq = 0
   started = false
   mismatchRetried = false
