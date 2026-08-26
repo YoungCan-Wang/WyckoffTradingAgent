@@ -122,11 +122,11 @@ wyckoff dashboard  # 启动本地可视化面板
 
 形态复盘页按数据库实际存在的最近 30 个复盘交易日读取数据：“复盘记录”保留窗口内的数据源行数，“总入选次数”按唯一的股票+入选日统计，“覆盖股票数”和涨跌幅摘要则按股票代码去重。单股分析页会把规则过滤后的关键新闻打到 K 线上，只作读盘解释，不改变漏斗候选。服务端报错进 Cloudflare Workers Logs（约 3 天）；页面 PV/UV 用 Web Analytics；白名单用户的点击热力图走 Clarity 项目 `y6albpfin1`。这三样都不写业务库。
 
-### Desktop（候选版）
+### Desktop
 
 Electron 桌面端把 Agent 对话、审批、持仓、定时任务、跟踪归因、报告和 K 线放进同一个本地工作台，支持 Windows x64 与 macOS Intel/Apple Silicon。
 
-当前 PR/CI 会生成带真实 Python 运行时的 EXE 和 DMG 候选包；它们用于干净机器验收，不是公开下载。正式发布将统一放在 [GitHub Releases](https://github.com/YoungCan-Wang/WyckoffTradingAgent/releases)，不会把 14 天过期的 Actions Artifact 当下载站。签名、安装验收与发布清单见 [docs/DESKTOP_RELEASE.md](docs/DESKTOP_RELEASE.md)。
+公开安装包统一放在 [GitHub Releases](https://github.com/YoungCan-Wang/WyckoffTradingAgent/releases)，不会把 14 天过期的 Actions Artifact 当下载站。桌面端在“设置 → 通用 → 软件更新”显示当前版本，发现新的 `desktop-v*` 正式版时会直接给出下载入口。PR/CI 仍生成带真实 Python 运行时的 EXE 和 DMG 候选包，供干净机器验收；签名、公证、自动发布与升级清单见 [docs/DESKTOP_RELEASE.md](docs/DESKTOP_RELEASE.md)。
 
 ### Streamlit MVP 已下线
 

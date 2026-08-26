@@ -2,7 +2,7 @@ name: Web deployment health
 
 on:
   workflow_run:
-    workflows: [CI]
+    workflows: [Worker deploy]
     branches: [main]
     types: [completed]
   workflow_dispatch:
@@ -18,11 +18,12 @@ jobs:
   verify:
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+      github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 8
     env:
       API_HEALTH_URL: https://wyckoff-api.yongkai-wang.workers.dev/api/health
+      API_REMOTE_URL: https://wyckoff-api.yongkai-wang.workers.dev/api/remote/devices
       CHAT_URL: https://wyckoff-analysis.pages.dev/chat
     steps:
       - name: Wait for production endpoints
@@ -30,9 +31,10 @@ jobs:
         run: |
           for attempt in {1..8}; do
             api_body="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 15 "$API_HEALTH_URL" || true)"
+            remote_status="$(curl --silent --output /dev/null --write-out '%{http_code}' --connect-timeout 5 --max-time 15 "$API_REMOTE_URL" || true)"
             chat_body="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 15 "$CHAT_URL" || true)"
-            if jq --exit-status '.status == "ok"' <<<"$api_body" >/dev/null && grep --quiet '<div id="root"' <<<"$chat_body"; then
-              echo "Production Worker and Pages chat entry are healthy."
+            if jq --exit-status '.status == "ok"' <<<"$api_body" >/dev/null && [[ "$remote_status" == "401" ]] && grep --quiet '<div id="root"' <<<"$chat_body"; then
+              echo "Production Worker, remote route, and Pages chat entry are healthy."
               exit 0
             fi
             echo "Attempt $attempt/8: production deployment is not ready yet."

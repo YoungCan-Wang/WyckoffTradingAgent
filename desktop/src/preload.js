@@ -55,6 +55,8 @@ contextBridge.exposeInMainWorld('wyckoff', {
   // print stylesheet (markdown); wrap=false uses body as a whole document (html).
   // 遥控开启时阻止系统睡眠（锁屏/息屏不受影响，那两种状态本来就能用）。
   keepAwake: (keep) => ipcRenderer.invoke('remote:keepAwake', Boolean(keep)),
+  checkUpdate: () => ipcRenderer.invoke('desktop:checkUpdate'),
+  openRelease: (url) => ipcRenderer.invoke('desktop:openRelease', url),
   exportPdf: (payload) => ipcRenderer.invoke('pdf:export', payload),
   status: () => ipcRenderer.invoke('py:status'),
   restart: () => ipcRenderer.invoke('py:restart'),

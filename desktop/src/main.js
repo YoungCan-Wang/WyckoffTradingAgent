@@ -1,6 +1,6 @@
 'use strict'
 
-const { app, BrowserWindow, Menu, clipboard, ipcMain, dialog } = require('electron')
+const { app, BrowserWindow, Menu, clipboard, ipcMain, dialog, net, shell } = require('electron')
 
 // powerSaveBlocker 的句柄。遥控开启期间持有，关闭时释放 —— 一直挂着会让电脑
 // 永不睡眠，那是在用户没要求的情况下改他的电源行为。
@@ -12,6 +12,7 @@ const { DaemonRunner } = require('./daemon-runner')
 const { BrowserHost } = require('./browser-host')
 const { ArtifactHost } = require('./artifact-host')
 const { PRINT_WEB_PREFERENCES, blockPrintNetwork } = require('./print-security')
+const { checkForDesktopUpdate, isAllowedReleaseUrl } = require('./update-service')
 
 // src/ -> desktop/ -> repo root
 const REPO_ROOT = path.resolve(__dirname, '..', '..')
@@ -427,6 +428,16 @@ app.whenReady().then(async () => {
   })
 
   ipcMain.handle('pdf:export', (_evt, payload) => exportPdf(payload))
+
+  ipcMain.handle('desktop:checkUpdate', () => checkForDesktopUpdate(
+    (url) => net.fetch(url, { signal: AbortSignal.timeout(8000) }),
+    app.getVersion()
+  ))
+  ipcMain.handle('desktop:openRelease', async (_evt, url) => {
+    if (!isAllowedReleaseUrl(url)) return { ok: false }
+    await shell.openExternal(url)
+    return { ok: true }
+  })
 
   // The renderer asks for current status once its listener is attached, so a
   // ready that arrived early is not lost.

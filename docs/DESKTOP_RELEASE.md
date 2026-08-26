@@ -32,23 +32,40 @@ The cross-platform Python bundler is `scripts/build_python_ipc.py`; `scripts/bui
 
 GitHub Releases is the public distribution and changelog surface. Workflow artifacts are temporary, hidden behind an Actions run, and must not be linked as the product download.
 
-Before publishing a release:
+Normal branch and PR runs still produce unsigned/ad-hoc candidates retained for 14 days. A tag matching the version in
+`desktop/package.json` turns the same verified workflow into the public release path:
 
-1. Merge only after all required PR checks, including all three package jobs, are successful.
-2. Install each candidate on a clean machine of the matching architecture. Verify first launch, model setup, a two-turn chat, K-line opening, settings, quit, and relaunch.
-3. Sign Windows executables with an Authenticode certificate. Unsigned candidates show an unknown-publisher warning and are not official releases.
-4. Sign macOS builds with a Developer ID Application certificate, notarize them, and staple the ticket. Ad-hoc signed CI candidates are not official releases.
-5. Create a versioned GitHub Release such as `desktop-v0.1.0`, attach the Windows installer and both DMGs, publish release notes, checksums, screenshots, supported systems, and known limitations.
-6. Link the latest GitHub Release from the repository README and announcement copy. Documentation may explain the release, but it must not act as binary storage.
+```bash
+git tag desktop-v0.1.0
+git push origin desktop-v0.1.0
+```
+
+The `Desktop` workflow then validates tag/version equality, signs the Windows installer, signs and notarizes both macOS
+DMGs, staples the notarization tickets, reruns packaged-runtime smoke checks, creates `SHA256SUMS.txt`, and publishes all
+three installers in a GitHub Release. That tag push is the only per-release maintainer action; a missing credential fails
+closed before packaging rather than publishing an unsigned binary.
+
+Before tagging, merge only after all required PR checks and install the candidate on clean matching machines. Verify first
+launch, model setup, a two-turn chat, K-line opening, settings, quit, and relaunch. Clean-machine acceptance remains a human
+release decision; signing, notarization, checksums, upload and release-note generation are automated.
 
 ## Required signing configuration
 
-The repository currently has no desktop signing secrets configured. A public desktop release remains blocked until the maintainer provides:
+Configure these GitHub Actions repository secrets once:
 
-- macOS: Developer ID certificate plus Apple notarization credentials.
-- Windows: Authenticode signing certificate or Azure Trusted Signing credentials.
+- `WINDOWS_CSC_LINK`, `WINDOWS_CSC_KEY_PASSWORD`: Authenticode certificate accepted by electron-builder and its password.
+- `MACOS_CSC_LINK`, `MACOS_CSC_KEY_PASSWORD`: Developer ID Application certificate and its password.
+- `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`: Apple notarization identity.
 
 The CI artifacts intentionally identify themselves as `unsigned` (Windows) or `adhoc` (macOS) so they cannot be mistaken for a production distribution.
+
+## User-visible update channel
+
+The stable machine-readable endpoint is `https://wyckoff-analysis.pages.dev/desktop/latest`. It selects the newest
+non-draft, non-prerelease `desktop-v*` GitHub Release and exposes its three assets. The desktop app checks this endpoint in
+Settings → General → Software updates and opens the repository release page when a newer semantic version exists. The
+manifest is only advisory: downloads remain signed GitHub Release assets and the main process allowlists this repository's
+HTTPS release URLs before opening them.
 
 ## Release notes minimum
 

@@ -19,6 +19,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main, feature/visible]
+    tags: ["desktop-v*"]
     paths:
       - "desktop/**"
       - "cli/**"
@@ -54,6 +55,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  release-metadata:
+    runs-on: ubuntu-latest
+    outputs:
+      is_release: ${{ steps.meta.outputs.is_release }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate desktop release tag
+        id: meta
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          package_version="$(jq -r .version desktop/package.json)"
+          if [[ "$GITHUB_REF" == refs/tags/desktop-v* ]]; then
+            test "$RELEASE_TAG" = "desktop-v$package_version"
+            echo "is_release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_release=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$package_version" >> "$GITHUB_OUTPUT"
+
   # 单元测试与类型检查在三个平台都跑。
   # 跨平台跑是有意义的：测试里有路径拼接、也有读源码做静态断言的用例，
   # Windows 的 \ 分隔符与 CRLF 都可能让它们表现不同。
@@ -138,7 +161,7 @@ jobs:
   # available without maintaining a native OpenSSL toolchain.
   package-windows:
     runs-on: windows-latest
-    needs: test
+    needs: [test, release-metadata]
     defaults:
       run:
         working-directory: desktop
@@ -161,8 +184,19 @@ jobs:
       - name: Build and smoke-test Python payload
         run: python ../scripts/build_python_ipc.py
 
+      - name: Require Windows signing credential for releases
+        if: needs.release-metadata.outputs.is_release == 'true'
+        shell: bash
+        env:
+          CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+        run: test -n "$CSC_LINK" && test -n "$CSC_KEY_PASSWORD"
+
       - name: Package NSIS (x64)
         run: npx --no-install electron-builder --win --x64 --publish never
+        env:
+          CSC_LINK: ${{ needs.release-metadata.outputs.is_release == 'true' && secrets.WINDOWS_CSC_LINK || '' }}
+          CSC_KEY_PASSWORD: ${{ needs.release-metadata.outputs.is_release == 'true' && secrets.WINDOWS_CSC_KEY_PASSWORD || '' }}
 
       - name: Verify bundled runtime and installer
         shell: pwsh
@@ -195,9 +229,19 @@ jobs:
           if (-not $installer) { throw "missing NSIS installer for x64" }
           $installer | Format-Table Name, Length
 
+      - name: Verify Authenticode signature
+        if: needs.release-metadata.outputs.is_release == 'true'
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem "dist/*-x64.exe" | Select-Object -First 1
+          $signature = Get-AuthenticodeSignature $installer.FullName
+          if ($signature.Status -ne 'Valid') {
+            throw "installer signature is $($signature.Status): $($signature.StatusMessage)"
+          }
+
       - uses: actions/upload-artifact@v7
         with:
-          name: wyckoff-windows-x64-unsigned
+          name: ${{ needs.release-metadata.outputs.is_release == 'true' && 'wyckoff-windows-x64-release' || 'wyckoff-windows-x64-unsigned' }}
           path: |
             desktop/dist/*-x64.exe
             desktop/dist/*-x64.exe.blockmap
@@ -214,7 +258,7 @@ jobs:
           - arch: x64
             os: macos-15-intel
     runs-on: ${{ matrix.os }}
-    needs: test
+    needs: [test, release-metadata]
     defaults:
       run:
         working-directory: desktop
@@ -234,11 +278,45 @@ jobs:
         run: npm run build:ui
       - name: Build and smoke-test Python payload
         run: python ../scripts/build_python_ipc.py
+      - name: Require Apple signing and notarization credentials for releases
+        if: needs.release-metadata.outputs.is_release == 'true'
+        shell: bash
+        env:
+          CSC_LINK: ${{ secrets.MACOS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MACOS_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          test -n "$CSC_LINK"
+          test -n "$CSC_KEY_PASSWORD"
+          test -n "$APPLE_ID"
+          test -n "$APPLE_APP_SPECIFIC_PASSWORD"
+          test -n "$APPLE_TEAM_ID"
       - name: Package DMG (${{ matrix.arch }})
         run: npx --no-install electron-builder --mac --${{ matrix.arch }} --publish never
         env:
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
-          WYCKOFF_ADHOC_SIGN: "1"
+          CSC_LINK: ${{ needs.release-metadata.outputs.is_release == 'true' && secrets.MACOS_CSC_LINK || '' }}
+          CSC_KEY_PASSWORD: ${{ needs.release-metadata.outputs.is_release == 'true' && secrets.MACOS_CSC_KEY_PASSWORD || '' }}
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ needs.release-metadata.outputs.is_release == 'true' && 'true' || 'false' }}
+          WYCKOFF_ADHOC_SIGN: ${{ needs.release-metadata.outputs.is_release == 'true' && '0' || '1' }}
+      - name: Notarize and staple DMG
+        if: needs.release-metadata.outputs.is_release == 'true'
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          dmg=$(find dist -maxdepth 1 -name '*-${{ matrix.arch }}.dmg' | head -1)
+          test -n "$dmg"
+          xcrun notarytool submit "$dmg" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          xcrun stapler staple "$dmg"
+          xcrun stapler validate "$dmg"
       - name: Verify app, bundled runtime, signature, and DMG
         shell: bash
         run: |
@@ -269,7 +347,7 @@ jobs:
           ls -lh "$dmg"
       - uses: actions/upload-artifact@v7
         with:
-          name: wyckoff-macos-${{ matrix.arch }}-adhoc
+          name: ${{ needs.release-metadata.outputs.is_release == 'true' && format('wyckoff-macos-{0}-release', matrix.arch) || format('wyckoff-macos-{0}-adhoc', matrix.arch) }}
           path: |
             desktop/dist/*-${{ matrix.arch }}.dmg
             desktop/dist/*-${{ matrix.arch }}.dmg.blockmap
@@ -291,3 +369,36 @@ jobs:
           find candidates -maxdepth 2 -type f -print
           test "$(find candidates -name '*.exe' | wc -l)" -eq 1
           test "$(find candidates -name '*.dmg' | wc -l)" -eq 2
+
+  publish-release:
+    name: Publish signed desktop release
+    if: needs.release-metadata.outputs.is_release == 'true'
+    runs-on: ubuntu-latest
+    needs: [release-metadata, package-windows, package-macos, verify-artifact-roundtrip]
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ github.ref_name }}
+      RELEASE_VERSION: ${{ needs.release-metadata.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: wyckoff-*-release
+          merge-multiple: true
+          path: release-assets/
+      - name: Verify release assets and write checksums
+        shell: bash
+        run: |
+          test "$(find release-assets -name '*.exe' | wc -l)" -eq 1
+          test "$(find release-assets -name '*.dmg' | wc -l)" -eq 2
+          cd release-assets
+          sha256sum *.exe *.dmg > SHA256SUMS.txt
+      - name: Create public GitHub Release
+        shell: bash
+        run: |
+          gh release create "$RELEASE_TAG" release-assets/*.exe release-assets/*.dmg release-assets/SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --generate-notes \
+            --title "Wyckoff Desktop v$RELEASE_VERSION"

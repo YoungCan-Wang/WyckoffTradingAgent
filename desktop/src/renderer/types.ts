@@ -62,6 +62,14 @@ export interface WyckoffBridge {
   exportPdf: (payload: { body: string; wrap: boolean; name: string }) => Promise<{ ok: boolean; error?: string }>
   /** 遥控开启时阻止系统睡眠。锁屏/息屏不受影响 —— 那两种状态本来就能用。 */
   keepAwake?: (keep: boolean) => Promise<{ ok: boolean; blocking: boolean }>
+  checkUpdate: () => Promise<{
+    ok: boolean
+    currentVersion: string
+    latestVersion?: string
+    updateAvailable?: boolean
+    releaseUrl?: string
+  }>
+  openRelease: (url: string) => Promise<{ ok: boolean }>
   status: () => Promise<PyStatus>
   restart: () => Promise<{ ok: boolean }>
   onEvent: (handler: (event: PyEvent) => void) => () => void

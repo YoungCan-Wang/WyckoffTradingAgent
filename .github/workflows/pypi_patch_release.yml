@@ -14,11 +14,42 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
-    name: Validate and build patch release
+  changes:
+    name: Detect PyPI package changes
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.scope.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || 'main' }}
+          fetch-depth: 2
+      - name: Collect merged paths
+        if: github.event_name != 'workflow_dispatch'
+        shell: bash
+        run: git diff --name-only HEAD^ HEAD > "$RUNNER_TEMP/changed-paths.txt"
+      - name: Force manual release
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: echo pyproject.toml > "$RUNNER_TEMP/changed-paths.txt"
+      - name: Decide release scope
+        id: scope
+        shell: bash
+        run: |
+          cat "$RUNNER_TEMP/changed-paths.txt"
+          publish="$(python scripts/release_scope.py pypi "$RUNNER_TEMP/changed-paths.txt")"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          if [[ "$publish" != "true" ]]; then
+            echo "No wheel or sdist input changed; PyPI release is skipped."
+          fi
+
+  build:
+    name: Validate and build patch release
+    needs: changes
+    if: needs.changes.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:
@@ -33,7 +64,7 @@ jobs:
       # Trusted Publishing 发 PyPI —— 让它签出外部 PR 的代码等于把发包权交出去。
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ github.event.workflow_run.head_sha || 'main' }}
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11"

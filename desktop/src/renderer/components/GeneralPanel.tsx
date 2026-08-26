@@ -1,4 +1,5 @@
 /** 「通用」页：外观 + 行为两栏。 */
+import { useEffect, useState } from 'react'
 import { Row, Seg, Range, SecHead } from './Rows'
 import { applyAppearance, previewFontScale } from '../lib/appearance'
 import type { Settings } from '../types'
@@ -13,6 +14,13 @@ interface Props {
 
 export function GeneralPanel ({ data, notes, save }: Props) {
   const note = (key: keyof Settings) => notes[String(key)]
+  const [update, setUpdate] = useState<Awaited<ReturnType<typeof window.wyckoff.checkUpdate>> | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    void window.wyckoff.checkUpdate().then((result) => { if (alive) setUpdate(result) })
+    return () => { alive = false }
+  }, [])
 
   /**
    * 改一个设置项，并让命令式那侧也跟上。
@@ -137,6 +145,27 @@ export function GeneralPanel ({ data, notes, save }: Props) {
           choices={[[false, t('behavior.motionNormal')], [true, t('behavior.motionReduced')]]}
           onPick={(v) => void saveAndApply('desktop_reduce_motion', v)}
         />
+      </Row>
+
+      <SecHead k="settings.updates" />
+
+      <Row
+        label={t('updates.version')}
+        hint={update ? t('updates.current', { version: update.currentVersion }) : t('updates.checking')}
+      >
+        {update?.updateAvailable && update.releaseUrl ? (
+          <button
+            type="button"
+            className="b pri"
+            onClick={() => void window.wyckoff.openRelease(update.releaseUrl!)}
+          >
+            {t('updates.download', { version: update.latestVersion || '' })}
+          </button>
+        ) : (
+          <span className={update?.ok ? 'ok' : 'miss'}>
+            {update?.ok ? t('updates.latest') : update ? t('updates.failed') : t('updates.checking')}
+          </span>
+        )}
       </Row>
     </>
   )
