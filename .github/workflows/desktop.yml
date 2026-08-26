@@ -7,8 +7,9 @@ name: Desktop
 # macOS 上做，那些分支从来没有真正跑过。所以这里的重点不是「再跑一遍单元测试」，
 # 而是**在真的 Windows 机器上打一次包**。
 #
-# Playwright 启动真实 Electron 窗口；打包任务再构建并运行真实 Python payload，
-# 产出的 EXE / DMG 才能作为候选安装包，而不是只验证 electron-builder 的空壳。
+# 日常 push/PR 只跑三平台测试，不构建安装包。只有显式手动候选构建或
+# desktop-v* 正式发布标签才进入打包任务，避免每次代码改动都消耗三平台打包时间。
+# 正式打包仍会构建并运行真实 Python payload，不能用 renderer-only 空壳代替。
 
 on:
   # 手动触发：功能分支上要出候选安装包时用。
@@ -160,6 +161,7 @@ jobs:
   # no longer publishes win_arm64 wheels, so a reproducible frozen runtime is not
   # available without maintaining a native OpenSSL toolchain.
   package-windows:
+    if: github.event_name == 'workflow_dispatch' || needs.release-metadata.outputs.is_release == 'true'
     runs-on: windows-latest
     needs: [test, release-metadata]
     defaults:
@@ -229,6 +231,7 @@ jobs:
           if-no-files-found: error
 
   package-macos:
+    if: github.event_name == 'workflow_dispatch' || needs.release-metadata.outputs.is_release == 'true'
     strategy:
       fail-fast: false
       matrix:

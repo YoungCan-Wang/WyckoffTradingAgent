@@ -134,10 +134,24 @@ def _check_workflow(path: Path) -> list[str]:
     return failures
 
 
+def _check_desktop_packaging_scope() -> list[str]:
+    path = WORKFLOW_DIR / "desktop.yml"
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    jobs = data.get("jobs", {})
+    required_gate = "github.event_name == 'workflow_dispatch' || needs.release-metadata.outputs.is_release == 'true'"
+    failures: list[str] = []
+    for job_name in ("package-windows", "package-macos"):
+        if jobs.get(job_name, {}).get("if") != required_gate:
+            failures.append(f"{path}: job {job_name} must only package manual candidates or desktop release tags")
+    return failures
+
+
 def main() -> int:
     failures: list[str] = []
     for path in sorted(WORKFLOW_DIR.glob("*.yml")) + sorted(WORKFLOW_DIR.glob("*.yaml")):
         failures.extend(_check_workflow(path))
+
+    failures.extend(_check_desktop_packaging_scope())
 
     shared_group = "step4-oms-a-share-${{ github.ref }}"
     for name in ("wyckoff_funnel.yml", "step4_from_supabase.yml"):

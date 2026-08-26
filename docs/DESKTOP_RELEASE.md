@@ -17,10 +17,11 @@ dependency does not publish `win_arm64` wheels, so CI cannot currently create a
 reproducible self-contained Python runtime for that architecture without adding
 and maintaining a native OpenSSL build toolchain.
 
-Each job runs the bundled `wyckoff-ipc` health and daemon entrypoints from the packaged application. Push and PR runs do
-not upload the large installers; manual candidate runs retain them for at most one day. Tag releases delete their temporary
-Actions artifacts immediately after copying the installers to GitHub Releases. A separate daily cleanup removes any
-still-active artifact of at least 50 MB once it is more than 24 hours old.
+Routine push and PR runs stop after the native-platform Electron tests; they do not enter the packaging jobs. A manual
+candidate run builds the three installers, runs the bundled `wyckoff-ipc` health and daemon entrypoints, and retains the
+downloads for at most one day. Tag releases run the same packaged-runtime checks and delete their temporary Actions
+artifacts immediately after copying the installers to GitHub Releases. A separate daily cleanup removes any still-active
+artifact of at least 50 MB once it is more than 24 hours old.
 
 Build locally from `desktop/`:
 
@@ -35,9 +36,18 @@ The cross-platform Python bundler is `scripts/build_python_ipc.py`; `scripts/bui
 
 GitHub Releases is the public distribution and changelog surface. Workflow artifacts are temporary, hidden behind an Actions run, and must not be linked as the product download.
 
-Normal branch and PR runs still build and verify unsigned/ad-hoc candidates without storing them. A manual workflow run
-uploads candidates for one day when a clean-machine download is actually needed. A tag matching the version in
-`desktop/package.json` turns the same verified workflow into the public release path:
+Normal branch and PR runs execute tests only. A manual workflow run builds and uploads candidates for one day when a
+clean-machine download is actually needed. Public releases should be started with the repository's user-invocable
+`desktop-release` Skill, which validates `main`, increments `desktop/package.json` and its lockfile, waits for the version
+commit's CI, and pushes a matching `desktop-vX.Y.Z` tag:
+
+```text
+/desktop-release patch
+/desktop-release minor
+/desktop-release 0.2.0
+```
+
+When no argument is supplied, the Skill defaults to a patch release. The equivalent low-level tag operation is:
 
 ```bash
 git tag desktop-v0.1.0
