@@ -102,7 +102,10 @@ class TestValidateCron:
         crashers = ["1-5/2 9 * * *", "abc 9 * * *", "0 9 * * x"]
         for cron in crashers:
             assert scheduler.validate_cron(cron) is not None
-            with pytest.raises(Exception):
+            # 断言具体的 ValueError 而不是裸 Exception：裸 Exception 会把
+            # AttributeError、TypeError 这类「代码写错了」也当成通过 ——
+            # 那时这条测试还是绿的，但它保护的东西已经没了。
+            with pytest.raises(ValueError):
                 scheduler.cron_matches_now(cron, datetime(2026, 8, 25, 9, 0))
 
 

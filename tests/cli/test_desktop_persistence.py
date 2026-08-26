@@ -7,8 +7,6 @@ Electron 里聊了几十轮，误关窗口就全没了 —— 而 TUI 用户不�
 
 from __future__ import annotations
 
-import sqlite3
-
 import pytest
 
 

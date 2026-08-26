@@ -613,9 +613,7 @@ def _checked_action(action: str) -> str:
 
 def schedule_create(params: dict[str, Any]) -> Iterator[Event]:
     """新建一个定时任务。"""
-    from cli.scheduler import Schedule, save_schedules, schedule_status, schedules_lock
-
-    from cli.scheduler import DEFAULT_PRESETS
+    from cli.scheduler import DEFAULT_PRESETS, Schedule, save_schedules, schedule_status, schedules_lock
 
     name = _checked_name(params.get("name"))
     cron = _checked_cron(params.get("cron"))
