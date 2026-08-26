@@ -1,0 +1,14 @@
+{
+  "name": "Wyckoff 遥控",
+  "short_name": "Wyckoff",
+  "description": "手机遥控电脑上的 Wyckoff 助手",
+  "start_url": "/m",
+  "scope": "/m",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#fafaf9",
+  "theme_color": "#1c1917",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

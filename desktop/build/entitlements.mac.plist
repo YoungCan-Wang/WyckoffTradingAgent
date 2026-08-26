@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  硬化运行时下 spawn 打包的 Python 需要这些豁免。缺了它们，开发时一切正常，
+  签名后启动子进程直接崩 —— 而且崩在 Electron 之外，日志里看不到原因。
+
+  allow-unsigned-executable-memory / allow-jit：CPython 与 numpy 会生成可执行页。
+  disable-library-validation：PyInstaller 打进来的 .so 不是 Apple 签的，
+  库校验会拒绝加载它们。
+  network.client：数据源和模型 API 都要出网。
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+    <key>com.apple.security.network.client</key>
+    <true/>
+</dict>
+</plist>

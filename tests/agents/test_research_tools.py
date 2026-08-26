@@ -8,15 +8,11 @@ from integrations import local_db
 
 @pytest.fixture(autouse=True)
 def research_db(tmp_path, monkeypatch):
-    if local_db._conn is not None:
-        local_db._conn.close()
-    local_db._conn = None
+    local_db.reset_connection()
     monkeypatch.setattr("core.constants.LOCAL_DB_PATH", tmp_path / "research.db")
     local_db.init_db()
     yield
-    if local_db._conn is not None:
-        local_db._conn.close()
-    local_db._conn = None
+    local_db.reset_connection()
 
 
 def _create() -> dict:

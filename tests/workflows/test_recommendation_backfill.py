@@ -152,7 +152,11 @@ def test_recommendation_backfill_workflow_defaults_to_dry_run_and_uploads_artifa
     assert 'if [ "$INPUT_APPLY" = "true" ]; then' in workflow_text
     assert "scripts/backfill_recommendation_tracking.py" in workflow_text
     assert "--skip-step3" in workflow_text
-    assert "actions/upload-artifact@v4" in workflow_text
+    # 只断言「有上传产物这一步」，不锁版本 —— 版本下界由
+    # scripts/check_workflow_hygiene.py 的 MIN_ACTION_MAJORS 统一把关。
+    # 写死 @v4 的后果是每次升 action 都要改这里，而这条测试的意图
+    # 是「失败时日志要传上去」，跟版本无关。
+    assert "actions/upload-artifact@" in workflow_text
     assert "if: always()" in workflow_text
 
 

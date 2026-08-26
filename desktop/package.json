@@ -1,0 +1,82 @@
+{
+  "name": "wyckoff-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Wyckoff 读盘室桌面端",
+  "author": "YoungCan Wang",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "npm run build:ui && electron .",
+    "start:debug": "electron . --inspect",
+    "test": "node --test test/*.test.js",
+    "build:py": "node ../scripts/run_build_python_ipc.cjs",
+    "package:prepare": "npm run build:ui && npm run build:py",
+    "pack": "npm run package:prepare && electron-builder --dir",
+    "dist": "npm run package:prepare && electron-builder",
+    "typecheck": "tsc -b",
+    "build:ui": "vite build",
+    "dev:ui": "vite",
+    "test:e2e": "npm run build:ui && node test/e2e/workbench.mjs && node test/e2e/login.mjs && node test/e2e/artifact-host.mjs"
+  },
+  "devDependencies": {
+    "@electron/asar": "4.3.0",
+    "@types/qrcode": "1.5.5",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^4.7.0",
+    "electron": "43.4.1",
+    "electron-builder": "^26.0.12",
+    "playwright": "1.62.1",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.3"
+  },
+  "build": {
+    "appId": "com.youngcan.wyckoff",
+    "productName": "Wyckoff",
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "afterPack": "build/after-pack.cjs",
+    "icon": "build/icon.png",
+    "files": [
+      "src/**/*",
+      "!test/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../dist/python/wyckoff-ipc",
+        "to": "wyckoff-ipc"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.finance",
+      "target": [
+        "dmg"
+      ],
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "icon": "build/icon-macos.png"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Office"
+    }
+  },
+  "dependencies": {
+    "lucide": "0.468.0",
+    "qrcode": "1.5.4",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  }
+}

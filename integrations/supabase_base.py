@@ -21,6 +21,43 @@ WRITE_CONTEXT_ENV = "WYCKOFF_WRITE_CONTEXT"
 SERVER_WRITE_CONTEXT = "server_job"
 CLI_WRITE_CONTEXT = "cli"
 
+# 网络超时。
+#
+# 这是实测踩出来的：桌面端切到持仓页永久卡在「读取中…」。量下来 `account`
+# 25ms 返回，`portfolio` 超过 15s 从未结束 —— 它先走 Supabase，而
+# `client.auth.set_session` 卡在 TLS 握手上。
+#
+# supabase-py 的默认值救不了这个场景：
+# - `postgrest_client_timeout` 默认 **120s**，等于界面挂两分钟
+# - auth 那个 gotrue client **没有任何超时选项**，只能靠注入自己的 httpx client
+#
+# 所以统一传 `httpx_client`：实测它同时被 auth 和 postgrest 采用（两处
+# `is ours` 都为 True），一处设置覆盖两条链路。
+#
+# 取值：连接 5s、读写 8s。持仓页是交互路径，用户在等；宁可快速失败落到本地库，
+# 也不要让他对着转圈猜。定时任务那类后台路径本来就允许重试。
+CONNECT_TIMEOUT_SECONDS = 5.0
+READ_TIMEOUT_SECONDS = 8.0
+
+
+def _timeout_client():
+    """带超时的 httpx client。
+
+    每次 create_* 都新建一个：httpx.Client 不是线程安全的复用对象，而这里的
+    调用方既有 IPC 线程池也有定时任务。共享一个实例省不下多少，却会引入
+    「一个请求把连接池占满，另一个跟着挂」这类难查的问题。
+    """
+    import httpx
+
+    return httpx.Client(timeout=httpx.Timeout(READ_TIMEOUT_SECONDS, connect=CONNECT_TIMEOUT_SECONDS))
+
+
+def _client_options():
+    """统一的 ClientOptions —— 只为把超时注进去。"""
+    from supabase import ClientOptions
+
+    return ClientOptions(httpx_client=_timeout_client())
+
 
 def _resolve_credentials() -> tuple[str, str]:
     """解析 Supabase URL 和 Key，统一回退链：环境变量 → 内置 anon key。"""
@@ -50,7 +87,7 @@ def create_admin_client() -> Client:
         raise ValueError("SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY 未配置")
     from supabase import create_client
 
-    return create_client(url, service_key)
+    return create_client(url, service_key, options=_client_options())
 
 
 def create_anon_client() -> Client:
@@ -60,7 +97,7 @@ def create_anon_client() -> Client:
     url, key = _resolve_credentials()
     if not url or not key:
         raise ValueError("Missing Supabase credentials. Please set SUPABASE_URL and SUPABASE_KEY.")
-    return create_client(url, key)
+    return create_client(url, key, options=_client_options())
 
 
 def create_read_client() -> Client:
@@ -85,7 +122,7 @@ def create_user_client(access_token: str, refresh_token: str = "") -> Client:
     url, key = _resolve_credentials()
     if not url or not key:
         raise ValueError("SUPABASE_URL / SUPABASE_KEY 未配置")
-    client = create_client(url, key)
+    client = create_client(url, key, options=_client_options())
     if refresh_token:
         resp = client.auth.set_session(access_token, refresh_token)
         # set_session 返回新 token pair，用新的 access_token 做 postgrest auth

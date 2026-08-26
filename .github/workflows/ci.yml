@@ -35,8 +35,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - name: Install ruff
@@ -51,8 +51,8 @@ jobs:
   quality-gate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - name: Function length and LOC trend
@@ -61,8 +61,8 @@ jobs:
   workflow-hygiene:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - name: Install workflow parser
@@ -73,8 +73,8 @@ jobs:
   dependency-hygiene:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - name: Check dependency hygiene
@@ -87,8 +87,8 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       # 从 API 现取 body，而不是读 event payload：payload 是事件发生那一刻的快照，且
@@ -109,8 +109,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: "pip"
@@ -127,7 +127,7 @@ jobs:
           python -m coverage report
           python -m coverage json -o coverage.json
       - name: Upload coverage artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: coverage-report-${{ github.run_number }}
@@ -139,8 +139,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: "pip"
@@ -163,11 +163,18 @@ jobs:
     runs-on: ubuntu-latest
     if: contains(toJSON(github.event.commits.*.modified), 'web/') || contains(toJSON(github.event.commits.*.added), 'web/') || github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      # 刻意留在 v4 线，只把补丁提到 4.4.0（那一版才带 Node 24 运行时）。
+      #
+      # v6 是为 pnpm v11 做的破坏性变更，而我们锁 pnpm 10.33.2
+      # （与 web/package.json 的 packageManager 字段对齐）。上游 README 也写着
+      # v4「remains the action to use for installing pnpm v10 and older」。
+      # 另外这个 action 已被 pnpm/setup 取代 —— 等真要上 pnpm 11 时一并迁移，
+      # 不在这次「消 Node 20 废弃警告」的改动里混进去。
+      - uses: pnpm/action-setup@v4.4.0
         with:
           version: 10.33.2
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm

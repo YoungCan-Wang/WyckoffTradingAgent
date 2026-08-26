@@ -1,0 +1,288 @@
+/**
+ * 对话状态机：发消息、接事件流、收尾。
+ *
+ * 桥不是 request/response 而是「同 id 的事件流」，所以订阅只挂一次，靠
+ * event.id 分发到对应的轮次 —— 每轮各自订阅会在长会话里堆几十个监听器。
+ */
+import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  applyEvent, isPortfolioWriteTool,
+  type Turn
+} from './chat'
+import { collect } from './ipc'
+import { type ChatArtifact } from './artifacts'
+import { useArtifacts } from './useArtifacts'
+
+const t = (key: string, params?: Record<string, string | number>) => window.WyckoffI18n.t(key, params)
+
+export interface ChatApi {
+  turns: Turn[]
+  busy: boolean
+  /** 有过任何一轮 = 欢迎页该让位给对话 */
+  started: boolean
+  send: (text: string) => Promise<void>
+  /** 开一段新会话。旧会话留在列表里（原来是把当前会话清空）。 */
+  reset: () => Promise<boolean>
+  /** 切到某个历史会话，把它的对话渲染出来。 */
+  loadSession: (id: string) => Promise<boolean>
+  /** 当前会话 id。空串表示后端还没分配。 */
+  sessionId: string
+  /** 系统提示行（退出登录、切模型失败之类）也进对话流。 */
+  sysLine: (text: string, isError?: boolean) => void
+  invalidateOnTool: (toolName: string) => void
+  /** 本会话的全部产物 —— 对话卡片与页签共用同一份数据。 */
+  artifacts: ChatArtifact[]
+  /** 用户主动打开某个产物。 */
+  openArtifact: (artifact: ChatArtifact) => void
+}
+
+export function useChat (ready: boolean): ChatApi {
+  const artifactsApi = useArtifacts()
+  const [turns, setTurns] = useState<Turn[]>([])
+  const [busy, setBusy] = useState(false)
+  // 当前会话 id。后端在每轮开头回传（chat 的第一个 result 事件），因为用户
+  // 可能在流式输出期间切走 —— 事件得知道往哪条时间线上贴。
+  const [sessionId, setSessionId] = useState('')
+  // 事件到达时要改「当前活跃的那一轮」，用 ref 拿最新值 —— 闭包里读 state
+  // 会读到订阅建立时的旧值。
+  const liveIds = useRef<Set<string>>(new Set())
+  /**
+   * send 还在等 {ok,id} 期间到达的事件，按 id 暂存。
+   *
+   * 桥一收到请求就同步开始推事件，而 id 要跨进程回来 —— 所以头几个 delta
+   * 一定早于我们建这一轮。它们既进不了 liveIds 判断（那时还没登记），也找不到
+   * 对应的 turn，于是被静默丢掉：正文从中间某句开始，前面的段落和列表项凭空
+   * 消失（界面上看不出丢了东西，这是最糟的一点）。
+   */
+  const pendingEvents = useRef<Map<string, Array<Record<string, unknown>>>>(new Map())
+  /** 有 send 在飞行中 —— 此时遇到不认识的 id 要缓存，而不是丢掉。 */
+  const sendInFlight = useRef(0)
+
+  const invalidateOnTool = useCallback((toolName: string) => {
+    if (!isPortfolioWriteTool(toolName)) return
+    window.WyckoffReact?.clearPortfolioCaches?.()
+  }, [])
+
+  const handleLiveEvent = useCallback((event: Record<string, unknown>) => {
+    const id = String(event.id || '')
+    const type = String(event.type || '')
+    if (type === 'tool_start') {
+      // 改持仓的工具一开跑就作废缓存：审批可能被「本次会话总是允许」放行，
+      // 那条路径不产生审批事件，只能挂在这里。
+      invalidateOnTool(String(event.name || ''))
+      // 刻意**不**在这里开 K 线图。
+      //
+      // 旧实现在 tool_start 就 openKline：工具还没成功,失败会留一个空面板;
+      // 而且 action=list（只是列出标注）也会弹开图表页。现在由后端在
+      // tool_result 之后发 chat_artifact 事件,useArtifacts 据它决定是否展开。
+      //
+      // drewCharts 仍要记：标注是在图建好之后写的,end 时要刷新一次。
+      const code = (event.args as { code?: string } | undefined)?.code
+      if (String(event.name || '') === 'annotate_chart' && code) {
+        setTurns((prev) => prev.map((x) => (
+          x.id === id
+            ? { ...x, drewCharts: [...(x.drewCharts || []), String(code)] }
+            : x
+        )))
+      }
+    }
+
+    if (type === 'approval_pending') window.WyckoffApp?.refreshApprovals?.()
+
+    if (type === 'done') {
+      setTurns((prev) => prev.map((x) => {
+        if (x.id !== id) return x
+        // **刻意不再靠文本长相猜报告。**
+        //
+        // 原来这里有一条 looksLikeReport() 回退：正文超 400 字且含标题或表格，
+        // 就当成报告送去右侧面板,并且 `.filter(b => b.kind !== 'text')`
+        // **把正文从对话里整块删掉**。
+        //
+        // 两个后果,用户都撞上了:
+        //
+        // 1. 误判率极高 —— 任何一段带小标题的正经分析都超过 400 字。用户问
+        //    「我的持仓怎么了」,得到的是一个面板,而主聊天里一个字都没有。
+        // 2. 答复被搬走 —— 那段正文本来就是对提问的回答,尤其当它末尾还写着
+        //    「要不要我再帮你跑一次」时,对话显然没结束,不该被塞进产物面板。
+        //
+        // 「这是不是一份报告」由产出它的人声明(save_report),不由读者按字数猜。
+        // 兼容旧后端不值得用「有时把答案藏起来」来换。
+        // done 带了完整文本而流式一个字都没来（非流式模型）：补上。
+        if (event.text && !x.blocks.some((b) => b.kind === 'text')) {
+          return { ...x, blocks: [...x.blocks, { kind: 'text', text: String(event.text) }] }
+        }
+        return x
+      }))
+      return
+    }
+
+    if (type === 'end') {
+      liveIds.current.delete(id)
+      setBusy(false)
+      setTurns((prev) => prev.map((x) => {
+        if (x.id !== id) return x
+        // 标注是在图建好之后写的，所以这一轮画过的图要再刷一次。
+        if (x.drewCharts?.length) window.WyckoffApp?.refreshCharts?.(x.drewCharts)
+        return { ...x, live: false }
+      }))
+      return
+    }
+
+    setTurns((prev) => prev.map((x) => (x.id === id ? applyEvent(x, event) : x)))
+  }, [invalidateOnTool, artifactsApi])
+
+  useEffect(() => {
+    const off = window.wyckoff.onEvent((event) => {
+      const id = String(event.id || '')
+      if (!id) return
+      if (!liveIds.current.has(id)) {
+        // 不是我们在等的流。但如果此刻有 send 在飞行，这可能正是它的前几个
+        // 事件（id 还没回来）—— 缓存等回放。缓存只在飞行期间增长，send 一
+        // 落地就会取走或清掉，不会无界堆积。
+        if (!sendInFlight.current) return
+        const list = pendingEvents.current.get(id) || []
+        list.push(event)
+        pendingEvents.current.set(id, list)
+        return
+      }
+      handleLiveEvent(event)
+    })
+    return off
+  }, [handleLiveEvent])
+
+  const sysLine = useCallback((text: string, isError = false) => {
+    setTurns((prev) => [...prev, {
+      id: `sys-${Date.now()}-${prev.length}`,
+      blocks: [isError ? { kind: 'error', message: text } : { kind: 'note', text }],
+      live: false
+    }])
+  }, [])
+
+  const send = useCallback(async (text: string) => {
+    const body = text.trim()
+    if (!body || busy || !ready) return
+    setBusy(true)
+    sendInFlight.current += 1
+    // 带上 session_id：不带的话后端用它自己的「活跃会话」，而前端认为的活跃
+    // 可能已经变了（用户刚点了列表里的另一个会话）—— 那会把这句话写进错的会话。
+    const params: Record<string, unknown> = { text: body }
+    if (sessionId) params.session_id = sessionId
+    const res = await window.wyckoff.call('chat', params).finally(() => {
+      sendInFlight.current -= 1
+    })
+    if (!res.ok || !res.id) {
+      // 用户那句话仍要留在流里，否则他会以为自己没发出去。
+      setTurns((prev) => [...prev, {
+        id: `fail-${Date.now()}`,
+        user: body,
+        blocks: [{ kind: 'error', message: String(res.error || t('chat.sendFailed')) }],
+        live: false
+      }])
+      setBusy(false)
+      return
+    }
+    // 必须 String()：桥回的 id 是**数字**（python-bridge 用自增计数器），而
+    // 事件分发那边比的是 String(event.id)。混着用会让 Set.has('9') 对 9 恒为
+    // 假 —— 每条事件都被丢掉，界面永远停在「正在思考…」。
+    const id = String(res.id)
+    // 新一轮：重置「本轮已展开」与「本轮关过」——上一轮的关闭不该影响这一轮。
+    artifactsApi.beginTurn()
+    liveIds.current.add(id)
+    setTurns((prev) => [...prev, { id, user: body, blocks: [], live: true, at: Date.now() }])
+    // 回放 await 期间缓存下来的事件，然后把缓存清空 —— 没被认领的那些属于
+    // 页面调用（它们有自己的订阅），留着只会占内存。
+    const early = pendingEvents.current.get(id)
+    pendingEvents.current.clear()
+    if (early?.length) {
+      for (const event of early) handleLiveEvent(event)
+    }
+  }, [busy, ready, handleLiveEvent, sessionId])
+
+  /**
+   * 换账号：把这一侧的全部轮次状态清空。
+   *
+   * 之前**完全没有**这段 —— useChat 里 `account-changed` 出现 0 次,而 App.tsx
+   * 派发了它,持仓和归因都接了,只有对话没接。后果有两层:
+   *
+   * 1. 上一个账号的 turns 和产物继续显示给新登录的人;
+   * 2. 更严重的是 `sessionId` 也留着,新账号发消息时把它带上,后端据此恢复
+   *    历史 —— 那是跨账号泄漏的触发路径(后端那侧已按 user_id 过滤,
+   *    但两处都该修:少了这里,界面上仍然摆着上一个人的对话)。
+   *
+   * 不调 chat_reset：那是个 IPC 往返,而这里要的是**立刻**清干净。后端的会话
+   * 由 sync_all_identities 负责重建,两侧各管自己那一半。
+   */
+  const clearForAccountChange = useCallback(() => {
+    liveIds.current.clear()
+    pendingEvents.current.clear()
+    sendInFlight.current = 0
+    setTurns([])
+    setBusy(false)
+    setSessionId('')
+    artifactsApi.reset()
+  }, [artifactsApi])
+
+  useEffect(() => {
+    window.addEventListener('wyckoff:account-changed', clearForAccountChange)
+    return () => window.removeEventListener('wyckoff:account-changed', clearForAccountChange)
+  }, [clearForAccountChange])
+
+  const reset = useCallback(async () => {
+    if (busy || !ready) return false
+    const result = await collect('chat_reset').catch(() => null)
+    if (!result) {
+      sysLine(t('chat.resetFailed'), true)
+      return false
+    }
+    liveIds.current.clear()
+    pendingEvents.current.clear()
+    setTurns([])
+    setBusy(false)
+    setSessionId(String(result.session_id || ''))
+    return true
+  }, [busy, ready, sysLine])
+
+  const loadSession = useCallback(async (id: string) => {
+    // 一轮还在跑时不切：那一轮的事件会继续按 id 分发到旧 turn 上，而 turns
+    // 已经被替换 —— 事件找不到归属，界面上表现为回复凭空消失。
+    if (busy || !ready || !id) return false
+    const result = await collect('chat_load', { session_id: id }).catch(() => null)
+    if (!result) {
+      sysLine(t('chat.loadFailed'), true)
+      return false
+    }
+    const rows = (result.turns as Array<{ role: string; content: string; at: string }>) || []
+    // 把 user/assistant 交替的扁平记录折回轮次结构。历史只有文本 ——
+    // 工具调用细节留在 scratchpad 里做取证，不重放到界面上。
+    const restored: Turn[] = []
+    for (const row of rows) {
+      if (row.role === 'user') {
+        restored.push({ id: `h${restored.length}`, user: row.content, blocks: [], live: false })
+      } else if (row.content) {
+        const last = restored[restored.length - 1]
+        if (last && !last.blocks.length) last.blocks.push({ kind: 'text', text: row.content })
+        else restored.push({ id: `h${restored.length}`, blocks: [{ kind: 'text', text: row.content }], live: false })
+      }
+    }
+    liveIds.current.clear()
+    pendingEvents.current.clear()
+    setTurns(restored)
+    setBusy(false)
+    setSessionId(id)
+    return true
+  }, [busy, ready, sysLine])
+
+  return {
+    turns,
+    busy,
+    started: turns.length > 0,
+    send,
+    reset,
+    loadSession,
+    sessionId,
+    sysLine,
+    invalidateOnTool,
+    artifacts: artifactsApi.artifacts,
+    openArtifact: artifactsApi.open
+  }
+}

@@ -157,3 +157,77 @@ class TestExecutionAudit:
 
         assert aq.get(approval_id, db_path=db).status == aq.FAILED
         assert aq.decide(approval_id, approved=True, db_path=db) is None
+
+
+class TestRiskReason:
+    """档位理由随记录存下来，展示时不重算。"""
+
+    def test_round_trips(self, db):
+        approval_id = _enqueue(db, risk_reason="reason.over_nav", nav_ratio=0.062)
+        record = aq.get(approval_id, db_path=db)
+        assert record.risk_reason == "reason.over_nav"
+        assert record.nav_ratio == pytest.approx(0.062)
+
+    def test_survives_list_pending(self, db):
+        _enqueue(db, risk_reason="reason.destructive_action")
+        assert aq.list_pending(db_path=db)[0].risk_reason == "reason.destructive_action"
+
+    def test_defaults_are_empty_not_null(self, db):
+        """老调用方不传理由也要能工作，读出来是空串而不是 None。"""
+        record = aq.get(_enqueue(db), db_path=db)
+        assert record.risk_reason == ""
+        assert record.nav_ratio == 0.0
+
+    def test_migrates_existing_db_missing_the_columns(self, db):
+        """已经在用的库要能加列，而不是启动就崩。"""
+        _enqueue(db)
+        with sqlite3.connect(db) as conn:
+            conn.execute("ALTER TABLE approvals DROP COLUMN risk_reason")
+            conn.execute("ALTER TABLE approvals DROP COLUMN nav_ratio")
+
+        fresh = _enqueue(db, risk_reason="reason.write_tool")
+        assert aq.get(fresh, db_path=db).risk_reason == "reason.write_tool"
+        assert len(aq.list_pending(db_path=db)) == 2
+
+
+def test_concurrent_decisions_execute_once(tmp_path):
+    """手机和电脑同时批同一项，只能有一个成功。
+
+    多设备遥控之后这不再是理论场景：两块屏幕都显示着同一个待批项，用户在手机上
+    点了、又想起电脑上也开着。重复执行一次卖出是真金白银。
+
+    `decide()` 靠 `BEGIN IMMEDIATE` + `UPDATE ... WHERE status='pending'` 的
+    rowcount 守住。这条测试之前不存在 —— 只有串行的 test_cannot_decide_twice。
+    """
+    import threading
+
+    db = tmp_path / "race.db"
+    approval_id = aq.enqueue(
+        "set_stop_loss",
+        {"code": "600519", "stop_loss": 1200},
+        risk="confirm",
+        source="test",
+        summary="设止损",
+        user_id="alice",
+        db_path=db,
+    )
+
+    won: list[object] = []
+    errors: list[str] = []
+
+    def attempt() -> None:
+        try:
+            if aq.decide(approval_id, approved=True, db_path=db) is not None:
+                won.append(1)
+        except Exception as exc:  # noqa: BLE001 - 锁竞争不该抛，抛了就是缺陷
+            errors.append(repr(exc))
+
+    threads = [threading.Thread(target=attempt) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == [], f"并发决策抛异常：{errors}"
+    assert len(won) == 1, f"应恰好一个成功，实际 {len(won)}"
+    assert aq.get(approval_id, db_path=db).status == aq.APPROVED

@@ -1,0 +1,365 @@
+name: Desktop
+
+# 桌面端此前完全没有 CI —— ci.yml 的 paths 里连 desktop/** 都没有。
+#
+# 而这个应用有一整套**只在 Windows 上执行**的代码：taskkill 回收进程树、
+# .venv/Scripts/python.exe 的解释器布局、wyckoff-ipc.exe 的二进制名。开发全在
+# macOS 上做，那些分支从来没有真正跑过。所以这里的重点不是「再跑一遍单元测试」，
+# 而是**在真的 Windows 机器上打一次包**。
+#
+# 日常 push/PR 只跑三平台测试，不构建安装包。只有显式手动候选构建或
+# desktop-v* 正式发布标签才进入打包任务，避免每次代码改动都消耗三平台打包时间。
+# 正式打包仍会构建并运行真实 Python payload，不能用 renderer-only 空壳代替。
+
+on:
+  # 手动触发：功能分支上要出候选安装包时用。
+  #
+  # 下面的 push/pull_request 只认 main 和 feature/visible，所以在别的分支上做完
+  # 一个能上手验的功能之后，没有任何办法拿到包 —— 只能先合进去，而「合进去才能验」
+  # 恰好是反的。这个入口让任意分支都能按需出包。
+  workflow_dispatch:
+  push:
+    branches: [main, feature/visible]
+    tags: ["desktop-v*"]
+    paths:
+      - "desktop/**"
+      - "cli/**"
+      - "integrations/**"
+      - "agents/**"
+      - "core/**"
+      - "tools/**"
+      - "packaging/**"
+      - "scripts/build_python_ipc.*"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/desktop.yml"
+  pull_request:
+    branches: [main, feature/visible]
+    paths:
+      - "desktop/**"
+      - "cli/**"
+      - "integrations/**"
+      - "agents/**"
+      - "core/**"
+      - "tools/**"
+      - "packaging/**"
+      - "scripts/build_python_ipc.*"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/desktop.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-metadata:
+    runs-on: ubuntu-latest
+    outputs:
+      is_release: ${{ steps.meta.outputs.is_release }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate desktop release tag
+        id: meta
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          package_version="$(jq -r .version desktop/package.json)"
+          if [[ "$GITHUB_REF" == refs/tags/desktop-v* ]]; then
+            test "$RELEASE_TAG" = "desktop-v$package_version"
+            echo "is_release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_release=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$package_version" >> "$GITHUB_OUTPUT"
+
+  # 单元测试与类型检查在三个平台都跑。
+  # 跨平台跑是有意义的：测试里有路径拼接、也有读源码做静态断言的用例，
+  # Windows 的 \ 分隔符与 CRLF 都可能让它们表现不同。
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - name: Install
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Unit tests
+        run: npm test
+      - name: Build renderer
+        run: npm run build:ui
+
+      # Linux 需要虚拟显示；Windows/macOS runner 可直接启动 Electron。
+      #
+      # workbench.mjs 是原来的 smoke + schedules + archive 三份合并的 ——
+      # 它们要的环境完全一样（已登录 + 干净 HOME），没理由各起一次 Electron。
+      #
+      # 注意：这个 job **不构建 Python payload**，所以 workbench 里依赖后端的
+      # 两段（定时任务、会话）会自己探测后跳过，并在日志里打出 SKIP。这也解释了
+      # schedules/archive 原先为什么不在 CI 里 —— 不是漏加，是在这个 job 里跑不了。
+      # 那两段的完整验证靠本地跑（本地有 .venv）。
+      - name: E2E 工作台（Linux 需要虚拟显示）
+        if: runner.os == 'Linux'
+        run: xvfb-run --auto-servernum node test/e2e/workbench.mjs
+      - name: E2E 工作台
+        if: runner.os != 'Linux'
+        run: node test/e2e/workbench.mjs
+
+      # login.mjs 不在这里 —— 它已经作为下面的「登录闸门验证」跑了一遍。
+      # （未登录形态刻意单独一个进程：它要的就是「没有 WYCKOFF_E2E_FAKE_SIGNIN」
+      # 的启动路径，塞进已登录窗口就验不到了。）
+
+      # 可交互产物宿主的安全验证。这个视图**执行模型生成的代码**,所以每次改动
+      # 都要在真 Electron 上重验一遍：JS 能跑、网络出不去、拿不到宿主 API。
+      # 静态断言验不了这些 —— CSP 是否生效、fetch 是否真被拦都是运行期行为。
+      - name: 产物宿主安全验证（Linux 需要虚拟显示）
+        if: runner.os == 'Linux'
+        run: xvfb-run --auto-servernum node test/e2e/artifact-host.mjs
+      - name: 产物宿主安全验证
+        if: runner.os != 'Linux'
+        run: node test/e2e/artifact-host.mjs
+
+      # 登录闸门。两件事只有起真窗口才验得了：未登录时登录页**取代**工作台，
+      # 以及已登录时**不闪**登录页（后者依赖真实的异步时序）。
+      - name: 登录闸门验证（Linux 需要虚拟显示）
+        if: runner.os == 'Linux'
+        run: xvfb-run --auto-servernum node test/e2e/login.mjs
+      - name: 登录闸门验证
+        if: runner.os != 'Linux'
+        run: node test/e2e/login.mjs
+
+      # 开发态没有打包后的 Python payload；这里只检查 Electron 外壳能完整退出。
+      - name: 检查 Electron 残留进程（Windows）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Start-Sleep -Seconds 6
+          $left = Get-Process -Name electron -ErrorAction SilentlyContinue
+          if ($left) {
+            Write-Host "退出后仍有 electron 进程残留："
+            $left | Format-Table Id, ProcessName
+            exit 1
+          }
+          Write-Host "无残留进程"
+
+  # Windows ARM64 is not a release target yet: the locked cryptography dependency
+  # no longer publishes win_arm64 wheels, so a reproducible frozen runtime is not
+  # available without maintaining a native OpenSSL toolchain.
+  package-windows:
+    if: github.event_name == 'workflow_dispatch' || needs.release-metadata.outputs.is_release == 'true'
+    runs-on: windows-latest
+    needs: [test, release-metadata]
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          architecture: x64
+      - name: Install
+        run: npm ci
+      # 必须在这里构建前端：`npm run build:ui` 只在 test job 里跑过，而那是
+      # **另一个 runner**，产物不共享。少了这一步 dist 压根不存在，打出来的包
+      # 回退到源 index.html —— 那份没有 React，装完是纯白屏。
+      - name: Build renderer
+        run: npm run build:ui
+      - name: Build and smoke-test Python payload
+        run: python ../scripts/build_python_ipc.py
+
+      - name: Package NSIS (x64)
+        run: npx --no-install electron-builder --win --x64 --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Verify bundled runtime and installer
+        shell: pwsh
+        run: |
+          $unpacked = 'dist/win-unpacked'
+          $app = Join-Path $unpacked 'Wyckoff.exe'
+          $ipc = Join-Path $unpacked 'resources/wyckoff-ipc/wyckoff-ipc.exe'
+          if (-not (Test-Path $app)) { throw "missing packaged app: $app" }
+          if (-not (Test-Path $ipc)) { throw "missing bundled IPC: $ipc" }
+          $health = ('{"id":"smoke","method":"health","params":{}}', '__shutdown__') | & $ipc
+          if (-not ($health -match '"type": "ready"')) { throw "packaged IPC health smoke failed: $health" }
+          $daemon = & $ipc --daemon --status
+          if (-not ($daemon -match '^daemon:')) { throw "packaged daemon smoke failed: $daemon" }
+          # 渲染层产物必须在包里（同 macOS 那条：漏掉 build:ui 会让应用回退到
+          # 没有 React 的源 index.html，界面白屏而后端一切正常）。
+          $asar = Join-Path $unpacked 'resources/app.asar'
+          # 路径分隔符不写死：asar list 在 macOS 上给正斜杠，Windows 上未必
+          # （第一版用 '/src/renderer/dist/...' 在 Windows 上恒不匹配，把一个
+          # 打包成功的包报成缺文件）。统一成正斜杠再比。
+          $packed = (npx --no-install @electron/asar list $asar) -replace '\\', '/'
+          if (-not ($packed -match '/src/renderer/dist/index\.html')) {
+            Write-Host "asar 里的 renderer 相关条目（诊断用）："
+            $packed | Where-Object { $_ -match 'renderer' } | Select-Object -First 10
+            throw "包里缺少 renderer/dist —— 启动会白屏"
+          }
+          if (-not ($packed -match '/src/renderer/dist/assets/.*\.js')) {
+            throw "包里缺少前端 JS bundle"
+          }
+          $installer = Get-ChildItem "dist/*-x64.exe"
+          if (-not $installer) { throw "missing NSIS installer for x64" }
+          $installer | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v7
+        if: github.event_name == 'workflow_dispatch' || needs.release-metadata.outputs.is_release == 'true'
+        with:
+          name: ${{ needs.release-metadata.outputs.is_release == 'true' && 'wyckoff-windows-x64-public-unsigned' || 'wyckoff-windows-x64-unsigned' }}
+          path: desktop/dist/*-x64.exe
+          retention-days: 1
+          if-no-files-found: error
+
+  package-macos:
+    if: github.event_name == 'workflow_dispatch' || needs.release-metadata.outputs.is_release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            os: macos-latest
+          - arch: x64
+            os: macos-15-intel
+    runs-on: ${{ matrix.os }}
+    needs: [test, release-metadata]
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          architecture: ${{ matrix.arch }}
+      - name: Install
+        run: npm ci
+      # 同上：前端产物必须在这个 runner 上构建，test job 的产物到不了这里。
+      - name: Build renderer
+        run: npm run build:ui
+      - name: Build and smoke-test Python payload
+        run: python ../scripts/build_python_ipc.py
+      - name: Package DMG (${{ matrix.arch }})
+        run: npx --no-install electron-builder --mac --${{ matrix.arch }} --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          WYCKOFF_ADHOC_SIGN: "1"
+      - name: Verify app, bundled runtime, signature, and DMG
+        shell: bash
+        run: |
+          set -e
+          app=$(find dist -path '*/Wyckoff.app' -type d | head -1)
+          test -n "$app" || { echo "missing Wyckoff.app"; exit 1; }
+          ipc="$app/Contents/Resources/wyckoff-ipc/wyckoff-ipc"
+          test -x "$ipc" || { echo "missing bundled IPC: $ipc"; exit 1; }
+          reply=$(printf '%s\n' '{"id":"smoke","method":"health","params":{}}' '__shutdown__' | "$ipc")
+          echo "$reply" | grep -q '"type": "ready"'
+          # 渲染层产物必须在包里。
+          #
+          # 真的漏过一次：打包 job 忘了跑 `npm run build:ui`（那一步只在 test
+          # job 里有，而那是**另一个 runner**，产物不共享）。于是应用回退到源
+          # index.html —— 那份没有 React，**整个界面白屏**，而 Python 后端一切
+          # 正常、日志里没有任何错误，用户完全无法判断。
+          # 只有装完打开才看得见，所以这条检查必须在打包 job 里，不能放单测。
+          npx --no-install @electron/asar list "$app/Contents/Resources/app.asar" \
+            | grep -q '/src/renderer/dist/index.html' \
+            || { echo "包里缺少 renderer/dist —— 启动会白屏"; exit 1; }
+          npx --no-install @electron/asar list "$app/Contents/Resources/app.asar" \
+            | grep -qE '/src/renderer/dist/assets/.*\.js' \
+            || { echo "包里缺少前端 JS bundle"; exit 1; }
+          codesign --verify --deep --strict "$app"
+          dmg=$(find dist -maxdepth 1 -name '*-${{ matrix.arch }}.dmg' | head -1)
+          test -n "$dmg" || { echo "missing DMG for ${{ matrix.arch }}"; exit 1; }
+          hdiutil verify "$dmg"
+          ls -lh "$dmg"
+      - uses: actions/upload-artifact@v7
+        if: github.event_name == 'workflow_dispatch' || needs.release-metadata.outputs.is_release == 'true'
+        with:
+          name: ${{ needs.release-metadata.outputs.is_release == 'true' && format('wyckoff-macos-{0}-public-adhoc', matrix.arch) || format('wyckoff-macos-{0}-adhoc', matrix.arch) }}
+          path: desktop/dist/*-${{ matrix.arch }}.dmg
+          retention-days: 1
+          if-no-files-found: error
+
+  verify-artifact-roundtrip:
+    if: github.event_name == 'workflow_dispatch' || needs.release-metadata.outputs.is_release == 'true'
+    runs-on: ubuntu-latest
+    needs: [package-windows, package-macos]
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: wyckoff-*
+          merge-multiple: true
+          path: candidates/
+      - name: Verify all three candidate installers survived upload/download
+        run: |
+          set -e
+          find candidates -maxdepth 2 -type f -print
+          test "$(find candidates -name '*.exe' | wc -l)" -eq 1
+          test "$(find candidates -name '*.dmg' | wc -l)" -eq 2
+
+  publish-release:
+    name: Publish free unsigned desktop release
+    if: needs.release-metadata.outputs.is_release == 'true'
+    runs-on: ubuntu-latest
+    needs: [release-metadata, package-windows, package-macos, verify-artifact-roundtrip]
+    permissions:
+      actions: write
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ github.ref_name }}
+      RELEASE_VERSION: ${{ needs.release-metadata.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: wyckoff-*-public-*
+          merge-multiple: true
+          path: release-assets/
+      - name: Verify release assets and write checksums
+        shell: bash
+        run: |
+          test "$(find release-assets -name '*.exe' | wc -l)" -eq 1
+          test "$(find release-assets -name '*.dmg' | wc -l)" -eq 2
+          cd release-assets
+          sha256sum *.exe *.dmg > SHA256SUMS.txt
+      - name: Create public GitHub Release
+        shell: bash
+        run: |
+          gh release create "$RELEASE_TAG" release-assets/*.exe release-assets/*.dmg release-assets/SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --generate-notes \
+            --notes "Free unsigned build: Windows may show a SmartScreen unknown-publisher warning; macOS is ad-hoc signed but not Apple-notarized and may require right-click → Open. No paid signing or notarization service is used." \
+            --title "Wyckoff Desktop v$RELEASE_VERSION (unsigned)"
+      - name: Delete temporary release artifacts
+        if: always()
+        shell: bash
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" \
+            --jq '.artifacts[].id' \
+            | while read -r artifact_id; do
+                test -n "$artifact_id" || continue
+                gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id"
+              done

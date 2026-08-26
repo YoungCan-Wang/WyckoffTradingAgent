@@ -6,9 +6,7 @@ from utils.tool_result_preview import tool_result_brief_lines
 def _isolate_local_db(monkeypatch, tmp_path):
     from integrations import local_db
 
-    if local_db._conn is not None:
-        local_db._conn.close()
-    local_db._conn = None
+    local_db.reset_connection()
     monkeypatch.setattr("core.constants.LOCAL_DB_PATH", tmp_path / "portfolio.db")
     local_db.init_db()
 

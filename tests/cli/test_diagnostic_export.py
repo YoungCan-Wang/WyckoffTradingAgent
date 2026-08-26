@@ -10,18 +10,14 @@ from cli.diagnostic_export import DiagnosticExportError, export_diagnostic_packa
 def _init_tmp_db(monkeypatch, tmp_path: Path):
     import integrations.local_db as local_db
 
-    if local_db._conn is not None:
-        local_db._conn.close()
-    local_db._conn = None
+    local_db.reset_connection()
     monkeypatch.setattr("core.constants.LOCAL_DB_PATH", tmp_path / "wyckoff.db")
     local_db.init_db()
     return local_db
 
 
 def _close_tmp_db(local_db) -> None:
-    if local_db._conn is not None:
-        local_db._conn.close()
-    local_db._conn = None
+    local_db.reset_connection()
 
 
 def test_export_diagnostic_package_zip_includes_session_evidence(tmp_path: Path, monkeypatch):

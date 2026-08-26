@@ -122,6 +122,12 @@ wyckoff dashboard  # 启动本地可视化面板
 
 形态复盘页按数据库实际存在的最近 30 个复盘交易日读取数据：“复盘记录”保留窗口内的数据源行数，“总入选次数”按唯一的股票+入选日统计，“覆盖股票数”和涨跌幅摘要则按股票代码去重。单股分析页会把规则过滤后的关键新闻打到 K 线上，只作读盘解释，不改变漏斗候选。服务端报错进 Cloudflare Workers Logs（约 3 天）；页面 PV/UV 用 Web Analytics；白名单用户的点击热力图走 Clarity 项目 `y6albpfin1`。这三样都不写业务库。
 
+### Desktop
+
+Electron 桌面端把 Agent 对话、审批、持仓、定时任务、跟踪归因、报告和 K 线放进同一个本地工作台，支持 Windows x64 与 macOS Intel/Apple Silicon。
+
+公开安装包统一放在 [GitHub Releases](https://github.com/YoungCan-Wang/WyckoffTradingAgent/releases)，不会把 Actions Artifact 当下载站。桌面端在“设置 → 通用 → 软件更新”显示当前版本，发现新的 `desktop-v*` 正式版时会直接给出下载入口。日常 PR/main CI 只跑三平台 Electron 测试，不构建安装包；只有显式手动候选构建或调用 `desktop-release` Skill 发布版本时才构建带真实 Python 运行时的 EXE 和 DMG，手动候选最多保留 1 天。公开包采用零付费的 Windows 未签名 / macOS 临时签名方案，并明确提示系统警告。按需发布、存储清理与升级清单见 [docs/DESKTOP_RELEASE.md](docs/DESKTOP_RELEASE.md)。
+
 ### Streamlit MVP 已下线
 
 Streamlit 已经不再迭代维护，主分支已全面移除 Streamlit 运行代码。相关代码仍保留在 `release/streamlit` 分支；Streamlit MVP 时期的产品架构和效果图见 [docs/STREAMLIT_MVP_ARCHITECTURE.md](docs/STREAMLIT_MVP_ARCHITECTURE.md)。

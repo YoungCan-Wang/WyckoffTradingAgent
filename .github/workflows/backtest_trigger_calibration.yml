@@ -105,7 +105,7 @@ jobs:
       TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
       BACKTEST_SNAPSHOT_WORKERS: "6"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Resolve period dates
         env:
@@ -113,7 +113,7 @@ jobs:
         run: bash .github/scripts/resolve_backtest_period.sh "$PERIOD_KEY"
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: "pip"
@@ -135,7 +135,7 @@ jobs:
             --output-dir snapshot_data
 
       - name: Upload snapshot
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: backtest-snapshot-${{ matrix.period_key }}
           path: snapshot_data/*
@@ -170,7 +170,7 @@ jobs:
       FUNNEL_AI_NEUTRAL_TREND: "5"
       FUNNEL_AI_NEUTRAL_ACCUM: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Resolve period dates
         env:
@@ -178,7 +178,7 @@ jobs:
         run: bash .github/scripts/resolve_backtest_period.sh "$PERIOD_KEY"
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: "pip"
@@ -189,7 +189,7 @@ jobs:
           pip install -e .
 
       - name: Download snapshot
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: backtest-snapshot-${{ matrix.cell.period }}
           path: snapshot_data/
@@ -249,7 +249,7 @@ jobs:
 
       - name: Upload matrix artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: backtest-trigger-${{ matrix.cell.period }}-${{ matrix.cell.value }}-${{ github.run_number }}
           path: ${{ env.OUT_ROOT }}/**
@@ -263,15 +263,15 @@ jobs:
     # 退出参数格不产出 trigger matrix，汇总无从谈起，结果直接看各格 summary。
     if: always() && inputs.grid_cells == ''
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
       - name: Download matrix artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts/
           pattern: backtest-trigger-*
@@ -295,7 +295,7 @@ jobs:
 
       - name: Upload report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: backtest-trigger-report-${{ github.run_number }}
           path: |

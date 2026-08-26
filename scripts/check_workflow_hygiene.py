@@ -50,6 +50,52 @@ def _has_direct_input_interpolation(job: dict[str, Any]) -> bool:
     return any("${{ inputs." in str(step.get("run", "")) for step in _steps(job))
 
 
+# 官方 action 的最低大版本。
+#
+# 低于这些的版本跑在已废弃的 Node 20 运行时上 —— GitHub 目前会强制降级到 Node 24
+# 并只发一条警告，但那是过渡期行为，随时会变成硬失败。而这个仓库有 22 个
+# workflow、上百处 uses，靠人肉 grep 迟早会漏一处、然后在某个只在夜里跑的定时
+# 任务里炸掉。
+#
+# 加新 workflow 时如果 uses 写了更低的版本，这条会红。要升上界就连同破坏性变更
+# 一起核对（例如 checkout v7 会拒绝签出 fork PR、setup-node v5 会按
+# packageManager 字段自动缓存）。
+MIN_ACTION_MAJORS = {
+    "actions/checkout": 7,
+    "actions/setup-python": 7,
+    "actions/setup-node": 7,
+    "actions/upload-artifact": 7,
+    "actions/download-artifact": 8,
+}
+
+
+def _check_action_versions(path: Path, data: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+    jobs = data.get("jobs")
+    if not isinstance(jobs, dict):
+        return failures
+    for job_name, job in jobs.items():
+        if not isinstance(job, dict):
+            continue
+        for step in _steps(job):
+            uses = str(step.get("uses", ""))
+            if "@" not in uses:
+                continue
+            action, _, ref = uses.partition("@")
+            minimum = MIN_ACTION_MAJORS.get(action)
+            if minimum is None:
+                continue
+            # 只认 vN / vN.M.P 形式；sha 固定的先放过（那是更强的固定方式）。
+            if not ref.startswith("v") or not ref[1:2].isdigit():
+                continue
+            major = int(ref[1:].split(".")[0])
+            if major < minimum:
+                failures.append(
+                    f"{path}: job {job_name} 用了 {uses}，低于要求的 {action}@v{minimum}（Node 20 运行时已废弃）"
+                )
+    return failures
+
+
 def _check_workflow(path: Path) -> list[str]:
     failures: list[str] = []
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -71,6 +117,8 @@ def _check_workflow(path: Path) -> list[str]:
     if not isinstance(permissions, dict) or permissions.get("contents") != "read":
         failures.append(f"{path}: workflow must declare top-level permissions: contents: read")
 
+    failures.extend(_check_action_versions(path, data))
+
     jobs = data.get("jobs")
     if not isinstance(jobs, dict) or not jobs:
         return failures + [f"{path}: missing jobs"]
@@ -86,10 +134,24 @@ def _check_workflow(path: Path) -> list[str]:
     return failures
 
 
+def _check_desktop_packaging_scope() -> list[str]:
+    path = WORKFLOW_DIR / "desktop.yml"
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    jobs = data.get("jobs", {})
+    required_gate = "github.event_name == 'workflow_dispatch' || needs.release-metadata.outputs.is_release == 'true'"
+    failures: list[str] = []
+    for job_name in ("package-windows", "package-macos"):
+        if jobs.get(job_name, {}).get("if") != required_gate:
+            failures.append(f"{path}: job {job_name} must only package manual candidates or desktop release tags")
+    return failures
+
+
 def main() -> int:
     failures: list[str] = []
     for path in sorted(WORKFLOW_DIR.glob("*.yml")) + sorted(WORKFLOW_DIR.glob("*.yaml")):
         failures.extend(_check_workflow(path))
+
+    failures.extend(_check_desktop_packaging_scope())
 
     shared_group = "step4-oms-a-share-${{ github.ref }}"
     for name in ("wyckoff_funnel.yml", "step4_from_supabase.yml"):

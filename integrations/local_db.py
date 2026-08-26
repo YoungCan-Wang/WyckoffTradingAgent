@@ -21,10 +21,17 @@ from utils.safe import finite_float, safe_float
 
 logger = logging.getLogger(__name__)
 
-_lock = threading.Lock()
-_conn: sqlite3.Connection | None = None
+# RLock 而不是 Lock：init_db() 整段持锁，而它内部会调 get_db()。
+_lock = threading.RLock()
 
-_SCHEMA_VERSION = 15
+# 连接是**每线程一条**的（见 get_db 的说明：共享一条会段错误）。
+_local = threading.local()
+
+# 连接「代号」。reset_connection() 把它 +1，各线程下次 get_db() 发现自己那条
+# 是旧代的就重建 —— 这样换库不需要去碰别的线程的连接对象。
+_generation = 0
+
+_SCHEMA_VERSION = 19
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -109,6 +116,10 @@ CREATE TABLE IF NOT EXISTS market_signal_daily (
 CREATE TABLE IF NOT EXISTS portfolio (
     portfolio_id TEXT PRIMARY KEY,
     free_cash REAL DEFAULT 0,
+    -- 总估值。NULL = 从来没估过（和「估值为 0」不是一回事）。
+    -- valued_at 与 synced_at 分开：估值可能比持仓行更旧。
+    total_equity REAL,
+    valued_at TEXT,
     synced_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -176,6 +187,26 @@ CREATE TABLE IF NOT EXISTS theme_radar_snapshot (
     synced_at TEXT DEFAULT (datetime('now'))
 );
 
+-- 会话级的可变元数据（标题、置顶）。
+--
+-- 单独一张表而不是给 chat_log 加列：chat_log 是 append-only 的消息明细，
+-- 而标题和置顶是整个会话的属性。塞进明细行意味着改标题要 UPDATE 每一行，
+-- 或者约定「取某一行的值」—— 两者都别扭。workflow_run + workflow_event
+-- 是同一个形状的先例。
+--
+-- 没有这张表的会话仍然合法：list 时 LEFT JOIN，标题回落到首条提问。
+CREATE TABLE IF NOT EXISTS chat_session (
+    session_id TEXT PRIMARY KEY,
+    user_id TEXT DEFAULT '',
+    title TEXT DEFAULT '',
+    pinned INTEGER DEFAULT 0,
+    -- 归档 = 从侧栏收起来，但不删。删除是不可逆的，而用户想清理列表时
+    -- 往往并不想丢掉内容 —— 两个动作要分开。
+    archived INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS workflow_run (
     run_id TEXT PRIMARY KEY,
     session_id TEXT DEFAULT '',
@@ -240,6 +271,9 @@ CREATE INDEX IF NOT EXISTS idx_mem_type ON agent_memory(memory_type);
 CREATE INDEX IF NOT EXISTS idx_mem_codes ON agent_memory(codes);
 CREATE INDEX IF NOT EXISTS idx_chatlog_session ON chat_log(session_id);
 CREATE INDEX IF NOT EXISTS idx_chatlog_created ON chat_log(created_at);
+-- 会话列表的默认排序：某账号下先按归档与否分开，再置顶优先，其余按最近活动倒序。
+-- archived 放在最左：侧栏拉未归档、设置页拉已归档，两边都是先按它筛。
+CREATE INDEX IF NOT EXISTS idx_chatsess_user ON chat_session(user_id, archived, pinned DESC, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_bg_task_session ON background_task_result(session_id);
 CREATE INDEX IF NOT EXISTS idx_bg_task_created ON background_task_result(created_at);
 CREATE INDEX IF NOT EXISTS idx_theme_radar_synced ON theme_radar_snapshot(synced_at);
@@ -273,31 +307,112 @@ END;
 
 
 def get_db() -> sqlite3.Connection:
-    global _conn
-    if _conn is not None:
-        return _conn
+    """本线程的数据库连接。
+
+    ## 为什么是**每线程一条**，而不是全进程共享一条
+
+    原来是共享一条 + `check_same_thread=False`。那等于让 78 个调用点在多个线程里
+    并发操作同一个 sqlite3 对象，而它们都不持锁 —— 症状是随机的：
+
+    - `cannot commit - no transaction is active`（两个线程的事务边界互相踩）
+    - `executescript returned NULL without setting an exception`
+    - 最糟的一种：另一个线程把连接 close 掉，剩下的在已释放句柄上跑 →
+      **段错误**（CI 上 exit 139，复审也独立复现了两次）
+
+    加锁修不动这个：调用点是 `conn = get_db()` 然后各自 execute，锁不住「拿到
+    之后」那段。给 78 处逐个包锁，漏一个就等于没修。
+
+    每线程一条连接从根上消掉共享：各线程有自己的事务边界和语句，谁也关不掉别人的。
+    SQLite 本身支持多连接并发（WAL 模式下读写还能并行），跨进程都行，跨线程更没问题。
+    表级的写冲突由 `busy_timeout` 处理。
+
+    代价是每个线程首次访问要建一次连接（约 0.1ms，还有一次 WAL pragma），
+    以及连接数等于活跃线程数 —— 这个进程里线程是个位数，可以忽略。
+    """
+    conn = getattr(_local, "conn", None)
+    if conn is not None and getattr(_local, "generation", -1) == _generation:
+        return conn
+
+    db_path = core_constants.LOCAL_DB_PATH
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    # check_same_thread 保持默认的 True：现在每个线程用自己的连接，
+    # 不再需要关掉这道保护 —— 留着它能在将来有人又跨线程传连接时立刻报错。
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=3000")
+    _local.conn = conn
+    _local.generation = _generation
+    return conn
+
+
+def reset_connection() -> None:
+    """丢弃共享连接，下次 `get_db()` 会重新建一条。**只给测试用。**
+
+    ## 为什么**不** close()
+
+    测试之间要换库（monkeypatch LOCAL_DB_PATH），得让 `_conn` 失效。直觉做法是
+    `_conn.close()` 再置 None —— 但那会 segfault：
+
+    `get_db()` 把连接对象**直接交出去**，然后几十处调用点各自 `conn.execute(...)`，
+    全都不持锁。后台同步线程（`sync_all_background`）正是这样在用它。此时另一个
+    线程 close 掉同一个对象，sqlite3 就在一个已释放的句柄上继续跑 —— **未定义
+    行为，直接段错误，不是抛异常**，所以 pytest 拦不住、本地也难复现。
+
+    我上一版只给 `init_db()` 和这个函数加了锁。那只排开了「两个 init_db」，
+    而真正的冲突是「close vs 任意一处普通读写」—— 复审指出后本地 5/5 复现了
+    exit 139。给每个调用点加锁不可行：几十处，漏一个就等于没修。
+
+    ## 做法：推进「代号」，让各线程自己换连接
+
+    连接现在是**每线程一条**（见 get_db）。这里只把全局代号 +1：其他线程下次
+    调 `get_db()` 时发现手里那条是旧代的，自己重建一条。
+
+    **绝不去 close 别的线程的连接** —— 那正是段错误的来源。旧连接在最后一个
+    引用消失时由 GC 安全回收（sqlite3 的析构会等自己的语句结束）。
+    """
+    global _generation
     with _lock:
-        if _conn is not None:
-            return _conn
-        db_path = core_constants.LOCAL_DB_PATH
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(db_path), check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=3000")
-        _conn = conn
-        return _conn
+        _generation += 1
+    # 本线程那条直接丢引用即可（别的线程靠代号自己换）。
+    _local.conn = None
 
 
 def init_db() -> None:
+    # 持锁：否则后台同步线程正在用连接时，测试或别处把它 close 掉会 segfault。
+    # 见 reset_connection() 的说明。
+    with _lock:
+        _init_db_locked()
+
+
+def _init_db_locked() -> None:
     conn = get_db()
     conn.executescript(_DDL)
     _ensure_recommendation_tracking_columns(conn)
     _ensure_signal_pending_columns(conn)
     _ensure_agent_memory_columns(conn)
-    cur = conn.execute("SELECT MAX(version) FROM schema_version")
-    row = cur.fetchone()
-    current = row[0] if row and row[0] else 0
+    current = _schema_version(conn)
+    _run_migrations(conn, current)
+    if current < _SCHEMA_VERSION:
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_version(version) VALUES(?)",
+            (_SCHEMA_VERSION,),
+        )
+        conn.commit()
+
+
+def _schema_version(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
+    return row[0] if row and row[0] else 0
+
+
+def _run_migrations(conn: sqlite3.Connection, current: int) -> None:
+    """按版本跑增量迁移。
+
+    从 init_db 拆出来的：那个函数原本把「建表 + 读版本 + 十几段迁移 + 写版本」
+    全塞在一起，超过了 70 行的上限。拆开之后 init_db 只表达流程，
+    每段迁移的细节在这里 —— 加新迁移也不会再把 init_db 撑大。
+    """
     if current < 4:
         try:
             conn.execute("ALTER TABLE portfolio_position ADD COLUMN buy_dt TEXT DEFAULT ''")
@@ -317,12 +432,82 @@ def init_db() -> None:
     if current < 13:
         _ensure_recommendation_tracking_columns(conn)
         _ensure_signal_pending_columns(conn)
-    if current < _SCHEMA_VERSION:
+    if current < 16:
+        # 对话记录按账号隔离。原来没有这一列，桌面端接上留存之后，两个账号的
+        # 对话会混在同一张表里 —— 和之前修过的「持仓缓存/报告按账号分区」同类。
+        # 历史行留空字符串，等于归到未登录分区，不会张冠李戴。
+        _ensure_columns(conn, "chat_log", {"user_id": "TEXT DEFAULT ''"})
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_chatlog_user ON chat_log(user_id, created_at)")
+    if current < 17:
+        _backfill_chat_sessions(conn)
+    if current < 18:
+        _migrate_chat_session_archived(conn)
+    if current < 19:
+        # 本地存一份总估值。
+        #
+        # 估值原来只在云端算、也只在云端存，本地 portfolio 表压根没有这一列。
+        # 加了「云端连不上就用本地库」的兜底之后，这暴露成一个新问题：持仓看得到，
+        # 总资产却必然是「—/未估值」—— 估值随云端一起丢了。
+        #
+        # valued_at 单独一列而不是复用 synced_at：后者是持仓行的同步时间，
+        # 而估值可能比持仓更旧（改了持仓但没重新估值）。混用会把一个旧估值
+        # 标成刚算的。
+        #
+        # 没有 DEFAULT：NULL 表示「从来没估过」，和「估值为 0」是两件事。
+        _ensure_columns(conn, "portfolio", {"total_equity": "REAL", "valued_at": "TEXT"})
+
+
+def _migrate_chat_session_archived(conn: sqlite3.Connection) -> None:
+    """归档位。历史行默认 0（未归档）—— 升级后侧栏看到的列表和升级前一致。"""
+    _ensure_columns(conn, "chat_session", {"archived": "INTEGER DEFAULT 0"})
+    # 索引要重建：老库里这个名字已经存在（不带 archived），
+    # 上面 SCHEMA 里的 CREATE INDEX IF NOT EXISTS 对它不生效。
+    try:
+        conn.execute("DROP INDEX IF EXISTS idx_chatsess_user")
         conn.execute(
-            "INSERT OR REPLACE INTO schema_version(version) VALUES(?)",
-            (_SCHEMA_VERSION,),
+            "CREATE INDEX IF NOT EXISTS idx_chatsess_user "
+            "ON chat_session(user_id, archived, pinned DESC, updated_at DESC)"
         )
-        conn.commit()
+    except Exception:
+        logger.warning("migration: rebuild idx_chatsess_user failed", exc_info=True)
+
+
+def _backfill_chat_sessions(conn: sqlite3.Connection) -> None:
+    """给已经存在的会话补上 chat_session 行。
+
+    库里已经攒了一批对话（桌面端和 TUI 都在写 chat_log），但那时还没有会话表。
+    不回填的话它们在新界面里全是「无标题」，看起来像坏数据。
+
+    标题取首条用户提问截断 —— 和 list_chat_sessions 原来的摘要口径一致，
+    用户能认出来那是自己问过的话。user_id 从消息行里取：同一会话内它是一致的，
+    取 MAX 只是为了在 GROUP BY 里挑一个值。
+
+    整段容错：这是锦上添花的迁移，失败不该让 init_db 挂掉、连库都开不了。
+    """
+    try:
+        existing = {r[0] for r in conn.execute("SELECT session_id FROM chat_session")}
+        rows = conn.execute(
+            """SELECT session_id,
+                      COALESCE(MAX(user_id), '') AS user_id,
+                      MIN(created_at) AS started_at,
+                      MAX(created_at) AS ended_at,
+                      (SELECT content FROM chat_log c2
+                       WHERE c2.session_id = chat_log.session_id AND c2.role = 'user'
+                       ORDER BY c2.created_at ASC LIMIT 1) AS first_user_msg
+               FROM chat_log GROUP BY session_id"""
+        ).fetchall()
+        # 标题在 Python 侧清洗：SQL 的 SUBSTR 会把首条提问后面注入的时间戳
+        # 上下文一起截进标题里。见 clean_session_title。
+        payload = [(r[0], r[1], clean_session_title(r[4] or ""), 0, r[2], r[3]) for r in rows if r[0] not in existing]
+        if payload:
+            conn.executemany(
+                """INSERT OR IGNORE INTO chat_session
+                   (session_id, user_id, title, pinned, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                payload,
+            )
+    except Exception:
+        logger.warning("migration: backfill chat_session failed", exc_info=True)
 
 
 def _ensure_recommendation_tracking_columns(conn: sqlite3.Connection) -> None:
@@ -750,14 +935,46 @@ def load_latest_theme_radar_snapshot() -> dict | None:
 # ---------------------------------------------------------------------------
 
 
-def save_portfolio(portfolio_id: str, free_cash: float, positions: list[dict]) -> None:
+def save_portfolio(
+    portfolio_id: str,
+    free_cash: float,
+    positions: list[dict],
+    total_equity: float | None = None,
+) -> None:
+    """写入持仓快照。
+
+    total_equity 给 None 时**保留库里已有的估值**，不覆盖成 NULL。这一点很关键：
+    这里用的是 INSERT OR REPLACE，整行替换 —— 直接写 NULL 的话，任何一次不带
+    估值的同步（比如改完持仓回写）都会把上次算好的估值抹掉，界面立刻退回
+    「未估值」。而估值是个时点数，旧的仍然有参考价值，标清时间就行。
+    """
     conn = get_db()
+    # 这两列是 v19 加的，而 get_db() **不跑迁移**（只有 init_db() 跑，且是在
+    # 首次建会话时才被调）。所以存在「老库还没升级就先写入」的窗口 —— 不补一下
+    # 就会 OperationalError: no such column，整次缓存失败。实测撞到过。
+    _ensure_columns(conn, "portfolio", {"total_equity": "REAL", "valued_at": "TEXT"})
     with conn:
-        conn.execute(
-            """INSERT OR REPLACE INTO portfolio
-               (portfolio_id, free_cash, synced_at) VALUES (?, ?, datetime('now'))""",
-            (portfolio_id, free_cash),
-        )
+        if total_equity is None:
+            conn.execute(
+                """INSERT INTO portfolio (portfolio_id, free_cash, synced_at)
+                   VALUES (?, ?, datetime('now'))
+                   ON CONFLICT(portfolio_id) DO UPDATE SET
+                     free_cash=excluded.free_cash,
+                     synced_at=excluded.synced_at""",
+                (portfolio_id, free_cash),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO portfolio
+                     (portfolio_id, free_cash, total_equity, valued_at, synced_at)
+                   VALUES (?, ?, ?, datetime('now'), datetime('now'))
+                   ON CONFLICT(portfolio_id) DO UPDATE SET
+                     free_cash=excluded.free_cash,
+                     total_equity=excluded.total_equity,
+                     valued_at=excluded.valued_at,
+                     synced_at=excluded.synced_at""",
+                (portfolio_id, free_cash, float(total_equity)),
+            )
         conn.execute(
             "DELETE FROM portfolio_position WHERE portfolio_id=?",
             (portfolio_id,),
@@ -789,11 +1006,21 @@ def load_portfolio(portfolio_id: str) -> dict | None:
     if not row:
         return None
     pos_cur = conn.execute("SELECT * FROM portfolio_position WHERE portfolio_id=?", (portfolio_id,))
-    return {
+    out = {
         "portfolio_id": row["portfolio_id"],
         "free_cash": row["free_cash"],
         "positions": [dict(p) for p in pos_cur.fetchall()],
     }
+    # 估值只在真的存过时才带出来。用 keys() 判断而不是直接取:老库刚升级完
+    # 这两列可能还不存在,直接索引会抛 IndexError。
+    keys = row.keys()
+    if "total_equity" in keys and row["total_equity"] is not None:
+        out["total_equity"] = row["total_equity"]
+        # 界面要能说清「这个估值是什么时候的」—— 一个不标时间的旧估值,
+        # 比不显示更容易误导。
+        if "valued_at" in keys and row["valued_at"]:
+            out["valued_at"] = row["valued_at"]
+    return out
 
 
 def _ensure_local_portfolio(portfolio_id: str) -> None:
@@ -1256,14 +1483,15 @@ def save_chat_log(
     error: str = "",
     tool_calls_json: str = "",
     metadata_json: str = "",
+    user_id: str = "",
 ) -> int:
     conn = get_db()
     with conn:
         cur = conn.execute(
             """INSERT INTO chat_log
                (session_id, role, content, model, provider,
-                tokens_in, tokens_out, elapsed_s, error, tool_calls, metadata)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                tokens_in, tokens_out, elapsed_s, error, tool_calls, metadata, user_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 session_id,
                 role,
@@ -1276,23 +1504,33 @@ def save_chat_log(
                 error,
                 tool_calls_json,
                 metadata_json,
+                user_id,
             ),
         )
         return cur.lastrowid or 0
 
 
-def load_chat_logs(*, session_id: str | None = None, limit: int = 200) -> list[dict]:
+def load_chat_logs(*, session_id: str | None = None, limit: int = 200, user_id: str | None = None) -> list[dict]:
+    """读对话记录。
+
+    传 user_id 就按账号过滤 —— 不传保持原有全量语义（TUI 与既有调用方依赖它）。
+    传空字符串是有意义的查询：未登录分区。所以判空要用 `is not None`，
+    用真值判断会把「查未登录的记录」误当成「不过滤」。
+    """
     conn = get_db()
+    clauses: list[str] = []
+    params: list[Any] = []
     if session_id:
-        cur = conn.execute(
-            "SELECT * FROM chat_log WHERE session_id=? ORDER BY created_at ASC LIMIT ?",
-            (session_id, limit),
-        )
-    else:
-        cur = conn.execute(
-            "SELECT * FROM chat_log ORDER BY created_at DESC LIMIT ?",
-            (limit,),
-        )
+        clauses.append("session_id=?")
+        params.append(session_id)
+    if user_id is not None:
+        clauses.append("user_id=?")
+        params.append(user_id)
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    # 指定会话时按时间正序（要按顺序回放）；否则倒序取最近的。
+    order = "ASC" if session_id else "DESC"
+    params.append(limit)
+    cur = conn.execute(f"SELECT * FROM chat_log{where} ORDER BY created_at {order} LIMIT ?", params)
     return [dict(r) for r in cur.fetchall()]
 
 
@@ -1553,38 +1791,215 @@ def _research_transition_row(row: sqlite3.Row) -> dict[str, Any]:
 # Chat sessions
 # ---------------------------------------------------------------------------
 
+CHAT_TITLE_MAX = 60
 
-def delete_chat_session(session_id: str) -> int:
+
+def clean_session_title(raw: str) -> str:
+    """把一条用户消息收成能当标题的一行。
+
+    只取第一行：提问文本后面会被追加注入上下文（实测有
+    `\\n\\n[当前北京时间：2026-08-21 16:20（星期五，UTC+8）]`），
+    直接截断会把这坨东西显示在侧边栏里。
+
+    也顺手挡掉系统注入块开头的消息 —— 那种整条都不是用户说的话。
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    first = text.split("\n", 1)[0].strip()
+    if first.startswith("[") or first.startswith("<"):
+        return ""
+    return first[:CHAT_TITLE_MAX]
+
+
+def delete_chat_session(session_id: str, user_id: str | None = None) -> int:
+    """删掉一个会话的消息和元数据。
+
+    传 user_id 就多一道归属校验 —— 否则知道 session_id 就能删别人的会话。
+    和 load_chat_logs 一样用 `is not None`：空串是「未登录分区」这个有效条件。
+    """
     conn = get_db()
+    params: list[Any] = [session_id]
+    guard = ""
+    if user_id is not None:
+        guard = " AND user_id=?"
+        params.append(user_id)
     with conn:
-        cur = conn.execute(
-            "DELETE FROM chat_log WHERE session_id=?",
-            (session_id,),
-        )
+        cur = conn.execute(f"DELETE FROM chat_log WHERE session_id=?{guard}", params)
+        # 元数据跟着走。留下孤立的 chat_session 行会让列表里出现一个点不开的空会话。
+        conn.execute(f"DELETE FROM chat_session WHERE session_id=?{guard}", params)
     return cur.rowcount
 
 
-def list_chat_sessions(limit: int = 50) -> list[dict]:
-    """返回最近的会话列表，每个会话的首条用户消息作为摘要。"""
+def delete_archived_chat_sessions(user_id: str | None = None) -> int:
+    """删掉**所有**已归档会话的消息和元数据。返回删掉的会话个数。
+
+    走子查询按 archived=1 挑，而不是让调用方传一串 id：
+    前端循环调 N 次单删，中间任何一次失败都会留下删一半的状态。
+
+    只删有 chat_session 行且 archived=1 的。迁移前 TUI 写的会话没有元数据行，
+    list_chat_sessions 用 COALESCE 把它们算作未归档 —— 这里的子查询天然不会
+    碰到它们，两边口径是一致的。**不能**写成 `NOT IN (未归档)`，那会把
+    这些没有元数据行的老会话一起删掉。
+    """
     conn = get_db()
+    guard = ""
+    params: list[Any] = []
+    if user_id is not None:
+        guard = " AND user_id=?"
+        params.append(user_id)
+    picked = f"SELECT session_id FROM chat_session WHERE archived=1{guard}"
+    with conn:
+        # 先数出个数再删 —— 删完就查不出来了。
+        removed = len(conn.execute(picked, params).fetchall())
+        if removed:
+            conn.execute(f"DELETE FROM chat_log WHERE session_id IN ({picked})", params)
+            conn.execute(f"DELETE FROM chat_session WHERE archived=1{guard}", params)
+    return removed
+
+
+def upsert_chat_session(session_id: str, user_id: str = "", title: str = "") -> None:
+    """确保会话有一行元数据，并把 updated_at 推到现在。
+
+    每轮对话都会调它（用于把会话顶到列表最前）。标题只在**为空**时写入 ——
+    否则用户手改的标题会被下一轮的自动标题覆盖掉。
+    """
+    if not session_id:
+        return
+    conn = get_db()
+    with conn:
+        conn.execute(
+            """INSERT INTO chat_session (session_id, user_id, title)
+               VALUES (?, ?, ?)
+               ON CONFLICT(session_id) DO UPDATE SET
+                   updated_at = datetime('now'),
+                   title = CASE WHEN chat_session.title = '' THEN excluded.title ELSE chat_session.title END""",
+            (session_id, user_id, clean_session_title(title)),
+        )
+
+
+def rename_chat_session(session_id: str, title: str, user_id: str | None = None) -> bool:
+    """改标题。返回是否真的改到了一行（没改到通常意味着归属不符）。"""
+    clean = (title or "").strip()[:60]
+    if not session_id or not clean:
+        return False
+    conn = get_db()
+    params: list[Any] = [clean, session_id]
+    guard = ""
+    if user_id is not None:
+        guard = " AND user_id=?"
+        params.append(user_id)
+    with conn:
+        cur = conn.execute(
+            f"UPDATE chat_session SET title=?, updated_at=datetime('now') WHERE session_id=?{guard}",
+            params,
+        )
+    return cur.rowcount > 0
+
+
+def set_chat_session_pinned(session_id: str, pinned: bool, user_id: str | None = None) -> bool:
+    """置顶/取消置顶。
+
+    刻意**不动** updated_at：置顶是整理动作，不是「有新活动」。
+    改了它会让一次置顶把会话伪装成刚聊过的。
+    """
+    if not session_id:
+        return False
+    conn = get_db()
+    params: list[Any] = [1 if pinned else 0, session_id]
+    guard = ""
+    if user_id is not None:
+        guard = " AND user_id=?"
+        params.append(user_id)
+    with conn:
+        cur = conn.execute(f"UPDATE chat_session SET pinned=? WHERE session_id=?{guard}", params)
+    return cur.rowcount > 0
+
+
+def set_chat_session_archived(session_id: str, archived: bool, user_id: str | None = None) -> bool:
+    """归档 / 取消归档。
+
+    和 set_chat_session_pinned 一样**不动** updated_at：归档是整理动作，不是新活动。
+    动了它，取消归档后这个会话会插到列表最前面，假装刚聊过。
+
+    归档不碰 pinned：一个置顶会话被归档又恢复，应该回到原来的置顶状态 ——
+    顺手清掉 pinned 等于替用户做了他没要求的决定。
+    """
+    if not session_id:
+        return False
+    conn = get_db()
+    params: list[Any] = [1 if archived else 0, session_id]
+    guard = ""
+    if user_id is not None:
+        guard = " AND user_id=?"
+        params.append(user_id)
+    with conn:
+        cur = conn.execute(f"UPDATE chat_session SET archived=? WHERE session_id=?{guard}", params)
+    return cur.rowcount > 0
+
+
+def list_chat_sessions(
+    limit: int = 50, user_id: str | None = None, search: str = "", archived: bool | None = False
+) -> list[dict]:
+    """返回会话列表：置顶优先，其余按最近活动倒序。
+
+    标题来自 chat_session，没有元数据行时回落到首条用户提问（LEFT JOIN + COALESCE）——
+    这样 TUI 写出来的、以及迁移前的历史会话都仍然显示得出来。
+
+    search 同时匹配标题和消息内容，用 LIKE 而不是 FTS：现有量级（几十个会话）下
+    LIKE 完全够，而 FTS 要建虚表加三个触发器还要回填。等会话过百再说。
+
+    archived 默认 False —— 侧栏是最常见的调用方，默认就该只看未归档的。
+    传 True 拿已归档（设置页用），传 None 表示两者都要。
+    用 COALESCE：没有 chat_session 行的历史会话（迁移前 TUI 写的）算未归档，
+    否则它们会因为 archived 是 NULL 而在两个列表里都消失。
+    """
+    conn = get_db()
+    clauses: list[str] = []
+    params: list[Any] = []
+    if user_id is not None:
+        clauses.append("l.user_id=?")
+        params.append(user_id)
+    if archived is not None:
+        clauses.append("COALESCE(s.archived, 0)=?")
+        params.append(1 if archived else 0)
+    if search.strip():
+        like = f"%{search.strip()}%"
+        clauses.append("(l.content LIKE ? OR s.title LIKE ?)")
+        params.extend([like, like])
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(limit)
     cur = conn.execute(
-        """SELECT session_id,
-                  MIN(created_at) AS started_at,
-                  MAX(created_at) AS ended_at,
+        f"""SELECT l.session_id,
+                  MIN(l.created_at) AS started_at,
+                  MAX(l.created_at) AS ended_at,
                   COUNT(*) AS msg_count,
-                  SUM(tokens_in) AS total_tokens_in,
-                  SUM(tokens_out) AS total_tokens_out,
-                  MAX(CASE WHEN error != '' THEN error ELSE NULL END) AS last_error,
-                  MAX(CASE WHEN role='assistant' THEN model ELSE NULL END) AS model,
-                  (SELECT content FROM chat_log c2 WHERE c2.session_id=chat_log.session_id AND c2.role='user' ORDER BY c2.created_at ASC LIMIT 1) AS first_user_msg,
-                  SUM(elapsed_s) AS total_elapsed_s
-           FROM chat_log
-           GROUP BY session_id
-           ORDER BY MAX(created_at) DESC
+                  SUM(l.tokens_in) AS total_tokens_in,
+                  SUM(l.tokens_out) AS total_tokens_out,
+                  MAX(CASE WHEN l.error != '' THEN l.error ELSE NULL END) AS last_error,
+                  MAX(CASE WHEN l.role='assistant' THEN l.model ELSE NULL END) AS model,
+                  (SELECT content FROM chat_log c2 WHERE c2.session_id=l.session_id AND c2.role='user'
+                    ORDER BY c2.created_at ASC LIMIT 1) AS first_user_msg,
+                  NULLIF(s.title, '') AS stored_title,
+                  COALESCE(s.pinned, 0) AS pinned,
+                  COALESCE(s.archived, 0) AS archived,
+                  SUM(l.elapsed_s) AS total_elapsed_s
+           FROM chat_log l
+           LEFT JOIN chat_session s ON s.session_id = l.session_id
+           {where}
+           GROUP BY l.session_id
+           ORDER BY COALESCE(s.pinned, 0) DESC, MAX(l.created_at) DESC
            LIMIT ?""",
-        (limit,),
+        params,
     )
-    return [dict(r) for r in cur.fetchall()]
+    rows: list[dict] = []
+    for raw in cur.fetchall():
+        row = dict(raw)
+        # 标题回落在 Python 侧做而不是 SQL：首条提问后面常带注入的时间戳上下文
+        # （`\n\n[当前北京时间：…]`），在 SQL 里 SUBSTR 会把那坨也显示到侧边栏。
+        row["title"] = row.pop("stored_title", None) or clean_session_title(row.get("first_user_msg") or "")
+        rows.append(row)
+    return rows
 
 
 # ---------------------------------------------------------------------------

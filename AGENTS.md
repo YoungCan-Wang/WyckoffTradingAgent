@@ -127,6 +127,7 @@ the error direction favored acting. So:
 - **Data isolation: Route A** — Signals are shared; portfolio and settings are per-user.
 - **Python ≥ 3.11**, **Node ≥ 20**, **pnpm** for web workspace.
 - The standalone `wiki_repo_new/` checkout is intentionally hidden and independently versioned; keep it ignored and do not merge it into `docs/`.
+- **Chart annotations are desktop-only and display-only** — `annotate_chart` writes to `~/.wyckoff/annotations.json`, is visible only in the Electron app, and never touches positions or orders, so it is a read tool and must not require approval. Drawing an annotation is not a substitute for stating the conclusion in the reply.
 
 ## Documentation Synchronization
 

@@ -83,13 +83,15 @@ _STOPS_MAX_ITEMS = 200
 
 def set_stop_loss(
     code: str = "",
-    stop_loss: float = 0,
+    stop_loss: float | None = 0,
     items: list[dict[str, Any]] | None = None,
     tool_context: ToolContext | None = None,
 ) -> dict:
     """只设置持仓止损价，不能改股数、成本或现金。
 
     安全性来自这个工具能做的事很窄，而不是来自调用方检查了参数。
+
+    传 stop_loss=None 表示清除该持仓的止损；0 或负数仍视为无效价格而报错。
     """
     try:
         rows, error = _normalize_stop_rows(code, stop_loss, items)
@@ -149,8 +151,15 @@ def _normalize_stop_rows(
         normalized = normalize_portfolio_code(str(item.get("code") or ""))
         if not normalized:
             return [], {"error": f"第 {index} 项股票代码无效: {item.get('code')}"}
+        # 显式的 None 表示「清除止损」——存储层一直支持 null，只是这里以前
+        # 一律 float() 把它堵成了「无效」，于是止损填错了没法单独去掉。
+        # 注意 0 和负数仍然是错误：那不是「清除」，是无效价格。
+        raw_stop = item.get("stop_loss")
+        if raw_stop is None:
+            rows.append({"code": normalized, "stop_loss": None})
+            continue
         try:
-            price = float(item.get("stop_loss"))
+            price = float(raw_stop)
         except (TypeError, ValueError):
             return [], {"error": f"{normalized} 的 stop_loss 无效"}
         if price <= 0:
@@ -323,33 +332,65 @@ def _portfolio_id(tool_context: ToolContext | None) -> str:
 
 
 def _load_portfolio_state(portfolio_id: str, tool_context: ToolContext | None) -> dict | None:
-    state = None
-    if has_cloud(tool_context):
-        from integrations.supabase_portfolio import load_portfolio_state
+    """读持仓：云端优先，云端不行就用本地库。
 
-        client = get_user_client(tool_context)
-        state = with_auth_retry(tool_context, load_portfolio_state, portfolio_id, client=client)
-        if state:
-            _cache_portfolio(portfolio_id, state, "remote")
+    云端那段**必须**包在 try 里。原来没包，于是 `get_user_client()` 的网络异常
+    （实测是 TLS 握手超时）直接穿透出去，下面写好的本地兜底根本没机会执行 ——
+    界面收到一个装着 error 的对象，显示成「暂无持仓数据」，而本地库里 8 只
+    持仓一直都在，7ms 就能读出来。
+
+    「云端挂了」和「你没有持仓」是两件完全不同的事，不能长成一样。
+    """
+    state = None
+    cloud_error = ""
+    if has_cloud(tool_context):
+        try:
+            from integrations.supabase_portfolio import load_portfolio_state
+
+            client = get_user_client(tool_context)
+            state = with_auth_retry(tool_context, load_portfolio_state, portfolio_id, client=client)
+            if state:
+                _cache_portfolio(portfolio_id, state, "remote")
+        except Exception as exc:  # noqa: BLE001 —— 云端任何失败都该落到本地库
+            cloud_error = str(exc) or exc.__class__.__name__
+            logger.warning(
+                "cloud portfolio read failed for %s, falling back to local DB: %s",
+                portfolio_id,
+                cloud_error,
+            )
     if state is not None:
         return state
     try:
         from integrations.local_db import load_portfolio
 
-        return load_portfolio(portfolio_id)
+        local = load_portfolio(portfolio_id)
     except Exception:
         logger.warning("failed to load portfolio %s from local DB", portfolio_id, exc_info=True)
         return None
+    # 标注数据来源：界面要能说清「这是本地数据，云端没连上」。不标的话用户会
+    # 以为看到的是最新的云端持仓，而它可能落后于另一台设备上的改动。
+    if local is not None and cloud_error:
+        local = {**local, "source": "local", "cloud_error": cloud_error}
+    return local
 
 
 def _cache_portfolio(portfolio_id: str, state: dict, source: str) -> None:
     try:
         from integrations.local_db import save_portfolio
 
+        # 顺手把云端算好的总估值存进本地。
+        #
+        # 估值原来只存在云端,所以「云端连不上就用本地库」那条兜底虽然能给出
+        # 持仓,总资产却必然是「—/未估值」。云端每次读成功都把估值缓存一份,
+        # 断网时就还有个带时间戳的旧估值可看。
+        #
+        # 拿不到就传 None —— save_portfolio 会保留库里已有的那份,而不是覆盖成 NULL。
+        equity = state.get("total_equity")
         save_portfolio(
             portfolio_id,
             float(state.get("free_cash", 0) or 0),
             [_local_position(p) for p in state.get("positions", [])],
+            total_equity=float(equity) if equity is not None else None,
         )
     except Exception:
         logger.warning("failed to cache %s portfolio %s locally", source, portfolio_id, exc_info=True)
@@ -388,7 +429,10 @@ def _portfolio_view(portfolio_id: str, state: dict) -> dict:
     }
     if state.get("total_equity") is not None:
         result["total_equity"] = state["total_equity"]
-        result["valuation_updated_at"] = state.get("updated_at", "")
+        # 云端那份的时间在 updated_at，本地缓存那份在 valued_at（单独一列，
+        # 因为估值可能比持仓行更旧）。两者都要认，否则本地兜底给出的估值
+        # 会显示成「没有时间」—— 一个不标时间的旧估值比不显示更容易误导。
+        result["valuation_updated_at"] = state.get("updated_at") or state.get("valued_at") or ""
     return result
 
 

@@ -1,0 +1,109 @@
+name: Worker deploy
+
+on:
+  workflow_run:
+    workflows: [CI]
+    branches: [main]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: worker-deploy-production
+  cancel-in-progress: false
+
+jobs:
+  changes:
+    name: Detect Worker changes
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    outputs:
+      deploy: ${{ steps.scope.outputs.deploy }}
+      sha: ${{ steps.ref.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || 'main' }}
+          fetch-depth: 2
+      - name: Resolve deployment commit
+        id: ref
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Collect merged paths
+        if: github.event_name != 'workflow_dispatch'
+        shell: bash
+        run: git diff --name-only HEAD^ HEAD > "$RUNNER_TEMP/changed-paths.txt"
+      - name: Force manual deployment
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: echo web/apps/api/wrangler.toml > "$RUNNER_TEMP/changed-paths.txt"
+      - name: Decide deployment scope
+        id: scope
+        shell: bash
+        run: |
+          cat "$RUNNER_TEMP/changed-paths.txt"
+          deploy="$(python scripts/release_scope.py worker "$RUNNER_TEMP/changed-paths.txt")"
+          echo "deploy=$deploy" >> "$GITHUB_OUTPUT"
+          if [[ "$deploy" != "true" ]]; then
+            echo "No Worker runtime input changed; deployment is skipped."
+          fi
+
+  deploy:
+    name: Deploy production Worker
+    needs: changes
+    if: needs.changes.outputs.deploy == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: cloudflare-production
+      url: https://wyckoff-api.yongkai-wang.workers.dev/api/health
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID || '6e64f92dd0779528d2a5ca8498ab5654' }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      API_BASE_URL: https://wyckoff-api.yongkai-wang.workers.dev
+      DEPLOY_SHA: ${{ needs.changes.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.changes.outputs.sha }}
+      - name: Check deployment credential
+        shell: bash
+        run: |
+          if [[ -z "$CLOUDFLARE_API_TOKEN" ]]; then
+            echo "CLOUDFLARE_API_TOKEN is not configured for cloudflare-production." >&2
+            exit 1
+          fi
+      - uses: pnpm/action-setup@v4.4.0
+        with:
+          version: 10.33.2
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Install locked dependencies
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+      - name: Deploy exact main commit
+        working-directory: web
+        run: pnpm --filter @wyckoff/api deploy -- --message "main:$DEPLOY_SHA"
+      - name: Verify Worker version and remote-control binding
+        working-directory: web
+        shell: bash
+        run: |
+          pnpm --filter @wyckoff/api exec wrangler versions list --json > "$RUNNER_TEMP/worker-versions.json"
+          version_id="$(jq -r 'max_by(.number | tonumber).id' "$RUNNER_TEMP/worker-versions.json")"
+          pnpm --filter @wyckoff/api exec wrangler versions view "$version_id" --json > "$RUNNER_TEMP/worker-version.json"
+          jq --exit-status '.. | objects | select(.name? == "REMOTE_RELAY")' "$RUNNER_TEMP/worker-version.json" >/dev/null
+          jq --exit-status '.. | objects | select(.tag? == "v2")' "$RUNNER_TEMP/worker-version.json" >/dev/null
+      - name: Verify deployed routes
+        shell: bash
+        run: |
+          health="$(curl --fail --silent --show-error "$API_BASE_URL/api/health")"
+          jq --exit-status '.status == "ok"' <<<"$health" >/dev/null
+          status="$(curl --silent --output /dev/null --write-out '%{http_code}' "$API_BASE_URL/api/remote/devices")"
+          test "$status" = "401"

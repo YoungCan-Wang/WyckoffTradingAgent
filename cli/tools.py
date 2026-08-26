@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import sys
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -321,6 +322,129 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "parameters": {"type": "object", "properties": {}},
     },
     {
+        "name": "save_report",
+        "description": (
+            "把一份写好的 markdown 报告存进报告库，并在桌面端右侧打开。"
+            "关掉页签后可从报告库重新打开，重启应用也还在。"
+            "\n\n"
+            "**默认不要用这个工具。** 对话里直接回答是常态，存报告是例外。"
+            "\n\n"
+            "只在**同时**满足以下三条时才用："
+            "\n"
+            "1. 用户明确要了一份报告/文档/存档（「写份报告」「导出」「存下来」），"
+            "或者要求的是复盘、归因这类天然成文的产物；"
+            "\n"
+            "2. 内容是面向未来回看的**结论性文档**，而不是对当下这句话的答复；"
+            "\n"
+            "3. 篇幅确实成篇（多个小节、可独立阅读）。"
+            "\n\n"
+            "反例（这些一律直接在对话里说，不要调这个工具）："
+            "\n"
+            # 刻意不写成「用户问 X 时调用」那种句式：工具描述里出现具体问法，"
+            # 模型会拿它当关键词去匹配用户的字面表达,而不是判断意图。
+            # 约束见 tests/cli/test_workflows.py 的 phrase_triggers 那条。
+            "- 「我的持仓怎么了」「今天大盘如何」这类**询问当下状况**的话 —— 答复它，不是给一份文档；"
+            "\n"
+            "- 你的回答末尾还想反问「要不要我再帮你做 X」—— 说明对话没结束，"
+            "把话留在对话里，别塞进面板；"
+            "\n"
+            "- 只是把工具数据整理了一下就当成报告。"
+            "\n\n"
+            "另外：调用它**不能代替**在对话里回答。存了报告仍要在对话里给出结论要点，"
+            "用户不该为了看你的答案去点开右侧面板。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "报告标题，同时用于文件名"},
+                "markdown": {"type": "string", "description": "报告正文（markdown）"},
+            },
+            "required": ["title", "markdown"],
+        },
+    },
+    {
+        "name": "render_dashboard",
+        "description": (
+            "在桌面端右侧渲染一个可交互的 HTML 面板（可筛选的表格、自绘图表、对比视图）。"
+            "只在 Wyckoff 桌面应用里可用。纯展示，不动持仓也不下单。"
+            "\n\n"
+            "适合 K 线图表达不了的形状：行业分布、多因子对比、可排序候选列表。"
+            "简单结论直接用文字说，不要为一句话造一个面板。"
+            "\n\n"
+            "重要约束：面板在隔离视图里渲染，**不能联网、拿不到实时数据**。"
+            "要展示什么就把数据直接写进 HTML。"
+            "不要引用外部 CDN（<script src>、<link href> 一律加载失败），"
+            "用原生 canvas/svg/CSS 自绘。内联 <script> 与 <style> 可以正常执行。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "面板标题，显示在页签上"},
+                "html": {
+                    "type": "string",
+                    "description": (
+                        "面板的 HTML 片段（body 内容，不要写 <html>/<head>）。"
+                        "可含内联 <style> 与 <script>。数据要嵌在里面。"
+                    ),
+                },
+            },
+            "required": ["title", "html"],
+        },
+    },
+    {
+        "name": "annotate_chart",
+        "description": (
+            "把分析结论画到桌面端 K 线图上（吸筹区、支撑阻力、spring 标记等）。"
+            "只在 Wyckoff 桌面应用里可用，命令行/TUI 下调用会被拒绝；"
+            "纯展示，不影响持仓与下单。画了标注不等于说出了结论，回复里仍要写清楚。"
+            "draw 为整组替换该图标注（重画即编辑），list 查看，clear 清空。"
+            "先画后开图、先开图后画都可以。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "description": "股票代码，如 600519"},
+                "action": {
+                    "type": "string",
+                    "enum": ["draw", "list", "clear"],
+                    "description": "默认 draw",
+                },
+                "annotations": {
+                    "type": "array",
+                    "description": (
+                        "按 type 判别的标注数组。日期用 YYYY-MM-DD，价格用数字。"
+                        "rectangle{start_date,end_date,low,high}=吸筹/派发区；"
+                        "price_line{price}=支撑/阻力/目标；"
+                        "trendline{start_date,start_price,end_date,end_price}=供需线；"
+                        "marker{date,price}=spring/upthrust；"
+                        "text{date,price,text}=事件字母。均可带 label。"
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "enum": ["rectangle", "price_line", "trendline", "marker", "text"],
+                            },
+                            "label": {"type": "string", "description": "图上显示的短标签"},
+                            "date": {"type": "string"},
+                            "price": {"type": "number"},
+                            "start_date": {"type": "string"},
+                            "end_date": {"type": "string"},
+                            "low": {"type": "number"},
+                            "high": {"type": "number"},
+                            "start_price": {"type": "number"},
+                            "end_price": {"type": "number"},
+                            "text": {"type": "string"},
+                        },
+                        "required": ["type"],
+                    },
+                },
+            },
+            "required": ["code"],
+        },
+    },
+    {
         "name": "wyckoff_diagnose",
         "description": (
             "单股 Wyckoff 结构诊断（纯引擎计算，比 analyze_stock 更底层）。"
@@ -592,6 +716,29 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "app_browser",
+        "description": (
+            "操作 Wyckoff 桌面应用内置浏览器：导航、读正文、点击、填表。"
+            "适合需要交互（登录、翻页、展开）才能拿到内容的页面。"
+            "只在桌面应用中可用；命令行环境请用 browser_research。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["navigate", "read", "title", "url", "click", "fill", "back", "wait"],
+                    "description": "要执行的动作",
+                },
+                "url": {"type": "string", "description": "navigate 的目标地址，必须是公网 http(s)"},
+                "selector": {"type": "string", "description": "click/fill 的 CSS 选择器"},
+                "value": {"type": "string", "description": "fill 要填入的值"},
+                "ms": {"type": "integer", "description": "wait 的毫秒数，50-10000"},
+            },
+            "required": ["action"],
+        },
+    },
+    {
         "name": "browser_research",
         "description": (
             "通过本机 Chrome CDP 搜索公开网页并抽取正文，返回可引用的标题/链接/摘要。"
@@ -692,6 +839,15 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "set_stop_loss": ToolSpec("set_stop_loss", "设置止损价", requires_approval=True),
     "market_regime": ToolSpec("market_regime", "市况判定"),
     "wyckoff_diagnose": ToolSpec("wyckoff_diagnose", "结构诊断"),
+    # 纯展示：不动持仓、不下单，所以不需要审批。
+    # 存储是一个原子替换的 JSON 文件；并发写会彼此覆盖，因此不能批内并行。
+    "annotate_chart": ToolSpec("annotate_chart", "标注图表"),
+    # 同样纯展示。渲染在隔离视图里（无网络、无宿主 API），所以模型生成的
+    # HTML/JS 能执行也不需要审批 —— 它做不了任何有副作用的事。
+    "render_dashboard": ToolSpec("render_dashboard", "渲染面板"),
+    # 写文件，但写的是报告库里的一份 markdown —— 不动持仓、不下单，
+    # 路径收敛在 ~/.wyckoff/reports 之内，所以不需要审批。
+    "save_report": ToolSpec("save_report", "保存报告"),
     "intraday_analysis": ToolSpec("intraday_analysis", "盘中分析"),
     "intraday_rescue_check": ToolSpec("intraday_rescue_check", "中周期结构"),
     "record_trade_fill": ToolSpec("record_trade_fill", "成交回填", requires_approval=True),
@@ -701,6 +857,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "read_file": ToolSpec("read_file", "读取文件"),
     "write_file": ToolSpec("write_file", "写入文件", requires_approval=True),
     "browser_research": ToolSpec("browser_research", "浏览器搜索"),
+    "app_browser": ToolSpec("app_browser", "内置浏览器"),
     "reassess_profile": ToolSpec("reassess_profile", "风控评估", concurrency_safe=True),
     "diagnose_backend": ToolSpec("diagnose_backend", "大模型诊疗", concurrency_safe=True),
     "ask_user_question": ToolSpec("ask_user_question", "提问用户", concurrency_safe=False),
@@ -761,6 +918,16 @@ def ask_user_question(
         except Exception as e:
             logger.error("ask_user_question_callback failed", exc_info=True)
             return {"error": f"无法获取用户答复: {e}"}
+
+    # 没有终端就别问：桌面端 / daemon / MCP 的 stdin 不是人在打字。IPC 下它
+    # 更是协议输入流，input() 会吞掉一帧协议然后永久阻塞工作线程 —— 表现为
+    # 界面直接卡死，而且看不出原因。宁可让模型拿到「问不了」自己决定。
+    if not sys.stdin or not sys.stdin.isatty():
+        logger.warning("ask_user_question with no callback and no tty; refusing to block on stdin")
+        return {
+            "error": "当前环境无法向用户提问（没有交互终端，也没有注册提问回调）。",
+            "hint": "请基于已有信息继续，或在回复里说明需要用户补充什么。",
+        }
 
     # Headless fallback: stdin
     print(f"\n💬 Agent 提问: {question}")
@@ -859,10 +1026,23 @@ class ToolRegistry:
         """统一的 session state，__main__ 和工具共享同一份。"""
         return self._tool_context.state
 
+    @property
+    def tool_context(self) -> ToolContext:
+        """
+        供直接调用工具函数的调用方（如桌面 IPC）传递上下文用。
+
+        不传就等于匿名执行：has_cloud() 恒为 False，已登录用户读不到自己的
+        云端数据，且失败是静默的。
+        """
+        return self._tool_context
+
     def _register_tools(self) -> dict[str, callable]:
         """注册所有工具函数。"""
+        from agents.app_browser_tools import app_browser
         from agents.backtest_tools import run_backtest
         from agents.browser_tools import browser_research
+        from agents.chart_annotation_tools import annotate_chart
+        from agents.dashboard_tools import render_dashboard
         from agents.diagnosis_tools import analyze_stock
         from agents.engine_tools import (
             intraday_analysis,
@@ -875,6 +1055,7 @@ class ToolRegistry:
         from agents.market_tools import get_market_history, get_market_overview
         from agents.portfolio_tools import portfolio, record_trade_fill, set_stop_loss, update_portfolio
         from agents.recommendation_tools import evaluate_recommendation_events
+        from agents.report_artifact_tools import save_report
         from agents.report_tools import generate_ai_report
         from agents.research_tools import research_hypothesis
         from agents.screen_tools import screen_stocks
@@ -905,6 +1086,9 @@ class ToolRegistry:
             "record_trade_fill": record_trade_fill,
             "market_regime": market_regime,
             "wyckoff_diagnose": wyckoff_diagnose,
+            "annotate_chart": annotate_chart,
+            "render_dashboard": render_dashboard,
+            "save_report": save_report,
             "intraday_analysis": intraday_analysis,
             "intraday_rescue_check": intraday_rescue_check,
             "run_backtest": run_backtest,
@@ -917,6 +1101,7 @@ class ToolRegistry:
             "read_file": read_file,
             "write_file": write_file,
             "browser_research": browser_research,
+            "app_browser": app_browser,
             "reassess_profile": reassess_decision_profile,
             "diagnose_backend": diagnose_backend,
         }

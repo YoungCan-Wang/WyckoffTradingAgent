@@ -201,15 +201,11 @@ def test_theme_summaries_drop_leftover_etf_snapshot_lines() -> None:
 def test_theme_radar_snapshot_round_trip_local_db(tmp_path, monkeypatch) -> None:
     from integrations import local_db
 
-    if local_db._conn is not None:
-        local_db._conn.close()
-    local_db._conn = None
+    local_db.reset_connection()
     monkeypatch.setattr("core.constants.LOCAL_DB_PATH", tmp_path / "theme.db")
     try:
         local_db.init_db()
         local_db.save_theme_radar_snapshot({"trade_date": "2026-05-27", "themes": [], "strategic_candidates": []})
         assert local_db.load_latest_theme_radar_snapshot()["trade_date"] == "2026-05-27"
     finally:
-        if local_db._conn is not None:
-            local_db._conn.close()
-        local_db._conn = None
+        local_db.reset_connection()

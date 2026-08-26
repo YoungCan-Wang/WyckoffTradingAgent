@@ -2,9 +2,7 @@ from __future__ import annotations
 
 
 def _reset_local_db(local_db) -> None:
-    if local_db._conn is not None:
-        local_db._conn.close()
-    local_db._conn = None
+    local_db.reset_connection()
 
 
 def test_load_signals_returns_empty_when_cache_table_missing(tmp_path, monkeypatch):

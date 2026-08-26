@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<!-- frame-src blob: 是给产物容器用的：AI 生成的 HTML 只在 sandbox iframe 里
+     渲染（无脚本、无同源），绝不进主文档 DOM。object-src 同理用于 PDF。 -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; frame-src blob:; object-src blob:">
+<title>Wyckoff 读盘室</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<!-- 外壳（侧栏 / 顶栏 / 会话 / 目标页面 / 菜单 / 设置弹窗）全部由 React 渲染。
+     产物面板留在这里：它的内容由命令式模块画（canvas 图表、原生浏览器 view、
+     sandbox iframe），React 只负责调用它们。 -->
+<div class="win">
+  <!-- React 渲染外壳（侧栏 + 会话区）。这个挂载点用 display:contents，
+       让它的子元素直接参与 .win 的 flex 布局 —— 否则侧栏和会话区被降一层，
+       flex 失效，两者会上下堆叠。 -->
+  <div id="root" class="shell-root"></div>
+
+  <div class="pane-resizer" id="pane-resizer" role="separator" aria-orientation="vertical" data-i18n-aria-label="action.resizePane" aria-label="调整产物面板宽度" aria-valuemin="360" tabindex="0"></div>
+  <aside class="pane" id="pane">
+    <div class="pane-top">
+      <div class="tabs" id="tabs" role="tablist" data-i18n-aria-label="tab.artifacts" aria-label="产物"></div>
+      <button class="icb pane-toggle" id="btn-pane" type="button" data-i18n-title="tooltip.paneHide" title="收起产物面板 ⌘⌥B">
+        <i data-lucide="panel-right-close" aria-hidden="true"></i>
+      </button>
+    </div>
+    <div class="pane-body" id="pane-body"></div>
+  </aside>
+</div>
+
+<script src="locales.js"></script>
+<script src="i18n.js"></script>
+<script src="md.js"></script>
+<script src="charts.js"></script>
+<script src="kline.js"></script>
+<script src="annotations.js"></script>
+<script src="viewer.js"></script>
+<script src="tabs.js"></script>
+<script src="shell.js"></script>
+<!-- React 侧。放在 shell.js 之后：shell.js 挂好 window.WyckoffShell，
+     React 外壳调用它来开图表/浏览器/报告面板。type=module 天然 defer，
+     所以 shell.js 一定先跑完。Vite 构建时这一行会换成带 hash 的产物。 -->
+<script type="module" src="./main.tsx"></script>
+</body>
+</html>

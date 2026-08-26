@@ -5,6 +5,20 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Wyckoff 智能投研助手</title>
+      <link rel="manifest" href="/manifest.webmanifest" />
+    <!-- iOS 不读 manifest 的 display，要靠这两个 meta 才能全屏运行 -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Wyckoff" />
+    <meta name="theme-color" content="#1c1917" />
+    <script>
+      // 只在遥控页注册 —— 桌面 web 端不需要 SW，注册了反而多一层缓存语义要管。
+      if ('serviceWorker' in navigator && location.pathname.startsWith('/m')) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js').catch(() => {})
+        })
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

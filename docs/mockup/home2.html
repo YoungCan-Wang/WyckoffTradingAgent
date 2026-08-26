@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>Wyckoff 工作台 · 首页</title>
+<style>
+  :root{--paper:#fffefc;--side:#f4f3f0;--line:#e6e4de;--line2:#efedE8;
+    --tx:#26251f;--tx2:#6f6d66;--tx3:#9b9891;--clay:#d97757;--grn:#5c8a54;--red:#b5544a}
+  *{box-sizing:border-box}
+  body{margin:0;background:#e8e6e1;color:var(--tx);zoom:1.2;
+    font:14px/1.6 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif;
+    -webkit-font-smoothing:antialiased}
+  .win{width:1300px;height:860px;margin:14px auto;background:var(--paper);
+    border-radius:12px;overflow:hidden;display:flex;box-shadow:0 22px 60px rgba(0,0,0,.22)}
+
+  .side{width:232px;flex:none;background:var(--side);border-right:1px solid var(--line);
+    display:flex;flex-direction:column;overflow:auto}
+  .chrome{display:flex;align-items:center;gap:8px;padding:13px 13px 10px}
+  .dot{width:11px;height:11px;border-radius:50%}
+  .ic{color:#8d8a83;font-size:13px;margin-left:auto}.ic+.ic{margin-left:7px}
+  .brand{display:flex;align-items:center;gap:7px;padding:2px 16px 12px;font-size:15px;font-weight:600}
+  .brand .cv{color:var(--tx3);font-size:11px;font-weight:400}
+  .nav{padding:0 8px}
+  .nv{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:8px;font-size:13.5px}
+  .nv.on{background:#e7e5e0;font-weight:600}
+  .nv .g{width:15px;text-align:center;color:#7d7a73;font-size:13px}
+  .nv .n{margin-left:auto;color:var(--tx3);font-size:11.5px}
+  .nv .n.warn{color:var(--clay);font-weight:600}
+  .lbl{display:flex;padding:17px 17px 5px;color:var(--tx3);font-size:12.5px}
+  .lbl span{margin-left:auto}
+  .prj{display:flex;align-items:center;gap:10px;padding:6px 17px;font-size:13.5px}
+  .prj .g{width:15px;text-align:center;color:#7d7a73;font-size:12px}
+  .sess{display:flex;align-items:center;gap:8px;padding:4px 17px 4px 42px;
+    font-size:12.5px;color:var(--tx2)}
+  .sess.on{background:#e7e5e0;color:var(--tx);font-weight:600}
+  .sess .s{margin-left:auto;font-size:11px;color:var(--clay)}
+  .more{padding:3px 17px 3px 42px;font-size:12px;color:var(--tx3)}
+  .acct{margin-top:auto;display:flex;align-items:center;gap:9px;padding:12px 15px;
+    border-top:1px solid var(--line);position:sticky;bottom:0;background:var(--side)}
+  .star{color:var(--clay);font-size:16px}
+  .acct .who b{font-weight:600;font-size:13px}
+  .acct .cv{margin-left:auto;color:var(--tx3);font-size:11px}
+
+  .canvas{flex:1;overflow:auto;padding:74px 46px 40px;display:flex;
+    flex-direction:column;align-items:center}
+  .hi{display:flex;align-items:center;gap:14px;margin-bottom:8px}
+  .hi .s{color:var(--clay);font-size:34px;line-height:1}
+  .hi h1{margin:0;font:400 38px/1.15 ui-serif,Georgia,"Songti SC",serif;letter-spacing:-.4px}
+  .sub-hi{color:var(--tx3);font-size:13.5px;margin-bottom:28px}
+  .sub-hi b{color:var(--tx2);font-weight:600}
+
+  .composer{width:100%;max-width:730px;background:#fff;border:1px solid var(--line);
+    border-radius:14px;box-shadow:0 2px 10px rgba(0,0,0,.045)}
+  .ph{padding:18px 20px 0;color:#a9a6a0;font-size:16px}
+  .crow{display:flex;align-items:center;padding:14px 15px 13px}
+  .plus{width:26px;height:26px;border-radius:8px;display:flex;align-items:center;
+    justify-content:center;color:var(--tx2);font-size:17px}
+  .mdl{margin-left:auto;display:flex;align-items:center;gap:6px;font-size:13.5px}
+  .mdl i{font-style:normal;color:var(--tx2)}
+  .mdl .cv{color:var(--tx3);font-size:11px}
+  .send{width:29px;height:29px;border-radius:9px;background:#f0eeE9;border:1px solid var(--line);
+    display:flex;align-items:center;justify-content:center;color:#8d8a83;margin-left:11px}
+  .cfoot{border-top:1px solid var(--line2);display:flex;align-items:center;gap:8px;
+    padding:10px 17px;font-size:13px}
+  .cfoot .cv{color:var(--tx3);font-size:11px}
+  .cfoot .i{margin-left:auto;color:var(--tx3)}
+
+  .wrap{width:100%;max-width:730px}
+  .st{color:var(--tx3);font-size:12.5px;margin:32px 0 4px;padding-left:2px;
+    display:flex;align-items:center}
+  .st span{margin-left:auto;font-size:12px}
+
+  .row{display:flex;align-items:center;gap:14px;padding:10px 2px;border-bottom:1px solid var(--line2)}
+  .row:last-child{border:0}
+  .tile{width:31px;height:31px;flex:none;border-radius:8px;background:#f2f0eb;
+    border:1px solid var(--line);display:flex;align-items:center;justify-content:center;
+    font-size:14px;color:#7d7a73}
+  .tile.warn{background:#fdf1ea;border-color:#eed6c8;color:var(--clay)}
+  .row .x{font-size:14px}
+  .row .d{color:var(--tx3);font-size:12px;margin-top:1px}
+  .row .go{margin-left:auto;color:var(--tx3);font-size:12px}
+  .row .go b{color:var(--clay);font-weight:600}
+
+  .grid{display:flex;gap:10px;margin-top:6px}
+  .kpi{flex:1;border:1px solid var(--line);border-radius:10px;padding:11px 13px;background:#fdfcfa}
+  .kpi .k{color:var(--tx3);font-size:11.5px}
+  .kpi .v{font-size:19px;font-weight:600;margin-top:3px;font-variant-numeric:tabular-nums}
+  .kpi .v.neg{color:var(--red)}.kpi .v.pos{color:var(--grn)}
+  .kpi .m{color:var(--tx3);font-size:11px;margin-top:1px}
+  .cap{width:1300px;margin:0 auto 6px;color:#6f6d66;font-size:12.5px}
+</style>
+</head>
+<body>
+
+<div class="cap">首页 — 招呼语 + 盘面 + 待办 + 最近产物。左栏按「组合」分组，会话嵌在组合下（学 Codex 的项目分组）</div>
+
+<div class="win">
+  <div class="side">
+    <div class="chrome">
+      <span class="dot" style="background:#ff5f57"></span>
+      <span class="dot" style="background:#febc2e"></span>
+      <span class="dot" style="background:#28c840"></span>
+      <span class="ic">◫</span><span class="ic">⌕</span>
+    </div>
+    <div class="brand">Wyckoff <span class="cv">⌄</span></div>
+
+    <div class="nav">
+      <div class="nv on"><span class="g">+</span>新会话</div>
+      <div class="nv"><span class="g">▤</span>组合<span class="n warn">189 ⚠</span></div>
+      <div class="nv"><span class="g">◈</span>产物<span class="n">42</span></div>
+      <div class="nv"><span class="g">◷</span>定时<span class="n">6</span></div>
+      <div class="nv"><span class="g">◔</span>回测<span class="n">1</span></div>
+      <div class="nv"><span class="g">▨</span>偏好</div>
+    </div>
+
+    <div class="lbl">组合</div>
+    <div class="prj"><span class="g">▣</span>A 股实盘</div>
+    <div class="sess on">今日调仓 <span class="s">◐</span></div>
+    <div class="sess">止损落库排查</div>
+    <div class="sess">Gemini 月费拆解</div>
+    <div class="more">展开显示</div>
+
+    <div class="prj" style="margin-top:8px"><span class="g">▣</span>回测研究</div>
+    <div class="sess">all_defined 全窗口 <span class="s">◐</span></div>
+    <div class="sess">变体 I 校准复核</div>
+    <div class="sess">移动止盈 activate</div>
+
+    <div class="prj" style="margin-top:8px"><span class="g">▣</span>美股 / 港股</div>
+    <div class="sess">港股通最值得标的</div>
+
+    <div class="lbl">近期<span>⇅</span></div>
+    <div class="sess" style="padding-left:17px">复盘本周推荐归因</div>
+    <div class="sess" style="padding-left:17px">PIT 口径核对</div>
+
+    <div class="acct"><span class="star">✳</span>
+      <span class="who"><b>youngcan</b></span><span class="cv">⌄</span></div>
+  </div>
+
+  <div class="canvas">
+    <div class="hi"><span class="s">✳</span><h1>您好，股神</h1></div>
+    <div class="sub-hi">8 月 11 日 周二 · 沪指 <b>3421.6 +0.38%</b> · 市况 <b>NEUTRAL</b>
+      · 距开盘 <b>42 分钟</b></div>
+
+    <div class="composer">
+      <div class="ph">今天想看什么？</div>
+      <div class="crow"><span class="plus">+</span>
+        <span class="mdl">claude-opus-5 <i>Max</i> <span class="cv">⌄</span></span>
+        <span class="send">↑</span></div>
+      <div class="cfoot"><span style="color:#7d7a73">▣</span>A 股实盘
+        <span class="cv">⌄</span><span class="i">ⓘ</span></div>
+    </div>
+
+    <div class="wrap">
+      <div class="st">组合</div>
+      <div class="grid">
+        <div class="kpi"><div class="k">净值</div><div class="v">¥486,203</div>
+          <div class="m">现金 ¥52,180</div></div>
+        <div class="kpi"><div class="k">今日</div><div class="v pos">+0.62%</div>
+          <div class="m">+¥2,984</div></div>
+        <div class="kpi"><div class="k">持仓</div><div class="v">196</div>
+          <div class="m">6 只有止损</div></div>
+        <div class="kpi"><div class="k">跟踪均收</div><div class="v neg">-1.49%</div>
+          <div class="m">302 笔 · 胜率 36.8%</div></div>
+      </div>
+
+      <div class="st">需要你决定</div>
+      <div class="row"><span class="tile warn">⚠</span>
+        <div><div class="x">189 个持仓没有止损价</div>
+          <div class="d">买入落库已修，历史持仓待补 ATR 止损 · 1 只已跌破未卖</div></div>
+        <span class="go"><b>补止损 →</b></span></div>
+      <div class="row"><span class="tile warn">◷</span>
+        <div><div class="x">OMS 已停摆 3 天</div>
+          <div class="d">Step4 因 llm_failed 连续失败，8/9 起未产出工单</div></div>
+        <span class="go"><b>重跑 →</b></span></div>
+      <div class="row"><span class="tile">◔</span>
+        <div><div class="x">回测 all_defined 已完成</div>
+          <div class="d">两个验证器仍 fail · activate=7 配对 t=2.36 显著</div></div>
+        <span class="go">查看 →</span></div>
+
+      <div class="st">最近产物<span>全部 42 →</span></div>
+      <div class="row"><span class="tile">▤</span>
+        <div><div class="x">市场观察简报 2026-08-11.md</div>
+          <div class="d">Step3 · 候选 8 只 · gemini-3-flash</div></div>
+        <span class="go">2 小时前</span></div>
+      <div class="row"><span class="tile">◫</span>
+        <div><div class="x">parameter_stability.html</div>
+          <div class="d">回测 · 跨 5 周期正收益 0/5</div></div>
+        <span class="go">昨天</span></div>
+      <div class="row"><span class="tile">▦</span>
+        <div><div class="x">trades.csv</div>
+          <div class="d">3204 笔 · 45 个 cell</div></div>
+        <span class="go">昨天</span></div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

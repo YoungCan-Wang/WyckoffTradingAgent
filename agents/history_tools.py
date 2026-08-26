@@ -22,29 +22,46 @@ def query_history(
     query: str = "",
     archive_ref: str = "",
     tool_context: ToolContext | None = None,
+    market: str = "cn",
+    report_date: str = "",
 ) -> dict:
     source = (source or "").strip().lower()
     if source == "recommendation":
-        return _query_recommendation(limit, tool_context)
+        # market 只对 recommendation 有意义：归因是全局的，signal/archive 不分市场。
+        return _query_recommendation(limit, tool_context, market=market)
     if source == "signal":
         return _query_signal(status, limit, tool_context)
     if source == "archive":
         return _query_archive(query, archive_ref, limit, tool_context)
     if source == "attribution":
-        return _query_attribution(limit, tool_context)
+        return _query_attribution(limit, tool_context, report_date=report_date)
     return {"error": f"不支持的 source：{source}，请用 'recommendation'、'signal'、'attribution' 或 'archive'"}
 
 
-def _query_recommendation(limit: int, tool_context: ToolContext | None = None) -> dict:
+def _query_recommendation(limit: int, tool_context: ToolContext | None = None, market: str = "cn") -> dict:
+    """
+    某个市场的推荐跟踪。
+
+    只有 A 股走「先本地缓存」：本地 SQLite 的 recommendation_tracking 只缓存
+    A 股，美股/港股读它会把 A 股的行摆到美股页签下面。宁可多一次网络往返，
+    也不能张冠李戴。
+    """
     try:
-        limit = min(max(int(limit), 1), 50)
-        records = _load_local_recommendations(limit)
+        limit = min(max(int(limit), 1), 200)
+        normalized = str(market or "cn").strip().lower()
+        from integrations.supabase_recommendation import RECOMMENDATION_TABLES
+
+        # 回显规范化后的市场：认不出的值会退回 cn 去查，那就得说自己是 cn，
+        # 否则界面会把 A 股的行标成用户点的那个市场。
+        if normalized not in RECOMMENDATION_TABLES:
+            normalized = "cn"
+        records = _load_local_recommendations(limit) if normalized == "cn" else []
         if not records:
-            records = _load_remote_recommendations(limit, tool_context)
+            records = _load_remote_recommendations(limit, tool_context, market=normalized)
         if not records:
-            return {"message": "暂无复盘记录", "records": []}
+            return {"message": "暂无复盘记录", "records": [], "market": normalized}
         simplified = pattern_review_tool_records(records)
-        return {"total": len(simplified), "records": simplified}
+        return {"total": len(simplified), "records": simplified, "market": normalized}
     except Exception as e:
         logger.exception("query_history(recommendation) error")
         return {"error": str(e)}
@@ -60,11 +77,17 @@ def _load_local_recommendations(limit: int) -> list[dict]:
         return []
 
 
-def _load_remote_recommendations(limit: int, tool_context: ToolContext | None) -> list[dict]:
+def _load_remote_recommendations(
+    limit: int,
+    tool_context: ToolContext | None,
+    market: str = "cn",
+) -> list[dict]:
     from integrations.supabase_recommendation import load_recommendation_tracking
 
-    records = load_recommendation_tracking(limit=limit, client=get_user_client(tool_context)) or []
-    if records:
+    records = load_recommendation_tracking(limit=limit, client=get_user_client(tool_context), market=market) or []
+    # 只回写 A 股：本地那张表就是 A 股的缓存，把美股行塞进去会污染 A 股结果，
+    # 而且下次 A 股走本地优先时会读到美股的票。
+    if records and str(market or "cn").strip().lower() == "cn":
         _cache_recommendations(records)
     return records
 
@@ -167,9 +190,22 @@ def _status_counts(records: list[dict]) -> dict[str, int]:
     return counts
 
 
-def _query_attribution(limit: int, tool_context: ToolContext | None = None) -> dict:
+def _query_attribution(
+    limit: int,
+    tool_context: ToolContext | None = None,
+    report_date: str = "",
+) -> dict:
     try:
-        rows = _load_attribution_rows(min(max(int(limit), 1), 10), tool_context)
+        # 上限 40：这里和 IPC 层各有一道钳制，只改一处会被另一处静默截断。
+        # 指定 report_date 时只需要一份，多取纯属浪费。
+        want = 1 if report_date else min(max(int(limit), 1), 40)
+        # 同 _load_attribution_rows 里的理由：不指定日期时保持原来的两参数调用，
+        # 否则既有替身会抛 TypeError，而外层 except 会把它当成查询失败咽掉。
+        rows = (
+            _load_attribution_rows(want, tool_context, report_date=report_date)
+            if report_date
+            else _load_attribution_rows(want, tool_context)
+        )
         if not rows:
             return {"message": "暂无策略归因报告", "records": []}
         records = [_attribution_record(row) for row in rows]
@@ -190,18 +226,30 @@ def _query_attribution(limit: int, tool_context: ToolContext | None = None) -> d
         return {"error": str(e)}
 
 
-def _load_attribution_rows(limit: int, tool_context: ToolContext | None) -> list[dict]:
+def _load_attribution_rows(
+    limit: int,
+    tool_context: ToolContext | None,
+    report_date: str = "",
+) -> list[dict]:
     rows: list[dict] = []
     remote_error: Exception | None = None
     try:
-        rows.extend(
-            _with_attribution_source(row, "remote") for row in _load_remote_attribution_rows(limit, tool_context)
+        # 不指定日期时按原来的两参数调用：既有测试（和任何替身）都是那个形状，
+        # 多传一个关键字会让它们抛 TypeError，而这里的 except 会把 TypeError
+        # 当成「云端读失败」静默咽掉 —— 真正的错误就再也看不到了。
+        remote = (
+            _load_remote_attribution_rows(limit, tool_context, report_date=report_date)
+            if report_date
+            else _load_remote_attribution_rows(limit, tool_context)
         )
+        rows.extend(_with_attribution_source(row, "remote") for row in remote)
     except Exception as exc:
         logger.warning("failed to load attribution reports from remote", exc_info=True)
         remote_error = exc
 
-    local = _load_local_attribution_row()
+    # 指定了日期就不掺本地那份：它是最新报告的缓存，不对应任意历史日期，
+    # 混进来会让某个历史页签显示成另一天的内容。
+    local = None if report_date else _load_local_attribution_row()
     if local:
         rows.append(_with_attribution_source(local, "local", remote_error))
     if rows:
@@ -211,21 +259,59 @@ def _load_attribution_rows(limit: int, tool_context: ToolContext | None) -> list
     return []
 
 
-def _load_remote_attribution_rows(limit: int, tool_context: ToolContext | None) -> list[dict]:
+def attribution_dates(limit: int = 60, tool_context: ToolContext | None = None) -> dict:
+    """
+    只取报告日期列表，不取正文。
+
+    整份报告约 14 KB（signal_actions 占大头），一次拉 20 份要 8 秒、174 KB。
+    页签只需要日期，所以单独走一条 select 只要两列 —— 页签能立刻出来，正文按
+    点开的那一份再取。
+    """
+    try:
+        from core.constants import TABLE_STRATEGY_ATTRIBUTION_REPORTS
+        from integrations.supabase_base import create_read_client
+
+        limit = min(max(int(limit), 1), 200)
+        client = get_user_client(tool_context) or create_read_client()
+        rows = (
+            client.table(TABLE_STRATEGY_ATTRIBUTION_REPORTS)
+            .select("report_date,window_start,window_end")
+            .eq("market", "cn")
+            .order("report_date", desc=True)
+            .limit(limit)
+            .execute()
+            .data
+            or []
+        )
+        dates = [
+            {
+                "report_date": str(r.get("report_date") or ""),
+                "window_start": str(r.get("window_start") or ""),
+                "window_end": str(r.get("window_end") or ""),
+            }
+            for r in rows
+            if r.get("report_date")
+        ]
+        return {"total": len(dates), "dates": dates}
+    except Exception as e:
+        logger.exception("attribution_dates error")
+        return {"error": str(e)}
+
+
+def _load_remote_attribution_rows(
+    limit: int,
+    tool_context: ToolContext | None,
+    report_date: str = "",
+) -> list[dict]:
     from core.constants import TABLE_STRATEGY_ATTRIBUTION_REPORTS
     from integrations.supabase_base import create_read_client
 
     client = get_user_client(tool_context) or create_read_client()
-    return (
-        client.table(TABLE_STRATEGY_ATTRIBUTION_REPORTS)
-        .select("*")
-        .eq("market", "cn")
-        .order("report_date", desc=True)
-        .limit(limit)
-        .execute()
-        .data
-        or []
-    )
+    query = client.table(TABLE_STRATEGY_ATTRIBUTION_REPORTS).select("*").eq("market", "cn")
+    # 指定日期时只取那一份 —— 这是「一次只拉一页」的实际落点。
+    if report_date:
+        query = query.eq("report_date", report_date)
+    return query.order("report_date", desc=True).limit(limit).execute().data or []
 
 
 def _load_local_attribution_row() -> dict | None:
