@@ -246,9 +246,7 @@ class RoutingScriptedProvider(ScriptedProvider):
 
 
 def _reset_local_db(local_db) -> None:
-    if local_db._conn is not None:
-        local_db._conn.close()
-    local_db._conn = None
+    local_db.reset_connection()
 
 
 def test_workflow_planner_prompt_keeps_task_semantics_model_authored():

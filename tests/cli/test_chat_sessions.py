@@ -27,12 +27,10 @@ def db(tmp_path, monkeypatch):
 
     logging.disable(logging.WARNING)  # 既有的 duplicate column 迁移噪音
     monkeypatch.setattr(cc, "LOCAL_DB_PATH", tmp_path / "t.db")
-    ldb._conn = None
+    ldb.reset_connection()
     ldb.init_db()
     yield ldb
-    if ldb._conn is not None:
-        ldb._conn.close()
-    ldb._conn = None
+    ldb.reset_connection()
     logging.disable(logging.NOTSET)
 
 
@@ -146,7 +144,7 @@ def test_existing_sessions_get_backfilled_on_upgrade(db):
     conn.execute("DELETE FROM schema_version")
     conn.execute("INSERT INTO schema_version(version) VALUES(16)")
     conn.commit()
-    db._conn = None
+    db.reset_connection()
     db.init_db()
     rows = {r["session_id"]: r for r in db.get_db().execute("SELECT * FROM chat_session")}
     assert rows["old1"]["title"] == "升级前问的问题"

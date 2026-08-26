@@ -4,9 +4,14 @@ import time
 
 
 def _reset_local_db(local_db) -> None:
-    if local_db._conn is not None:
-        local_db._conn.close()
-    local_db._conn = None
+    """换库前丢弃共享连接。
+
+    走 `reset_connection()` 而不是自己 `_conn.close()`：后者不持锁，而
+    `sync_all_background()` 会在后台线程里用同一个连接跑 init_db ——
+    一边 execute、一边 close，sqlite3 直接 **segfault**（不是异常，pytest
+    也拦不住）。CI 上实测崩过一次，本地跑不出来。
+    """
+    local_db.reset_connection()
 
 
 def _screen_result() -> dict:

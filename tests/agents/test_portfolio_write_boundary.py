@@ -147,9 +147,7 @@ def test_update_portfolio_add_requires_buy_dt(monkeypatch, tmp_path):
     from core.buy_dt import MISSING_BUY_DT_ERROR
     from integrations import local_db
 
-    if local_db._conn is not None:
-        local_db._conn.close()
-        local_db._conn = None
+    local_db.reset_connection()
     monkeypatch.setattr("core.constants.LOCAL_DB_PATH", tmp_path / "portfolio.db")
     local_db.init_db()
     monkeypatch.setattr(portfolio_tools, "has_cloud", lambda _ctx=None: False)
@@ -167,9 +165,7 @@ def test_update_portfolio_preserves_buy_dt_when_editing_size_or_cost(monkeypatch
     from agents import portfolio_tools
     from integrations import local_db
 
-    if local_db._conn is not None:
-        local_db._conn.close()
-        local_db._conn = None
+    local_db.reset_connection()
     monkeypatch.setattr("core.constants.LOCAL_DB_PATH", tmp_path / "portfolio.db")
     local_db.init_db()
     monkeypatch.setattr(portfolio_tools, "has_cloud", lambda _ctx=None: False)
@@ -197,9 +193,7 @@ def _local_portfolio(monkeypatch, tmp_path):
     from agents import portfolio_tools
     from integrations import local_db
 
-    if local_db._conn is not None:
-        local_db._conn.close()
-        local_db._conn = None
+    local_db.reset_connection()
     monkeypatch.setattr("core.constants.LOCAL_DB_PATH", tmp_path / "portfolio.db")
     local_db.init_db()
     monkeypatch.setattr(portfolio_tools, "has_cloud", lambda _ctx=None: False)

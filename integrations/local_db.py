@@ -21,7 +21,10 @@ from utils.safe import finite_float, safe_float
 
 logger = logging.getLogger(__name__)
 
-_lock = threading.Lock()
+# RLock 而不是 Lock：init_db() 现在整段持锁（防止后台同步线程与 close 打架），
+# 而它内部会调 get_db()，后者在首次建连时**也要拿这把锁**。用普通 Lock 会在
+# 冷启动时自锁死。
+_lock = threading.RLock()
 _conn: sqlite3.Connection | None = None
 
 _SCHEMA_VERSION = 19
@@ -316,7 +319,41 @@ def get_db() -> sqlite3.Connection:
         return _conn
 
 
+def reset_connection() -> None:
+    """关掉并丢弃共享连接。**只给测试用。**
+
+    为什么要有这个函数：测试之间需要换库（monkeypatch LOCAL_DB_PATH），做法是
+    把 `_conn` 关掉再置 None。但 `sync_all_background()` 会在**后台线程**里跑
+    `init_db()`，用的是同一个 `_conn` —— 一边在 `conn.execute()`，另一边
+    `conn.close()`，sqlite3 在这种情况下是**未定义行为，会直接 segfault**
+    （不是抛异常，所以 pytest 也捕获不到）。
+
+    CI 上实测崩过：
+        Fatal Python error: Segmentation fault
+        Current thread ...: local_db.py in _ensure_signal_pending_columns
+                            sync.py in _run  ← 后台同步线程
+        Thread ...:         test_background_results.py in _reset_local_db  ← 主线程 close
+
+    持 `_lock` 就能把两者排开：init_db 里的建表/迁移也走同一把锁。
+    """
+    global _conn
+    with _lock:
+        if _conn is not None:
+            try:
+                _conn.close()
+            except Exception:
+                logger.debug("reset_connection: close failed", exc_info=True)
+        _conn = None
+
+
 def init_db() -> None:
+    # 持锁：否则后台同步线程正在用连接时，测试或别处把它 close 掉会 segfault。
+    # 见 reset_connection() 的说明。
+    with _lock:
+        _init_db_locked()
+
+
+def _init_db_locked() -> None:
     conn = get_db()
     conn.executescript(_DDL)
     _ensure_recommendation_tracking_columns(conn)

@@ -337,9 +337,7 @@ def test_update_market_report_links_confirmation_to_research_hypothesis(tmp_path
     from integrations import local_db
     from scripts.update_backtest_market_report import main
 
-    if local_db._conn is not None:
-        local_db._conn.close()
-    local_db._conn = None
+    local_db.reset_connection()
     monkeypatch.setattr("core.constants.LOCAL_DB_PATH", tmp_path / "research.db")
     hypothesis = research_hypothesis(
         action="create",
@@ -388,8 +386,8 @@ def test_update_market_report_links_confirmation_to_research_hypothesis(tmp_path
         "backtest",
         "stability",
     }
-    local_db._conn.close()
-    local_db._conn = None
+    local_db.reset_connection()
+    local_db.reset_connection()
 
 
 def test_backtest_grid_exposes_portable_hypothesis_evidence():

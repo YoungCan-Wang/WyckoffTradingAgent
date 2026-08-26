@@ -22,12 +22,10 @@ def db(tmp_path, monkeypatch):
     import integrations.local_db as ldb
 
     monkeypatch.setattr(cc, "LOCAL_DB_PATH", tmp_path / "t.db")
-    ldb._conn = None
+    ldb.reset_connection()
     ldb.init_db()
     yield tmp_path / "t.db"
-    if ldb._conn is not None:
-        ldb._conn.close()
-    ldb._conn = None
+    ldb.reset_connection()
 
 
 def test_chat_log_has_a_user_id_column(db):

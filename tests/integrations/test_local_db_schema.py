@@ -4,9 +4,7 @@ import sqlite3
 
 
 def _reset_local_db(local_db) -> None:
-    if local_db._conn is not None:
-        local_db._conn.close()
-    local_db._conn = None
+    local_db.reset_connection()
 
 
 def test_init_db_migrates_candidate_columns_before_lane_indexes(tmp_path, monkeypatch):

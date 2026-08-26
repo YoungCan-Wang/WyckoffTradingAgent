@@ -9,18 +9,14 @@ from cli.session_tools import export_session_transcript, fork_session
 def _init_tmp_db(monkeypatch, tmp_path: Path):
     import integrations.local_db as local_db
 
-    if local_db._conn is not None:
-        local_db._conn.close()
-    local_db._conn = None
+    local_db.reset_connection()
     monkeypatch.setattr("core.constants.LOCAL_DB_PATH", tmp_path / "wyckoff.db")
     local_db.init_db()
     return local_db
 
 
 def _close_tmp_db(local_db) -> None:
-    if local_db._conn is not None:
-        local_db._conn.close()
-    local_db._conn = None
+    local_db.reset_connection()
 
 
 def test_export_session_transcript_markdown(tmp_path: Path, monkeypatch):

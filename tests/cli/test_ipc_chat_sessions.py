@@ -48,12 +48,10 @@ def db(tmp_path, monkeypatch):
 
     logging.disable(logging.WARNING)
     monkeypatch.setattr(cc, "LOCAL_DB_PATH", tmp_path / "t.db")
-    ldb._conn = None
+    ldb.reset_connection()
     ldb.init_db()
     yield ldb
-    if ldb._conn is not None:
-        ldb._conn.close()
-    ldb._conn = None
+    ldb.reset_connection()
     logging.disable(logging.NOTSET)
 
 
