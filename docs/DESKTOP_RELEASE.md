@@ -17,7 +17,10 @@ dependency does not publish `win_arm64` wheels, so CI cannot currently create a
 reproducible self-contained Python runtime for that architecture without adding
 and maintaining a native OpenSSL build toolchain.
 
-Each job runs the bundled `wyckoff-ipc` health and daemon entrypoints from the packaged application before upload. Candidate artifacts are retained for 14 days and are intended for maintainer testing, not as the public download channel.
+Each job runs the bundled `wyckoff-ipc` health and daemon entrypoints from the packaged application. Push and PR runs do
+not upload the large installers; manual candidate runs retain them for at most one day. Tag releases delete their temporary
+Actions artifacts immediately after copying the installers to GitHub Releases. A separate daily cleanup removes any
+still-active artifact of at least 50 MB once it is more than 24 hours old.
 
 Build locally from `desktop/`:
 
@@ -32,7 +35,8 @@ The cross-platform Python bundler is `scripts/build_python_ipc.py`; `scripts/bui
 
 GitHub Releases is the public distribution and changelog surface. Workflow artifacts are temporary, hidden behind an Actions run, and must not be linked as the product download.
 
-Normal branch and PR runs still produce unsigned/ad-hoc candidates retained for 14 days. A tag matching the version in
+Normal branch and PR runs still build and verify unsigned/ad-hoc candidates without storing them. A manual workflow run
+uploads candidates for one day when a clean-machine download is actually needed. A tag matching the version in
 `desktop/package.json` turns the same verified workflow into the public release path:
 
 ```bash
@@ -40,22 +44,23 @@ git tag desktop-v0.1.0
 git push origin desktop-v0.1.0
 ```
 
-The `Desktop` workflow then validates tag/version equality, signs the Windows installer, signs and notarizes both macOS
-DMGs, staples the notarization tickets, reruns packaged-runtime smoke checks, creates `SHA256SUMS.txt`, and publishes all
-three installers in a GitHub Release. That tag push is the only per-release maintainer action; a missing credential fails
-closed before packaging rather than publishing an unsigned binary.
+The `Desktop` workflow then validates tag/version equality, reruns packaged-runtime smoke checks, creates
+`SHA256SUMS.txt`, and publishes the unsigned Windows installer and ad-hoc-signed macOS DMGs in a GitHub Release. This path
+uses no paid code-signing certificate, Apple Developer membership, or notarization service. The Release title and notes
+explicitly disclose the unsigned status.
 
 Before tagging, merge only after all required PR checks and install the candidate on clean matching machines. Verify first
 launch, model setup, a two-turn chat, K-line opening, settings, quit, and relaunch. Clean-machine acceptance remains a human
-release decision; signing, notarization, checksums, upload and release-note generation are automated.
+release decision; checksums, upload and release-note generation are automated.
 
-## Required signing configuration
+## Zero-cost signing policy
 
-Configure these GitHub Actions repository secrets once:
+No signing secrets are required or consumed. Windows packages are unsigned. macOS packages use local ad-hoc signing only
+so their bundle structure can still be verified, but they are not Apple-notarized. Consequently:
 
-- `WINDOWS_CSC_LINK`, `WINDOWS_CSC_KEY_PASSWORD`: Authenticode certificate accepted by electron-builder and its password.
-- `MACOS_CSC_LINK`, `MACOS_CSC_KEY_PASSWORD`: Developer ID Application certificate and its password.
-- `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`: Apple notarization identity.
+- Windows may show a Microsoft Defender SmartScreen unknown-publisher warning.
+- macOS may block the first launch; the user can use Finder's right-click → Open flow after verifying the checksum and source.
+- Do not describe these binaries as signed or notarized production installers.
 
 The CI artifacts intentionally identify themselves as `unsigned` (Windows) or `adhoc` (macOS) so they cannot be mistaken for a production distribution.
 
@@ -64,7 +69,7 @@ The CI artifacts intentionally identify themselves as `unsigned` (Windows) or `a
 The stable machine-readable endpoint is `https://wyckoff-analysis.pages.dev/desktop/latest`. It selects the newest
 non-draft, non-prerelease `desktop-v*` GitHub Release and exposes its three assets. The desktop app checks this endpoint in
 Settings → General → Software updates and opens the repository release page when a newer semantic version exists. The
-manifest is only advisory: downloads remain signed GitHub Release assets and the main process allowlists this repository's
+manifest is only advisory: downloads remain GitHub Release assets and the main process allowlists this repository's
 HTTPS release URLs before opening them.
 
 ## Release notes minimum

@@ -811,7 +811,8 @@ MCP server 走 ToolSurface，没有确认弹窗也没有待批队列。`tools/wr
 | **CI** (`ci.yml`) | push/PR | 单次 coverage-instrumented pytest + Python compile + TypeScript check + Web/API tests + dry-run；同一次 Python 测试生成覆盖率 artifact，不重复执行全量套件 |
 | **Worker 自动部署** (`worker_deploy.yml`) | main CI 成功后 / 手动 | 仅 Worker 运行时输入变化时部署精确 CI SHA；检查 Durable Object binding、迁移和远程路由 |
 | **Web 部署健康检查** (`web_deployment_health.yml`) | Worker deploy 完成后 / 手动 | 从 GitHub runner 轮询 Worker `/api/health`、远程路由与 Pages `/chat`；不调用已登录接口或创建沙箱 |
-| **Desktop** (`desktop.yml`) | desktop 相关 push/PR / `desktop-v*` tag | 三平台候选包验收；tag 与 package version 一致时自动签名、公证、校验并发布 GitHub Release |
+| **Desktop** (`desktop.yml`) | desktop 相关 push/PR / `desktop-v*` tag | 三平台候选包验收；tag 与 package version 一致时以 Windows 未签名 / macOS 临时签名的零付费方式校验并发布 GitHub Release |
+| **大型 Artifact 清理** (`artifact_cleanup.yml`) | 每天 03:30 / 手动 | 删除超过 24 小时且至少 50 MB 的 Actions artifacts；桌面工作流自身保留期固定为 1 天 |
 | **盘前风控** (`premarket_risk.yml`) | 周一-周五 08:20 | Codex Automation 调用 `workflow_dispatch`；A50 + VIX 预警，Actions 可手动补跑。另有 UTC 02:20 的 `schedule` 兜底，带 `--backstop` 幂等短路，仅在当日盘前态缺失时补跑 |
 | **港股漏斗筛选** (`wyckoff_funnel_hk.yml`) | 周一-周五 16:35 | `market_funnel_job.py --market hk` |
 | **A 股漏斗筛选 + AI 研报 + 决策** (`wyckoff_funnel.yml`) | 周日-周四 17:17 | `daily_job.py` Step2→3→4；周日正常为周一实盘准备候选，若次日非 A 股交易日才跳过，日频写入 `theme_radar_snapshot` |

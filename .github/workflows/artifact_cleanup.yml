@@ -1,0 +1,44 @@
+name: Artifact Cleanup
+
+on:
+  schedule:
+    # 北京时间每天 03:30，清理已给验收留出一天窗口的大型 Actions artifacts。
+    - cron: "30 19 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: artifact-cleanup-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  delete-large-artifacts:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Delete large artifacts older than 24 hours
+        shell: bash
+        run: |
+          set -euo pipefail
+          cutoff=$(date -u -d '24 hours ago' '+%Y-%m-%dT%H:%M:%SZ')
+          candidates="$RUNNER_TEMP/large-artifacts.tsv"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" \
+            --jq ".artifacts[] | select(.expired == false and .size_in_bytes >= 50000000 and .created_at < \"$cutoff\") | [.id, .name, .size_in_bytes] | @tsv" \
+            > "$candidates"
+
+          deleted=0
+          bytes=0
+          while IFS=$'\t' read -r artifact_id artifact_name artifact_bytes; do
+            test -n "$artifact_id" || continue
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id"
+            deleted=$((deleted + 1))
+            bytes=$((bytes + artifact_bytes))
+            echo "deleted $artifact_name ($artifact_bytes bytes)"
+          done < "$candidates"
+
+          echo "deleted_artifacts=$deleted"
+          echo "deleted_bytes=$bytes"

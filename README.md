@@ -126,7 +126,7 @@ wyckoff dashboard  # 启动本地可视化面板
 
 Electron 桌面端把 Agent 对话、审批、持仓、定时任务、跟踪归因、报告和 K 线放进同一个本地工作台，支持 Windows x64 与 macOS Intel/Apple Silicon。
 
-公开安装包统一放在 [GitHub Releases](https://github.com/YoungCan-Wang/WyckoffTradingAgent/releases)，不会把 14 天过期的 Actions Artifact 当下载站。桌面端在“设置 → 通用 → 软件更新”显示当前版本，发现新的 `desktop-v*` 正式版时会直接给出下载入口。PR/CI 仍生成带真实 Python 运行时的 EXE 和 DMG 候选包，供干净机器验收；签名、公证、自动发布与升级清单见 [docs/DESKTOP_RELEASE.md](docs/DESKTOP_RELEASE.md)。
+公开安装包统一放在 [GitHub Releases](https://github.com/YoungCan-Wang/WyckoffTradingAgent/releases)，不会把 Actions Artifact 当下载站。桌面端在“设置 → 通用 → 软件更新”显示当前版本，发现新的 `desktop-v*` 正式版时会直接给出下载入口。PR/CI 会构建并验证带真实 Python 运行时的 EXE 和 DMG，但不上传大包；只有手动候选构建最多保留 1 天。公开包采用零付费的 Windows 未签名 / macOS 临时签名方案，并明确提示系统警告。自动发布、存储清理与升级清单见 [docs/DESKTOP_RELEASE.md](docs/DESKTOP_RELEASE.md)。
 
 ### Streamlit MVP 已下线
 
