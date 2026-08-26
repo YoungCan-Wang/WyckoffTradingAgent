@@ -178,13 +178,42 @@ class TestImport:
         assert excinfo.value.code == "not_found"
 
 
-class TestLegacyRootFiles:
-    """加账号隔离之前落在根目录的报告，必须「列得出来也读得开」。
+class TestListReadRoundTrip:
+    """**每一条列出来的报告都必须能用它给的 rel_path 读回来。**
 
-    这是实测踩到的 bug：`list_artifacts` 同时扫账号分区和根目录，`rel_path` 是
-    相对**根目录**算的；而 `resolve_inside_reports` 收敛到**账号分区**。两个基准
-    不一致，于是根目录那些历史文件在报告页能看见，点开只有一句「无法读取该文件」。
+    这是这组测试的核心不变式，也是我上一版漏掉的东西：那时我分开测
+    `list_artifacts` 和 `read_artifact`，两个都绿，但它们各自用的**路径基准
+    不一致** —— 列表按根目录算（分区文件带 `<uid>/` 前缀），读取按分区算，
+    于是去找 `<uid>/<uid>/x.md`。结果是所有登录用户的新报告都打不开，而测试
+    一片绿。
+
+    所以这里一律走「列表 → 拿 rel_path → 读」的往返，不再分开断言。
     """
+
+    def test_every_listed_artifact_is_readable(self, reports: Path) -> None:
+        """三种形态一起测：分区文件、分区子目录、根目录历史文件。"""
+        root = _store.reports_dir()
+        (reports / "mine.md").write_text("我的报告", encoding="utf-8")
+        (reports / "sub").mkdir()
+        (reports / "sub" / "deep.md").write_text("子目录里的", encoding="utf-8")
+        (root / "legacy.md").write_text("历史文件", encoding="utf-8")
+
+        listed = art.list_artifacts()
+        assert len(listed) == 3, f"应该列出 3 份: {[a.rel_path for a in listed]}"
+
+        for item in listed:
+            # 关键：用**列表给出的** rel_path 去读
+            payload = art.read_artifact(item.rel_path)
+            assert payload["content"], f"{item.rel_path} 读出来是空的"
+
+    def test_partition_file_round_trips(self, reports: Path) -> None:
+        """单独钉住分区文件这一支 —— 它才是绝大多数报告的形态。"""
+        (reports / "20260825-复盘.md").write_text("正文", encoding="utf-8")
+        listed = art.list_artifacts()
+        assert len(listed) == 1
+        # rel_path 带账号前缀，这是列表的既有约定（相对根目录）
+        assert "/" in listed[0].rel_path, f"分区文件应带账号前缀: {listed[0].rel_path}"
+        assert art.read_artifact(listed[0].rel_path)["content"] == "正文"
 
     def test_lists_and_reads_legacy_root_file(self, reports: Path) -> None:
         root = _store.reports_dir()
@@ -219,6 +248,28 @@ class TestLegacyRootFiles:
         with pytest.raises(art.ArtifactError) as excinfo:
             art.read_artifact("other-account/secret.md")
         assert excinfo.value.code == "not_found"
+
+    @pytest.mark.parametrize(
+        "evil",
+        [
+            "other-account/secret.md",       # 直接指别人的分区
+            "./other-account/secret.md",     # 前缀伪装
+            "__anon__/../other-account/secret.md",  # 先进自己分区再跳出去
+        ],
+    )
+    def test_cross_account_paths_stay_blocked(self, reports: Path, evil: str) -> None:
+        """把根目录当基准之后，越权读是最容易被放开的东西 —— 逐个钉住。
+
+        白名单的写法（只放行「我的分区内」或「根目录直接文件」）比「先试分区、
+        失败再试根目录」更可靠：后者的安全性依赖于「分区那次恰好失败」，
+        是隐式的；一旦有人改了顺序就默默漏了。
+        """
+        other = _store.reports_dir() / "other-account"
+        other.mkdir(exist_ok=True)
+        (other / "secret.md").write_text("别人的私有报告", encoding="utf-8")
+
+        with pytest.raises(art.ArtifactError):
+            art.read_artifact(evil)
 
     @pytest.mark.parametrize(
         "evil",

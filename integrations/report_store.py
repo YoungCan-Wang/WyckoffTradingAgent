@@ -95,19 +95,37 @@ def resolve_inside_reports(rel_path: str, user_id: str = "") -> Path:
 
 
 def resolve_for_read(rel_path: str, user_id: str = "") -> Path:
-    """解析**读取**路径：先账号分区，找不到再看根目录下的历史散文件。
+    """解析**读取**路径。
 
-    为什么需要它：`list_artifacts` 同时列出账号分区和根目录的历史文件，且
-    `rel_path` 是**相对根目录**算的；而 `resolve_inside_reports` 把路径收敛到
-    **账号分区内**。两个基准不一致，于是根目录那些加账号隔离之前落下的报告
-    「列得出来、打不开」—— 点进去只有一句「无法读取该文件」。实测复现过。
+    ## 要解决的不一致
 
-    写入路径**不走这里**，仍然只认账号分区（见 dashboard_tools /
-    report_artifact_tools）：新文件一律进分区，历史遗留只是要能读。
+    `list_artifacts` 给出的 `rel_path` 是**相对根目录**算的
+    （`path.relative_to(root)`），所以分区里的文件带着账号前缀：
+    `<uid>/20260825-复盘.md`。而 `resolve_inside_reports` 以**分区目录**为根，
+    拿这个路径去解析就变成 `<uid>/<uid>/20260825-复盘.md` —— 找不到。
 
-    兜底刻意只放行**根目录下的直接文件**，不放行子目录：
-    `reports/<别人的uid>/x.md` 这种形式必须继续被挡掉，否则这个兜底就成了
-    绕过账号隔离的后门 —— 那正是分区当初要解决的问题。
+    后果是**每一个登录用户的每一份新报告都列得出来、点不开**。这个 bug 从引入
+    账号分区那天就在（2e0f7b98），我上一版只修了「根目录历史文件」那一支，
+    主路径仍然是坏的 —— 因为我的测试分开测两个函数，没测「用列表给出的
+    rel_path 去读」这个往返。
+
+    ## 做法：统一以根目录为基准，再用白名单收口
+
+    路径一律按根目录解析（和列表同一个基准，不再有两套），然后要求落点满足
+    其中之一，否则拒绝：
+
+    1. 在**调用者自己的**分区内 —— 正常路径
+    2. 是根目录下的**直接文件** —— 加分区之前的历史遗留，对所有账号可见
+
+    这样 `<别人的uid>/x.md` 会因为两条都不满足而被拒：它既不在我的分区里，
+    也不是根目录直接文件。白名单比「先试分区、失败再试根目录」更好，因为后者
+    的安全性依赖于「分区那次恰好失败」，是隐式的。
+
+    为兼容也接受**分区相对**的路径（历史调用方可能传 `report.md` 指自己分区里
+    的文件）：先按分区试一次，命中且存在就用它。
+
+    写入路径**不走这里**，仍然只认 `resolve_inside_reports`（见 dashboard_tools /
+    report_artifact_tools）：新文件一律进自己的分区。
     """
     raw = (rel_path or "").strip()
     if not raw:
@@ -115,19 +133,33 @@ def resolve_for_read(rel_path: str, user_id: str = "") -> Path:
     if Path(raw).is_absolute():
         raise ReportPathError("invalid_path", "只接受报告目录内的相对路径")
 
+    root = reports_dir().resolve()
+    mine = ensure_reports_dir(user_id).resolve()
+
+    # 1) 先按「分区相对」解析。resolve_inside_reports 自带逃逸校验,
+    #    所以 "../x" 这类在这里就被拒掉,不会漏到下面。
     scoped = resolve_inside_reports(raw, user_id)
     if scoped.is_file():
         return scoped
 
-    # 历史文件：只可能是根目录下的一层，不含分隔符。用 Path(raw).name 比对而
-    # 不是「拼上去再 resolve」—— 后者遇到 "../x" 会先逃出去再落回来看着合法。
-    if Path(raw).name != raw:
-        return scoped  # 带路径分隔符 → 不是历史散文件，维持分区结果（不存在）
-
-    root = reports_dir().resolve()
-    legacy = (root / raw).resolve()
-    if legacy.parent != root:
+    # 2) 再按「根目录相对」解析 —— 这是列表给出的那个基准。
+    target = (root / raw).resolve()
+    if target != root and root not in target.parents:
         raise ReportPathError("outside_root", "路径超出报告目录")
-    if legacy.is_file():
-        return legacy
+
+    allowed = (
+        # 自己分区内的文件
+        target == mine or mine in target.parents
+        # 或根目录下的直接文件（历史遗留，对所有账号可见）
+        or target.parent == root
+    )
+    if not allowed:
+        # 落在别人的分区里。说成 not_found 而不是 outside_root：不确认
+        # 「这个路径确实存在但你没权限」，避免变成探测别人有哪些报告的接口。
+        raise ReportPathError("not_found", f"找不到文件: {rel_path}")
+    if target.is_file():
+        return target
+
+    # 两种解释都不存在。返回分区那个 —— 调用方据此报 not_found，
+    # 错误信息里出现的是用户自己的分区,不泄漏根目录布局。
     return scoped
