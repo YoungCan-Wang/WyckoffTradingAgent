@@ -235,11 +235,15 @@ class RemoteBridge:
             params = {}
 
         if method in REMOTE_UNAVAILABLE:
-            self._respond(request_id, origin, {
-                "type": "error",
-                "code": "desktop_only",
-                "message": REMOTE_UNAVAILABLE[method],
-            })
+            self._respond(
+                request_id,
+                origin,
+                {
+                    "type": "error",
+                    "code": "desktop_only",
+                    "message": REMOTE_UNAVAILABLE[method],
+                },
+            )
             self._respond(request_id, origin, {"type": "end"})
             return
 

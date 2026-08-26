@@ -7,7 +7,7 @@
  * 协议与桌面端完全一致（`cli/ipc/methods.py` 的 63 个方法），所以手机上能做的事
  * 和电脑上一模一样：对话、改持仓、设止损、审批。
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react'
 import { supabase } from '@/lib/supabase'
 import { apiUrl } from '@/lib/api-url'
 
@@ -32,6 +32,79 @@ export function pairingCodeFromHash(hash: string): string {
   return match?.[1] ?? ''
 }
 
+/** 建连所需的一切可变状态。从 useRemote 里抽出来，好让 wiring 逻辑离开 hook。 */
+interface SocketDeps {
+  socket: MutableRefObject<WebSocket | null>
+  waiters: MutableRefObject<Map<number, Waiter>>
+  attempt: MutableRefObject<number>
+  closed: MutableRefObject<boolean>
+  setState: (next: LinkState) => void
+  reconnect: () => void
+}
+
+/**
+ * 解析一条下行消息，派发给状态或对应的调用方。
+ *
+ * 从 useRemote 里抽出来的：那个 hook 原本 112 行，超过 90 的上限。
+ * 这段是最独立的一块 —— 它只依赖 waiters 和 setState，不碰重连逻辑。
+ */
+function handleMessage (raw: string, deps: SocketDeps): void {
+  let payload: RemoteEvent
+  try {
+    payload = JSON.parse(raw)
+  } catch {
+    return
+  }
+  if (payload.type === 'presence') {
+    deps.setState(payload.host_online ? 'paired' : 'host_offline')
+    return
+  }
+  if (payload.type === 'host_offline') { deps.setState('host_offline'); return }
+
+  const waiter = deps.waiters.current.get(Number(payload.id))
+  if (!waiter) return
+  if (payload.type === 'end') {
+    deps.waiters.current.delete(Number(payload.id))
+    waiter.resolve()
+    return
+  }
+  waiter.onEvent(payload)
+}
+
+/** 断线处理：区分「被踢」与「网络抖动」，后者退避重连。 */
+function handleClose (evt: CloseEvent, deps: SocketDeps): void {
+  deps.socket.current = null
+  // 4003 = 被电脑端踢掉。那是用户主动的决定，不该自动爬回来。
+  if (evt.code === 4003) { deps.closed.current = true; deps.setState('unauthorized'); return }
+  if (deps.closed.current) return
+  // 挂起的调用要收到失败，否则界面永久转圈。
+  for (const waiter of deps.waiters.current.values()) waiter.reject(new Error('连接断开'))
+  deps.waiters.current.clear()
+  deps.setState('connecting')
+  const delay = Math.min(1000 * 2 ** deps.attempt.current, 15000)
+  deps.attempt.current += 1
+  setTimeout(deps.reconnect, delay)
+}
+
+/** 拿 token 和配对码，拼出 WS 地址。返回 null 表示不具备连接条件。 */
+async function resolveSocketUrl (setState: (n: LinkState) => void): Promise<{ url: string; token: string; code: string } | null> {
+  const { data } = await supabase.auth.getSession()
+  const token = data.session?.access_token
+  if (!token) { setState('unauthorized'); return null }
+
+  // 配对码只在第一次连接时用（信箱那边一次性消费）。存进 sessionStorage 是为了
+  // 熬过重连 —— 但重连时不再带它，否则第二次必然因为「码已用掉」被拒。
+  const code = pairingCodeFromHash(window.location.hash)
+  if (code) sessionStorage.setItem('wyckoff.paired', '1')
+  const paired = sessionStorage.getItem('wyckoff.paired') === '1'
+  if (!code && !paired) { setState('unauthorized'); return null }
+
+  // 复用 apiUrl 而不是自己拼 base：它已经处理了 dev/prod 与 VITE_API_URL 覆盖。
+  const label = encodeURIComponent(navigator.userAgent.includes('iPhone') ? 'iPhone' : '手机')
+  const http = apiUrl(`/api/remote/ws?role=remote&label=${label}${code ? `&code=${code}` : ''}`)
+  return { url: http.replace(/^http/, 'ws'), token, code }
+}
+
 export function useRemote () {
   const [state, setState] = useState<LinkState>('connecting')
   const socket = useRef<WebSocket | null>(null)
@@ -43,71 +116,25 @@ export function useRemote () {
 
   const connect = useCallback(async () => {
     if (closed.current) return
-    const { data } = await supabase.auth.getSession()
-    const token = data.session?.access_token
-    if (!token) { setState('unauthorized'); return }
-
-    // 配对码只在第一次连接时用（信箱那边一次性消费）。存进 sessionStorage 是为了
-    // 熬过重连 —— 但重连时不再带它，否则第二次必然因为「码已用掉」被拒。
-    const code = pairingCodeFromHash(window.location.hash)
-    if (code) sessionStorage.setItem('wyckoff.paired', '1')
-    const paired = sessionStorage.getItem('wyckoff.paired') === '1'
-    if (!code && !paired) { setState('unauthorized'); return }
-
-    // 复用 apiUrl 而不是自己拼 base：它已经处理了 dev/prod 与 VITE_API_URL 覆盖。
-    const label = encodeURIComponent(navigator.userAgent.includes('iPhone') ? 'iPhone' : '手机')
-    const http = apiUrl(`/api/remote/ws?role=remote&label=${label}${code ? `&code=${code}` : ''}`)
-    const url = http.replace(/^http/, 'ws')
+    const resolved = await resolveSocketUrl(setState)
+    if (!resolved) return
 
     // token 走 subprotocol：浏览器不能给 WS upgrade 带 Authorization header。
     // 这个格式和 agent-run-socket 那边一致，云端按同一套解析。
-    const ws = new WebSocket(url, ['bearer', token])
+    const ws = new WebSocket(resolved.url, ['bearer', resolved.token])
     socket.current = ws
+    const deps: SocketDeps = {
+      socket, waiters, attempt, closed, setState, reconnect: () => void connect()
+    }
 
     ws.onopen = () => {
       attempt.current = 0
       setState('paired')
       // 配对码用掉了就从地址栏抹掉 —— 留在 history 里等于把它写进浏览器记录。
-      if (code) history.replaceState(null, '', window.location.pathname)
+      if (resolved.code) history.replaceState(null, '', window.location.pathname)
     }
-
-    ws.onmessage = (evt) => {
-      let payload: RemoteEvent
-      try {
-        payload = JSON.parse(String(evt.data))
-      } catch {
-        return
-      }
-      if (payload.type === 'presence') {
-        setState(payload.host_online ? 'paired' : 'host_offline')
-        return
-      }
-      if (payload.type === 'host_offline') { setState('host_offline'); return }
-
-      const waiter = waiters.current.get(Number(payload.id))
-      if (!waiter) return
-      if (payload.type === 'end') {
-        waiters.current.delete(Number(payload.id))
-        waiter.resolve()
-        return
-      }
-      waiter.onEvent(payload)
-    }
-
-    ws.onclose = (evt) => {
-      socket.current = null
-      // 4003 = 被电脑端踢掉。那是用户主动的决定，不该自动爬回来。
-      if (evt.code === 4003) { closed.current = true; setState('unauthorized'); return }
-      if (closed.current) return
-      // 挂起的调用要收到失败，否则界面永久转圈。
-      for (const waiter of waiters.current.values()) waiter.reject(new Error('连接断开'))
-      waiters.current.clear()
-      setState('connecting')
-      const delay = Math.min(1000 * 2 ** attempt.current, 15000)
-      attempt.current += 1
-      setTimeout(() => void connect(), delay)
-    }
-
+    ws.onmessage = (evt) => handleMessage(String(evt.data), deps)
+    ws.onclose = (evt) => handleClose(evt, deps)
     ws.onerror = () => {
       if (attempt.current > 3) setState('failed')
     }

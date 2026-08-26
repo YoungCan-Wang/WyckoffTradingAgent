@@ -149,7 +149,8 @@ def resolve_for_read(rel_path: str, user_id: str = "") -> Path:
 
     allowed = (
         # 自己分区内的文件
-        target == mine or mine in target.parents
+        target == mine
+        or mine in target.parents
         # 或根目录下的直接文件（历史遗留，对所有账号可见）
         or target.parent == root
     )

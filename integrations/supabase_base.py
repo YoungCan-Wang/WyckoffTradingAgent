@@ -49,9 +49,7 @@ def _timeout_client():
     """
     import httpx
 
-    return httpx.Client(
-        timeout=httpx.Timeout(READ_TIMEOUT_SECONDS, connect=CONNECT_TIMEOUT_SECONDS)
-    )
+    return httpx.Client(timeout=httpx.Timeout(READ_TIMEOUT_SECONDS, connect=CONNECT_TIMEOUT_SECONDS))
 
 
 def _client_options():

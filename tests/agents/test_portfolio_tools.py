@@ -136,11 +136,13 @@ class TestCloudFailureFallsBackToLocal:
         local_state = {"positions": [{"code": "000001", "shares": 100}], "free_cash": 50.0}
         monkeypatch.setattr(pt, "has_cloud", lambda ctx: True)
         monkeypatch.setattr(
-            pt, "get_user_client",
+            pt,
+            "get_user_client",
             lambda ctx: (_ for _ in ()).throw(Exception("handshake timed out")),
         )
         monkeypatch.setitem(
-            __import__("sys").modules, "integrations.local_db",
+            __import__("sys").modules,
+            "integrations.local_db",
             type("M", (), {"load_portfolio": staticmethod(lambda pid: dict(local_state))}),
         )
 
@@ -158,7 +160,8 @@ class TestCloudFailureFallsBackToLocal:
 
         monkeypatch.setattr(pt, "has_cloud", lambda ctx: False)
         monkeypatch.setitem(
-            __import__("sys").modules, "integrations.local_db",
+            __import__("sys").modules,
+            "integrations.local_db",
             type("M", (), {"load_portfolio": staticmethod(lambda pid: {"positions": [], "free_cash": 0})}),
         )
 
@@ -188,7 +191,8 @@ class TestValuationSurvivesOffline:
             saved.update(pid=pid, cash=cash, equity=total_equity)
 
         monkeypatch.setitem(
-            __import__("sys").modules, "integrations.local_db",
+            __import__("sys").modules,
+            "integrations.local_db",
             type("M", (), {"save_portfolio": staticmethod(fake_save)}),
         )
         pt._cache_portfolio("pid", {"free_cash": 100.0, "positions": [], "total_equity": 92858.41}, "remote")
@@ -201,9 +205,17 @@ class TestValuationSurvivesOffline:
 
         seen = {}
         monkeypatch.setitem(
-            __import__("sys").modules, "integrations.local_db",
-            type("M", (), {"save_portfolio": staticmethod(
-                lambda pid, cash, pos, total_equity=None: seen.update(equity=total_equity))}),
+            __import__("sys").modules,
+            "integrations.local_db",
+            type(
+                "M",
+                (),
+                {
+                    "save_portfolio": staticmethod(
+                        lambda pid, cash, pos, total_equity=None: seen.update(equity=total_equity)
+                    )
+                },
+            ),
         )
         pt._cache_portfolio("pid", {"free_cash": 0, "positions": []}, "remote")
 
@@ -218,8 +230,10 @@ class TestValuationSurvivesOffline:
         import agents.portfolio_tools as pt
 
         state = {
-            "free_cash": 0, "positions": [],
-            "total_equity": 1234.5, "valued_at": "2026-08-25 11:25:33",
+            "free_cash": 0,
+            "positions": [],
+            "total_equity": 1234.5,
+            "valued_at": "2026-08-25 11:25:33",
         }
         view = pt._portfolio_view("pid", state)
         assert view["total_equity"] == 1234.5

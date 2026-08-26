@@ -126,9 +126,7 @@ class TestNextRunSearchWindow:
 
     def test_month_end_skips_short_months(self):
         """每月 31 号：2 月没有那天就跳过，落到 3 月。"""
-        found = scheduler.next_scheduled_time(
-            self._sched("0 9 31 * *"), at=datetime(2026, 2, 1, 0, 0)
-        )
+        found = scheduler.next_scheduled_time(self._sched("0 9 31 * *"), at=datetime(2026, 2, 1, 0, 0))
         assert found == datetime(2026, 3, 31, 9, 0)
 
     def test_disabled_has_no_next_run(self):

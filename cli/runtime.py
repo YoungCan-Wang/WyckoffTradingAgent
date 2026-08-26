@@ -1033,9 +1033,7 @@ class AgentRuntime:
 
         for call in to_run:
             if self.scratchpad:
-                self.scratchpad.record_tool_start(
-                    call["name"], call.get("args") or {}, tool_call_id=call["id"]
-                )
+                self.scratchpad.record_tool_start(call["name"], call.get("args") or {}, tool_call_id=call["id"])
             yield self._tool_start_event(call, concurrent=True)
 
         completed: dict[str, dict[str, Any]] = {}

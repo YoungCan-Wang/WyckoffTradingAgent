@@ -252,8 +252,8 @@ class TestListReadRoundTrip:
     @pytest.mark.parametrize(
         "evil",
         [
-            "other-account/secret.md",       # 直接指别人的分区
-            "./other-account/secret.md",     # 前缀伪装
+            "other-account/secret.md",  # 直接指别人的分区
+            "./other-account/secret.md",  # 前缀伪装
             "__anon__/../other-account/secret.md",  # 先进自己分区再跳出去
         ],
     )

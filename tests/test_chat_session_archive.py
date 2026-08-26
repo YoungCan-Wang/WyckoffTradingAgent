@@ -81,13 +81,9 @@ def test_archive_does_not_bump_updated_at(db):
     """归档是整理动作，不是新活动。动了 updated_at 会让它假装刚聊过。"""
     _seed(db, "s1", "u1")
     conn = db.get_db()
-    before = conn.execute(
-        "SELECT updated_at FROM chat_session WHERE session_id='s1'"
-    ).fetchone()[0]
+    before = conn.execute("SELECT updated_at FROM chat_session WHERE session_id='s1'").fetchone()[0]
     db.set_chat_session_archived("s1", True, "u1")
-    after = conn.execute(
-        "SELECT updated_at FROM chat_session WHERE session_id='s1'"
-    ).fetchone()[0]
+    after = conn.execute("SELECT updated_at FROM chat_session WHERE session_id='s1'").fetchone()[0]
     assert before == after
 
 
@@ -113,9 +109,7 @@ def test_session_without_metadata_row_counts_as_unarchived(db):
     两个列表里都匹配不上 —— 会话直接从界面上消失。
     """
     conn = db.get_db()
-    conn.execute(
-        "INSERT INTO chat_log(session_id,user_id,role,content) VALUES('orphan','u1','user','老会话')"
-    )
+    conn.execute("INSERT INTO chat_log(session_id,user_id,role,content) VALUES('orphan','u1','user','老会话')")
     conn.commit()
     assert "orphan" in _ids(db)
 
@@ -139,9 +133,7 @@ def test_delete_all_also_removes_messages(db):
     db.set_chat_session_archived("gone", True, "u1")
     db.delete_archived_chat_sessions("u1")
     conn = db.get_db()
-    left = conn.execute(
-        "SELECT COUNT(*) FROM chat_log WHERE session_id='gone'"
-    ).fetchone()[0]
+    left = conn.execute("SELECT COUNT(*) FROM chat_log WHERE session_id='gone'").fetchone()[0]
     assert left == 0
 
 
@@ -153,9 +145,7 @@ def test_delete_all_respects_account_boundary(db):
     db.set_chat_session_archived("theirs", True, "u2")
 
     assert db.delete_archived_chat_sessions("u1") == 1
-    assert [r["session_id"] for r in db.list_chat_sessions(user_id="u2", archived=True)] == [
-        "theirs"
-    ]
+    assert [r["session_id"] for r in db.list_chat_sessions(user_id="u2", archived=True)] == ["theirs"]
 
 
 def test_delete_all_spares_sessions_without_metadata_row(db):
@@ -165,9 +155,7 @@ def test_delete_all_spares_sessions_without_metadata_row(db):
     这些没有元数据行的老会话会被一起干掉。
     """
     conn = db.get_db()
-    conn.execute(
-        "INSERT INTO chat_log(session_id,user_id,role,content) VALUES('legacy','u1','user','老会话')"
-    )
+    conn.execute("INSERT INTO chat_log(session_id,user_id,role,content) VALUES('legacy','u1','user','老会话')")
     conn.commit()
     _seed(db, "archived", "u1")
     db.set_chat_session_archived("archived", True, "u1")
@@ -252,9 +240,7 @@ def test_upgrade_from_v17_adds_column_and_rebuilds_index(tmp_path, monkeypatch):
     cols = {r[1] for r in conn.execute("PRAGMA table_info(chat_session)")}
     assert "archived" in cols
 
-    index_sql = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE name='idx_chatsess_user'"
-    ).fetchone()[0]
+    index_sql = conn.execute("SELECT sql FROM sqlite_master WHERE name='idx_chatsess_user'").fetchone()[0]
     assert "archived" in index_sql
 
     # 升级后侧栏看到的东西和升级前一致：老会话仍在，且仍然置顶。

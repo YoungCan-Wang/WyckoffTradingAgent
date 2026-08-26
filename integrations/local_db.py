@@ -322,9 +322,28 @@ def init_db() -> None:
     _ensure_recommendation_tracking_columns(conn)
     _ensure_signal_pending_columns(conn)
     _ensure_agent_memory_columns(conn)
-    cur = conn.execute("SELECT MAX(version) FROM schema_version")
-    row = cur.fetchone()
-    current = row[0] if row and row[0] else 0
+    current = _schema_version(conn)
+    _run_migrations(conn, current)
+    if current < _SCHEMA_VERSION:
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_version(version) VALUES(?)",
+            (_SCHEMA_VERSION,),
+        )
+        conn.commit()
+
+
+def _schema_version(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
+    return row[0] if row and row[0] else 0
+
+
+def _run_migrations(conn: sqlite3.Connection, current: int) -> None:
+    """按版本跑增量迁移。
+
+    从 init_db 拆出来的：那个函数原本把「建表 + 读版本 + 十几段迁移 + 写版本」
+    全塞在一起，超过了 70 行的上限。拆开之后 init_db 只表达流程，
+    每段迁移的细节在这里 —— 加新迁移也不会再把 init_db 撑大。
+    """
     if current < 4:
         try:
             conn.execute("ALTER TABLE portfolio_position ADD COLUMN buy_dt TEXT DEFAULT ''")
@@ -353,18 +372,7 @@ def init_db() -> None:
     if current < 17:
         _backfill_chat_sessions(conn)
     if current < 18:
-        # 归档位。历史行默认 0（未归档）—— 升级后侧栏看到的列表和升级前一致。
-        _ensure_columns(conn, "chat_session", {"archived": "INTEGER DEFAULT 0"})
-        # 索引要重建：老库里这个名字已经存在（不带 archived），
-        # 上面 SCHEMA 里的 CREATE INDEX IF NOT EXISTS 对它不生效。
-        try:
-            conn.execute("DROP INDEX IF EXISTS idx_chatsess_user")
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_chatsess_user "
-                "ON chat_session(user_id, archived, pinned DESC, updated_at DESC)"
-            )
-        except Exception:
-            logger.warning("migration: rebuild idx_chatsess_user failed", exc_info=True)
+        _migrate_chat_session_archived(conn)
     if current < 19:
         # 本地存一份总估值。
         #
@@ -377,17 +385,22 @@ def init_db() -> None:
         # 标成刚算的。
         #
         # 没有 DEFAULT：NULL 表示「从来没估过」，和「估值为 0」是两件事。
-        _ensure_columns(
-            conn,
-            "portfolio",
-            {"total_equity": "REAL", "valued_at": "TEXT"},
-        )
-    if current < _SCHEMA_VERSION:
+        _ensure_columns(conn, "portfolio", {"total_equity": "REAL", "valued_at": "TEXT"})
+
+
+def _migrate_chat_session_archived(conn: sqlite3.Connection) -> None:
+    """归档位。历史行默认 0（未归档）—— 升级后侧栏看到的列表和升级前一致。"""
+    _ensure_columns(conn, "chat_session", {"archived": "INTEGER DEFAULT 0"})
+    # 索引要重建：老库里这个名字已经存在（不带 archived），
+    # 上面 SCHEMA 里的 CREATE INDEX IF NOT EXISTS 对它不生效。
+    try:
+        conn.execute("DROP INDEX IF EXISTS idx_chatsess_user")
         conn.execute(
-            "INSERT OR REPLACE INTO schema_version(version) VALUES(?)",
-            (_SCHEMA_VERSION,),
+            "CREATE INDEX IF NOT EXISTS idx_chatsess_user "
+            "ON chat_session(user_id, archived, pinned DESC, updated_at DESC)"
         )
-        conn.commit()
+    except Exception:
+        logger.warning("migration: rebuild idx_chatsess_user failed", exc_info=True)
 
 
 def _backfill_chat_sessions(conn: sqlite3.Connection) -> None:
@@ -416,11 +429,7 @@ def _backfill_chat_sessions(conn: sqlite3.Connection) -> None:
         ).fetchall()
         # 标题在 Python 侧清洗：SQL 的 SUBSTR 会把首条提问后面注入的时间戳
         # 上下文一起截进标题里。见 clean_session_title。
-        payload = [
-            (r[0], r[1], clean_session_title(r[4] or ""), 0, r[2], r[3])
-            for r in rows
-            if r[0] not in existing
-        ]
+        payload = [(r[0], r[1], clean_session_title(r[4] or ""), 0, r[2], r[3]) for r in rows if r[0] not in existing]
         if payload:
             conn.executemany(
                 """INSERT OR IGNORE INTO chat_session
@@ -1432,9 +1441,7 @@ def save_chat_log(
         return cur.lastrowid or 0
 
 
-def load_chat_logs(
-    *, session_id: str | None = None, limit: int = 200, user_id: str | None = None
-) -> list[dict]:
+def load_chat_logs(*, session_id: str | None = None, limit: int = 200, user_id: str | None = None) -> list[dict]:
     """读对话记录。
 
     传 user_id 就按账号过滤 —— 不传保持原有全量语义（TUI 与既有调用方依赖它）。
@@ -1454,9 +1461,7 @@ def load_chat_logs(
     # 指定会话时按时间正序（要按顺序回放）；否则倒序取最近的。
     order = "ASC" if session_id else "DESC"
     params.append(limit)
-    cur = conn.execute(
-        f"SELECT * FROM chat_log{where} ORDER BY created_at {order} LIMIT ?", params
-    )
+    cur = conn.execute(f"SELECT * FROM chat_log{where} ORDER BY created_at {order} LIMIT ?", params)
     return [dict(r) for r in cur.fetchall()]
 
 

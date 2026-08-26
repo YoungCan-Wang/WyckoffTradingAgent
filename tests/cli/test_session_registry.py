@@ -201,7 +201,7 @@ class TestResumeIsAccountScoped:
 
         session = registry.DesktopSession("shared-sid")
         session.start()
-        session._user_id = "bob"          # 当前登录的是 bob
+        session._user_id = "bob"  # 当前登录的是 bob
         restored = session.load_history()
 
         assert seen["user_id"] == "bob", f"没有按账号过滤,实际传了 {seen['user_id']!r}"
@@ -216,5 +216,5 @@ class TestResumeIsAccountScoped:
             ),
         )
         session = registry.DesktopSession("my-sid")
-        session.start()          # fake_start 把 _user_id 设成 alice
+        session.start()  # fake_start 把 _user_id 设成 alice
         assert session.load_history() > 0, "自己的历史应该恢复得回来"
