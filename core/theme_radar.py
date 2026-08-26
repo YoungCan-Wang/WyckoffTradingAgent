@@ -13,7 +13,7 @@ import pandas as pd
 from core._price_math import clamp as _clamp
 from core._price_math import drawdown_pct as _drawdown_pct
 from core._price_math import ret_pct as _ret_pct
-from core.concept_filters import is_actionable_theme_name
+from core.concept_filters import is_actionable_theme_name, is_user_facing_etf
 from utils.safe import finite_float as _as_float
 
 THEME_ALIASES: dict[str, tuple[str, ...]] = {
@@ -228,14 +228,19 @@ def build_theme_radar_snapshot(
 
 
 def summarize_theme_radar(snapshot: dict[str, Any], limit: int = 5) -> str:
-    themes = list(snapshot.get("themes") or [])[:limit]
+    themes = [x for x in (snapshot.get("themes") or []) if not is_user_facing_etf(name=str(x.get("theme") or ""))]
+    themes = themes[:limit]
     if not themes:
         return "无明确中长线主线"
     return "；".join(f"{x['theme']} {x['score']:.2f}/{x['state']}" for x in themes)
 
 
 def summarize_theme_rotation(snapshot: dict[str, Any], limit: int = 3) -> str:
-    themes = list(snapshot.get("rotation_watch") or [])[:limit]
+    themes = [
+        item
+        for item in (snapshot.get("rotation_watch") or [])
+        if not is_user_facing_etf(name=str(item.get("theme") or ""))
+    ][:limit]
     if not themes:
         return "暂无显著短周期轮动"
     return "；".join(

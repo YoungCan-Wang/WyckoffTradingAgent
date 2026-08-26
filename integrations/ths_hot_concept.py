@@ -11,7 +11,7 @@ from typing import Any
 import requests
 
 from core.candidate_metadata import code6 as _code6
-from core.concept_filters import is_actionable_theme_name
+from core.concept_filters import is_actionable_theme_name, is_user_facing_etf
 from core.theme_radar import normalize_theme_name
 from utils.safe import safe_float as _as_float
 
@@ -73,7 +73,11 @@ def ths_hot_events_to_concept_heat(snapshot: dict[str, Any]) -> list[dict[str, A
 
 
 def summarize_ths_hot_events(snapshot: dict[str, Any], *, limit: int = 6) -> str:
-    events = [x for x in snapshot.get("events") or [] if x.get("theme")]
+    events = [
+        x
+        for x in snapshot.get("events") or []
+        if x.get("theme") and not is_user_facing_etf(name=str(x.get("theme") or ""))
+    ]
     if not events:
         return ""
     parts = []

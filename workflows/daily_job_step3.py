@@ -107,11 +107,33 @@ def mark_step3_outputs(
         )
 
 
+def persist_ic_shadow_pool(step2: Step2StageResult, cfg: DailyJobConfig) -> None:
+    """写入 IC 反向打分影子池。只观察不下单，失败不阻断主流程。
+
+    影子行在漏斗内计算（复用其 all_df_map，见 wyckoff_funnel._build_ic_shadow_pool），
+    在此统一落库——漏斗本身保持只读，写库集中在 daily_job 这一层。
+    """
+    rows = ((step2.details or {}).get("metrics") or {}).get("ic_shadow") or []
+    if not rows:
+        return
+    if cfg.preview_only:
+        log_line(f"  影子池 dry-run：{len(rows)} 行未写入")
+        return
+    try:
+        from integrations.supabase_signal_feedback import upsert_signal_observations
+
+        written = upsert_signal_observations(rows)
+        log_line(f"  影子池已写入 {written}/{len(rows)} 行（source=ic_shadow）")
+    except Exception as exc:  # noqa: BLE001 - 研究支线，不得阻断
+        log_line(f"  影子池写入失败（不影响主流程）: {str(exc)[:120]}")
+
+
 def persist_step3_signal_observations(
     step2: Step2StageResult,
     step3: Step3StageResult,
     cfg: DailyJobConfig,
 ) -> bool:
+    persist_ic_shadow_pool(step2, cfg)
     if step2.ok and step2.details:
         return signal_observations.persist_signal_observations(
             step2.details,

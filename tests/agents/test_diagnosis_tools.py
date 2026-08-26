@@ -330,3 +330,17 @@ def test_fill_position_weights_uses_market_value_share() -> None:
     assert results[0]["weight_pct"] == 75.0
     assert results[1]["weight_pct"] == 25.0
     assert "weight_pct" not in results[2]
+
+
+def test_attach_chart_news_events_is_overlay_only(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "integrations.stock_news_events.load_news_chart_events",
+        lambda *_args, **_kwargs: [{"date": "2026-08-13", "kind": "deal", "title": "入股"}],
+    )
+    payload = diagnosis_tools._attach_chart_news_events(
+        {"code": "300684"},
+        "300684",
+        pd.DataFrame({"date": ["2026-08-01", "2026-08-20"]}),
+    )
+    assert payload["chart_news_note"] == "读盘叠加层，不改变漏斗候选"
+    assert payload["chart_news_events"][0]["kind"] == "deal"

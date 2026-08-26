@@ -78,9 +78,25 @@ def _dedupe_decisions(decisions: list[DecisionItem]) -> list[DecisionItem]:
     return [selected[code] for code in order]
 
 
-def max_new_buy_names(market_regime: str, limits: NewBuyLimits) -> int:
+def max_new_buy_names(
+    market_regime: str,
+    limits: NewBuyLimits,
+    blocked_regimes: frozenset[str] | None = None,
+) -> int:
+    """当日允许的新开仓只数。
+
+    `blocked_regimes` 留空时回退到硬编码的 EXECUTE_BLOCK_NEW_BUY_REGIMES（旧行为）；
+    传入时应与 OMS 的 buy_block_regimes 同源，否则 STEP4_BUY_ALLOW_REGIMES 的豁免
+    到这一层会被重新拦掉——PR #301/#308 让回测闸门读了 ALLOW，若此处仍用硬编码集合，
+    就会形成「回测能买、实盘买不到」的错位。
+
+    注意：本函数只负责让两侧口径一致，不改变任何档位的可买性。当前 ALLOW 名单为
+    BEAR_REBOUND，而实测其候选净超额 -0.04pct、为正日恰 50%（无方向性），
+    故上游 allow_recommendation_write 仍保持关闭，两侧一致地不买。
+    """
     regime = normalize_regime(clean_text(market_regime))
-    if regime in EXECUTE_BLOCK_NEW_BUY_REGIMES:
+    blocked = blocked_regimes if blocked_regimes is not None else EXECUTE_BLOCK_NEW_BUY_REGIMES
+    if regime in blocked:
         return 0
     if regime in PROBE_ONLY_REGIMES:
         return max(min(limits.caution, 1), 0)
@@ -92,8 +108,9 @@ def trim_new_buy_decisions(
     held_codes: set[str],
     market_regime: str,
     limits: NewBuyLimits,
+    blocked_regimes: frozenset[str] | None = None,
 ) -> tuple[list[DecisionItem], list[str], int]:
-    max_new_names = max_new_buy_names(market_regime, limits)
+    max_new_names = max_new_buy_names(market_regime, limits, blocked_regimes)
     new_buys = [
         dec
         for dec in decisions

@@ -8,6 +8,8 @@ import { streamLLMResponseWithFallback, type LLMStreamStatus } from '@/lib/llm-s
 import { clearStreamFlush, scheduleStreamFlush } from '@/lib/stream-render'
 import { MarkdownContent } from '@/components/markdown'
 import { KlineChart } from '@/components/kline-chart'
+import { NewsEventCards } from '@/components/news-event-cards'
+import { useNewsChartEvents } from '@/lib/news-chart-events'
 import { StockSearchBox, matchesSelectedQuery, useStockSearch, type StockSearchController } from '@/components/stock-search-box'
 import { usePreferences } from '@/lib/preferences'
 import { AIDisclaimer } from '@/components/ai-disclaimer'
@@ -319,7 +321,7 @@ function AnalysisContent({ runner, onAskAboutRange }: { runner: AnalysisRunnerSt
       )}
       <div className="min-h-0 flex-1 overflow-auto pr-1">
         <div className="space-y-6">
-          {kline && dataQuality && <KlineSection klineData={kline} dataQuality={dataQuality} onAskAboutRange={onAskAboutRange} />}
+          {kline && dataQuality && <KlineSection symbol={symbol} name={name} klineData={kline} dataQuality={dataQuality} onAskAboutRange={onAskAboutRange} />}
           {contextPack && <ContextPackSection pack={contextPack} />}
           {valueSnapshot && <ValueSection snapshot={valueSnapshot} />}
           {report && <ReportSection report={report} streaming={loading && !result} />}
@@ -340,9 +342,12 @@ function ContextPackSection({ pack }: { pack: AnalysisContextPack }) {
   )
 }
 
-function KlineSection({ klineData, dataQuality, compact = false, onAskAboutRange }: { klineData: KlineRow[]; dataQuality: KlineDataQuality; compact?: boolean; onAskAboutRange: (start: string, end: string) => void }) {
+function KlineSection({ symbol, name, klineData, dataQuality, compact = false, onAskAboutRange }: { symbol?: string; name?: string; klineData: KlineRow[]; dataQuality: KlineDataQuality; compact?: boolean; onAskAboutRange: (start: string, end: string) => void }) {
   const { t } = usePreferences()
   const wyckoff = useMemo(() => detectWyckoffAnnotations(klineData), [klineData])
+  const sessionDates = useMemo(() => klineData.map((row) => row.date), [klineData])
+  const news = useNewsChartEvents(symbol, sessionDates, name)
+  const newsMarkers = useMemo(() => news.events.map((event) => ({ date: event.date, sentiment: event.sentiment, label: event.kind })), [news.events])
   const [selectedRange, setSelectedRange] = useState<{ start: string; end: string } | null>(null)
   const handleBarClick = (date: string) => {
     setSelectedRange((current) => {
@@ -364,7 +369,8 @@ function KlineSection({ klineData, dataQuality, compact = false, onAskAboutRange
           <DataQualityBadge quality={dataQuality} />
         </div>
       </div>
-      <KlineChart data={klineData} height={compact ? 320 : 430} wyckoffMarkers={wyckoff?.markers} tradingRange={wyckoff?.tradingRange ?? undefined} stage={wyckoff?.stage} showIndicators onBarClick={handleBarClick} />
+      <KlineChart data={klineData} height={compact ? 320 : 430} wyckoffMarkers={wyckoff?.markers} newsMarkers={newsMarkers} tradingRange={wyckoff?.tradingRange ?? undefined} stage={wyckoff?.stage} showIndicators onBarClick={handleBarClick} />
+      <NewsEventCards events={news.events} status={news.status} />
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
         <span>{range ? `已选 ${range.label}` : '点击一根 K 线开始选段，再点击另一根确定区间'}</span>
         <div className="flex items-center gap-2">

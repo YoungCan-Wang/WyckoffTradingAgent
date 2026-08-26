@@ -109,6 +109,12 @@ class BacktestReplayConfig:
     enforce_confirmed_loss_guard: bool = False
     market_breadth_calculator: MarketBreadthCalculator | None = None
     market_regime_analyzer: MarketRegimeAnalyzer | None = None
+    # 小盘基准（默认创业板指）。缺它则 CRASH/PANIC_REPAIR 少一条判据，
+    # 防守档会塌成 NEUTRAL——见 _analyze_market_regime 的说明。
+    smallcap_bench_df: pd.DataFrame | None = None
+    # live 模式下的禁买水温集合。留空则回退到 EXECUTE_BLOCK_NEW_BUY_REGIMES（旧行为）；
+    # 由调用方注入实盘的 STEP4_BUY_BLOCK_REGIMES 以保证回测与实盘闸门一致。
+    buy_block_regimes: frozenset[str] = frozenset()
     a_share_entry_research: AShareEntryResearchPolicy = field(default_factory=AShareEntryResearchPolicy)
 
 
@@ -307,7 +313,8 @@ def _apply_execution_gates(
     selected: _RankedSelection | None,
     config: BacktestReplayConfig,
 ) -> tuple[_ExecutionGateResult, int]:
-    if selected is not None and not _execution_regime_allows(ctx.regime, config.execution_regime_gate):
+    blocked = config.buy_block_regimes or None
+    if selected is not None and not _execution_regime_allows(ctx.regime, config.execution_regime_gate, blocked):
         return _ExecutionGateResult(None, True), len(selected.codes)
     if selected is None:
         return _ExecutionGateResult(None, False), 0
@@ -369,13 +376,24 @@ def _trade_context(ctx: _DayContext) -> _TradeContext:
     return _TradeContext(ctx.idx, ctx.signal_date, ctx.entry_target_date, ctx.regime)
 
 
-def _execution_regime_allows(regime: str, mode: str) -> bool:
+def _execution_regime_allows(regime: str, mode: str, blocked: frozenset[str] | None = None) -> bool:
+    """回测的下单闸门。
+
+    `live` 模式此前用硬编码的 EXECUTE_BLOCK_NEW_BUY_REGIMES，与实盘的
+    STEP4_BUY_BLOCK_REGIMES 不一致，且方向恰好相反：
+
+        回测禁买  BEAR_REBOUND / RISK_ON（实测超额 +4.08 / +6.07pct，实盘已放开）
+        回测放行  NEUTRAL（实测超额 -4.35pct，实盘已禁买）
+
+    后果是回测只在 NEUTRAL 下单、实盘恰好不在 NEUTRAL 下单，两者成交的交易日几乎不重叠，
+    任何按水温分档的回测结论都无法映射到实盘。现改为接受实盘同一份禁买集合。
+    """
     normalized = normalize_regime(regime)
     if mode == "off":
         return True
     if mode == "neutral_only":
         return normalized == "NEUTRAL"
-    return normalized not in EXECUTE_BLOCK_NEW_BUY_REGIMES
+    return normalized not in (blocked if blocked is not None else EXECUTE_BLOCK_NEW_BUY_REGIMES)
 
 
 def _limit_probe_only_selection(
@@ -424,9 +442,16 @@ def _build_day_context(
     bench_slice = _history_tail(bench_df, signal_date, config.trading_days)
     if not day_df_map or len(bench_slice) < base_cfg.ma_long:
         return None
+    smallcap_slice = (
+        _history_tail(config.smallcap_bench_df, signal_date, config.trading_days)
+        if config.smallcap_bench_df is not None
+        else None
+    )
+    if smallcap_slice is not None and smallcap_slice.empty:
+        smallcap_slice = None
     day_cfg = replace(base_cfg)
     breadth = _calculate_market_breadth(day_df_map, config)
-    bench_context = _analyze_market_regime(bench_slice, day_cfg, breadth, config)
+    bench_context = _analyze_market_regime(bench_slice, day_cfg, breadth, config, smallcap_slice)
     result = run_funnel(
         all_symbols=list(day_df_map.keys()),
         df_map=day_df_map,
@@ -466,9 +491,19 @@ def _analyze_market_regime(
     day_cfg: FunnelConfig,
     breadth: dict,
     config: BacktestReplayConfig,
+    smallcap_slice: pd.DataFrame | None = None,
 ) -> dict:
+    """按日判定水温。
+
+    smallcap_slice 此前硬传 None，导致 tools/market_regime.py 里依赖小盘的判据
+    （CRASH 的 crash_small_day_drop_pct、PANIC_REPAIR 的 panic_repair_small_rebound_pct）
+    永远不成立：生产库中的 CRASH 13 天 / RISK_OFF 15 天 / PANIC_REPAIR 4 天 / RISK_ON 5 天
+    在回测里全部塌成 NEUTRAL 或 CAUTION，24 个重叠日仅 14 天判定一致（58%）。
+    后果是任何按水温分档的回测结论都不可信——例如防守档流动性门槛改动，
+    因该档在回测中从不出现而完全测不出差别。
+    """
     analyzer = config.market_regime_analyzer or analyze_benchmark_and_tune_cfg
-    return analyzer(bench_slice, None, day_cfg, breadth=breadth)
+    return analyzer(bench_slice, smallcap_slice, day_cfg, breadth=breadth)
 
 
 def _day_df_map(

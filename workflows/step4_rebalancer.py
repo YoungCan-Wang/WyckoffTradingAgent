@@ -289,7 +289,12 @@ def _prepare_step4_input_context(
         total_equity=payloads.total_equity,
         candidate_codes=payloads.candidate_codes,
         allowed_codes=payloads.allowed_codes,
-        max_new_buy_names=_parser_max_new_buy_names(market_regime, runtime_config.new_buy_limits),
+        # 与 guardrail、OMS 用同一份禁买集合，避免 ALLOW 豁免在这一层被重新拦掉。
+        max_new_buy_names=_parser_max_new_buy_names(
+            market_regime,
+            runtime_config.new_buy_limits,
+            frozenset(order_config.buy_block_regimes),
+        ),
         positions_payload=payloads.positions_payload,
         candidate_payload=payloads.candidate_payload,
         position_failures=payloads.position_failures,

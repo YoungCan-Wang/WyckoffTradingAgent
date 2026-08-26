@@ -91,8 +91,31 @@ def _confirmed_repair_trade_mode(regime: str) -> MarketTradeMode:
     )
 
 
+def _explicitly_allowed_regimes() -> frozenset[str]:
+    """读 STEP4_BUY_ALLOW_REGIMES —— 运维显式豁免的档位。
+
+    这些档位仍留在 REPAIR_REVIEW / OVERHEAT_SHADOW 等集合里（那些集合同时被 AI 复核、
+    推荐写入与横幅文案消费，直接改会牵连数十处），故只在 trade mode 这一层按名单放行。
+
+    为什么需要它：STEP4_BUY_ALLOW_REGIMES 此前只作用于 OMS 的 buy_block_regimes，
+    而 max_new_buy_names、build_market_guardrail、本函数三处仍按硬编码集合拦截，
+    使豁免形同虚设。#301/#308 又让回测闸门读了同一份 ALLOW，于是形成
+    「回测能买、实盘买不到」的错位。
+
+    BEAR_REBOUND 实测（6 天 / 日均 126 只候选 / T+1 开盘买入 → T+5 / 扣 0.202%）：
+    净收益 +4.02%、市场 +4.06%、净超额 -0.04pct、为正日恰 50%。即无 alpha 但跟得住
+    beta——若替代方案是空仓，放行能吃到那 +4.02%。样本仅 8 天且集中在两周内，
+    故这是「可回退的对齐」而非「已证明的优势」：移出 ALLOW 即刻恢复禁买。
+    """
+    import os
+
+    raw = os.getenv("STEP4_BUY_ALLOW_REGIMES", "").strip()
+    return frozenset(item.strip().upper() for item in raw.split(",") if item.strip())
+
+
 def resolve_market_trade_mode(regime: str | None) -> MarketTradeMode:
     regime_norm = normalize_regime(regime)
+    allowed = _explicitly_allowed_regimes()
     if regime_norm in NO_NEW_BUY_REGIMES:
         return MarketTradeMode(
             regime=regime_norm,
@@ -106,7 +129,7 @@ def resolve_market_trade_mode(regime: str | None) -> MarketTradeMode:
             allow_bypass_review=False,
             allow_theme_promotion=False,
         )
-    if regime_norm in OVERHEAT_SHADOW_REGIMES:
+    if regime_norm in OVERHEAT_SHADOW_REGIMES and regime_norm not in allowed:
         return MarketTradeMode(
             regime=regime_norm,
             mode="overheat_shadow",
@@ -119,7 +142,7 @@ def resolve_market_trade_mode(regime: str | None) -> MarketTradeMode:
             allow_bypass_review=False,
             allow_theme_promotion=False,
         )
-    if regime_norm in REPAIR_REVIEW_REGIMES:
+    if regime_norm in REPAIR_REVIEW_REGIMES and regime_norm not in allowed:
         return MarketTradeMode(
             regime=regime_norm,
             mode="repair_review",

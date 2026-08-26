@@ -212,6 +212,19 @@ def _step4_candidate_meta(
     return selected, blocked if require_confirmed else 0
 
 
+def step4_candidate_meta(
+    symbols_info: list,
+    step3_springboard_codes: list[str],
+    step3_report_text: str = "",
+) -> tuple[list[dict], int]:
+    """公开入口：给同层 runtime 复用 Step4 的规则准入（confirmed / VALIDATED）。
+
+    影子账本要与实盘用同一套买许可，否则纸面成绩没有参考价值。跨模块 import 私有名会被
+    tests/test_architecture_boundaries.py 拦下，因此在这里显式导出，而不是把逻辑复制一份。
+    """
+    return _step4_candidate_meta(symbols_info, step3_springboard_codes, step3_report_text)
+
+
 def run_step4_pipeline(
     *,
     step4_target: dict,

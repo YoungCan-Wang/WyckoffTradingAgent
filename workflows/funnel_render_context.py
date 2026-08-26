@@ -76,8 +76,6 @@ class FunnelRenderContext:
     accum_stage_map: dict[str, str]
     exit_signals: dict[str, dict]
     sector_rotation_map: dict[str, dict]
-    etf_metrics: dict
-    etf_candidates: list[dict]
     report_maps: FunnelReportMaps
     theme_l4_count: int
     theme_radar_source: str
@@ -508,8 +506,6 @@ def _render_context_from_parts(parts: _RenderContextParts) -> FunnelRenderContex
         accum_stage_map=parts.metrics.get("accum_stage_map", {}) or {},
         exit_signals=parts.exit_signals,
         sector_rotation_map=parts.sector_rotation_map,
-        etf_metrics=parts.metrics.get("etf_enhancement", {}) or {},
-        etf_candidates=parts.metrics.get("etf_candidates", []) or [],
         report_maps=parts.report_maps,
         theme_l4_count=sum(1 for c in parts.formal_hit_set if c in parts.theme_candidate_map),
         theme_radar_source=str(parts.metrics.get("theme_radar_source") or "current"),

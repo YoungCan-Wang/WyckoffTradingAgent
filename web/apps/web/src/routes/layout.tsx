@@ -6,6 +6,8 @@ import { useAuthStore } from '@/stores/auth'
 import { MarketBar } from '@/components/market-bar'
 import { usePreferences, type Locale, type TranslationKey } from '@/lib/preferences'
 import { trackRouteActivity } from '@/lib/activity'
+import { installWhitelistClarity } from '@/lib/product-analytics'
+import { useWhitelistGate } from '@/lib/whitelist-gate'
 
 const navGroups = [
   {
@@ -210,6 +212,7 @@ export function AppLayout() {
   const handleLogout = useLogoutHandler()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => readBooleanStorage(APP_SIDEBAR_STORAGE_KEY, false))
   useRouteActivity(user?.id, location)
+  useWhitelistClarity(user?.id)
   const hideMarketBar = location.pathname === '/chat'
   const toggleSidebar = useCallback(() => {
     setSidebarCollapsed((value) => {
@@ -368,4 +371,11 @@ function useRouteActivity(userId: string | undefined, location: ReturnType<typeo
   useEffect(() => {
     if (userId) trackRouteActivity(userId, route)
   }, [route, userId])
+}
+
+function useWhitelistClarity(userId: string | undefined) {
+  const whitelist = useWhitelistGate(userId)
+  useEffect(() => {
+    if (userId && whitelist.data === true) installWhitelistClarity(userId)
+  }, [userId, whitelist.data])
 }

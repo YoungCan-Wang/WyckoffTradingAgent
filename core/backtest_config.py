@@ -6,6 +6,8 @@ from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 
+import pandas as pd
+
 from core.a_share_entry_research import AShareEntryResearchPolicy
 from core.ai_candidate_allocation import AiCandidateAllocationConfig
 from core.backtest_execution import ExitSimulationConfig, IntradayPriceFetcher
@@ -14,6 +16,7 @@ from core.backtest_replay import BacktestReplayConfig, MarketBreadthCalculator, 
 from core.candidate_policy import CandidatePolicyConfig
 from core.cash_portfolio import CashPortfolioConfig, expand_portfolio_styles
 from core.mainline_engine import MainlineEngineConfig
+from core.market_trade_mode import EXECUTE_BLOCK_NEW_BUY_REGIMES
 
 
 @dataclass(frozen=True)
@@ -52,6 +55,8 @@ class BacktestRunInput:
     funnel_config_overrides: dict[str, object] = field(default_factory=dict)
     market_breadth_calculator: MarketBreadthCalculator | None = None
     market_regime_analyzer: MarketRegimeAnalyzer | None = None
+    # 小盘基准；缺失时防守档判据退化，见 core/backtest_replay._analyze_market_regime。
+    smallcap_bench_df: pd.DataFrame | None = None
     candidate_policy: CandidatePolicyConfig = field(default_factory=CandidatePolicyConfig)
     ai_allocation: AiCandidateAllocationConfig = field(default_factory=AiCandidateAllocationConfig)
     concept_map: dict[str, list[str]] = field(default_factory=dict)
@@ -184,6 +189,31 @@ def _validate_modes(
         raise ValueError("sltp_priority 必须是 stop_first 或 take_first")
 
 
+def _live_buy_block_regimes() -> frozenset[str]:
+    """读实盘的 STEP4_BUY_BLOCK_REGIMES / STEP4_BUY_ALLOW_REGIMES。
+
+    回测 live 模式此前用硬编码集合，与实盘方向相反（详见
+    core/backtest_replay._execution_regime_allows 的说明）。这里改为复用实盘同一份 env，
+    以后运维改闸门，回测自动跟上，无需再动代码。
+
+    直接解析 env 而不复用 workflows.step4_order_config：core 层不得依赖 workflows
+    （tests/test_architecture_boundaries.py 强制这条方向）。但必须复刻它的语义——
+    ``EXECUTE_BLOCK_NEW_BUY_REGIMES`` **无条件并入** BLOCK，再由 ALLOW 显式豁免。
+
+    此前误写成 ``BLOCK or 默认集``（取其一而非并集），导致默认集独有的档位在回测里
+    仍可买：例如 RISK_ON 只在默认集、不在生产 BLOCK env 里，实盘因并入而禁买，
+    回测却放行——恰好是需要验证的那一档。
+    """
+    import os
+
+    def _parse(name: str) -> set[str]:
+        raw = os.getenv(name, "").strip()
+        return {item.strip().upper() for item in raw.split(",") if item.strip()}
+
+    blocked = _parse("STEP4_BUY_BLOCK_REGIMES") | set(EXECUTE_BLOCK_NEW_BUY_REGIMES)
+    return frozenset(blocked - _parse("STEP4_BUY_ALLOW_REGIMES"))
+
+
 def _validate_dates_and_trade_params(
     start_dt: date,
     end_dt: date,
@@ -248,6 +278,7 @@ def _replay_config(
         full_formal_l4_max=params.full_formal_l4_max,
         regime_filter=False,
         execution_regime_gate=str(params.execution_regime_gate or "live").strip().lower(),
+        buy_block_regimes=_live_buy_block_regimes(),
         pending_mode=pending_mode,
         pending_merge_order=pending_merge_order,
         abc_filter=bool(params.abc_filter),
@@ -260,6 +291,7 @@ def _replay_config(
         intraday_entry_price_fetcher=params.intraday_entry_price_fetcher,
         market_breadth_calculator=params.market_breadth_calculator,
         market_regime_analyzer=params.market_regime_analyzer,
+        smallcap_bench_df=getattr(params, "smallcap_bench_df", None),
         exit=params.exit_config,
         candidate_policy=params.candidate_policy,
         ai_allocation=params.ai_allocation,

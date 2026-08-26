@@ -9,8 +9,8 @@ from typing import Any
 from core.candidate_metadata import code6
 from core.candidate_ranker import TRIGGER_GROUP_ORDER, TRIGGER_GROUP_TITLES, TRIGGER_LABELS, TRIGGER_SHORT_LABELS
 from core.candidate_tracks import candidate_entry_key
+from core.concept_filters import is_user_facing_etf
 from core.execution_playbook import funnel_playbook_lines
-from core.funnel_etf import append_etf_section
 from core.funnel_sections import score_star
 from core.market_trade_mode import resolve_market_trade_mode
 from core.signal_confirmation import compute_support_level, score_springboard_abc
@@ -26,7 +26,6 @@ from workflows.funnel_report_payload import (
 )
 from workflows.funnel_settings import (
     FUNNEL_BYPASS_DISPLAY_LIMIT,
-    FUNNEL_ETF_DISPLAY_LIMIT,
     FUNNEL_L2_BYPASS_AI_CAP,
     FUNNEL_MAINLINE_DISPLAY_LIMIT,
     FUNNEL_TRACKING_SHAPE_DISPLAY_LIMIT,
@@ -114,7 +113,7 @@ def _capital_migration_report_lines(metrics: dict | None) -> list[str]:
     lines = [f"**资金迁徙雷达**: {summary} | 置信度 {confidence}"]
     for item in (migration.get("rotation") or [])[:2]:
         text = str(item or "").strip()
-        if text:
+        if text and not is_user_facing_etf(name=text):
             lines.append(f"  - {text}")
     activity = _capital_migration_activity_line(migration)
     if activity:
@@ -123,7 +122,9 @@ def _capital_migration_report_lines(metrics: dict | None) -> list[str]:
 
 
 def _capital_migration_activity_line(migration: dict) -> str:
-    rows = list(migration.get("activity") or [])[:5]
+    rows = [
+        row for row in (migration.get("activity") or []) if not is_user_facing_etf(name=str(row.get("theme") or ""))
+    ][:5]
     if not rows:
         return ""
     return "异动: " + "； ".join(f"{row['theme']}({row['evidence']})" for row in rows)
@@ -379,7 +380,12 @@ def _top_summary_lines(ctx: Any, selected_count: int, money_line: str) -> list[s
 
 
 def _rotation_gate_line(ctx: Any, snapshot: dict[str, Any]) -> str:
-    if not snapshot.get("rotation_watch"):
+    watch = [
+        item
+        for item in (snapshot.get("rotation_watch") or [])
+        if not is_user_facing_etf(name=str(item.get("theme") or ""))
+    ]
+    if not watch:
         return ""
     mode = resolve_market_trade_mode(ctx.regime)
     if not mode.allow_recommendation_write:
@@ -440,7 +446,11 @@ def _reference_support_level(ctx: Any, code: str) -> float | None:
 
 
 def _top_candidate_list_lines(ctx: Any, selection: FunnelAiSelection) -> list[str]:
-    selected_for_ai = selection.selected_for_ai
+    selected_for_ai = [
+        code
+        for code in selection.selected_for_ai
+        if not is_user_facing_etf(code, (getattr(ctx, "name_map", {}) or {}).get(code, code))
+    ]
     mode = resolve_market_trade_mode(ctx.regime)
     lines = [
         f"**【✅ 今日候选清单】{len(selected_for_ai)} 只**",
@@ -482,13 +492,12 @@ def _append_l2_bypass_card_section(lines: list[str], ctx: Any, selected_count: i
     )
     for code in display_pool:
         name = ctx.name_map.get(code, code)
+        if is_user_facing_etf(code, name):
+            continue
         reasons = "+".join(_trigger_short_reasons(code, ctx.bypass_triggers))
         industry = str(ctx.sector_map.get(code, "") or "")
         theme_badge = f"  {ctx.theme_badge_map[code]}" if code in ctx.theme_badge_map else ""
         lines.append(f"  {code} {name}  {reasons}{_confirmation_suffix(ctx, code)}  [{industry}]{theme_badge}")
-    omitted = len(ctx.l2_bypass_pool) - len(display_pool)
-    if omitted > 0:
-        lines.append(f"  ... 另 {omitted} 只略")
 
 
 def _append_strategic_bypass_card_section(lines: list[str], ctx: Any, selected_count: int) -> None:
@@ -504,14 +513,13 @@ def _append_strategic_bypass_card_section(lines: list[str], ctx: Any, selected_c
     )
     for code in display_pool:
         name = ctx.name_map.get(code, code)
+        if is_user_facing_etf(code, name):
+            continue
         short = "+".join(TRIGGER_SHORT_LABELS.get(k, k) for k in ctx.code_to_trigger_keys.get(code, []))
         stage = str(ctx.strategic_l2_bypass_stage_map.get(code, "") or "").strip()
         reason = " / ".join(x for x in [short, stage] if x) or "战略复核"
         theme_badge = f"  {ctx.theme_badge_map[code]}" if code in ctx.theme_badge_map else ""
         lines.append(f"  {code} {name}  {reason}{_confirmation_suffix(ctx, code)}{theme_badge}")
-    omitted = len(ctx.strategic_l2_bypass_pool) - len(display_pool)
-    if omitted > 0:
-        lines.append(f"  ... 另 {omitted} 只略")
 
 
 def _append_mainline_card_section(lines: list[str], ctx: Any, selected_count: int) -> None:
@@ -524,10 +532,9 @@ def _append_mainline_card_section(lines: list[str], ctx: Any, selected_count: in
     if not display_rows:
         lines.append("  暂无")
     for item in display_rows:
+        if is_user_facing_etf(str(item.get("code") or ""), str(item.get("name") or "")):
+            continue
         lines.append(_mainline_row(ctx, item))
-    omitted = len(ctx.mainline_tradeable) - len(display_rows)
-    if omitted > 0:
-        lines.append(f"  ... 另 {omitted} 只略")
     lines.append(f"**主线观察**: {len(ctx.mainline_observe)}只；**鱼尾不追**: {len(ctx.mainline_overheated)}只")
 
 
@@ -598,7 +605,8 @@ def _tracking_shape_rows(ctx: Any, selection: FunnelAiSelection) -> list[dict]:
         for raw_code, _raw_score in hits or []:
             code = code6(raw_code)
             df = (getattr(ctx, "all_df_map", {}) or {}).get(code)
-            if not code or df is None or df.empty:
+            name = (getattr(ctx, "name_map", {}) or {}).get(code, code)
+            if not code or df is None or df.empty or is_user_facing_etf(code, name):
                 continue
             try:
                 springboard = score_springboard_abc(df, signal_type)
@@ -609,7 +617,7 @@ def _tracking_shape_rows(ctx: Any, selection: FunnelAiSelection) -> list[dict]:
                 continue
             row = {
                 "code": code,
-                "name": (getattr(ctx, "name_map", {}) or {}).get(code, code),
+                "name": name,
                 "signal_type": str(signal_type),
                 "grade": str(springboard.get("grade") or "2/3+"),
                 "met_count": met_count,
@@ -658,9 +666,6 @@ def _tracking_shape_section_lines(ctx: Any, selection: FunnelAiSelection) -> lis
             continue
         lines.append(f"**{TRIGGER_GROUP_TITLES.get(signal_type, signal_type)}（{len(grouped)}）**")
         lines.extend(_tracking_shape_row_text(row) for row in grouped)
-    omitted = len(rows) - len(displayed)
-    if omitted > 0:
-        lines.append(f"  ... 另 {omitted} 只已入表，详见结构化运行数据")
     lines.append("")
     return lines
 
@@ -684,8 +689,9 @@ def _append_legacy_selected_sections(lines: list[str], ctx: Any, selected_for_ai
         if c not in ctx.strategic_l2_bypass_set and len(ctx.code_to_trigger_keys.get(c, [])) > 1
     ]
     if multi_signal:
-        lines.append(f"**【🔥 多信号共振】{len(multi_signal)} 只**")
-        for code in sorted(multi_signal, key=lambda c: -ctx.code_to_total_score.get(c, 0)):
+        visible = [c for c in multi_signal if not is_user_facing_etf(c, ctx.name_map.get(c, c))]
+        lines.append(f"**【🔥 多信号共振】{len(visible)} 只**")
+        for code in sorted(visible, key=lambda c: -ctx.code_to_total_score.get(c, 0)):
             name = ctx.name_map.get(code, code)
             short = "+".join(TRIGGER_SHORT_LABELS.get(k, k) for k in ctx.code_to_trigger_keys.get(code, []))
             score = ctx.code_to_total_score.get(code, 0)
@@ -695,7 +701,11 @@ def _append_legacy_selected_sections(lines: list[str], ctx: Any, selected_for_ai
             )
         lines.append("")
     single_signal_codes = [
-        c for c in selected_for_ai if c not in set(multi_signal) and c not in ctx.strategic_l2_bypass_set
+        c
+        for c in selected_for_ai
+        if c not in set(multi_signal)
+        and c not in ctx.strategic_l2_bypass_set
+        and not is_user_facing_etf(c, ctx.name_map.get(c, c))
     ]
     code_primary_key = {code: (ctx.code_to_trigger_keys.get(code, []) or ["sos"])[0] for code in single_signal_codes}
     for group_key in TRIGGER_GROUP_ORDER:
@@ -760,9 +770,6 @@ def _build_legacy_card_lines(ctx: Any, selection: FunnelAiSelection) -> list[str
     governance_line = _policy_governance_line(selection.ai_policy)
     if governance_line:
         lines.insert(-1, governance_line)
-    append_etf_section(lines, ctx.etf_metrics, ctx.etf_candidates, display_limit=FUNNEL_ETF_DISPLAY_LIMIT)
-    if ctx.etf_metrics or ctx.etf_candidates:
-        lines.append("")
     _append_legacy_selected_sections(lines, ctx, selected_for_ai)
     if not selected_for_ai:
         lines.append("无")
@@ -837,7 +844,7 @@ def _build_modern_card_lines(ctx: Any, selection: FunnelAiSelection) -> list[str
                 f"连续主题{len(ctx.metrics.get('theme_lines') or [])}条 / "
                 f"最新{ctx.metrics.get('concept_history_latest_date') or '无'}"
             ),
-            "完整 L4、主线池、ETF 与逐层淘汰明细保留在结构化运行数据中；推送仅展开入表形态。",
+            "完整 L4、主线池与逐层淘汰明细保留在结构化运行数据中；推送仅展开入表形态。",
         ]
     )
     return lines

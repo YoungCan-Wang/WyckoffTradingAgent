@@ -27,11 +27,5 @@ def funnel_config_for_market(market: str, *, trading_days: int = 320, min_avg_am
         funnel_cfg.evr_max_rise = 3.0
     elif market == "hk":
         apply_hk_funnel_cfg(funnel_cfg, min_avg_amount=min_avg_amount)
-    elif market == "etf":
-        funnel_cfg.sos_pct_min = 3.5
-        funnel_cfg.sos_vol_ratio = 2.0
-        funnel_cfg.spring_vol_ratio = 1.0
-        funnel_cfg.evr_min_turnover = 0.3
-        funnel_cfg.evr_max_rise = 2.0
 
     return funnel_cfg

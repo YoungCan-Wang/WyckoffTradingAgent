@@ -25,19 +25,14 @@ def market_regime_config_from_env() -> MarketRegimeConfig:
         crash_breadth_delta_pct=_float_env("FUNNEL_CRASH_BREADTH_DELTA_PCT", -20.0),
         panic_repair_min_avg_amount_wan=_float_env("FUNNEL_PANIC_REPAIR_MIN_AVG_AMOUNT_WAN", 7000.0),
         risk_off_min_avg_amount_wan=_float_env("FUNNEL_RISK_OFF_MIN_AVG_AMOUNT_WAN", 8000.0),
-        # 深度 RISK_OFF 与 CRASH 的流动性门槛由 10000/12000 统一下调到 8000（与 RISK_OFF 齐平）。
-        # 实测（466 个交易日 / 全市场 20 日均额分档，T+5 净超额已扣 0.202% 往返成本）：
-        #   门槛 4000 万  日均候选 4801  净超额 -0.24
-        #   门槛 8000 万  日均候选 3751  净超额 -0.31
-        #   门槛 12000 万 日均候选 2999  净超额 -0.35
-        # 单调递减——抬高门槛没有选股优势。被 CRASH 档砍掉的边缘区间 11000~12000 万
-        # 单独看是 -0.20pct，反而优于 12000 档整体，即砍掉的恰是相对不那么差的一批。
-        # 2026-08-20 复盘中 73/200 只涨停股被该档拦掉，其中神州细胞/南模生物差不到 55 万。
-        #
-        # 不降到默认 4000 的理由：该测试用统一 0.202% 成本，未建模低流动性票的滑点差异，
-        # 而门槛的真实价值在滑点保护而非选股。保留 8000 以挡住 4000~8000 那批真正难成交的标的。
-        risk_off_deep_min_avg_amount_wan=_float_env("FUNNEL_RISK_OFF_DEEP_MIN_AVG_AMOUNT_WAN", 8000.0),
-        crash_min_avg_amount_wan=_float_env("FUNNEL_CRASH_MIN_AVG_AMOUNT_WAN", 8000.0),
+        # 恢复 10000/12000。#295 曾依「全市场分档实测门槛越高净超额越差」下调到 8000，
+        # 但该测试**未叠加禁买闸门**：CRASH 与深度 RISK_OFF 都在 STEP4_BUY_BLOCK_REGIMES
+        # 里，这些档位下压根不下单，门槛因此不参与任何成交决策——它只影响候选池规模。
+        # 修复回测小盘基准后（#299）重跑对照：门槛 8000 与 12000/10000 两组的成交笔数、
+        # 胜率、总收益、夏普、回撤、VaR95、Trend/Accum 分层全部一字不差（103 笔 / 33.01% /
+        # +5.72% / 0.714 / -7.25% / -8.881%）。即该改动在逻辑与实测上均无效。
+        risk_off_deep_min_avg_amount_wan=_float_env("FUNNEL_RISK_OFF_DEEP_MIN_AVG_AMOUNT_WAN", 10000.0),
+        crash_min_avg_amount_wan=_float_env("FUNNEL_CRASH_MIN_AVG_AMOUNT_WAN", 12000.0),
         panic_repair_enabled=_bool_env("FUNNEL_PANIC_REPAIR_ENABLE", True),
         panic_repair_main_rebound_pct=_float_env("FUNNEL_PANIC_REPAIR_MAIN_REBOUND_PCT", 0.8),
         panic_repair_small_rebound_pct=_float_env("FUNNEL_PANIC_REPAIR_SMALL_REBOUND_PCT", 1.5),

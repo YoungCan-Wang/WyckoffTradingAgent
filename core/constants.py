@@ -1,5 +1,6 @@
 # Database Table Names
 TABLE_USER_SETTINGS = "user_settings"
+TABLE_FACTOR_IC_DAILY = "factor_ic_daily"
 TABLE_MARKET_SIGNAL_DAILY = "market_signal_daily"
 TABLE_RECOMMENDATION_TRACKING = "recommendation_tracking"
 TABLE_RECOMMENDATION_TRACKING_US = "recommendation_tracking_us"
@@ -20,6 +21,11 @@ TABLE_STRATEGY_POLICY_CANDIDATES = "strategy_policy_candidates"
 TABLE_STRATEGY_ATTRIBUTION_REPORTS = "strategy_attribution_reports"
 TABLE_THEME_RADAR_SNAPSHOT = "theme_radar_snapshot"
 TABLE_EXTERNAL_SEED_OBSERVATIONS = "external_seed_observations"
+TABLE_SHADOW_ACCOUNT = "shadow_account"
+TABLE_SHADOW_POSITIONS = "shadow_positions"
+TABLE_SHADOW_EVENTS = "shadow_events"
+TABLE_SHADOW_NAV_DAILY = "shadow_nav_daily"
+TABLE_SHADOW_TRADE_PLANS = "shadow_trade_plans"
 
 # Local SQLite DB path
 from pathlib import Path as _Path

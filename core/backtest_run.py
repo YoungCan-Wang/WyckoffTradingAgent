@@ -50,6 +50,7 @@ class BacktestPreparedData:
     metadata_source: str = "disabled"
     #: 快照 metadata.json 里的 PIT 状态，供报告据实描述幸存者偏差（见 _survivorship_note）。
     pit_meta: dict = field(default_factory=dict)
+    smallcap_bench_df: pd.DataFrame | None = None
 
 
 def parse_date(v: str) -> date:
@@ -156,6 +157,7 @@ def _base_funnel_config(config: BacktestRunConfig) -> FunnelConfig:
 def _replay_config_with_metadata(config: BacktestRunConfig, data: BacktestPreparedData):
     return replace(
         config.replay,
+        smallcap_bench_df=data.smallcap_bench_df,
         concept_map=data.concept_map,
         concept_heat=data.concept_heat,
         financial_map=data.financial_map,

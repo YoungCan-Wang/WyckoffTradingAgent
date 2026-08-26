@@ -2,6 +2,10 @@
 
 本文档汇总了 Wyckoff-Analysis 项目中涉及的所有金融术语、量化指标和策略概念，帮助新同学快速理解系统逻辑。
 
+### 午间独立研究扫描
+
+工作日 11:30 运行的全 A 股只读研究任务，与盘后 Wyckoff 漏斗相互独立。一次运行内按“有效横截面 → 可成交池 → 六通道实时注意力池 → 深度证据池 → 六视角60只短名单 → 10—20只公告终审”逐层收敛，并记录每层数量、淘汰原因和真实耗时。六个研究视角为质量成长、合理估值、盈利变化、稳定相对强度、行业扩散和逆向修复；任何单一技术形态或综合分都不能直接生成买入结论。
+
 ---
 
 ## 1. 回测指标
@@ -248,6 +252,8 @@ watch_score = 0.25 × q20 + 0.20 × q5 + 0.05 × q3
 | **前复权 (qfq)** | 以最新价格为基准向前调整历史价格，消除分红送股导致的价格跳空。回测默认使用前复权数据 |
 | **外部资金佐证** | 正式候选的 observation 特征：龙虎榜及机构/沪深股通席位、融资融券、大宗交易、个股资金流和沪深股通十大成交。只用于解释与 outcome 复盘，不直接改变漏斗、推荐或 OMS。`north_money` 当前按发布金额保存，不解释为北向净买入。 |
 | **应交易覆盖率** | OHLCV 质量门的分母为股票池减去当日确认停牌标的；停牌缺 K 线单列为非交易排除，不再记作接口失败。原始全池缺口仍保留为 `raw_ohlcv` / `fetch_raw_missing` 供审计；换手率、行业和概念映射另有覆盖门槛。 |
+| **脏 K 线守卫** | 入口层处理结构不可能的 bar：`high<low`、最高价低于实体、最低价高于实体、价格非正、成交量为负。分析入口留行并把脏值置空；漏斗批量拉取才丢 bar。默认 `OHLCV_DIRTY_BAR_GUARD=1`。不改漏斗阈值。 |
+| **时点裁切 (as-of / PIT)** | 显式回放（`END_CALENDAR_DAY`）时，A 股漏斗只保留截止日及以前的日线和已公告财务；当天无 bar 的票整只丢掉，无日期财务直接丢弃。周日定时不算回放，不裁 K 线/财务；市值/概念热度仍可按「截止日早于今天」走历史接口。网格回测本身按日切片，不走这条。 |
 
 ## 11. 信号反馈闭环
 
@@ -266,12 +272,13 @@ flowchart LR
 | **Outcome** | Observation 之后 1/3/5/10/20 日的收益和最大回撤，落在 `signal_outcomes`。 |
 | **Health** | 按信号类型聚合后的胜率、均值收益、样本数和权重，落在 `signal_health_daily`。 |
 | **动态影子晋级** | 将当日候选的基础影子分与同信号、同水温的历史健康度合成动态分；通过结构、样本和风险清单后，只获得 Step3 复核席位，不等于正式推荐、跨日确认或 OMS 买入许可。 |
+| **影子账本 (paper shadow ledger)** | 漏斗成功后的纸面对照账户，账户号 `USER_SHADOW:<uuid>`。盘后按 Step4 同口径买许可写下夜 `next_open` 计划，次日开盘价成交，遵守 T+1 / 整手 / 涨跌停 / 费用。只写 `shadow_*` 表，绝不写 `USER_LIVE` 的 `portfolios` / `portfolio_positions` / `trade_orders` / `daily_nav`。飞书卡标题必须带「影子账本 / paper」，与 `ic_shadow`、动态影子分不是同一概念。 |
 | **Registry** | 信号生命周期表，控制信号是 `ACTIVE`、`WATCH`、`EXPERIMENTAL` 还是 `RETIRED`。信号级 `status` 以全局行（`regime=""` / `ALL`）为准；regime 拆分行只承载精确权重并跟随全局生命周期。 |
 | **Shadow Run** | 动态策略旁路演练：真实推荐不变，只记录动态策略会新增或移除哪些候选。 |
 | **Dynamic Policy** | 根据信号健康度、registry 和市场广度，动态调整 Trend / Accum 候选配额。 |
 | **推荐价 / initial_price** | `recommendation_tracking` 中展示用的入场价：按股票 code 粘住首次 `recommend_date` 收盘价；再次推荐只增加 `recommend_count` 与新事件行，不改推荐价。涨跌幅相对该价；MFE/MAE 仍按事件日独立计算。performance 刷新的 `max_dates` 只裁剪待更新行，不算改锚点历史。 |
 | **复盘窗口入选次数** | Web `/tracking` 窗口内唯一 `(code, recommend_date)` 的数量；同股同日的 tracking 与 pending 数据源不重复计数。覆盖股票数另按 `code` 去重，两者不应混用。 |
-| **形态入表观察** | 当日 L4 中 Springboard A/B/C 至少满足 2 项、并写入 `recommendation_tracking` 的跟踪样本。同一股票有多个达标信号时按代码合并为“双/多 Wyckoff 形态共振”，`signal_types` 保留全部信号。它用于后续复盘，不等于 Step3 送审、`VALIDATED` 或 OMS 买入核准。 |
+| **形态入表观察** | 当日 L4 中 Springboard A/B/C 至少满足 2 项、并写入 `recommendation_tracking` 的跟踪样本。同一股票有多个达标信号时按代码合并为“双/多 Wyckoff 形态共振”，`signal_types` 保留全部信号。飞书卡列出全部名称（旁路/主线同样不写「另 N 只略」）；超长由 `split_lark_md` 拆多卡，不静默截断。它用于后续复盘，不等于 Step3 送审、`VALIDATED` 或 OMS 买入核准。 |
 
 ---
 
@@ -356,6 +363,10 @@ flowchart LR
 | **Hono Middleware** | Cloudflare Worker API 的请求处理链。公共链负责请求 ID、安全响应头、CORS 和请求体限制，路由链再执行 JWT 鉴权、限流和业务校验。 |
 | **Redis 临时协调状态** | 使用 Upstash Redis REST 保存可过期的用户请求额度、每日沙箱 CPU 用量和短期 Agent Run 结果，使不同 Worker 实例看到一致状态；Redis 不保存持仓、订单、交易信号或长期审计真相。 |
 | **本地软限流** | 未配置 Redis 或 Redis 临时故障时，单个 Worker 实例内的保护计数。实例回收或扩容后不保证全局一致，响应头通过 `local` / `local-fallback` 明确标识。 |
+| **Workers Logs** | Cloudflare Worker 免费日志：未捕获异常和 `console.error` 进控制台，约保留 3 天。不写 Supabase。 |
+| **Web Analytics** | Cloudflare 免费网站统计：匿名 PV/UV 和页面访问。可在 Pages 项目里打开，或用公开构建变量 `VITE_CF_WEB_ANALYTICS_TOKEN` 注入 beacon。不做按钮点击率。 |
+| **Clarity（白名单）** | Microsoft Clarity 点击热力图/录屏。只对有效白名单用户加载，默认项目 `y6albpfin1`，可用 `VITE_CLARITY_PROJECT_ID` 覆盖。事件进 Clarity，不写业务库。 |
+| **新闻打点 / News chart overlay** | 单股分析页和 `analyze_stock` 诊断上的读盘叠加层：用规则过滤东方财富个股新闻，把业绩/监管/股东/交易事件对齐到交易日并标在 K 线上。不进漏斗、不改候选、不构成买卖依据。 |
 | **web_search（读盘室）** | DeepSeek Responses API 的服务端联网搜索工具；仅在读盘室、模型为 `deepseek-v4-flash`、且官方 `api.deepseek.com` origin 时注入。用于公开网页/舆情检索，不替代行情与持仓工具；搜索证据仅当轮有效。与 CLI 本机 CDP `browser_research` 不同路径。 |
 | **browser_research（CLI）** | TUI/CLI 专用公开网页检索：Playwright 附着本机 Chrome CDP。CDP 未就绪时弹窗授权，同意后自动拉起独立调试 Chrome（`~/.wyckoff/chrome-cdp`），授权本会话有效；可用 `/browser start|status`。 |
 | **观察篮临时行情** | 读盘室按当前问题选取观察篮标的后拉取的 TickFlow 快照；浏览器缓存有效期为 45 秒，只作本轮模型上下文，不写入 Redis、持仓或信号表。 |
@@ -386,7 +397,7 @@ flowchart LR
 |------|------|
 | **两个方向** | `mcp_server.py` 是本项目**作为 server** 被 Claude Desktop / Cursor 连接；`cli/mcp_client.py` 是本项目**作为客户端**去连第三方 server。两者工具集不同、审批路径不同，不要混谈。 |
 | **配置即信任边界** | 接入一个外部 server 等于允许在本机 spawn 它的命令。因此 `~/.wyckoff/mcp_servers.json` 只由用户手写，模型不能新增 server，新增条目默认 `enabled: false`；文件权限固定为 0600。 |
-| **工具前缀** | 外部工具统一命名 `mcp__<server>__<tool>`，避免与原生 31 个工具撞名。前缀在读写判定时会被剥掉，所以 server 名叫 `deploy` 不会让它的只读工具被误判为写。 |
+| **工具前缀** | 外部工具统一命名 `mcp__<server>__<tool>`，避免与原生工具撞名。前缀在读写判定时会被剥掉，所以 server 名叫 `deploy` 不会让它的只读工具被误判为写。 |
 | **写工具启发式** | MCP 的 `annotations` 是可选的，server 不保证声明副作用。判定顺序：`readOnlyHint=True` → 读；`destructiveHint=True` → 写；工具名含 create/delete/update/send/deploy 等动词 → 写；**其余一律按写**。判错代价不对称：把读当写只多一次确认，把写当读是静默执行了副作用。 |
 | **外部工具永不 auto** | 外部写工具映射到 `review` 档，进待批准队列。`AUTO_TOOLS` 只含 `set_stop_loss`，daemon 无人监督时不会执行任何第三方写入。 |
 | **失败隔离** | 某个 server 连不上（命令不存在、进程立刻退出、协议超时）只把它自己标为不可用，不影响原生工具和其他 server。SDK 的失败以 `ExceptionGroup` / `FileNotFoundError` 形式抛出，不总是 `McpError`，所以捕获必须宽。 |

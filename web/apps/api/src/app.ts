@@ -4,6 +4,7 @@ import { cors } from 'hono/cors'
 import { requestId } from 'hono/request-id'
 import { secureHeaders } from 'hono/secure-headers'
 import type { AgentRunMessage } from './services/agent-run'
+import { logUnhandledWorkerError } from './services/request-observability'
 
 export type Env = {
   SUPABASE_URL?: string
@@ -55,7 +56,10 @@ export function createApiApp() {
     onError: (c) => c.json({ error: 'Request body is too large', requestId: c.get('requestId') }, 413),
   }))
 
-  app.onError((_error, c) => c.json({ error: 'Internal Server Error', requestId: c.get('requestId') }, 500))
+  app.onError((error, c) => {
+    logUnhandledWorkerError(error, c)
+    return c.json({ error: 'Internal Server Error', requestId: c.get('requestId') }, 500)
+  })
   app.notFound((c) => c.json({ error: 'Not Found', requestId: c.get('requestId') }, 404))
   app.get('/api/health', (c) => c.json({ status: 'ok' }))
   return app

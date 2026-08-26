@@ -11,6 +11,9 @@ import { WyckoffLoading } from '@/components/loading'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { AppUpdateGate } from '@/components/app-update-gate'
 import { PreferencesProvider } from '@/lib/preferences'
+import { installCloudflareWebAnalytics } from '@/lib/product-analytics'
+
+installCloudflareWebAnalytics()
 
 // 手机遥控页。独立外壳 —— 不套 AppLayout（那是桌面侧栏布局），也不进 AuthGuard
 // 的重定向流程（未登录时它自己显示「需要重新扫码」而不是跳走）。

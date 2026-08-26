@@ -39,6 +39,32 @@ def send_step3_input_preview(
     return (True, report)
 
 
+def write_step3_evidence_sidecar(
+    *,
+    codes: list[str],
+    veto_lines: list[str],
+    prose: str,
+    selected_count: int,
+) -> str:
+    from pathlib import Path
+
+    from core.evidence_snapshot import freeze_evidence, merge_llm_prose, write_evidence_snapshot
+
+    evidence = freeze_evidence(
+        {
+            "selected_count": selected_count,
+            "veto_count": len(veto_lines),
+            "codes": codes,
+            "veto_lines": veto_lines,
+        }
+    )
+    merged = merge_llm_prose(evidence, prose)
+    raw = os.getenv("STEP3_EVIDENCE_PATH") or os.path.join(
+        os.getenv("LOGS_DIR", "logs"), "step3_evidence_snapshot.json"
+    )
+    return str(write_evidence_snapshot(merged, Path(raw)))
+
+
 def notify_step3_channels(options: Step3RunOptions, title: str, content: str) -> bool:
     sent = send_feishu_notification(options.webhook_url, title, content) if options.webhook_url else True
     if options.wecom_webhook:
