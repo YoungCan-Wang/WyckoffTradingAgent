@@ -1,7 +1,7 @@
 {
   "name": "wyckoff-desktop",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Wyckoff 读盘室桌面端",
   "author": "YoungCan Wang",
   "main": "src/main.js",
