@@ -117,7 +117,10 @@ def run_shadow_session(
     prev_equity: float | None = None,
 ) -> ShadowSession:
     unlock_t_plus_one(book, as_of)
-    fills = [filled for plan in planned if (filled := try_fill_plan(book, plan, bars, as_of)) is not None]
+    # 先卖后买：plan_key 含 action，字典序 buy < sell；若按库主键序兑现，
+    # 买单会在卖单释放现金之前因 not_lot/no_cash 被永久 skipped，轮动失败。
+    ordered = sorted(planned, key=lambda p: (0 if p.action == SELL else 1, p.plan_key))
+    fills = [filled for plan in ordered if (filled := try_fill_plan(book, plan, bars, as_of)) is not None]
     mark_to_market(book, bars, as_of)
     sells = _stop_sell_plans(book, as_of, account_id)
     buys = propose_buy_plans(book, buy_candidates, bars, as_of, account_id) if allow_new_buys else []
@@ -137,6 +140,10 @@ def try_fill_plan(
     if plan.signal_date >= as_of:
         return replace(plan, status="skipped", fill_reason="lookahead_blocked")
     reason = _fill_block_reason(book, plan, bars, as_of)
+    if reason == "no_open":
+        # 缺当日 K 线（停牌、拉取失败、脏 bar 被丢掉）是暂时态，不能写成
+        # skipped 落库，否则计划永远不会再被 load_planned 捞起。
+        return None
     if reason:
         return replace(plan, status="skipped", fill_reason=reason, entry_date=as_of)
     price = _bar_price(bars.get(plan.code), as_of, "open")
