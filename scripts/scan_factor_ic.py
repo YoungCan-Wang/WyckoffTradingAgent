@@ -114,6 +114,45 @@ def build_factors(market: pd.DataFrame) -> tuple[dict[str, pd.DataFrame], pd.Dat
     rng = high - low
     factors["close_position"] = ((close - low) / rng.where(rng > 0)) * 100
 
+    _add_volume_school_factors(factors, close, vol)
+
+    # --- 板块强度因子 ---
+    # 2026-08-26 实测（169 个交易日、日均 3823 只、扣 0.202%），这是当前唯一测出**正 IC**
+    # 的维度，其余因子（ret60/vol_ratio/量学 5 个）皆为负或近零：
+    #
+    #   静态行业 tushare industry（110 个）  IC +0.0330  IC_IR +0.19  IC为正日 57%
+    #                                       强板块top20% 净超额 +0.37pct  为正日 58%
+    #   动态概念 东财（340 个，成员>=15）     IC +0.0343  IC_IR +0.19  IC为正日 54%
+    #                                       强板块top20% 净超额 +0.49pct  为正日 53%
+    #
+    # 一个反直觉的发现：**静态行业标签并不比动态概念差**（IC 几乎相同，为正日反而更高）。
+    # 原因是强度本身是动态的——标签静态，但「成员股 5 日涨幅中位数」每天在变，
+    # 只要标签把相关股票分到一组就能捕捉轮动。故「静态分类跟不上题材切换」的担心不成立。
+    #
+    # 2026-08-26 补测（444 日，2024-06~2026-08，含 2024 下半年）：**只有 5 日窗口有效**——
+    #   sector_strength_5d   T+5   IC +0.0420  IC_IR +0.24  为正日 58%
+    #   sector_strength_5d   T+10  IC +0.0149  IC_IR +0.08  为正日 58%
+    #   sector_strength_20d  T+5   IC +0.0036  IC_IR +0.02  为正日 54%（无方向性）
+    #   sector_strength_20d  T+10  IC -0.0104  IC_IR -0.06  为正日 52%（无方向性）
+    # 即板块轮动确实快：20 日窗口已无信息，做组合打分时板块维度只能取短窗口。
+    #
+    # 同一区间上 ret60（IR -0.37 -> -0.14）与 dry_vol_q250（IR -0.35 -> -0.16）均大幅衰减，
+    # 说明这两个因子对区间敏感——此前「三段方向全一致」是在 2024-08 之后的样本上得出的。
+    # 影子池正用这两个因子，故其预期效果应下调；这与 2026-08-24 实测
+    # （影子池 T+1 净超额 -0.91pct）方向吻合。
+    #
+    # IC_IR 均未过 0.30 门槛。故先入 scanner 持续跟踪，暂不据此改题材层。
+    # 注意：这里测的是「全市场排序」效果，而生产题材层作用于已过结构通道的小候选集，
+    # 两者不等价——改动前需在候选集口径上单独验证。
+    sector_map = _load_sector_map()
+    if sector_map:
+        factors["sector_strength_5d"] = _sector_strength(close, sector_map, 5)
+        factors["sector_strength_20d"] = _sector_strength(close, sector_map, 20)
+    return factors, close, open_
+
+
+def _add_volume_school_factors(factors: dict[str, pd.DataFrame], close: pd.DataFrame, vol: pd.DataFrame) -> None:
+    """量学候选因子。原本内联在 build_factors 里，抽出以满足函数长度上限。"""
     # --- 量学（A 股本土量价流派）候选因子 ---
     # 量学与威科夫同源：都主张「量在价先、跟随大资金意图」，只是量学更贴 A 股微观结构
     # （涨停板制度、散户主导、题材轮动）。这里把它的核心量柱形态做成因子持续观测。
@@ -145,7 +184,40 @@ def build_factors(market: pd.DataFrame) -> tuple[dict[str, pd.DataFrame], pd.Dat
     factors["vs_price_vol_divergence"] = (close.pct_change(5, fill_method=None) * 100) * (
         1 - v5 / v5_prev.where(v5_prev > 0)
     )
-    return factors, close, open_
+
+
+def _load_sector_map() -> dict[str, str]:
+    """读生产同一份行业映射（tushare stock_basic 的 industry 字段，24h 缓存）。
+
+    缺失时返回空 dict——scanner 少两个因子而非整体失败。
+    """
+    import json
+
+    try:
+        from integrations.market_metadata import SECTOR_CACHE
+
+        if not SECTOR_CACHE.exists():
+            return {}
+        data = json.loads(SECTOR_CACHE.read_text(encoding="utf-8"))
+        return {str(k): str(v) for k, v in data.items() if v} if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _sector_strength(close: pd.DataFrame, sector_map: dict[str, str], window: int) -> pd.DataFrame:
+    """个股所属板块的相对强度：同板块成员 window 日涨幅的中位数。
+
+    用中位数而非均值：单只涨停股不应把整个板块拉高。
+    结果按行（截面日）广播回个股，故每只股票拿到的是「它所在板块的强度」。
+    """
+    codes = [c for c in close.columns if c in sector_map]
+    if len(codes) < 50:
+        return pd.DataFrame(index=close.index, columns=close.columns, dtype=float)
+    labels = pd.Series({c: sector_map[c] for c in codes})
+    rets = close[codes].pct_change(window, fill_method=None) * 100
+    # groupby 沿列方向聚合，再 reindex 回原列顺序。
+    grouped = rets.T.groupby(labels).median().T
+    return grouped.reindex(columns=labels.values).set_axis(codes, axis=1).reindex(columns=close.columns)
 
 
 def _daily_ic(fac: pd.Series, fwd: pd.Series, mask: pd.Series) -> tuple[float | None, float | None]:
