@@ -98,6 +98,72 @@ def test_disable_still_stops_locally_when_the_relay_is_down(signed_in, monkeypat
     assert stopped == [True]
 
 
+def test_sign_out_tears_down_running_remote(signed_in, monkeypatch):
+    """退出登录必须拆遥控：否则旧手机仍经本机 IPC 操作后续登录者的数据。"""
+    stopped: list[bool] = []
+    http = FakeHttp({"revoked": 1})
+    monkeypatch.setattr("cli.ipc.remote.bridge_status", lambda: {"running": True, "connected": True})
+    monkeypatch.setattr("cli.ipc.remote.stop_bridge", lambda: stopped.append(True))
+    monkeypatch.setattr("cli.ipc.methods._remote_http", http)
+    monkeypatch.setattr("integrations.local_auth.logout", lambda: None)
+    monkeypatch.setattr("integrations.local_auth.load_config", lambda: {})
+    monkeypatch.setattr("cli.ipc.session.shutdown_session", lambda: None)
+
+    assert _result("sign_out")["signed_out"] is True
+    assert stopped == [True]
+    assert http.calls == [("revoke", "POST", {"conn_id": "*"})]
+
+
+def test_sign_out_skips_revoke_when_remote_was_never_enabled(signed_in, monkeypatch):
+    """没开过遥控就别打云端 —— 普通退出不该依赖中转可达。"""
+    http = FakeHttp()
+    stopped: list[bool] = []
+    monkeypatch.setattr("cli.ipc.remote.bridge_status", lambda: {"running": False, "connected": False})
+    monkeypatch.setattr("cli.ipc.remote.stop_bridge", lambda: stopped.append(True))
+    monkeypatch.setattr("cli.ipc.methods._remote_http", http)
+    monkeypatch.setattr("integrations.local_auth.logout", lambda: None)
+    monkeypatch.setattr("integrations.local_auth.load_config", lambda: {})
+    monkeypatch.setattr("cli.ipc.session.shutdown_session", lambda: None)
+
+    assert _result("sign_out")["signed_out"] is True
+    assert stopped == []
+    assert http.calls == []
+
+
+def test_auth_logout_tears_down_running_remote(signed_in, monkeypatch):
+    stopped: list[bool] = []
+    http = FakeHttp({"revoked": 1})
+    monkeypatch.setattr("cli.ipc.remote.bridge_status", lambda: {"running": True, "connected": True})
+    monkeypatch.setattr("cli.ipc.remote.stop_bridge", lambda: stopped.append(True))
+    monkeypatch.setattr("cli.ipc.methods._remote_http", http)
+    monkeypatch.setattr("integrations.local_auth.logout", lambda: None)
+    monkeypatch.setattr("cli.ipc.methods._synced_session", lambda: None)
+
+    assert _result("auth_logout")["signed_in"] is False
+    assert stopped == [True]
+    assert http.calls == [("revoke", "POST", {"conn_id": "*"})]
+
+
+def test_auth_login_tears_down_previous_users_remote(signed_in, monkeypatch):
+    """换号登录也要先拆旧桥：UI 未必先走 sign_out。"""
+    stopped: list[bool] = []
+    http = FakeHttp({"revoked": 1})
+    monkeypatch.setattr("cli.ipc.remote.bridge_status", lambda: {"running": True, "connected": True})
+    monkeypatch.setattr("cli.ipc.remote.stop_bridge", lambda: stopped.append(True))
+    monkeypatch.setattr("cli.ipc.methods._remote_http", http)
+    monkeypatch.setattr(
+        "integrations.local_auth.login",
+        lambda email, password: {"email": email, "user_id": "u-new", "access_token": "tok-new"},
+    )
+    monkeypatch.setattr("cli.ipc.methods._synced_session", lambda: None)
+    monkeypatch.setattr("cli.ipc.cloud_config.pull_cloud_config", lambda *a, **k: {})
+
+    out = _result("auth_login", {"email": "b@c.com", "password": "pw"})
+    assert out["signed_in"] is True
+    assert stopped == [True]
+    assert http.calls == [("revoke", "POST", {"conn_id": "*"})]
+
+
 def test_pair_returns_a_scannable_url(signed_in, monkeypatch):
     monkeypatch.setattr(
         "cli.ipc.methods._remote_http",
