@@ -48,6 +48,7 @@ from cli.loop_guard import (
 from cli.prepare_tool_call import PrepareDecision, accept, prepare_allowed_tools, prepare_exists, reject
 from cli.providers.base import LLMProvider
 from cli.scratchpad import AgentScratchpad
+from cli.text_repair import StreamTextRepair, repair_text
 from cli.tool_results import format_tool_result_for_context
 from cli.tools import ToolRegistry
 from cli.usage_metrics import as_int, enrich_usage, generation_seconds
@@ -128,6 +129,42 @@ def _iter_with_timeout(stream, timeout: float, cancel_check: Callable[[], bool] 
             with contextlib.suppress(Exception):
                 stream.close()
         raise
+
+
+# 哪些流式字段是「一段正文的一部分」，会被网关拆到两个 chunk 里。
+_STREAM_TEXT_FIELDS = ("text_delta", "thinking_delta")
+
+
+def _repair_split_chars(stream):
+    """接上被网关拆到两个 chunk 里的字符，落单的代理字符换成 U+FFFD。
+
+    在这里做而不是各 provider 里做：三家 provider 都可能遇到，而下游 IPC、
+    SQLite、JSONL 全是 strict UTF-8，漏一处就是整轮回答变一行报错。
+    """
+    repairs = {event_type: StreamTextRepair() for event_type in _STREAM_TEXT_FIELDS}
+
+    def flush_all() -> Iterator[RuntimeEvent]:
+        # 流结束在半个字符上时，攥着的尾巴要放出来，否则那点内容凭空消失。
+        for event_type, repair in repairs.items():
+            if tail := repair.flush():
+                yield {"type": event_type, "text": tail}
+
+    for chunk in stream:
+        chunk_type = chunk.get("type") if isinstance(chunk, dict) else None
+        if repair := repairs.get(chunk_type):
+            # 攥住尾巴等下一块拼上，所以这块可能什么都不剩 —— 那就别发空事件。
+            if fixed := repair.feed(str(chunk.get("text") or "")):
+                yield {**chunk, "text": fixed}
+            continue
+        # 出现非正文事件说明这一段正文到此为止，攥着的尾巴得先放出来，才能保持
+        # 「尾巴在前、本块在后」的顺序。
+        yield from flush_all()
+        if isinstance(chunk, dict) and isinstance(chunk.get("text"), str):
+            # tool_calls 也带 text，是 provider 自己累计的原始串，没走上面的逐块修复。
+            yield {**chunk, "text": repair_text(chunk["text"])}
+        else:
+            yield chunk
+    yield from flush_all()
 
 
 @dataclass
@@ -682,7 +719,8 @@ class AgentRuntime:
     ) -> Iterator[RuntimeEvent | RoundState]:
         round_state = RoundState(stream_started=time.monotonic())
         stream = self.provider.chat_stream(messages, self._tool_schemas(), system_prompt)
-        for chunk in _iter_with_timeout(stream, self.stream_chunk_timeout, self.cancel_check):
+        guarded = _repair_split_chars(_iter_with_timeout(stream, self.stream_chunk_timeout, self.cancel_check))
+        for chunk in guarded:
             event = self._consume_model_chunk(round_state, chunk, round_number)
             if event:
                 yield event

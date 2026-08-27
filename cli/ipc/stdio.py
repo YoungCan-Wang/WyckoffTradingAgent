@@ -15,6 +15,8 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, wait
 from typing import Any, TextIO
 
+from cli.text_repair import repair_text
+
 logger = logging.getLogger(__name__)
 
 PROTOCOL_VERSION = 1
@@ -65,7 +67,14 @@ def _emit(payload: dict[str, Any]) -> None:
     out = _protocol_out or sys.__stdout__
     line = json.dumps(payload, ensure_ascii=False, default=str)
     with _write_lock:
-        out.write(line + "\n")
+        try:
+            out.write(line + "\n")
+        except UnicodeEncodeError:
+            # 落单的代理字符编不成 UTF-8。上游（runtime 流式入口、IPC 的 _cap）
+            # 都会修，这里是最后一道：真漏过来时宁可让这一行带几个 U+FFFD，也不能
+            # 让异常冒出去 —— 那会连带把整轮回答变成一行编码错误。
+            # 整行一起修没问题：JSON 的结构字符都是 ASCII，动不到。
+            out.write(repair_text(line) + "\n")
         out.flush()
 
 
