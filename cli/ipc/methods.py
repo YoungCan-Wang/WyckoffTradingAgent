@@ -831,6 +831,9 @@ def auth_login(params: dict[str, Any]) -> Iterator[Event]:
     if not email or not password:
         raise MethodError("invalid_params", "需要邮箱和密码")
 
+    # 换号前先拆遥控：必须还握着旧 token，才能 revoke 已配对手机。
+    _teardown_remote_on_identity_change()
+
     try:
         session = login(email, password)
     except Exception as exc:  # supabase 的异常类型随版本变，不按类型分支
@@ -862,6 +865,8 @@ def auth_logout(_params: dict[str, Any]) -> Iterator[Event]:
     """退出登录。清掉 session 与自动重登凭据。"""
     from integrations.local_auth import logout
 
+    # 先拆遥控再清 session：revoke 还需要当前 token。
+    _teardown_remote_on_identity_change()
     logout()
     # 同上：身份变了要重建 registry，否则退出后工具还拿着旧 token 读云端。
     _synced_session()
@@ -1089,6 +1094,8 @@ def sign_out(_params: dict[str, Any]) -> Iterator[Event]:
     """清除本地会话。同时清掉配置里的凭据，否则 auto_relogin 会立刻登回去。"""
     from integrations.local_auth import load_config, logout, save_config_key
 
+    # 先拆遥控再清 session：否则已配对手机仍经本机 IPC 操作后续登录者的数据。
+    _teardown_remote_on_identity_change()
     logout()
     # login() 会把 email/password 写进 config，auto_relogin 靠它静默恢复会话。
     # 只删 session 文件的话，「退出登录」下一次启动就自动失效了。
@@ -1322,6 +1329,24 @@ def chat_reset(_params: dict[str, Any]) -> Iterator[Event]:
 # 云端信箱的地址。与 web 端硬编码的同一个 Worker（web/apps/web/src/lib/api-url.ts）。
 # 允许用环境变量覆盖，好在本地 wrangler dev 上联调。
 REMOTE_API_BASE = os.environ.get("WYCKOFF_API_BASE", "https://wyckoff-api.yongkai-wang.workers.dev")
+
+
+def _teardown_remote_on_identity_change() -> None:
+    """身份切换前拆遥控桥。
+
+    遥控复用同一批 IPC：手机打到本机后，dispatch 读的是**磁盘当前登录态**；
+    桥上挂的却是开启时的 host JWT。登出/换号若不拆桥，已配对的旧手机仍会
+    连着，却以新账号身份读写持仓与审批 —— 跨账号读写，不是单纯断连问题。
+    """
+    from cli.ipc.remote import bridge_status, stop_bridge
+
+    if not bridge_status().get("running"):
+        return
+    try:
+        _remote_http("revoke", "POST", {"conn_id": "*"})
+    except MethodError:
+        logger.info("remote revoke failed on identity change", exc_info=True)
+    stop_bridge()
 
 
 def _remote_ws_url() -> str:
