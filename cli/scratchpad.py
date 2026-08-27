@@ -15,6 +15,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from cli.text_repair import repair_text
+
 _SENSITIVE_KEY_RE = re.compile(r"(api[_-]?key|token|password|secret|authorization|cookie)", re.IGNORECASE)
 _MAX_INLINE_STRING = 200_000
 
@@ -84,8 +86,12 @@ class AgentScratchpad:
 
     def append(self, entry: dict[str, Any]) -> None:
         safe_entry = scrub_sensitive_value(entry)
+        line = json.dumps(safe_entry, ensure_ascii=False, default=str)
         with self.path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(safe_entry, ensure_ascii=False, default=str))
+            # 落单的代理字符（网关把一个字符拆到两个 chunk 里）编不成 strict UTF-8。
+            # 这里的写没有 try 包着，而调用方在 runtime 的主流程上 —— 抛出去就是整轮
+            # 回答变一行编码错误。整行一起修没问题：JSON 结构字符都是 ASCII。
+            fh.write(repair_text(line))
             fh.write("\n")
 
     def record_thinking(self, content: str) -> None:

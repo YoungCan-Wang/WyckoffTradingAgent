@@ -12,6 +12,8 @@ import uuid
 from collections.abc import Iterator
 from typing import Any
 
+from cli.text_repair import repair_text
+
 logger = logging.getLogger(__name__)
 
 # 与 TUI 一致：多轮对话保留在内存里，前端不必每次重传历史。
@@ -594,10 +596,18 @@ def _cap(value: Any) -> Any:
 
     截断而不是丢弃：前端拿到「前 768 KiB + 已截断」仍能显示个大概，而整个字段
     消失会让人以为工具什么都没返回。
+
+    进来的字符串先修一遍落单的代理字符。cli/runtime.py 已经在流式入口修过模型
+    正文，但走到这儿的不止那一条路 —— 工具结果、args 里的文件内容都可能带上
+    不可编码的字符。这里是 IPC 的最后一道关口，`len(...encode("utf-8"))` 一抛
+    UnicodeEncodeError 整轮回答就没了，所以在这层也兜一次。
     """
-    if isinstance(value, str) and len(value.encode("utf-8")) > MAX_IPC_FIELD_BYTES:
-        clipped = value.encode("utf-8")[:MAX_IPC_FIELD_BYTES].decode("utf-8", "ignore")
-        return clipped + "\n\n…（内容过大，已在 IPC 层截断）"
+    if isinstance(value, str):
+        value = repair_text(value)
+        if len(value.encode("utf-8")) > MAX_IPC_FIELD_BYTES:
+            clipped = value.encode("utf-8")[:MAX_IPC_FIELD_BYTES].decode("utf-8", "ignore")
+            return clipped + "\n\n…（内容过大，已在 IPC 层截断）"
+        return value
     if isinstance(value, dict):
         return {k: _cap(v) for k, v in value.items()}
     return value
