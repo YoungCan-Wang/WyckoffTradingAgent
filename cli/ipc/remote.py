@@ -29,6 +29,8 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+from cli.text_repair import repair_text
+
 logger = logging.getLogger(__name__)
 
 MAX_WORKERS = 4
@@ -78,7 +80,9 @@ class _Outbox:
         self._thread.start()
 
     def put(self, payload: dict[str, Any]) -> None:
-        raw = json.dumps(payload, ensure_ascii=False, default=str)
+        # 先修落单的代理字符（网关把一个字符拆到两个 chunk 里留下的）：紧接着的
+        # `encode("utf-8")` 是 strict 的，抛出去就是整轮回答变一行编码错误。
+        raw = repair_text(json.dumps(payload, ensure_ascii=False, default=str))
         if len(raw.encode("utf-8")) > MAX_FRAME_BYTES:
             raw = json.dumps(
                 {

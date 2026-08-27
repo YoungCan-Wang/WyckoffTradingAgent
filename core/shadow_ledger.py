@@ -137,8 +137,9 @@ def try_fill_plan(
 ) -> ShadowPlan | None:
     if plan.status != "planned":
         return None
+    # 未到成交日：原样留下 planned。若写成 skipped 并 upsert，同日重跑会永久毁掉今夜计划。
     if plan.signal_date >= as_of:
-        return replace(plan, status="skipped", fill_reason="lookahead_blocked")
+        return None
     reason = _fill_block_reason(book, plan, bars, as_of)
     if reason == "no_open":
         # 缺当日 K 线（停牌、拉取失败、脏 bar 被丢掉）是暂时态，不能写成
