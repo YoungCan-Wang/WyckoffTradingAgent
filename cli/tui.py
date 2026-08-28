@@ -25,7 +25,7 @@ from rich.text import Text
 from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList, RichLog, Static
 from textual.widgets.option_list import Option
@@ -1828,8 +1828,11 @@ class ToolConfirmScreen(ModalScreen[dict]):
         align: center middle;
     }
     #confirm-box {
-        width: 64;
-        max-height: 20;
+        width: 80%;
+        min-width: 64;
+        max-width: 100;
+        height: auto;
+        max-height: 90%;
         background: $surface;
         border: thick $accent;
         padding: 1 2;
@@ -1838,13 +1841,19 @@ class ToolConfirmScreen(ModalScreen[dict]):
         text-style: bold;
         margin-bottom: 1;
     }
-    #confirm-summary {
-        color: $text-muted;
+    #confirm-summary-scroll {
+        height: auto;
+        max-height: 8;
+        overflow-y: auto;
         margin-bottom: 1;
     }
+    #confirm-summary {
+        width: 100%;
+        color: $text-muted;
+    }
     #confirm-options {
-        height: auto;
-        max-height: 6;
+        height: 6;
+        min-height: 6;
     }
     #confirm-edit {
         display: none;
@@ -1866,7 +1875,8 @@ class ToolConfirmScreen(ModalScreen[dict]):
                 f"⚠ [bold]{self.display_name}[/bold] 需要确认",
                 id="confirm-title",
             )
-            yield Static(self._format_summary(), id="confirm-summary")
+            with VerticalScroll(id="confirm-summary-scroll"):
+                yield Static(self._format_summary(), id="confirm-summary")
             yield OptionList(
                 Option("允许一次", id="once"),
                 Option("本次会话总是允许", id="always"),
