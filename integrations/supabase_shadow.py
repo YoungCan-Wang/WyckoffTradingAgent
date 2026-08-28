@@ -101,9 +101,11 @@ def persist_shadow_session(
         raise RuntimeError("Supabase 未配置，影子账本无法落库")
     account_id = assert_shadow_account(account_id)
     seed_shadow_account(account_id)
+    # 先落计划状态再改账本：plan status 是成交幂等闸。若先写 cash/positions
+    # 再 upsert plans 失败，下次 load_planned 仍会捞到旧 planned，买单被再兑一次。
+    _upsert_plans(account_id, fills + new_plans)
     _upsert_account(account_id, as_of, book, nav)
     _replace_positions(account_id, book)
-    _upsert_plans(account_id, fills + new_plans)
     _insert_events(account_id, as_of, fills)
     _upsert_nav(account_id, as_of, nav)
 
@@ -143,19 +145,25 @@ def _insert_events(account_id: str, as_of: date, fills: list[ShadowPlan]) -> Non
 
     rows = []
     for plan in fills:
+        # event_type 按 schema 是 buy/sell，不是 filled/skipped。
+        # 用 status 当 type/key 时，同日同股同量的买+卖会 upsert 互盖。
         rows.append(
             {
-                "event_key": event_key(account_id, as_of, plan.status, plan.code, plan.qty),
+                "event_key": event_key(account_id, as_of, plan.action, plan.code, plan.qty, status=plan.status),
                 "account_id": account_id,
                 "as_of": as_of.isoformat(),
                 "code": plan.code,
                 "name": plan.name,
-                "event_type": plan.status,
+                "event_type": plan.action,
                 "price": plan.entry_price,
                 "qty": plan.qty,
                 "fees": plan.fees,
                 "reason": plan.fill_reason,
-                "payload": {"action": plan.action, "plan_key": plan.plan_key},
+                "payload": {
+                    "action": plan.action,
+                    "plan_key": plan.plan_key,
+                    "status": plan.status,
+                },
             }
         )
     if rows:
