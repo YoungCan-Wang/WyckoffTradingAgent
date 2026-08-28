@@ -1,8 +1,11 @@
 /**
- * 顶栏：侧栏开关槽位 + 当前视图标题 + 待批提示 + 后端状态 + 「打开」菜单。
+ * 顶栏：侧栏开关槽位 + 当前视图标题 + 后端状态 + 「打开」菜单。
  *
  * 后端健康是默认预期，所以从不宣告；重启按钮只在**不健康**时出现 ——
  * 那才是用户能采取行动的时刻。
+ *
+ * 原来这里有个「待审 N」的角标。写操作的确认已经回到对话里当场问，没有待办
+ * 可数了 —— 留一个恒为 0 的计数只会让人以为别处还藏着一个收件箱。
  */
 import { useEffect, useRef } from 'react'
 
@@ -10,16 +13,14 @@ const t = (key: string, params?: Record<string, string | number>) => window.Wyck
 
 interface Props {
   titleKey: string
-  pendingCount: number
   backendState: string
-  onPendingClick: () => void
   onRestart: () => void
   onOpenMenu: (anchor: HTMLElement) => void
   toggleSlot: React.ReactNode
 }
 
 export function TopBar (
-  { titleKey, pendingCount, backendState, onPendingClick, onRestart, onOpenMenu, toggleSlot }: Props
+  { titleKey, backendState, onRestart, onOpenMenu, toggleSlot }: Props
 ) {
   const root = useRef<HTMLElement>(null)
   useEffect(() => { window.WyckoffIcons?.render?.() })
@@ -31,13 +32,6 @@ export function TopBar (
       <span className="side-toggle-slot">{toggleSlot}</span>
       <div className="ttitle">{t(titleKey)}</div>
       <div className="tools">
-        {/* 待批准是花钱的决定；侧栏默认收起时那个角标看不见，所以在常驻的
-            顶栏也放一个。 */}
-        {pendingCount ? (
-          <button className="chip" type="button" title={t('tooltip.pending')} onClick={onPendingClick}>
-            {t('approvals.tierReview')} {pendingCount}
-          </button>
-        ) : null}
         {!ready ? (
           <button
             className={`icb has-dot ${backendState}`}

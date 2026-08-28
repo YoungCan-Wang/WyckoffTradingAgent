@@ -65,8 +65,58 @@ def approve_list(_params: dict[str, Any]) -> Iterator[Event]:
     yield _ok(items=items, count=len(items))
 
 
+def approve_records(params: dict[str, Any]) -> Iterator[Event]:
+    """确认记录（只读流水）。
+
+    不是待办列表 —— 这里的每一行都已经有结论了。会话内的确认是当场问当场执行的，
+    留这份记录只为回答「谁在什么时候批了什么」。
+    """
+    from cli import approval_queue as aq
+
+    limit = int(params.get("limit") or 100)
+    items = [
+        {
+            "id": item.id,
+            "tool_name": item.tool_name,
+            "summary": item.summary,
+            "risk": item.risk,
+            "source": item.source,
+            "status": item.status,
+            "created_at": item.created_at,
+            "decided_at": item.decided_at,
+            "args": aq.sanitized_args(item.args),
+            "risk_reason": item.risk_reason,
+            "nav_ratio": item.nav_ratio,
+        }
+        for item in aq.list_decisions(user_id=_current_user_id(), limit=limit)
+    ]
+    yield _ok(items=items, count=len(items))
+
+
+def chat_answer(params: dict[str, Any]) -> Iterator[Event]:
+    """把用户对确认卡 / 提问卡的答复送给正在等它的那一轮。
+
+    走独立请求而不是复用 chat：被问的那一轮此刻**阻塞在等答复上**，答复必须由
+    另一个 IPC worker 送进去（stdio 是 4 worker 的线程池）。
+    """
+    from cli.ipc.session import find_waiting_session
+
+    question_id = str(params.get("question_id") or "").strip()
+    if not question_id:
+        raise MethodError("invalid_params", "缺少 question_id")
+    answer = str(params.get("answer") or "")
+
+    session = find_waiting_session(question_id)
+    if session is None or not session.answer_question(question_id, answer):
+        # 超时、已答过、或前端拿着过期的卡片重复点。不是错误，但要说清没送达，
+        # 否则界面会显示「已批准」而那一轮其实早就按未作答收尾了。
+        yield _ok(delivered=False, question_id=question_id)
+        return
+    yield _ok(delivered=True, question_id=question_id)
+
+
 def approve_decide(params: dict[str, Any]) -> Iterator[Event]:
-    """批准或拒绝一项。批准后立即执行，与 CLI 同一条路径。"""
+    """批准或拒绝一项待批（定时任务/遥控留下的）。批准后立即执行，与 CLI 同一条路径。"""
     from cli import approval_queue as aq
 
     approval_id = str(params.get("id") or "").strip()
@@ -1612,7 +1662,9 @@ METHODS: dict[str, Callable[[dict[str, Any]], Iterator[Event]]] = {
     "remote_devices": remote_devices,
     "remote_revoke": remote_revoke,
     "approve_list": approve_list,
+    "approve_records": approve_records,
     "approve_decide": approve_decide,
+    "chat_answer": chat_answer,
     "portfolio": portfolio,
     "portfolio_edit": portfolio_edit,
     "portfolio_set_stop": portfolio_set_stop,

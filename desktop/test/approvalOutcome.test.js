@@ -1,42 +1,51 @@
 'use strict'
 
-// 决策结果不能在 reload 里被冲掉。
+// 确认结果不能报告一件没发生的事。
 //
-// decide() 之后要 reload 才能刷掉已决策的项,而 useIpc 的 reload 会把 loading
-// 打回 true。审批页顶上那句 `if (loading) return <加载中>` 会把整个列表连同刚
-// 写好的「执行失败」文案一起卸载 —— 用户批准一笔失败的操作,只看到列表少一项,
-// **看不到失败信息**。而这一页自己的注释写着「执行了但失败要明说失败」。
+// 就地确认卡有三条失败路径,长得很像但含义完全不同:
+//   1. collect 抛错          → 这次点击没送到,可以再点
+//   2. collect 返回 null      → 同上。注意它是**返回 null 而不是抛错**,
+//                              当成「送到了」就会显示一个假的「已同意」
+//   3. delivered=false       → 送到了,但那一轮已经不在等答复(超时收尾,
+//                              或这张卡被点过第二次)。操作**没有执行**
+// 前两条要留着按钮(retryable),第三条不能 —— 决定权已经不在这张卡手上了。
 //
-// 与 SchedulesPage 的区别:那边的项重跑后仍在列表里,页面级 notes 就够;
-// 审批项一旦决策就离开待批列表,所以还需要一条独立的结果横幅。
+// 原来这里测的是审批页 reload 会不会把结果文案冲掉。那一页没有了:确认在对话
+// 里当场问,不再有「决策后离开待批列表」这回事。留下来的是同一个诚实性要求。
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const { readFileSync } = require('node:fs')
 const { join } = require('node:path')
 
-const SRC = readFileSync(join(__dirname, '..', 'src', 'renderer', 'components', 'ApprovalsPage.tsx'), 'utf8')
+const read = (name) =>
+  readFileSync(join(__dirname, '..', 'src', 'renderer', 'components', name), 'utf8')
 
-test('首次加载才整页显示「加载中」', () => {
-  assert.match(
-    SRC,
-    /if \(loading && !data\) return/,
-    '无条件的 if (loading) 会在每次 reload 时卸载整个列表（连同结果文案）'
-  )
-})
+const CARDS = [['ConfirmCardInline.tsx', read('ConfirmCardInline.tsx')],
+  ['QuestionCardInline.tsx', read('QuestionCardInline.tsx')]]
 
-test('已决策但已离开待批列表的结果仍要渲染', () => {
-  assert.match(SRC, /const pendingIds = new Set/, '要能区分「还在待批」和「已决策」')
-  assert.match(SRC, /const decided = Object\.entries\(outcome\)/, '缺少已决策项的结果集合')
-  // 可重试的（调用没走通）不算已决策 —— 那些项还在列表里,按钮也还留着
-  assert.match(SRC, /!out\.retryable/, '「调用失败可重试」不该被当成已决策结果')
-  assert.match(SRC, /decided\.map/, '结果集合没有被渲染出来')
-})
+for (const [name, src] of CARDS) {
+  test(`${name}: collect 返回 null 不能当成送达`, () => {
+    assert.match(src, /if \(!res\)/, 'collect 失败时返回 null,漏判会报告一个假的决定')
+    assert.match(src, /retryable: true/, '没送到的点击要留着按钮,否则只能重开一轮')
+  })
 
-test('空列表判断要把已决策结果算进去', () => {
-  // 否则决策掉最后一项时,会立刻显示「没有待批」而把结果文案挤掉
-  assert.match(
-    SRC,
-    /if \(!items\.length && !decided\.length\)/,
-    '决策掉最后一项后,结果文案会被「没有待批」覆盖'
-  )
+  test(`${name}: delivered=false 要说实话`, () => {
+    assert.match(src, /delivered\?: boolean/, '没有读 delivered,无法知道那一轮还在不在等')
+    assert.match(src, /confirm\.expired/, '过期时缺少「没有送达」的文案')
+  })
+
+  test(`${name}: 只有可重试的失败才留按钮`, () => {
+    assert.match(
+      src,
+      /!outcome \|\| outcome\.retryable/,
+      '已经作过决定还留着按钮,会让人以为可以改;反之点击没送到却收走按钮,就没法再试'
+    )
+  })
+}
+
+test('ConfirmCardInline: 拒绝不触发缓存作废', () => {
+  const src = read('ConfirmCardInline.tsx')
+  // 拒绝意味着没有执行,数据没变。无条件 invalidate 会重拉一遍相同的数据,
+  // 更糟的是让人以为有什么被改动了。
+  assert.match(src, /if \(approved\) onDecided/, '拒绝后不该作废缓存 —— 什么都没执行')
 })

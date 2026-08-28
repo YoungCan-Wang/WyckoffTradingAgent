@@ -12,7 +12,7 @@ export interface NavItem {
   view: string
   icon: string
   labelKey: string
-  /** 侧栏右侧的计数（审批、计划任务）。 */
+  /** 侧栏右侧的计数（计划任务）。 */
   badge?: string
   badgeWarn?: boolean
 }
@@ -25,15 +25,14 @@ const GROUPS: Array<{ labelKey: string; items: NavItem[] }> = [
     // 已有的。放一个「今天」在这里会和会话列表抢同一件事，而且那个名字并不按
     // 日期筛任何东西，点进去看到的可能是上周的会话。
     //
-    // 也没有「任务运行」。它读的是 approve_list + schedules 这两个接口的汇总，
-    // 每一行的按钮都只是「去审批页」「去定时任务页」—— 自己不能批准也不能改
-    // 任务。三个入口里它是唯一没有独有能力的那个,那些计数已经由下面的徽标
-    // 和各自页面给出。
-    // 「审批」和「定时任务」放一起:都是要你动手的运维项,而且定时任务跑出来的
-    // 写操作正是审批的来源。删掉「任务运行」之后「工作」只剩审批一项 ——
-    // 一项的分组不是分组,那个标题纯属白占 18px。
+    // 也没有「任务运行」。它读的是几个接口的汇总，每一行的按钮都只是「去某个
+    // 页面」—— 自己不能改任何东西,那些计数已经由下面的徽标和各自页面给出。
+    //
+    // 「确认记录」不是原来的「审批」页。写操作的确认已经回到对话里当场问
+    // （见 ConfirmCardInline）,这里只留一份只读流水,所以它和「定时任务」一样
+    // 是事后来看的东西,没有徽标 —— 没有待办可数。
     items: [
-      { view: 'approvals', icon: 'shield-check', labelKey: 'nav.approvals' },
+      { view: 'records', icon: 'shield-check', labelKey: 'records.heading' },
       { view: 'schedules', icon: 'calendar-clock', labelKey: 'nav.schedules' }
     ]
   },
@@ -55,7 +54,7 @@ interface Props {
   active: string
   onNavigate: (view: string) => void
   onNewAnalysis: () => void
-  counts: { approvals: number; schedules: number }
+  counts: { schedules: number }
   accountLabel: string
   accountInitial: string
   onAccountClick: (anchor: HTMLElement) => void
@@ -76,7 +75,6 @@ export function Sidebar (
   useEffect(() => { window.WyckoffIcons?.render?.() })
 
   const badgeFor = (view: string) => {
-    if (view === 'approvals' && counts.approvals) return String(counts.approvals)
     if (view === 'schedules' && counts.schedules) return String(counts.schedules)
     return ''
   }
@@ -111,10 +109,7 @@ export function Sidebar (
                 >
                   <i className="nav-icon" data-lucide={item.icon} aria-hidden="true" />
                   <span>{t(item.labelKey)}</span>
-                  {/* 待批准是花钱的决定，用强调色 */}
-                  {badge ? (
-                    <span className={item.view === 'approvals' ? 'n warn' : 'n'}>{badge}</span>
-                  ) : null}
+                  {badge ? <span className="n">{badge}</span> : null}
                 </button>
               )
             })}

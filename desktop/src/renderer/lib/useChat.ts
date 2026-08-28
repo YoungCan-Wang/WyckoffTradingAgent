@@ -87,8 +87,6 @@ export function useChat (ready: boolean): ChatApi {
       }
     }
 
-    if (type === 'approval_pending') window.WyckoffApp?.refreshApprovals?.()
-
     if (type === 'done') {
       setTurns((prev) => prev.map((x) => {
         if (x.id !== id) return x

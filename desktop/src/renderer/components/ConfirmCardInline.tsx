@@ -1,8 +1,11 @@
 /**
- * 对话流里的审批卡片。
+ * 对话流里的就地确认卡。
  *
- * 与「审批」页的卡片同源同规则，只是嵌在对话里 —— 批准要说实话（executed /
- * failed / rejected 分开），决策后按钮消失，执行成功且动了持仓就作废缓存。
+ * 这不是「审批」——没有队列、没有待办、没有另一个页面。写操作要动手之前，这一轮
+ * 停在这里等你点一下：同意就在同一轮里执行，结果接着往下说；拒绝就到此为止。
+ *
+ * 卡片过期（那一轮已经按未作答收尾）时后端会回 delivered=false，此时必须说实话，
+ * 不能显示「已批准」—— 那是报告一件没有发生的事。
  */
 import { useState } from 'react'
 import { collect } from '../lib/ipc'
@@ -15,13 +18,14 @@ interface Props {
   onDecided: (toolName: string) => void
 }
 
-export function ApprovalCardInline ({ event, onDecided }: Props) {
+export function ConfirmCardInline ({ event, onDecided }: Props) {
   const [busy, setBusy] = useState(false)
-  // retryable：区分「决策完成」和「这次调用没走通」。后者要留着按钮。
+  // retryable：区分「已经作过决定」和「这次点击没送到」。后者要留着按钮。
   const [outcome, setOutcome] = useState<{ kind: 'ok' | 'err'; text: string; retryable?: boolean } | null>(null)
 
+  const questionId = String(event.question_id || '')
   const item: ApprovalItem = {
-    id: String(event.approval_id || ''),
+    id: questionId,
     tool_name: String(event.tool_name || event.tool || ''),
     summary: String(event.summary || ''),
     risk: String(event.risk || ''),
@@ -32,31 +36,33 @@ export function ApprovalCardInline ({ event, onDecided }: Props) {
 
   const decide = async (approved: boolean) => {
     setBusy(true)
-    const res = await collect('approve_decide', { id: item.id, approved }).catch(
-      (err: unknown) => ({ __error: (err as Error)?.message || String(err) })
-    )
+    const res = await collect('chat_answer', {
+      question_id: questionId,
+      answer: approved ? 'allow' : 'deny'
+    }).catch((err: unknown) => ({ __error: (err as Error)?.message || String(err) }))
+
     const errText = (res as { __error?: string } | null)?.__error
     if (errText) {
       setOutcome({ kind: 'err', text: errText, retryable: true })
       setBusy(false)
       return
     }
-    const status = String(((res || {}) as { status?: string }).status || '')
-    // 没有 status 就是这次调用压根没走通（collect 失败返回 null 而不是抛错）。
-    // 落到下面的 else 会被标成「已拒绝」—— 报告一个没有发生的决策。
-    if (!status) {
-      setOutcome({ kind: 'err', text: t('approvals.callFailed'), retryable: true })
+    // collect 失败时返回 null 而不是抛错。当成「送到了」会报告一个假的决定。
+    if (!res) {
+      setOutcome({ kind: 'err', text: t('confirm.callFailed'), retryable: true })
       setBusy(false)
       return
     }
-    // 只看调用成功会把「执行了但失败」报成成功。
-    const label = status === 'executed' ? t('approvals.executed')
-      : status === 'failed' ? t('approvals.failed')
-      : t('approvals.rejected')
-    setOutcome({ kind: status === 'failed' ? 'err' : 'ok', text: label })
+    if (!(res as { delivered?: boolean }).delivered) {
+      // 那一轮已经不在等了（超时收尾，或这张卡片被点过第二次）。
+      setOutcome({ kind: 'err', text: t('confirm.expired') })
+      setBusy(false)
+      return
+    }
+    setOutcome({ kind: 'ok', text: approved ? t('confirm.allowed') : t('confirm.denied') })
     setBusy(false)
-    if (status === 'executed') onDecided(String(item.tool_name || ''))
-    window.WyckoffApp?.refreshApprovals?.()
+    // 执行结果由这一轮自己的事件流往下说；这里只负责作废受影响的缓存。
+    if (approved) onDecided(String(item.tool_name || ''))
   }
 
   const tier = ({ confirm: t('approvals.tierConfirm'), review: t('approvals.tierReview') } as
@@ -72,7 +78,7 @@ export function ApprovalCardInline ({ event, onDecided }: Props) {
         <span className={`tg ${tone}`}>{tier}</span>
       </div>
       {why ? <p className="approval-why">{why}</p> : null}
-      <p className="sub">{t('approvals.submitted')}</p>
+      <p className="sub">{t('confirm.prompt')}</p>
       {hasArgs ? (
         <details className="approval-args">
           <summary>{t('approvals.exactChange')}</summary>
@@ -82,7 +88,7 @@ export function ApprovalCardInline ({ event, onDecided }: Props) {
       {outcome ? (
         <div className={outcome.kind === 'err' ? 'sys err' : 'sys'}>{outcome.text}</div>
       ) : null}
-      {/* 调用没走通不是决策 —— 留着按钮，否则只能刷新页面才能再试 */}
+      {/* 点击没送到不算决定 —— 留着按钮，否则只能重开一轮才能再试 */}
       {!outcome || outcome.retryable ? (
         <div className="btns">
           <button type="button" className="b pri" disabled={busy} onClick={() => decide(true)}>

@@ -746,6 +746,12 @@ daemon 持锁时 TUI 的 `_check_schedules` 直接返回，让出调度权。两
 
 `cli/approval_policy.classify()` 把高风险工具调用分三档：`auto` / `review` / `confirm`。
 daemon 只放行 `auto`，其余写入 `~/.wyckoff/approvals.db` 等人批准，12 小时过期。
+
+入队只发生在**没人可问**的时候。有人在对话里（桌面端、TUI）时，确认就是一次
+ask_user_question：卡片进当轮事件流，工具线程阻塞等答复，同意就在同一轮里执行，
+超时按未作答处理而不是拒绝。落库只留一条终态流水（`log_decision`），进不了待批
+队列 —— 否则「已经当场批过」的操作会再长出一个待办入口。下面这套队列语义属于
+daemon 和遥控（`cli/headless.py` 的 `DaemonGuard`），那两条路径没有对话流可以停下来等。
 队列项绑定入队时的 `user_id`；`approve ok/no` 要求当前登录账户一致，防止换号后改到别人的持仓。
 `approve list` 展示脱敏后的完整参数；`approve ok` 原子认领一次后通过正常 ToolRegistry 执行并记录结果，
 执行失败不自动重试，避免真实成交或外部写入被重复提交。

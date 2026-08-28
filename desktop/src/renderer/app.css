@@ -556,6 +556,9 @@ html.dark .berr-b { background: var(--paper2); }
   font: 10.5px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word;
 }
 .btns { display: flex; gap: 6px; margin-top: 10px; }
+/* 提问卡的自由输入行。.btns 是按钮行，输入框放进去不会自己长 ——
+   不给 flex: 1 就是一个挤在左边的小方块，答一句话都看不全。 */
+.btns .sf-input { flex: 1; min-width: 0; }
 .b {
   border: 1px solid var(--line); background: #fff; color: var(--tx2);
   border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer;

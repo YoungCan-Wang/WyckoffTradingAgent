@@ -190,6 +190,82 @@ class TestRiskReason:
         assert len(aq.list_pending(db_path=db)) == 2
 
 
+class TestDecisionRecords:
+    """会话内的确认只留流水，不产生待办。
+
+    这是审批流程被拆掉之后剩下的东西：确认在对话里当场问、当场执行，落库只为
+    回答「谁在什么时候批了什么」。所以关键性质是它**进不了待批队列** —— 一旦
+    进了，桌面端就会又长出一个待办入口,而那正是要删掉的东西。
+    """
+
+    def _log(self, db, decision, **kwargs):
+        return aq.log_decision(
+            kwargs.pop("tool_name", "update_portfolio"),
+            kwargs.pop("args", {"code": "002270", "stop_loss": 33.15}),
+            risk=kwargs.pop("risk", "confirm"),
+            source=kwargs.pop("source", "desktop"),
+            decision=decision,
+            db_path=db,
+            **kwargs,
+        )
+
+    def test_never_lands_in_pending(self, db):
+        for decision in ("allow", "deny", ""):
+            self._log(db, decision)
+        assert aq.list_pending(db_path=db) == [], "确认记录跑进了待批队列 —— 待办入口会复活"
+
+    def test_decision_maps_to_terminal_status(self, db):
+        cases = {"allow": aq.APPROVED, "deny": aq.REJECTED, "": aq.EXPIRED}
+        for decision, expected in cases.items():
+            record_id = self._log(db, decision)
+            assert aq.get(record_id, db_path=db).status == expected, decision
+
+    def test_unknown_decision_is_expired_not_approved(self, db):
+        """认不出来的答复绝不能算同意 —— 那是替用户做一个他没做过的决定。"""
+        record_id = self._log(db, "maybe")
+        assert aq.get(record_id, db_path=db).status == aq.EXPIRED
+
+    def test_decided_at_is_set(self, db):
+        """记录一写出来就是终态,没有「等待决策」的中间时刻。"""
+        record = aq.get(self._log(db, "allow"), db_path=db)
+        assert record.decided_at, "缺 decided_at,界面上就只能显示发起时间"
+
+    def test_listed_newest_first(self, db):
+        old = self._log(db, "allow", user_id="alice")
+        new = self._log(db, "deny", user_id="alice")
+        _backdate(db, old, 2)
+        assert [r.id for r in aq.list_decisions(user_id="alice", db_path=db)] == [new, old]
+
+    def test_scoped_to_account(self, db):
+        self._log(db, "allow", user_id="alice")
+        self._log(db, "allow", user_id="bob")
+        assert [r.user_id for r in aq.list_decisions(user_id="alice", db_path=db)] == ["alice"]
+
+    def test_excludes_pending_items(self, db):
+        """待批项（定时任务留下的）不该混进确认记录 —— 它们还没有结论。"""
+        _enqueue(db, user_id="alice")
+        logged = self._log(db, "allow", user_id="alice")
+        assert [r.id for r in aq.list_decisions(user_id="alice", db_path=db)] == [logged]
+
+    def test_args_are_sanitized(self, db):
+        record_id = self._log(db, "allow", args={"code": "605007", "stop_loss": 13.0})
+        assert aq.get(record_id, db_path=db).args == {"code": "605007", "stop_loss": 13.0}
+
+    def test_risk_reason_round_trips(self, db):
+        record = aq.get(
+            self._log(db, "allow", risk_reason="reason.over_nav", nav_ratio=0.062),
+            db_path=db,
+        )
+        assert record.risk_reason == "reason.over_nav"
+        assert record.nav_ratio == pytest.approx(0.062)
+
+    def test_limit_is_clamped(self, db):
+        """limit 直接拼进 SQL,越界值不能变成负数 LIMIT 或者拉全表。"""
+        self._log(db, "allow", user_id="alice")
+        assert len(aq.list_decisions(user_id="alice", limit=0, db_path=db)) == 1
+        assert len(aq.list_decisions(user_id="alice", limit=-5, db_path=db)) == 1
+
+
 def test_concurrent_decisions_execute_once(tmp_path):
     """手机和电脑同时批同一项，只能有一个成功。
 
