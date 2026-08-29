@@ -6,6 +6,7 @@ from core.shadow_ledger import (
     ShadowBook,
     ShadowPlan,
     ShadowPosition,
+    event_key,
     plan_key,
     run_shadow_session,
     try_fill_plan,
@@ -164,3 +165,24 @@ def test_shadow_account_guard_rejects_user_live() -> None:
     else:
         raise AssertionError("USER_LIVE must be rejected")
     assert assert_shadow_account("USER_SHADOW:e66942b7-be66-46fe-95ed-ebc7f3b47928")
+
+
+def test_event_key_keeps_buy_and_sell_distinct() -> None:
+    """event_key 必须含 action：同日同股同量的买/卖不能共用一个幂等键。"""
+    as_of = date(2026, 8, 27)
+    buy = event_key("USER_SHADOW:test", as_of, "buy", "600519", 100, status="filled")
+    sell = event_key("USER_SHADOW:test", as_of, "sell", "600519", 100, status="filled")
+    assert buy != sell
+    assert ":buy:" in buy and ":sell:" in sell
+    # 旧写法用 status 当 type 时两者撞成同一键
+    legacy = f"USER_SHADOW:test:{as_of.isoformat()}:filled:600519:100"
+    assert buy != legacy and sell != legacy
+
+
+def test_event_key_distinguishes_skipped_from_filled() -> None:
+    as_of = date(2026, 8, 27)
+    skipped = event_key("USER_SHADOW:test", as_of, "buy", "000001", 0, status="skipped")
+    filled = event_key("USER_SHADOW:test", as_of, "buy", "000001", 100, status="filled")
+    assert skipped != filled
+    assert skipped.endswith(":skipped")
+    assert filled.endswith(":filled")

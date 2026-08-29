@@ -74,8 +74,22 @@ def plan_key(account_id: str, signal_date: date, action: str, code: str) -> str:
     return f"{account_id}:{signal_date.isoformat()}:{action}:{code}"
 
 
-def event_key(account_id: str, as_of: date, event_type: str, code: str, qty: int) -> str:
-    return f"{account_id}:{as_of.isoformat()}:{event_type}:{code}:{qty}"
+def event_key(
+    account_id: str,
+    as_of: date,
+    action: str,
+    code: str,
+    qty: int,
+    *,
+    status: str = "",
+) -> str:
+    """幂等键。必须含 action：同日同股同量的买/卖不能撞车。
+
+    status 一并写入，避免「先 skipped(qty=0) 再 filled」或两个不同
+    signal_date 的 skipped 共用一个键把审计行盖掉。
+    """
+    base = f"{account_id}:{as_of.isoformat()}:{action}:{code}:{qty}"
+    return f"{base}:{status}" if status else base
 
 
 def unlock_t_plus_one(book: ShadowBook, as_of: date) -> None:
