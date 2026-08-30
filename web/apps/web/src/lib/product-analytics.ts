@@ -23,7 +23,7 @@ export function installCloudflareWebAnalytics(doc?: Document): void {
   target.head.appendChild(script)
 }
 
-export function installWhitelistClarity(userId: string, doc?: Document, win?: Window): void {
+export function installPlanetMemberClarity(userId: string, doc?: Document, win?: Window): void {
   const projectId = clarityProjectId()
   const target = doc ?? (typeof document === 'undefined' ? undefined : document)
   const host = win ?? (typeof window === 'undefined' ? undefined : window)

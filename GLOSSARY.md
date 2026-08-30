@@ -365,7 +365,8 @@ flowchart LR
 | **本地软限流** | 未配置 Redis 或 Redis 临时故障时，单个 Worker 实例内的保护计数。实例回收或扩容后不保证全局一致，响应头通过 `local` / `local-fallback` 明确标识。 |
 | **Workers Logs** | Cloudflare Worker 免费日志：未捕获异常和 `console.error` 进控制台，约保留 3 天。不写 Supabase。 |
 | **Web Analytics** | Cloudflare 免费网站统计：匿名 PV/UV 和页面访问。可在 Pages 项目里打开，或用公开构建变量 `VITE_CF_WEB_ANALYTICS_TOKEN` 注入 beacon。不做按钮点击率。 |
-| **Clarity（白名单）** | Microsoft Clarity 点击热力图/录屏。只对有效白名单用户加载，默认项目 `y6albpfin1`，可用 `VITE_CLARITY_PROJECT_ID` 覆盖。事件进 Clarity，不写业务库。 |
+| **星球会员（Planet Member）** | 已在 `planet_members` 表绑定且未过期的登录账号。会员可使用形态跟踪、策略归因、云端持仓、隔离研究计算和手机遥控等共享云端能力；会员身份不会自动写入用户的私人模型或数据源 Key。 |
+| **Clarity（星球会员）** | Microsoft Clarity 点击热力图/录屏。只对有效星球会员加载，默认项目 `y6albpfin1`，可用 `VITE_CLARITY_PROJECT_ID` 覆盖。事件进 Clarity，不写业务库。 |
 | **新闻打点 / News chart overlay** | 单股分析页和 `analyze_stock` 诊断上的读盘叠加层：用规则过滤东方财富个股新闻，把业绩/监管/股东/交易事件对齐到交易日并标在 K 线上。不进漏斗、不改候选、不构成买卖依据。 |
 | **web_search（读盘室）** | DeepSeek Responses API 的服务端联网搜索工具；在读盘室使用官方 `deepseek-v4-flash` 或 `deepseek-v4-pro` 时注入。用于公开网页/舆情检索，不替代行情与持仓工具；搜索证据仅当轮有效。与 CLI 本机 CDP `browser_research` 不同路径。 |
 | **DeepSeek V4 思考策略** | 仅官方 DeepSeek V4 端点启用 `thinking` / `reasoning_effort`。读盘室主 Agent 使用 `high`，网页专项报告和后台结构化任务使用 `low`，读盘室嵌套 Chat 调用使用 `off`；TUI/桌面可在 `off/low/high/max` 中配置。无工具报告不会回传会被官方忽略的 `reasoning_content`：纯推理截断时提高预算重试，有正文时只按正文续写；工具型 Agent 才完整回传推理。 |
@@ -373,7 +374,7 @@ flowchart LR
 | **观察篮临时行情** | 读盘室按当前问题选取观察篮标的后拉取的 TickFlow 快照；浏览器缓存有效期为 45 秒，只作本轮模型上下文，不写入 Redis、持仓或信号表。 |
 | **Agent Run** | 一个按 Supabase 用户隔离的短期执行记录。当前只支持 `python_research`：提交后先返回 `queued`，由 Cloudflare Queue 消费并转为 `running`、`completed`、`failed` 或 `cancelled`；结果在 Redis 中自动过期。读盘室工具与 REST 端点复用同一记录。 |
 | **Agent Run 队列** | `wyckoff-agent-runs` 是单并发、单消息批次的 Cloudflare Queue 消费者。瞬时基础设施故障最多自动重试三次，之后转入 `wyckoff-agent-runs-dlq` 并把对应记录标为失败；Python 脚本非零退出是业务失败，不自动重跑。 |
-| **执行沙箱** | 执行 Agent 生成代码的临时 Vercel Sandbox。当前固定禁用外网与持久化，不注入业务密钥，结束后永久删除；读盘室仅在用户确认后执行，并再次校验白名单、创建次数及累计 CPU 额度；Cloudflare Worker 只承担鉴权、编排和结果返回。 |
+| **执行沙箱** | 执行 Agent 生成代码的临时 Vercel Sandbox。当前固定禁用外网与持久化，不注入业务密钥，结束后永久删除；读盘室仅在用户确认后执行，并再次校验星球会员身份、创建次数及累计 CPU 额度；Cloudflare Worker 只承担鉴权、编排和结果返回。 |
 
 ## 16. 定时调度与写操作审批
 

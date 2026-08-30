@@ -1385,7 +1385,7 @@ def _remote_http(path: str, method: str = "GET", payload: dict[str, Any] | None 
     except Exception as exc:
         raise MethodError("relay_unreachable", f"连不上云端中转：{exc}") from exc
     if resp.status_code == 403:
-        raise MethodError("not_whitelisted", "这个账号还没开通远程遥控。")
+        raise MethodError("planet_membership_required", "这个账号还没开通星球会员，暂时不能使用远程遥控。")
     if resp.status_code >= 400:
         raise MethodError("relay_error", f"云端中转返回 {resp.status_code}")
     try:

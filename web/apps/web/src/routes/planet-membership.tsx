@@ -1,7 +1,9 @@
 import { useEffect } from 'react'
 import { useLocation } from 'react-router'
-import { AlertTriangle, BarChart3, Bot, Briefcase, CalendarDays, CheckCircle2, CloudCog, Download, ExternalLink, GitBranch, MessageSquare, RadioTower, Rocket, Settings, Swords, Terminal, TrendingUp, Users, type LucideIcon } from 'lucide-react'
+import { AlertTriangle, BarChart3, Bot, Briefcase, CalendarDays, CheckCircle2, CloudCog, Crown, Download, ExternalLink, GitBranch, MessageSquare, RadioTower, Rocket, Settings, Swords, Terminal, TrendingUp, Users, type LucideIcon } from 'lucide-react'
 import { usePreferences, type Locale, type TranslationKey } from '@/lib/preferences'
+import { useAuthStore } from '@/stores/auth'
+import { usePlanetMembership } from '@/lib/planet-membership-gate'
 
 const workflows = [
   {
@@ -59,7 +61,7 @@ const capabilityCopy = {
     title: 'Web 是日常工作台，后台负责重任务',
     intro: '当前 Web 端已经覆盖读盘、单股、多股、持仓、跟踪和导出这些高频动作；全市场漏斗、回测、回刷和运维任务继续放在 GitHub Actions、CLI 或数据库后台，避免把长任务和敏感权限塞进浏览器。',
     webTitle: 'Web 端已经接入',
-    webItems: ['单股 320 日日线结构图、价值快照、AI 报告与本地历史', '多股对抗的相对强弱、叠加/分图、价值面校准与本地历史', '持仓诊断支持数据库持仓和手动持仓，结果保存在当前浏览器', '白名单形态跟踪、批量行情导出、模型和数据源配置'],
+    webItems: ['单股 320 日日线结构图、价值快照、AI 报告与本地历史', '多股对抗的相对强弱、叠加/分图、价值面校准与本地历史', '持仓诊断支持数据库持仓和手动持仓，结果保存在当前浏览器', '星球会员形态跟踪、批量行情导出、模型和数据源配置'],
     gapTitle: '系统有，但不放在 Web 里主跑',
     whyTitle: '为什么不全塞进 Web',
     costLinkText: '成本详见：COST_MODEL.md',
@@ -70,7 +72,7 @@ const capabilityCopy = {
     title: 'The web UI is the daily desk; background jobs carry the heavy work',
     intro: 'The web UI now covers the high-frequency loops: reading, single-stock analysis, stock battle, portfolio diagnosis, tracking, and export. Full-market funnels, backtests, repricing, and maintenance stay in GitHub Actions, CLI, or database-side jobs instead of pushing long jobs and sensitive permissions into the browser.',
     webTitle: 'Covered by the web UI',
-    webItems: ['Single-stock 320-day chart, value snapshot, AI report, and local history', 'Stock battle with relative strength, overlay/separate charts, value calibration, and local history', 'Portfolio diagnosis for database or manual positions, with browser-local result history', 'Allowlisted pattern tracking, batch market-data export, model and data-source settings'],
+    webItems: ['Single-stock 320-day chart, value snapshot, AI report, and local history', 'Stock battle with relative strength, overlay/separate charts, value calibration, and local history', 'Portfolio diagnosis for database or manual positions, with browser-local result history', 'Planet-member pattern tracking, batch market-data export, model and data-source settings'],
     gapTitle: 'Available in the system, but not browser-first',
     whyTitle: 'Why not put everything in the browser',
     costLinkText: 'Cost details: COST_MODEL.md',
@@ -119,19 +121,19 @@ const capabilityLaunch = {
     kicker: '正式开放',
     date: '2026-06-03',
     title: '「威科夫策略交流学习」知识星球',
-    desc: '知识星球现已正式开放！年费仅需 518 元/年（折合每天仅约 1.4 元），518 也取「我要发」的好彩头。项目本身将始终保持开源，并热忱欢迎大家 fork 自行部署、提交 Issue 与 PR。如果您希望免除数据源接口订阅与复杂的云端环境维护工作（个人部署硬件与 API 纯开销高达 20,000+ 元/年），加入星球即可共享云端多端同步、全市场漏斗推送及专属交流社区。',
+    desc: '知识星球现已正式开放！年费 518 元/年（折合每天约 1.4 元）。项目本身始终保持开源，也欢迎 fork、自行部署、提交 Issue 与 PR。星球会员共享云端持仓、30 日形态跟踪、策略归因、隔离研究计算、手机遥控、每日漏斗产物和专属交流；个人模型与数据源 Key 仍由用户自行管理。',
     note: '费用主要用于共同平摊数据源、数据库、云服务器、AI API 和自动化任务等系统运维硬成本；不是投资顾问费，也不构成任何收益承诺。',
     badge: '星球会员特权',
-    tags: ['云端数据同步', '每日漏斗推送', '自动 AI 研报', '专属交流社群'],
+    tags: ['云端持仓', '30 日跟踪', '策略归因', '隔离研究', '手机遥控', '每日漏斗'],
   },
   'en-US': {
     kicker: 'Now Open',
     date: '2026-06-03',
     title: 'Wyckoff Strategy Learning Planet',
-    desc: 'Knowledge Planet is officially launched! Membership is just 518 CNY/year (about 1.4 CNY/day); 518 is also an auspicious Chinese wordplay for “I want to prosper”. The project itself will always remain open source, and we welcome forks, issues, and PRs. If you wish to bypass local DevOps and API subscriptions (which cost over 20,000+ CNY/year individually), joining the shared cloud gives you cloud sync, daily scans, and the private community.',
+    desc: 'Knowledge Planet is officially open at 518 CNY/year (about 1.4 CNY/day). The project remains open source and welcomes forks, issues, and PRs. Members share cloud portfolios, 30-day pattern tracking, strategy attribution, isolated research, phone remote control, daily funnel artifacts, and the private community. Personal model and data-source keys remain user-managed.',
     note: 'The fee mainly helps share hard operating costs such as data feeds, databases, cloud servers, AI APIs, and scheduled automation; it is not an investment advisory fee and does not imply any return guarantee.',
     badge: 'Member Benefits',
-    tags: ['Cloud Sync', 'Daily Funnel Push', 'AI Report Alerts', 'Quant Community'],
+    tags: ['Cloud Portfolio', '30-Day Tracking', 'Attribution', 'Isolated Research', 'Phone Remote', 'Daily Funnel'],
   },
 } satisfies Record<Locale, {
   kicker: string
@@ -158,9 +160,11 @@ const capabilityAccess = {
   ],
 } satisfies Record<Locale, [string, string][]>
 
-export function FeatureGuidePage() {
+export function PlanetMembershipPage() {
   const { locale, t } = usePreferences()
   const location = useLocation()
+  const user = useAuthStore((state) => state.user)
+  const membership = usePlanetMembership(user?.id)
 
   useEffect(() => {
     if (location.hash !== '#capability-boundary') return
@@ -182,6 +186,15 @@ export function FeatureGuidePage() {
           </div>
         </div>
       </header>
+
+      <PlanetMembershipOverview
+        email={user?.email || ''}
+        isActive={membership.data?.isActive === true}
+        expiresOn={membership.data?.expiresOn ?? null}
+        hasError={membership.isError}
+        isLoading={membership.isLoading}
+        locale={locale}
+      />
 
       <section>
         <div className="mb-4 flex items-end justify-between gap-4">
@@ -254,6 +267,51 @@ export function FeatureGuidePage() {
         </div>
       </section>
     </div>
+  )
+}
+
+function PlanetMembershipOverview({
+  email,
+  isActive,
+  expiresOn,
+  hasError,
+  isLoading,
+  locale,
+}: {
+  email: string
+  isActive: boolean
+  expiresOn: string | null
+  hasError: boolean
+  isLoading: boolean
+  locale: Locale
+}) {
+  const zh = locale === 'zh-CN'
+  const benefits = zh
+    ? ['最近 30 个复盘交易日的形态跟踪', '策略归因与信号分层报告', '云端持仓保存与多端同步', '隔离 Python 研究计算', '手机遥控桌面读盘室', '每日漏斗产物与星球交流']
+    : ['30 recent review trading days', 'Strategy attribution reports', 'Cloud portfolio sync', 'Isolated Python research', 'Phone remote for the desktop', 'Daily funnel artifacts and community']
+  const status = isLoading ? (zh ? '正在核验' : 'Checking') : hasError ? (zh ? '会员状态暂时无法核验' : 'Membership check unavailable') : isActive ? (zh ? '星球会员已生效' : 'Planet membership active') : (zh ? '当前账号未开通' : 'Membership not active')
+  const expiry = isActive ? (expiresOn || (zh ? '长期有效' : 'No expiry')) : '—'
+  return (
+    <section className="overflow-hidden rounded-2xl border border-amber-300/40 bg-gradient-to-br from-amber-500/10 via-background to-violet-500/10 p-5">
+      <div className="grid gap-5 lg:grid-cols-[320px_1fr]">
+        <div className="rounded-xl border border-border bg-background/85 p-4">
+          <div className="flex items-center gap-2 text-sm font-semibold"><Crown size={18} className="text-amber-500" />{status}</div>
+          <dl className="mt-4 space-y-3 text-sm">
+            <div><dt className="text-xs text-muted-foreground">{zh ? '当前账号' : 'Account'}</dt><dd className="mt-1 break-all font-medium">{email || '—'}</dd></div>
+            <div><dt className="text-xs text-muted-foreground">{zh ? '有效期' : 'Valid through'}</dt><dd className="mt-1 font-medium">{expiry}</dd></div>
+          </dl>
+          <p className="mt-4 text-xs leading-5 text-muted-foreground">{zh ? '会员身份与数据源、模型配置分别核验；开通会员不会自动写入你的私人 API Key。' : 'Membership and API configuration are checked separately. Membership never writes private API keys for you.'}</p>
+        </div>
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary">{zh ? '星球会员专属能力' : 'Planet member benefits'}</p>
+          <h2 className="mt-2 text-xl font-semibold">{zh ? '把个人部署里最麻烦的共享能力交给云端' : 'Shared cloud capabilities without operating them alone'}</h2>
+          <div className="mt-4 grid gap-2 sm:grid-cols-2">
+            {benefits.map((item) => <div key={item} className="flex items-start gap-2 rounded-lg bg-background/70 p-3 text-sm"><CheckCircle2 size={16} className="mt-0.5 shrink-0 text-primary" /><span>{item}</span></div>)}
+          </div>
+          <p className="mt-4 text-xs leading-5 text-muted-foreground">{zh ? '普通用户仍可自配模型和数据源使用读盘、单股、多股、手动持仓诊断、导出与本地历史。会员费用用于分摊共享系统成本，不是投资顾问费，也不承诺收益。' : 'Everyone can still use reading, analysis, battles, manual portfolio diagnosis, export, and local history with their own model and data source. Membership shares system costs; it is not investment advice and makes no return promise.'}</p>
+        </div>
+      </div>
+    </section>
   )
 }
 

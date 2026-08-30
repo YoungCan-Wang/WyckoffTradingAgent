@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import type { Env } from '../app'
 import { authMiddleware, createUserSupabase, resolveUserId, type AuthContext } from '../middleware/auth'
-import { isActiveWhitelistUser, whitelistMiddleware } from '../middleware/whitelist'
+import { isActivePlanetMember, planetMemberMiddleware } from '../middleware/planet-membership'
 import {
   AGENT_RUN_INPUT_SCHEMA,
   AgentRunServiceError,
@@ -29,8 +29,8 @@ agentRunRoutes.get('/ws', async (c) => {
   if (!token) return c.json({ error: 'Unauthorized' }, 401)
   const userId = await resolveUserId(c.env, token)
   if (!userId) return c.json({ error: 'Invalid token' }, 401)
-  if (!(await isActiveWhitelistUser(createUserSupabase(c.env, token), userId))) {
-    return c.json({ error: 'Whitelist required' }, 403)
+  if (!(await isActivePlanetMember(createUserSupabase(c.env, token), userId))) {
+    return c.json({ error: 'Planet membership required' }, 403)
   }
   const stub = namespace.get(namespace.idFromName(userId))
   return stub.fetch(new Request('https://agent-run-notifier/connect', c.req.raw))
@@ -42,7 +42,7 @@ export function websocketBearerToken(header: string | undefined): string | null 
 }
 
 agentRunRoutes.use('*', authMiddleware)
-agentRunRoutes.use('*', whitelistMiddleware)
+agentRunRoutes.use('*', planetMemberMiddleware)
 
 agentRunRoutes.post('/', async (c) => {
   if (c.env.AGENT_SANDBOX_ENABLED !== 'true') return c.json({ error: 'Agent sandbox is disabled' }, 503)

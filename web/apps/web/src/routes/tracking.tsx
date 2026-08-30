@@ -4,7 +4,7 @@ import { ArrowRight, CheckCircle2, ExternalLink, ShieldCheck } from 'lucide-reac
 import { createChart, HistogramSeries, type Time } from 'lightweight-charts'
 import { supabase } from '@/lib/supabase'
 import { watchChartResize } from '@/lib/chart-resize'
-import { useWhitelistGate, whitelistGateView } from '@/lib/whitelist-gate'
+import { usePlanetMembership, planetMembershipGateView } from '@/lib/planet-membership-gate'
 import { SortableHeader, type SortOrder } from '@/components/sortable-header'
 import {
   countTrackingOccurrences,
@@ -231,14 +231,14 @@ export function TrackingPage() {
 
   const user = useAuthStore((s) => s.user)
   const userId = user?.id
-  const whitelist = useWhitelistGate(userId)
+  const membership = usePlanetMembership(userId)
 
-  const isWhitelisted = whitelist.data === true
+  const isPlanetMember = membership.data?.isActive === true
 
   const { data = [], isLoading: loading, error: fetchError } = useQuery({
     queryKey: ['tracking', market],
     queryFn: () => fetchTracking(market),
-    enabled: isWhitelisted,
+    enabled: isPlanetMember,
     retry: 1,
   })
 
@@ -272,7 +272,7 @@ export function TrackingPage() {
   const latestDate = latestDates[0] ?? null
   const oldestDate = latestDates.at(-1) ?? null
   const activeOldestDate = activeDates.at(-1) ?? null
-  const gateView = whitelistGateView(whitelist, <WyckoffLoading />, <TrackingLockedView />)
+  const gateView = planetMembershipGateView(membership, <WyckoffLoading />, <TrackingLockedView />)
   if (gateView) return gateView
 
   return (

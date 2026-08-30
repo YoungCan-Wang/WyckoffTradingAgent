@@ -13,7 +13,7 @@ import {
   policyExecutionModeLabel,
 } from '@wyckoff/shared'
 import { supabase } from '@/lib/supabase'
-import { useWhitelistGate, whitelistGateView } from '@/lib/whitelist-gate'
+import { usePlanetMembership, planetMembershipGateView } from '@/lib/planet-membership-gate'
 import { WyckoffLoading } from '@/components/loading'
 import { financialValueClass } from '@/lib/financial-colors'
 import { useAuthStore } from '@/stores/auth'
@@ -175,14 +175,14 @@ async function fetchLatestReport(): Promise<AttributionReport | null> {
 export function AttributionPage() {
   const user = useAuthStore((s) => s.user)
   const userId = user?.id
-  const whitelist = useWhitelistGate(userId)
+  const membership = usePlanetMembership(userId)
   const report = useQuery({
     queryKey: ['strategy-attribution-report'],
     queryFn: fetchLatestReport,
-    enabled: whitelist.data === true,
+    enabled: membership.data?.isActive === true,
   })
 
-  const gateView = whitelistGateView(whitelist, <WyckoffLoading />, <LockedView />)
+  const gateView = planetMembershipGateView(membership, <WyckoffLoading />, <LockedView />)
   if (gateView) return gateView
   if (report.isLoading) return <WyckoffLoading />
 
@@ -812,7 +812,7 @@ function LockedView() {
     <div className="h-full p-6">
       <div className="rounded-lg border border-border bg-card p-6">
         <h1 className="text-xl font-semibold">策略归因报告</h1>
-        <p className="mt-2 text-sm text-muted-foreground">该视图仅对白名单用户开放。</p>
+        <p className="mt-2 text-sm text-muted-foreground">该视图仅对星球会员开放。</p>
       </div>
     </div>
   )

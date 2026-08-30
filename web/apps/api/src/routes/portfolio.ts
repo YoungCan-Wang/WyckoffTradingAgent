@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { normalizePortfolioCode, refreshPortfolioTotalEquity, isValidBuyDt } from '@wyckoff/shared'
 import { authMiddleware, createUserSupabase, type AuthContext } from '../middleware/auth'
-import { isActiveWhitelistUser } from '../middleware/whitelist'
+import { isActivePlanetMember } from '../middleware/planet-membership'
 import type { Env } from '../app'
 
 type PortfolioBindings = { Bindings: Env; Variables: { auth: AuthContext } }
@@ -42,7 +42,7 @@ portfolioRoutes.use('*', authMiddleware)
 portfolioRoutes.get('/', async (c) => {
   const auth = c.get('auth')
   const supabase = createUserSupabase(c.env, auth.accessToken)
-  if (!(await isActiveWhitelistUser(supabase, auth.userId))) return c.json({ error: 'Whitelist required' }, 403)
+  if (!(await isActivePlanetMember(supabase, auth.userId))) return c.json({ error: 'Planet membership required' }, 403)
   const result = await loadPortfolio(supabase, auth.userId)
   return result.error ? c.json({ error: result.error }, 500) : c.json(result.portfolio)
 })
@@ -53,7 +53,7 @@ portfolioRoutes.put('/', async (c) => {
   if ('error' in body) return c.json(body, 400)
 
   const supabase = createUserSupabase(c.env, auth.accessToken)
-  if (!(await isActiveWhitelistUser(supabase, auth.userId))) return c.json({ error: 'Whitelist required' }, 403)
+  if (!(await isActivePlanetMember(supabase, auth.userId))) return c.json({ error: 'Planet membership required' }, 403)
   const error = await savePortfolio(supabase, auth.userId, body.data)
   if (error) return c.json({ error }, 500)
   const valuation = await refreshPortfolioTotalEquity(
