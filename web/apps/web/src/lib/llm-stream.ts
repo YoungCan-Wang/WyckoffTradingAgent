@@ -1,14 +1,15 @@
 import {
+  DEEPSEEK_AGENT_MAX_OUTPUT_TOKENS,
   DEEPSEEK_REPORT_MAX_OUTPUT_TOKENS,
   deepSeekThinkingBody,
   isOfficialDeepSeek,
+  resolveOfficialDeepSeekModel,
 } from '@wyckoff/shared'
 import type { LLMConfig } from './chat-agent'
 
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
   content: string
-  reasoning_content?: string
 }
 
 type StreamProtocol = 'openai' | 'anthropic'
@@ -43,21 +44,28 @@ export async function streamLLMResponse(
   const protocol = config.protocol ?? 'openai'
   const officialDeepSeek = isOfficialDeepSeek(config.provider || 'deepseek', config.model, config.base_url)
   const maxSegments = officialDeepSeek && protocol === 'openai' ? DEEPSEEK_MAX_SEGMENTS : 1
+  const initialMaxTokens = Math.max(opts.maxTokens ?? 0, DEEPSEEK_REPORT_MAX_OUTPUT_TOKENS)
   let requestMessages = [...messages]
   let result = ''
 
   for (let index = 0; index < maxSegments; index += 1) {
-    const request = buildStreamRequest(config, requestMessages, opts, protocol)
+    const maxTokens = officialDeepSeek
+      ? Math.min(initialMaxTokens * (2 ** index), DEEPSEEK_AGENT_MAX_OUTPUT_TOKENS)
+      : opts.maxTokens
+    const request = buildStreamRequest(config, requestMessages, { ...opts, maxTokens }, protocol)
     const segment = await fetchStreamSegment(request, protocol, opts)
     result += segment.text
     if (segment.finishReason !== 'length') {
-      if (!result.trim()) throw new Error('模型未返回正文')
+      if (officialDeepSeek && !result.trim()) throw new Error('模型未返回正文')
       return result
     }
+    if (!officialDeepSeek) return result
     if (index + 1 >= maxSegments) {
       throw new Error(`模型连续 ${maxSegments} 段达到输出上限，未能生成完整正文`)
     }
-    requestMessages = appendDeepSeekContinuation(requestMessages, segment)
+    requestMessages = segment.text
+      ? appendTextContinuation(requestMessages, segment.text)
+      : [...messages]
   }
   throw new Error('模型未返回完整正文')
 }
@@ -103,14 +111,10 @@ async function readStreamSegment(
   return segment
 }
 
-function appendDeepSeekContinuation(messages: ChatMessage[], segment: StreamSegment): ChatMessage[] {
+function appendTextContinuation(messages: ChatMessage[], text: string): ChatMessage[] {
   return [
     ...messages,
-    {
-      role: 'assistant',
-      content: segment.text,
-      ...(segment.reasoning ? { reasoning_content: segment.reasoning } : {}),
-    },
+    { role: 'assistant', content: text },
     { role: 'user', content: DEEPSEEK_CONTINUATION_PROMPT },
   ]
 }
@@ -174,6 +178,8 @@ function buildStreamRequest(
 ): StreamRequest {
   if (protocol === 'anthropic') return buildAnthropicRequest(config, messages, opts)
   const officialDeepSeek = isOfficialDeepSeek(config.provider || 'deepseek', config.model, config.base_url)
+  const resolved = resolveOfficialDeepSeekModel(config.provider || 'deepseek', config.model, config.base_url)
+  const reasoningLevel = config.reasoning_level || resolved.reasoningLevel || 'low'
   const maxTokens = officialDeepSeek
     ? Math.max(opts.maxTokens ?? 0, DEEPSEEK_REPORT_MAX_OUTPUT_TOKENS)
     : opts.maxTokens ?? 4096
@@ -185,10 +191,10 @@ function buildStreamRequest(
       'X-Target-URL': config.base_url,
     },
     body: JSON.stringify({
-      model: config.model,
+      model: resolved.model,
       messages,
       ...(!officialDeepSeek ? { temperature: opts.temperature ?? 0.5 } : {}),
-      ...(officialDeepSeek ? deepSeekThinkingBody('low') : {}),
+      ...(officialDeepSeek ? deepSeekThinkingBody(reasoningLevel) : {}),
       max_tokens: maxTokens,
       stream: true,
     }),

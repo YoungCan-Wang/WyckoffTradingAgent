@@ -18,6 +18,8 @@ describe('reading-room context preparation', () => {
   it('uses the official DeepSeek V4 one-million-token context window', () => {
     expect(getChatContextWindow('deepseek-v4-flash')).toBe(1_000_000)
     expect(getChatContextWindow('deepseek-v4-pro')).toBe(1_000_000)
+    expect(getChatContextWindow('deepseek-chat')).toBe(64_000)
+    expect(getChatContextWindow('deepseek-reasoner')).toBe(64_000)
   })
 
   it('scales recent token budget by model', () => {

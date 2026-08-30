@@ -10,6 +10,10 @@ DEEPSEEK_CONTEXT_WINDOW = 1_000_000
 DEEPSEEK_AGENT_MAX_OUTPUT_TOKENS = 32_768
 DEEPSEEK_BACKGROUND_MIN_OUTPUT_TOKENS = 4_096
 DEEPSEEK_REASONING_LEVELS = ("off", "low", "high", "max")
+DEEPSEEK_LEGACY_MODEL_ALIASES = {
+    "deepseek-chat": ("deepseek-v4-flash", "off"),
+    "deepseek-reasoner": ("deepseek-v4-flash", "high"),
+}
 
 DeepSeekReasoningLevel = Literal["off", "low", "high", "max"]
 
@@ -55,3 +59,17 @@ def deepseek_chat_extra_body(level: str | None) -> dict[str, Any]:
         "thinking": {"type": "enabled"},
         "reasoning_effort": normalized,
     }
+
+
+def resolve_official_deepseek_model(
+    model: str,
+    base_url: str,
+) -> tuple[str, DeepSeekReasoningLevel | None]:
+    """Normalize retired official aliases while preserving their reasoning mode."""
+    model_id = str(model or "").strip()
+    if not is_official_deepseek_url(base_url):
+        return model_id, None
+    alias = DEEPSEEK_LEGACY_MODEL_ALIASES.get(model_id.lower())
+    if alias is None:
+        return model_id, None
+    return alias

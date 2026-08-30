@@ -54,3 +54,32 @@ def test_deepseek_provider_supports_off_reasoning_level():
     assert err is None
     assert isinstance(provider, DeepSeekProvider)
     assert provider._request_options()["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+def test_deepseek_provider_keeps_custom_endpoint_generic():
+    provider, err = create_provider(
+        "deepseek",
+        "test-key",
+        model="deepseek-v4-flash",
+        base_url="https://proxy.example.com/v1",
+    )
+
+    assert err is None
+    assert isinstance(provider, DeepSeekProvider)
+    assert provider.context_window == 64_000
+    assert provider._request_options() == {"frequency_penalty": 0.3}
+
+
+def test_deepseek_provider_migrates_retired_official_alias():
+    provider, err = create_provider(
+        "deepseek",
+        "test-key",
+        model="deepseek-chat",
+        base_url="https://api.deepseek.com/v1",
+    )
+
+    assert err is None
+    assert isinstance(provider, DeepSeekProvider)
+    assert provider._model == "deepseek-v4-flash"
+    assert provider.context_window == 1_000_000
+    assert provider._request_options()["extra_body"] == {"thinking": {"type": "disabled"}}

@@ -28,6 +28,8 @@ import {
   isAllowedModelBaseUrl,
   buildLlmUsageMetrics,
   createModelGenerationClock,
+  resolveOfficialDeepSeekModel,
+  type DeepSeekReasoningLevel,
   type LLMToolConfig,
   type Provider,
   type ToolDeps,
@@ -187,11 +189,12 @@ function createToolDeps(supabase: ToolDeps['supabase']): ToolDeps {
   return { supabase, fetch: createToolFetch(), generateText }
 }
 
-function createProviderFetch(): typeof globalThis.fetch {
+function createProviderFetch(reasoningLevel?: DeepSeekReasoningLevel): typeof globalThis.fetch {
   return async (input, init) => {
     const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
     const oneRouteBody = isOneRouteChatCompletion(requestUrl) ? patchOneRouteBody(init?.body) : init?.body
-    const patchedBody = patchDeepSeekApiBody(requestUrl, oneRouteBody)
+    const deepSeekLevel = requestUrl.endsWith('/responses') ? reasoningLevel : 'off'
+    const patchedBody = patchDeepSeekApiBody(requestUrl, oneRouteBody, deepSeekLevel)
     const response = await globalThis.fetch(input, { ...init, body: patchedBody, redirect: 'manual' })
     if (response.status >= 300 && response.status < 400) throw new Error('Model provider redirects are not allowed')
     if (isGeminiChatCompletion(requestUrl) && isSseResponse(response) && response.body) {
@@ -217,7 +220,11 @@ function createToolFetch(): typeof globalThis.fetch {
   }
 }
 
-type ChatModelConfig = LLMToolConfig & { protocol?: 'openai' | 'anthropic'; provider: string }
+type ChatModelConfig = LLMToolConfig & {
+  protocol?: 'openai' | 'anthropic'
+  provider: string
+  reasoning_level?: DeepSeekReasoningLevel
+}
 
 async function loadLLMConfig(supabase: ToolDeps['supabase'], userId: string): Promise<ChatModelConfig | null> {
   return (await loadLLMConfigs(supabase, userId))[0] || null
@@ -238,8 +245,17 @@ async function loadLLMConfigs(supabase: ToolDeps['supabase'], userId: string): P
     .filter((provider) => !['zhipu', 'minimax', 'qwen', 'volcengine'].includes(provider))
     .flatMap((provider) => {
       const config = configForProvider(settings, provider)
-      return config ? [{ ...config, provider }] : []
+      return config ? [normalizeDeepSeekChatConfig({ ...config, provider })] : []
     })
+}
+
+function normalizeDeepSeekChatConfig(config: ChatModelConfig): ChatModelConfig {
+  const resolved = resolveOfficialDeepSeekModel(config.provider, config.model, config.base_url)
+  return {
+    ...config,
+    model: resolved.model,
+    ...(resolved.reasoningLevel ? { reasoning_level: resolved.reasoningLevel } : {}),
+  }
 }
 
 type UserSettingsRow = Record<string, string | Record<string, unknown> | null>
@@ -490,7 +506,7 @@ async function runChatAttempt(args: ChatResilienceArgs, config: ChatModelConfig,
   let succeeded = false
   let outputStarted = false
   try {
-    const resolved = resolveChatLanguageModel(config, createProviderFetch())
+    const resolved = resolveChatLanguageModel(config, createProviderFetch(config.reasoning_level))
     const tools = buildTools(args, config, resolved.nestedModel, resolved.providerTools)
     const recentMessages = removeSupersededToolApprovals(args.messages.slice(-40))
     const normalizedMessages = resolved.transport === 'chat'

@@ -6,7 +6,10 @@ import {
   DEEPSEEK_OFFICIAL_ORIGIN,
   deepSeekResponsesReasoningBody,
   deepSeekThinkingBody,
+  isDeepSeekV4Model,
   isOfficialDeepSeek,
+  resolveOfficialDeepSeekModel,
+  type DeepSeekReasoningLevel,
 } from '@wyckoff/shared'
 
 export type ChatLanguageModelConfig = {
@@ -15,6 +18,7 @@ export type ChatLanguageModelConfig = {
   api_key: string
   base_url: string
   protocol?: 'openai' | 'anthropic'
+  reasoning_level?: DeepSeekReasoningLevel
 }
 
 export type ResolvedChatLanguageModel = {
@@ -55,13 +59,15 @@ export function resolveChatLanguageModel(
     return { model, nestedModel: model, providerTools: {}, transport: 'chat' }
   }
 
+  const resolvedConfig = resolveOfficialDeepSeekModel(config.provider, config.model, config.base_url)
+  const modelName = resolvedConfig.model
   const nestedProvider = createOpenAI({
     apiKey: config.api_key,
     baseURL: config.base_url,
     fetch: fetchImpl,
   })
-  const nestedModel = nestedProvider.chat(config.model)
-  if (!supportsDeepSeekWebSearch(config.provider, config.model, config.base_url)) {
+  const nestedModel = nestedProvider.chat(modelName)
+  if (!supportsDeepSeekWebSearch(config.provider, modelName, config.base_url)) {
     return { model: nestedModel, nestedModel, providerTools: {}, transport: 'chat' }
   }
 
@@ -71,7 +77,7 @@ export function resolveChatLanguageModel(
     fetch: fetchImpl,
   })
   return {
-    model: provider.responses(config.model),
+    model: provider.responses(modelName),
     nestedModel,
     providerTools: { web_search: provider.tools.webSearch({}) } as ToolSet,
     transport: 'responses',
@@ -79,7 +85,11 @@ export function resolveChatLanguageModel(
   }
 }
 
-export function patchDeepSeekApiBody(requestUrl: string, body: BodyInit | null | undefined): BodyInit | null | undefined {
+export function patchDeepSeekApiBody(
+  requestUrl: string,
+  body: BodyInit | null | undefined,
+  requestedLevel?: DeepSeekReasoningLevel,
+): BodyInit | null | undefined {
   if (typeof body !== 'string') return body
   let url: URL
   try {
@@ -90,10 +100,14 @@ export function patchDeepSeekApiBody(requestUrl: string, body: BodyInit | null |
   if (url.origin !== DEEPSEEK_OFFICIAL_ORIGIN) return body
   try {
     const parsed = JSON.parse(body) as Record<string, unknown>
+    const resolved = resolveOfficialDeepSeekModel('deepseek', String(parsed.model || ''), requestUrl)
+    if (!isDeepSeekV4Model(resolved.model)) return body
     const isResponses = url.pathname.endsWith('/responses')
-    const patched = {
+    const reasoningLevel = requestedLevel || resolved.reasoningLevel || (isResponses ? 'high' : 'off')
+    const patched: Record<string, unknown> = {
       ...parsed,
-      ...(isResponses ? deepSeekResponsesReasoningBody('high') : deepSeekThinkingBody('off')),
+      model: resolved.model,
+      ...(isResponses ? deepSeekResponsesReasoningBody(reasoningLevel) : deepSeekThinkingBody(reasoningLevel)),
     }
     if (isResponses) {
       delete patched.temperature

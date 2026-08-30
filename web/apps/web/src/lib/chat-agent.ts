@@ -1,5 +1,12 @@
 import { supabase } from './supabase'
-import { DEEPSEEK_CONTEXT_WINDOW, PROVIDER_BASE_URLS, PROVIDER_DEFAULT_MODELS, type Provider } from '@wyckoff/shared'
+import {
+  DEEPSEEK_CONTEXT_WINDOW,
+  PROVIDER_BASE_URLS,
+  PROVIDER_DEFAULT_MODELS,
+  resolveOfficialDeepSeekModel,
+  type DeepSeekReasoningLevel,
+  type Provider,
+} from '@wyckoff/shared'
 
 export interface LLMConfig {
   provider?: string
@@ -7,6 +14,7 @@ export interface LLMConfig {
   model: string
   base_url: string
   protocol?: 'openai' | 'anthropic'
+  reasoning_level?: DeepSeekReasoningLevel
 }
 
 const RETIRED_PROVIDERS = new Set(['zhipu', 'minimax', 'qwen', 'volcengine'])
@@ -257,21 +265,30 @@ function buildProviderConfig(provider: string, data: UserSettingsRow): LLMConfig
     const model = data[`${provider}_model` as keyof UserSettingsRow] as string | null | undefined
     const baseUrl = data[`${provider}_base_url` as keyof UserSettingsRow] as string | null | undefined
     const override = BUILTIN_PROVIDER_OVERRIDES[provider]
-    return {
+    return normalizeDeepSeekConfig({
       provider,
       api_key: apiKey,
       model: model || PROVIDER_DEFAULT_MODELS[provider as Provider] || '',
       base_url: baseUrl || override?.base_url || PROVIDER_BASE_URLS[provider as Provider] || '',
       protocol: override?.protocol || 'openai',
-    }
+    })
   }
   const custom = parseCustomProviders(data.custom_providers)
   const info = custom[provider] || {}
-  return {
+  return normalizeDeepSeekConfig({
     provider,
     api_key: info.apikey || info.api_key || '',
     model: info.model || PROVIDER_DEFAULT_MODELS[provider as Provider] || '',
     base_url: info.baseurl || info.base_url || PROVIDER_BASE_URLS[provider as Provider] || '',
     protocol: 'openai',
+  })
+}
+
+function normalizeDeepSeekConfig(config: LLMConfig): LLMConfig {
+  const resolved = resolveOfficialDeepSeekModel(config.provider || '', config.model, config.base_url)
+  return {
+    ...config,
+    model: resolved.model,
+    ...(resolved.reasoningLevel ? { reasoning_level: resolved.reasoningLevel } : {}),
   }
 }

@@ -8,6 +8,7 @@ import {
   PROVIDER_BASE_URLS,
   PROVIDER_DEFAULT_MODELS,
   isAllowedModelBaseUrl,
+  resolveOfficialDeepSeekModel,
   type Provider,
 } from '@wyckoff/shared'
 import { authMiddleware, type AuthContext } from '../middleware/auth'
@@ -118,12 +119,13 @@ function providerModel(config: Required<ModelTestConfig>) {
   if (config.provider === 'anthropic') {
     return createAnthropic({ apiKey: config.api_key, baseURL: config.base_url }).chat(config.model)
   }
+  const resolved = resolveOfficialDeepSeekModel(config.provider, config.model, config.base_url)
   const fetchImpl: typeof globalThis.fetch = async (input, init) => {
     const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
-    const body = config.provider === 'deepseek' ? patchDeepSeekApiBody(requestUrl, init?.body) : init?.body
+    const body = config.provider === 'deepseek' ? patchDeepSeekApiBody(requestUrl, init?.body, 'off') : init?.body
     return globalThis.fetch(input, { ...init, body })
   }
-  return createOpenAI({ apiKey: config.api_key, baseURL: config.base_url, fetch: fetchImpl }).chat(config.model)
+  return createOpenAI({ apiKey: config.api_key, baseURL: config.base_url, fetch: fetchImpl }).chat(resolved.model)
 }
 
 function tickFlowRowCount(payload: unknown): number {

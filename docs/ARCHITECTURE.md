@@ -362,7 +362,7 @@ chunk 类型：`thinking_delta` | `text_delta` | `tool_calls` | `usage` | `finis
 **输出 tok/s** = `output_tokens / generation_seconds`（首个 text/thinking delta → 该轮 stream 结束；多步 tool 循环只累计模型生成窗口，不含工具时间）。  
 **缓存命中率** = `cache_read_tokens / input_tokens`（有 cache 字段时展示，含 0%）。Anthropic 的 `input_tokens` 不含 cache，CLI 会先归一化为 `input + cache_read + cache_write`。OpenAI 兼容通道优先读 DeepSeek 的 `prompt_cache_hit_tokens`，其次 `prompt_tokens_details.cached_tokens`。
 
-OpenAI provider 兼容 Qwen / Kimi / LongCat / Minimax 等 OpenAI API 格式端点，支持兼容网关的 `reasoning_content` thinking 流，以及 `<tool_call>` XML 标签兜底解析。`provider_name=deepseek` 使用独立的 `DeepSeekProvider`：默认官方 `/v1`、32K 输出预算、1M 上下文，并把 `off/low/high/max` 映射为官方 `thinking` 与 `reasoning_effort`。工具轮、自动续写和 Loop Guard 重试都会保存 assistant 的 `reasoning_content`；即使该段正文为空，也不会丢失推理历史。
+OpenAI provider 兼容 Qwen / Kimi / LongCat / Minimax 等 OpenAI API 格式端点，支持兼容网关的 `reasoning_content` thinking 流，以及 `<tool_call>` XML 标签兜底解析。`provider_name=deepseek` 使用独立的 `DeepSeekProvider`：默认官方 `/v1`，官方 V4 使用 32K 输出预算、1M 上下文，并把 `off/low/high/max` 映射为官方 `thinking` 与 `reasoning_effort`；自定义代理端点保持普通 OpenAI-compatible 参数，不注入官方字段。工具轮、自动续写和 Loop Guard 重试都会保存 assistant 的 `reasoning_content`；即使该段正文为空，也不会丢失推理历史。官方旧名称 `deepseek-chat` / `deepseek-reasoner` 在运行时迁移到 Flash，并分别保留 `off` / `high` 语义。
 
 `FallbackProvider` 会暴露当前实际运行的 provider/model，TUI 状态栏因此随故障切换更新。默认模型发生可恢复错误后，如果某个备用配置本身不可构造，该备用项会被记录并跳过；所有备用项都不可用时保留默认模型的原始网络/上游错误，避免用次级配置错误掩盖首因。
 
@@ -872,7 +872,7 @@ CDP 未就绪时，TUI 会弹窗请用户授权，同意后自动拉起**独立�
 
 Web 读盘室在用户选择官方 `deepseek-v4-flash` 或 `deepseek-v4-pro` 时走 Responses API（`https://api.deepseek.com/responses`），注入服务端 `web_search`，并显式使用 `high` 思考强度和 32K 输出预算；行情、持仓、形态复盘仍走本地工具。Responses API 是无状态接口，搜索结果仅当轮有效；切到 Chat Completions 模型或跨供应商 fallback 前会把历史中的 provider-executed `web_search` 部件折叠成短文本，避免悬空 `tool_calls`。嵌套研报/诊断 Chat 调用关闭思考，避免小任务产生无法续传的推理状态。
 
-个股分析、持仓诊断和股票对抗等网页专项报告继续走 Chat Completions，但会识别官方 DeepSeek V4：固定 `low` 思考、单段至少 12K 输出预算，解析正文、`reasoning_content` 和 `finish_reason`。若命中 `length`，最多自动续写两次，并把上一段正文与推理原样放回 assistant 历史；三段仍未结束则明确失败，不把截断内容保存成完整报告。后台结构化 LLM 任务同样显式使用 `low`，最小 4K 输出预算；截断时扩大一次预算，只有调用方明确允许时才接受非完整文本。
+个股分析、持仓诊断和股票对抗等网页专项报告继续走 Chat Completions，但只对官方 DeepSeek V4 启用完整输出策略：默认 `low` 思考，输出预算按 12K → 24K → 32K 有界增加，并解析正文、`reasoning_content` 和 `finish_reason`。无工具请求中的历史推理会被官方忽略，因此纯推理截断时重试原问题；已有正文时只回传正文并续写。三段仍未结束才明确失败；其他供应商保留原有的截断正文返回语义。后台结构化任务也只对官方 V4 使用最小 4K、一次有界扩容和严格完整输出；代理及其他 OpenAI-compatible 供应商保持原契约。
 
 ### ToolSurface 执行边界
 

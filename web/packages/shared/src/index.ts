@@ -20,6 +20,8 @@ export {
   deepSeekThinkingBody,
   isDeepSeekV4Model,
   isOfficialDeepSeek,
+  isOfficialDeepSeekBaseUrl,
+  resolveOfficialDeepSeekModel,
 } from './deepseek'
 export type { DeepSeekReasoningLevel } from './deepseek'
 export {
