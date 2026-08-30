@@ -192,6 +192,7 @@ class RunState:
     incomplete_tool_retries: int = 0
     auto_continuations: int = 0
     answer_parts: list[str] = field(default_factory=list)
+    thinking_parts: list[str] = field(default_factory=list)
     continuation_limit_hint: str = ""
     used_tools: list[tuple[str, dict]] = field(default_factory=list)
     recent_calls: list[tuple[str, int]] = field(default_factory=list)
@@ -505,6 +506,11 @@ class AgentRuntime:
         if round_state and (round_state.text or round_state.thinking):
             if round_state.text:
                 state.answer_parts.append(round_state.text)
+            if round_state.thinking:
+                # 续写会丢掉带 CONTINUATION_PARTIAL 的中间条；推理链先攒到
+                # thinking_parts，收尾时写回最终 assistant，满足 DeepSeek tools
+                # 场景必须回传 reasoning_content 的协议。
+                state.thinking_parts.append(round_state.thinking)
             partial: dict[str, Any] = {
                 "role": "assistant",
                 "content": round_state.text,
@@ -514,6 +520,7 @@ class AgentRuntime:
                 partial["reasoning_content"] = round_state.thinking
             messages.append(partial)
             round_state.text = ""
+            round_state.thinking = ""
             round_state.streamed = False
         messages.append({"role": "user", "content": CONTINUATION_PROMPT, _INTERNAL_RETRY_MARKER: True})
         yield {
@@ -545,10 +552,15 @@ class AgentRuntime:
         items = self.steer_drain() if self.steer_drain else []
         if not items:
             return None
-        if round_state and round_state.text:
-            # 打断前的正文是真实对话，必须保留（不能打 internal-retry 删除标记）。
-            messages.append({"role": "assistant", "content": round_state.text})
+        if round_state and (round_state.text or round_state.thinking):
+            # 打断前的正文/推理是真实对话，必须保留（不能打 internal-retry 删除标记）。
+            # DeepSeek thinking + tools 要求后续请求回传 reasoning_content，丢掉会 400。
+            steered: dict[str, Any] = {"role": "assistant", "content": round_state.text or ""}
+            if round_state.thinking:
+                steered["reasoning_content"] = round_state.thinking
+            messages.append(steered)
             round_state.text = ""
+            round_state.thinking = ""
             round_state.streamed = False
         joined = "\n".join(f"- {item}" for item in items)
         prompt = (
@@ -994,8 +1006,9 @@ class AgentRuntime:
         messages[:] = [m for m in messages if not m.get(_CONTINUATION_PARTIAL_MARKER)]
         full_text = _merge_answer_text(state.answer_parts, round_state.text)
         final_msg: dict[str, Any] = {"role": "assistant", "content": full_text}
-        if round_state.thinking and not state.answer_parts:
-            final_msg["reasoning_content"] = round_state.thinking
+        thinking = _merge_answer_text(state.thinking_parts, round_state.thinking)
+        if thinking:
+            final_msg["reasoning_content"] = thinking
         messages.append(final_msg)
         return self._done_event(full_text, state, rounds)
 
