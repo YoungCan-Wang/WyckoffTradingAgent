@@ -80,6 +80,17 @@ class FallbackProvider(LLMProvider):
         except Exception:
             return None
 
+    @property
+    def active_provider_name(self) -> str:
+        return str(self._active_config().get("provider_name") or "")
+
+    @property
+    def active_model(self) -> str:
+        return str(self._active_config().get("model") or "")
+
+    def _active_config(self) -> dict[str, Any]:
+        return next(c for c in self._configs if c["id"] == self._active_id)
+
     def chat(self, messages, tools, system_prompt=""):
         return self._with_fallback(
             lambda p: p.chat(messages, tools, system_prompt),
@@ -109,7 +120,10 @@ class FallbackProvider(LLMProvider):
                 return fn(provider)
             except Exception as e:
                 if not _is_retriable(e):
-                    raise
+                    if last_exc is None:
+                        raise
+                    logger.warning("Fallback provider %s is unusable: %s, skipping", cfg["id"], e)
+                    continue
                 last_exc = e
                 logger.warning("Provider %s failed: %s, trying next", cfg["id"], e)
                 self.last_fallback_msg = f"{cfg['id']} 失败 ({type(e).__name__})，已切换"
@@ -132,7 +146,10 @@ class FallbackProvider(LLMProvider):
                 return
             except Exception as e:
                 if not _is_retriable(e):
-                    raise
+                    if last_exc is None:
+                        raise
+                    logger.warning("Fallback provider %s is unusable: %s, skipping", cfg["id"], e)
+                    continue
                 last_exc = e
                 logger.warning("Provider %s stream failed: %s, trying next", cfg["id"], e)
                 self.last_fallback_msg = f"{cfg['id']} 失败 ({type(e).__name__})，已切换"

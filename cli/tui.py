@@ -2450,8 +2450,8 @@ class WyckoffTUI(App):
 
     def _build_status_right(self) -> str:
         parts = []
-        prov = self._state.get("provider_name", "")
-        model = self._state.get("model", "")
+        prov = getattr(self._provider, "active_provider_name", "") or self._state.get("provider_name", "")
+        model = getattr(self._provider, "active_model", "") or self._state.get("model", "")
         if prov and model:
             parts.append(f"{prov}:{model}")
         email = self._tools.state.get("email", "") if self._tools else ""

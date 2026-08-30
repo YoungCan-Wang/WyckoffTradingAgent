@@ -361,7 +361,9 @@ chunk 类型：`thinking_delta` | `text_delta` | `tool_calls` | `usage` | `finis
 **输出 tok/s** = `output_tokens / generation_seconds`（首个 text/thinking delta → 该轮 stream 结束；多步 tool 循环只累计模型生成窗口，不含工具时间）。  
 **缓存命中率** = `cache_read_tokens / input_tokens`（有 cache 字段时展示，含 0%）。Anthropic 的 `input_tokens` 不含 cache，CLI 会先归一化为 `input + cache_read + cache_write`。OpenAI 兼容通道优先读 DeepSeek 的 `prompt_cache_hit_tokens`，其次 `prompt_tokens_details.cached_tokens`。
 
-OpenAI provider 兼容所有 OpenAI API 格式端点（DeepSeek / Qwen / Kimi / LongCat / Minimax 等），支持推理模型的 `reasoning_content` thinking 流，以及 `<tool_call>` XML 标签兜底解析。
+OpenAI provider 兼容所有 OpenAI API 格式端点（DeepSeek / Qwen / Kimi / LongCat / Minimax 等），支持推理模型的 `reasoning_content` thinking 流，以及 `<tool_call>` XML 标签兜底解析。CLI 会把本地或云端配置中的 `provider_name=deepseek` 映射到同一 OpenAI-compatible transport；未填写 `base_url` 时使用 DeepSeek 官方 `/v1` 地址。
+
+`FallbackProvider` 会暴露当前实际运行的 provider/model，TUI 状态栏因此随故障切换更新。默认模型发生可恢复错误后，如果某个备用配置本身不可构造，该备用项会被记录并跳过；所有备用项都不可用时保留默认模型的原始网络/上游错误，避免用次级配置错误掩盖首因。
 
 ### MCP Server
 

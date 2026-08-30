@@ -1102,6 +1102,19 @@ def test_new_chat_notice_does_not_insert_blank_log_line():
     assert list(app._queue) == []
 
 
+def test_status_bar_shows_active_fallback_model():
+    app = object.__new__(WyckoffTUI)
+    app._provider = SimpleNamespace(active_provider_name="deepseek", active_model="deepseek-v4-flash")
+    app._state = {"provider_name": "openai", "model": "primary-model"}
+    app._tools = None
+    app._session_tokens = {"input": 0, "output": 0, "rounds": 0}
+
+    status = WyckoffTUI._build_status_right(app)
+
+    assert status.startswith("deepseek:deepseek-v4-flash")
+    assert "primary-model" not in status
+
+
 def test_schedule_trigger_notice_does_not_insert_blank_log_line():
     app = object.__new__(WyckoffTUI)
     log = _FakeLog()
