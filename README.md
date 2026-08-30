@@ -80,7 +80,7 @@ wyckoff          # 启动 Agent 对话
 wyckoff dashboard  # 启动本地可视化面板
 ```
 
-启动后 `/model` 选择模型（Gemini / Claude / OpenAI），输入 API Key 即可对话。
+启动后 `/model` 选择模型（Gemini / Claude / OpenAI / DeepSeek V4），输入 API Key 即可对话。DeepSeek 官方适配支持 Flash/Pro、`off/low/high/max` 思考强度和 1M 上下文。
 
 <p align="center">
   <img src="attach/cli-home.png" alt="CLI 启动界面" width="900" />

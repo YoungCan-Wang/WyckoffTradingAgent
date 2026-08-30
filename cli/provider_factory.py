@@ -4,10 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-_PROVIDER_ALIASES = {
-    "deepseek": ("openai", "https://api.deepseek.com/v1"),
-}
-
 
 def provider_config_kwargs(config: dict[str, Any]) -> dict[str, Any]:
     return {
@@ -16,6 +12,7 @@ def provider_config_kwargs(config: dict[str, Any]) -> dict[str, Any]:
         "model": config.get("model", ""),
         "base_url": config.get("base_url", ""),
         "context_window": config.get("context_window"),
+        "thinking_level": config.get("thinking_level", ""),
     }
 
 
@@ -25,13 +22,13 @@ def create_provider(
     model: str = "",
     base_url: str = "",
     context_window: int | None = None,
+    thinking_level: str = "",
 ):
     import inspect
 
     from cli.providers import PROVIDERS
 
-    resolved_name, default_base_url = _PROVIDER_ALIASES.get(provider_name, (provider_name, ""))
-    cls = PROVIDERS.get(resolved_name)
+    cls = PROVIDERS.get(provider_name)
     if cls is None:
         install_hints = {
             "gemini": "pip install google-genai",
@@ -45,15 +42,16 @@ def create_provider(
     kwargs = {"api_key": api_key}
     if model:
         kwargs["model"] = model
-    resolved_base_url = base_url or default_base_url
-    if resolved_base_url:
-        kwargs["base_url"] = resolved_base_url
+    if base_url:
+        kwargs["base_url"] = base_url
+    if thinking_level:
+        kwargs["thinking_level"] = thinking_level
 
     sig = inspect.signature(cls.__init__)
     kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
 
     provider = cls(**kwargs)
-    window = _resolved_window(context_window, model, resolved_base_url)
+    window = _resolved_window(context_window, model, base_url)
     if window > 0:
         provider.context_window = window
     return provider, None

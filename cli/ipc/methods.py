@@ -941,6 +941,7 @@ def model_add(params: dict[str, Any]) -> Iterator[Event]:
     model = str(params.get("model") or "").strip()
     api_key = str(params.get("api_key") or "").strip()
     base_url = str(params.get("base_url") or "").strip()
+    thinking_level = str(params.get("thinking_level") or "").strip().lower()
 
     if not model_id:
         raise MethodError("invalid_params", "缺少模型标识")
@@ -950,6 +951,8 @@ def model_add(params: dict[str, Any]) -> Iterator[Event]:
         raise MethodError("invalid_params", "缺少模型名")
     if not api_key:
         raise MethodError("invalid_params", "缺少 API Key")
+    if thinking_level and thinking_level not in {"off", "low", "high", "max"}:
+        raise MethodError("invalid_params", "DeepSeek 思考强度必须是 off/low/high/max")
 
     save_model_entry(
         {
@@ -958,6 +961,7 @@ def model_add(params: dict[str, Any]) -> Iterator[Event]:
             "model": model,
             "api_key": api_key,
             "base_url": base_url,
+            "thinking_level": thinking_level if provider_name == "deepseek" else "",
         }
     )
     _reload_desktop_session()
@@ -985,7 +989,7 @@ def model_test(params: dict[str, Any]) -> Iterator[Event]:
     """
     import time
 
-    from cli.provider_factory import create_provider
+    from cli.provider_factory import create_provider, provider_config_kwargs
     from integrations.local_auth import load_model_configs
 
     model_id = str(params.get("id") or "").strip()
@@ -995,12 +999,8 @@ def model_test(params: dict[str, Any]) -> Iterator[Event]:
 
     yield {"type": "progress", "message": f"正在连接 {model_id}…"}
 
-    provider, error = create_provider(
-        entry.get("provider_name", ""),
-        entry.get("api_key", ""),
-        entry.get("model", ""),
-        entry.get("base_url", ""),
-    )
+    test_entry = {**entry, "thinking_level": "off"} if entry.get("provider_name") == "deepseek" else entry
+    provider, error = create_provider(**provider_config_kwargs(test_entry))
     if provider is None:
         yield _ok(model_id=model_id, connected=False, error=error or "无法构造 provider")
         return
@@ -1134,6 +1134,7 @@ def settings_get(_params: dict[str, Any]) -> Iterator[Event]:
             "provider_name": str(m.get("provider_name") or ""),
             # base_url 不是机密（密钥才是），前端要靠它区分同名自建端点。
             "base_url": str(m.get("base_url") or ""),
+            "thinking_level": str(m.get("thinking_level") or ""),
             "has_key": bool(m.get("api_key")),
         }
         for m in load_model_configs()

@@ -1,7 +1,8 @@
 import { supabase } from './supabase'
-import { PROVIDER_BASE_URLS, PROVIDER_DEFAULT_MODELS, type Provider } from '@wyckoff/shared'
+import { DEEPSEEK_CONTEXT_WINDOW, PROVIDER_BASE_URLS, PROVIDER_DEFAULT_MODELS, type Provider } from '@wyckoff/shared'
 
 export interface LLMConfig {
+  provider?: string
   api_key: string
   model: string
   base_url: string
@@ -47,6 +48,7 @@ type UserSettingsRow = {
 }
 
 const MODEL_CONTEXT_WINDOWS: [string, number][] = [
+  ['deepseek-v4', DEEPSEEK_CONTEXT_WINDOW],
   ['deepseek', 64_000],
   ['gpt-4o', 128_000],
   ['gpt-4', 128_000],
@@ -256,6 +258,7 @@ function buildProviderConfig(provider: string, data: UserSettingsRow): LLMConfig
     const baseUrl = data[`${provider}_base_url` as keyof UserSettingsRow] as string | null | undefined
     const override = BUILTIN_PROVIDER_OVERRIDES[provider]
     return {
+      provider,
       api_key: apiKey,
       model: model || PROVIDER_DEFAULT_MODELS[provider as Provider] || '',
       base_url: baseUrl || override?.base_url || PROVIDER_BASE_URLS[provider as Provider] || '',
@@ -265,6 +268,7 @@ function buildProviderConfig(provider: string, data: UserSettingsRow): LLMConfig
   const custom = parseCustomProviders(data.custom_providers)
   const info = custom[provider] || {}
   return {
+    provider,
     api_key: info.apikey || info.api_key || '',
     model: info.model || PROVIDER_DEFAULT_MODELS[provider as Provider] || '',
     base_url: info.baseurl || info.base_url || PROVIDER_BASE_URLS[provider as Provider] || '',

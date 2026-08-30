@@ -205,6 +205,9 @@ class OpenAIProvider(LLMProvider):
     def name(self) -> str:
         return f"OpenAI ({self._model})"
 
+    def _request_options(self) -> dict[str, Any]:
+        return {"frequency_penalty": 0.3}
+
     def chat(
         self,
         messages: list[dict[str, Any]],
@@ -220,7 +223,7 @@ class OpenAIProvider(LLMProvider):
         kwargs: dict[str, Any] = {
             "model": self._model,
             "messages": oai_messages,
-            "frequency_penalty": 0.3,
+            **self._request_options(),
         }
         if oai_tools:
             kwargs["tools"] = oai_tools
@@ -253,7 +256,7 @@ class OpenAIProvider(LLMProvider):
             "messages": oai_messages,
             "stream": True,
             "stream_options": {"include_usage": True},
-            "frequency_penalty": 0.3,
+            **self._request_options(),
         }
         if oai_tools:
             kwargs["tools"] = oai_tools
@@ -298,9 +301,7 @@ class OpenAIProvider(LLMProvider):
                 oai_msgs.append({"role": "user", "content": msg["content"]})
 
             elif role == "assistant":
-                oai_msg: dict[str, Any] = {"role": "assistant"}
-                if msg.get("content"):
-                    oai_msg["content"] = msg["content"]
+                oai_msg: dict[str, Any] = {"role": "assistant", "content": msg.get("content") or ""}
                 if msg.get("reasoning_content"):
                     oai_msg["reasoning_content"] = msg["reasoning_content"]
                 if msg.get("tool_calls"):

@@ -1783,13 +1783,16 @@ _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 _DEFAULT_MODEL_BY_PROVIDER = {
     "gemini": "gemini-2.0-flash",
     "openai": "gpt-4o",
+    "deepseek": "deepseek-v4-flash",
     "claude": "claude-sonnet-4-20250514",
 }
 _MODEL_PROVIDER_OPTIONS = [
     ("gemini", "Gemini (Google)"),
-    ("openai", "OpenAI / 兼容接口 (LongCat, DeepSeek, Qwen...)"),
+    ("openai", "OpenAI / 兼容接口 (LongCat, Qwen...)"),
+    ("deepseek", "DeepSeek V4 官方 API"),
     ("claude", "Claude (Anthropic)"),
 ]
+_DEEPSEEK_REASONING_OPTIONS = [(level, level) for level in ("off", "low", "high", "max")]
 
 
 # ---------------------------------------------------------------------------
@@ -4053,6 +4056,11 @@ class WyckoffTUI(App):
             inp.password = True
             self._input_mode = _InputState.MODEL_KEY
 
+        elif callback_id == "model_thinking":
+            self._input_buf["thinking_level"] = value
+            log.write(Text.from_markup(f"  思考强度: {value}"))
+            self._apply_model_config()
+
     def _switch_model_selector(self) -> None:
         """弹出浮层选择器切换当前模型。"""
         from cli.auth import load_default_model_id, load_model_configs
@@ -4219,6 +4227,11 @@ class WyckoffTUI(App):
     def _handle_model_url_input(self, text: str, inp: Input) -> None:
         self._input_buf["base_url"] = text
         self._reset_input_prompt(inp)
+        if self._input_buf.get("provider") == "deepseek":
+            log = self.query_one("#chat-log", ChatLog)
+            log.write(Text.from_markup("  选择思考强度（推荐 high）："))
+            self._show_selector(_DEEPSEEK_REASONING_OPTIONS, "model_thinking")
+            return
         self._apply_model_config()
 
     def _apply_model_config(self) -> None:
@@ -4231,6 +4244,7 @@ class WyckoffTUI(App):
                 "api_key": buf["api_key"],
                 "model": buf.get("model", ""),
                 "base_url": buf.get("base_url", ""),
+                "thinking_level": buf.get("thinking_level", ""),
             }
             from cli.auth import load_model_configs, save_model_entry, set_default_model
 

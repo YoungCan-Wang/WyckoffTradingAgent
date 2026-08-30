@@ -1,6 +1,13 @@
 import { createAnthropic } from '@ai-sdk/anthropic'
 import { createOpenAI } from '@ai-sdk/openai'
 import type { LanguageModel, ToolSet } from 'ai'
+import {
+  DEEPSEEK_AGENT_MAX_OUTPUT_TOKENS,
+  DEEPSEEK_OFFICIAL_ORIGIN,
+  deepSeekResponsesReasoningBody,
+  deepSeekThinkingBody,
+  isOfficialDeepSeek,
+} from '@wyckoff/shared'
 
 export type ChatLanguageModelConfig = {
   provider: string
@@ -15,19 +22,11 @@ export type ResolvedChatLanguageModel = {
   nestedModel: LanguageModel
   providerTools: ToolSet
   transport: 'chat' | 'responses'
+  maxOutputTokens?: number
 }
 
-const DEEPSEEK_RESPONSES_ORIGIN = 'https://api.deepseek.com'
-
 export function supportsDeepSeekWebSearch(provider: string, model: string, baseUrl = ''): boolean {
-  if (provider !== 'deepseek') return false
-  try {
-    if (new URL(baseUrl).origin !== DEEPSEEK_RESPONSES_ORIGIN) return false
-  } catch {
-    return false
-  }
-  const id = String(model || '').trim().toLowerCase()
-  return id === 'deepseek-v4-flash' || id.startsWith('deepseek-v4-flash-')
+  return isOfficialDeepSeek(provider, model, baseUrl)
 }
 
 /** DeepSeek Responses docs use root origin; chat completions keep `/v1`. */
@@ -42,7 +41,7 @@ export function deepSeekResponsesBaseUrl(chatBaseUrl: string): string {
     }
     return `${url.origin}${path || ''}`.replace(/\/+$/, '') || url.origin
   } catch {
-    return DEEPSEEK_RESPONSES_ORIGIN
+    return DEEPSEEK_OFFICIAL_ORIGIN
   }
 }
 
@@ -76,5 +75,32 @@ export function resolveChatLanguageModel(
     nestedModel,
     providerTools: { web_search: provider.tools.webSearch({}) } as ToolSet,
     transport: 'responses',
+    maxOutputTokens: DEEPSEEK_AGENT_MAX_OUTPUT_TOKENS,
+  }
+}
+
+export function patchDeepSeekApiBody(requestUrl: string, body: BodyInit | null | undefined): BodyInit | null | undefined {
+  if (typeof body !== 'string') return body
+  let url: URL
+  try {
+    url = new URL(requestUrl)
+  } catch {
+    return body
+  }
+  if (url.origin !== DEEPSEEK_OFFICIAL_ORIGIN) return body
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>
+    const isResponses = url.pathname.endsWith('/responses')
+    const patched = {
+      ...parsed,
+      ...(isResponses ? deepSeekResponsesReasoningBody('high') : deepSeekThinkingBody('off')),
+    }
+    if (isResponses) {
+      delete patched.temperature
+      delete patched.top_p
+    }
+    return JSON.stringify(patched)
+  } catch {
+    return body
   }
 }

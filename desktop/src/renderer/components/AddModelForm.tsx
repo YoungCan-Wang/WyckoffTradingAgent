@@ -4,7 +4,7 @@ import { collect } from '../lib/ipc'
 
 const t = (key: string, params?: Record<string, string | number>) => window.WyckoffI18n.t(key, params)
 
-const PROVIDERS = ['openai', 'gemini', 'claude']
+const PROVIDERS = ['openai', 'deepseek', 'gemini', 'claude']
 
 interface Props {
   onAdded: () => Promise<void> | void
@@ -12,7 +12,7 @@ interface Props {
   onMessage: (text: string, isError?: boolean) => void
 }
 
-const EMPTY = { id: '', model: '', api_key: '', base_url: '' }
+const EMPTY = { id: '', model: '', api_key: '', base_url: '', thinking_level: 'high' }
 
 export function AddModelForm ({ onAdded, onMessage }: Props) {
   const [open, setOpen] = useState(false)
@@ -30,7 +30,8 @@ export function AddModelForm ({ onAdded, onMessage }: Props) {
       provider_name: provider,
       model: fields.model.trim(),
       api_key: fields.api_key.trim(),
-      base_url: fields.base_url.trim()
+      base_url: fields.base_url.trim(),
+      thinking_level: provider === 'deepseek' ? fields.thinking_level : ''
     }
     if (!payload.id || !payload.model || !payload.api_key) {
       setError(t('models.required'))
@@ -86,6 +87,14 @@ export function AddModelForm ({ onAdded, onMessage }: Props) {
             value={fields.api_key} onChange={set('api_key')} />
           <Field label={t('models.fieldBaseUrl')} placeholder={t('models.fieldBaseUrlPlaceholder')}
             value={fields.base_url} onChange={set('base_url')} />
+          {provider === 'deepseek' ? (
+            <div className="mfield">
+              <label className="mflab">{t('models.fieldThinkingLevel')}</label>
+              <select className="sel" value={fields.thinking_level} onChange={(e) => set('thinking_level')(e.target.value)}>
+                {['off', 'low', 'high', 'max'].map((level) => <option key={level} value={level}>{level}</option>)}
+              </select>
+            </div>
+          ) : null}
           <button type="button" className="wel-c" disabled={busy} onClick={() => void submit()}>
             {busy ? t('models.saving') : t('models.saveTest')}
           </button>

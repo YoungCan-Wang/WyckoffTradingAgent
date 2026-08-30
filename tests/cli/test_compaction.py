@@ -27,7 +27,7 @@ from cli.model_metadata import infer_context_window
 
 class TestInferContextWindow:
     def test_deepseek(self):
-        assert infer_context_window("deepseek-v4-flash") == 64_000
+        assert infer_context_window("deepseek-v4-flash") == 1_000_000
 
     def test_claude(self):
         assert infer_context_window("claude-sonnet-4-20260514") == 200_000
@@ -45,8 +45,8 @@ class TestInferContextWindow:
         assert get_compact_threshold("claude-sonnet-4") == 200_000 - MAX_COMPACT_RESERVE_TOKENS
 
     def test_threshold_uses_configured_context_window(self):
-        assert resolve_context_window("deepseek-chat", 100_000) == 100_000
-        assert get_compact_threshold("deepseek-chat", 100_000) == 75_000
+        assert resolve_context_window("deepseek-v4-pro", 100_000) == 100_000
+        assert get_compact_threshold("deepseek-v4-pro", 100_000) == 75_000
 
     def test_reserve_has_small_window_cap(self):
         assert get_compact_reserve_tokens(16_000) == 8_000
@@ -55,7 +55,7 @@ class TestInferContextWindow:
 
     def test_recent_keep_budget_scales_with_model(self):
         assert get_recent_keep_tokens("gpt-3.5-turbo") == 4_000
-        assert get_recent_keep_tokens("deepseek-chat") == 20_000
+        assert get_recent_keep_tokens("deepseek-v4-pro") == 20_000
         assert get_recent_keep_tokens("claude-sonnet-4") == 20_000
 
 

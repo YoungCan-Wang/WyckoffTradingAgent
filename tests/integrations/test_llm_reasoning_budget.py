@@ -42,9 +42,17 @@ def _patch_post(monkeypatch: pytest.MonkeyPatch, responses: list[_Resp]) -> list
     return calls
 
 
-def _call(max_output_tokens: int | None = 6000) -> str:
+def _call(max_output_tokens: int | None = 6000, *, allow_truncated_text: bool = False) -> str:
     return llm_client._call_openai_compatible(
-        "https://api.example.com/v1", "k", "deepseek-v4-flash", "sys", "user", 60, max_output_tokens
+        "https://api.example.com/v1",
+        "k",
+        "deepseek-v4-flash",
+        "sys",
+        "user",
+        60,
+        max_output_tokens,
+        provider="deepseek",
+        allow_truncated_text=allow_truncated_text,
     )
 
 
@@ -53,6 +61,9 @@ def test_normal_response_returns_content_without_retry(monkeypatch: pytest.Monke
 
     assert _call() == "正文"
     assert len(calls) == 1
+    assert calls[0]["thinking"] == {"type": "enabled"}
+    assert calls[0]["reasoning_effort"] == "low"
+    assert "temperature" not in calls[0]
 
 
 def test_reasoning_exhausted_budget_retries_with_larger_budget(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -73,6 +84,23 @@ def test_retry_happens_only_once(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(RuntimeError, match="返回内容为空"):
         _call(6000)
     assert len(calls) == 2
+
+
+def test_partial_truncation_retries_for_complete_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _patch_post(
+        monkeypatch,
+        [_Resp(_body("半段", finish="length", reasoning_tokens=100)), _Resp(_body("完整正文"))],
+    )
+
+    assert _call(6000) == "完整正文"
+    assert [call["max_tokens"] for call in calls] == [6000, 12000]
+
+
+def test_partial_truncation_can_be_explicitly_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _patch_post(monkeypatch, [_Resp(_body("允许的半段", finish="length", reasoning_tokens=100))])
+
+    assert _call(6000, allow_truncated_text=True) == "允许的半段"
+    assert len(calls) == 1
 
 
 def test_no_retry_when_finish_reason_is_not_length(monkeypatch: pytest.MonkeyPatch) -> None:

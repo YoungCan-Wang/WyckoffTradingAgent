@@ -239,7 +239,7 @@ Agent 采用 ReAct 范式：每一轮 LLM 先推理（Reason），再决定是�
 | 通道 | 当前工具 |
 |------|----------|
 | CLI / TUI（26） | 原有诊断、筛选、研报、组合、历史、后台、Skill 与委派工具，加 `evaluate_recommendation_events`、`research_hypothesis`、`reassess_profile`、`diagnose_backend`、`browser_research`（本机 Chrome CDP） |
-| Web（13+） | `search_stock`、`view_portfolio`、`market_overview`、`market_history`、`query_recommendations`、`query_attribution`、`plan_portfolio_update`、`execute_portfolio_update`、`analyze_stock`、`screen_stocks`、`generate_ai_report`、`generate_strategy_decision`、`intraday_analysis`；DeepSeek `deepseek-v4-flash` 另挂服务端 `web_search`（Responses API，非本机 CDP） |
+| Web（13+） | `search_stock`、`view_portfolio`、`market_overview`、`market_history`、`query_recommendations`、`query_attribution`、`plan_portfolio_update`、`execute_portfolio_update`、`analyze_stock`、`screen_stocks`、`generate_ai_report`、`generate_strategy_decision`、`intraday_analysis`；官方 DeepSeek V4 Flash/Pro 另挂服务端 `web_search`（Responses API，非本机 CDP） |
 | MCP（18） | 原有行情、漏斗、诊断、组合、研报与决策工具，加 `research_hypothesis`、`reassess_profile`、`diagnose_backend` |
 
 CLI 中 `screen_stocks`、`generate_ai_report`、`generate_strategy_decision`、`run_backtest` 会提交到 `BackgroundTaskManager`（daemon Thread），不阻塞对话。Web 的 `screen_stocks` 读取最新漏斗结果，不在浏览器会话里启动本地后台漏斗。MCP 只返回单次工具调用结果。
@@ -350,6 +350,7 @@ LLMProvider (abstract)              cli/providers/base.py
   ├── GeminiProvider                google-genai SDK
   ├── ClaudeProvider                anthropic SDK
   ├── OpenAIProvider                openai SDK + base_url + reasoning_content
+  ├── DeepSeekProvider              官方 V4 Chat API + thinking/reasoning_effort
   └── FallbackProvider              多模型路由，按可用性自动切换
 ```
 
@@ -361,7 +362,7 @@ chunk 类型：`thinking_delta` | `text_delta` | `tool_calls` | `usage` | `finis
 **输出 tok/s** = `output_tokens / generation_seconds`（首个 text/thinking delta → 该轮 stream 结束；多步 tool 循环只累计模型生成窗口，不含工具时间）。  
 **缓存命中率** = `cache_read_tokens / input_tokens`（有 cache 字段时展示，含 0%）。Anthropic 的 `input_tokens` 不含 cache，CLI 会先归一化为 `input + cache_read + cache_write`。OpenAI 兼容通道优先读 DeepSeek 的 `prompt_cache_hit_tokens`，其次 `prompt_tokens_details.cached_tokens`。
 
-OpenAI provider 兼容所有 OpenAI API 格式端点（DeepSeek / Qwen / Kimi / LongCat / Minimax 等），支持推理模型的 `reasoning_content` thinking 流，以及 `<tool_call>` XML 标签兜底解析。CLI 会把本地或云端配置中的 `provider_name=deepseek` 映射到同一 OpenAI-compatible transport；未填写 `base_url` 时使用 DeepSeek 官方 `/v1` 地址。
+OpenAI provider 兼容 Qwen / Kimi / LongCat / Minimax 等 OpenAI API 格式端点，支持兼容网关的 `reasoning_content` thinking 流，以及 `<tool_call>` XML 标签兜底解析。`provider_name=deepseek` 使用独立的 `DeepSeekProvider`：默认官方 `/v1`、32K 输出预算、1M 上下文，并把 `off/low/high/max` 映射为官方 `thinking` 与 `reasoning_effort`。工具轮、自动续写和 Loop Guard 重试都会保存 assistant 的 `reasoning_content`；即使该段正文为空，也不会丢失推理历史。
 
 `FallbackProvider` 会暴露当前实际运行的 provider/model，TUI 状态栏因此随故障切换更新。默认模型发生可恢复错误后，如果某个备用配置本身不可构造，该备用项会被记录并跳过；所有备用项都不可用时保留默认模型的原始网络/上游错误，避免用次级配置错误掩盖首因。
 
@@ -504,7 +505,7 @@ threshold = context_window - reserve
 
 | 模型/来源 | Context Window（上下文窗口） | 预留缓冲 | 压缩阈值 |
 |---------|---------------|---------|---------|
-| deepseek | 64K | 16.4K | 47.6K |
+| deepseek-v4 | 1M | 32.8K | 967.2K |
 | gpt-4o | 128K | 32K | 96K |
 | gemini-2 | 1M | 32.8K | 967.2K |
 | claude | 200K | 32.8K | 167.2K |
@@ -869,7 +870,9 @@ CLI 公开信息检索走 `browser_research`：Playwright 附着本机 Chrome CD
 
 CDP 未就绪时，TUI 会弹窗请用户授权，同意后自动拉起**独立调试 Chrome**（专用 profile：`~/.wyckoff/chrome-cdp`，不碰日常浏览数据）；授权对本 TUI 会话有效。也可主动执行 `/browser start`。`/browser status|hint|stop` 查看状态或关闭提示。无 TUI 回调的环境不会静默开浏览器。
 
-Web 读盘室在用户选择 DeepSeek、模型为 `deepseek-v4-flash`、且 `base_url` origin 为 `https://api.deepseek.com` 时，改走 Responses API（`https://api.deepseek.com/responses`），并注入服务端执行的 `web_search`，用于 IPO/舆情/公告等公开网页检索；行情、持仓、形态复盘仍走本地工具。搜索结果仅当轮有效（SDK/无状态 API 不会跨轮回传完整 `web_search_call`）；切到 Chat Completions 模型或跨供应商 fallback 前会把历史中的 provider-executed `web_search` 部件折叠成短文本，避免悬空 `tool_calls` 导致 400。其它 DeepSeek 模型、非官方 origin（如 ark 代理）与其它供应商继续使用 Chat Completions；嵌套研报/诊断 LLM 调用始终保持 `/v1/chat/completions`。
+Web 读盘室在用户选择官方 `deepseek-v4-flash` 或 `deepseek-v4-pro` 时走 Responses API（`https://api.deepseek.com/responses`），注入服务端 `web_search`，并显式使用 `high` 思考强度和 32K 输出预算；行情、持仓、形态复盘仍走本地工具。Responses API 是无状态接口，搜索结果仅当轮有效；切到 Chat Completions 模型或跨供应商 fallback 前会把历史中的 provider-executed `web_search` 部件折叠成短文本，避免悬空 `tool_calls`。嵌套研报/诊断 Chat 调用关闭思考，避免小任务产生无法续传的推理状态。
+
+个股分析、持仓诊断和股票对抗等网页专项报告继续走 Chat Completions，但会识别官方 DeepSeek V4：固定 `low` 思考、单段至少 12K 输出预算，解析正文、`reasoning_content` 和 `finish_reason`。若命中 `length`，最多自动续写两次，并把上一段正文与推理原样放回 assistant 历史；三段仍未结束则明确失败，不把截断内容保存成完整报告。后台结构化 LLM 任务同样显式使用 `low`，最小 4K 输出预算；截断时扩大一次预算，只有调用方明确允许时才接受非完整文本。
 
 ### ToolSurface 执行边界
 

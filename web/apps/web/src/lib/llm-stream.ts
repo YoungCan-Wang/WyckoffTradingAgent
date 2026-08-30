@@ -1,8 +1,14 @@
+import {
+  DEEPSEEK_REPORT_MAX_OUTPUT_TOKENS,
+  deepSeekThinkingBody,
+  isOfficialDeepSeek,
+} from '@wyckoff/shared'
 import type { LLMConfig } from './chat-agent'
 
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
   content: string
+  reasoning_content?: string
 }
 
 type StreamProtocol = 'openai' | 'anthropic'
@@ -13,6 +19,12 @@ interface StreamRequest {
   body: string
 }
 
+interface StreamSegment {
+  text: string
+  reasoning: string
+  finishReason: string
+}
+
 export interface LLMStreamStatus {
   phase: 'retrying' | 'fallback'
   model: string
@@ -20,49 +32,87 @@ export interface LLMStreamStatus {
   nextModel?: string
 }
 
+const DEEPSEEK_MAX_SEGMENTS = 3
+const DEEPSEEK_CONTINUATION_PROMPT = '继续完成上一段回答，不要重复已经给出的内容。'
+
 export async function streamLLMResponse(
   config: LLMConfig,
   messages: ChatMessage[],
   opts: { temperature?: number; maxTokens?: number; signal?: AbortSignal; onDelta?: (chunk: string) => void } = {},
 ): Promise<string> {
   const protocol = config.protocol ?? 'openai'
-  const request = buildStreamRequest(config, messages, opts, protocol)
+  const officialDeepSeek = isOfficialDeepSeek(config.provider || 'deepseek', config.model, config.base_url)
+  const maxSegments = officialDeepSeek && protocol === 'openai' ? DEEPSEEK_MAX_SEGMENTS : 1
+  let requestMessages = [...messages]
+  let result = ''
+
+  for (let index = 0; index < maxSegments; index += 1) {
+    const request = buildStreamRequest(config, requestMessages, opts, protocol)
+    const segment = await fetchStreamSegment(request, protocol, opts)
+    result += segment.text
+    if (segment.finishReason !== 'length') {
+      if (!result.trim()) throw new Error('模型未返回正文')
+      return result
+    }
+    if (index + 1 >= maxSegments) {
+      throw new Error(`模型连续 ${maxSegments} 段达到输出上限，未能生成完整正文`)
+    }
+    requestMessages = appendDeepSeekContinuation(requestMessages, segment)
+  }
+  throw new Error('模型未返回完整正文')
+}
+
+async function fetchStreamSegment(
+  request: StreamRequest,
+  protocol: StreamProtocol,
+  opts: { signal?: AbortSignal; onDelta?: (chunk: string) => void },
+): Promise<StreamSegment> {
   const response = await fetch(request.url, {
     method: 'POST',
     signal: opts.signal,
     headers: request.headers,
     body: request.body,
   })
-
   if (!response.ok) {
     const err = await response.json().catch(() => ({}))
     throw new Error(err.error?.message || `模型请求失败 (${response.status})`)
   }
-
   const reader = response.body?.getReader()
   if (!reader) throw new Error('响应无可读流')
+  return readStreamSegment(reader, protocol, opts.onDelta)
+}
 
+async function readStreamSegment(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  protocol: StreamProtocol,
+  onDelta?: (chunk: string) => void,
+): Promise<StreamSegment> {
   const decoder = new TextDecoder()
-  let result = ''
+  const segment: StreamSegment = { text: '', reasoning: '', finishReason: '' }
   let buffer = ''
-
   for (;;) {
     const { done, value } = await reader.read()
     if (done) break
     buffer += decoder.decode(value, { stream: true })
     const lines = buffer.split('\n')
     buffer = lines.pop()!
-    for (const line of lines) {
-      const delta = extractDataLineDelta(line, protocol)
-      if (delta) { opts.onDelta?.(delta); result += delta }
-    }
+    for (const line of lines) consumeDataLine(line, protocol, segment, onDelta)
   }
   buffer += decoder.decode()
-  for (const line of buffer.split('\n')) {
-    const delta = extractDataLineDelta(line, protocol)
-    if (delta) { opts.onDelta?.(delta); result += delta }
-  }
-  return result
+  for (const line of buffer.split('\n')) consumeDataLine(line, protocol, segment, onDelta)
+  return segment
+}
+
+function appendDeepSeekContinuation(messages: ChatMessage[], segment: StreamSegment): ChatMessage[] {
+  return [
+    ...messages,
+    {
+      role: 'assistant',
+      content: segment.text,
+      ...(segment.reasoning ? { reasoning_content: segment.reasoning } : {}),
+    },
+    { role: 'user', content: DEEPSEEK_CONTINUATION_PROMPT },
+  ]
 }
 
 export async function streamLLMResponseWithFallback(
@@ -122,28 +172,11 @@ function buildStreamRequest(
   opts: { temperature?: number; maxTokens?: number },
   protocol: StreamProtocol,
 ): StreamRequest {
-  if (protocol === 'anthropic') {
-    const system = messages.filter(item => item.role === 'system').map(item => item.content).join('\n\n')
-    const chatMessages = messages.filter(item => item.role !== 'system')
-    return {
-      url: '/api/llm-proxy/v1/messages',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': config.api_key,
-        'anthropic-version': '2023-06-01',
-        'X-Target-URL': config.base_url,
-      },
-      body: JSON.stringify({
-        model: config.model,
-        messages: chatMessages,
-        ...(system ? { system } : {}),
-        temperature: opts.temperature ?? 0.5,
-        max_tokens: opts.maxTokens ?? 4096,
-        stream: true,
-      }),
-    }
-  }
-
+  if (protocol === 'anthropic') return buildAnthropicRequest(config, messages, opts)
+  const officialDeepSeek = isOfficialDeepSeek(config.provider || 'deepseek', config.model, config.base_url)
+  const maxTokens = officialDeepSeek
+    ? Math.max(opts.maxTokens ?? 0, DEEPSEEK_REPORT_MAX_OUTPUT_TOKENS)
+    : opts.maxTokens ?? 4096
   return {
     url: '/api/llm-proxy/chat/completions',
     headers: {
@@ -154,6 +187,33 @@ function buildStreamRequest(
     body: JSON.stringify({
       model: config.model,
       messages,
+      ...(!officialDeepSeek ? { temperature: opts.temperature ?? 0.5 } : {}),
+      ...(officialDeepSeek ? deepSeekThinkingBody('low') : {}),
+      max_tokens: maxTokens,
+      stream: true,
+    }),
+  }
+}
+
+function buildAnthropicRequest(
+  config: LLMConfig,
+  messages: ChatMessage[],
+  opts: { temperature?: number; maxTokens?: number },
+): StreamRequest {
+  const system = messages.filter(item => item.role === 'system').map(item => item.content).join('\n\n')
+  const chatMessages = messages.filter(item => item.role !== 'system')
+  return {
+    url: '/api/llm-proxy/v1/messages',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': config.api_key,
+      'anthropic-version': '2023-06-01',
+      'X-Target-URL': config.base_url,
+    },
+    body: JSON.stringify({
+      model: config.model,
+      messages: chatMessages,
+      ...(system ? { system } : {}),
       temperature: opts.temperature ?? 0.5,
       max_tokens: opts.maxTokens ?? 4096,
       stream: true,
@@ -161,29 +221,46 @@ function buildStreamRequest(
   }
 }
 
-function extractDataLineDelta(line: string, protocol: StreamProtocol): string | undefined {
+function consumeDataLine(
+  line: string,
+  protocol: StreamProtocol,
+  segment: StreamSegment,
+  onDelta?: (chunk: string) => void,
+): void {
   const trimmed = line.trim()
-  if (!trimmed.startsWith('data: ')) return undefined
+  if (!trimmed.startsWith('data: ')) return
   const payload = trimmed.slice(6)
-  if (payload === '[DONE]') return undefined
+  if (payload === '[DONE]') return
   try {
-    return extractStreamDelta(JSON.parse(payload), protocol)
+    const delta = extractStreamDelta(JSON.parse(payload), protocol)
+    if (delta.text) {
+      segment.text += delta.text
+      onDelta?.(delta.text)
+    }
+    if (delta.reasoning) segment.reasoning += delta.reasoning
+    if (delta.finishReason) segment.finishReason = delta.finishReason
   } catch {
-    return undefined
+    return
   }
 }
 
-function extractStreamDelta(json: unknown, protocol: StreamProtocol): string | undefined {
-  if (!json || typeof json !== 'object') return undefined
-  if (protocol === 'anthropic') return extractAnthropicDelta(json as Record<string, unknown>)
+function extractStreamDelta(json: unknown, protocol: StreamProtocol): Partial<StreamSegment> {
+  if (!json || typeof json !== 'object') return {}
+  if (protocol === 'anthropic') return { text: extractAnthropicDelta(json as Record<string, unknown>) }
   const choices = (json as Record<string, unknown>).choices
-  if (!Array.isArray(choices)) return undefined
+  if (!Array.isArray(choices)) return {}
   const first = choices[0]
-  if (!first || typeof first !== 'object') return undefined
-  const delta = (first as Record<string, unknown>).delta
-  if (!delta || typeof delta !== 'object') return undefined
-  const content = (delta as Record<string, unknown>).content
-  return typeof content === 'string' ? content : undefined
+  if (!first || typeof first !== 'object') return {}
+  const choice = first as Record<string, unknown>
+  const finishReason = typeof choice.finish_reason === 'string' ? choice.finish_reason : undefined
+  const delta = choice.delta
+  if (!delta || typeof delta !== 'object') return { finishReason }
+  const values = delta as Record<string, unknown>
+  return {
+    text: typeof values.content === 'string' ? values.content : undefined,
+    reasoning: typeof values.reasoning_content === 'string' ? values.reasoning_content : undefined,
+    finishReason,
+  }
 }
 
 function extractAnthropicDelta(json: Record<string, unknown>): string | undefined {

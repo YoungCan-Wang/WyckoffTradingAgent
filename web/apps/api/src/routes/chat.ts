@@ -48,7 +48,7 @@ import {
   continuationLimitMessage,
   decideAgentLoop,
 } from '../services/chat-agent-loop'
-import { resolveChatLanguageModel } from '../services/chat-language-model'
+import { patchDeepSeekApiBody, resolveChatLanguageModel } from '../services/chat-language-model'
 import { appendMarketWatchModelMessage, buildStableChatSystemPrompt } from '../services/chat-prompt-prefix'
 
 type ChatBindings = { Bindings: Env; Variables: { auth: AuthContext } }
@@ -190,7 +190,8 @@ function createToolDeps(supabase: ToolDeps['supabase']): ToolDeps {
 function createProviderFetch(): typeof globalThis.fetch {
   return async (input, init) => {
     const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
-    const patchedBody = isOneRouteChatCompletion(requestUrl) ? patchOneRouteBody(init?.body) : init?.body
+    const oneRouteBody = isOneRouteChatCompletion(requestUrl) ? patchOneRouteBody(init?.body) : init?.body
+    const patchedBody = patchDeepSeekApiBody(requestUrl, oneRouteBody)
     const response = await globalThis.fetch(input, { ...init, body: patchedBody, redirect: 'manual' })
     if (response.status >= 300 && response.status < 400) throw new Error('Model provider redirects are not allowed')
     if (isGeminiChatCompletion(requestUrl) && isSseResponse(response) && response.body) {
@@ -378,15 +379,14 @@ async function runChatSegment(
     system,
     messages: modelMessages,
     tools,
-    maxOutputTokens: CHAT_MAX_OUTPUT_TOKENS,
+    maxOutputTokens: resolved.maxOutputTokens ?? CHAT_MAX_OUTPUT_TOKENS,
     stopWhen: stepCountIs(maxSteps),
     abortSignal: args.signal,
     experimental_toolApprovalSecret: await getToolApprovalSecret(args.env),
     providerOptions: {
       openai: {
-        parallelToolCalls: false,
-        // DeepSeek Responses is stateless; avoid item_reference round-trips for web_search.
-        ...(resolved.transport === 'responses' ? { store: false } : {}),
+        // DeepSeek Responses is stateless and always allows parallel tools.
+        ...(resolved.transport === 'responses' ? { store: false } : { parallelToolCalls: false }),
       },
     },
   })

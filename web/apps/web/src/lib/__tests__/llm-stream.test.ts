@@ -49,6 +49,41 @@ describe('streamLLMResponse', () => {
     expect(JSON.parse(String(init.body))).toMatchObject({ model: 'gpt-test', stream: true })
   })
 
+  it('replays DeepSeek reasoning when a reasoning-only segment reaches the output limit', async () => {
+    const config: LLMConfig = {
+      provider: 'deepseek',
+      api_key: 'deepseek-key',
+      model: 'deepseek-v4-flash',
+      base_url: 'https://api.deepseek.com/v1',
+      protocol: 'openai',
+    }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(sseResponse([
+        'data: {"choices":[{"delta":{"reasoning_content":"推理中"},"finish_reason":null}]}',
+        'data: {"choices":[{"delta":{},"finish_reason":"length"}]}',
+        'data: [DONE]',
+      ]))
+      .mockResolvedValueOnce(sseResponse([
+        'data: {"choices":[{"delta":{"content":"完整正文"},"finish_reason":null}]}',
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+        'data: [DONE]',
+      ]))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await streamLLMResponse(config, [{ role: 'user', content: '分析' }], { maxTokens: 4000 })
+    const firstBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))
+    const secondBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))
+
+    expect(result).toBe('完整正文')
+    expect(firstBody).toMatchObject({
+      max_tokens: 12000,
+      thinking: { type: 'enabled' },
+      reasoning_effort: 'low',
+    })
+    expect(firstBody).not.toHaveProperty('temperature')
+    expect(secondBody.messages.at(-2)).toEqual({ role: 'assistant', content: '', reasoning_content: '推理中' })
+  })
+
   it('streams Anthropic messages through the proxy with Anthropic headers', async () => {
     const config: LLMConfig = {
       api_key: 'anthropic-key',

@@ -502,8 +502,9 @@ class AgentRuntime:
             self._note_continuation_limit(state, round_state, decision.reason)
             return False
         state.auto_continuations += 1
-        if round_state and round_state.text:
-            state.answer_parts.append(round_state.text)
+        if round_state and (round_state.text or round_state.thinking):
+            if round_state.text:
+                state.answer_parts.append(round_state.text)
             partial: dict[str, Any] = {
                 "role": "assistant",
                 "content": round_state.text,
@@ -966,7 +967,7 @@ class AgentRuntime:
         round_state: RoundState,
         retry_prompt: str,
     ) -> None:
-        if round_state.text:
+        if round_state.text or round_state.thinking:
             retry_msg: dict[str, Any] = {
                 "role": "assistant",
                 "content": round_state.text,

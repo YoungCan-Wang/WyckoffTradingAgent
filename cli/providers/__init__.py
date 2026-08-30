@@ -24,3 +24,10 @@ try:
     PROVIDERS["openai"] = OpenAIProvider
 except ImportError:
     pass
+
+try:
+    from cli.providers.deepseek import DeepSeekProvider
+
+    PROVIDERS["deepseek"] = DeepSeekProvider
+except ImportError:
+    pass

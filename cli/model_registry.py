@@ -9,6 +9,7 @@ from typing import Any
 
 from cli.model_catalog import catalog_context_window, looks_like_openrouter
 from cli.model_metadata import infer_context_window
+from core.deepseek import DEEPSEEK_REASONING_LEVELS
 
 
 @dataclass(frozen=True)
@@ -52,7 +53,7 @@ _MODEL_PATTERNS: tuple[_ModelPattern, ...] = (
         re.compile(r"\bo[34](?:-|$)|gpt-5|reasoning", re.I), True, ("off", "minimal", "low", "medium", "high")
     ),
     _ModelPattern(re.compile(r"gpt-4o|gpt-4\.1|gpt-4", re.I), False),
-    _ModelPattern(re.compile(r"deepseek", re.I), True, ("off", "low", "medium", "high")),
+    _ModelPattern(re.compile(r"deepseek-v4", re.I), True, DEEPSEEK_REASONING_LEVELS),
     _ModelPattern(re.compile(r"minimax-m3", re.I), True, ("off", "adaptive")),
     _ModelPattern(re.compile(r"qwen|kimi|moonshot|minimax|mistral", re.I), False),
     _ModelPattern(re.compile(r"longcat|step", re.I), False),
