@@ -58,7 +58,6 @@ createRoot(document.getElementById('root')!).render(
                   <Route path="/history" element={<HistoryPage />} />
                   <Route path="/export" element={<ExportPage />} />
                   <Route path="/membership" element={<PlanetMembershipPage />} />
-                  <Route path="/guide" element={<Navigate to="/membership" replace />} />
                   <Route path="/settings" element={<SettingsPage />} />
                 </Route>
               </Route>

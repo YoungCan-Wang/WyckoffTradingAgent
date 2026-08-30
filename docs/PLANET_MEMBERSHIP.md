@@ -31,7 +31,14 @@
 
 ## 线上改名与发布顺序
 
-仓库目前没有维护 Supabase migration history，因此不要把执行一次后失效的 SQL 文件提交进仓库。发布负责人在 Supabase SQL Editor 中执行下面的受控迁移，并把执行记录留在发布单中。表改名会保留原表的 RLS、授权和依赖；兼容视图让迁移期间的旧 Web/API 仍能读取旧字段。
+仓库目前没有维护 Supabase migration history，因此不要把执行一次后失效的 SQL 文件提交进仓库。发布负责人在 Supabase SQL Editor 中执行下面的受控迁移，并把执行记录留在发布单中。
+
+这是一次明确的 breaking cutover，不创建旧表视图、不保留旧字段，也不支持旧 `/guide` 路由。上线顺序固定为：
+
+1. 合并并完成 Worker/Web 部署；此时新代码查询尚不存在的 `planet_members`，会员校验失败关闭，会员能力会暂时不可用；
+2. 验证新提交的 Worker health、Pages 和普通用户能力正常；数据库尚未修改，此时仍可安全回滚应用；
+3. 立即执行下方数据库事务；成功后会员能力恢复；
+4. 验证五条会员鉴权路径。数据库迁移完成后不得单独回滚到旧应用，必须前向修复或同时反向迁移数据库。
 
 执行前先确认旧数据均为 `NULL`、空字符串或合法 `YYYYMMDD`：
 
@@ -82,54 +89,80 @@ begin
   end if;
 end $$;
 
-alter table public.planet_members enable row level security;
-revoke all on table public.planet_members from anon;
-grant select on table public.planet_members to authenticated;
-
 do $$
+declare
+  item record;
 begin
-  if not exists (
-    select 1
+  for item in
+    select policyname
     from pg_policies
     where schemaname = 'public'
       and tablename = 'planet_members'
-      and policyname = 'planet_members_select_own'
-  ) then
-    create policy planet_members_select_own
-      on public.planet_members
-      for select
-      to authenticated
-      using (user_id = (select auth.uid())::text);
-  end if;
+  loop
+    execute format('drop policy %I on public.planet_members', item.policyname);
+  end loop;
 end $$;
 
-create view public.whitelist
-with (security_invoker = true)
-as
-select
-  user_id,
-  created_at,
-  to_char(expires_on, 'YYYYMMDD') as expire_date
-from public.planet_members;
+alter table public.planet_members enable row level security;
+revoke all on table public.planet_members from anon;
+revoke all on table public.planet_members from authenticated;
+grant select on table public.planet_members to authenticated;
 
-revoke all on table public.whitelist from anon;
-grant select on table public.whitelist to authenticated;
+create policy planet_members_select_own
+  on public.planet_members
+  for select
+  to authenticated
+  using (user_id = (select auth.uid())::text);
+
 notify pgrst, 'reload schema';
 
 commit;
 ```
 
-迁移后按顺序验证：
+迁移后立即验证：
 
 1. 用普通登录账号读取 `planet_members`，结果为空且会员页显示未开通；
 2. 用有效会员账号只能读取自己的记录，会员页显示到期日或长期有效；
-3. 旧版本通过兼容视图仍能读取 `expire_date`；
-4. 发布 Worker 和 Web，验证跟踪、归因、云端持仓、沙箱、手机遥控五条鉴权路径；
-5. 观察至少一个发布周期，确认旧前端缓存和旧 Worker 已退出后再删除兼容视图：
+3. 验证跟踪、归因、云端持仓、沙箱、手机遥控五条鉴权路径；
+4. 确认 PostgREST 中不存在 `whitelist` 表或视图，旧 `/guide` 返回 SPA 的未匹配路由结果而不会跳转。
+
+如果数据库迁移后必须回滚，应用和数据库要在同一个维护窗口一起退回：
 
 ```sql
-drop view public.whitelist;
-notify pgrst, 'reload schema';
-```
+begin;
 
-迁移后若新版本需要回退，只需回滚应用，旧版本会继续走兼容视图；不要立即把物理表改回旧名。只有确认没有新版本流量后，才考虑在维护窗口撤销结构迁移。
+drop policy if exists planet_members_select_own on public.planet_members;
+alter table public.planet_members
+  alter column expires_on type text
+  using case
+    when expires_on is null then null
+    else to_char(expires_on, 'YYYYMMDD')
+  end;
+alter table public.planet_members rename column expires_on to expire_date;
+alter table public.planet_members rename to whitelist;
+
+do $$
+begin
+  if exists (
+    select 1
+    from pg_constraint
+    where conrelid = 'public.whitelist'::regclass
+      and conname = 'planet_members_pkey'
+  ) then
+    alter table public.whitelist
+      rename constraint planet_members_pkey to whitelist_pkey;
+  end if;
+end $$;
+
+revoke all on table public.whitelist from anon;
+revoke all on table public.whitelist from authenticated;
+grant select on table public.whitelist to authenticated;
+create policy whitelist_select_own
+  on public.whitelist
+  for select
+  to authenticated
+  using (user_id = (select auth.uid())::text);
+
+notify pgrst, 'reload schema';
+commit;
+```

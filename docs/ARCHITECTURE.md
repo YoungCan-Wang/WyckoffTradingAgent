@@ -154,7 +154,7 @@ CLI Agent 的本地命令工具只允许明确的只读命令；文件工具继�
 | `/portfolio` | 持仓 | 持仓明细 + 收益率 |
 | `/tracking` | 跟踪 | 形态复盘 + 涨跌幅 |
 | `/export` | 数据导出 | CSV 导出 |
-| `/guide` | 功能与能力边界 | Web 端功能入口、日常工作流和运行边界说明 |
+| `/membership` | 星球会员 | 会员状态、专属能力、普通用户能力和加入方式 |
 | `/settings` | 设置 | 模型 / API Key / 数据源配置 |
 
 `/tracking` 按数据库实际存在的最近 30 个复盘交易日分页读取。窗口原始记录数保留数据源行数，“总入选次数”以唯一 `(code, recommend_date)` 为粒度；“覆盖股票数”及平均/最高/最低涨跌幅先按 `code` 去重，使用窗口内该股的最新复盘行和粘住的首次推荐价。
@@ -948,7 +948,7 @@ Web 个股、持仓和股票对抗分析保存历史时写入 `meta`：输入快
 - 拖延天数按可卖日计算：一字跌停（全天最高价未离开跌停价）当日卖不掉，不计入天数，但也不打断
   连续段，否则中间夹一个跌停板就能把前面的拖延洗掉。仅收在跌停不算——盘中高于跌停价即存在卖出窗口。
 
-星球会员身份以 `public.planet_members` 为唯一事实表：`user_id text` 为主键，`created_at timestamptz` 记录绑定时间，`expires_on date` 为最后有效日且 `NULL` 表示长期有效。客户端只有按 `auth.uid()` 读取自己记录的 RLS 权限，没有会员写权限。旧表改名、兼容窗口和回滚顺序见 [PLANET_MEMBERSHIP.md](PLANET_MEMBERSHIP.md)。
+星球会员身份以 `public.planet_members` 为唯一事实表：`user_id text` 为主键，`created_at timestamptz` 记录绑定时间，`expires_on date` 为最后有效日且 `NULL` 表示长期有效。客户端只有按 `auth.uid()` 读取自己记录的 RLS 权限，没有会员写权限。旧表采用一次性 breaking cutover，发布与回滚顺序见 [PLANET_MEMBERSHIP.md](PLANET_MEMBERSHIP.md)。
 
 Web `/portfolio` 的数据库模式仅对星球会员开放。浏览器把 Supabase JWT 发送给 `/api/portfolio`，API
 从已验证令牌取得 `user_id` 并固定映射到 `USER_LIVE:<user_id>`，请求体不能指定 `portfolio_id`。
