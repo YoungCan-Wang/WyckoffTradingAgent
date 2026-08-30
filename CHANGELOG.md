@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### 修复
+- **TUI 模型故障切换**：本地和云端的 `deepseek` 配置统一走 OpenAI-compatible transport；备用配置不可用时不再覆盖默认模型的原始错误，状态栏同步显示实际活跃模型。
+
 ## 0.9.3 (2026-05-19)
 
 ### 改进
