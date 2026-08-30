@@ -143,6 +143,7 @@ def test_runtime_auto_continue_keeps_full_answer():
 
 
 def test_runtime_auto_continue_replays_reasoning_without_text():
+    messages = [{"role": "user", "content": "写长文"}]
     provider = ScriptedProvider(
         rounds=[
             [
@@ -158,13 +159,106 @@ def test_runtime_auto_continue_replays_reasoning_without_text():
         ]
     )
 
-    events = list(AgentRuntime(provider, StubToolRegistry()).run_stream([{"role": "user", "content": "写长文"}]))
+    events = list(AgentRuntime(provider, StubToolRegistry()).run_stream(messages))
 
     second_messages = provider.calls[1]["messages"]
     assistant = next(message for message in second_messages if message["role"] == "assistant")
     assert assistant["content"] == ""
     assert assistant["reasoning_content"] == "上一轮推理"
     assert events[-1]["text"] == "续写完成。"
+    merged = [m for m in messages if m.get("role") == "assistant"][-1]
+    assert merged["reasoning_content"] == "上一轮推理"
+    assert "续写完成" in merged["content"]
+
+
+def test_runtime_auto_continue_keeps_reasoning_after_tools():
+    """DeepSeek thinking+tools：length 续写合并后最终 assistant 必须保留 reasoning_content。"""
+
+    messages = [{"role": "user", "content": "查持仓并写长文"}]
+    provider = ScriptedProvider(
+        rounds=[
+            [
+                {"type": "thinking_delta", "text": "先查持仓"},
+                {
+                    "type": "tool_calls",
+                    "tool_calls": [{"id": "tc1", "name": "portfolio", "args": {"mode": "view"}}],
+                    "text": "",
+                },
+                {"type": "usage", "input_tokens": 1, "output_tokens": 1},
+            ],
+            [
+                {"type": "thinking_delta", "text": "根据持仓写长分析"},
+                {"type": "text_delta", "text": "第一部分分析…"},
+                {"type": "finish", "reason": "length"},
+                {"type": "usage", "input_tokens": 1, "output_tokens": 8},
+            ],
+            [
+                {"type": "thinking_delta", "text": "续写推理"},
+                {"type": "text_delta", "text": "续写完成。"},
+                {"type": "finish", "reason": "stop"},
+                {"type": "usage", "input_tokens": 1, "output_tokens": 4},
+            ],
+        ]
+    )
+    events = list(
+        AgentRuntime(provider, StubToolRegistry(tool_results={"portfolio": {"positions": []}})).run_stream(messages)
+    )
+    assert events[-1]["type"] == "done"
+    assert "第一部分" in events[-1]["text"] and "续写完成" in events[-1]["text"]
+    final = [m for m in messages if m.get("role") == "assistant" and not m.get("tool_calls")][-1]
+    assert "根据持仓写长分析" in final["reasoning_content"]
+    assert "续写推理" in final["reasoning_content"]
+
+
+def test_runtime_steering_keeps_reasoning_content():
+    """转向打断时必须把已产生的 reasoning_content 留下，否则下一跳带 tools 会 400。"""
+
+    drained = {"n": 0}
+
+    def steer_drain():
+        drained["n"] += 1
+        if drained["n"] == 3:
+            return ["改看大盘"]
+        return []
+
+    messages = [{"role": "user", "content": "查持仓"}]
+    provider = ScriptedProvider(
+        rounds=[
+            [
+                {"type": "thinking_delta", "text": "先想一下"},
+                {
+                    "type": "tool_calls",
+                    "tool_calls": [{"id": "tc1", "name": "portfolio", "args": {}}],
+                    "text": "",
+                },
+                {"type": "usage", "input_tokens": 1, "output_tokens": 1},
+            ],
+            [
+                {"type": "thinking_delta", "text": "正在写结论"},
+                {"type": "text_delta", "text": "持仓结论前半…"},
+                {"type": "usage", "input_tokens": 1, "output_tokens": 2},
+            ],
+            [
+                {"type": "thinking_delta", "text": "改看大盘推理"},
+                {"type": "text_delta", "text": "已改看大盘。"},
+                {"type": "usage", "input_tokens": 1, "output_tokens": 2},
+            ],
+        ]
+    )
+    events = list(
+        AgentRuntime(
+            provider,
+            StubToolRegistry(tool_results={"portfolio": {"ok": True}}),
+            steer_drain=steer_drain,
+        ).run_stream(messages)
+    )
+    assert any(e.get("type") == "steered" for e in events)
+    assert events[-1]["text"] == "已改看大盘。"
+    post_steer = provider.calls[2]["messages"]
+    interrupted = next(
+        m for m in post_steer if m.get("role") == "assistant" and "持仓结论前半" in str(m.get("content") or "")
+    )
+    assert interrupted["reasoning_content"] == "正在写结论"
 
 
 def test_runtime_natural_finish_at_max_rounds_no_false_continue():
