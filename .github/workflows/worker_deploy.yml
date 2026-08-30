@@ -90,7 +90,7 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Deploy exact main commit
         working-directory: web
-        run: pnpm --filter @wyckoff/api deploy -- --message "main:$DEPLOY_SHA"
+        run: pnpm --filter @wyckoff/api run deploy --message "main:$DEPLOY_SHA"
       - name: Verify Worker version and remote-control binding
         working-directory: web
         shell: bash

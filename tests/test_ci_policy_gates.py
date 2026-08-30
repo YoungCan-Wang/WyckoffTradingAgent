@@ -138,3 +138,10 @@ def test_ci_runs_python_suite_once_and_reuses_it_for_coverage():
     assert workflow.count("python -m coverage run -m pytest tests/ -x -q") == 1
     assert "\n  coverage-report:" not in workflow
     assert "name: coverage-report-${{ github.run_number }}" in workflow
+
+
+def test_worker_deploy_invokes_the_package_script_explicitly():
+    workflow = Path(".github/workflows/worker_deploy.yml").read_text(encoding="utf-8")
+
+    assert "pnpm --filter @wyckoff/api run deploy --message" in workflow
+    assert "pnpm --filter @wyckoff/api deploy --" not in workflow
