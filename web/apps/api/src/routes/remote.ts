@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import type { Env } from '../app'
 import { authMiddleware, createUserSupabase, resolveUserId, type AuthContext } from '../middleware/auth'
-import { isActiveWhitelistUser, whitelistMiddleware } from '../middleware/whitelist'
+import { isActivePlanetMember, planetMemberMiddleware } from '../middleware/planet-membership'
 import { websocketBearerToken } from './agent-runs'
 
 type RemoteBindings = { Bindings: Env; Variables: { auth: AuthContext } }
@@ -28,8 +28,8 @@ remoteRoutes.get('/ws', async (c) => {
   if (!token) return c.json({ error: 'Unauthorized' }, 401)
   const userId = await resolveUserId(c.env, token)
   if (!userId) return c.json({ error: 'Invalid token' }, 401)
-  if (!(await isActiveWhitelistUser(createUserSupabase(c.env, token), userId))) {
-    return c.json({ error: 'Whitelist required' }, 403)
+  if (!(await isActivePlanetMember(createUserSupabase(c.env, token), userId))) {
+    return c.json({ error: 'Planet membership required' }, 403)
   }
   // role / label / code 走 query，转交时原样带上 —— DO 负责校验配对码。
   const url = new URL(c.req.url)
@@ -41,7 +41,7 @@ remoteRoutes.get('/ws', async (c) => {
 
 // 以下是普通 HTTP，走标准中间件。
 remoteRoutes.use('*', authMiddleware)
-remoteRoutes.use('*', whitelistMiddleware)
+remoteRoutes.use('*', planetMemberMiddleware)
 
 /** 电脑端要一个一次性配对码，编进二维码。 */
 remoteRoutes.post('/pair', async (c) => {

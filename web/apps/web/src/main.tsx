@@ -27,7 +27,7 @@ const AnalysisPage = lazy(() => import('@/routes/analysis').then(m => ({ default
 const StockBattlePage = lazy(() => import('@/routes/stock-battle').then(m => ({ default: m.StockBattlePage })))
 const HistoryPage = lazy(() => import('@/routes/history').then(m => ({ default: m.HistoryPage })))
 const ExportPage = lazy(() => import('@/routes/export').then(m => ({ default: m.ExportPage })))
-const FeatureGuidePage = lazy(() => import('@/routes/feature-guide').then(m => ({ default: m.FeatureGuidePage })))
+const PlanetMembershipPage = lazy(() => import('@/routes/planet-membership').then(m => ({ default: m.PlanetMembershipPage })))
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -57,7 +57,7 @@ createRoot(document.getElementById('root')!).render(
                   <Route path="/battle" element={<StockBattlePage />} />
                   <Route path="/history" element={<HistoryPage />} />
                   <Route path="/export" element={<ExportPage />} />
-                  <Route path="/guide" element={<FeatureGuidePage />} />
+                  <Route path="/membership" element={<PlanetMembershipPage />} />
                   <Route path="/settings" element={<SettingsPage />} />
                 </Route>
               </Route>

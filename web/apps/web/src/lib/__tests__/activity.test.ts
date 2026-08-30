@@ -36,7 +36,7 @@ describe('featureForRoute', () => {
   it('maps app routes to compact feature keys', () => {
     expect(featureForRoute('/')).toBe('chat')
     expect(featureForRoute('/battle?x=1')).toBe('battle')
-    expect(featureForRoute('/guide#capability-boundary')).toBe('guide')
+    expect(featureForRoute('/membership#capability-boundary')).toBe('membership')
   })
 })
 

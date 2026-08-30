@@ -4,7 +4,7 @@ import { ArrowRight, CheckCircle2, ExternalLink, ShieldCheck } from 'lucide-reac
 import { createChart, HistogramSeries, type Time } from 'lightweight-charts'
 import { supabase } from '@/lib/supabase'
 import { watchChartResize } from '@/lib/chart-resize'
-import { useWhitelistGate, whitelistGateView } from '@/lib/whitelist-gate'
+import { usePlanetMembership, planetMembershipGateView } from '@/lib/planet-membership-gate'
 import { SortableHeader, type SortOrder } from '@/components/sortable-header'
 import {
   countTrackingOccurrences,
@@ -231,14 +231,14 @@ export function TrackingPage() {
 
   const user = useAuthStore((s) => s.user)
   const userId = user?.id
-  const whitelist = useWhitelistGate(userId)
+  const membership = usePlanetMembership(userId)
 
-  const isWhitelisted = whitelist.data === true
+  const isPlanetMember = membership.data?.isActive === true
 
   const { data = [], isLoading: loading, error: fetchError } = useQuery({
     queryKey: ['tracking', market],
     queryFn: () => fetchTracking(market),
-    enabled: isWhitelisted,
+    enabled: isPlanetMember,
     retry: 1,
   })
 
@@ -272,7 +272,7 @@ export function TrackingPage() {
   const latestDate = latestDates[0] ?? null
   const oldestDate = latestDates.at(-1) ?? null
   const activeOldestDate = activeDates.at(-1) ?? null
-  const gateView = whitelistGateView(whitelist, <WyckoffLoading />, <TrackingLockedView />)
+  const gateView = planetMembershipGateView(membership, <WyckoffLoading />, <TrackingLockedView />)
   if (gateView) return gateView
 
   return (
@@ -423,7 +423,7 @@ function TrackingLockedAccessCard() {
         <img src="/zsxq_qr.jpg" alt={t('tracking.locked.qrAlt')} className="h-auto w-full rounded-md object-contain" />
       </div>
       <div className="mt-4 grid gap-2">
-        <a href="/guide#capability-boundary" className="inline-flex items-center justify-center gap-2 rounded-lg bg-sky-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-sky-700">
+        <a href="/membership#capability-boundary" className="inline-flex items-center justify-center gap-2 rounded-lg bg-sky-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-sky-700">
           {t('tracking.locked.join')}
           <ArrowRight className="h-4 w-4" />
         </a>

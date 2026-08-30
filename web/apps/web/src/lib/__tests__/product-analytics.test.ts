@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { installCloudflareWebAnalytics, installWhitelistClarity } from '../product-analytics'
+import { installCloudflareWebAnalytics, installPlanetMemberClarity } from '../product-analytics'
 
 afterEach(() => {
   vi.unstubAllEnvs()
@@ -19,23 +19,23 @@ describe('product analytics installers', () => {
 
   it('does not inject Clarity for empty users', () => {
     const doc = fakeDocument()
-    installWhitelistClarity('', doc as unknown as Document)
+    installPlanetMemberClarity('', doc as unknown as Document)
     expect(doc.getElementById('ms-clarity')).toBeUndefined()
   })
 
   it('uses the production Clarity project when no env override is set', () => {
     const doc = fakeDocument()
     const win = {} as Window
-    installWhitelistClarity('user-1', doc as unknown as Document, win)
+    installPlanetMemberClarity('user-1', doc as unknown as Document, win)
     expect(doc.getElementById('ms-clarity')?.src).toContain('clarity.ms/tag/y6albpfin1')
   })
 
-  it('loads Clarity only once and identifies the whitelist user', () => {
+  it('loads Clarity only once and identifies the planet member', () => {
     vi.stubEnv('VITE_CLARITY_PROJECT_ID', 'clarity-id')
     const doc = fakeDocument()
     const win = {} as Window
-    installWhitelistClarity('user-1', doc as unknown as Document, win)
-    installWhitelistClarity('user-1', doc as unknown as Document, win)
+    installPlanetMemberClarity('user-1', doc as unknown as Document, win)
+    installPlanetMemberClarity('user-1', doc as unknown as Document, win)
     expect(doc.scripts).toHaveLength(1)
     expect(doc.getElementById('ms-clarity')?.src).toContain('clarity.ms/tag/clarity-id')
     expect((win as Window & { clarity?: { q?: unknown[] } }).clarity?.q).toEqual([['identify', 'user-1']])

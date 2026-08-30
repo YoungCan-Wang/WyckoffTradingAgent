@@ -165,37 +165,6 @@ export async function getUserDataKeys(userId: string): Promise<{ tickflow: strin
   }
 }
 
-export function whitelistToday(): string {
-  const now = new Date()
-  const month = String(now.getMonth() + 1).padStart(2, '0')
-  const day = String(now.getDate()).padStart(2, '0')
-  return `${now.getFullYear()}${month}${day}`
-}
-
-function isCompactDate(value: string): boolean {
-  if (!/^\d{8}$/.test(value)) return false
-  const year = Number(value.slice(0, 4))
-  const month = Number(value.slice(4, 6))
-  const day = Number(value.slice(6, 8))
-  const date = new Date(year, month - 1, day)
-  return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day
-}
-
-export function isWhitelistEntryActive(expireDate: unknown, today = whitelistToday()): boolean {
-  const raw = String(expireDate ?? '').trim()
-  if (!raw) return true
-  return isCompactDate(raw) && raw >= today
-}
-
-export async function checkWhitelist(userId: string): Promise<boolean> {
-  const { data } = await supabase
-    .from('whitelist')
-    .select('user_id, expire_date')
-    .eq('user_id', userId)
-    .limit(1)
-  return Array.isArray(data) && data.some((row) => isWhitelistEntryActive((row as { expire_date?: unknown }).expire_date))
-}
-
 export async function fetchKlineWithQuality(
   code: string,
   keys: { tickflow: string | null; tushare: string | null },

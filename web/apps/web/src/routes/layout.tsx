@@ -1,13 +1,13 @@
 import { Outlet, Link, useLocation, useNavigate } from 'react-router'
 import { useCallback, useEffect, useState } from 'react'
-import { MessageSquare, Briefcase, TrendingUp, Settings, LogOut, BarChart3, Moon, FileDown, BookOpen, Home, Github, Sun, Languages, Swords, History, Microscope, PanelLeftClose, PanelLeftOpen, type LucideIcon } from 'lucide-react'
+import { MessageSquare, Briefcase, TrendingUp, Settings, LogOut, BarChart3, Moon, FileDown, Crown, Home, Github, Sun, Languages, Swords, History, Microscope, PanelLeftClose, PanelLeftOpen, type LucideIcon } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/auth'
 import { MarketBar } from '@/components/market-bar'
 import { usePreferences, type Locale, type TranslationKey } from '@/lib/preferences'
 import { trackRouteActivity } from '@/lib/activity'
-import { installWhitelistClarity } from '@/lib/product-analytics'
-import { useWhitelistGate } from '@/lib/whitelist-gate'
+import { installPlanetMemberClarity } from '@/lib/product-analytics'
+import { usePlanetMembership } from '@/lib/planet-membership-gate'
 
 const navGroups = [
   {
@@ -36,7 +36,7 @@ const navGroups = [
   {
     titleKey: 'nav.group.system',
     items: [
-      { to: '/guide', icon: BookOpen, labelKey: 'nav.guide' },
+      { to: '/membership', icon: Crown, labelKey: 'nav.membership' },
       { to: '/settings', icon: Settings, labelKey: 'nav.settings' },
     ]
   }
@@ -212,7 +212,7 @@ export function AppLayout() {
   const handleLogout = useLogoutHandler()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => readBooleanStorage(APP_SIDEBAR_STORAGE_KEY, false))
   useRouteActivity(user?.id, location)
-  useWhitelistClarity(user?.id)
+  usePlanetMemberClarity(user?.id)
   const hideMarketBar = location.pathname === '/chat'
   const toggleSidebar = useCallback(() => {
     setSidebarCollapsed((value) => {
@@ -373,9 +373,9 @@ function useRouteActivity(userId: string | undefined, location: ReturnType<typeo
   }, [route, userId])
 }
 
-function useWhitelistClarity(userId: string | undefined) {
-  const whitelist = useWhitelistGate(userId)
+function usePlanetMemberClarity(userId: string | undefined) {
+  const membership = usePlanetMembership(userId)
   useEffect(() => {
-    if (userId && whitelist.data === true) installWhitelistClarity(userId)
-  }, [userId, whitelist.data])
+    if (userId && membership.data?.isActive === true) installPlanetMemberClarity(userId)
+  }, [userId, membership.data?.isActive])
 }

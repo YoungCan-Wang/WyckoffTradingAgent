@@ -17,7 +17,6 @@ import { detectWyckoffAnnotations } from '@/lib/wyckoff-detect'
 import { TICKFLOW_PURCHASE, buildStockAnalysisContextPack, fetchValueSnapshotWithFetch, formatAnalysisContextPack, isCnSymbol, isSupportedKlineCode } from '@wyckoff/shared'
 import type { AnalysisContextPack, KlineDataQuality, KlineRow, ValueSnapshot } from '@wyckoff/shared'
 import { fetchKlineWithQuality, getUserDataKeys } from '@/lib/kline'
-import { useWhitelistGate } from '@/lib/whitelist-gate'
 import { avg } from '@/lib/math'
 import { resolveStockQuery, type StockSearchResult } from '@/lib/market-search'
 import { buildValuePrompt, sourceLabel, valueTraceMeta } from '@wyckoff/shared'
@@ -115,7 +114,6 @@ interface Prerequisites {
 }
 
 function usePrerequisites(userId: string | undefined): Prerequisites {
-  const whitelist = useWhitelistGate(userId)
   const [checkingConfig, setCheckingConfig] = useState(true)
   const [hasModelConfig, setHasModelConfig] = useState(false)
   const [hasDataKeys, setHasDataKeys] = useState(false)
@@ -132,9 +130,9 @@ function usePrerequisites(userId: string | undefined): Prerequisites {
   }, [userId])
 
   return {
-    checkingConfig: checkingConfig || whitelist.isLoading,
+    checkingConfig,
     hasModelConfig,
-    hasDataSource: hasDataKeys || whitelist.data === true,
+    hasDataSource: hasDataKeys,
     setHasModelConfig,
   }
 }

@@ -54,7 +54,7 @@
 ```
 浏览器 (React SPA)
   │
-  ├─→ Supabase (Auth + DB)     ← Auth、白名单、配置、持仓、复盘表等仍按 RLS 直连
+  ├─→ Supabase (Auth + DB)     ← Auth、星球会员、配置、持仓、复盘表等仍按 RLS 直连
   │
   ├─→ /api/chat/*              ← Pages Function 转发到 Hono Worker API
   │       │
@@ -73,7 +73,7 @@
 
 Hono app 的公共中间件按请求 ID、安全响应头、CORS、256 KiB 请求体上限的顺序执行；路由随后执行 Supabase JWT 鉴权与业务校验。聊天 POST 在鉴权后执行用户限流：同时配置 `UPSTASH_REDIS_REST_URL` 和 `UPSTASH_REDIS_REST_TOKEN` 时使用 Upstash Redis REST 共享额度，未配置时保留单 Worker 实例内的软限流，Redis 超时或不可用时返回 `X-RateLimit-Backend: local-fallback` 并启用本地保护。只配置一个 Upstash 变量属于部署错误，请求会失败而不会静默使用不完整连接。
 
-`/api/agent-runs` 是云 Agent 的异步执行边界：只接受已登录且在有效白名单内的用户，并且只有 `AGENT_SANDBOX_ENABLED=true` 时开放。POST 接受一个最多 12,000 字符的 `python_research` 脚本，先把 `queued` 记录写入按认证用户隔离的 Upstash Redis，再发送到 `wyckoff-agent-runs`，两步成功后返回 `202` 和 `runId`；脚本只在队列消息中传递，不写入 Redis 或结构化日志。GET 只能读取当前用户的记录；`POST /:id/cancel` 只允许取消尚未领取的 `queued` 任务；DELETE 只删除 `completed`、`failed` 或 `cancelled` 的短期记录，避免运行中的消费者重新写回已删除状态。沙箱创建额度在入队边界统一执行：REST 与聊天工具共用同一份 Upstash 配额（默认每用户每天 20 次、两次提交至少间隔 10 秒），超限返回 `429`；配置了 Redis 后限额服务不可用会返回 `503`，绝不降级到本地计数。每个用户同时只能保留一个 `queued` 或 `running` 沙箱任务，第二次提交同样返回 `429`；取消、终态完成或死信失败都会释放这个占位。终态任务把 bridge 回传的实际 `activeCpuUsageMs` 累加到按 UTC 日过期的 Redis 计数，下一次提交会先检查默认每用户每天 120,000 ms 的 CPU 预算；计量读取异常同样返回 `503`，而计量写入异常不会重跑已完成的计算，并让后续提交在读到 Redis 异常时停住。该额度独立于聊天限流，目的是把 Vercel Hobby 的月度沙箱创建数锁在免费范围内。
+`/api/agent-runs` 是云 Agent 的异步执行边界：只接受已登录且是有效星球会员的用户，并且只有 `AGENT_SANDBOX_ENABLED=true` 时开放。POST 接受一个最多 12,000 字符的 `python_research` 脚本，先把 `queued` 记录写入按认证用户隔离的 Upstash Redis，再发送到 `wyckoff-agent-runs`，两步成功后返回 `202` 和 `runId`；脚本只在队列消息中传递，不写入 Redis 或结构化日志。GET 只能读取当前用户的记录；`POST /:id/cancel` 只允许取消尚未领取的 `queued` 任务；DELETE 只删除 `completed`、`failed` 或 `cancelled` 的短期记录，避免运行中的消费者重新写回已删除状态。沙箱创建额度在入队边界统一执行：REST 与聊天工具共用同一份 Upstash 配额（默认每用户每天 20 次、两次提交至少间隔 10 秒），超限返回 `429`；配置了 Redis 后限额服务不可用会返回 `503`，绝不降级到本地计数。每个用户同时只能保留一个 `queued` 或 `running` 沙箱任务，第二次提交同样返回 `429`；取消、终态完成或死信失败都会释放这个占位。终态任务把 bridge 回传的实际 `activeCpuUsageMs` 累加到按 UTC 日过期的 Redis 计数，下一次提交会先检查默认每用户每天 120,000 ms 的 CPU 预算；计量读取异常同样返回 `503`，而计量写入异常不会重跑已完成的计算，并让后续提交在读到 Redis 异常时停住。该额度独立于聊天限流，目的是把 Vercel Hobby 的月度沙箱创建数锁在免费范围内。
 
 队列消费者固定 `max_batch_size=1`、`max_concurrency=1`，入队前用按用户归属的 Redis 原子占位阻止单个用户积压多个活动任务，每次领取记录时再用 Redis 租约防止重复交付并发执行；Worker 调 bridge 的请求会在“沙箱超时 + 30 秒”后主动中止，确保任何挂起的调用都先于 180 秒租约失效，不给重复投递留下并行执行的窗口。Cloudflare Queue 是至少一次投递而不是顺序工作流：bridge、Redis 等瞬时基础设施异常会以 10/20/40 秒退避重试，最多三次后进入 `wyckoff-agent-runs-dlq` 并把记录标为 `failed`；Python 返回非零退出码是用户计算的终态失败，不自动重跑。bridge 已成功返回后，Worker 会先把 stdout/stderr/用量暂存到仍为 `running` 的 Redis 记录，再写终态；若终态写入失败而触发队列重投，下一次消费只做落盘，不再二次进入 bridge。计量写入异常同样不会重跑已完成的计算。因而脚本必须是有限、无外部副作用的研究计算，不能在其中下单、写外部系统或依赖“恰好执行一次”。已进入 `running` 的沙箱不能被该控制面中断；需要再次执行时提交新的脚本请求。
 
@@ -81,7 +81,7 @@ Worker 负责鉴权、输入校验、队列控制面和 HMAC 签名。Vercel Nod
 
 每个实际执行都会复用 API 的 `requestId` 并生成独立 `runId`；Worker 用两个 ID 调 bridge，bridge 在 Vercel Runtime Logs 中输出同一对 ID，因此两侧能按 ID 关联。Worker 日志事件为 `sandbox_run.queued|started|retrying|finished|failed|cancelled|metering_failed`，bridge 事件为 `sandbox_bridge.started|finished|rejected|failed`；只包含状态、尝试次数、耗时、退出码、脚本字节数和 CPU/网络用量，不记录 Python 源码、stdout/stderr、HMAC、Token 或原始用户 ID。实时排查可在 `web/apps/api/` 运行 `pnpm exec wrangler tail wyckoff-api --format pretty`，或在 `web/apps/sandbox-bridge/` 运行 `pnpm exec vercel logs https://wyckoff-agent-sandbox.vercel.app --json`；历史 Vercel 日志在项目 Deployment 的 Functions Logs 中查看。
 
-读盘室仅在沙箱显式开启且当前用户在有效白名单内时，才向模型注册 `run_python_research` 工具；非白名单用户在模型侧看不到该能力，不会出现“审批后才失败”的体验。工具仅在用户明确提出计算需求后使用，且 Vercel AI SDK 必须取得用户确认才会执行。确认后，状态回传以推送为主、轮询兜底：前端在存在未终态任务时向 `GET /api/agent-runs/ws` 发起 WebSocket 连接（浏览器无法在升级请求上带 Authorization 头，登录令牌经 `Sec-WebSocket-Protocol` 子协议传递，Worker 验证令牌与白名单后才转交按用户命名的 `AgentRunNotifier` Durable Object），队列消费者在任务进入 `running` 或终态时把记录 POST 给该 DO 广播到用户所有打开的标签页。DO 使用 WebSocket Hibernation API，空闲连接不消耗免费套餐的 DO 时长；推送是尽力而为，投递失败不影响任务状态。推送通道在线时轮询间隔放宽到 15 秒，通道断开或不可用时回落到 2 秒轮询 `GET /api/agent-runs/:id`：它只读取该用户的记录，并在工具返回排队记录时就将该输出合并回原调用，仅移除已被输出取代的同 ID `approval-responded` 副本；此后轮询再在原位将该记录更新为最终 stdout、stderr、退出码和用量。Worker 在转换模型消息前也仅移除已有后续输出的早先审批副本，保证旧对话恢复为合法的 `assistant tool-call` / `tool-result` 序列，不静默改写其他工具结果。轮询覆盖当前浏览器保存的各个对话；状态先写入所属对话的本地存储，再在该对话仍处于前台时同步 live chat，避免切走对话时只更新内存态而丢掉结果。因此刷新或切走对话不会遗失未终态任务，终态会回写到其原来的对话。若记录已超过 Redis 保存期（轮询收到 404），前端把该任务落定为“结果已过期”的失败终态并停止轮询，而不是无限重试。用户可在 `queued` 时取消，完成后点“解读结果”才向模型发送基于该终态输出的后续请求；这避免把尚未完成的队列确认误当作研究结论。执行时再次校验当前用户的白名单，复用与 REST 端点完全相同的 Redis 记录、超时和删除流程；未开启沙箱或未在白名单中的用户不能经聊天路径绕过这道边界。
+读盘室仅在沙箱显式开启且当前用户是有效星球会员时，才向模型注册 `run_python_research` 工具；非星球会员在模型侧看不到该能力，不会出现“审批后才失败”的体验。工具仅在用户明确提出计算需求后使用，且 Vercel AI SDK 必须取得用户确认才会执行。确认后，状态回传以推送为主、轮询兜底：前端在存在未终态任务时向 `GET /api/agent-runs/ws` 发起 WebSocket 连接（浏览器无法在升级请求上带 Authorization 头，登录令牌经 `Sec-WebSocket-Protocol` 子协议传递，Worker 验证令牌与星球会员身份后才转交按用户命名的 `AgentRunNotifier` Durable Object），队列消费者在任务进入 `running` 或终态时把记录 POST 给该 DO 广播到用户所有打开的标签页。DO 使用 WebSocket Hibernation API，空闲连接不消耗免费套餐的 DO 时长；推送是尽力而为，投递失败不影响任务状态。推送通道在线时轮询间隔放宽到 15 秒，通道断开或不可用时回落到 2 秒轮询 `GET /api/agent-runs/:id`：它只读取该用户的记录，并在工具返回排队记录时就将该输出合并回原调用，仅移除已被输出取代的同 ID `approval-responded` 副本；此后轮询再在原位将该记录更新为最终 stdout、stderr、退出码和用量。Worker 在转换模型消息前也仅移除已有后续输出的早先审批副本，保证旧对话恢复为合法的 `assistant tool-call` / `tool-result` 序列，不静默改写其他工具结果。轮询覆盖当前浏览器保存的各个对话；状态先写入所属对话的本地存储，再在该对话仍处于前台时同步 live chat，避免切走对话时只更新内存态而丢掉结果。因此刷新或切走对话不会遗失未终态任务，终态会回写到其原来的对话。若记录已超过 Redis 保存期（轮询收到 404），前端把该任务落定为“结果已过期”的失败终态并停止轮询，而不是无限重试。用户可在 `queued` 时取消，完成后点“解读结果”才向模型发送基于该终态输出的后续请求；这避免把尚未完成的队列确认误当作研究结论。执行时再次校验当前用户的星球会员身份，复用与 REST 端点完全相同的 Redis 记录、超时和删除流程；未开启沙箱或不是星球会员的用户不能经聊天路径绕过这道边界。
 
 | Worker 变量 | 默认值 | 作用 |
 |---|---:|---|
@@ -90,7 +90,7 @@ Worker 负责鉴权、输入校验、队列控制面和 HMAC 签名。Vercel Nod
 | `CHAT_TOOL_APPROVAL_SECRET` | Worker secret | Web 工具审批签名专用随机密钥；建议独立配置。迁移期缺失时从 service-role key 做单向域分离派生，不直接复用或传播原值 |
 | `UPSTASH_REDIS_REST_URL` | 未设置 | Upstash Redis REST 地址；与 Token 同时存在时启用共享限流 |
 | `UPSTASH_REDIS_REST_TOKEN` | 未设置 | Upstash Redis REST Token，必须通过 Worker secret 注入 |
-| `AGENT_SANDBOX_ENABLED` | `false` | 显式开启白名单 Agent 沙箱端点；本地/生产凭据与一次真实调用验证通过后才打开 |
+| `AGENT_SANDBOX_ENABLED` | `false` | 显式开启星球会员 Agent 沙箱端点；本地/生产凭据与一次真实调用验证通过后才打开 |
 | `AGENT_SANDBOX_TIMEOUT_MS` | `60000` | 单次沙箱会话超时；代码硬上限为 120 秒 |
 | `AGENT_RUN_TTL_SECONDS` | `3600` | Redis 中短期任务结果的存活秒数，最长 24 小时 |
 | `AGENT_RUN_DAILY_LIMIT_PER_USER` | `20` | 每个用户每天允许创建的沙箱任务数；REST 与聊天工具共用 |
@@ -107,7 +107,7 @@ Worker 负责鉴权、输入校验、队列控制面和 HMAC 签名。Vercel Nod
 
 前端的 `web/apps/web/src/lib/api-url.ts` 统一生成 chat、portfolio 和 settings 的后端地址。本地开发默认连接 `http://127.0.0.1:8787`，生产默认连接 `https://wyckoff-api.yongkai-wang.workers.dev`；部署环境可用公开的构建变量 `VITE_API_URL` 覆盖地址。该变量只包含公开服务地址，不能放 Token。
 
-**免费可观测（不写 Supabase）**：`wyckoff-api` 在 `wrangler.toml` 打开 Workers Logs。未捕获 500 会打一条 `worker_error` JSON（`requestId`、方法、路径、已鉴权则带 `userId`），脱敏后不含 Token。查日志：Cloudflare Dashboard → Workers & Pages → `wyckoff-api` → Logs，免费档约留 3 天。页面 PV/UV 用 Cloudflare Web Analytics：优先在 Pages 项目打开；若要用脚本注入，给 Pages 构建加上公开变量 `VITE_CF_WEB_ANALYTICS_TOKEN`。按钮点击/热力图用 Microsoft Clarity 项目 `y6albpfin1`，只对有效白名单用户加载脚本；可用公开构建变量 `VITE_CLARITY_PROJECT_ID` 覆盖。这两类变量都是前端公开 ID，不是密钥，不要写进 `wrangler secret`。Clarity 控制台里不用选 Gatsby/GTM，应用会自己注入官方脚本。
+**免费可观测（不写 Supabase）**：`wyckoff-api` 在 `wrangler.toml` 打开 Workers Logs。未捕获 500 会打一条 `worker_error` JSON（`requestId`、方法、路径、已鉴权则带 `userId`），脱敏后不含 Token。查日志：Cloudflare Dashboard → Workers & Pages → `wyckoff-api` → Logs，免费档约留 3 天。页面 PV/UV 用 Cloudflare Web Analytics：优先在 Pages 项目打开；若要用脚本注入，给 Pages 构建加上公开变量 `VITE_CF_WEB_ANALYTICS_TOKEN`。按钮点击/热力图用 Microsoft Clarity 项目 `y6albpfin1`，只对有效星球会员加载脚本；可用公开构建变量 `VITE_CLARITY_PROJECT_ID` 覆盖。这两类变量都是前端公开 ID，不是密钥，不要写进 `wrangler secret`。Clarity 控制台里不用选 Gatsby/GTM，应用会自己注入官方脚本。
 
 每次 `main` 上的 CI 成功后，`Worker deploy` 先用 `scripts/release_scope.py` 判断 Worker API、共享包或 Web 锁文件是否变化；命中时签出该次 CI 的精确 SHA，并通过 `pnpm --filter @wyckoff/api run deploy` 显式调用 package script 自动部署，避免被 pnpm 同名内置命令解析。生产 environment 需一次性配置 `CLOUDFLARE_API_TOKEN`，账号 ID 可由 repository variable `CLOUDFLARE_ACCOUNT_ID` 覆盖。部署后会从当前 100% deployment 核对精确提交消息与 version ID，再检查 `REMOTE_RELAY` binding、`/api/health`，并要求未登录的 `/api/remote/devices` 返回 401；migration tag 由受版本控制的 `wrangler.toml` 声明，不能依赖新版 Wrangler 已不返回该字段的 version JSON。随后 `Web deployment health` 轮询 Worker health、远程路由和 Pages `/chat`；它不会调用已登录接口或创建沙箱。未涉及 Worker 的主干提交会跳过部署，但仍执行生产健康检查。
 
@@ -154,7 +154,7 @@ CLI Agent 的本地命令工具只允许明确的只读命令；文件工具继�
 | `/portfolio` | 持仓 | 持仓明细 + 收益率 |
 | `/tracking` | 跟踪 | 形态复盘 + 涨跌幅 |
 | `/export` | 数据导出 | CSV 导出 |
-| `/guide` | 功能与能力边界 | Web 端功能入口、日常工作流和运行边界说明 |
+| `/membership` | 星球会员 | 会员状态、专属能力、普通用户能力和加入方式 |
 | `/settings` | 设置 | 模型 / API Key / 数据源配置 |
 
 `/tracking` 按数据库实际存在的最近 30 个复盘交易日分页读取。窗口原始记录数保留数据源行数，“总入选次数”以唯一 `(code, recommend_date)` 为粒度；“覆盖股票数”及平均/最高/最低涨跌幅先按 `code` 去重，使用窗口内该股的最新复盘行和粘住的首次推荐价。
@@ -948,7 +948,9 @@ Web 个股、持仓和股票对抗分析保存历史时写入 `meta`：输入快
 - 拖延天数按可卖日计算：一字跌停（全天最高价未离开跌停价）当日卖不掉，不计入天数，但也不打断
   连续段，否则中间夹一个跌停板就能把前面的拖延洗掉。仅收在跌停不算——盘中高于跌停价即存在卖出窗口。
 
-Web `/portfolio` 的数据库模式仅对白名单用户开放。浏览器把 Supabase JWT 发送给 `/api/portfolio`，API
+星球会员身份以 `public.planet_members` 为唯一事实表：`user_id text` 为主键，`created_at timestamptz` 记录绑定时间，`expires_on date` 按 `Asia/Shanghai` 判断最后有效日，`NULL` 表示长期有效。会员身份与个人模型/行情配置相互独立，单股分析不会因会员身份绕过 TickFlow/Tushare Key 检查。客户端只有按 `auth.uid()` 读取自己记录的 RLS 权限，没有会员写权限。旧表采用一次性 breaking cutover，发布与回滚顺序见 [PLANET_MEMBERSHIP.md](PLANET_MEMBERSHIP.md)。
+
+Web `/portfolio` 的数据库模式仅对星球会员开放。浏览器把 Supabase JWT 发送给 `/api/portfolio`，API
 从已验证令牌取得 `user_id` 并固定映射到 `USER_LIVE:<user_id>`，请求体不能指定 `portfolio_id`。
 Cloudflare Pages 通过 `web/functions/api/portfolio/[[path]].ts` 将同域请求交给 Hono API，前端同时校验
 响应结构，避免 SPA fallback 的 HTML 或缺失字段被误当成持仓数据。
@@ -960,7 +962,7 @@ API 响应同时返回 `total_equity`、`valuation_updated_at`；刷新失败时
 改股数/成本时不得覆盖已有建仓日。
 `portfolios` 与 `portfolio_positions` 已启用 RLS，SELECT/INSERT/UPDATE/DELETE 均要求
 `split_part(portfolio_id, ':', 2) = auth.uid()::text`；UPDATE 同时使用 `USING` 与 `WITH CHECK`。
-因此用户只能读取和修改自己的持仓。白名单用户可在页面编辑现金和持仓，选择“保存到云端”或
+因此用户只能读取和修改自己的持仓。星球会员可在页面编辑现金和持仓，选择“保存到云端”或
 “保存并诊断”；普通用户只使用浏览器内临时录入，不写 Supabase。
 写入边界：GitHub Actions / server job 必须设置 `WYCKOFF_WRITE_CONTEXT=server_job` 才能写共享信号、推荐、策略表。CLI 默认只能读取云端表；除持仓增删改和现金更新外，其它 CLI 结果只写本地 SQLite。
 

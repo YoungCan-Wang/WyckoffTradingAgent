@@ -15,7 +15,7 @@ import { TICKFLOW_PURCHASE, fetchValueSnapshotWithFetch, isSupportedPortfolioCod
 import type { KlineRow, ValueSnapshot } from '@wyckoff/shared'
 import { fetchKlineViaTickFlow, getUserDataKeys } from '@/lib/kline'
 import { formatSignedPercent } from '@/lib/format'
-import { useWhitelistGate } from '@/lib/whitelist-gate'
+import { usePlanetMembership } from '@/lib/planet-membership-gate'
 import { avg } from '@/lib/math'
 import { EMPTY_PORTFOLIO, requestPortfolio, type Portfolio, type Position } from '@/lib/portfolio-api'
 import { saveAnalysisHistory } from '@/lib/local-history'
@@ -83,12 +83,12 @@ function PortfolioPageContent() {
   const fullDiag = useFullDiagnosisRunner()
   const [manualPortfolio, setManualPortfolio] = useState<Portfolio>(EMPTY_PORTFOLIO)
   const [databaseDraft, setDatabaseDraft] = useState<Portfolio>(EMPTY_PORTFOLIO)
-  const source = portfolioData.isWhitelisted ? 'database' : 'manual'
+  const source = portfolioData.isPlanetMember ? 'database' : 'manual'
   usePortfolioHistory(user?.id, fullDiag.result, source, fullDiag.model)
 
   useEffect(() => {
-    if (portfolioData.isWhitelisted && portfolioData.portfolio) setDatabaseDraft(portfolioData.portfolio)
-  }, [portfolioData.isWhitelisted, portfolioData.portfolio])
+    if (portfolioData.isPlanetMember && portfolioData.portfolio) setDatabaseDraft(portfolioData.portfolio)
+  }, [portfolioData.isPlanetMember, portfolioData.portfolio])
 
   if (portfolioData.isLoading) return <WyckoffLoading />
 
@@ -97,7 +97,7 @@ function PortfolioPageContent() {
       <PageHeader />
       {portfolioData.loadError && <UpgradeNotice message={portfolioData.loadError} />}
       {fullDiag.error && <UpgradeNotice message={fullDiag.error} />}
-      {portfolioData.isWhitelisted ? (
+      {portfolioData.isPlanetMember ? (
         <ManualInput
           portfolio={databaseDraft}
           fullLoading={fullDiag.loading}
@@ -119,20 +119,20 @@ function PortfolioPageContent() {
 }
 
 function usePortfolioData(userId: string | undefined) {
-  const whitelist = useWhitelistGate(userId)
+  const membership = usePlanetMembership(userId)
   const portfolio = useQuery({
     queryKey: ['portfolio', userId],
     queryFn: () => portfolioApi('GET'),
-    enabled: !!userId && whitelist.data === true,
+    enabled: !!userId && membership.data?.isActive === true,
   })
   const saveMutation = useMutation({
     mutationFn: (draft: Portfolio) => portfolioApi('PUT', draft),
     onSuccess: (saved) => portfolio.refetch().then(() => saved),
   })
-  const isWhitelisted = whitelist.data === true
+  const isPlanetMember = membership.data?.isActive === true
   return {
-    isWhitelisted,
-    isLoading: whitelist.isLoading || (isWhitelisted && portfolio.isLoading),
+    isPlanetMember,
+    isLoading: membership.isLoading || (isPlanetMember && portfolio.isLoading),
     portfolio: portfolio.data || EMPTY_PORTFOLIO,
     loadError: portfolio.error instanceof Error ? portfolio.error.message : '',
     save: (draft: Portfolio) => saveMutation.mutateAsync(draft),

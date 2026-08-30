@@ -65,8 +65,8 @@ describe('requestPortfolio', () => {
   })
 
   it('surfaces API errors', async () => {
-    const fetcher = vi.fn().mockResolvedValue(response({ error: 'Whitelist required' }, { status: 403 }))
+    const fetcher = vi.fn().mockResolvedValue(response({ error: 'Planet membership required' }, { status: 403 }))
 
-    await expect(requestPortfolio('GET', 'token', undefined, fetcher)).rejects.toThrow('Whitelist required')
+    await expect(requestPortfolio('GET', 'token', undefined, fetcher)).rejects.toThrow('Planet membership required')
   })
 })
