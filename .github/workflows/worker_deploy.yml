@@ -95,11 +95,14 @@ jobs:
         working-directory: web
         shell: bash
         run: |
-          pnpm --filter @wyckoff/api exec wrangler versions list --json > "$RUNNER_TEMP/worker-versions.json"
-          version_id="$(jq -r 'max_by(.number | tonumber).id' "$RUNNER_TEMP/worker-versions.json")"
+          pnpm --filter @wyckoff/api exec wrangler deployments status --json > "$RUNNER_TEMP/worker-deployment.json"
+          jq --exit-status --arg message "main:$DEPLOY_SHA" \
+            '.annotations["workers/message"] == $message' \
+            "$RUNNER_TEMP/worker-deployment.json" >/dev/null
+          version_id="$(jq -r '.versions[] | select(.percentage == 100).version_id' "$RUNNER_TEMP/worker-deployment.json")"
+          test -n "$version_id"
           pnpm --filter @wyckoff/api exec wrangler versions view "$version_id" --json > "$RUNNER_TEMP/worker-version.json"
           jq --exit-status '.. | objects | select(.name? == "REMOTE_RELAY")' "$RUNNER_TEMP/worker-version.json" >/dev/null
-          jq --exit-status '.. | objects | select(.tag? == "v2")' "$RUNNER_TEMP/worker-version.json" >/dev/null
       - name: Verify deployed routes
         shell: bash
         run: |

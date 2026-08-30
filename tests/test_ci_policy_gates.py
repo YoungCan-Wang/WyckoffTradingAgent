@@ -145,3 +145,7 @@ def test_worker_deploy_invokes_the_package_script_explicitly():
 
     assert "pnpm --filter @wyckoff/api run deploy --message" in workflow
     assert "pnpm --filter @wyckoff/api deploy --" not in workflow
+    assert "wrangler deployments status --json" in workflow
+    assert "select(.percentage == 100).version_id" in workflow
+    assert '.annotations["workers/message"] == $message' in workflow
+    assert 'select(.tag? == "v2")' not in workflow
