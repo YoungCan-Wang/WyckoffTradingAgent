@@ -1,4 +1,5 @@
 import { createMiddleware } from 'hono/factory'
+import { isPlanetMembershipActive } from '@wyckoff/shared'
 import type { Env } from '../app'
 import { createUserSupabase, type AuthContext } from './auth'
 
@@ -24,15 +25,5 @@ export async function isActivePlanetMember(
     .eq('user_id', userId)
     .limit(1)
   if (error || !Array.isArray(data)) return false
-  return data.some((row) => isActiveExpiry(row.expires_on))
-}
-
-function isActiveExpiry(value: unknown): boolean {
-  if (value == null || String(value).trim() === '') return true
-  const expiry = String(value).trim()
-  const date = new Date(`${expiry}T00:00:00Z`)
-  const isIsoDate = /^\d{4}-\d{2}-\d{2}$/.test(expiry)
-    && !Number.isNaN(date.valueOf())
-    && date.toISOString().slice(0, 10) === expiry
-  return isIsoDate && expiry >= new Date().toISOString().slice(0, 10)
+  return data.some((row) => isPlanetMembershipActive(row.expires_on))
 }

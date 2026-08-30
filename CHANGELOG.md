@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### 改进
+- **星球会员硬切与权限解耦**：Web、Worker、TUI 和数据库统一使用 `planet_members` 语义；会员身份不再代替个人 TickFlow/Tushare 或模型配置，单股分析只在真实行情 Key 就绪后开放；前后端到期日统一按 `Asia/Shanghai` 自然日判断。
 - **DeepSeek V4 全链路适配**：官方 Flash/Pro 统一支持 1M 上下文、`off/low/high/max` 思考强度和 Responses 联网搜索；旧 `deepseek-chat` / `deepseek-reasoner` 配置在官方端点按原思考语义迁移，代理端点保持普通兼容协议。网页专项报告、读盘室、后台任务、TUI 与桌面打包使用各自明确的完整输出策略。
 
 ### 修复

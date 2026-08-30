@@ -423,7 +423,7 @@ function TrackingLockedAccessCard() {
         <img src="/zsxq_qr.jpg" alt={t('tracking.locked.qrAlt')} className="h-auto w-full rounded-md object-contain" />
       </div>
       <div className="mt-4 grid gap-2">
-        <a href="/guide#capability-boundary" className="inline-flex items-center justify-center gap-2 rounded-lg bg-sky-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-sky-700">
+        <a href="/membership#capability-boundary" className="inline-flex items-center justify-center gap-2 rounded-lg bg-sky-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-sky-700">
           {t('tracking.locked.join')}
           <ArrowRight className="h-4 w-4" />
         </a>
