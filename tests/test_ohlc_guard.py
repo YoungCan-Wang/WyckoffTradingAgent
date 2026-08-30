@@ -42,6 +42,38 @@ def test_sanitize_map_drops_all_dirty_symbol(monkeypatch):
     assert stats["dirty_bars_dropped"] == 1
 
 
+def test_sanitize_map_drops_symbol_when_latest_bar_is_dirty(monkeypatch):
+    """最新 bar 脏掉后不能留下昨日 tip，否则漏斗会把昨收当今日。"""
+    monkeypatch.delenv("OHLCV_DIRTY_BAR_GUARD", raising=False)
+    frame = pd.DataFrame(
+        [
+            _bar(date="2026-08-01"),
+            _bar(date="2026-08-02", high=8.0, low=9.5),
+        ]
+    )
+    out, stats = sanitize_ohlcv_map({"000001": frame})
+    assert "000001" not in out
+    assert stats["dirty_symbols_dropped"] == 1
+    assert stats["dirty_bar_reasons"]["stale_tip_after_dirty_drop"] == 1
+    assert stats["dirty_bar_reasons"]["high_lt_low"] == 1
+
+
+def test_sanitize_map_keeps_symbol_when_only_older_bar_is_dirty(monkeypatch):
+    monkeypatch.delenv("OHLCV_DIRTY_BAR_GUARD", raising=False)
+    frame = pd.DataFrame(
+        [
+            _bar(date="2026-08-01", high=8.0, low=9.5),
+            _bar(date="2026-08-02"),
+        ]
+    )
+    out, stats = sanitize_ohlcv_map({"000001": frame})
+    assert list(out) == ["000001"]
+    assert len(out["000001"]) == 1
+    assert out["000001"].iloc[0]["date"] == "2026-08-02"
+    assert stats["dirty_symbols_dropped"] == 0
+    assert stats["dirty_bars_dropped"] == 1
+
+
 def test_guard_can_be_disabled(monkeypatch):
     monkeypatch.setenv("OHLCV_DIRTY_BAR_GUARD", "0")
     dirty = pd.DataFrame([_bar(high=1.0, low=2.0)])
