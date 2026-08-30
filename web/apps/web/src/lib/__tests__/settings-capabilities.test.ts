@@ -42,7 +42,7 @@ describe('settings capabilities', () => {
       tickflow: ' tf-key ',
       savedTickflow: '',
       modelProviderLabel: 'DeepSeek',
-      modelConfig: { api_key: 'deepseek-key', model: 'deepseek-chat' },
+      modelConfig: { api_key: 'deepseek-key', model: 'deepseek-v4-flash' },
       savedModelConfig: { api_key: '', model: '' },
     })
     const tickflow = findRow(rows, 'market-data')
@@ -94,13 +94,13 @@ describe('settings capabilities', () => {
       tickflow: '',
       savedTickflow: '',
       modelProviderLabel: 'DeepSeek',
-      modelConfig: { api_key: 'deepseek-key', model: 'deepseek-chat' },
-      savedModelConfig: { api_key: 'deepseek-key', model: 'deepseek-chat' },
+      modelConfig: { api_key: 'deepseek-key', model: 'deepseek-v4-flash' },
+      savedModelConfig: { api_key: 'deepseek-key', model: 'deepseek-v4-flash' },
     })
 
     expect(findRow(missingModelRows, 'reading-model').status).toBe('missing_config')
     expect(findRow(readyRows, 'reading-model').status).toBe('ready')
-    expect(findRow(readyRows, 'reading-model').badgeLabels).toEqual(['deepseek-chat'])
+    expect(findRow(readyRows, 'reading-model').badgeLabels).toEqual(['deepseek-v4-flash'])
   })
 
   it('marks model unsaved when provider switched before save', () => {
@@ -108,7 +108,7 @@ describe('settings capabilities', () => {
       tickflow: 'tf-key',
       savedTickflow: 'tf-key',
       modelProviderLabel: 'DeepSeek',
-      modelConfig: { api_key: 'deepseek-key', model: 'deepseek-chat' },
+      modelConfig: { api_key: 'deepseek-key', model: 'deepseek-v4-flash' },
       savedModelConfig: { api_key: 'old-key', model: 'old-model' },
       providerMatchesSaved: false,
     })
@@ -122,8 +122,8 @@ describe('settings capabilities', () => {
       tickflow: 'tf-key',
       savedTickflow: 'tf-key',
       modelProviderLabel: 'DeepSeek',
-      modelConfig: { api_key: 'deepseek-key', model: 'deepseek-chat' },
-      savedModelConfig: { api_key: 'deepseek-key', model: 'deepseek-chat' },
+      modelConfig: { api_key: 'deepseek-key', model: 'deepseek-v4-flash' },
+      savedModelConfig: { api_key: 'deepseek-key', model: 'deepseek-v4-flash' },
     })
 
     expect(summarizeSettingsCapabilities(rows)).toMatchObject({

@@ -23,7 +23,32 @@ def test_infer_model_info_exposes_context_and_reasoning():
 
     assert info.context_window == 1_000_000
     assert info.supports_reasoning is True
-    assert "medium" in info.thinking_levels
+    assert info.thinking_levels == ("off", "low", "medium", "high")
+
+
+def test_infer_deepseek_v4_metadata():
+    info = infer_model_info({"provider_name": "deepseek", "model": "deepseek-v4-pro"})
+
+    assert info.context_window == 1_000_000
+    assert info.supports_reasoning is True
+    assert info.thinking_levels == ("off", "low", "high", "max")
+
+
+def test_infer_retired_deepseek_alias_metadata():
+    info = infer_model_info({"provider_name": "deepseek", "model": "deepseek-chat"})
+
+    assert info.context_window == 1_000_000
+    assert info.supports_reasoning is True
+    assert info.thinking_levels == ("off", "low", "high", "max")
+
+    proxy = infer_model_info(
+        {
+            "provider_name": "deepseek",
+            "model": "deepseek-chat",
+            "base_url": "https://proxy.example.com/v1",
+        }
+    )
+    assert proxy.context_window == 64_000
 
 
 def test_infer_minimax_m3_metadata():

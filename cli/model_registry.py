@@ -9,6 +9,7 @@ from typing import Any
 
 from cli.model_catalog import catalog_context_window, looks_like_openrouter
 from cli.model_metadata import infer_context_window
+from core.deepseek import DEEPSEEK_OFFICIAL_ORIGIN, DEEPSEEK_REASONING_LEVELS, resolve_official_deepseek_model
 
 
 @dataclass(frozen=True)
@@ -52,7 +53,7 @@ _MODEL_PATTERNS: tuple[_ModelPattern, ...] = (
         re.compile(r"\bo[34](?:-|$)|gpt-5|reasoning", re.I), True, ("off", "minimal", "low", "medium", "high")
     ),
     _ModelPattern(re.compile(r"gpt-4o|gpt-4\.1|gpt-4", re.I), False),
-    _ModelPattern(re.compile(r"deepseek", re.I), True, ("off", "low", "medium", "high")),
+    _ModelPattern(re.compile(r"deepseek-(?:v4|chat|reasoner)", re.I), True, DEEPSEEK_REASONING_LEVELS),
     _ModelPattern(re.compile(r"minimax-m3", re.I), True, ("off", "adaptive")),
     _ModelPattern(re.compile(r"qwen|kimi|moonshot|minimax|mistral", re.I), False),
     _ModelPattern(re.compile(r"longcat|step", re.I), False),
@@ -88,11 +89,18 @@ def infer_model_info(config: dict[str, Any]) -> ModelInfo:
 
     provider = str(config.get("provider_name", "") or "")
     model = str(config.get("model", "") or "")
-    pattern_info = next((item for item in _MODEL_PATTERNS if item.pattern.search(model)), None)
+    base_url = str(config.get("base_url", "") or "")
+    metadata_model = model
+    if provider == "deepseek":
+        metadata_model, _ = resolve_official_deepseek_model(
+            model,
+            base_url or f"{DEEPSEEK_OFFICIAL_ORIGIN}/v1",
+        )
+    pattern_info = next((item for item in _MODEL_PATTERNS if item.pattern.search(metadata_model)), None)
     context_window = _int_or_none(config.get("context_window"))
     window_source = "config" if context_window is not None else ""
     if context_window is None:
-        context_window, window_source = _resolve_window(model, str(config.get("base_url", "") or ""))
+        context_window, window_source = _resolve_window(metadata_model, base_url)
     supports_reasoning = (
         bool(config.get("supports_reasoning"))
         if "supports_reasoning" in config

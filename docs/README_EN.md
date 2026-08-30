@@ -253,7 +253,7 @@ Daily automations (GitHub Actions plus Codex Automation):
 
 ## Model Support
 
-**CLI**: Gemini / Claude / OpenAI — switch with `/model`; any OpenAI-compatible endpoint works (DeepSeek, Qwen, Kimi, etc.).
+**CLI**: Gemini / Claude / OpenAI-compatible endpoints plus a dedicated official DeepSeek V4 adapter. DeepSeek Flash/Pro support `off/low/high/max` reasoning effort and a 1M context window. Retired official aliases are migrated with their prior reasoning semantics, while custom proxy endpoints keep generic OpenAI-compatible request fields.
 
 **Web / Pipeline**: 1Route / Gemini / OpenAI / Zhipu / Minimax / DeepSeek / Qwen / Volcengine. Kimi and other OpenAI-compatible providers can be configured via custom `base_url` / `custom_providers`.
 

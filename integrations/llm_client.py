@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from dataclasses import dataclass
 
 from integrations._llm_types import (
     DEFAULT_GEMINI_MODEL,
@@ -38,11 +39,19 @@ GEMINI_MAX_OUTPUT_TOKENS_DEFAULT = 32768
 GEMINI_MAX_RETRIES = 3
 GEMINI_RETRY_DELAY = 2.0
 
-# 推理型模型思考耗尽 max_tokens 时的放大重试。放大 2 倍是按生产实测取的：
-# deepseek-v4-flash 在 6000 下 100% 返回空正文，12000 下可返回。上限设 32768
-# 防止无界放大——真需要更大预算的提示应该拆分，不是无限抬预算。
+# 推理与正文共享输出预算；只允许一次有上限的扩容，避免把截断误判为成功，
+# 也避免复杂提示通过无限抬高预算掩盖任务本身需要拆分的问题。
 OPENAI_COMPATIBLE_BUDGET_RETRY_FACTOR = 2
 OPENAI_COMPATIBLE_MAX_BUDGET = 32768
+
+
+@dataclass(frozen=True)
+class _CompatibleCompletion:
+    text: str
+    finish_reason: str
+    completion_tokens: int
+    reasoning_tokens: int
+    reasoning_length: int
 
 
 def get_provider_credentials(provider: str) -> tuple[str, str, str]:
@@ -145,6 +154,9 @@ def _call_litellm_if_enabled(
 ) -> str | None:
     if not _litellm_enabled():
         return None
+    if provider == "deepseek":
+        logger.info("[llm] DeepSeek uses the official native adapter even when LiteLLM is enabled")
+        return None
     if images:
         logger.info("[llm] LITELLM_ENABLED=1 but images present, using native Gemini implementation")
         return None
@@ -205,6 +217,8 @@ def _call_native_llm(
             user_message=user_message,
             timeout=timeout,
             max_output_tokens=max_output_tokens,
+            provider=provider,
+            allow_truncated_text=allow_truncated_text,
         )
     raise ValueError(f"未实现的供应商: {provider}")
 
@@ -280,6 +294,8 @@ def _call_openai_compatible(
     user_message: str,
     timeout: int,
     max_output_tokens: int | None,
+    provider: str = "",
+    allow_truncated_text: bool = False,
 ) -> str:
     """通过 OpenAI 兼容的 /chat/completions 接口调用（OpenAI/智谱/DeepSeek/Qwen 等）。"""
     url = base_url.rstrip("/") + "/chat/completions"
@@ -287,23 +303,75 @@ def _call_openai_compatible(
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    max_tokens = max(256, int(max_output_tokens) if max_output_tokens is not None else 8192)
-    text, retry_budget = _openai_compatible_attempt(
-        url, headers, model, system_prompt, user_message, timeout, max_tokens
+    from core.deepseek import (
+        DEEPSEEK_BACKGROUND_MIN_OUTPUT_TOKENS,
+        is_deepseek_v4_model,
+        is_official_deepseek_url,
+        resolve_official_deepseek_model,
     )
-    if text:
-        return text
-    # 推理型模型（deepseek-v4-flash 等）把思考写进 reasoning_content，与正文共用 max_tokens。
-    # 思考吃满预算时 content 为空、finish_reason=length，此前只报「返回内容为空」，
-    # 既看不出根因也无法自救。这里放大一次预算重试——生产实测 flash 在 6000 下 100% 失败、
-    # 12000 下可返回正文。
+
+    resolved_model, legacy_level = resolve_official_deepseek_model(model, base_url)
+    official_deepseek = (
+        provider == "deepseek" and is_official_deepseek_url(base_url) and is_deepseek_v4_model(resolved_model)
+    )
+    minimum = DEEPSEEK_BACKGROUND_MIN_OUTPUT_TOKENS if official_deepseek else 256
+    max_tokens = max(minimum, int(max_output_tokens) if max_output_tokens is not None else 8192)
+    completion = _openai_compatible_attempt(
+        url,
+        headers,
+        resolved_model,
+        system_prompt,
+        user_message,
+        timeout,
+        max_tokens,
+        official_deepseek=official_deepseek,
+        reasoning_level=legacy_level or "low",
+    )
+    if _completion_is_acceptable(completion, official_deepseek, allow_truncated_text):
+        return completion.text
+    retry_budget = _compatible_retry_budget(completion, max_tokens, official_deepseek)
     if retry_budget:
-        text, _ = _openai_compatible_attempt(
-            url, headers, model, system_prompt, user_message, timeout, retry_budget, is_retry=True
+        completion = _openai_compatible_attempt(
+            url,
+            headers,
+            resolved_model,
+            system_prompt,
+            user_message,
+            timeout,
+            retry_budget,
+            official_deepseek=official_deepseek,
+            reasoning_level=legacy_level or "low",
         )
-        if text:
-            return text
+        if _completion_is_acceptable(completion, official_deepseek, allow_truncated_text):
+            return completion.text
+    if completion.text and completion.finish_reason == "length":
+        raise RuntimeError("OpenAI 兼容接口输出被截断，未返回完整正文")
     raise RuntimeError("OpenAI 兼容接口返回内容为空")
+
+
+def _completion_is_acceptable(
+    completion: _CompatibleCompletion,
+    strict_completion: bool,
+    allow_truncated_text: bool,
+) -> bool:
+    if not completion.text:
+        return False
+    return not strict_completion or completion.finish_reason != "length" or allow_truncated_text
+
+
+def _compatible_retry_budget(
+    completion: _CompatibleCompletion,
+    max_tokens: int,
+    strict_completion: bool,
+) -> int:
+    if completion.finish_reason != "length":
+        return 0
+    if completion.text and not strict_completion:
+        return 0
+    if not completion.text and completion.reasoning_tokens <= 0 and completion.reasoning_length <= 0:
+        return 0
+    budget = min(max_tokens * OPENAI_COMPATIBLE_BUDGET_RETRY_FACTOR, OPENAI_COMPATIBLE_MAX_BUDGET)
+    return budget if budget > max_tokens else 0
 
 
 def _openai_compatible_attempt(
@@ -315,12 +383,35 @@ def _openai_compatible_attempt(
     timeout: int,
     max_tokens: int,
     *,
-    is_retry: bool = False,
-) -> tuple[str, int]:
-    """发一次请求。返回 (正文, 建议的重试预算)；正文非空时重试预算为 0。"""
+    official_deepseek: bool = False,
+    reasoning_level: str = "low",
+) -> _CompatibleCompletion:
+    """发一次请求并保留截断诊断，是否重试由调用场景决定。"""
     import requests
 
-    payload = {
+    payload = _openai_compatible_payload(
+        model,
+        system_prompt,
+        user_message,
+        max_tokens,
+        official_deepseek,
+        reasoning_level,
+    )
+    resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
+    if resp.status_code != 200:
+        raise RuntimeError(f"OpenAI 兼容接口 HTTP {resp.status_code}: {resp.text[:500]}")
+    return _parse_openai_compatible_response(resp.json(), model, max_tokens)
+
+
+def _openai_compatible_payload(
+    model: str,
+    system_prompt: str,
+    user_message: str,
+    max_tokens: int,
+    official_deepseek: bool,
+    reasoning_level: str,
+) -> dict:
+    payload: dict = {
         "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
@@ -329,10 +420,19 @@ def _openai_compatible_attempt(
         "max_tokens": max_tokens,
         "temperature": 0.4,
     }
-    resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
-    if resp.status_code != 200:
-        raise RuntimeError(f"OpenAI 兼容接口 HTTP {resp.status_code}: {resp.text[:500]}")
-    data = resp.json()
+    if official_deepseek:
+        from core.deepseek import deepseek_chat_extra_body
+
+        payload.pop("temperature", None)
+        payload.update(deepseek_chat_extra_body(reasoning_level))
+    return payload
+
+
+def _parse_openai_compatible_response(
+    data: dict,
+    model: str,
+    max_tokens: int,
+) -> _CompatibleCompletion:
     choices = data.get("choices") or []
     if not choices:
         raise RuntimeError("OpenAI 兼容接口返回无 choices")
@@ -343,33 +443,27 @@ def _openai_compatible_attempt(
     usage = data.get("usage") or {}
     reasoning_tokens = int((usage.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0)
     completion_tokens = int(usage.get("completion_tokens") or 0)
-    if text:
-        return text, 0
-
-    logger.error(
-        "openai_compatible model=%s 返回空正文: finish_reason=%s max_tokens=%s "
-        "completion_tokens=%s reasoning_tokens=%s reasoning_len=%s is_retry=%s",
-        model,
-        finish_reason,
-        max_tokens,
-        completion_tokens,
-        reasoning_tokens,
-        len(str(msg.get("reasoning_content") or "")),
-        is_retry,
+    completion = _CompatibleCompletion(
+        text=text,
+        finish_reason=finish_reason.lower(),
+        completion_tokens=completion_tokens,
+        reasoning_tokens=reasoning_tokens,
+        reasoning_length=len(str(msg.get("reasoning_content") or "")),
     )
-    if is_retry or finish_reason.lower() != "length" or reasoning_tokens <= 0:
-        return "", 0
-    retry_budget = min(max_tokens * OPENAI_COMPATIBLE_BUDGET_RETRY_FACTOR, OPENAI_COMPATIBLE_MAX_BUDGET)
-    if retry_budget <= max_tokens:
-        return "", 0
-    logger.warning(
-        "openai_compatible model=%s 推理耗尽预算(%s/%s)，放大到 %s 重试一次",
-        model,
-        reasoning_tokens,
-        max_tokens,
-        retry_budget,
-    )
-    return "", retry_budget
+    if not text or completion.finish_reason == "length":
+        log = logger.warning if text else logger.error
+        log(
+            "openai_compatible model=%s 返回%s正文: finish_reason=%s max_tokens=%s "
+            "completion_tokens=%s reasoning_tokens=%s reasoning_len=%s",
+            model,
+            "截断" if text else "空",
+            completion.finish_reason,
+            max_tokens,
+            completion.completion_tokens,
+            completion.reasoning_tokens,
+            completion.reasoning_length,
+        )
+    return completion
 
 
 def _gemini_http_options(timeout: int, base_url: str) -> dict:

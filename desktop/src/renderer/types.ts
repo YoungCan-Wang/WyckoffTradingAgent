@@ -118,6 +118,7 @@ export interface ModelEntry {
   provider_name: string
   /** 不是机密（密钥才是），用来区分同名的自建端点。 */
   base_url: string
+  thinking_level: string
   has_key: boolean
 }
 

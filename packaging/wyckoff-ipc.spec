@@ -26,6 +26,7 @@ HIDDEN = [
     "supabase_functions",
     "anthropic",
     "openai",
+    "cli.providers.deepseek",
     "google.genai",
     "akshare",
     "yaml",

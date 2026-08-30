@@ -273,8 +273,8 @@ def _model_add():
     if not model_id:
         print("已取消")
         return
-    provider = input("供应商 (gemini/openai/claude): ").strip().lower()
-    if provider not in ("gemini", "openai", "claude"):
+    provider = input("供应商 (gemini/openai/deepseek/claude): ").strip().lower()
+    if provider not in ("gemini", "openai", "deepseek", "claude"):
         print(f"✗ 不支持: {provider}")
         sys.exit(1)
     import getpass
@@ -283,11 +283,23 @@ def _model_add():
     if not api_key:
         print("已取消")
         return
-    default_models = {"gemini": "gemini-2.0-flash", "openai": "gpt-4o", "claude": "claude-sonnet-4-20250514"}
+    default_models = {
+        "gemini": "gemini-2.0-flash",
+        "openai": "gpt-4o",
+        "deepseek": "deepseek-v4-flash",
+        "claude": "claude-sonnet-4-20250514",
+    }
     model = input(f"模型名 (留空使用 {default_models.get(provider, '')}): ").strip()
     model = model or default_models.get(provider, "")
     base_url = input("Base URL (留空使用默认): ").strip()
     entry = {"id": model_id, "provider_name": provider, "api_key": api_key, "model": model, "base_url": base_url}
+    if provider == "deepseek":
+        level = input("思考强度 (off/low/high/max，留空使用 high): ").strip().lower()
+        level = level or "high"
+        if level not in {"off", "low", "high", "max"}:
+            print(f"✗ 不支持的思考强度: {level}")
+            return
+        entry["thinking_level"] = level
     save_model_entry(entry)
     if len(load_model_configs()) == 1:
         set_default_model(model_id)
@@ -340,6 +352,7 @@ def _cmd_model(args):
                 "api_key": api_key,
                 "model": args.model_name or "",
                 "base_url": args.base_url or "",
+                "thinking_level": (args.thinking_level or "") if provider == "deepseek" else "",
             }
         )
         print(f"✓ 模型 {model_id} 已保存")
@@ -1927,6 +1940,9 @@ def _add_auth_model_config_parsers(sub) -> None:
     p_model.add_argument("api_key", nargs="?", default="", help="API Key (set 时)")
     p_model.add_argument("--model", dest="model_name", default="", help="模型名")
     p_model.add_argument("--base-url", dest="base_url", default="", help="Base URL")
+    p_model.add_argument(
+        "--thinking-level", choices=("off", "low", "high", "max"), default="", help="DeepSeek 思考强度"
+    )
     p_model.add_argument("--input-per-1m", type=float, default=None, help="输入 token 每百万成本（USD，cost 时）")
     p_model.add_argument("--output-per-1m", type=float, default=None, help="输出 token 每百万成本（USD，cost 时）")
     p_model.add_argument("--context-window", type=int, default=None, help="上下文窗口 token 数（cost 时）")

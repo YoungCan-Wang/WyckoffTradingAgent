@@ -142,6 +142,31 @@ def test_runtime_auto_continue_keeps_full_answer():
     assert "第一部分" in assistants[0]["content"] and "续写完成" in assistants[0]["content"]
 
 
+def test_runtime_auto_continue_replays_reasoning_without_text():
+    provider = ScriptedProvider(
+        rounds=[
+            [
+                {"type": "thinking_delta", "text": "上一轮推理"},
+                {"type": "finish", "reason": "length"},
+                {"type": "usage", "input_tokens": 1, "output_tokens": 8},
+            ],
+            [
+                {"type": "text_delta", "text": "续写完成。"},
+                {"type": "finish", "reason": "stop"},
+                {"type": "usage", "input_tokens": 1, "output_tokens": 4},
+            ],
+        ]
+    )
+
+    events = list(AgentRuntime(provider, StubToolRegistry()).run_stream([{"role": "user", "content": "写长文"}]))
+
+    second_messages = provider.calls[1]["messages"]
+    assistant = next(message for message in second_messages if message["role"] == "assistant")
+    assert assistant["content"] == ""
+    assert assistant["reasoning_content"] == "上一轮推理"
+    assert events[-1]["text"] == "续写完成。"
+
+
 def test_runtime_natural_finish_at_max_rounds_no_false_continue():
     """P1: 恰好在轮次上限自然 stop 时不得误判 step-limit。"""
 

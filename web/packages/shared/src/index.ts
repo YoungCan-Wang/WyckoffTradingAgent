@@ -12,6 +12,19 @@ export {
 } from './constants'
 export type { Provider } from './constants'
 export {
+  DEEPSEEK_AGENT_MAX_OUTPUT_TOKENS,
+  DEEPSEEK_CONTEXT_WINDOW,
+  DEEPSEEK_OFFICIAL_ORIGIN,
+  DEEPSEEK_REPORT_MAX_OUTPUT_TOKENS,
+  deepSeekResponsesReasoningBody,
+  deepSeekThinkingBody,
+  isDeepSeekV4Model,
+  isOfficialDeepSeek,
+  isOfficialDeepSeekBaseUrl,
+  resolveOfficialDeepSeekModel,
+} from './deepseek'
+export type { DeepSeekReasoningLevel } from './deepseek'
+export {
   normalizeGeminiChunk,
   normalizeGeminiSseLine,
   normalizeGeminiStream,

@@ -37,6 +37,7 @@ test('PyInstaller hidden imports use current Supabase package names', () => {
   )
   assert.match(source, /"supabase_auth"/)
   assert.match(source, /"supabase_functions"/)
+  assert.match(source, /"cli\.providers\.deepseek"/)
   assert.doesNotMatch(source, /"gotrue"|"supafunc"/)
 })
 

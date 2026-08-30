@@ -2,8 +2,11 @@
 
 ## Unreleased
 
+### 改进
+- **DeepSeek V4 全链路适配**：官方 Flash/Pro 统一支持 1M 上下文、`off/low/high/max` 思考强度和 Responses 联网搜索；旧 `deepseek-chat` / `deepseek-reasoner` 配置在官方端点按原思考语义迁移，代理端点保持普通兼容协议。网页专项报告、读盘室、后台任务、TUI 与桌面打包使用各自明确的完整输出策略。
+
 ### 修复
-- **TUI 模型故障切换**：本地和云端的 `deepseek` 配置统一走 OpenAI-compatible transport；备用配置不可用时不再覆盖默认模型的原始错误，状态栏同步显示实际活跃模型。
+- **TUI 模型故障切换**：本地和云端的 `deepseek` 配置统一识别为专用官方 provider；备用配置不可用时不再覆盖默认模型的原始错误，状态栏同步显示实际活跃模型。
 
 ## 0.9.3 (2026-05-19)
 

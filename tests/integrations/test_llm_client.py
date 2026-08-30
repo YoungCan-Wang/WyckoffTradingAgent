@@ -63,24 +63,27 @@ class TestLiteLLMSwitch:
             mock_litellm.assert_called_once()
 
     def test_litellm_enabled_true_string(self):
-        """LITELLM_ENABLED=true 也应生效。"""
+        """DeepSeek 始终走官方适配器，避免 LiteLLM 丢失推理契约。"""
         with (
             patch.dict(os.environ, {"LITELLM_ENABLED": "true"}),
             patch(
                 "integrations.llm_adapter.call_llm_via_litellm",
                 return_value="litellm reply",
-            ),
+            ) as mock_litellm,
+            patch("integrations.llm_client._call_openai_compatible", return_value="native reply") as mock_native,
         ):
             from integrations.llm_client import call_llm
 
             result = call_llm(
                 provider="deepseek",
-                model="deepseek-chat",
+                model="deepseek-v4-flash",
                 api_key="fake-key",
                 system_prompt="test",
                 user_message="hello",
             )
-            assert result == "litellm reply"
+            assert result == "native reply"
+            mock_litellm.assert_not_called()
+            mock_native.assert_called_once()
 
     def test_litellm_enabled_with_images_falls_back(self):
         """LITELLM_ENABLED=1 但带 images 时，降级为原生实现。"""
