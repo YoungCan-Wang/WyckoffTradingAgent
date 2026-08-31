@@ -67,16 +67,32 @@ test('工具失败与普通错误分开', () => {
   assert.equal(s.blocks[0].error, '超时')
 })
 
-test('审批事件整条留着 —— 卡片要用里面的参数', () => {
+test('确认请求整条留着 —— 卡片要用里面的参数', () => {
   const s = applyEvent(turn(), {
-    type: 'approval_pending', id: 7, approval_id: 'ap1', summary: '卖出', args: { code: '600519' }
+    type: 'confirm_request', question_id: 'q1', summary: '卖出', args: { code: '600519' }
   })
-  assert.equal(s.blocks[0].kind, 'approval')
-  assert.equal(s.blocks[0].event.approval_id, 'ap1')
+  assert.equal(s.blocks[0].kind, 'confirm')
+  // question_id 丢了就答不回去 —— 那一轮会一直等到超时
+  assert.equal(s.blocks[0].event.question_id, 'q1')
   assert.equal(s.blocks[0].event.args.code, '600519')
 })
 
+test('提问请求走自己的块', () => {
+  const s = applyEvent(turn(), {
+    type: 'question_request', question_id: 'q2', question: '要几股?', options: ['100', '200']
+  })
+  assert.equal(s.blocks[0].kind, 'question')
+  assert.deepEqual(s.blocks[0].event.options, ['100', '200'])
+})
 
+test('等待心跳不画块', () => {
+  // waiting_for_user 只是喂 bridge 的静默看门狗。画出来就会在等答复的这段时间里
+  // 每 20 秒堆一行重复文案。
+  const a = applyEvent(turn(), { type: 'confirm_request', question_id: 'q3' })
+  const b = applyEvent(a, { type: 'waiting_for_user', question_id: 'q3' })
+  assert.equal(b.blocks.length, 1)
+  assert.equal(b, a, '没变化就该返回同一个对象')
+})
 
 
 

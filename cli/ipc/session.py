@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import queue
 import threading
 import uuid
 from collections.abc import Iterator
@@ -15,6 +16,18 @@ from typing import Any
 from cli.text_repair import repair_text
 
 logger = logging.getLogger(__name__)
+
+# 前端答复问题的等待上限。
+#
+# 卡在 180 秒以下是硬约束：桌面端的 bridge 对每个请求有 180s 静默看门狗
+# （desktop/src/python-bridge.js 的 IDLE_TIMEOUT_MS），一旦超时它会替这一轮补发
+# error+end，前端那一轮就收尾了 —— 之后我们再发答复事件也没人接。所以这里等
+# 150 秒，留 30 秒余量给答复往返。
+ASK_TIMEOUT_SECONDS = 150.0
+
+# 等待期间的心跳间隔。不发心跳的话，bridge 的静默计时器会在 180s 到点，
+# 而人在界面上思考一两分钟是很正常的事。
+ASK_HEARTBEAT_SECONDS = 20.0
 
 # 与 TUI 一致：多轮对话保留在内存里，前端不必每次重传历史。
 MAX_HISTORY_MESSAGES = 80
@@ -36,6 +49,46 @@ _session_lock = threading.RLock()
 _turn_gate = threading.RLock()
 
 
+class _PendingQuestion:
+    """一个正在等前端作答的问题。
+
+    工具线程在 `wait()` 上阻塞，前端的答复经另一个 IPC worker 走 `answer()` 进来
+    （stdio 是 4 个 worker 的线程池，答复不会排在被阻塞的那一轮后面）。
+    """
+
+    __slots__ = ("question_id", "event", "_answer", "_lock")
+
+    def __init__(self, question_id: str) -> None:
+        self.question_id = question_id
+        self.event = threading.Event()
+        self._answer = ""
+        self._lock = threading.Lock()
+
+    def answer(self, value: str) -> bool:
+        """记下答复。重复作答返回 False —— 第一个答复才算。"""
+        with self._lock:
+            if self.event.is_set():
+                return False
+            self._answer = value
+            self.event.set()
+            return True
+
+    def wait(self, emit: Any) -> str | None:
+        """等答复，返回 None 表示超时。
+
+        `emit` 每隔 ASK_HEARTBEAT_SECONDS 调一次，用来喂 bridge 的静默看门狗。
+        """
+        waited = 0.0
+        while waited < ASK_TIMEOUT_SECONDS:
+            slice_s = min(ASK_HEARTBEAT_SECONDS, ASK_TIMEOUT_SECONDS - waited)
+            if self.event.wait(timeout=slice_s):
+                with self._lock:
+                    return self._answer
+            waited += slice_s
+            emit()
+        return None
+
+
 class DesktopSession:
     """一个 IPC 进程内的对话状态。审批闸门把写操作交给前端确认。"""
 
@@ -44,7 +97,11 @@ class DesktopSession:
         self._tools: Any = None
         self._provider: Any = None
         self._mcp_manager: Any = None
-        self._pending_confirms: list[dict[str, Any]] = []
+        # 本轮要插进事件流的东西（确认卡、提问卡）。工具跑在线程池里，没法直接
+        # yield，所以先进队列，由 _run_turn 的产出循环捞出来发走。
+        self._outbox: queue.Queue[dict[str, Any]] = queue.Queue()
+        self._pending_question: _PendingQuestion | None = None
+        self._question_lock = threading.Lock()
         self._user_id = ""
         self._turn_lock = threading.RLock()
         self.ready_error = ""
@@ -149,7 +206,7 @@ class DesktopSession:
         )
         if self._provider is not None:
             self._tools.set_provider(self._provider)
-        # 桌面端有 UI，但确认要走前端；这里先入队，由 approve_decide 执行。
+        # 确认与提问都在当轮对话里就地问，阻塞等前端作答（见 _ask_inline）。
         self._tools.set_confirm_callback(self._confirm)
         self._tools.set_ask_user_question_callback(self._ask)
         self._start_mcp()
@@ -186,7 +243,18 @@ class DesktopSession:
     # -- 工具闸门 -------------------------------------------------------------
 
     def _confirm(self, name: str, args: dict[str, Any]) -> dict[str, str]:
-        """写操作入待批准队列，由前端的审批卡决定，不阻塞当前轮。"""
+        """就地问用户「这个写操作要不要执行」，等到答复再放行。
+
+        原来是入队 + 返回 queued，让用户去「审批」页批准，由 approve_decide 在
+        另一个请求里执行。那条路有两个问题：确认脱离了发起它的对话（用户批完回来
+        找不到上下文），而且那一轮往往没有正文，历史落盘被 `if reply` 跳过。
+
+        现在按它本来的性质处理 —— 这就是一次 ask_user_question：卡片发进当轮的
+        事件流，工具线程阻塞等答复，同意就在**同一轮**里执行。人不在（超时）按
+        未作答处理，绝不代替用户做决定。
+
+        无人值守的定时任务不走这里，走 cli/headless.py 的 DaemonGuard（仍然入队）。
+        """
         from cli import approval_queue as aq
         from cli.approval_policy import classify, explain, nav_ratio
 
@@ -195,40 +263,120 @@ class DesktopSession:
         summary = aq.summarize(name, args)
         reason = explain(name, args, nav)
         ratio = nav_ratio(args, nav)
-        approval_id = aq.enqueue(
-            name,
-            args,
-            risk=risk,
-            source="desktop",
-            summary=summary,
-            user_id=self._user_id,
-            risk_reason=reason,
-            nav_ratio=ratio,
-        )
-        self._pending_confirms.append(
+        answer = self._ask_inline(
             {
-                "approval_id": approval_id,
+                "type": "confirm_request",
                 "tool_name": name,
                 "summary": summary,
                 "risk": risk,
-                "args": args,
+                "args": aq.sanitized_args(args),
                 "risk_reason": reason,
                 "nav_ratio": ratio,
             }
         )
-        return {
-            "action": "queued",
-            "message": (
-                f"操作 [{name}] 已提交审批（编号 {approval_id}），尚未执行。"
-                "这不是拒绝，也不是失败——等待用户在界面上批准。"
-                "不要重试，不要声称已完成，直接说明已提交审批。"
-            ),
-        }
+        decided = "" if answer is None else str(answer)
+        self._record_decision(name, args, risk=risk, summary=summary, reason=reason, ratio=ratio, decision=decided)
+        if decided == "allow":
+            return {"action": "allow"}
+        if decided == "deny":
+            return {"action": "deny"}
+        # 没答复。必须走 timeout 而不是 deny —— 说成「用户拒绝」是伪造一个没发生
+        # 过的决定，模型只能照着那个措辞写，用户会读到自己从没做过的选择。
+        return {"action": "timeout"}
 
-    def _ask(self, *_args: Any, **_kwargs: Any) -> str:
-        from cli.tools import ASK_USER_TIMEOUT_SENTINEL
+    def _record_decision(
+        self,
+        name: str,
+        args: dict[str, Any],
+        *,
+        risk: str,
+        summary: str,
+        reason: str,
+        ratio: float,
+        decision: str,
+    ) -> None:
+        """把这次确认记成一条流水。只是记录，没有状态机 —— 没人靠它推进执行。"""
+        try:
+            from cli import approval_queue as aq
 
-        return ASK_USER_TIMEOUT_SENTINEL
+            aq.log_decision(
+                name,
+                args,
+                risk=risk,
+                source="desktop",
+                summary=summary,
+                user_id=self._user_id,
+                risk_reason=reason,
+                nav_ratio=ratio,
+                decision=decision,
+                session_id=self._session_id,
+            )
+        except Exception:
+            logger.debug("approval record failed", exc_info=True)
+
+    def _ask(
+        self,
+        question: str,
+        options: list[str] | None = None,
+        allow_free_text: bool = True,
+        default_answer: str = "",
+    ) -> str:
+        """ask_user_question 的桌面实现：问题进事件流，阻塞等前端作答。
+
+        原来这里直接返回超时哨兵（桌面端没有可问的地方），于是模型每次想确认
+        什么都只能拿到「问不了」。
+        """
+        answer = self._ask_inline(
+            {
+                "type": "question_request",
+                "question": str(question or ""),
+                "options": list(options or []),
+                "allow_free_text": bool(allow_free_text),
+                "default_answer": str(default_answer or ""),
+            }
+        )
+        if answer is None:
+            from cli.tools import ASK_USER_TIMEOUT_SENTINEL
+
+            return default_answer or ASK_USER_TIMEOUT_SENTINEL
+        return answer
+
+    def _ask_inline(self, payload: dict[str, Any]) -> str | None:
+        """发一张卡片到当轮事件流，阻塞等前端答复。超时返回 None。
+
+        能这么写是因为 IPC 是 4 worker 的线程池（cli/ipc/stdio.py）：答复作为另一个
+        请求进来，落在别的 worker 上，不会排在被阻塞的这一轮后面。
+        """
+        question_id = uuid.uuid4().hex[:12]
+        pending = _PendingQuestion(question_id)
+        with self._question_lock:
+            # 一轮里同时问两件事不该发生（工具批次会并发，但确认闸门是串行的）。
+            # 真撞上时让后来者直接超时，而不是覆盖掉前一个 —— 覆盖会让前一个
+            # 永久挂在 wait 上。
+            if self._pending_question is not None:
+                logger.warning("another question is already pending; refusing to ask")
+                return None
+            self._pending_question = pending
+        try:
+            self._outbox.put({**payload, "question_id": question_id})
+            return pending.wait(lambda: self._outbox.put({"type": "waiting_for_user", "question_id": question_id}))
+        finally:
+            with self._question_lock:
+                if self._pending_question is pending:
+                    self._pending_question = None
+
+    def answer_question(self, question_id: str, answer: str) -> bool:
+        """前端送答复进来（由 IPC 的 chat_answer 方法调用）。"""
+        with self._question_lock:
+            pending = self._pending_question
+        if pending is None or pending.question_id != question_id:
+            return False
+        return pending.answer(answer)
+
+    @property
+    def pending_question_id(self) -> str:
+        with self._question_lock:
+            return self._pending_question.question_id if self._pending_question else ""
 
     def _nav(self) -> float:
         try:
@@ -283,10 +431,9 @@ class DesktopSession:
         只在身份变化时重建 ToolRegistry：它带着确认回调和 MCP 管理器，无条件
         重建会把待审批状态和 MCP 连接一起丢掉。
 
-        并发安全：这个方法会清空 _messages 和 _pending_confirms，而 run_turn
-        正在流式产出时也在读写它们。对话进行中另一个进程改了登录态（登录/登出）
-        时，若在这里直接重建，那一轮的回复会 append 进新账号的空历史，且该轮
-        入队的审批不会发出 approval_pending 事件（审批仍在队列里，只是界面不弹）。
+        并发安全：这个方法会清空 _messages，而 run_turn 正在流式产出时也在读写
+        它。对话进行中另一个进程改了登录态（登录/登出）时，若在这里直接重建，
+        那一轮的回复会 append 进新账号的空历史。
 
         但**不能无条件等锁**：run_turn 持锁贯穿整个流式输出（可能几分钟），
         一次读持仓就会挂到对话结束，期间不发任何事件 —— 直接撞上桥的静默超时，
@@ -331,9 +478,9 @@ class DesktopSession:
         if self._mcp_manager is not None:
             tools.set_mcp_manager(self._mcp_manager)
         self._tools = tools
-        # 换人了，上一个账号的对话历史和待审批不能留给新账号。
+        # 换人了，上一个账号的对话历史不能留给新账号。
         self._messages = []
-        self._pending_confirms = []
+        self._drain_outbox()
         return True
 
     @property
@@ -485,7 +632,7 @@ class DesktopSession:
         from core.prompts import CHAT_AGENT_SYSTEM_PROMPT
         from integrations.local_auth import load_config
 
-        self._pending_confirms.clear()
+        self._drain_outbox()
         self._messages.append({"role": "user", "content": text})
         self._chatlog_save("user", text)
         self._touch_session(text)
@@ -500,38 +647,102 @@ class DesktopSession:
         )
 
         try:
-            for event in runtime.run_stream(list(self._messages), prompt):
+            for event in self._stream_with_outbox(runtime, prompt):
+                if not isinstance(event, dict):
+                    yield _project(event)
+                    continue
+                # 确认卡 / 提问卡是我们自己塞进来的，不过 _project 的白名单。
+                if event.get("__inline__"):
+                    yield {k: v for k, v in event.items() if k != "__inline__"}
+                    continue
                 yield _project(event)
                 # 工具成功之后才发产物事件 —— 据 tool_start 开面板会在失败时
                 # 留下一个空面板。
-                if isinstance(event, dict) and event.get("type") in ("tool_result", "tool_error"):
+                if event.get("type") in ("tool_result", "tool_error"):
                     artifact = _chat_artifact(event)
                     if artifact is not None:
                         yield artifact
-                if isinstance(event, dict) and event.get("type") == "done":
-                    reply = str(event.get("text") or "")
-                    if reply:
-                        self._messages.append({"role": "assistant", "content": reply})
-                        usage = event.get("usage") or {}
-                        self._chatlog_save(
-                            "assistant",
-                            reply,
-                            model=str(getattr(self._provider, "model", "") or self._model_name),
-                            provider=str(getattr(self._provider, "name", "") or self._provider_name),
-                            tokens_in=int(usage.get("input_tokens") or 0),
-                            tokens_out=int(usage.get("output_tokens") or 0),
-                            elapsed_s=float(event.get("elapsed") or 0.0),
-                        )
-                        # 后台起标题。放在 chat_log 落盘之后 —— worker 要靠
-                        # msg_count 判断这是不是第一轮。
-                        self._maybe_title(text, reply)
-                    self._trim()
+                if event.get("type") == "done":
+                    self._persist_reply(text, event)
         except Exception as exc:
             logger.exception("chat turn failed")
             yield {"type": "error", "code": "turn_failed", "message": str(exc)}
 
-        for pending in self._pending_confirms:
-            yield {"type": "approval_pending", **pending}
+    def _persist_reply(self, text: str, event: dict[str, Any]) -> None:
+        """把这一轮的回复落进内存历史和 chat_log。
+
+        **空正文也要落盘**。原来整段挂在 `if reply:` 下面：而以确认收尾的那一轮
+        模型常常一个字都不写（它在等工具结果），于是 user 行进了库、assistant 行
+        没有，标题也没生成 —— 侧边栏里那个会话看着像空的，用户「找不到会话了」。
+        """
+        reply = str(event.get("text") or "")
+        if reply:
+            self._messages.append({"role": "assistant", "content": reply})
+        usage = event.get("usage") or {}
+        self._chatlog_save(
+            "assistant",
+            reply,
+            model=str(getattr(self._provider, "model", "") or self._model_name),
+            provider=str(getattr(self._provider, "name", "") or self._provider_name),
+            tokens_in=int(usage.get("input_tokens") or 0),
+            tokens_out=int(usage.get("output_tokens") or 0),
+            elapsed_s=float(event.get("elapsed") or 0.0),
+        )
+        # 后台起标题。放在 chat_log 落盘之后 —— worker 要靠 msg_count 判断这是
+        # 不是第一轮。空回复起不出标题，_maybe_title 自己会跳过。
+        self._maybe_title(text, reply)
+        self._trim()
+
+    def _stream_with_outbox(self, runtime: Any, prompt: str) -> Iterator[Any]:
+        """跑 runtime，同时把 outbox 里的卡片插进事件流。
+
+        为什么要把 runtime 挪到另一个线程：确认闸门（`_confirm`）是在工具线程里
+        **阻塞**等答复的，而那个线程正是驱动这个生成器的线程。不挪的话，卡片进了
+        outbox 也发不出去 —— 生成器停在阻塞点上，前端永远收不到要它作答的那张卡，
+        于是双方互等，150 秒后一起超时。
+        """
+        pump: queue.Queue[Any] = queue.Queue()
+        done = object()
+
+        def _produce() -> None:
+            try:
+                for event in runtime.run_stream(list(self._messages), prompt):
+                    pump.put(event)
+            except BaseException as exc:  # noqa: BLE001 - 交给消费侧重抛
+                pump.put(exc)
+            finally:
+                pump.put(done)
+
+        worker = threading.Thread(target=_produce, name="ipc-turn", daemon=True)
+        worker.start()
+        while True:
+            yield from self._flush_outbox()
+            try:
+                item = pump.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if item is done:
+                break
+            if isinstance(item, BaseException):
+                yield from self._flush_outbox()
+                raise item
+            yield item
+        yield from self._flush_outbox()
+
+    def _flush_outbox(self) -> Iterator[dict[str, Any]]:
+        while True:
+            try:
+                yield {**self._outbox.get_nowait(), "__inline__": True}
+            except queue.Empty:
+                return
+
+    def _drain_outbox(self) -> None:
+        """丢掉上一轮没发完的卡片（比如那一轮出错提前退出了）。"""
+        while True:
+            try:
+                self._outbox.get_nowait()
+            except queue.Empty:
+                return
 
     def _trim(self) -> None:
         if len(self._messages) > MAX_HISTORY_MESSAGES:
@@ -541,12 +752,12 @@ class DesktopSession:
         """清掉这个会话的上下文（换账号时用）。"""
         with self._turn_lock:
             self._messages.clear()
-            self._pending_confirms.clear()
+            self._drain_outbox()
 
     def reset(self) -> None:
         with self._turn_lock:
             self._messages.clear()
-            self._pending_confirms.clear()
+            self._drain_outbox()
 
 
 # 只透传前端要渲染的字段，避免把内部结构和凭据带出去。
@@ -777,6 +988,22 @@ def get_session(session_id: str = "") -> DesktopSession:
         if _active_session_id not in _sessions:
             _active_session_id = next(iter(_sessions))
         return _sessions[_active_session_id]
+
+
+def find_waiting_session(question_id: str) -> DesktopSession | None:
+    """找正在等这个 question_id 的会话。
+
+    不走 get_session：那个会在会话不存在时**建一个**（还会跑 start()）。送答复
+    只该找已经在内存里等着的那一轮，找不到就是超时或重复点击。
+    """
+    if not question_id:
+        return None
+    with _session_lock:
+        candidates = list(_sessions.values())
+    for session in candidates:
+        if session.pending_question_id == question_id:
+            return session
+    return None
 
 
 def new_session() -> DesktopSession:

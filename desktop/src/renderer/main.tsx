@@ -78,7 +78,6 @@ declare global {
      */
     WyckoffApp?: {
       navigate?: (view: string) => void
-      refreshApprovals?: () => void
       refreshSchedules?: () => void
       openKline?: (code: string) => void
       /** 把报告送去产物面板。 */

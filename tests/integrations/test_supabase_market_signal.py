@@ -1,5 +1,5 @@
 import integrations.supabase_market_signal as market_signal_module
-from core.market_trade_mode import EXECUTE_BLOCK_NEW_BUY_REGIMES, PROBE_ONLY_REGIMES, stricter_market_regime
+from core.market_trade_mode import PROBE_ONLY_REGIMES, merge_premarket_regime, resolve_market_trade_mode
 from integrations.supabase_market_signal import (
     _merge_latest_market_signal_rows,
     compose_market_state,
@@ -32,16 +32,88 @@ def test_benchmark_caution_is_not_collapsed_to_risk_off():
     assert "禁止 ATTACK" in state["action_phrase"]
 
 
-def test_banner_action_never_exceeds_effective_market_permission():
-    for premarket in ("NORMAL", "CAUTION", "RISK_OFF", "BLACK_SWAN"):
-        for benchmark in ("RISK_ON", "NEUTRAL", "CAUTION", "RISK_OFF", "CRASH"):
-            state = compose_market_state({"benchmark_regime": benchmark, "premarket_regime": premarket})
-            effective = stricter_market_regime(benchmark, premarket)
-            action = state["action_phrase"]
-            if effective in EXECUTE_BLOCK_NEW_BUY_REGIMES:
-                assert "禁止新开仓" in action, f"{benchmark}+{premarket} 报告越过硬闸门"
-            elif effective in PROBE_ONLY_REGIMES:
-                assert "PROBE" in action and "禁止 ATTACK" in action
+ALL_BENCHMARK_REGIMES = (
+    "RISK_ON",
+    "NEUTRAL",
+    "CAUTION",
+    "BEAR_REBOUND",
+    "PANIC_REPAIR",
+    "PANIC_REPAIR_CONFIRMED",
+    "PANIC_REPAIR_INTRADAY",
+    "RISK_OFF",
+    "CRASH",
+    "BLACK_SWAN",
+)
+ALL_PREMARKET_SLOTS = ("NORMAL", "CAUTION", "RISK_OFF", "BLACK_SWAN", "UNKNOWN", "")
+
+
+def _assert_banner_matches_trade_mode(benchmark: str, premarket: str) -> None:
+    state = compose_market_state({"benchmark_regime": benchmark, "premarket_regime": premarket})
+    mode = resolve_market_trade_mode(merge_premarket_regime(benchmark, premarket))
+    action = state["action_phrase"]
+    where = f"{benchmark}+{premarket}"
+    if not mode.allow_recommendation_write:
+        assert "禁止新开仓" in action, f"{where} 横幅越过执行层闸门"
+    else:
+        assert "禁止新开仓" not in action, f"{where} 横幅比执行层更严"
+        if mode.regime in PROBE_ONLY_REGIMES:
+            assert "PROBE" in action and "禁止 ATTACK" in action, where
+
+
+def test_banner_action_never_exceeds_effective_market_permission(monkeypatch):
+    """横幅口径必须与执行层同源：oracle 走 trade mode，而不是自算 stricter + 硬集合。"""
+    monkeypatch.delenv("STEP4_BUY_ALLOW_REGIMES", raising=False)
+    for premarket in ALL_PREMARKET_SLOTS:
+        for benchmark in ALL_BENCHMARK_REGIMES:
+            _assert_banner_matches_trade_mode(benchmark, premarket)
+
+
+def test_banner_follows_step4_buy_allow_regimes_exemption(monkeypatch):
+    """运维豁免必须同时作用于横幅。
+
+    生产 ``STEP4_BUY_ALLOW_REGIMES=BEAR_REBOUND``。此前横幅直接比
+    ``EXECUTE_BLOCK_NEW_BUY_REGIMES``（BEAR_REBOUND 仍在其中），于是 08-07/08-17
+    两天 trade mode 判「可执行买入」、横幅却写「禁止新开仓」。
+    """
+    monkeypatch.setenv("STEP4_BUY_ALLOW_REGIMES", "BEAR_REBOUND")
+    for premarket in ALL_PREMARKET_SLOTS:
+        for benchmark in ALL_BENCHMARK_REGIMES:
+            _assert_banner_matches_trade_mode(benchmark, premarket)
+
+    state = compose_market_state({"benchmark_regime": "BEAR_REBOUND", "premarket_regime": "UNKNOWN"})
+    assert "禁止新开仓" not in state["action_phrase"]
+
+
+def test_banner_permission_reads_raw_regime_not_collapsed_slot(monkeypatch):
+    """slot 会把 BEAR_REBOUND 压成 RISK_OFF，权限判定必须用未压缩的水温。"""
+    monkeypatch.setenv("STEP4_BUY_ALLOW_REGIMES", "BEAR_REBOUND")
+    bear = compose_market_state({"benchmark_regime": "BEAR_REBOUND", "premarket_regime": "NORMAL"})
+    risk_off = compose_market_state({"benchmark_regime": "RISK_OFF", "premarket_regime": "NORMAL"})
+
+    assert bear["benchmark_slot"] == risk_off["benchmark_slot"] == "RISK_OFF"
+    assert "禁止新开仓" not in bear["action_phrase"]
+    assert "禁止新开仓" in risk_off["action_phrase"]
+
+
+def test_premarket_gap_banner_follows_benchmark_not_data_hold():
+    """盘前取数失败不再自己加闸门——执行层已回落 benchmark，文案必须跟上。
+
+    08-07/08-17 两天就是这个组合（a50_pct_chg 缺失 → 盘前 UNKNOWN），此前横幅写
+    「禁止新开仓，等待关键数据恢复」，与 trade mode 的「可执行买入」直接相反。
+    """
+    state = compose_market_state({"benchmark_regime": "NEUTRAL", "premarket_regime": "UNKNOWN"})
+
+    assert state["premarket_slot"] == "UNKNOWN"
+    assert state["market_posture_code"] == "PATIENT_OBSERVE"
+    assert "禁止新开仓" not in state["action_phrase"]
+    assert "隔夜" in state["wind_phrase"]
+
+
+def test_premarket_gap_still_defers_to_hard_benchmark():
+    state = compose_market_state({"benchmark_regime": "CRASH", "premarket_regime": ""})
+
+    assert state["premarket_slot"] == "UNKNOWN"
+    assert "禁止新开仓" in state["action_phrase"]
 
 
 def test_invalid_benchmark_display_fails_closed_as_unknown():

@@ -16,10 +16,10 @@ from supabase import Client
 
 from core.constants import TABLE_MARKET_SIGNAL_DAILY
 from core.market_trade_mode import (
-    EXECUTE_BLOCK_NEW_BUY_REGIMES,
     KNOWN_MARKET_REGIMES,
     PROBE_ONLY_REGIMES,
-    stricter_market_regime,
+    merge_premarket_regime,
+    resolve_market_trade_mode,
 )
 from integrations.supabase_base import create_admin_client as _get_supabase_admin_client
 from integrations.supabase_base import create_read_client as _get_supabase_read_client
@@ -149,7 +149,49 @@ UNKNOWN_MARKET_STRATEGY = {
 }
 
 
+# 盘前态取不到时的文案行。以前这里没有 UNKNOWN 行，矩阵查不到就整条落到
+# DATA_HOLD「禁止新开仓，等待关键数据恢复」——而执行层已按 merge_premarket_regime
+# 回落 benchmark 正常放行（08-07/08-17 两天即如此）。文案必须跟着收盘态走，只在措辞里
+# 交代隔夜数据缺口，不再自己加一道闸门。
 MARKET_BANNER_MATRIX: dict[str, dict[str, dict[str, str]]] = {
+    "UNKNOWN": {
+        "RISK_ON": {
+            "posture_code": "OVERHEAT_HOLD",
+            "posture_name": "过热不追",
+            "tone": "保守",
+            "title": "亲爱的投资者，隔夜外部数据暂缺，盘后市场仍处于过热禁追区。",
+            "wind": "强势风向已进入容易反转的过热阶段，隔夜参考暂时缺位",
+            "water": "资金仍集中于强势方向，但新增追价的赔率不足",
+            "action": "暂停新开仓，只管理已有仓位并等待过热降温",
+        },
+        "NEUTRAL": {
+            "posture_code": "PATIENT_OBSERVE",
+            "posture_name": "耐心观察",
+            "tone": "谨慎",
+            "title": "亲爱的投资者，隔夜外部数据暂缺，以盘后水温为准：方向仍需自己走出来。",
+            "wind": "市场风向仍在试探，隔夜参考暂时缺位",
+            "water": "资金在轮动中寻找下一步方向",
+            "action": "不急着抢跑，耐心等更清晰的盘口与结构确认",
+        },
+        "RISK_OFF": {
+            "posture_code": "DEFENSIVE",
+            "posture_name": "收缩防线",
+            "tone": "保守",
+            "title": "亲爱的投资者，隔夜外部数据暂缺，盘后市场偏弱，当前仍以防守为先。",
+            "wind": "偏弱风向暂未扭转，隔夜参考暂时缺位",
+            "water": "资金更偏向防守而不是扩张",
+            "action": "先保护本金，等待水温真正回暖后再提升进攻强度",
+        },
+        "CRASH": {
+            "posture_code": "HARD_DEFENSE",
+            "posture_name": "严防死守",
+            "tone": "恶劣",
+            "title": "亲爱的投资者，隔夜外部数据暂缺，盘后市场环境偏冷，不要与下行趋势硬碰硬。",
+            "wind": "市场风向仍明显偏空，隔夜参考暂时缺位",
+            "water": "资金仍处在避险模式",
+            "action": "继续防守，避免在高波动环境中频繁试错",
+        },
+    },
     "BLACK_SWAN": {
         "RISK_ON": {
             "posture_code": "DEFENSIVE",
@@ -305,17 +347,39 @@ MARKET_BANNER_MATRIX: dict[str, dict[str, dict[str, str]]] = {
 }
 
 
-def _select_market_strategy(premarket_slot: str, benchmark_slot: str) -> dict[str, str]:
-    if "UNKNOWN" in {premarket_slot, benchmark_slot}:
+def _select_market_strategy(
+    premarket_slot: str,
+    benchmark_slot: str,
+    benchmark_regime: str = "",
+) -> dict[str, str]:
+    """选横幅文案。权限口径**必须**与执行层同源，否则横幅会写反。
+
+    slot 只用来挑文案，不能用来判权限：它把 ``BEAR_REBOUND`` / ``PANIC_REPAIR`` 压成
+    ``RISK_OFF``、``BLACK_SWAN`` 压成 ``CRASH``，而这些档位的开仓权限并不相同。权限走
+    未压缩的 ``benchmark_regime`` +``resolve_market_trade_mode``（缺省回落 slot，保持
+    老调用点行为）。
+
+    修掉的两处自算——生产实测三天横幅与 trade mode 直接相反（06-18、08-07、08-17）：
+
+    1. 用 ``stricter_market_regime`` 自算合并，把 :func:`merge_premarket_regime` 已按
+       实测裁掉的「盘前 RISK_OFF/UNKNOWN 降级」又加回来。
+    2. 直接比 ``EXECUTE_BLOCK_NEW_BUY_REGIMES``，漏掉 ``STEP4_BUY_ALLOW_REGIMES``
+       的运维豁免（生产 ALLOW=BEAR_REBOUND）。
+
+    ``benchmark_slot`` 为 UNKNOWN（收盘态缺失/无效）仍走 DATA_HOLD——那是真的没有可用
+    判定；盘前 UNKNOWN 已不再触发它，改由矩阵的 UNKNOWN 行按收盘态给文案。
+    """
+    if benchmark_slot == "UNKNOWN":
         return UNKNOWN_MARKET_STRATEGY
     benchmark_key = "NEUTRAL" if benchmark_slot == "CAUTION" else benchmark_slot
     strategy = MARKET_BANNER_MATRIX.get(premarket_slot, {}).get(benchmark_key)
     if not strategy:
         return UNKNOWN_MARKET_STRATEGY
-    effective_regime = stricter_market_regime(premarket_slot, benchmark_slot)
-    if effective_regime in EXECUTE_BLOCK_NEW_BUY_REGIMES:
+    permission_basis = str(benchmark_regime or "").strip().upper() or benchmark_slot
+    trade_mode = resolve_market_trade_mode(merge_premarket_regime(permission_basis, premarket_slot))
+    if not trade_mode.allow_recommendation_write:
         return {**strategy, "action": "只管理已有仓位，禁止新开仓"}
-    if effective_regime in PROBE_ONLY_REGIMES:
+    if trade_mode.regime in PROBE_ONLY_REGIMES:
         return {**strategy, "action": "最多一只二次确认候选执行小额 PROBE，禁止 ATTACK"}
     return strategy
 
@@ -326,7 +390,7 @@ def compose_market_state(row: dict[str, Any] | None) -> dict[str, str]:
     premarket_regime = str(data.get("premarket_regime", "") or "").strip().upper()
     benchmark_slot = _normalize_benchmark_slot(benchmark_regime)
     premarket_slot = _normalize_premarket_slot(premarket_regime)
-    strategy = _select_market_strategy(premarket_slot, benchmark_slot)
+    strategy = _select_market_strategy(premarket_slot, benchmark_slot, benchmark_regime)
 
     return {
         "benchmark_slot": benchmark_slot,
@@ -345,7 +409,7 @@ def compose_market_banner(row: dict[str, Any] | None) -> dict[str, str]:
     benchmark_regime = str(data.get("benchmark_regime", "") or "").strip().upper()
     premarket_regime = str(data.get("premarket_regime", "") or "").strip().upper()
     state = compose_market_state(data)
-    title = _select_market_strategy(state["premarket_slot"], state["benchmark_slot"])["title"]
+    title = _select_market_strategy(state["premarket_slot"], state["benchmark_slot"], benchmark_regime)["title"]
     body = (
         "以上指标按各自最新可用时间更新。"
         f"{_benchmark_state_sentence(benchmark_regime)}，{_premarket_state_sentence(premarket_regime)}。"

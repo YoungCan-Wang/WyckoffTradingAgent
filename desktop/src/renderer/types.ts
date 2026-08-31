@@ -24,7 +24,11 @@ export interface PyEvent {
     | 'thinking_delta'
     | 'tool_start'
     | 'tool_error'
-    | 'approval_pending'
+    // 就地确认 / 就地提问：这一轮停下来等前端回一句（走 chat_answer 送回去）。
+    | 'confirm_request'
+    | 'question_request'
+    // 等答复期间的心跳，喂 bridge 的静默看门狗，不用画。
+    | 'waiting_for_user'
     | 'done'
   // result 事件把方法的返回值平铺在顶层，所以这里必须允许任意键。
   [key: string]: unknown

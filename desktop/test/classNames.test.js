@@ -2,7 +2,7 @@
 
 // 组件写的类名必须在样式表里真的存在。
 //
-// 我在审批页写了 className="evidence"，而 app.css 定义的是 .approval-evidence
+// 我在那一版的审批页写了 className="evidence"，而 app.css 定义的是 .approval-evidence
 // （两列网格 + 上分隔线）。没有任何东西报错，只是那块元信息退化成一行一行
 // 裸堆的标签/值 —— 用户的原话是「好丑」。账号菜单里的 .menu-email 同理，
 // 样式表里叫 .menu-em。
@@ -49,8 +49,8 @@ test('每个静态 className 在 app.css 里都有对应规则', () => {
   )
 })
 
-test('审批页的元信息用的是那个两列网格', () => {
-  const src = readFileSync(join(R, 'components', 'ApprovalsPage.tsx'), 'utf8')
+test('确认记录页的元信息用的是那个两列网格', () => {
+  const src = readFileSync(join(R, 'components', 'RecordsPage.tsx'), 'utf8')
   const css = readFileSync(join(R, 'app.css'), 'utf8')
   assert.match(src, /className="approval-evidence"/, '容器类名写错就没有网格')
   // 顺带确认那条规则本身还在（有人重命名 CSS 时这两条会一起红）

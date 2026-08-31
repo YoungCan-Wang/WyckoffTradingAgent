@@ -12,7 +12,9 @@ export type Block =
   | { kind: 'text'; text: string }
   | { kind: 'tool'; name: string; display: string; done?: boolean }
   | { kind: 'toolError'; name: string; error: string }
-  | { kind: 'approval'; event: Record<string, unknown> }
+  // 就地确认 / 就地提问。都是「这一轮在等你回一句」，等到答复才继续。
+  | { kind: 'confirm'; event: Record<string, unknown> }
+  | { kind: 'question'; event: Record<string, unknown> }
   | { kind: 'error'; message: string }
   | { kind: 'note'; text: string }
   /**
@@ -136,8 +138,13 @@ export function applyEvent (turn: Turn, event: Record<string, unknown>): Turn {
           error: str(event.error)
         })
       }
-    case 'approval_pending':
-      return { ...turn, blocks: pushBlock(turn.blocks, { kind: 'approval', event }) }
+    case 'confirm_request':
+      return { ...turn, blocks: pushBlock(turn.blocks, { kind: 'confirm', event }) }
+    case 'question_request':
+      return { ...turn, blocks: pushBlock(turn.blocks, { kind: 'question', event }) }
+    case 'waiting_for_user':
+      // 等待期间的心跳（喂 bridge 的静默看门狗）。卡片已经在流里了，不用再画。
+      return turn
     case 'error':
       return { ...turn, blocks: pushBlock(turn.blocks, { kind: 'error', message: str(event.message) }) }
     default:

@@ -223,8 +223,6 @@ function ScheduleCard (
       onNote({ text: t('schedules.rerunFailed', { error: (err as Error)?.message || String(err) }), failed: true })
     }
     setRunning(false)
-    // 重跑可能产生新审批，侧栏计数与本页状态都要跟上。
-    window.WyckoffApp?.refreshApprovals?.()
     onRan()
   }
 

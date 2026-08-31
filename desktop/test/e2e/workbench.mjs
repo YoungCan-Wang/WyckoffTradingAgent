@@ -23,7 +23,7 @@ import {
 
 // 导航里的页面。**不含 chat** —— 对话是主界面，不是和这些并列的目的地，
 // 它的入口是「新建分析」和会话列表。下面单独验它到得了。
-const VIEWS = ['approvals', 'portfolio', 'schedules', 'tracking', 'attribution', 'reports']
+const VIEWS = ['records', 'portfolio', 'schedules', 'tracking', 'attribution', 'reports']
 
 const r = reporter()
 const { app, home } = await launchApp({ signedIn: true, tag: 'workbench' })

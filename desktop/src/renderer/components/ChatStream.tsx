@@ -7,7 +7,8 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Turn, Block } from '../lib/chat'
 import type { ChatArtifact } from '../lib/artifacts'
-import { ApprovalCardInline } from './ApprovalCardInline'
+import { ConfirmCardInline } from './ConfirmCardInline'
+import { QuestionCardInline } from './QuestionCardInline'
 import { Markdown } from './Markdown'
 
 const t = (key: string, params?: Record<string, string | number>) => window.WyckoffI18n.t(key, params)
@@ -250,8 +251,10 @@ function BlockView (
       return <div className="sys">{block.text}</div>
     case 'artifact':
       return <ArtifactCard title={block.title} body={block.body} />
-    case 'approval':
-      return <ApprovalCardInline event={block.event} onDecided={onApprovalDecided} />
+    case 'confirm':
+      return <ConfirmCardInline event={block.event} onDecided={onApprovalDecided} />
+    case 'question':
+      return <QuestionCardInline event={block.event} />
     default:
       return null
   }

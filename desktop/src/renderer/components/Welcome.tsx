@@ -40,15 +40,18 @@ interface Overview {
   /** 持仓还没加载出来。用于区分「0 持仓」和「还不知道」。 */
   pfUnknown: boolean
   noStop: number
-  pending: number
   enabled: number
   daemonRunning: boolean
   summary: string
 }
 
-/** 审批与计划这类「非持仓」的概览数据。持仓走共享 store,不在这里。 */
+/**
+ * 计划任务这类「非持仓」的概览数据。持仓走共享 store,不在这里。
+ *
+ * 原来还有一个「待审 N」。确认已经回到对话里当场问,桌面端没有待办列表了,
+ * 而一个点进去无事可做的数字比没有更糟。
+ */
 interface SideCounts {
-  pending: number
   enabled: number
   daemonRunning: boolean
 }
@@ -64,14 +67,10 @@ export function Welcome ({ draft, onDraft, onSend, busy, ready, sendOnEnter }: P
   useEffect(() => {
     let alive = true
     void (async () => {
-      const [approvals, schedules] = await Promise.all([
-        collect('approve_list').catch(() => null),
-        collect('schedules').catch(() => null)
-      ])
+      const schedules = await collect('schedules').catch(() => null)
       if (!alive) return
       const sch = (schedules as { schedules?: Array<{ enabled?: boolean }>; daemon_running?: boolean } | null)
       setSide({
-        pending: Number((approvals as { count?: number } | null)?.count || 0),
         enabled: (sch?.schedules || []).filter((s) => s.enabled).length,
         daemonRunning: Boolean(sch?.daemon_running)
       })
@@ -83,7 +82,6 @@ export function Welcome ({ draft, onDraft, onSend, busy, ready, sendOnEnter }: P
   const positions = portfolio?.positions || []
   // 没设止损的仓位 —— 这是最值得先看一眼的风险
   const noStop = positions.filter((p) => p.stop_loss === null || p.stop_loss === undefined).length
-  const pending = side?.pending || 0
 
   // 还没拿到持仓时不要说「当前无持仓」—— 那是断言,而此刻只是不知道。
   // 后端冷启动要十几秒,期间说错话比什么都不说更糟。
@@ -93,15 +91,13 @@ export function Welcome ({ draft, onDraft, onSend, busy, ready, sendOnEnter }: P
     summaryParts.push(positions.length ? t('welcome.holding', { count: positions.length }) : t('welcome.noHolding'))
   }
   if (noStop) summaryParts.push(t('welcome.noStop', { count: noStop }))
-  summaryParts.push(pending ? t('welcome.pending', { count: pending }) : t('welcome.noPending'))
 
-  // 不等 side:持仓先到就先显示。整块 gate 在 side 上的话,审批/计划慢一步
+  // 不等 side:持仓先到就先显示。整块 gate 在 side 上的话,计划慢一步
   // 就会连持仓数字一起压住 —— 那又变成「明明有数据却显示不出来」。
   const ov: Overview = {
     positions: positions.length,
     pfUnknown,
     noStop,
-    pending,
     enabled: side?.enabled || 0,
     daemonRunning: Boolean(side?.daemonRunning),
     summary: summaryParts.join(' · ')
@@ -114,13 +110,6 @@ export function Welcome ({ draft, onDraft, onSend, busy, ready, sendOnEnter }: P
   }
 
   const attention: React.ReactNode[] = []
-  if (ov.pending) {
-    attention.push(
-      <button key="ap" type="button" onClick={() => window.WyckoffApp?.navigate?.('approvals')}>
-        {t('welcome.approvalAttention', { count: ov.pending })}
-      </button>
-    )
-  }
   if (ov.noStop) {
     attention.push(
       <button key="st" type="button" onClick={() => fill('prompt.stops')}>
@@ -153,7 +142,6 @@ export function Welcome ({ draft, onDraft, onSend, busy, ready, sendOnEnter }: P
 
         <div className="wel-overview" id="wel-overview">
           <Metric label={t('welcome.positionsMetric')} value={ov.pfUnknown ? null : ov.positions} view="portfolio" />
-          <Metric label={t('welcome.approvalsMetric')} value={ov.pending} view="approvals" />
           <Metric label={t('welcome.schedulesMetric')} value={ov.enabled} view="tasks" />
           <Metric label={t('welcome.riskMetric')} value={ov.pfUnknown ? null : ov.noStop} view="portfolio" />
         </div>

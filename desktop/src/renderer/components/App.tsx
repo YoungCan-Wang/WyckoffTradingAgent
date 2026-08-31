@@ -30,7 +30,7 @@ const TITLES: Record<string, string> = {
   // chat 没有对应的导航项（对话是主界面，不是并列的目的地），但顶栏仍要有个
   // 说得过去的标题。用「对话」而不是原来的「今天」：它不按日期筛任何东西。
   chat: 'nav.chat',
-  approvals: 'nav.approvals',
+  records: 'records.heading',
   portfolio: 'nav.portfolio',
   schedules: 'nav.schedules',
   tracking: 'nav.tracking',
@@ -53,7 +53,7 @@ export function App () {
     return window.innerWidth >= 1180
   })
   const [backendState, setBackendState] = useState('starting')
-  const [counts, setCounts] = useState({ approvals: 0, schedules: 0 })
+  const [counts, setCounts] = useState({ schedules: 0 })
   // checked 区分「查过了、确实没登录」与「还没查」。少了它，已登录用户在
   // account 返回之前会先闪一下登录页 —— 那比慢一点更糟。
   const [account, setAccount] = useState({ signedIn: false, email: '', userId: '', checked: false, lastEmail: '' })
@@ -83,12 +83,8 @@ export function App () {
   }, [sideOpen])
 
   const refreshCounts = useCallback(async () => {
-    const [ap, sc] = await Promise.all([
-      collect('approve_list').catch(() => null),
-      collect('schedules').catch(() => null)
-    ])
+    const sc = await collect('schedules').catch(() => null)
     setCounts({
-      approvals: Number((ap as { count?: number } | null)?.count || 0),
       schedules: ((sc as { schedules?: Array<{ enabled?: boolean }> } | null)?.schedules || [])
         .filter((s) => s.enabled).length
     })
@@ -228,9 +224,7 @@ export function App () {
     window.WyckoffReact?.clearPortfolioCaches?.()
     closeSettings()
     await loadAccount()
-    // 徽标也得重拉。审批项按账号隔离（approve_list 用 owner_matches 过滤），
-    // 不刷新就会留着上一个账号的数字 —— 实测显示「待审 1」而点进去列表是空的，
-    // 用户只能理解成功能坏了。登录那条路径已经在做，退出这条漏了。
+    // 徽标也得重拉：定时任务按账号隔离，不刷新就会留着上一个账号的数字。
     await refreshCounts()
     toast(t('signin.signedOutDone'))
   }, [closeSettings, loadAccount, refreshCounts, toast])
@@ -239,7 +233,6 @@ export function App () {
   useEffect(() => {
     window.WyckoffApp = {
       navigate,
-      refreshApprovals: () => { void refreshCounts() },
       refreshSchedules: () => { void refreshCounts() },
       openKline: (code) => window.WyckoffShell?.openKline?.(code),
       openReport: (title, body) => window.WyckoffShell?.openReport?.(title, body),
@@ -326,9 +319,7 @@ export function App () {
       <main className="thread">
         <TopBar
           titleKey={TITLES[view] || 'nav.chat'}
-          pendingCount={counts.approvals}
           backendState={backendState}
-          onPendingClick={() => navigate('approvals')}
           onRestart={() => { void window.wyckoff.restart() }}
           onOpenMenu={setOpenAnchor}
           toggleSlot={sideOpen ? null : toggle}

@@ -170,6 +170,18 @@ class TestMethodErrors:
 
 
 class TestApprovalOwnership:
+    """确认的归属与风险分级。
+
+    这几个测试原来读 list_pending —— 桌面端的确认曾经是入队等审批。现在确认在
+    对话里当场问、当场执行，落库只剩一条流水，所以断言改成读 list_decisions。
+    等答复本身由 test_ipc_inline_confirm.py 覆盖，这里用替身直接给答复，免得
+    每个测试都挂满超时。
+    """
+
+    @staticmethod
+    def _answer(session, value="allow"):
+        session._ask_inline = lambda card: value
+
     def test_approval_nav_uses_session_tool_registry(self, tmp_path, monkeypatch):
         from cli import approval_queue as aq
         from cli.ipc.session import DesktopSession
@@ -183,12 +195,13 @@ class TestApprovalOwnership:
         )
         session = DesktopSession()
         session._tools = registry
+        self._answer(session)
         session._confirm(
             "update_portfolio",
             {"action": "add", "code": "600519", "shares": 10, "cost_price": 10},
         )
 
-        record = aq.list_pending()[0]
+        record = aq.list_decisions(user_id="")[0]
         assert seen == [registry]
         assert record.risk == "confirm"
         assert record.nav_ratio == pytest.approx(0.1)
@@ -200,26 +213,33 @@ class TestApprovalOwnership:
         monkeypatch.setattr(aq, "DB_PATH", tmp_path / "approvals.db")
         session = DesktopSession()
         session._user_id = "user-a"
+        self._answer(session)
         session._confirm("update_portfolio", {"code": "600519", "action": "buy"})
 
-        record = aq.list_pending()[0]
+        record = aq.list_decisions(user_id="user-a")[0]
         assert record.user_id == "user-a"
 
-    def test_each_queued_tool_keeps_its_own_pending_event(self, tmp_path, monkeypatch):
+    def test_each_confirm_gets_its_own_record(self, tmp_path, monkeypatch):
+        """一轮里问两次,就该有两条独立流水。
+
+        原来这里测的是每个入队工具各自留一个 pending 事件（前端好分别画卡）。
+        待批队列没有了,但「两次确认不能糊成一条」这个要求还在 —— 糊了就答不出
+        哪个操作在什么时候被批过。
+        """
         from cli import approval_queue as aq
         from cli.ipc.session import DesktopSession
 
         monkeypatch.setattr(aq, "DB_PATH", tmp_path / "approvals.db")
         session = DesktopSession()
+        self._answer(session)
         session._confirm("update_portfolio", {"code": "600519", "action": "buy"})
         session._confirm("set_stop_loss", {"code": "600519", "price": 1400})
 
-        assert [item["tool_name"] for item in session._pending_confirms] == [
-            "update_portfolio",
-            "set_stop_loss",
-        ]
-        assert all(item["approval_id"] for item in session._pending_confirms)
-        assert session._pending_confirms[0]["args"] == {"code": "600519", "action": "buy"}
+        records = aq.list_decisions(user_id="")
+        assert {r.tool_name for r in records} == {"update_portfolio", "set_stop_loss"}
+        assert len({r.id for r in records}) == 2, "两次确认糊成一条,就答不出哪次批了什么"
+        portfolio = next(r for r in records if r.tool_name == "update_portfolio")
+        assert portfolio.args == {"code": "600519", "action": "buy"}
 
     def test_mismatched_account_cannot_approve(self, tmp_path, monkeypatch):
         from cli import approval_queue as aq
@@ -325,6 +345,10 @@ class TestMethodTable:
             "health",
             "chat",
             "chat_reset",
+            # 就地确认/提问的回话通道,以及只读的确认流水
+            "chat_answer",
+            "approve_records",
+            # 仍留给手机端和 CLI —— 它们没有对话流可以停下来等
             "approve_list",
             "approve_decide",
             "portfolio",
