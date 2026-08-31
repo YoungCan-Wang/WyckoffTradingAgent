@@ -87,7 +87,7 @@ Worker 负责鉴权、输入校验、队列控制面和 HMAC 签名。Vercel Nod
 |---|---:|---|
 | `CHAT_DAILY_LIMIT_PER_USER` | `80` | 每个用户每天允许的聊天 POST 数 |
 | `CHAT_MIN_INTERVAL_MS` | `2500` | 同一用户两次聊天 POST 的最小间隔 |
-| `CHAT_TOOL_APPROVAL_SECRET` | Worker secret | Web 工具审批签名专用随机密钥；建议独立配置。迁移期缺失时从 service-role key 做单向域分离派生，不直接复用或传播原值 |
+| `CHAT_TOOL_APPROVAL_SECRET` | Worker secret | Web 工具审批签名专用随机密钥，生产必需且至少 32 字符；不得使用或派生自能绕过 RLS 的 service-role key |
 | `UPSTASH_REDIS_REST_URL` | 未设置 | Upstash Redis REST 地址；与 Token 同时存在时启用共享限流 |
 | `UPSTASH_REDIS_REST_TOKEN` | 未设置 | Upstash Redis REST Token，必须通过 Worker secret 注入 |
 | `AGENT_SANDBOX_ENABLED` | `false` | 显式开启星球会员 Agent 沙箱端点；本地/生产凭据与一次真实调用验证通过后才打开 |
@@ -109,7 +109,7 @@ Worker 负责鉴权、输入校验、队列控制面和 HMAC 签名。Vercel Nod
 
 **免费可观测（不写 Supabase）**：`wyckoff-api` 在 `wrangler.toml` 打开 Workers Logs。未捕获 500 会打一条 `worker_error` JSON（`requestId`、方法、路径、已鉴权则带 `userId`），脱敏后不含 Token。查日志：Cloudflare Dashboard → Workers & Pages → `wyckoff-api` → Logs，免费档约留 3 天。页面 PV/UV 用 Cloudflare Web Analytics：优先在 Pages 项目打开；若要用脚本注入，给 Pages 构建加上公开变量 `VITE_CF_WEB_ANALYTICS_TOKEN`。按钮点击/热力图用 Microsoft Clarity 项目 `y6albpfin1`，只对有效星球会员加载脚本；可用公开构建变量 `VITE_CLARITY_PROJECT_ID` 覆盖。这两类变量都是前端公开 ID，不是密钥，不要写进 `wrangler secret`。Clarity 控制台里不用选 Gatsby/GTM，应用会自己注入官方脚本。
 
-每次 `main` 上的 CI 成功后，`Worker deploy` 先用 `scripts/release_scope.py` 判断 Worker API、共享包或 Web 锁文件是否变化；命中时签出该次 CI 的精确 SHA，并通过 `pnpm --filter @wyckoff/api run deploy` 显式调用 package script 自动部署，避免被 pnpm 同名内置命令解析。生产 environment 需一次性配置 `CLOUDFLARE_API_TOKEN`，账号 ID 可由 repository variable `CLOUDFLARE_ACCOUNT_ID` 覆盖。部署后会从当前 100% deployment 核对精确提交消息与 version ID，再检查 `REMOTE_RELAY` binding、`/api/health`，并要求未登录的 `/api/remote/devices` 返回 401；migration tag 由受版本控制的 `wrangler.toml` 声明，不能依赖新版 Wrangler 已不返回该字段的 version JSON。随后 `Web deployment health` 轮询 Worker health、远程路由和 Pages `/chat`；它不会调用已登录接口或创建沙箱。未涉及 Worker 的主干提交会跳过部署，但仍执行生产健康检查。
+每次 `main` 上的 CI 成功后，`Worker deploy` 先用 `scripts/release_scope.py` 判断 Worker API、共享包或 Web 锁文件是否变化；命中时签出该次 CI 的精确 SHA，并通过 `pnpm --filter @wyckoff/api run deploy` 显式调用 package script 自动部署，避免被 pnpm 同名内置命令解析。生产 environment 需一次性配置 `CLOUDFLARE_API_TOKEN`，账号 ID 可由 repository variable `CLOUDFLARE_ACCOUNT_ID` 覆盖。部署前会从 Cloudflare 核对 `CHAT_TOOL_APPROVAL_SECRET` 已存在；部署后会从当前 100% deployment 核对精确提交消息与 version ID，再检查 `REMOTE_RELAY` binding、`/api/health`，并要求未登录的 `/api/remote/devices` 返回 401。生产 `/api/health` 同时验证审批签名密钥，缺失或强度不足时返回 503，因此 Web 健康检查也会阻止“页面可开但读盘室必失败”的发布。migration tag 由受版本控制的 `wrangler.toml` 声明，不能依赖新版 Wrangler 已不返回该字段的 version JSON。未涉及 Worker 的主干提交会跳过部署，但仍执行生产健康检查。
 
 本地开发可复制 `web/apps/api/.dev.vars.example` 为 `.dev.vars`。首次部署异步 Agent 前，先在 `web/apps/api/` 创建两个队列，再部署 Worker：`pnpm exec wrangler queues create wyckoff-agent-runs`、`pnpm exec wrangler queues create wyckoff-agent-runs-dlq`、`pnpm run deploy`。部署时不要把密钥写入 `wrangler.toml`：在 Vercel 项目将 `SANDBOX_BRIDGE_SECRET` 写入 production 环境变量，并在 `web/apps/api/` 下分别执行 `pnpm exec wrangler secret put CHAT_TOOL_APPROVAL_SECRET`、`pnpm exec wrangler secret put UPSTASH_REDIS_REST_URL`、`pnpm exec wrangler secret put UPSTASH_REDIS_REST_TOKEN` 和 `pnpm exec wrangler secret put SANDBOX_BRIDGE_SECRET`。Vercel bridge 在生产环境由平台 OIDC 自动获取短期 Sandbox 凭据，Cloudflare Worker 不再保留 Vercel Access Token。
 

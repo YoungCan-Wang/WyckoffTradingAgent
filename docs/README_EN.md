@@ -272,7 +272,7 @@ Advanced configuration (`.env` file or GitHub Actions Secrets):
 | `PORTFOLIO_HKD_CNY_RATE` / `PORTFOLIO_USD_CNY_RATE` | Optional broker FX overrides for CNY portfolio valuation; ECB reference rates are used otherwise | Optional |
 | `FEISHU_WEBHOOK_URL` | Feishu push notifications | Optional |
 | `TG_BOT_TOKEN` + `TG_CHAT_ID` | Telegram push notifications | Optional |
-| `CHAT_TOOL_APPROVAL_SECRET` | Dedicated Web tool-approval signing secret; recommended. A one-way domain-separated key is derived from the service-role secret during migration | Recommended for Web chat |
+| `CHAT_TOOL_APPROVAL_SECRET` | Dedicated Web tool-approval signing secret, at least 32 characters; never reuse or derive it from the Supabase service-role key | Required for production Web chat |
 
 > Data source: [TickFlow →](https://tickflow.org/auth/register?ref=5N4NKTCPL4) | LLM API: [1Route →](https://www.1route.dev/register?aff=359904261)
 

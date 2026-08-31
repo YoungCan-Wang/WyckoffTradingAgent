@@ -7,12 +7,13 @@ import { workerChatRoutes } from './routes/worker-chat'
 import { handleAgentRunQueue } from './services/agent-run-queue'
 import type { AgentRunMessage } from './services/agent-run'
 import type { Env } from './app'
+import { missingWorkerRuntimeSecrets } from './services/runtime-readiness'
 
 export type { Env } from './app'
 export { AgentRunNotifier } from './durable/agent-run-notifier'
 export { RemoteRelay } from './durable/remote-relay'
 
-export const app = createApiApp()
+export const app = createApiApp(missingWorkerRuntimeSecrets)
 app.route('/api/chat', workerChatRoutes)
 app.route('/api/agent-runs', agentRunRoutes)
 app.route('/api/portfolio', portfolioRoutes)
