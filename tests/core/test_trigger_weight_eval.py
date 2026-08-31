@@ -438,6 +438,22 @@ class TestDecision:
     def test_holds_when_walk_forward_fails(self):
         assert any("暂维持" in line for line in decision(_full_report(wf_t=0.5)))
 
+    def test_near_miss_walk_forward_is_called_out_not_rounded_up(self):
+        """t=1.96 贴着双侧 5% 临界点。423 日实跑就是这个值，必须挡住且写明贴线。
+
+        差 0.04 就放行的话这道闸等于没有——首轮 192 日窗口给的是 t=+2.14，
+        补到 423 日掉到 +1.96，正是「幅度有一半是单段行情运气」的表现。
+        """
+        lines = decision(_full_report(wf_t=1.96))
+        action = next(line for line in lines if line.startswith("④"))
+        assert "暂维持" in action
+        assert "贴着线但没过" in action and "t=+1.96" in action
+        assert "支持把 trigger_q 权重从" not in action
+
+    def test_clearly_failed_walk_forward_gets_no_near_miss_note(self):
+        action = next(line for line in decision(_full_report(wf_t=0.5)) if line.startswith("④"))
+        assert "贴着线" not in action
+
     def test_holds_when_ablation_not_negative(self):
         lines = decision(_full_report(diff=0.01, diff_t=0.1))
         assert any("消融没有一格显著为负" in line for line in lines)
