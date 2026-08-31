@@ -326,6 +326,30 @@ class TestDesktopOnlyMethods:
             assert method not in R.REMOTE_UNAVAILABLE
 
 
+class TestRemoteRequestIdentityPin:
+    def test_handle_pins_disk_user_for_write_guard(self, monkeypatch):
+        """handler 入口钉住当时的登录账号，供换号后的 _write_session 对照。"""
+        seen: list[str | None] = []
+
+        def capture(_method, _params):
+            seen.append(R.remote_request_user_id())
+            yield {"type": "result", "ok": True}
+
+        monkeypatch.setattr("integrations.local_auth.load_session", lambda: {"user_id": "alice"})
+        monkeypatch.setattr("cli.ipc.methods.dispatch", capture)
+
+        sink = Sink()
+        bridge = R.RemoteBridge("wss://x", "t")
+        bridge._outbox = R._Outbox(sink)
+        try:
+            bridge._handle(json.dumps({"id": 7, "from": "phone", "method": "portfolio_edit", "params": {}}))
+            assert sink.wait(2)
+            assert seen == ["alice"]
+            assert sink.types()[-1] == "end"
+        finally:
+            bridge._outbox.close()
+
+
 class TestBridgeLifecycle:
     def test_status_reports_disconnected_before_start(self):
         R.stop_bridge()

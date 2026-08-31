@@ -423,3 +423,33 @@ class TestIdentityMustBeAlignedBeforeWriting:
         monkeypatch.setattr("cli.ipc.session.get_session", lambda *a, **k: Stub())
         assert M._write_session() is not None
         assert calls == [1], "仍要调 sync_identity 保持原有副作用"
+
+    def test_remote_inflight_write_refuses_after_desktop_login_swap(self, monkeypatch) -> None:
+        """遥控 in-flight 写：桌面换号后不得落到新账号。
+
+        桥 stop(wait=False) 不打断已在跑的 handler。handler 若在换号后再读
+        磁盘登录态，_write_session 会对齐到 Bob 并把 Alice 手机的改动写进 Bob。
+        """
+        from cli.ipc import methods as M
+        from cli.ipc.remote import bind_remote_request_user
+
+        s, _ = self._session("bob", "bob")
+        self._patched(monkeypatch, s, "bob")
+        monkeypatch.setattr("integrations.local_auth.load_session", lambda: {"user_id": "bob"})
+
+        with bind_remote_request_user("alice"):
+            with pytest.raises(M.MethodError) as excinfo:
+                M._write_session()
+        assert excinfo.value.code == "identity_busy"
+        assert "切换账号" in excinfo.value.message
+
+    def test_remote_inflight_write_allows_matching_host_user(self, monkeypatch) -> None:
+        from cli.ipc import methods as M
+        from cli.ipc.remote import bind_remote_request_user
+
+        s, _ = self._session("alice", "alice")
+        self._patched(monkeypatch, s, "alice")
+        monkeypatch.setattr("integrations.local_auth.load_session", lambda: {"user_id": "alice"})
+
+        with bind_remote_request_user("alice"):
+            assert M._write_session() is s
