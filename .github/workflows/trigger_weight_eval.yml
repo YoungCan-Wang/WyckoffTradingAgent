@@ -1,0 +1,105 @@
+name: Trigger Weight Eval
+
+# 排序权重体检：watch_score 里的 trigger_q（生产 0.30，单项最大）值不值这个分量。
+# 首轮（2026-08-31，423 个交易日 20241118..20260813）结论与 dry_q 那轮相反 —— 这一项
+# 是**负贡献，但幅度不稳到不足以定档**，故本轮不改生产权重：
+#   触发本身就是负超额：H=10 -0.483pct(t=-4.94)、H=5 -0.284pct(t=-4.00)，日均 163 只。
+#   留 vs 去的逐日配对差 H=10 top10 -0.735pct(t=-2.29)，低于同权重随机带下沿；
+#   H=5 top10 -0.424(t=-1.68) 与两个 top20 都不显著。
+#   六种触发类型超额**全为负**（H=10 sos -0.704 最差、compression -0.121 最轻），所以
+#   这不是「按类型重配权」能修的问题，改 _trigger_score_map 的聚合方式解决不了。
+#   幅度不带信息：高低半区差 t=-0.89，keep-binary 近零(t=+0.11) —— 0.30 的连续分位项
+#   不比一个 0.30 的二元旗标多带任何东西。
+#   走前动态选权重 H=10 top10 +0.599(t=+1.96)、H=5 top10 +0.327(t=+1.65)，虽然 83%/65%
+#   的选中落在生产值以下，但 t<2 没过线 —— 方向指向下调，档位待更多样本。
+# 窗口长度是这轮最大的教训：先跑的 192 日版本（面板 210 bar 预热吃掉整个 2025，只覆盖
+# 一个行情段）给出 -1.461(t=-3.14) 和走前 t=+2.14，看着足够支持「降到 0.10」；补到
+# 423 日后幅度腰斩、走前掉到 t<2。方向复现了，幅度有一半是单段行情的运气。
+# 每周重跑要盯三件事：
+#   1) 走前那格 —— 它过线（t>=2 且选中集中在生产值以下）才是动权重的依据，
+#      消融格的显著性不能替它：消融测「这项好不好」，走前测「换档能不能真更好」；
+#   2) 季度表 —— 8 季 5 负，翻正的两季（20244 +2.448、20263 +2.996）都在样本两端，
+#      若中段也开始连续翻正就得重审这个负号；
+#   3) top10 与 top20 的不对称 —— 负号只在集中持仓档成立，宽档不显著，别外推。
+# 触发面板要逐票逐日重放六个检测器（约 90 分钟）且需 210 个 bar 预热，故与行情一起缓存。
+on:
+  schedule:
+    # UTC 周六 03:35 = 北京时间周六 11:35，排在 ranker-weight（10:55）之后，错开取数配额。
+    - cron: "35 3 * * 6"
+  workflow_dispatch:
+    inputs:
+      horizon:
+        description: "前瞻交易日数"
+        default: "10"
+      start:
+        description: "行情起始（触发重放需 210 个 bar 预热，故须比目标区间提前约一年）"
+        default: "2024-01-01"
+      skip_panel:
+        description: "跳过触发面板重放，直接用缓存面板（改前瞻天数时可省 90 分钟）"
+        type: boolean
+        default: false
+
+concurrency:
+  group: trigger-weight-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    # 六个检测器 × 5600 只票 × 600 余日；默认 360 分钟留不出余量，显式收到 300。
+    timeout-minutes: 300
+    env:
+      PYTHONUNBUFFERED: "1"
+      # 只读行情，不写库；故不设 WYCKOFF_WRITE_CONTEXT。
+      TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+      FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+      TZ: Asia/Shanghai
+      HORIZON: ${{ github.event.inputs.horizon || '10' }}
+      START: ${{ github.event.inputs.start || '2024-01-01' }}
+      SKIP_PANEL: ${{ github.event.inputs.skip_panel || 'false' }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Restore market/panel cache
+        uses: actions/cache@v4
+        with:
+          # 行情与触发面板都是 csv，已被 .gitignore 的 *.csv 收掉，不会误提交。
+          path: docs/evidence/.cache
+          # run_id 让每轮都另存一份，靠 restore-keys 拿上一轮的做增量；
+          # 否则命中即不再保存，面板永远停在第一次生成的区间。
+          key: trigger-panel-${{ env.START }}-${{ github.run_id }}
+          restore-keys: |
+            trigger-panel-${{ env.START }}-
+
+      - name: Evaluate trigger weight
+        run: |
+          # 定时轮总是重放：新交易日不进面板的话，窗口会静默停在旧区间。
+          args=(--horizon "$HORIZON" --start "$START")
+          if [ "$SKIP_PANEL" != "true" ]; then
+            args+=(--gen-panel)
+          fi
+          python scripts/evaluate_trigger_weight.py "${args[@]}"
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          # docs/evidence 而非 artifacts/：后者被 .gitignore 收掉，upload 会静默匹配不到文件。
+          name: trigger-weight-evidence
+          path: docs/evidence/trigger_weight_h*
+          if-no-files-found: warn

@@ -1,0 +1,68 @@
+name: Ranker Weight Eval
+
+# 排序权重体检：watch_score 里的 dry_q（生产 0.20）值不值这个分量。
+# 首轮（2026-08-31，368 个交易日 / 219 万行行情）：
+#   留 dry_q vs 去 dry_q 的逐日配对差 top10 +1.173pct(t=+3.12)、top20 +0.591pct(t=+2.11)，
+#   两格都高于单次往返成本 0.202%、都在同权重随机带之外、7 个季度里 6 个为正 —— 保留。
+#   但走前动态选权重 t 只有 +0.70，选中分布散在 0.40/0.80/1.20 之间 —— 权重不动。
+# 每周重跑的意义：0.20 这一档是靠「0 明显更差」站住的，不是靠曲线在 0.20 处有峰
+# （0.20~2.00 段是平的）。所以要盯的是「去掉它会不会某段行情里不再变差」，
+# 一旦配对差在新行情段转不显著，就该重新审这个权重。
+on:
+  schedule:
+    # UTC 周六 02:55 = 北京时间周六 10:55，紧随门槛层 alpha 检验之后。
+    - cron: "55 2 * * 6"
+  workflow_dispatch:
+    inputs:
+      horizon:
+        description: "前瞻交易日数"
+        default: "10"
+      start:
+        description: "行情起始（需比目标区间提前约 25 个交易日预热）"
+        default: "2025-01-01"
+
+concurrency:
+  group: ranker-weight-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONUNBUFFERED: "1"
+      # 只读行情，不写库；故不设 WYCKOFF_WRITE_CONTEXT。
+      TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+      FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+      TZ: Asia/Shanghai
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Evaluate ranker weight
+        run: |
+          python scripts/evaluate_ranker_weight.py \
+            --horizon "${{ github.event.inputs.horizon || '10' }}" \
+            --start "${{ github.event.inputs.start || '2025-01-01' }}"
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          # docs/evidence 而非 artifacts/：后者被 .gitignore 收掉，upload 会静默匹配不到文件。
+          name: ranker-weight-evidence
+          path: docs/evidence/ranker_weight_h*
+          if-no-files-found: warn

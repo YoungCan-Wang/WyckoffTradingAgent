@@ -1,0 +1,352 @@
+{
+  "q1_binary": {
+    "days": 423,
+    "avg_size": 163.4,
+    "inside": -0.0633,
+    "inside_t": -0.29,
+    "excess": -0.4828,
+    "excess_t": -4.94,
+    "verdict": "显著为负：触发本身是负超额"
+  },
+  "q2_magnitude": {
+    "days": 423,
+    "spread": -0.1216,
+    "spread_t": -0.89,
+    "ic": -0.0329,
+    "ic_t": -4.33,
+    "verdict": "不显著：幅度不带信息"
+  },
+  "q3_kinds": [
+    {
+      "kind": "sos",
+      "days": 347,
+      "avg_size": 12.6,
+      "excess": -0.7035,
+      "excess_t": -2.49,
+      "verdict": "显著为负"
+    },
+    {
+      "kind": "spring",
+      "days": 329,
+      "avg_size": 18.5,
+      "excess": -0.5209,
+      "excess_t": -2.44,
+      "verdict": "显著为负"
+    },
+    {
+      "kind": "lps",
+      "days": 221,
+      "avg_size": 23.3,
+      "excess": -0.4659,
+      "excess_t": -1.94,
+      "verdict": "不显著"
+    },
+    {
+      "kind": "evr",
+      "days": 420,
+      "avg_size": 43.0,
+      "excess": -0.3807,
+      "excess_t": -2.37,
+      "verdict": "显著为负"
+    },
+    {
+      "kind": "compression",
+      "days": 291,
+      "avg_size": 27.4,
+      "excess": -0.1209,
+      "excess_t": -0.75,
+      "verdict": "不显著"
+    },
+    {
+      "kind": "trend_pullback",
+      "days": 394,
+      "avg_size": 61.6,
+      "excess": -0.584,
+      "excess_t": -3.96,
+      "verdict": "显著为负"
+    }
+  ],
+  "ablation": [
+    {
+      "top_n": 10,
+      "days": 423,
+      "keep": -0.5805,
+      "keep_t": -1.78,
+      "drop": 0.1542,
+      "drop_t": 0.35,
+      "diff": -0.7347,
+      "diff_t": -2.29,
+      "binary": -0.592,
+      "binary_t": -1.98,
+      "keep_minus_binary": 0.0115,
+      "keep_minus_binary_t": 0.11,
+      "rank_adds_over_binary": false,
+      "overlap": 0.12,
+      "rand_min": -0.2689,
+      "rand_max": 0.0294,
+      "worse_than_random": true,
+      "negative_quarters": "5/8",
+      "excess_by_quarter": {
+        "20244": 2.448,
+        "20251": 0.168,
+        "20252": -2.918,
+        "20253": -0.095,
+        "20254": -0.811,
+        "20261": -2.047,
+        "20262": -2.499,
+        "20263": 2.996
+      },
+      "verdict": "显著为负且超出随机带：支持下调"
+    },
+    {
+      "top_n": 20,
+      "days": 423,
+      "keep": -0.2492,
+      "keep_t": -0.83,
+      "drop": -0.1599,
+      "drop_t": -0.43,
+      "diff": -0.0893,
+      "diff_t": -0.42,
+      "binary": -0.2874,
+      "binary_t": -1.11,
+      "keep_minus_binary": 0.0382,
+      "keep_minus_binary_t": 0.31,
+      "rank_adds_over_binary": false,
+      "overlap": 0.228,
+      "rand_min": 0.0467,
+      "rand_max": 0.3063,
+      "worse_than_random": true,
+      "negative_quarters": "4/8",
+      "excess_by_quarter": {
+        "20244": 1.848,
+        "20251": -0.121,
+        "20252": -1.846,
+        "20253": 0.36,
+        "20254": 0.651,
+        "20261": -0.298,
+        "20262": -1.672,
+        "20263": 2.339
+      },
+      "verdict": "不显著：这一项不值 0.30 权重"
+    }
+  ],
+  "weight_grid": {
+    "10": [
+      {
+        "weight": 0.0,
+        "days": 423,
+        "inside": 0.1542,
+        "inside_t": 0.35,
+        "excess": -0.2653,
+        "excess_t": -0.82,
+        "is_production": false
+      },
+      {
+        "weight": 0.1,
+        "days": 423,
+        "inside": 0.1815,
+        "inside_t": 0.43,
+        "excess": -0.238,
+        "excess_t": -0.76,
+        "is_production": false
+      },
+      {
+        "weight": 0.2,
+        "days": 423,
+        "inside": -0.0719,
+        "inside_t": -0.19,
+        "excess": -0.4913,
+        "excess_t": -1.75,
+        "is_production": false
+      },
+      {
+        "weight": 0.3,
+        "days": 423,
+        "inside": -0.5805,
+        "inside_t": -1.78,
+        "excess": -1.0,
+        "excess_t": -4.27,
+        "is_production": true
+      },
+      {
+        "weight": 0.45,
+        "days": 423,
+        "inside": -0.4937,
+        "inside_t": -1.64,
+        "excess": -0.9131,
+        "excess_t": -4.18,
+        "is_production": false
+      },
+      {
+        "weight": 0.6,
+        "days": 423,
+        "inside": -0.4466,
+        "inside_t": -1.49,
+        "excess": -0.8661,
+        "excess_t": -3.99,
+        "is_production": false
+      }
+    ],
+    "20": [
+      {
+        "weight": 0.0,
+        "days": 423,
+        "inside": -0.1599,
+        "inside_t": -0.43,
+        "excess": -0.5793,
+        "excess_t": -2.35,
+        "is_production": false
+      },
+      {
+        "weight": 0.1,
+        "days": 423,
+        "inside": -0.1514,
+        "inside_t": -0.42,
+        "excess": -0.5709,
+        "excess_t": -2.41,
+        "is_production": false
+      },
+      {
+        "weight": 0.2,
+        "days": 423,
+        "inside": -0.2664,
+        "inside_t": -0.77,
+        "excess": -0.6859,
+        "excess_t": -3.09,
+        "is_production": false
+      },
+      {
+        "weight": 0.3,
+        "days": 423,
+        "inside": -0.2492,
+        "inside_t": -0.83,
+        "excess": -0.6687,
+        "excess_t": -3.41,
+        "is_production": true
+      },
+      {
+        "weight": 0.45,
+        "days": 423,
+        "inside": -0.2488,
+        "inside_t": -0.95,
+        "excess": -0.6683,
+        "excess_t": -3.94,
+        "is_production": false
+      },
+      {
+        "weight": 0.6,
+        "days": 423,
+        "inside": -0.2445,
+        "inside_t": -0.96,
+        "excess": -0.664,
+        "excess_t": -4.01,
+        "is_production": false
+      }
+    ]
+  },
+  "l3_proxy_pools": [
+    {
+      "pool_size": 300,
+      "top_n": 10,
+      "days": 423,
+      "trigger_rate": 0.0577,
+      "diff": -0.7577,
+      "diff_t": -2.39,
+      "verdict": "池内仍显著为负"
+    },
+    {
+      "pool_size": 300,
+      "top_n": 20,
+      "days": 423,
+      "trigger_rate": 0.0577,
+      "diff": -0.2127,
+      "diff_t": -1.08,
+      "verdict": "池内不显著"
+    },
+    {
+      "pool_size": 600,
+      "top_n": 10,
+      "days": 423,
+      "trigger_rate": 0.0622,
+      "diff": -0.7988,
+      "diff_t": -2.51,
+      "verdict": "池内仍显著为负"
+    },
+    {
+      "pool_size": 600,
+      "top_n": 20,
+      "days": 423,
+      "trigger_rate": 0.0622,
+      "diff": -0.0901,
+      "diff_t": -0.42,
+      "verdict": "池内不显著"
+    }
+  ],
+  "walk_forward": [
+    {
+      "top_n": 10,
+      "days": 363,
+      "chosen": -0.3309,
+      "fixed": -0.9303,
+      "diff": 0.5994,
+      "diff_t": 1.96,
+      "pick_dist": {
+        "0.0": 0.427,
+        "0.1": 0.408,
+        "0.6": 0.165
+      },
+      "is_concentrated": false,
+      "picks_below_production": 0.835,
+      "verdict": "走前不显著：不足以支持改动"
+    },
+    {
+      "top_n": 20,
+      "days": 363,
+      "chosen": -0.7531,
+      "fixed": -0.5405,
+      "diff": -0.2127,
+      "diff_t": -1.12,
+      "pick_dist": {
+        "0.0": 0.11,
+        "0.1": 0.358,
+        "0.2": 0.366,
+        "0.45": 0.165
+      },
+      "is_concentrated": false,
+      "picks_below_production": 0.835,
+      "verdict": "走前不显著：不足以支持改动"
+    }
+  ],
+  "scale_check": {
+    "kind_score_medians": {
+      "compression": 0.607,
+      "evr": 2.148,
+      "lps": 0.575,
+      "sos": 4.218,
+      "spring": 2.227,
+      "trend_pullback": 0.444
+    },
+    "n_hits_dist": {
+      "1": 66898,
+      "2": 2183,
+      "3": 29
+    },
+    "note": "六种触发分数量纲不同，取 max 等于先按类型排序；九成以上命中只来自单一触发，「多信号共振」在样本里几乎不存在"
+  },
+  "production": {
+    "trigger_weight": 0.3,
+    "q20_weight": 0.25,
+    "q5_weight": 0.2,
+    "q3_weight": 0.05,
+    "dry_weight": 0.2
+  },
+  "cost_threshold_pct": 0.202,
+  "reading": "excess 为相对同日流动性域内全体的超额。消融 diff = keep - drop，**为负**才是可行动结论（砍权重），须同时超过成本 0.202% 并低于随机带下沿。keep_minus_binary 近零说明 0.30 的连续分位项不比二元旗标多带信息。触发面板用 channel=\"\" 重放，max_bias_200 取全局上限，故触发率是下界。",
+  "horizon_days": 10,
+  "window": {
+    "start": 20241118,
+    "end": 20260813,
+    "days": 423
+  },
+  "domain_trigger_rate": 0.0427
+}
