@@ -1,0 +1,71 @@
+name: Momentum Regime Eval
+
+# 动量体检：RPS 闸门还值不值得留，以及能不能跟着市场动态调。
+# 首轮（2026-08-31，402 个交易日 2025-01-02..2026-08-28 全市场）：**动量没坏，是平的**。
+#   闸门相对流动性域内的超额 H=5 +0.05pct（t=+0.31）、H=10 +0.07pct（t=+0.28）。
+#   绝对收益 +0.432%（t=+0.96）对域内基准 +0.362%（t=+1.27）——均值高 0.07pct 而 t 值更低。
+#   季度超额 +1.66 / +1.76 / -0.37 / +2.32 / -6.63，围绕零按季度摆动；2026Q3 是摆幅一侧不是故障。
+#   阈值扫描 75/80..30/40 全期 t 值恒在 +0.88~+1.11：阈值只改振幅，不改期望。
+#   四种动态切换设计（IC 二值、IC 连续、宽度/波动、惩罚极端动量）走前全部失效。
+# 所以首轮没改任何参数。每周重跑的意义：持续确认「期望为零、按季度摆动」，
+# 并在闸门真的转为持续为负时能被看见——而不是靠单个坏季度拍板改阈值。
+on:
+  schedule:
+    # UTC 周六 03:40 = 北京时间周六 11:40，紧随 gate-alpha（10:40）之后，错开取数高峰。
+    - cron: "40 3 * * 6"
+  workflow_dispatch:
+    inputs:
+      horizon:
+        description: "前瞻交易日数，逗号分隔可一次跑多个"
+        default: "10,5"
+      start:
+        description: "行情起始（RPS 慢腿需 120 日预热，实际可用区间比这晚 120 个交易日）"
+        default: "2025-01-01"
+
+concurrency:
+  group: momentum-regime-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONUNBUFFERED: "1"
+      # 只读全市场日线，不写库；故不设 WYCKOFF_WRITE_CONTEXT。
+      TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+      FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+      TZ: Asia/Shanghai
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      # H=10 与 H=5 一起跑：季度符号在两个持有期上一致，才说明结论不是持有期挑出来的。
+      # 脚本内部复用同一份行情，多加一个 horizon 不会重复取数。
+      - name: Evaluate momentum regime
+        run: |
+          python scripts/evaluate_momentum_regime.py \
+            --horizon "${{ github.event.inputs.horizon || '10,5' }}" \
+            --start "${{ github.event.inputs.start || '2025-01-01' }}"
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: momentum-regime-evidence
+          # 与脚本 --out 默认值保持一致。artifacts/ 在 .gitignore 里，写那儿会匹配不到文件。
+          path: docs/evidence/momentum_regime_h*.json
+          if-no-files-found: warn
