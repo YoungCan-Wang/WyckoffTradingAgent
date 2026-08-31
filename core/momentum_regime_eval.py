@@ -289,9 +289,7 @@ def ic_persistence(daily_ic: list[float], horizon: int) -> dict[str, Any]:
     honest = _lag1_corr(closed)
     signs = [1 if v > 0 else 0 for v in closed]
     persist = (
-        sum(1 for a, b in zip(signs, signs[1:], strict=False) if a == b) / (len(signs) - 1)
-        if len(signs) > 1
-        else None
+        sum(1 for a, b in zip(signs, signs[1:], strict=False) if a == b) / (len(signs) - 1) if len(signs) > 1 else None
     )
     return {
         "segments": len(closed),
@@ -331,7 +329,11 @@ def render(report: MomentumReport, horizon: int) -> str:
         lines.append(_band_row(report.mid_band, quarters))
     if report.domain is not None:
         lines.append(_band_row(report.domain, quarters))
-    lines += ["", "| 动态切换设计 | 天数 | 切换后 | 固定放行 | 差值 | 差值t | 开启率 | 判定 |", "| --- | --: | --: | --: | --: | --: | --: | --- |"]
+    lines += [
+        "",
+        "| 动态切换设计 | 天数 | 切换后 | 固定放行 | 差值 | 差值t | 开启率 | 判定 |",
+        "| --- | --: | --: | --: | --: | --: | --: | --- |",
+    ]
     for stat in report.switches:
         lines.append(
             f"| {stat.label} | {stat.days} | {_signed(stat.switched_ret)} | {_signed(stat.baseline_ret)} | "
