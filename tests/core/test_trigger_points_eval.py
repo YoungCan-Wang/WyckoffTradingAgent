@@ -40,6 +40,7 @@ from core.trigger_points_eval import (
     summarize_quarters,
     topn_mean,
     tstat,
+    walk_forward_narrow,
     walk_forward_table,
 )
 
@@ -383,6 +384,79 @@ def test_walk_forward_short_sample_is_insufficient() -> None:
     assert "样本不足" in stat.verdict
 
 
+# --- 走前收窄到两方 ---
+
+
+def test_walk_forward_narrow_only_offers_two_tables() -> None:
+    """收窄格只有 prod / flat 两方,不能悄悄把别的候选混进来。"""
+    dates = [20250100 + i for i in range(200)]
+    series = _wf_series("flat")
+    stat = walk_forward_narrow(10, dates, series["prod"], series["flat"], horizon=10)
+    assert set(stat.pick_dist) <= {"prod", "flat"}
+    assert stat.top_pick == "flat"
+
+
+def test_walk_forward_narrow_concentration_restates_the_diff_sign() -> None:
+    """两方之间的集中度不是独立信息:哪张增量为正,集中度就指向它。
+
+    所以它在这一格里不构成第三闸。注意也**不是恒等于 1.00** —— 个别截面里 prod
+    的历史均值确实更高,实测四格有三格落在 0.94~0.98。
+    """
+    dates = [20250100 + i for i in range(200)]
+    flat_wins = _wf_series("flat")
+    prod_wins = _wf_series("prod")
+    a = walk_forward_narrow(10, dates, flat_wins["prod"], flat_wins["flat"], horizon=10)
+    b = walk_forward_narrow(10, dates, prod_wins["prod"], prod_wins["flat"], horizon=10)
+    assert a.top_pick == "flat" and a.diff is not None and a.diff > 0
+    assert b.top_pick == "prod" and b.diff is not None and b.diff <= 0
+    # 集中度跟着增量符号走,两侧都「集中」,可见它不携带额外判据。
+    assert a.is_concentrated is True and b.is_concentrated is True
+
+
+def test_walk_forward_narrow_matches_two_table_walk_forward() -> None:
+    """收窄格必须就是「候选集只有两张」的 walk_forward_table,不是另一套算法。"""
+    dates = [20250100 + i for i in range(200)]
+    series = _wf_series("flat")
+    narrow = walk_forward_narrow(10, dates, series["prod"], series["flat"], horizon=10)
+    direct = walk_forward_table(10, dates, {"prod": series["prod"], "flat": series["flat"]}, horizon=10)
+    assert (narrow.days, narrow.diff, narrow.diff_t) == (direct.days, direct.diff, direct.diff_t)
+
+
+def test_walk_forward_narrow_empty_series_is_insufficient() -> None:
+    assert walk_forward_narrow(10, [], [], [], horizon=10).days == 0
+    dates = [20250100 + i for i in range(200)]
+    assert walk_forward_narrow(10, dates, _wf_series("flat")["prod"], [], horizon=10).days == 0
+
+
+def test_narrow_finding_never_claims_three_gates_passed() -> None:
+    """t 过了也只能说到「这 6 个自由参数不值」,不许升级成「三闸全过」。"""
+    stat = WalkForwardStat(10, 363, -0.70, -0.88, 0.18, 3.1, {"flat": 1.0})
+    report = _full_report()
+    report.walk_forward_narrow = [stat]
+    narrow = "\n".join(decision(report)).split("⑤")[1].split("⑥")[0]
+    assert "支持删掉这张表" in narrow
+    assert "不构成第三闸" in narrow
+    # 「三闸全过」只许以被否认的形式出现,不许当成本格的结论。
+    assert "不是「三闸全过」" in narrow
+    assert narrow.count("三闸全过") == 1
+    # 也不许把集中度说成「必然 1.00」—— 实测多数格是 0.94~0.98。
+    assert "1.00" not in narrow
+
+
+def test_narrow_finding_holds_production_when_t_misses() -> None:
+    report = _full_report()
+    report.walk_forward_narrow = [WalkForwardStat(10, 363, -0.74, -0.88, 0.14, 1.30, {"flat": 1.0})]
+    text = "\n".join(decision(report))
+    assert "收窄走前不显著" in text
+    assert "维持生产" in text
+
+
+def test_narrow_finding_reports_insufficient_sample() -> None:
+    report = _full_report()
+    report.walk_forward_narrow = [WalkForwardStat(10, 5, None, None, None, None, {})]
+    assert "样本不足" in "\n".join(decision(report)).split("⑤")[1]
+
+
 # --- 季度切片与工具 ---
 
 
@@ -481,6 +555,32 @@ def test_render_includes_all_sections_and_double_count_warning() -> None:
     assert "不可同时下调" in text
     assert "nlargest" in text
     assert str(FLAT_POINTS) in text or "25" in text
+
+
+def test_render_narrow_section_disowns_its_concentration() -> None:
+    """收窄格必须在报告正文里自己写清「集中度不构成证据」,否则下一轮会读成三闸全过。"""
+    report = _full_report()
+    report.walk_forward_narrow = [WalkForwardStat(10, 363, -0.70, -0.88, 0.18, 3.1, {"flat": 1.0})]
+    text = render(report, horizon=10, start=20241118, end=20260813)
+    assert "走前收窄到两方" in text
+    assert "第三闸" in text and "不成立" in text
+    assert "自由参数" in text
+    # 表头不许有选中分布列 —— 印出来就等于邀请人把 1.00 当证据读。
+    narrow = text.split("走前收窄到两方")[1].split("###")[0]
+    header = next(line for line in narrow.splitlines() if line.startswith("| topN"))
+    assert "选中分布" not in header
+    assert "不看选中分布" in narrow
+
+
+def test_report_as_dict_carries_narrow_caveat_into_json() -> None:
+    """JSON 是给下一轮机器读的,警告必须跟着落盘,不能只写在 Markdown 里。"""
+    report = _full_report()
+    report.walk_forward_narrow = [WalkForwardStat(10, 363, -0.70, -0.88, 0.18, 3.1, {"flat": 1.0})]
+    cell = report.as_dict()["walk_forward_narrow"]
+    assert len(cell["cells"]) == 1
+    assert "不构成证据" in cell["note"]
+    assert "自由参数" in cell["note"]
+    assert "1.00" not in cell["note"]
 
 
 def test_report_as_dict_records_production_table_and_tie_note() -> None:

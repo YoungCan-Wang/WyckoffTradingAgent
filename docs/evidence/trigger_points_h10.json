@@ -219,6 +219,42 @@
       "verdict": "走前不显著：不足以支持改动"
     }
   ],
+  "walk_forward_narrow": {
+    "cells": [
+      {
+        "top_n": 10,
+        "days": 363,
+        "chosen": -0.5189,
+        "fixed": -0.8837,
+        "diff": 0.3649,
+        "diff_t": 3.55,
+        "pick_dist": {
+          "flat": 1.0
+        },
+        "is_concentrated": true,
+        "top_pick": "flat",
+        "picks_off_production": 1.0,
+        "verdict": "走前显著且选中集中于 flat：支持替换生产分值表"
+      },
+      {
+        "top_n": 20,
+        "days": 363,
+        "chosen": -0.5735,
+        "fixed": -0.7341,
+        "diff": 0.1606,
+        "diff_t": 1.74,
+        "pick_dist": {
+          "flat": 0.937,
+          "prod": 0.063
+        },
+        "is_concentrated": true,
+        "top_pick": "flat",
+        "picks_off_production": 0.937,
+        "verdict": "走前不显著：不足以支持改动"
+      }
+    ],
+    "note": "候选只有 prod / flat 两张,pick_dist 的高集中度等价于 diff 的符号,不是独立信息,在这一格里不构成证据,判定只看 diff_t。这一格问「这 6 个自由参数值不值」(flat 自由参数为 0),四表那格问「换成哪 6 个」。"
+  },
   "quarters": [
     {
       "quarter": 20244,
