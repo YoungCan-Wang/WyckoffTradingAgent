@@ -33,7 +33,9 @@ export type Env = {
   SANDBOX_BRIDGE_SECRET?: string
 }
 
-export function createApiApp() {
+export type RuntimeReadinessCheck = (env: Env) => string[]
+
+export function createApiApp(readinessCheck: RuntimeReadinessCheck = () => []) {
   const app = new Hono<{ Bindings: Env }>()
 
   app.use('*', requestId({ limitLength: 128 }))
@@ -61,6 +63,11 @@ export function createApiApp() {
     return c.json({ error: 'Internal Server Error', requestId: c.get('requestId') }, 500)
   })
   app.notFound((c) => c.json({ error: 'Not Found', requestId: c.get('requestId') }, 404))
-  app.get('/api/health', (c) => c.json({ status: 'ok' }))
+  app.get('/api/health', (c) => {
+    const missing = readinessCheck(c.env)
+    return missing.length === 0
+      ? c.json({ status: 'ok' })
+      : c.json({ status: 'unhealthy', missing }, 503)
+  })
   return app
 }

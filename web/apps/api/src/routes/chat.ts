@@ -52,6 +52,7 @@ import {
 } from '../services/chat-agent-loop'
 import { patchDeepSeekApiBody, resolveChatLanguageModel } from '../services/chat-language-model'
 import { appendMarketWatchModelMessage, buildStableChatSystemPrompt } from '../services/chat-prompt-prefix'
+import { getToolApprovalSecret } from '../services/runtime-readiness'
 
 type ChatBindings = { Bindings: Env; Variables: { auth: AuthContext } }
 
@@ -171,18 +172,6 @@ function getEnvValue(env: Env, key: 'SUPABASE_URL' | 'SUPABASE_ANON_KEY'): strin
   const value = env[key] || (key === 'SUPABASE_URL' ? env.VITE_SUPABASE_URL : env.VITE_SUPABASE_ANON_KEY)
   if (!value) throw new Error(`Missing ${key}`)
   return value
-}
-
-// Prefer an independent key. During rollout, a one-way domain-separated digest keeps the
-// service-role value itself out of the wider approval-token trust boundary.
-export async function getToolApprovalSecret(env: Env): Promise<string> {
-  const secret = env.CHAT_TOOL_APPROVAL_SECRET
-  if (secret) return secret
-  const serviceRole = env.SUPABASE_SERVICE_ROLE_KEY
-  if (!serviceRole) throw new Error('Missing CHAT_TOOL_APPROVAL_SECRET')
-  const bytes = new TextEncoder().encode(`wyckoff-chat-tool-approval\0${serviceRole}`)
-  const digest = await crypto.subtle.digest('SHA-256', bytes)
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
 function createToolDeps(supabase: ToolDeps['supabase']): ToolDeps {
@@ -398,7 +387,7 @@ async function runChatSegment(
     maxOutputTokens: resolved.maxOutputTokens ?? CHAT_MAX_OUTPUT_TOKENS,
     stopWhen: stepCountIs(maxSteps),
     abortSignal: args.signal,
-    experimental_toolApprovalSecret: await getToolApprovalSecret(args.env),
+    experimental_toolApprovalSecret: getToolApprovalSecret(args.env),
     providerOptions: {
       openai: {
         // DeepSeek Responses is stateless and always allows parallel tools.

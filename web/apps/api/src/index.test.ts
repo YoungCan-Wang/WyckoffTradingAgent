@@ -9,12 +9,22 @@ describe('API middleware', () => {
         Origin: 'http://localhost:5173',
         'X-Request-Id': 'test-request-1',
       },
-    })
+    }, { CHAT_TOOL_APPROVAL_SECRET: 'a'.repeat(64) })
 
     expect(response.status).toBe(200)
     expect(response.headers.get('X-Request-Id')).toBe('test-request-1')
     expect(response.headers.get('X-Content-Type-Options')).toBe('nosniff')
     expect(response.headers.get('Access-Control-Allow-Origin')).toBe('http://localhost:5173')
+  })
+
+  it('fails readiness when the production chat signing secret is absent', async () => {
+    const response = await app.request('/api/health')
+
+    expect(response.status).toBe(503)
+    expect(await response.json()).toEqual({
+      status: 'unhealthy',
+      missing: ['CHAT_TOOL_APPROVAL_SECRET'],
+    })
   })
 
   it('rejects oversized API request bodies before routing', async () => {

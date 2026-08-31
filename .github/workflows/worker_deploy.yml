@@ -88,6 +88,12 @@ jobs:
       - name: Install locked dependencies
         working-directory: web
         run: pnpm install --frozen-lockfile
+      - name: Verify required Worker secrets
+        working-directory: web
+        shell: bash
+        run: |
+          pnpm --filter @wyckoff/api exec wrangler secret list --format json \
+            | jq --exit-status 'map(.name) | index("CHAT_TOOL_APPROVAL_SECRET") != null' >/dev/null
       - name: Deploy exact main commit
         working-directory: web
         run: pnpm --filter @wyckoff/api run deploy --message "main:$DEPLOY_SHA"
