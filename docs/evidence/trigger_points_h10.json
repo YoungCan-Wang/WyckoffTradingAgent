@@ -1,0 +1,300 @@
+{
+  "arms": [
+    {
+      "label": "prod",
+      "top_n": 10,
+      "days": 423,
+      "excess": -0.8513,
+      "excess_t": -4.96,
+      "vs_prod": null,
+      "vs_prod_t": null,
+      "beats_production": null
+    },
+    {
+      "label": "flat",
+      "top_n": 10,
+      "days": 423,
+      "excess": -0.5125,
+      "excess_t": -3.32,
+      "vs_prod": 0.3389,
+      "vs_prod_t": 3.58,
+      "beats_production": true
+    },
+    {
+      "label": "no_res",
+      "top_n": 10,
+      "days": 423,
+      "excess": -0.7277,
+      "excess_t": -4.8,
+      "vs_prod": 0.1237,
+      "vs_prod_t": 1.13,
+      "beats_production": false
+    },
+    {
+      "label": "by_excess",
+      "top_n": 10,
+      "days": 423,
+      "excess": -0.3401,
+      "excess_t": -1.83,
+      "vs_prod": 0.5113,
+      "vs_prod_t": 2.9,
+      "beats_production": true
+    },
+    {
+      "label": "prod",
+      "top_n": 20,
+      "days": 422,
+      "excess": -0.6959,
+      "excess_t": -5.18,
+      "vs_prod": null,
+      "vs_prod_t": null,
+      "beats_production": null
+    },
+    {
+      "label": "flat",
+      "top_n": 20,
+      "days": 422,
+      "excess": -0.4943,
+      "excess_t": -4.17,
+      "vs_prod": 0.2017,
+      "vs_prod_t": 2.33,
+      "beats_production": false
+    },
+    {
+      "label": "no_res",
+      "top_n": 20,
+      "days": 422,
+      "excess": -0.6146,
+      "excess_t": -4.81,
+      "vs_prod": 0.0813,
+      "vs_prod_t": 1.47,
+      "beats_production": false
+    },
+    {
+      "label": "by_excess",
+      "top_n": 20,
+      "days": 422,
+      "excess": -0.3939,
+      "excess_t": -2.6,
+      "vs_prod": 0.3021,
+      "vs_prod_t": 2.02,
+      "beats_production": true
+    }
+  ],
+  "permutation": [
+    {
+      "top_n": 10,
+      "n_perm": 200,
+      "prod": -0.8513,
+      "band_low": -0.8513,
+      "band_high": -0.2366,
+      "band_median": -0.4874,
+      "percentile": 0.5,
+      "inside_band": true,
+      "verdict": "反校准：生产落在置换带第 0.5 百分位（越低越接近最差排法）"
+    },
+    {
+      "top_n": 20,
+      "n_perm": 200,
+      "prod": -0.6959,
+      "band_low": -0.7159,
+      "band_high": -0.333,
+      "band_median": -0.5133,
+      "percentile": 3.0,
+      "inside_band": true,
+      "verdict": "反校准：生产落在置换带第 3.0 百分位（越低越接近最差排法）"
+    }
+  ],
+  "kinds": [
+    {
+      "kind": "sos",
+      "points": 15.0,
+      "days": 418,
+      "rows": 4590,
+      "excess": -0.7975,
+      "excess_t": -2.49,
+      "verdict": "显著为负"
+    },
+    {
+      "kind": "spring",
+      "points": 12.0,
+      "days": 396,
+      "rows": 6235,
+      "excess": -0.2992,
+      "excess_t": -1.19,
+      "verdict": "不显著"
+    },
+    {
+      "kind": "lps",
+      "points": 30.0,
+      "days": 352,
+      "rows": 5447,
+      "excess": -0.4999,
+      "excess_t": -1.9,
+      "verdict": "不显著"
+    },
+    {
+      "kind": "evr",
+      "points": 12.0,
+      "days": 423,
+      "rows": 18058,
+      "excess": -0.3978,
+      "excess_t": -2.48,
+      "verdict": "显著为负"
+    },
+    {
+      "kind": "compression",
+      "points": 22.0,
+      "days": 393,
+      "rows": 8208,
+      "excess": -0.3392,
+      "excess_t": -1.43,
+      "verdict": "不显著"
+    },
+    {
+      "kind": "trend_pullback",
+      "points": 34.0,
+      "days": 423,
+      "rows": 24360,
+      "excess": -0.4898,
+      "excess_t": -2.68,
+      "verdict": "显著为负"
+    }
+  ],
+  "rank_corr": {
+    "scope": "单类型命中",
+    "corr": -0.435,
+    "n_kinds": 6,
+    "verdict": "分值与超额负相关：高分档反而更差"
+  },
+  "sos_resonance": {
+    "single": {
+      "points": 15.0,
+      "rows": 4590,
+      "excess": -0.7975,
+      "excess_t": -2.49
+    },
+    "resonant": {
+      "points": 50.0,
+      "rows": 833,
+      "excess": -1.0067,
+      "excess_t": -1.79
+    },
+    "gap": -0.2093,
+    "verdict": "共振**差于**单独 -0.209：15 -> 50 的加成方向是反的"
+  },
+  "walk_forward": [
+    {
+      "top_n": 10,
+      "days": 363,
+      "chosen": -0.7399,
+      "fixed": -0.8837,
+      "diff": 0.1438,
+      "diff_t": 1.08,
+      "pick_dist": {
+        "by_excess": 0.096,
+        "flat": 0.499,
+        "no_res": 0.405
+      },
+      "is_concentrated": false,
+      "top_pick": "flat",
+      "picks_off_production": 1.0,
+      "verdict": "走前不显著：不足以支持改动"
+    },
+    {
+      "top_n": 20,
+      "days": 363,
+      "chosen": -0.6247,
+      "fixed": -0.7341,
+      "diff": 0.1094,
+      "diff_t": 1.07,
+      "pick_dist": {
+        "by_excess": 0.083,
+        "flat": 0.41,
+        "no_res": 0.507
+      },
+      "is_concentrated": false,
+      "top_pick": "no_res",
+      "picks_off_production": 1.0,
+      "verdict": "走前不显著：不足以支持改动"
+    }
+  ],
+  "quarters": [
+    {
+      "quarter": 20244,
+      "days": 32,
+      "diff": 0.638,
+      "diff_t": 2.95
+    },
+    {
+      "quarter": 20251,
+      "days": 57,
+      "diff": 0.113,
+      "diff_t": 0.46
+    },
+    {
+      "quarter": 20252,
+      "days": 60,
+      "diff": -0.0788,
+      "diff_t": -0.49
+    },
+    {
+      "quarter": 20253,
+      "days": 66,
+      "diff": 0.3539,
+      "diff_t": 1.7
+    },
+    {
+      "quarter": 20254,
+      "days": 60,
+      "diff": -0.0862,
+      "diff_t": -0.55
+    },
+    {
+      "quarter": 20261,
+      "days": 56,
+      "diff": 0.2444,
+      "diff_t": 1.09
+    },
+    {
+      "quarter": 20262,
+      "days": 60,
+      "diff": 1.0501,
+      "diff_t": 2.8
+    },
+    {
+      "quarter": 20263,
+      "days": 32,
+      "diff": 0.8227,
+      "diff_t": 1.55
+    }
+  ],
+  "tie_break": {
+    "unique_scores": 11,
+    "boundary_bucket_median": 23,
+    "boundary_bucket_max": 523,
+    "note": "六个分值只组合出少量唯一分数，topN 边界并列桶很宽。本模块按比例分权（= 随机打破并列的期望），不用 nlargest —— 后者按 ts_code 顺序选票，会把对照稀释掉（拍平-生产 +0.339 t=+3.58 被读成 +0.131 t=+0.86）。"
+  },
+  "production": {
+    "points": {
+      "spring": 12.0,
+      "lps": 30.0,
+      "evr": 12.0,
+      "compression": 22.0,
+      "trend_pullback": 34.0
+    },
+    "sos_single": 15.0,
+    "sos_resonant": 50.0,
+    "flat_points": 25.0,
+    "source": "core/ai_candidate_allocation.py:559-582"
+  },
+  "cost_threshold_pct": 0.202,
+  "reading": "excess 为相对同日流动性域内全体的超额，只在**已触发票之间**比排序。置换带保留分值集合不变、只换对应关系，故它回答「这六个数字分配得对不对」，不回答「量级对不对」。生产落在带下沿 = 反校准。改生产分值仍须三闸全过：替代表显著优于生产 + 走前 t>=2 + 选中集中。",
+  "horizon_days": 10,
+  "window": {
+    "start": 20241118,
+    "end": 20260813,
+    "days": 423
+  },
+  "triggered_rows": 69110
+}

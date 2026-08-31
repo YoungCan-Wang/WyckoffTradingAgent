@@ -1,0 +1,113 @@
+name: Trigger Points Eval
+
+# 触发分值体检：_trigger_score 那六个硬编码分值（core/ai_candidate_allocation.py:559-582，
+# 12~50 分）排得对不对。这是**路径 B** —— 同一个触发信号在系统里被记了两次：
+#   路径 A  trigger_q 在 watch_score 里权重 0.30 → _layer3_rank_bonus，全摆幅 2.4 分
+#   路径 B  _trigger_score 在 ai_candidate_allocation.py:518 直接加，12~50 分
+# 一次 lps 命中（30 分）等于 trigger_q 整个摆幅的 12.5 倍，所以真正决定「已触发的票谁
+# 排前面」的是路径 B。前两轮（dry_q / trigger_q）审的都是路径 A。
+#
+# 首轮（2026-08-31，423/428 个交易日 20241118..20260813，69110 触发行）结论是
+# **反校准但不动生产**：
+#   置换检验：生产表落在 200 次「同一组数字随机重排」的第 0.5 百分位（H=10 top10）、
+#     3.0%（top20）；H=5 top10 也是 0.5%。生产恰好等于带下沿 —— 12.0 出现两次
+#     （spring/evr）使若干置换与生产同构，所以「不存在比它更差的排法」。
+#   秩相关：分值 vs 实测超额 -0.435（H=10）、-0.464（H=5），高分档反而更差。
+#     最高分档 trend_pullback(34) 超额 -0.490，最低分档 spring(12) -0.299。
+#   sos 共振（15 → 50，全表最大的一次加分 +35）方向是反的：共振 -1.007 差于单独
+#     -0.797（H=10，共振仅 833 行）。与路径 A 那轮查到的 n_hits 分布同源 —— 共振本就稀少。
+#   拍平成 25 分优于生产 +0.339(t=+3.58, H=10) / +0.266(t=+3.72, H=5)。
+#   但**走前挑表没过线**：H=10 top10 +0.144(t=1.08)、H=5 top10 +0.243(t=1.74)，且选中
+#     在 flat/no_res/by_excess 之间三分（无一到 80%）。消融测「这一项好不好」，走前测
+#     「换一张能不能真的更好」，后者才是上线依据 —— 故本轮不改 _trigger_score。
+#
+# 并列打破方式是这轮最大的方法论坑：六个分值只组合出 11 个唯一分数，每日 topN 的边界
+# 并列桶中位 23 只、最大 523 只。nlargest 按 index 顺序打破并列，index 跟着 ts_code 排、
+# ts_code 又与交易所相关 —— 等于偷偷按代码字典序选票。同一份数据：nlargest 读成
+# 拍平-生产 +0.131(t=+0.86)（看着没信号），按边界桶比例分权后是 +0.339(t=+3.58)。
+# 分权即随机打破并列的期望值，且确定可复。改 topn_mean 前先看这条。
+#
+# 每周重跑盯三件事：
+#   1) 走前那格 —— t>=2 且选中集中（>=80%）在同一张候选表上，才是动分值的依据；
+#      1.80<=t<2.0 明确算没过，不四舍五入；
+#   2) 选中分布是否从三分收敛到一张表 —— 方向已明（离开生产表 100%），缺的是「换成哪张」；
+#   3) sos 共振行数（833 行 / 428 日）是否长起来 —— 全表最大的加分却是最小的样本。
+#
+# **不与路径 A 同时下调**：同一个信号被罚两次，净效果会超过任一轮量到的幅度。
+# 路径 A 那轮（trigger_weight_eval）结论已是维持 0.30。
+#
+# 本流程复用 trigger_weight_eval 落的行情与触发面板缓存（重放约 90 分钟、需 210 bar
+# 预热），自己不重放。缓存面板决定统计窗口，不是 --start：核对报告 window.days。
+on:
+  schedule:
+    # UTC 周六 04:15 = 北京时间周六 12:15，排在 trigger-weight（11:35）之后 ——
+    # 它先重放面板，本流程直接复用，串行才不会读到半成品缓存。
+    - cron: "15 4 * * 6"
+  workflow_dispatch:
+    inputs:
+      horizon:
+        description: "前瞻交易日数"
+        default: "10"
+
+concurrency:
+  group: trigger-points-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    # 不重放面板，只做打分与置换（200 次 × 2 个 topN），十几分钟量级。
+    timeout-minutes: 60
+    env:
+      PYTHONUNBUFFERED: "1"
+      # 只读行情，不写库；故不设 WYCKOFF_WRITE_CONTEXT。
+      TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+      FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+      TZ: Asia/Shanghai
+      HORIZON: ${{ github.event.inputs.horizon || '10' }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Restore market/panel cache
+        uses: actions/cache@v4
+        with:
+          # 与 trigger_weight_eval 共用同一份缓存，key 前缀也必须一致才命中。
+          path: docs/evidence/.cache
+          # 本流程只读缓存、不生成面板，所以用固定 key 只做 restore；
+          # 写入那侧（trigger-weight）负责带 run_id 另存新版。
+          key: trigger-panel-2024-01-01-readonly
+          restore-keys: |
+            trigger-panel-2024-01-01-
+
+      - name: Evaluate trigger points
+        run: |
+          # 缺缓存就明确失败，不静默跑出空窗口 —— 面板由 trigger-weight 那条流程生成。
+          if [ ! -f docs/evidence/.cache/trigger_panel.csv ]; then
+            echo "::error::缺少 docs/evidence/.cache/trigger_panel.csv，先跑 Trigger Weight Eval 生成面板"
+            exit 1
+          fi
+          python scripts/evaluate_trigger_points.py --horizon "$HORIZON"
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          # docs/evidence 而非 artifacts/：后者被 .gitignore 收掉，upload 会静默匹配不到文件。
+          name: trigger-points-evidence
+          path: docs/evidence/trigger_points_h*
+          if-no-files-found: warn
