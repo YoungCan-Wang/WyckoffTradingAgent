@@ -51,6 +51,7 @@ from core.trigger_points_eval import (
     summarize_quarters,
     topn_mean,
     tstat,
+    walk_forward_narrow,
     walk_forward_table,
 )
 
@@ -304,6 +305,10 @@ def build_report(merged: pd.DataFrame, domain: pd.Series, horizon: int) -> Point
             summarize_permutation(top_n, float(np.mean(prod_clean)) if prod_clean else None, perm_means)
         )
         report.walk_forward.append(walk_forward_table(top_n, panel.dates, series, horizon=horizon))
+        # 并列一格,不替换上面那格:两格问的是不同问题,见 walk_forward_narrow 的 docstring。
+        report.walk_forward_narrow.append(
+            walk_forward_narrow(top_n, panel.dates, prod, series["flat"], horizon=horizon)
+        )
         if top_n == TOP_N_GRID[0]:
             uniq, med, mx = panel.tie_diagnostics(tables["prod"], top_n)
             report.unique_scores, report.tie_bucket_median, report.tie_bucket_max = uniq, med, mx

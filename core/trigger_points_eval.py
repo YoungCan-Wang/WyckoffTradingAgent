@@ -505,6 +505,9 @@ class PointsReport:
     rank_corr: RankCorrStat | None = None
     sos: SosResonanceStat | None = None
     walk_forward: list[WalkForwardStat] = field(default_factory=list)
+    # 收窄到 prod vs flat 的走前。与上面那格并列呈现,不替换 —— 两格问的是
+    # 不同的问题,见 walk_forward_narrow 的 docstring。
+    walk_forward_narrow: list[WalkForwardStat] = field(default_factory=list)
     quarters: list[QuarterStat] = field(default_factory=list)
     tie_bucket_median: int | None = None
     tie_bucket_max: int | None = None
@@ -518,6 +521,14 @@ class PointsReport:
             "rank_corr": self.rank_corr.as_dict() if self.rank_corr else {},
             "sos_resonance": self.sos.as_dict() if self.sos else {},
             "walk_forward": [w.as_dict() for w in self.walk_forward],
+            "walk_forward_narrow": {
+                "cells": [w.as_dict() for w in self.walk_forward_narrow],
+                "note": (
+                    "候选只有 prod / flat 两张,pick_dist 的高集中度等价于 diff 的符号,"
+                    "不是独立信息,在这一格里不构成证据,判定只看 diff_t。"
+                    "这一格问「这 6 个自由参数值不值」(flat 自由参数为 0),四表那格问「换成哪 6 个」。"
+                ),
+            },
             "quarters": [q.as_dict() for q in self.quarters],
             "tie_break": {
                 "unique_scores": self.unique_scores,
@@ -701,6 +712,52 @@ def walk_forward_table(
         diff=mean(diffs),
         diff_t=tstat(diffs),
         pick_dist={k: v / len(picks) for k, v in dist.items()},
+    )
+
+
+def walk_forward_narrow(
+    top_n: int,
+    dates: list[int],
+    prod_series: list[float | None],
+    flat_series: list[float | None],
+    *,
+    horizon: int,
+    warmup: int = WALK_FORWARD_WARMUP,
+) -> WalkForwardStat:
+    """只留 ``flat`` 一个候选的走前:回答「要不要这张表」,而不是「换哪张表」。
+
+    为什么单独一格,而不是把四表那格收窄
+    ----------------------------------
+
+    四表走前挑不出集中候选(flat 50% / no_res 40% / by_excess 10%),看着像
+    「证据不足」,其实是**问题问错了**。那一格问的是「六个数字该怎么排」,答案
+    空间大、每张候选表都带自由参数,历史均值在三者之间摆动是必然的。
+
+    收窄到两方后问题变了:``flat`` 的自由参数是 **0** 个(把六个分值设成同一个
+    常数 = 删掉这张表,常数取多少不影响已触发票之间的排序),``prod`` 是 6 个。
+    所以这一格问的是「这 6 个自由参数值不值」,而不是「换成哪 6 个」。
+
+    集中度那道闸在这里**退化成增量符号的复述**,不构成证据
+    -------------------------------------------------
+
+    候选只剩两张,``pick_dist`` 就只有两个格子,「集中度 >=80%」等价于「其中一张
+    在八成以上的截面里历史均值更高」—— 而这跟 ``diff`` 的符号说的是同一件事,
+    不是一条独立信息。实测四格里有三格落在 0.94~0.98 而非 1.00(某些截面 ``prod``
+    历史均值确实更高),所以也别把它说成「必然满分」:它是**必然接近满分**,原因
+    是两方之间只要有一方稳定占优,比例就自动高。
+
+    结论:这一格的判定只看 ``diff_t``。想拿集中度当证据必须回四表那格 —— 那里
+    候选之间互相竞争,集中度才携带「换哪张」的信息。调用方与报告都要写明这一点,
+    否则下一轮会把这里的高集中度当成三闸全过。
+    """
+    if not prod_series or not flat_series:
+        return WalkForwardStat(top_n, 0, None, None, None, None, {})
+    return walk_forward_table(
+        top_n,
+        dates,
+        {"prod": prod_series, "flat": flat_series},
+        horizon=horizon,
+        warmup=warmup,
     )
 
 
@@ -918,6 +975,41 @@ def _walk_forward_table(stats: list[WalkForwardStat]) -> list[str]:
     return lines
 
 
+def _walk_forward_narrow_table(stats: list[WalkForwardStat]) -> list[str]:
+    lines = ["### 走前收窄到两方：留这张表 vs 删这张表", ""]
+    if not stats:
+        return lines + ["样本不足。", ""]
+    lines += [_row(["topN", "天数", "走前选中", "固定生产", "增量", "t", "判定"]), _row(["---"] * 7)]
+    for stat in stats:
+        passes = stat.diff_t is not None and float(stat.diff_t) >= 2.0
+        lines.append(
+            _row(
+                [
+                    str(stat.top_n),
+                    str(stat.days),
+                    _signed(stat.chosen),
+                    _signed(stat.fixed),
+                    _signed(stat.diff),
+                    _plain(stat.diff_t),
+                    "走前通过：支持删掉这张表" if passes else "走前不显著：维持生产",
+                ]
+            )
+        )
+    dists = "、".join(f"top{s.top_n} flat {s.pick_dist.get('flat', 0.0) * 100:.0f}%" for s in stats)
+    lines += [
+        "",
+        f"**这一格不看选中分布**（{dists}）。候选只剩两张，「集中度 >=80%」等价于「其中一张在"
+        "八成以上截面里历史均值更高」—— 与增量的符号说的是同一件事，不是独立信息。所以第三闸"
+        "在这一格不成立，判定只看 t。",
+        "",
+        "与上面四表那格问的不是同一个问题。四表问「六个数字该怎么排」，候选各带自由参数，"
+        "历史均值在几张之间摆动是常态；这一格问「这 6 个自由参数值不值」—— `flat` 把六档设成"
+        "同一个常数等于**删掉这张表**，自由参数为 0（常数取多少不影响已触发票之间的排序）。",
+        "",
+    ]
+    return lines
+
+
 def _quarter_table(quarters: list[QuarterStat]) -> list[str]:
     lines = ["### 按季度切（拍平 - 生产）", ""]
     if not quarters:
@@ -946,8 +1038,9 @@ def decision(report: PointsReport) -> list[str]:
     lines.append(_rank_finding(report.kinds, report.rank_corr))
     lines.append(_sos_finding(report.sos))
     lines.append(_points_action(report.arms, report.walk_forward))
+    lines.append(_narrow_finding(report.walk_forward_narrow))
     lines.append(
-        f"⑤ 任何分值改动落地前：幅度须大于单次往返成本 {ROUND_TRIP_COST_PCT}%、"
+        f"⑥ 任何分值改动落地前：幅度须大于单次往返成本 {ROUND_TRIP_COST_PCT}%、"
         "跨行情段方向稳定，且**不与路径 A（`trigger_q` 0.30）同时下调** —— "
         "同一个信号被罚两次，净效果会超过任一轮量到的幅度。"
     )
@@ -1036,6 +1129,38 @@ def _points_action(arms: list[ArmStat], walk_forward: list[WalkForwardStat]) -> 
     )
 
 
+def _narrow_finding(narrow: list[WalkForwardStat]) -> str:
+    """⑤ 收窄到两方的走前:只看 t,不看集中度。
+
+    两个候选之间的 ``is_concentrated`` 只是 ``diff`` 符号的复述(见
+    ``walk_forward_narrow`` 的 docstring),拿它当第三闸等于自己给自己发通行证。
+    所以判据是单闸(t>=2),而且结论的措辞也只能说到「这 6 个自由参数值不值」,
+    不能升级成「三闸全过」。想要第三闸,得回四表那格。
+    """
+    ready = [w for w in narrow if w.days >= MIN_DAYS and w.diff_t is not None]
+    if not ready:
+        return "⑤ 收窄走前（留表 vs 删表）：样本不足。"
+    passed = [w for w in ready if w.diff_t is not None and w.diff_t >= 2.0]
+    cells = "、".join(f"top{w.top_n} {_signed(w.diff)}（t={w.diff_t:+.2f}）" for w in ready)
+    if len(passed) == len(ready):
+        return (
+            f"⑤ 收窄走前**支持删掉这张表**：{cells}，每格 t>=2。"
+            "这里的候选只有 `flat` 一张（自由参数 0 个,等于不给触发类型加权），"
+            "两方之间的集中度只是增量符号的复述、**不构成第三闸** —— 该结论的强度是"
+            "「这 6 个自由参数不值」,不是「三闸全过」。真要替换成另一张有参数的表,仍须回 ④ 那格。"
+        )
+    if passed:
+        return (
+            f"⑤ 收窄走前部分通过：{cells}。只有部分 topN 到 t>=2,先不动。"
+            "两方之间的集中度只是增量符号的复述,不参与判定。"
+        )
+    return (
+        f"⑤ 收窄走前不显著：{cells}，t 未到 2。"
+        "即便把候选收到只剩「删表」一个选项,已结算历史也没能稳定选它 —— "
+        "维持生产。两方之间的集中度只是增量符号的复述,不参与判定。"
+    )
+
+
 def render(report: PointsReport, *, horizon: int, start: int, end: int) -> str:
     days = f"{start}..{end}"
     lines = [
@@ -1052,6 +1177,7 @@ def render(report: PointsReport, *, horizon: int, start: int, end: int) -> str:
     lines += _kind_table(report.kinds, report.rank_corr)
     lines += _sos_section(report.sos)
     lines += _walk_forward_table(report.walk_forward)
+    lines += _walk_forward_narrow_table(report.walk_forward_narrow)
     lines += _quarter_table(report.quarters)
     lines += ["### 结论", ""]
     lines += [f"{line}" for line in decision(report)]
