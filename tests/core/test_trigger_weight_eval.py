@@ -11,6 +11,7 @@ import pytest
 
 from core.trigger_weight_eval import (
     MIN_DAYS,
+    MIN_REPLAY_BARS,
     PROD_TRIGGER_WEIGHT,
     ROUND_TRIP_COST_PCT,
     TRIGGER_KINDS,
@@ -24,8 +25,10 @@ from core.trigger_weight_eval import (
     WalkForwardStat,
     decision,
     extension_penalty,
+    production_detectors,
     quarter_of,
     render,
+    replay_entry_bias_limit,
     summarize_ablation,
     summarize_binary,
     summarize_kind,
@@ -492,3 +495,56 @@ class TestRender:
 
     def test_min_days_guard_is_documented(self):
         assert MIN_DAYS >= 20
+
+
+class TestReplayWrappers:
+    """重放包装层必须与生产 ``layer4_triggers`` 同源。
+
+    这两个函数存在的唯一理由是绕开架构边界（scripts/ 不得引 core 私有成员），
+    所以它们一旦与生产漂移，重放出的面板就不再代表生产,而单看脚本发现不了。
+    """
+
+    def test_detectors_match_production_layer4(self):
+        from core import wyckoff_engine
+
+        assert production_detectors() == (
+            ("spring", wyckoff_engine._detect_spring),
+            ("lps", wyckoff_engine._detect_lps),
+            ("evr", wyckoff_engine._detect_evr),
+            ("compression", wyckoff_engine._detect_compression),
+            ("sos", wyckoff_engine._detect_sos),
+            ("trend_pullback", wyckoff_engine._detect_trend_pullback),
+        )
+
+    def test_detectors_cover_every_trigger_kind(self):
+        """六种触发一个不少：漏一种,那一类的超额就整段读不到。"""
+        assert {kind for kind, _ in production_detectors()} == set(TRIGGER_KINDS)
+
+    def test_entry_bias_limit_matches_production_formula(self):
+        """与 layer4_triggers 里那行同式:channel=""、rps_slow=None。"""
+        import numpy as np
+        import pandas as pd
+
+        from core.wyckoff_engine import FunnelConfig, _effective_entry_max_bias_200, _ret120_pct
+
+        rng = np.random.default_rng(7)
+        close = 10 + np.cumsum(rng.normal(0, 0.12, 300))
+        frame = pd.DataFrame(
+            {
+                "date": np.arange(20240101, 20240101 + 300),
+                "open": close,
+                "high": close * 1.01,
+                "low": close * 0.99,
+                "close": close,
+                "volume": rng.uniform(1e5, 3e5, 300),
+            }
+        )
+        cfg = FunnelConfig()
+        expected = _effective_entry_max_bias_200(
+            "600000.SH", "", cfg, rps_slow=None, ret120_pct=_ret120_pct(frame, cfg)
+        )
+        assert replay_entry_bias_limit("600000.SH", frame, cfg) == expected
+
+    def test_replay_bars_cover_the_longest_lookback(self):
+        """检测器要看 200 日 MA;预热不够会把早段截面静默判成不触发。"""
+        assert MIN_REPLAY_BARS >= 210

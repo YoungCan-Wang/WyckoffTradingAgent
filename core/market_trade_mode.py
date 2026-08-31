@@ -110,11 +110,7 @@ def oms_buy_block_regimes() -> frozenset[str]:
     import os
 
     raw = os.getenv("STEP4_BUY_BLOCK_REGIMES", _DEFAULT_OMS_BUY_BLOCK)
-    values = {
-        item.strip().upper()
-        for item in raw.split(",")
-        if item.strip() and item.strip().upper() != "COOLDOWN"
-    }
+    values = {item.strip().upper() for item in raw.split(",") if item.strip() and item.strip().upper() != "COOLDOWN"}
     merged = values | set(EXECUTE_BLOCK_NEW_BUY_REGIMES)
     return frozenset(merged - _explicitly_allowed_regimes())
 

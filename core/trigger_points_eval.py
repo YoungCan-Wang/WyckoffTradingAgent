@@ -858,7 +858,15 @@ def _sos_section(sos: SosResonanceStat | None) -> list[str]:
     lines += [
         _row(["档", "生产分", "行数", "超额", "t"]),
         _row(["---"] * 5),
-        _row(["sos 单独", _plain(PROD_SOS_SINGLE, 1), str(sos.single_rows), _signed(sos.single_excess), _plain(sos.single_t)]),
+        _row(
+            [
+                "sos 单独",
+                _plain(PROD_SOS_SINGLE, 1),
+                str(sos.single_rows),
+                _signed(sos.single_excess),
+                _plain(sos.single_t),
+            ]
+        ),
         _row(
             [
                 "sos 共振",

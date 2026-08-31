@@ -86,9 +86,13 @@ Q1 触发超额 H=10     -0.774 (t=-4.67)  -0.483 (t=-4.94)
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from statistics import mean
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 # 生产权重，用于在报告里标注「当前档位」。
 PROD_TRIGGER_WEIGHT = 0.30
@@ -122,6 +126,59 @@ MIN_TRIGGERED = 5
 MIN_HALF = 5
 MIN_POOL_DAYS = 20
 WALK_FORWARD_WARMUP = 60
+
+# 重放需要的 bar 数下界，与 wyckoff_engine 各检测器的最长回看对齐。
+MIN_REPLAY_BARS = 210
+
+
+def production_detectors() -> tuple[tuple[str, Callable[..., float | None]], ...]:
+    """生产 ``layer4_triggers`` 里跑的六个检测器，顺序与之一致。
+
+    检测器在 ``core/wyckoff_engine.py`` 里是私有的，重放脚本不能直接 import
+    （tests/test_architecture_boundaries.py 禁止 scripts/ 引私有成员）。这层
+    包装把「哪六个、什么顺序」这件事留在 core 内部，脚本只拿公开元组。
+
+    注意不是 ``core/wyckoff_structure.py`` 的 ``detect_structure_triggers``
+    ——那条是影子观测路径（workflows/funnel_layers.py:180），不参与
+    ``trigger_score``。
+
+    这里不复现 ``cfg.enable_*_trigger`` 三个开关：默认全开，重放按全开取，
+    与生产默认配置一致。
+    """
+    from core.wyckoff_engine import (
+        _detect_compression,
+        _detect_evr,
+        _detect_lps,
+        _detect_sos,
+        _detect_spring,
+        _detect_trend_pullback,
+    )
+
+    return (
+        ("spring", _detect_spring),
+        ("lps", _detect_lps),
+        ("evr", _detect_evr),
+        ("compression", _detect_compression),
+        ("sos", _detect_sos),
+        ("trend_pullback", _detect_trend_pullback),
+    )
+
+
+def replay_entry_bias_limit(code: str, frame: pd.DataFrame, cfg: object) -> float | None:
+    """重放用的 ``max_bias_200`` 上限，与生产 ``layer4_triggers`` 同式。
+
+    ``channel=""``、``rps_slow=None``：不复现 L2 的通道放宽，取全局/科创板上限，
+    所以重放出的触发率是**下界**。同样为了绕开私有成员边界而收在 core 里。
+    """
+    from core.wyckoff_engine import _effective_entry_max_bias_200, _ret120_pct
+
+    return _effective_entry_max_bias_200(
+        code,
+        "",
+        cfg,
+        rps_slow=None,
+        ret120_pct=_ret120_pct(frame, cfg),
+    )
 
 
 def tstat(values: list[float]) -> float | None:

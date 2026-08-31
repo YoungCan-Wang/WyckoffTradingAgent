@@ -40,6 +40,7 @@ from core.trigger_weight_eval import (
     MIN_AMOUNT_RAW,
     MIN_DAYS,
     MIN_HALF,
+    MIN_REPLAY_BARS,
     MIN_TRIGGERED,
     PROD_DRY_WEIGHT,
     PROD_Q3_WEIGHT,
@@ -53,7 +54,9 @@ from core.trigger_weight_eval import (
     WEIGHT_GRID,
     TriggerReport,
     extension_penalty,
+    production_detectors,
     render,
+    replay_entry_bias_limit,
     summarize_ablation,
     summarize_binary,
     summarize_kind,
@@ -63,8 +66,9 @@ from core.trigger_weight_eval import (
     walk_forward_weight,
 )
 
-# 检测器要看 200 日 MA，外加缓冲；生产 df_map 同样是长历史。
-MIN_BARS = 210
+# 检测器要看 200 日 MA，外加缓冲；生产 df_map 同样是长历史。定义在 core 侧，
+# 与 production_detectors() 的回看长度同源。
+MIN_BARS = MIN_REPLAY_BARS
 FIELDS = "ts_code,trade_date,open,high,low,close,vol,amount,pct_chg"
 PANEL_CACHE = "docs/evidence/.cache"
 
@@ -184,43 +188,16 @@ def merge_panel(feats: pd.DataFrame, panel: pd.DataFrame) -> pd.DataFrame:
 _PANEL: dict[str, object] = {}
 
 
-def _detectors() -> tuple[tuple[str, object], ...]:
-    """生产 layer4_triggers 里跑的六个检测器，顺序与之一致。
-
-    注意不是 core/wyckoff_structure.py 的 detect_structure_triggers——那条是
-    影子观测路径（workflows/funnel_layers.py:180），不参与 trigger_score。
-    """
-    from core.wyckoff_engine import (
-        _detect_compression,
-        _detect_evr,
-        _detect_lps,
-        _detect_sos,
-        _detect_spring,
-        _detect_trend_pullback,
-    )
-
-    return (
-        ("spring", _detect_spring),
-        ("lps", _detect_lps),
-        ("evr", _detect_evr),
-        ("compression", _detect_compression),
-        ("sos", _detect_sos),
-        ("trend_pullback", _detect_trend_pullback),
-    )
-
-
 def _init_worker(payload: dict[str, object]) -> None:
     from core.wyckoff_engine import FunnelConfig
 
     _PANEL.update(payload)
     _PANEL["cfg"] = FunnelConfig()
-    _PANEL["detectors"] = _detectors()
+    _PANEL["detectors"] = production_detectors()
 
 
 def _replay_symbol(ci: int) -> list[tuple[str, int, float, int, str]]:
     """单只票逐日重放。每个截面只喂 T 日及之前的 bar，不含未来信息。"""
-    from core.wyckoff_engine import _effective_entry_max_bias_200, _ret120_pct
-
     codes = _PANEL["codes"]  # type: ignore[index]
     cidx = _PANEL["cidx"]  # type: ignore[index]
     cfg = _PANEL["cfg"]
@@ -242,8 +219,7 @@ def _replay_symbol(ci: int) -> list[tuple[str, int, float, int, str]]:
     out: list[tuple[str, int, float, int, str]] = []
     for end in range(MIN_BARS, len(frame)):
         sub = frame.iloc[: end + 1]
-        # channel="" -> 不复现 L2 通道放宽，取全局/科创板上限，触发率是下界
-        limit = _effective_entry_max_bias_200(code, "", cfg, rps_slow=None, ret120_pct=_ret120_pct(sub, cfg))
+        limit = replay_entry_bias_limit(code, sub, cfg)
         best: float | None = None
         kinds: list[str] = []
         for key, fn in detectors:  # type: ignore[misc]
