@@ -27,8 +27,10 @@ DEFAULT_AI_QUOTA_BY_FAMILY: dict[str, tuple[int, int]] = {
     # 此前两者共用一个配额家族会让证据互相污染。
     "PANIC_REPAIR": (0, 0),
     "RISK_OFF": (0, 0),
-    # NEUTRAL: 已于 #280 并入禁买（超额 -4.35pct、CI [-6.80,-2.07] 不跨 0）；
-    # 配额保留供 shadow 对照，正式推荐与下单由闸门拦住。
+    # NEUTRAL: 已于 #280 并入禁买；配额保留供 shadow 对照，正式推荐与下单由闸门拦住。
+    # 注意 #280 引的「超额 -4.35pct」测的是 all 宽候选池，不是闸门管辖的正式推荐；
+    # 2026-08-31 按 formal_l4 口径重测，绝对收益 H=5/10/20 为 -2.43/-6.19/-5.72%，
+    # 禁买结论不变（详见 core/market_trade_mode._explicitly_allowed_regimes 文档串）。
     "NEUTRAL": (5, 1),
 }
 

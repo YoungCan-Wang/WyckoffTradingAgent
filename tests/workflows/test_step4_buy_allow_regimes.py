@@ -57,7 +57,7 @@ def test_allow_switch_does_not_touch_other_regimes(monkeypatch):
 
 
 def test_neutral_can_be_blocked_via_env(monkeypatch):
-    """NEUTRAL 证据最强（超额 −4.35pct、CI [−6.80,−2.07] 不跨 0），需能被禁掉。"""
+    """NEUTRAL 证据最强（正式推荐口径绝对收益 H=5/10/20 为 -2.43/-6.19/-5.72%），需能被禁掉。"""
     blocked = _blocked(monkeypatch, block="UNKNOWN,NEUTRAL,PANIC_REPAIR,RISK_OFF,CRASH,BLACK_SWAN")
     assert "NEUTRAL" in blocked
 

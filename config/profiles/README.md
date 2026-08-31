@@ -13,7 +13,7 @@ over profile values for runtime jobs.
 A-share **trading** defaults (quotas, hard stops, regime blocks) live mainly in:
 
 - `core/ai_candidate_allocation.py` / GitHub Actions env (`FUNNEL_AI_*`)
-- `core/market_trade_mode.py` (NEUTRAL mainline_active, RISK_ON observe_only)
+- `core/market_trade_mode.py` (写入闸门与 `STEP4_BUY_BLOCK_REGIMES` 同源；生产下 NEUTRAL/RISK_ON 均禁新仓)
 - `.github/workflows/wyckoff_funnel.yml` and `holding_diagnosis.yml`
 
 Operator guide: [`docs/OPERATOR_PLAYBOOK.md`](../../docs/OPERATOR_PLAYBOOK.md).

@@ -1250,6 +1250,8 @@ def _candidate_action_label(trade_mode: dict) -> str:
         return "主线/趋势可执行，优先确认买点"
     if mode == "overheat_shadow":
         return "过热市禁止新开：可做AI/shadow对照，不写正式推荐"
+    if mode == "execution_blocked":
+        return "该水温在下单闸门禁买：可做AI/shadow对照，不写正式推荐"
     if mode == "risk_on":
         return "过热市仅管理旧仓，不新开"
     return "先复核候选质量"
