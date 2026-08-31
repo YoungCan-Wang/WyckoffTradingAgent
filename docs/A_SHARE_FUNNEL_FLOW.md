@@ -371,7 +371,7 @@ flowchart TD
     IDEM -->|否| LLM["LLM 决策<br/>EXIT > TRIM > HOLD > PROBE/ATTACK"]
 
     LLM --> RISK{"风控门控"}
-RISK -->|UNKNOWN / RISK_ON / BEAR_REBOUND / PANIC_REPAIR / RISK_OFF / CRASH / BLACK_SWAN| BLOCK_BUY["默认冻结新开仓<br/>STEP4_BUY_BLOCK_REGIMES"]
+RISK -->|UNKNOWN / NEUTRAL / RISK_ON / PANIC_REPAIR / RISK_OFF / CRASH / BLACK_SWAN| BLOCK_BUY["冻结新开仓 + 不写正式推荐<br/>STEP4_BUY_BLOCK_REGIMES"]
 RISK -->|PANIC_REPAIR_CONFIRMED| REPAIR_PROBE["最多1只小额 PROBE<br/>禁止 ATTACK"]
     RISK -->|CAUTION| CAUTION_PROBE["最多1只小额 PROBE<br/>禁止 ATTACK"]
     RISK -->|NEUTRAL| ALLOW["按交易模式限额执行"]
@@ -560,7 +560,7 @@ efinance
 | `STEP4_REPAIR_PROBE_BUDGET_LIMIT` | `0.05` | `PANIC_REPAIR_CONFIRMED` 单票试探仓上限；同时最多只开放一只 |
 | `STEP4_REQUIRE_CONFIRMED_BUY_CANDIDATE` | `1` | Step4 新开仓只允许显式跨日确认候选；否定/观察状态优先拦截，不做模糊字符串匹配 |
 | `STEP4_AI_CANDIDATE_POLICY` | `veto_only` | `veto_only` 只剔除逻辑破产；`shadow` 仅记录分类用于实验对照 |
-| `STEP4_BUY_BLOCK_REGIMES` | `UNKNOWN,RISK_ON,BEAR_REBOUND,PANIC_REPAIR,RISK_OFF,CRASH,BLACK_SWAN` | 市场数据未就绪、过热与弱市均冻结新开仓 |
+| `STEP4_BUY_BLOCK_REGIMES` | `UNKNOWN,NEUTRAL,PANIC_REPAIR,RISK_OFF,CRASH,BLACK_SWAN`（生产值；代码默认不含 NEUTRAL 但含 RISK_ON/BEAR_REBOUND） | 市场数据未就绪、过热与弱市均冻结新开仓。**同时决定正式推荐是否写入**：`resolve_market_trade_mode` 读同一份名单，禁买档返回 `execution_blocked`，不再出现「报告说可买、OMS 买不到」 |
 
 ### 数据缺失导致的禁买要能被认出来
 

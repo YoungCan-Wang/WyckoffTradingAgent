@@ -383,7 +383,7 @@ def _execution_regime_allows(regime: str, mode: str, blocked: frozenset[str] | N
     STEP4_BUY_BLOCK_REGIMES 不一致，且方向恰好相反：
 
         回测禁买  BEAR_REBOUND / RISK_ON（实测超额 +4.08 / +6.07pct，实盘已放开）
-        回测放行  NEUTRAL（实测超额 -4.35pct，实盘已禁买）
+        回测放行  NEUTRAL（正式推荐口径绝对收益 H=10 -6.19%，实盘已禁买）
 
     后果是回测只在 NEUTRAL 下单、实盘恰好不在 NEUTRAL 下单，两者成交的交易日几乎不重叠，
     任何按水温分档的回测结论都无法映射到实盘。现改为接受实盘同一份禁买集合。

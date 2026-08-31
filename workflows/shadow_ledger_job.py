@@ -106,7 +106,11 @@ def _run_shadow_session(
         _buy_candidates(symbols_info, step3_report_text),
         step2_details.get("all_df_map") or {},
         as_of,
-        allow_new_buys=bool(mode.allow_recommendation_write),
+        # 跟 allow_ai_review 而非 allow_recommendation_write：影子账本是研究对照，
+        # 「禁正式推荐」的水温（RISK_ON/NEUTRAL 等 execution_blocked 档）正是最需要攒
+        # 对照样本的时候，模式名里的「shadow 对照」就是这个意思。只有硬防守档
+        # （RISK_OFF/CRASH/BLACK_SWAN，allow_ai_review=False）才真正停止建新仓。
+        allow_new_buys=bool(mode.allow_ai_review),
         prev_equity=float(book_nav(book)["equity"]),
     )
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from core.market_trade_mode import EXECUTE_BLOCK_NEW_BUY_REGIMES
+from core.market_trade_mode import oms_buy_block_regimes
 from utils.env import env_bool as _env_bool
 from utils.env import env_float as _env_float
 from utils.env import env_int as _env_int
@@ -23,10 +23,7 @@ def step4_order_config_from_env() -> Step4OrderConfig:
         probe_budget_limit=_clamp01(_env_float("STEP4_PROBE_BUDGET_LIMIT", 0.10)),
         repair_probe_budget_limit=_clamp01(_env_float("STEP4_REPAIR_PROBE_BUDGET_LIMIT", 0.05)),
         attack_budget_limit=_clamp01(_env_float("STEP4_ATTACK_BUDGET_LIMIT", 0.20)),
-        buy_block_regimes=_env_regime_set(
-            "STEP4_BUY_BLOCK_REGIMES",
-            "RISK_ON,BEAR_REBOUND,PANIC_REPAIR,RISK_OFF,CRASH,BLACK_SWAN",
-        ),
+        buy_block_regimes=oms_buy_block_regimes(),
         block_buy_on_stale_exit=_env_bool("STEP4_BLOCK_BUY_ON_STALE_EXIT", True),
         new_position_stop_guard_days=_env_int("STEP4_NEW_POSITION_STOP_GUARD_DAYS", 4, minimum=0),
         chase_gap_pct_min=gap_min,
@@ -41,41 +38,6 @@ def step4_order_config_from_env() -> Step4OrderConfig:
 def _env_stop_mode(name: str, default: str) -> str:
     mode = os.getenv(name, default).strip().lower()
     return mode if mode in {"fixed", "floor"} else default
-
-
-def _env_regime_set(name: str, default: str) -> frozenset[str]:
-    """解析禁买水温集合。
-
-    ``EXECUTE_BLOCK_NEW_BUY_REGIMES`` 无条件并入，所以单改 env 无法放开其中任何一档；
-    但那个集合同时被 AI 复核、推荐写入与横幅文案消费（实测直接改它会连带影响 30 个用例），
-    因此放开只在**下单闸门**这一层做，用 ``STEP4_BUY_ALLOW_REGIMES`` 显式豁免。
-
-    2026-08-17 联动实测（水温 × 严格候选，54 个交易日，候选 T+5 相对同日全市场）：
-
-    | 水温 | 天数 | 超额 | 为正 |
-    |---|---:|---:|---:|
-    | RISK_ON | 3 | +6.07pct | 3/3 |
-    | BEAR_REBOUND | 4 | +4.08pct | 4/4 |
-    | NEUTRAL | 12 | −4.35pct | 3/12 |
-
-    现状放行档（NEUTRAL/CAUTION）13 天超额 −4.62pct、bootstrap 95% CI [−6.99, −2.33]；
-    换成 BEAR_REBOUND/RISK_ON 后 7 天超额 +4.93pct、CI [+3.18, +6.65]，两个区间不重叠。
-    RISK_ON/BEAR_REBOUND 样本仅 3~4 天，故做成**可关的显式开关**而非改默认策略常量，
-    并保留 NEUTRAL 于禁买（它证据最强：CI [−6.80, −2.07] 不跨 0，且大盘侧独立同向 p=0.011）。
-    """
-    values = {
-        item.strip().upper()
-        for item in os.getenv(name, default).split(",")
-        if item.strip() and item.strip().upper() != "COOLDOWN"
-    }
-    merged = values | set(EXECUTE_BLOCK_NEW_BUY_REGIMES)
-    return frozenset(merged - _env_buy_allow_regimes())
-
-
-def _env_buy_allow_regimes() -> set[str]:
-    """从禁买名单里豁免的水温。留空表示沿用原有全部禁买。"""
-    raw = os.getenv("STEP4_BUY_ALLOW_REGIMES", "").strip()
-    return {item.strip().upper() for item in raw.split(",") if item.strip()}
 
 
 def _clamp01(value: float) -> float:
