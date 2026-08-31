@@ -1,0 +1,283 @@
+{
+  "dry_bands": [
+    {
+      "label": "最湿20%",
+      "days": 373,
+      "avg_size": 766.3,
+      "inside": 0.0971,
+      "inside_t": 0.55,
+      "excess": -0.0709,
+      "excess_t": -1.34,
+      "verdict": "不显著"
+    },
+    {
+      "label": "偏湿",
+      "days": 373,
+      "avg_size": 767.0,
+      "inside": 0.2992,
+      "inside_t": 1.79,
+      "excess": 0.1312,
+      "excess_t": 5.35,
+      "verdict": "显著为正"
+    },
+    {
+      "label": "中档",
+      "days": 373,
+      "avg_size": 766.9,
+      "inside": 0.2564,
+      "inside_t": 1.47,
+      "excess": 0.0884,
+      "excess_t": 4.7,
+      "verdict": "显著为正"
+    },
+    {
+      "label": "偏干",
+      "days": 373,
+      "avg_size": 767.0,
+      "inside": 0.1098,
+      "inside_t": 0.59,
+      "excess": -0.0582,
+      "excess_t": -2.13,
+      "verdict": "显著为负"
+    },
+    {
+      "label": "最干20%",
+      "days": 373,
+      "avg_size": 767.6,
+      "inside": 0.0775,
+      "inside_t": 0.41,
+      "excess": -0.0905,
+      "excess_t": -2.13,
+      "verdict": "显著为负"
+    }
+  ],
+  "ablation": [
+    {
+      "top_n": 10,
+      "days": 373,
+      "keep": 0.3928,
+      "keep_t": 1.2,
+      "drop": -0.5278,
+      "drop_t": -1.55,
+      "diff": 0.9206,
+      "diff_t": 3.02,
+      "overlap": 0.093,
+      "rand_min": 0.1751,
+      "rand_max": 0.502,
+      "beats_random": true,
+      "positive_quarters": "6/7",
+      "excess_by_quarter": {
+        "20251": 2.087,
+        "20252": 1.936,
+        "20253": 0.326,
+        "20254": 1.31,
+        "20261": -0.381,
+        "20262": 0.119,
+        "20263": 1.903
+      },
+      "verdict": "显著且抵成本：支持保留"
+    },
+    {
+      "top_n": 20,
+      "days": 373,
+      "keep": 0.0777,
+      "keep_t": 0.27,
+      "drop": -0.5483,
+      "drop_t": -1.85,
+      "diff": 0.626,
+      "diff_t": 2.86,
+      "overlap": 0.122,
+      "rand_min": 0.2661,
+      "rand_max": 0.4495,
+      "beats_random": true,
+      "positive_quarters": "5/7",
+      "excess_by_quarter": {
+        "20251": 2.003,
+        "20252": 1.514,
+        "20253": -0.082,
+        "20254": 0.725,
+        "20261": 0.199,
+        "20262": -0.607,
+        "20263": 1.67
+      },
+      "verdict": "显著且抵成本：支持保留"
+    }
+  ],
+  "weight_grid": {
+    "10": [
+      {
+        "weight": 0.0,
+        "days": 373,
+        "inside": -0.5278,
+        "inside_t": -1.55,
+        "excess": -0.6958,
+        "excess_t": -2.6,
+        "is_production": false
+      },
+      {
+        "weight": 0.2,
+        "days": 373,
+        "inside": 0.3928,
+        "inside_t": 1.2,
+        "excess": 0.2249,
+        "excess_t": 0.89,
+        "is_production": true
+      },
+      {
+        "weight": 0.4,
+        "days": 373,
+        "inside": 0.5623,
+        "inside_t": 1.79,
+        "excess": 0.3943,
+        "excess_t": 1.65,
+        "is_production": false
+      },
+      {
+        "weight": 0.6,
+        "days": 373,
+        "inside": 0.4259,
+        "inside_t": 1.36,
+        "excess": 0.2579,
+        "excess_t": 1.11,
+        "is_production": false
+      },
+      {
+        "weight": 0.8,
+        "days": 373,
+        "inside": 0.4214,
+        "inside_t": 1.38,
+        "excess": 0.2534,
+        "excess_t": 1.11,
+        "is_production": false
+      },
+      {
+        "weight": 1.2,
+        "days": 373,
+        "inside": 0.2501,
+        "inside_t": 0.83,
+        "excess": 0.0822,
+        "excess_t": 0.36,
+        "is_production": false
+      },
+      {
+        "weight": 2.0,
+        "days": 373,
+        "inside": 0.1814,
+        "inside_t": 0.62,
+        "excess": 0.0134,
+        "excess_t": 0.06,
+        "is_production": false
+      }
+    ],
+    "20": [
+      {
+        "weight": 0.0,
+        "days": 373,
+        "inside": -0.5483,
+        "inside_t": -1.85,
+        "excess": -0.7163,
+        "excess_t": -3.24,
+        "is_production": false
+      },
+      {
+        "weight": 0.2,
+        "days": 373,
+        "inside": 0.0777,
+        "inside_t": 0.27,
+        "excess": -0.0902,
+        "excess_t": -0.46,
+        "is_production": true
+      },
+      {
+        "weight": 0.4,
+        "days": 373,
+        "inside": 0.2184,
+        "inside_t": 0.79,
+        "excess": 0.0504,
+        "excess_t": 0.27,
+        "is_production": false
+      },
+      {
+        "weight": 0.6,
+        "days": 373,
+        "inside": 0.1981,
+        "inside_t": 0.72,
+        "excess": 0.0301,
+        "excess_t": 0.16,
+        "is_production": false
+      },
+      {
+        "weight": 0.8,
+        "days": 373,
+        "inside": 0.2574,
+        "inside_t": 0.94,
+        "excess": 0.0895,
+        "excess_t": 0.48,
+        "is_production": false
+      },
+      {
+        "weight": 1.2,
+        "days": 373,
+        "inside": 0.2182,
+        "inside_t": 0.81,
+        "excess": 0.0502,
+        "excess_t": 0.28,
+        "is_production": false
+      },
+      {
+        "weight": 2.0,
+        "days": 373,
+        "inside": 0.1438,
+        "inside_t": 0.55,
+        "excess": -0.0241,
+        "excess_t": -0.14,
+        "is_production": false
+      }
+    ]
+  },
+  "walk_forward": [
+    {
+      "top_n": 10,
+      "days": 253,
+      "chosen": 0.1783,
+      "fixed": 0.0618,
+      "diff": 0.1165,
+      "diff_t": 0.76,
+      "pick_dist": {
+        "0.4": 0.921,
+        "0.8": 0.079
+      },
+      "is_concentrated": true,
+      "verdict": "走前不显著：不可上线"
+    }
+  ],
+  "momentum_matched_spread": {
+    "days": 373,
+    "spread": -0.0643,
+    "spread_t": -0.87,
+    "by_quarter": {
+      "20251": -0.334,
+      "20252": 0.555,
+      "20253": -0.09,
+      "20254": 0.077,
+      "20261": -0.086,
+      "20262": -0.407,
+      "20263": -0.414
+    },
+    "note": "接近零不代表 dry_q 无用：它改变的是动量维度上的落点，不是档内排序"
+  },
+  "production": {
+    "dry_weight": 0.2,
+    "q20_weight": 0.25,
+    "q5_weight": 0.2,
+    "q3_weight": 0.05
+  },
+  "cost_threshold_pct": 0.202,
+  "reading": "excess 为相对同日流动性域内全体的超额。消融的 diff 为「留 dry_q 减去 dry_q」的逐日配对差值，为正说明该项有贡献；须同时高于成本 0.202% 且落在随机带之外。分档看的是无条件分位，驼峰形（最干档非最优）说明收益来自躲开放量而非越缩越好。",
+  "horizon_days": 5,
+  "window": {
+    "start": 20250212,
+    "end": 20260820,
+    "days": 373
+  }
+}
