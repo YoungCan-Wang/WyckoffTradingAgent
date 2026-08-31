@@ -76,8 +76,9 @@ def test_data_gap_falls_back_to_benchmark_but_keeps_real_risk():
 
     # 取数失败：回落收盘态，不再无故禁买。
     assert resolve_effective_market_regime("BEAR_REBOUND", PREMARKET_DATA_GAP) == "BEAR_REBOUND"
-    # 盘前明确判定危险：照旧收紧。
-    assert resolve_effective_market_regime("BEAR_REBOUND", "UNKNOWN") == "UNKNOWN"
+    # 盘前 UNKNOWN 也一并回落：实测挡错的两天都是 a50_pct_chg 缺失伪装成 UNKNOWN。
+    assert resolve_effective_market_regime("BEAR_REBOUND", "UNKNOWN") == "BEAR_REBOUND"
+    # BLACK_SWAN 是唯一保留的收紧通道。
     assert resolve_effective_market_regime("BEAR_REBOUND", "BLACK_SWAN") == "BLACK_SWAN"
     # 回落不等于放行：收盘态本身禁买时仍然禁买。
     assert resolve_effective_market_regime("CRASH", PREMARKET_DATA_GAP) == "CRASH"

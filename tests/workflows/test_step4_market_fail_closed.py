@@ -10,9 +10,10 @@ from workflows.step4_market import (
 _READY = {"status": "ok", "reason": ""}
 
 
-def test_invalid_premarket_regime_fails_closed() -> None:
+def test_invalid_premarket_regime_falls_back_to_benchmark() -> None:
+    """字段级归一化仍 fail-closed，但合并层已不让盘前的 UNKNOWN 收紧执行权限。"""
     assert normalize_premarket_regime("typo") == "UNKNOWN"
-    assert resolve_effective_market_regime("NEUTRAL", "typo") == "UNKNOWN"
+    assert resolve_effective_market_regime("NEUTRAL", "typo") == "NEUTRAL"
 
 
 def test_missing_premarket_falls_back_to_benchmark() -> None:
@@ -34,17 +35,25 @@ def test_missing_premarket_does_not_loosen_strict_benchmark() -> None:
         assert resolve_effective_market_regime(regime, None) == regime
 
 
-def test_explicit_unknown_still_fails_closed() -> None:
-    """盘前模型明确给出 UNKNOWN（看不清）与拼写错误（数据不可信）都该收紧。"""
-    assert resolve_effective_market_regime("NEUTRAL", "UNKNOWN") == "UNKNOWN"
-    assert resolve_effective_market_regime("NEUTRAL", "typo") == "UNKNOWN"
+def test_only_black_swan_premarket_can_still_tighten() -> None:
+    """盘前 A50/VIX 只保留 BLACK_SWAN 一条收紧通道。
+
+    实测 69 天：盘前合并共改了 6 天的 allow_ai_review，3 次挡对 3 次挡错，均值超额
+    -0.89 全由 07-14 一天贡献，剔掉后翻正为 +0.39；挡错的 08-07/08-17 还是
+    a50_pct_chg 取数失败伪装成 UNKNOWN。故 RISK_OFF/UNKNOWN 两路降级已裁除。
+    """
+    assert resolve_effective_market_regime("NEUTRAL", "BLACK_SWAN") == "BLACK_SWAN"
+    for benign in ("UNKNOWN", "RISK_OFF", "CAUTION", "NORMAL", "typo"):
+        assert resolve_effective_market_regime("NEUTRAL", benign) == "NEUTRAL", benign
 
 
-def test_repair_stages_survive_normal_premarket_merge() -> None:
+def test_repair_stages_survive_premarket_merge() -> None:
     assert resolve_effective_market_regime("PANIC_REPAIR", "NORMAL") == "PANIC_REPAIR"
     assert resolve_effective_market_regime("PANIC_REPAIR_CONFIRMED", "NORMAL") == "PANIC_REPAIR_CONFIRMED"
     assert resolve_effective_market_regime("PANIC_REPAIR_CONFIRMED", "CAUTION") == "PANIC_REPAIR_CONFIRMED"
-    assert resolve_effective_market_regime("PANIC_REPAIR_CONFIRMED", "RISK_OFF") == "RISK_OFF"
+    # 盘前 RISK_OFF 不再收紧（已裁除），但 BLACK_SWAN 仍然压得住。
+    assert resolve_effective_market_regime("PANIC_REPAIR_CONFIRMED", "RISK_OFF") == "PANIC_REPAIR_CONFIRMED"
+    assert resolve_effective_market_regime("PANIC_REPAIR_CONFIRMED", "BLACK_SWAN") == "BLACK_SWAN"
 
 
 def test_caution_and_risk_on_keep_their_execution_semantics() -> None:
@@ -57,18 +66,24 @@ def test_every_emitted_benchmark_regime_has_explicit_execution_priority() -> Non
     assert KNOWN_MARKET_REGIMES <= MARKET_EXECUTION_PRIORITY.keys()
 
 
-def test_no_source_level_hard_block_can_escape_after_merge() -> None:
-    benchmark_regimes = KNOWN_MARKET_REGIMES | {"UNKNOWN"}
-    premarket_regimes = {"UNKNOWN", "NORMAL", "CAUTION", "RISK_OFF", "BLACK_SWAN"}
-    for benchmark in benchmark_regimes:
+def test_no_benchmark_hard_block_can_escape_after_merge() -> None:
+    """收盘态禁买绝不能被盘前态放行——合并只允许收紧，不允许放松。
+
+    盘前态一侧的禁买档位不再对称成立：RISK_OFF/UNKNOWN 已按实测裁除，只有
+    BLACK_SWAN 还能升级，故其禁买语义单列一条断言。
+    """
+    premarket_regimes = {"UNKNOWN", "NORMAL", "CAUTION", "RISK_OFF", "BLACK_SWAN", "", None}
+    for benchmark in KNOWN_MARKET_REGIMES | {"UNKNOWN"}:
         for premarket in premarket_regimes:
             effective = resolve_effective_market_regime(benchmark, premarket)
-            if benchmark in EXECUTE_BLOCK_NEW_BUY_REGIMES or premarket in EXECUTE_BLOCK_NEW_BUY_REGIMES:
+            if benchmark in EXECUTE_BLOCK_NEW_BUY_REGIMES:
+                assert effective in EXECUTE_BLOCK_NEW_BUY_REGIMES, f"{benchmark}+{premarket} escaped as {effective}"
+            if premarket == "BLACK_SWAN":
                 assert effective in EXECUTE_BLOCK_NEW_BUY_REGIMES, f"{benchmark}+{premarket} escaped as {effective}"
 
 
 def test_absent_premarket_is_distinguished_from_a_real_unknown_verdict() -> None:
-    """两者都会降级为 UNKNOWN 禁买，但只有前者是运维可以补救的。"""
+    """两者都已回落 benchmark，但只有前者需要运维去补任务，仍要能分辨。"""
     assert missing_market_inputs("NEUTRAL", None, _READY, None) == ["premarket"]
     assert missing_market_inputs("NEUTRAL", "UNKNOWN", _READY, None) == []
 
@@ -154,7 +169,8 @@ def test_guardrail_data_gap_falls_back_like_missing_premarket() -> None:
     assert f"盘前={PREMARKET_DATA_GAP}" in market_view
 
 
-def test_guardrail_explicit_unknown_still_blocks_via_production_entry() -> None:
+def test_guardrail_premarket_unknown_no_longer_blocks_via_production_entry() -> None:
+    """盘前 UNKNOWN 在生产入口也不再禁买：08-17 一天曾因此白扔 71 只 formal_l4。"""
     regime, guardrail_text, _market_view = build_market_guardrail(
         trade_date="2026-08-18",
         benchmark_context={"regime": "CAUTION"},
@@ -165,7 +181,23 @@ def test_guardrail_explicit_unknown_still_blocks_via_production_entry() -> None:
         },
         buy_block_regimes={"UNKNOWN", "NEUTRAL", "CRASH", "RISK_OFF", "BLACK_SWAN"},
     )
-    assert regime == "UNKNOWN"
+    assert regime == "CAUTION"
+    assert "一票否决" not in guardrail_text
+
+
+def test_guardrail_premarket_black_swan_still_blocks_via_production_entry() -> None:
+    """唯一保留的收紧通道在生产入口必须仍然生效。"""
+    regime, guardrail_text, _market_view = build_market_guardrail(
+        trade_date="2026-08-18",
+        benchmark_context={"regime": "CAUTION"},
+        market_signal_row={
+            "trade_date": "2026-08-18",
+            "benchmark_regime": "CAUTION",
+            "premarket_regime": "BLACK_SWAN",
+        },
+        buy_block_regimes={"UNKNOWN", "NEUTRAL", "CRASH", "RISK_OFF", "BLACK_SWAN"},
+    )
+    assert regime == "BLACK_SWAN"
     assert "一票否决" in guardrail_text
 
 

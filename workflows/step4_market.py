@@ -6,8 +6,8 @@ import logging
 
 from core.market_trade_mode import (
     PREMARKET_DATA_GAP,
+    merge_premarket_regime,
     normalize_regime,
-    stricter_market_regime,
 )
 from integrations.supabase_market_signal import compose_market_banner, load_market_signal_daily, market_signal_readiness
 from workflows.step4_text import clean_text
@@ -31,24 +31,13 @@ def normalize_premarket_regime(raw: object) -> str:
 
 
 def resolve_effective_market_regime(benchmark_regime: object, premarket_regime: object) -> str:
-    """收盘态与盘前态取更严者。
+    """Step4 入口的合并口径，实现委托给 ``core.market_trade_mode``。
 
-    ``premarket`` **完全缺失**（None/空串）时不再拉成 UNKNOWN，而是回落到 benchmark
-    单独判定——「上游任务没跑」是系统故障，不是市场信号，把两者混为一谈会让取数失败
-    冒充风险事件。真实的 ``"UNKNOWN"`` 判定与拼写错误仍然 fail-closed：前者是盘前
-    模型明确给出的「看不清」，后者说明数据不可信，两种都该收紧。
-
-    实测 60 个交易日里，2026-07-20 与 07-21 两天 benchmark 为 NEUTRAL（放行）却因
-    premarket 缺失被降级为 UNKNOWN 而禁买。
+    合并策略（以 benchmark 为准，盘前态只留 BLACK_SWAN 一条收紧通道）与其 69 天实测
+    依据见 :func:`core.market_trade_mode.merge_premarket_regime`。此处保留薄封装是因为
+    生产入口需要 ``normalize_benchmark_regime`` 的 clean_text 语义，且调用点已固定。
     """
-    benchmark_norm = normalize_benchmark_regime(benchmark_regime)
-    raw = clean_text(premarket_regime).upper()
-    # 两类「拿不到数据」都回落：字段为空（盘前任务没跑）与 DATA_GAP（任务跑了但
-    # A50/VIX 取数失败）。此前只处理前者，导致「跑了反而更严格」的不一致。
-    if not raw or raw == PREMARKET_DATA_GAP:
-        return benchmark_norm
-    premarket_norm = normalize_premarket_regime(premarket_regime)
-    return stricter_market_regime(benchmark_norm, premarket_norm)
+    return merge_premarket_regime(normalize_benchmark_regime(benchmark_regime), premarket_regime)
 
 
 def load_market_signal_for_trade_date(trade_date: str) -> dict[str, object] | None:
