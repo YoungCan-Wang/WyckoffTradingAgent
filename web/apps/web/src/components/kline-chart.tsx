@@ -2,7 +2,8 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import { watchChartResize } from '@/lib/chart-resize'
 import { formatSignedPercent } from '@/lib/format'
 import { avg, rsi as calcRSI, macd as calcMACD, bollinger as calcBollinger } from '@/lib/math'
-import type { KlineRow } from '@wyckoff/shared'
+import { deriveForecastSeries, deriveWyckoffZones, formatChartPlanNotes, type KlineRow, type WyckoffChartPlan } from '@wyckoff/shared'
+import { WyckoffZonePrimitive } from '@/components/wyckoff-zone-primitive'
 import {
   createChart,
   CandlestickSeries,
@@ -41,6 +42,8 @@ interface KlineChartProps {
   tradingRange?: { support: number; resistance: number }
   stage?: string
   showIndicators?: boolean
+  /** 模型给的威科夫作图计划:阶段、事件、推演。给了就画长周期均线、底色、预测线。 */
+  chartPlan?: WyckoffChartPlan | null
   onBarClick?: (date: string) => void
 }
 
@@ -62,23 +65,27 @@ interface ChartRefs {
   ma5: ISeriesApi<'Line'>
   ma20: ISeriesApi<'Line'>
   ma50: ISeriesApi<'Line'>
+  ma200: ISeriesApi<'Line'>
   volume: ISeriesApi<'Histogram'>
   markers: ISeriesMarkersPluginApi<Time> | null
 }
 
 type ChartTheme = ReturnType<typeof readChartTheme>
 
-export function KlineChart({ data, height = 400, wyckoffMarkers, newsMarkers, tradingRange, stage, showIndicators = false, onBarClick }: KlineChartProps) {
+export function KlineChart({ data, height = 400, wyckoffMarkers, newsMarkers, tradingRange, stage, showIndicators = false, chartPlan, onBarClick }: KlineChartProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRefs = useRef<ChartRefs | null>(null)
   const themeRef = useRef(readChartTheme())
   const structure = useMemo(() => buildStructureSnapshot(data, tradingRange, stage), [data, tradingRange, stage])
   const [indicators, setIndicators] = useState({ boll: false, rsi: false, macd: false })
+  const planMarkers = useMemo(() => (chartPlan ? toPlanMarkers(chartPlan) : undefined), [chartPlan])
+  const planNotes = useMemo(() => (chartPlan ? formatChartPlanNotes(chartPlan) : []), [chartPlan])
 
   useChartInit(containerRef, chartRefs, themeRef, height)
-  useChartData(chartRefs, themeRef, data, wyckoffMarkers, newsMarkers, tradingRange)
+  useChartData(chartRefs, themeRef, data, planMarkers ?? wyckoffMarkers, newsMarkers, tradingRange)
   useChartSelection(chartRefs, onBarClick)
   useBollingerOverlay(chartRefs, data, indicators.boll)
+  useChartPlanOverlay(chartRefs, data, chartPlan)
 
   const closes = useMemo(() => data.map((d) => d.close), [data])
   const dates = useMemo(() => data.map((d) => d.date), [data])
@@ -94,8 +101,23 @@ export function KlineChart({ data, height = 400, wyckoffMarkers, newsMarkers, tr
       {showIndicators && <IndicatorBar indicators={indicators} setIndicators={setIndicators} />}
       {indicators.rsi && <RSISubChart closes={closes} dates={dates} />}
       {indicators.macd && <MACDSubChart closes={closes} dates={dates} />}
-      <ChartLegend boll={indicators.boll} wyckoffMarkers={!!wyckoffMarkers} newsMarkers={!!newsMarkers?.length} />
+      <ChartLegend boll={indicators.boll} wyckoffMarkers={!!wyckoffMarkers || !!planMarkers} newsMarkers={!!newsMarkers?.length} chartPlan={!!chartPlan} />
+      {planNotes.length > 0 && <ChartPlanNotes notes={planNotes} />}
     </div>
+  )
+}
+
+/**
+ * 图上只挂术语,理由列在图下。
+ *
+ * 术语加长句一起塞进 marker,几个事件挨在一起就互相压住,谁也读不清。宁可
+ * 图上少显示一个字,也不牺牲整张图的可读性。
+ */
+function ChartPlanNotes({ notes }: { notes: string[] }) {
+  return (
+    <ul className="space-y-1 rounded-lg border border-border bg-muted/20 px-3 py-2 text-[11px] leading-5 text-muted-foreground">
+      {notes.map((note) => <li key={note}>{note}</li>)}
+    </ul>
   )
 }
 
@@ -138,9 +160,10 @@ function useChartInit(
     const ma5 = chart.addSeries(LineSeries, { ...maOpts, color: '#f59e0b', lineWidth: 1 })
     const ma20 = chart.addSeries(LineSeries, { ...maOpts, color: '#2563eb', lineWidth: 2 })
     const ma50 = chart.addSeries(LineSeries, { ...maOpts, color: '#7c3aed', lineWidth: 2, lineStyle: LineStyle.Dashed })
+    const ma200 = chart.addSeries(LineSeries, { ...maOpts, color: '#dc2626', lineWidth: 2, lineStyle: LineStyle.Dashed })
     const volume = chart.addSeries(HistogramSeries, { priceFormat: { type: 'volume' }, priceScaleId: 'volume' })
     chart.priceScale('volume').applyOptions({ scaleMargins: { top: 0.84, bottom: 0 } })
-    chartRefs.current = { chart, candle, ma5, ma20, ma50, volume, markers: null }
+    chartRefs.current = { chart, candle, ma5, ma20, ma50, ma200, volume, markers: null }
     const stopResize = watchChartResize(containerRef.current, chart)
     return () => { stopResize(); chartRefs.current?.markers?.detach(); chart.remove(); chartRefs.current = null }
   }, [containerRef, chartRefs, themeRef, height])
@@ -166,6 +189,8 @@ function useChartData(
     refs.ma5.setData(movingAverage(data, 5))
     refs.ma20.setData(movingAverage(data, 20))
     refs.ma50.setData(movingAverage(data, 50))
+    // 不足 200 根时 movingAverage 返回空数组,线自动不画 —— 不用半截数据凑一条。
+    refs.ma200.setData(movingAverage(data, 200))
     refs.volume.setData(volumes)
     const markers = [...(wyckoffMarkers ? toSeriesMarkers(wyckoffMarkers) : buildMarkers(data)), ...toNewsMarkers(newsMarkers)]
     if (refs.markers) refs.markers.setMarkers(markers)
@@ -195,6 +220,83 @@ function useBollingerOverlay(chartRefs: React.MutableRefObject<ChartRefs | null>
   }, [chartRefs, data, active])
 }
 
+/**
+ * 阶段底色、阶段分割线、30 日推演线。
+ *
+ * 每次 plan 变了整套重建 —— 这三样都是整体一致的东西,增量更新容易留下上一轮的
+ * 残留线条。重建的代价是几个 addSeries,可以接受。
+ */
+function useChartPlanOverlay(
+  chartRefs: React.MutableRefObject<ChartRefs | null>,
+  data: KlineRow[],
+  plan: WyckoffChartPlan | null | undefined,
+) {
+  useEffect(() => {
+    const refs = chartRefs.current
+    if (!refs || data.length === 0 || !plan) return
+    const added: ISeriesApi<'Line'>[] = []
+    const zones = deriveWyckoffZones(plan, data)
+    const zonePrimitive = zones.length > 0 ? new WyckoffZonePrimitive(zones) : null
+    if (zonePrimitive) refs.candle.attachPrimitive(zonePrimitive)
+
+    // 阶段分割线画成竖线:同一天两个点,一个贴顶一个贴底。用独立 series 而不是
+    // priceLine —— priceLine 只能横着画。
+    const bounds = priceBounds(data)
+    for (const phase of plan.phases) {
+      const divider = refs.chart.addSeries(LineSeries, {
+        color: '#94a3b8', lineWidth: 1, lineStyle: LineStyle.Dotted,
+        priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+      })
+      divider.setData([
+        { time: phase.startDate as Time, value: bounds.low },
+        { time: phase.startDate as Time, value: bounds.high },
+      ])
+      added.push(divider)
+    }
+
+    const forecast = deriveForecastSeries(plan.forecast, data)
+    if (forecast.length > 1) {
+      const line = refs.chart.addSeries(LineSeries, {
+        color: '#f97316', lineWidth: 2, lineStyle: LineStyle.Dashed,
+        priceLineVisible: false, lastValueVisible: true, title: '推演',
+      })
+      line.setData(forecast.map((point) => ({ time: point.date as Time, value: point.value })))
+      added.push(line)
+    }
+    refs.chart.timeScale().fitContent()
+
+    return () => {
+      if (zonePrimitive) refs.candle.detachPrimitive(zonePrimitive)
+      added.forEach((series) => refs.chart.removeSeries(series))
+    }
+  }, [chartRefs, data, plan])
+}
+
+function priceBounds(data: KlineRow[]): { low: number; high: number } {
+  return {
+    low: Math.min(...data.map((row) => row.low)),
+    high: Math.max(...data.map((row) => row.high)),
+  }
+}
+
+/** 图上只挂术语原文,理由交给 ChartPlanNotes —— 长句挤在 K 线上谁也读不清。 */
+function toPlanMarkers(plan: WyckoffChartPlan): WyckoffMarkerInput[] {
+  return plan.events.map((event) => ({
+    date: event.date,
+    type: planMarkerType(event.term),
+    label: event.term,
+    position: event.side === 'above' ? 'aboveBar' : 'belowBar',
+  }))
+}
+
+function planMarkerType(term: string): WyckoffMarkerInput['type'] {
+  const normalized = term.toLowerCase()
+  if (normalized.includes('spring') || normalized.includes('sc')) return 'spring'
+  if (normalized.includes('sos') || normalized.includes('jac')) return 'sos'
+  if (normalized.includes('lps') || normalized.includes('st')) return 'lps'
+  return 'evr'
+}
+
 function StructureMetrics({ structure }: { structure: StructureSnapshot }) {
   return (
     <div className="grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4">
@@ -216,12 +318,20 @@ function IndicatorBar({ indicators, setIndicators }: { indicators: { boll: boole
   )
 }
 
-function ChartLegend({ boll, wyckoffMarkers, newsMarkers }: { boll: boolean; wyckoffMarkers: boolean; newsMarkers: boolean }) {
+function ChartLegend({ boll, wyckoffMarkers, newsMarkers, chartPlan = false }: { boll: boolean; wyckoffMarkers: boolean; newsMarkers: boolean; chartPlan?: boolean }) {
   return (
     <div className="flex flex-wrap gap-3 text-[11px] text-muted-foreground">
       <Legend color="#f59e0b" label="MA5" />
       <Legend color="#2563eb" label="MA20" />
       <Legend color="#7c3aed" label="MA50" />
+      <Legend color="#dc2626" label="MA200" />
+      {chartPlan && (
+        <>
+          <Legend color="#f97316" label="30日推演" />
+          <Legend color="#2563eb" label="吸筹区" />
+          <Legend color="#ef4444" label="派发区" />
+        </>
+      )}
       {boll && <Legend color="#94a3b8" label="BOLL" />}
       {newsMarkers && <Legend color="#0f766e" label="新闻" />}
       {wyckoffMarkers ? (
