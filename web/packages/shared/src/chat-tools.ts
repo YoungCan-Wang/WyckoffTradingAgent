@@ -31,6 +31,13 @@ import {
   type PatternReviewRow,
 } from './pattern-review'
 import { ANALYSIS_CONTEXT_PACK_SCHEMA, buildStockAnalysisContextPack } from './analysis-context'
+import {
+  fetchEastMoneyStockNews,
+  selectStockNewsHeadlines,
+  type NewsEventKind,
+  type NewsSentiment,
+  type StockNewsHeadline,
+} from './news-chart-events'
 import { WYCKOFF_CHART_PLAN_SCHEMA, validateChartPlan } from './wyckoff-chart-plan'
 import { marketWatchSymbol, normalizeMarketWatchCode, readFreshMarketWatchSnapshot, type MarketWatchQuote, type MarketWatchSnapshot } from './market-watch'
 import { refreshPortfolioTotalEquity } from './portfolio-valuation'
@@ -709,6 +716,56 @@ function buildMarketHistoryDigest(name: string, rows: KlineRow[]): string {
     ...recent,
     '```',
   ].join('\n')
+}
+
+/**
+ * 拉个股近期消息,供 Step 1.5 核证结构判断。
+ *
+ * 为什么不用 web_search:那个是 provider 侧工具,只在 DeepSeek Responses 通道
+ * 挂得上(见 chat-language-model 的 providerTools)。走 chat 通道时它整个不存在,
+ * 核证一步就断了。这个走东财接口,两条通道都在。
+ *
+ * 定位是核证,不是选股依据 —— 先有量价结构结论,再看消息能不能对上。所以输出
+ * 里明写这一句,不让模型倒过来用。
+ */
+export async function execStockNews(deps: ToolDeps, code: string, name: string | null, limit: number): Promise<string> {
+  const normalized = normalizeCode(code)
+  if (!isCnSymbol(normalized)) {
+    return `${code} 不是 A 股 6 位代码。个股消息检索目前只覆盖 A 股（数据源为东方财富），港股/美股请用其它工具或公开信息。`
+  }
+  const rows = await fetchEastMoneyStockNews(normalized, deps.fetch).catch(() => null)
+  if (rows === null) return `消息源暂时不可用，未能取到 ${normalized} ${name || ''} 的消息。不要据此断定「没有消息」。`
+  const headlines = selectStockNewsHeadlines(rows, Math.min(Math.max(limit, 1), 20), normalized, name || '')
+  if (headlines.length === 0) {
+    return `未检索到 ${normalized} ${name || ''} 的相关消息（已过滤涨停板、龙虎榜、盘后集锦这类无事件内核的标题）。这说明检索没有命中，不等于确实无事发生。`
+  }
+  return [
+    `${normalized} ${name || ''} 近期消息 ${headlines.length} 条（来源：东方财富，按发布日倒序）`,
+    '用途：核证量价结构判断。先有结构结论，再看消息能否对上；不要反过来用消息推结构。',
+    '注意：发布日是自然日，未贴到交易日；周末与盘后消息通常反映在下一交易日。',
+    '',
+    ...headlines.map(formatNewsHeadlineLine),
+  ].join('\n')
+}
+
+function formatNewsHeadlineLine(row: StockNewsHeadline): string {
+  const tags = [row.kind ? NEWS_KIND_LABEL[row.kind] : '未归类', NEWS_SENTIMENT_LABEL[row.sentiment]].join('/')
+  return [`- ${row.date} [${tags}] ${row.title}`, row.summary ? `  摘要：${row.summary}` : ''].filter(Boolean).join('\n')
+}
+
+const NEWS_KIND_LABEL: Record<NewsEventKind, string> = {
+  regulatory: '监管',
+  risk: '风险',
+  earnings: '业绩',
+  holder: '股东',
+  deal: '交易',
+}
+
+const NEWS_SENTIMENT_LABEL: Record<NewsSentiment, string> = {
+  bullish: '偏多',
+  bearish: '偏空',
+  mixed: '多空混杂',
+  unknown: '中性',
 }
 
 export async function execQueryRecommendations(deps: ToolDeps, limit: number): Promise<string> {
