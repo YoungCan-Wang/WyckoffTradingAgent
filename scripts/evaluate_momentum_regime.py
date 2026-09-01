@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import time
 from pathlib import Path
 
@@ -29,10 +30,12 @@ import _bootstrap  # noqa: F401
 import pandas as pd
 
 from core.momentum_regime_eval import (
+    CONTROL_SEEDS,
     MID_BAND,
     MIN_AMOUNT_RAW,
     MIN_DOMAIN_SIZE,
     MIN_GROUP,
+    NON_TOP_CAP,
     PROD_RPS_FAST_MIN,
     PROD_RPS_SLOW_MIN,
     PROD_RPS_WINDOW_FAST,
@@ -157,6 +160,7 @@ def _collect_day(snap, date: int, sink, switch_rows, daily_ic) -> None:
         sink.setdefault("中动量档", []).append(
             {"date": date, "inside": float(forward[mid].mean()), "domain": domain_ret, "size": float(mid.sum())}
         )
+        _collect_non_top_control(pct_fast, pct_slow, forward, date, int(mid.sum()), domain_ret, sink)
         if int(gate.sum()) >= MIN_GROUP:
             switch_rows.append(
                 {
@@ -169,6 +173,25 @@ def _collect_day(snap, date: int, sink, switch_rows, daily_ic) -> None:
             )
 
 
+def _collect_non_top_control(pct_fast, pct_slow, forward, date: int, size: int, domain_ret: float, sink) -> None:
+    """随机负控制：每天从「两条腿都低于 NON_TOP_CAP 分位」里随机抽 size 只。
+
+    只数与中动量档当日相同，域也只砍掉顶部，因此这一档除了「避开顶部」不含任何
+    选择信息。中动量档比不过它，就说明它的边缘同样只是避开顶部。
+
+    随机数按 (seed, 交易日) 定种，同一天同一种子在多次运行、多个 horizon 之间
+    都取到同一批票，否则各档之间的差值会掺进抽样噪声。
+    """
+    eligible = list(forward.index[(pct_fast < NON_TOP_CAP) & (pct_slow < NON_TOP_CAP)])
+    if len(eligible) < size:
+        return
+    for seed in CONTROL_SEEDS:
+        picks = random.Random(seed * 1_000_003 + date).sample(eligible, size)
+        sink.setdefault(f"__control_{seed}__", []).append(
+            {"date": date, "inside": float(forward[picks].mean()), "domain": domain_ret, "size": float(size)}
+        )
+
+
 def build_report(sink: dict[str, list[dict[str, float]]], daily_ic: list[float], horizon: int) -> MomentumReport:
     report = MomentumReport()
     for fast_min, slow_min in THRESHOLD_GRID:
@@ -177,10 +200,15 @@ def build_report(sink: dict[str, list[dict[str, float]]], daily_ic: list[float],
         report.thresholds.append(summarize_band(label, sink.get(label, []), is_production=is_prod))
     report.mid_band = summarize_band("中动量档 40-65/40-70", sink.get("中动量档", []))
     report.domain = summarize_band("域内基准（对照）", sink.get("__domain__", []))
+    report.controls = [
+        summarize_band(f"随机负控制 <{NON_TOP_CAP:.0f} 分位 seed={seed}", sink.get(f"__control_{seed}__", []))
+        for seed in CONTROL_SEEDS
+    ]
     rows = sink.get("__switch__", [])
+    # horizon 传进去,价差 t 才会按不重叠日算——相邻日的 H 日前向收益共用 H-1 天。
     report.switches = [
-        walk_forward_switch("按市场宽度切换", rows, state_key="breadth", high_is_on=True),
-        walk_forward_switch("按截面离散度切换", rows, state_key="dispersion", high_is_on=False),
+        walk_forward_switch("按市场宽度切换", rows, state_key="breadth", high_is_on=True, horizon=horizon),
+        walk_forward_switch("按截面离散度切换", rows, state_key="dispersion", high_is_on=False, horizon=horizon),
     ]
     report.ic_persistence = ic_persistence(daily_ic, horizon)
     return report
