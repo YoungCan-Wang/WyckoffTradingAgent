@@ -19,6 +19,7 @@ from core.funnel_effect_eval import (
     match_by_momentum,
     resolve_layer,
     sample_momentum_band,
+    summarize_absolute,
     summarize_group,
     tstat,
 )
@@ -249,6 +250,78 @@ class TestResolveLayer:
         assert resolve_layer({}, self.UNIVERSE, "l4_vs_rest") == ([], [])
 
 
+def _abs_daily(nets: list[float], benches: list[float | None] | None = None, *, size: float = 10.0) -> list[dict]:
+    """绝对口径的逐日观测。benches 为 None 表示整段无基准。"""
+    return [
+        {
+            "date": f"2026-06-{i + 1:02d}",
+            "size_abs": size,
+            "net_abs": net,
+            "bench": None if benches is None else benches[i],
+        }
+        for i, net in enumerate(nets)
+    ]
+
+
+class TestSummarizeAbsolute:
+    def test_sample_floor_blocks_short_windows(self):
+        stat = summarize_absolute(_abs_daily([1.0] * (MIN_DAYS - 1)))
+        assert stat.net_pct is None
+        assert stat.verdict == "样本不足"
+
+    def test_thin_days_are_dropped_like_matched(self):
+        """当日候选不足 MIN_HITS_PER_DAY 的日子不参与,与配对口径同一道门槛。"""
+        rows = _abs_daily([1.0] * MIN_DAYS)
+        rows[0]["size_abs"] = MIN_HITS_PER_DAY - 1
+        assert summarize_absolute(rows).days == MIN_DAYS - 1
+
+    def test_negative_absolute_is_called_out(self):
+        """超额可能为正而仓位实亏,判定必须先看绝对收益本身。"""
+        stat = summarize_absolute(_abs_daily([-2.0] * MIN_DAYS))
+        assert stat.net_pct == pytest.approx(-2.0)
+        assert stat.verdict == "绝对收益为负：这批票拿着是亏的"
+
+    def test_win_rate_counts_net_positive_days(self):
+        """AbsoluteStat.positive_day_pct 是胜率,不是 GroupStat 的「超额为正日」。"""
+        stat = summarize_absolute(_abs_daily([1.0] * 15 + [-1.0] * 5))
+        assert stat.positive_day_pct == pytest.approx(75.0)
+        assert stat.worst_day_pct == pytest.approx(-1.0)
+        assert stat.best_day_pct == pytest.approx(1.0)
+
+    def test_beats_market_only_when_bench_excess_positive(self):
+        """绝对为正但跑输基准 = 只赚了 beta,这正是纯度检验里 LPS T+40 的形态。"""
+        rows = _abs_daily([1.0] * MIN_DAYS, [3.0] * MIN_DAYS)
+        stat = summarize_absolute(rows)
+        assert stat.bench_pct == pytest.approx(3.0)
+        assert stat.bench_excess_pct == pytest.approx(-2.0)
+        assert stat.verdict == "绝对为正但跑输基准：只赚了市场的钱"
+
+        beat = summarize_absolute(_abs_daily([4.0] * MIN_DAYS, [3.0] * MIN_DAYS))
+        assert beat.verdict == "绝对为正且跑赢基准"
+
+    def test_missing_bench_days_are_not_treated_as_zero(self):
+        """缺基准的日子若按 0 计,会把无基准段当成「基准不涨不跌」凭空造超额。"""
+        benches: list[float | None] = [None] * 5 + [2.0] * MIN_DAYS
+        stat = summarize_absolute(_abs_daily([1.0] * (5 + MIN_DAYS), benches))
+        assert stat.days == 5 + MIN_DAYS
+        assert stat.bench_days == MIN_DAYS
+        assert stat.bench_excess_pct == pytest.approx(-1.0)
+
+    def test_bench_columns_absent_without_benchmark(self):
+        stat = summarize_absolute(_abs_daily([1.0] * MIN_DAYS))
+        assert stat.bench_days == 0
+        assert (stat.bench_pct, stat.bench_excess_pct, stat.bench_excess_t) == (None, None, None)
+        assert stat.verdict == "绝对为正且跑赢基准"
+
+    def test_bench_excess_needs_its_own_sample_floor(self):
+        """基准日数不够时只压掉基准三列,绝对收益本身照出。"""
+        benches: list[float | None] = [2.0] * (MIN_DAYS - 1) + [None] * 5
+        stat = summarize_absolute(_abs_daily([1.0] * (MIN_DAYS + 4), benches))
+        assert stat.net_pct == pytest.approx(1.0)
+        assert stat.bench_days == MIN_DAYS - 1
+        assert stat.bench_excess_pct is None
+
+
 def _panels(n_days: int = 40, *, codes: list[str] | None = None) -> Panels:
     codes = codes or [f"s{i}" for i in range(200)]
     dates = [f"2026-06-{i + 1:02d}" for i in range(n_days)]
@@ -289,6 +362,32 @@ class TestPanels:
     def test_gross_return_none_when_nothing_priced(self):
         panels = _panels(5, codes=["a"])
         assert panels.gross_return(["ghost"], "2026-06-02", "2026-06-03") is None
+
+    def test_bench_return_spans_the_same_window_as_candidates(self):
+        """基准必须 T+1 开盘进、T+1+H 收盘出。用 buy_ds 收盘当起点会把 T+1 的涨跌
+        从基准里剔掉却留在候选里,跳空日能造出假超额。"""
+        panels = _panels(5, codes=["a"])
+        panels.bench_open = {"2026-06-02": 100.0}
+        panels.bench_close = {"2026-06-02": 105.0, "2026-06-04": 110.0}
+        assert panels.bench_return("2026-06-02", "2026-06-04") == pytest.approx(10.0)
+
+    def test_bench_return_none_when_either_end_missing(self):
+        panels = _panels(5, codes=["a"])
+        panels.bench_open = {"2026-06-02": 100.0}
+        panels.bench_close = {"2026-06-04": 110.0}
+        assert panels.bench_return("2026-06-03", "2026-06-04") is None
+        assert panels.bench_return("2026-06-02", "2026-06-05") is None
+
+    def test_bench_return_none_on_nonpositive_start(self):
+        panels = _panels(5, codes=["a"])
+        panels.bench_open = {"2026-06-02": 0.0}
+        panels.bench_close = {"2026-06-04": 110.0}
+        assert panels.bench_return("2026-06-02", "2026-06-04") is None
+
+    def test_bench_panels_default_to_empty(self):
+        """没传基准时绝对收益照出,只是不出基准差额三列。"""
+        panels = _panels(5)
+        assert (panels.bench_open, panels.bench_close) == ({}, {})
 
 
 class TestEvaluateDaily:
@@ -345,6 +444,41 @@ class TestEvaluateDaily:
         assert rows["matched"]
         # 对照池只有 5 只 -> 每天最多配 5 对。
         assert max(r["size"] for r in rows["matched"]) <= 5
+
+    def test_absolute_covers_all_hits_not_the_paired_subset(self):
+        """绝对口径算在全部候选上：配对会丢掉没有同动量对照的票,而漏斗当天
+        真正给出的是全集,分母本就不同。"""
+        panels = _panels(60)
+        cands = self._cands(panels, n_hits=20, n_wide=25)
+        rows = evaluate_daily(cands, panels, 5, status="l4_vs_rest")
+        assert rows["absolute"]
+        assert all(r["size_abs"] == 20 for r in rows["absolute"])
+        assert max(r["size"] for r in rows["matched"]) < rows["absolute"][0]["size_abs"]
+
+    def test_absolute_survives_days_where_pairing_fails(self):
+        """配对不成的日子不能连绝对收益一起丢——所以它算在配对之前。"""
+        panels = _panels(60)
+        codes = sorted(next(iter(panels.liquid.values())))
+        # 宽池 == 命中集 -> 无对照可配,配对组整段为空。
+        cands = {d: {"formal_l4": codes[:20], "all": codes[:20]} for d in panels.dates[:-25]}
+        rows = evaluate_daily(cands, panels, 5, status="l4_vs_rest")
+        assert rows["matched"] == []
+        assert len(rows["absolute"]) >= MIN_DAYS
+
+    def test_absolute_net_is_cost_deducted_and_bench_is_not(self):
+        """基准是「不动手」的参照,不产生交易,所以不扣成本。"""
+        panels = _panels(60)
+        panels.bench_open = dict.fromkeys(panels.dates, 100.0)
+        panels.bench_close = dict.fromkeys(panels.dates, 100.0)
+        rows = evaluate_daily(self._cands(panels), panels, 5, status="formal_l4")
+        row = rows["absolute"][0]
+        assert row["net_abs"] == pytest.approx(-ROUND_TRIP_COST_PCT)
+        assert row["bench"] == pytest.approx(0.0)
+
+    def test_absolute_bench_is_none_without_benchmark_panels(self):
+        panels = _panels(60)
+        rows = evaluate_daily(self._cands(panels), panels, 5, status="formal_l4")
+        assert all(r["bench"] is None for r in rows["absolute"])
 
 
 class TestControlGap:
