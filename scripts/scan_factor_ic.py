@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from functools import lru_cache
 from pathlib import Path
 
 import _bootstrap  # noqa: F401
@@ -39,6 +40,13 @@ from core.factor_ic import (
 
 WARMUP = 260
 QUANTILE_GROUPS = 5
+# beta 估计窗口。截面回归剔除市场因子时用它算个股对等权市场的敏感度。
+BETA_WINDOW = 120
+# beta 估计所需最少有效样本，不足则该股当日不参与中性化后的 IC。
+BETA_MIN_OBS = 60
+# 行业内分位所需的最少同业成员数。低于此值组内 pct rank 只有寥寥几个取值，
+# 1 只成员更是恒等于 1.0，是噪声而非信号。
+WITHIN_SECTOR_MIN_MEMBERS = 5
 
 
 def parse_args() -> argparse.Namespace:
@@ -49,6 +57,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--factors", default="", help="只测这些因子，逗号分隔；留空=全部")
     p.add_argument("--min-amount-wan", type=float, default=8000.0, help="流动性门槛，与生产 RISK_OFF 档一致")
     p.add_argument("--walk-forward", type=int, default=0, help="切成 N 段分别评估，检查跨段稳定性")
+    p.add_argument(
+        "--beta-neutral",
+        action="store_true",
+        help="前瞻收益先对滚动 beta 做截面回归取残差，分离市场敏感度与真 alpha",
+    )
     p.add_argument("--json-out", default="")
     p.add_argument("--no-notify", action="store_true")
     p.add_argument("--save-db", action="store_true", help="落库到 factor_ic_daily")
@@ -93,8 +106,17 @@ def build_factors(market: pd.DataFrame) -> tuple[dict[str, pd.DataFrame], pd.Dat
     for win in (3, 5, 20, 60, 120):
         factors[f"ret{win}"] = close.pct_change(win, fill_method=None) * 100
     # 相对强弱：生产的 rps_fast / rps_slow 用横截面分位，这里同构
-    factors["rps_fast"] = (close.pct_change(20, fill_method=None) * 100).rank(axis=1, pct=True) * 100
-    factors["rps_slow"] = (close.pct_change(60, fill_method=None) * 100).rank(axis=1, pct=True) * 100
+    # 注意：`ret20` 的全市场 rank **不是**新因子。Spearman 秩相关对单调变换不变，
+    # 故 `rank(ret20)` 与 `ret20` 的 Rank IC / IR / 为正日逐位相同（2026-08-30 实测差 <1e-9）。
+    # 早前版本把这两列当独立因子，导致因子表虚增两条证据、且 BH 多重比较的检验数偏大。
+    # 这里换成**行业内**分位：同一 ret20 在弱行业里是龙头、在强行业里是垫底，
+    # 秩序被行业重排后才携带原始动量之外的信息。
+    sector_map_for_rps = _load_sector_map()
+    for label, win in (("rps_fast", 20), ("rps_slow", 60)):
+        mom = close.pct_change(win, fill_method=None) * 100
+        factors[label] = (
+            _within_sector_rank(mom, sector_map_for_rps) if sector_map_for_rps else mom.rank(axis=1, pct=True) * 100
+        )
     # 量能族：dry_vol 生产用 250 日分位（PR 早前把默认从 0.05 放宽到 0.20）
     v20 = vol.rolling(20).mean()
     factors["dry_vol_q250"] = v20.rolling(250).rank(pct=True) * 100
@@ -186,10 +208,12 @@ def _add_volume_school_factors(factors: dict[str, pd.DataFrame], close: pd.DataF
     )
 
 
+@lru_cache(maxsize=1)
 def _load_sector_map() -> dict[str, str]:
     """读生产同一份行业映射（tushare stock_basic 的 industry 字段，24h 缓存）。
 
     缺失时返回空 dict——scanner 少两个因子而非整体失败。
+    一次运行内被 rps 与 sector_strength 两处调用，故加进程内缓存。
     """
     import json
 
@@ -202,6 +226,29 @@ def _load_sector_map() -> dict[str, str]:
         return {str(k): str(v) for k, v in data.items() if v} if isinstance(data, dict) else {}
     except Exception:
         return {}
+
+
+def _within_sector_rank(panel: pd.DataFrame, sector_map: dict[str, str]) -> pd.DataFrame:
+    """把面板值换成**行业内**百分位（0~100），行业外的股票留 NaN。
+
+    与全市场 rank 的区别：全市场 rank 是原值的单调变换，对 Rank IC 无影响；
+    行业内 rank 会按行业重排秩序，故携带新信息。
+    """
+    codes = [c for c in panel.columns if c in sector_map]
+    if len(codes) < 50:
+        return pd.DataFrame(index=panel.index, columns=panel.columns, dtype=float)
+    labels = pd.Series({c: sector_map[c] for c in codes})
+    # 小行业剔除：pct rank 在只有 1 个成员的组里恒为 1.0，会把这些票当成永久的
+    # 行业龙头喂进 IC；组内 2~3 只也只能取到 0.33/0.5/1.0 这几个值，秩噪声大于信号。
+    sizes = labels.value_counts()
+    keep = set(sizes[sizes >= WITHIN_SECTOR_MIN_MEMBERS].index)
+    labels = labels[labels.isin(keep)]
+    if len(labels) < 50:
+        return pd.DataFrame(index=panel.index, columns=panel.columns, dtype=float)
+    sub = panel[list(labels.index)]
+    # 沿列方向按行业分组，组内求百分位；transform 保持原形状。
+    ranked = sub.T.groupby(labels).rank(pct=True).T * 100
+    return ranked.reindex(columns=panel.columns)
 
 
 def _sector_strength(close: pd.DataFrame, sector_map: dict[str, str], window: int) -> pd.DataFrame:
@@ -218,6 +265,36 @@ def _sector_strength(close: pd.DataFrame, sector_map: dict[str, str], window: in
     # groupby 沿列方向聚合，再 reindex 回原列顺序。
     grouped = rets.T.groupby(labels).median().T
     return grouped.reindex(columns=labels.values).set_axis(codes, axis=1).reindex(columns=close.columns)
+
+
+def rolling_beta(close: pd.DataFrame, window: int = BETA_WINDOW) -> pd.DataFrame:
+    """个股对等权市场的滚动 beta，只用 T 日及之前的数据。
+
+    等权市场收益取当日横截面均值——它与 000001 的加权口径不同，但 IC 是截面统计量，
+    需要的是「同一截面内谁更敏感」的排序，等权基准足够且不引入外部数据依赖。
+    """
+    ret = close.pct_change(fill_method=None)
+    mkt = ret.mean(axis=1)
+    # cov/var 用滚动窗口逐列算；min_periods 保证窗口早期不出伪 beta。
+    cov = ret.rolling(window, min_periods=BETA_MIN_OBS).cov(mkt)
+    var = mkt.rolling(window, min_periods=BETA_MIN_OBS).var()
+    return cov.div(var, axis=0)
+
+
+def _beta_neutral(fwd: pd.Series, beta: pd.Series) -> pd.Series:
+    """截面上把收益对 beta 回归，返回残差。
+
+    减截面均值对 rank IC 是**恒等变换**（秩不变，IC 逐位相同），故必须做回归而非去均值：
+    只有残差化才会改变个股间的秩序，从而分离「因子选到高 beta 票」与「因子真有 alpha」。
+    """
+    frame = pd.DataFrame({"r": fwd, "b": beta}).dropna()
+    if len(frame) < MIN_CROSS_SECTION or frame.b.nunique() < 2:
+        return pd.Series(dtype=float)
+    var = float(frame.b.var())
+    if not var or var != var:
+        return pd.Series(dtype=float)
+    slope = float(frame.b.cov(frame.r)) / var
+    return frame.r - (frame.b - float(frame.b.mean())) * slope
 
 
 def _daily_ic(fac: pd.Series, fwd: pd.Series, mask: pd.Series) -> tuple[float | None, float | None]:
@@ -244,6 +321,7 @@ def evaluate(
     min_amount_wan: float,
     liquidity_wan: pd.DataFrame,
     date_slice: tuple[int, int] | None = None,
+    beta: pd.DataFrame | None = None,
 ) -> list[FactorICResult]:
     dates = list(close.index)
     lo, hi = date_slice or (WARMUP, len(dates) - max(horizons) - 2)
@@ -262,6 +340,13 @@ def evaluate(
                 entry = open_.iloc[i + 1]
                 fwd = (close.iloc[exit_idx] / entry - 1) * 100
                 liquid = (amt20.iloc[i] >= min_amount_wan) & entry.notna() & (entry > 0)
+                if beta is not None:
+                    fwd = _beta_neutral(fwd[liquid], beta.iloc[i][liquid])
+                    if fwd.empty:
+                        continue
+                    # beta 缺失的票已被残差化丢掉，mask 必须跟着收窄，
+                    # 否则 avg_universe 记的是中性化前的宽度。
+                    liquid = liquid & liquid.index.isin(fwd.index)
                 ic, mono = _daily_ic(panel.iloc[i], fwd, liquid)
                 if ic is None:
                     continue
@@ -319,18 +404,33 @@ def main() -> int:
         factors = {k: v for k, v in factors.items() if k in keep}
     print(f"[ic] 因子 {len(factors)} 个 × 前瞻 {horizons}")
 
-    payload: dict[str, object] = {}
+    beta = None
+    if args.beta_neutral:
+        beta = rolling_beta(close)
+        print(f"[ic] beta 中性化开启（窗口 {BETA_WINDOW} 日，最少 {BETA_MIN_OBS} 个观测）")
+    suffix = "（beta 中性）" if beta is not None else ""
+
+    # 落库的 segment 加后缀：唯一键是 (eval_date, factor_name, horizon, segment)，
+    # 同日跑原始+beta 中性两次会互相 upsert 覆盖。加后缀后两份并存，
+    # 且既有消费方查 segment='full' 不受诊断性运行影响。
+    seg_tag = "_bn" if beta is not None else ""
+
+    payload: dict[str, object] = {"beta_neutral": bool(args.beta_neutral)}
     sections: list[str] = []
-    full = evaluate(factors, close, open_, horizons, args.min_amount_wan, liquidity)
-    text = render(full, "因子 IC 全样本扫描")
+    full = evaluate(factors, close, open_, horizons, args.min_amount_wan, liquidity, beta=beta)
+    text = render(full, f"因子 IC 全样本扫描{suffix}")
     print("\n" + text)
     sections.append(text)
     full_rows = [r.as_dict() for r in full]
     payload["full"] = full_rows
     dates = list(close.index)
     win = (str(dates[WARMUP].date()), str(dates[-1].date()))
+    # 显式记录 IC 实际覆盖的区间。WARMUP 会把行情起点往后推 260 个交易日，
+    # 光看 --start 会误判样本范围（2026-08-30 就因此把 2024 下半年当成已覆盖）。
+    payload["ic_window"] = {"market_start": str(dates[0].date()), "ic_start": win[0], "ic_end": win[1]}
+    print(f"[ic] 行情自 {dates[0].date()} 起；扣掉 WARMUP={WARMUP} 后 IC 实际覆盖 {win[0]} ~ {win[1]}")
     if args.save_db:
-        _save(full_rows, "full", win, composite_weights(full))
+        _save(full_rows, f"full{seg_tag}", win, composite_weights(full))
 
     if args.walk_forward > 1:
         lo, hi = WARMUP, len(dates) - max(horizons) - 2
@@ -338,15 +438,18 @@ def main() -> int:
         segments = []
         for k in range(args.walk_forward):
             s0, s1 = lo + k * step, (lo + (k + 1) * step) if k < args.walk_forward - 1 else hi
-            seg = evaluate(factors, close, open_, horizons, args.min_amount_wan, liquidity, (s0, s1))
+            seg = evaluate(factors, close, open_, horizons, args.min_amount_wan, liquidity, (s0, s1), beta=beta)
             seg_rows = [r.as_dict() for r in seg]
             segments.append(seg_rows)
             label = f"{dates[s0].date()}~{dates[s1 - 1].date()}"
             if args.save_db:
                 _save(
-                    seg_rows, f"seg{k + 1}", (str(dates[s0].date()), str(dates[s1 - 1].date())), composite_weights(seg)
+                    seg_rows,
+                    f"seg{k + 1}{seg_tag}",
+                    (str(dates[s0].date()), str(dates[s1 - 1].date())),
+                    composite_weights(seg),
                 )
-            text = render(seg, f"分段 {k + 1}/{args.walk_forward}　{label}")
+            text = render(seg, f"分段 {k + 1}/{args.walk_forward}　{label}{suffix}")
             print("\n" + text)
             sections.append(text)
         payload["segments"] = segments

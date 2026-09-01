@@ -61,7 +61,13 @@ class TestConfig:
         assert names == {"ret60", "dry_vol_q250"}
 
     def test_does_not_double_count_ret60_and_rps_slow(self):
-        """rps_slow 就是 ret60 的横截面分位，两者 IC 完全相同，不得同时入选。"""
+        """rps_slow 与 ret60 不得同时入选——两者共享同一份 60 日动量。
+
+        2026-08-30 前 rps_slow 是 ret60 的**全市场**分位，即单调变换，故 Rank IC 逐位
+        相同；此后改为**行业内**分位（见 scan_factor_ic._within_sector_rank），IC 已不再
+        相同（实测差 +0.019）。但底层信号仍是同一个 60 日涨幅，一起加权仍属重复计权，
+        故本约束保留——只是理由从「IC 相同」变成「同源」。
+        """
         names = {w.name for w in ShadowScoreConfig().weights}
         assert not {"ret60", "rps_slow"} <= names
 

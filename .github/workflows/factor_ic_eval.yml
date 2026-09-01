@@ -33,6 +33,13 @@ on:
       factors:
         description: "只测这些因子，逗号分隔；留空=全部"
         default: ""
+      start:
+        description: "行情起始日。IC 窗口从此日 +260 个交易日算起（WARMUP），要覆盖 2024 下半年就得填 2023 年中"
+        default: "2024-08-01"
+      beta_neutral:
+        description: "前瞻收益先对滚动 beta 做截面回归取残差，分离市场敏感度与真 alpha"
+        type: boolean
+        default: false
       save_db:
         description: "落库到 factor_ic_daily"
         type: boolean
@@ -75,9 +82,11 @@ jobs:
           pip install -e .
 
       - name: Fetch market snapshot
+        env:
+          IN_START: ${{ inputs.start || '2024-08-01' }}
         run: |
           python scripts/backtest_snapshot_fetch.py \
-            --start 2024-08-01 \
+            --start "$IN_START" \
             --end "$(date +%Y-%m-%d)" \
             --board all \
             --output-dir /tmp/ic_snap
@@ -88,17 +97,23 @@ jobs:
           IN_HORIZONS: ${{ inputs.horizons || '5,10' }}
           IN_WALK_FORWARD: ${{ inputs.walk_forward || '3' }}
           IN_FACTORS: ${{ inputs.factors }}
+          IN_START: ${{ inputs.start || '2024-08-01' }}
+          IN_BETA_NEUTRAL: ${{ inputs.beta_neutral }}
           IN_SAVE_DB: ${{ inputs.save_db }}
         run: |
           EXTRA=()
           if [ -n "$IN_FACTORS" ]; then
             EXTRA+=(--factors "$IN_FACTORS")
           fi
+          if [ "$IN_BETA_NEUTRAL" = "true" ]; then
+            EXTRA+=(--beta-neutral)
+          fi
           if [ "$IN_SAVE_DB" != "false" ]; then
             EXTRA+=(--save-db)
           fi
           python scripts/scan_factor_ic.py \
             --cache /tmp/ic_snap/hist_full.csv.gz \
+            --start "$IN_START" \
             --horizons "$IN_HORIZONS" \
             --walk-forward "$IN_WALK_FORWARD" \
             --json-out factor_ic_eval.json \
