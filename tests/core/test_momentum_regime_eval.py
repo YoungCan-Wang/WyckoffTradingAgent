@@ -608,6 +608,33 @@ class TestRender:
         assert "T+10" in render(_report(), 10)
         assert "T+5" in render(_report(), 5)
 
+    def test_header_carries_the_evaluated_window_not_the_fetch_start(self):
+        """报告头必须写实际评估区间：飞书推送只有这一行能说清样本范围。
+
+        实测取 402 天只评估了 271 天，而 271 天读「期望为零」、513 天读「负贡献」。
+        表格里只写取数起点会让读者把没评估过的半年当成已覆盖。
+        """
+        text = render(
+            _report(),
+            10,
+            {
+                "market_start": 20240102,
+                "eval_start": 20240704,
+                "eval_end": 20260813,
+                "market_days": 644,
+                "eval_days": 513,
+            },
+        )
+        assert "20240704~20260813" in text
+        assert "513 天" in text
+        # 取数起点也要在，但要与评估区间分开写，不能只有它。
+        assert "20240102" in text
+
+    def test_header_says_so_when_the_window_is_missing(self):
+        """老产物没有 eval_window。这时要显式说「未记录」，不能静默留白。"""
+        text = render(_report(), 10, None)
+        assert "未记录" in text
+
 
 class TestReportSerialization:
     def test_json_serializable(self):

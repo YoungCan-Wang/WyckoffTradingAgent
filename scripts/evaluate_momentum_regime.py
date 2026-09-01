@@ -1,20 +1,29 @@
 """动量体检：RPS 闸门的选择价值、阈值扫描、以及动态切换设计的走前验证。
 
-首轮（2026-08-31，402 个交易日 2025-01-02..2026-08-28）结论：**动量没坏，是平的**。
-闸门超额 H=5 +0.05pct（t=+0.31）、H=10 +0.07pct（t=+0.28）；2026Q3 的 -6.63 是
-正常摆幅的一侧，不是故障。四种动态切换设计走前全部失效。详见 core/momentum_regime_eval.py。
+⚠️ **``--start`` 不是评估区间。**RPS 慢腿 120 日预热把起点往后推 120 个交易日，尾部
+再扣 H+1 天：取 402 天行情只评估了 271 天（2025-07-04 起），首轮标的「402 个交易日
+2025-01-02..2026-08-28」是一个从未被评估过的区间。产物里的 ``eval_window`` 是唯一
+可信的样本范围，别拿 ``--start`` 当它读。
 
-留下这个脚本是为了持续确认该结论，以及在闸门真的转为持续为负时能被看见。
+这不是措辞问题，两个窗口给的是相反结论（同一份行情、H=10、生产档 65/70）：
 
-RPS 慢腿要 120 日回看，因此 ``--start`` 之后的头 120 个交易日不可用——想覆盖
-N 天就要多取 120 天，默认 start 已按此留足。
+    271 个评估日（start=2025-01）  超额 +0.070  t=+0.28  期望为零：无选择价值
+    513 个评估日（start=2024-01）  超额 -0.320  t=-2.08  负贡献
+
+H=5 同向（+0.050 → -0.151）。所以默认 start 从 2025-01-01 提到 2024-01-01：短窗看不
+见的恰恰是这个体检要看见的东西。
+
+留下这个脚本是为了持续确认闸门方向，以及在它真的转为持续为负时能被看见。
 
 用法::
 
     python scripts/evaluate_momentum_regime.py --horizon 10,5
-    python scripts/evaluate_momentum_regime.py --horizon 5 --start 2025-01-01 --no-notify
+    python scripts/evaluate_momentum_regime.py --horizon 5 --start 2024-01-01 --no-notify
+    # 已有 backtest 快照时直接复用，省掉逐日取数
+    python scripts/evaluate_momentum_regime.py --horizon 10 --cache /tmp/snap/hist_full.csv.gz
 
-取数（约 400 次 tushare 日调用）是最贵的一步，多个 horizon 复用同一份行情。
+取数是最贵的一步（逐日约 1.6s/天，893 天约 24 分钟），多个 horizon 复用同一份行情。
+``--cache`` 可改读 backtest 快照，注意两种来源的 amount 单位差 1000 倍，脚本会归一。
 """
 
 from __future__ import annotations
@@ -55,10 +64,55 @@ def parse_args() -> argparse.Namespace:
     # 逗号分隔可一次跑多个持有期。取数是这里最贵的一步（约 400 次 tushare 日调用），
     # 多个 horizon 复用同一份行情，避免重复拉取。
     parser.add_argument("--horizon", default="10,5", help="前瞻交易日数，逗号分隔")
-    parser.add_argument("--start", default="2025-01-01", help="行情起始（RPS 慢腿需 120 日预热）")
+    # 2024-01-01 给约 513 个评估日。原默认 2025-01-01 只剩 271 天，把「负贡献」读成
+    # 「期望为零」——预热吃掉的半年不在评估区间里。
+    parser.add_argument("--start", default="2024-01-01", help="行情起始（预热后实际评估区间见 eval_window）")
+    # 逐日 tushare 取数约 1.6s/天，1128 天要半小时；快照逐只取，拉长几乎不加成本。
+    parser.add_argument("--cache", default="", help="行情来源改用 backtest 快照 hist_full.csv.gz，缺省则逐日取 tushare")
     parser.add_argument("--out", default="docs/evidence", help="产物目录")
     parser.add_argument("--no-notify", action="store_true", help="不推飞书")
     return parser.parse_args()
+
+
+def amount_to_raw_divisor(frame: pd.DataFrame) -> float:
+    """把 amount 归一到 tushare 口径（千元），因为 MIN_AMOUNT_RAW 是按它定的。
+
+    两种来源差 1000 倍：tushare ``amount`` 单位千元，``amount/(vol*close)`` 中位数
+    约 0.10；backtest 快照 hist_full 单位是元，同一比值约 100。不归一就等于把
+    流动性门槛放宽/收紧 1000 倍，域会整个换掉而且不报错。
+    """
+    probe = frame[["amount", "vol", "close"]].dropna()
+    probe = probe[(probe.vol > 0) & (probe.close > 0)]
+    if probe.empty:
+        return 1.0
+    ratio = float((probe.amount / (probe.vol * probe.close)).median())
+    # 1.0 是 0.10 与 100 的几何中点，足够把两种来源分开。
+    return 1000.0 if ratio >= 1.0 else 1.0
+
+
+def load_cached_market(cache: str, start: str) -> pd.DataFrame:
+    """读 backtest 快照（``hist_full.csv.gz``）当行情源。
+
+    逐日 tushare 取数约 1.6s/天，1128 天要半小时；快照是逐只取的，拉长区间几乎不
+    加成本，长样本只有这条路划得来。列名与单位都归一到 tushare 口径。
+    """
+    frame = pd.read_csv(cache, dtype={"symbol": str, "ts_code": str}, low_memory=False)
+    if "ts_code" not in frame.columns and "symbol" in frame.columns:
+        frame = frame.rename(columns={"symbol": "ts_code"})
+    if "vol" not in frame.columns and "volume" in frame.columns:
+        frame = frame.rename(columns={"volume": "vol"})
+    if "trade_date" not in frame.columns:
+        frame["trade_date"] = pd.to_datetime(frame["date"], errors="coerce").dt.strftime("%Y%m%d")
+    missing = {"ts_code", "trade_date", "open", "close", "amount", "vol"} - set(frame.columns)
+    if missing:
+        raise SystemExit(f"行情缺少必要列: {sorted(missing)}")
+    frame = frame.dropna(subset=["trade_date"])
+    frame = frame[frame.trade_date.astype(str) >= start.replace("-", "")]
+    if frame.empty:
+        raise SystemExit(f"快照在 {start} 之后没有数据")
+    frame["amount"] = pd.to_numeric(frame.amount, errors="coerce") / amount_to_raw_divisor(frame)
+    frame["trade_date"] = frame.trade_date.astype(int)
+    return frame
 
 
 def load_market(start: str) -> pd.DataFrame:
@@ -101,6 +155,11 @@ def build_panels(market: pd.DataFrame, horizon: int) -> tuple[dict[str, list[dic
     """逐日算各档动量带的前向收益，以及当日动量 RankIC。
 
     返回 (各档逐日观测, 逐日 IC)。前向收益按 T+1 开盘买、T+1+H 收盘卖，扣往返成本。
+
+    循环从 ``PROD_RPS_WINDOW_SLOW`` 起、到倒数第 ``horizon+1`` 天止，所以**实际评估
+    区间比 ``--start`` 晚 120 个交易日、比行情末尾早 H+1 天**。402 天的行情只剩 271
+    天可评估，起点从 2025-01-02 推到 2025-07-04。区间靠 ``eval_window`` 显式落盘，
+    不要拿 ``--start`` 当样本范围读。
     """
     close = market.pivot(index="trade_date", columns="ts_code", values="close").sort_index()
     open_ = market.pivot(index="trade_date", columns="ts_code", values="open").sort_index()
@@ -119,7 +178,28 @@ def build_panels(market: pd.DataFrame, horizon: int) -> tuple[dict[str, list[dic
             continue
         _collect_day(snap, int(dates[i]), sink, switch_rows, daily_ic)
     sink["__switch__"] = switch_rows
+    sink["__window__"] = eval_window(dates, horizon)
     return sink, daily_ic
+
+
+def eval_window(dates: list, horizon: int) -> list[dict[str, float]]:
+    """实际评估区间。与 build_panels 的循环边界同源，改一处必然带上另一处。
+
+    单独落盘是因为 ``--start`` 会骗人：预热把起点往后推 120 个交易日，光看它会把
+    没评估过的半年当成已覆盖（板块强度那次 IC 复现不了就是这个原因）。
+    """
+    lo, hi = PROD_RPS_WINDOW_SLOW, len(dates) - horizon - 1
+    if hi <= lo:
+        return []
+    return [
+        {
+            "market_start": float(dates[0]),
+            "eval_start": float(dates[lo]),
+            "eval_end": float(dates[hi - 1]),
+            "market_days": float(len(dates)),
+            "eval_days": float(hi - lo),
+        }
+    ]
 
 
 def _day_snapshot(close, open_, liquidity, ret_fast, ret_slow, i: int, horizon: int):
@@ -232,10 +312,19 @@ def run_one(market: pd.DataFrame, horizon: int, out_dir: Path, start: str) -> st
     payload = report.as_dict()
     payload["horizon_days"] = horizon
     payload["start"] = start
+    # start 是取数起点，不是评估区间；预热把后者往后推 120 个交易日，两个都要落盘。
+    window = (sink.get("__window__") or [{}])[0]
+    payload["eval_window"] = {k: int(v) for k, v in window.items()}
+    if window:
+        print(
+            f"[mom] 行情自 {int(window['market_start'])} 起共 {int(window['market_days'])} 天；"
+            f"扣掉预热 {PROD_RPS_WINDOW_SLOW} 与 H+1 后实际评估 "
+            f"{int(window['eval_start'])}~{int(window['eval_end'])}，{int(window['eval_days'])} 天"
+        )
     out_path = out_dir / f"momentum_regime_h{horizon}.json"
     out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[mom] 落盘 {out_path}")
-    text = render(report, horizon)
+    text = render(report, horizon, payload["eval_window"])
     print(text)
     return text
 
@@ -243,7 +332,7 @@ def run_one(market: pd.DataFrame, horizon: int, out_dir: Path, start: str) -> st
 def main() -> int:
     args = parse_args()
     horizons = _parse_horizons(args.horizon)
-    market = load_market(args.start)
+    market = load_cached_market(args.cache, args.start) if args.cache else load_market(args.start)
     print(f"[mom] 行情 {len(market):,} 行 / {market.ts_code.nunique()} 只 / {market.trade_date.nunique()} 天")
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
