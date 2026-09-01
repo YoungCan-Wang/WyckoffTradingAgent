@@ -496,6 +496,8 @@ def _run_step4_decision_flow(
         context.candidate_meta_map,
         context.market_regime,
         options.runtime_config,
+        # 传 order_config 才能让裁剪配额与上面提示词里的 max_new_buy_names 同源。
+        options.order_config,
     )
     backfill_step4_decision_market_data(
         decisions,
