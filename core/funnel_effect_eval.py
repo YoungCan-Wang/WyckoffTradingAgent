@@ -20,6 +20,14 @@
 
 买点 T+1 开盘（漏斗信号收盘后产出，最早可成交是次日开盘），卖点 T+1+H 收盘，
 扣 ROUND_TRIP_COST_PCT=0.202%，按交易日等权汇总。
+
+绝对收益口径（``AbsoluteStat``）
+--------------------------------
+配对超额只答「同动量同侪里选得好不好」，它为正**不等于赚钱**：对照亏 5%、候选
+亏 2%，超额 +3pct 而仓位实亏 2%。反向的例子在威科夫纯度检验里——LPS T+40 绝对
++0.99% 而超额 -0.35pct，赚的是市场的钱。所以中性化口径与绝对口径必须同时出，
+单看任何一栏都会得出相反的结论。绝对栏还带一个不做任何中性化的指数基准差额，
+用来分清「赚的是 beta 还是 alpha」。
 """
 
 from __future__ import annotations
@@ -114,6 +122,93 @@ def summarize_group(label: str, daily: list[dict[str, float]]) -> GroupStat:
     )
 
 
+@dataclass
+class AbsoluteStat:
+    """绝对收益口径：这批票拿在手里到底赚不赚钱。
+
+    配对超额回答的是「同动量同侪里选得好不好」，它为正**不等于**赚钱：对照组亏
+    5%、候选亏 2%，超额 +3pct 而仓位实亏。纯度检验里 LPS T+40 是反向的同一件事
+    ——绝对 +0.99% 而超额 -0.35pct，赚的是市场的钱不是选股的钱。两栏必须同时看。
+
+    ``positive_day_pct`` 这里算的是**净收益为正的交易日占比**（胜率），与
+    ``GroupStat.positive_day_pct`` 的「超额为正日占比」不是一回事，不可混用。
+
+    收益算在**全部候选**上（``net_abs``），不是配对子集：配对会丢掉找不到同动量
+    对照的候选，而漏斗当天真正给出的就是全集。超额那一栏必须用配对子集（分母要
+    和对照组一致），这一栏必须用全集（要如实反映持有这批票的结果）——两栏分母
+    本就不同，``avg_size`` 与 ``matched.avg_size`` 的差就是被配对丢掉的只数。
+    """
+
+    days: int
+    avg_size: float
+    net_pct: float | None
+    net_t: float | None
+    positive_day_pct: float | None
+    worst_day_pct: float | None
+    best_day_pct: float | None
+    bench_pct: float | None
+    bench_excess_pct: float | None
+    bench_excess_t: float | None
+    bench_days: int = 0
+
+    @property
+    def verdict(self) -> str:
+        if self.days < MIN_DAYS or self.net_pct is None:
+            return "样本不足"
+        if self.net_pct <= 0:
+            return "绝对收益为负：这批票拿着是亏的"
+        if self.bench_excess_pct is not None and self.bench_excess_pct <= 0:
+            return "绝对为正但跑输基准：只赚了市场的钱"
+        return "绝对为正且跑赢基准"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "days": self.days,
+            "avg_size": _round(self.avg_size, 1),
+            "net_pct": _round(self.net_pct),
+            "net_t": _round(self.net_t, 2),
+            "positive_day_pct": _round(self.positive_day_pct, 1),
+            "worst_day_pct": _round(self.worst_day_pct),
+            "best_day_pct": _round(self.best_day_pct),
+            "bench_days": self.bench_days,
+            "bench_pct": _round(self.bench_pct),
+            "bench_excess_pct": _round(self.bench_excess_pct),
+            "bench_excess_t": _round(self.bench_excess_t, 2),
+            "verdict": self.verdict,
+        }
+
+
+def summarize_absolute(daily: list[dict[str, float]]) -> AbsoluteStat:
+    """绝对收益汇总。不要求配对成功，日子比 summarize_group 多，对读时看 days 差。
+
+    基准差额只用**同时有 net_abs 和 bench 的日子**算，缺基准的日子不静默按 0
+    处理——那会把无基准段当成「基准不涨不跌」，凭空造出超额。
+    """
+    usable = [
+        row
+        for row in daily
+        if row.get("net_abs") is not None and (row.get("size_abs") or 0) >= MIN_HITS_PER_DAY
+    ]
+    if len(usable) < MIN_DAYS:
+        return AbsoluteStat(len(usable), 0.0, None, None, None, None, None, None, None, None)
+    nets = [float(row["net_abs"]) for row in usable]
+    paired = [(float(r["net_abs"]), float(r["bench"])) for r in usable if r.get("bench") is not None]
+    bench_diffs = [net - bench for net, bench in paired]
+    return AbsoluteStat(
+        days=len(usable),
+        avg_size=mean(float(row.get("size_abs") or 0) for row in usable),
+        net_pct=mean(nets),
+        net_t=tstat(nets),
+        positive_day_pct=100.0 * sum(1 for value in nets if value > 0) / len(nets),
+        worst_day_pct=min(nets),
+        best_day_pct=max(nets),
+        bench_days=len(paired),
+        bench_pct=mean(b for _, b in paired) if paired else None,
+        bench_excess_pct=mean(bench_diffs) if len(bench_diffs) >= MIN_DAYS else None,
+        bench_excess_t=tstat(bench_diffs) if len(bench_diffs) >= MIN_DAYS else None,
+    )
+
+
 def _quarter_of(ds: str) -> int:
     """'2026-08-31' -> 20263。用于看超额是否只来自某一个季度。"""
     year, month = int(ds[:4]), int(ds[5:7])
@@ -196,13 +291,29 @@ def _bisect_left(pairs: list[tuple[float, str]], value: float) -> int:
 
 @dataclass
 class Panels:
-    """行情面板。open/close 按日索引，liquid 是当日流动性池，mom20 是 T 日已知 20 日涨幅。"""
+    """行情面板。open/close 按日索引，liquid 是当日流动性池，mom20 是 T 日已知 20 日涨幅。
+
+    ``bench_open`` / ``bench_close`` 是基准指数，缺失时绝对收益仍出，只是不出基准差额三列。
+    """
 
     open: dict[str, dict[str, float]]
     close: dict[str, dict[str, float]]
     liquid: dict[str, set[str]]
     mom20: dict[str, dict[str, float]]
     dates: list[str]
+    bench_open: dict[str, float] = field(default_factory=dict)
+    bench_close: dict[str, float] = field(default_factory=dict)
+
+    def bench_return(self, buy_ds: str, sell_ds: str) -> float | None:
+        """基准在**同一持有窗口**内的收益（%）：T+1 开盘进、T+1+H 收盘出。
+
+        必须与候选同窗口。用 buy_ds 收盘当起点会把 T+1 当天的涨跌从基准里剔掉、
+        却留在候选里，跳空大的日子能凭空造出 1pct 以上的假超额。
+        """
+        start, end = self.bench_open.get(buy_ds), self.bench_close.get(sell_ds)
+        if not start or not end or start <= 0:
+            return None
+        return 100.0 * (end / start - 1.0)
 
     def window(self, signal_ds: str, horizon: int) -> tuple[str, str] | None:
         """T+1 开盘买、T+1+horizon 收盘卖。窗口越界返回 None。"""
@@ -244,6 +355,56 @@ def resolve_layer(day: dict, universe: set[str], layer: str) -> tuple[list[str],
     return hits, sorted(universe - wide)
 
 
+def absolute_row(hits: list[str], panels: Panels, ds: str, buy_ds: str, sell_ds: str) -> dict | None:
+    """当日绝对收益观测。算在**全部候选**上，与配对成败无关。
+
+    配对会丢掉找不到同动量对照的票，而漏斗当天真正给出的就是全集，两栏分母本就不同。
+    """
+    gross = panels.gross_return(hits, buy_ds, sell_ds)
+    if gross is None:
+        return None
+    return {
+        "date": ds,
+        "size_abs": len(hits),
+        "net_abs": gross - ROUND_TRIP_COST_PCT,
+        # 基准不扣成本：它是「不动手」的参照，不产生交易。
+        "bench": panels.bench_return(buy_ds, sell_ds),
+    }
+
+
+def random_control_row(
+    paired_hits: list[str],
+    pool: list[str],
+    mom: dict[str, float],
+    panels: Panels,
+    ds: str,
+    buy_ds: str,
+    sell_ds: str,
+    hit_ret: float,
+    *,
+    seed: int,
+) -> dict | None:
+    """单个随机负控制的当日观测。
+
+    必须与配对组用同一批候选（``paired_hits``），否则两者分母不同、超额不可直接
+    比较——这是把「配对超额 vs 随机超额」摆在一起的前提。
+    """
+    band = sample_momentum_band(paired_hits, pool, mom, seed=seed, date=ds)
+    if len(band) < MIN_HITS_PER_DAY:
+        return None
+    ctl = panels.gross_return(band, buy_ds, sell_ds)
+    if ctl is None:
+        return None
+    return {
+        "date": ds,
+        "size": len(band),
+        "net": hit_ret - ROUND_TRIP_COST_PCT,
+        "control": ctl - ROUND_TRIP_COST_PCT,
+        "residual_mom": mean(mom[h] for h in paired_hits if h in mom)
+        - mean(mom[c] for c in band if c in mom),
+    }
+
+
 def evaluate_daily(
     cands: dict[str, dict],
     panels: Panels,
@@ -256,7 +417,7 @@ def evaluate_daily(
 
     成本对候选和对照同样扣：两边都是一次往返，比较的是选股而非交易频率。
     """
-    rows: dict[str, list[dict]] = {"matched": [], **{f"control_{s}": [] for s in seeds}}
+    rows: dict[str, list[dict]] = {"absolute": [], "matched": [], **{f"control_{s}": [] for s in seeds}}
     for ds in sorted(cands):
         win = panels.window(ds, horizon)
         if win is None:
@@ -267,6 +428,11 @@ def evaluate_daily(
         hits, pool = resolve_layer(cands[ds], universe, status)
         if len(hits) < MIN_HITS_PER_DAY:
             continue
+
+        # 放在配对之前，否则「找不到同动量对照」的日子会连绝对收益一起丢掉。
+        abs_row = absolute_row(hits, panels, ds, buy_ds, sell_ds)
+        if abs_row is not None:
+            rows["absolute"].append(abs_row)
 
         # 随机控制必须与配对组用同一批候选（paired_hits），否则两者分母不同、
         # 超额不可直接比较——这是把「配对超额 vs 随机超额」摆在一起的前提。
@@ -293,22 +459,11 @@ def evaluate_daily(
             )
 
         for seed in seeds:
-            band = sample_momentum_band(paired_hits, pool, mom, seed=seed, date=ds)
-            if len(band) < MIN_HITS_PER_DAY:
-                continue
-            ctl = panels.gross_return(band, buy_ds, sell_ds)
-            if ctl is None:
-                continue
-            rows[f"control_{seed}"].append(
-                {
-                    "date": ds,
-                    "size": len(band),
-                    "net": hit_ret - ROUND_TRIP_COST_PCT,
-                    "control": ctl - ROUND_TRIP_COST_PCT,
-                    "residual_mom": mean(mom[h] for h in paired_hits if h in mom)
-                    - mean(mom[c] for c in band if c in mom),
-                }
+            ctrl_row = random_control_row(
+                paired_hits, pool, mom, panels, ds, buy_ds, sell_ds, hit_ret, seed=seed
             )
+            if ctrl_row is not None:
+                rows[f"control_{seed}"].append(ctrl_row)
     return rows
 
 
