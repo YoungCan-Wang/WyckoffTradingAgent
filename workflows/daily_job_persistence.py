@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any
 
 from core.candidate_metadata import build_candidate_metadata_map, code6
+from core.funnel_report import FunnelReportMaps, build_symbol_report_row
 from core.mainline_engine import TRADEABLE_MAINLINE_STATUSES
 from core.market_trade_mode import MarketTradeMode, resolve_market_trade_mode
 from core.signal_feedback import signal_track
@@ -18,11 +19,15 @@ from integrations.recommendation_payload import (
     write_recommendation_backup_artifact,
 )
 from integrations.supabase_market_signal import upsert_market_signal_daily
+from utils.safe import has_value
 from utils.safe import safe_float as _safe_float
+from workflows.funnel_render_context import rebuild_report_maps
 from workflows.step4_pipeline import TZ, is_confirmed_step4_candidate
 from workflows.step4_text import clean_text as _clean_text
 
 RECOMMENDATION_MAINLINE_STATUSES = TRADEABLE_MAINLINE_STATUSES
+# priority_rank 只有排序上下文才有意义，补一个 0 会让 selection_rank 读到假名次。
+_ENRICH_SKIP_KEYS = frozenset({"priority_rank"})
 RECOMMENDATION_STRATEGIC_MIN_THEME_SCORE = 0.45
 RECOMMENDATION_STRATEGIC_MIN_STOCK_SCORE = 0.55
 STEP3_CONFIRMED_REVIEW_CAP = "STEP3_CONFIRMED_REVIEW_CAP"
@@ -111,7 +116,70 @@ def recommendation_write_symbols(
     rows = [_tracking_symbol(item, mode) for item in symbols_info if is_recommendation_tracking_candidate(item)]
     if step2_details:
         rows.extend(_springboard_tracking_symbols(step2_details, mode))
+        _enrich_tracking_rows(rows, step2_details)
     return _dedupe_tracking_symbols(rows)
+
+
+def _enrich_tracking_rows(rows: list[dict], step2_details: dict) -> None:
+    """补齐绕过 build_symbol_report_row 的写入行的报告字段族。
+
+    起跳板行(`_springboard_tracking_row`)与跨日确认行(`_confirmed_symbol_info`)各自
+    从零拼 dict,行业轮动/主题/资金迁移/离场信号字段全部缺失,归因表里这些列长期
+    100% NULL。这里用同一套映射复原并只填缺失键,已有值(含 mainline 行)不动。
+    """
+    metrics = step2_details.get("metrics") or {}
+    if not metrics:
+        return
+    maps = rebuild_report_maps(
+        metrics,
+        name_map=step2_details.get("name_map") or {},
+        sector_map=step2_details.get("sector_map") or {},
+        triggers=step2_details.get("review_triggers") or step2_details.get("triggers") or {},
+    )
+    priority_scores = step2_details.get("priority_score_map") or {}
+    stage_map = metrics.get("accum_stage_map") or {}
+    for row in rows:
+        _seed_signal_family(row)
+        _fill_report_fields(row, maps, priority_scores, stage_map)
+
+
+def _seed_signal_family(row: dict) -> None:
+    """跨日确认行只带单数 signal_type,归因列读的是 signal_types/primary_signal。"""
+    signal = _clean_text(row.get("signal_type")).lower()
+    if not signal:
+        return
+    if not row.get("signal_types"):
+        row["signal_types"] = [signal]
+    if not _clean_text(row.get("primary_signal")):
+        row["primary_signal"] = signal
+
+
+def _fill_report_fields(
+    row: dict,
+    maps: FunnelReportMaps,
+    priority_scores: dict[str, Any],
+    stage_map: dict[str, str],
+) -> None:
+    code = code6(row.get("code"))
+    score = _safe_float(row.get("score"))
+    reference = build_symbol_report_row(
+        code,
+        rank=int(_safe_float(row.get("priority_rank"), 0.0) or 0),
+        tag=str(row.get("tag") or ""),
+        track=str(row.get("track") or ""),
+        stage=str(row.get("stage") or stage_map.get(code, "") or ""),
+        score=score,
+        priority_score=_safe_float(priority_scores.get(code), score),
+        selection_source=str(row.get("selection_source") or ""),
+        selection_is_fill=bool(row.get("selection_is_fill")),
+        market_regime=str(row.get("market_regime") or ""),
+        maps=maps,
+    )
+    for key, value in reference.items():
+        if key in _ENRICH_SKIP_KEYS:
+            continue
+        if not has_value(row.get(key)) and has_value(value):
+            row[key] = value
 
 
 def step3_review_symbols(
