@@ -13,6 +13,7 @@ import {
   type ValueSnapshot,
 } from './agent-market'
 import { buildValuePrompt, buildValueScore } from './agent-value'
+import { resolveExecutionGate } from './market-regime-gate'
 import { checkPriceBasis, formatPriceBasisNote } from './price-basis'
 import {
   attributionFormalDynamicLabel,
@@ -626,14 +627,7 @@ export async function execMarketOverview(deps: ToolDeps): Promise<string> {
   }
   const regime = String(merged.benchmark_regime || 'UNKNOWN').toUpperCase()
   const premarket = String(merged.premarket_regime || 'UNKNOWN').toUpperCase()
-  const blockedRegimes = new Set(['UNKNOWN', 'RISK_ON', 'BEAR_REBOUND', 'PANIC_REPAIR', 'RISK_OFF', 'CRASH', 'BLACK_SWAN'])
-  const hardPremarket = new Set(['UNKNOWN', 'RISK_OFF', 'BLACK_SWAN'])
-  const blocked = blockedRegimes.has(regime) || hardPremarket.has(premarket)
-  const executionGate = blocked
-    ? '执行闸门：禁止新开仓，只管理已有仓位'
-    : premarket === 'CAUTION' || regime === 'CAUTION'
-      ? '执行闸门：仅允许二次确认后的 PROBE，禁止 ATTACK'
-      : '执行闸门：允许 confirmed 候选进入 OMS 复核'
+  const executionGate = resolveExecutionGate(regime, premarket).text
   const close = Number(merged.main_index_close || 0)
   const pct = Number(merged.main_index_today_pct || 0)
   const a50Close = Number(merged.a50_close || 0)
