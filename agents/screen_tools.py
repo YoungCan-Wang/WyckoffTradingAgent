@@ -1555,6 +1555,7 @@ def _ranked_candidates(
     priority_scores = _priority_score_map(details or {}, selected_rows)
     shadow_scores = _shadow_score_map(details or {})
     metadata_map = _candidate_metadata_map(details or {})
+    stage_map = _accum_stage_map(details or {})
     rows: dict[str, dict] = {}
     for trigger_name, candidates in trigger_groups.items():
         for candidate in candidates:
@@ -1570,6 +1571,7 @@ def _ranked_candidates(
                     selected,
                     shadow_scores.get(code),
                     _metadata_for_code(metadata_map, code),
+                    stage=stage_map.get(code6(code), ""),
                 ),
             )
             row["score"] = max(float(row["score"]), candidate_score_value(candidate.get("score")))
@@ -1586,6 +1588,7 @@ def _ranked_candidates(
                 selected,
                 shadow_scores.get(code),
                 _metadata_for_code(metadata_map, code),
+                stage=stage_map.get(code6(code), ""),
             ),
         )
         row["priority_score"] = max(float(row["priority_score"]), candidate_score_value(priority_scores.get(code)))
@@ -1599,6 +1602,15 @@ def _candidate_metadata_map(details: dict) -> dict[str, dict[str, Any]]:
         _safe_dict_list(details.get("candidate_entries")),
         _safe_dict_list(details.get("mainline_candidates")),
     )
+
+
+def _accum_stage_map(details: dict) -> dict[str, str]:
+    """Wyckoff 阶段的唯一来源：``metrics.accum_stage_map``（detect_accum_stage 产出）。"""
+    metrics = details.get("metrics") if isinstance(details.get("metrics"), dict) else {}
+    raw = (metrics or {}).get("accum_stage_map") or {}
+    if not isinstance(raw, dict):
+        return {}
+    return {code6(code): str(stage or "").strip() for code, stage in raw.items() if code6(code)}
 
 
 def _safe_dict_list(value: Any) -> list[dict[str, Any]]:
@@ -1647,6 +1659,7 @@ def _candidate_row(
     selected: set[str],
     shadow_score: object = None,
     metadata: dict[str, Any] | None = None,
+    stage: str = "",
 ) -> dict:
     report_row = report_row or {}
     metadata = metadata or {}
@@ -1661,7 +1674,10 @@ def _candidate_row(
         "selected_for_report": code in selected,
         "selection_source": str(report_row.get("selection_source") or _metadata_selection_source(metadata)).strip(),
         "track": str(report_row.get("track") or _metadata_track(metadata)).strip(),
-        "stage": str(report_row.get("stage") or metadata.get("candidate_status") or "").strip(),
+        # 阶段取 metrics.accum_stage_map。曾经兜底读 metadata["candidate_status"]，
+        # 那只是因为 candidate_status 被写进了 Wyckoff 阶段名（Accum_B/Accum_C/Markup）;
+        # 写入侧已修，阶段回到 accum_stage_map 这个唯一来源。
+        "stage": str(report_row.get("stage") or stage or "").strip(),
         "tag": str(report_row.get("tag") or _metadata_tag(metadata)).strip(),
         "candidate_lane": str(report_row.get("candidate_lane") or metadata.get("candidate_lane") or "").strip(),
         "entry_type": str(report_row.get("entry_type") or metadata.get("entry_type") or "").strip(),

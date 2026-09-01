@@ -66,7 +66,11 @@ export function labelCandidateTerm(value: string): string | null {
     evr: 'EVR放量不跌',
     lps: 'LPS缩量回踩',
     spring: 'Spring震仓',
+    // 2026-09-01 前的历史行里 candidate_status 存的是生产者标签而非语义状态
+    // （Lane/alpha/formal_l4 共 6391 行）。写入侧已修，这里保留翻译只为让旧行可读。
     Lane: '入选路径',
+    alpha: '入选路径',
+    formal_l4: '正式触发',
     可买主线: '主线买点候选',
     主线买点候选: '主线买点候选',
     主线观察: '主线观察',

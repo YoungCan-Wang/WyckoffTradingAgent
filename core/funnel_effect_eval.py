@@ -231,6 +231,10 @@ def resolve_layer(day: dict, universe: set[str], layer: str) -> tuple[list[str],
     - ``formal_l4`` / ``all``：对照池是全市场里的非候选股，答「漏斗产出 vs 场内同侪」。
     - ``l4_vs_rest``：对照池是宽池内**未进 L4** 的候选，答「L4 这道筛本身有没有用」。
       这一层最能隔离筛的贡献：两组都已过了宽池入口，差别只在 L4。
+
+    ``day["formal_l4"]`` 的成员判定要按 ``candidate_lane in FORMAL_L4_LANES``。早先
+    按 ``candidate_status == "formal_l4"`` 建集合，漏掉了 104 只 stage 已知（状态位
+    被 ``Accum_B``/``Accum_C`` 顶掉）的正式候选，这些票还被算进了对照池。
     """
     wide = set(day.get("all") or []) & universe
     l4 = set(day.get("formal_l4") or []) & universe

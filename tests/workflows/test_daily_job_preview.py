@@ -288,6 +288,51 @@ def test_recommendation_write_symbols_tracks_market_blocked_springboard_candidat
     assert got[0]["tag"] == "SOS起跳板结构(A+C)"
 
 
+def test_producer_tagged_candidate_gets_a_real_tracking_status():
+    """生产者标签不再冒充状态,起跳板候选拿到真状态「跨日确认观察」。
+
+    2026-09-01 实测：生产库 7318 行里 6391 行的 candidate_status 存的是
+    ``Lane``/``alpha``/``formal_l4``。``_tracking_status`` 的 ``if existing:
+    return existing`` 把标签当成已有状态,于是这些行永远走不到默认分支
+    （``跨日确认观察``/``AI复核候选``),这里锁死这条回归。
+    """
+    from core.market_trade_mode import resolve_market_trade_mode
+    from workflows.daily_job_persistence import recommendation_write_symbols
+
+    details = {
+        "candidate_entries": [
+            {
+                "code": "000007",
+                "lane": "trend_breakout",
+                "entry_type": "trend_breakout",
+                "signal_key": "trend_breakout",
+                "state": "Lane",
+                "score": 72.0,
+            }
+        ],
+        "formal_triggers": {"trend_breakout": [("000007", 9.0)]},
+        "springboard_map": {
+            "trend_breakout:000007": {
+                "springboard_met_count": 2,
+                "springboard_grade": "A+C",
+                "springboard_scored": True,
+            }
+        },
+        "metrics": {"latest_close_map": {"000007": 12.3}},
+        "name_map": {"000007": "全新好"},
+    }
+
+    got = recommendation_write_symbols(
+        [],
+        step2_details=details,
+        trade_mode=resolve_market_trade_mode("NEUTRAL"),
+    )
+
+    assert len(got) == 1
+    assert got[0]["candidate_status"] not in {"Lane", "alpha", "formal_l4"}
+    assert got[0]["candidate_status"] == "跨日确认观察"
+
+
 def test_recommendation_write_symbols_merges_multiple_tracking_signals():
     from core.market_trade_mode import resolve_market_trade_mode
     from workflows.daily_job_persistence import recommendation_write_symbols

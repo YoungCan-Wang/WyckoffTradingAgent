@@ -4072,7 +4072,9 @@ class TestSymbolPool:
                 [],
                 {},
                 {
-                    "metrics": {},
+                    # 阶段来自 accum_stage_map，不是候选条目的 state：state 存的是生产者
+                    # 标签/阶段名，早先 candidate_status 直抄 state 才让阶段"顺带"传下来。
+                    "metrics": {"accum_stage_map": {"000007": "Markup"}},
                     "triggers": {"launchpad": [("000007", 8.0)]},
                     "candidate_entries": [
                         {
