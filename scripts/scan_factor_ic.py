@@ -47,6 +47,9 @@ BETA_MIN_OBS = 60
 # 行业内分位所需的最少同业成员数。低于此值组内 pct rank 只有寥寥几个取值，
 # 1 只成员更是恒等于 1.0，是噪声而非信号。
 WITHIN_SECTOR_MIN_MEMBERS = 5
+# RPS 窗口必须与生产同源：core/wyckoff_engine.py 的 rps_window_fast / rps_window_slow。
+RPS_WINDOW_FAST = 50
+RPS_WINDOW_SLOW = 120
 
 
 def parse_args() -> argparse.Namespace:
@@ -68,9 +71,32 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def amount_to_wan_divisor(frame: pd.DataFrame) -> float:
+    """推断 amount 列的单位，返回「换算成万元要除以多少」。
+
+    两个数据源的 amount 单位差 1000 倍，靠列名分不出来（都叫 amount）：
+      - tushare 日线：vol 单位手、amount 单位**千元**，故 amount/(vol*close) ≈ 0.1
+      - backtest 快照 hist_full.csv.gz：amount 单位**元**，故该比值 ≈ 100
+
+    2026-09-01 修：此处原先硬编码 `/10`（按千元写的），而 CI 实际喂的是快照（元），
+    于是 8000 万元的流动性门槛被稀释成约 8 万元，几乎全市场放行——截面宽 4349 而非
+    2630。IC 结论未翻（ret60 T+10 由 -0.0659 变 -0.0722，反而更强），但样本域不是
+    声称的那个，故按比值判定而不再假定来源。
+    """
+    probe = frame[["amount", "vol", "close"]].apply(pd.to_numeric, errors="coerce").dropna()
+    probe = probe[(probe.vol > 0) & (probe.close > 0) & (probe.amount > 0)]
+    if probe.empty:
+        return 1e4
+    ratio = float((probe.amount / (probe.vol * probe.close)).median())
+    # 1.0 是两者的几何中点（0.1 与 100 各差 10 倍以上），足够把两种来源分开。
+    return 10.0 if ratio < 1.0 else 1e4
+
+
 def load_market(cache: str, start: str) -> pd.DataFrame:
     """读行情。兼容两种列名：tushare 原始（ts_code/trade_date/vol）与
-    backtest 快照 hist_full.csv.gz（symbol/date/volume）——后者是 CI 里的实际来源。"""
+    backtest 快照 hist_full.csv.gz（symbol/date/volume）——后者是 CI 里的实际来源。
+
+    amount 一并归一到**万元**，让下游门槛不必再关心来源单位。"""
     if not cache or not Path(cache).exists():
         raise SystemExit("请用 --cache 指定行情 CSV（可复用 backtest 快照的 hist_full）")
     frame = pd.read_csv(cache, dtype={"ts_code": str, "symbol": str, "trade_date": str}, low_memory=False)
@@ -87,6 +113,7 @@ def load_market(cache: str, start: str) -> pd.DataFrame:
         raise SystemExit(f"行情缺少必要列: {sorted(missing)}")
     frame = frame.dropna(subset=["d"])
     frame = frame[frame.d >= pd.Timestamp(start)]
+    frame["amount"] = pd.to_numeric(frame.amount, errors="coerce") / amount_to_wan_divisor(frame)
     return frame.sort_values(["ts_code", "d"])
 
 
@@ -105,18 +132,23 @@ def build_factors(market: pd.DataFrame) -> tuple[dict[str, pd.DataFrame], pd.Dat
     # 动量族：生产的 ret3/5/20/60/120
     for win in (3, 5, 20, 60, 120):
         factors[f"ret{win}"] = close.pct_change(win, fill_method=None) * 100
-    # 相对强弱：生产的 rps_fast / rps_slow 用横截面分位，这里同构
-    # 注意：`ret20` 的全市场 rank **不是**新因子。Spearman 秩相关对单调变换不变，
-    # 故 `rank(ret20)` 与 `ret20` 的 Rank IC / IR / 为正日逐位相同（2026-08-30 实测差 <1e-9）。
-    # 早前版本把这两列当独立因子，导致因子表虚增两条证据、且 BH 多重比较的检验数偏大。
-    # 这里换成**行业内**分位：同一 ret20 在弱行业里是龙头、在强行业里是垫底，
-    # 秩序被行业重排后才携带原始动量之外的信息。
+    # 相对强弱：窗口必须跟生产一致。生产是 RPS50 / RPS120 的**全市场**分位
+    # （core/wyckoff_engine.py rps_window_fast=50 / rps_window_slow=120，
+    # 分位在 core/layer2_strength.py:105-106 用 rank(pct=True)），
+    # 2026-09-01 前这里写的是 20/60 却在注释里自称「同构」：实测两套 slow 的
+    # 日均截面秩相关只有 +0.63，等于在测另一个因子，故改回 50/120。
+    for label, win in (("rps_fast", RPS_WINDOW_FAST), ("rps_slow", RPS_WINDOW_SLOW)):
+        factors[label] = (close.pct_change(win, fill_method=None) * 100).rank(axis=1, pct=True) * 100
+    # 行业内分位是**另一个**因子，不是 rps 的等价写法，故单独命名。
+    # 注意：全市场分位对 Rank IC 是恒等变换——Spearman 对单调变换不变，故
+    # `rank(ret60)` 与 `ret60` 的 Rank IC 逐位相同（2026-08-30 实测差 <1e-9），
+    # 所以 rps_slow 相对 ret60 不携带新信息，只是与生产同名便于对照；
+    # 真正带新信息的是行业内重排：同一 ret20 在弱行业里是龙头、在强行业里是垫底。
     sector_map_for_rps = _load_sector_map()
-    for label, win in (("rps_fast", 20), ("rps_slow", 60)):
-        mom = close.pct_change(win, fill_method=None) * 100
-        factors[label] = (
-            _within_sector_rank(mom, sector_map_for_rps) if sector_map_for_rps else mom.rank(axis=1, pct=True) * 100
-        )
+    if sector_map_for_rps:
+        for label, win in (("sector_rel_20", 20), ("sector_rel_60", 60)):
+            mom = close.pct_change(win, fill_method=None) * 100
+            factors[label] = _within_sector_rank(mom, sector_map_for_rps)
     # 量能族：dry_vol 生产用 250 日分位（PR 早前把默认从 0.05 放宽到 0.20）
     v20 = vol.rolling(20).mean()
     factors["dry_vol_q250"] = v20.rolling(250).rank(pct=True) * 100
@@ -395,7 +427,8 @@ def main() -> int:
     print(f"[ic] 行情 {len(market):,} 行 / {market.ts_code.nunique()} 只")
     factors, close, open_ = build_factors(market)
     # 在 --factors 过滤之前留存流动性面板，否则过滤掉 turnover_amt 会导致门槛无法计算。
-    liquidity = factors["turnover_amt"] / 10.0
+    # amount 已在 load_market 里归一到万元，此处不再换算。
+    liquidity = factors["turnover_amt"]
     if args.factors:
         keep = {x.strip() for x in args.factors.split(",") if x.strip()}
         missing = keep - set(factors)
