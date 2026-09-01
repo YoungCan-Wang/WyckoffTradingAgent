@@ -66,6 +66,16 @@ export {
 export { MARKET_WATCH_CACHE_TTL_MS } from './market-watch'
 export type { MarketWatchQuote, MarketWatchSnapshot, MarketWatchState } from './market-watch'
 export {
+  BENCHMARK_BUY_BLOCK_REGIMES,
+  KNOWN_MARKET_REGIMES,
+  mergePremarketRegime,
+  normalizeRegime,
+  PREMARKET_ESCALATION_REGIMES,
+  PROBE_ONLY_REGIMES,
+  resolveExecutionGate,
+} from './market-regime-gate'
+export type { ExecutionGate, ExecutionGateLevel } from './market-regime-gate'
+export {
   assessTradingDay,
   formatSessionClockContext,
   resolveSessionClock,
