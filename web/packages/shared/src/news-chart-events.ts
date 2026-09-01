@@ -68,20 +68,72 @@ export function selectNewsChartEvents(
 
 export function classifyHeadline(title: string, content = ''): { kind: NewsEventKind; sentiment: NewsSentiment; score: number } | null {
   const text = `${title} ${content}`
-  if ([...ROUNDUP_TITLES, ...NOISE_ONLY].some((word) => title.includes(word))) return null
+  if (isNoiseHeadline(title)) return null
   const kind = (Object.keys(KIND_KEYWORDS) as NewsEventKind[]).find((name) => KIND_KEYWORDS[name].some((word) => text.includes(word)))
   if (!kind) return null
+  const extra = [...BULLISH_KEYWORDS, ...BEARISH_KEYWORDS].filter((word) => text.includes(word)).length
+  return { kind, sentiment: headlineSentiment(text), score: KIND_WEIGHTS[kind] + extra }
+}
+
+/** 涨停板、龙虎榜、盘后集锦这类没有事件内核的标题。 */
+export function isNoiseHeadline(title: string): boolean {
+  return [...ROUNDUP_TITLES, ...NOISE_ONLY].some((word) => title.includes(word))
+}
+
+export function headlineSentiment(text: string): NewsSentiment {
   const bullish = BULLISH_KEYWORDS.some((word) => text.includes(word))
   const bearish = BEARISH_KEYWORDS.some((word) => text.includes(word))
-  const sentiment: NewsSentiment = bullish && bearish ? 'mixed' : bullish ? 'bullish' : bearish ? 'bearish' : 'unknown'
-  const extra = [...BULLISH_KEYWORDS, ...BEARISH_KEYWORDS].filter((word) => text.includes(word)).length
-  return { kind, sentiment, score: KIND_WEIGHTS[kind] + extra }
+  return bullish && bearish ? 'mixed' : bullish ? 'bullish' : bearish ? 'bearish' : 'unknown'
 }
 
 export function snapToSession(rawDate: string, sessionDates: string[]): string {
   const day = parseDay(rawDate)
   if (!day) return ''
   return sessionDates.find((session) => session >= day) || sessionDates.at(-1) || ''
+}
+
+export interface StockNewsHeadline {
+  date: string
+  title: string
+  summary: string
+  source: string
+  url: string
+  /** 命中已知事件类型时给出;命中不了仍保留条目 —— 核证消息不该只看这五类。 */
+  kind: NewsEventKind | null
+  sentiment: NewsSentiment
+}
+
+/**
+ * 给模型核证用的消息流,与作图用的 selectNewsChartEvents 不是一回事。
+ *
+ * 作图那条要求「一天一个、必须归到已知事件类型、必须贴到交易日」,因为图上一天只
+ * 挂得下一个标记。核证不受这些约束:同一天可以有两条,归不了类的公告照样是证据。
+ * 所以这里只做三件事 —— 去噪、去重、按时间倒序,保留原始日期不贴任何交易日。
+ */
+export function selectStockNewsHeadlines(items: RawNewsItem[], limit = 12, symbol = '', name = ''): StockNewsHeadline[] {
+  const seen = new Set<string>()
+  const rows: StockNewsHeadline[] = []
+  for (const item of items) {
+    const title = item.title.trim()
+    const published = parseDay(item.published_at || item.date || '')
+    if (!title || !published) continue
+    if (isNoiseHeadline(title)) continue
+    if (!mentionsSymbol(title, item.content || '', symbol, name)) continue
+    const key = titleKey(title)
+    if (seen.has(key)) continue
+    seen.add(key)
+    rows.push({
+      date: published,
+      title,
+      summary: (item.content || '').replace(/\s+/g, ' ').trim().slice(0, 100),
+      source: item.source || 'eastmoney',
+      url: item.url || '',
+      kind: classifyHeadline(title, item.content || '')?.kind ?? null,
+      sentiment: headlineSentiment(`${title} ${item.content || ''}`),
+    })
+  }
+  rows.sort((a, b) => b.date.localeCompare(a.date) || a.title.localeCompare(b.title))
+  return rows.slice(0, Math.max(limit, 0))
 }
 
 export async function fetchEastMoneyStockNews(code: string, fetcher: typeof fetch = fetch): Promise<RawNewsItem[]> {

@@ -161,7 +161,10 @@ export {
   classifyHeadline,
   fetchEastMoneyStockNews,
   handleNewsEventsRequest,
+  headlineSentiment,
+  isNoiseHeadline,
   selectNewsChartEvents,
+  selectStockNewsHeadlines,
   snapToSession,
 } from './news-chart-events'
-export type { NewsChartEvent, NewsEventKind, NewsSentiment, RawNewsItem } from './news-chart-events'
+export type { NewsChartEvent, NewsEventKind, NewsSentiment, RawNewsItem, StockNewsHeadline } from './news-chart-events'
