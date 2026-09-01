@@ -18,9 +18,12 @@ import pandas as pd
 
 from scripts.scan_factor_ic import (
     BETA_MIN_OBS,
+    RPS_WINDOW_FAST,
+    RPS_WINDOW_SLOW,
     WITHIN_SECTOR_MIN_MEMBERS,
     _beta_neutral,
     _within_sector_rank,
+    amount_to_wan_divisor,
     rolling_beta,
 )
 
@@ -148,3 +151,53 @@ class TestRollingBeta:
     def test_shape_matches_input(self):
         close = self._close()
         assert rolling_beta(close).shape == close.shape
+
+
+class TestAmountUnit:
+    """amount 单位判定。两个数据源都叫 amount 但差 1000 倍,靠列名分不出来。
+
+    2026-09-01 前 main 上硬编码 `/10`（按 tushare 的千元写),而 CI 实际喂的是
+    backtest 快照(元),于是 8000 万元的流动性门槛被稀释成约 8 万元,截面宽 4349
+    而非 2630。IC 结论没翻,但样本域不是声称的那个,靠肉眼复核发现不了。
+    """
+
+    def _frame(self, *, amount_scale: float, n: int = 500, seed: int = 11) -> pd.DataFrame:
+        rng = np.random.default_rng(seed)
+        close = rng.uniform(5, 50, n)
+        vol = rng.uniform(1e4, 1e6, n)  # 单位:手
+        # 成交额的真值 = 手 * 100股 * 价,再按目标单位缩放
+        return pd.DataFrame({"close": close, "vol": vol, "amount": vol * 100 * close * amount_scale})
+
+    def test_detects_tushare_thousand_yuan(self):
+        """tushare: amount 千元 -> 除以 10 得万元。"""
+        assert amount_to_wan_divisor(self._frame(amount_scale=1e-3)) == 10.0
+
+    def test_detects_snapshot_yuan(self):
+        """快照 hist_full.csv.gz: amount 元 -> 除以 1e4 得万元。"""
+        assert amount_to_wan_divisor(self._frame(amount_scale=1.0)) == 1e4
+
+    def test_two_sources_differ_by_exactly_one_thousand(self):
+        """反证:两种判定必须差 1000 倍,否则不是「单位换算」而是引入了新偏差。"""
+        yuan = amount_to_wan_divisor(self._frame(amount_scale=1.0))
+        thousand = amount_to_wan_divisor(self._frame(amount_scale=1e-3))
+        assert yuan / thousand == 1000.0
+
+    def test_falls_back_when_unusable(self):
+        """全是缺失/零时不能崩,退回快照口径(CI 的实际来源)。"""
+        frame = pd.DataFrame({"close": [0.0, np.nan], "vol": [0.0, 1.0], "amount": [np.nan, 0.0]})
+        assert amount_to_wan_divisor(frame) == 1e4
+
+
+class TestRpsWindowsMatchProduction:
+    """RPS 窗口必须与生产同源,否则扫描表测的是另一个因子。
+
+    2026-09-01 前这里是 20/60 却在注释里自称与生产「同构」;生产是 RPS50/RPS120
+    (core/wyckoff_engine.py)。实测两套 slow 的日均截面秩相关只有 +0.63——
+    不是换名,是换了因子。
+    """
+
+    def test_windows_equal_production_config(self):
+        from core.wyckoff_engine import FunnelConfig
+
+        cfg = FunnelConfig()
+        assert (RPS_WINDOW_FAST, RPS_WINDOW_SLOW) == (cfg.rps_window_fast, cfg.rps_window_slow)
