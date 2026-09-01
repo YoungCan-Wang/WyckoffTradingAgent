@@ -9,9 +9,13 @@
 用法：
     python scripts/backtest_snapshot_fetch.py --start 2026-01-01 --end 2026-09-01 \
         --board all --output-dir /tmp/funnel_snap
+    python scripts/build_funnel_cands.py --output /tmp/funnel_cands.json
     python scripts/evaluate_funnel_effect.py \
         --cands /tmp/funnel_cands.json --cache /tmp/funnel_snap/hist_full.csv.gz \
         --status formal_l4 --horizons 5,10,20
+
+候选集必须由 build_funnel_cands.py 生成：L4 成员判定按 candidate_lane 落在
+FORMAL_L4_LANES，手搓 ``candidate_status == "formal_l4"`` 会漏掉 stage 已知的那批。
 """
 
 from __future__ import annotations

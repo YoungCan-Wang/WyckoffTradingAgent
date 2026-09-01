@@ -9,6 +9,8 @@ from typing import Any
 from core.candidate_policy import candidate_score_value
 from core.candidate_report_semantics import candidate_phase, candidate_role, candidate_theme
 from core.candidate_tracks import (
+    CANDIDATE_PRODUCER_TAGS,
+    WYCKOFF_STAGE_NAMES,
     candidate_entry_key,
     normalize_candidate_entry_key,
     stronger_candidate_entry,
@@ -108,7 +110,13 @@ def candidate_entry_metadata(item: dict[str, Any], mainline: dict[str, Any] | No
         "entry_type": _text(item.get("entry_type")) or lane,
         "signal_key": candidate_entry_key(item, fields=("signal_key", "lane", "entry_type"))
         or normalize_candidate_entry_key(lane),
-        "candidate_status": _text(item.get("state")) or _text((mainline or {}).get("status")),
+        # candidate_status 是语义状态位（主线买点候选 / 过热不追 / AI复核候选…），
+        # 下游 TRADEABLE_MAINLINE_STATUSES 按它放行推荐写入。item["state"] 是生产者
+        # 标签（formal_l4/alpha/Lane/Mainline），照抄进来会把这一列变成 candidate_lane
+        # 的副本：实测 7318 行里 6391 行存的是标签，且 stage 已知时被 Accum_B/Accum_C
+        # 顶掉，连 formal_l4 这个标记本身都丢了 104 行。通道信息由 candidate_lane 承载，
+        # stage 由 stage 列承载，这里只取语义状态。
+        "candidate_status": _semantic_status(item) or _text((mainline or {}).get("status")),
         "candidate_timing": _text(item.get("timing")) or _text((mainline or {}).get("entry_type")),
         "candidate_risk": _text(item.get("risk")) or _join_texts((mainline or {}).get("risk_flags")),
         "candidate_reasons": _json_object(_candidate_reason_payload(item, mainline)),
@@ -243,6 +251,19 @@ def _optional_float(raw: Any) -> float | None:
 def _text(raw: Any) -> str | None:
     text = str(raw or "").strip()
     return text or None
+
+
+def _semantic_status(item: dict[str, Any]) -> str | None:
+    """取候选条目上的语义状态，滤掉生产者标签与 Wyckoff 阶段名。
+
+    ``state`` 这一个字段同时承载了两种东西：``_formal_candidate_entries`` 写的是
+    ``stage_map`` 命中时的阶段名、否则是 ``"formal_l4"``；alpha/Lane/Mainline 三条
+    产出路径写的是各自的通道标签。两者都不是候选状态，不该进 candidate_status。
+    """
+    state = _text(item.get("state"))
+    if state is None or state in CANDIDATE_PRODUCER_TAGS or state in WYCKOFF_STAGE_NAMES:
+        return None
+    return state
 
 
 def _join_texts(raw: Any) -> str | None:

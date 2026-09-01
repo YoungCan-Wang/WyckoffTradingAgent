@@ -8,6 +8,20 @@ from typing import Any
 
 from core.candidate_policy import candidate_score_value
 
+#: 正式 L4 触发通道（``_formal_candidate_entries`` 产出的六条）。判「这一行是不是
+#: 正式 L4 候选」要按 ``candidate_lane`` 落在这个集合里，不要去比
+#: ``candidate_status == "formal_l4"``——那个字段是语义状态位，历史上被生产者标签
+#: 占用过，且在 stage 已知时会被 ``Accum_B``/``Accum_C`` 顶掉。
+FORMAL_L4_LANES = frozenset({"sos", "evr", "lps", "spring", "compression", "trend_pullback"})
+
+#: 生产者标签：候选条目 ``state`` 字段用它区分产出通道（正式触发 / alpha / Lane /
+#: Mainline），是流水线内部用的来源标记，不是给人看的候选状态。
+CANDIDATE_PRODUCER_TAGS = frozenset({"formal_l4", "alpha", "Lane", "Mainline"})
+
+#: Wyckoff 阶段名（``detect_accum_stage`` + ``detect_markup_stage`` 的全部取值）。
+#: 它有自己的 ``stage``/``stage_tag`` 列，不该挤进 candidate_status。
+WYCKOFF_STAGE_NAMES = frozenset({"Accum_A", "Accum_B", "Accum_C", "Markup"})
+
 ACCUM_TRACK_KEYS = {
     "accum",
     "accumulation",

@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import pytest
+
 from core.candidate_metadata import (
     build_candidate_metadata_map,
     build_candidate_signal_metadata_map,
     candidate_metadata_for_signal,
     candidate_signal_triggers,
 )
-from core.candidate_tracks import best_candidate_entry_map
+from core.candidate_tracks import (
+    CANDIDATE_PRODUCER_TAGS,
+    FORMAL_L4_LANES,
+    WYCKOFF_STAGE_NAMES,
+    best_candidate_entry_map,
+)
 
 
 def test_build_candidate_metadata_map_keeps_highest_scored_duplicate_entry() -> None:
@@ -120,3 +127,66 @@ def test_formal_signal_keeps_identity_and_inherits_mainline_context() -> None:
     assert row["candidate_theme"] == "光模块"
     assert row["candidate_phase"] == "分歧机会"
     assert row["candidate_role"] == "主线核心"
+
+
+class TestCandidateStatusIsSemanticOnly:
+    """candidate_status 只放语义状态，不放生产者标签，也不放 Wyckoff 阶段名。
+
+    2026-09-01 在生产 signal_observations 上实测：7318 行里 6391 行（87%）存的是
+    生产者标签（``Lane`` 3507、``alpha`` 2025、``formal_l4`` 799、``shadow_observe``
+    60），另有 104 行存的是阶段名（``Accum_C`` 56、``Accum_B`` 45、``Markup`` 3）。
+    交叉表显示这些值 100% 复述 ``candidate_lane``，这一列等于白占。
+
+    两个后果：
+    1. ``_tracking_status`` 里 ``if existing: return existing`` 把标签当成已有状态，
+       那 6391 行永远拿不到真状态（``AI复核候选``/``跨日确认观察``/``市场拦截观察``）。
+    2. ``_formal_candidate_entries`` 写的是 ``stage_map.get(code, "formal_l4")``,
+       stage 已知时 ``formal_l4`` 这个标记本身被顶掉，漏斗效果检验按状态位建 L4
+       集合就漏了 104 只正式候选，还把它们算进了对照池。
+    """
+
+    @staticmethod
+    def _status(state: str, lane: str = "sos") -> str | None:
+        item = {"code": "000001", "lane": lane, "entry_type": lane, "signal_key": lane, "state": state, "score": 80.0}
+        return build_candidate_metadata_map([item])[item["code"]].get("candidate_status")
+
+    @pytest.mark.parametrize("tag", sorted(CANDIDATE_PRODUCER_TAGS))
+    def test_producer_tag_never_lands_in_status(self, tag: str) -> None:
+        assert self._status(tag) is None
+
+    @pytest.mark.parametrize("stage", sorted(WYCKOFF_STAGE_NAMES))
+    def test_stage_name_never_lands_in_status(self, stage: str) -> None:
+        """阶段名有自己的 stage/stage_tag 列，实测那 104 行两处都存了同一个值。"""
+        assert self._status(stage) is None
+
+    def test_lane_still_carries_the_channel(self) -> None:
+        """过滤状态位不能把通道信息一起丢掉——通道由 candidate_lane 承载。"""
+        item = {"code": "000001", "lane": "lps", "entry_type": "lps", "signal_key": "lps", "state": "Accum_C"}
+        meta = build_candidate_metadata_map([item])["000001"]
+        assert meta["candidate_lane"] == "lps"
+        assert meta["candidate_lane"] in FORMAL_L4_LANES
+
+    def test_real_semantic_status_on_state_survives(self) -> None:
+        """影子/过热路径确实往 state 上写语义状态，这些必须留下。"""
+        assert self._status("过热不追") == "过热不追"
+        assert self._status("shadow") == "shadow"
+
+    def test_mainline_status_comes_from_mainline_context(self) -> None:
+        """主线路径的状态来自 mainline.status,不受 state 过滤影响。"""
+        metadata = build_candidate_metadata_map(
+            [{"code": "300308", "lane": "mainline", "entry_type": "主线回踩MA5", "state": "Mainline", "score": 80.0}],
+            [{"code": "300308", "status": "主线买点候选", "theme": "光模块", "mainline_score": 0.86}],
+        )
+        assert metadata["300308"]["candidate_status"] == "主线买点候选"
+
+    def test_formal_l4_lanes_cover_every_formal_trigger(self) -> None:
+        """FORMAL_L4_LANES 要与 _formal_candidate_entries 的 base_map 键一致。
+
+        漏一条通道就等于把那条通道的票判进对照池,超额会被自家兄弟稀释。
+        """
+        from core.wyckoff_engine import _formal_candidate_entries
+
+        triggers = {key: [("000001", 1.0)] for key in FORMAL_L4_LANES}
+        entries = _formal_candidate_entries(triggers, {}, {})
+        assert {entry["entry_type"] for entry in entries} == set(FORMAL_L4_LANES)
+        assert {entry["state"] for entry in entries} == {"formal_l4"}
