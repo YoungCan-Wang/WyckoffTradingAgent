@@ -246,10 +246,20 @@ def maybe_persist_policy_shadow_run(
     diff_added, diff_removed = selection_diff(selected_for_ai, shadow_selected)
     row = _policy_shadow_row(ai_policy, metrics, selected_for_ai, shadow_selected, diff_added, diff_removed, regime)
     written = upsert_policy_shadow_run(row)
-    print(
-        "[funnel] 动态策略shadow已写入 signal_policy_shadow_runs: "
-        f"written={written}, added={len(diff_added)}, removed={len(diff_removed)}"
-    )
+    if written:
+        print(
+            "[funnel] 动态策略shadow已写入 signal_policy_shadow_runs: "
+            f"written={written}, added={len(diff_added)}, removed={len(diff_removed)}"
+        )
+    else:
+        # 原先「已写入 ... written=0」照样打印，读着像正常输出。实测这条就是影子账本
+        # 2026-07-04 起停摆两个月没被发现的原因：upsert 是 raise_on_error=False，
+        # 缺列异常只进 logger.warning，而这行日志说的是「已写入」。
+        print(
+            "[funnel] 警告: 动态策略shadow写入失败(0 行落库)，"
+            "归因重算会持续报 insufficient_shadow_sample；"
+            "检查 signal_policy_shadow_runs 是否缺列(scripts/print_signal_policy_shadow_ddl.py)"
+        )
     return _policy_shadow_meta(written, shadow_selected, diff_added, diff_removed, score_map)
 
 

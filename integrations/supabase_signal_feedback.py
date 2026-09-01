@@ -13,6 +13,7 @@ from core.constants import (
     TABLE_SIGNAL_POLICY_SHADOW_RUNS,
     TABLE_SIGNAL_REGISTRY,
 )
+from core.signal_policy_shadow_schema import column_names as _SHADOW_OPTIONAL_COLUMNS_FN
 from integrations.supabase_base import close_client as _close
 from integrations.supabase_base import create_admin_client as _admin
 from integrations.supabase_base import is_admin_configured as _configured
@@ -34,6 +35,19 @@ OPTIONAL_SIGNAL_OBSERVATION_COLUMNS = (
     "signal_key",
     "candidate_status",
 )
+
+# 缺列时可以牺牲的列，按表登记。命中就剔掉重试，只丢字段不丢行。
+#
+# 为什么要扩到 shadow_runs：这层降级原先只保 signal_observations，别的表缺列直接丢整行。
+# 2026-07-04 ``_policy_shadow_row`` 新增 attribution_signal_weights /
+# attribution_policy_meta 两个键而生产表没跟上，此后每次 upsert 都 42703；又因
+# ``upsert_policy_shadow_run`` 是 raise_on_error=False，异常只进 logger.warning，
+# 影子账本停在 2026-07-01 整两个月无人发现，归因重算一直误报 insufficient_shadow_sample。
+# 补 DDL（core/signal_policy_shadow_schema.py）治本，这里治「下次再漂移」。
+OPTIONAL_COLUMNS_BY_TABLE: dict[str, tuple[str, ...]] = {
+    TABLE_SIGNAL_OBSERVATIONS: OPTIONAL_SIGNAL_OBSERVATION_COLUMNS,
+    TABLE_SIGNAL_POLICY_SHADOW_RUNS: tuple(sorted(_SHADOW_OPTIONAL_COLUMNS_FN())),
+}
 
 
 def _recent_cutoff(days: int) -> str:
@@ -67,14 +81,20 @@ def _looks_like_schema_miss(exc: Exception) -> bool:
     return "column" in text or "schema cache" in text or "could not find" in text
 
 
-def _drop_optional_columns(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    clean = []
-    for row in rows:
-        r = dict(row)
-        for column in OPTIONAL_SIGNAL_OBSERVATION_COLUMNS:
-            r.pop(column, None)
-        clean.append(r)
-    return clean
+def _drop_optional_columns(table: str, rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
+    """剔掉该表登记的可选列，返回 (新行, 实际剔掉的列)。
+
+    返回剔掉了哪些列是为了让调用方 warn 出来：静默降级正是影子账本停摆两个月
+    没被发现的原因。
+    """
+    optional = OPTIONAL_COLUMNS_BY_TABLE.get(table, ())
+    if not optional:
+        return rows, []
+    dropped = sorted({column for row in rows for column in optional if column in row})
+    if not dropped:
+        return rows, []
+    clean = [{key: value for key, value in row.items() if key not in set(dropped)} for row in rows]
+    return clean, dropped
 
 
 def _execute_upsert(
@@ -93,9 +113,17 @@ def _execute_upsert(
         try:
             client.table(table).upsert(rows, on_conflict=conflict).execute()
         except Exception as exc:
-            if table != TABLE_SIGNAL_OBSERVATIONS or not _looks_like_schema_miss(exc):
+            if not _looks_like_schema_miss(exc):
                 raise
-            client.table(table).upsert(_drop_optional_columns(rows), on_conflict=conflict).execute()
+            compatible, dropped = _drop_optional_columns(table, rows)
+            if not dropped:
+                raise
+            logger.warning(
+                "%s missing optional columns; retried without %s (run scripts/print_*_ddl.py and apply)",
+                table,
+                dropped,
+            )
+            client.table(table).upsert(compatible, on_conflict=conflict).execute()
         return len(rows)
     except Exception as exc:
         logger.warning("upsert %s failed: %s", table, exc)

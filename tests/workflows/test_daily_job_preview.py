@@ -359,6 +359,127 @@ def test_recommendation_write_symbols_merges_multiple_tracking_signals():
     assert got[0]["tag"] == "双形态共振(SOS+LPS)"
 
 
+def _enrichment_details() -> dict:
+    return {
+        "formal_triggers": {"sos": [("000007", 9.0)]},
+        "review_triggers": {"sos": [("000007", 9.0)]},
+        "springboard_map": {"sos:000007": {"springboard_met_count": 2, "springboard_grade": "A+C"}},
+        "metrics": {
+            "latest_close_map": {"000007": 12.3, "000009": 8.6},
+            "accum_stage_map": {"000007": "Markup", "000009": "Accumulation"},
+            "layer3_score_map": {"000007": 71.5, "000009": 64.0},
+            "sector_rotation": {
+                "state_map": {
+                    "测试行业": {
+                        "state": "leading",
+                        "label": "领涨",
+                        "note": "资金持续流入",
+                        "guidance": "可正常参与",
+                    }
+                }
+            },
+            "exit_signals": {"000009": {"signal": "跌破MA20", "price": 8.1, "reason": "量能衰竭"}},
+            "theme_radar": {
+                "strategic_candidates": [
+                    {"code": "000007", "theme": "机器人", "theme_score": 0.72, "stock_score": 0.66, "state": "active"},
+                    {"code": "000009", "theme": "机器人", "theme_score": 0.72, "stock_score": 0.61, "state": "active"},
+                ]
+            },
+            "capital_migration": {"inflow": [{"theme": "机器人", "score": 0.5}]},
+        },
+        "name_map": {"000007": "全新好", "000009": "测试股"},
+        "sector_map": {"000007": "测试行业", "000009": "测试行业"},
+        "priority_score_map": {"000009": 55.0},
+    }
+
+
+def test_bypassing_producers_get_the_full_report_field_family():
+    """起跳板行与跨日确认行不再丢行业轮动/主题/资金迁移/离场字段。
+
+    2026-09-01 实测：生产库 822 行里 690 行 ``l4_springboard`` 和 129 行
+    ``signal_confirmed`` 的 ``sector_state_code``/``strategic_theme*``/
+    ``capital_migration_bonus``/``exit_signal`` 全 100% NULL,只有 3 行
+    ``mainline`` 带全 —— 因为前两者各自从零拼 dict,绕开了
+    ``build_symbol_report_row``,而 ``FunnelReportMaps`` 不进 step2_details。
+    """
+    from core.market_trade_mode import resolve_market_trade_mode
+    from workflows.daily_job_persistence import recommendation_write_symbols
+
+    confirmed = {
+        "code": "000009",
+        "name": "测试股",
+        "signal_status": "confirmed",
+        "selection_source": "signal_confirmed",
+        "signal_type": "lps",
+        "track": "Accum",
+        "score": 61.0,
+    }
+
+    got = recommendation_write_symbols(
+        [confirmed],
+        step2_details=_enrichment_details(),
+        trade_mode=resolve_market_trade_mode("NEUTRAL"),
+    )
+    by_code = {row["code"]: row for row in got}
+
+    springboard = by_code["000007"]
+    assert springboard["sector_state_code"] == "leading"
+    assert springboard["sector_state"] == "领涨"
+    assert springboard["sector_guidance"] == "可正常参与"
+    assert springboard["strategic_theme"] == "机器人"
+    assert springboard["strategic_theme_score"] == 0.72
+    assert springboard["strategic_theme_bonus"] > 0
+    assert springboard["capital_migration_bonus"] > 0
+    assert springboard["layer3_quality_score"] == 71.5
+    # 生产者已给出的值不被复原值覆盖
+    assert springboard["tag"] == "SOS起跳板结构(A+C)"
+    assert springboard["stage"] == "Markup"
+
+    confirmed_row = by_code["000009"]
+    assert confirmed_row["industry"] == "测试行业"
+    assert confirmed_row["stage"] == "Accumulation"
+    assert confirmed_row["priority_score"] == 55.0
+    assert confirmed_row["primary_signal"] == "lps"
+    assert confirmed_row["signal_types"] == ["lps"]
+    assert confirmed_row["sector_state_code"] == "leading"
+    assert confirmed_row["exit_signal"] == "跌破MA20"
+    assert confirmed_row["exit_price"] == 8.1
+    assert confirmed_row["exit_reason"] == "量能衰竭"
+    assert confirmed_row["capital_migration_bonus"] > 0
+    # priority_rank 只在排序上下文里有意义,不能补一个假名次
+    assert "priority_rank" not in confirmed_row
+
+
+def test_enrichment_never_overwrites_existing_tracking_values():
+    from core.market_trade_mode import resolve_market_trade_mode
+    from workflows.daily_job_persistence import recommendation_write_symbols
+
+    mainline = {
+        "code": "000009",
+        "signal_status": "confirmed",
+        "selection_source": "mainline",
+        "industry": "既有行业",
+        "sector_state_code": "lagging",
+        "strategic_theme": "既有主题",
+        "strategic_theme_bonus": 0.0,
+        "priority_score": 90.0,
+        "stage": "Distribution",
+    }
+
+    got = recommendation_write_symbols(
+        [mainline],
+        step2_details=_enrichment_details(),
+        trade_mode=resolve_market_trade_mode("NEUTRAL"),
+    )
+    row = next(item for item in got if item["code"] == "000009")
+
+    assert row["industry"] == "既有行业"
+    assert row["sector_state_code"] == "lagging"
+    assert row["strategic_theme"] == "既有主题"
+    assert row["priority_score"] == 90.0
+    assert row["stage"] == "Distribution"
+
+
 def test_step3_springboard_updates_patch_recommendation_payload():
     from workflows.daily_signal_observations import apply_step3_springboard_updates
 

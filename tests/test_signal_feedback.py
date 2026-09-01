@@ -586,6 +586,57 @@ def test_signal_observations_drop_features_json_when_schema_missing(monkeypatch)
     assert "features_json" not in client.rows[0]
 
 
+def test_policy_shadow_run_drops_attribution_columns_when_schema_missing(monkeypatch, caplog):
+    """缺列必须降级成「丢字段」而不是「丢整行」，且必须 warn 出来。
+
+    影子账本停在 2026-07-01 整两个月无人发现，正是因为这里既没有降级（缺列丢整行）
+    也没有告警（``raise_on_error=False`` + 日志写着「已写入」）。
+    """
+    import logging
+
+    from integrations import supabase_signal_feedback
+
+    client = _SchemaMissThenCaptureClient()
+    monkeypatch.setenv("WYCKOFF_WRITE_CONTEXT", "server_job")
+    monkeypatch.setattr(supabase_signal_feedback, "_configured", lambda: True)
+    monkeypatch.setattr(supabase_signal_feedback, "_admin", lambda: client)
+    monkeypatch.setattr(supabase_signal_feedback, "_close", lambda _client: None)
+
+    row = {
+        "market": "cn",
+        "trade_date": "2026-07-04",
+        "regime": "NEUTRAL",
+        "base_selected": ["000001"],
+        "attribution_signal_weights": {"lps": 0.5},
+        "attribution_policy_meta": {"report_date": "2026-07-04"},
+    }
+
+    with caplog.at_level(logging.WARNING):
+        assert supabase_signal_feedback.upsert_policy_shadow_run(row) == 1
+    assert client.calls == 2
+    assert "attribution_signal_weights" not in client.rows[0]
+    assert "attribution_policy_meta" not in client.rows[0]
+    # 行本身必须留下来 —— 缺列只该丢字段。
+    assert client.rows[0]["trade_date"] == "2026-07-04"
+    assert any("missing optional columns" in record.message for record in caplog.records)
+
+
+def test_schema_miss_without_registered_optional_columns_still_raises(monkeypatch):
+    """没登记可选列的表不能被这层降级悄悄吞掉异常。"""
+    from integrations import supabase_signal_feedback
+
+    client = _SchemaMissThenCaptureClient()
+    monkeypatch.setenv("WYCKOFF_WRITE_CONTEXT", "server_job")
+    monkeypatch.setattr(supabase_signal_feedback, "_configured", lambda: True)
+    monkeypatch.setattr(supabase_signal_feedback, "_admin", lambda: client)
+    monkeypatch.setattr(supabase_signal_feedback, "_close", lambda _client: None)
+
+    # signal_registry 没登记可选列：缺列应当照常抛出，不进降级。
+    with pytest.raises(RuntimeError):
+        supabase_signal_feedback.upsert_signal_registry([{"market": "cn", "signal_type": "sos", "regime": "ALL"}])
+    assert client.calls == 1
+
+
 def test_summarize_signal_health_classifies_watch_and_all_regime():
     outcomes = []
     for idx in range(20):
