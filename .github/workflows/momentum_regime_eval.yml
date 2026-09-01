@@ -1,14 +1,22 @@
 name: Momentum Regime Eval
 
 # 动量体检：RPS 闸门还值不值得留，以及能不能跟着市场动态调。
-# 首轮（2026-08-31，402 个交易日 2025-01-02..2026-08-28 全市场）：**动量没坏，是平的**。
+#
+# ⚠️ start 不是评估区间：RPS 慢腿 120 日预热把起点往后推 120 个交易日，尾部再扣 H+1 天。
+#   原默认 start=2025-01-01 取 402 天行情，真正评估的只有 271 天（2025-07-04 起），
+#   而这个窗口把结论读反了（同一份行情、H=10、生产档 65/70）：
+#       271 个评估日  超额 +0.070  t=+0.28  期望为零：无选择价值
+#       513 个评估日  超额 -0.320  t=-2.08  负贡献
+#   H=5 同向（+0.050 → -0.151）。故默认 start 提到 2024-01-01，取数约 24 分钟。
+#   看样本范围只能看产物里的 eval_window，不能看 start。
+#
+# 首轮（2026-08-31，271 个评估日）读数是「动量没坏，是平的」，那三条结论只在短窗成立：
 #   闸门相对流动性域内的超额 H=5 +0.05pct（t=+0.31）、H=10 +0.07pct（t=+0.28）。
 #   绝对收益 +0.432%（t=+0.96）对域内基准 +0.362%（t=+1.27）——均值高 0.07pct 而 t 值更低。
-#   季度超额 +1.66 / +1.76 / -0.37 / +2.32 / -6.63，围绕零按季度摆动；2026Q3 是摆幅一侧不是故障。
 #   阈值扫描 75/80..30/40 全期 t 值恒在 +0.88~+1.11：阈值只改振幅，不改期望。
 #   四种动态切换设计（IC 二值、IC 连续、宽度/波动、惩罚极端动量）走前全部失效。
-# 所以首轮没改任何参数。每周重跑的意义：持续确认「期望为零、按季度摆动」，
-# 并在闸门真的转为持续为负时能被看见——而不是靠单个坏季度拍板改阈值。
+# 长样本上闸门是负贡献，与 core/momentum_regime_eval.py 第五条（动量只能做顶部负筛）同向。
+# 每周重跑的意义：持续确认闸门方向，并在它转为持续为负时能被看见——这恰恰要求样本够长。
 on:
   schedule:
     # UTC 周六 03:40 = 北京时间周六 11:40，紧随 gate-alpha（10:40）之后，错开取数高峰。
@@ -19,8 +27,8 @@ on:
         description: "前瞻交易日数，逗号分隔可一次跑多个"
         default: "10,5"
       start:
-        description: "行情起始（RPS 慢腿需 120 日预热，实际可用区间比这晚 120 个交易日）"
-        default: "2025-01-01"
+        description: "行情起始（不是评估区间：预热吃掉 120 个交易日，真实区间见产物 eval_window）"
+        default: "2024-01-01"
 
 concurrency:
   group: momentum-regime-${{ github.ref }}
@@ -32,6 +40,8 @@ permissions:
 jobs:
   run:
     runs-on: ubuntu-latest
+    # 逐日取数约 1.6s/天，893 天约 24 分钟；留足余量避免 tushare 限频重试时被砍。
+    timeout-minutes: 90
     env:
       PYTHONUNBUFFERED: "1"
       # 只读全市场日线，不写库；故不设 WYCKOFF_WRITE_CONTEXT。
@@ -59,7 +69,7 @@ jobs:
         run: |
           python scripts/evaluate_momentum_regime.py \
             --horizon "${{ github.event.inputs.horizon || '10,5' }}" \
-            --start "${{ github.event.inputs.start || '2025-01-01' }}"
+            --start "${{ github.event.inputs.start || '2024-01-01' }}"
 
       - name: Upload evidence
         uses: actions/upload-artifact@v7

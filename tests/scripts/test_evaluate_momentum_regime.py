@@ -17,8 +17,12 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from core.momentum_regime_eval import CONTROL_SEEDS, NON_TOP_CAP
-from scripts.evaluate_momentum_regime import _collect_non_top_control
+from core.momentum_regime_eval import CONTROL_SEEDS, NON_TOP_CAP, PROD_RPS_WINDOW_SLOW
+from scripts.evaluate_momentum_regime import (
+    _collect_non_top_control,
+    amount_to_raw_divisor,
+    eval_window,
+)
 
 
 def _cross_section(n: int = 200):
@@ -91,3 +95,68 @@ class TestControlSampler:
         """裁剪后不够抽满时整天跳过，不能悄悄抽少了充数。"""
         sink = _run(size=500)
         assert sink == {}
+
+
+class TestEvalWindow:
+    """``--start`` 不是评估区间：预热把起点往后推 120 个交易日。
+
+    实测同一份行情，start=2025-01 只剩 271 天可评估（2025-07-04 起），生产档超额读
+    +0.070（t=+0.28）「期望为零」；start=2024-01 有 513 天，同一个档位是 -0.320
+    （t=-2.08）「负贡献」。区间必须显式落盘，否则会把没评估过的半年当成已覆盖。
+    """
+
+    def test_start_is_pushed_back_by_the_warmup(self):
+        dates = list(range(20240101, 20240101 + 400))
+        row = eval_window(dates, 10)[0]
+        assert row["market_start"] == dates[0]
+        assert row["eval_start"] == dates[PROD_RPS_WINDOW_SLOW]
+        assert row["market_days"] == 400.0
+        # 尾部还要留 H+1 天出前向窗口。
+        assert row["eval_days"] == 400.0 - PROD_RPS_WINDOW_SLOW - 11.0
+
+    def test_longer_horizon_costs_tail_days(self):
+        dates = list(range(20240101, 20240101 + 400))
+        assert eval_window(dates, 20)[0]["eval_days"] == eval_window(dates, 10)[0]["eval_days"] - 10.0
+
+    def test_eval_end_is_the_last_evaluated_day(self):
+        dates = list(range(20240101, 20240101 + 200))
+        row = eval_window(dates, 5)[0]
+        # 循环上界是 len-h-1（不含），故最后一个被评估的是它减一。
+        assert row["eval_end"] == dates[200 - 5 - 1 - 1]
+
+    def test_window_shorter_than_the_warmup_is_empty(self):
+        assert eval_window(list(range(20240101, 20240101 + PROD_RPS_WINDOW_SLOW)), 10) == []
+
+
+class TestAmountUnit:
+    """两种行情源的 amount 差 1000 倍，不归一就等于换掉整个流动性域且不报错。
+
+    tushare ``amount`` 单位千元，``amount/(vol*close)`` 中位数实测 0.0996；
+    backtest 快照 hist_full 单位是元，同一比值 100.86。``MIN_AMOUNT_RAW`` 按前者定。
+    """
+
+    def _frame(self, scale: float) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "close": [10.0] * 50,
+                "vol": [1000.0] * 50,
+                "amount": [10.0 * 1000.0 * scale] * 50,
+            }
+        )
+
+    def test_tushare_thousand_yuan_is_left_alone(self):
+        assert amount_to_raw_divisor(self._frame(0.1)) == 1.0
+
+    def test_snapshot_yuan_is_divided_by_a_thousand(self):
+        assert amount_to_raw_divisor(self._frame(100.0)) == 1000.0
+
+    def test_zero_and_missing_rows_do_not_decide_the_unit(self):
+        frame = self._frame(0.1)
+        frame.loc[0:9, "vol"] = 0.0
+        frame.loc[10:19, "amount"] = float("nan")
+        assert amount_to_raw_divisor(frame) == 1.0
+
+    def test_unusable_frame_falls_back_to_no_scaling(self):
+        frame = self._frame(0.1)
+        frame["vol"] = 0.0
+        assert amount_to_raw_divisor(frame) == 1.0
