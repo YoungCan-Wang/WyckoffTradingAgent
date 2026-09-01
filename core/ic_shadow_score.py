@@ -64,10 +64,15 @@ class ShadowScoreConfig:
         rps_slow      IC -0.0350  IR -0.35  三段同号
         dry_vol_q250  IC -0.0320  IR -0.32  三段同号
 
-    rps_slow 与 ret60 的 IC 完全相同——前者就是后者的横截面分位，**只取其一**，
-    否则同一信息被计权两次。rps_fast（IR -0.25）、vol_ratio（IR -0.24 且仅 2/3 段
-    同向）未过门槛；turnover_amt / bias_200 / price_from_low250 等为正日占比落在
-    45~55% 噪声带内，按 AGENTS.md 判为无方向性。
+    rps_slow 与 ret60 **只取其一**，否则同一份 60 日动量被计权两次。2026-08-30 前
+    rps_slow 是 ret60 的全市场分位（单调变换故 Rank IC 逐位相同）；此后改为行业内
+    分位（scan_factor_ic._within_sector_rank），IC 已不再相同，但底层信号同源，本
+    约束不变。rps_fast（IR -0.25）、vol_ratio（IR -0.24 且仅 2/3 段同向）未过门槛；
+    turnover_amt / bias_200 / price_from_low250 等为正日占比落在 45~55% 噪声带内，
+    按 AGENTS.md 判为无方向性。
+
+    2026-08-30 全市场 4300+ 只、516 个交易日复测：上表三个因子的 IR 比这里记的更强
+    （ret60 T+10 IR -0.51、dry_vol_q250 -0.63），三段同号依旧，故权重方向无需调整。
     """
 
     weights: tuple[FactorWeight, ...] = (
