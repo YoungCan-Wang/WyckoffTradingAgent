@@ -45,7 +45,17 @@ def complete_step4_decisions(
     candidate_meta_map: dict[str, CandidateMeta],
     market_regime: str,
     runtime_config: Step4RuntimeConfig,
+    order_config: Step4OrderConfig | None = None,
 ) -> list[DecisionItem]:
+    """补全 Step4 决策，并按组合级限购裁掉超额新开仓。
+
+    ``order_config`` 只为拿 ``buy_block_regimes`` —— 那是 OMS 闸门与提示词配额
+    (``step4_rebalancer.py:293``) 共用的同一份禁买集合，这一层必须同源。留空则回退到
+    ``max_new_buy_names`` 的硬编码集合（旧行为），与 ``trim_new_buy_decisions`` 的
+    ``blocked_regimes=None`` 语义一致；生产链路一律要传，否则 ``STEP4_BUY_ALLOW_REGIMES``
+    豁免掉的档位会在这里被重新拦成配额 0，模型照配额给的票被"组合级限购拦截"丢掉。
+    不变量由 ``tests/workflows/test_allow_regimes_chain.py`` 看住。
+    """
     mentioned_codes = {d.code for d in decisions}
     for position in portfolio.positions:
         if position.code in mentioned_codes:
@@ -75,6 +85,9 @@ def complete_step4_decisions(
         held_codes=held_codes,
         market_regime=market_regime,
         limits=runtime_config.new_buy_limits,
+        # 与 OMS 闸门、提示词配额同源。缺这个参数会落回硬编码集合，把 ALLOW 豁免
+        # 掉的档位重新拦成 0，见本函数 docstring。
+        blocked_regimes=frozenset(order_config.buy_block_regimes) if order_config else None,
     )
     if dropped:
         logger.info(
