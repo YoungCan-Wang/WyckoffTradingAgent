@@ -184,11 +184,7 @@ def summarize_absolute(daily: list[dict[str, float]]) -> AbsoluteStat:
     基准差额只用**同时有 net_abs 和 bench 的日子**算，缺基准的日子不静默按 0
     处理——那会把无基准段当成「基准不涨不跌」，凭空造出超额。
     """
-    usable = [
-        row
-        for row in daily
-        if row.get("net_abs") is not None and (row.get("size_abs") or 0) >= MIN_HITS_PER_DAY
-    ]
+    usable = [row for row in daily if row.get("net_abs") is not None and (row.get("size_abs") or 0) >= MIN_HITS_PER_DAY]
     if len(usable) < MIN_DAYS:
         return AbsoluteStat(len(usable), 0.0, None, None, None, None, None, None, None, None)
     nets = [float(row["net_abs"]) for row in usable]
@@ -400,8 +396,7 @@ def random_control_row(
         "size": len(band),
         "net": hit_ret - ROUND_TRIP_COST_PCT,
         "control": ctl - ROUND_TRIP_COST_PCT,
-        "residual_mom": mean(mom[h] for h in paired_hits if h in mom)
-        - mean(mom[c] for c in band if c in mom),
+        "residual_mom": mean(mom[h] for h in paired_hits if h in mom) - mean(mom[c] for c in band if c in mom),
     }
 
 
@@ -459,9 +454,7 @@ def evaluate_daily(
             )
 
         for seed in seeds:
-            ctrl_row = random_control_row(
-                paired_hits, pool, mom, panels, ds, buy_ds, sell_ds, hit_ret, seed=seed
-            )
+            ctrl_row = random_control_row(paired_hits, pool, mom, panels, ds, buy_ds, sell_ds, hit_ret, seed=seed)
             if ctrl_row is not None:
                 rows[f"control_{seed}"].append(ctrl_row)
     return rows

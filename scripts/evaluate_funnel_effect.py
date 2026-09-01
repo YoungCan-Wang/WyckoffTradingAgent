@@ -133,8 +133,7 @@ def read_absolute_notes(result: dict) -> list[str]:
     lagging = [h for h, b in result["horizons"].items() if (b["absolute"]["bench_excess_pct"] or 0) < 0]
     if not losing:
         return [
-            "- 绝对收益为正。若「减基准」为负，赚的是 beta 不是 alpha，"
-            "换成买指数能拿到同样的钱且不承担个股风险。",
+            "- 绝对收益为正。若「减基准」为负，赚的是 beta 不是 alpha，换成买指数能拿到同样的钱且不承担个股风险。",
         ]
     notes = [
         f"- **T+{'/T+'.join(str(h) for h in losing)} 绝对收益为负：这批票拿在手里是亏的。**"
