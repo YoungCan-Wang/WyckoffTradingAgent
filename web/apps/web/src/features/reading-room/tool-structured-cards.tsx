@@ -5,6 +5,7 @@ import { ScreenResultCard } from '@/components/screen-result-card'
 import { asRecord, normalizeStockCode, sanitizeText } from './utils'
 import type { PinStockInput } from './types'
 import { isAnalyzeResult, isScreenResult, isStrategyResult, summarizeToolOutput } from './tool-rendering-model'
+import { WyckoffChartPanel } from './wyckoff-chart-panel'
 
 export function ToolStructuredOutput({
   toolName,
@@ -62,6 +63,7 @@ function AnalyzeResultCard({
       </div>
       {data.data_quality && <DataQualityLine quality={data.data_quality} />}
       {data.context_pack && <ContextPackLine pack={data.context_pack} />}
+      {code && data.chart_plan && <WyckoffChartPanel code={code} plan={data.chart_plan} />}
       <AnalyzeLevelBadges data={data} />
       <MarkdownContent content={data.markdown || data.summary} className="text-xs" />
     </div>

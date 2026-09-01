@@ -16,7 +16,10 @@ import {
   execStrategyDecision,
   execViewPortfolio,
   fetchMarketWatchSnapshot,
+  assessTradingDay,
   formatMarketWatchContext,
+  formatSessionClockContext,
+  resolveSessionClock,
   selectMarketWatchCodes,
   ALLOWED_PROXY_TARGET_ORIGINS,
   normalizeGeminiStream,
@@ -129,7 +132,10 @@ const WYCKOFF_CHAT_SYSTEM_PROMPT = `# 角色设定
 4. 风险声明：涉及具体操作建议时，附带风险提示。
 5. 技术面为主：价值面只用于质量、风险、置信度和仓位校准，不能替代 K 线事实。
 6. 策略归因问题必须调用 query_attribution，先确认返回结果是否来自远端表或提示本地 --no-write 报告，再优先读取 operator_summary / latest_operator_summary 作为运营结论，然后读取 latest_policy_display、latest_execution_summary、promotion_checklist 和 latest_operations 后判断信号升降权、是否能晋级 dynamic=on，以及 shadow 新增/移除样本；raw next_action/promotion_status 只作追证据，不直接复述给用户。
-7. 只有用户明确要求进行 Python 计算、回测或统计时，才可调用 run_python_research。先说明计算目的；该工具必须等待用户确认，脚本只处理已知、有限的数据，不能把猜测当作数据来源。`
+7. 只有用户明确要求进行 Python 计算、回测或统计时，才可调用 run_python_research。先说明计算目的；该工具必须等待用户确认，脚本只处理已知、有限的数据，不能把猜测当作数据来源。
+8. 时间与交易时段以本轮注入的「当前时间与交易时段」为准，不得自行推算或编造。涉及盘面的回复先写出那一行北京时间；处于非交易日/非交易时段时，只做盘后复盘、次日计划与 T+1 委托策略，不给「立刻买/立刻卖」的指令。
+9. 复权口径以本轮注入的「复权口径」为准：结构价位来自前复权，委托价须是不复权实时价。两者被判定错开时，先说明差异，不得把结构价位直接当作委托价。
+10. analyze_stock 的 chart_plan 用于前端作图：日期必须取自工具返回的真实交易日，判断不出的阶段就留空，不要为了凑齐五个阶段而编。若处于可盘中交易时段且该股已有持仓，则不填 chart_plan（置为 null），直接给结论与操作口径 —— 盘中持仓看的是当下怎么办，不是回顾结构。`
 
 const WEB_SEARCH_GUIDANCE = `# 联网搜索
 
@@ -333,13 +339,19 @@ async function runChatWithResilience(args: ChatResilienceArgs): Promise<void> {
   const marketWatch = await fetchMarketWatchSnapshot(args.deps, args.userId, selectedCodes, args.marketWatchCache)
   if (marketWatch.state !== 'empty') writeMarketWatchStatus(args.writer, marketWatch)
   const marketWatchContext = formatMarketWatchContext(marketWatch)
+  // 时间取本轮实测，交易日用行情时间戳证实 —— 节假日算不出来，只能观测。
+  const clock = resolveSessionClock(new Date())
+  const sessionClockContext = formatSessionClockContext(
+    clock,
+    assessTradingDay(clock, marketWatch.state === 'ready' ? marketWatch.quotes.map((quote) => quote.asOf) : []),
+  )
   let lastError: unknown = new Error('没有可用的模型配置')
   for (let index = 0; index < args.configs.length; index += 1) {
     const config = args.configs[index]
     if (!config) continue
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
-        await runChatAttempt(args, config, marketWatchContext)
+        await runChatAttempt(args, config, marketWatchContext, sessionClockContext)
         return
       } catch (error) {
         lastError = error
@@ -489,7 +501,31 @@ function buildChatSystemPrompt(transport: 'chat' | 'responses'): string {
   })
 }
 
-async function runChatAttempt(args: ChatResilienceArgs, config: ChatModelConfig, marketWatchContext: string): Promise<void> {
+/** 当轮消息：历史前缀 + 挂在末尾的时间和行情。 */
+async function buildTurnModelMessages(
+  args: ChatResilienceArgs,
+  resolved: ReturnType<typeof resolveChatLanguageModel>,
+  tools: any,
+  sessionClockContext: string,
+  marketWatchContext: string,
+) {
+  const recentMessages = removeSupersededToolApprovals(args.messages.slice(-40))
+  const normalizedMessages = resolved.transport === 'chat'
+    ? sanitizeMessagesForChatTransport(recentMessages)
+    : recentMessages
+  const modelMessages = await convertToModelMessages(normalizedMessages, {
+    tools,
+    ignoreIncompleteToolCalls: true,
+  })
+  // 时间与行情都作为当轮额外 user 消息挂在末尾，不改写 system / 历史前缀。
+  // 时间每轮都变，写进 system 等于每轮击穿 prompt cache。
+  return appendMarketWatchModelMessage(
+    appendMarketWatchModelMessage(modelMessages, sessionClockContext),
+    marketWatchContext,
+  )
+}
+
+async function runChatAttempt(args: ChatResilienceArgs, config: ChatModelConfig, marketWatchContext: string, sessionClockContext: string): Promise<void> {
   writeRunEvent(args, { type: 'model_started', label: `开始使用 ${config.model}` })
   writeStageProgress(args.writer, { stage: 'model', state: 'started', message: '正在分析', model: config.model })
   let succeeded = false
@@ -497,16 +533,7 @@ async function runChatAttempt(args: ChatResilienceArgs, config: ChatModelConfig,
   try {
     const resolved = resolveChatLanguageModel(config, createProviderFetch(config.reasoning_level))
     const tools = buildTools(args, config, resolved.nestedModel, resolved.providerTools)
-    const recentMessages = removeSupersededToolApprovals(args.messages.slice(-40))
-    const normalizedMessages = resolved.transport === 'chat'
-      ? sanitizeMessagesForChatTransport(recentMessages)
-      : recentMessages
-    let modelMessages = await convertToModelMessages(normalizedMessages, {
-      tools,
-      ignoreIncompleteToolCalls: true,
-    })
-    // 行情作为当轮额外 user 消息挂在末尾，不改写 system / 历史前缀。
-    modelMessages = appendMarketWatchModelMessage(modelMessages, marketWatchContext)
+    let modelMessages = await buildTurnModelMessages(args, resolved, tools, sessionClockContext, marketWatchContext)
     let continuationCount = 0
     let totalSteps = 0
     let segmentIndex = 0
