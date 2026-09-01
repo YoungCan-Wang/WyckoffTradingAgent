@@ -46,11 +46,12 @@ def test_declared_columns_are_actually_emitted_by_the_writer() -> None:
 
 
 def test_writer_columns_are_all_either_live_or_pending_ddl() -> None:
-    """写入侧新加键时,要么表里已有,要么必须登记进 MISSING_COLUMNS 等人工执行 DDL。
+    """写入侧新加键时，要么表里已有，要么必须登记进 MISSING_COLUMNS。
 
-    这条是本次事故的直接防线:2026-07-04 那两个键当时既不在表里、也没有任何清单
-    记着它们缺,于是没有任何环节会报警。``_LIVE_COLUMNS`` 是 2026-09-01 对生产表
-    实测的列集合;下次改 payload 若引入新键,这条会失败并要求同步登记。
+    这条是本次事故的直接防线：2026-07-04 那两个键当时既不在表里、也没有任何清单
+    记着它们缺，于是没有任何环节会报警。下面那份 live_columns 是 2026-09-01 对生产表
+    实测的**建列前**基线（那两列于同日补上，现已存在，仍留在 MISSING_COLUMNS 里作为
+    「缺了只丢字段」的登记）；下次改 payload 若引入新键，这条会失败并要求同步登记。
     """
     from workflows import funnel_ai_selection
 

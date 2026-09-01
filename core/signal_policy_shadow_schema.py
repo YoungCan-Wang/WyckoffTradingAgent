@@ -31,6 +31,12 @@ Editor 执行一次。与 ``core/recommendation_tracking_schema.py``、``core/fa
 不丢行。这张表没有那层降级，缺列直接丢整行——同一种 schema 漂移，后果重一个量级。
 本次同时给 ``_execute_upsert`` 补上按表登记的可选列降级（见
 ``OPTIONAL_COLUMNS_BY_TABLE``），下次再加列最坏只丢字段。
+
+## 现状
+
+DDL 已于 2026-09-01 在 SQL Editor 执行，两列实测存在。此后本模块的作用从"待执行的补列
+清单"转为**版本化记录**：``MISSING_COLUMNS`` 仍是 ``OPTIONAL_COLUMNS_BY_TABLE`` 的数据源，
+即"这两列缺了也只丢字段不丢行"，所以不能因为已建好就删掉。
 """
 
 from __future__ import annotations
