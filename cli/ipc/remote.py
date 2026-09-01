@@ -26,7 +26,10 @@ import json
 import logging
 import threading
 from collections import deque
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 from cli.text_repair import repair_text
@@ -34,6 +37,24 @@ from cli.text_repair import repair_text
 logger = logging.getLogger(__name__)
 
 MAX_WORKERS = 4
+
+# 遥控请求开始时钉死的 host 账号。换号后 in-flight 写操作若再读磁盘登录态，
+# 会落到新账号；方法层用这个 ContextVar 拒绝错位写入。
+_remote_request_user: ContextVar[str | None] = ContextVar("remote_request_user", default=None)
+
+
+def remote_request_user_id() -> str | None:
+    return _remote_request_user.get()
+
+
+@contextmanager
+def bind_remote_request_user(user_id: str) -> Iterator[None]:
+    token = _remote_request_user.set(str(user_id or ""))
+    try:
+        yield
+    finally:
+        _remote_request_user.reset(token)
+
 
 # 单条消息上限。方法层已经把大字段裁到 768KB（session.py 的 MAX_IPC_FIELD_BYTES），
 # 这里再挡一道是因为远程还要过公网 —— 超大帧会让整条连接卡住而不只是慢。
@@ -252,11 +273,16 @@ class RemoteBridge:
             return
 
         from cli.ipc.methods import MethodError, dispatch
+        from integrations.local_auth import load_session
 
+        # 钉住请求开始时的登录账号。stop(wait=False) 不会打断已在跑的 handler；
+        # 若此时桌面换号，后续 _write_session 会读到新账号。用起始身份做对照。
+        host_user = str((load_session() or {}).get("user_id") or "")
         try:
-            for event in dispatch(method, params):
-                self._respond(request_id, origin, event)
-            self._respond(request_id, origin, {"type": "end"})
+            with bind_remote_request_user(host_user):
+                for event in dispatch(method, params):
+                    self._respond(request_id, origin, event)
+                self._respond(request_id, origin, {"type": "end"})
         except MethodError as exc:
             self._respond(request_id, origin, {"type": "error", "code": exc.code, "message": exc.message})
             self._respond(request_id, origin, {"type": "end"})

@@ -212,8 +212,22 @@ def _write_session(session_id: str = ""):
 
     读操作不走这里：它们退回旧数据虽然不理想，但可恢复（下一次调用自然对齐），
     而拒绝读会让界面在切换账号的那一两秒里整片报错。
+
+    遥控路径额外对照请求开始时钉住的 host 账号：桥 stop(wait=False) 不会打断
+    已在跑的 handler，换号后若只看磁盘登录态，会把旧手机的写入落到新账号。
     """
+    from cli.ipc.remote import remote_request_user_id
     from cli.ipc.session import get_session
+    from integrations.local_auth import load_session
+
+    remote_user = remote_request_user_id()
+    if remote_user is not None:
+        disk_user = str((load_session() or {}).get("user_id") or "")
+        if remote_user != disk_user:
+            raise MethodError(
+                "identity_busy",
+                "桌面端已切换账号，这次远程改动没有执行。请用当前登录账号重新连接后再试。",
+            )
 
     session = get_session(session_id) if session_id else get_session()
     if not _sync_ok(session):
