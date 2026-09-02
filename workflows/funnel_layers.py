@@ -17,6 +17,7 @@ from core.theme_activity import build_theme_activity_snapshot
 from core.theme_radar import build_theme_radar_snapshot
 from core.wyckoff_engine import (
     FunnelConfig,
+    build_layer2_evaluation_context,
     detect_leader_radar,
     layer1_filter,
     layer2_strength_detailed,
@@ -61,6 +62,11 @@ class FunnelLayerOutputs:
     mainline_candidates: list[dict]
     mainline_ai_cap: int
     rps_universe_count: int
+    # L2 算过的 RPS 快/慢线,原本用完即弃。留下来是为了写进 trace:影子车道的效果
+    # 检验要「同动量随机对照」,不记录当日动量,事后就只能拿全市场当对照,会把择时
+    # 读成选股(见 memory full-market-control-confounds-momentum)。
+    rps_fast_map: dict[str, float]
+    rps_slow_map: dict[str, float]
 
 
 def run_base_funnel_layers(
@@ -75,9 +81,9 @@ def run_base_funnel_layers(
     print("[funnel] 开始执行全量漏斗筛选...")
     _report_progress("漏斗筛选", "L1~L4 计算中", 0.85)
     l1_input = list(all_df_map.keys())
-    l1_passed, l2_passed, l2_channel_map, l2_rejections = _run_strength_layers(
-        l1_input, all_df_map, bench_df, cfg, ref_data
-    )
+    strength = _run_strength_layers(l1_input, all_df_map, bench_df, cfg, ref_data)
+    l1_passed, l2_passed = strength.l1_passed, strength.l2_passed
+    l2_channel_map = strength.l2_channel_map
     theme_activity = _build_theme_activity(window, ref_data, all_df_map)
     l3_passed, top_sectors, sector_rotation = _run_sector_layer(
         l1_passed,
@@ -108,10 +114,7 @@ def run_base_funnel_layers(
     )
     return _build_funnel_layer_outputs(
         l1_input=l1_input,
-        l1_passed=l1_passed,
-        l2_passed=l2_passed,
-        l2_channel_map=l2_channel_map,
-        l2_rejections=l2_rejections,
+        strength=strength,
         l3_passed=l3_passed,
         top_sectors=top_sectors,
         sector_rotation=sector_rotation,
@@ -129,10 +132,7 @@ def run_base_funnel_layers(
 
 def _build_funnel_layer_outputs(
     l1_input: list[str],
-    l1_passed: list[str],
-    l2_passed: list[str],
-    l2_channel_map: dict[str, str],
-    l2_rejections: dict[str, str],
+    strength: _StrengthLayerResult,
     l3_passed: list[str],
     top_sectors: list[str],
     sector_rotation: dict,
@@ -147,11 +147,11 @@ def _build_funnel_layer_outputs(
     mainline_cfg: Any,
 ) -> FunnelLayerOutputs:
     return FunnelLayerOutputs(
-        l1_passed=l1_passed,
-        l2_passed=l2_passed,
-        l2_channel_map=l2_channel_map,
-        l2_rejections=l2_rejections,
-        l2_counts=_l2_channel_counts(l2_channel_map),
+        l1_passed=strength.l1_passed,
+        l2_passed=strength.l2_passed,
+        l2_channel_map=strength.l2_channel_map,
+        l2_rejections=strength.l2_rejections,
+        l2_counts=_l2_channel_counts(strength.l2_channel_map),
         l3_passed=l3_passed,
         top_sectors=top_sectors,
         sector_rotation=sector_rotation,
@@ -167,6 +167,8 @@ def _build_funnel_layer_outputs(
         mainline_candidates=mainline_candidates,
         mainline_ai_cap=mainline_cfg.max_ai_candidates,
         rps_universe_count=len(l1_input),
+        rps_fast_map=strength.rps_fast_map,
+        rps_slow_map=strength.rps_slow_map,
     )
 
 
@@ -190,17 +192,30 @@ def _structure_shadow(
         }
 
 
+@dataclass(frozen=True)
+class _StrengthLayerResult:
+    l1_passed: list[str]
+    l2_passed: list[str]
+    l2_channel_map: dict[str, str]
+    l2_rejections: dict[str, str]
+    rps_fast_map: dict[str, float]
+    rps_slow_map: dict[str, float]
+
+
 def _run_strength_layers(
     l1_input: list[str],
     all_df_map: dict[str, pd.DataFrame],
     bench_df: pd.DataFrame | None,
     cfg: FunnelConfig,
     ref_data: FunnelReferenceData,
-) -> tuple[list[str], list[str], dict[str, str], dict[str, str]]:
+) -> _StrengthLayerResult:
     l1_passed = layer1_filter(
         l1_input, ref_data.name_map, ref_data.market_cap_map, all_df_map, cfg, financial_map=ref_data.financial_map
     )
     l2_rejections: dict[str, str] = {}
+    # 显式建 context 而不是让 layer2 内部建:RPS 快/慢线在里面算过一次,不接出来
+    # 就只能事后重算一遍(或者干脆没有动量,同动量对照做不成)。
+    context = build_layer2_evaluation_context(l1_passed, all_df_map, bench_df, cfg, rps_universe=l1_input)
     l2_passed, l2_channel_map, _pre_ignition = layer2_strength_detailed(
         l1_passed,
         all_df_map,
@@ -208,8 +223,16 @@ def _run_strength_layers(
         cfg,
         rps_universe=l1_input,
         rejections=l2_rejections,
+        evaluation_context=context,
     )
-    return l1_passed, l2_passed, l2_channel_map, l2_rejections
+    return _StrengthLayerResult(
+        l1_passed=l1_passed,
+        l2_passed=l2_passed,
+        l2_channel_map=l2_channel_map,
+        l2_rejections=l2_rejections,
+        rps_fast_map=dict(context.rps.fast or {}),
+        rps_slow_map=dict(context.rps.slow or {}),
+    )
 
 
 def _run_sector_layer(

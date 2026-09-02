@@ -37,7 +37,16 @@ _SHADOW_NEAR_L2_MAX_GAP_PCT = 10.0
 def write_review_trace_artifact(inputs: Any, triggers: dict, metrics: dict, output_dir: str) -> Path | None:
     if not str(output_dir or "").strip():
         return None
-    payload = build_review_trace(inputs, triggers, metrics)
+    return dump_review_trace_artifact(build_review_trace(inputs, triggers, metrics), output_dir)
+
+
+def dump_review_trace_artifact(payload: dict[str, Any], output_dir: str) -> Path | None:
+    """落盘一份已构建好的 trace。
+
+    与 build 分开:落库和落盘用同一份 payload,不重复走一遍全量决策行构建。
+    """
+    if not str(output_dir or "").strip():
+        return None
     path = Path(output_dir) / f"review_trace_{payload['trade_date'].replace('-', '')}.json.gz"
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_suffix(path.suffix + ".tmp")
@@ -138,6 +147,7 @@ def _decision_row(
         "layer3_quality_score": _score_or_none((score_map or {}).get(code)),
         "trigger_labels": list(hit_map.get(code, [])),
         "risk_signal": str((blocked.get(code) or {}).get("signal") or ""),
+        **_market_state(code, inputs),
     }
     if code not in inputs.all_df_map:
         return {**base, "stage": "数据失败", "reason": "日线拉取失败/超时"}
@@ -164,6 +174,28 @@ def _score_or_none(value: Any) -> float | None:
         return round(float(value), 6)
     except (TypeError, ValueError):
         return None
+
+
+def _market_state(code: str, inputs: Any) -> dict[str, float | None]:
+    """记录信号当日的动量与收盘价。
+
+    效果检验要的是「同动量随机对照」:不留下当日 RPS,事后只能拿全市场当对照,
+    会把择时读成选股(memory full-market-control-confounds-momentum)。RPS 在 L2
+    已经算过,这里只是把它接出来,不重算。用 getattr:回放路径自己拼 layers 对象。
+    """
+    layers = inputs.layers
+    return {
+        "rps_fast": _score_or_none((getattr(layers, "rps_fast_map", None) or {}).get(code)),
+        "rps_slow": _score_or_none((getattr(layers, "rps_slow_map", None) or {}).get(code)),
+        "close": _last_close(inputs.all_df_map.get(code)),
+    }
+
+
+def _last_close(frame: pd.DataFrame | None) -> float | None:
+    if frame is None or getattr(frame, "empty", True):
+        return None
+    close = pd.to_numeric(sort_by_date_if_needed(frame).get("close"), errors="coerce").dropna()
+    return None if close.empty else round(float(close.iloc[-1]), 4)
 
 
 def _l1_rejection_reason(code: str, inputs: Any) -> str:
