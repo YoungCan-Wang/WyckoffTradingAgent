@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from cli.scratchpad import AgentScratchpad
+from cli.scratchpad import AgentScratchpad, is_sensitive_key
 from cli.tool_results import INLINE_TOOL_RESULT_MAX_CHARS, format_tool_result_for_context, serialize_tool_result
 from utils.tool_result_preview import tool_result_brief_lines, tool_result_preview
 
@@ -39,6 +39,12 @@ def test_scratchpad_records_jsonl_and_redacts_secrets(tmp_path):
     assert tool_entry["durationMs"] == 12
     assert lines[2]["contextArchive"]["archive_ref"] == "archive://session_x/ctx_1"
     assert lines[3]["sources"] == []
+    assert lines[4]["usage"]["input_tokens"] == 10
+    assert lines[4]["usage"]["output_tokens"] == 5
+    assert not is_sensitive_key("input_tokens")
+    assert not is_sensitive_key("tokens_in")
+    assert is_sensitive_key("token")
+    assert is_sensitive_key("api_key")
 
 
 def test_tool_result_serialization_replaces_nonfinite_numbers() -> None:

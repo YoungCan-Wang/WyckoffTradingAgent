@@ -82,6 +82,8 @@ def test_export_diagnostic_package_zip_includes_session_evidence(tmp_path: Path,
             assert "tool-results/other.json" not in names
             chat_log = json.loads(zf.read("chat_log.json").decode("utf-8"))
             assert chat_log[1]["metadata"]["api_key"] == "***REDACTED***"
+            assert chat_log[1]["tokens_in"] == 12
+            assert chat_log[1]["tokens_out"] == 8
             index_lines = zf.read("tool-results/index.jsonl").decode("utf-8").splitlines()
             assert len(index_lines) == 1
             assert json.loads(index_lines[0])["node_id"] == "T_keep"

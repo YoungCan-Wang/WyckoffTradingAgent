@@ -10,9 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from cli.scratchpad import wyckoff_home
+from cli.scratchpad import is_sensitive_key, wyckoff_home
 
-_SENSITIVE_KEY_RE = re.compile(r"(api[_-]?key|token|password|secret|authorization|cookie)", re.IGNORECASE)
 _TEXT_SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9_-]{20,}"),
     re.compile(r"\bBearer\s+eyJ[A-Za-z0-9_.-]+"),
@@ -46,7 +45,7 @@ def _scrub(value: Any) -> Any:
         cleaned: dict[str, Any] = {}
         for key, item in value.items():
             key_text = str(key)
-            cleaned[key_text] = "***REDACTED***" if _SENSITIVE_KEY_RE.search(key_text) else _scrub(item)
+            cleaned[key_text] = "***REDACTED***" if is_sensitive_key(key_text) else _scrub(item)
         return cleaned
     if isinstance(value, list):
         return [_scrub(item) for item in value]

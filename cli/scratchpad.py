@@ -18,7 +18,29 @@ from typing import Any
 from cli.text_repair import repair_text
 
 _SENSITIVE_KEY_RE = re.compile(r"(api[_-]?key|token|password|secret|authorization|cookie)", re.IGNORECASE)
+_USAGE_COUNT_KEYS = frozenset(
+    {
+        "input_tokens",
+        "output_tokens",
+        "tokens_in",
+        "tokens_out",
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+    }
+)
 _MAX_INLINE_STRING = 200_000
+
+
+def is_sensitive_key(key: str) -> bool:
+    """True for credential-like keys; usage counters such as input_tokens stay visible."""
+    key_text = str(key)
+    lowered = key_text.lower()
+    if lowered in _USAGE_COUNT_KEYS or lowered.endswith(("_tokens", "_token_count")):
+        return False
+    return bool(_SENSITIVE_KEY_RE.search(key_text))
 
 
 def wyckoff_home() -> Path:
@@ -38,7 +60,7 @@ def scrub_sensitive_value(value: Any) -> Any:
         cleaned: dict[str, Any] = {}
         for key, item in value.items():
             key_text = str(key)
-            cleaned[key_text] = "***REDACTED***" if _SENSITIVE_KEY_RE.search(key_text) else scrub_sensitive_value(item)
+            cleaned[key_text] = "***REDACTED***" if is_sensitive_key(key_text) else scrub_sensitive_value(item)
         return cleaned
     if isinstance(value, (list, tuple, set)):
         return [scrub_sensitive_value(item) for item in value]
