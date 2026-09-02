@@ -33,18 +33,17 @@ import argparse
 import json
 
 import _bootstrap  # noqa: F401
-import pandas as pd
 
 from core.funnel_effect_eval import (
     CONTROL_SEEDS,
     MIN_DAYS,
     MOM_MATCH_TOL_PCT,
-    Panels,
     control_gap,
     evaluate_daily,
     summarize_absolute,
     summarize_group,
 )
+from core.funnel_effect_panels import build_panels, load_market_frame
 from core.pattern_forward_eval import ROUND_TRIP_COST_PCT
 
 
@@ -63,62 +62,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--benchmark", default="", help="基准指数 CSV（快照的 benchmark_main.csv），缺省则不出基准差额")
     parser.add_argument("--json-out", default="", help="结构化结果输出路径")
     return parser.parse_args()
-
-
-def load_market(path: str) -> pd.DataFrame:
-    """兼容两种列名：快照的 date/symbol/amount(元)，与 tushare 的 trade_date/ts_code/amount(千元)。"""
-    head = pd.read_csv(path, nrows=1)
-    if "symbol" in head.columns:
-        frame = pd.read_csv(path, usecols=["date", "open", "close", "amount", "symbol"])
-        frame["code"] = frame.symbol.astype(str).str.extract(r"(\d+)")[0].str.zfill(6)
-        frame["ds"] = pd.to_datetime(frame.date).dt.strftime("%Y-%m-%d")
-        frame["amt_wan"] = pd.to_numeric(frame.amount, errors="coerce") / 1e4
-    else:
-        frame = pd.read_csv(path, usecols=["ts_code", "trade_date", "open", "close", "amount"])
-        frame["code"] = frame.ts_code.astype(str).str.extract(r"(\d+)")[0].str.zfill(6)
-        frame["ds"] = pd.to_datetime(frame.trade_date.astype(str), format="%Y%m%d").dt.strftime("%Y-%m-%d")
-        frame["amt_wan"] = pd.to_numeric(frame.amount, errors="coerce") / 10.0
-    for col in ("open", "close"):
-        frame[col] = pd.to_numeric(frame[col], errors="coerce")
-    return frame.dropna(subset=["open", "close"]).sort_values(["code", "ds"])
-
-
-def load_benchmark(path: str) -> tuple[dict[str, float], dict[str, float]]:
-    """基准指数的 (开盘, 收盘)。窗口要与候选完全一致，所以两头都要。"""
-    if not path:
-        return {}, {}
-    frame = pd.read_csv(path, usecols=["date", "open", "close"])
-    frame["ds"] = pd.to_datetime(frame.date).dt.strftime("%Y-%m-%d")
-    for col in ("open", "close"):
-        frame[col] = pd.to_numeric(frame[col], errors="coerce")
-    frame = frame.dropna(subset=["open", "close"]).drop_duplicates("ds")
-    return (
-        dict(zip(frame.ds, frame.open.astype(float), strict=True)),
-        dict(zip(frame.ds, frame.close.astype(float), strict=True)),
-    )
-
-
-def build_panels(frame: pd.DataFrame, min_amount_wan: float, benchmark: str = "") -> Panels:
-    """流动性池与 20 日动量都用 shift(1)，只含 T 日收盘可知的信息。"""
-    frame = frame.copy()
-    grouped = frame.groupby("code", sort=False)
-    frame["avg20"] = grouped.amt_wan.transform(lambda s: s.rolling(20, min_periods=10).mean().shift(1))
-    # 20 日涨幅按 T 日收盘算（含 T 日），配对时对候选和对照同口径，无前视。
-    frame["mom20"] = grouped.close.transform(lambda s: 100.0 * (s / s.shift(20) - 1.0))
-    liquid = frame[frame.avg20 >= min_amount_wan]
-    bench_open, bench_close = load_benchmark(benchmark)
-    return Panels(
-        open={ds: dict(zip(g.code, g.open, strict=True)) for ds, g in frame.groupby("ds", sort=False)},
-        close={ds: dict(zip(g.code, g.close, strict=True)) for ds, g in frame.groupby("ds", sort=False)},
-        liquid={ds: set(g.code) for ds, g in liquid.groupby("ds", sort=False)},
-        mom20={
-            ds: dict(zip(g.code, g.mom20, strict=True))
-            for ds, g in frame.dropna(subset=["mom20"]).groupby("ds", sort=False)
-        },
-        dates=sorted(frame.ds.unique()),
-        bench_open=bench_open,
-        bench_close=bench_close,
-    )
 
 
 CONTROL_DESC = {
@@ -204,13 +147,20 @@ def render(result: dict, status: str) -> str:
         f"## 随机负控制（{len(CONTROL_SEEDS)} 个种子，逐只在同动量 ±{MOM_MATCH_TOL_PCT:.0f}pct 邻域内随机替换）",
         "",
     ]
-    inside = 0
+    # 「没跑赢随机」和「跑赢上界但幅度小于种子宽度」都不构成证据，但理由不同，分开
+    # 计数：前者是同动量随便挑就有同等超额，后者是跑赢的幅度还没超过随机自己的抽样
+    # 噪声。按 beats_band 分，不要按 verdict 里的字面——句式改了计数就会静默变错。
+    ready = [b["control_gap"] for b in result["horizons"].values() if b["control_gap"].get("verdict") != "样本不足"]
+    inside = sum(1 for gap in ready if not gap.get("beats_band"))
+    thin = sum(1 for gap in ready if gap.get("beats_band") and "证据不足" in gap.get("verdict", ""))
+    # 数「真跑赢的格子」,不要用「没被否证」反推：全部持有期样本不足时 inside 和 thin
+    # 都是 0,反推会印出「含独立选股信息」——零证据宣布有效。
+    won = len(ready) - inside - thin
     for h, block in result["horizons"].items():
         gap = block["control_gap"]
         if gap.get("verdict") == "样本不足":
             lines.append(f"- T+{h}：样本不足")
             continue
-        inside += "落在" in gap["verdict"]
         lines.append(
             f"- T+{h}：配对超额 {gap['matched_excess']:+.3f}pct，"
             f"随机控制 {gap['control_excess_min']:+.3f}~{gap['control_excess_max']:+.3f}pct"
@@ -220,13 +170,20 @@ def render(result: dict, status: str) -> str:
     lines += ["", "## 怎么读", "", *read_absolute_notes(result)]
     if inside:
         lines += [
-            f"- **{inside} 个持有期的配对超额落在随机负控制区间内。**上表的超额和 t 值不能读成选股能力：",
+            f"- **{inside} 个持有期的配对超额没有高过随机负控制的上界。**上表的超额和 t 值不能读成选股能力：",
             "  同动量邻域内随机抽同样只数就能拿到同等甚至更高的超额，说明这部分收益来自"
             "「候选站在动量轴的哪个位置」，而不是「在同一位置上挑中了哪一只」。",
             "- 为正日比例高（如 70%/75%）同样不构成证据——随机控制的为正日比例一样高。",
         ]
-    else:
+    if thin:
+        lines.append(
+            f"- **{thin} 个持有期跑赢了随机控制上界，但幅度小于种子自身的抽样宽度。**"
+            "换 5 个种子就可能翻转，不能当选股能力；要判定得加种子数并取不重叠日。"
+        )
+    if won and not inside and not thin:
         lines.append("- 配对超额跑赢随机负控制，含独立选股信息；仍需在更长样本上按走前口径复核后才可据此改阈值。")
+    if not ready:
+        lines.append("- 所有持有期都样本不足，本轮不给判定：既不能说含选股信息，也不能说不含。")
     lines += [
         f"- 单次往返成本 {ROUND_TRIP_COST_PCT}%：超额小于它时，净收益上看不出差别。",
         "- 残差动量列是配对是否真中性化的检查项；它偏离 0 太多时，超额里混着动量差，整行作废。",
@@ -241,7 +198,7 @@ def render(result: dict, status: str) -> str:
 def main() -> int:
     args = parse_args()
     cands = json.load(open(args.cands, encoding="utf-8"))
-    panels = build_panels(load_market(args.cache), args.min_amount_wan, args.benchmark)
+    panels = build_panels(load_market_frame(args.cache), args.min_amount_wan, args.benchmark)
     horizons = [int(x) for x in args.horizons.split(",") if x.strip()]
 
     result: dict = {"status": args.status, "horizons": {}}
