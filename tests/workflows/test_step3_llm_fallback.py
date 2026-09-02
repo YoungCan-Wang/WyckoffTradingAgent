@@ -44,6 +44,62 @@ def test_call_track_report_falls_back_to_efficiency_after_gemini_failure(monkeyp
     ]
 
 
+def test_call_track_report_falls_back_to_gemini_after_efficiency_failure(monkeypatch):
+    import workflows.step3_llm as step3_llm
+    from workflows.step3_llm import call_track_report
+    from workflows.step3_runtime_config import Step3RuntimeConfig
+
+    calls: list[tuple[str, str, str | None]] = []
+    monkeypatch.setenv("GEMINI_API_KEY", "gem-key")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-main")
+
+    def fake_call_llm(**kwargs):
+        calls.append((kwargs["provider"], kwargs["model"], kwargs.get("base_url")))
+        if kwargs["provider"] == "efficiency":
+            raise RuntimeError("efficiency unavailable")
+        return "## 💀 逻辑破产\n- 无\n\n## ⏳ 储备营地\n- 无\n\n## 🏹 处于起跳板\n- 000001"
+
+    monkeypatch.setattr(step3_llm, "call_llm", fake_call_llm)
+
+    ok, report, used_model = call_track_report(
+        track="Trend",
+        system_prompt="system",
+        user_message="user",
+        model="eff-model",
+        api_key="eff-key",
+        selected_codes=["000001"],
+        selected_df=pd.DataFrame([{"code": "000001"}]),
+        provider="efficiency",
+        llm_base_url="https://efficiency.example/v1",
+        runtime_config=Step3RuntimeConfig(),
+    )
+
+    assert ok is True
+    assert "处于起跳板" in report
+    assert used_model == "Gemini:gemini-main"
+    assert calls == [
+        ("efficiency", "eff-model", "https://efficiency.example/v1"),
+        ("gemini", "gemini-main", None),
+    ]
+
+
+def test_step3_llm_routes_include_gemini_when_efficiency_primary(monkeypatch):
+    from workflows.step3_llm import build_step3_llm_routes
+
+    monkeypatch.setenv("GEMINI_API_KEY", "gem-key")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-main")
+
+    routes = build_step3_llm_routes(
+        provider="efficiency",
+        model="eff-model",
+        api_key="eff-key",
+        llm_base_url="https://efficiency.example/v1",
+    )
+
+    assert [route["provider"] for route in routes] == ["efficiency", "gemini"]
+    assert routes[1]["model"] == "gemini-main"
+
+
 def test_step3_llm_routes_allow_efficiency_when_gemini_key_missing(monkeypatch):
     from workflows.step3_llm import build_step3_llm_routes
 

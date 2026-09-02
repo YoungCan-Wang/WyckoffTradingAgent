@@ -164,7 +164,7 @@ def run(
     benchmark_context: dict | None = None,
     *,
     notify: bool = True,
-    provider: str = "gemini",
+    provider: str = "efficiency",
     llm_base_url: str = "",
     wecom_webhook: str = "",
     dingtalk_webhook: str = "",
