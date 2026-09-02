@@ -14,6 +14,8 @@ from core.momentum_regime_eval import (
     NON_TOP_CAP,
     PROD_RPS_FAST_MIN,
     PROD_RPS_SLOW_MIN,
+    SWITCH_SHIFTS,
+    TOP_SCREEN_PCT,
     BandStat,
     MomentumReport,
     SwitchStat,
@@ -21,7 +23,9 @@ from core.momentum_regime_eval import (
     ic_persistence,
     quarter_of,
     render,
+    shifted_switch_controls,
     summarize_band,
+    switch_control_gap,
     tstat,
     walk_forward_switch,
 )
@@ -674,3 +678,272 @@ class TestReportSerialization:
         assert payload["controls"] == []
         assert payload["control_gap"]["verdict"] == "样本不足"
         assert math.isclose(payload["production"]["rps_slow_min"], PROD_RPS_SLOW_MIN)
+        assert payload["top_screen"] is None
+        assert payload["screen_switches"] == []
+
+
+def _screen_band(label: str, excess: float, excess_t: float, *, production: bool = False) -> BandStat:
+    return _band(
+        label,
+        inside=excess + 0.5,
+        inside_t=1.0,
+        excess=excess,
+        excess_t=excess_t,
+        is_production=production,
+    )
+
+
+def _switch_stat(label: str, diff: float | None, diff_t: float | None, **kwargs) -> SwitchStat:
+    return SwitchStat(
+        label=label,
+        days=300,
+        switched_ret=kwargs.get("switched_ret", 0.5),
+        baseline_ret=kwargs.get("baseline_ret", 0.45),
+        diff=diff,
+        diff_t=diff_t,
+        on_rate=kwargs.get("on_rate", 0.88),
+        mechanical=kwargs.get("mechanical"),
+    )
+
+
+def _autocorrelated(n: int, *, seed: int = 11, rho: float = 0.94) -> list[float]:
+    """强自相关状态序列。开关表的状态就是这种形状,均匀随机不是。"""
+    rng = random.Random(seed)
+    out = [rng.gauss(0.0, 1.0)]
+    for _ in range(n - 1):
+        out.append(rho * out[-1] + rng.gauss(0.0, 1.0 - rho**2) ** 0.0 * rng.gauss(0.0, 0.35))
+    return out
+
+
+def _lag1_rho(values: list[float]) -> float:
+    n = len(values) - 1
+    mean = sum(values) / len(values)
+    num = sum((values[i] - mean) * (values[i + 1] - mean) for i in range(n))
+    den = sum((v - mean) ** 2 for v in values)
+    return num / den if den else 0.0
+
+
+class TestShiftedSwitchControls:
+    """环移负控制:保留状态的一切,只打断它与同日收益的对齐。"""
+
+    def test_uniform_random_state_pins_on_rate_at_half(self):
+        """为什么不能用均匀随机状态当控制:它的开启率被走前中位数钉在 ~0.5。
+
+        真设计的状态是强自相关的漂移序列,开启率可以到 0.88。开启率不同,机械项
+        (关闭率 × 全期价差)就不同,比出来的是关闭率的差而不是信息的差。
+        """
+        n = 400
+        rng = random.Random(3)
+        uniform = walk_forward_switch("随机", _switch_rows([rng.random() for _ in range(n)]), state_key="state")
+        assert uniform.on_rate == pytest.approx(0.5, abs=0.06)
+        drifting = walk_forward_switch("漂移", _switch_rows([float(i) for i in range(n)]), state_key="state")
+        assert drifting.on_rate > 0.9
+
+    def test_does_not_preserve_walk_forward_on_rate(self):
+        """环移**不**保留走前开启率——阈值是扩张窗口中位数,对漂移序列路径依赖。
+
+        这就是 switch_control_gap 必须同时看择时项的原因:``diff`` 里含机械项,而机械
+        项随开启率变;``timing`` 已扣掉它。这条断言是为了在有人「修好」环移让开启率
+        对齐时立刻失败——那意味着 gap 的双口径判定前提变了,得一起改。
+        """
+        rows = _switch_rows([float(i) + (i % 7) for i in range(400)])
+        design = walk_forward_switch("漂移", rows, state_key="state")
+        controls = shifted_switch_controls("漂移", rows, state_key="state")
+        assert controls
+        assert max(abs(c.on_rate - design.on_rate) for c in controls) > 0.1
+
+    def test_preserves_autocorrelation_and_value_distribution(self):
+        """环移只是旋转下标:取值多重集合与 lag-1 自相关都应几乎不变。"""
+        states = _autocorrelated(400)
+        shift = 73
+        rotated = states[shift:] + states[:shift]
+        assert sorted(rotated) == pytest.approx(sorted(states))
+        assert _lag1_rho(rotated) == pytest.approx(_lag1_rho(states), abs=0.03)
+
+    def test_breaks_alignment_so_perfect_foresight_loses_its_edge(self):
+        """完美先知的差值必须远高于它自己的环移控制。
+
+        这是这一层能否分辨真假的判据:结构断言看不出抵消,只有让一个真有信息的状态
+        跑一遍,看控制组把它的优势吃掉多少。
+        """
+        n = 400
+        rng = random.Random(5)
+        mids = [rng.gauss(0.0, 1.0) for _ in range(n)]
+        gates = [rng.gauss(0.0, 1.0) for _ in range(n)]
+        # 状态 = 当日 gate-mid,即完美先知:high_is_on 下状态高时开启(留在 gate),
+        # 而状态高恰好就是 gate 当日更好的日子。
+        states = [g - m for g, m in zip(gates, mids, strict=True)]
+        rows = _switch_rows(states, gates=gates, mids=mids)
+        design = walk_forward_switch("先知", rows, state_key="state")
+        controls = shifted_switch_controls("先知", rows, state_key="state")
+        assert design.diff is not None
+        assert design.diff > max(c.diff for c in controls if c.diff is not None)
+        assert switch_control_gap(design, controls)["inside_control"] is False
+
+    def test_pure_noise_state_falls_inside_its_own_controls(self):
+        """无信息状态的差值应落在环移区间内——控制组不能只会放行。"""
+        n = 400
+        rng = random.Random(9)
+        rows = _switch_rows(
+            [rng.gauss(0.0, 1.0) for _ in range(n)],
+            gates=[rng.gauss(0.0, 1.0) for _ in range(n)],
+            mids=[rng.gauss(0.0, 1.0) for _ in range(n)],
+        )
+        design = walk_forward_switch("噪声", rows, state_key="state")
+        controls = shifted_switch_controls("噪声", rows, state_key="state")
+        assert switch_control_gap(design, controls)["inside_control"] is True
+
+    def test_empty_when_sample_too_short(self):
+        rows = _switch_rows([1.0] * (120 + MIN_DAYS))
+        assert shifted_switch_controls("短", rows, state_key="state") == []
+
+    def test_skips_rows_with_missing_state(self):
+        rows = _switch_rows(_autocorrelated(300))
+        for row in rows[:40]:
+            row["state"] = None
+        controls = shifted_switch_controls("缺", rows, state_key="state")
+        assert controls
+        assert all(c.days and c.days > 0 for c in controls)
+
+    def test_labels_carry_the_shift(self):
+        controls = shifted_switch_controls("甲", _switch_rows(_autocorrelated(400)), state_key="state")
+        assert [c.label for c in controls] == [f"甲｜环移 {s}" for s in SWITCH_SHIFTS]
+
+
+class TestSwitchControlGap:
+    def test_inside_control_means_no_information(self):
+        design = _switch_stat("设计", 0.05, 2.84)
+        controls = [_switch_stat(f"c{i}", d, 3.63) for i, d in enumerate((-0.19, 0.24))]
+        gap = switch_control_gap(design, controls)
+        assert gap["inside_control"] is True
+        assert "不含信息" in gap["verdict"]
+
+    def test_outside_control_is_flagged_for_spread_review(self):
+        design = _switch_stat("设计", 0.80, 2.10)
+        controls = [_switch_stat(f"c{i}", d, 1.0) for i, d in enumerate((-0.10, 0.20))]
+        gap = switch_control_gap(design, controls)
+        assert gap["inside_control"] is False
+        assert "价差 t" in gap["verdict"]
+
+    def test_judged_on_diff_not_diff_t(self):
+        """判据只能是 diff。diff_t 是这一层要否掉的东西,拿它当判据就循环了。
+
+        这里真设计的 diff_t 远高于所有控制,但 diff 落在区间内,必须判为不含信息。
+        """
+        design = _switch_stat("设计", 0.05, 9.99)
+        controls = [_switch_stat(f"c{i}", d, 0.01) for i, d in enumerate((-0.19, 0.24))]
+        assert switch_control_gap(design, controls)["inside_control"] is True
+
+    def test_too_few_controls_is_insufficient(self):
+        gap = switch_control_gap(_switch_stat("设计", 0.05, 2.84), [_switch_stat("c0", 0.1, 1.0)])
+        assert gap["verdict"] == "样本不足"
+
+    def test_missing_design_diff_is_insufficient(self):
+        controls = [_switch_stat(f"c{i}", d, 1.0) for i, d in enumerate((-0.1, 0.2))]
+        assert switch_control_gap(_switch_stat("设计", None, None), controls)["verdict"] == "样本不足"
+
+    def test_reports_the_highest_control_t(self):
+        """控制里的最高 t 必须印出来:实测它到 +3.63,比真设计的 +2.84 还高。"""
+        controls = [_switch_stat("c0", -0.19, 1.2), _switch_stat("c1", 0.24, 3.63)]
+        assert switch_control_gap(_switch_stat("设计", 0.05, 2.84), controls)["control_diff_t_max"] == pytest.approx(
+            3.63
+        )
+
+    def test_timing_inside_alone_is_enough_to_refute(self):
+        """差值出圈但择时项落在区间内,仍判不含信息。
+
+        环移不保留走前开启率,差值里的机械项随开启率变,所以差值出圈可能只是开启率
+        差异的产物;择时项已扣掉机械项,是开启率中性的那一半。
+        """
+        design = _switch_stat("设计", 0.90, 3.0, mechanical=0.86)  # timing = +0.04
+        controls = [
+            _switch_stat("c0", -0.10, 1.0, mechanical=0.10),  # timing = -0.20
+            _switch_stat("c1", 0.30, 1.0, mechanical=0.08),  # timing = +0.22
+        ]
+        gap = switch_control_gap(design, controls)
+        assert gap["timing_inside_control"] is True
+        assert gap["inside_control"] is True
+
+    def test_both_outside_is_required_to_claim_information(self):
+        design = _switch_stat("设计", 0.90, 3.0, mechanical=0.10)  # timing = +0.80
+        controls = [
+            _switch_stat("c0", -0.10, 1.0, mechanical=0.10),  # timing = -0.20
+            _switch_stat("c1", 0.30, 1.0, mechanical=0.08),  # timing = +0.22
+        ]
+        gap = switch_control_gap(design, controls)
+        assert gap["timing_inside_control"] is False
+        assert gap["inside_control"] is False
+
+    def test_missing_timing_falls_back_to_diff_only(self):
+        """机械项缺失时不能把 timing 当成 0 判——只报差值口径。"""
+        design = _switch_stat("设计", 0.90, 3.0)
+        controls = [_switch_stat(f"c{i}", d, 1.0) for i, d in enumerate((-0.10, 0.20))]
+        gap = switch_control_gap(design, controls)
+        assert gap["timing_inside_control"] is None
+        assert gap["inside_control"] is False
+
+
+class TestScreenSwitchRendering:
+    def _report(self, *, inside: bool) -> MomentumReport:
+        design = _switch_stat("顶部梯度 60 日", 0.043, 2.84, mechanical=0.3)
+        band = (-0.186, 0.238) if inside else (-0.10, 0.02)
+        controls = [_switch_stat(f"c{i}", d, 3.63) for i, d in enumerate(band)]
+        return MomentumReport(
+            thresholds=[_screen_band("65/70", -0.320, -2.08, production=True)],
+            top_screen=_screen_band(f"闸门内剔顶部（任一腿 >={TOP_SCREEN_PCT:.0f}）", -0.087, 3.06),
+            screen_switches=[(design, controls)],
+        )
+
+    def test_control_band_is_printed_next_to_the_design(self):
+        text = render(self._report(inside=True), horizon=10)
+        assert "顶部梯度 60 日" in text
+        assert "-0.186" in text and "+0.238" in text
+        assert "3.63" in text
+
+    def test_note_says_why_random_state_is_not_a_control(self):
+        text = render(self._report(inside=True), horizon=10)
+        assert "环移" in text
+        assert "开启率" in text
+
+    def test_note_admits_on_rate_is_not_preserved(self):
+        """环移不保留开启率这一点必须写在注里,否则读者会以为机械项已被匹配掉。"""
+        text = render(self._report(inside=True), horizon=10)
+        assert "不保留" in text
+        assert "择时项" in text
+
+    def test_timing_control_band_is_printed(self):
+        text = render(self._report(inside=True), horizon=10)
+        assert "择时项 [" in text
+
+    def test_inside_control_tells_the_reader_to_keep_static(self):
+        text = render(self._report(inside=True), horizon=10)
+        assert "不含可用信息" in text
+
+    def test_escaping_design_is_named_and_sent_to_spread_t(self):
+        text = render(self._report(inside=False), horizon=10)
+        assert "顶部梯度 60 日" in text
+        assert "价差 t" in text
+
+    def test_static_screen_is_compared_against_production(self):
+        text = render(self._report(inside=True), horizon=10)
+        assert f"{TOP_SCREEN_PCT:.0f} 分位" in text
+        assert "+0.233" in text  # -0.087 - (-0.320)
+
+    def test_static_screen_warns_full_sample_t_is_inflated(self):
+        text = render(self._report(inside=True), horizon=10)
+        assert "相位" in text
+        assert "夸大" in text
+
+    def test_screen_switch_gap_is_serialized(self):
+        payload = json.loads(json.dumps(self._report(inside=True).as_dict(), ensure_ascii=False))
+        entry = payload["screen_switches"][0]
+        assert entry["design"]["label"] == "顶部梯度 60 日"
+        assert len(entry["shift_controls"]) == 2
+        assert entry["shift_gap"]["inside_control"] is True
+
+    def test_missing_screen_switches_is_stated_not_silent(self):
+        report = MomentumReport(
+            thresholds=[_screen_band("65/70", -0.320, -2.08, production=True)],
+            top_screen=_screen_band("剔顶部", -0.087, 3.06),
+        )
+        assert "未评估" in render(report, horizon=10)
