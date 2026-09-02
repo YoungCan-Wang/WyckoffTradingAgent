@@ -11,8 +11,10 @@ from typing import Any
 
 import pandas as pd
 
+from core.funnel_effect_panels import build_panels_from_snapshot
 from core.review_shadow_lanes import ReviewShadowSignal, shadow_lane_label, shadow_signal_from_decision
 from workflows.backtest_data import load_snapshot_hist_map
+from workflows.review_shadow_control import control_verdict_lines, lane_control_summary
 
 
 @dataclass(frozen=True)
@@ -41,7 +43,9 @@ def run_shadow_backtest(trace_dir: Path, snapshot_dir: Path, output_dir: Path) -
     traces = load_trace_payloads(trace_dir)
     history, _ = load_snapshot_hist_map(snapshot_dir)
     trades = evaluate_shadow_traces(traces, history)
-    report = summarize_shadow_trades(trades, traces, history)
+    # 同动量对照要全市场面板，与 history 用同一份快照，动量口径由 core 单点定义。
+    panels = build_panels_from_snapshot(snapshot_dir)
+    report = summarize_shadow_trades(trades, traces, history, panels=panels)
     write_shadow_outputs(output_dir, trades, report)
     return report
 
@@ -93,6 +97,8 @@ def summarize_shadow_trades(
     trades: list[ShadowTrade],
     traces: list[dict[str, Any]],
     history: dict[str, pd.DataFrame] | None = None,
+    *,
+    panels: Any | None = None,
 ) -> dict[str, Any]:
     lanes = sorted({trade.lane for trade in trades})
     recall = _review_recall(traces, history or {})
@@ -108,6 +114,8 @@ def summarize_shadow_trades(
         "by_lane": {lane: _lane_summary([trade for trade in trades if trade.lane == lane]) for lane in lanes},
         "by_score_band": {lane: _score_band_summary([t for t in trades if t.lane == lane]) for lane in lanes},
         "overall": _lane_summary(trades),
+        # 裸收益混着动量 beta。「要不要补强」只有配对超额跑赢随机负控制才算是"要"。
+        "momentum_control": lane_control_summary(trades, panels),
     }
 
 
@@ -356,6 +364,8 @@ def _markdown_report(report: dict[str, Any]) -> str:
         "",
         "候选仅由信号日收盘时的生产 trace 生成；T+1/T+3/T+5 行情只用于结果评价。",
         "",
+        "下表是**裸收益**，混着动量 beta，不能单独用来判定「要不要补强」——结论看后面的同动量对照一节。",
+        "",
         _recall_line(report),
         "",
         "| 车道 | 样本 | T+1均值 | T+3均值 | T+5均值 | T+5胜率 |",
@@ -368,6 +378,7 @@ def _markdown_report(report: dict[str, Any]) -> str:
             f"{_metric(t3, 'mean')} | {_metric(t5, 'mean')} | {_metric(t5, 'win_rate', percent=False)} |"
         )
     lines.extend(_score_band_lines(report))
+    lines.extend(["", *control_verdict_lines(report.get("momentum_control") or {})])
     return "\n".join(lines) + "\n"
 
 

@@ -390,6 +390,91 @@ class TestPanels:
         assert (panels.bench_open, panels.bench_close) == ({}, {})
 
 
+def _noisy_panels(n_days: int = 32, n_codes: int = 200) -> Panels:
+    """行情带噪声、动量与噪声独立的面板。
+
+    为什么必须带噪声：最近邻动量配对**天然会杀掉「纯粹由动量决定的」收益差**。
+    ``_panels`` 那种恒定价格的面板里,任何选股都拿不出超额,只能验 null 的一侧,
+    验不出「有边缘」的一侧,也就证不明这套对照有分辨力。这里让每 (票, 日) 的收益
+    是独立噪声、动量是与噪声无关的固定抽样,选股能力才有地方体现。
+    """
+    codes = [f"s{i}" for i in range(n_codes)]
+    dates = [f"2026-06-{i + 1:02d}" for i in range(n_days)]
+    rng = random.Random(19)
+    mom = {c: rng.gauss(5.0, 8.0) for c in codes}
+    close = {d: {c: 100.0 * (1.0 + rng.gauss(0.0, 3.0) / 100.0) for c in codes} for d in dates}
+    return Panels(
+        open={d: dict.fromkeys(codes, 100.0) for d in dates},
+        close=close,
+        liquid={d: set(codes) for d in dates},
+        mom20={d: dict(mom) for d in dates},
+        dates=dates,
+    )
+
+
+def _verdict(cands: dict[str, dict], panels: Panels, horizon: int = 5) -> dict:
+    rows = evaluate_daily(cands, panels, horizon, status="formal_l4")
+    matched = summarize_group("matched", rows["matched"])
+    controls = [summarize_group(f"c{s}", rows[f"control_{s}"]) for s in CONTROL_SEEDS]
+    return {"gap": control_gap(matched, controls), "matched": matched}
+
+
+class TestControlGapDiscriminates:
+    """端到端守住「否证环节对候选好坏敏感」。
+
+    原来的 ``TestControlGap`` 全是手喂 ``GroupStat`` 的超额值,不经 ``evaluate_daily``
+    /``random_control_row``,所以随机组把候选收益当被测量这个 bug 一直没被发现——
+    实测完美预知的候选(配对超额 +5.79pct, t=+35.6)与纯随机选票(-0.14pct)拿到同
+    一句「不含选股信息」,扫候选收益 -5%~+20% 时 gap 恒为 +0.0000。这里必须走完整
+    链路。
+    """
+
+    HORIZON = 5
+    N_HITS = 20
+
+    def _signal_days(self, panels: Panels) -> list[str]:
+        return panels.dates[: -(self.HORIZON + 2)]
+
+    def _foresight(self, panels: Panels) -> dict[str, dict]:
+        """按实际卖出价选票——选股能力的上限。用 sell_ds 而非 buy_ds：后者跟持有
+        期收益无关,选出来的边缘接近 0,那样探针自己就是错的。"""
+        cands: dict[str, dict] = {}
+        for ds in self._signal_days(panels):
+            _buy_ds, sell_ds = panels.window(ds, self.HORIZON)
+            ranked = sorted(panels.close[sell_ds], key=lambda c: -panels.close[sell_ds][c])
+            hits = sorted(ranked[: self.N_HITS])
+            cands[ds] = {"formal_l4": hits, "all": hits}
+        return cands
+
+    def _random_picks(self, panels: Panels) -> dict[str, dict]:
+        cands: dict[str, dict] = {}
+        rng = random.Random(4242)
+        for ds in self._signal_days(panels):
+            hits = sorted(rng.sample(sorted(panels.liquid[ds]), self.N_HITS))
+            cands[ds] = {"formal_l4": hits, "all": hits}
+        return cands
+
+    def test_perfect_foresight_beats_the_random_control(self):
+        panels = _noisy_panels()
+        out = _verdict(self._foresight(panels), panels, self.HORIZON)
+        assert out["matched"].excess_pct > 1.0, out["matched"].excess_pct
+        assert out["gap"]["gap"] > out["gap"]["seed_spread"]
+        assert "含独立选股信息" in out["gap"]["verdict"], out["gap"]
+
+    def test_random_picks_stay_inside_the_random_control(self):
+        panels = _noisy_panels()
+        out = _verdict(self._random_picks(panels), panels, self.HORIZON)
+        assert abs(out["matched"].excess_pct) < 1.0, out["matched"].excess_pct
+        assert "不含选股信息" in out["gap"]["verdict"], out["gap"]
+
+    def test_gap_tracks_candidate_performance(self):
+        """gap 必须随候选收益单调变化。bug 版本下它恒为 +0.0000。"""
+        panels = _noisy_panels()
+        strong = _verdict(self._foresight(panels), panels, self.HORIZON)["gap"]
+        weak = _verdict(self._random_picks(panels), panels, self.HORIZON)["gap"]
+        assert strong["gap"] > weak["gap"] + 1.0, (strong["gap"], weak["gap"])
+
+
 class TestEvaluateDaily:
     def _cands(self, panels: Panels, n_hits: int = 20, n_wide: int = 60) -> dict[str, dict]:
         codes = sorted(next(iter(panels.liquid.values())))
@@ -398,10 +483,12 @@ class TestEvaluateDaily:
             for d in panels.dates[:-25]  # 留出足够的前向窗口
         }
 
-    def test_matched_and_controls_share_the_same_hits(self):
-        """随机控制必须与配对组用同一批候选,否则分母不同、两个超额不可比。
+    def test_matched_and_controls_share_the_same_baseline(self):
+        """两组的 control 栏必须是同一条基准线（配对篮),超额才可直接相减比较。
 
-        这是本轮自己写出来又改掉的 bug：配对失败的候选留在了随机组里。
+        原先这里断言两组的 **net** 相同,那正是 bug 本身：随机组的被测量被填成了
+        候选自己的收益,于是 gap 里候选项精确抵消,整个否证环节对候选好坏不敏感。
+        共用的应该是基准(control),被测量(net)必须各是各的篮子。
         """
         panels = _panels(60)
         rows = evaluate_daily(self._cands(panels), panels, 5, status="formal_l4")
@@ -411,8 +498,23 @@ class TestEvaluateDaily:
             assert ctrl
             by_date = {r["date"]: r for r in ctrl}
             for row in rows["matched"]:
-                # 同一天两边的 net 必须完全相同——它们算的是同一批票。
-                assert by_date[row["date"]]["net"] == pytest.approx(row["net"])
+                assert by_date[row["date"]]["control"] == pytest.approx(row["control"])
+
+    def test_control_net_is_the_random_basket_not_the_candidates(self):
+        """随机组的 net 必须是随机篮自己的收益。恒定行情下两者都等于 -成本,
+        分不出来,所以给命中票加一个边缘再看：net 不应跟着候选动。"""
+        panels = _panels(60)
+        codes = sorted(next(iter(panels.liquid.values())))
+        hits = codes[:20]
+        for ds in panels.dates:
+            closes = panels.close.get(ds) or {}
+            for code in hits:
+                if code in closes:
+                    closes[code] = closes[code] * 1.5
+        rows = evaluate_daily(self._cands(panels), panels, 5, status="formal_l4")
+        matched_net = rows["matched"][0]["net"]
+        ctrl_net = rows[f"control_{CONTROL_SEEDS[0]}"][0]["net"]
+        assert matched_net > ctrl_net + 1.0, "候选被拉高后,随机组的 net 不应跟着涨"
 
     def test_cost_is_deducted_from_both_sides(self):
         """两边同扣往返成本,比较的是选股而非交易频率;超额里成本自然抵消。"""
@@ -484,33 +586,52 @@ class TestEvaluateDaily:
 class TestControlGap:
     """随机负控制：漏斗的超额到底是选股信息,还是只是「站在了某个动量位置上」。
 
-    实测 L4 vs 同动量非 L4 候选 T+10 超额 +4.10pct、t=+3.55、为正日 70%,看着很强;
-    但同口径随机控制给 +4.48~+5.17,配对超额反而在区间之下。缺这个对照就会把
-    动量选位读成选股能力。
+    修好抵消基准（见 ``random_control_row``）后实测 L4 vs 同动量非 L4 候选,71 个信号日
+    2026-05-25~09-01：T+10 配对超额 +2.47pct、t=+1.48,随机控制 +0.54~+2.10,差距
+    +1.414 小于种子宽度 1.555 —— 高过上界但幅度不够,三格都没到「含选股信息」。
+    早先记的 +4.10pct/t=+3.55/在区间之下是抵消基准算出来的,已作废。
+
+    本类每个用例守住 verdict 的一种分支：低于下界 / 区间内 / 高过上界但幅度薄 / 跑赢。
+    三种否证理由不同,句式不能混用,否则报告会把数读反。
     """
 
     def _stat(self, excess: float | None) -> GroupStat:
         return GroupStat("x", 30, 13.7, None, None, excess, 3.55, 70.0, -0.16)
 
     def test_inside_control_range_has_no_selection_value(self):
-        gap = control_gap(self._stat(4.098), [self._stat(e) for e in (4.477, 4.866, 5.165)])
+        """落在种子区间里：分不出漏斗和「同动量随便挑」。取一格真的被包住的数。"""
+        gap = control_gap(self._stat(4.600), [self._stat(e) for e in (4.477, 4.866, 5.165)])
+        assert gap["beats_band"] is False
         assert "落在" in gap["verdict"]
         assert gap["control_excess_min"] == pytest.approx(4.477)
         assert gap["control_excess_max"] == pytest.approx(5.165)
         assert gap["gap"] < 0
 
-    def test_below_every_seed_is_still_not_a_win(self):
-        """配对超额低于所有种子时更不能说有效——gap 为负,必然落进「无选股信息」。"""
-        gap = control_gap(self._stat(1.588), [self._stat(e) for e in (1.594, 1.898, 2.272)])
-        assert "落在" in gap["verdict"]
-        assert gap["gap"] == pytest.approx(1.588 - 1.921, abs=1e-3)
+    def test_below_every_seed_says_random_did_better(self):
+        """低于所有种子要说「随便挑还更好」,不能沿用「落在区间内」的句式。
 
-    def test_gap_within_seed_spread_is_not_a_win(self):
-        """哪怕高于所有种子,只要差距不超过种子间宽度就算不上跑赢。"""
+        4.098 在 4.477 之下,不在 [4.477, 5.165] 里。这两种都不构成证据,但把「比
+        每个种子都差」印成「被区间包住」是把数读反了。
+        """
+        gap = control_gap(self._stat(4.098), [self._stat(e) for e in (4.477, 4.866, 5.165)])
+        assert gap["beats_band"] is False
+        assert "落在" not in gap["verdict"]
+        assert "随便挑还更好" in gap["verdict"]
+        assert gap["gap"] == pytest.approx(4.098 - 4.836, abs=1e-3)
+
+    def test_above_the_band_but_within_spread_says_so_explicitly(self):
+        """高于所有种子、但差距不超过种子宽度：不算跑赢,也**不能说「落在区间内」**。
+
+        旧版对这一格印的是「落在随机负控制区间内」,那句话是错的——超额明明在上界
+        之上。实测 T+10 就是这一格（+2.468 vs 种子上界 +2.095,宽度 1.555）,报告里
+        照旧句式读会以为被区间包住了。两种情况都不构成证据,但理由不同。
+        """
         gap = control_gap(self._stat(0.35), [self._stat(e) for e in (0.10, 0.30)])
         assert gap["gap"] == pytest.approx(0.15)
         assert gap["seed_spread"] == pytest.approx(0.20)
-        assert "落在" in gap["verdict"]
+        assert gap["beats_band"] is True
+        assert "落在" not in gap["verdict"]
+        assert "证据不足" in gap["verdict"]
 
     def test_gap_equal_to_spread_is_not_a_win(self):
         """边界取 <=：刚好等于宽度不算跑赢。
@@ -521,7 +642,7 @@ class TestControlGap:
         # 均值 0.5、宽度 0.5 -> matched=1.0 时 gap 恰好等于 spread。
         gap = control_gap(self._stat(1.0), [self._stat(e) for e in (0.25, 0.75)])
         assert gap["gap"] == pytest.approx(gap["seed_spread"])
-        assert "落在" in gap["verdict"]
+        assert "证据不足" in gap["verdict"]
 
     def test_clear_outperformance_is_flagged(self):
         gap = control_gap(self._stat(2.00), [self._stat(e) for e in (0.10, 0.12)])

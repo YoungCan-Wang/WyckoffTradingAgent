@@ -14,9 +14,12 @@
 2. **对照组用「T 日已知 20 日涨幅最近邻 1:1 无放回配对」的非候选股**。候选
    天然偏高动量，全市场等权对照会把动量的 beta 混进来。配对后残差动量应接近 0，
    报告里给出实测值供核对。
-3. **随机负控制**：每天从「与候选同动量分位区间」随机抽同样只数。配对超额若
-   落在多种子随机控制的区间内，说明它只是「站在了那个动量位置上」，不含选股
-   信息。这一条照 momentum_regime_eval 的做法固化进每次体检，不可省。
+3. **随机负控制**：每天从「与候选同动量分位区间」随机抽同样只数，**减掉与配对组
+   同一条基准线**（配对篮的收益），得到随机组的超额。配对超额若落在多种子随机
+   控制的区间内，说明它只是「站在了那个动量位置上」，不含选股信息。共用基准这一
+   点是硬要求：若随机组的被测量填成候选自己的收益，候选项在相减时精确抵消，整个
+   否证环节对候选好坏完全不敏感（曾经如此，见 ``random_control_row``）。这一条照
+   momentum_regime_eval 的做法固化进每次体检，不可省。
 
 买点 T+1 开盘（漏斗信号收盘后产出，最早可成交是次日开盘），卖点 T+1+H 收盘，
 扣 ROUND_TRIP_COST_PCT=0.202%，按交易日等权汇总。
@@ -351,6 +354,19 @@ def resolve_layer(day: dict, universe: set[str], layer: str) -> tuple[list[str],
     return hits, sorted(universe - wide)
 
 
+@dataclass(frozen=True)
+class MatchedBaseline:
+    """配对对照篮的当日毛收益与平均动量，是配对组与随机组**共用**的那条基准线。
+
+    共用是要点：两组各减同一个基准，相减后基准抵消、剩下的是「漏斗挑的 vs 随机挑
+    的」。若两组减的基准不同（或某一组把候选自己的收益当被测量），差值里就没有候选
+    的位置了，详见 ``random_control_row``。
+    """
+
+    ret: float
+    mom: float
+
+
 def absolute_row(hits: list[str], panels: Panels, ds: str, buy_ds: str, sell_ds: str) -> dict | None:
     """当日绝对收益观测。算在**全部候选**上，与配对成败无关。
 
@@ -376,14 +392,28 @@ def random_control_row(
     ds: str,
     buy_ds: str,
     sell_ds: str,
-    hit_ret: float,
+    baseline: MatchedBaseline,
     *,
     seed: int,
 ) -> dict | None:
-    """单个随机负控制的当日观测。
+    """单个随机负控制的当日观测：把「随机抽的那一篮」放到候选的位置上。
 
-    必须与配对组用同一批候选（``paired_hits``），否则两者分母不同、超额不可直接
-    比较——这是把「配对超额 vs 随机超额」摆在一起的前提。
+    ``net`` 必须是**随机篮自己的收益**，``control`` 必须是配对组减的那同一个
+    ``baseline``。第一版把 ``net`` 填成了候选收益 ``hit_ret``（与配对行同值），于是
+
+        matched.excess = hit - baseline
+        control.excess = hit - baseline'      <- net 也是 hit
+        gap = (hit - baseline) - (hit - baseline') = baseline' - baseline
+
+    候选表现在相减时**精确抵消**，``control_gap`` 只在比「随机篮 vs 最近邻篮」，
+    对候选好坏完全不敏感：实测完美预知的候选（配对超额 +5.79pct，t=+35.6）与纯
+    随机选票（-0.14pct）拿到同一句「不含选股信息」，扫候选收益从 -5% 到 +20%，
+    gap 恒为 +0.0000。正确形状见 ``evaluate_momentum_regime._collect_non_top_control``：
+    每行带自己的 ``inside``、共用一个 ``domain`` 基准。修好后 gap = hit - rand，
+    也就是「同一动量位置上，漏斗挑的这几只有没有跑赢随便挑的几只」。
+
+    必须与配对组用同一批候选（``paired_hits``）定邻域，否则两者分母不同、超额
+    不可直接比较——这是把「配对超额 vs 随机超额」摆在一起的前提。
     """
     band = sample_momentum_band(paired_hits, pool, mom, seed=seed, date=ds)
     if len(band) < MIN_HITS_PER_DAY:
@@ -394,9 +424,10 @@ def random_control_row(
     return {
         "date": ds,
         "size": len(band),
-        "net": hit_ret - ROUND_TRIP_COST_PCT,
-        "control": ctl - ROUND_TRIP_COST_PCT,
-        "residual_mom": mean(mom[h] for h in paired_hits if h in mom) - mean(mom[c] for c in band if c in mom),
+        "net": ctl - ROUND_TRIP_COST_PCT,
+        "control": baseline.ret - ROUND_TRIP_COST_PCT,
+        # 与本行超额（随机篮 - 基准）对齐的中性化检查项，故是随机篮减基准的动量差。
+        "residual_mom": mean(mom[c] for c in band if c in mom) - baseline.mom,
     }
 
 
@@ -441,20 +472,26 @@ def evaluate_daily(
             continue
 
         ctl = panels.gross_return(paired_ctrl, buy_ds, sell_ds)
-        if ctl is not None:
-            rows["matched"].append(
-                {
-                    "date": ds,
-                    "size": len(pairs),
-                    # 两边都扣成本，故超额里成本抵消；net/control 本身仍是净值口径
-                    "net": hit_ret - ROUND_TRIP_COST_PCT,
-                    "control": ctl - ROUND_TRIP_COST_PCT,
-                    "residual_mom": mean(mom[h] for h in paired_hits) - mean(mom[c] for c in paired_ctrl),
-                }
-            )
+        if ctl is None:
+            continue
+
+        # 配对篮既是配对组的对照，也是随机组的基准：两组减同一条线，相减后基准
+        # 抵消，剩下「漏斗挑的 vs 同邻域内随便挑的」。缺了这条共用，gap 就退化成
+        # 两个对照篮互比，与候选无关（见 random_control_row）。
+        baseline = MatchedBaseline(ret=ctl, mom=mean(mom[c] for c in paired_ctrl))
+        rows["matched"].append(
+            {
+                "date": ds,
+                "size": len(pairs),
+                # 两边都扣成本，故超额里成本抵消；net/control 本身仍是净值口径
+                "net": hit_ret - ROUND_TRIP_COST_PCT,
+                "control": baseline.ret - ROUND_TRIP_COST_PCT,
+                "residual_mom": mean(mom[h] for h in paired_hits) - baseline.mom,
+            }
+        )
 
         for seed in seeds:
-            ctrl_row = random_control_row(paired_hits, pool, mom, panels, ds, buy_ds, sell_ds, hit_ret, seed=seed)
+            ctrl_row = random_control_row(paired_hits, pool, mom, panels, ds, buy_ds, sell_ds, baseline, seed=seed)
             if ctrl_row is not None:
                 rows[f"control_{seed}"].append(ctrl_row)
     return rows
@@ -463,9 +500,11 @@ def evaluate_daily(
 def control_gap(matched: GroupStat, controls: list[GroupStat]) -> dict[str, Any]:
     """配对超额相对随机负控制的差距。
 
-    控制组每天从「候选动量区间内」随机抽同样只数，只带动量选位这一条信息。
-    配对超额若落在控制组区间内、或差距小于控制组自身的抽样宽度，就不能说漏斗
-    含选股信息——这是唯一能否掉「漏斗有效」的环节。
+    控制组每天从「候选动量区间内」随机抽同样只数，只带动量选位这一条信息。两组
+    减同一条基准线（配对篮），所以 ``gap = 候选收益 - 随机篮收益``：同一动量位置
+    上，漏斗挑的这几只比随便挑的几只好多少。配对超额若落在控制组区间内、或差距
+    小于控制组自身的抽样宽度，就不能说漏斗含选股信息——这是唯一能否掉「漏斗有效」
+    的环节，所以它必须对候选表现敏感（回归测试守在 ``TestControlGapDiscriminates``）。
     """
     usable = [c.excess_pct for c in controls if c.excess_pct is not None]
     if matched.excess_pct is None or len(usable) < 2:
@@ -473,7 +512,6 @@ def control_gap(matched: GroupStat, controls: list[GroupStat]) -> dict[str, Any]
     avg = mean(usable)
     spread = max(usable) - min(usable)
     gap = matched.excess_pct - avg
-    inside = min(usable) <= matched.excess_pct <= max(usable)
     return {
         "seeds": len(usable),
         "matched_excess": _round(matched.excess_pct),
@@ -482,9 +520,28 @@ def control_gap(matched: GroupStat, controls: list[GroupStat]) -> dict[str, Any]
         "control_excess_max": _round(max(usable)),
         "seed_spread": _round(spread),
         "gap": _round(gap),
-        "verdict": (
-            "配对超额落在随机负控制区间内：边缘仅来自动量选位，不含选股信息"
-            if inside or gap <= spread
-            else "配对超额跑赢随机负控制：含独立选股信息"
-        ),
+        # 只标「有没有高过每个种子」这一件事：报告按它把「没跑赢随机」和「跑赢但
+        # 幅度薄」分开计数。别把「落在区间内」也塞进这个布尔——一个字段两种语义。
+        "beats_band": matched.excess_pct > max(usable),
+        "verdict": _gap_verdict(matched.excess_pct, usable, gap=gap, spread=spread),
     }
+
+
+def _gap_verdict(matched: float, usable: list[float], *, gap: float, spread: float) -> str:
+    """三个否证条件必须分开说，否则会把数读反。
+
+    实测 T+10：配对超额 +2.468pct **高过**种子上界 +2.095，但差距 1.414 小于种子
+    自身宽度 1.555。旧版对这一格印「落在随机负控制区间内」——那句话是错的，读报告
+    的人会以为超额被区间包住了。反过来，低于种子下界（实测 T+5 的 +0.74 vs 下界
+    +0.221 之外的格子）说成「高过上界」同样是读反。三种都不构成证据，但理由不同：
+    随便挑还更好 / 分不出来 / 跑赢的幅度还没超过随机自己的抽样噪声。
+    """
+    if matched < min(usable):
+        return "配对超额低于每个随机负控制种子：同动量位置上随便挑还更好，不含选股信息"
+    if matched <= max(usable):
+        return "配对超额落在随机负控制区间内：边缘仅来自动量选位，不含选股信息"
+    if gap <= spread:
+        return (
+            f"配对超额高过随机负控制上界，但差距 {gap:+.3f}pct 未超过种子宽度 {spread:.3f}pct：证据不足，不能算选股信息"
+        )
+    return "配对超额跑赢随机负控制：含独立选股信息"
