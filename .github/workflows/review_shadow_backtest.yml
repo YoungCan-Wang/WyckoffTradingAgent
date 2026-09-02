@@ -1,0 +1,167 @@
+name: Review Shadow Backtest
+
+# 影子车道效果检验：near_l2 / rotation_setup / pre_breakout 三条观测车道值不值得补强。
+#
+# 为什么现在才补这个 workflow：scripts/review_shadow_backtest.py 在此之前没有任何
+# 调用方，等于写了不跑。本地按本文件的口径手跑一次（18 份生产 trace + 同期快照），
+# 说明管线是通的，缺的只是定时执行：
+#   trace_days=18  evaluated=15  trades=14011
+#   overall           T+1 +0.319pct(胜率 53.6%)  T+3 +0.079(48.8%)  T+5 -0.713(43.2%)
+#   near_l2           T+1 +0.058  T+5 -0.628(40.1%)
+#   pre_breakout      T+1 +0.043  T+5 -2.341(33.4%)
+#   rotation_setup    T+1 +0.715  T+5 +1.242(59.1%)
+#   review_shadow_recall_rate 0.1436   review_candidate_recall_rate 0.0331
+#
+# ⚠️ 上面这些裸收益不构成「该补强 rotation_setup、该砍 pre_breakout」的依据。影子车道
+#   天生偏高动量（near_l2 差一点就过结构强度、pre_breakout 按 watch_score 排序），
+#   车道间那 3.6pct 的 T+5 价差里混着动量 beta 与当期市场方向。唯一有判别力的是产物
+#   里的 momentum_control 一节（同动量最近邻配对 + 随机负控制），而它要
+#   core.funnel_effect_eval.MIN_DAYS 个交易日才下判定。
+#
+# ⚠️ 样本天数是这个任务的硬约束，不是它跑得对不对的问题。trace 只活在
+#   `daily-job-artifacts-*` 里（retention-days: 30 ≈ 22 个交易日），恰好压在
+#   MIN_DAYS 线上：本地那 18 份只留下 15 个可评估日，三条车道全部返回
+#   「交易日仅 15 天，不足 20 天，不下判定」。所以本任务显式打印
+#   trace_days 与 MIN_DAYS 的对比 —— 「不下判定」必须读成样本不够，
+#   不能读成对照没通过（那是两个完全不同的结论）。
+#   真正的解法是 review_shadow_lane_daily 落库（见 core/review_shadow_lane_schema.py），
+#   建表后样本不再随 artifact 过期而消失；本任务是那之前的过渡口径。
+#
+# 只读 artifact 与行情，不写任何表，故不设 WYCKOFF_WRITE_CONTEXT。
+on:
+  schedule:
+    # UTC 周六 05:40 = 北京时间周六 13:40，排在 factor_ic_eval(05:10) 之后，
+    # 与其它周六评估任务错开，避免同时抢 Tushare / TickFlow 配额。
+    - cron: "40 5 * * 6"
+  workflow_dispatch:
+    inputs:
+      max_artifacts:
+        description: "最多扫描多少次生产漏斗运行（越大样本越长，但下载耗时线性增长；artifact 只留 30 天，超过约 30 次纯属白扫）"
+        default: "40"
+      snapshot_trading_days:
+        description: "快照预取长度：取数窗口 = 起点往前 2×该值个自然日。要盖住 trace 跨度 + 动量预热"
+        default: "60"
+
+concurrency:
+  group: review-shadow-backtest-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  # 列举并下载生产漏斗的 artifact 需要读 Actions。
+  actions: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      PYTHONUNBUFFERED: "1"
+      TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+      TICKFLOW_API_KEY: ${{ secrets.TICKFLOW_API_KEY }}
+      TZ: Asia/Shanghai
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Collect production review traces
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # inputs 先落 env 再进 shell，避免表达式直接拼进命令行。
+          IN_MAX_ARTIFACTS: ${{ inputs.max_artifacts || '40' }}
+          TRACE_DIR: ${{ github.workspace }}/review-shadow-traces
+        run: |
+          set -euo pipefail
+          mkdir -p "$TRACE_DIR"
+          listing="$RUNNER_TEMP/funnel-runs.txt"
+          # 按 workflow 直接列 run（一次调用，实测 2.3s）。不要改成遍历
+          # `actions/artifacts?per_page=100` ——仓库里有近 6000 份 artifact，--paginate
+          # 要走 60 页、实测 50s 才能筛出这 27 份。
+          #
+          # 也不要按 conclusion 过滤。漏斗失败的 run 因为 if: always() 照样上传
+          # artifact，里面的 trace 是完整的（实测 2026-08-10 那次 failure，trace 有
+          # 5331 只票、data_quality.status=normal），失败往往发生在下单/通知这些
+          # trace 落盘之后。本任务是攒样本，扔掉能用的交易日没有道理；真正不可用的
+          # run 会在下载那步自然落空。
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/wyckoff_funnel.yml/runs?branch=${GITHUB_REF_NAME}&per_page=${IN_MAX_ARTIFACTS}" \
+            --jq '.workflow_runs[].id' \
+            > "$listing"
+
+          scanned=0
+          while read -r run_id; do
+            test -n "$run_id" || continue
+            scanned=$((scanned + 1))
+            dest="$RUNNER_TEMP/artifact-dl/${run_id}"
+            mkdir -p "$dest"
+            # --pattern 省掉一次 artifacts API 调用。artifact 已过期或那次 run 压根没
+            # 产出时 gh 退非零，正好自然跳过。
+            if ! gh run download "$run_id" --dir "$dest" --pattern 'daily-job-artifacts-*' >/dev/null 2>&1; then
+              rm -rf "$dest"
+              continue
+            fi
+            # -n 不覆盖：同一交易日若出现在多份 artifact 里（漏斗当天重跑），保留先取到
+            # 的那份。列表按新到旧，先取到的就是最近一次重跑的结果。
+            find "$dest" -type f -name 'review_trace_*.json.gz' -exec cp -n {} "$TRACE_DIR"/ \; 2>/dev/null || true
+            rm -rf "$dest"
+          done < "$listing"
+
+          days="$(find "$TRACE_DIR" -type f -name 'review_trace_*.json.gz' | wc -l | tr -d ' ')"
+          echo "[review-shadow] 扫描 ${scanned} 次漏斗运行，收集到 ${days} 个交易日的 trace"
+          if [ "$days" -eq 0 ]; then
+            echo "[review-shadow] 没有可用 trace：上游 wyckoff_funnel 近期未产出 artifact，或已全部过期"
+            exit 1
+          fi
+          echo "TRACE_DIR=${TRACE_DIR}" >> "$GITHUB_ENV"
+          echo "TRACE_DAYS=${days}" >> "$GITHUB_ENV"
+
+      - name: Fetch market snapshot
+        env:
+          IN_TRADING_DAYS: ${{ inputs.snapshot_trading_days || '60' }}
+        run: |
+          set -euo pipefail
+          # --start/--end 只定位窗口右端：真实取数起点是 start 往前 2×trading-days 个
+          # 自然日（见 workflows/backtest_snapshot_fetch.py 的 _snapshot_range）。
+          # trading-days=60 → 约 120 个自然日 ≈ 82 个交易日，够盖住 trace 跨度（≈22 天）
+          # 加 mom20/avg20 的预热。不要沿用 320 的默认值，那会白拉两年行情。
+          python -u scripts/backtest_snapshot_fetch.py \
+            --start "$(date +%Y-%m-%d)" \
+            --end "$(date +%Y-%m-%d)" \
+            --board all \
+            --trading-days "$IN_TRADING_DAYS" \
+            --output-dir "$RUNNER_TEMP/review_shadow_snap"
+
+      - name: Run review shadow backtest
+        run: |
+          set -euo pipefail
+          # MIN_DAYS 从 core 读，不在 workflow 里写死 20——阈值有两个来源就会漂移
+          # （见 memory two-gates-must-share-one-source）。
+          min_days="$(python -c 'from core.funnel_effect_eval import MIN_DAYS; print(MIN_DAYS)')"
+          echo "[review-shadow] 样本 ${TRACE_DAYS} 个交易日 / 同动量对照下判定门槛 ${min_days} 天"
+          if [ "$TRACE_DAYS" -lt "$min_days" ]; then
+            echo "[review-shadow] ⚠️ 低于门槛：momentum_control 会返回「不下判定」。"
+            echo "[review-shadow] 这是样本不足，不是对照未通过——不要据此认为车道无效。"
+          fi
+          python -u scripts/review_shadow_backtest.py \
+            --trace-dir "$TRACE_DIR" \
+            --snapshot-dir "$RUNNER_TEMP/review_shadow_snap" \
+            --output-dir artifacts/review_shadow_backtest
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: review-shadow-backtest-${{ github.run_number }}
+          path: artifacts/review_shadow_backtest/*
+          retention-days: 30
+          if-no-files-found: warn
