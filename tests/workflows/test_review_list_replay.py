@@ -395,6 +395,69 @@ def test_build_report_lines_separates_raw_and_executable_capture_rates() -> None
     assert "可交易样本前日候选 1/1" in text
 
 
+def test_report_head_carries_the_only_same_pool_ratio() -> None:
+    """「可买到且被捕获」必须在报告头,不能只埋在可交易口径的第三段。
+
+    实测 2026-09-01 这个比率是 1/54,而同一份报告头上写的是影子召回 35/98 ——
+    后者的分母是涨幅筛出来的,读着像召回率其实是事后命中计数。分子分母同池的
+    只有这一个,它得排在前面。
+    """
+    lines = build_report_lines(
+        [_row("000001", "平安银行", REVIEW_STAGE_CANDIDATE_HIT)],
+        Counter({REVIEW_STAGE_CANDIDATE_HIT: 1}),
+        today=date(2026, 9, 1),
+        previous_trade_date=date(2026, 8, 31),
+        end_trade_date="2026-08-31",
+        stats={
+            "candidate": 2,
+            "recommended": 1,
+            "total": 98,
+            "l1_eligible": 58,
+            "open_executable": 54,
+            "candidate_open_executable": 1,
+            "execution_available": 98,
+            "shadow": 35,
+            "shadow_open_executable": 32,
+        },
+    )
+
+    text = "\n".join(lines)
+    assert "**可买到且被捕获**: 1/54（1.9%）" in text
+    # 必须排在影子召回之前:影子那行的分母是结果筛出来的。
+    assert text.index("可买到且被捕获") < text.index("影子召回")
+
+
+def test_trigger_miss_focus_stops_proposing_lane_changes() -> None:
+    """买点未确认这档不能提「补强爆发前夜车道」。
+
+    同一份报告的基础准入档已经写了「不建议为涨停复盘反向放宽」,证据强度一样,
+    两档结论必须一致。原措辞是在结果选样上直接提改动方案。
+    """
+    lines = build_focus_lines(
+        [_row("000004", "长江证券", REVIEW_STAGE_TRIGGER_MISS)],
+        today=date(2026, 9, 1),
+        previous_trade_date=date(2026, 8, 31),
+    )
+    text = "\n".join(lines)
+
+    assert "买点未确认" in text
+    assert "需要补强" not in text
+    assert "影子回放" in text
+
+
+def test_focus_lines_open_with_the_result_selected_caveat() -> None:
+    """报告一进「重点归因」就要说样本是按结果选的,否则每档只数会被当淘汰率读。"""
+    lines = build_focus_lines(
+        [_row("000006", "深振业A", REVIEW_STAGE_BASE_REJECT)],
+        today=date(2026, 9, 1),
+        previous_trade_date=date(2026, 8, 31),
+    )
+
+    assert lines[0] == "**重点归因**"
+    assert "没有分母" in lines[1]
+    assert "不能作为放宽" in lines[1]
+
+
 def test_tushare_cross_sections_avoid_full_market_history_fetch(monkeypatch):
     from integrations import tushare_client
 
