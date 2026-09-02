@@ -155,7 +155,7 @@ def _run_step3_if_needed(
     from integrations.llm_client import get_provider_credentials, resolve_provider_name
     from workflows.step3_batch_report import run as run_step3
 
-    provider = resolve_provider_name("STEP3_LLM_PROVIDER", "gemini")
+    provider = resolve_provider_name("STEP3_LLM_PROVIDER", "efficiency")
     api_key, model, base_url = get_provider_credentials(provider)
     ok, reason, report_text = run_step3(
         write_symbols,

@@ -29,7 +29,7 @@ def build_step3_llm_routes(
 ) -> list[dict[str, str]]:
     cfg = runtime_config or Step3RuntimeConfig()
     routes: list[dict[str, str]] = []
-    provider = str(provider or "gemini").strip().lower() or "gemini"
+    provider = str(provider or "efficiency").strip().lower() or "efficiency"
     _append_llm_route(routes, provider=provider, model=model, api_key=api_key, base_url=llm_base_url)
     gemini_fallback = cfg.gemini_model_fallback
     if provider == "gemini" and gemini_fallback and model != gemini_fallback:
@@ -52,7 +52,7 @@ def call_track_report(
     api_key: str,
     selected_codes: list[str],
     selected_df: pd.DataFrame,
-    provider: str = "gemini",
+    provider: str = "efficiency",
     llm_base_url: str = "",
     runtime_config: Step3RuntimeConfig | None = None,
 ) -> tuple[bool, str, str]:
@@ -198,7 +198,7 @@ def _repair_report_structure(
     api_key: str,
     selected_codes: list[str],
     *,
-    provider: str = "gemini",
+    provider: str = "efficiency",
     llm_base_url: str = "",
     max_output_tokens: int = 32768,
 ) -> str:

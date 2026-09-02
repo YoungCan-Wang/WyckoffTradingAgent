@@ -47,6 +47,40 @@ def test_explicit_end_calendar_day_forces_step4_off(monkeypatch, tmp_path) -> No
     assert cfg.skip_step4 is True
 
 
+def test_resolve_daily_job_config_defaults_step3_to_efficiency(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("STEP3_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("DEFAULT_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("STEP4_LLM_PROVIDER", raising=False)
+    monkeypatch.setenv("EFFICIENCY_API_KEY", "eff-key")
+    monkeypatch.setenv("EFFICIENCY_MODEL", "eff-model")
+    monkeypatch.setenv("EFFICIENCY_BASE_URL", "https://efficiency.example/v1")
+    monkeypatch.setenv("GEMINI_API_KEY", "gem-key")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-main")
+
+    cfg = resolve_daily_job_config(Namespace(logs=str(tmp_path / "daily.log")))
+
+    assert cfg.provider == "efficiency"
+    assert cfg.step4_provider == "efficiency"
+
+
+def test_log_llm_config_announces_gemini_fallback(monkeypatch) -> None:
+    from workflows.daily_job_runtime import log_llm_config
+
+    logs: list[str] = []
+    monkeypatch.setenv("GEMINI_API_KEY", "gem-key")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-main")
+
+    log_llm_config(
+        "efficiency",
+        "https://efficiency.example/v1",
+        "EFFICIENCY_BASE_URL",
+        None,
+        lambda msg, _path: logs.append(msg),
+    )
+
+    assert any("Gemini 兜底已配置: model=gemini-main" in msg for msg in logs)
+
+
 def test_live_job_keeps_step4_enabled(monkeypatch, tmp_path) -> None:
     _stub_provider_config(monkeypatch)
     monkeypatch.delenv("END_CALENDAR_DAY", raising=False)
