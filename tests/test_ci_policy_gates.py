@@ -140,6 +140,38 @@ def test_ci_runs_python_suite_once_and_reuses_it_for_coverage():
     assert "name: coverage-report-${{ github.run_number }}" in workflow
 
 
+def test_review_shadow_backtest_collects_traces_from_failed_funnel_runs_too():
+    """影子回测按样本天数攒 trace，不能按 conclusion 过滤掉失败的漏斗运行。
+
+    漏斗失败的 run 因为 ``if: always()`` 照样上传 artifact，里面的 trace 往往是完整的
+    （实测 2026-08-10 那次 failure 有 5331 只票、data_quality.status=normal），因为失败
+    多发生在下单/通知这些 trace 落盘之后。而这个任务的瓶颈恰恰是样本天数：artifact
+    retention 30 天 ≈ 22 个交易日，压在 MIN_DAYS=20 线上，少两天就可能跨不过判定门槛。
+
+    review_list_replay.yml 用 ``--status success`` 是对的——它要的是某个特定交易日那份
+    trace，宁缺勿错。两个任务口径不同，别把那份写法照抄过来。
+    """
+    workflow = Path(".github/workflows/review_shadow_backtest.yml").read_text(encoding="utf-8")
+
+    assert "--status success" not in workflow
+    assert "select(.conclusion" not in workflow
+    assert "/actions/workflows/wyckoff_funnel.yml/runs?branch=" in workflow
+
+
+def test_review_shadow_backtest_reads_min_days_from_core():
+    """样本门槛只能有一处来源。
+
+    workflow 里写死 20 就会与 core.funnel_effect_eval.MIN_DAYS 漂移（见 memory
+    two-gates-must-share-one-source）：改了 core 而 workflow 照旧，日志会说「够了」
+    而报告说「不下判定」。
+    """
+    workflow = Path(".github/workflows/review_shadow_backtest.yml").read_text(encoding="utf-8")
+
+    assert "from core.funnel_effect_eval import MIN_DAYS" in workflow
+    # 「不下判定」是样本不足，不是对照未通过——这两句结论完全不同，必须写在日志里。
+    assert "不是对照未通过" in workflow
+
+
 def test_worker_deploy_invokes_the_package_script_explicitly():
     workflow = Path(".github/workflows/worker_deploy.yml").read_text(encoding="utf-8")
 
