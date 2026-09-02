@@ -51,12 +51,19 @@ from core.momentum_regime_eval import (
     PROD_RPS_WINDOW_SLOW,
     ROUND_TRIP_COST_PCT,
     THRESHOLD_GRID,
+    TOP_SCREEN_PCT,
     MomentumReport,
+    SwitchStat,
     ic_persistence,
     render,
+    shifted_switch_controls,
     summarize_band,
     walk_forward_switch,
 )
+
+# 顶部梯度的回看长度。40 天太抖、120 天跟不上半年级别的反转,60 天是中间档;
+# 三档都报是因为「哪一档过线」本身就是过拟合的常见入口,三档一起看才拦得住。
+SCREEN_LOOKBACKS: tuple[int, ...] = (40, 60, 120)
 
 
 def parse_args() -> argparse.Namespace:
@@ -171,13 +178,15 @@ def build_panels(market: pd.DataFrame, horizon: int) -> tuple[dict[str, list[dic
 
     sink: dict[str, list[dict[str, float]]] = {}
     switch_rows: list[dict[str, float]] = []
+    screen_rows: list[dict[str, float]] = []
     daily_ic: list[float] = []
     for i in range(PROD_RPS_WINDOW_SLOW, len(dates) - horizon - 1):
         snap = _day_snapshot(close, open_, liquidity, ret_fast, ret_slow, i, horizon)
         if snap is None:
             continue
-        _collect_day(snap, int(dates[i]), sink, switch_rows, daily_ic)
+        _collect_day(snap, int(dates[i]), sink, (switch_rows, screen_rows), daily_ic)
     sink["__switch__"] = switch_rows
+    sink["__screen_switch__"] = screen_rows
     sink["__window__"] = eval_window(dates, horizon)
     return sink, daily_ic
 
@@ -219,7 +228,8 @@ def _day_snapshot(close, open_, liquidity, ret_fast, ret_slow, i: int, horizon: 
     )
 
 
-def _collect_day(snap, date: int, sink, switch_rows, daily_ic) -> None:
+def _collect_day(snap, date: int, sink, row_sinks: tuple[list, list], daily_ic) -> None:
+    switch_rows, screen_rows = row_sinks
     pct_fast, pct_slow, forward = snap
     domain_ret = float(forward.mean())
     daily_ic.append(float(pct_slow.rank().corr(forward.rank())))
@@ -251,6 +261,34 @@ def _collect_day(snap, date: int, sink, switch_rows, daily_ic) -> None:
                     "dispersion": float(forward.std()),
                 }
             )
+    _collect_top_screen(pct_fast, pct_slow, forward, date, domain_ret, gate, sink, screen_rows)
+
+
+def _collect_top_screen(pct_fast, pct_slow, forward, date, domain_ret, gate, sink, screen_rows) -> None:
+    """闸门内部再剔掉顶部这一档，以及动态开关要用的逐日行。
+
+    ``top`` 用「任一腿到 TOP_SCREEN_PCT 分位」，不是两腿都到：单看一条腿会漏掉另一
+    条腿冲顶的票，而逐带扫描是两条腿各自独立给出同一梯度的。
+
+    ``screen_rows`` 里的 ``top_excess`` 是开关状态的原料——它是**当日已实现**的顶部
+    梯度，取用时必须回退 H+1 天，否则状态里含着待预测的收益（穿越）。
+    """
+    top = gate & ((pct_fast >= TOP_SCREEN_PCT) | (pct_slow >= TOP_SCREEN_PCT))
+    screen = gate & ~top
+    if int(gate.sum()) < MIN_GROUP or int(screen.sum()) < MIN_GROUP or int(top.sum()) < MIN_GROUP // 2:
+        return
+    sink.setdefault("__top_screen__", []).append(
+        {"date": date, "inside": float(forward[screen].mean()), "domain": domain_ret, "size": float(screen.sum())}
+    )
+    screen_rows.append(
+        {
+            "date": date,
+            "gate": float(forward[gate].mean()),
+            # walk_forward_switch 的「关闭」态退到 mid：这里的 mid 就是负筛后的闸门。
+            "mid": float(forward[screen].mean()),
+            "top_excess": float(forward[top].mean()) - domain_ret,
+        }
+    )
 
 
 def _collect_non_top_control(pct_fast, pct_slow, forward, date: int, size: int, domain_ret: float, sink) -> None:
@@ -290,8 +328,44 @@ def build_report(sink: dict[str, list[dict[str, float]]], daily_ic: list[float],
         walk_forward_switch("按市场宽度切换", rows, state_key="breadth", high_is_on=True, horizon=horizon),
         walk_forward_switch("按截面离散度切换", rows, state_key="dispersion", high_is_on=False, horizon=horizon),
     ]
+    report.top_screen = summarize_band(f"闸门内剔顶部（任一腿 >={TOP_SCREEN_PCT:.0f}）", sink.get("__top_screen__", []))
+    report.screen_switches = _build_screen_switches(sink.get("__screen_switch__", []), horizon)
     report.ic_persistence = ic_persistence(daily_ic, horizon)
     return report
+
+
+def _build_screen_switches(rows: list[dict[str, float]], horizon: int) -> list[tuple[SwitchStat, list[SwitchStat]]]:
+    """顶部负筛的动态开关：状态是过去 LOOK 天已实现的顶部梯度。
+
+    每个设计都配一组环移负控制。只报设计本身会把 diff_t 读成通过——实测 H=10、
+    LOOK=60 的 diff_t=+2.84，而环移控制能到 +3.63。
+
+    状态回退 ``horizon + 1`` 天是防穿越的关键：T 日起跳的收益要到 T+1+H 才走完，
+    所以 T 日可用的最新已实现梯度只到 T-H-1。少退这一步，状态里就含着待预测的收益。
+    """
+    out: list[tuple[SwitchStat, list[SwitchStat]]] = []
+    for look in SCREEN_LOOKBACKS:
+        staged = _stage_screen_states(rows, look=look, horizon=horizon)
+        if len(staged) <= 120 + MIN_GROUP:
+            continue
+        label = f"顶部梯度 {look} 日"
+        design = walk_forward_switch(label, staged, state_key="state", high_is_on=True, horizon=horizon)
+        controls = shifted_switch_controls(label, staged, state_key="state", high_is_on=True, horizon=horizon)
+        out.append((design, controls))
+    return out
+
+
+def _stage_screen_states(rows: list[dict[str, float]], *, look: int, horizon: int) -> list[dict[str, float]]:
+    """给每一天配上「回退 H+1 天后、过去 look 天」的已实现顶部梯度。"""
+    lag = horizon + 1
+    staged: list[dict[str, float]] = []
+    for index, row in enumerate(rows):
+        window = rows[max(0, index - lag - look) : max(0, index - lag)]
+        if len(window) < look // 2:
+            continue
+        state = sum(float(item["top_excess"]) for item in window) / len(window)
+        staged.append({"date": row["date"], "gate": row["gate"], "mid": row["mid"], "state": state})
+    return staged
 
 
 def _parse_horizons(raw: str) -> list[int]:

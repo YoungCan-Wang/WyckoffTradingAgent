@@ -90,6 +90,50 @@ dry_vol_q250 保留 94%。顺带露出两个被 beta 盖住的因子：amplitude
 
 两种动态切换设计都不含可用的水温信息，第二轮**没有**上线任何一种。这与配对随机
 控制给出的 +1.61~+2.85 是同一结论，三条独立路径互相印证。
+
+第四轮（2026-09-02，513/518 个评估日 2024-07-04..2026-08-13，H=10/5）直接回答「动量
+在现在的市场还合不合适、能不能跟市场动态迭代」这两问。答案是：**不合适，但也没法动态
+调**——所以仍然不改任何阈值。
+
+先看「合不合适」。生产闸门在 513 天上是净负贡献（超额 -0.320pct、t=-2.08），而且梯度
+**不稳定到会整体反号**。按 RPS120 十分位、H=10 分半年看，顶部带与底部带同时翻面：
+
+    顶部带  24H2 -2.08   25H1 -0.82   25H2 -0.11   26H1 **+2.64**   26H2 -5.37
+    底部带  24H2 +1.15   25H1 -0.07   25H2 -0.00   26H1 **-1.12**   26H2 +3.50
+
+26H1 整个半年「越强越好」，26H2 又翻回「越强越差」且幅度翻倍。顶部带超额自身的不重叠
+lag-1 rho 只有 +0.247（月）/-0.227（双月）/+0.334（季），即**上一段的方向预测不了下一
+段**。这正是任何「跟着近期梯度动态开关」都注定失效的根源。
+
+**六、顶部负筛的方向是真的，但证不出来，而且不能跟着市场动态开关。**闸门内再剔掉
+「任一腿 >= 90 分位」这一档，超额回收 H=10 +0.233pct、H=5 +0.152pct，5 个半年里 4 个
+为正——方向与第二轮的逐带扫描一致。但判据是**不重叠相位**：H=10 全样本 t=+3.06，而
+11 个相位全部落在 +0.59~+1.29，**0/11 个到 2**（相邻日的 H 日前向收益共用 H-1 天，全
+样本口径把 t 夸大一倍以上）。所以静态负筛达不到上线标准。
+
+动态版本更彻底：以「过去 LOOK 天已实现的顶部梯度」为状态（回退 H+1 天防穿越）做走前
+切换，LOOK=40/60/120 与两个 horizon 共六格里，只有 H=10 / LOOK=60 的 ``diff_t`` 过线
+（差值 +0.043、t=+2.84）。而它的**环移负控制**给 -0.186~+0.238、其中一个到 t=+3.63：
+把状态与同日前向收益的对齐关系整体打乱后，还能拿到比真设计更高的 t。真值落在控制区间
+内，这一格是噪声。
+
+这里的控制必须是**环移**而不是均匀随机状态：随机序列没有自相关，走前阈值取历史中位数
+会把开启率钉在 ~0.5（实测三个种子 0.480/0.486/0.497），而真设计是 0.88；两者机械项
+（关闭率 × 全期价差）不同，比出来的是关闭率的差而不是信息的差——与
+``uniform-band-control-is-biased`` 同一类错。环移保留取值分布与自相关，只打断待检的那条
+对齐关系。**但环移不保留走前开启率**（扩张窗口中位数对漂移序列路径依赖，实测控制落在
+0.366~0.793），所以判定同时看差值与**择时项**：真设计择时项 +0.038 落在控制的
+-0.196~+0.224 内，三个 LOOK 档在这个开启率中性的口径下同样全部被吃掉。
+见 ``shifted_switch_controls`` 与 ``switch_control_gap``。
+
+**七、bias-200 不是独立旋钮，是动量的代理，所以 ``_boost_bias_for_strong_rps`` 没有
+额外押注。**第二轮把它列为「押在梯度负端的三处机制」之一，但那个 -0.860 是在全体流动
+性域上无条件测的，而这个 boost 的总体是「趋势通道标签 + ret120>=40%」、旋钮是 bias-200
+上限——按 ``same-subpopulation-control``，正确的检验是在该子总体内看 bias 的梯度。实测
+原始梯度强且单调（``<=35`` +0.750 t=+3.25 → ``>80`` -1.086 t=-3.35），但按同日 ret120
+五分位去均值后，每一带的残差都是 |t|<2（+0.084 / -0.039 / -0.072 / -0.209）。也就是说
+它放宽 bias 上限只是多放进了顶部动量票，等于已知的那条梯度，不是另一笔独立的坏赌注。
+第四轮据此**不动** ``_boost_bias_for_strong_rps``。
 """
 
 from __future__ import annotations
@@ -130,6 +174,13 @@ MID_BAND = (40.0, 65.0, 40.0, 70.0)
 NON_TOP_CAP = 80.0
 # 随机负控制的种子。多种子是为了看边缘是否稳定，单种子的一次抽样不足以判定。
 CONTROL_SEEDS: tuple[int, ...] = (11, 29, 47, 83, 101)
+
+# 顶部负筛的分位。第四轮检验「闸门内部再把顶部剔掉」，两条腿任一到此分位即算顶部：
+# 逐带扫描里 80~90 与 90~100 都为负，而单看一条腿会漏掉另一条腿冲顶的票。
+TOP_SCREEN_PCT = 90.0
+
+# 开关表环移负控制的位移量。取素数且跨度拉开，避免与状态自身的周期共振。
+SWITCH_SHIFTS: tuple[int, ...] = (37, 73, 109, 151, 199, 241)
 
 
 def tstat(values: list[float]) -> float | None:
@@ -282,6 +333,11 @@ class MomentumReport:
     controls: list[BandStat] = field(default_factory=list)
     switches: list[SwitchStat] = field(default_factory=list)
     ic_persistence: dict[str, Any] = field(default_factory=dict)
+    # 第四轮：闸门内部再剔掉顶部这一档，以及它跟着市场动态开关的走前结果。
+    # top_screen 与生产闸门同域同日，差值即「负筛值不值得做」；screen_switches 的
+    # 每一项都配一组环移负控制，见 shifted_switch_controls。
+    top_screen: BandStat | None = None
+    screen_switches: list[tuple[SwitchStat, list[SwitchStat]]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -291,6 +347,15 @@ class MomentumReport:
             "controls": [s.as_dict() for s in self.controls],
             "control_gap": control_gap(self.mid_band, self.controls),
             "switches": [s.as_dict() for s in self.switches],
+            "top_screen": None if self.top_screen is None else self.top_screen.as_dict(),
+            "screen_switches": [
+                {
+                    "design": design.as_dict(),
+                    "shift_controls": [c.as_dict() for c in ctls],
+                    "shift_gap": switch_control_gap(design, ctls),
+                }
+                for design, ctls in self.screen_switches
+            ],
             "ic_persistence": self.ic_persistence,
             "production": {
                 "rps_fast_min": PROD_RPS_FAST_MIN,
@@ -441,6 +506,99 @@ def walk_forward_switch(
     )
 
 
+def shifted_switch_controls(
+    label: str,
+    rows: list[dict[str, float]],
+    *,
+    state_key: str,
+    shifts: tuple[int, ...] = SWITCH_SHIFTS,
+    warmup: int = 120,
+    high_is_on: bool = True,
+    horizon: int = 1,
+) -> list[SwitchStat]:
+    """开关表的匹配负控制：把状态序列整体**环移**后重跑同一个走前切换。
+
+    为什么不能用均匀随机状态当控制：随机状态没有自相关，走前阈值取历史中位数，于是
+    开启率恒被钉在 ~0.5（实测三个种子 0.480/0.486/0.497），而真设计的状态是强自相关
+    的漂移序列、开启率 0.88。这与 ``uniform-band-control-is-biased`` 是同一类错：控制
+    组必须与被检验对象在**除待检性质以外**的维度上尽量匹配。
+
+    环移保留状态的取值多重集合与自相关结构，只打断「状态与同日前向收益的对齐」——
+    待检的正是那条对齐关系。**但它不保留走前开启率**：阈值是扩张窗口的中位数，对
+    漂移序列是路径依赖的，实测真设计 0.878 而 6 个环移控制落在 0.366~0.793。所以
+    ``switch_control_gap`` 同时看 ``diff`` 和**择时项** ``timing``——后者已经扣掉了
+    机械项（关闭率 × 全期价差），是开启率中性的那一半。
+
+    第四轮实测（H=10、LOOK=60、顶部梯度开关，见模块 docstring 第六条）：真设计差值
+    +0.043（``diff_t``=+2.84）、择时项 +0.038；6 个环移控制的差值给 -0.186~+0.238
+    （其中一个到 t=+3.63）、择时项给 -0.196~+0.224。两个口径下真值都落在控制区间
+    内，**打乱对齐还能拿到更高的 t**。单看 ``diff_t`` 过线会把它读成有效设计，这一层
+    控制是唯一能否掉它的环节。
+    """
+    usable = [r for r in rows if r.get(state_key) is not None]
+    if len(usable) <= warmup + MIN_DAYS:
+        return []
+    states = [float(r[state_key]) for r in usable]
+    out: list[SwitchStat] = []
+    for shift in shifts:
+        step = shift % len(states)
+        if step == 0:
+            continue
+        rotated = states[step:] + states[:step]
+        control = [{**row, state_key: value} for row, value in zip(usable, rotated, strict=True)]
+        out.append(
+            walk_forward_switch(
+                f"{label}｜环移 {shift}",
+                control,
+                state_key=state_key,
+                warmup=warmup,
+                high_is_on=high_is_on,
+                horizon=horizon,
+            )
+        )
+    return out
+
+
+def switch_control_gap(design: SwitchStat, controls: list[SwitchStat]) -> dict[str, Any]:
+    """真设计相对环移控制区间的位置。落在区间内即为「对齐关系不含信息」。
+
+    判定看 ``diff`` **和择时项** ``timing``，两者任一落在控制区间内即判为不含信息。
+    加 ``timing`` 是因为环移不保留走前开启率（见 ``shifted_switch_controls``），而
+    ``diff`` 里含着机械项 = 关闭率 × 全期价差；``timing`` 已扣掉它，是开启率中性的
+    那一半。要判「有信息」，得两个口径都出圈。
+
+    不看 ``diff_t``——``diff_t`` 正是这一层要否掉的东西，拿它当判据就循环了。
+    """
+    diffs = [c.diff for c in controls if c.diff is not None]
+    if design.diff is None or len(diffs) < 2:
+        return {"verdict": "样本不足", "seeds": len(diffs)}
+    lo, hi = min(diffs), max(diffs)
+    inside = lo <= design.diff <= hi
+    timings = [c.timing for c in controls if c.timing is not None]
+    timing_inside = None
+    if design.timing is not None and len(timings) >= 2:
+        timing_inside = min(timings) <= design.timing <= max(timings)
+        inside = inside or timing_inside
+    return {
+        "seeds": len(diffs),
+        "design_diff": _round(design.diff),
+        "design_diff_t": _round(design.diff_t, 2),
+        "design_timing": _round(design.timing),
+        "control_diff_min": _round(lo),
+        "control_diff_max": _round(hi),
+        "control_diff_t_max": _round(max((c.diff_t for c in controls if c.diff_t is not None), default=None), 2),
+        "control_timing_min": _round(min(timings, default=None)),
+        "control_timing_max": _round(max(timings, default=None)),
+        "timing_inside_control": timing_inside,
+        "inside_control": inside,
+        "verdict": (
+            "差值或择时项落在环移负控制区间内：状态与收益的对齐关系不含信息"
+            if inside
+            else "两个口径都超出环移负控制区间：对齐关系可能含信息，需按价差 t 复核"
+        ),
+    }
+
+
 def _phase_welch_t(rows: list[tuple[float, bool]]) -> float | None:
     """一个抽样相位内的两样本 Welch t。"""
     return welch_t([v for v, on in rows if not on], [v for v, on in rows if on])
@@ -520,6 +678,8 @@ def render(report: MomentumReport, horizon: int, window: dict[str, int] | None =
     ]
     for stat in report.thresholds:
         lines.append(_band_row(stat, quarters))
+    if report.top_screen is not None:
+        lines.append(_band_row(report.top_screen, quarters))
     if report.mid_band is not None:
         lines.append(_band_row(report.mid_band, quarters))
     for stat in report.controls:
@@ -546,8 +706,48 @@ def render(report: MomentumReport, horizon: int, window: dict[str, int] | None =
         "一倍以上（实测 +3.57 vs 相位区间 +0.08~+1.92）；均值仍用全部日子。"
         "区间下界不到 2 就判「证据不稳」：结论取决于抽哪一相位，不算站得住。"
     )
+    lines += _screen_switch_lines(report)
     lines += ["", _ic_line(report.ic_persistence), "", "**接下来做什么**", *_actions(report)]
     return "\n".join(lines)
+
+
+def _screen_switch_lines(report: MomentumReport) -> list[str]:
+    """顶部负筛的动态开关：每个设计后面紧跟它的环移负控制区间。
+
+    控制区间必须和设计印在一起。只印设计那一行，``diff_t``=+2.84 会被读成通过，
+    而实测环移控制能到 +3.63——把对齐关系打乱反而更高。差值与择时项两个区间都印，
+    因为环移不保留走前开启率，只有择时项是开启率中性的。
+    """
+    if not report.screen_switches:
+        return []
+    out = [
+        "",
+        "| 顶部负筛的动态开关 | 天数 | 差值 | 差值t | 机械项 | 择时项 | 价差t | 开启率 | 环移控制差值区间 | 判定 |",
+        "| --- | --: | --: | --: | --: | --: | --: | --: | --: | --- |",
+    ]
+    for design, controls in report.screen_switches:
+        gap = switch_control_gap(design, controls)
+        band = (
+            "—"
+            if gap.get("control_diff_min") is None
+            else f"[{gap['control_diff_min']:+.3f}, {gap['control_diff_max']:+.3f}]"
+            f"（最高 t={_num(gap.get('control_diff_t_max'), 2)}）"
+            f"；择时项 [{_num(gap.get('control_timing_min'))}, {_num(gap.get('control_timing_max'))}]"
+        )
+        out.append(
+            f"| {design.label} | {design.days} | {_num(design.diff)} | {_num(design.diff_t, 2)} | "
+            f"{_num(design.mechanical)} | {_num(design.timing)} | {_spread_t_cell(design)} | "
+            f"{_pct(design.on_rate)} | {band} | {gap.get('verdict', '—')} |"
+        )
+    out.append(
+        "　注：控制组是把状态序列整体**环移**后重跑同一走前切换——取值分布与自相关保留，"
+        "只打断它与同日前向收益的对齐关系，而待检的正是这条对齐。不能用均匀随机状态当"
+        "控制：随机序列没有自相关，走前阈值取历史中位数会把开启率钉在 ~0.5，而真设计是"
+        "0.88。环移**不保留**走前开启率（扩张窗口中位数对漂移序列路径依赖，实测控制落在"
+        "0.37~0.79），所以判定同时看差值与择时项——后者已扣掉机械项（关闭率 × 全期价差），"
+        "是开启率中性的那一半，要判「有信息」得两个口径都出圈。"
+    )
+    return out
 
 
 def _window_line(window: dict[str, int] | None) -> str:
@@ -631,8 +831,61 @@ def _actions(report: MomentumReport) -> list[str]:
     out.append(_domain_action(report))
     out.append(_control_action(report))
     out.append(_switch_action(report))
-    out.append("- ⑤ 任何参数改动落地前，须按本脚本 walk_forward_switch 的走前口径复验，且增益需大于成本 0.202%。")
+    out.extend(_top_screen_actions(report))
+    out.append("- ⑦ 任何参数改动落地前，须按本脚本 walk_forward_switch 的走前口径复验，且增益需大于成本 0.202%。")
     return out
+
+
+def _top_screen_actions(report: MomentumReport) -> list[str]:
+    """顶部负筛的两条读法：静态值不值得做，以及能不能跟着市场动态开关。
+
+    静态那条的判据是**不重叠相位**，不是全样本 t。实测 H=10 全样本 t=+3.06，
+    而 11 个相位全部落在 +0.59~+1.29，0/11 到 2——相邻日的 H 日前向收益共用 H-1
+    天，全样本口径会把 t 夸大一倍以上。
+    """
+    out = [_static_screen_action(report)]
+    if not report.screen_switches:
+        out.append("- ⑥ 顶部负筛的动态开关未评估（样本不足或未接入）。")
+        return out
+    escaped = [
+        (design, gap)
+        for design, controls in report.screen_switches
+        if not (gap := switch_control_gap(design, controls)).get("inside_control", True)
+        and gap.get("verdict") != "样本不足"
+    ]
+    if not escaped:
+        out.append(
+            "- ⑥ 顶部负筛的所有动态开关设计，差值或择时项都落在环移负控制区间内——把状态与"
+            "收益的对齐关系打乱后能拿到同样甚至更高的值，说明「跟着市场近期动量梯度开关负筛」"
+            "**不含可用信息**。择时项那一栏已扣掉机械项，是开启率中性的口径，"
+            "所以这不是控制组开启率不同造成的。维持静态口径，不要按这一族设计上线。"
+        )
+        return out
+    names = "、".join(
+        f"{design.label}（差值 {gap['design_diff']:+.3f}pct，控制区间 "
+        f"[{gap['control_diff_min']:+.3f}, {gap['control_diff_max']:+.3f}]）"
+        for design, gap in escaped
+    )
+    out.append(
+        f"- ⑥ {names} 的差值与择时项都超出了环移负控制区间，与第四轮结论不同。"
+        "下一步看它的**价差 t 相位区间**是否整体过 2；只有出圈不足以上线。"
+    )
+    return out
+
+
+def _static_screen_action(report: MomentumReport) -> str:
+    """静态顶部负筛相对生产闸门的增量。"""
+    prod = next((s for s in report.thresholds if s.is_production), None)
+    screen = report.top_screen
+    if prod is None or screen is None or prod.excess is None or screen.excess is None:
+        return "- ⑤ 顶部负筛样本不足，无法与生产闸门对照。"
+    gain = screen.excess - prod.excess
+    return (
+        f"- ⑤ 闸门内剔掉顶部（任一腿 >= {TOP_SCREEN_PCT:.0f} 分位）超额 {screen.excess:+.3f}pct"
+        f"（t={_num(screen.excess_t, 2)}），比生产闸门 {prod.excess:+.3f}pct 高 {gain:+.3f}pct。"
+        "**判据看上表动态开关那一节的价差 t 相位区间，不要拿全样本 t 读**——"
+        "相邻日的前向收益重叠，全样本口径会把 t 夸大一倍以上。"
+    )
 
 
 def _switch_action(report: MomentumReport) -> str:
