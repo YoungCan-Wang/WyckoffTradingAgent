@@ -28,10 +28,26 @@ def short_code_list(rows: list[dict[str, Any]], limit: int = 8) -> str:
 def build_focus_lines(rows: list[dict[str, Any]], today: date, previous_trade_date: date) -> list[str]:
     total = max(len(rows), 1)
     stage_rows = _group_stage_rows(rows)
-    lines = ["**重点归因**"]
+    lines = ["**重点归因**", _result_selected_caveat()]
     lines.extend(_date_gap_lines(today, previous_trade_date))
     lines.extend(_stage_focus_lines(stage_rows, total))
     return lines
+
+
+def _result_selected_caveat() -> str:
+    """先说清样本是按结果选的,否则下面每一档的只数都会被当成淘汰率读。
+
+    本报告的样本定义是「今日收盘>+7% 且前一日<+3%」——先有结果再回溯原因。
+    被同一道闸门挡住却没涨的票根本不进样本,所以「39 只被基础准入淘汰」这类
+    数字没有分母,不能推出闸门误伤。要检验某车道该不该补强,只能全量打标签 +
+    同动量随机对照,那是 workflows/review_shadow_backtest.py 的事。
+    """
+    return (
+        "- **样本口径**：本报告先按「今日涨幅>+7%」选样、再回溯卡在哪一层，"
+        "被同样阈值挡住却没涨的票不在样本内，因此下面每一档的只数都**没有分母**。"
+        "它只能定位单票卡点，不能作为放宽任何阈值或车道的依据；"
+        "「某车道该不该补强」要走全量打标签 + 同动量随机对照（影子回放）。"
+    )
 
 
 def build_report_lines(
@@ -51,6 +67,9 @@ def build_report_lines(
     if stats:
         if stats.get("context_source"):
             lines.append(f"**归因数据源**: {stats['context_source']}")
+        headline = _buyable_capture_headline(stats)
+        if headline:
+            lines.append(headline)
         stats_line = (
             f"**漏斗全链路追踪**: 前一日候选 {stats['candidate']}/{stats['total']} | "
             f"跟踪表记录 {stats.get('tracked_previous_day', stats['recommended'])}/{stats['total']} | "
@@ -78,6 +97,27 @@ def build_report_lines(
     )
     lines.extend(_detail_lines(rows))
     return lines
+
+
+def _buyable_capture_headline(stats: dict[str, Any]) -> str:
+    """把「可交易样本里前日候选占几只」提到报告头。
+
+    这是全篇唯一分子分母同池的比率:分母是「昨天基础准入通过、今天涨了、且次日
+    还能按≤+4%开盘价买到」的票,分子是其中前一日真在候选池里的。其它数字(影子
+    召回 35/98、可交易 32/35)都是事后命中计数,分母是涨幅筛出来的。
+    实测 2026-09-01 这行是 1/54,而它原先埋在可交易口径的第三段。
+    """
+    if stats.get("execution_available", 0) <= 0:
+        return ""
+    executable = stats.get("open_executable", 0)
+    if executable <= 0:
+        return ""
+    captured = stats.get("candidate_open_executable", 0)
+    rate = captured / executable * 100.0
+    return (
+        f"**可买到且被捕获**: {captured}/{executable}（{rate:.1f}%）"
+        " ← 全篇唯一分母同池的比率：次日开盘还买得到的强势票里，前一日真在候选池的有几只"
+    )
 
 
 def _execution_scope_line(stats: dict[str, Any]) -> str:
@@ -149,10 +189,18 @@ def _risk_focus(rows: list[dict[str, Any]]) -> list[str]:
 
 
 def _trigger_miss_focus(rows: list[dict[str, Any]]) -> list[str]:
+    """不再从这一档提「补强爆发前夜车道」。
+
+    原措辞「适合检查爆发前夜压缩/试盘类车道是否需要补强」是在结果选样的证据上
+    直接提改动方案,而同一份报告的「基础准入淘汰」那档已经写了「不建议为涨停复盘
+    反向放宽」——同样的证据强度,两档结论必须一致。
+    """
     if not rows:
         return []
     return [
-        f"- **买点未确认**：{short_code_list(rows)}。这些票已有结构基础但未触发买点确认，适合检查“爆发前夜压缩/试盘”类车道是否需要补强。"
+        f"- **买点未确认**：{short_code_list(rows)}。已过结构层、买点未触发。"
+        "同口径下没涨的票不在样本内，所以这里看不出买点阈值是松还是紧；"
+        "要判断先跑影子回放取 T+5 超额与同动量对照。"
     ]
 
 

@@ -11,7 +11,7 @@ from typing import Any
 
 import pandas as pd
 
-from core.review_shadow_lanes import shadow_lane_label, shadow_signal_from_decision
+from core.review_shadow_lanes import ReviewShadowSignal, shadow_lane_label, shadow_signal_from_decision
 from workflows.backtest_data import load_snapshot_hist_map
 
 
@@ -22,7 +22,8 @@ class ShadowTrade:
     code: str
     name: str
     lane: str
-    score: float
+    score: float | None
+    ranked: bool
     entry_open: float
     signal_pct_chg: float | None
     next_pct_chg: float | None
@@ -80,8 +81,7 @@ def evaluate_shadow_traces(
                 next_date,
                 str(code),
                 row,
-                signal.lane,
-                signal.score,
+                signal,
                 history.get(str(code)),
             )
             if trade is not None:
@@ -106,7 +106,40 @@ def summarize_shadow_trades(
         "review_shadow_recall_rate": _ratio(recall["shadow_hits"], recall["review_hits"]),
         "review_candidate_recall_rate": _ratio(recall["candidate_hits"], recall["review_hits"]),
         "by_lane": {lane: _lane_summary([trade for trade in trades if trade.lane == lane]) for lane in lanes},
+        "by_score_band": {lane: _score_band_summary([t for t in trades if t.lane == lane]) for lane in lanes},
         "overall": _lane_summary(trades),
+    }
+
+
+def _score_band_summary(trades: list[ShadowTrade]) -> dict[str, Any]:
+    """按分值三分档拆开,看这个排序键到底有没有单调性。
+
+    v1 的常数分让这张表全落进一个桶——那才是「无法效果检验」的具体形态。
+    不可排序的车道(rotation_setup、缺 watch_score 的老 trace)显式返回
+    ranked=False,不要在这里造一个假的分档结论。
+    """
+    ranked = [t for t in trades if t.ranked and t.score is not None]
+    if not ranked:
+        # 「本层无排序键」和「样本还不够」是两回事:前者攒数据也不会变,
+        # 后者下个月就能重跑。混成一句话会让人以为轮动车道等等就能分档。
+        if trades:
+            return {"ranked": False, "reason": "本层无连续排序键，只作标签，不参与分档", "count": 0}
+        return {"ranked": False, "reason": "无样本", "count": 0}
+    if len(ranked) < 3:
+        return {"ranked": False, "reason": "可排序样本不足 3 只，分档没有意义", "count": len(ranked)}
+    scores = pd.Series([float(t.score) for t in ranked], dtype="float64")
+    if scores.nunique() <= 1:
+        return {"ranked": False, "reason": f"分值全同({scores.iloc[0]:.2f})，排序键无区分度", "count": len(ranked)}
+    lo, hi = float(scores.quantile(1 / 3)), float(scores.quantile(2 / 3))
+    bands = {
+        "low": [t for t in ranked if float(t.score) <= lo],
+        "mid": [t for t in ranked if lo < float(t.score) <= hi],
+        "high": [t for t in ranked if float(t.score) > hi],
+    }
+    return {
+        "ranked": True,
+        "cut_points": [round(lo, 4), round(hi, 4)],
+        "bands": {name: _lane_summary(rows) for name, rows in bands.items()},
     }
 
 
@@ -124,8 +157,7 @@ def _shadow_trade(
     next_date: date,
     code: str,
     row: dict[str, Any],
-    lane: str,
-    score: float,
+    signal: ReviewShadowSignal,
     frame: pd.DataFrame | None,
 ) -> ShadowTrade | None:
     signal_row, future = _signal_and_future_rows(frame, signal_date, next_date)
@@ -150,8 +182,9 @@ def _shadow_trade(
         entry_date=str(future["date"].iloc[0]),
         code=code,
         name=str(row.get("name") or code),
-        lane=lane,
-        score=float(score),
+        lane=signal.lane,
+        score=None if signal.score is None else float(signal.score),
+        ranked=bool(signal.ranked),
         entry_open=entry,
         signal_pct_chg=signal_pct,
         next_pct_chg=next_pct,
@@ -334,7 +367,30 @@ def _markdown_report(report: dict[str, Any]) -> str:
             f"| {shadow_lane_label(lane)} | {summary.get('count', 0)} | {_metric(t1, 'mean')} | "
             f"{_metric(t3, 'mean')} | {_metric(t5, 'mean')} | {_metric(t5, 'win_rate', percent=False)} |"
         )
+    lines.extend(_score_band_lines(report))
     return "\n".join(lines) + "\n"
+
+
+def _score_band_lines(report: dict[str, Any]) -> list[str]:
+    """分档表:排序键有没有单调性,只能靠这张表说话。"""
+    bands = report.get("by_score_band") or {}
+    if not bands:
+        return []
+    lines = ["", "## 排序键分档（低/中/高，看单调性）", ""]
+    for lane, payload in bands.items():
+        label = shadow_lane_label(lane)
+        if not payload.get("ranked"):
+            lines.append(f"- {label}：不可排序 —— {payload.get('reason', '未说明')}（样本 {payload.get('count', 0)}）")
+            continue
+        cuts = payload.get("cut_points") or []
+        cut_text = "/".join(f"{c:.2f}" for c in cuts)
+        parts = []
+        for name in ("low", "mid", "high"):
+            summary = (payload.get("bands") or {}).get(name) or {}
+            t5 = summary.get("ret_t5_pct") or {}
+            parts.append(f"{name} n={summary.get('count', 0)} T+5={_metric(t5, 'mean')}")
+        lines.append(f"- {label}（切点 {cut_text}）：" + " | ".join(parts))
+    return lines
 
 
 def _recall_line(report: dict[str, Any]) -> str:

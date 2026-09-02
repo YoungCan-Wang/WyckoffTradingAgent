@@ -102,9 +102,13 @@ def _decision_rows(inputs: Any, triggers: dict) -> dict[str, dict[str, Any]]:
     entry_map = best_candidate_entry_map(candidates.candidate_entries)
     hit_map = _trigger_labels(triggers)
     blocked = _blocked_exit_map(candidates.exit_signals)
+    # watch_score 落进 trace:pre_breakout 车道的排序键。缺了它影子车道只能给
+    # 常数分,31 只同分就无法做「取前 N 只看超额」的效果检验。
+    # 用 getattr:回放路径自己拼候选对象,不一定带这个字段,缺了就退回不可排序标签。
+    score_map = {str(k): v for k, v in (getattr(candidates, "l3_score_map", None) or {}).items()}
     return {
         code: attach_shadow_signal(
-            _decision_row(code, inputs, l1_set, l2_set, l3_set, entry_map, hit_map, blocked),
+            _decision_row(code, inputs, l1_set, l2_set, l3_set, entry_map, hit_map, blocked, score_map),
             near_l2_max_gap_pct=_SHADOW_NEAR_L2_MAX_GAP_PCT,
         )
         for code in inputs.pool.symbols
@@ -120,6 +124,7 @@ def _decision_row(
     entry_map: dict[str, dict],
     hit_map: dict[str, list[str]],
     blocked: dict[str, dict],
+    score_map: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     name = str(inputs.ref_data.name_map.get(code, code)).strip() or code
     sector = str(inputs.ref_data.sector_map.get(code, "")).strip()
@@ -130,6 +135,7 @@ def _decision_row(
         "l2_eligible": code in l2_set,
         "l3_eligible": code in l3_set,
         "l2_channel": str(inputs.layers.l2_channel_map.get(code, "")),
+        "layer3_quality_score": _score_or_none((score_map or {}).get(code)),
         "trigger_labels": list(hit_map.get(code, [])),
         "risk_signal": str((blocked.get(code) or {}).get("signal") or ""),
     }
@@ -151,6 +157,13 @@ def _decision_row(
     if code in hit_map:
         return {**base, "stage": REVIEW_STAGE_TRIGGER_HIT, "reason": "、".join(hit_map[code])}
     return {**base, "stage": REVIEW_STAGE_TRIGGER_MISS, "reason": "未触发 Spring/LPS/EVR/SOS 等买点确认"}
+
+
+def _score_or_none(value: Any) -> float | None:
+    try:
+        return round(float(value), 6)
+    except (TypeError, ValueError):
+        return None
 
 
 def _l1_rejection_reason(code: str, inputs: Any) -> str:
