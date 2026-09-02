@@ -124,6 +124,7 @@ def test_formal_signal_keeps_identity_and_inherits_mainline_context() -> None:
     row = candidate_metadata_for_signal(metadata, "300308", "sos")
     assert row["signal_key"] == "sos"
     assert row["candidate_lane"] == "sos"
+    assert row.get("candidate_status") is None
     assert row["candidate_theme"] == "光模块"
     assert row["candidate_phase"] == "分歧机会"
     assert row["candidate_role"] == "主线核心"
@@ -178,6 +179,46 @@ class TestCandidateStatusIsSemanticOnly:
             [{"code": "300308", "status": "主线买点候选", "theme": "光模块", "mainline_score": 0.86}],
         )
         assert metadata["300308"]["candidate_status"] == "主线买点候选"
+
+    def test_formal_lane_does_not_inherit_mainline_observe_status(self) -> None:
+        """非 mainline 车道不得继承「主线观察」，否则 Step4 确认闸门会静默否决。
+
+        is_confirmed_step4_candidate 对 candidate_status 做「观察」子串否决，且排在
+        signal_status/selection_source 的正向确认之前。#366 滤掉 formal_l4 后若再回退
+        到 mainline 默认态「主线观察」，跨日已确认的 SOS 会被当成未确认丢掉。
+        """
+        from core.mainline_engine import MAINLINE_OBSERVE_STATUS
+        from workflows.step4_pipeline import is_confirmed_step4_candidate
+
+        formal = {
+            "code": "002292",
+            "lane": "sos",
+            "entry_type": "sos",
+            "signal_key": "sos",
+            "state": "formal_l4",
+            "score": 108.0,
+        }
+        mainline = {
+            "code": "002292",
+            "status": MAINLINE_OBSERVE_STATUS,
+            "theme": "测试主题",
+            "mainline_score": 0.8,
+        }
+        meta = build_candidate_metadata_map([formal], [mainline])["002292"]
+        assert meta["candidate_lane"] == "sos"
+        assert meta.get("candidate_status") is None
+        assert meta["candidate_theme"] == "测试主题"
+
+        confirmed = {
+            "code": "002292",
+            "signal_status": "confirmed",
+            "status": "confirmed",
+            "selection_source": "signal_confirmed",
+            "tag": "SOS(跨日确认)",
+            "candidate_lane": meta["candidate_lane"],
+            "candidate_status": meta.get("candidate_status"),
+        }
+        assert is_confirmed_step4_candidate(confirmed) is True
 
     def test_formal_l4_lanes_cover_every_formal_trigger(self) -> None:
         """FORMAL_L4_LANES 要与 _formal_candidate_entries 的 base_map 键一致。

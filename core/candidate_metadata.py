@@ -116,7 +116,11 @@ def candidate_entry_metadata(item: dict[str, Any], mainline: dict[str, Any] | No
         # 的副本：实测 7318 行里 6391 行存的是标签，且 stage 已知时被 Accum_B/Accum_C
         # 顶掉，连 formal_l4 这个标记本身都丢了 104 行。通道信息由 candidate_lane 承载，
         # stage 由 stage 列承载，这里只取语义状态。
-        "candidate_status": _semantic_status(item) or _text((mainline or {}).get("status")),
+        #
+        # 不能把 mainline.status 回填到非 mainline 车道：#366 滤掉生产者标签后若回退到
+        # 「主线观察」，is_confirmed_step4_candidate 会因「观察」子串一票否决，把已
+        # confirmed 的 SOS/LPS 等正式信号静默踢出推荐写入与 Step4。主题/分数仍可继承。
+        "candidate_status": _semantic_status(item),
         "candidate_timing": _text(item.get("timing")) or _text((mainline or {}).get("entry_type")),
         "candidate_risk": _text(item.get("risk")) or _join_texts((mainline or {}).get("risk_flags")),
         "candidate_reasons": _json_object(_candidate_reason_payload(item, mainline)),
