@@ -613,7 +613,7 @@ CREATE TABLE chat_log (
 
 | 文件 / 数据库 | 用途 |
 |-------------|------|
-| `wyckoff.json` | 模型配置（provider / api_key / model / base_url）；可选超时：`stream_chunk_timeout_seconds`（默认 120，模型空闲/首 token）、`tool_timeout_seconds`（默认 60，单工具墙钟）。控制面板 Overview、TUI `/config set`、`wyckoff config` 均可改。 |
+| `wyckoff.json` | 模型配置（provider / api_key / model / base_url）；可选超时：`stream_chunk_timeout_seconds`（默认 120，模型空闲/首 token）、`tool_timeout_seconds`（默认 60，单工具墙钟）。控制面板 Overview、TUI `/config set`、`wyckoff config` 均可改。1Route 的 `base_url` 必须带 `/v1`；只写根域名会打到官网 HTML（HTTP 200、无用量）。运行时会自动补 `/v1`。 |
 | `session.json` | Supabase 登录态（access_token / refresh_token） |
 | `agent.log` | Agent 文件日志 |
 | `wyckoff.db` | SQLite 数据库（下方详述） |

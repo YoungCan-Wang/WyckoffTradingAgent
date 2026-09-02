@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Generator
 from dataclasses import dataclass, field
@@ -12,7 +13,12 @@ import httpx
 import openai
 
 from cli.providers.base import LLMProvider
-from cli.usage_metrics import extract_openai_cache_tokens, openai_cache_reported
+from cli.usage_metrics import extract_openai_cache_tokens, extract_openai_usage_tokens, openai_cache_reported
+from integrations._llm_types import normalize_openai_compatible_base_url
+
+logger = logging.getLogger(__name__)
+_FATAL_HTTP = frozenset({401, 403, 429})
+_FATAL_EXC = frozenset({"AuthenticationError", "PermissionDenied", "RateLimitError"})
 
 _TIMEOUT = httpx.Timeout(300.0, connect=60.0)
 
@@ -64,30 +70,47 @@ def _openai_tool_call_payload(tc: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _openai_http_status(exc: BaseException) -> int | None:
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        return status
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    return status if isinstance(status, int) else None
+
+
+def _reraise_if_fatal_openai(exc: BaseException) -> None:
+    if type(exc).__name__ in _FATAL_EXC or _openai_http_status(exc) in _FATAL_HTTP:
+        raise exc
+
+
 def _create_openai_stream(client: openai.OpenAI, kwargs: dict[str, Any]):
     try:
         return client.chat.completions.create(**kwargs)
-    except Exception:
+    except Exception as exc:
+        _reraise_if_fatal_openai(exc)
+        logger.warning("openai stream create failed; retry without stream_options: %s", exc)
         kwargs.pop("stream_options", None)
         try:
             return client.chat.completions.create(**kwargs)
-        except Exception:
+        except Exception as exc:
+            _reraise_if_fatal_openai(exc)
+            logger.warning("openai stream create failed; retry without extra params: %s", exc)
             kwargs.pop("tool_choice", None)
             kwargs.pop("frequency_penalty", None)
             return client.chat.completions.create(**kwargs)
 
 
 def _apply_usage_from_chunk(state: OpenAIStreamState, chunk: Any) -> None:
-    """Capture usage whenever present — MiniMax/OpenRouter may attach it on a choices chunk."""
+    """Capture usage whenever present — MiniMax/OpenRouter/1Route may attach it on a choices chunk."""
     usage = getattr(chunk, "usage", None)
     if usage is None:
         return
-    prompt = getattr(usage, "prompt_tokens", None)
-    completion = getattr(usage, "completion_tokens", None)
+    prompt, completion = extract_openai_usage_tokens(usage)
     if prompt is not None:
-        state.input_tokens = int(prompt or 0)
+        state.input_tokens = prompt
     if completion is not None:
-        state.output_tokens = int(completion or 0)
+        state.output_tokens = completion
     state.cache_read, state.cache_write = extract_openai_cache_tokens(usage)
     state.cache_reported = state.cache_reported or openai_cache_reported(usage)
 
@@ -197,7 +220,7 @@ class OpenAIProvider(LLMProvider):
     def __init__(self, api_key: str, model: str = "gpt-4o", base_url: str = ""):
         kwargs: dict[str, Any] = {"api_key": api_key, "timeout": _TIMEOUT}
         if base_url:
-            kwargs["base_url"] = base_url.rstrip("/")
+            kwargs["base_url"] = normalize_openai_compatible_base_url(base_url)
         self._client = openai.OpenAI(**kwargs)
         self._model = model
 
@@ -232,9 +255,10 @@ class OpenAIProvider(LLMProvider):
         response = self._client.chat.completions.create(**kwargs)
         result = self._parse_response(response)
         if hasattr(response, "usage") and response.usage:
+            prompt, completion = extract_openai_usage_tokens(response.usage)
             usage: dict[str, Any] = {
-                "input_tokens": response.usage.prompt_tokens or 0,
-                "output_tokens": response.usage.completion_tokens or 0,
+                "input_tokens": prompt or 0,
+                "output_tokens": completion or 0,
             }
             if openai_cache_reported(response.usage):
                 cache_read, cache_write = extract_openai_cache_tokens(response.usage)

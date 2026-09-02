@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 SUPPORTED_PROVIDERS = (
     "1route",
     "gemini",
@@ -36,6 +38,20 @@ GEMINI_MODELS = (
     "gemini-3-pro-preview",
     "gemini-3-flash-preview",
 )
+
+
+def normalize_openai_compatible_base_url(base_url: str) -> str:
+    """1Route 根域名会 200 回官网 HTML，必须落到 /v1。"""
+    text = (base_url or "").strip().rstrip("/")
+    if not text:
+        return ""
+    parsed = urlparse(text)
+    host = (parsed.hostname or "").lower()
+    path = (parsed.path or "").rstrip("/")
+    if host == "api.1route.dev" and path in {"", "/"}:
+        return f"{parsed.scheme}://{parsed.netloc}/v1"
+    return text
+
 
 PROVIDER_LABELS: dict[str, str] = {
     "1route": "1Route（推荐）",

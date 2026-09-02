@@ -18,6 +18,7 @@ from integrations._llm_types import (
     OPENAI_COMPATIBLE_BASE_URLS,
     PROVIDER_LABELS,
     SUPPORTED_PROVIDERS,
+    normalize_openai_compatible_base_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -206,7 +207,7 @@ def _call_native_llm(
             base_url=(base_url or "").strip(),
         )
     if provider in OPENAI_COMPATIBLE_BASE_URLS:
-        base = (base_url or OPENAI_COMPATIBLE_BASE_URLS.get(provider, "") or "").rstrip("/")
+        base = normalize_openai_compatible_base_url(base_url or OPENAI_COMPATIBLE_BASE_URLS.get(provider, "") or "")
         if not base:
             raise ValueError(f"未配置 {provider} 的 base_url")
         return _call_openai_compatible(

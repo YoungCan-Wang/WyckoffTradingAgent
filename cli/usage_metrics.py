@@ -97,6 +97,20 @@ def openai_cache_reported(usage: Any) -> bool:
     return False
 
 
+def extract_openai_usage_tokens(usage: Any) -> tuple[int | None, int | None]:
+    """Read prompt/completion counts from OpenAI or 1Route-style usage objects."""
+    prompt = _usage_field(usage, "prompt_tokens")
+    if prompt is None:
+        prompt = _usage_field(usage, "input_tokens")
+    completion = _usage_field(usage, "completion_tokens")
+    if completion is None:
+        completion = _usage_field(usage, "output_tokens")
+    return (
+        as_int(prompt) if prompt is not None else None,
+        as_int(completion) if completion is not None else None,
+    )
+
+
 def extract_openai_cache_tokens(usage: Any) -> tuple[int, int]:
     """Return (cache_read, cache_write) from an OpenAI-compatible usage object."""
     hit = _usage_field(usage, "prompt_cache_hit_tokens")

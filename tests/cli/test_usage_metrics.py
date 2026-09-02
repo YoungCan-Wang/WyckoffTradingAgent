@@ -5,6 +5,7 @@ from cli.usage_metrics import (
     cache_hit_rate_pct,
     enrich_usage,
     extract_openai_cache_tokens,
+    extract_openai_usage_tokens,
     format_usage_footer,
     generation_seconds,
     normalize_anthropic_usage,
@@ -18,6 +19,14 @@ def test_as_int_respects_default_for_none():
     assert as_int(None) == 0
     assert as_int("12") == 12
     assert as_int("x", default=7) == 7
+
+
+def test_extract_openai_usage_tokens_reads_prompt_and_input_aliases():
+    classic = SimpleNamespace(prompt_tokens=120, completion_tokens=8)
+    assert extract_openai_usage_tokens(classic) == (120, 8)
+    oneroute = {"input_tokens": 64, "output_tokens": 3}
+    assert extract_openai_usage_tokens(oneroute) == (64, 3)
+    assert extract_openai_usage_tokens(SimpleNamespace()) == (None, None)
 
 
 def test_extract_openai_cache_prefers_deepseek_hit_tokens():
