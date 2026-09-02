@@ -750,14 +750,37 @@ def _attach_funnel_debug_context(metrics: dict, inputs: FunnelMetricsInputs, inc
 
 
 def _write_review_trace(inputs: FunnelMetricsInputs, triggers: dict, metrics: dict) -> None:
-    output_dir = os.getenv("DAILY_JOB_ARTIFACTS_DIR", "").strip()
-    if not output_dir:
-        return
-    from workflows.review_trace import write_review_trace_artifact
+    from workflows.review_trace import build_review_trace, dump_review_trace_artifact
 
-    path = write_review_trace_artifact(inputs, triggers, metrics, output_dir)
-    if path is not None:
-        print(f"[funnel] Review trace artifact: {path}")
+    payload = build_review_trace(inputs, triggers, metrics)
+    output_dir = os.getenv("DAILY_JOB_ARTIFACTS_DIR", "").strip()
+    if output_dir:
+        path = dump_review_trace_artifact(payload, output_dir)
+        if path is not None:
+            print(f"[funnel] Review trace artifact: {path}")
+    _persist_shadow_lanes(payload)
+
+
+def _persist_shadow_lanes(payload: dict) -> None:
+    """把影子车道观测落库。
+
+    artifact 的 retention 只有 30 天,而漏斗层级无法事后回放(回测引擎不重跑
+    L1~L4),过期即永久丢失。所以落库不跟 DAILY_JOB_ARTIFACTS_DIR 绑定:本地
+    没有 artifacts 目录也该写,只要处在 server_job 写入上下文里。
+    """
+    from integrations.supabase_base import is_server_write_context
+
+    if not is_server_write_context():
+        return
+    from integrations.supabase_review_shadow_lane import build_lane_rows, save_review_shadow_lane_rows
+
+    try:
+        rows = build_lane_rows(payload)
+        written = save_review_shadow_lane_rows(rows)
+    except Exception as exc:  # noqa: BLE001 - 观测表写失败不该中断漏斗
+        print(f"[funnel] 影子车道落库失败: {exc}")
+        return
+    print(f"[funnel] 影子车道落库: {written}/{len(rows)} 行")
 
 
 def _log_funnel_summary(metrics: dict, inputs: FunnelMetricsInputs) -> None:

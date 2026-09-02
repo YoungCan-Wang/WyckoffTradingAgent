@@ -562,7 +562,10 @@ def test_review_trace_records_as_run_stages_without_ohlcv(tmp_path):
     assert payload["symbols"]["000002"]["stage"] == REVIEW_STAGE_STRENGTH_MISS
     assert payload["symbols"]["000003"]["stage"] == REVIEW_STAGE_BASE_REJECT
     assert "all_df_map" not in payload
-    assert "close" not in payload["symbols"]["000001"]
+    # close 只留信号日一个标量,不能把日线序列整段搬进 trace(那会让单日产物涨几十倍)。
+    assert payload["symbols"]["000001"]["close"] == 10.0
+    # 这个 layers 是 SimpleNamespace,没有 rps_*_map:缺字段要退成 None,不能抛。
+    assert payload["symbols"]["000001"]["rps_fast"] is None
     assert payload["symbols"]["000002"]["shadow_lane"] == "near_l2"
 
     path = write_review_trace_artifact(inputs, {"sos": [("000001", 5.0)]}, {}, str(tmp_path))
@@ -570,6 +573,51 @@ def test_review_trace_records_as_run_stages_without_ohlcv(tmp_path):
     assert loaded["config_digest"] == payload["config_digest"]
     with pytest.raises(ValueError, match="date mismatch"):
         load_review_trace_artifact(path, date(2026, 5, 11))
+
+
+def test_review_trace_records_signal_day_momentum() -> None:
+    """L2 算过的 RPS 必须落进 trace。
+
+    同动量随机对照要的就是这两个数;不留下来,事后只能拿全市场当对照,
+    会把择时读成选股(memory full-market-control-confounds-momentum)。
+    """
+    frame = pd.DataFrame(
+        {
+            "date": pd.bdate_range("2025-08-01", periods=220),
+            "close": [10.0] * 219 + [13.5],
+            "amount": [100_000_000.0] * 220,
+        }
+    )
+    inputs = SimpleNamespace(
+        cfg=FunnelConfig(),
+        window=SimpleNamespace(end_trade_date=date(2026, 5, 12)),
+        pool=SimpleNamespace(symbols=["000001"]),
+        ref_data=SimpleNamespace(
+            name_map={"000001": "平安银行"},
+            sector_map={"000001": "银行"},
+            market_cap_map={"000001": 100.0},
+            financial_map={},
+        ),
+        all_df_map={"000001": frame},
+        layers=SimpleNamespace(
+            l1_passed=["000001"],
+            l2_passed=["000001"],
+            l3_passed=["000001"],
+            l2_channel_map={"000001": "主升通道"},
+            l2_rejections={},
+            rps_fast_map={"000001": 92.5},
+            rps_slow_map={"000001": 88.125},
+        ),
+        candidates=SimpleNamespace(candidate_entries=[], exit_signals={}, l3_score_map={"000001": 0.63}),
+    )
+
+    row = build_review_trace(inputs, {}, {})["symbols"]["000001"]
+
+    assert row["rps_fast"] == 92.5
+    assert row["rps_slow"] == 88.125
+    assert row["close"] == 13.5
+    assert row["layer3_quality_score"] == 0.63
+    assert row["shadow_lane"] == "pre_breakout"
 
 
 def test_replay_context_from_trace_uses_recorded_decision_reason():
