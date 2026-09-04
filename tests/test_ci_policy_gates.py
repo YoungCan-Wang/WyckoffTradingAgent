@@ -155,7 +155,7 @@ def test_weekly_reflection_gate_reads_trigger_cron_not_wall_clock():
     """
     workflow = Path(".github/workflows/signal_feedback.yml").read_text(encoding="utf-8")
 
-    assert '$(date -u +%u)' not in workflow
+    assert "$(date -u +%u)" not in workflow
     assert 'cron: "30 15 * * 1-4"' in workflow
     assert 'cron: "30 15 * * 5"' in workflow
     assert "TRIGGER_CRON: ${{ github.event.schedule }}" in workflow
