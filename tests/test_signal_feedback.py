@@ -938,6 +938,173 @@ def test_attach_shadow_policy_preserves_base_policy():
     assert base["_attribution_signal_weights"] == {}
 
 
+def test_maybe_persist_policy_shadow_run_writes_row_in_on_mode(monkeypatch):
+    """闸门死环的回归用例：on 档必须落一行，否则 run_count 永远到不了 MIN_SHADOW_RUNS。
+
+    这条在修复前必然失败 —— 旧代码首行 ``!= "shadow"`` 直接 return {}，连
+    「写入失败」的告警都不会打，表现为线上日志里两条 shadow 日志一条都没有。
+    """
+    from workflows import funnel_ai_selection as selection
+
+    captured: list[dict] = []
+    monkeypatch.setattr(selection, "upsert_policy_shadow_run", lambda row: captured.append(row) or 1)
+    # 静态反事实：静态档会多挑 000009，少挑实选里的 000003。
+    monkeypatch.setattr(
+        selection,
+        "allocate_ai_candidates",
+        lambda *_args, **_kwargs: (["000001", "000009"], ["000002"], {"000001": 70.0, "000009": 55.0}),
+    )
+
+    static_base = {"trend_quota": 8, "accum_quota": 4, "quota_family": "RISK_ON", "max_per_sector": 2}
+    dynamic = {"trend_quota": 3, "accum_quota": 5, "quota_family": "RISK_ON+DYNAMIC", "max_per_sector": 2}
+    ai_policy = {
+        **dynamic,
+        "_dynamic_mode": "on",
+        "_shadow_policy": dynamic,
+        "_static_base_policy": static_base,
+        "_signal_weights": {"sos": 0.8},
+        "_registry_rows": [],
+        "_health_rows": [],
+    }
+
+    meta = selection.maybe_persist_policy_shadow_run(
+        ai_policy=ai_policy,
+        metrics={"end_trade_date": "2026-09-04", "layer3_symbols": ["000001", "000002", "000003"]},
+        triggers={"sos": [("000001", 70.0), ("000003", 66.0)]},
+        selected_for_ai=["000001", "000002", "000003"],
+        l3_ranked_symbols=["000001", "000002", "000003"],
+        regime="RISK_ON",
+        sector_map={},
+        executed_score_map={"000003": 66.0},
+    )
+
+    assert len(captured) == 1, "on 档必须记账，否则影子样本永远攒不够"
+    row = captured[0]
+    # 实选（动态档）落在 shadow_* 侧，静态反事实落在 base_* 侧。
+    assert row["shadow_selected"] == ["000001", "000002", "000003"]
+    assert row["base_selected"] == ["000001", "000009", "000002"]
+    # diff_added 的含义在两档下一致：动态档比静态档多挑的票。
+    assert row["diff_added"] == ["000003"]
+    assert row["diff_removed"] == ["000009"]
+    assert row["selection_summary"]["executed_side"] == "shadow"
+    assert meta["shadow_written"] == 1
+    assert meta["shadow_executed_side"] == "shadow"
+    # 实选那批码的分数得取实盘那份，不能因为静态 score_map 里没有就记 0.0。
+    assert meta["shadow_score_map"]["000003"] == 66.0
+
+
+def test_maybe_persist_policy_shadow_run_skips_off_mode(monkeypatch):
+    from workflows import funnel_ai_selection as selection
+
+    captured: list[dict] = []
+    monkeypatch.setattr(selection, "upsert_policy_shadow_run", lambda row: captured.append(row) or 1)
+
+    meta = selection.maybe_persist_policy_shadow_run(
+        ai_policy={"_dynamic_mode": "off", "_shadow_policy": {}},
+        metrics={"end_trade_date": "2026-09-04"},
+        triggers={},
+        selected_for_ai=["000001"],
+        l3_ranked_symbols=["000001"],
+        regime="RISK_ON",
+        sector_map={},
+    )
+
+    assert meta == {}
+    assert captured == []
+
+
+def test_attach_shadow_policy_also_attaches_in_on_mode():
+    """on 档也必须挂上影子上下文，否则闸门永远开不了。
+
+    线上 ``FUNNEL_DYNAMIC_POLICY=on``（secret，2026-07-15 起）时原先这里直接 return，
+    于是 signal_policy_shadow_runs 从 2026-07-01 起不再进新行；归因重算的 60 天滚动窗
+    里 run_count=0 < MIN_SHADOW_RUNS=10，判 insufficient_shadow_sample，把 on 档的归因
+    权重挡住；而样本只在 shadow 档才攒 —— 死环。
+    """
+    from workflows.funnel_ai_selection import attach_shadow_policy
+
+    static_base = {"trend_quota": 8, "accum_quota": 4, "quota_family": "RISK_ON"}
+    dynamic = {"trend_quota": 3, "accum_quota": 5, "quota_family": "RISK_ON+DYNAMIC"}
+    # on 档下传进来的 ai_policy 本身就是动态档。
+    ai_policy = dict(dynamic)
+
+    attach_shadow_policy(
+        ai_policy,
+        {"mode": "on", "policy": dynamic, "base_policy": static_base, "weights": {"sos": 0.8}},
+    )
+
+    assert ai_policy["_dynamic_mode"] == "on"
+    assert ai_policy["_shadow_policy"] == dynamic
+    # 静态基线必须单独带出来，否则 base_* 列会被写成动态档。
+    assert ai_policy["_static_base_policy"] == static_base
+
+
+def test_attach_shadow_policy_skips_off_mode():
+    from workflows.funnel_ai_selection import attach_shadow_policy
+
+    ai_policy = {"trend_quota": 8}
+    attach_shadow_policy(ai_policy, {"mode": "off", "policy": {"trend_quota": 3}})
+    assert "_dynamic_mode" not in ai_policy
+
+
+def test_policy_shadow_row_keeps_base_static_in_on_mode():
+    """列语义不能随档位翻转：base_* 恒为静态档，shadow_* 恒为动态档。
+
+    若 on 档把「实际下单的动态档」写进 base_*，diff_added 的含义就会反过来，
+    治理器读到的符号整体翻转。执行侧只能记在 selection_summary 里。
+    """
+    from workflows.funnel_ai_selection import _policy_shadow_row
+
+    static_base = {"trend_quota": 8, "accum_quota": 4, "quota_family": "RISK_ON"}
+    dynamic = {"trend_quota": 3, "accum_quota": 5, "quota_family": "RISK_ON+DYNAMIC"}
+    ai_policy = {
+        **dynamic,
+        "_shadow_policy": dynamic,
+        "_static_base_policy": static_base,
+        "_signal_weights": {"sos": 0.8},
+    }
+
+    row = _policy_shadow_row(
+        ai_policy,
+        {"end_trade_date": "2026-09-04"},
+        ["000001", "000002"],
+        ["000002", "000003"],
+        ["000003"],
+        ["000001"],
+        "RISK_ON",
+        mode="on",
+    )
+
+    assert row["base_policy"]["quota_family"] == "RISK_ON"
+    assert row["shadow_policy"]["quota_family"] == "RISK_ON+DYNAMIC"
+    assert row["base_selected"] == ["000001", "000002"]
+    assert row["shadow_selected"] == ["000002", "000003"]
+    assert row["selection_summary"]["dynamic_mode"] == "on"
+    assert row["selection_summary"]["executed_side"] == "shadow"
+
+
+def test_policy_shadow_row_marks_base_as_executed_in_shadow_mode():
+    from workflows.funnel_ai_selection import _policy_shadow_row
+
+    row = _policy_shadow_row(
+        {
+            "trend_quota": 8,
+            "accum_quota": 4,
+            "quota_family": "RISK_ON",
+            "_shadow_policy": {"trend_quota": 3, "accum_quota": 5, "quota_family": "RISK_ON+DYNAMIC"},
+        },
+        {"end_trade_date": "2026-09-04"},
+        ["000001"],
+        ["000002"],
+        ["000002"],
+        ["000001"],
+        "RISK_ON",
+    )
+
+    assert row["base_policy"]["quota_family"] == "RISK_ON"
+    assert row["selection_summary"]["executed_side"] == "base"
+
+
 def test_load_dynamic_policy_context_merges_attribution_weights(monkeypatch):
     from core.ai_candidate_allocation import AiCandidateAllocationConfig
     from workflows import funnel_ai_selection as selection

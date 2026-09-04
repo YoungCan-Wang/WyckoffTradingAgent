@@ -268,6 +268,7 @@ def _select_run_ai_candidates(
         l3_ranked_symbols=l3_ranked_symbols,
         regime=ctx.regime,
         sector_map=ctx.sector_map,
+        executed_score_map=score_map,
     )
     ai_policy.update(shadow_meta)
     return FunnelAiSelection(

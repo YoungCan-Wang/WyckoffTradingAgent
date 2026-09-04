@@ -106,6 +106,9 @@ def select_base_ai_candidates(
         print(f"[funnel] 市场模式 {trade_mode.mode}: {regime} 强制从 full_l4 切换为 quota 选股")
     if use_full_ai_selection:
         result = full_formal_ai_selection(formal_sorted_codes, code_to_best_score, code_to_trigger_keys)
+        # 这里只认 shadow，不放 on：full_l4 下实际下单的是全量正式名单，既不是静态配额
+        # 也不是动态配额，写进影子账本会把 base/shadow 两列标错对象。on 档 + full_l4
+        # 因此仍然不记账（线上走的是下面的 quota 路径，这条分支当前不触发）。
         if dynamic_policy_mode(dynamic_config) == "shadow":
             attach_shadow_policy(
                 result[4],
@@ -231,25 +234,55 @@ def maybe_persist_policy_shadow_run(
     l3_ranked_symbols: list[str],
     regime: str,
     sector_map: dict[str, str],
+    executed_score_map: dict[str, float] | None = None,
 ) -> dict:
-    if ai_policy.get("_dynamic_mode") != "shadow" or not ai_policy.get("_shadow_policy"):
+    mode = str(ai_policy.get("_dynamic_mode") or "")
+    if mode not in {"shadow", "on"} or not ai_policy.get("_shadow_policy"):
         return {}
-    shadow_trend, shadow_accum, score_map = _shadow_selected_codes(
-        metrics,
-        triggers,
-        l3_ranked_symbols,
-        regime,
-        sector_map,
+    if mode == "on":
+        # on 档实际下单的是动态档，所以 shadow_selected 直接取实选，反过来算静态反事实。
+        # 列语义不能随档位翻转：base_* 恒为静态档，shadow_* 恒为动态档。
+        shadow_selected = list(selected_for_ai)
+        base_trend, base_accum, score_map = _static_selected_codes(
+            metrics,
+            triggers,
+            l3_ranked_symbols,
+            regime,
+            sector_map,
+            ai_policy,
+        )
+        base_selected = base_trend + base_accum
+        # shadow_selected 是实选，分数得用实盘那份；静态反事实的 score_map 里没有它们，
+        # 否则这批码在 shadow 观测行里会被记成 0.0 分。
+        if executed_score_map:
+            score_map = {**score_map, **executed_score_map}
+    else:
+        base_selected = list(selected_for_ai)
+        shadow_trend, shadow_accum, score_map = _shadow_selected_codes(
+            metrics,
+            triggers,
+            l3_ranked_symbols,
+            regime,
+            sector_map,
+            ai_policy,
+        )
+        shadow_selected = shadow_trend + shadow_accum
+    diff_added, diff_removed = selection_diff(base_selected, shadow_selected)
+    row = _policy_shadow_row(
         ai_policy,
+        metrics,
+        base_selected,
+        shadow_selected,
+        diff_added,
+        diff_removed,
+        regime,
+        mode=mode,
     )
-    shadow_selected = shadow_trend + shadow_accum
-    diff_added, diff_removed = selection_diff(selected_for_ai, shadow_selected)
-    row = _policy_shadow_row(ai_policy, metrics, selected_for_ai, shadow_selected, diff_added, diff_removed, regime)
     written = upsert_policy_shadow_run(row)
     if written:
         print(
             "[funnel] 动态策略shadow已写入 signal_policy_shadow_runs: "
-            f"written={written}, added={len(diff_added)}, removed={len(diff_removed)}"
+            f"mode={mode}, written={written}, added={len(diff_added)}, removed={len(diff_removed)}"
         )
     else:
         # 原先「已写入 ... written=0」照样打印，读着像正常输出。实测这条就是影子账本
@@ -260,7 +293,7 @@ def maybe_persist_policy_shadow_run(
             "归因重算会持续报 insufficient_shadow_sample；"
             "检查 signal_policy_shadow_runs 是否缺列(scripts/print_signal_policy_shadow_ddl.py)"
         )
-    return _policy_shadow_meta(written, shadow_selected, diff_added, diff_removed, score_map)
+    return _policy_shadow_meta(written, shadow_selected, diff_added, diff_removed, score_map, mode=mode)
 
 
 def full_formal_ai_selection(
@@ -293,20 +326,38 @@ def full_formal_ai_selection(
 
 
 def attach_shadow_policy(ai_policy: dict, dynamic_ctx: dict) -> None:
-    if str(dynamic_ctx.get("mode") or "off") != "shadow" or not dynamic_ctx.get("policy"):
+    """挂上影子账本所需的上下文。shadow 与 on 两档都要挂。
+
+    原先这里只认 shadow 档，于是线上 ``FUNNEL_DYNAMIC_POLICY=on`` 时形成死环：
+    on 档不挂 ``_shadow_policy`` -> ``maybe_persist_policy_shadow_run`` 首行直接
+    返回 -> ``signal_policy_shadow_runs`` 不进新行 -> 归因重算的滚动窗里
+    ``run_count=0 < MIN_SHADOW_RUNS`` -> 判 ``insufficient_shadow_sample`` ->
+    on 档的归因权重被永久挡住，而样本只在 shadow 档才会攒。闸门永远开不了。
+
+    两档都记账后，列语义仍然固定：``base_*`` 永远是静态档，``shadow_*`` 永远是
+    动态档，只有「哪一侧真下单」随档位变（记在 selection_summary 里）。治理器读
+    ``diff_added`` 的符号因此不用改。
+    """
+    mode = str(dynamic_ctx.get("mode") or "off")
+    if mode not in {"shadow", "on"} or not dynamic_ctx.get("policy"):
         return
     shadow_policy = dynamic_ctx["policy"]
-    ai_policy["_dynamic_mode"] = "shadow"
+    ai_policy["_dynamic_mode"] = mode
     ai_policy["_shadow_policy"] = shadow_policy
+    # on 档下 ai_policy 本身已是动态档，静态基线只能从 ctx 拿。
+    ai_policy["_static_base_policy"] = dynamic_ctx.get("base_policy") or {}
     ai_policy["_signal_weights"] = dynamic_ctx.get("weights") or {}
     ai_policy["_registry_rows"] = dynamic_ctx.get("registry") or []
     ai_policy["_health_rows"] = dynamic_ctx.get("health") or []
     ai_policy["_attribution_signal_weights"] = dynamic_ctx.get("attribution_weights") or {}
     ai_policy["_attribution_policy_meta"] = dynamic_ctx.get("attribution_policy_meta") or {}
     ai_policy["_pv_policy_shadow"] = dynamic_ctx.get("pv_policy_shadow") or {}
+    # base 一律读静态档：on 档下 ai_policy 就是动态档，拿它当 base 会打出两边一样。
+    base_for_log = ai_policy.get("_static_base_policy") or ai_policy
+    executed = "shadow" if mode == "on" else "base"
     print(
-        "[funnel] 动态策略shadow: "
-        f"base Trend={ai_policy['trend_quota']}, Accum={ai_policy['accum_quota']} -> "
+        f"[funnel] 动态策略shadow(mode={mode}, 实际下单侧={executed}): "
+        f"base Trend={base_for_log.get('trend_quota')}, Accum={base_for_log.get('accum_quota')} -> "
         f"shadow Trend={shadow_policy['trend_quota']}, Accum={shadow_policy['accum_quota']}"
     )
 
@@ -362,6 +413,9 @@ def _load_dynamic_policy_context(
         "attribution_weights": attribution_weights,
         "attribution_policy_meta": attribution_snapshot.as_dict(),
         "policy": policy,
+        # on 档下 ai_policy 就是 policy（动态档），静态基线取不到，必须单独带出来，
+        # 否则影子账本的 base_* 列会被写成动态档，diff 的符号整体翻转。
+        "base_policy": base_policy,
         "pv_policy_shadow": pv_policy_shadow,
     }
 
@@ -383,6 +437,7 @@ def _dynamic_policy_fallback(mode: str, pv_policy_shadow: dict) -> dict:
         "attribution_weights": {},
         "attribution_policy_meta": {},
         "policy": None,
+        "base_policy": None,
         "pv_policy_shadow": pv_policy_shadow,
     }
 
@@ -464,18 +519,48 @@ def _shadow_selected_codes(
     return trend, accum, score_map
 
 
+def _static_selected_codes(
+    metrics: dict,
+    triggers: dict[str, list[tuple[str, float]]],
+    l3_ranked_symbols: list[str],
+    regime: str,
+    sector_map: dict[str, str],
+    ai_policy: dict,
+) -> tuple[list[str], list[str], dict[str, float]]:
+    """on 档下的静态反事实：不按 registry 过滤触发、不加权、用静态配额。
+
+    与 ``_shadow_selected_codes`` 严格镜像——那边是「静态在跑，问动态会选什么」，
+    这边是「动态在跑，问静态会选什么」。两处都不过 ``_apply_ai_post_filters``，
+    保持与历史行的口径一致（反事实一侧从来不过后置过滤）。
+    """
+    static_policy = ai_policy.get("_static_base_policy") or {}
+    trend, accum, score_map = allocate_ai_candidates(
+        _candidate_result(metrics, triggers),
+        l3_ranked_symbols,
+        regime,
+        sector_map=sector_map,
+        max_per_sector=int(static_policy.get("max_per_sector") or ai_policy.get("max_per_sector") or 2),
+        policy_override=static_policy or None,
+        signal_weight_map=None,
+    )
+    return trend, accum, score_map
+
+
 def _policy_shadow_row(
     ai_policy: dict,
     metrics: dict,
-    selected_for_ai: list[str],
+    base_selected: list[str],
     shadow_selected: list[str],
     diff_added: list[str],
     diff_removed: list[str],
     regime: str,
+    mode: str = "shadow",
 ) -> dict:
     registry_rows = ai_policy.get("_registry_rows") or []
     health_rows = ai_policy.get("_health_rows") or []
-    base_policy = _public_policy(ai_policy)
+    # base_policy 必须是静态档。on 档下 ai_policy 本身就是动态档，直接 _public_policy(ai_policy)
+    # 会把两列写成同一份策略，diff 恒为空，账本看着「一切正常」却什么都没记。
+    base_policy = _public_policy(ai_policy.get("_static_base_policy") or ai_policy)
     shadow_policy = _public_policy(ai_policy.get("_shadow_policy") or {})
     return {
         "market": "cn",
@@ -488,11 +573,11 @@ def _policy_shadow_row(
         "signal_weights": ai_policy.get("_signal_weights") or {},
         "attribution_signal_weights": ai_policy.get("_attribution_signal_weights") or {},
         "attribution_policy_meta": ai_policy.get("_attribution_policy_meta") or {},
-        "base_selected": selected_for_ai,
+        "base_selected": base_selected,
         "shadow_selected": shadow_selected,
         "diff_added": diff_added,
         "diff_removed": diff_removed,
-        "selection_summary": _selection_summary(selected_for_ai, shadow_selected, diff_added, diff_removed),
+        "selection_summary": _selection_summary(base_selected, shadow_selected, diff_added, diff_removed, mode=mode),
         "policy_summary": _policy_summary(
             base_policy,
             shadow_policy,
@@ -514,10 +599,14 @@ def _policy_shadow_meta(
     diff_added: list[str],
     diff_removed: list[str],
     score_map: dict[str, float],
+    mode: str = "shadow",
 ) -> dict:
     return {
         "shadow_table": "signal_policy_shadow_runs",
         "shadow_written": written,
+        "shadow_dynamic_mode": mode,
+        # on 档下 shadow_* 这批码就是实选，base 才是反事实；shadow 档反过来。
+        "shadow_executed_side": "shadow" if mode == "on" else "base",
         "shadow_added_count": len(diff_added),
         "shadow_removed_count": len(diff_removed),
         "shadow_selected": shadow_selected,
@@ -532,16 +621,21 @@ def _public_policy(policy: dict) -> dict:
 
 
 def _selection_summary(
-    selected_for_ai: list[str],
+    base_selected: list[str],
     shadow_selected: list[str],
     diff_added: list[str],
     diff_removed: list[str],
+    mode: str = "shadow",
 ) -> dict:
-    base_set = set(selected_for_ai)
+    base_set = set(base_selected)
     shadow_set = set(shadow_selected)
     overlap = len(base_set & shadow_set)
     return {
-        "base_count": len(selected_for_ai),
+        # base 恒为静态档、shadow 恒为动态档；executed_side 才是「哪一侧真下了单」。
+        # 少了这个标记，就无法区分同一行是 shadow 档观测还是 on 档实盘。
+        "dynamic_mode": mode,
+        "executed_side": "shadow" if mode == "on" else "base",
+        "base_count": len(base_selected),
         "shadow_count": len(shadow_selected),
         "overlap_count": overlap,
         "diff_added_count": len(diff_added),

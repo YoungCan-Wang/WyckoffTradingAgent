@@ -27,6 +27,7 @@ TABLE_SHADOW_EVENTS = "shadow_events"
 TABLE_SHADOW_NAV_DAILY = "shadow_nav_daily"
 TABLE_SHADOW_TRADE_PLANS = "shadow_trade_plans"
 TABLE_REVIEW_SHADOW_LANE_DAILY = "review_shadow_lane_daily"
+TABLE_REVIEW_CAPTURE_DAILY = "review_capture_daily"
 
 # Local SQLite DB path
 from pathlib import Path as _Path

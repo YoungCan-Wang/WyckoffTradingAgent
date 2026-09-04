@@ -33,7 +33,12 @@ from core.wyckoff_engine import (
 )
 from utils.env import env_flag
 from utils.feishu import send_feishu_notification
-from workflows.review_big_gainers import execution_snapshot, is_target_cn_board, load_today_review_pool
+from workflows.review_big_gainers import (
+    execution_snapshot,
+    is_target_cn_board,
+    latest_and_previous_pct,
+    load_today_review_pool,
+)
 from workflows.review_recommendation_lookup import format_recommendation_history, load_recommendation_lookup
 from workflows.review_report_render import build_report_lines
 from workflows.wyckoff_funnel import run_funnel_job
@@ -82,7 +87,8 @@ def run_review_list_replay(webhook: str, log=print) -> int:
         previous_trade_date=dates.previous_trade_date,
     )
     execution_map = {code: execution_snapshot(pool.frames.get(code)) for code in pool.codes}
-    return _run_review_for_codes(webhook, pool.codes, dates, log, execution_map)
+    gain_map = {code: latest_and_previous_pct(pool.frames.get(code))[0] for code in pool.codes}
+    return _run_review_for_codes(webhook, pool.codes, dates, log, execution_map, gain_map)
 
 
 def resolve_review_dates() -> ReviewDates:
@@ -441,6 +447,7 @@ def _run_review_for_codes(
     dates: ReviewDates,
     log,
     execution_map: dict[str, dict[str, object]] | None = None,
+    gain_map: dict[str, float | None] | None = None,
 ) -> int:
     if not review_codes:
         log("[review] 今日无满足收盘涨幅 > 7% 且前一交易日收盘涨幅 < 3% 的股票，跳过")
@@ -459,7 +466,51 @@ def _run_review_for_codes(
     )
     ok = send_replay_report(webhook, rows, stage_counter, dates, ctx.end_trade_date, stats)
     log(f"[review] feishu_sent={ok}")
+    _persist_capture_rows(rows, ctx, dates, stats, gain_map, log=log)
     return 0 if ok else 4
+
+
+def _persist_capture_rows(
+    rows: list[dict[str, Any]],
+    ctx: ReplayContext,
+    dates: ReviewDates,
+    stats: dict[str, Any],
+    gain_map: dict[str, float | None] | None,
+    log=print,
+) -> None:
+    """把逐日档位归属落库,供 20+ 个交易日后算捕获率与各闸门增量精度。
+
+    放在发报告之后:飞书那份是当天要看的,落库是为了以后能做检验,写不进去不该
+    影响前者。artifact 里的复盘产物只留 7 天、前一日 trace 只留 30 天,过期后这
+    一天就永久算不出来,所以本地没有 artifacts 目录也该写,只要处在 server_job
+    写入上下文里。
+    """
+    from integrations.supabase_base import is_server_write_context
+
+    if not is_server_write_context():
+        return
+    from integrations.supabase_review_capture import build_capture_rows, save_review_capture_rows
+
+    try:
+        capture_rows = build_capture_rows(
+            rows,
+            trade_date=dates.today.strftime("%Y-%m-%d"),
+            previous_trade_date=dates.previous_trade_date.strftime("%Y-%m-%d"),
+            denominators={
+                "universe": len(ctx.all_symbol_set),
+                "l1": len(ctx.l1_set),
+                "l2": len(ctx.l2_set),
+                "l3": len(ctx.l3_set),
+                "candidate": len(ctx.candidate_entry_map),
+            },
+            gain_map=gain_map,
+            context_source=str(stats.get("context_source") or ctx.source),
+        )
+        written = save_review_capture_rows(capture_rows)
+    except Exception as exc:  # noqa: BLE001 - 观测表写失败不该影响复盘
+        log(f"[review] 捕获率落库失败: {exc}")
+        return
+    log(f"[review] 捕获率落库: {written}/{len(capture_rows)} 行")
 
 
 def load_previous_context(previous_trade_date: date, log=print) -> ReplayContext | None:
