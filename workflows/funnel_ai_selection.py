@@ -577,9 +577,7 @@ def _policy_shadow_row(
         "shadow_selected": shadow_selected,
         "diff_added": diff_added,
         "diff_removed": diff_removed,
-        "selection_summary": _selection_summary(
-            base_selected, shadow_selected, diff_added, diff_removed, mode=mode
-        ),
+        "selection_summary": _selection_summary(base_selected, shadow_selected, diff_added, diff_removed, mode=mode),
         "policy_summary": _policy_summary(
             base_policy,
             shadow_policy,
