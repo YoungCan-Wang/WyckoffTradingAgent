@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Mapping
 from typing import Any
 
 from core.candidate_policy import candidate_score_value
@@ -12,6 +13,8 @@ from core.candidate_tracks import (
     CANDIDATE_PRODUCER_TAGS,
     WYCKOFF_STAGE_NAMES,
     candidate_entry_key,
+    candidate_entry_score,
+    candidate_entry_sort_key,
     normalize_candidate_entry_key,
     stronger_candidate_entry,
 )
@@ -66,6 +69,51 @@ def build_candidate_metadata_map(
     for code, item in mainline_by_code.items():
         result.setdefault(code, mainline_metadata(item))
     return result
+
+
+def candidate_lane_dedup_conflicts(candidate_entries: list[dict[str, Any]] | None) -> dict[str, Any]:
+    """数一下同票多车道命中时，按 score 去重和按 entry_type 优先级去重会不会挑出不同的通道。
+
+    ``build_candidate_metadata_map`` 按 code 去重，``stronger_candidate_entry`` 先比 score，
+    只有精确同分才读 ``CANDIDATE_ENTRY_PRIORITY``。但各车道的 score 不同量纲：2026-09-02
+    的候选池里 trend_breakout 中位 98.0、lps 中位 32.0，45 个车道两两组合里有 14 对的
+    score 次序与优先级次序相反。也就是说同票双命中落在这 14 对上时，去重结果与设计意图相反。
+
+    双命中频率无法从产物反推（trace 只存去重后的 entry），所以这里只做观测：纯函数，
+    不改任何去重行为，由调用方打印。频率量出来之前不动 stronger_candidate_entry。
+    """
+    by_code: dict[str, list[dict[str, Any]]] = {}
+    for item in candidate_entries or []:
+        code = code6((item or {}).get("code"))
+        if not code:
+            continue
+        by_code.setdefault(code, []).append(item)
+
+    multi = {code: items for code, items in by_code.items() if len({_lane_of(i) for i in items}) > 1}
+    disagreed: list[dict[str, Any]] = []
+    for code, items in multi.items():
+        by_score = min(items, key=lambda i: (-candidate_entry_score(i), candidate_entry_sort_key(i)))
+        by_priority = min(items, key=candidate_entry_sort_key)
+        if _lane_of(by_score) != _lane_of(by_priority):
+            disagreed.append(
+                {
+                    "code": code,
+                    "score_pick": _lane_of(by_score),
+                    "score_pick_score": candidate_entry_score(by_score),
+                    "priority_pick": _lane_of(by_priority),
+                    "priority_pick_score": candidate_entry_score(by_priority),
+                }
+            )
+    return {
+        "codes": len(by_code),
+        "multi_lane_codes": len(multi),
+        "disagreed_codes": len(disagreed),
+        "details": sorted(disagreed, key=lambda d: d["code"])[:20],
+    }
+
+
+def _lane_of(item: Mapping[str, Any]) -> str:
+    return candidate_entry_key(item, fields=("entry_type", "signal_key", "lane"))
 
 
 def build_candidate_signal_metadata_map(
