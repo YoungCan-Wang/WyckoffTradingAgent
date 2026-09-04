@@ -140,6 +140,28 @@ def test_ci_runs_python_suite_once_and_reuses_it_for_coverage():
     assert "name: coverage-report-${{ github.run_number }}" in workflow
 
 
+def test_weekly_reflection_gate_reads_trigger_cron_not_wall_clock():
+    """周度反思的「今天是不是周五」只能看哪条 cron 触发，不能在步骤里读 date -u。
+
+    原先这里是 ``[ "$(date -u +%u)" = "5" ]``，把周几绑在了 GitHub 的排队延迟上。实测
+    同一周里两头都错了：周四那班 cron 被推到 2026-08-28T00:29Z（UTC 已跨到周五），
+    ``date -u +%u`` 读成 5，于是多跑了一次周度反思；周五那班被推到 2026-08-29T00:02Z
+    （UTC 已跨到周六）读成 6，run 33222336351 的 ``Refresh weekly strategy reflection``
+    被标成 skipped，整周静默丢了一轮。近期 run 起始时间已经从 15:48Z 漂到 18:48~20:56Z，
+    延迟是常态而不是偶发。
+
+    ``github.event.schedule`` 记的是排队那一刻的 cron 表达式，延迟多久都不变，所以周五
+    单独拆一条 cron、按表达式判断才是与调度意图同源的写法。
+    """
+    workflow = Path(".github/workflows/signal_feedback.yml").read_text(encoding="utf-8")
+
+    assert "$(date -u +%u)" not in workflow
+    assert 'cron: "30 15 * * 1-4"' in workflow
+    assert 'cron: "30 15 * * 5"' in workflow
+    assert "TRIGGER_CRON: ${{ github.event.schedule }}" in workflow
+    assert '[ "${TRIGGER_CRON}" = "30 15 * * 5" ]' in workflow
+
+
 def test_review_shadow_backtest_collects_traces_from_failed_funnel_runs_too():
     """影子回测按样本天数攒 trace，不能按 conclusion 过滤掉失败的漏斗运行。
 
