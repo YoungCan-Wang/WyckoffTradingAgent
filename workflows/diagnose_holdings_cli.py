@@ -18,6 +18,7 @@ from core.holding_diagnostic import (
 from core.wyckoff_engine import FunnelConfig, normalize_hist_from_fetch
 from integrations.fetch_a_share_csv import fetch_hist, resolve_trading_window
 from integrations.index_data_source import fetch_index_hist
+from integrations.tickflow_client import normalize_cn_symbol
 from utils.trading_clock import resolve_end_calendar_day
 
 TRADING_DAYS = 320
@@ -26,7 +27,8 @@ TRADING_DAYS = 320
 def _fetch_stock_data(code: str, window) -> tuple[str, pd.DataFrame | None]:
     """拉取单只股票 OHLCV 数据，返回 (code, df_or_None)。"""
 
-    symbol = f"{code}.SH" if code.startswith("6") else f"{code}.SZ"
+    # 港股 NNNNN.HK 与北交所 4/8/9 开头代码不能拼 .SH/.SZ 后缀，否则数据源全部取不到。
+    symbol = normalize_cn_symbol(code)
     try:
         raw = fetch_hist(symbol, window, adjust="qfq")
         if raw is None or (hasattr(raw, "empty") and raw.empty):
