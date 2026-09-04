@@ -2,8 +2,14 @@ name: Signal Feedback
 
 on:
   schedule:
-    # 北京时间周一到周五 23:30，GitHub Actions 使用 UTC。
-    - cron: "30 15 * * 1-5"
+    # 北京时间周一到周四 23:30，GitHub Actions 使用 UTC；只刷新信号反馈。
+    - cron: "30 15 * * 1-4"
+    # 北京时间周五 23:30，额外跑周度策略反思。
+    # 「今天是不是周五」必须由哪条 cron 触发来决定，不能在步骤里读 date -u：GitHub 的
+    # 排队延迟经常把 run 推后几小时，实测周四那班被推到 08-28T00:29Z（UTC 已跨到周五）
+    # 于是误跑了一次周度反思，周五那班被推到 08-29T00:02Z（UTC 已跨到周六）于是整周静默
+    # 跳过。触发时刻记下的 cron 表达式不受延迟影响。
+    - cron: "30 15 * * 5"
   workflow_dispatch:
     inputs:
       formal_dynamic_approved:
@@ -58,8 +64,12 @@ jobs:
 
       - name: Decide whether to run weekly strategy reflection
         id: reflection_policy
+        env:
+          # github.event.schedule 是「触发这次 run 的那条 cron 表达式」，在排队时刻就定下来了，
+          # 后面延迟多久都不会变。原先这里读 date -u +%u，等于把周几绑在队列延迟上。
+          TRIGGER_CRON: ${{ github.event.schedule }}
         run: |
-          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] || [ "$(date -u +%u)" = "5" ]; then
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] || [ "${TRIGGER_CRON}" = "30 15 * * 5" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
