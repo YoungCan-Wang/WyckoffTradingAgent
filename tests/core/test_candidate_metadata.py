@@ -5,6 +5,7 @@ import pytest
 from core.candidate_metadata import (
     build_candidate_metadata_map,
     build_candidate_signal_metadata_map,
+    candidate_lane_dedup_conflicts,
     candidate_metadata_for_signal,
     candidate_signal_triggers,
 )
@@ -190,3 +191,42 @@ class TestCandidateStatusIsSemanticOnly:
         entries = _formal_candidate_entries(triggers, {}, {})
         assert {entry["entry_type"] for entry in entries} == set(FORMAL_L4_LANES)
         assert {entry["state"] for entry in entries} == {"formal_l4"}
+
+
+def test_lane_dedup_conflict_counts_only_real_disagreements() -> None:
+    """判别性用例：同一只票双命中,但两种去重规则挑出不同通道时才该计数。
+
+    launchpad 优先级 0(设计上该赢),trend_breakout 优先级 6;实测 score 却反过来
+    (2026-09-02 候选池中位 88.27 vs 98.00)。所以按 score 去重拿到 trend_breakout,
+    按优先级去重拿到 launchpad —— 这是要数的那一类。
+    """
+    stats = candidate_lane_dedup_conflicts(
+        [
+            {"code": "000001", "entry_type": "launchpad", "score": 88.0},
+            {"code": "000001", "entry_type": "trend_breakout", "score": 98.0},
+        ]
+    )
+
+    assert stats["multi_lane_codes"] == 1
+    assert stats["disagreed_codes"] == 1
+    assert stats["details"][0]["score_pick"] == "trend_breakout"
+    assert stats["details"][0]["priority_pick"] == "launchpad"
+
+
+def test_lane_dedup_conflict_ignores_agreeing_and_single_lane_codes() -> None:
+    """两种规则一致、或压根没双命中的,都不该进计数,否则这个观测量没有判别性。"""
+    stats = candidate_lane_dedup_conflicts(
+        [
+            # 双命中但一致:launchpad 优先级更高且分也更高
+            {"code": "000002", "entry_type": "launchpad", "score": 99.0},
+            {"code": "000002", "entry_type": "trend_breakout", "score": 70.0},
+            # 单车道:同通道多条不算双命中
+            {"code": "000003", "entry_type": "lps", "score": 30.0},
+            {"code": "000003", "entry_type": "lps", "score": 40.0},
+        ]
+    )
+
+    assert stats["codes"] == 2
+    assert stats["multi_lane_codes"] == 1
+    assert stats["disagreed_codes"] == 0
+    assert stats["details"] == []

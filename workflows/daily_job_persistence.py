@@ -7,7 +7,7 @@ from collections import Counter
 from datetime import datetime
 from typing import Any
 
-from core.candidate_metadata import build_candidate_metadata_map, code6
+from core.candidate_metadata import build_candidate_metadata_map, candidate_lane_dedup_conflicts, code6
 from core.funnel_report import FunnelReportMaps, build_symbol_report_row
 from core.mainline_engine import TRADEABLE_MAINLINE_STATUSES
 from core.market_trade_mode import MarketTradeMode, resolve_market_trade_mode
@@ -375,10 +375,33 @@ def _springboard_tracking_row(
 
 
 def _candidate_metadata(step2_details: dict) -> dict[str, dict[str, Any]]:
+    entries = step2_details.get("candidate_entries", []) or []
+    _log_lane_dedup_conflicts(entries)
     return build_candidate_metadata_map(
-        step2_details.get("candidate_entries", []) or [],
+        entries,
         step2_details.get("mainline_candidates", []) or [],
     )
+
+
+def _log_lane_dedup_conflicts(entries: list[dict[str, Any]]) -> None:
+    """把同票多车道去重的分歧数打进日志。
+
+    这条 metadata_map 按 code 去重后喂给 l4_springboard 跟踪行（见 _springboard_tracking_row
+    的 metadata 入参）。各车道 score 不同量纲，去重先比 score、优先级只在同分时才读，
+    所以分歧是可能的；但双命中频率产物里反推不出来，先观测再决定要不要改去重。
+    """
+    stats = candidate_lane_dedup_conflicts(entries)
+    if not stats["multi_lane_codes"]:
+        return
+    print(
+        f"[funnel] 候选去重观测: 多车道命中 {stats['multi_lane_codes']}/{stats['codes']} 只, "
+        f"其中 score 与 entry_type 优先级挑出不同通道 {stats['disagreed_codes']} 只"
+    )
+    for d in stats["details"]:
+        print(
+            f"[funnel]   {d['code']}: score 选 {d['score_pick']}({d['score_pick_score']:.2f}) / "
+            f"优先级选 {d['priority_pick']}({d['priority_pick_score']:.2f})"
+        )
 
 
 def _tracking_status(row: dict, trade_mode: MarketTradeMode, *, springboard: bool = False) -> str:
