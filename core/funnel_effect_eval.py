@@ -80,6 +80,11 @@ class GroupStat:
     positive_day_pct: float | None
     residual_mom_pct: float | None
     by_quarter: dict[int, float] = field(default_factory=dict)
+    # 股级胜率一栏。``positive_day_pct`` 是「超额为正的日子占比」，与这一栏无关。
+    stock_win_pct: float | None = None
+    stock_win_control_pct: float | None = None
+    stock_win_excess_pct: float | None = None
+    stock_win_excess_t: float | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -93,6 +98,10 @@ class GroupStat:
             "positive_day_pct": _round(self.positive_day_pct, 1),
             "residual_mom_pct": _round(self.residual_mom_pct, 3),
             "by_quarter": {str(q): _round(v, 3) for q, v in sorted(self.by_quarter.items())},
+            "stock_win_pct": _round(self.stock_win_pct, 1),
+            "stock_win_control_pct": _round(self.stock_win_control_pct, 1),
+            "stock_win_excess_pct": _round(self.stock_win_excess_pct, 2),
+            "stock_win_excess_t": _round(self.stock_win_excess_t, 2),
         }
 
 
@@ -111,6 +120,14 @@ def summarize_group(label: str, daily: list[dict[str, float]]) -> GroupStat:
     by_quarter: dict[int, list[float]] = {}
     for row, diff in zip(usable, diffs, strict=True):
         by_quarter.setdefault(_quarter_of(str(row["date"])), []).append(diff)
+    # 胜率的配对差只用**两栏都在**的日子，缺一栏不按 0 补——那会把「没算出胜率」
+    # 当成「胜率 0%」，凭空造出负超额。
+    win_pairs = [
+        (float(r["stock_win"]), float(r["stock_win_control"]))
+        for r in usable
+        if r.get("stock_win") is not None and r.get("stock_win_control") is not None
+    ]
+    win_diffs = [h - c for h, c in win_pairs]
     return GroupStat(
         label=label,
         days=len(usable),
@@ -122,6 +139,10 @@ def summarize_group(label: str, daily: list[dict[str, float]]) -> GroupStat:
         positive_day_pct=100.0 * sum(1 for d in diffs if d > 0) / len(diffs),
         residual_mom_pct=mean(moms) if moms else None,
         by_quarter={q: mean(v) for q, v in by_quarter.items()},
+        stock_win_pct=mean(h for h, _ in win_pairs) if len(win_pairs) >= MIN_DAYS else None,
+        stock_win_control_pct=mean(c for _, c in win_pairs) if len(win_pairs) >= MIN_DAYS else None,
+        stock_win_excess_pct=mean(win_diffs) if len(win_pairs) >= MIN_DAYS else None,
+        stock_win_excess_t=tstat(win_diffs) if len(win_pairs) >= MIN_DAYS else None,
     )
 
 
@@ -153,6 +174,10 @@ class AbsoluteStat:
     bench_excess_pct: float | None
     bench_excess_t: float | None
     bench_days: int = 0
+    # 股级胜率：这批票里有多少只自己赚了钱。与上面的 positive_day_pct（正收益**日**
+    # 占比）是两个口径，一篮 3 只 +20% / 7 只 -5% 在日级算赢、股级只有 30%。
+    stock_win_pct: float | None = None
+    stock_win_days: int = 0
 
     @property
     def verdict(self) -> str:
@@ -177,6 +202,8 @@ class AbsoluteStat:
             "bench_pct": _round(self.bench_pct),
             "bench_excess_pct": _round(self.bench_excess_pct),
             "bench_excess_t": _round(self.bench_excess_t, 2),
+            "stock_win_pct": _round(self.stock_win_pct, 1),
+            "stock_win_days": self.stock_win_days,
             "verdict": self.verdict,
         }
 
@@ -193,6 +220,9 @@ def summarize_absolute(daily: list[dict[str, float]]) -> AbsoluteStat:
     nets = [float(row["net_abs"]) for row in usable]
     paired = [(float(r["net_abs"]), float(r["bench"])) for r in usable if r.get("bench") is not None]
     bench_diffs = [net - bench for net, bench in paired]
+    # 股级胜率按**交易日等权**平均，不是把所有票混成一个大池：命中只数多的日子
+    # 不该主导胜率，与 net_pct 的等权口径保持一致。
+    wins = [float(r["stock_win_abs"]) for r in usable if r.get("stock_win_abs") is not None]
     return AbsoluteStat(
         days=len(usable),
         avg_size=mean(float(row.get("size_abs") or 0) for row in usable),
@@ -205,6 +235,8 @@ def summarize_absolute(daily: list[dict[str, float]]) -> AbsoluteStat:
         bench_pct=mean(b for _, b in paired) if paired else None,
         bench_excess_pct=mean(bench_diffs) if len(bench_diffs) >= MIN_DAYS else None,
         bench_excess_t=tstat(bench_diffs) if len(bench_diffs) >= MIN_DAYS else None,
+        stock_win_pct=mean(wins) if len(wins) >= MIN_DAYS else None,
+        stock_win_days=len(wins),
     )
 
 
@@ -326,13 +358,34 @@ class Panels:
 
     def gross_return(self, codes: list[str], buy_ds: str, sell_ds: str) -> float | None:
         """等权毛收益（%），未扣成本。"""
+        rets = self.per_stock_returns(codes, buy_ds, sell_ds)
+        return mean(rets) if rets else None
+
+    def per_stock_returns(self, codes: list[str], buy_ds: str, sell_ds: str) -> list[float]:
+        """逐只毛收益（%），未扣成本。缺开盘或收盘的票直接不收录。"""
         opens, closes = self.open.get(buy_ds, {}), self.close.get(sell_ds, {})
         rets = []
         for code in codes:
             o, c = opens.get(code), closes.get(code)
             if o and c and o > 0:
                 rets.append(100.0 * (c / o - 1.0))
-        return mean(rets) if rets else None
+        return rets
+
+    def stock_win_rate(self, codes: list[str], buy_ds: str, sell_ds: str) -> float | None:
+        """**逐只**净收益为正的占比（%）。
+
+        与 ``GroupStat.positive_day_pct`` / ``AbsoluteStat.positive_day_pct`` 都不是
+        一回事，别混用：那两个是**日级**的（当天这一篮的均值为正吗），这个是**股级**
+        的（这只票赚了吗）。一篮 10 只里 3 只 +20%、7 只 -5%，日级算「正收益日」，
+        股级只有 30%。「选出的股票都赚钱」问的是后者。
+
+        判正的门槛是**扣掉往返成本之后**：毛涨 0.1% 的票扣完 0.202% 是亏的，算赢会
+        把成本一栏悄悄漏掉。
+        """
+        rets = self.per_stock_returns(codes, buy_ds, sell_ds)
+        if not rets:
+            return None
+        return 100.0 * sum(1 for r in rets if r - ROUND_TRIP_COST_PCT > 0) / len(rets)
 
 
 def resolve_layer(day: dict, universe: set[str], layer: str) -> tuple[list[str], list[str]]:
@@ -365,6 +418,8 @@ class MatchedBaseline:
 
     ret: float
     mom: float
+    # 胜率口径要拿基准篮自己的成分重算一遍股级胜率，均值算不出胜率来，故带上成分。
+    codes: tuple[str, ...] = ()
 
 
 def absolute_row(hits: list[str], panels: Panels, ds: str, buy_ds: str, sell_ds: str) -> dict | None:
@@ -379,6 +434,8 @@ def absolute_row(hits: list[str], panels: Panels, ds: str, buy_ds: str, sell_ds:
         "date": ds,
         "size_abs": len(hits),
         "net_abs": gross - ROUND_TRIP_COST_PCT,
+        # 股级胜率：当天这批票里有多少只自己赚了钱，与 net_abs 的日级均值不同口径。
+        "stock_win_abs": panels.stock_win_rate(hits, buy_ds, sell_ds),
         # 基准不扣成本：它是「不动手」的参照，不产生交易。
         "bench": panels.bench_return(buy_ds, sell_ds),
     }
@@ -426,6 +483,10 @@ def random_control_row(
         "size": len(band),
         "net": ctl - ROUND_TRIP_COST_PCT,
         "control": baseline.ret - ROUND_TRIP_COST_PCT,
+        # 胜率与收益同结构：net 是随机篮自己的股级胜率，control 是共用基准的胜率。
+        # 两者必须同源于 baseline_codes，否则相减时基准不抵消（见本函数上文的坑）。
+        "stock_win": panels.stock_win_rate(band, buy_ds, sell_ds),
+        "stock_win_control": panels.stock_win_rate(baseline.codes, buy_ds, sell_ds),
         # 与本行超额（随机篮 - 基准）对齐的中性化检查项，故是随机篮减基准的动量差。
         "residual_mom": mean(mom[c] for c in band if c in mom) - baseline.mom,
     }
@@ -478,7 +539,7 @@ def evaluate_daily(
         # 配对篮既是配对组的对照，也是随机组的基准：两组减同一条线，相减后基准
         # 抵消，剩下「漏斗挑的 vs 同邻域内随便挑的」。缺了这条共用，gap 就退化成
         # 两个对照篮互比，与候选无关（见 random_control_row）。
-        baseline = MatchedBaseline(ret=ctl, mom=mean(mom[c] for c in paired_ctrl))
+        baseline = MatchedBaseline(ret=ctl, mom=mean(mom[c] for c in paired_ctrl), codes=tuple(paired_ctrl))
         rows["matched"].append(
             {
                 "date": ds,
@@ -486,6 +547,9 @@ def evaluate_daily(
                 # 两边都扣成本，故超额里成本抵消；net/control 本身仍是净值口径
                 "net": hit_ret - ROUND_TRIP_COST_PCT,
                 "control": baseline.ret - ROUND_TRIP_COST_PCT,
+                # 胜率与收益同结构、同基准：配对组与随机组减的都是这一条。
+                "stock_win": panels.stock_win_rate(paired_hits, buy_ds, sell_ds),
+                "stock_win_control": panels.stock_win_rate(paired_ctrl, buy_ds, sell_ds),
                 "residual_mom": mean(mom[h] for h in paired_hits) - baseline.mom,
             }
         )
@@ -506,15 +570,32 @@ def control_gap(matched: GroupStat, controls: list[GroupStat]) -> dict[str, Any]
     小于控制组自身的抽样宽度，就不能说漏斗含选股信息——这是唯一能否掉「漏斗有效」
     的环节，所以它必须对候选表现敏感（回归测试守在 ``TestControlGapDiscriminates``）。
     """
-    usable = [c.excess_pct for c in controls if c.excess_pct is not None]
-    if matched.excess_pct is None or len(usable) < 2:
+    return _gap_of(matched, controls, attr="excess_pct")
+
+
+def win_control_gap(matched: GroupStat, controls: list[GroupStat]) -> dict[str, Any]:
+    """胜率口径的同一道否证。
+
+    胜率必须自己过一遍随机负控制，不能借收益那一栏的结论：风格择时那轮实测两栏
+    分家——收益过了月内置换（T+5 p=0.025 / T+10 p=0.001），胜率没过（p=0.284）。
+    近期强弱能预测**亏多少**、预测不了**赢不赢**。所以「收益有边缘」不蕴含「胜率
+    有边缘」，反之亦然。
+    """
+    return _gap_of(matched, controls, attr="stock_win_excess_pct")
+
+
+def _gap_of(matched: GroupStat, controls: list[GroupStat], *, attr: str) -> dict[str, Any]:
+    """``control_gap`` 与 ``win_control_gap`` 共用的实现，只换读哪一栏超额。"""
+    matched_excess = getattr(matched, attr)
+    usable = [v for v in (getattr(c, attr) for c in controls) if v is not None]
+    if matched_excess is None or len(usable) < 2:
         return {"verdict": "样本不足", "seeds": len(usable)}
     avg = mean(usable)
     spread = max(usable) - min(usable)
-    gap = matched.excess_pct - avg
+    gap = matched_excess - avg
     return {
         "seeds": len(usable),
-        "matched_excess": _round(matched.excess_pct),
+        "matched_excess": _round(matched_excess),
         "control_excess_avg": _round(avg),
         "control_excess_min": _round(min(usable)),
         "control_excess_max": _round(max(usable)),
@@ -522,8 +603,8 @@ def control_gap(matched: GroupStat, controls: list[GroupStat]) -> dict[str, Any]
         "gap": _round(gap),
         # 只标「有没有高过每个种子」这一件事：报告按它把「没跑赢随机」和「跑赢但
         # 幅度薄」分开计数。别把「落在区间内」也塞进这个布尔——一个字段两种语义。
-        "beats_band": matched.excess_pct > max(usable),
-        "verdict": _gap_verdict(matched.excess_pct, usable, gap=gap, spread=spread),
+        "beats_band": matched_excess > max(usable),
+        "verdict": _gap_verdict(matched_excess, usable, gap=gap, spread=spread),
     }
 
 

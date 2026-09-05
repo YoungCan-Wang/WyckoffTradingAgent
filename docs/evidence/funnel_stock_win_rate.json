@@ -1,0 +1,478 @@
+{
+  "question": "漏斗选出的票自己赚不赚钱（股级胜率，已扣往返成本 0.202%）",
+  "buy_convention": "T+1 开盘买入 / T+1+H 收盘卖出",
+  "win_threshold": "单只净收益 r - 0.202 > 0",
+  "cands_nominal_range": [
+    "2026-05-25",
+    "2026-09-03"
+  ],
+  "statuses": {
+    "formal_l4": {
+      "5": {
+        "eval_window": [
+          "2026-07-01",
+          "2026-08-27"
+        ],
+        "days": 39,
+        "absolute": {
+          "days": 39,
+          "avg_size": 19.3,
+          "net_pct": -1.9776,
+          "net_t": -1.74,
+          "positive_day_pct": 48.7,
+          "worst_day_pct": -23.9247,
+          "best_day_pct": 10.0408,
+          "bench_days": 0,
+          "bench_pct": null,
+          "bench_excess_pct": null,
+          "bench_excess_t": null,
+          "stock_win_pct": 41.6,
+          "stock_win_days": 39,
+          "verdict": "绝对收益为负：这批票拿着是亏的"
+        },
+        "matched": {
+          "label": "matched",
+          "days": 39,
+          "avg_size": 19.0,
+          "net_pct": -2.2311,
+          "control_pct": -2.6057,
+          "excess_pct": 0.3747,
+          "excess_t": 0.36,
+          "positive_day_pct": 53.8,
+          "residual_mom_pct": 0.019,
+          "by_quarter": {
+            "20263": 0.375
+          },
+          "stock_win_pct": 41.0,
+          "stock_win_control_pct": 42.7,
+          "stock_win_excess_pct": -1.71,
+          "stock_win_excess_t": -0.4
+        },
+        "win_control_gap": {
+          "seeds": 5,
+          "matched_excess": -1.7096,
+          "control_excess_avg": -1.4808,
+          "control_excess_min": -3.607,
+          "control_excess_max": 1.8219,
+          "seed_spread": 5.4289,
+          "gap": -0.2288,
+          "beats_band": false,
+          "verdict": "配对超额落在随机负控制区间内：边缘仅来自动量选位，不含选股信息"
+        },
+        "win_by_month": {
+          "2026-07": {
+            "days": 20,
+            "cand_win_pct": 41.51,
+            "control_win_pct": 41.1,
+            "win_excess_pct": 0.411,
+            "seed_band": [
+              -4.922,
+              3.574
+            ],
+            "beats_band": false
+          },
+          "2026-08": {
+            "days": 19,
+            "cand_win_pct": 40.53,
+            "control_win_pct": 44.47,
+            "win_excess_pct": -3.941,
+            "seed_band": [
+              -7.134,
+              -0.022
+            ],
+            "beats_band": false
+          }
+        }
+      },
+      "10": {
+        "eval_window": [
+          "2026-07-01",
+          "2026-08-20"
+        ],
+        "days": 34,
+        "absolute": {
+          "days": 34,
+          "avg_size": 16.5,
+          "net_pct": -3.3677,
+          "net_t": -1.97,
+          "positive_day_pct": 44.1,
+          "worst_day_pct": -29.9362,
+          "best_day_pct": 14.0967,
+          "bench_days": 0,
+          "bench_pct": null,
+          "bench_excess_pct": null,
+          "bench_excess_t": null,
+          "stock_win_pct": 40.6,
+          "stock_win_days": 34,
+          "verdict": "绝对收益为负：这批票拿着是亏的"
+        },
+        "matched": {
+          "label": "matched",
+          "days": 34,
+          "avg_size": 16.2,
+          "net_pct": -3.7175,
+          "control_pct": -5.213,
+          "excess_pct": 1.4955,
+          "excess_t": 1.09,
+          "positive_day_pct": 55.9,
+          "residual_mom_pct": 0.024,
+          "by_quarter": {
+            "20263": 1.495
+          },
+          "stock_win_pct": 39.9,
+          "stock_win_control_pct": 37.7,
+          "stock_win_excess_pct": 2.25,
+          "stock_win_excess_t": 0.57
+        },
+        "win_control_gap": {
+          "seeds": 5,
+          "matched_excess": 2.2491,
+          "control_excess_avg": -1.3481,
+          "control_excess_min": -1.76,
+          "control_excess_max": -0.5525,
+          "seed_spread": 1.2076,
+          "gap": 3.5972,
+          "beats_band": true,
+          "verdict": "配对超额跑赢随机负控制：含独立选股信息"
+        },
+        "win_by_month": {
+          "2026-07": {
+            "days": 20,
+            "cand_win_pct": 43.08,
+            "control_win_pct": 37.09,
+            "win_excess_pct": 5.99,
+            "seed_band": [
+              -1.453,
+              4.89
+            ],
+            "beats_band": true
+          },
+          "2026-08": {
+            "days": 14,
+            "cand_win_pct": 35.37,
+            "control_win_pct": 38.47,
+            "win_excess_pct": -3.095,
+            "seed_band": [
+              -11.26,
+              -0.896
+            ],
+            "beats_band": false
+          }
+        }
+      },
+      "20": {
+        "eval_window": [
+          "2026-07-01",
+          "2026-08-06"
+        ],
+        "days": 24,
+        "absolute": {
+          "days": 24,
+          "avg_size": 11.9,
+          "net_pct": -2.5948,
+          "net_t": -1.13,
+          "positive_day_pct": 50.0,
+          "worst_day_pct": -27.1614,
+          "best_day_pct": 17.2395,
+          "bench_days": 0,
+          "bench_pct": null,
+          "bench_excess_pct": null,
+          "bench_excess_t": null,
+          "stock_win_pct": 39.4,
+          "stock_win_days": 24,
+          "verdict": "绝对收益为负：这批票拿着是亏的"
+        },
+        "matched": {
+          "label": "matched",
+          "days": 24,
+          "avg_size": 11.5,
+          "net_pct": -3.3413,
+          "control_pct": -4.6701,
+          "excess_pct": 1.3288,
+          "excess_t": 0.72,
+          "positive_day_pct": 58.3,
+          "residual_mom_pct": 0.023,
+          "by_quarter": {
+            "20263": 1.329
+          },
+          "stock_win_pct": 38.1,
+          "stock_win_control_pct": 37.2,
+          "stock_win_excess_pct": 0.94,
+          "stock_win_excess_t": 0.16
+        },
+        "win_control_gap": {
+          "seeds": 5,
+          "matched_excess": 0.9383,
+          "control_excess_avg": 4.7333,
+          "control_excess_min": 0.4956,
+          "control_excess_max": 7.7354,
+          "seed_spread": 7.2398,
+          "gap": -3.795,
+          "beats_band": false,
+          "verdict": "配对超额落在随机负控制区间内：边缘仅来自动量选位，不含选股信息"
+        },
+        "win_by_month": {
+          "2026-07": {
+            "days": 20,
+            "cand_win_pct": 35.18,
+            "control_win_pct": 35.38,
+            "win_excess_pct": -0.2,
+            "seed_band": [
+              0.243,
+              9.802
+            ],
+            "beats_band": false
+          },
+          "2026-08": {
+            "days": 4,
+            "cand_win_pct": 52.83,
+            "control_win_pct": 46.2,
+            "win_excess_pct": 6.629,
+            "seed_band": [
+              -4.261,
+              1.759
+            ],
+            "beats_band": true
+          }
+        }
+      }
+    },
+    "l4_vs_rest": {
+      "5": {
+        "eval_window": [
+          "2026-07-01",
+          "2026-08-27"
+        ],
+        "days": 38,
+        "absolute": {
+          "days": 39,
+          "avg_size": 19.3,
+          "net_pct": -1.9776,
+          "net_t": -1.74,
+          "positive_day_pct": 48.7,
+          "worst_day_pct": -23.9247,
+          "best_day_pct": 10.0408,
+          "bench_days": 0,
+          "bench_pct": null,
+          "bench_excess_pct": null,
+          "bench_excess_t": null,
+          "stock_win_pct": 41.6,
+          "stock_win_days": 39,
+          "verdict": "绝对收益为负：这批票拿着是亏的"
+        },
+        "matched": {
+          "label": "matched",
+          "days": 38,
+          "avg_size": 17.2,
+          "net_pct": -2.3506,
+          "control_pct": -4.3497,
+          "excess_pct": 1.9991,
+          "excess_t": 1.7,
+          "positive_day_pct": 60.5,
+          "residual_mom_pct": -0.194,
+          "by_quarter": {
+            "20263": 1.999
+          },
+          "stock_win_pct": 40.7,
+          "stock_win_control_pct": 33.9,
+          "stock_win_excess_pct": 6.79,
+          "stock_win_excess_t": 1.75
+        },
+        "win_control_gap": {
+          "seeds": 5,
+          "matched_excess": 6.7851,
+          "control_excess_avg": -0.6455,
+          "control_excess_min": -1.7656,
+          "control_excess_max": 1.0481,
+          "seed_spread": 2.8137,
+          "gap": 7.4306,
+          "beats_band": true,
+          "verdict": "配对超额跑赢随机负控制：含独立选股信息"
+        },
+        "win_by_month": {
+          "2026-07": {
+            "days": 19,
+            "cand_win_pct": 41.1,
+            "control_win_pct": 26.77,
+            "win_excess_pct": 14.329,
+            "seed_band": [
+              -2.983,
+              0.806
+            ],
+            "beats_band": true
+          },
+          "2026-08": {
+            "days": 19,
+            "cand_win_pct": 40.24,
+            "control_win_pct": 41.0,
+            "win_excess_pct": -0.759,
+            "seed_band": [
+              -2.8,
+              2.917
+            ],
+            "beats_band": false
+          }
+        }
+      },
+      "10": {
+        "eval_window": [
+          "2026-07-01",
+          "2026-08-20"
+        ],
+        "days": 33,
+        "absolute": {
+          "days": 34,
+          "avg_size": 16.5,
+          "net_pct": -3.3677,
+          "net_t": -1.97,
+          "positive_day_pct": 44.1,
+          "worst_day_pct": -29.9362,
+          "best_day_pct": 14.0967,
+          "bench_days": 0,
+          "bench_pct": null,
+          "bench_excess_pct": null,
+          "bench_excess_t": null,
+          "stock_win_pct": 40.6,
+          "stock_win_days": 34,
+          "verdict": "绝对收益为负：这批票拿着是亏的"
+        },
+        "matched": {
+          "label": "matched",
+          "days": 33,
+          "avg_size": 14.7,
+          "net_pct": -4.1335,
+          "control_pct": -8.2648,
+          "excess_pct": 4.1314,
+          "excess_t": 3.69,
+          "positive_day_pct": 75.8,
+          "residual_mom_pct": -0.194,
+          "by_quarter": {
+            "20263": 4.131
+          },
+          "stock_win_pct": 37.9,
+          "stock_win_control_pct": 28.0,
+          "stock_win_excess_pct": 9.84,
+          "stock_win_excess_t": 3.1
+        },
+        "win_control_gap": {
+          "seeds": 5,
+          "matched_excess": 9.8422,
+          "control_excess_avg": -0.266,
+          "control_excess_min": -2.3692,
+          "control_excess_max": 1.8138,
+          "seed_spread": 4.183,
+          "gap": 10.1082,
+          "beats_band": true,
+          "verdict": "配对超额跑赢随机负控制：含独立选股信息"
+        },
+        "win_by_month": {
+          "2026-07": {
+            "days": 19,
+            "cand_win_pct": 40.25,
+            "control_win_pct": 22.31,
+            "win_excess_pct": 17.938,
+            "seed_band": [
+              -3.297,
+              4.985
+            ],
+            "beats_band": true
+          },
+          "2026-08": {
+            "days": 14,
+            "cand_win_pct": 34.69,
+            "control_win_pct": 35.83,
+            "win_excess_pct": -1.145,
+            "seed_band": [
+              -3.111,
+              1.932
+            ],
+            "beats_band": false
+          }
+        }
+      },
+      "20": {
+        "eval_window": [
+          "2026-07-01",
+          "2026-08-06"
+        ],
+        "days": 23,
+        "absolute": {
+          "days": 24,
+          "avg_size": 11.9,
+          "net_pct": -2.5948,
+          "net_t": -1.13,
+          "positive_day_pct": 50.0,
+          "worst_day_pct": -27.1614,
+          "best_day_pct": 17.2395,
+          "bench_days": 0,
+          "bench_pct": null,
+          "bench_excess_pct": null,
+          "bench_excess_t": null,
+          "stock_win_pct": 39.4,
+          "stock_win_days": 24,
+          "verdict": "绝对收益为负：这批票拿着是亏的"
+        },
+        "matched": {
+          "label": "matched",
+          "days": 23,
+          "avg_size": 11.6,
+          "net_pct": -3.5843,
+          "control_pct": -10.1547,
+          "excess_pct": 6.5704,
+          "excess_t": 3.55,
+          "positive_day_pct": 73.9,
+          "residual_mom_pct": -0.123,
+          "by_quarter": {
+            "20263": 6.57
+          },
+          "stock_win_pct": 39.0,
+          "stock_win_control_pct": 31.1,
+          "stock_win_excess_pct": 7.89,
+          "stock_win_excess_t": 1.76
+        },
+        "win_control_gap": {
+          "seeds": 5,
+          "matched_excess": 7.8856,
+          "control_excess_avg": -0.9527,
+          "control_excess_min": -2.534,
+          "control_excess_max": 3.1723,
+          "seed_spread": 5.7063,
+          "gap": 8.8383,
+          "beats_band": true,
+          "verdict": "配对超额跑赢随机负控制：含独立选股信息"
+        },
+        "win_by_month": {
+          "2026-07": {
+            "days": 19,
+            "cand_win_pct": 35.56,
+            "control_win_pct": 25.82,
+            "win_excess_pct": 9.736,
+            "seed_band": [
+              -5.023,
+              3.177
+            ],
+            "beats_band": true
+          },
+          "2026-08": {
+            "days": 4,
+            "cand_win_pct": 55.42,
+            "control_win_pct": 56.32,
+            "win_excess_pct": -0.903,
+            "seed_band": [
+              -1.053,
+              10.382
+            ],
+            "beats_band": false
+          }
+        }
+      }
+    }
+  },
+  "notes": [
+    "候选集名义区间自 2026-05-25 起，但 2026-05-25..06-30 共 26 个交易日正式 L4 恒为 0（那段 candidate_lane 只写出 launchpad/trend_lane_pullback/trend_breakout 等 Lane 通道，与 FORMAL_L4_LANES 的六条形式触发不相交），真实评估区间自 2026-07-01 起。",
+    "候选自身胜率在两个月、两种 status 下都稳定在 ~40%；变动的是对照池，不是候选。",
+    "所有跑赢随机负控制的格子都落在 2026-07；2026-08 四格全部带内。两个月样本，一个月扛全部。",
+    "t 值被高估：逐日持有窗口重叠。判显著要取不重叠日并扫遍相位。",
+    "T+20 的 2026-08 只有 4 个交易日（快照止于 09-04，T+20 需要 20 个前瞻日，评估区间被截到 08-06），那两格（formal_l4 +6.63 / l4_vs_rest -0.90）不可读。同理 T+10 的 08 只有 14 天。"
+  ]
+}

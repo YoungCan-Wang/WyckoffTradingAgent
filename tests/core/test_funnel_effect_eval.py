@@ -22,6 +22,7 @@ from core.funnel_effect_eval import (
     summarize_absolute,
     summarize_group,
     tstat,
+    win_control_gap,
 )
 from core.pattern_forward_eval import ROUND_TRIP_COST_PCT
 
@@ -281,8 +282,12 @@ class TestSummarizeAbsolute:
         assert stat.net_pct == pytest.approx(-2.0)
         assert stat.verdict == "绝对收益为负：这批票拿着是亏的"
 
-    def test_win_rate_counts_net_positive_days(self):
-        """AbsoluteStat.positive_day_pct 是胜率,不是 GroupStat 的「超额为正日」。"""
+    def test_positive_day_pct_counts_net_positive_days(self):
+        """AbsoluteStat.positive_day_pct 是「正收益**日**占比」,不是股级胜率。
+
+        它也不是 GroupStat 的「超额为正日」。三个名字相近的口径互不等价,股级胜率
+        看 ``stock_win_pct``(守在 TestStockWinRate)。
+        """
         stat = summarize_absolute(_abs_daily([1.0] * 15 + [-1.0] * 5))
         assert stat.positive_day_pct == pytest.approx(75.0)
         assert stat.worst_day_pct == pytest.approx(-1.0)
@@ -390,6 +395,76 @@ class TestPanels:
         assert (panels.bench_open, panels.bench_close) == ({}, {})
 
 
+class TestStockWinRate:
+    """股级胜率:这批票里有多少只自己赚了钱。与日级口径不可混用。"""
+
+    def _panels_with(self, rets: dict[str, float]) -> Panels:
+        """按给定的逐只收益(%)造一个两日面板。"""
+        codes = sorted(rets)
+        return Panels(
+            open={"2026-06-01": dict.fromkeys(codes, 100.0)},
+            close={"2026-06-02": {c: 100.0 * (1.0 + rets[c] / 100.0) for c in codes}},
+            liquid={"2026-06-01": set(codes)},
+            mom20={"2026-06-01": dict.fromkeys(codes, 0.0)},
+            dates=["2026-06-01", "2026-06-02"],
+        )
+
+    def test_counts_stocks_not_days(self):
+        """3 只 +20% / 7 只 -5%:日级均值为正,股级只有 30%。这一格是两个口径的分水岭。"""
+        rets = {f"w{i}": 20.0 for i in range(3)} | {f"l{i}": -5.0 for i in range(7)}
+        panels = self._panels_with(rets)
+        codes = sorted(rets)
+        assert panels.stock_win_rate(codes, "2026-06-01", "2026-06-02") == pytest.approx(30.0)
+        # 同一批票的日级均值确实为正,若把它当胜率就会读成「赢」。
+        assert panels.gross_return(codes, "2026-06-01", "2026-06-02") > 0
+
+    def test_cost_threshold_makes_thin_winners_losses(self):
+        """毛涨 0.1% 扣掉往返成本是亏的,不能算赢。"""
+        thin = ROUND_TRIP_COST_PCT / 2.0
+        panels = self._panels_with({"a": thin, "b": thin})
+        assert panels.stock_win_rate(["a", "b"], "2026-06-01", "2026-06-02") == pytest.approx(0.0)
+
+        clear = ROUND_TRIP_COST_PCT * 2.0
+        panels = self._panels_with({"a": clear, "b": clear})
+        assert panels.stock_win_rate(["a", "b"], "2026-06-01", "2026-06-02") == pytest.approx(100.0)
+
+    def test_missing_prices_are_dropped_not_counted_as_losses(self):
+        """缺价的票不进分母,否则停牌会被记成亏。"""
+        panels = self._panels_with({"a": 10.0})
+        assert panels.stock_win_rate(["a", "ghost"], "2026-06-01", "2026-06-02") == pytest.approx(100.0)
+        assert panels.stock_win_rate(["ghost"], "2026-06-01", "2026-06-02") is None
+
+    def test_absolute_win_needs_min_days(self):
+        """样本不足时给 None,不给一个看着像结论的数。"""
+        short = [
+            {"date": f"2026-06-{i + 1:02d}", "size_abs": 10, "net_abs": 1.0, "stock_win_abs": 60.0, "bench": None}
+            for i in range(MIN_DAYS - 1)
+        ]
+        assert summarize_absolute(short).stock_win_pct is None
+        enough = short + [{"date": "2026-07-01", "size_abs": 10, "net_abs": 1.0, "stock_win_abs": 60.0, "bench": None}]
+        assert summarize_absolute(enough).stock_win_pct == pytest.approx(60.0)
+
+    def test_group_win_excess_skips_days_missing_either_side(self):
+        """缺一栏的日子不按 0 补,否则会凭空造出负超额。"""
+        rows = [
+            {
+                "date": f"2026-06-{i + 1:02d}",
+                "size": 10,
+                "net": 1.0,
+                "control": 0.0,
+                "residual_mom": 0.0,
+                "stock_win": 60.0,
+                "stock_win_control": 50.0,
+            }
+            for i in range(MIN_DAYS)
+        ]
+        rows[0]["stock_win_control"] = None
+        stat = summarize_group("m", rows)
+        # 19 个可用日 < MIN_DAYS,故胜率一栏给 None,而收益一栏(20 日)照常有值。
+        assert stat.stock_win_excess_pct is None
+        assert stat.excess_pct == pytest.approx(1.0)
+
+
 def _noisy_panels(n_days: int = 32, n_codes: int = 200) -> Panels:
     """行情带噪声、动量与噪声独立的面板。
 
@@ -416,7 +491,12 @@ def _verdict(cands: dict[str, dict], panels: Panels, horizon: int = 5) -> dict:
     rows = evaluate_daily(cands, panels, horizon, status="formal_l4")
     matched = summarize_group("matched", rows["matched"])
     controls = [summarize_group(f"c{s}", rows[f"control_{s}"]) for s in CONTROL_SEEDS]
-    return {"gap": control_gap(matched, controls), "matched": matched}
+    return {
+        "gap": control_gap(matched, controls),
+        "win_gap": win_control_gap(matched, controls),
+        "matched": matched,
+        "absolute": summarize_absolute(rows["absolute"]),
+    }
 
 
 class TestControlGapDiscriminates:
@@ -473,6 +553,32 @@ class TestControlGapDiscriminates:
         strong = _verdict(self._foresight(panels), panels, self.HORIZON)["gap"]
         weak = _verdict(self._random_picks(panels), panels, self.HORIZON)["gap"]
         assert strong["gap"] > weak["gap"] + 1.0, (strong["gap"], weak["gap"])
+
+    def test_win_gap_discriminates_like_the_return_gap(self):
+        """胜率的否证环节也必须对候选好坏敏感,不能借收益那一栏。
+
+        与收益版同构:共用基准若填错(比如拿候选自己的胜率当对照),完美预知与纯随机
+        会拿到同一句判定。
+        """
+        panels = _noisy_panels()
+        strong = _verdict(self._foresight(panels), panels, self.HORIZON)
+        weak = _verdict(self._random_picks(panels), panels, self.HORIZON)
+        assert strong["matched"].stock_win_excess_pct > 10.0, strong["matched"].stock_win_excess_pct
+        assert abs(weak["matched"].stock_win_excess_pct) < 10.0, weak["matched"].stock_win_excess_pct
+        assert strong["win_gap"]["gap"] > weak["win_gap"]["gap"] + 5.0
+        assert "含独立选股信息" in strong["win_gap"]["verdict"], strong["win_gap"]
+        assert "不含选股信息" in weak["win_gap"]["verdict"], weak["win_gap"]
+
+    def test_win_gap_reads_the_win_column_not_the_return_column(self):
+        """守住 _gap_of 的 attr 分派:两个 gap 不能是同一个数。
+
+        实现时 ``beats_band`` / ``_gap_verdict`` 两处曾仍读 ``matched.excess_pct``,
+        那样胜率块会把收益的数字印出来,而表头写着胜率。
+        """
+        panels = _noisy_panels()
+        out = _verdict(self._foresight(panels), panels, self.HORIZON)
+        assert out["win_gap"]["matched_excess"] == pytest.approx(out["matched"].stock_win_excess_pct, abs=1e-4)
+        assert out["win_gap"]["matched_excess"] != pytest.approx(out["gap"]["matched_excess"], abs=1e-4)
 
 
 class TestEvaluateDaily:
