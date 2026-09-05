@@ -42,6 +42,7 @@ from core.funnel_effect_eval import (
     evaluate_daily,
     summarize_absolute,
     summarize_group,
+    win_control_gap,
 )
 from core.funnel_effect_panels import build_panels, load_market_frame
 from core.pattern_forward_eval import ROUND_TRIP_COST_PCT
@@ -98,21 +99,57 @@ def render_absolute(result: dict) -> list[str]:
         "",
         "算在**全部候选**上（不是配对子集），已扣往返成本。基准为主指数同窗口 T+1 开盘进、T+1+H 收盘出，不扣成本。",
         "",
-        "| H | 天数 | 日均只数 | 绝对净收益 | t | 胜率 | 最差日 | 最好日 | 基准 | 减基准 | t | 判定 |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "股级胜率 = 这批票里**自己赚钱的只数占比**（已扣成本）；正收益日 = 当天这一篮**均值**为正的日子占比。"
+        "两者不是一回事：一篮 3 只 +20% / 7 只 -5%，正收益日算赢、股级胜率只有 30%。",
+        "",
+        "| H | 天数 | 日均只数 | 绝对净收益 | t | 股级胜率 | 正收益日 | 最差日 | 最好日 | 基准 | 减基准 | t | 判定 |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for h, block in result["horizons"].items():
         a = block["absolute"]
         if a["net_pct"] is None:
-            lines.append(f"| T+{h} | {a['days']} | — | — | — | — | — | — | — | — | — | 样本不足(<{MIN_DAYS}) |")
+            lines.append(f"| T+{h} | {a['days']} | — | — | — | — | — | — | — | — | — | — | 样本不足(<{MIN_DAYS}) |")
             continue
         bench = "—" if a["bench_pct"] is None else f"{a['bench_pct']:+.2f}%"
         b_ex = "—" if a["bench_excess_pct"] is None else f"{a['bench_excess_pct']:+.2f}pct"
         b_t = "—" if a["bench_excess_t"] is None else f"{a['bench_excess_t']:+.2f}"
+        s_win = "—" if a.get("stock_win_pct") is None else f"{a['stock_win_pct']:.1f}%"
         lines.append(
             f"| T+{h} | {a['days']} | {a['avg_size']:.1f} | {a['net_pct']:+.2f}% | {a['net_t']:+.2f} "
-            f"| {a['positive_day_pct']:.0f}% | {a['worst_day_pct']:+.2f}% | {a['best_day_pct']:+.2f}% "
+            f"| {s_win} | {a['positive_day_pct']:.0f}% | {a['worst_day_pct']:+.2f}% | {a['best_day_pct']:+.2f}% "
             f"| {bench} | {b_ex} | {b_t} | {a['verdict']} |"
+        )
+    return lines
+
+
+def render_win_rate(result: dict) -> list[str]:
+    """胜率块。与收益块分开，因为两栏实测会分家：能预测亏多少 ≠ 能预测赢不赢。
+
+    胜率过不过随机负控制要单独判，不能借收益那一栏的结论。
+    """
+    lines = [
+        "",
+        "## 股级胜率（同动量中性化后）",
+        "",
+        "问的是「选出的票自己赚不赚钱」，判正门槛已扣往返成本。对照与收益口径同源：同一批配对候选、同一条基准篮。",
+        "",
+        "| H | 天数 | 候选胜率 | 配对对照 | 胜率超额 | t | 随机控制区间 | 判定 |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for h, block in result["horizons"].items():
+        m, gap = block["matched"], block.get("win_control_gap", {})
+        if m.get("stock_win_excess_pct") is None:
+            lines.append(f"| T+{h} | {m['days']} | — | — | — | — | — | 样本不足(<{MIN_DAYS}) |")
+            continue
+        band = (
+            "—"
+            if gap.get("verdict") == "样本不足"
+            else f"{gap['control_excess_min']:+.2f}~{gap['control_excess_max']:+.2f}pct"
+        )
+        lines.append(
+            f"| T+{h} | {m['days']} | {m['stock_win_pct']:.1f}% | {m['stock_win_control_pct']:.1f}% "
+            f"| {m['stock_win_excess_pct']:+.2f}pct | {m['stock_win_excess_t']:+.2f} "
+            f"| {band} | {gap.get('verdict', '—')} |"
         )
     return lines
 
@@ -167,6 +204,7 @@ def render(result: dict, status: str) -> str:
             f"（均值 {gap['control_excess_avg']:+.3f}，宽度 {gap['seed_spread']:.3f}），"
             f"差距 {gap['gap']:+.3f}pct → {gap['verdict']}"
         )
+    lines += render_win_rate(result)
     lines += ["", "## 怎么读", "", *read_absolute_notes(result)]
     if inside:
         lines += [
@@ -211,6 +249,8 @@ def main() -> int:
             "matched": matched.as_dict(),
             "controls": [c.as_dict() for c in controls],
             "control_gap": control_gap(matched, controls),
+            # 胜率自己过一遍同一道否证：收益过了不代表胜率过了（风格择时那轮两栏分家）。
+            "win_control_gap": win_control_gap(matched, controls),
         }
 
     print(render(result, args.status))

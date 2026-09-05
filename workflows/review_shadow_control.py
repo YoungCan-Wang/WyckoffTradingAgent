@@ -12,11 +12,14 @@ full-market-control-confounds-momentum 记的就是这个坑：候选动量 +19%
 统计全部复用 ``core.funnel_effect_eval``（``match_by_momentum`` / ``sample_momentum_band``
 / ``control_gap``），这里只做形状适配，不新写一套统计口径。
 
-三栏必须同时读
+四栏必须同时读
 --------------
-- ``absolute``：拿着这批票赚不赚钱（分母=全部车道票）。
+- ``absolute``：拿着这批票赚不赚钱（分母=全部车道票），含**股级**胜率。
 - ``matched``：同动量同侪里选得好不好（分母=配对成功的子集，与对照组一致）。
-- ``control_gap``：超额是不是只来自动量选位。这是唯一能否掉「该补强」的一环。
+- ``control_gap``：收益超额是不是只来自动量选位。
+- ``win_control_gap``：胜率超额是不是只来自动量选位。胜率必须自己过一遍控制，
+  不能借收益那一栏的结论——风格择时那轮实测两栏分家：收益过了月内置换
+  （T+5 p=0.025），胜率没过（p=0.284）。
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ from core.funnel_effect_eval import (
     evaluate_daily,
     summarize_absolute,
     summarize_group,
+    win_control_gap,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - 仅类型标注，避免运行时强依赖
@@ -78,6 +82,8 @@ def evaluate_lane_control(
             "matched": matched.as_dict(),
             "controls": [c.as_dict() for c in controls],
             "control_gap": control_gap(matched, controls),
+            # 车道比较同样要看胜率:两条车道的收益差与胜率差实测会分家。
+            "win_control_gap": win_control_gap(matched, controls),
         }
     return result
 
@@ -123,13 +129,27 @@ def control_verdict_lines(summary: dict[str, Any]) -> list[str]:
 
 
 def _cell_line(cell: dict[str, Any]) -> str:
-    """绝对与超额同时出：任何一栏单看都会得出相反结论。"""
+    """绝对、股级胜率、超额同时出：任何一栏单看都会得出相反结论。
+
+    ``positive_day_pct`` 是**日级**的（当天这一篮均值为正的日子占比），不是胜率，
+    早先这里就把它写成了「胜率」。一篮 3 只 +20% / 7 只 -5%，日级算赢、股级只有
+    30%，两者能同时成立。真正回答「选出来的票赚不赚钱」的是 ``stock_win_pct``。
+    """
     absolute = cell.get("absolute") or {}
     matched = cell.get("matched") or {}
     gap = cell.get("control_gap") or {}
-    abs_txt = f"绝对 {_num(absolute.get('net_pct'))}%（胜率 {_num(absolute.get('positive_day_pct'))}%，{absolute.get('verdict')}）"
-    exc_txt = f"配对超额 {_num(matched.get('excess_pct'))}pct（t={_num(matched.get('excess_t'))}）"
-    return f"{abs_txt}；{exc_txt}；{gap.get('verdict') or '样本不足'}"
+    win_gap = cell.get("win_control_gap") or {}
+    abs_txt = (
+        f"绝对 {_num(absolute.get('net_pct'))}%"
+        f"（股级胜率 {_num(absolute.get('stock_win_pct'))}%，"
+        f"正收益日 {_num(absolute.get('positive_day_pct'))}%，{absolute.get('verdict')}）"
+    )
+    exc_txt = f"配对超额 {_num(matched.get('excess_pct'))}pct（t={_num(matched.get('excess_t'))}）→ {gap.get('verdict') or '样本不足'}"
+    win_txt = (
+        f"胜率超额 {_num(matched.get('stock_win_excess_pct'))}pct"
+        f"（t={_num(matched.get('stock_win_excess_t'))}）→ {win_gap.get('verdict') or '样本不足'}"
+    )
+    return f"{abs_txt}；{exc_txt}；{win_txt}"
 
 
 def _num(value: Any) -> str:
