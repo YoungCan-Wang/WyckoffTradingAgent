@@ -1,0 +1,92 @@
+name: Style Timing Evaluation
+
+# 风格择时体检:池子自己的近期强弱能不能预测池子接下来的表现。
+# 起因:入池与池内排序两层都已证实无增量(月级 t=+1.03 / 6-6 落随机带内),
+# 择时这条线上只有「池子近 5 日强弱」活下来,而且只在收益口径上活。
+# 单轮 69 天 4 个月说不了话,所以每月重跑一次看能否跨周期稳定,再谈动不动生产开关。
+#
+# 三个口径都要跑:T+5 收益、T+10 收益、先触碰胜率。胜率口径当前没过月内置换
+# (p=0.281),而胜率是第一优先级 —— 它恰恰是最需要攒样本看会不会转正的那个。
+on:
+  schedule:
+    # UTC 每月 3 日 02:17 = 北京时间 10:17。避开整点与 :00/:30,别和别的任务挤。
+    # 取 3 日:上月数据已收全,且前瞻窗口对上月末几天也已凑齐。
+    - cron: "17 2 3 * *"
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "起始日期 YYYY-MM-DD,留空取全部"
+        default: ""
+
+concurrency:
+  group: style-timing-eval-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    # 逐只取价约 1 只/秒,单口径 2372 只约 40 分钟,三个口径顺序跑要 2 小时出头。
+    # 不并行:三个 job 同时打同一个数据源(tickflow/tushare)容易触发限流,
+    # 而限流的表现是「部分标的取空」——那会静默改变样本构成,比跑得慢危险得多。
+    timeout-minutes: 300
+    env:
+      PYTHONUNBUFFERED: "1"
+      # 只读 signal_outcomes 与行情,不写库;故不设 WYCKOFF_WRITE_CONTEXT。
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+      FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+      TZ: Asia/Shanghai
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      # 收益口径两个 horizon 各推一次;胜率口径只推一次(它不依赖 horizon)。
+      - name: Evaluate T+5 forward return
+        run: |
+          python scripts/evaluate_style_timing.py --horizon 5 \
+            ${{ github.event.inputs.start && format('--start {0}', github.event.inputs.start) || '' }}
+
+      - name: Evaluate T+10 forward return
+        run: |
+          python scripts/evaluate_style_timing.py --horizon 10 \
+            ${{ github.event.inputs.start && format('--start {0}', github.event.inputs.start) || '' }}
+
+      # 胜率是第一优先级的口径,但它当前没过月内置换。--no-notify:三条推送太吵,
+      # 结论看产物即可;真要盯的是它哪个月开始过置换。
+      - name: Evaluate first-touch win rate
+        run: |
+          python scripts/evaluate_style_timing.py --value win --no-notify \
+            ${{ github.event.inputs.start && format('--start {0}', github.event.inputs.start) || '' }}
+
+      # 从第一天就用 error,不用 warn。姊妹 workflow(regime_forward_eval)因为 warn,
+      # 连续两次定时跑什么都没留下却显示成功,藏了两周。
+      - name: Verify evidence written
+        if: always()
+        run: |
+          ls -la docs/evidence/ || echo "docs/evidence 不存在"
+          for f in style_timing_h5_forward.json style_timing_h10_forward.json style_timing_win.json; do
+            test -f "docs/evidence/$f" || { echo "::error::$f 未落盘,证据会丢失"; exit 1; }
+          done
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: style-timing-evidence
+          path: docs/evidence/style_timing_*.json
+          if-no-files-found: error

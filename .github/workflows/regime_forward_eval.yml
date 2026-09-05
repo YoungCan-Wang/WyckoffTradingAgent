@@ -56,10 +56,21 @@ jobs:
             --horizon "${{ github.event.inputs.horizon || '5' }}" \
             --index "${{ github.event.inputs.index || '000001' }}"
 
+      # 定时跑连续两次(08-22、08-29)都只留下 ##[warning]No files were found,
+      # 手动 dispatch 却每次都有产物 —— 同一份 workflow、同一条已解析命令
+      # (--horizon "5")、脚本本地跑必写文件。机制没查清,先让它响:
+      # warn 会把「每月重跑看跨周期稳定」的证据静默丢掉,error 至少下一次定时跑就暴露。
+      - name: Verify evidence written
+        if: always()
+        run: |
+          ls -la docs/evidence/ || echo "docs/evidence 不存在"
+          test -n "$(find docs/evidence -name 'regime_forward_h*.json' -print -quit 2>/dev/null)" \
+            || { echo "::error::报告未落盘,证据会丢失"; exit 1; }
+
       - name: Upload evidence
         uses: actions/upload-artifact@v7
         if: always()
         with:
           name: regime-forward-evidence
           path: docs/evidence/regime_forward_h*.json
-          if-no-files-found: warn
+          if-no-files-found: error
