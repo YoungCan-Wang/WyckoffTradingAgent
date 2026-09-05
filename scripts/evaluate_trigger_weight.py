@@ -185,6 +185,40 @@ def merge_panel(feats: pd.DataFrame, panel: pd.DataFrame) -> pd.DataFrame:
     return merged
 
 
+def build_replay_payload(market: pd.DataFrame) -> dict[str, object]:
+    """把全市场行情摊成共享给子进程的列数组。
+
+    单独成函数是为了让测试能不起进程池就走完整条重放路径：
+    build_replay_payload -> _init_worker -> _replay_symbol。之前这段内联在
+    gen_panel 里，测试只能另手搓一个帧,于是漏列这类事测不出来 —— 首轮定时轮
+    就是死在这:帧里没 pct_chg,_detect_evr 与 _detect_sos 在池子里抛 KeyError。
+    """
+    df = market.copy()
+    if "pct_chg" not in df.columns:
+        # 缓存行情可能是早于 FIELDS 的旧文件。不用 close.pct_change() 兜底：
+        # tushare daily 给的是不复权价，除权日 close 跳空，推出来的涨跌幅在那些
+        # 日子上是假的大值，正好落在 _detect_evr / _detect_sos 的判据上。
+        raise SystemExit(f"缓存行情缺 pct_chg 列，删掉 {PANEL_CACHE}/market.csv 重新取数")
+    for col in ("open", "high", "low", "close", "vol"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df.dropna(subset=["open", "high", "low", "close", "vol"])
+    # pct_chg 不进 dropna：每只票首个 bar 无前收,天然是 NaN,检测器逐日自己判
+    # （_detect_evr 在 day_pct 处、_detect_sos 同式）。丢行会把首 bar 连带删掉。
+    df["pct_chg"] = pd.to_numeric(df["pct_chg"], errors="coerce")
+    codes, cidx = np.unique(df["ts_code"].to_numpy(), return_inverse=True)
+    return {
+        "codes": codes,
+        "cidx": cidx,
+        "dates": df["trade_date"].to_numpy(dtype=np.int64),
+        "open": df["open"].to_numpy(dtype=np.float64),
+        "high": df["high"].to_numpy(dtype=np.float64),
+        "low": df["low"].to_numpy(dtype=np.float64),
+        "close": df["close"].to_numpy(dtype=np.float64),
+        "volume": df["vol"].to_numpy(dtype=np.float64),
+        "pct_chg": df["pct_chg"].to_numpy(dtype=np.float64),
+    }
+
+
 _PANEL: dict[str, object] = {}
 
 
@@ -206,6 +240,9 @@ def _replay_symbol(ci: int) -> list[tuple[str, int, float, int, str]]:
     mask = cidx == ci
     if int(mask.sum()) < MIN_BARS:
         return []
+    # 这些列名要和生产 df_map 对齐:六个检测器里 _detect_evr 与 _detect_sos 都读
+    # pct_chg,缺了会在池子里抛 KeyError 而整轮重放退出（面板生成不了,依赖它的
+    # Trigger Points Eval 也跟着挂）。加列前先看 production_detectors() 读了什么。
     frame = pd.DataFrame(
         {
             "date": _PANEL["dates"][mask],  # type: ignore[index]
@@ -214,6 +251,7 @@ def _replay_symbol(ci: int) -> list[tuple[str, int, float, int, str]]:
             "low": _PANEL["low"][mask],  # type: ignore[index]
             "close": _PANEL["close"][mask],  # type: ignore[index]
             "volume": _PANEL["volume"][mask],  # type: ignore[index]
+            "pct_chg": _PANEL["pct_chg"][mask],  # type: ignore[index]
         }
     ).sort_values("date", ignore_index=True)
     out: list[tuple[str, int, float, int, str]] = []
@@ -237,21 +275,8 @@ def gen_panel(market: pd.DataFrame, cache: Path, workers: int) -> None:
     """多进程重放触发面板。全市场约 90 分钟，结果落缓存供后续统计复用。"""
     from multiprocessing import Pool, cpu_count
 
-    df = market.copy()
-    for col in ("open", "high", "low", "close", "vol"):
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    df = df.dropna(subset=["open", "high", "low", "close", "vol"])
-    codes, cidx = np.unique(df["ts_code"].to_numpy(), return_inverse=True)
-    payload = {
-        "codes": codes,
-        "cidx": cidx,
-        "dates": df["trade_date"].to_numpy(dtype=np.int64),
-        "open": df["open"].to_numpy(dtype=np.float64),
-        "high": df["high"].to_numpy(dtype=np.float64),
-        "low": df["low"].to_numpy(dtype=np.float64),
-        "close": df["close"].to_numpy(dtype=np.float64),
-        "volume": df["vol"].to_numpy(dtype=np.float64),
-    }
+    payload = build_replay_payload(market)
+    codes = payload["codes"]
     n_workers = workers if workers > 0 else max(cpu_count() - 2, 2)
     print(f"[trigw] 重放 {len(codes)} 只 / {n_workers} 进程")
     rows: list[tuple[str, int, float, int, str]] = []

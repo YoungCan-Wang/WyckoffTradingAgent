@@ -548,3 +548,97 @@ class TestReplayWrappers:
     def test_replay_bars_cover_the_longest_lookback(self):
         """检测器要看 200 日 MA;预热不够会把早段截面静默判成不触发。"""
         assert MIN_REPLAY_BARS >= 210
+
+    def test_every_detector_runs_on_the_replay_frame(self):
+        """六个检测器都得能吃下重放帧。
+
+        首轮定时轮（33953595070）就是死在这:重放帧只摊了 open/high/low/close/
+        volume,而 _detect_evr 与 _detect_sos 都读 pct_chg,于是在进程池里抛
+        KeyError、整轮退出,面板没生成,依赖面板的 Trigger Points Eval 跟着挂。
+        逐个检测器单独断言,漏哪一列能直接看出是哪个检测器要的。
+        """
+        import numpy as np
+        import pandas as pd
+
+        from core.wyckoff_engine import FunnelConfig
+
+        n = MIN_REPLAY_BARS + 20
+        rng = np.random.default_rng(11)
+        close = 10.0 * np.cumprod(1.0 + rng.normal(0.0004, 0.02, n))
+        frame = pd.DataFrame(
+            {
+                "date": [int(d.strftime("%Y%m%d")) for d in pd.bdate_range("2025-01-02", periods=n)],
+                "open": close * (1 + rng.normal(0, 0.004, n)),
+                "high": close * (1 + np.abs(rng.normal(0, 0.012, n))),
+                "low": close * (1 - np.abs(rng.normal(0, 0.012, n))),
+                "close": close,
+                "volume": rng.integers(4_000_000, 40_000_000, n).astype(float),
+                "pct_chg": pd.Series(close).pct_change().mul(100).to_numpy(),
+            }
+        )
+        cfg = FunnelConfig()
+        limit = replay_entry_bias_limit("600000.SH", frame, cfg)
+        for kind, fn in production_detectors():
+            score = fn(frame, cfg, max_bias_200=limit, code="600000.SH")
+            assert score is None or isinstance(score, float), kind
+
+    def test_replay_frame_carries_every_column_detectors_read(self):
+        """走完 build_replay_payload -> _init_worker -> _replay_symbol 这条真实路径。
+
+        不起进程池:池子里的异常会被包成 RemoteTraceback,测试里看不清是谁抛的。
+        直接在本进程调 worker,漏列会以原样 KeyError 冒出来。
+        """
+        import numpy as np
+        import pandas as pd
+
+        from scripts.evaluate_trigger_weight import _init_worker, _replay_symbol, build_replay_payload
+
+        n = MIN_REPLAY_BARS + 15
+        rng = np.random.default_rng(3)
+        rows = []
+        for code in ("600000.SH", "300001.SZ"):
+            close = 10.0 * np.cumprod(1.0 + rng.normal(0.0005, 0.022, n))
+            for i, day in enumerate(pd.bdate_range("2025-01-02", periods=n)):
+                prev = close[i - 1] if i else close[0]
+                rows.append(
+                    {
+                        "ts_code": code,
+                        "trade_date": int(day.strftime("%Y%m%d")),
+                        "open": close[i] * 0.998,
+                        "high": close[i] * 1.012,
+                        "low": close[i] * 0.988,
+                        "close": close[i],
+                        "vol": float(rng.integers(4_000_000, 40_000_000)),
+                        "amount": float(rng.integers(80_000, 900_000)),
+                        "pct_chg": (close[i] / prev - 1.0) * 100.0,
+                    }
+                )
+        payload = build_replay_payload(pd.DataFrame(rows))
+        _init_worker(payload)
+        for ci in range(len(payload["codes"])):
+            for row in _replay_symbol(ci):
+                assert len(row) == 5
+
+    def test_missing_pct_chg_fails_loudly_instead_of_deriving(self):
+        """旧缓存缺列时要报错退出,不许用 close.pct_change() 兜底。
+
+        tushare daily 是不复权价,除权日 close 跳空,推出来的涨跌幅在那几天是假的
+        大值 —— 正好落在 _detect_evr / _detect_sos 的判据上,面板会静默变脏。
+        """
+        import pandas as pd
+
+        from scripts.evaluate_trigger_weight import build_replay_payload
+
+        market = pd.DataFrame(
+            {
+                "ts_code": ["600000.SH"] * 3,
+                "trade_date": [20250102, 20250103, 20250106],
+                "open": [10.0, 10.1, 10.2],
+                "high": [10.3, 10.4, 10.5],
+                "low": [9.9, 10.0, 10.1],
+                "close": [10.1, 10.2, 10.3],
+                "vol": [1e6, 1.1e6, 1.2e6],
+            }
+        )
+        with pytest.raises(SystemExit, match="pct_chg"):
+            build_replay_payload(market)
