@@ -19,11 +19,16 @@ name: Review Shadow Backtest
 #   core.funnel_effect_eval.MIN_DAYS 个交易日才下判定。
 #
 # ⚠️ 样本天数是这个任务的硬约束，不是它跑得对不对的问题。trace 只活在
-#   `daily-job-artifacts-*` 里（retention-days: 30 ≈ 22 个交易日），恰好压在
-#   MIN_DAYS 线上：本地那 18 份只留下 15 个可评估日，三条车道全部返回
-#   「交易日仅 15 天，不足 20 天，不下判定」。所以本任务显式打印
-#   trace_days 与 MIN_DAYS 的对比 —— 「不下判定」必须读成样本不够，
+#   `daily-job-artifacts-*` 里,过期即永久消失。要点是**可评估日 = trace_days - h**:
+#   最后 h 天没有 T+h 行情,panels.window 返回 None 被跳过。所以 T+5 要过
+#   MIN_DAYS=20,至少需要 25 个交易日的 trace,而不是 20 个。
+#   2026-09-05 首次定时实跑就撞在这里:trace_days=20,T+1 剩 19 天 / T+3 剩 17 /
+#   T+5 剩 15,三条车道每一格都是「样本不足」。上游 retention 已从 30 天
+#   （≈21 个交易日）提到 90 天,攒够 25 天后 T+5 才会开始出判定。
+#   本任务显式打印每档的「可评估日 vs MIN_DAYS」—— 「不下判定」必须读成样本不够，
 #   不能读成对照没通过（那是两个完全不同的结论）。
+#   另注:产物里 avg_size=0.0 是样本不足分支的哨兵值（core/funnel_effect_eval.py
+#   的 summarize_group / summarize_absolute），不表示当日篮子是空的,别据此查取数。
 #   真正的解法是 review_shadow_lane_daily 落库（见 core/review_shadow_lane_schema.py），
 #   建表后样本不再随 artifact 过期而消失；本任务是那之前的过渡口径。
 #
@@ -36,11 +41,14 @@ on:
   workflow_dispatch:
     inputs:
       max_artifacts:
-        description: "最多扫描多少次生产漏斗运行（越大样本越长，但下载耗时线性增长；artifact 只留 30 天，超过约 30 次纯属白扫）"
-        default: "40"
+        description: "最多扫描多少次生产漏斗运行（越大样本越长，但下载耗时线性增长；artifact 留 90 天，超过约 90 次纯属白扫）"
+        default: "70"
       snapshot_trading_days:
         description: "快照预取长度：取数窗口 = 起点往前 2×该值个自然日。要盖住 trace 跨度 + 动量预热"
-        default: "60"
+        # retention 90 天后 trace 跨度可达 ~60 个交易日,加 mom20/avg20 预热与 T+5
+        # 右端,须 ~85 个交易日。90 → 约 180 个自然日 ≈ 123 个交易日,留足余量。
+        # 宁可多拉:盖不住的日子会静默丢掉(window 返回 None),表现成样本莫名变少。
+        default: "90"
 
 concurrency:
   group: review-shadow-backtest-${{ github.ref }}
@@ -132,8 +140,9 @@ jobs:
           set -euo pipefail
           # --start/--end 只定位窗口右端：真实取数起点是 start 往前 2×trading-days 个
           # 自然日（见 workflows/backtest_snapshot_fetch.py 的 _snapshot_range）。
-          # trading-days=60 → 约 120 个自然日 ≈ 82 个交易日，够盖住 trace 跨度（≈22 天）
-          # 加 mom20/avg20 的预热。不要沿用 320 的默认值，那会白拉两年行情。
+          # trading-days=90 → 约 180 个自然日 ≈ 123 个交易日，盖住 90 天 retention 下
+          # 的 trace 跨度（≈60 天）加 mom20/avg20 预热。不要沿用 320 的默认值，
+          # 那会白拉两年行情。
           python -u scripts/backtest_snapshot_fetch.py \
             --start "$(date +%Y-%m-%d)" \
             --end "$(date +%Y-%m-%d)" \
@@ -144,11 +153,22 @@ jobs:
       - name: Run review shadow backtest
         run: |
           set -euo pipefail
-          # MIN_DAYS 从 core 读，不在 workflow 里写死 20——阈值有两个来源就会漂移
-          # （见 memory two-gates-must-share-one-source）。
+          # MIN_DAYS 与持有期都从 core 读，不在 workflow 里写死——阈值有两个来源就会
+          # 漂移（见 memory two-gates-must-share-one-source）。
+          # 门槛不是 MIN_DAYS 而是 MIN_DAYS + max(horizon)：最后 h 天没有 T+h 行情，
+          # panels.window 返回 None 被跳过,可评估日恒等于 trace_days - h。
+          # 首次实跑就踩了这个:trace_days=20 对 min_days=20 判定「达标」不告警,
+          # 而产物里 T+1 只有 19 天、T+3 17 天、T+5 15 天,三档全是「样本不足」。
           min_days="$(python -c 'from core.funnel_effect_eval import MIN_DAYS; print(MIN_DAYS)')"
-          echo "[review-shadow] 样本 ${TRACE_DAYS} 个交易日 / 同动量对照下判定门槛 ${min_days} 天"
-          if [ "$TRACE_DAYS" -lt "$min_days" ]; then
+          horizons="$(python -c 'from workflows.review_shadow_control import CONTROL_HORIZONS; print(*CONTROL_HORIZONS)')"
+          max_h="$(python -c 'from workflows.review_shadow_control import CONTROL_HORIZONS; print(max(CONTROL_HORIZONS))')"
+          need=$((min_days + max_h))
+          echo "[review-shadow] 样本 ${TRACE_DAYS} 个交易日 / 最长持有期 T+${max_h}"
+          echo "[review-shadow] 可评估日 = trace_days - h,故 T+${max_h} 下判定需 ${need} 天(MIN_DAYS=${min_days})"
+          for h in $horizons; do
+            echo "[review-shadow]   T+${h} 可评估 $((TRACE_DAYS - h)) 天 / 需 ${min_days} 天"
+          done
+          if [ "$TRACE_DAYS" -lt "$need" ]; then
             echo "[review-shadow] ⚠️ 低于门槛：momentum_control 会返回「不下判定」。"
             echo "[review-shadow] 这是样本不足，不是对照未通过——不要据此认为车道无效。"
           fi

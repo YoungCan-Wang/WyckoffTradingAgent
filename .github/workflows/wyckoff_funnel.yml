@@ -181,7 +181,13 @@ jobs:
           path: |
             logs/*.log
             artifacts/**
-          retention-days: 30
+          # 90 天不是随手放宽:review_shadow_backtest 的 trace 只活在这份 artifact 里,
+          # 过期即样本永久消失。同动量对照要 MIN_DAYS=20 个**可评估**日,而最后 5 天没有
+          # T+5 行情,故最短需 25 个交易日 ≈ 35 个自然日;30 天只够 21 天,T+5 恒为
+          # 「样本不足」——2026-09-05 首跑实测 trace_days=20 → T+5 仅 15 天。
+          # 单份 0.2MB、仓库 public(90 天为上限),约 60 份合计 ~12MB。
+          # 真正的解法仍是 review_shadow_lane_daily 落库,届时这里可以调回 30。
+          retention-days: 90
           if-no-files-found: warn
 
       - name: Notify on failure
