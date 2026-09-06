@@ -32,8 +32,16 @@ const REMOTE = 'remote'
 /** 配对码有效期。够扫码，短到照片泄露的价值有限。 */
 const PAIR_TTL_MS = 3 * 60 * 1000
 
+/**
+ * 配对成功后发给手机的设备凭证有效期。
+ * 断线重连靠它，不再消耗一次性二维码；主人点「全部断开」会清掉。
+ */
+const DEVICE_GRANT_TTL_MS = 7 * 24 * 60 * 60 * 1000
+
 /** 一个账号最多几台远程设备同时在线。防止 code 泄露后被大量挂连接。 */
 const MAX_REMOTES = 8
+
+const DEVICE_GRANTS_KEY = 'device_grants'
 
 type Role = typeof HOST | typeof REMOTE
 
@@ -46,6 +54,11 @@ interface Meta {
 
 interface PairRecord {
   code: string
+  expires: number
+}
+
+interface DeviceGrant {
+  token: string
   expires: number
 }
 
@@ -87,8 +100,9 @@ export class RemoteRelay {
       return Response.json({ error: 'bad payload' }, { status: 400 })
     }
     if (connId === '*') {
-      // 作废配对码 + 踢掉所有 remote。用户点「全部断开」时用。
+      // 作废配对码 + 设备凭证 + 踢掉所有 remote。用户点「全部断开」时用。
       await this.ctx.storage.delete('pair')
+      await this.ctx.storage.delete(DEVICE_GRANTS_KEY)
       let closed = 0
       for (const socket of this.ctx.getWebSockets()) {
         if (this.metaOf(socket)?.role === REMOTE) {
@@ -114,12 +128,16 @@ export class RemoteRelay {
     const role: Role = url.searchParams.get('role') === HOST ? HOST : REMOTE
     const label = (url.searchParams.get('label') || '').slice(0, 60) || (role === HOST ? '电脑' : '手机')
 
+    let freshGrant: DeviceGrant | null = null
     if (role === REMOTE) {
-      // 手机必须出示有效的一次性配对码。仅凭账号 token 不够 —— token 可能在
-      // 别的设备上，而配对是「这台设备被主人当场授权过」的证据。
-      const supplied = url.searchParams.get('code') || ''
-      const ok = await this.consumePair(supplied)
-      if (!ok) return new Response('Pairing required', { status: 403 })
+      // 手机必须出示一次性配对码，或此前配对成功后下发的设备凭证。
+      // 仅凭账号 token 不够 —— token 可能在别的未授权设备上。
+      const auth = await this.authorizeRemote(
+        url.searchParams.get('code') || '',
+        url.searchParams.get('device') || '',
+      )
+      if (!auth.ok) return new Response('Pairing required', { status: 403 })
+      freshGrant = auth.freshGrant
       const online = this.ctx.getWebSockets().filter((s) => this.metaOf(s)?.role === REMOTE).length
       if (online >= MAX_REMOTES) return new Response('Too many devices', { status: 429 })
     } else {
@@ -136,8 +154,31 @@ export class RemoteRelay {
     // 休眠后仍然读得到 —— 普通字段会随实例被回收而丢失。
     this.ctx.acceptWebSocket(pair[1])
     pair[1].serializeAttachment(meta)
+    if (freshGrant) {
+      this.sendQuietly(
+        pair[1],
+        JSON.stringify({
+          type: 'device_grant',
+          token: freshGrant.token,
+          expires_in_ms: DEVICE_GRANT_TTL_MS,
+        }),
+      )
+    }
     this.broadcastPresence()
     return new Response(null, { status: 101, webSocket: pair[0], headers: acceptedProtocol(request) })
+  }
+
+  private async authorizeRemote(
+    code: string,
+    deviceToken: string,
+  ): Promise<{ ok: boolean; freshGrant: DeviceGrant | null }> {
+    if (await this.consumePair(code)) {
+      return { ok: true, freshGrant: await this.mintDeviceGrant() }
+    }
+    if (await this.hasValidDeviceGrant(deviceToken)) {
+      return { ok: true, freshGrant: null }
+    }
+    return { ok: false, freshGrant: null }
   }
 
   private async consumePair(supplied: string): Promise<boolean> {
@@ -149,6 +190,33 @@ export class RemoteRelay {
     if (record.code !== supplied) return false
     await this.ctx.storage.delete('pair')
     return true
+  }
+
+  private async mintDeviceGrant(): Promise<DeviceGrant> {
+    const grant: DeviceGrant = {
+      token: crypto.randomUUID().replace(/-/g, ''),
+      expires: Date.now() + DEVICE_GRANT_TTL_MS,
+    }
+    const grants = await this.loadDeviceGrants()
+    grants.push(grant)
+    await this.ctx.storage.put(DEVICE_GRANTS_KEY, grants.slice(-MAX_REMOTES))
+    return grant
+  }
+
+  private async hasValidDeviceGrant(token: string): Promise<boolean> {
+    if (!token) return false
+    const now = Date.now()
+    const grants = await this.loadDeviceGrants()
+    const alive = grants.filter((g) => g.expires >= now)
+    if (alive.length !== grants.length) {
+      await this.ctx.storage.put(DEVICE_GRANTS_KEY, alive)
+    }
+    return alive.some((g) => g.token === token)
+  }
+
+  private async loadDeviceGrants(): Promise<DeviceGrant[]> {
+    const raw = (await this.ctx.storage.get<DeviceGrant[]>(DEVICE_GRANTS_KEY)) || []
+    return Array.isArray(raw) ? raw : []
   }
 
   /**

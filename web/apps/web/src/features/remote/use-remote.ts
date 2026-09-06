@@ -25,11 +25,42 @@ type Waiter = {
 
 export type LinkState = 'connecting' | 'paired' | 'host_offline' | 'unauthorized' | 'failed'
 
+const PAIRED_FLAG_KEY = 'wyckoff.paired'
+const DEVICE_TOKEN_KEY = 'wyckoff.remote_device'
+
 /** 配对码从 URL hash 里来（电脑生成的二维码带着它）。 */
 export function pairingCodeFromHash(hash: string): string {
   const match = /(?:^|[#&])code=([0-9a-z]+)/i.exec(hash || '')
   // noUncheckedIndexedAccess 下捕获组是 string | undefined，即便正则保证它存在。
   return match?.[1] ?? ''
+}
+
+export function readStoredDeviceToken(): string {
+  try {
+    return sessionStorage.getItem(DEVICE_TOKEN_KEY) || ''
+  } catch {
+    return ''
+  }
+}
+
+export function storeDeviceGrant(token: string): void {
+  const value = String(token || '').trim()
+  if (!value) return
+  try {
+    sessionStorage.setItem(DEVICE_TOKEN_KEY, value)
+    sessionStorage.setItem(PAIRED_FLAG_KEY, '1')
+  } catch {
+    // sessionStorage 不可用时仍可本会话连一次；重连会再要二维码。
+  }
+}
+
+export function clearRemotePairingState(): void {
+  try {
+    sessionStorage.removeItem(DEVICE_TOKEN_KEY)
+    sessionStorage.removeItem(PAIRED_FLAG_KEY)
+  } catch {
+    // ignore
+  }
 }
 
 /** 建连所需的一切可变状态。从 useRemote 里抽出来，好让 wiring 逻辑离开 hook。 */
@@ -55,6 +86,10 @@ function handleMessage (raw: string, deps: SocketDeps): void {
   } catch {
     return
   }
+  if (payload.type === 'device_grant') {
+    storeDeviceGrant(String(payload.token || ''))
+    return
+  }
   if (payload.type === 'presence') {
     deps.setState(payload.host_online ? 'paired' : 'host_offline')
     return
@@ -75,7 +110,12 @@ function handleMessage (raw: string, deps: SocketDeps): void {
 function handleClose (evt: CloseEvent, deps: SocketDeps): void {
   deps.socket.current = null
   // 4003 = 被电脑端踢掉。那是用户主动的决定，不该自动爬回来。
-  if (evt.code === 4003) { deps.closed.current = true; deps.setState('unauthorized'); return }
+  if (evt.code === 4003) {
+    clearRemotePairingState()
+    deps.closed.current = true
+    deps.setState('unauthorized')
+    return
+  }
   if (deps.closed.current) return
   // 挂起的调用要收到失败，否则界面永久转圈。
   for (const waiter of deps.waiters.current.values()) waiter.reject(new Error('连接断开'))
@@ -86,22 +126,26 @@ function handleClose (evt: CloseEvent, deps: SocketDeps): void {
   setTimeout(deps.reconnect, delay)
 }
 
-/** 拿 token 和配对码，拼出 WS 地址。返回 null 表示不具备连接条件。 */
+/** 拿 token 与凭证，拼出 WS 地址。返回 null 表示不具备连接条件。 */
 async function resolveSocketUrl (setState: (n: LinkState) => void): Promise<{ url: string; token: string; code: string } | null> {
   const { data } = await supabase.auth.getSession()
   const token = data.session?.access_token
   if (!token) { setState('unauthorized'); return null }
 
-  // 配对码只在第一次连接时用（信箱那边一次性消费）。存进 sessionStorage 是为了
-  // 熬过重连 —— 但重连时不再带它，否则第二次必然因为「码已用掉」被拒。
+  // 首次扫码用一次性 code；之后信箱会下发 device grant，断线重连只带 grant。
+  // 若仍拿已消费的 code 去连，服务端必然 403。只有 flag、没有凭证时清掉，逼用户重新扫。
   const code = pairingCodeFromHash(window.location.hash)
-  if (code) sessionStorage.setItem('wyckoff.paired', '1')
-  const paired = sessionStorage.getItem('wyckoff.paired') === '1'
-  if (!code && !paired) { setState('unauthorized'); return null }
+  const device = readStoredDeviceToken()
+  if (!code && !device) {
+    clearRemotePairingState()
+    setState('unauthorized')
+    return null
+  }
 
   // 复用 apiUrl 而不是自己拼 base：它已经处理了 dev/prod 与 VITE_API_URL 覆盖。
   const label = encodeURIComponent(navigator.userAgent.includes('iPhone') ? 'iPhone' : '手机')
-  const http = apiUrl(`/api/remote/ws?role=remote&label=${label}${code ? `&code=${code}` : ''}`)
+  const authQuery = code ? `&code=${code}` : `&device=${encodeURIComponent(device)}`
+  const http = apiUrl(`/api/remote/ws?role=remote&label=${label}${authQuery}`)
   return { url: http.replace(/^http/, 'ws'), token, code }
 }
 
