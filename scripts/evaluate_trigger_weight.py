@@ -216,7 +216,40 @@ def build_replay_payload(market: pd.DataFrame) -> dict[str, object]:
         "close": df["close"].to_numpy(dtype=np.float64),
         "volume": df["vol"].to_numpy(dtype=np.float64),
         "pct_chg": df["pct_chg"].to_numpy(dtype=np.float64),
+        "turnover": _replay_turnover(df),
     }
+
+
+def _replay_turnover(df: pd.DataFrame) -> np.ndarray:
+    """换手率(%)，与生产 workflows/funnel_data.py::_attach_turnover 同式同源。
+
+    生产在装配数据时就补了这一列，重放不补的话 _evr_turnover_ok 走"缺列即通过"
+    分支，量到的是一个比生产更松的 EVR：实测重放 EVR 触发日有 21% 落在
+    evr_min_turnover=1.5 以下，即多算约 27%。而模块头说重放触发率是"下界"
+    （漏了 L2 通道放宽），方向正相反 —— 两个偏差同时在，面板的 EVR 触发率
+    哪个方向都不构成界。
+
+    单位链错 100 倍会凭空造出或抹掉整个效应，逐段核过：生产
+    data_source_tushare 把 vol 乘 100 后存进 volume（股），这里的 vol 是
+    tushare 原始值（手），流通股本缓存已是股，故 vol*100/float_share*100。
+    """
+    from integrations.market_metadata import fetch_float_share_map
+
+    float_share_map = fetch_float_share_map()
+    if not float_share_map:
+        # 不学生产的 warning-then-continue：生产宁可少一道闸也要出票，而一份
+        # 静默量着更松检测器的评估产物比没有产物更糟 —— 拿它的幅度推断生产,
+        # 错的方向还不知道。
+        raise SystemExit("流通股本映射为空，重放会量到比生产更松的 EVR；先修数据源再跑")
+    symbols = df["ts_code"].astype(str).str.split(".").str[0]
+    # 缺流通股本的填 NaN 不填 0：_evr_turnover_ok 对 NaN 也是放行，与生产对齐；
+    # 填 0 会把方向反过来变成整只票全拒。
+    float_share = symbols.map(float_share_map).astype(float)
+    float_share = float_share.where(float_share > 0)
+    turnover = df["vol"].to_numpy(dtype=np.float64) * 100.0 / float_share.to_numpy(dtype=np.float64) * 100.0
+    covered = int(np.isfinite(turnover).sum())
+    print(f"[trigw] 换手率折算覆盖: {covered:,}/{len(turnover):,} ({covered / max(len(turnover), 1):.1%})")
+    return turnover
 
 
 _PANEL: dict[str, object] = {}
@@ -242,7 +275,9 @@ def _replay_symbol(ci: int) -> list[tuple[str, int, float, int, str]]:
         return []
     # 这些列名要和生产 df_map 对齐:六个检测器里 _detect_evr 与 _detect_sos 都读
     # pct_chg,缺了会在池子里抛 KeyError 而整轮重放退出（面板生成不了,依赖它的
-    # Trigger Points Eval 也跟着挂）。加列前先看 production_detectors() 读了什么。
+    # Trigger Points Eval 也跟着挂）。turnover 缺的表现相反 —— 不报错,
+    # _evr_turnover_ok 静默放行,量到一个比生产松 27% 的 EVR。加列前先看
+    # production_detectors() 读了什么,也看生产 df_map 装配时补了什么。
     frame = pd.DataFrame(
         {
             "date": _PANEL["dates"][mask],  # type: ignore[index]
@@ -252,6 +287,7 @@ def _replay_symbol(ci: int) -> list[tuple[str, int, float, int, str]]:
             "close": _PANEL["close"][mask],  # type: ignore[index]
             "volume": _PANEL["volume"][mask],  # type: ignore[index]
             "pct_chg": _PANEL["pct_chg"][mask],  # type: ignore[index]
+            "turnover": _PANEL["turnover"][mask],  # type: ignore[index]
         }
     ).sort_values("date", ignore_index=True)
     out: list[tuple[str, int, float, int, str]] = []

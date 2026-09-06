@@ -582,7 +582,7 @@ class TestReplayWrappers:
             score = fn(frame, cfg, max_bias_200=limit, code="600000.SH")
             assert score is None or isinstance(score, float), kind
 
-    def test_replay_frame_carries_every_column_detectors_read(self):
+    def test_replay_frame_carries_every_column_detectors_read(self, monkeypatch):
         """走完 build_replay_payload -> _init_worker -> _replay_symbol 这条真实路径。
 
         不起进程池:池子里的异常会被包成 RemoteTraceback,测试里看不清是谁抛的。
@@ -591,8 +591,10 @@ class TestReplayWrappers:
         import numpy as np
         import pandas as pd
 
+        import integrations.market_metadata as meta
         from scripts.evaluate_trigger_weight import _init_worker, _replay_symbol, build_replay_payload
 
+        monkeypatch.setattr(meta, "fetch_float_share_map", lambda: {"600000": 1e9, "300001": 5e8})
         n = MIN_REPLAY_BARS + 15
         rng = np.random.default_rng(3)
         rows = []
@@ -614,6 +616,11 @@ class TestReplayWrappers:
                     }
                 )
         payload = build_replay_payload(pd.DataFrame(rows))
+        # 生产 df_map 在装配阶段补了 turnover(workflows/funnel_data.py::_attach_turnover)。
+        # 单靠上面那趟 _replay_symbol 兜不住这一列:漏了它 _evr_turnover_ok 走
+        # "缺列即通过"分支,不抛错、面板照样生成,只是量到的 EVR 比生产宽约 27%。
+        # 所以这里显式点名,别删。
+        assert "turnover" in payload
         _init_worker(payload)
         for ci in range(len(payload["codes"])):
             for row in _replay_symbol(ci):
@@ -641,4 +648,70 @@ class TestReplayWrappers:
             }
         )
         with pytest.raises(SystemExit, match="pct_chg"):
+            build_replay_payload(market)
+
+    def test_replay_turnover_matches_production_units(self, monkeypatch):
+        """换手率的**数值**要对,不只是列在。
+
+        断言具体数字是因为这里的静默腐化模式是差 100 倍:生产
+        data_source_tushare 把 vol 乘 100 存进 volume(股),而这里的 vol 是 tushare
+        原始值(手),流通股本缓存已是股。少乘一次 100 就让全市场换手率变成百分之
+        一,evr_min_turnover=1.5 从此恒不通过 —— 只断言列在的话测不出来。
+
+        50,000 手 = 500 万股,流通股本 10 亿股,换手率 0.5%。
+        """
+        import numpy as np
+        import pandas as pd
+
+        import integrations.market_metadata as meta
+        from scripts.evaluate_trigger_weight import build_replay_payload
+
+        monkeypatch.setattr(meta, "fetch_float_share_map", lambda: {"600000": 1e9})
+        market = pd.DataFrame(
+            {
+                "ts_code": ["600000.SH", "600000.SH", "000002.SZ"],
+                "trade_date": [20250102, 20250103, 20250102],
+                "open": [10.0, 10.1, 20.0],
+                "high": [10.3, 10.4, 20.5],
+                "low": [9.9, 10.0, 19.5],
+                "close": [10.1, 10.2, 20.2],
+                "vol": [50_000.0, 100_000.0, 50_000.0],
+                "pct_chg": [1.0, 0.99, 1.0],
+            }
+        )
+        turnover = np.asarray(build_replay_payload(market)["turnover"], dtype=float)
+        # 行序跟着 build_replay_payload 里的 dropna,按 ts_code 定位而非猜下标
+        by_code = dict(zip(market["ts_code"] + market["trade_date"].astype(str), turnover))
+        assert by_code["600000.SH20250102"] == pytest.approx(0.5)
+        assert by_code["600000.SH20250103"] == pytest.approx(1.0)
+        # 映射里没有的票填 NaN 不填 0:_evr_turnover_ok 对 NaN 放行(与生产一致),
+        # 填 0 会反向变成整只票全拒。
+        assert np.isnan(by_code["000002.SZ20250102"])
+
+    def test_empty_float_share_map_fails_loudly(self, monkeypatch):
+        """流通股本映射空了要退出,不许照生产那样 warning 后继续。
+
+        生产宁可少一道闸也要出票,评估脚本不行:静默少了 turnover 就是在量一个比
+        生产宽约 27% 的 EVR(重放 EVR 触发日有 21% 落在 evr_min_turnover 以下),
+        而模块头说触发率是"下界"、方向正相反。一份不知偏向哪边的产物比没有更糟。
+        """
+        import pandas as pd
+
+        import integrations.market_metadata as meta
+        from scripts.evaluate_trigger_weight import build_replay_payload
+
+        monkeypatch.setattr(meta, "fetch_float_share_map", lambda: {})
+        market = pd.DataFrame(
+            {
+                "ts_code": ["600000.SH"],
+                "trade_date": [20250102],
+                "open": [10.0],
+                "high": [10.3],
+                "low": [9.9],
+                "close": [10.1],
+                "vol": [1e6],
+                "pct_chg": [1.0],
+            }
+        )
+        with pytest.raises(SystemExit, match="流通股本"):
             build_replay_payload(market)

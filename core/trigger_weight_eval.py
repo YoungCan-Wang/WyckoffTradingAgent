@@ -168,7 +168,12 @@ def replay_entry_bias_limit(code: str, frame: pd.DataFrame, cfg: object) -> floa
     """重放用的 ``max_bias_200`` 上限，与生产 ``layer4_triggers`` 同式。
 
     ``channel=""``、``rps_slow=None``：不复现 L2 的通道放宽，取全局/科创板上限，
-    所以重放出的触发率是**下界**。同样为了绕开私有成员边界而收在 core 里。
+    所以**这一项**让重放触发率偏低。同样为了绕开私有成员边界而收在 core 里。
+
+    别把它读成整体下界：曾经另有一个反向偏差与它同时在（重放帧不带 turnover，
+    ``_evr_turnover_ok`` 缺列即放行，量到的 EVR 比生产宽约 27%），两者符号相反、
+    量级都不清楚时触发率哪个方向都不构成界。turnover 已在
+    ``build_replay_payload`` 补齐；再往重放帧里省列前先想清楚符号。
     """
     from core.wyckoff_engine import _effective_entry_max_bias_200, _ret120_pct
 
