@@ -66,23 +66,49 @@ def upsert_concept_heat_history(trade_date: str, heat: list[dict[str, Any]], top
             _close(client)
 
 
+def _fetch_concept_heat_rows(client: Any, row_limit: int, as_of_date: str | None) -> list[dict[str, Any]]:
+    query = client.table(TABLE_CONCEPT_HEAT_HISTORY).select("trade_date,concept_name,pct,net_inflow,rank")
+    if as_of_date:
+        query = query.lte("trade_date", as_of_date)
+    resp = query.order("trade_date", desc=True).order("rank").limit(row_limit).execute()
+    return list(resp.data or [])
+
+
 def load_concept_heat_history_from_supabase(limit_days: int = 20, as_of_date: str | None = None) -> dict[str, dict]:
-    """读取最近 N 个交易日的概念热度历史。"""
+    """读取最近 N 个交易日的概念热度历史。
+
+    anon 角色在 concept_heat_history 上被 RLS 挡住,返回的是 count=0 而不是报错——
+    与「表为空」完全同形。回放靠这张表还原当日板块热度,读空不会抛异常,只会静默
+    退化成 concept_heat=[](2026-09-07 实测:回放拿到 0 个概念,库里同日有 31 个),
+    L3 板块过滤和主线打分因此偏离生产。故读空且 service key 可用时升级重读一次。
+    """
     row_limit = max(int(limit_days), 1) * 50
+    rows: list[dict[str, Any]] = []
     client = None
     try:
         client = _read()
-        query = client.table(TABLE_CONCEPT_HEAT_HISTORY).select("trade_date,concept_name,pct,net_inflow,rank")
-        if as_of_date:
-            query = query.lte("trade_date", as_of_date)
-        resp = query.order("trade_date", desc=True).order("rank").limit(row_limit).execute()
+        rows = _fetch_concept_heat_rows(client, row_limit, as_of_date)
     except Exception as exc:
         logger.warning("concept heat read failed: %s", exc)
-        return {}
+        rows = []
     finally:
         if client is not None:
             _close(client)
-    return _rows_to_history(resp.data or [], limit_days)
+
+    if not rows and _configured():
+        admin = None
+        try:
+            admin = _admin()
+            rows = _fetch_concept_heat_rows(admin, row_limit, as_of_date)
+            if rows:
+                logger.warning("concept heat: anon 读到 0 行,已用 service key 重读到 %d 行", len(rows))
+        except Exception as exc:
+            logger.warning("concept heat admin re-read failed: %s", exc)
+        finally:
+            if admin is not None:
+                _close(admin)
+
+    return _rows_to_history(rows, limit_days)
 
 
 def _rows_to_history(rows: list[dict[str, Any]], limit_days: int) -> dict[str, dict]:
