@@ -296,6 +296,17 @@ def maybe_persist_policy_shadow_run(
         regime,
         mode=mode,
     )
+    written = _write_policy_shadow_row(row, mode, diff_added, diff_removed)
+    return _policy_shadow_meta(written, shadow_selected, diff_added, diff_removed, score_map, mode=mode)
+
+
+def _write_policy_shadow_row(
+    row: dict,
+    mode: str,
+    diff_added: list[str],
+    diff_removed: list[str],
+) -> int:
+    """写入影子账本并按结果打日志，成功与失败必须长得不一样。"""
     written = upsert_policy_shadow_run(row)
     if written:
         print(
@@ -311,7 +322,7 @@ def maybe_persist_policy_shadow_run(
             "归因重算会持续报 insufficient_shadow_sample；"
             "检查 signal_policy_shadow_runs 是否缺列(scripts/print_signal_policy_shadow_ddl.py)"
         )
-    return _policy_shadow_meta(written, shadow_selected, diff_added, diff_removed, score_map, mode=mode)
+    return written
 
 
 def full_formal_ai_selection(
