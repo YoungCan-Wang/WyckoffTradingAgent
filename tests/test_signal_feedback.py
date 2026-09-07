@@ -1013,6 +1013,60 @@ def test_maybe_persist_policy_shadow_run_skips_off_mode(monkeypatch):
     assert captured == []
 
 
+def _skip_reason_line(capsys) -> str:
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if "动态策略shadow跳过记账" in ln]
+    assert len(lines) == 1, lines
+    return lines[0]
+
+
+def test_skip_names_the_regime_gate_as_by_design(monkeypatch, capsys):
+    """闸门关是设计行为。这行日志得说清楚,否则和「写入失败」在日志里没法区分。"""
+    from workflows import funnel_ai_selection as selection
+
+    monkeypatch.setattr(selection, "upsert_policy_shadow_run", lambda row: 1)
+    selection.maybe_persist_policy_shadow_run(
+        ai_policy={
+            "trade_gate_reason": "RISK_OFF 回测全周期弱势，新开仓胜率不足",
+            "trade_action": "禁止新仓：仅影子观察",
+        },
+        metrics={"end_trade_date": "2026-09-06"},
+        triggers={},
+        selected_for_ai=[],
+        l3_ranked_symbols=[],
+        regime="RISK_OFF",
+        sector_map={},
+    )
+    line = _skip_reason_line(capsys)
+    assert "水温闸门关" in line
+    assert "RISK_OFF" in line
+    assert "按设计不记账" in line
+
+
+def test_skip_distinguishes_unmounted_from_broken(monkeypatch, capsys):
+    """mode 空 = 没挂载(off/full_l4);mode 有值而 policy 空 = 异常,两者不能同一句话。"""
+    from workflows import funnel_ai_selection as selection
+
+    monkeypatch.setattr(selection, "upsert_policy_shadow_run", lambda row: 1)
+    kwargs = dict(
+        metrics={"end_trade_date": "2026-09-04"},
+        triggers={},
+        selected_for_ai=["000001"],
+        l3_ranked_symbols=["000001"],
+        regime="NEUTRAL",
+        sector_map={},
+    )
+
+    selection.maybe_persist_policy_shadow_run(ai_policy={"_dynamic_mode": "off"}, **kwargs)
+    unmounted = _skip_reason_line(capsys)
+    assert "未挂载" in unmounted
+    assert "这不该出现" not in unmounted
+
+    selection.maybe_persist_policy_shadow_run(ai_policy={"_dynamic_mode": "shadow", "_shadow_policy": {}}, **kwargs)
+    broken = _skip_reason_line(capsys)
+    assert "这不该出现" in broken
+    assert "水温闸门关" not in broken
+
+
 def test_attach_shadow_policy_also_attaches_in_on_mode():
     """on 档也必须挂上影子上下文，否则闸门永远开不了。
 
