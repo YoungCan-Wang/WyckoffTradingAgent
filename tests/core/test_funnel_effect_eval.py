@@ -14,6 +14,7 @@ from core.funnel_effect_eval import (
     MOM_MATCH_TOL_PCT,
     GroupStat,
     Panels,
+    SwapDay,
     control_gap,
     evaluate_daily,
     match_by_momentum,
@@ -21,6 +22,8 @@ from core.funnel_effect_eval import (
     sample_momentum_band,
     summarize_absolute,
     summarize_group,
+    swap_arms,
+    swap_falsification,
     tstat,
     win_control_gap,
 )
@@ -764,3 +767,136 @@ class TestControlGap:
     def test_ignores_seeds_without_excess(self):
         gap = control_gap(self._stat(0.35), [self._stat(0.10), self._stat(0.30), self._stat(None)])
         assert gap["seeds"] == 2
+
+
+def _swap_days(pairs_by_day: list[list[tuple[str, str]]]) -> list[SwapDay]:
+    return [SwapDay(date=f"d{i}", buy_ds=f"b{i}", sell_ds=f"s{i}", pairs=pairs) for i, pairs in enumerate(pairs_by_day)]
+
+
+def _swap_panels(days: list[SwapDay], ret) -> Panels:
+    """只填 open/close：逐对随机互换用不到 liquid/mom20/dates（配对已在入参里钉死）。"""
+    opens: dict[str, dict[str, float]] = {}
+    closes: dict[str, dict[str, float]] = {}
+    for i, day in enumerate(days):
+        codes = [c for pair in day.pairs for c in pair]
+        opens[day.buy_ds] = dict.fromkeys(codes, 100.0)
+        closes[day.sell_ds] = {c: 100.0 * (1.0 + ret(i, c) / 100.0) for c in codes}
+    return Panels(open=opens, close=closes, liquid={}, mom20={}, dates=[])
+
+
+def _perfect(n_days: int = 24, n_pairs: int = 8) -> tuple[list[SwapDay], Panels]:
+    """完美标签：每对里 A 组那只必赢、B 组那只必亏。这是天花板用例。"""
+    days = _swap_days([[(f"w{i}_{j}", f"l{i}_{j}") for j in range(n_pairs)] for i in range(n_days)])
+    return days, _swap_panels(days, lambda _i, code: 3.0 if code.startswith("w") else -3.0)
+
+
+def _noise(n_days: int = 24, n_pairs: int = 8, seed: int = 7) -> tuple[list[SwapDay], Panels]:
+    """纯噪声标签：收益与分组无关。这是 null 那一侧，p 必须留在带内。"""
+    rng = random.Random(seed)
+    days = _swap_days([[(f"a{i}_{j}", f"b{i}_{j}") for j in range(n_pairs)] for i in range(n_days)])
+    draws = {(i, c): rng.gauss(0.0, 3.0) for i, d in enumerate(days) for pair in d.pairs for c in pair}
+    return days, _swap_panels(days, lambda i, code: draws[(i, code)])
+
+
+class TestSwapFalsification:
+    """逐对随机互换必须有分辨力：完美标签 p→下限，纯噪声标签 p 留在带内。
+
+    这套测试守的是一个会让工具静默失效的写法——零分布若拿**原始标签**算差值，每次
+    抽样都等于观测值，p 恒等于 1、null_sd 恒等于 0，报告上看不出任何异常，只会一路
+    印「不含信息」。所以下面同时钉住 null 的均值和离散度，不只看 p。
+    """
+
+    N_PERM = 60
+
+    def _run(self, days: list[SwapDay], panels: Panels) -> dict:
+        return swap_falsification(days, panels, n_perm=self.N_PERM)
+
+    def test_perfect_label_breaks_the_null(self):
+        """完美标签下两栏都必须打穿零分布，且 p 取到 (0+1)/(n+1) 这个下限。"""
+        out = self._run(*_perfect())
+        assert set(out) == {"stock_win", "gross_return"}
+        assert out["stock_win"].observed_pct == pytest.approx(100.0)
+        assert out["gross_return"].observed_pct == pytest.approx(6.0)
+        for test in out.values():
+            assert test.p_one_sided == pytest.approx(1.0 / (self.N_PERM + 1))
+            assert test.p_two_sided == pytest.approx(1.0 / (self.N_PERM + 1))
+            assert "超出互换零分布" in test.verdict
+
+    def test_null_is_not_the_observed_value(self):
+        """bug 版本（用原始标签算零分布）下 null_avg 会等于观测值、null_sd 恒为 0。"""
+        out = self._run(*_perfect())
+        for test in out.values():
+            assert test.null_sd_pct > 0.0
+            assert abs(test.null_avg_pct) < abs(test.observed_pct) / 2.0
+
+    def test_pure_noise_label_stays_inside_the_band(self):
+        """收益与分组无关时，观测差必须读作零分布里的一次普通抽样。"""
+        out = self._run(*_noise())
+        for test in out.values():
+            assert test.p_two_sided > 0.05
+            assert abs(test.observed_pct - test.null_avg_pct) < 2.0 * test.null_sd_pct
+            assert "不含信息" in test.verdict or "反而更差" in test.verdict
+
+    def test_reversed_label_is_called_worse_not_significant(self):
+        """标签反着接时观测差为负：单侧 p 必须变大，判定说「反而更差」而不是「过了」。"""
+        days, panels = _perfect()
+        flipped = [SwapDay(d.date, d.buy_ds, d.sell_ds, [(b, a) for a, b in d.pairs]) for d in days]
+        out = self._run(flipped, panels)
+        assert out["stock_win"].observed_pct == pytest.approx(-100.0)
+        assert out["stock_win"].p_one_sided == pytest.approx(1.0)
+        # 双侧照样打穿——效应是真的，只是方向相反。判定必须先看方向。
+        assert out["stock_win"].p_two_sided == pytest.approx(1.0 / (self.N_PERM + 1))
+        assert "反而更差" in out["stock_win"].verdict
+
+    def test_p_never_reports_zero(self):
+        """(r+1)/(n+1)：200 次抽样说不出小于 1/201 的话，硬报 0.000 是越过分辨率。"""
+        out = swap_falsification(*_perfect(), n_perm=10)
+        assert out["stock_win"].p_one_sided == pytest.approx(1.0 / 11)
+        assert out["stock_win"].permutations == 10
+
+    def test_short_window_is_unknown_not_failed(self):
+        """可评估日不够只能说「尚未可知」，不能当成「没通过」。"""
+        out = self._run(*_perfect(n_days=MIN_DAYS - 1))
+        assert out["stock_win"].days == MIN_DAYS - 1
+        assert "尚未可知" in out["stock_win"].verdict
+        assert "不含信息" not in out["stock_win"].verdict
+
+    def test_thin_days_are_dropped(self):
+        """不足 MIN_HITS_PER_DAY 对的日子不进汇总，avg_pairs 也只按入选的日子算。"""
+        days, panels = _perfect(n_days=MIN_DAYS)
+        days[0].pairs = days[0].pairs[: MIN_HITS_PER_DAY - 1]
+        out = self._run(days, panels)
+        assert out["stock_win"].days == MIN_DAYS - 1
+        assert out["stock_win"].avg_pairs == pytest.approx(8.0)
+
+    def test_no_usable_day_returns_empty(self):
+        days, panels = _perfect(n_days=3, n_pairs=MIN_HITS_PER_DAY - 1)
+        assert swap_falsification(days, panels, n_perm=self.N_PERM) == {}
+
+    def test_is_reproducible(self):
+        """种子按 (置换序号, 日期) 定，两次调用必须逐位一致，否则报告数字会漂。"""
+        assert self._run(*_perfect())["stock_win"].as_dict() == self._run(*_perfect())["stock_win"].as_dict()
+
+    def test_both_columns_share_the_same_draws(self):
+        """两栏共用同一批置换，判定才在同一基准上；置换数不同就说明种子掺了列名。"""
+        out = self._run(*_noise())
+        assert out["stock_win"].permutations == out["gross_return"].permutations
+
+
+class TestSwapArms:
+    PAIRS = [("a1", "b1"), ("a2", "b2"), ("a3", "b3")]
+
+    def test_each_pair_contributes_one_member_per_arm(self):
+        for seed in range(20):
+            arm_a, arm_b = swap_arms(self.PAIRS, rng=random.Random(seed))
+            assert len(arm_a) == len(arm_b) == len(self.PAIRS)
+            for (first, second), a, b in zip(self.PAIRS, arm_a, arm_b, strict=True):
+                assert {a, b} == {first, second}
+
+    def test_both_orderings_occur(self):
+        """互换必须真的会换。恒等返回时下游零分布退化，p 恒为 1。"""
+        seen = {swap_arms(self.PAIRS, rng=random.Random(s))[0][0] for s in range(20)}
+        assert seen == {"a1", "b1"}
+
+    def test_same_rng_state_gives_same_arms(self):
+        assert swap_arms(self.PAIRS, rng=random.Random(5)) == swap_arms(self.PAIRS, rng=random.Random(5))
