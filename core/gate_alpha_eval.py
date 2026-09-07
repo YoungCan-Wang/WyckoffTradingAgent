@@ -1,34 +1,64 @@
 """门槛层 alpha 检验：L3 题材共振与止损参考价陈旧度。
 
-两条都是 2026-08-20 首轮跑出的结论，脚本化的目的是让它们能被持续验证，
-而不是靠单段行情拍板。
+**2026-09-07 修正：首轮那两条结论是裸差值算出来的，没有任何对照。**首轮（2026-08-20）
+把「热门 − 非热门」和「触发档 − 全市场」的日均差直接读成正/负贡献，而两侧的动量分布
+差得很远：题材层的「热门」按定义就是成分股 5 日动量均值最高的行业，止损层的「深偏离」
+按定义就是从 60 日高点跌得最多的票，对照侧还是**未做任何匹配**的全市场均值。两条都踩在
+「全市场对照混入动量」上。
 
-**L3 题材共振**（生产 ``top_n_sectors=5``）：按行业近 5 日动量取前 N 个「热门行业」，
-只放行其中的标的。首轮 107 个交易日实测——
+补做逐对随机互换否证（``core/funnel_effect_eval.swap_falsification``，配对钉住、只抹标签，
+动量按最近邻配平）。下面每条结论都注明自己的评估区间——**这一层的读数对窗口极其敏感，
+不带区间的数字没有意义**。
 
-    topN=3   热门 T+5 -1.33%  非热门 -0.48%  差 -0.85pct
-    topN=5   热门 -0.87%      非热门 -0.50%  差 -0.37pct   （生产值）
-    topN=12  热门 -0.53%      非热门 -0.56%  差 +0.03pct
-    topN=20  热门 -0.49%      非热门 -0.60%  差 +0.11pct
+**止损参考价陈旧度——原结论不成立。** 142 个交易日、评估区间 2026-01-28..2026-08-28，
+配对后残差动量 +0.0085pct/18686 对。「未触发 vs 已触发」配平动量后：胜率差 +0.041pct
+（双侧 p=0.821，落在互换零分布内），收益差 -0.027pct。即止损这个标签在配平个股动量后
+**不含信息**，首轮那 4 档 -0.07~-0.54pct 的超额来自未匹配的全市场基准。收紧容差到 0.5
+同样落带内（胜率 -0.065，p=0.751）。四档各自单独跑（对照池限定在**该档内**，回答「这一档
+触发得对不对」）方向一致：2026-04..08 那 99 天里四档胜率差分别 -0.016 / -0.165 / -1.159 /
+-1.019，**全为非正**，即没有任何一档显示「未触发的那批本该留着」。
 
-**越热越差**，即这一层在做负向筛选（追热点买在板块高位）。但放宽到 20 的增益
-+0.11pct 小于单次往返成本 0.202%，改了在净收益上看不出来，故首轮未改。
+原来写在这里的「四档全为负，止损在统计上是对的……故明确不改风控」**已作废**：不是说
+该放宽风控，而是「不放宽」这个决定目前没有测量支撑，别再引用这条当依据。
 
-**止损参考价陈旧度**：生产用 ``recent_high = high.tail(60).max()`` 作跟踪止损基准，
-回撤 10% 即触发（core/wyckoff_engine.py 的 ``_compute_stop_loss``）。深跌股的参考价会
-长期远高于现价，于是永久处于「已破位」——江顺科技 2026-08-18 参考价 119.01 而收盘
-78.13（偏离 +52%），次日却涨 10%。但按偏离分档实测——
+**L3 题材共振——过得了逐日的零分布，过不了跨窗口的稳定性检验。**「非热门 vs 热门」
+配平动量后，生产档 topN=5、评估区间 2026-01-05..2026-08-28 共 159 天，日均 225.5 对：
+胜率差 +3.064pct（双侧 p=0.005），收益差 +0.488pct。但**按 2 个月切开，符号在同一段
+八个月里反了号**：
 
-    偏离 0~15%   触发后 T+5 超额 -0.51pct
-    偏离 15~30%  超额 -0.54pct
-    偏离 30~50%  超额 -0.35pct
-    偏离 >50%    超额 -0.07pct
+===============  ====  ==========  =====
+区间             天数  胜率差 pct  p
+===============  ====  ==========  =====
+2026-01 ~ 02       34      +9.087  0.005
+2026-03 ~ 04       43      +7.932  0.005
+2026-05 ~ 06       39      -4.468  0.005
+2026-07 ~ 08       43      +0.199  0.851
+汇总              159      +3.064  0.005
+===============  ====  ==========  =====
 
-**四档全为负**，止损在统计上是对的；陈旧档只是最弱而非反向。江顺是个案不是规律，
-故明确**不改风控**。这条检验保留下来是为了持续确认该结论，而不是为了推翻它。
+四段之间 mean +3.188 / sd 6.451，**t=+0.988（n=4），跨窗口不显著**。三段非空 p 全部钉在
+200 次置换的下限 1/201≈0.005 上，说明「打得过自己那天的零分布」很容易，真正有区分力的是
+段间那个离散度。所以汇总那个 +3.064 **不能当作可用的边缘**：换一个窗口它就换一个符号——
+同一套代码，topN=5 在 142 天读 +2.808、159 天读 +3.064、而 2026-04..08 那 99 天读
+**-1.739**（后者正好是 05~06 负段主导的窗口）；topN=3 在 142 天读 +4.845。这些数彼此不
+矛盾，它们是同一件事的不同切法。
 
-口径约定：``excess`` 为相对同日全市场的超额。对止损而言**负值表示止损正确**
-（卖出后确实跑输），正值表示卖早了。
+这一族与已在案的两条同形：动量梯度按半年反号、池子相对优势按月翻号。**结论是「这个标签
+目前没有稳定方向」，不是「放宽 topN 可得 +3pct」。**
+
+容差从 3.0 收到 0.5 在这个几何下**几乎没有区分力**（非热门池约 4000 只、热门篮约 140 只，
+最近邻距离本就趋 0，配对数 132.5→130.6），不要引用它当稳健性证据。
+
+**这一层量的不是生产那道闸。** 本模块按「全市场个股 5 日动量的行业均值」取前 N，生产
+（``core/wyckoff_engine.py`` 的 ``_compute_per_sector_strength``）取的是**候选内**成分股复合
+截面百分位（ret20 40% + ret5 30% + ret3 30%）的**中位数**；且 L3 放行是四路取或——在
+``top_sectors`` 内、或在 ``keep_sectors`` 内且个股强度达标、或在热门概念内且强度达标、或
+individual 强度单独达标，末尾还有 ``len(filtered) < 3`` 兜底放行全量。所以 topN 网格这里的
+读数**不能直接换算成生产参数**，它是「按行业动量分组」这个构造的性质，不是那道闸的性质。
+
+口径约定：``excess`` 是裸日均差，**描述性**的，两侧动量未配平，不能当结论；判定一律看
+``swap``（动量配平后的逐对互换否证）。``swap`` 的待测组是**要动的那一侧**（题材层=非热门，
+止损层=未触发），观测为正才说明那个方向可行；它与 ``excess`` 的符号天然相反。
 """
 
 from __future__ import annotations
@@ -36,6 +66,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from statistics import mean
 from typing import Any
+
+from core.funnel_effect_eval import SwapTest
 
 # 生产值，用于在报告里标注「当前档位」。
 PROD_TOP_N_SECTORS = 5
@@ -55,6 +87,12 @@ MIN_GROUP = 3
 
 @dataclass
 class GateStat:
+    """一档门槛的读数。
+
+    ``excess`` 是裸日均差，只作描述；判定看 ``swap``。``swap_question`` 写清待测组是
+    哪一侧——它与 ``excess`` 的符号相反，不写的话读者会把同一个发现的两面当成矛盾。
+    """
+
     label: str
     days: int
     avg_group_size: float
@@ -63,6 +101,8 @@ class GateStat:
     excess: float | None
     positive_day_pct: float | None
     is_production: bool = False
+    swap_question: str | None = None
+    swap: dict[str, SwapTest] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -72,18 +112,28 @@ class GateStat:
             "inside_ret": _round(self.inside_ret),
             "outside_ret": _round(self.outside_ret),
             "excess": _round(self.excess),
+            "excess_is_controlled": False,
             "positive_day_pct": _round(self.positive_day_pct, 1),
             "is_production": self.is_production,
+            "swap_question": self.swap_question,
+            "swap": None if not self.swap else {col: test.as_dict() for col, test in self.swap.items()},
             "verdict": self.verdict,
         }
 
     @property
     def verdict(self) -> str:
+        """没有对照就不给方向性结论——裸差值两侧动量没配平，说不了「贡献」。"""
         if self.days < MIN_DAYS or self.excess is None:
             return "样本不足"
-        if self.positive_day_pct is not None and 45.0 <= self.positive_day_pct <= 55.0:
-            return "为正日占比接近随机：无方向性"
-        return "正贡献" if self.excess > 0 else "负贡献"
+        if self.swap is None:
+            return f"裸差值 {self.excess:+.2f}pct（未配平动量，仅描述，不是结论）"
+        win = self.swap.get("stock_win")
+        ret = self.swap.get("gross_return")
+        if win is None:
+            return "对照未跑出结果：尚未可知"
+        head = "" if not self.swap_question else f"{self.swap_question} → "
+        tail = "" if ret is None else f"；收益栏 {ret.observed_pct:+.3f}pct（双侧 p={ret.p_two_sided:.3f}）"
+        return f"{head}{win.verdict}{tail}"
 
 
 def _round(value: float | None, digits: int = 4) -> float | None:
@@ -105,17 +155,30 @@ class GateReport:
                 "recent_high_window": PROD_RECENT_HIGH_WINDOW,
             },
             "reading": (
-                "excess 为相对同日全市场的超额。题材层正值=该层有效；"
-                "止损档**负值=止损正确**（卖出后确实跑输），正值=卖早了。"
+                "excess 是裸日均差，两侧动量未配平，**仅描述不是结论**——题材层的「热门」按定义就是"
+                "成分股动量均值最高的行业，止损层的对照侧是未匹配的全市场均值，两个差值里主要是动量。"
+                "判定一律看 swap（动量配平后的逐对互换否证）：待测组是要动的那一侧（题材=非热门、"
+                "止损=未触发），故 swap 的符号与 excess 天然相反。p 值偏乐观，持有窗口逐日重叠。"
             ),
         }
 
 
-def summarize(label: str, daily: list[dict[str, float]], *, is_production: bool = False) -> GateStat:
-    """把逐日观测汇总成一档统计。每日等权，避免个股数量多的日子主导均值。"""
+def summarize(
+    label: str,
+    daily: list[dict[str, float]],
+    *,
+    is_production: bool = False,
+    swap_question: str | None = None,
+    swap: dict[str, SwapTest] | None = None,
+) -> GateStat:
+    """把逐日观测汇总成一档统计。每日等权，避免个股数量多的日子主导均值。
+
+    ``swap`` 缺省为 None：那样出来的 ``verdict`` 只会说「裸差值……不是结论」。判定要
+    有方向性，调用方必须自己配平动量、跑完互换否证再传进来。
+    """
     usable = [row for row in daily if row.get("inside") is not None and row.get("outside") is not None]
     if len(usable) < MIN_DAYS:
-        return GateStat(label, len(usable), 0.0, None, None, None, None, is_production)
+        return GateStat(label, len(usable), 0.0, None, None, None, None, is_production, swap_question, swap)
     diffs = [float(row["inside"]) - float(row["outside"]) for row in usable]
     return GateStat(
         label=label,
@@ -126,6 +189,8 @@ def summarize(label: str, daily: list[dict[str, float]], *, is_production: bool 
         excess=mean(diffs),
         positive_day_pct=100.0 * sum(1 for value in diffs if value > 0) / len(diffs),
         is_production=is_production,
+        swap_question=swap_question,
+        swap=swap,
     )
 
 
@@ -143,27 +208,30 @@ def render(report: GateReport) -> str:
     lines = [
         "**门槛层 alpha 检验**",
         "",
-        "| 题材共振 topN | 天数 | 日均入选 | 热门 | 非热门 | 差值 | 为正日% | 判定 |",
+        "| 题材共振 topN | 天数 | 日均入选 | 热门 | 非热门 | 裸差值 | 为正日% | 判定（配平动量后） |",
         "| --- | --: | --: | --: | --: | --: | --: | --- |",
     ]
     for stat in report.theme:
         lines.append(_row(stat, mark_production=stat.is_production))
     lines += [
         "",
-        "| 止损参考价偏离 | 天数 | 日均触发 | 触发后 | 市场 | 超额 | 为正日% | 判定 |",
+        "| 止损参考价偏离 | 天数 | 日均触发 | 触发后 | 市场（未匹配） | 裸差值 | 为正日% | 判定（配平动量后） |",
         "| --- | --: | --: | --: | --: | --: | --: | --- |",
     ]
     for stat in report.stop_loss:
         lines.append(_row(stat))
     lines += [
         "",
-        "**读法**　题材层：差值为正才说明「只买热门行业」有效。"
-        "止损档：**超额为负 = 止损正确**（卖出后确实跑输大盘），为正才说明卖早了。",
+        "**读法**　差值一栏是**裸日均差，两侧动量没配平，只作描述**：题材层的「热门」按定义就是成分股"
+        "动量均值最高的行业，止损层的对照侧是未做匹配的全市场均值，这两个差值里主要是动量，"
+        "**不能**读成「该层有效」或「止损正确」。判定看最后一栏（动量配平后的逐对互换否证），"
+        "它的待测组是要动的那一侧（题材=非热门、止损=未触发），符号与差值栏天然相反。",
         "",
         "**接下来做什么**",
         _theme_action(report.theme),
         _stop_action(report.stop_loss),
-        "- 任一结论要落到参数改动，需先确认增益大于单次往返成本 0.202%，且跨越多个行情段后方向稳定。",
+        "- 任一结论要落到参数改动，需先确认增益大于单次往返成本 0.202%，且跨越多个行情段后方向稳定。"
+        "互换否证的 p 值偏乐观——持有窗口逐日重叠、日间观测不独立，而置换零分布按独立处理。",
     ]
     return "\n".join(lines)
 
@@ -186,23 +254,45 @@ def _row(stat: GateStat, *, mark_production: bool = False) -> str:
 
 
 def _theme_action(stats: list[GateStat]) -> str:
+    """只讲对照说了什么。裸差值的大小、以及「放宽到 topN=X 可得多少」都不能当行动依据：
+
+    ① 差值两侧动量没配平；② 这个构造不是生产那道闸（见模块 docstring），topN 换不成
+    生产参数。
+    """
     prod = next((s for s in stats if s.is_production), None)
     if prod is None or prod.excess is None:
         return "- ① 题材层样本不足，继续积累。"
-    if prod.excess < 0:
-        best = max((s for s in stats if s.excess is not None), key=lambda s: s.excess, default=None)
-        gain = None if best is None else best.excess - prod.excess
-        tail = "" if gain is None else f"；放宽到 {best.label} 可得 {gain:+.2f}pct"
+    if prod.swap is None:
         return (
-            f"- ① 题材共振为负贡献（{prod.excess:+.2f}pct），即「只买热门行业」在做反向筛选{tail}。"
-            "增益若小于成本 0.202% 则不值得改。"
+            f"- ① 题材层裸差值 {prod.excess:+.2f}pct，**未配平动量**——「热门」按定义就是成分股动量均值最高的行业，"
+            "这个差值里主要是动量。要给结论得先跑逐对互换否证。"
         )
-    return f"- ① 题材共振为正贡献（{prod.excess:+.2f}pct），维持现状。"
+    win = prod.swap.get("stock_win")
+    if win is None:
+        return "- ① 题材层对照未跑出结果，尚未可知。"
+    if win.observed_pct <= 0 or win.p_two_sided > 0.05:
+        return f"- ① 题材层配平动量后没通过：{win.verdict}。这一层维持现状，别拿裸差值去调 topN。"
+    return (
+        f"- ① 题材层配平动量后胜率差 {win.observed_pct:+.3f}pct（双侧 p={win.p_two_sided:.3f}）——"
+        "**这只是打过了逐日的置换零分布，不等于可用**。2026-01..08 拆成 4 段时符号就反了号"
+        "（+9.09 / +7.93 / -4.47 / +0.20，段间 t=+0.988 不显著），别默认这次的窗口不同。"
+        "要落到改动得先满足两条：按 2 个月拆开每段同号、段间 t 显著；且本模块的行业动量分组"
+        "不是生产 L3 那道闸（生产用候选内复合百分位中位数 + 四路取或），得在生产口径上重测。"
+    )
 
 
 def _stop_action(stats: list[GateStat]) -> str:
-    negatives = [s for s in stats if s.excess is not None and s.excess < 0]
-    if len(negatives) == len([s for s in stats if s.excess is not None]) and negatives:
-        return "- ② 止损各偏离档超额全为负，说明止损触发后确实继续跑输——**不要因为个别陈旧参考价的反例去放宽风控**。"
-    positives = [s.label for s in stats if s.excess is not None and s.excess > 0]
-    return f"- ② 止损在这些偏离档上为正超额（卖早了）：{'、'.join(positives)}——值得单独复核该档判定。"
+    """止损层同理。首轮「四档全为负 → 止损是对的」是把未匹配全市场当对照得出的，已作废。"""
+    controlled = [s for s in stats if s.swap and s.swap.get("stock_win")]
+    if not controlled:
+        return (
+            "- ② 止损各档只有裸差值，对照侧是**未做动量匹配的全市场均值**——「深偏离」按定义就是从 60 日高点"
+            "跌得最多的票，这个超额里主要是动量。**不要**拿它当「止损正确」或「该放宽风控」的依据。"
+        )
+    passed = [s.label for s in controlled if (t := s.swap["stock_win"]).observed_pct > 0 and t.p_two_sided <= 0.05]
+    if not passed:
+        return (
+            "- ② 止损各档配平动量后都没通过：这个标签不含信息，首轮「触发后确实继续跑输」的读数是全市场基准"
+            "带来的动量差。风控要不要动，目前没有测量支撑——保持现状是默认，不是结论。"
+        )
+    return f"- ② 止损这些档配平动量后仍显示卖早了：{'、'.join(passed)}——值得单独复核，仍需按月拆开。"

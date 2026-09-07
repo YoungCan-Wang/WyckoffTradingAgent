@@ -225,6 +225,19 @@ def _promote_mainline_for_ai(
     )
 
 
+def _shadow_skip_reason(ai_policy: dict, mode: str, regime: str) -> str:
+    """分清「按设计跳过」与「坏了」。三种成因各自有过一段真实的停摆史。"""
+    if ai_policy.get("trade_gate_reason"):
+        # allow_ai_review=False 时 funnel_ai_selection 早返回，动态上下文根本没加载过。
+        # 这是设计行为，不是缺陷：RISK_OFF/CRASH/BLACK_SWAN/UNKNOWN 这四档不记账。
+        return f"水温闸门关(regime={regime}, {ai_policy.get('trade_action') or ai_policy['trade_gate_reason']})，按设计不记账"
+    if mode not in {"shadow", "on"}:
+        # 别写成 ``not mode``:off 档的 mode 是字符串 "off"(真值),会被误判成异常。
+        # 这三种都是「没挂载」:键缺失、off 档、full_l4 分支只挂 shadow 不挂 on。
+        return f"动态档未挂载(mode={mode or '缺失'}，FUNNEL_DYNAMIC_POLICY=off 或走了 full_l4 分支)，无对照可记"
+    return f"mode={mode} 但 _shadow_policy 为空——这不该出现，检查 _load_dynamic_policy_context 是否降级为静态"
+
+
 def maybe_persist_policy_shadow_run(
     *,
     ai_policy: dict,
@@ -238,6 +251,11 @@ def maybe_persist_policy_shadow_run(
 ) -> dict:
     mode = str(ai_policy.get("_dynamic_mode") or "")
     if mode not in {"shadow", "on"} or not ai_policy.get("_shadow_policy"):
+        # 这条早返回原先完全静默，于是「今天没记账」在日志里和「写入失败」长得一样。
+        # 实测代价：查一次 signal_policy_shadow_runs 为什么不长要翻三段历史（07-04 缺列、
+        # 09-04 前 on 档不挂、水温闸门关），而其中只有第三种是正常的。把原因打出来，
+        # 下次一条 grep 就能分清「按设计跳过」和「坏了」。
+        print(f"[funnel] 动态策略shadow跳过记账: 原因={_shadow_skip_reason(ai_policy, mode, regime)}")
         return {}
     if mode == "on":
         # on 档实际下单的是动态档，所以 shadow_selected 直接取实选，反过来算静态反事实。
@@ -278,6 +296,17 @@ def maybe_persist_policy_shadow_run(
         regime,
         mode=mode,
     )
+    written = _write_policy_shadow_row(row, mode, diff_added, diff_removed)
+    return _policy_shadow_meta(written, shadow_selected, diff_added, diff_removed, score_map, mode=mode)
+
+
+def _write_policy_shadow_row(
+    row: dict,
+    mode: str,
+    diff_added: list[str],
+    diff_removed: list[str],
+) -> int:
+    """写入影子账本并按结果打日志，成功与失败必须长得不一样。"""
     written = upsert_policy_shadow_run(row)
     if written:
         print(
@@ -293,7 +322,7 @@ def maybe_persist_policy_shadow_run(
             "归因重算会持续报 insufficient_shadow_sample；"
             "检查 signal_policy_shadow_runs 是否缺列(scripts/print_signal_policy_shadow_ddl.py)"
         )
-    return _policy_shadow_meta(written, shadow_selected, diff_added, diff_removed, score_map, mode=mode)
+    return written
 
 
 def full_formal_ai_selection(

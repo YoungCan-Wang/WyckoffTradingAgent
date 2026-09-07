@@ -167,6 +167,36 @@ class TestMatchByMomentum:
         residual = mean(mom[h] for h, _ in pairs) - mean(mom[c] for _, c in pairs)
         assert abs(residual) < 0.5
 
+    def test_matches_brute_force_including_ties(self):
+        """二分快路必须与全扫版逐对相同,并列时都取最小下标。
+
+        并列不是边角情形：动量按点数取整或多只票同涨停时成串出现。二分默认落在相等
+        值串的某一个上,不往左退就会挑到另一只对照股——动量一样、估计量不变,但等价性
+        就没人守了,后续再改这个函数就没有基准。
+        """
+
+        def brute(hits: list[str], pool: list[str], mom: dict[str, float]) -> list[tuple[str, str]]:
+            avail = sorted((mom[c], c) for c in pool if c in mom)
+            out: list[tuple[str, str]] = []
+            for code in sorted(hits, key=lambda c: mom.get(c, 0.0)):
+                if code not in mom or not avail:
+                    continue
+                target = mom[code]
+                best_i = min(range(len(avail)), key=lambda i: abs(avail[i][0] - target))
+                if abs(avail[best_i][0] - target) > MOM_MATCH_TOL_PCT:
+                    continue
+                out.append((code, avail.pop(best_i)[1]))
+            return out
+
+        rng = random.Random(11)
+        for case in range(200):
+            # 动量取整到 0.5,制造大量并列。
+            n_h, n_p = rng.randint(1, 25), rng.randint(1, 60)
+            mom = {f"h{i}": round(rng.gauss(5.0, 6.0) * 2) / 2 for i in range(n_h)}
+            mom.update({f"c{i}": round(rng.gauss(5.0, 6.0) * 2) / 2 for i in range(n_p)})
+            hits, pool = [f"h{i}" for i in range(n_h)], [f"c{i}" for i in range(n_p)]
+            assert match_by_momentum(hits, pool, mom) == brute(hits, pool, mom), f"case {case}"
+
 
 class TestSampleMomentumBand:
     def test_stays_inside_the_neighbourhood(self):
