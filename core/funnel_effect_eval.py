@@ -263,16 +263,32 @@ def match_by_momentum(
     落在候选密集区」的对照股被反复选中而放大它自身的特异噪声。偏差超过
     ``tol_pct`` 视为找不到可比对象，该候选**不进入配对样本**——宁可少算几只，
     也不要拿动量差 10 个点的票当对照。
+
+    ``avail`` 已按动量排序，故最近邻只可能是插入点左右两个，用二分定位而不是每只
+    候选全扫一遍。门槛层检验要在 4000 只宽池上逐日配 950 只，全扫是 O(n*m)，跑不动。
+    并列时必须退到相等动量串的**最左**一个，与全扫版 ``min(range(...))`` 取最小下标
+    的行为对齐——动量一样不影响估计量，但两版挑到不同对照股，等价性测试就守不住了。
     """
     avail = sorted((mom[c], c) for c in pool if c in mom)
+    keys = [value for value, _ in avail]
     pairs: list[tuple[str, str]] = []
     for code in sorted(hits, key=lambda c: mom.get(c, 0.0)):
         if code not in mom or not avail:
             continue
         target = mom[code]
-        best_i = min(range(len(avail)), key=lambda i: abs(avail[i][0] - target))
-        if abs(avail[best_i][0] - target) > tol_pct:
+        j = _bisect_left(avail, target)
+        best_i: int | None = None
+        best_d: float | None = None
+        for k in (j - 1, j):
+            if 0 <= k < len(avail):
+                d = abs(keys[k] - target)
+                if best_d is None or d < best_d:
+                    best_i, best_d = k, d
+        if best_i is None or best_d is None or best_d > tol_pct:
             continue
+        while best_i > 0 and keys[best_i - 1] == keys[best_i]:
+            best_i -= 1
+        keys.pop(best_i)
         pairs.append((code, avail.pop(best_i)[1]))
     return pairs
 
