@@ -36,8 +36,9 @@
 from __future__ import annotations
 
 import random
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from statistics import mean
+from statistics import mean, pstdev
 from typing import Any
 
 from core.pattern_forward_eval import ROUND_TRIP_COST_PCT
@@ -50,6 +51,9 @@ MIN_DAYS = 20
 CONTROL_SEEDS = (11, 23, 37, 53, 71)
 # 配对时允许的 20 日动量绝对偏差上限（百分点）。超出即视为无可配对对象。
 MOM_MATCH_TOL_PCT = 3.0
+# 逐对随机互换的置换次数。200 次让单侧 p 的分辨率到 0.005，足够判 0.05 这道门槛；
+# 再加收益递减，而每次置换都要把每天两篮的收益重算一遍。
+N_SWAP_PERMUTATIONS = 200
 
 
 def tstat(values: list[float]) -> float | None:
@@ -626,3 +630,185 @@ def _gap_verdict(matched: float, usable: list[float], *, gap: float, spread: flo
             f"配对超额高过随机负控制上界，但差距 {gap:+.3f}pct 未超过种子宽度 {spread:.3f}pct：证据不足，不能算选股信息"
         )
     return "配对超额跑赢随机负控制：含独立选股信息"
+
+
+@dataclass
+class SwapDay:
+    """一天的配对结果。``pairs`` 里每个元组是 (待测组成员, 对照组成员)，动量已配平。
+
+    配对本身由 ``match_by_momentum`` 之类的最近邻配对产出，这里只负责拿着不动。
+    """
+
+    date: str
+    buy_ds: str
+    sell_ds: str
+    pairs: list[tuple[str, str]]
+
+
+def swap_arms(pairs: list[tuple[str, str]], *, rng: random.Random) -> tuple[list[str], list[str]]:
+    """逐对随机互换：每一对独立以 1/2 概率交换两个成员的组别归属。
+
+    这是整个否证的全部随机性来源。**必须**返回互换后的分组，别图省事拿原始标签去
+    算差值——那样零假设分布会退化成一堆与观测值相同的数，p 恒等于 1，工具看着在跑
+    实际上什么都没检验。回归测试 ``TestSwapFalsification`` 用「完美标签必须 p→0」
+    守这一条。
+    """
+    arm_a: list[str] = []
+    arm_b: list[str] = []
+    for first, second in pairs:
+        if rng.random() < 0.5:
+            arm_a.append(first)
+            arm_b.append(second)
+        else:
+            arm_a.append(second)
+            arm_b.append(first)
+    return arm_a, arm_b
+
+
+# 两栏各自成一道否证。收益过了不蕴含胜率过了（见 ``win_control_gap``），所以两栏
+# 都算、都报，不允许用一栏的结论替另一栏。
+SWAP_METRICS: dict[str, Callable[[Panels, list[str], str, str], float | None]] = {
+    "stock_win": lambda p, codes, buy, sell: p.stock_win_rate(codes, buy, sell),
+    "gross_return": lambda p, codes, buy, sell: p.gross_return(codes, buy, sell),
+}
+
+
+@dataclass
+class SwapTest:
+    """一栏的逐对随机互换结果。``*_pct`` 都是「待测组 − 对照组」的日均差（百分点）。"""
+
+    column: str
+    days: int
+    avg_pairs: float
+    observed_pct: float
+    null_avg_pct: float
+    null_sd_pct: float
+    p_one_sided: float
+    p_two_sided: float
+    permutations: int
+
+    @property
+    def verdict(self) -> str:
+        """三种不通过要分开说，理由不同（同 ``_gap_verdict`` 的用意）。"""
+        if self.days < MIN_DAYS:
+            return f"可评估日仅 {self.days} 天（门槛 {MIN_DAYS}）：尚未可知，不是没通过"
+        if self.observed_pct <= 0:
+            return f"待测组反而更差（{self.observed_pct:+.3f}pct）：这个标签没有正向信息"
+        if self.p_two_sided > 0.05:
+            return f"观测差 {self.observed_pct:+.3f}pct 落在互换零分布内（双侧 p={self.p_two_sided:.3f}）：配平动量后该标签不含信息"
+        return (
+            f"观测差 {self.observed_pct:+.3f}pct 超出互换零分布（双侧 p={self.p_two_sided:.3f}）："
+            "过了这一道，但还要收紧配对容差、按月拆开才能算筛"
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "column": self.column,
+            "days": self.days,
+            "avg_pairs": _round(self.avg_pairs, 2),
+            "observed_pct": _round(self.observed_pct, 3),
+            "null_avg_pct": _round(self.null_avg_pct, 3),
+            "null_sd_pct": _round(self.null_sd_pct, 3),
+            "p_one_sided": _round(self.p_one_sided, 4),
+            "p_two_sided": _round(self.p_two_sided, 4),
+            "permutations": self.permutations,
+            "verdict": self.verdict,
+        }
+
+
+def swap_falsification(
+    days: list[SwapDay],
+    panels: Panels,
+    *,
+    n_perm: int = N_SWAP_PERMUTATIONS,
+) -> dict[str, SwapTest]:
+    """逐对随机互换否证：配平动量之后，这个标签本身还含信息吗？
+
+    比 ``sample_momentum_band`` 严在哪：那个每天重新抽一篮，抽样噪声里混着「换了一
+    批票」这件事；这个把配对**完全钉住**，只抹掉标签，零假设正好是「配平动量后该
+    标签不含信息」。同一批票、同一个动量位置，只问分组本身有没有意义。
+
+    p 值偏乐观，报告里必须写出来：持有窗口逐日重叠，日间观测不独立，而置换零分布
+    按独立处理。这与 t 值虚高是同一个来源。
+
+    **过了这一道不等于是个筛。** 实测反例：振幅上限 cap=7.0 拿到胜率单侧 p=0.020、
+    收益 p<0.005，随后两道否证把它杀了——配对容差从 3.0 收到 0.5，残差动量 -1.18→
+    -0.11，胜率差 +5.44→+3.18；去掉 2026-07 直接反号成 -4.71。所以拿到小 p 之后固定
+    还要跑：①收紧容差看效应是否存活；②按月拆开看是否单月扛着。
+
+    返回 ``{列名: SwapTest}``，两栏都在（胜率、收益）。一天不足 ``MIN_HITS_PER_DAY``
+    对的直接丢；一对可评估日都没有则返回空 dict。
+    """
+    usable = [d for d in days if len(d.pairs) >= MIN_HITS_PER_DAY]
+    observed: dict[str, list[float]] = {col: [] for col in SWAP_METRICS}
+    for day in usable:
+        arm_a = [a for a, _ in day.pairs]
+        arm_b = [b for _, b in day.pairs]
+        for col, metric in SWAP_METRICS.items():
+            diff = _arm_diff(panels, metric, arm_a, arm_b, day)
+            if diff is not None:
+                observed[col].append(diff)
+
+    # 零分布：同一批置换驱动两栏，种子不含列名。两栏共用抽样，判定才在同一基准上。
+    null: dict[str, list[float]] = {col: [] for col in SWAP_METRICS}
+    for i in range(n_perm):
+        drawn: dict[str, list[float]] = {col: [] for col in SWAP_METRICS}
+        for day in usable:
+            rng = random.Random(f"{i}:{day.date}")
+            arm_a, arm_b = swap_arms(day.pairs, rng=rng)
+            for col, metric in SWAP_METRICS.items():
+                diff = _arm_diff(panels, metric, arm_a, arm_b, day)
+                if diff is not None:
+                    drawn[col].append(diff)
+        for col, vals in drawn.items():
+            if vals:
+                null[col].append(mean(vals))
+
+    out: dict[str, SwapTest] = {}
+    for col, obs_vals in observed.items():
+        if not obs_vals or len(null[col]) < 2:
+            continue
+        obs = mean(obs_vals)
+        draws = null[col]
+        out[col] = SwapTest(
+            column=col,
+            days=len(obs_vals),
+            avg_pairs=mean(len(d.pairs) for d in usable),
+            observed_pct=obs,
+            null_avg_pct=mean(draws),
+            null_sd_pct=pstdev(draws),
+            p_one_sided=_perm_p(obs, draws, two_sided=False),
+            # 双侧是默认判据：提案方向几乎总是扫过来的（振幅那轮扫了 3 档上限 ×
+            # 3 个持有期），单侧会把「扫出来的方向」当成事先定的方向。
+            p_two_sided=_perm_p(obs, draws, two_sided=True),
+            permutations=len(draws),
+        )
+    return out
+
+
+def _arm_diff(
+    panels: Panels,
+    metric: Callable[[Panels, list[str], str, str], float | None],
+    arm_a: list[str],
+    arm_b: list[str],
+    day: SwapDay,
+) -> float | None:
+    """一天里两篮的差值。任一篮算不出（行情缺失）则整天不收录，避免拿半天凑数。"""
+    va = metric(panels, arm_a, day.buy_ds, day.sell_ds)
+    vb = metric(panels, arm_b, day.buy_ds, day.sell_ds)
+    if va is None or vb is None:
+        return None
+    return va - vb
+
+
+def _perm_p(observed: float, draws: list[float], *, two_sided: bool) -> float:
+    """置换 p 值，用 (r+1)/(n+1)。
+
+    不能写成 r/n：200 次抽样最小只能说到 1/201≈0.005，硬报 p=0.000 是把分辨率之外
+    的东西当成结论。加一等于把观测值本身算进零分布，这也是置换检验的标准做法。
+    """
+    if two_sided:
+        hits = sum(1 for v in draws if abs(v) >= abs(observed))
+    else:
+        hits = sum(1 for v in draws if v >= observed)
+    return (hits + 1) / (len(draws) + 1)
