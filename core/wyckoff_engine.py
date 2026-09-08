@@ -3049,7 +3049,7 @@ def _mainline_entries_for_result(
         config=mainline_config,
         main_force_map=main_force_map,
     )
-    return mainline_candidate_entries(candidates)
+    return mainline_candidate_entries(candidates, max_count=mainline_config.max_ai_candidates)
 
 
 def _mainline_theme_radar_asof(df_map: dict[str, pd.DataFrame], snapshot: dict | None) -> dict:

@@ -120,7 +120,11 @@ def build_mainline_candidates(
 
 
 def mainline_candidate_entries(candidates: list[dict[str, Any]], *, max_count: int = 0) -> list[dict[str, Any]]:
-    """Keep the research pool intact; only explicit display callers may truncate it."""
+    """Rank tradeable mainline candidates, dropping unusable scores.
+
+    ``max_count <= 0`` returns the full ranked pool. Selection call sites must pass an
+    explicit cap; only score-repair/display readers may take the uncapped pool.
+    """
     tradeable = [
         item
         for item in candidates
