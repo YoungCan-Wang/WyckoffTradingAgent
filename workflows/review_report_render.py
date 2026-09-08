@@ -181,10 +181,26 @@ def _strength_miss_focus(rows: list[dict[str, Any]], total: int) -> list[str]:
 
 
 def _risk_focus(rows: list[dict[str, Any]]) -> list[str]:
+    """不再说「被硬拦截」。
+
+    生产里离场信号根本不是闸门:四路候选生产者只有正式威科夫那一路读 exit_signals
+    (core/wyckoff_engine.py:2349),而且是 -35 分的软扣分;车道/alpha/主线三路
+    完全不读。2026-09-04 落到这一档的 147 只票 trigger_labels 全为空——没有买点
+    可拦,这个标签只是级联顺序的产物(memory funnel-cascade-label-is-not-cause)。
+    同一天有 19 只带 stop_loss 的票照样进了候选池,其中 16 只走的是不读离场信号的车道。
+    """
     if not rows:
         return []
+    blocking = [row for row in rows if row.get("trigger_labels")]
+    if not blocking:
+        return [
+            f"- **带风控信号**：{short_code_list(rows)}。这一档买点本来就没触发，"
+            "所以风控没拦下任何东西，标签只反映级联顺序。"
+            "离场信号在生产里是正式威科夫那一路的软扣分，车道/alpha/主线三路不读它。"
+        ]
     return [
-        f"- **风控拦截优先复盘**：{short_code_list(rows)}。这些票被结构止损/派发信号硬拦截，适合单独检查止损是否对强修复过敏。"
+        f"- **带风控信号**：{short_code_list(rows)}。其中 {len(blocking)} 只买点已触发而带离场信号，"
+        "这几只才真被扣了分；要判断这个扣分是否伤了胜率，需按同动量对照比前向收益。"
     ]
 
 
@@ -205,9 +221,26 @@ def _trigger_miss_focus(rows: list[dict[str, Any]]) -> list[str]:
 
 
 def _theme_miss_focus(rows: list[dict[str, Any]]) -> list[str]:
+    """题材层不一定是这一档的约束点,得先把并发的离场信号摊出来。
+
+    级联在 L3 之前不查离场信号,所以「题材共振不足」这个标签会把同时带 stop_loss
+    的票一起收进来。2026-09-04 全市场这一档 1678 只,其中 1147 只(68.4%)带
+    stop_loss——对这三分之二来说,就算题材层放它过去,下一道也会扣分,改题材映射
+    动不了它们。只报总数会把改动引到不是约束点的那一层。
+    """
     if not rows:
         return []
-    return [f"- **题材共振不足**：{short_code_list(rows)}。优先检查题材映射、主线热度和板块强势车道覆盖。"]
+    risky = [row for row in rows if row.get("risk_signal")]
+    line = f"- **题材共振不足**：{short_code_list(rows)}。"
+    if risky:
+        line += (
+            f"注意其中 {len(risky)}/{len(rows)} 只同时带离场信号（{short_code_list(risky)}），"
+            "对这部分票题材层不是唯一约束，只改题材映射动不了它们；"
+            "先看剩下那些干净的票再决定要不要碰题材层。"
+        )
+    else:
+        line += "这一档都没带离场信号，可以检查题材映射、主线热度和板块强势车道覆盖。"
+    return [line]
 
 
 def _base_reject_focus(rows: list[dict[str, Any]]) -> list[str]:
@@ -240,6 +273,10 @@ def _state_suffix(row: dict[str, Any]) -> str:
         states.append(f"买点={'、'.join(str(x) for x in row['trigger_labels'])}")
     if row.get("risk_signal"):
         states.append(f"风控={row['risk_signal']}")
+    elif row.get("risk_evaluated") is False:
+        # 空的 risk_signal 有两种来源:查过没事,和从来没查。离场信号只对 L2 通过池
+        # 算,L2 未过的票落到这里恒为空,不标出来就会被读成「风控干净」。
+        states.append("风控=未评估")
     if row.get("tracked_previous_day"):
         status = "、".join(str(x) for x in row.get("candidate_statuses") or []) or "已跟踪"
         states.append(f"跟踪状态={status}")

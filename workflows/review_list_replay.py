@@ -314,6 +314,9 @@ def _build_replay_row(
         "l3_eligible": code in ctx.l3_set,
         "trigger_labels": list(decision.get("trigger_labels") or []),
         "risk_signal": str(decision.get("risk_signal") or ""),
+        # 老 trace 没有这个键,取不到就传 None,渲染侧只在显式 False 时标「未评估」,
+        # 不把历史 trace 的缺失读成「没查过」。
+        "risk_evaluated": decision.get("risk_evaluated"),
         "shadow_lane": str(decision.get("shadow_lane") or ""),
         "shadow_score": decision.get("shadow_score"),
         "shadow_reason": str(decision.get("shadow_reason") or ""),
