@@ -142,6 +142,27 @@ def test_update_portfolio_rejects_negative_free_cash():
     assert result["error"] == "free_cash 不能为负数"
 
 
+def test_update_portfolio_set_cash_requires_explicit_free_cash(monkeypatch, tmp_path):
+    """省略 free_cash 旧默认是 0，会静默把可用资金清零。"""
+    from agents import portfolio_tools
+    from integrations import local_db
+
+    local_db.reset_connection()
+    monkeypatch.setattr("core.constants.LOCAL_DB_PATH", tmp_path / "portfolio.db")
+    local_db.init_db()
+    monkeypatch.setattr(portfolio_tools, "has_cloud", lambda _ctx=None: False)
+    monkeypatch.setattr(portfolio_tools, "_portfolio_id", lambda _ctx=None: "LOCAL")
+    local_db.update_local_free_cash("LOCAL", 12_345.0)
+
+    omitted = portfolio_tools.update_portfolio(action="set_cash")
+    assert omitted["error"] == "set_cash 必须显式传入 free_cash，省略会被当成清零"
+    assert local_db.load_portfolio("LOCAL")["free_cash"] == 12_345.0
+
+    zeroed = portfolio_tools.update_portfolio(action="set_cash", free_cash=0)
+    assert zeroed["success"] is True
+    assert local_db.load_portfolio("LOCAL")["free_cash"] == 0.0
+
+
 def test_update_portfolio_add_requires_buy_dt(monkeypatch, tmp_path):
     from agents import portfolio_tools
     from core.buy_dt import MISSING_BUY_DT_ERROR

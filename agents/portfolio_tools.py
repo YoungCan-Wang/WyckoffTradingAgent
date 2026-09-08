@@ -49,7 +49,7 @@ def update_portfolio(
     shares: int = 0,
     cost_price: float = 0,
     buy_dt: str = "",
-    free_cash: float = 0,
+    free_cash: float | None = None,
     table: str = "",
     codes: list[str] | None = None,
     items: list[dict[str, Any]] | None = None,
@@ -172,7 +172,7 @@ def _update_portfolio_batch(
     action: str,
     portfolio_id: str,
     items: list[dict[str, Any]],
-    free_cash: float,
+    free_cash: float | None,
     cloud: bool,
     tool_context: ToolContext | None,
 ) -> dict:
@@ -625,7 +625,7 @@ def _apply_portfolio_action(
     shares: int,
     cost_price: float,
     buy_dt: str,
-    free_cash: float,
+    free_cash: float | None,
     cloud: bool,
     tool_context: ToolContext | None,
     *,
@@ -647,6 +647,9 @@ def _apply_portfolio_action(
     if action == "remove":
         return _remove_position(portfolio_id, code, cloud, tool_context, refresh_equity=refresh_equity)
     if action == "set_cash":
+        # 与 shares/cost_price 同病：默认 0 会把「省略」写成「清零」。
+        if free_cash is None:
+            return {"error": "set_cash 必须显式传入 free_cash，省略会被当成清零"}
         return _set_cash(portfolio_id, free_cash, cloud, tool_context, refresh_equity=refresh_equity)
     return {"error": f"未知操作: {action}，支持 add/update/remove/set_cash/delete_records"}
 
