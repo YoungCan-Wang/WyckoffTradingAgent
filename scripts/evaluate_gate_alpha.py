@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import os
 from collections.abc import Callable
@@ -38,6 +39,7 @@ from core.funnel_effect_eval import (
     match_by_momentum,
     swap_falsification,
 )
+from core.funnel_effect_panels import build_panels, normalize_market_frame
 from core.gate_alpha_eval import (
     MIN_GROUP,
     PROD_RECENT_HIGH_WINDOW,
@@ -45,10 +47,14 @@ from core.gate_alpha_eval import (
     PROD_TRAILING_DRAWDOWN_PCT,
     STALE_BANDS,
     TOP_N_GRID,
+    TRACE_HORIZONS,
     GateReport,
     band_of,
+    l3_window_note,
     render,
+    split_l3_hard_filter_days,
     summarize,
+    summarize_l3_gate,
 )
 
 WARMUP_BARS = 60
@@ -65,6 +71,16 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="跳过逐对互换否证，只出裸差值（判定里会明写不是结论）",
     )
+    parser.add_argument(
+        "--trace-dir",
+        default="",
+        help="review_trace_*.json.gz 所在目录（递归找）。给了才跑 L3 硬过滤那一节；不给就跳过",
+    )
+    parser.add_argument(
+        "--trace-horizons",
+        default=",".join(str(h) for h in TRACE_HORIZONS),
+        help="L3 那一节的持有期网格，逗号分隔",
+    )
     return parser.parse_args()
 
 
@@ -73,6 +89,9 @@ def load_market(start: str) -> pd.DataFrame:
 
     ``open`` 是对照要用的：互换否证按 T+1 开盘买入、T+1+H 收盘卖出，与
     ``core/funnel_effect_eval`` 同口径。裸差值那部分仍用收盘→收盘，两者不混在一栏里。
+
+    ``amount`` 只有 L3 那一节用：它要建生产同款面板（流动性池 + 20 日动量），缺成交额
+    ``build_panels`` 的流动性池会是空的，而空池不报错——只会让筛选悄悄失效。
     """
     from integrations.fetch_a_share_csv import cached_trade_dates
     from integrations.tushare_client import get_pro
@@ -85,7 +104,7 @@ def load_market(start: str) -> pd.DataFrame:
     frames = []
     for day in days:
         try:
-            frame = pro.daily(trade_date=day.replace("-", ""), fields="ts_code,trade_date,open,high,close")
+            frame = pro.daily(trade_date=day.replace("-", ""), fields="ts_code,trade_date,open,high,close,amount")
             if frame is not None and not frame.empty:
                 frames.append(frame)
         except Exception as exc:  # noqa: BLE001 - 单日失败不应中断整体检验
@@ -244,6 +263,91 @@ def _stop_control(members: list[dict[str, Any]], panels: Panels, horizon: int, b
     return swap_falsification(days, panels) or None
 
 
+def load_trace_payloads(trace_dir: str) -> list[dict[str, Any]]:
+    """递归读 review_trace_*.json.gz。目录不存在或没有文件返回空列表，不抛。
+
+    递归是必需的：工作流把每天的 artifact 各解一个子目录，平铺（``cp -n``）会因为同名
+    覆盖丢掉重跑那份，而留下哪一份取决于 ``find`` 的顺序。这里全都读进来，再由
+    ``latest_trace_per_date`` 按 ``generated_at`` 定夺。
+    """
+    root = Path(trace_dir)
+    if not root.exists():
+        print(f"[gate] trace 目录不存在: {root}")
+        return []
+    payloads: list[dict[str, Any]] = []
+    for path in sorted(root.rglob("review_trace_*.json.gz")):
+        try:
+            with gzip.open(path, "rt", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except Exception as exc:  # noqa: BLE001 - 单份坏文件不该拖挂整体
+            print(f"[gate] {path.name} 读取失败: {str(exc)[:60]}")
+            continue
+        if isinstance(payload, dict) and payload.get("trade_date") and isinstance(payload.get("symbols"), dict):
+            payloads.append(payload)
+    print(f"[gate] trace {len(payloads)} 份")
+    return payloads
+
+
+def build_l3_days(
+    hard_days: dict[str, dict[str, Any]],
+    panels: Panels,
+    horizon: int,
+) -> list[SwapDay]:
+    """把硬过滤日变成配好对的 SwapDay。待测=被 L3 拒的 L2 票，对照=L3 留下的票。
+
+    两侧先与「流动性池 ∩ 有 20 日动量」取交集，和生产漏斗同一把尺子——不取交集会把
+    动量缺失的票塞进配对，``match_by_momentum`` 只能按缺省值处理它们。
+    """
+    days: list[SwapDay] = []
+    for ds in sorted(hard_days):
+        window = panels.window(ds, horizon)
+        if window is None:
+            continue
+        usable = panels.liquid.get(ds, set()) & set(panels.mom20.get(ds, {}))
+        kept = set(hard_days[ds]["l3"]) & usable
+        rejected = (set(hard_days[ds]["l2"]) - set(hard_days[ds]["l3"])) & usable
+        if len(kept) < MIN_GROUP or len(rejected) < MIN_GROUP:
+            continue
+        pairs = _pairs_oriented(sorted(rejected), sorted(kept), panels.mom20[ds])
+        if pairs:
+            days.append(SwapDay(date=ds, buy_ds=window[0], sell_ds=window[1], pairs=pairs))
+    return days
+
+
+def attach_l3_gate(
+    report: GateReport,
+    market: pd.DataFrame,
+    trace_dir: str,
+    horizons: tuple[int, ...],
+) -> None:
+    """在报告上挂 L3 硬过滤那一节。任何一步取不到数就跳过，不抛——这一节是增量。"""
+    payloads = load_trace_payloads(trace_dir)
+    if not payloads:
+        report.l3_gate_note = "没有可用 trace：这一层没有读数（不是没通过）。"
+        return
+    hard_days, demoted_days = split_l3_hard_filter_days(payloads)
+    report.l3_gate_note = l3_window_note(hard_days, demoted_days)
+    print(f"[gate] L3 硬过滤日 {len(hard_days)} / 降级日 {len(demoted_days)}")
+    if not hard_days:
+        return
+    if "amount" not in market.columns:
+        report.l3_gate_note += "　**行情缺 amount 列，建不出流动性池，这一节跳过**。"
+        print("[gate] 行情缺 amount 列，L3 那一节跳过")
+        return
+    panels = build_panels(normalize_market_frame(market))
+    # 空池会让每一天都被跳过，最后判定读成「尚未可知」——与「数据确实不够」同形。
+    # 生产漏斗必然有流动性池，这里量到空池只可能是取数或单位换算坏了，必须出声。
+    if not any(panels.liquid.values()):
+        report.l3_gate_note += "　**流动性池为空（检查 amount 单位换算），这一节跳过**。"
+        print("[gate] 流动性池为空，L3 那一节跳过")
+        return
+    for horizon in horizons:
+        days = build_l3_days(hard_days, panels, horizon)
+        swap = swap_falsification(days, panels) or None
+        report.l3_gate.append(summarize_l3_gate(horizon, hard_days, swap))
+        print(f"[gate] L3 T+{horizon}: 可评估日 {len(days)}")
+
+
 def _collect_theme(
     frame: pd.DataFrame,
     sector_map: dict[str, str],
@@ -331,6 +435,8 @@ def main() -> int:
     market = load_market(args.start)
     print(f"[gate] 行情 {len(market):,} 行 / {market.ts_code.nunique()} 只")
     report = build_report(market, sector_map, max(int(args.horizon), 1), with_control=not args.no_control)
+    if args.trace_dir:
+        attach_l3_gate(report, market, args.trace_dir, _parse_horizons(args.trace_horizons))
     payload = report.as_dict()
     payload["horizon_days"] = int(args.horizon)
     payload["control_ran"] = not args.no_control
@@ -344,6 +450,11 @@ def main() -> int:
     if not args.no_notify:
         _notify(text, int(args.horizon))
     return 0
+
+
+def _parse_horizons(raw: str) -> tuple[int, ...]:
+    out = sorted({int(part) for part in str(raw).split(",") if part.strip().isdigit() and int(part) >= 1})
+    return tuple(out) or TRACE_HORIZONS
 
 
 def _notify(markdown: str, horizon: int) -> None:

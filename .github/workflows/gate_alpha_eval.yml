@@ -6,6 +6,10 @@ name: Gate Alpha Eval
 #   止损各偏离档超额 -0.40 / -0.42 / -0.22 / +0.05，前三档为负说明止损触发后确实继续跑输。
 # 两条都未落到参数改动：题材层增益小于单次往返成本 0.202%；止损仅最陈旧档轻微为正。
 # 每周重跑的意义在于让这两个结论跨越更多行情段后再判，而不是靠单段拍板。
+#
+# 第三节（L3 硬过滤）量的是**生产那道闸**：两侧成员直接读 trace 的 l3_eligible，不像
+# 题材层那样用「行业动量 topN」当代理。它依赖 wyckoff_funnel 的 artifact，取不到就整节
+# 跳过，题材层与止损层照跑——artifact 有 90 天保留期，这一节的窗口只会短不会错。
 on:
   schedule:
     # UTC 周六 02:40 = 北京时间周六 10:40，紧随 regime 与卖出归因之后。
@@ -13,8 +17,11 @@ on:
   workflow_dispatch:
     inputs:
       horizon:
-        description: "前瞻交易日数"
+        description: "前瞻交易日数(题材层与止损层用;L3 那一节自带持有期网格)"
         default: "5"
+      max_artifacts:
+        description: "回溯多少次漏斗运行取 trace"
+        default: "40"
 
 concurrency:
   group: gate-alpha-${{ github.ref }}
@@ -22,6 +29,8 @@ concurrency:
 
 permissions:
   contents: read
+  # 下载 wyckoff_funnel 的 artifact 取 review trace,L3 那一节要用。
+  actions: read
 
 jobs:
   run:
@@ -48,9 +57,50 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e .
 
+      - name: Collect production review traces
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IN_MAX_ARTIFACTS: ${{ github.event.inputs.max_artifacts || '40' }}
+          TRACE_DIR: ${{ github.workspace }}/gate-alpha-traces
+        run: |
+          set -euo pipefail
+          mkdir -p "$TRACE_DIR"
+          listing="$RUNNER_TEMP/funnel-runs.txt"
+          # 按 workflow 直接列 run(一次调用,实测 2.3s)。不要改成遍历
+          # `actions/artifacts?per_page=100`——仓库里近 6000 份 artifact,--paginate 要走
+          # 60 页、实测 50s。也不要按 conclusion 过滤:漏斗 failure 的 run 因为
+          # if: always() 照样上传,里面的 trace 是完整的,失败多发生在 trace 落盘之后。
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/wyckoff_funnel.yml/runs?branch=${GITHUB_REF_NAME}&per_page=${IN_MAX_ARTIFACTS}" \
+            --jq '.workflow_runs[].id' \
+            > "$listing"
+
+          scanned=0
+          while read -r run_id; do
+            test -n "$run_id" || continue
+            scanned=$((scanned + 1))
+            # 每次 run 解到自己的子目录,**不要**平铺 cp 到一处。同一交易日可能有多份
+            # trace(漏斗当天重跑),实测 2026-08-24 三份里 L3 分别是 732/732/449——
+            # 同一个 config_digest,数却不一样。平铺 `cp -n` 保留哪一份取决于 find 的
+            # 顺序,同一批证据能跑出两个数。这里全留着,由 latest_trace_per_date 按
+            # generated_at 定夺。
+            if ! gh run download "$run_id" --dir "$TRACE_DIR/${run_id}" --pattern 'daily-job-artifacts-*' >/dev/null 2>&1; then
+              rm -rf "$TRACE_DIR/${run_id}"
+              continue
+            fi
+          done < "$listing"
+
+          files="$(find "$TRACE_DIR" -type f -name 'review_trace_*.json.gz' | wc -l | tr -d ' ')"
+          echo "[gate-alpha] 扫描 ${scanned} 次漏斗运行,收集到 ${files} 份 trace(含同日重跑)"
+          echo "TRACE_DIR=${TRACE_DIR}" >> "$GITHUB_ENV"
+
       - name: Evaluate gate alpha
         run: |
-          python scripts/evaluate_gate_alpha.py --horizon "${{ github.event.inputs.horizon || '5' }}"
+          # trace 取不到就不传 --trace-dir,脚本跳过 L3 那一节继续跑题材层与止损层。
+          # 那一节是增量,不该让它的缺失拖挂整个任务。
+          python scripts/evaluate_gate_alpha.py \
+            --horizon "${{ github.event.inputs.horizon || '5' }}" \
+            --trace-dir "${TRACE_DIR:-}"
 
       - name: Upload evidence
         uses: actions/upload-artifact@v7

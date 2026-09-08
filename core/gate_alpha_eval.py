@@ -84,6 +84,11 @@ STALE_BANDS: tuple[tuple[float, float, str], ...] = (
 MIN_DAYS = 5
 MIN_GROUP = 3
 
+# 持有期网格。单一持有期的读数是切片不是结论：跨持有期同向才说明标签本身含信息，
+# 只在某一格显著更可能是窗口挑出来的。代价要一并报——可评估日 = trace 天数 − h，
+# 所以 h 越大天数越少、离 funnel_effect_eval.MIN_DAYS 越远。
+TRACE_HORIZONS = (1, 2, 3, 5, 10)
+
 
 @dataclass
 class GateStat:
@@ -140,15 +145,110 @@ def _round(value: float | None, digits: int = 4) -> float | None:
     return None if value is None else round(float(value), digits)
 
 
+def latest_trace_per_date(payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """同一交易日多份 trace 时，只留 ``generated_at`` 最新的一份。
+
+    同日重复是常态：一天可能跑过多次（重跑、补跑），每次都上传一份同名 artifact。实测
+    2026-08-24 有三份，L2 都是 1810/1812 但 L3 是 732、732、449——config_digest 相同，
+    差在取数快照。工作流按 ``cp -n`` 平铺到一个目录，留下哪一份取决于 ``find`` 的顺序，
+    于是同一份证据两次跑出两个数。这里显式按 ``generated_at`` 取最新，读数才可复现。
+    """
+    best: dict[str, dict[str, Any]] = {}
+    for payload in payloads:
+        ds = str(payload.get("trade_date") or "")
+        if not ds:
+            continue
+        current = best.get(ds)
+        if current is None or str(payload.get("generated_at") or "") > str(current.get("generated_at") or ""):
+            best[ds] = payload
+    return [best[ds] for ds in sorted(best)]
+
+
+def split_l3_hard_filter_days(
+    payloads: list[dict[str, Any]],
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """按「当天 L3 是不是硬过滤」把 trace 分成两堆，返回 (硬过滤日, 降级日)。
+
+    判定用 **L2 与 L3 成员集合是否相等**，不用水温白名单：降级发生时
+    ``workflows/funnel_layers.py`` 直接令 ``l3_passed = l2_passed``，两个集合逐一相等，
+    这是降级留在 trace 里的确定痕迹。按水温名单反推会漏——实测 2026-08-07/08-10/08-12
+    三天 ``market_context.regime`` 是空字符串（盘前 A50 缺数据导致 UNKNOWN），但它们确实
+    走了降级；而同样空水温的 2026-08-11 是硬过滤日（L2=866 / L3=199）。空水温本身不决定
+    任何事，集合相等才决定。
+
+    不用 ``l3_eligible_strict``：那一位要到它上线之后的 trace 才有，历史 trace 全是 None。
+    """
+    hard: dict[str, dict[str, Any]] = {}
+    demoted: dict[str, dict[str, Any]] = {}
+    for payload in latest_trace_per_date(payloads):
+        symbols = payload.get("symbols") or {}
+        if not isinstance(symbols, dict) or not symbols:
+            continue
+        l2 = {str(code) for code, row in symbols.items() if (row or {}).get("l2_eligible")}
+        l3 = {str(code) for code, row in symbols.items() if (row or {}).get("l3_eligible")}
+        if not l2 or not l3:
+            continue
+        row = {
+            "regime": str((payload.get("market_context") or {}).get("regime") or ""),
+            "l2": sorted(l2),
+            "l3": sorted(l3),
+        }
+        (demoted if l2 == l3 else hard)[str(payload["trade_date"])] = row
+    return hard, demoted
+
+
+@dataclass
+class L3GateStat:
+    """L3 硬过滤那道闸的判别力，一个持有期一行。
+
+    与 ``GateStat`` 的题材层区别在量的是**哪道闸**：题材层用「行业动量 topN」当代理，
+    ``core/gate_alpha_eval`` 的文档开头已写明那不是生产那道闸；这里的两侧成员直接读
+    trace 的 ``l3_eligible``，是生产四路取或（含 ``len(filtered) < 3`` 兜底放行）的真实
+    结果。两侧都已过 L2，唯一差别就是 L3，与 ``resolve_layer`` 的 ``l4_vs_rest`` 同构。
+
+    待测组取**被 L3 拒掉**的那一侧：问的是「把这道硬过滤拆掉会不会更好」，被拒的那批
+    正是拆掉后会进来的票。于是 ``observed_pct`` 为正 = 拆掉更好 = 这道闸在反向筛。
+    """
+
+    horizon: int
+    days: int
+    avg_pairs: float
+    regimes: dict[str, int] = field(default_factory=dict)
+    swap: dict[str, SwapTest] | None = None
+
+    @property
+    def verdict(self) -> str:
+        if self.swap is None or "stock_win" not in self.swap:
+            return "对照未跑出结果：尚未可知"
+        win = self.swap["stock_win"]
+        ret = self.swap.get("gross_return")
+        tail = "" if ret is None else f"；收益栏 {ret.observed_pct:+.3f}pct（双侧 p={ret.p_two_sided:.3f}）"
+        return f"被拒 vs 留下（动量配平）→ {win.verdict}{tail}"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "horizon_days": self.horizon,
+            "days": self.days,
+            "avg_pairs": _round(self.avg_pairs, 2),
+            "regimes": dict(sorted(self.regimes.items())),
+            "swap": None if not self.swap else {col: test.as_dict() for col, test in self.swap.items()},
+            "verdict": self.verdict,
+        }
+
+
 @dataclass
 class GateReport:
     theme: list[GateStat] = field(default_factory=list)
     stop_loss: list[GateStat] = field(default_factory=list)
+    l3_gate: list[L3GateStat] = field(default_factory=list)
+    l3_gate_note: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "theme_resonance": [stat.as_dict() for stat in self.theme],
             "stop_loss_staleness": [stat.as_dict() for stat in self.stop_loss],
+            "l3_hard_filter": [stat.as_dict() for stat in self.l3_gate],
+            "l3_hard_filter_note": self.l3_gate_note,
             "production": {
                 "top_n_sectors": PROD_TOP_N_SECTORS,
                 "trailing_drawdown_pct": PROD_TRAILING_DRAWDOWN_PCT,
@@ -194,6 +294,50 @@ def summarize(
     )
 
 
+def summarize_l3_gate(
+    horizon: int,
+    hard_days: dict[str, dict[str, Any]],
+    swap: dict[str, SwapTest] | None,
+) -> L3GateStat:
+    """把一个持有期的 L3 互换否证结果收成一行。
+
+    ``days`` / ``avg_pairs`` 取自 ``SwapTest`` 自己报的数，不用 ``len(hard_days)``：
+    ``swap_falsification`` 会丢掉配对数不足 ``MIN_HITS_PER_DAY`` 的日子，也丢掉前瞻窗口
+    落在行情尾部之外的日子（可评估日 = trace 天数 − horizon），两个数天生不等。
+
+    ``regimes`` 统的是**入选那批硬过滤日**的水温分布，不是最终参与检验的那批——后者
+    ``SwapTest`` 没有回传日期清单。两个口径差在被丢掉的尾部几天，读的时候按上限看。
+    """
+    win = (swap or {}).get("stock_win")
+    regimes: dict[str, int] = {}
+    for row in hard_days.values():
+        key = str(row.get("regime") or "") or "(空)"
+        regimes[key] = regimes.get(key, 0) + 1
+    return L3GateStat(
+        horizon=horizon,
+        days=0 if win is None else int(win.days),
+        avg_pairs=0.0 if win is None else float(win.avg_pairs),
+        regimes=regimes,
+        swap=swap,
+    )
+
+
+def l3_window_note(hard_days: dict[str, dict[str, Any]], demoted_days: dict[str, dict[str, Any]]) -> str:
+    """描述这次 L3 检验站在什么窗口上。窗口不写清楚，读数就没有意义。"""
+    if not hard_days:
+        return "没有可用的硬过滤日：这一层没有读数。"
+    dates = sorted(hard_days)
+    regimes: dict[str, int] = {}
+    for row in hard_days.values():
+        key = str(row.get("regime") or "") or "(空)"
+        regimes[key] = regimes.get(key, 0) + 1
+    composition = "、".join(f"{name} {count}" for name, count in sorted(regimes.items(), key=lambda kv: -kv[1]))
+    return (
+        f"硬过滤日 {len(hard_days)} 天（{dates[0]}..{dates[-1]}），水温构成：{composition}；"
+        f"另有 {len(demoted_days)} 天 L3 被降级（l3_passed = l2_passed，成员集合逐一相等）已排除。"
+    )
+
+
 def band_of(deviation_pct: float) -> str | None:
     """参考价偏离幅度归档。负偏离（参考价低于现价）不属于陈旧问题，返回 None。"""
     if deviation_pct < 0:
@@ -220,6 +364,8 @@ def render(report: GateReport) -> str:
     ]
     for stat in report.stop_loss:
         lines.append(_row(stat))
+    if report.l3_gate:
+        lines += _l3_section(report)
     lines += [
         "",
         "**读法**　差值一栏是**裸日均差，两侧动量没配平，只作描述**：题材层的「热门」按定义就是成分股"
@@ -234,6 +380,46 @@ def render(report: GateReport) -> str:
         "互换否证的 p 值偏乐观——持有窗口逐日重叠、日间观测不独立，而置换零分布按独立处理。",
     ]
     return "\n".join(lines)
+
+
+def _l3_section(report: GateReport) -> list[str]:
+    """L3 硬过滤那道闸，按持有期成网格出。
+
+    单看一格没有意义：跨持有期同向才说明标签含信息。天数一栏必须显示——每一格的天数
+    都不一样（可评估日 = trace 天数 − h），拿天数多的格子和天数少的格子比大小，比到的
+    是日期构成不是持有期。
+    """
+    lines = [
+        "",
+        f"**L3 硬过滤（生产口径，读 trace 的 l3_eligible）**　{report.l3_gate_note}",
+        "",
+        "| 持有期 | 可评估日 | 日均配对 | 胜率差 pct | p（双侧） | 收益差 pct | p（双侧） | 判定 |",
+        "| --- | --: | --: | --: | --: | --: | --: | --- |",
+    ]
+    for stat in report.l3_gate:
+        win = (stat.swap or {}).get("stock_win")
+        ret = (stat.swap or {}).get("gross_return")
+        lines.append(
+            f"| T+{stat.horizon} | {stat.days} | {stat.avg_pairs:.0f} | "
+            f"{'—' if win is None else f'{win.observed_pct:+.3f}'} | "
+            f"{'—' if win is None else f'{win.p_two_sided:.3f}'} | "
+            f"{'—' if ret is None else f'{ret.observed_pct:+.3f}'} | "
+            f"{'—' if ret is None else f'{ret.p_two_sided:.3f}'} | "
+            f"{'样本不足' if win is None else win.verdict} |"
+        )
+    lines += [
+        "",
+        "**这一栏怎么读**　两侧都已过 L2，唯一差别是 L3，与 `resolve_layer` 的 `l4_vs_rest` 同构。"
+        "待测组是**被 L3 拒掉**的那批（拆掉这道闸就会进来的票），所以**为正 = 拆掉更好 = 这道闸在反向筛**。"
+        "与上面题材层那两张表不同：题材层用「行业动量 topN」当代理，本模块开头已写明那不是生产那道闸；"
+        "这一栏读的是 trace 里的真实放行结果（候选内复合百分位中位数 + 四路取或 + `len(filtered) < 3` 兜底）。",
+        "- 跨持有期只看**符号是否同向**。各格天数不同，数值大小不可横向相减——天数多的格子必然"
+        "偏向窗口里较早那批日子，把日期构成读成「持有越久效应越大」是常见的错。",
+        "- 每格天数都要与 `funnel_effect_eval.MIN_DAYS` 比：不够就是「尚未可知」，**不是「没通过」**。",
+        "- 水温构成决定这条读数能外推到哪。若窗口里几乎只有 RISK_OFF/CRASH，那它只是一条熊市窗口的"
+        "暂时读数，不能当作改 L3 的依据。",
+    ]
+    return lines
 
 
 def _signed(value: float | None) -> str:
