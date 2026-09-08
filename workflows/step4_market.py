@@ -70,6 +70,13 @@ def missing_market_inputs(
     `normalize_*_regime` 会把缺失值和真实的 UNKNOWN 判定压成同一个 UNKNOWN，
     而 UNKNOWN 属于禁止开仓状态。不单独识别缺失，运维就无法区分「行情不明」和
     「上游任务没跑」——生产 47 天里有 11 天因后者被禁买，比 NEUTRAL 放行的天数还多。
+
+    上面那 11 天已经是关掉的历史区间，两半各有各的成因，别再拿它去查现网：
+    盘前那半是外部 08:20 触发器连续漏掉周一周二，5a8d5a83(2026-07-30) 补了兜底
+    cron；benchmark 那半是当时 DB CHECK 不收 PANIC_REPAIR、而旧兜底只降级
+    PANIC_REPAIR_CONFIRMED，纯 PANIC_REPAIR 落空后写入抛错记成 ok=False，
+    0286f735(2026-07-14) 连同放宽约束一起收掉。两个修复之后各自 0 复发。
+    留这个函数不是为了那 11 天，是为了下一次上游静默时仍能分清缺失与不明。
     """
     missing: list[str] = []
     if not clean_text(raw_premarket):

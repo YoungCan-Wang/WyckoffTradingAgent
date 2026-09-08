@@ -3,6 +3,7 @@ from core.market_trade_mode import PROBE_ONLY_REGIMES, merge_premarket_regime, r
 from integrations.supabase_market_signal import (
     _merge_latest_market_signal_rows,
     compose_market_state,
+    load_market_signal_daily,
     market_signal_readiness,
     upsert_market_signal_daily,
 )
@@ -304,3 +305,81 @@ def test_upsert_market_signal_daily_scrubs_non_finite_numeric_fields(monkeypatch
     assert written["main_index_close"] is None
     assert written["vix_close"] is None
     assert written["a50_close"] == 13200.5
+
+
+class _RlsBlindClient:
+    """anon 视角：表里有行，但 RLS 把它过滤成 0 行,且不报错。"""
+
+    def __init__(self):
+        self.reads = 0
+
+    def table(self, _name):
+        self.reads += 1
+        return _FakeQuery(_FakeMarketSignalTable({}), "select")
+
+
+def test_load_market_signal_daily_falls_back_to_admin_when_anon_reads_empty(monkeypatch):
+    """anon 被 RLS 读空必须兜底到 service key,否则下游把它折成禁买态。
+
+    step4_market 拿不到行且 benchmark_context 也没 regime 时，会把 regime 置成
+    UNKNOWN——一个禁买状态。所以「读空」在这条链路上不是缺数据，是当天不许买；
+    权限问题伪装成市场判断，日志里两者同形。
+    """
+    blind = _RlsBlindClient()
+    served = _FakeMarketSignalTable({"trade_date": "2026-06-20", "benchmark_regime": "NEUTRAL"})
+    monkeypatch.setattr(market_signal_module, "_get_supabase_read_client", lambda: blind)
+    monkeypatch.setattr(market_signal_module, "_read_client_uses_admin", lambda: False)
+    monkeypatch.setattr(market_signal_module, "is_supabase_admin_configured", lambda: True)
+    monkeypatch.setattr(market_signal_module, "_get_supabase_admin_client", lambda: served)
+
+    row = load_market_signal_daily("2026-06-20")
+
+    assert blind.reads == 1, "anon 通道必须先试，不能直接上 service key"
+    assert row is not None, "anon 读空后没兜底：这行会被下游折成 UNKNOWN 禁买"
+    assert row["benchmark_regime"] == "NEUTRAL"
+
+
+def test_load_market_signal_daily_skips_admin_when_read_client_already_admin(monkeypatch):
+    """server job 的 read client 本身就是 service role,不该再连一次库。"""
+    served = _FakeMarketSignalTable({"trade_date": "2026-06-20", "benchmark_regime": "RISK_ON"})
+    admin_calls = []
+
+    def _unexpected_admin():
+        admin_calls.append(1)
+        return served
+
+    monkeypatch.setattr(market_signal_module, "_get_supabase_read_client", lambda: _RlsBlindClient())
+    monkeypatch.setattr(market_signal_module, "_read_client_uses_admin", lambda: True)
+    monkeypatch.setattr(market_signal_module, "is_supabase_admin_configured", lambda: True)
+    monkeypatch.setattr(market_signal_module, "_get_supabase_admin_client", _unexpected_admin)
+
+    assert load_market_signal_daily("2026-06-20") is None
+    assert admin_calls == [], "read client 已是 admin，兜底通道属于重复连接"
+
+
+def test_load_market_signal_daily_logs_when_admin_rescues_the_read(monkeypatch, caplog):
+    """兜底生效时必须留一条 warning,否则没人知道这台机器读的是 RLS 视图。"""
+    served = _FakeMarketSignalTable({"trade_date": "2026-06-20", "benchmark_regime": "NEUTRAL"})
+    monkeypatch.setattr(market_signal_module, "_get_supabase_read_client", lambda: _RlsBlindClient())
+    monkeypatch.setattr(market_signal_module, "_read_client_uses_admin", lambda: False)
+    monkeypatch.setattr(market_signal_module, "is_supabase_admin_configured", lambda: True)
+    monkeypatch.setattr(market_signal_module, "_get_supabase_admin_client", lambda: served)
+
+    with caplog.at_level("WARNING", logger=market_signal_module.logger.name):
+        load_market_signal_daily("2026-06-20")
+
+    assert any("service key 重读" in r.getMessage() for r in caplog.records)
+
+
+def test_load_market_signal_daily_stays_quiet_on_a_normal_first_try_hit(monkeypatch, caplog):
+    """anon 一次读到就别喊兜底,否则 warning 天天出,真出事时没人看。"""
+    served = _FakeMarketSignalTable({"trade_date": "2026-06-20", "benchmark_regime": "NEUTRAL"})
+    monkeypatch.setattr(market_signal_module, "_get_supabase_read_client", lambda: served)
+    monkeypatch.setattr(market_signal_module, "_read_client_uses_admin", lambda: False)
+    monkeypatch.setattr(market_signal_module, "is_supabase_admin_configured", lambda: True)
+
+    with caplog.at_level("WARNING", logger=market_signal_module.logger.name):
+        row = load_market_signal_daily("2026-06-20")
+
+    assert row is not None
+    assert not [r for r in caplog.records if "service key 重读" in r.getMessage()]
