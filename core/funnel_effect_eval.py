@@ -35,6 +35,7 @@
 
 from __future__ import annotations
 
+import math
 import random
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -68,6 +69,24 @@ def tstat(values: list[float]) -> float | None:
 
 def _round(value: float | None, digits: int = 4) -> float | None:
     return None if value is None else round(float(value), digits)
+
+
+def _finite(value: Any) -> float | None:
+    """能当数用就返回 float，否则 None。行情里的缺失值判空必须走这里。
+
+    行情表缺值到手上是 ``NaN`` 而不是 ``None``（tushare / pandas 的常态），而
+    ``bool(NaN)`` 是 **True**、``NaN <= 0`` 是 **False**——``if not price``、
+    ``if o and c``、``price is not None`` 三种写法一个都拦不住它。放过去之后
+    ``100 * (c / o - 1)`` 得到 NaN，被 ``mean`` 一吃，**整日读数变成 NaN**，
+    而且不抛错、不告警，最后在报告里跟真实读数长得一样。
+    """
+    if value is None:
+        return None
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+    return num if math.isfinite(num) else None
 
 
 @dataclass
@@ -161,6 +180,9 @@ class AbsoluteStat:
     ``positive_day_pct`` 这里算的是**净收益为正的交易日占比**（胜率），与
     ``GroupStat.positive_day_pct`` 的「超额为正日占比」不是一回事，不可混用。
 
+    ``bench_excess_pct`` 为 ``None`` 时判定句是「基准覆盖不足，超额未知」，**不是**
+    「跑赢基准」：没拿到基准就没这个资格说。读 ``bench_days`` 看基准站了几天。
+
     收益算在**全部候选**上（``net_abs``），不是配对子集：配对会丢掉找不到同动量
     对照的候选，而漏斗当天真正给出的就是全集。超额那一栏必须用配对子集（分母要
     和对照组一致），这一栏必须用全集（要如实反映持有这批票的结果）——两栏分母
@@ -185,11 +207,22 @@ class AbsoluteStat:
 
     @property
     def verdict(self) -> str:
-        if self.days < MIN_DAYS or self.net_pct is None:
+        """判定句。**"跑赢基准"只有在真拿到基准读数时才能说。**
+
+        原先缺基准时 ``bench_excess_pct`` 是 ``None``，"为负"和"跑输"两条都不触发，
+        直接落到最后一句——**没有基准却宣称跑赢**。脏数据那条更隐蔽：NaN 超额下
+        ``NaN <= 0`` 是 False，同样落到最后一句。两条都是「没测过」被说成「测过且赢了」，
+        与"样本不足 ≠ 对照未通过"是同一种错，方向还更坏：它是无据宣称。
+        """
+        net = _finite(self.net_pct)
+        if self.days < MIN_DAYS or net is None:
             return "样本不足"
-        if self.net_pct <= 0:
+        if net <= 0:
             return "绝对收益为负：这批票拿着是亏的"
-        if self.bench_excess_pct is not None and self.bench_excess_pct <= 0:
+        excess = _finite(self.bench_excess_pct)
+        if excess is None:
+            return "绝对收益为正；基准覆盖不足，超额未知"
+        if excess <= 0:
             return "绝对为正但跑输基准：只赚了市场的钱"
         return "绝对为正且跑赢基准"
 
@@ -218,11 +251,17 @@ def summarize_absolute(daily: list[dict[str, float]]) -> AbsoluteStat:
     基准差额只用**同时有 net_abs 和 bench 的日子**算，缺基准的日子不静默按 0
     处理——那会把无基准段当成「基准不涨不跌」，凭空造出超额。
     """
-    usable = [row for row in daily if row.get("net_abs") is not None and (row.get("size_abs") or 0) >= MIN_HITS_PER_DAY]
+    usable = [
+        row
+        for row in daily
+        if _finite(row.get("net_abs")) is not None and (row.get("size_abs") or 0) >= MIN_HITS_PER_DAY
+    ]
     if len(usable) < MIN_DAYS:
         return AbsoluteStat(len(usable), 0.0, None, None, None, None, None, None, None, None)
     nets = [float(row["net_abs"]) for row in usable]
-    paired = [(float(r["net_abs"]), float(r["bench"])) for r in usable if r.get("bench") is not None]
+    # 基准这一栏也要过 _finite：``is not None`` 放 NaN 过去，一天脏基准就让
+    # bench_excess_pct 变 NaN，再被 verdict 读成「跑赢」。
+    paired = [(float(r["net_abs"]), b) for r in usable if (b := _finite(r.get("bench"))) is not None]
     bench_diffs = [net - bench for net, bench in paired]
     # 股级胜率按**交易日等权**平均，不是把所有票混成一个大池：命中只数多的日子
     # 不该主导胜率，与 net_pct 的等权口径保持一致。
@@ -361,8 +400,9 @@ class Panels:
         必须与候选同窗口。用 buy_ds 收盘当起点会把 T+1 当天的涨跌从基准里剔掉、
         却留在候选里，跳空大的日子能凭空造出 1pct 以上的假超额。
         """
-        start, end = self.bench_open.get(buy_ds), self.bench_close.get(sell_ds)
-        if not start or not end or start <= 0:
+        start = _finite(self.bench_open.get(buy_ds))
+        end = _finite(self.bench_close.get(sell_ds))
+        if start is None or end is None or start <= 0 or end <= 0:
             return None
         return 100.0 * (end / start - 1.0)
 
@@ -382,13 +422,20 @@ class Panels:
         return mean(rets) if rets else None
 
     def per_stock_returns(self, codes: list[str], buy_ds: str, sell_ds: str) -> list[float]:
-        """逐只毛收益（%），未扣成本。缺开盘或收盘的票直接不收录。"""
+        """逐只毛收益（%），未扣成本。缺开盘或收盘的票直接不收录。
+
+        判空走 ``_finite``：原先的 ``if o and c and o > 0`` 只对 ``o`` 查了正负，
+        ``c`` 是裸真值判断，NaN 收盘价能穿过去，算出的 NaN 被 ``mean`` 一吃就把
+        **整日**读数变成 NaN。这是全链唯一的取价口，``gross_return`` 与
+        ``stock_win_rate`` 都走它，所以这一处修完那两个也就干净了。
+        """
         opens, closes = self.open.get(buy_ds, {}), self.close.get(sell_ds, {})
         rets = []
         for code in codes:
-            o, c = opens.get(code), closes.get(code)
-            if o and c and o > 0:
-                rets.append(100.0 * (c / o - 1.0))
+            o, c = _finite(opens.get(code)), _finite(closes.get(code))
+            if o is None or c is None or o <= 0 or c <= 0:
+                continue
+            rets.append(100.0 * (c / o - 1.0))
         return rets
 
     def stock_win_rate(self, codes: list[str], buy_ds: str, sell_ds: str) -> float | None:
