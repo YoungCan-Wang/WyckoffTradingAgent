@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from core.wyckoff_engine import (
     FunnelConfig,
@@ -24,6 +25,7 @@ from core.wyckoff_engine import (
     _latest_trade_date,
     _lps_creek_confirmed,
     _recent_sequence_events,
+    _skipped_weekdays,
     _sos_volume_ratio,
     _spring_support_level,
     build_candidate_entries,
@@ -231,7 +233,32 @@ class TestIsHolidayGrace:
         assert _is_holiday_grace(df, 1) is False
 
     def test_weekend_no_grace(self):
+        """周五 → 周一是普通周末,不是节后。
+
+        这条原先断言的是 ``is True``——用例名写着「weekend no grace」,断言写的是给了宽限,
+        把 bug 钉住了。周五到周一正好跨 3 自然日,撞上旧判据 ``>= 3``,于是**每个周一都被
+        判成节后、止损整段跳过**:生产 trace 里 5 个周一 stop_loss 恰好 0,17 个非周一
+        518~1636。
+        """
         df = _make_df(["2024-01-05", "2024-01-08"], [10, 11])
+        assert _is_holiday_grace(df, 1) is False
+
+    def test_midweek_single_day_holiday_triggers_grace(self):
+        """周二 → 周四只跨 2 自然日,但周三整日没开盘,这才是节后。
+
+        旧判据 ``>= 3`` 在这里判 False——它按跨天数算,周中单日假一律漏掉。
+        """
+        df = _make_df(["2024-04-02", "2024-04-04"], [10, 11])
+        assert _is_holiday_grace(df, 1) is True
+
+    def test_monday_holiday_triggers_grace(self):
+        """周五 → 周二:中间的周一整日休市,是节后。跟普通周末只差一个工作日。"""
+        df = _make_df(["2024-01-05", "2024-01-09"], [10, 11])
+        assert _is_holiday_grace(df, 1) is True
+
+    def test_friday_holiday_triggers_grace(self):
+        """周四 → 周一:中间的周五整日休市,是节后。"""
+        df = _make_df(["2024-01-04", "2024-01-08"], [10, 11])
         assert _is_holiday_grace(df, 1) is True
 
     def test_holiday_gap_triggers_grace(self):
@@ -254,6 +281,35 @@ class TestIsHolidayGrace:
         )
         assert _is_holiday_grace(df, 2) is False
         assert _is_holiday_grace(df, 3) is True
+
+    def test_weekend_inside_lookback_does_not_trigger(self):
+        """回看窗里夹着周末也不该触发——每周都有周末,否则这道闸等于常开。
+
+        grace_days=3 时会回看 3 对相邻交易日,周三往前数必然跨过一个周末。
+        """
+        df = _make_df(["2024-01-04", "2024-01-05", "2024-01-08", "2024-01-09"], [10, 11, 12, 13])
+        assert _is_holiday_grace(df, 3) is False
+
+
+class TestSkippedWeekdays:
+    """判据是「中间有几个工作日没开盘」,不是「跨了几个自然日」。"""
+
+    @pytest.mark.parametrize(
+        ("prev", "curr", "expected", "label"),
+        [
+            ("2024-01-04", "2024-01-05", 0, "周四→周五 连续"),
+            ("2024-01-05", "2024-01-08", 0, "周五→周一 普通周末"),
+            ("2024-01-05", "2024-01-09", 1, "周五→周二 周一放假"),
+            ("2024-01-04", "2024-01-08", 1, "周四→周一 周五放假"),
+            ("2024-04-02", "2024-04-04", 1, "周二→周四 周三放假"),
+            ("2024-09-27", "2024-10-08", 6, "国庆长假"),
+        ],
+    )
+    def test_counts_only_missing_weekdays(self, prev, curr, expected, label):
+        assert _skipped_weekdays(pd.Timestamp(prev), pd.Timestamp(curr)) == expected, label
+
+    def test_same_day_is_zero(self):
+        assert _skipped_weekdays(pd.Timestamp("2024-01-05"), pd.Timestamp("2024-01-05")) == 0
 
 
 class TestComputeStopLoss:

@@ -374,7 +374,7 @@ class FunnelConfig:
     exit_trailing_drawdown_pct: float = -10.0  # 利润保护线：高位跟踪回撤止损幅度（%）
     exit_confirm_days: int = 2  # 洗盘过滤：连续 N 日收盘低于止损线才确认
     exit_vol_confirm_ratio: float = 0.8  # 确认期量比阈值（低于此值视为缩量洗盘不触发）
-    exit_holiday_grace_days: int = 1  # 节后宽限期：跨 ≥3 自然日后跳过 N 个交易日止损
+    exit_holiday_grace_days: int = 1  # 节后宽限期：整日休市后跳过 N 个交易日止损（普通周末不算）
     exit_holiday_grace_dynamic_enabled: bool = True
     exit_holiday_grace_max_days: int = 2
     exit_holiday_grace_min_money_flow_score: float = -5.0
@@ -2621,8 +2621,32 @@ def _detect_upthrust_after_distribution(df: pd.DataFrame, cfg: FunnelConfig) -> 
     }
 
 
+def _skipped_weekdays(prev: pd.Timestamp, curr: pd.Timestamp) -> int:
+    """两个相邻交易日之间被跳过的工作日数。0 = 连续交易日，**普通周末也算连续**。
+
+    判据是「中间有没有整个工作日没开盘」，不是「跨了几个自然日」。跨天数会两头出错：
+
+    - 周五 → 周一跨 3 自然日，中间只有周六周日，**是普通周末不是假日**；
+    - 周二 → 周四只跨 2 自然日，中间的周三是工作日却没开盘,**这才是假日**。
+    """
+    gap = (curr - prev).days
+    if gap <= 1:
+        return 0
+    return sum(1 for k in range(1, gap) if (prev + pd.Timedelta(days=k)).weekday() < 5)
+
+
 def _is_holiday_grace(df_s: pd.DataFrame, grace_days: int) -> bool:
-    """检测最近交易日是否处于节后宽限期（跨 ≥3 自然日后的 grace_days 个交易日内）。"""
+    """最近交易日是否在节后宽限期内（前 grace_days 个交易日里有过整日休市）。
+
+    **普通周末不算节后。** 原先的判据是「相邻交易日跨 ≥3 自然日」，而周五到周一
+    正好 3 天,于是**每个周一都被判成节后,止损整段跳过**。2026-08-13~09-07 的
+    生产 trace 里,5 个周一的 ``stop_loss`` 恰好为 0、17 个非周一是 518~1636;
+    风控拦截档周一均值 1.2、非周一 351.9;候选池带止损的票周一恒 0、非周一均值
+    34.9——那批本该吃 −35 分的票,周一一分不扣。
+
+    同一个阈值还漏掉周中单日假(周二→周四跨 2 天,判 False)。改成数「被跳过的
+    工作日」两头都对,见 :func:`_skipped_weekdays`。
+    """
     if grace_days <= 0 or "date" not in df_s.columns or len(df_s) < 2:
         return False
     dates = pd.to_datetime(df_s["date"], errors="coerce")
@@ -2631,7 +2655,7 @@ def _is_holiday_grace(df_s: pd.DataFrame, grace_days: int) -> bool:
     for i in range(1, check_pairs + 1):
         if dates.isna().iloc[-i] or dates.isna().iloc[-i - 1]:
             continue
-        if (dates.iloc[-i] - dates.iloc[-i - 1]).days >= 3:
+        if _skipped_weekdays(dates.iloc[-i - 1], dates.iloc[-i]) >= 1:
             return True
     return False
 
