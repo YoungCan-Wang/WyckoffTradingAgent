@@ -377,9 +377,42 @@ def _markdown_report(report: dict[str, Any]) -> str:
             f"| {shadow_lane_label(lane)} | {summary.get('count', 0)} | {_metric(t1, 'mean')} | "
             f"{_metric(t3, 'mean')} | {_metric(t5, 'mean')} | {_metric(t5, 'win_rate', percent=False)} |"
         )
+    lines.extend(_risk_screen_caveat_lines(report))
     lines.extend(_score_band_lines(report))
     lines.extend(["", *control_verdict_lines(report.get("momentum_control") or {})])
     return "\n".join(lines) + "\n"
+
+
+#: 这两条车道的行来自 L2 已通过的票,离场信号对它们算过,带信号的被
+#: shadow_signal_from_decision 剔掉了 —— 风控过滤对它们是真的。
+_RISK_SCREENED_LANES = frozenset({"rotation_setup", "pre_breakout"})
+#: 这条车道来自 L2 未过的票。离场信号只对 L2 通过池 + Markup + 战略旁路算
+#: (workflows/funnel_candidates.py),所以它们的 risk_signal 恒为空,同一道
+#: 过滤在这里是空转:带 stop_loss 的票照样进车道,只是没人知道。
+_RISK_UNSCREENED_LANES = frozenset({"near_l2"})
+
+
+def _risk_screen_caveat_lines(report: dict[str, Any]) -> list[str]:
+    """上表把三条车道并排放,但它们不是按同一套标准筛出来的。
+
+    不写这一句,读者会把「接近结构通道跑赢爆发前夜」读成车道优劣,而两组的
+    风控筛选强度本来就不同 —— 一组剔掉了带离场信号的票,另一组没剔(也没法剔:
+    那些票从没被算过)。只在两类车道同时出现在表里时才提示,单类时没有可比性问题。
+    """
+    lanes = set(report.get("by_lane") or {})
+    screened = sorted(lanes & _RISK_SCREENED_LANES)
+    unscreened = sorted(lanes & _RISK_UNSCREENED_LANES)
+    if not screened or not unscreened:
+        return []
+    screened_text = "、".join(shadow_lane_label(x) for x in screened)
+    unscreened_text = "、".join(shadow_lane_label(x) for x in unscreened)
+    return [
+        "",
+        f"> 跨车道比较注意：{screened_text}剔除了带离场信号的票，而{unscreened_text}没有剔除"
+        "——这层的票 L2 没过，离场信号从没对它们算过，同一道过滤在那里是空转。"
+        "两组的风控筛选强度不同，行与行之间的差不能直接读成车道优劣；"
+        f"要作同辈比较，只在{screened_text}之间比。",
+    ]
 
 
 def _score_band_lines(report: dict[str, Any]) -> list[str]:

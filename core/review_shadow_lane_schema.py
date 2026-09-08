@@ -13,7 +13,7 @@
 REST 不支持 DDL、环境也无 psycopg2/asyncpg 与连接串,故 schema 以 Python 常量形式
 版本化,由 scripts/print_review_shadow_lane_ddl.py 打印后人工在 SQL Editor 执行一次。
 
-字段设计的两条约束:
+字段设计的三条约束:
 1. **动量必须同期落下来。** 效果检验要的是「同动量随机对照」(见 memory
    full-market-control-confounds-momentum / uniform-band-control-is-biased):
    不记录当日 RPS,事后就只能拿全市场当对照,把择时读成选股。rps_fast/rps_slow
@@ -21,6 +21,15 @@ REST 不支持 DDL、环境也无 psycopg2/asyncpg 与连接串,故 schema 以 P
 2. **score 可空 + ranked 显式。** rotation_setup 所在的题材共振层是集合成员
    判断,没有连续键;老 trace 也可能缺 watch_score。宁可存 null 并标
    ranked=false,也不要用常数占位——那正是 v1 让 31 只票同分、排不了序的原因。
+3. **risk_evaluated 必须落下来,否则三条车道不可比。**
+   `shadow_signal_from_decision` 见到非空 risk_signal 就不给车道,而离场信号只对
+   L2 通过池算过(workflows/funnel_candidates.py)。于是这道过滤:
+     - 对 near_l2(L2 未过)是**空转**——它的 risk_signal 恒为空,带 stop_loss 的
+       票照样进车道,只是没人知道;
+     - 对 rotation_setup / pre_breakout(L2 已过)是**真过滤**——带信号的被剔掉。
+   三条车道按不同标准筛完却当同辈比。表里不记这一位,这个混淆就只存在于某个人的
+   记忆里;记下来,跨车道比较至少能显式限定在可比的子集上
+   (rotation_setup vs pre_breakout 两条都是筛过的,可比)。
 """
 
 from __future__ import annotations
@@ -44,6 +53,13 @@ COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("l1_eligible", "boolean not null default false", "当日是否过基础准入"),
     ("l2_eligible", "boolean not null default false", "当日是否过结构强度"),
     ("l3_eligible", "boolean not null default false", "当日是否过题材共振"),
+    # 三态,可空。true=查过且干净,false=从没查过,null=老 trace 不带这个字段。
+    # 不给 default:填 false 会把「不知道」写成「没查过」,填 true 更糟。
+    (
+        "risk_evaluated",
+        "boolean",
+        "当日离场信号是否对这只票算过。null=老 trace 无此字段,不可当 false 用",
+    ),
     # 动量:同动量对照的必要条件。缺了它只能拿全市场比,那会把择时当选股。
     ("rps_fast", "numeric(10, 2)", "当日快线 RPS(默认 20 日),L1 闸门同源"),
     ("rps_slow", "numeric(10, 2)", "当日慢线 RPS(默认 120 日),L1 闸门同源"),
