@@ -72,17 +72,29 @@ describe('RemoteRelay 配对', () => {
     expect(res.status).toBe(403)
   })
 
-  it('配对码用掉即失效', async () => {
-    // 二维码被拍照也不能重复配对。
-    const { relay } = createRelay()
+  it('配对码用掉即失效，但会下发可重连的设备凭证', async () => {
+    // 二维码被拍照也不能重复配对；断线重连改走 device grant。
+    const { relay, store } = createRelay()
     const issued = await relay.fetch(new Request('https://remote-relay/pair', { method: 'POST' }))
     const { code } = await issued.json() as { code: string }
 
     const first = await relay.fetch(upgrade(`?role=remote&code=${code}`))
     expect(first.status).toBe(101)
+    const grants = store.get('device_grants') as Array<{ token: string }>
+    expect(grants).toHaveLength(1)
+    expect(grants[0]?.token).toHaveLength(32)
 
-    const second = await relay.fetch(upgrade(`?role=remote&code=${code}`))
-    expect(second.status).toBe(403)
+    const reusedCode = await relay.fetch(upgrade(`?role=remote&code=${code}`))
+    expect(reusedCode.status).toBe(403)
+
+    const reconnect = await relay.fetch(upgrade(`?role=remote&device=${grants[0]!.token}`))
+    expect(reconnect.status).toBe(101)
+  })
+
+  it('伪造的设备凭证不能连', async () => {
+    const { relay } = createRelay()
+    const res = await relay.fetch(upgrade('?role=remote&device=deadbeefdeadbeefdeadbeefdeadbeef'))
+    expect(res.status).toBe(403)
   })
 
   it('过期的配对码无效', async () => {
@@ -183,11 +195,12 @@ describe('RemoteRelay 设备管理', () => {
     expect(b.close).not.toHaveBeenCalled()
   })
 
-  it('通配符断开所有远程设备并作废配对码', async () => {
+  it('通配符断开所有远程设备并作废配对码与设备凭证', async () => {
     const h = host()
     const a = remote('phone-a')
     const { relay, store } = createRelay([h, a])
     await relay.fetch(new Request('https://remote-relay/pair', { method: 'POST' }))
+    store.set('device_grants', [{ token: 'keepme', expires: Date.now() + 60_000 }])
     const res = await relay.fetch(new Request('https://remote-relay/revoke', {
       method: 'POST', body: '{"conn_id":"*"}',
     }))
@@ -195,6 +208,7 @@ describe('RemoteRelay 设备管理', () => {
     expect(a.close).toHaveBeenCalled()
     expect(h.close).not.toHaveBeenCalled()  // 电脑自己不该被踢
     expect(store.get('pair')).toBeUndefined()
+    expect(store.get('device_grants')).toBeUndefined()
   })
 
   it('踢不存在的设备不报错', async () => {
