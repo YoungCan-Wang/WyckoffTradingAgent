@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/youngcan-wang-wyckofftradingagent-badge.png)](https://mseep.ai/app/youngcan-wang-wyckofftradingagent)
+
 <div align="center">
 
 # WyckoffAgent — Open-Source Wyckoff Trading Agent
