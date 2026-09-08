@@ -16,7 +16,7 @@ from core.backtest_replay import BacktestReplayConfig, MarketBreadthCalculator, 
 from core.candidate_policy import CandidatePolicyConfig
 from core.cash_portfolio import CashPortfolioConfig, expand_portfolio_styles
 from core.mainline_engine import MainlineEngineConfig
-from core.market_trade_mode import EXECUTE_BLOCK_NEW_BUY_REGIMES
+from core.market_trade_mode import EXECUTE_BLOCK_NEW_BUY_REGIMES, PROBE_DOWNGRADABLE_REGIMES
 
 
 @dataclass(frozen=True)
@@ -203,6 +203,11 @@ def _live_buy_block_regimes() -> frozenset[str]:
     此前误写成 ``BLOCK or 默认集``（取其一而非并集），导致默认集独有的档位在回测里
     仍可买：例如 RISK_ON 只在默认集、不在生产 BLOCK env 里，实盘因并入而禁买，
     回测却放行——恰好是需要验证的那一档。
+
+    STEP4_BUY_PROBE_REGIMES 同样要减掉，且必须与实盘一样先与
+    ``PROBE_DOWNGRADABLE_REGIMES`` 求交：降档后的水温实盘买得到（只是限 1 只），
+    回测若仍当禁买，量出来的就不是即将上线的那套闸门。限仓数量由
+    core.backtest_replay._limit_probe_only_selection 负责，本函数只管「能不能买」。
     """
     import os
 
@@ -211,7 +216,8 @@ def _live_buy_block_regimes() -> frozenset[str]:
         return {item.strip().upper() for item in raw.split(",") if item.strip()}
 
     blocked = _parse("STEP4_BUY_BLOCK_REGIMES") | set(EXECUTE_BLOCK_NEW_BUY_REGIMES)
-    return frozenset(blocked - _parse("STEP4_BUY_ALLOW_REGIMES"))
+    exempt = _parse("STEP4_BUY_ALLOW_REGIMES") | (_parse("STEP4_BUY_PROBE_REGIMES") & set(PROBE_DOWNGRADABLE_REGIMES))
+    return frozenset(blocked - exempt)
 
 
 def _validate_dates_and_trade_params(

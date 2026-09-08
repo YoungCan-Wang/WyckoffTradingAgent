@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 
-from core.market_trade_mode import PROBE_ONLY_REGIMES, normalize_regime
+from core.market_trade_mode import normalize_regime, probe_only_regimes
 from core.portfolio_symbol import portfolio_lot_size
 from core.portfolio_valuation import portfolio_currency
 from workflows.step4_models import (
@@ -650,7 +650,7 @@ class WyckoffOrderEngine:
             )
         if ctx.action in {"PROBE", "ATTACK"} and self.market_regime in self.config.buy_block_regimes:
             return self._no_trade(ctx.dec, ctx.name, f"系统性风控拦截: regime={self.market_regime} 禁止买入")
-        if ctx.action == "ATTACK" and self.market_regime in PROBE_ONLY_REGIMES:
+        if ctx.action == "ATTACK" and self.market_regime in probe_only_regimes():
             return self._no_trade(ctx.dec, ctx.name, "防守试探阶段只允许小额 PROBE，禁止 ATTACK")
         for validator in (self._validate_buy_stop, self._validate_add_on):
             ticket = validator(ctx)

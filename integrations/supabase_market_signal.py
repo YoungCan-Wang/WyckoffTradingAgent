@@ -18,8 +18,8 @@ from supabase import Client
 from core.constants import TABLE_MARKET_SIGNAL_DAILY
 from core.market_trade_mode import (
     KNOWN_MARKET_REGIMES,
-    PROBE_ONLY_REGIMES,
     merge_premarket_regime,
+    probe_only_regimes,
     resolve_market_trade_mode,
 )
 from integrations.supabase_base import create_admin_client as _get_supabase_admin_client
@@ -381,7 +381,7 @@ def _select_market_strategy(
     trade_mode = resolve_market_trade_mode(merge_premarket_regime(permission_basis, premarket_slot))
     if not trade_mode.allow_recommendation_write:
         return {**strategy, "action": "只管理已有仓位，禁止新开仓"}
-    if trade_mode.regime in PROBE_ONLY_REGIMES:
+    if trade_mode.regime in probe_only_regimes():
         return {**strategy, "action": "最多一只二次确认候选执行小额 PROBE，禁止 ATTACK"}
     return strategy
 

@@ -274,6 +274,9 @@ jobs:
       # PR #305 把 RISK_ON 移出豁免时漏改此处，导致 run 32537955220 的回测仍放行 RISK_ON
       # 并产生 6 笔成交（胜率 16.7%、均收 -5.03%），与实盘口径不符。
       STEP4_BUY_ALLOW_REGIMES: ${{ vars.STEP4_BUY_ALLOW_REGIMES || 'BEAR_REBOUND' }}
+      # 降档档在回测里必须同样可买且同样限 1 只，否则量的不是即将上线的闸门：
+      # 能不能买由 _live_buy_block_regimes 决定，买多少由 _limit_probe_only_selection 决定。
+      STEP4_BUY_PROBE_REGIMES: ${{ vars.STEP4_BUY_PROBE_REGIMES || '' }}
       STEP4_BLOCK_BUY_SIGNAL_TYPES: ${{ vars.STEP4_BLOCK_BUY_SIGNAL_TYPES || '' }}
       FUNNEL_DYNAMIC_POLICY: ${{ vars.FUNNEL_DYNAMIC_POLICY || 'shadow' }}
       FUNNEL_DYNAMIC_POLICY_HORIZON: "5"

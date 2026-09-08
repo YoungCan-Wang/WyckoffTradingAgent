@@ -59,6 +59,10 @@ jobs:
       # 不以近期样本收益解禁」。样本仍偏小（6 笔），但两次同向为负、方向与放开依据相反，
       # 且禁买是保守侧，故先恢复禁买。
       STEP4_BUY_ALLOW_REGIMES: BEAR_REBOUND
+      # 硬防守档降为小仓试探（只认 RISK_OFF）。留空 = 与此前行为逐位相同。
+      # 必须与 wyckoff_funnel.yml 同源：两个 workflow 都调 complete_step4_decisions，
+      # 只在一边设会让同一天的配额按入口不同而不同。
+      STEP4_BUY_PROBE_REGIMES: ${{ vars.STEP4_BUY_PROBE_REGIMES || '' }}
       STEP4_BLOCK_BUY_SIGNAL_TYPES: ""
       STEP4_REQUIRE_CONFIRMED_BUY_CANDIDATE: "1"
       STEP4_RECOMMEND_DATE: ${{ github.event.inputs.recommend_date }}
