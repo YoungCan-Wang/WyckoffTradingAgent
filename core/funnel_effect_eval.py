@@ -35,6 +35,7 @@
 
 from __future__ import annotations
 
+import math
 import random
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -161,10 +162,9 @@ class AbsoluteStat:
     ``positive_day_pct`` 这里算的是**净收益为正的交易日占比**（胜率），与
     ``GroupStat.positive_day_pct`` 的「超额为正日占比」不是一回事，不可混用。
 
-    收益算在**全部候选**上（``net_abs``），不是配对子集：配对会丢掉找不到同动量
-    对照的候选，而漏斗当天真正给出的就是全集。超额那一栏必须用配对子集（分母要
-    和对照组一致），这一栏必须用全集（要如实反映持有这批票的结果）——两栏分母
-    本就不同，``avg_size`` 与 ``matched.avg_size`` 的差就是被配对丢掉的只数。
+    收益覆盖流动性域内、双端价格完整的候选，不要求配对成功。``avg_size`` 是实际
+    收益分母；``price_coverage`` 披露缺价观测和被样本门槛排除的日子，不能把缺价的
+    股票当作零收益或把这一栏称作全部线上候选。
     """
 
     days: int
@@ -182,6 +182,7 @@ class AbsoluteStat:
     # 占比）是两个口径，一篮 3 只 +20% / 7 只 -5% 在日级算赢、股级只有 30%。
     stock_win_pct: float | None = None
     stock_win_days: int = 0
+    price_coverage: dict[str, int] = field(default_factory=dict)
 
     @property
     def verdict(self) -> str:
@@ -191,6 +192,8 @@ class AbsoluteStat:
             return "绝对收益为负：这批票拿着是亏的"
         if self.bench_excess_pct is not None and self.bench_excess_pct <= 0:
             return "绝对为正但跑输基准：只赚了市场的钱"
+        if self.bench_excess_pct is None:
+            return "绝对收益为正；基准覆盖不足，超额未知"
         return "绝对为正且跑赢基准"
 
     def as_dict(self) -> dict[str, Any]:
@@ -208,6 +211,7 @@ class AbsoluteStat:
             "bench_excess_t": _round(self.bench_excess_t, 2),
             "stock_win_pct": _round(self.stock_win_pct, 1),
             "stock_win_days": self.stock_win_days,
+            "price_coverage": self.price_coverage,
             "verdict": self.verdict,
         }
 
@@ -219,8 +223,14 @@ def summarize_absolute(daily: list[dict[str, float]]) -> AbsoluteStat:
     处理——那会把无基准段当成「基准不涨不跌」，凭空造出超额。
     """
     usable = [row for row in daily if row.get("net_abs") is not None and (row.get("size_abs") or 0) >= MIN_HITS_PER_DAY]
+    coverage = {
+        "eligible_observations": sum(int(row.get("requested_size_abs", row.get("size_abs", 0))) for row in daily),
+        "priced_observations": sum(int(row.get("size_abs", 0)) for row in daily),
+        "missing_price_observations": sum(int(row.get("missing_price_count_abs", 0)) for row in daily),
+        "excluded_days": len(daily) - len(usable),
+    }
     if len(usable) < MIN_DAYS:
-        return AbsoluteStat(len(usable), 0.0, None, None, None, None, None, None, None, None)
+        return AbsoluteStat(len(usable), 0.0, None, None, None, None, None, None, None, None, price_coverage=coverage)
     nets = [float(row["net_abs"]) for row in usable]
     paired = [(float(r["net_abs"]), float(r["bench"])) for r in usable if r.get("bench") is not None]
     bench_diffs = [net - bench for net, bench in paired]
@@ -241,6 +251,7 @@ def summarize_absolute(daily: list[dict[str, float]]) -> AbsoluteStat:
         bench_excess_t=tstat(bench_diffs) if len(bench_diffs) >= MIN_DAYS else None,
         stock_win_pct=mean(wins) if len(wins) >= MIN_DAYS else None,
         stock_win_days=len(wins),
+        price_coverage=coverage,
     )
 
 
@@ -387,7 +398,7 @@ class Panels:
         rets = []
         for code in codes:
             o, c = opens.get(code), closes.get(code)
-            if o and c and o > 0:
+            if o is not None and c is not None and math.isfinite(o) and math.isfinite(c) and o > 0 and c > 0:
                 rets.append(100.0 * (c / o - 1.0))
         return rets
 
@@ -442,20 +453,17 @@ class MatchedBaseline:
     codes: tuple[str, ...] = ()
 
 
-def absolute_row(hits: list[str], panels: Panels, ds: str, buy_ds: str, sell_ds: str) -> dict | None:
-    """当日绝对收益观测。算在**全部候选**上，与配对成败无关。
-
-    配对会丢掉找不到同动量对照的票，而漏斗当天真正给出的就是全集，两栏分母本就不同。
-    """
-    gross = panels.gross_return(hits, buy_ds, sell_ds)
-    if gross is None:
-        return None
+def absolute_row(hits: list[str], panels: Panels, ds: str, buy_ds: str, sell_ds: str) -> dict:
+    """流动性域内候选收益，与配对成败无关；缺价观测保留计数而不虚构收益。"""
+    returns = panels.per_stock_returns(hits, buy_ds, sell_ds)
     return {
         "date": ds,
-        "size_abs": len(hits),
-        "net_abs": gross - ROUND_TRIP_COST_PCT,
+        "requested_size_abs": len(hits),
+        "size_abs": len(returns),
+        "missing_price_count_abs": len(hits) - len(returns),
+        "net_abs": mean(returns) - ROUND_TRIP_COST_PCT if returns else None,
         # 股级胜率：当天这批票里有多少只自己赚了钱，与 net_abs 的日级均值不同口径。
-        "stock_win_abs": panels.stock_win_rate(hits, buy_ds, sell_ds),
+        "stock_win_abs": 100.0 * sum(r > ROUND_TRIP_COST_PCT for r in returns) / len(returns) if returns else None,
         # 基准不扣成本：它是「不动手」的参照，不产生交易。
         "bench": panels.bench_return(buy_ds, sell_ds),
     }
@@ -533,13 +541,11 @@ def evaluate_daily(
         universe = panels.liquid.get(ds, set())
         mom = panels.mom20.get(ds, {})
         hits, pool = resolve_layer(cands[ds], universe, status)
-        if len(hits) < MIN_HITS_PER_DAY:
-            continue
-
         # 放在配对之前，否则「找不到同动量对照」的日子会连绝对收益一起丢掉。
         abs_row = absolute_row(hits, panels, ds, buy_ds, sell_ds)
-        if abs_row is not None:
-            rows["absolute"].append(abs_row)
+        rows["absolute"].append(abs_row)
+        if len(hits) < MIN_HITS_PER_DAY:
+            continue
 
         # 随机控制必须与配对组用同一批候选（paired_hits），否则两者分母不同、
         # 超额不可直接比较——这是把「配对超额 vs 随机超额」摆在一起的前提。

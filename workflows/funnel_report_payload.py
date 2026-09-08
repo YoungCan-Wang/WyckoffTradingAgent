@@ -10,6 +10,7 @@ from core.candidate_tracks import candidate_entry_track
 from core.funnel_report import build_symbol_report_row, candidate_reason_text
 from core.funnel_taxonomy import source_label
 from core.market_trade_mode import resolve_market_trade_mode
+from core.research_discovery import build_research_discovery
 from workflows.funnel_ai_selection import FunnelAiSelection
 from workflows.funnel_settings import FUNNEL_L2_BYPASS_AI_CAP, FUNNEL_STRATEGIC_L2_BYPASS_AI_CAP
 
@@ -126,6 +127,7 @@ def funnel_run_details(
     return {
         "metrics": ctx.metrics,
         "trade_mode": trade_mode_payload,
+        "research_discovery": research_discovery_payload(ctx),
         "strategy_policy": _strategy_policy_payload(selection.ai_policy),
         "triggers": ctx.review_triggers,
         "review_triggers": ctx.review_triggers,
@@ -164,6 +166,22 @@ def funnel_run_details(
         "sector_map": ctx.sector_map,
         "all_df_map": ctx.all_df_map,
     }
+
+
+def research_discovery_payload(ctx: Any) -> dict[str, Any]:
+    metrics = getattr(ctx, "metrics", {}) or {}
+    if existing := metrics.get("research_discovery"):
+        return existing
+    return build_research_discovery(
+        {},
+        {
+            **metrics,
+            "benchmark_context": {"regime": context_regime(ctx)},
+            "candidate_entries": getattr(ctx, "candidate_entries", []) or [],
+            "mainline_candidates": getattr(ctx, "mainline_candidates", []) or [],
+            "leader_radar_rows": getattr(ctx, "leader_radar_rows", []) or [],
+        },
+    )
 
 
 def _trade_mode_payload(ctx: Any, trade_mode: Any) -> dict[str, Any]:

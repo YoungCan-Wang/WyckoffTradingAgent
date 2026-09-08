@@ -8,6 +8,8 @@ from core.candidate_policy import candidate_score_value
 from core.theme_radar import normalize_theme_name
 from utils.safe import safe_float
 
+DEFAULT_THEME_RADAR_MAX_AGE_DAYS = 14
+
 
 def theme_candidate_map(snapshot: dict) -> dict[str, dict]:
     out: dict[str, dict] = {}
@@ -140,13 +142,17 @@ def select_linked_theme_radar(
 ) -> tuple[dict, str]:
     if not enabled:
         return empty_theme_snapshot(trade_date), "disabled"
+    current_is_today = theme_snapshot_age_days(current_snapshot, trade_date, max_age_days) == 0
+    current = current_snapshot if current_is_today else empty_theme_snapshot(trade_date)
+    if current_is_today and has_theme_radar_payload(current):
+        return current, "current"
     if not link_enabled:
-        return current_snapshot, "current"
+        return current, "current"
     if has_theme_radar_payload(persisted_snapshot):
         age_days = theme_snapshot_age_days(persisted_snapshot or {}, trade_date, max_age_days)
         if age_days <= max_age_days:
-            return persisted_snapshot or current_snapshot, "persisted"
-    return current_snapshot, "current"
+            return persisted_snapshot or current, "persisted_fallback"
+    return current, "current"
 
 
 def strategic_bypass_seed_codes(
@@ -192,7 +198,8 @@ def theme_snapshot_age_days(snapshot: dict, trade_date: str, fallback_days: int)
     try:
         snapshot_date = pd.to_datetime(str(snapshot.get("trade_date") or "")).date()
         current_date = pd.to_datetime(str(trade_date)).date()
-        return abs((current_date - snapshot_date).days)
+        age_days = (current_date - snapshot_date).days
+        return age_days if age_days >= 0 else fallback_days + 1
     except Exception:
         return fallback_days + 1
 

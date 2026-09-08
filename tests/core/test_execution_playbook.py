@@ -84,6 +84,8 @@ def test_oms_ticket_includes_playbook() -> None:
 def test_step3_and_oms_playbook_helpers() -> None:
     assert "起跳板" in "\n".join(step3_playbook_lines("NEUTRAL"))
     assert "PROBE/ATTACK" in "\n".join(oms_playbook_lines())
+    assert "工单实际配置" in "\n".join(oms_playbook_lines())
+    assert "-12%" not in "\n".join(oms_playbook_lines())
 
 
 def test_trade_ticket_shows_decision_model():

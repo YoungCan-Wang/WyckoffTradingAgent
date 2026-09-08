@@ -751,9 +751,12 @@ def _attach_funnel_debug_context(metrics: dict, inputs: FunnelMetricsInputs, inc
 
 
 def _write_review_trace(inputs: FunnelMetricsInputs, triggers: dict, metrics: dict) -> None:
+    from core.research_discovery import build_research_discovery
     from workflows.review_trace import build_review_trace, dump_review_trace_artifact
 
     payload = build_review_trace(inputs, triggers, metrics)
+    metrics["research_discovery"] = build_research_discovery(payload, metrics)
+    payload["research_discovery"] = metrics["research_discovery"]
     output_dir = os.getenv("DAILY_JOB_ARTIFACTS_DIR", "").strip()
     if output_dir:
         path = dump_review_trace_artifact(payload, output_dir)

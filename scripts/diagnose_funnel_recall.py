@@ -21,8 +21,12 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="按代码回放漏斗并逐层归因")
     parser.add_argument("codes", nargs="+", help="六位股票代码")
     parser.add_argument("--date", default="", help="信号日 YYYY-MM-DD，默认最近交易日")
+    parser.add_argument("--trace", default="", help="优先读取对应日期的生产 review_trace_*.json.gz，不重跑")
     parser.add_argument("--json-out", default="", help="把结构化结果写入该路径")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.trace and not args.date:
+        parser.error("--trace 必须同时指定 --date，以校验生产快照日期")
+    return args
 
 
 def _resolve_signal_date(raw: str) -> date:
@@ -60,6 +64,17 @@ def _stage_rows(codes: list[str], ctx) -> list[dict[str, str]]:
 
 
 def _layer_flags(code: str, ctx) -> dict[str, object]:
+    if ctx.decision_rows is not None:
+        row = ctx.decision_rows.get(code) or {}
+        return {
+            "in_universe": code in ctx.decision_rows,
+            "l1": bool(row.get("l1_eligible")),
+            "l2": bool(row.get("l2_eligible")),
+            "l3": bool(row.get("l3_eligible")),
+            "buy_triggers": list(row.get("trigger_labels") or []),
+            "exit_signal": str(row.get("risk_signal") or ""),
+            "candidate_entry": bool(row.get("entry")),
+        }
     return {
         "in_universe": code in ctx.all_symbol_set,
         "l1": code in ctx.l1_set,
@@ -96,25 +111,31 @@ def _print_report(signal_date: date, end_trade_date: str, rows: list[dict[str, s
 def main() -> int:
     args = _parse_args()
     codes = [str(c).strip() for c in args.codes if str(c).strip()]
-    signal_date = _resolve_signal_date(args.date)
+    signal_date = date.fromisoformat(args.date) if args.trace else _resolve_signal_date(args.date)
     print(f"[diagnose] 信号日 {signal_date}，回放 {len(codes)} 只: {', '.join(codes)}")
 
-    triggers, metrics = _replay(signal_date)
+    from workflows.review_list_replay import replay_context, replay_context_from_trace
 
-    from workflows.review_list_replay import replay_context
+    if args.trace:
+        from workflows.review_trace import load_review_trace_artifact
 
-    ctx = replay_context(triggers, metrics, log=print)
+        ctx = replay_context_from_trace(load_review_trace_artifact(args.trace, signal_date))
+    else:
+        triggers, metrics = _replay(signal_date)
+        ctx = replay_context(triggers, metrics, log=print)
     if ctx is None:
         print("[diagnose] 缺少调试上下文，无法归因")
         return 3
 
     rows = _stage_rows(codes, ctx)
     _print_report(signal_date, ctx.end_trade_date, rows)
+    print(f"[diagnose] 归因来源: {ctx.source}")
 
     if args.json_out:
         payload = {
             "signal_date": str(signal_date),
             "funnel_end_trade_date": ctx.end_trade_date,
+            "context_source": ctx.source,
             "rows": rows,
         }
         with open(args.json_out, "w", encoding="utf-8") as fh:

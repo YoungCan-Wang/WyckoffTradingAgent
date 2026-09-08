@@ -7,7 +7,7 @@ from typing import Any
 
 from core.constants import TABLE_RECOMMENDATION_TRACKING
 from integrations.recommendation_tracking_common import chunked
-from integrations.supabase_base import create_read_client
+from integrations.supabase_base import create_read_client, require_shared_writes_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,8 @@ def fetch_recommendation_tracking_records(
 def upsert_recommendation_tracking_updates(client, updates: list[dict[str, Any]], batch_size: int = 500) -> int:
     written = 0
     rows = [row for row in updates if row.get("code") is not None and row.get("recommend_date") is not None]
+    if rows:
+        require_shared_writes_enabled("update recommendation tracking")
     for batch in chunked(rows, max(min(int(batch_size), 1000), 1)):
         client.table(TABLE_RECOMMENDATION_TRACKING).upsert(batch, on_conflict="code,recommend_date").execute()
         written += len(batch)
@@ -64,6 +66,8 @@ def upsert_recommendation_tracking_updates(client, updates: list[dict[str, Any]]
 def upsert_recommendation_tracking_price_updates(client, updates: list[dict[str, Any]], batch_size: int = 50) -> int:
     written = 0
     rows = [row for row in updates if row.get("id") is not None]
+    if rows:
+        require_shared_writes_enabled("update recommendation tracking prices")
     for batch in chunked(rows, max(int(batch_size), 1)):
         client.table(TABLE_RECOMMENDATION_TRACKING).upsert(batch, on_conflict="id").execute()
         written += len(batch)

@@ -276,3 +276,62 @@ def test_run_funnel_merges_mainline_entries_when_configured() -> None:
     )
 
     assert any(item["signal_key"] == "mainline" for item in result.candidate_entries)
+
+
+def test_mainline_research_entries_default_uncapped_and_ignore_unavailable_scores() -> None:
+    candidates = [
+        {"code": f"{index:06d}", "status": "主线买点候选", "mainline_score": 0.8} for index in range(6, 0, -1)
+    ]
+    candidates.extend(
+        {"code": f"{index:06d}", "status": "主线买点候选", "mainline_score": score}
+        for index, score in enumerate((None, float("nan"), float("inf")), start=7)
+    )
+
+    entries = mainline_candidate_entries(candidates)
+
+    assert [item["code"] for item in entries] == [f"{index:06d}" for index in range(1, 7)]
+    assert {item["score"] for item in entries} == {80.0}
+    assert len(mainline_candidate_entries(candidates, max_count=3)) == 3
+
+
+def test_replay_funnel_retains_mainline_research_beyond_ai_cap() -> None:
+    codes = [f"{index:06d}" for index in range(1, 7)]
+    frame = _frame(_trend_values())
+    result = run_funnel(
+        all_symbols=codes,
+        df_map={code: frame for code in codes},
+        bench_df=frame,
+        name_map={code: code for code in codes},
+        market_cap_map={},
+        sector_map={code: "通信设备" for code in codes},
+        cfg=FunnelConfig(ma_long=60),
+        concept_map={code: ["军工信息化"] for code in codes},
+        concept_heat=[{"name": "军工信息化", "pct": 5.5, "net_inflow": 900_000_000}],
+        mainline_config=MainlineEngineConfig(max_ai_candidates=3),
+    )
+
+    mainline = [item for item in result.candidate_entries if item["signal_key"] == "mainline"]
+    assert {item["code"] for item in mainline} == set(codes)
+
+
+def test_replay_funnel_does_not_pass_future_theme_to_mainline_engine(monkeypatch) -> None:
+    import core.wyckoff_engine as engine
+
+    received: list[dict] = []
+    monkeypatch.setattr(engine, "build_mainline_candidates", lambda **kwargs: received.append(kwargs) or [])
+    frame = _frame(_trend_values())
+    run_funnel(
+        all_symbols=["000001"],
+        df_map={"000001": frame},
+        bench_df=frame,
+        name_map={"000001": "主线"},
+        market_cap_map={},
+        sector_map={"000001": "通信设备"},
+        cfg=FunnelConfig(ma_long=60),
+        mainline_config=MainlineEngineConfig(),
+        theme_radar={"trade_date": "2099-01-01", "themes": [{"theme": "光模块", "score": 1.0}]},
+    )
+
+    assert len(received) == 1
+    assert received[0]["theme_radar"]["themes"] == []
+    assert received[0]["theme_radar"]["trade_date"] == frame["date"].max().date().isoformat()

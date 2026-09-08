@@ -238,7 +238,7 @@ wyckoff mcp-list
 ## 功能亮点
 
 - **对话式 Agent** — 用自然语言触发诊断、筛选、研报；CLI、Web、MCP 各自按权限编排多工具
-- **主线漏斗筛选** — A 股全市场约 5000 股动态发现概念主线、八通道强度、候选车道和买点确认；NEUTRAL 主线优先，RISK_ON 禁新开
+- **主线漏斗筛选** — A 股全市场约 5000 股动态发现概念主线、八通道强度、候选车道和买点确认；研究发现独立展示，生产 NEUTRAL / RISK_ON 禁新开，候选不等于买单
 - **日漏斗 × 次日开盘串联** — 漏斗定候选与环境，跨日 confirmed 后由 OMS 给出唯一允许买入区间，开盘价在区间内才执行；报告顶部固定「执行纪律」
 - **跨市场** — A 股 / 港股 / 美股漏斗独立 workflow
 - **AI 三阵营研报** — 逻辑破产 / 储备营地 / 起跳板，LLM 独立审判
@@ -291,6 +291,7 @@ wyckoff mcp-list
 | 运营成本、规模化预算 | [docs/COST_MODEL.md](docs/COST_MODEL.md) |
 | 星球会员能力、数据契约与线上迁移 | [docs/PLANET_MEMBERSHIP.md](docs/PLANET_MEMBERSHIP.md) |
 | 策略语义：漏斗、AI 研报、OMS、回测 | [README_STRATEGY.md](README_STRATEGY.md) |
+| 研究池、逐次推荐收益与组合验收边界 | [A_SHARE_RESEARCH_EXECUTION_ACCEPTANCE.md](docs/A_SHARE_RESEARCH_EXECUTION_ACCEPTANCE.md) |
 | **实盘操作（日漏斗×次日开盘）** | [docs/OPERATOR_PLAYBOOK.md](docs/OPERATOR_PLAYBOOK.md) |
 | 术语速查 | [GLOSSARY.md](GLOSSARY.md) |
 | MCP Server 配置 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#mcp-server) |

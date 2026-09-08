@@ -15,6 +15,7 @@ from core.funnel_effect_eval import (
     GroupStat,
     Panels,
     SwapDay,
+    absolute_row,
     control_gap,
     evaluate_daily,
     match_by_momentum,
@@ -349,7 +350,7 @@ class TestSummarizeAbsolute:
         stat = summarize_absolute(_abs_daily([1.0] * MIN_DAYS))
         assert stat.bench_days == 0
         assert (stat.bench_pct, stat.bench_excess_pct, stat.bench_excess_t) == (None, None, None)
-        assert stat.verdict == "绝对为正且跑赢基准"
+        assert stat.verdict == "绝对收益为正；基准覆盖不足，超额未知"
 
     def test_bench_excess_needs_its_own_sample_floor(self):
         """基准日数不够时只压掉基准三列,绝对收益本身照出。"""
@@ -358,6 +359,23 @@ class TestSummarizeAbsolute:
         assert stat.net_pct == pytest.approx(1.0)
         assert stat.bench_days == MIN_DAYS - 1
         assert stat.bench_excess_pct is None
+
+    def test_price_coverage_keeps_excluded_days_in_the_audit(self):
+        rows = _abs_daily([1.0] * MIN_DAYS, size=3)
+        rows.append({"size_abs": 0, "requested_size_abs": 4, "missing_price_count_abs": 4, "net_abs": None})
+        stat = summarize_absolute(rows)
+        assert stat.price_coverage == {
+            "eligible_observations": MIN_DAYS * 3 + 4,
+            "priced_observations": MIN_DAYS * 3,
+            "missing_price_observations": 4,
+            "excluded_days": 1,
+        }
+        assert stat.as_dict()["price_coverage"] == stat.price_coverage
+
+    def test_insufficient_results_still_expose_price_coverage(self):
+        stat = summarize_absolute([{"size_abs": 1, "requested_size_abs": 3, "missing_price_count_abs": 2}])
+        assert stat.days == 0
+        assert stat.price_coverage["missing_price_observations"] == 2
 
 
 def _panels(n_days: int = 40, *, codes: list[str] | None = None) -> Panels:
@@ -375,6 +393,23 @@ def _panels(n_days: int = 40, *, codes: list[str] | None = None) -> Panels:
 
 
 class TestPanels:
+    def test_missing_prices_do_not_inflate_absolute_denominator(self):
+        panels = _panels(5, codes=["a", "b", "c"])
+        panels.close["2026-06-03"] = {"a": 110.0, "b": float("nan"), "c": float("inf")}
+        row = absolute_row(["a", "b", "c", "ghost"], panels, "2026-06-01", "2026-06-02", "2026-06-03")
+        assert row["size_abs"] == 1
+        assert row["requested_size_abs"] == 4
+        assert row["missing_price_count_abs"] == 3
+        assert row["net_abs"] == pytest.approx(10.0 - ROUND_TRIP_COST_PCT)
+        assert row["stock_win_abs"] == 100.0
+
+    def test_absolute_all_missing_prices_remain_visible(self):
+        row = absolute_row(["ghost"], _panels(5), "2026-06-01", "2026-06-02", "2026-06-03")
+        assert row["size_abs"] == 0
+        assert row["missing_price_count_abs"] == 1
+        assert row["net_abs"] is None
+        assert row["stock_win_abs"] is None
+
     def test_window_buys_next_open(self):
         """漏斗信号收盘后才出,最早的真实买点是 T+1 开盘。"""
         panels = _panels(10)

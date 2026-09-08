@@ -18,7 +18,7 @@ from core.funnel_theme import capital_migration_bonus_map as build_capital_migra
 from core.funnel_theme import theme_badge_map as build_theme_badge_map
 from core.funnel_theme import theme_bonus_map as build_theme_bonus_map
 from core.funnel_theme import theme_candidate_map as build_theme_candidate_map
-from core.mainline_engine import TRADEABLE_MAINLINE_STATUSES
+from core.mainline_engine import TRADEABLE_MAINLINE_STATUSES, mainline_candidate_entries
 from integrations.market_metadata import fetch_sector_map
 from tools.symbol_pool import load_stock_name_map
 from workflows.funnel_settings import (
@@ -339,6 +339,7 @@ def _build_review_score_context(
         capital_migration_badge_map=capital_migration_badge_map,
         capital_migration_bonus_map=capital_migration_bonus_map,
         benchmark_context=benchmark_context,
+        mainline_candidates=metrics.get("mainline_candidates", []) or [],
     )
     sorted_codes = sorted(code_to_reasons.keys(), key=lambda c: -candidate_score_value(code_to_total_score.get(c)))
     return _ReviewScoreContext(
@@ -437,12 +438,19 @@ def _build_review_score_maps(
     capital_migration_badge_map: dict[str, str],
     capital_migration_bonus_map: dict[str, float],
     benchmark_context: dict | None = None,
+    mainline_candidates: list[dict] | None = None,
 ) -> tuple[dict[str, list[str]], dict[str, list[str]], dict[str, float]]:
     code_to_reasons: dict[str, list[str]] = {}
     code_to_trigger_keys: dict[str, list[str]] = {}
     code_to_total_score: dict[str, float] = {}
     _add_trigger_reasons(review_triggers, code_to_reasons, code_to_trigger_keys, code_to_total_score)
     _add_candidate_entry_reasons(candidate_entry_map, code_to_reasons, code_to_trigger_keys, code_to_total_score)
+    _add_candidate_entry_reasons(
+        {item["code"]: item for item in mainline_candidate_entries(mainline_candidates or [])},
+        code_to_reasons,
+        code_to_trigger_keys,
+        code_to_total_score,
+    )
     for code in strategic_l2_bypass_set:
         code_to_reasons.setdefault(code, [])
         code_to_trigger_keys.setdefault(code, [])
@@ -489,6 +497,8 @@ def _add_candidate_entry_reasons(
         entry_type = str(item.get("entry_type") or signal_key)
         reasons = [str(x).strip() for x in item.get("reasons", []) if str(x).strip()]
         reason_text = f"{entry_type}: " + " / ".join(reasons[:3]) if reasons else entry_type
+        if signal_key == "mainline":
+            reason_text = f"主线综合分 {candidate_score_value(item.get('score')):.2f}: {reason_text}"
         code_to_reasons.setdefault(code, [])
         code_to_trigger_keys.setdefault(code, [])
         code_to_total_score[code] = max(

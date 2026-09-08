@@ -25,7 +25,7 @@ from integrations.recommendation_tracking_common import (
 )
 from integrations.supabase_base import create_admin_client as _get_supabase_admin_client
 from integrations.supabase_base import is_admin_configured as is_supabase_configured
-from integrations.supabase_base import require_server_write_context
+from integrations.supabase_base import require_server_write_context, require_shared_writes_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +80,7 @@ def _remember_first_recommend_price(
 def upsert_recommendation_payload_rows(client, payload: list[dict[str, Any]]) -> None:
     if not payload:
         return
+    require_shared_writes_enabled("upsert recommendation payload")
     compatible_payload = payload
     dropped_columns: set[str] = set()
     while True:

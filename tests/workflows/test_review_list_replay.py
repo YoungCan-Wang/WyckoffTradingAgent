@@ -656,3 +656,44 @@ def test_previous_context_does_not_full_replay_without_explicit_fallback(monkeyp
     )
 
     assert load_previous_context(date(2026, 5, 12), log=lambda _line: None) is None
+
+
+@pytest.mark.parametrize("original", [None, "", "unexpected-prior-value"])
+@pytest.mark.parametrize("fails", [False, True])
+def test_previous_funnel_scope_blocks_persistence_and_restores_environment(monkeypatch, original, fails):
+    import os
+
+    from integrations.supabase_base import is_server_write_context
+    from workflows import review_list_replay, wyckoff_funnel
+
+    monkeypatch.setenv("WYCKOFF_WRITE_CONTEXT", "server_job")
+    monkeypatch.delenv("WYCKOFF_SHARED_READ_ONLY", raising=False)
+    for key in ("END_CALENDAR_DAY", "DAILY_JOB_ARTIFACTS_DIR"):
+        if original is None:
+            monkeypatch.delenv(key, raising=False)
+        else:
+            monkeypatch.setenv(key, original)
+    monkeypatch.setattr(
+        "integrations.supabase_review_shadow_lane.save_review_shadow_lane_rows",
+        lambda *_a, **_kw: pytest.fail("read-only replay wrote shared state"),
+    )
+
+    def fake_run(**kwargs):
+        assert kwargs == {"include_debug_context": True, "direct_source": True}
+        assert os.environ["END_CALENDAR_DAY"] == "2026-09-04"
+        assert os.environ["DAILY_JOB_ARTIFACTS_DIR"] == ""
+        assert not is_server_write_context()
+        wyckoff_funnel._persist_shadow_lanes({})
+        if fails:
+            raise RuntimeError("simulated replay failure")
+        return {}, {"read_only": True}
+
+    monkeypatch.setattr(review_list_replay, "run_funnel_job", fake_run)
+    if fails:
+        with pytest.raises(RuntimeError, match="simulated replay failure"):
+            review_list_replay.run_previous_funnel(date(2026, 9, 4), log=lambda _: None)
+    else:
+        assert review_list_replay.run_previous_funnel(date(2026, 9, 4), log=lambda _: None) == ({}, {"read_only": True})
+    assert is_server_write_context()
+    assert os.environ.get("WYCKOFF_SHARED_READ_ONLY") is None
+    assert all(os.environ.get(key) == original for key in ("END_CALENDAR_DAY", "DAILY_JOB_ARTIFACTS_DIR"))

@@ -252,7 +252,7 @@ def _build_events(
     events: list[dict[str, Any]] = []
     observation_index = observation_index or _ObservationFeatureIndex({}, frozenset(), "not_requested")
     for code, rows in sorted(grouped.items()):
-        ohlc = ohlc_map_from_tickflow_hist(hist_by_code.get(code))
+        ohlc = ohlc_map_from_tickflow_hist(hist_by_code.get(code), preserve_invalid=True)
         events.extend(_event_with_quality(row, code, ohlc, request, observation_index) for row in rows)
     return sorted(events, key=lambda item: (item.get("recommend_date") or 0, str(item.get("code") or "")))
 
@@ -264,7 +264,9 @@ def _event_with_quality(
     request: RecommendationEventEvalRequest,
     observation_index: _ObservationFeatureIndex,
 ) -> dict[str, Any]:
-    event = build_horizon_event(row, ohlc, horizon_days=request.horizon_days, target_pct=request.target_pct)
+    event = build_horizon_event(
+        {**row, "code": code}, ohlc, horizon_days=request.horizon_days, target_pct=request.target_pct
+    )
     key = (_code_key(code, resolve_tracking_market(request.market)), _date_compact(row.get("recommend_date")))
     observed = observation_index.features.get(key, {})
     quality_fields = _quality_feature_fields(row, observed)
@@ -411,6 +413,10 @@ def _strategy_lift_row(row: dict[str, Any], baseline: dict[str, Any]) -> dict[st
         "top_k": row.get("top_k"),
         "rows_ready": row.get("rows_ready", 0),
         "baseline_rows_ready": baseline.get("rows_ready", 0),
+        "net_return_rows": row.get("net_return_rows", 0),
+        "baseline_net_return_rows": baseline.get("net_return_rows", 0),
+        "avg_net_close_return_horizon_pct": row.get("avg_net_close_return_horizon_pct"),
+        "avg_net_close_return_delta_pct": _delta(row, baseline, "avg_net_close_return_horizon_pct"),
         "hit_rate_delta_pct": _delta(row, baseline, "hit_rate_pct"),
         "close_win_rate_delta_pct": _delta(row, baseline, "close_win_rate_pct"),
         "avg_close_return_delta_pct": _delta(row, baseline, "avg_close_return_horizon_pct"),
@@ -435,11 +441,15 @@ def _ranking_decision(lift_by_strategy: dict[str, dict[str, Any]]) -> dict[str, 
         "recommended_top_k": best.get("top_k") if promotable else None,
         "watch_strategy": best.get("strategy") if watch and not promotable else None,
         "reason": _ranking_decision_reason(status, best),
+        "validation_scope": "in_sample_research_only",
+        "requires_cross_period_portfolio_validation": True,
         "thresholds": {
             "min_ready_rows": _DECISION_MIN_READY_ROWS,
             "min_hit_lift_pct": _DECISION_MIN_HIT_LIFT_PCT,
             "min_mfe_lift_pct": _DECISION_MIN_MFE_LIFT_PCT,
             "max_mae_worse_pct": _DECISION_MAX_MAE_WORSE_PCT,
+            "require_complete_net_returns": True,
+            "net_return_and_lift_must_exceed_pct": 0.0,
         },
         "candidates": candidates,
     }
@@ -447,7 +457,7 @@ def _ranking_decision(lift_by_strategy: dict[str, dict[str, Any]]) -> dict[str, 
 
 def _ranking_strategy_decision(strategy: str, top_rows: dict[str, Any]) -> dict[str, Any]:
     rows = [_decision_candidate(strategy, k, row) for k, row in top_rows.items()]
-    return _best_decision(rows) or _empty_decision(strategy)
+    return _best_decision([row for row in rows if row["status"] == "candidate"] or rows) or _empty_decision(strategy)
 
 
 def _decision_candidate(strategy: str, top_k: str, row: dict[str, Any]) -> dict[str, Any]:
@@ -459,22 +469,36 @@ def _decision_candidate(strategy: str, top_k: str, row: dict[str, Any]) -> dict[
     sample_ok = ready >= _DECISION_MIN_READY_ROWS and baseline_ready >= _DECISION_MIN_READY_ROWS
     lift_ok = hit_lift >= _DECISION_MIN_HIT_LIFT_PCT and mfe_lift >= _DECISION_MIN_MFE_LIFT_PCT
     risk_ok = mae_delta is not None and mae_delta >= _DECISION_MAX_MAE_WORSE_PCT
+    net_return = _optional_number(row.get("avg_net_close_return_horizon_pct"))
+    net_lift = _optional_number(row.get("avg_net_close_return_delta_pct"))
+    net_sample_ok = (
+        int(row.get("net_return_rows") or 0) == ready
+        and int(row.get("baseline_net_return_rows") or 0) == baseline_ready
+        and sample_ok
+    )
+    net_return_ok = (
+        net_sample_ok and net_return is not None and net_return > 0 and net_lift is not None and net_lift > 0
+    )
     return {
         "strategy": strategy,
         "top_k": str(top_k),
-        "status": _candidate_status(sample_ok, lift_ok, risk_ok, _decision_score(hit_lift, mfe_lift, mae_delta)),
+        "status": _candidate_status(
+            sample_ok, lift_ok, risk_ok, _decision_score(hit_lift, mfe_lift, mae_delta), net_return_ok
+        ),
         "decision_score": _decision_score(hit_lift, mfe_lift, mae_delta),
         "sample_ok": sample_ok,
         "lift_ok": lift_ok,
         "risk_ok": risk_ok,
+        "net_sample_ok": net_sample_ok,
+        "net_return_ok": net_return_ok,
         **row,
     }
 
 
-def _candidate_status(sample_ok: bool, lift_ok: bool, risk_ok: bool, score: float) -> str:
+def _candidate_status(sample_ok: bool, lift_ok: bool, risk_ok: bool, score: float, net_return_ok: bool) -> str:
     if not sample_ok:
         return "insufficient_sample"
-    if lift_ok and risk_ok and score > 0:
+    if lift_ok and risk_ok and net_return_ok and score > 0:
         return "candidate"
     if risk_ok and score > 0:
         return "watch"
@@ -501,7 +525,10 @@ def _fallback_decision_status(candidates: dict[str, dict[str, Any]]) -> str:
 
 def _ranking_decision_reason(status: str, best: dict[str, Any]) -> str:
     if status == "candidate":
-        return f"{best.get('strategy')} top{best.get('top_k')} passed lift and risk gates"
+        return (
+            f"{best.get('strategy')} top{best.get('top_k')} passed in-sample lift, net-return and risk gates; "
+            "research candidate only, cross-period portfolio validation still required"
+        )
     if status == "watch":
         return f"{best.get('strategy')} improved some metrics but did not pass all promotion gates"
     if status == "insufficient_sample":
@@ -783,6 +810,14 @@ def _metadata(
         "kline_count": request.kline_count,
         "records": len(records),
         "codes": len(grouped),
+        "return_basis": "per_recommendation_event_next_open",
+        "tracking_change_pct_basis": "first_recommendation_close_to_latest",
+        "execution_verified": False,
+        "limitations": [
+            "观察到的下一根日线开盘入场，H根日线后收盘；缺失日线可能包含停牌或数据缺口",
+            "校验发布时刻、开盘涨停和零成交量；未模拟盘口、账户仓位或延迟退出",
+            "毛收益与按市场估算的扣费收益分列；不是券商成交收益或已证明的策略alpha",
+        ],
         "observation_context": context_coverage,
     }
 
@@ -862,14 +897,21 @@ def _write_markdown(path: Path, result: dict[str, Any]) -> None:
         "# Recommendation Event Evaluation",
         "",
         f"- Market: `{meta['market']}`",
-        f"- Target: `{meta['target_pct']}%` within `{meta['horizon_days']}` future trading days",
+        f"- Target: `{meta['target_pct']}%`; H=`{meta['horizon_days']}` observed bars after entry",
         f"- Records: `{meta['records']}` rows / `{meta['codes']}` codes",
+        "- 收益口径：逐次推荐日之后观察到的下一根日线开盘入场（next_observed_open），不是首次入池累计涨幅。",
+        "- 入场日记为0，第H根后续观测日线收盘退出；共观察H+1根日线，不保证等于连续市场交易日。",
+        "- hit_target仅为按T+1资格可卖日的价格触达：A股排除入场当日；不代表委托成交或可兑现盈利。",
+        "- price_touch_target包含入场日，仅供研究价格触达；MFE/MAE同样不是实际止盈/止损成交。",
+        "- 以下排序只产生样本内研究候选，仍需跨期、组合、成本和成交约束验收，不能当作策略alpha证明。",
     ]
+    lines.extend(f"- 限制：{item}" for item in meta.get("limitations") or [])
+    lines.extend(_net_return_markdown(result["summary"]))
     lines.extend(_coverage_markdown(meta.get("observation_context") or {}))
     lines.extend(
         [
             "",
-            "| Slice | Ready | Hit rate | Close win | Avg close | Payoff | Avg MFE | Avg MAE |",
+            "| Slice | Ready | Target touch | Gross win | Avg gross | Gross payoff | Avg MFE | Avg MAE |",
             "|---|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
@@ -881,6 +923,33 @@ def _write_markdown(path: Path, result: dict[str, Any]) -> None:
     lines.extend(_quality_markdown(result["summary"]))
     lines.extend(_context_markdown(result["summary"].get("outcome_context") or {}))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _net_return_markdown(summary: dict[str, Any]) -> list[str]:
+    all_rows = summary.get("all") or {}
+    slices = [(name, summary[name]) for name in ("all", "ai", "non_ai") if name in summary]
+    for strategy, top_rows in (summary.get("top_k_by_strategy") or {}).items():
+        slices.extend((f"{strategy} top{k}", row) for k, row in top_rows.items())
+    lines = [
+        "",
+        "## Event Net Returns and Coverage",
+        "",
+        "扣费收益按市场费率、滑点和默认名义金额估算；不是账户真实成交收益。",
+        "未成熟或不可评估事件保留在Total计数，排除在收益统计之外；净均值/胜率的分母是Net rows。",
+        f"状态计数：`{json.dumps(all_rows.get('status_counts') or {}, ensure_ascii=False, sort_keys=True)}`",
+        "",
+        "| Slice | Total | Ready | Net rows | Unready/invalid | Avg gross | Avg net | Net win |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for name, row in slices:
+        lines.append(
+            f"| {name} | {row.get('rows_total', 0)} | {row.get('rows_ready', 0)} | "
+            f"{row.get('net_return_rows', 0)} | {row.get('rows_unready', 0)} | "
+            f"{_fmt(row.get('avg_close_return_horizon_pct'))}% | "
+            f"{_fmt(row.get('avg_net_close_return_horizon_pct'))}% | "
+            f"{_fmt(row.get('net_close_win_rate_pct'))}% |"
+        )
+    return lines
 
 
 def _coverage_markdown(coverage: dict[str, Any]) -> list[str]:
@@ -927,7 +996,7 @@ def _strategy_markdown(top_k_by_strategy: dict[str, dict[str, Any]]) -> list[str
         "",
         "## Ranking Strategy Comparison",
         "",
-        "| Strategy | Top-K | Ready | Hit rate | Close win | Avg close | Payoff | Avg MFE | Avg MAE |",
+        "| Strategy | Top-K | Ready | Target touch | Gross win | Avg gross | Gross payoff | Avg MFE | Avg MAE |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for strategy, top_rows in top_k_by_strategy.items():
@@ -968,19 +1037,23 @@ def _ranking_decision_markdown(decision: dict[str, Any]) -> list[str]:
         "",
         "## Ranking Decision Gate",
         "",
+        "- 样本内研究候选：净收益样本须完整、平均扣费收益>0且相对基线扣费增量>0；仍需跨期组合验收。",
         f"- Status: `{decision.get('status', 'unknown')}`",
         f"- Recommended strategy: `{decision.get('recommended_strategy', 'score_only')}`",
         f"- Recommended Top-K: `{decision.get('recommended_top_k') or 'n/a'}`",
         f"- Reason: {decision.get('reason', '-')}",
         "",
-        "| Strategy | Best Top-K | Status | Score | Ready | Hit Δ | MFE Δ | MAE Δ |",
-        "|---|---:|---|---:|---:|---:|---:|---:|",
+        "| Strategy | Best Top-K | Status | Score | Ready | Net rows | Avg net | Net Δ | Hit Δ | MFE Δ | MAE Δ |",
+        "|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for strategy, item in (decision.get("candidates") or {}).items():
         ready = f"{item.get('rows_ready', 0)}/{item.get('baseline_rows_ready', 0)}"
+        net_rows = f"{item.get('net_return_rows', 0)}/{item.get('baseline_net_return_rows', 0)}"
         rows.append(
             f"| {strategy} | {item.get('top_k', 'n/a')} | {item.get('status', 'unknown')} | "
-            f"{_fmt(item.get('decision_score'))} | {ready} | {_fmt_delta(item.get('hit_rate_delta_pct'))}pp | "
+            f"{_fmt(item.get('decision_score'))} | {ready} | {net_rows} | "
+            f"{_fmt(item.get('avg_net_close_return_horizon_pct'))}% | "
+            f"{_fmt_delta(item.get('avg_net_close_return_delta_pct'))}pp | {_fmt_delta(item.get('hit_rate_delta_pct'))}pp | "
             f"{_fmt_delta(item.get('avg_mfe_delta_pct'))}pp | {_fmt_delta(item.get('avg_mae_delta_pct'))}pp |"
         )
     return rows

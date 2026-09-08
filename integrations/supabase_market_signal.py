@@ -24,7 +24,7 @@ from core.market_trade_mode import (
 from integrations.supabase_base import create_admin_client as _get_supabase_admin_client
 from integrations.supabase_base import create_read_client as _get_supabase_read_client
 from integrations.supabase_base import is_admin_configured as is_supabase_admin_configured
-from integrations.supabase_base import require_server_write_context
+from integrations.supabase_base import require_server_write_context, require_shared_writes_enabled
 from utils.safe import finite_float as _safe_float
 
 logger = logging.getLogger(__name__)
@@ -575,6 +575,7 @@ def _build_merged_row(existing: dict[str, Any], trade_date_text: str, patch: dic
 
 
 def _write_merged_row(client: Client, merged: dict[str, Any]) -> None:
+    require_shared_writes_enabled("upsert market signal row")
     try:
         client.table(TABLE_MARKET_SIGNAL_DAILY).upsert(
             _normalize_row_for_upsert(merged),
