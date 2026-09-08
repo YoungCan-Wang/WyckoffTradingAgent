@@ -4,9 +4,11 @@
 重跑同一天覆盖而非累积。建表语句由
 `python scripts/print_review_shadow_lane_ddl.py` 输出。
 
-为什么必须落库:trace 只活在 `daily-job-artifacts-*` 里(retention-days: 30,与日志
-同包),而且**补不回来**——回测引擎不重放漏斗分层,没有任何路径能从快照倒推出
-「某日某票卡在哪一层、watch_score 多少」。每过一天没留存就永久少一天样本。
+为什么必须落库:trace 只活在 `daily-job-artifacts-*` 里(retention-days: 90,与日志
+同包),过期即永久少一天样本。「补不回来」只针对**快照**——回测引擎不重放漏斗
+分层,没有任何路径能从快照倒推出「某日某票卡在哪一层」;但只要 artifact 还在
+retention 窗口内,`build_lane_rows(payload)` 就能直接吃 trace 补历史。别把这句
+读成「已有 artifact 也补不了」而放弃回填。
 
 行来源只有 trace 一处:车道判定走 core.review_shadow_lanes,不在这里重新分类,
 否则报告与落库两套口径会漂移(见 memory two-gates-must-share-one-source)。

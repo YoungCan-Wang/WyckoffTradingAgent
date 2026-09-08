@@ -631,6 +631,79 @@ def test_review_trace_records_as_run_stages_without_ohlcv(tmp_path):
         load_review_trace_artifact(path, date(2026, 5, 11))
 
 
+def _l3_strict_inputs() -> SimpleNamespace:
+    """L2 过 3 只、L3 按降级口径全放行的最小夹具。"""
+    frame = pd.DataFrame(
+        {
+            "date": pd.bdate_range("2025-08-01", periods=220),
+            "close": [10.0] * 220,
+            "amount": [100_000_000.0] * 220,
+        }
+    )
+    codes = ["000001", "000002", "000003"]
+    return SimpleNamespace(
+        cfg=FunnelConfig(),
+        window=SimpleNamespace(end_trade_date=date(2026, 8, 31)),
+        pool=SimpleNamespace(symbols=codes),
+        ref_data=SimpleNamespace(
+            name_map={code: code for code in codes},
+            sector_map={"000001": "银行", "000002": "地产", "000003": "券商"},
+            market_cap_map={code: 100.0 for code in codes},
+            financial_map={},
+        ),
+        all_df_map={code: frame for code in codes},
+        layers=SimpleNamespace(
+            l1_passed=list(codes),
+            l2_passed=list(codes),
+            # 降级日:l3_passed 等于 l2_passed,这正是那 6 天 L3/L2=100.0% 的成因。
+            l3_passed=list(codes),
+            l2_channel_map={code: "点火破局" for code in codes},
+            l2_rejections={},
+        ),
+        candidates=SimpleNamespace(candidate_entries=[], exit_signals={}),
+    )
+
+
+def test_review_trace_keeps_l3_demotion_counterfactual() -> None:
+    """修复期 L3 降级日,trace 要留下「照常过滤会留下谁」。
+
+    BEAR_REBOUND 那 6 天 Layer 3 从硬过滤降级成 +8 加分项(funnel_layers 里显式
+    分支 + 日志),l3_passed 等于 l2_passed。降级时算出的严格口径通过集此前只存在
+    benchmark_context 里、没人落盘——22 份产物里 l3_passed_normal 零命中,等于每个
+    降级日都白算了一次同日同水温的「L3 开 vs 关」对照。
+    """
+    inputs = _l3_strict_inputs()
+    metrics = {"benchmark_context": {"regime": "BEAR_REBOUND", "l3_passed_normal": ["000001"]}}
+
+    rows = build_review_trace(inputs, {}, metrics)["symbols"]
+
+    # 降级口径:三只都算过 L3。
+    assert [rows[code]["l3_eligible"] for code in ("000001", "000002", "000003")] == [True, True, True]
+    # 严格口径:只有 000001 会留下。这一对差值才是可用的同日对照。
+    assert rows["000001"]["l3_eligible_strict"] is True
+    assert rows["000002"]["l3_eligible_strict"] is False
+    assert rows["000003"]["l3_eligible_strict"] is False
+
+
+def test_review_trace_l3_strict_is_none_on_normal_days() -> None:
+    """非降级日必须是 None,不能是 False。
+
+    `or set()` 兜底会把「今天 L3 就是硬过滤」和「今天降级了且严格口径一只不留」
+    压成同一个空集合,于是 20 个正常日全被读成「L3 本来会全灭」——把缺失读成事实。
+    """
+    inputs = _l3_strict_inputs()
+
+    rows = build_review_trace(inputs, {}, {"benchmark_context": {"regime": "RISK_OFF"}})["symbols"]
+    assert all(rows[code]["l3_eligible_strict"] is None for code in ("000001", "000002", "000003"))
+
+    # metrics 整个缺失(回放路径传 {})也要退成 None,不能抛。
+    assert build_review_trace(inputs, {}, {})["symbols"]["000001"]["l3_eligible_strict"] is None
+
+    # 降级日而严格口径真的一只不留:是 False,与上面的 None 必须分得开。
+    empty = build_review_trace(inputs, {}, {"benchmark_context": {"l3_passed_normal": []}})["symbols"]
+    assert all(empty[code]["l3_eligible_strict"] is False for code in ("000001", "000002", "000003"))
+
+
 def test_review_trace_separates_unevaluated_risk_from_clean_risk() -> None:
     """空的 risk_signal 有两种来源,trace 必须分得开。
 
