@@ -166,3 +166,34 @@ def test_score_band_marks_rotation_setup_unrankable() -> None:
     # 不能说成「样本不足」:那会让人以为攒够数据就能分档,而这一层压根没有键。
     assert "无连续排序键" in band["reason"]
     assert "样本不足" not in band["reason"]
+
+
+def test_report_warns_when_screened_and_unscreened_lanes_share_one_table() -> None:
+    """三条车道并排放在一张表里,但风控筛选强度不同,不提示就会被读成车道优劣。
+
+    near_l2 来自 L2 未过的票,离场信号从没对它们算过,风控过滤在那条车道空转;
+    rotation_setup / pre_breakout 来自 L2 已过的票,带信号的被剔掉了。
+    """
+    from workflows.review_shadow_backtest import _markdown_report
+
+    text = _markdown_report({"by_lane": {"near_l2": {"count": 3}, "pre_breakout": {"count": 5}}})
+
+    assert "跨车道比较注意" in text
+    assert "空转" in text
+
+
+def test_report_omits_the_caveat_when_only_screened_lanes_are_present() -> None:
+    """只有同类车道时没有可比性问题,不要挂一句用不上的警告冲淡真警告。"""
+    from workflows.review_shadow_backtest import _markdown_report
+
+    text = _markdown_report({"by_lane": {"rotation_setup": {"count": 4}, "pre_breakout": {"count": 6}}})
+
+    assert "跨车道比较注意" not in text
+
+
+def test_report_omits_the_caveat_when_only_the_unscreened_lane_is_present() -> None:
+    from workflows.review_shadow_backtest import _markdown_report
+
+    text = _markdown_report({"by_lane": {"near_l2": {"count": 4}}})
+
+    assert "跨车道比较注意" not in text

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from core.funnel_taxonomy import (
     REVIEW_STAGE_CANDIDATE_HIT,
+    REVIEW_STAGE_STRENGTH_MISS,
     REVIEW_STAGE_THEME_MISS,
     REVIEW_STAGE_TRIGGER_MISS,
 )
@@ -88,6 +89,54 @@ def test_unranked_lane_stores_null_score_not_a_constant() -> None:
 def test_missing_trade_date_yields_no_rows() -> None:
     symbols = {"000001": {"stage": REVIEW_STAGE_TRIGGER_MISS, "l3_eligible": True}}
     assert build_lane_rows({"symbols": symbols}) == []
+
+
+def test_row_records_whether_exit_signals_were_evaluated() -> None:
+    """三条车道按不同标准筛,表里必须留下这一位,否则跨车道比较是混淆的。
+
+    near_l2 来自 L2 未过的票,离场信号从没对它们算过,风控过滤对这条车道空转;
+    rotation_setup / pre_breakout 来自 L2 已过的票,过滤是真的。不记 risk_evaluated,
+    这个差别就只存在于某个人的记忆里。
+    """
+    payload = _trace(
+        {
+            "000001": {
+                "stage": REVIEW_STAGE_STRENGTH_MISS,
+                "reason": "缺口 4.0%",
+                "risk_evaluated": False,
+            },
+            "000002": {
+                "stage": REVIEW_STAGE_TRIGGER_MISS,
+                "l3_eligible": True,
+                "layer3_quality_score": 0.5,
+                "risk_evaluated": True,
+            },
+        }
+    )
+
+    rows = {row["ts_code"]: row for row in build_lane_rows(payload)}
+
+    assert rows["000001"]["lane"] == "near_l2"
+    assert rows["000001"]["risk_evaluated"] is False
+    assert rows["000002"]["lane"] == "pre_breakout"
+    assert rows["000002"]["risk_evaluated"] is True
+
+
+def test_old_trace_without_the_field_stores_null_not_false() -> None:
+    """缺失必须留 null。写成 false 就是把「不知道」断言成「确定没查过」。"""
+    payload = _trace({"000001": {"stage": REVIEW_STAGE_TRIGGER_MISS, "l3_eligible": True}})
+
+    assert build_lane_rows(payload)[0]["risk_evaluated"] is None
+
+
+def test_risk_evaluated_column_is_nullable_without_default() -> None:
+    """加了 default 就没有第三态:老行会被填成某个确定值,混淆重新藏回去。"""
+    from core.review_shadow_lane_schema import COLUMNS
+
+    ddl_type = next(spec for name, spec, _ in COLUMNS if name == "risk_evaluated")
+    assert ddl_type == "boolean"
+    assert "not null" not in ddl_type
+    assert "default" not in ddl_type
 
 
 def test_payload_keys_match_schema_columns() -> None:

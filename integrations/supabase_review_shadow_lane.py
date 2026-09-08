@@ -65,6 +65,9 @@ def _lane_row(trade_date: str, code: str, row: dict[str, Any], signal: Any) -> d
         "l1_eligible": bool(row.get("l1_eligible")),
         "l2_eligible": bool(row.get("l2_eligible")),
         "l3_eligible": bool(row.get("l3_eligible")),
+        # 不要 bool():缺失会塌成 False,把「不知道有没有查过」写成「确定没查过」。
+        # 这一位决定三条车道是否可比,详见 core/review_shadow_lane_schema.py 约束 3。
+        "risk_evaluated": _tribool(row.get("risk_evaluated")),
         "rps_fast": _float(row.get("rps_fast")),
         "rps_slow": _float(row.get("rps_slow")),
         "close": _float(row.get("close")),
@@ -104,6 +107,15 @@ def save_review_shadow_lane_rows(rows: list[dict[str, Any]]) -> int:
     else:
         logger.info("[shadow-lane] %s written=%d", TABLE_REVIEW_SHADOW_LANE_DAILY, written)
     return written
+
+
+def _tribool(value: Any) -> bool | None:
+    """None 透传,其余转 bool。
+
+    存在三种状态:查过且干净 / 从没查过 / 老 trace 不带这个字段。第三种必须留 None——
+    用 bool() 会把它变成 False,于是历史行全被断言成「没查过」,把缺失读成事实。
+    """
+    return None if value is None else bool(value)
 
 
 def _float(value: Any) -> float | None:

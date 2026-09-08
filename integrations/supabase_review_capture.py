@@ -66,6 +66,8 @@ def build_capture_rows(
                 "is_candidate": bool(raw.get("stage") == REVIEW_STAGE_CANDIDATE_HIT),
                 "trigger_labels": [str(x) for x in (raw.get("trigger_labels") or [])],
                 "risk_signal": _text(raw.get("risk_signal")) or None,
+                # 不要 bool():缺失会塌成 False,把「不知道」写成「确定没查过」。
+                "risk_evaluated": (None if raw.get("risk_evaluated") is None else bool(raw.get("risk_evaluated"))),
                 "tracked_previous_day": bool(raw.get("tracked_previous_day")),
                 "ai_recommended_previous_day": bool(raw.get("ai_recommended_previous_day")),
                 "shadow_lane": _text(raw.get("shadow_lane")) or None,
