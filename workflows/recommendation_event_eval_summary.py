@@ -16,6 +16,12 @@ def recommendation_event_eval_result_summary(result: dict[str, Any]) -> str:
     ready = f"{all_rows.get('rows_ready', 0)}/{all_rows.get('rows_total', 0)}"
     lines = [
         f"推荐事件评估: ready={ready}, hit={_summary_pct(all_rows.get('hit_rate_pct'))}%, ranking_decision={status}",
+        "收益口径：逐次推荐后下一根观测日线开盘入场，入场日记0，第H根后续日线收盘；不是首次入池累计涨幅。",
+        "目标命中是按T+1资格可卖日触价（A股排除入场当日），不是实际成交证明；缺失日线不等于连续交易日。",
+        f"扣费平均收益={_summary_pct(all_rows.get('avg_net_close_return_horizon_pct'))}% "
+        f"(有效样本={all_rows.get('net_return_rows', 0)})；"
+        f"未成熟/不可评估={all_rows.get('rows_unready', 0)}",
+        "费用按市场费率、滑点和默认名义金额估算；未模拟盘口、账户持仓或受限退出。",
         _ranking_decision_line(status, strategy, top_k),
     ]
     if coverage_line := _context_coverage_line(summary.get("context_coverage")):
@@ -48,7 +54,7 @@ def _context_coverage_line(raw: Any) -> str:
 
 def _ranking_decision_line(status: str, strategy: str, top_k: Any) -> str:
     if status == "candidate":
-        return f"排序接入候选: {strategy} top{top_k} 已通过样本/lift/风险门槛"
+        return f"样本内排序研究候选: {strategy} top{top_k} 已通过样本/lift/净收益/风险门槛；仍需跨期组合验收"
     if status == "watch":
         return f"排序观察项: {strategy} 有改善但未全部过门槛"
     return "排序策略: 继续保持 score_only"

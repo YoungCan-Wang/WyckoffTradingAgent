@@ -186,6 +186,7 @@ from agents.diagnosis_tools import analyze_stock as _analyze_stock
 from agents.market_tools import (
     get_market_overview as _get_market_overview,
 )
+from agents.screen_tools import research_discovery_agent_view
 from agents.screen_tools import screen_stocks as _screen_stocks
 from agents.search_tools import search_stock_by_name as _search_stock_by_name
 
@@ -241,13 +242,20 @@ def screen_stocks(
     **注意**：耗时 2-3 分钟，请提前告知用户需要等待。
     **快速试扫**：limit 可限制扫描股票池前 N 只；聊天态留空默认快扫，全量扫描传 limit=0。
     **财务过滤**：聊天快扫默认跳过 TickFlow 财务指标；明确需要完整财务过滤时传 financial_metrics=true.
-    **结果处理**：返回候选股票列表和分数，请用专业但易懂的方式呈现。
+    **结果处理**：研究层返回完整分层计数/代码索引与最多50条详情预览，不是收益排名或BUY。
+    **详情限制**：原始report/review_trace仅在当次保留时可核对，不能假定完整快照存在。
     """
-    return _execute_mcp_tool(
+    result = _execute_mcp_tool(
         "screen_stocks",
         _screen_stocks,
         {"board": board, "limit": limit, "financial_metrics": financial_metrics},
     )
+    if "research_discovery" not in result:
+        return result
+    return {
+        **result,
+        "research_discovery": research_discovery_agent_view(result["research_discovery"], detailed=True),
+    }
 
 
 @mcp.tool()

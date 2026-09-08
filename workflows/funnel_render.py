@@ -22,6 +22,7 @@ from workflows.funnel_report_payload import (
     funnel_run_details,
     legacy_symbol_rows,
     modern_symbol_rows,
+    research_discovery_payload,
     selected_track,
 )
 from workflows.funnel_settings import (
@@ -729,6 +730,7 @@ def _build_legacy_card_lines(ctx: Any, selection: FunnelAiSelection) -> list[str
     lines = _top_summary_lines(ctx, len(selected_for_ai), money_line)
     lines.extend(_top_candidate_list_lines(ctx, selection))
     lines.extend(_tracking_shape_section_lines(ctx, selection))
+    lines.extend(_research_discovery_lines(ctx))
     lines += [
         "**【📊 详细市场证据】**",
         _pool_summary_line(ctx.metrics),
@@ -811,6 +813,31 @@ def _print_modern_selection_summary(ctx: Any, selection: FunnelAiSelection, coun
     )
 
 
+def _research_discovery_lines(ctx: Any) -> list[str]:
+    inventory = research_discovery_payload(ctx)
+    counts = inventory["counts"]
+    signals = inventory["signal_counts"]
+    rows = inventory["candidates"]
+    if not rows:
+        return []
+    lines = [
+        "",
+        "**【研究发现与执行分层】**",
+        f"研究发现{counts['total']}只；买点候选{signals.get('candidate_detected', 0)}只；"
+        f"待确认{signals.get('awaiting_confirmation', 0)}只；执行拦截{counts.get('execution_blocked', 0)}只。",
+        "研究发现不等于当日新信号、跨日confirmed或BUY；完整名单在Agent结构化研究发现中，AI额度与OMS禁买不变。",
+    ]
+    focused = sorted(
+        rows, key=lambda row: (not any("mainline" in s or "leader" in s for s in row["discovery_sources"]), row["code"])
+    )
+    for row in focused[:8]:
+        reason = "；".join(row["blocking_reasons"]) or row["timing_condition"]
+        lines.append(f"  {row['code']} {row['name']} {row['theme']} | {row['signal_state']} | {reason}")
+    if len(rows) > 8:
+        lines.append(f"  展示8/{len(rows)}只（来源分组后按代码展示，非收益排名）；完整名单未截断。")
+    return lines
+
+
 def _build_modern_card_lines(ctx: Any, selection: FunnelAiSelection) -> list[str]:
     counts = _modern_selection_counts(ctx, selection)
     _print_modern_selection_summary(ctx, selection, counts)
@@ -818,6 +845,7 @@ def _build_modern_card_lines(ctx: Any, selection: FunnelAiSelection) -> list[str
     lines = _top_summary_lines(ctx, len(selection.selected_for_ai), money_line)
     lines.extend(_top_candidate_list_lines(ctx, selection))
     lines.extend(_tracking_shape_section_lines(ctx, selection))
+    lines.extend(_research_discovery_lines(ctx))
     rejection = ctx.metrics.get("layer_rejections") or {}
     l3_rejected = int((rejection.get("layer3") or {}).get("rejected") or 0)
     trigger_counts = ", ".join(

@@ -17,6 +17,7 @@ from core._price_math import sort_by_date_if_needed
 from core._price_math import upper_shadow_pct as _upper_shadow_pct
 from core._price_math import vol_ratio as _vol_ratio
 from core.candidate_metadata import code6
+from core.candidate_policy import candidate_score_value
 from core.main_force_signal import MainForceSignal, analyze_main_force_signal
 from core.theme_radar import normalize_theme_name
 from utils.safe import safe_float as _safe_float
@@ -118,9 +119,17 @@ def build_mainline_candidates(
     return [asdict(item) for item in _rank_candidates([c for c in candidates if c is not None], cfg)]
 
 
-def mainline_candidate_entries(candidates: list[dict[str, Any]], *, max_count: int) -> list[dict[str, Any]]:
-    tradeable = [item for item in candidates if str(item.get("status")) in TRADEABLE_MAINLINE_STATUSES]
-    ranked = sorted(tradeable, key=lambda item: (-float(item.get("mainline_score") or 0), str(item.get("code"))))
+def mainline_candidate_entries(candidates: list[dict[str, Any]], *, max_count: int = 0) -> list[dict[str, Any]]:
+    """Keep the research pool intact; only explicit display callers may truncate it."""
+    tradeable = [
+        item
+        for item in candidates
+        if str(item.get("status")) in TRADEABLE_MAINLINE_STATUSES
+        and candidate_score_value(item.get("mainline_score")) > 0
+    ]
+    ranked = sorted(
+        tradeable, key=lambda item: (-candidate_score_value(item.get("mainline_score")), str(item.get("code")))
+    )
     rows = ranked if max_count <= 0 else ranked[:max_count]
     return [_candidate_entry(item) for item in rows]
 
@@ -575,7 +584,7 @@ def _quality_score(metrics: dict | None) -> float:
 
 
 def _candidate_entry(item: dict[str, Any]) -> dict[str, Any]:
-    score = round(float(item.get("mainline_score") or 0.0) * 100.0, 2)
+    score = round(candidate_score_value(item.get("mainline_score")) * 100.0, 2)
     status = str(item.get("status") or MAINLINE_BUY_STATUS)
     return {
         "code": item["code"],

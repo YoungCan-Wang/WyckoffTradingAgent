@@ -542,6 +542,8 @@ def _event(
         "recommend_count": count,
         "label_ready": True,
         "hit_target": hit,
+        "close_return_horizon_pct": 5.202 if hit else -1.798,
+        "net_close_return_horizon_pct": 5.0 if hit else -2.0,
         "mfe_horizon_pct": 12.0 if hit else 4.0,
         "mae_horizon_pct": -3.0,
     }

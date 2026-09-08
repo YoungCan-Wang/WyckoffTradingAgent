@@ -16,7 +16,7 @@ import logging
 from datetime import date
 
 from core.constants import TABLE_FACTOR_IC_DAILY
-from integrations.supabase_base import create_admin_client
+from integrations.supabase_base import create_admin_client, require_shared_writes_enabled
 
 logger = logging.getLogger(__name__)
 CHUNK = 200
@@ -34,6 +34,7 @@ def save_factor_ic_rows(
     """写入一批 IC 结果，返回成功行数。失败只 warning——评估本身已在日志里输出。"""
     if not rows:
         return 0
+    require_shared_writes_enabled("upsert factor IC results")
     stamp = (eval_date or date.today()).isoformat()
     weights = weights or {}
     payload = [

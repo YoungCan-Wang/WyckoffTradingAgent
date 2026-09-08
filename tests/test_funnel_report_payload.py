@@ -154,6 +154,38 @@ def test_funnel_run_details_keeps_report_payload_fields():
     assert details["priority_score_map"] == {"000001": 3.5}
 
 
+def test_production_artifact_and_report_details_keep_research_when_ai_selection_is_empty(monkeypatch, tmp_path):
+    import gzip
+    import json
+
+    from workflows.wyckoff_funnel import _write_review_trace
+
+    trace = {
+        "trade_date": "2026-09-04",
+        "counts": {"universe": 1},
+        "market_context": {"regime": "RISK_OFF"},
+        "symbols": {"300308": {"name": "中际旭创", "l2_eligible": True, "stage": "题材共振不足"}},
+    }
+    monkeypatch.setattr("workflows.review_trace.build_review_trace", lambda *_a: trace)
+    monkeypatch.setenv("WYCKOFF_WRITE_CONTEXT", "cli")
+    monkeypatch.setenv("DAILY_JOB_ARTIFACTS_DIR", str(tmp_path))
+    metrics = {}
+
+    _write_review_trace(None, {}, metrics)
+    with gzip.open(tmp_path / "review_trace_20260904.json.gz", "rt") as handle:
+        artifact = json.load(handle)
+    selection = _selection()
+    selection.selected_for_ai.clear()
+    details = funnel_run_details(_ctx(metrics=metrics, regime="RISK_OFF"), selection, content="", title="", symbols=[])
+
+    assert artifact["symbols"] == trace["symbols"]
+    assert artifact["research_discovery"] == details["research_discovery"]
+    assert details["selected_for_ai"] == []
+    assert details["symbols_for_report"] == []
+    assert details["research_discovery"]["candidates"][0]["code"] == "300308"
+    assert details["research_discovery"]["counts"] == {"total": 1, "execution_blocked": 1}
+
+
 def test_funnel_run_details_overrides_trade_mode_when_data_quality_is_degraded():
     metrics = {
         "layer3_score_map": {},

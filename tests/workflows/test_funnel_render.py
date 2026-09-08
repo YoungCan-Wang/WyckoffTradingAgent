@@ -16,6 +16,27 @@ def test_execution_decision_line_makes_observe_only_action_explicit() -> None:
     assert "不从本报告选择买入标的" in line
 
 
+def test_research_card_lists_observation_even_when_market_blocks_buy():
+    from workflows.funnel_render import _research_discovery_lines
+
+    ctx = SimpleNamespace(
+        regime="RISK_OFF",
+        metrics={},
+        candidate_entries=[],
+        leader_radar_rows=[],
+        mainline_candidates=[{"code": "300308", "name": "中际旭创", "theme": "CPO", "status": "主线观察"}],
+    )
+
+    report = "\n".join(_research_discovery_lines(ctx))
+
+    assert "研究发现1只" in report
+    assert "执行拦截1只" in report
+    assert "待确认1只" in report
+    assert "300308 中际旭创 CPO" in report
+    assert "market_gate:RISK_OFF" in report
+    assert "AI额度与OMS禁买不变" in report
+
+
 def test_execution_decision_line_blocks_formal_action_when_data_quality_is_degraded() -> None:
     from workflows.funnel_render import _execution_decision_line
 

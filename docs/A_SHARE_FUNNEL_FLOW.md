@@ -165,7 +165,7 @@ flowchart TD
         G1["calc_market_breadth<br/>市场广度"]
         G2["analyze_benchmark_and_tune_cfg<br/>regime 判定"]
         G3{"水温 regime"}
-        G3 -->|NEUTRAL| T1["主战场 mainline_active<br/>质量池 Top8 / 行业最多2"]
+        G3 -->|NEUTRAL| T1["生产 execution_blocked<br/>研究发现保留，不授予买入许可"]
         G3 -->|RISK_ON| T2["禁止正式新开 overheat_shadow<br/>研究配额 5/1"]
         G3 -->|RISK_OFF| T3["提高门槛 + 禁新开"]
         G3 -->|CRASH| T4["极限门槛 + 禁新开"]
@@ -278,6 +278,11 @@ ABC 门槛松紧不是问题所在：met=2 与 met=3 的差异在 1/3/5/10 日�
 
 ### 数据质量与诊断口径
 
+- 完整研究池以 `research_discovery_v1` 写入同一次运行的 `review_trace`，并透传报告详情和 Agent。研究并集含 L2/近 L2、候选车道、主线和趋势雷达；独立的 `signal_counts` / `execution_counts` 避免把“被市场拦截”误记为“没有发现”。卡片只列明确标注的示例，结构化名单不截断；新字段始终为研究状态，不授予跨日确认或 OMS 权限。
+- 有效主线买点条目不再提前 Top3，最终 AI 总额、单行业和主题晋级上限仍按原设置执行。主线补充分数使用 `mainline_score × 100`，不降低同票原有更高分。
+- 当日有效主题雷达优先；历史雷达仅作为 `persisted_fallback`，未来/非法日期/超 TTL（默认 14 天）均拒绝，生产与 core 回放共享该边界。事件、财务、概念映射的历史时点完整性仍须单独验证。
+- `scripts/diagnose_funnel_recall.py --trace <review_trace.json.gz> --date YYYYMMDD` 直接读 as-run 冻结决策，不重新拉行情。`run_previous_funnel` 则是当前配置的历史回放，不等于当时生产结果；它使用同步 `WYCKOFF_SHARED_READ_ONLY` scope 拒绝共享表写入，保留服务端读取并在异常后恢复环境。相同进程中并发 server job 可能保守拒写，诊断应使用独立进程。
+
 - 生产漏斗默认开启交易日新鲜度硬断路器：股票 OHLCV 至少 95% 必须对齐目标交易日，两个基准指数也必须对齐；否则任务直接失败并报警，不生成基于旧行情的报告。`FUNNEL_DATA_FRESHNESS_HARD_FAIL=0` 只用于显式研究/故障诊断。
 - OHLCV 和市值覆盖率均不得低于 95%。每日量价漏斗不请求全市场财务指标，财务覆盖率显示为“未纳入量价漏斗”；仅显式启用质量/基本面筛选时，财务覆盖率不得低于 90%。Step3 仍为最终少量候选补充财务快照。
 - 任一必需覆盖率不足，运行状态标记为 `degraded`，交易就绪度强制为 `observe_only`。候选仍可进入 AI/shadow 对照，但报告、结构化详情和候选行都会禁止正式推荐、写入执行清单或新开仓。
@@ -374,9 +379,9 @@ flowchart TD
 RISK -->|UNKNOWN / NEUTRAL / RISK_ON / PANIC_REPAIR / RISK_OFF / CRASH / BLACK_SWAN| BLOCK_BUY["冻结新开仓 + 不写正式推荐<br/>STEP4_BUY_BLOCK_REGIMES"]
 RISK -->|PANIC_REPAIR_CONFIRMED| REPAIR_PROBE["最多1只小额 PROBE<br/>禁止 ATTACK"]
     RISK -->|CAUTION| CAUTION_PROBE["最多1只小额 PROBE<br/>禁止 ATTACK"]
-    RISK -->|NEUTRAL| ALLOW["按交易模式限额执行"]
+    RISK -->|允许档位| ALLOW["按生产交易模式限额执行"]
 
-    ALLOW --> OMS["灾难止损地板 -12%<br/>PROBE≤10% / ATTACK≤20%<br/>ATR/结构/时间管理优先"]
+    ALLOW --> OMS["生产新仓止损配置 5%<br/>PROBE≤10% / ATTACK≤20%<br/>已有持仓止损继承"]
     REPAIR_PROBE --> OMS
     CAUTION_PROBE --> OMS
     OMS --> DB["trade_orders 写库"]
@@ -400,7 +405,9 @@ Step4 以 `trade_orders` 作为幂等事实源。Telegram 超时具有“可能�
 
 ### 报告执行纪律
 
-日漏斗、Step3、OMS 推送正文顶部固定附带 `core/execution_playbook.py` 的 **「🧭 执行纪律」**（闸门、主线优先、5 日持有、-12% 灾难地板）。操作解读见 [`OPERATOR_PLAYBOOK.md`](OPERATOR_PLAYBOOK.md)。
+日漏斗、Step3、OMS 推送正文顶部固定附带 `core/execution_playbook.py` 的 **「🧭 执行纪律」**（闸门、主线优先、时间管理与工单止损边界）。操作解读见 [`OPERATOR_PLAYBOOK.md`](OPERATOR_PLAYBOOK.md)。
+
+结构止损候选护栏与新仓止损是不同层次：生产 workflow 的 `STEP4_BUY_HARD_STOP_PCT=5.0`，OMS 文案不再硬编码旧 12% 灾难地板。研究池修复不更改风险参数。收益/回测必须区分首次入池累计、逐次事件和现金组合，验收口径见 [`A_SHARE_RESEARCH_EXECUTION_ACCEPTANCE.md`](A_SHARE_RESEARCH_EXECUTION_ACCEPTANCE.md)。
 
 ---
 

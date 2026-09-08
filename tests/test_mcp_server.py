@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import sys
+from copy import deepcopy
 from types import ModuleType
 
 
@@ -124,3 +126,53 @@ def test_research_hypothesis_maps_mcp_arguments(monkeypatch):
     assert result["hypothesis"]["hypothesis_id"] == "hyp_1"
     assert captured["title"] == "Spring 样本外"
     assert captured["invalidation_criteria"] == "十日均值收益为负"
+
+
+def test_mcp_screen_bounds_only_research_view_without_modifying_raw_result(monkeypatch):
+    server = import_mcp_server(monkeypatch)
+    tech_codes = ("300308", "300502", "002463", "002281", "300394", "603083")
+    codes = [f"{100000 + idx:06d}" for idx in range(1994)] + list(tech_codes)
+    raw = {
+        "action_plan": {"new_buy_allowed": False},
+        "report_candidates": [],
+        "research_discovery": {
+            "counts": {"total": 2000, "execution_blocked": 2000},
+            "signal_counts": {"awaiting_confirmation": 2000},
+            "execution_counts": {"blocked": 2000},
+            "candidates": [
+                {
+                    "code": code,
+                    "name": "科技观察",
+                    "signal_state": "awaiting_confirmation",
+                    "execution_permission": "blocked",
+                    "discovery_reason": "不可直接买入，等待确认；" * 30,
+                }
+                for code in codes
+            ],
+        },
+    }
+    before = deepcopy(raw)
+    monkeypatch.setattr(server, "_execute_mcp_tool", lambda *_a: raw)
+
+    result = server.screen_stocks(limit=0)
+    view = result["research_discovery"]
+
+    assert len(json.dumps(result, ensure_ascii=False).encode("utf-8")) < 150_000
+    assert view["code_index_total"] == 2000
+    assert set(tech_codes) <= set(view["code_index"]["awaiting_confirmation"]["blocked"])
+    assert view["preview_returned"] <= 50
+    assert view["preview_truncated"] is True
+    assert view["full_details_location"] == "report/review_trace_when_retained"
+    assert "result_ref" not in result
+    assert result["action_plan"] == {"new_buy_allowed": False}
+    assert result["report_candidates"] == []
+    assert raw == before
+    assert len(raw["research_discovery"]["candidates"]) == 2000
+
+
+def test_mcp_screen_keeps_error_result_unchanged(monkeypatch):
+    server = import_mcp_server(monkeypatch)
+    error = {"status": "error", "error": "screen failed"}
+    monkeypatch.setattr(server, "_execute_mcp_tool", lambda *_a: error)
+
+    assert server.screen_stocks() == error

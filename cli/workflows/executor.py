@@ -1231,6 +1231,7 @@ def _compact_screen_handoff(value: Any) -> dict[str, Any]:
             "preference_match",
             "scan_scope",
             "summary",
+            "research_discovery",
             "data_quality",
             "decision_brief",
             "selection_brief",
