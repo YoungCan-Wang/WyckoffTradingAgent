@@ -22,6 +22,7 @@ from core._price_math import sort_by_date_if_needed, swing_values
 from core.candidate_lanes import build_l1_candidate_lane_entries, merge_candidate_entries
 from core.candidate_tracks import candidate_entry_sort_key
 from core.cn_boards import cn_board, is_supported_cn_board
+from core.funnel_theme import DEFAULT_THEME_RADAR_MAX_AGE_DAYS, empty_theme_snapshot, select_linked_theme_radar
 from core.layer2_strength import (
     BenchmarkContext,
     RpsContext,
@@ -3016,7 +3017,7 @@ def _mainline_entries_for_result(
         concept_map=concept_map or {},
         sector_map=sector_map or {},
         concept_heat=concept_heat or [],
-        theme_radar=theme_radar or {},
+        theme_radar=_mainline_theme_radar_asof(df_map, theme_radar),
         theme_activity=theme_activity,
         df_map=df_map,
         financial_map=financial_map or {},
@@ -3024,4 +3025,27 @@ def _mainline_entries_for_result(
         config=mainline_config,
         main_force_map=main_force_map,
     )
-    return mainline_candidate_entries(candidates, max_count=mainline_config.max_ai_candidates)
+    return mainline_candidate_entries(candidates)
+
+
+def _mainline_theme_radar_asof(df_map: dict[str, pd.DataFrame], snapshot: dict | None) -> dict:
+    if not snapshot:
+        return {}
+    last_dates = [
+        str(sort_by_date_if_needed(frame)["date"].iloc[-1])
+        for frame in df_map.values()
+        if not frame.empty and "date" in frame.columns
+    ]
+    latest = pd.to_datetime(last_dates, errors="coerce").max()
+    if pd.isna(latest):
+        return {}
+    trade_date = latest.date().isoformat()
+    linked, _source = select_linked_theme_radar(
+        empty_theme_snapshot(trade_date),
+        snapshot,
+        trade_date,
+        enabled=True,
+        link_enabled=True,
+        max_age_days=DEFAULT_THEME_RADAR_MAX_AGE_DAYS,
+    )
+    return linked

@@ -44,6 +44,46 @@ def test_require_server_write_context(monkeypatch):
     require_server_write_context("upsert signal_observations")
 
 
+@pytest.mark.parametrize("original", [None, "", "unknown", "0"])
+def test_read_only_scope_preserves_reads_blocks_workers_and_restores_environment(monkeypatch, original):
+    import os
+    from concurrent.futures import ThreadPoolExecutor
+
+    from integrations import supabase_base as sb
+
+    monkeypatch.setenv("WYCKOFF_WRITE_CONTEXT", "server_job")
+    if original is None:
+        monkeypatch.delenv("WYCKOFF_SHARED_READ_ONLY", raising=False)
+    else:
+        monkeypatch.setenv("WYCKOFF_SHARED_READ_ONLY", original)
+    monkeypatch.setattr(sb, "is_admin_configured", lambda: True)
+    monkeypatch.setattr(sb, "create_admin_client", lambda: "shared-read-client")
+    with pytest.raises(RuntimeError, match="replay failure"), sb.read_only_write_context():
+        assert sb.create_read_client() == "shared-read-client"
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            assert pool.submit(sb.is_server_write_context).result() is False
+            assert pool.submit(sb.create_read_client).result() == "shared-read-client"
+        os.environ["WYCKOFF_SHARED_READ_ONLY"] = "0"
+        os.environ["WYCKOFF_WRITE_CONTEXT"] = "server_job"
+        with pytest.raises(PermissionError):
+            sb.require_server_write_context("attempted shared write")
+        raise RuntimeError("replay failure")
+    assert os.environ.get("WYCKOFF_SHARED_READ_ONLY") == original
+    assert sb.is_server_write_context()
+
+
+def test_nested_read_only_scope_does_not_restore_write_permission_early(monkeypatch):
+    from integrations import supabase_base as sb
+
+    monkeypatch.setenv("WYCKOFF_WRITE_CONTEXT", "server_job")
+    monkeypatch.delenv("WYCKOFF_SHARED_READ_ONLY", raising=False)
+    with sb.read_only_write_context():
+        with sb.read_only_write_context():
+            assert not sb.is_server_write_context()
+        assert not sb.is_server_write_context()
+    assert sb.is_server_write_context()
+
+
 class TestNetworkTimeout:
     """所有客户端都必须带网络超时。
 

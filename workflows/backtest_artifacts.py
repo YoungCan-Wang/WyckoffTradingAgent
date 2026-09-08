@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from datetime import date
@@ -54,6 +55,14 @@ def write_backtest_artifacts(
         *_write_optional_frame(out_dir / f"wbt_dailys_{stamp}.csv", summary.pop("_wbt_dailys_df", None), "wbt dailys"),
         *_write_optional_frame(out_dir / f"wbt_pairs_{stamp}.csv", summary.pop("_wbt_pairs_df", None), "wbt pairs"),
     ]
+    if "selection_coverage" in summary:
+        coverage_path = out_dir / f"selection_coverage_{stamp}.json"
+        coverage = {
+            key: summary.get(key)
+            for key in ("pending_mode", "ai_selection_mode", "mainline_selection_evaluated", "selection_coverage")
+        }
+        coverage_path.write_text(json.dumps(coverage, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        extra_paths.append(coverage_path)
     return BacktestArtifactResult(summary_md, summary_path, trades_path, tuple(extra_paths))
 
 

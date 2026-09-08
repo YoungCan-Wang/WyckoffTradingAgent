@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
+from math import isfinite
 from typing import Any
 
 import pandas as pd
@@ -51,6 +52,7 @@ class CashPortfolioConfig:
     swap_score_multiplier: float = 1.15
     buy_friction_pct: float = 0.0
     sell_friction_pct: float = 0.0
+    cash_timing_mode: str = "legacy_exit_first"
 
 
 def expand_portfolio_styles(raw: str | list[str] | tuple[str, ...] | None) -> list[str]:
@@ -525,6 +527,8 @@ def _new_skipped() -> dict[str, int]:
         "weight_cap": 0,
         "not_stronger": 0,
         "style_swaps": 0,
+        "entry_mark": 0,
+        "t1": 0,
     }
 
 
@@ -547,6 +551,7 @@ def _portfolio_summary(
     return {
         "cash_portfolio_style": _style(config),
         "cash_portfolio_style_label": _style_label(config),
+        "cash_portfolio_timing_mode": config.cash_timing_mode,
         "cash_portfolio_initial_cash": float(config.initial_cash),
         "cash_portfolio_final_cash": float(cash),
         "cash_portfolio_total_return_pct": (float(cash) / float(config.initial_cash) - 1.0) * 100.0,
@@ -571,6 +576,8 @@ def _portfolio_summary(
         "cash_portfolio_skipped_duplicate": int(skipped.get("duplicate", 0)),
         "cash_portfolio_skipped_weight_cap": int(skipped.get("weight_cap", 0)),
         "cash_portfolio_skipped_not_stronger": int(skipped.get("not_stronger", 0)),
+        "cash_portfolio_skipped_entry_mark": int(skipped.get("entry_mark", 0)),
+        "cash_portfolio_skipped_t1": int(skipped.get("t1", 0)),
         "cash_portfolio_style_swaps": int(skipped.get("style_swaps", 0)),
         "cash_portfolio_max_positions": int(_position_limit(config)),
     }
@@ -594,8 +601,17 @@ def simulate_cash_portfolio(
     trades_df: pd.DataFrame,
     config: CashPortfolioConfig | None = None,
     mark_price_fn: Callable[[str, date], float | None] | None = None,
+    *,
+    entry_mark_price_fn: Callable[[str, date], float | None] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+    """Replay cash with legacy ordering or conservative open-before-exit ordering.
+
+    In open_before_exit mode, all scheduled exits (including gap exits) are released
+    after that day's entry attempts. The caller supplies opening marks for sizing;
+    mark_price_fn remains the closing NAV mark. Only fixed-slot styles are validated.
+    """
     cfg = config or CashPortfolioConfig()
+    open_first = _open_before_exit_mode(cfg, entry_mark_price_fn)
     df = _normalize_trade_dates(trades_df)
     if df.empty:
         empty = pd.DataFrame()
@@ -610,9 +626,15 @@ def simulate_cash_portfolio(
     signals_by_day = {day: rows for day, rows in ordered.groupby("entry_date")}
 
     for day in _trade_calendar(ordered):
-        cash = _close_due_positions(active, cash, day, closed)
+        if not open_first:
+            cash = _close_due_positions(active, cash, day, closed)
         for _, row in signals_by_day.get(day, pd.DataFrame()).iterrows():
-            cash = _apply_style(row, cash, active, closed, cfg, skipped, mark_price_fn)
+            if open_first:
+                cash = _apply_opening_entry(row, cash, active, closed, cfg, skipped, entry_mark_price_fn)
+            else:
+                cash = _apply_style(row, cash, active, closed, cfg, skipped, mark_price_fn)
+        if open_first:
+            cash = _close_due_positions(active, cash, day, closed)
         equity_rows.append(
             {
                 "date": day,
@@ -627,6 +649,43 @@ def simulate_cash_portfolio(
     if not nav_df.empty:
         nav_df = nav_df.drop_duplicates(subset=["date"], keep="last")
     return closed_df, nav_df, _portfolio_summary(closed_df, nav_df, cash, cfg, skipped)
+
+
+def _open_before_exit_mode(
+    config: CashPortfolioConfig,
+    entry_mark_price_fn: Callable[[str, date], float | None] | None,
+) -> bool:
+    if config.cash_timing_mode == "legacy_exit_first":
+        return False
+    if config.cash_timing_mode != "open_before_exit":
+        raise ValueError(f"未知 cash_timing_mode: {config.cash_timing_mode}")
+    if _style(config) not in {"slot_equal_4", "confirmation_only"}:
+        raise ValueError("open_before_exit仅支持slot_equal_4/confirmation_only；其他组合样式需单独验收")
+    if not callable(entry_mark_price_fn):
+        raise ValueError("open_before_exit必须显式提供entry_mark_price_fn开盘估值，禁止回退收盘价")
+    return True
+
+
+def _apply_opening_entry(
+    row: pd.Series,
+    cash: float,
+    active: list[dict[str, Any]],
+    closed: list[dict[str, Any]],
+    config: CashPortfolioConfig,
+    skipped: dict[str, int],
+    entry_mark_price_fn: Callable[[str, date], float | None],
+) -> float:
+    if row["exit_date"] <= row["entry_date"]:
+        skipped["t1"] += 1
+        return cash
+    marks = {}
+    for code in sorted(_active_codes(active)):
+        value = entry_mark_price_fn(code, row["entry_date"])
+        if value is None or not isfinite(value) or value <= 0:
+            skipped["entry_mark"] += 1
+            return cash
+        marks[code] = float(value)
+    return _apply_style(row, cash, active, closed, config, skipped, lambda code, _day: marks.get(code))
 
 
 def _apply_style(

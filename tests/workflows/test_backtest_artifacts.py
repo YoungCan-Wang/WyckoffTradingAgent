@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 
 import pandas as pd
@@ -20,6 +21,8 @@ def test_write_backtest_artifacts_persists_private_frames(tmp_path) -> None:
             "_nav_df": pd.DataFrame([{"date": "2026-01-02", "nav": 1.01}]),
             "_cash_portfolio_trades_by_style": {"confirmation_only": pd.DataFrame([{"code": "000001"}])},
             "_wbt_pairs_df": pd.DataFrame([{"pair": "p1"}]),
+            "selection_coverage": [{"signal_date": "2026-01-02", "mainline_entry_codes": ["000001"]}],
+            "mainline_selection_evaluated": False,
         }
     )
 
@@ -36,6 +39,11 @@ def test_write_backtest_artifacts_persists_private_frames(tmp_path) -> None:
     assert (tmp_path / f"cash_trades_confirmation_only_{stamp}.csv").exists()
     assert (tmp_path / f"wbt_pairs_{stamp}.csv").exists()
     assert "_nav_df" not in summary
+    coverage_path = tmp_path / f"selection_coverage_{stamp}.json"
+    assert coverage_path in result.extra_paths
+    coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
+    assert coverage["selection_coverage"][0]["mainline_entry_codes"] == ["000001"]
+    assert coverage["mainline_selection_evaluated"] is False
 
 
 def test_write_suite_summary_renders_rows_and_escapes_errors(tmp_path) -> None:

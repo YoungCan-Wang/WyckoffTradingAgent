@@ -10,6 +10,10 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from threading import Lock
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -20,6 +24,11 @@ logger = logging.getLogger(__name__)
 WRITE_CONTEXT_ENV = "WYCKOFF_WRITE_CONTEXT"
 SERVER_WRITE_CONTEXT = "server_job"
 CLI_WRITE_CONTEXT = "cli"
+_SHARED_READ_ONLY_ENV = "WYCKOFF_SHARED_READ_ONLY"
+_shared_read_only: ContextVar[bool] = ContextVar("supabase_shared_read_only", default=False)
+_shared_read_only_lock = Lock()
+_shared_read_only_scopes = 0
+_shared_read_only_previous_env: str | None = None
 
 # 网络超时。
 #
@@ -202,8 +211,53 @@ def current_write_context() -> str:
     return os.getenv(WRITE_CONTEXT_ENV, CLI_WRITE_CONTEXT).strip().lower() or CLI_WRITE_CONTEXT
 
 
+def _shared_writes_read_only() -> bool:
+    with _shared_read_only_lock:
+        return (
+            _shared_read_only_scopes > 0
+            or _shared_read_only.get()
+            or os.getenv(_SHARED_READ_ONLY_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+        )
+
+
 def is_server_write_context() -> bool:
-    return current_write_context() == SERVER_WRITE_CONTEXT
+    return not _shared_writes_read_only() and current_write_context() == SERVER_WRITE_CONTEXT
+
+
+def require_shared_writes_enabled(operation: str = "Supabase shared write") -> None:
+    """Deny scoped read-only writes without changing the caller's normal authority."""
+    if _shared_writes_read_only():
+        raise PermissionError(f"{operation} is disabled in read-only research scope")
+
+
+@contextmanager
+def read_only_write_context() -> Iterator[None]:
+    """Block shared writes during synchronous research, preserving server read access.
+
+    Active scopes conservatively block shared adapters across this process,
+    including worker threads. Only the last overlapping scope restores the flag;
+    newly spawned subprocesses inherit it. This is not a database sandbox.
+    """
+    global _shared_read_only_scopes, _shared_read_only_previous_env
+
+    token = _shared_read_only.set(True)
+    with _shared_read_only_lock:
+        if _shared_read_only_scopes == 0:
+            _shared_read_only_previous_env = os.environ.get(_SHARED_READ_ONLY_ENV)
+        _shared_read_only_scopes += 1
+        os.environ[_SHARED_READ_ONLY_ENV] = "1"
+    try:
+        yield
+    finally:
+        with _shared_read_only_lock:
+            _shared_read_only_scopes -= 1
+            if _shared_read_only_scopes:
+                os.environ[_SHARED_READ_ONLY_ENV] = "1"
+            elif _shared_read_only_previous_env is None:
+                os.environ.pop(_SHARED_READ_ONLY_ENV, None)
+            else:
+                os.environ[_SHARED_READ_ONLY_ENV] = _shared_read_only_previous_env
+        _shared_read_only.reset(token)
 
 
 def require_server_write_context(operation: str = "Supabase shared write") -> None:

@@ -158,10 +158,7 @@ def build_candidate_outputs(
         l2_symbols=layers.l2_passed,
         channel_map=layers.l2_channel_map,
     )
-    mainline_entries = mainline_candidate_entries(
-        layers.mainline_candidates,
-        max_count=layers.mainline_ai_cap,
-    )
+    mainline_entries = mainline_candidate_entries(layers.mainline_candidates)
     candidate_entries = merge_candidate_entries(candidate_entries, lane_entries, mainline_entries)
     annotate_trend_drawdown_risk(candidate_entries, all_df_map, layers.l2_channel_map)
     ranked_l3_symbols, l3_score_map = rank_l3_candidates(

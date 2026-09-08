@@ -249,6 +249,28 @@ def _reset_local_db(local_db) -> None:
     local_db.reset_connection()
 
 
+def test_workflow_handoff_keeps_compact_research_discovery_without_granting_buy():
+    research = {
+        "counts": {"total": 2000, "execution_blocked": 2000},
+        "signal_counts": {"awaiting_confirmation": 2000},
+        "execution_counts": {"blocked": 2000},
+        "preview_total": 2000,
+        "preview_returned": 1,
+        "preview_truncated": True,
+        "new_buy_allowed": False,
+        "direct_buy_allowed": False,
+        "candidates": [{"code": "300308", "signal_state": "awaiting_confirmation", "direct_buy_allowed": False}],
+    }
+    state = {"last_screen_result": {"research_discovery": research, "report_candidates": []}}
+    before = deepcopy(state)
+
+    handoff = _workflow_handoff_state(SimpleNamespace(_tool_context=SimpleNamespace(state=state)))
+
+    assert handoff["last_screen_result"]["research_discovery"] == research
+    assert handoff["last_screen_result"]["research_discovery"]["direct_buy_allowed"] is False
+    assert state == before
+
+
 def test_workflow_planner_prompt_keeps_task_semantics_model_authored():
     assert "自然语言语义、上下文恢复和任务拆分由你完成" in _PLAN_SYSTEM_PROMPT
     assert "合理推断" in _PLAN_SYSTEM_PROMPT
