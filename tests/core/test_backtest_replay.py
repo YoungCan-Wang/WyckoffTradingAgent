@@ -827,3 +827,146 @@ def test_enforce_confirmed_loss_guard_flag_exists() -> None:
 
     assert cfg.enforce_confirmed_loss_guard is False
     assert replace(cfg, enforce_confirmed_loss_guard=True).enforce_confirmed_loss_guard is True
+
+
+def _pending_mainline_history() -> dict[str, pd.DataFrame]:
+    days = pd.bdate_range("2026-01-05", periods=46).date
+    closes = [10.0] * 40 + [10.1, 10.2, 10.4, 10.3, 10.5, 10.6]
+    frame = pd.DataFrame(
+        {
+            "date": days,
+            "open": closes,
+            "close": closes,
+            "high": [value * 1.02 for value in closes],
+            "low": [value * 0.99 for value in closes],
+            "volume": [1000.0] * 40 + [700.0] * 6,
+            "amount": [100_000_000.0] * 46,
+            "pct_chg": pd.Series(closes).pct_change().fillna(0.0) * 100,
+        }
+    )
+    return {f"{index:06d}": frame.copy() for index in range(1, 7)}
+
+
+def _pending_mainline_day(history, index, regime, research_rows):
+    from unittest.mock import patch
+
+    from core import wyckoff_engine as engine
+
+    days = history["000001"].date.tolist()
+    frames = {code: frame.iloc[: index + 1].copy() for code, frame in history.items()}
+    names = {code: code for code in frames}
+    with patch.object(engine, "build_mainline_candidates", return_value=research_rows):
+        entries = engine._mainline_entries_for_result(
+            list(frames),
+            list(frames),
+            frames,
+            sector_map={},
+            concept_map={},
+            concept_heat=[],
+            theme_radar={},
+            financial_map={},
+            theme_member_index={},
+            name_map=names,
+            mainline_config=MainlineEngineConfig(max_ai_candidates=3),
+        )
+    triggers = {"compression": [(f"{code:06d}", float(code)) for code in range(1, 6)]} if index == 39 else {}
+    result = _result()._replace(
+        layer1_symbols=list(frames),
+        layer2_symbols=list(frames),
+        layer3_symbols=list(frames),
+        triggers=triggers,
+        candidate_entries=entries,
+        channel_map={},
+    )
+    return replay_mod._DayContext(index, days[index], days[index + 1], frames, names, FunnelConfig(), result, regime)
+
+
+def _pending_mainline_compatibility_case(regime="RISK_ON", research_count=6, weighted=False):
+    """Synthetic event fixture: real confirmation/selection/exits/fills, not a signal detector backtest."""
+    from core.signal_confirmation import PendingPool
+
+    history = _pending_mainline_history()
+    research = [{"code": code, "status": "主线买点候选", "mainline_score": 0.8 + int(code) / 100} for code in history][
+        -research_count:
+    ]
+    policy = AShareEntryResearchPolicy(
+        entry_weight_multipliers=(("RISK_ON", "compression", 0.5),) if weighted else (),
+        max_hold_days_by_regime_signal=(("RISK_ON", "compression", 1),) if weighted else (),
+    )
+    config = replace(
+        _config(),
+        trading_days=40,
+        hold_days=2,
+        top_n=0,
+        selection_mode="tradeable_l4",
+        pending_mode="only",
+        execution_regime_gate="live",
+        buy_block_regimes=frozenset({"RISK_OFF"}),
+        a_share_entry_research=policy,
+    )
+    pool, signal_days, snapshots = PendingPool(), [], []
+    for index in (39, 40, 41):
+        ctx = _pending_mainline_day(history, index, regime, research)
+        selection, confirmed_count = replay_mod._select_ranked_codes(ctx, pool, {}, config)
+        gate, blocked = replay_mod._apply_execution_gates(ctx, selection, config)
+        snapshots.append(
+            {
+                "research_count": len(ctx.result.candidate_entries),
+                "confirmed_count": confirmed_count,
+                "selected": selection.codes if selection else [],
+                "executed": gate.selected.codes if gate.selected else [],
+                "scores": selection.score_map if selection else {},
+            }
+        )
+        signal_days.append(
+            replay_mod._SignalDay(
+                replay_mod._trade_context(ctx), gate.selected, confirmed_count, gate.regime_blocked, blocked
+            )
+        )
+    return {"days": snapshots, **_pending_mainline_fills(signal_days, history, config)}
+
+
+def _pending_mainline_fills(signal_days, history, config):
+    from dataclasses import asdict
+
+    from core.backtest_execution import cash_mark_price_fn
+    from core.cash_portfolio import CashPortfolioConfig, simulate_cash_portfolio
+
+    replay = replay_signal_ledger(
+        ledger=replay_mod.BacktestSignalLedger(signal_days),
+        all_df_map=history,
+        trade_dates=history["000001"].date.tolist(),
+        name_map={},
+        config=config,
+    )
+    records = pd.DataFrame([asdict(record) for record in replay.records])
+    filled, _, cash = simulate_cash_portfolio(
+        records,
+        CashPortfolioConfig(portfolio_style="confirmation_only", buy_friction_pct=0.05, sell_friction_pct=0.05),
+        mark_price_fn=cash_mark_price_fn(history, {}),
+    )
+    fields = (
+        "code signal_date entry_date exit_date entry_close exit_close signal_confirmed entry_weight_multiplier".split()
+    )
+    fill_fields = "code entry_date exit_date shares entry_market_price exit_market_price cost_total pnl".split()
+    return {
+        "trades": records[fields].to_dict("records") if not records.empty else [],
+        "fills": filled[fill_fields].to_dict("records") if not filled.empty else [],
+        "final_cash": cash["cash_portfolio_final_cash"],
+        "skipped_full": cash["cash_portfolio_skipped_full"],
+    }
+
+
+@pytest.mark.parametrize("regime,weighted", [("RISK_ON", False), ("RISK_ON", True), ("RISK_OFF", False)])
+def test_pending_only_cash_path_ignores_mainline_research_pool_expansion(regime, weighted):
+    old_pool = _pending_mainline_compatibility_case(regime, 3, weighted)
+    full_pool = _pending_mainline_compatibility_case(regime, 6, weighted)
+    assert [day["research_count"] for day in full_pool["days"]] == [6, 6, 6]
+    assert [day["confirmed_count"] for day in full_pool["days"]] == [0, 5, 0]
+    assert full_pool["days"][1]["scores"] != old_pool["days"][1]["scores"]
+    assert [day["selected"] for day in old_pool["days"]] == [day["selected"] for day in full_pool["days"]]
+    for field in ("trades", "fills", "final_cash", "skipped_full"):
+        assert full_pool[field] == old_pool[field]
+    assert all(row["code"] != "000006" for row in full_pool["trades"])
+    assert len(full_pool["fills"]) == (4 if regime == "RISK_ON" else 0)
+    assert full_pool["skipped_full"] == (1 if regime == "RISK_ON" else 0)

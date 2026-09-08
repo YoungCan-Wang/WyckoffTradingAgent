@@ -291,7 +291,7 @@ wyckoff mcp-list
 | 运营成本、规模化预算 | [docs/COST_MODEL.md](docs/COST_MODEL.md) |
 | 星球会员能力、数据契约与线上迁移 | [docs/PLANET_MEMBERSHIP.md](docs/PLANET_MEMBERSHIP.md) |
 | 策略语义：漏斗、AI 研报、OMS、回测 | [README_STRATEGY.md](README_STRATEGY.md) |
-| 研究池、逐次推荐收益与组合验收边界 | [A_SHARE_RESEARCH_EXECUTION_ACCEPTANCE.md](docs/A_SHARE_RESEARCH_EXECUTION_ACCEPTANCE.md) |
+| 研究池、逐次推荐收益、开盘现金时序与组合验收边界 | [A_SHARE_RESEARCH_EXECUTION_ACCEPTANCE.md](docs/A_SHARE_RESEARCH_EXECUTION_ACCEPTANCE.md) |
 | **实盘操作（日漏斗×次日开盘）** | [docs/OPERATOR_PLAYBOOK.md](docs/OPERATOR_PLAYBOOK.md) |
 | 术语速查 | [GLOSSARY.md](GLOSSARY.md) |
 | MCP Server 配置 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#mcp-server) |

@@ -7,7 +7,9 @@ its filled ledger on the observed benchmark calendar, not a new trading policy.
 from __future__ import annotations
 
 import argparse
+import bisect
 import hashlib
+import inspect
 import json
 import math
 from dataclasses import asdict
@@ -21,6 +23,52 @@ from core.backtest_execution import cash_mark_price_fn
 from core.cash_portfolio import CashPortfolioConfig, simulate_cash_portfolio
 from core.trade_friction import round_trip_cost_pct
 from workflows.backtest_data import load_snapshot_benchmark, load_snapshot_hist_map
+
+
+class StrictOpenMarks:
+    """Exact raw opens; deliberately bypass OHLC helpers that substitute closes."""
+
+    def __init__(self, history: dict[str, pd.DataFrame]):
+        self.prices = {
+            code: dict(zip(frame.date, pd.to_numeric(frame.open, errors="coerce"), strict=True))
+            for code, frame in history.items()
+            if "open" in frame
+        }
+        self.queries: set[tuple[str, date]] = set()
+        self.missing: set[tuple[str, date]] = set()
+
+    def __call__(self, code: str, day: date) -> float | None:
+        self.queries.add((code, day))
+        value = self.prices.get(code, {}).get(day)
+        if value is not None and math.isfinite(value) and value > 0:
+            return float(value)
+        self.missing.add((code, day))
+        return None
+
+
+def entry_contract(frame: pd.DataFrame, benchmark: pd.DataFrame, opens: StrictOpenMarks) -> dict:
+    days = benchmark.date.tolist()
+    delayed = missing_open = mismatched_open = unknown_target = 0
+    for row in frame.itertuples():
+        index = bisect.bisect_right(days, row.signal_date)
+        target = days[index] if index < len(days) else None
+        unknown_target += int(target is None)
+        delayed += int(target is not None and row.entry_date != target)
+        raw_open = opens.prices.get(str(row.code), {}).get(row.entry_date)
+        if raw_open is None or not math.isfinite(raw_open) or raw_open <= 0:
+            missing_open += 1
+        elif not math.isclose(float(row.entry_close), raw_open, rel_tol=1e-8, abs_tol=1e-8):
+            mismatched_open += 1
+    sources = frame.get("entry_price_source", pd.Series("unknown", index=frame.index)).fillna("unknown")
+    return {
+        "trade_observations": len(frame),
+        "entry_not_on_next_benchmark_day": delayed,
+        "unknown_next_benchmark_day": unknown_target,
+        "missing_raw_entry_open": missing_open,
+        "entry_price_mismatches_raw_open": mismatched_open,
+        "entry_price_source_counts": {str(key): int(value) for key, value in sources.value_counts().items()},
+        "strict_next_open_contract_satisfied": not (delayed or missing_open or mismatched_open or unknown_target),
+    }
 
 
 def load_trades(path: Path, start: date, end: date) -> pd.DataFrame:
@@ -206,18 +254,29 @@ def evaluate_arm(frame, history, benchmark, config, start, end, output_dir: Path
     if not frame.empty and not set(frame.entry_date).union(frame.exit_date) <= set(days):
         raise ValueError("Trade dates missing from benchmark calendar")
     mark = cash_mark_price_fn(history, {})
-    closed, event_nav, summary = simulate_cash_portfolio(frame, config, mark_price_fn=mark)
+    opens = StrictOpenMarks(history)
+    entry_audit = entry_contract(frame, benchmark, opens)
+    closed, event_nav, summary = simulate_cash_portfolio(frame, config, mark_price_fn=mark, entry_mark_price_fn=opens)
     daily_nav = full_calendar_nav(closed, days, mark, config.initial_cash)
     reconcile_account(closed, event_nav, daily_nav, summary, config.initial_cash)
     diagnostic = trade_periods(frame, benchmark)
     missing_benchmark = diagnostic.get("aggregate", {}).get("missing_benchmark_observations", 0)
-    complete = not daily_nav.missing_marks.any() and missing_benchmark == 0
+    complete = not (
+        daily_nav.missing_marks.any()
+        or missing_benchmark
+        or opens.missing
+        or entry_audit["missing_raw_entry_open"]
+        or entry_audit["entry_price_mismatches_raw_open"]
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     closed.to_csv(output_dir / "cash_trades.csv", index=False)
     daily_nav.to_csv(output_dir / "daily_nav.csv", index=False)
     return {
         "accounting_reconciled": True,
         "observed_calendar_price_coverage_complete": bool(complete),
+        "entry_contract": entry_audit,
+        "cash_entry_open_mark_pairs": len(opens.queries),
+        "cash_missing_entry_open_mark_pairs": len(opens.missing),
         "cash": summary,
         "cash_periods": cash_periods(daily_nav, benchmark, config.initial_cash),
         "pre_cash_signal_diagnostics": diagnostic,
@@ -305,6 +364,7 @@ def compare(args: argparse.Namespace) -> dict:
         portfolio_style=args.style,
         buy_friction_pct=args.slippage_pct,
         sell_friction_pct=args.slippage_pct,
+        cash_timing_mode="open_before_exit",
     )
     arms = {
         name: evaluate_arm(frame, history, benchmark, config, args.start, args.end, args.output_dir / name)
@@ -316,6 +376,10 @@ def compare(args: argparse.Namespace) -> dict:
     return {
         "window": [args.start.isoformat(), args.end.isoformat()],
         "input_sha256": hashes,
+        "measurement_source_sha256": {
+            "comparison_script": file_sha256(Path(__file__)),
+            "cash_simulator": file_sha256(Path(inspect.getfile(simulate_cash_portfolio))),
+        },
         "snapshot_file_sha256": snapshot_files,
         "actual_input_contract": actual_inputs,
         "cash_config": asdict(config),
@@ -327,6 +391,9 @@ def compare(args: argparse.Namespace) -> dict:
         "comparability_verified": comparable,
         "measurement_complete": comparable
         and all(arm["observed_calendar_price_coverage_complete"] for arm in arms.values()),
+        "strict_next_open_contract_satisfied": all(
+            arm["entry_contract"]["strict_next_open_contract_satisfied"] for arm in arms.values()
+        ),
         "filled_exposure_difference": {
             "base_only_keys": sorted(fills["base"].keys() - fills["candidate"].keys()),
             "candidate_only_keys": sorted(fills["candidate"].keys() - fills["base"].keys()),
@@ -342,6 +409,8 @@ def compare(args: argparse.Namespace) -> dict:
             "Missing marks use last observed or entry price only for provisional valuation and prevent measurement_complete.",
             "Cash fees include actual commission/minimum, stamp duty and transfer fees plus specified slippage.",
             "Trade diagnostics deduct a fixed reference cost; account NAV uses actual per-fill fees.",
+            "Open-before-exit cash sizing uses raw opens; same-day scheduled exit proceeds and slots cannot fund that open.",
+            "Input production entries may defer across up to five available bars or fall back to close; entry_contract exposes this without deleting trades.",
             "Positive aggregate differences alone do not establish cross-regime, PIT, or live-policy validity.",
             "Run contracts are ledger-bound provenance assertions; absent contracts prevent comparability_verified.",
             "snapshot_sha256 binds the complete filename-to-SHA256 map; universe_sha256 binds snapshot name_map.json.",

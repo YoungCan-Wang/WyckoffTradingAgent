@@ -61,7 +61,7 @@ def test_production_simulator_reconciles_and_uses_actual_fees(tmp_path):
             {"date": DAYS, "open": [10, 8, 11], "high": [10, 8, 11], "low": [10, 8, 11], "close": [10, 8, 11]}
         )
     }
-    config = CashPortfolioConfig(buy_friction_pct=0.05, sell_friction_pct=0.05)
+    config = CashPortfolioConfig(buy_friction_pct=0.05, sell_friction_pct=0.05, cash_timing_mode="open_before_exit")
     report = mod.evaluate_arm(_ledger(), history, _benchmark(), config, DAYS[0], DAYS[-1], tmp_path)
     assert report["accounting_reconciled"]
     assert report["observed_calendar_price_coverage_complete"]
@@ -79,7 +79,15 @@ def test_missing_held_day_prevents_complete_measurement(tmp_path):
             {"date": [DAYS[0], DAYS[2]], "open": [10, 11], "high": [10, 11], "low": [10, 11], "close": [10, 11]}
         )
     }
-    report = mod.evaluate_arm(_ledger(), history, _benchmark(), CashPortfolioConfig(), DAYS[0], DAYS[-1], tmp_path)
+    report = mod.evaluate_arm(
+        _ledger(),
+        history,
+        _benchmark(),
+        CashPortfolioConfig(cash_timing_mode="open_before_exit"),
+        DAYS[0],
+        DAYS[-1],
+        tmp_path,
+    )
     assert not report["observed_calendar_price_coverage_complete"]
     assert report["cash_periods"]["aggregate"]["missing_mark_observations"] == 1
 
@@ -244,3 +252,45 @@ def test_completed_output_is_not_overwritten(tmp_path):
     with pytest.raises(ValueError, match="Completed output already exists"):
         mod.compare(Namespace(output_dir=tmp_path))
     assert path.read_text() == '{"previous": "completed"}'
+
+
+def test_raw_open_never_substitutes_close_and_entry_delays_are_disclosed():
+    frame = _ledger().assign(entry_date=DAYS[1], entry_close=8.0, entry_price_source="daily_open")
+    opens = mod.StrictOpenMarks(
+        {"000001": pd.DataFrame({"date": DAYS, "open": [10.0, float("nan"), 11.0], "close": [10.0, 8.0, 11.0]})}
+    )
+    assert opens("000001", DAYS[1]) is None
+    audit = mod.entry_contract(frame, _benchmark(), opens)
+    assert audit["entry_not_on_next_benchmark_day"] == 1
+    assert audit["missing_raw_entry_open"] == 1
+    assert not audit["strict_next_open_contract_satisfied"]
+    assert len(frame) == 1
+
+
+def test_raw_open_mismatch_is_not_hidden_by_daily_open_source_label():
+    opens = mod.StrictOpenMarks({"000001": pd.DataFrame({"date": DAYS, "open": [9.0, 8.0, 11.0]})})
+    audit = mod.entry_contract(_ledger().assign(entry_price_source="daily_open"), _benchmark(), opens)
+    assert audit["entry_price_mismatches_raw_open"] == 1
+    assert audit["entry_price_source_counts"] == {"daily_open": 1}
+    assert not audit["strict_next_open_contract_satisfied"]
+
+
+def test_missing_open_for_held_position_blocks_cash_measurement(tmp_path):
+    first = _ledger()
+    second = _ledger().assign(code="000002", signal_date=DAYS[0], entry_date=DAYS[1])
+    history = {
+        "000001": pd.DataFrame({"date": DAYS, "open": [10.0, float("nan"), 11.0], "close": [10.0, 8.0, 11.0]}),
+        "000002": pd.DataFrame({"date": DAYS, "open": [10.0, 10.0, 11.0], "close": [10.0, 10.0, 11.0]}),
+    }
+    report = mod.evaluate_arm(
+        pd.concat([first, second]),
+        history,
+        _benchmark(),
+        CashPortfolioConfig(cash_timing_mode="open_before_exit"),
+        DAYS[0],
+        DAYS[-1],
+        tmp_path,
+    )
+    assert report["cash"]["cash_portfolio_skipped_entry_mark"] == 1
+    assert report["cash_missing_entry_open_mark_pairs"] == 1
+    assert not report["observed_calendar_price_coverage_complete"]

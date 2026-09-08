@@ -118,7 +118,8 @@ def test_cash_portfolio_accepts_empty_trade_frame() -> None:
     assert summary["cash_portfolio_trades"] == 0
 
 
-def test_cash_portfolio_applies_execution_friction_once_to_cash_positions_and_nav() -> None:
+@pytest.mark.parametrize("timing_mode", ["legacy_exit_first", "open_before_exit"])
+def test_cash_portfolio_applies_execution_friction_once_to_cash_positions_and_nav(timing_mode) -> None:
     trades = pd.DataFrame(
         [
             {
@@ -136,10 +137,11 @@ def test_cash_portfolio_applies_execution_friction_once_to_cash_positions_and_na
         max_positions=1,
         buy_friction_pct=1.0,
         sell_friction_pct=1.0,
+        cash_timing_mode=timing_mode,
         **FEE_FREE,
     )
 
-    closed, nav, summary = simulate_cash_portfolio(trades, config)
+    closed, nav, summary = simulate_cash_portfolio(trades, config, entry_mark_price_fn=lambda _code, _day: 10.0)
 
     trade = closed.iloc[0]
     assert trade["shares"] == 9_900
@@ -446,3 +448,116 @@ def test_expand_portfolio_styles_preset() -> None:
         "trend_pyramid",
         "concentrated_swap",
     ]
+
+
+def test_open_first_does_not_use_same_day_exit_cash_or_slot_and_releases_next_day() -> None:
+    trades = pd.DataFrame([_cash_row("A", 5, 6), _cash_row("B", 6, 8), _cash_row("C", 7, 8)])
+    config = CashPortfolioConfig(max_positions=1, cash_timing_mode="open_before_exit", **FEE_FREE)
+
+    closed, nav, summary = simulate_cash_portfolio(trades, config, entry_mark_price_fn=lambda _code, _day: 10.0)
+    legacy, legacy_nav, legacy_summary = simulate_cash_portfolio(
+        trades, CashPortfolioConfig(max_positions=1, **FEE_FREE)
+    )
+
+    assert list(closed["code"]) == ["A", "C"]
+    assert list(legacy["code"]) == ["A", "B"]
+    assert summary["cash_portfolio_skipped_full"] == 1
+    assert summary["cash_portfolio_timing_mode"] == "open_before_exit"
+    assert legacy_summary["cash_portfolio_timing_mode"] == "legacy_exit_first"
+    assert nav.set_index("date").loc[date(2026, 1, 6), "cash"] == 100_000
+    assert nav.set_index("date").loc[date(2026, 1, 6), "positions"] == 0
+    assert legacy_nav.set_index("date").loc[date(2026, 1, 6), "positions"] == 1
+
+
+@pytest.mark.parametrize("style", ["slot_equal_4", "confirmation_only"])
+def test_open_first_sizing_uses_open_marks_not_current_close_but_nav_uses_close(style) -> None:
+    trades = pd.DataFrame([_cash_row("A", 5, 8), _cash_row("B", 6, 8)])
+    config = CashPortfolioConfig(
+        max_positions=2, equal_weight=0.5, portfolio_style=style, cash_timing_mode="open_before_exit", **FEE_FREE
+    )
+    runs = [
+        simulate_cash_portfolio(
+            trades,
+            config,
+            mark_price_fn=lambda code, _day, mark=closing_mark: mark if code == "A" else 10.0,
+            entry_mark_price_fn=lambda _code, _day: 10.0,
+        )
+        for closing_mark in (5.0, 20.0)
+    ]
+
+    assert list(runs[0][0]["shares"]) == list(runs[1][0]["shares"]) == [5000, 5000]
+    assert runs[0][1].set_index("date").loc[date(2026, 1, 6), "equity"] == 75_000
+    assert runs[1][1].set_index("date").loc[date(2026, 1, 6), "equity"] == 150_000
+
+
+@pytest.mark.parametrize("missing_mark", [None, 0.0, -1.0, float("nan"), float("inf")])
+def test_open_first_missing_active_open_mark_skips_entry_without_close_fallback(missing_mark) -> None:
+    trades = pd.DataFrame([_cash_row("A", 5, 8), _cash_row("B", 6, 8)])
+    config = CashPortfolioConfig(max_positions=2, cash_timing_mode="open_before_exit", **FEE_FREE)
+
+    closed, _nav, summary = simulate_cash_portfolio(
+        trades,
+        config,
+        mark_price_fn=lambda _code, _day: 20.0,
+        entry_mark_price_fn=lambda _code, _day: missing_mark,
+    )
+
+    assert list(closed["code"]) == ["A"]
+    assert summary["cash_portfolio_skipped_entry_mark"] == 1
+    assert summary["cash_portfolio_final_cash"] == 100_000
+
+
+def test_open_first_rejects_t0_ledger_and_does_not_reenter_same_code_before_exit() -> None:
+    trades = pd.DataFrame([_cash_row("T0", 5, 5), _cash_row("A", 5, 6), _cash_row("A", 6, 8), _cash_row("A", 7, 8)])
+    config = CashPortfolioConfig(max_positions=2, cash_timing_mode="open_before_exit", **FEE_FREE)
+
+    closed, _nav, summary = simulate_cash_portfolio(trades, config, entry_mark_price_fn=lambda _code, _day: 10.0)
+
+    assert list(closed["entry_date"]) == [date(2026, 1, 5), date(2026, 1, 7)]
+    assert all(closed["exit_date"] > closed["entry_date"])
+    assert summary["cash_portfolio_skipped_t1"] == 1
+    assert summary["cash_portfolio_skipped_duplicate"] == 1
+
+
+def test_open_first_requires_explicit_open_mark_and_known_timing_mode() -> None:
+    with pytest.raises(ValueError, match="entry_mark_price_fn"):
+        simulate_cash_portfolio(pd.DataFrame(), CashPortfolioConfig(cash_timing_mode="open_before_exit"))
+    with pytest.raises(ValueError, match="未知 cash_timing_mode"):
+        simulate_cash_portfolio(pd.DataFrame(), CashPortfolioConfig(cash_timing_mode="unknown"))
+
+
+@pytest.mark.parametrize("style", ["probe_add", "trend_pyramid", "concentrated_swap"])
+def test_open_first_rejects_portfolio_styles_with_unvalidated_intraday_semantics(style) -> None:
+    config = CashPortfolioConfig(portfolio_style=style, cash_timing_mode="open_before_exit")
+
+    with pytest.raises(ValueError, match="其他组合样式需单独验收"):
+        simulate_cash_portfolio(pd.DataFrame(), config, entry_mark_price_fn=lambda _code, _day: 10.0)
+
+
+def test_legacy_default_keeps_current_mark_sizing_and_ignores_new_open_callback() -> None:
+    trades = pd.DataFrame([_cash_row("A", 5, 8), _cash_row("B", 6, 8)])
+    config = CashPortfolioConfig(max_positions=2, **FEE_FREE)
+
+    def close_mark(code, _day):
+        return 5.0 if code == "A" else 10.0
+
+    default = simulate_cash_portfolio(trades, config, mark_price_fn=close_mark)
+    explicit = simulate_cash_portfolio(
+        trades, config, mark_price_fn=close_mark, entry_mark_price_fn=lambda _code, _day: 100.0
+    )
+
+    pd.testing.assert_frame_equal(default[0], explicit[0])
+    pd.testing.assert_frame_equal(default[1], explicit[1])
+    assert default[2] == explicit[2]
+    assert list(default[0]["shares"]) == [5000, 3700]
+
+
+def _cash_row(code: str, entry_day: int, exit_day: int) -> dict:
+    return {
+        "code": code,
+        "entry_date": date(2026, 1, entry_day),
+        "exit_date": date(2026, 1, exit_day),
+        "entry_close": 10.0,
+        "exit_close": 10.0,
+        "signal_confirmed": True,
+    }
