@@ -102,6 +102,27 @@ def compute_percentiles(
     return panels, str(dates[idx].date()), len(eligible)
 
 
+def _regime_for(trade_date: str) -> str:
+    """查信号日当天的基准档位。本脚本从行情缓存跑，手里没有漏斗的 benchmark_context。
+
+    查不到就返回 UNKNOWN，不要退成 NEUTRAL：NEUTRAL 是真实档位，兜底用它会把
+    「这天没查到」混进「这天中性」，而影子池正是靠 regime 分层做归因的。
+    """
+    from core.market_trade_mode import normalize_regime
+
+    try:
+        from integrations.supabase_market_signal import load_market_signal_daily
+
+        row = load_market_signal_daily(trade_date) or {}
+    except Exception as exc:  # noqa: BLE001 - 查不到档位不该挡住影子池计算
+        print(f"[shadow] 未能读到 {trade_date} 的市场档位（记 UNKNOWN）: {str(exc)[:120]}")
+        return "UNKNOWN"
+    regime = normalize_regime(row.get("benchmark_regime"))
+    if regime == "UNKNOWN":
+        print(f"[shadow] {trade_date} 无可用 benchmark_regime，档位记 UNKNOWN")
+    return regime
+
+
 def main() -> int:
     args = parse_args()
     config = build_config(args)
@@ -123,7 +144,7 @@ def main() -> int:
         detail = " ".join(f"{k}={v:.0f}" for k, v in pick.factor_ranks.items())
         print(f"{pick.rank:>3} {pick.code:12}{pick.score:>+9.2f}  {detail}")
 
-    rows = to_rows(picks, trade_date, config)
+    rows = to_rows(picks, trade_date, config, regime=_regime_for(trade_date))
     if args.dry_run:
         print(f"\n[shadow] dry-run：本应写入 {len(rows)} 行")
         return 0
