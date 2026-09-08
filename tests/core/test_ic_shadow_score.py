@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
 from core.ic_shadow_score import (
@@ -133,7 +135,7 @@ class TestObservationRows:
         from scripts.run_ic_shadow_pool import to_rows
 
         picks = [ShadowPick(code="600363.SH", score=-1.06, rank=1, factor_ranks={"ret60": 0.0})]
-        row = to_rows(picks, "2026-08-14", ShadowScoreConfig())[0]
+        row = to_rows(picks, "2026-08-14", ShadowScoreConfig(), regime="RISK_OFF")[0]
         assert row["ai_recommended"] is False
         assert row["selected_for_ai"] is False
         assert row["candidate_status"] == "shadow_observe"
@@ -141,7 +143,7 @@ class TestObservationRows:
     def test_source_and_channel_tagged(self):
         from scripts.run_ic_shadow_pool import to_rows
 
-        row = to_rows([ShadowPick("600363.SH", -1.0, 1)], "2026-08-14", ShadowScoreConfig())[0]
+        row = to_rows([ShadowPick("600363.SH", -1.0, 1)], "2026-08-14", ShadowScoreConfig(), regime="RISK_OFF")[0]
         assert row["source"] == SHADOW_SOURCE
         assert row["channel"] == SHADOW_CHANNEL
         assert row["signal_type"] == SHADOW_SOURCE
@@ -149,7 +151,7 @@ class TestObservationRows:
     def test_code_stripped_of_suffix(self):
         from scripts.run_ic_shadow_pool import to_rows
 
-        row = to_rows([ShadowPick("600363.SH", -1.0, 1)], "2026-08-14", ShadowScoreConfig())[0]
+        row = to_rows([ShadowPick("600363.SH", -1.0, 1)], "2026-08-14", ShadowScoreConfig(), regime="RISK_OFF")[0]
         assert row["code"] == "600363"
 
     def test_features_json_records_composition(self):
@@ -158,7 +160,7 @@ class TestObservationRows:
         from scripts.run_ic_shadow_pool import to_rows
 
         pick = ShadowPick("600363.SH", -1.06, 1, {"ret60": 0.0, "dry_vol_q250": 3.0})
-        payload = json.loads(to_rows([pick], "2026-08-14", ShadowScoreConfig())[0]["features_json"])
+        payload = json.loads(to_rows([pick], "2026-08-14", ShadowScoreConfig(), regime="RISK_OFF")[0]["features_json"])
         assert payload["ic_shadow_rank"] == 1
         assert payload["factor_percentiles"]["dry_vol_q250"] == pytest.approx(3.0)
 
@@ -166,7 +168,7 @@ class TestObservationRows:
         """便于事后区分不同权重版本写入的行。"""
         from scripts.run_ic_shadow_pool import to_rows
 
-        row = to_rows([ShadowPick("600363.SH", -1.0, 1)], "2026-08-14", ShadowScoreConfig())[0]
+        row = to_rows([ShadowPick("600363.SH", -1.0, 1)], "2026-08-14", ShadowScoreConfig(), regime="RISK_OFF")[0]
         assert "ret60" in row["strategy_version"]
 
 
@@ -223,7 +225,7 @@ class TestRequiredColumns:
         from core.ic_shadow_score import to_rows
 
         picks = [ShadowPick("002121.SZ", -1.65, 1, {"ret60": 2.0, "dry_vol_q250": 1.0})]
-        return to_rows(picks, "2026-08-24", ShadowScoreConfig())[0]
+        return to_rows(picks, "2026-08-24", ShadowScoreConfig(), regime="CRASH")[0]
 
     def test_track_present_and_valid(self):
         """track 仅接受 Trend / Accum。影子池选低位缩量股，语义属吸筹。"""
@@ -239,3 +241,84 @@ class TestRequiredColumns:
         row = self._row()
         for key in ("market", "trade_date", "code", "signal_type"):
             assert row.get(key), key
+
+
+class TestRegimeColumn:
+    """影子行必须带上当天真实档位。
+
+    首批 110 行（2026-08-24..09-07，11 个交易日）全被标成 NEUTRAL：to_rows 当时
+    根本不产出 regime 列，落库吃了 DB 默认值。这 11 天真实档位是 RISK_OFF 8 天 /
+    BEAR_REBOUND 2 天 / CRASH 1 天，没有一天真的是 NEUTRAL，整片影子样本的分层
+    归因都建立在错标签上。其中 08-24..08-28 这 5 天表里只有影子行，没有同日其它
+    信号可交叉核对——这类错标只有靠断言才能发现。
+    """
+
+    def _row(self, regime: str) -> dict:
+        from core.ic_shadow_score import to_rows
+
+        picks = [ShadowPick("002121.SZ", -1.65, 1, {"ret60": 2.0})]
+        return to_rows(picks, "2026-08-24", ShadowScoreConfig(), regime=regime)[0]
+
+    def test_regime_column_present(self):
+        assert self._row("RISK_OFF")["regime"] == "RISK_OFF"
+
+    def test_regime_normalized_to_upper(self):
+        assert self._row("risk_off")["regime"] == "RISK_OFF"
+
+    def test_missing_regime_becomes_unknown_not_neutral(self):
+        """缺档位记 UNKNOWN。NEUTRAL 是真实档位，拿它兜底就把两种情形混成一列。"""
+        for blank in ("", "   ", None):
+            assert self._row(blank)["regime"] == "UNKNOWN"
+
+    def test_regime_is_required_keyword(self):
+        """不给默认值，否则新调用方会以静默默认值的形式重演这个缺陷。"""
+        import inspect
+
+        from core.ic_shadow_score import to_rows
+
+        param = inspect.signature(to_rows).parameters["regime"]
+        assert param.kind is inspect.Parameter.KEYWORD_ONLY
+        assert param.default is inspect.Parameter.empty
+
+
+class TestFunnelThreadsRegime:
+    """漏斗必须把 benchmark_context 的档位透传进影子行，而不是让它落到默认值。"""
+
+    def _run(self, benchmark_context) -> list[dict]:
+        from types import SimpleNamespace
+
+        import core.ic_shadow_score as shadow
+        import workflows.wyckoff_funnel as funnel
+
+        picks = [ShadowPick("002121.SZ", -1.65, 1, {"ret60": 2.0})]
+        orig_panels, orig_combine = shadow.percentiles_from_df_map, shadow.combine_scores
+        shadow.percentiles_from_df_map = lambda df_map, config: {"ret60": {"002121.SZ": 2.0}}
+        shadow.combine_scores = lambda panels, config: picks
+        try:
+            data = SimpleNamespace(
+                all_df_map={},
+                window=SimpleNamespace(end_trade_date=date(2026, 8, 24)),
+                benchmark_context=benchmark_context,
+            )
+            return funnel._build_ic_shadow_pool(data)
+        finally:
+            shadow.percentiles_from_df_map, shadow.combine_scores = orig_panels, orig_combine
+
+    def test_context_regime_reaches_the_row(self):
+        rows = self._run({"available": True, "regime": "RISK_OFF"})
+        assert rows and rows[0]["regime"] == "RISK_OFF"
+
+    def test_row_is_not_silently_neutral(self):
+        """这是原缺陷的形状：RISK_OFF 的日子写出 NEUTRAL。"""
+        rows = self._run({"available": True, "regime": "CRASH"})
+        assert rows and rows[0]["regime"] != "NEUTRAL"
+
+    def test_absent_context_records_unknown(self):
+        for ctx in (None, {}, {"available": False, "regime": "UNKNOWN"}):
+            rows = self._run(ctx)
+            assert rows and rows[0]["regime"] == "UNKNOWN", ctx
+
+    def test_unrecognized_regime_falls_to_unknown(self):
+        """normalize_regime 只认白名单，脏值不该原样落库。"""
+        rows = self._run({"available": True, "regime": "TOTALLY_MADE_UP"})
+        assert rows and rows[0]["regime"] == "UNKNOWN"
