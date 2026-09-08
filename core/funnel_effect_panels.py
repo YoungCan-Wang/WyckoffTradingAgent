@@ -25,24 +25,38 @@ from core.funnel_effect_eval import Panels
 DEFAULT_MIN_AMOUNT_WAN = 8000.0
 
 
+def normalize_market_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    """把两种来源的行情表规整成 code/ds/open/close/amt_wan。
+
+    兼容快照的 date/symbol/amount(元) 与 tushare 的 trade_date/ts_code/amount(千元)。
+    两者 amount 差 1000 倍，换算只写在这里一处：写第二遍就会错第二遍，而错了不报错，
+    只是流动性池悄悄大一千倍或小一千倍。内存里已有的行情表（比如按交易日批量取回来的）
+    直接调这个，不必先落盘再 ``load_market_frame`` 读回来。
+    """
+    out = frame.copy()
+    if "symbol" in out.columns:
+        out["code"] = out.symbol.astype(str).str.extract(r"(\d+)")[0].str.zfill(6)
+        out["ds"] = pd.to_datetime(out.date).dt.strftime("%Y-%m-%d")
+        out["amt_wan"] = pd.to_numeric(out.amount, errors="coerce") / 1e4
+    else:
+        out["code"] = out.ts_code.astype(str).str.extract(r"(\d+)")[0].str.zfill(6)
+        out["ds"] = pd.to_datetime(out.trade_date.astype(str), format="%Y%m%d").dt.strftime("%Y-%m-%d")
+        out["amt_wan"] = pd.to_numeric(out.amount, errors="coerce") / 10.0
+    for col in ("open", "close"):
+        out[col] = pd.to_numeric(out[col], errors="coerce")
+    return out.dropna(subset=["open", "close"]).sort_values(["code", "ds"])
+
+
 def load_market_frame(path: str | Path) -> pd.DataFrame:
     """兼容两种列名：快照的 date/symbol/amount(元)，与 tushare 的 trade_date/ts_code/amount(千元)。"""
     text = str(path)
     compression = "gzip" if text.endswith(".gz") else None
     head = pd.read_csv(text, nrows=1, compression=compression)
     if "symbol" in head.columns:
-        frame = pd.read_csv(text, usecols=["date", "open", "close", "amount", "symbol"], compression=compression)
-        frame["code"] = frame.symbol.astype(str).str.extract(r"(\d+)")[0].str.zfill(6)
-        frame["ds"] = pd.to_datetime(frame.date).dt.strftime("%Y-%m-%d")
-        frame["amt_wan"] = pd.to_numeric(frame.amount, errors="coerce") / 1e4
+        cols = ["date", "open", "close", "amount", "symbol"]
     else:
-        frame = pd.read_csv(text, usecols=["ts_code", "trade_date", "open", "close", "amount"], compression=compression)
-        frame["code"] = frame.ts_code.astype(str).str.extract(r"(\d+)")[0].str.zfill(6)
-        frame["ds"] = pd.to_datetime(frame.trade_date.astype(str), format="%Y%m%d").dt.strftime("%Y-%m-%d")
-        frame["amt_wan"] = pd.to_numeric(frame.amount, errors="coerce") / 10.0
-    for col in ("open", "close"):
-        frame[col] = pd.to_numeric(frame[col], errors="coerce")
-    return frame.dropna(subset=["open", "close"]).sort_values(["code", "ds"])
+        cols = ["ts_code", "trade_date", "open", "close", "amount"]
+    return normalize_market_frame(pd.read_csv(text, usecols=cols, compression=compression))
 
 
 def load_benchmark_prices(path: str | Path) -> tuple[dict[str, float], dict[str, float]]:

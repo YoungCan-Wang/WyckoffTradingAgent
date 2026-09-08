@@ -51,7 +51,16 @@ COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("l3_eligible", "boolean not null default false", "前一日是否过题材共振"),
     ("is_candidate", "boolean not null default false", "前一日是否进入候选池"),
     ("trigger_labels", "text[]", "买点触发标签。只对候选池内的票有值——触发检测只跑最终候选集"),
-    ("risk_signal", "text", "风控信号名,如 stop_loss"),
+    ("risk_signal", "text", "风控信号名,如 stop_loss。空值有两种含义,必须配合下一列读"),
+    # 三态,可空,无 default。空的 risk_signal 是「查过、干净」还是「根本没查」,
+    # 只看那一列分不出来:离场信号只对 L2 通过池 + Markup + 战略旁路算过。
+    # 2026-09-04 全部 1246 只结构强度不足的票 risk_signal 都是空,而隔壁查过的
+    # 池子 68.4% 带 stop_loss——差别来自取值范围,不是市场。
+    (
+        "risk_evaluated",
+        "boolean",
+        "当日离场信号是否对这只票算过。null=trace 无此字段,不可当 false 用",
+    ),
     ("tracked_previous_day", "boolean not null default false", "前一日是否已在推荐跟踪表里"),
     ("ai_recommended_previous_day", "boolean not null default false", "前一日是否被 AI 推荐"),
     # 影子车道:与 review_shadow_lane_daily 同源判定,便于两张表对照。

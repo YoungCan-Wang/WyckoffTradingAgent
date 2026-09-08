@@ -4,9 +4,11 @@
 重跑同一天覆盖而非累积。建表语句由
 `python scripts/print_review_shadow_lane_ddl.py` 输出。
 
-为什么必须落库:trace 只活在 `daily-job-artifacts-*` 里(retention-days: 30,与日志
-同包),而且**补不回来**——回测引擎不重放漏斗分层,没有任何路径能从快照倒推出
-「某日某票卡在哪一层、watch_score 多少」。每过一天没留存就永久少一天样本。
+为什么必须落库:trace 只活在 `daily-job-artifacts-*` 里(retention-days: 90,与日志
+同包),过期即永久少一天样本。「补不回来」只针对**快照**——回测引擎不重放漏斗
+分层,没有任何路径能从快照倒推出「某日某票卡在哪一层」;但只要 artifact 还在
+retention 窗口内,`build_lane_rows(payload)` 就能直接吃 trace 补历史。别把这句
+读成「已有 artifact 也补不了」而放弃回填。
 
 行来源只有 trace 一处:车道判定走 core.review_shadow_lanes,不在这里重新分类,
 否则报告与落库两套口径会漂移(见 memory two-gates-must-share-one-source)。
@@ -65,6 +67,9 @@ def _lane_row(trade_date: str, code: str, row: dict[str, Any], signal: Any) -> d
         "l1_eligible": bool(row.get("l1_eligible")),
         "l2_eligible": bool(row.get("l2_eligible")),
         "l3_eligible": bool(row.get("l3_eligible")),
+        # 不要 bool():缺失会塌成 False,把「不知道有没有查过」写成「确定没查过」。
+        # 这一位决定三条车道是否可比,详见 core/review_shadow_lane_schema.py 约束 3。
+        "risk_evaluated": _tribool(row.get("risk_evaluated")),
         "rps_fast": _float(row.get("rps_fast")),
         "rps_slow": _float(row.get("rps_slow")),
         "close": _float(row.get("close")),
@@ -104,6 +109,15 @@ def save_review_shadow_lane_rows(rows: list[dict[str, Any]]) -> int:
     else:
         logger.info("[shadow-lane] %s written=%d", TABLE_REVIEW_SHADOW_LANE_DAILY, written)
     return written
+
+
+def _tribool(value: Any) -> bool | None:
+    """None 透传,其余转 bool。
+
+    存在三种状态:查过且干净 / 从没查过 / 老 trace 不带这个字段。第三种必须留 None——
+    用 bool() 会把它变成 False,于是历史行全被断言成「没查过」,把缺失读成事实。
+    """
+    return None if value is None else bool(value)
 
 
 def _float(value: Any) -> float | None:

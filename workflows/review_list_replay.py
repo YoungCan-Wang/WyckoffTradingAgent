@@ -318,8 +318,14 @@ def _build_replay_row(
         "execution_reason": str(execution.get("reason", "") or ""),
         "l2_eligible": code in ctx.l2_set,
         "l3_eligible": code in ctx.l3_set,
+        # 直接透传,不从 ctx.l3_set 反推:降级日 l3_set 已等于 l2_set,
+        # 反推只会得到 l3_eligible 的副本,把反事实抹平。老 trace 缺这个键取到 None。
+        "l3_eligible_strict": decision.get("l3_eligible_strict"),
         "trigger_labels": list(decision.get("trigger_labels") or []),
         "risk_signal": str(decision.get("risk_signal") or ""),
+        # 老 trace 没有这个键,取不到就传 None,渲染侧只在显式 False 时标「未评估」,
+        # 不把历史 trace 的缺失读成「没查过」。
+        "risk_evaluated": decision.get("risk_evaluated"),
         "shadow_lane": str(decision.get("shadow_lane") or ""),
         "shadow_score": decision.get("shadow_score"),
         "shadow_reason": str(decision.get("shadow_reason") or ""),

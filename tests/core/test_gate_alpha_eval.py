@@ -16,8 +16,12 @@ from core.gate_alpha_eval import (
     GateReport,
     GateStat,
     band_of,
+    l3_window_note,
+    latest_trace_per_date,
     render,
+    split_l3_hard_filter_days,
     summarize,
+    summarize_l3_gate,
 )
 
 
@@ -205,6 +209,179 @@ class TestRender:
     def test_p_value_optimism_is_disclosed(self):
         """持有期重叠 → 观测不独立,而置换零分布当它们独立,p 偏乐观,必须写出来。"""
         assert "偏乐观" in render(self._report(-0.59, [-0.4] * 4))
+
+
+def _trace(ds: str, l2: list[str], l3: list[str], *, regime: str = "RISK_OFF", generated_at: str = "") -> dict:
+    symbols = {code: {"l2_eligible": True, "l3_eligible": code in set(l3)} for code in sorted(set(l2) | set(l3))}
+    return {
+        "trade_date": ds,
+        "generated_at": generated_at or f"{ds}T09:00:00",
+        "market_context": {"regime": regime},
+        "symbols": symbols,
+    }
+
+
+class TestLatestTracePerDate:
+    """同日多份 trace 必须按 generated_at 定夺,否则同一份证据两次跑出两个数。"""
+
+    def test_keeps_latest_generated_at(self):
+        early = _trace("2026-08-24", ["1", "2", "3"], ["1"], generated_at="2026-08-24T12:44:00")
+        late = _trace("2026-08-24", ["1", "2", "3"], ["1", "2"], generated_at="2026-08-24T23:24:00")
+        kept = latest_trace_per_date([early, late])
+        assert len(kept) == 1
+        assert kept[0]["generated_at"] == "2026-08-24T23:24:00"
+
+    def test_order_of_input_does_not_matter(self):
+        """实测就是靠 find 的顺序决定留哪一份——顺序反过来结果必须不变。"""
+        early = _trace("2026-08-24", ["1", "2", "3"], ["1"], generated_at="2026-08-24T12:44:00")
+        late = _trace("2026-08-24", ["1", "2", "3"], ["1", "2"], generated_at="2026-08-24T23:24:00")
+        assert latest_trace_per_date([late, early]) == latest_trace_per_date([early, late])
+
+    def test_returns_dates_sorted(self):
+        out = latest_trace_per_date([_trace("2026-08-25", ["1"], ["1"]), _trace("2026-08-11", ["1"], ["1"])])
+        assert [row["trade_date"] for row in out] == ["2026-08-11", "2026-08-25"]
+
+    def test_drops_payload_without_trade_date(self):
+        assert latest_trace_per_date([{"symbols": {"1": {}}}]) == []
+
+
+class TestSplitL3HardFilterDays:
+    def test_equal_sets_are_demoted(self):
+        """降级时 l3_passed = l2_passed,两个集合逐一相等——这是 trace 里的确定痕迹。"""
+        hard, demoted = split_l3_hard_filter_days([_trace("2026-08-17", ["1", "2", "3"], ["1", "2", "3"])])
+        assert hard == {}
+        assert "2026-08-17" in demoted
+
+    def test_strict_subset_is_hard_filter(self):
+        hard, demoted = split_l3_hard_filter_days([_trace("2026-08-11", ["1", "2", "3"], ["1"])])
+        assert demoted == {}
+        assert hard["2026-08-11"]["l2"] == ["1", "2", "3"]
+        assert hard["2026-08-11"]["l3"] == ["1"]
+
+    def test_blank_regime_does_not_decide(self):
+        """实测 08-11 水温为空但是硬过滤日,08-12 水温为空却是降级日。只有集合相等能决定。"""
+        payloads = [
+            _trace("2026-08-11", ["1", "2", "3"], ["1"], regime=""),
+            _trace("2026-08-12", ["1", "2", "3"], ["1", "2", "3"], regime=""),
+        ]
+        hard, demoted = split_l3_hard_filter_days(payloads)
+        assert list(hard) == ["2026-08-11"]
+        assert list(demoted) == ["2026-08-12"]
+
+    def test_dedupes_before_classifying(self):
+        """同日两份一份看着降级一份看着硬过滤时,分类必须跟着最新那份走。"""
+        payloads = [
+            _trace("2026-08-24", ["1", "2", "3"], ["1", "2", "3"], generated_at="2026-08-24T12:44:00"),
+            _trace("2026-08-24", ["1", "2", "3"], ["1"], generated_at="2026-08-24T23:24:00"),
+        ]
+        hard, demoted = split_l3_hard_filter_days(payloads)
+        assert list(hard) == ["2026-08-24"]
+        assert demoted == {}
+
+    def test_empty_l3_is_skipped(self):
+        hard, demoted = split_l3_hard_filter_days([_trace("2026-08-11", ["1", "2"], [])])
+        assert hard == {} and demoted == {}
+
+
+class TestL3GateStat:
+    def _hard(self, days: int, regime: str = "RISK_OFF") -> dict:
+        return {f"2026-08-{11 + i:02d}": {"regime": regime, "l2": ["1"], "l3": ["1"]} for i in range(days)}
+
+    def test_days_come_from_swap_not_input_days(self):
+        """可评估日 = trace 天数 − h,并且配对不足的日子还会再被丢掉,两个数天生不等。"""
+        stat = summarize_l3_gate(5, self._hard(16), {"stock_win": _swap(4.764, 0.005, days=12)})
+        assert stat.days == 12
+
+    def test_positive_reads_as_removing_the_gate_helps(self):
+        stat = summarize_l3_gate(5, self._hard(16), {"stock_win": _swap(4.764, 0.005, days=100)})
+        assert "被拒 vs 留下" in stat.verdict
+        assert "超出互换零分布" in stat.verdict
+
+    def test_short_window_is_not_a_failure(self):
+        """天数不够是「尚未可知」。判定句必须自己否掉「没通过」这个读法,不能只说尚未可知。"""
+        stat = summarize_l3_gate(10, self._hard(16), {"stock_win": _swap(11.374, 0.005, days=7)})
+        assert "尚未可知，不是没通过" in stat.verdict
+        assert "超出互换零分布" not in stat.verdict
+
+    def test_missing_swap_is_not_a_conclusion(self):
+        assert summarize_l3_gate(5, self._hard(16), None).verdict == "对照未跑出结果：尚未可知"
+
+    def test_regime_composition_is_counted(self):
+        hard = {**self._hard(9), "2026-08-24": {"regime": "CRASH", "l2": ["1"], "l3": ["1"]}}
+        assert summarize_l3_gate(5, hard, None).regimes == {"CRASH": 1, "RISK_OFF": 9}
+
+    def test_blank_regime_is_labelled_not_dropped(self):
+        hard = {"2026-08-11": {"regime": "", "l2": ["1"], "l3": ["1"]}}
+        assert summarize_l3_gate(5, hard, None).regimes == {"(空)": 1}
+
+    def test_return_column_is_reported_alongside(self):
+        stat = summarize_l3_gate(
+            5,
+            self._hard(16),
+            {"stock_win": _swap(4.764, 0.005, days=100), "gross_return": _swap(0.995, 0.005, column="gross_return")},
+        )
+        assert "+0.995" in stat.verdict
+
+
+class TestL3WindowNote:
+    def test_states_window_and_regime_composition(self):
+        hard = {
+            "2026-08-11": {"regime": "", "l2": ["1"], "l3": ["1"]},
+            "2026-08-19": {"regime": "CRASH", "l2": ["1"], "l3": ["1"]},
+        }
+        note = l3_window_note(hard, {"2026-08-17": {"regime": "BEAR_REBOUND"}})
+        assert "2026-08-11..2026-08-19" in note
+        assert "CRASH 1" in note
+        assert "降级" in note
+
+    def test_no_days_says_no_reading_not_failure(self):
+        assert "没有读数" in l3_window_note({}, {})
+
+
+class TestL3Render:
+    def _report(self, swap: dict[str, SwapTest] | None) -> GateReport:
+        report = GateReport()
+        report.theme = [GateStat("topN=5", 100, 240, -0.95, -0.36, -0.59, 48.0, True)]
+        report.stop_loss = [GateStat("0~15%", 100, 500, -0.75, -0.35, -0.40, 46.0)]
+        report.l3_gate_note = "硬过滤日 16 天（2026-08-11..2026-09-07），水温构成：RISK_OFF 11、CRASH 2"
+        report.l3_gate = [summarize_l3_gate(h, {"2026-08-11": {"regime": "RISK_OFF"}}, swap) for h in (1, 5, 10)]
+        return report
+
+    def test_section_absent_when_no_trace(self):
+        report = GateReport()
+        report.theme = [GateStat("topN=5", 100, 240, -0.95, -0.36, -0.59, 48.0, True)]
+        assert "L3 硬过滤" not in render(report)
+
+    def test_orientation_is_spelled_out(self):
+        """为正 = 拆掉更好。不写清方向,读者会把它读成「L3 有效」。"""
+        text = render(self._report({"stock_win": _swap(4.764, 0.005, days=12)}))
+        assert "被 L3 拒掉" in text
+        assert "拆掉更好" in text
+
+    def test_says_it_reads_production_gate_not_proxy(self):
+        text = render(self._report({"stock_win": _swap(4.764, 0.005, days=12)}))
+        assert "l3_eligible" in text
+        assert "不是生产那道闸" in text  # 与上面题材层代理的区别必须写明
+
+    def test_warns_against_comparing_horizons_by_magnitude(self):
+        """各格天数不同,横向比大小比到的是日期构成。"""
+        text = render(self._report({"stock_win": _swap(4.764, 0.005, days=12)}))
+        assert "符号是否同向" in text
+        assert "日期构成" in text
+
+    def test_window_note_is_carried_into_output(self):
+        assert "RISK_OFF 11" in render(self._report({"stock_win": _swap(4.764, 0.005, days=12)}))
+
+    def test_regime_composition_limits_extrapolation(self):
+        assert "熊市窗口" in render(self._report({"stock_win": _swap(4.764, 0.005, days=12)}))
+
+    def test_days_column_每格都要出现(self):
+        text = render(self._report({"stock_win": _swap(4.764, 0.005, days=12)}))
+        assert "| T+1 | 12 |" in text
+        assert "| T+10 | 12 |" in text
+
+    def test_missing_swap_row_says_insufficient(self):
+        assert "样本不足" in render(self._report(None))
 
 
 class TestReportSerialization:

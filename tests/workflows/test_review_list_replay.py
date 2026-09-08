@@ -292,7 +292,7 @@ def test_build_focus_lines_highlights_actionable_buckets():
     assert "日期间隔" in text
     assert "候选池已捕获" in text
     assert "结构强度不足" in text
-    assert "风控拦截优先复盘" in text
+    assert "带风控信号" in text
     assert "000003国农科技" in text
     assert "买点未确认" in text
     assert "题材共振不足" in text
@@ -445,6 +445,62 @@ def test_trigger_miss_focus_stops_proposing_lane_changes() -> None:
     assert "影子回放" in text
 
 
+def test_theme_miss_focus_discloses_co_occurring_exit_signals() -> None:
+    """题材档里同时带离场信号的票要摊出来,不能只报总数。
+
+    级联在 L3 之前不查离场信号,所以这个标签会把带 stop_loss 的票一起收进来。
+    2026-09-04 全市场这一档 1678 只里 1147 只(68.4%)带 stop_loss,对这三分之二
+    来说改题材映射动不了它们。只报总数会把改动引到不是约束点的那一层。
+    """
+    rows = [
+        {**_row("000005", "世纪星源", REVIEW_STAGE_THEME_MISS), "risk_signal": "stop_loss"},
+        {**_row("000006", "深振业A", REVIEW_STAGE_THEME_MISS), "risk_signal": ""},
+    ]
+    text = "\n".join(build_focus_lines(rows, today=date(2026, 9, 4), previous_trade_date=date(2026, 9, 3)))
+
+    assert "题材共振不足" in text
+    assert "1/2" in text
+    assert "000005世纪星源" in text
+    # 带风控信号的那部分不能被说成「改题材映射就能捞回来」
+    assert "题材层不是唯一约束" in text
+
+
+def test_theme_miss_focus_only_points_at_theme_layer_when_cohort_is_clean() -> None:
+    """全档都干净时才可以把改动指向题材层。"""
+    rows = [{**_row("000006", "深振业A", REVIEW_STAGE_THEME_MISS), "risk_signal": ""}]
+    text = "\n".join(build_focus_lines(rows, today=date(2026, 9, 4), previous_trade_date=date(2026, 9, 3)))
+
+    assert "题材映射" in text
+    assert "题材层不是唯一约束" not in text
+
+
+def test_risk_focus_does_not_claim_a_block_that_never_happened() -> None:
+    """没有买点可拦时,不能说「被硬拦截」。
+
+    2026-09-04 落到风控档的 147 只票 trigger_labels 全为空,这个标签只是级联顺序
+    的产物。而且生产里离场信号不是闸门:四路候选生产者只有正式威科夫那一路读它,
+    还是 -35 分的软扣分,车道/alpha/主线三路完全不读。
+    """
+    rows = [{**_row("000003", "国农科技", REVIEW_STAGE_RISK_BLOCK), "trigger_labels": []}]
+    text = "\n".join(build_focus_lines(rows, today=date(2026, 9, 4), previous_trade_date=date(2026, 9, 3)))
+
+    assert "硬拦截" not in text
+    assert "风控没拦下任何东西" in text
+
+
+def test_risk_focus_separates_rows_whose_trigger_actually_fired() -> None:
+    """买点已触发又带离场信号的那几只才真被扣了分,要和其余分开。"""
+    rows = [
+        {**_row("000003", "国农科技", REVIEW_STAGE_RISK_BLOCK), "trigger_labels": []},
+        {**_row("000008", "神州高铁", REVIEW_STAGE_RISK_BLOCK), "trigger_labels": ["SOS（量价点火）"]},
+    ]
+    text = "\n".join(build_focus_lines(rows, today=date(2026, 9, 4), previous_trade_date=date(2026, 9, 3)))
+
+    assert "其中 1 只买点已触发" in text
+    # 是否伤了胜率仍未检验,不能在这里下结论
+    assert "同动量对照" in text
+
+
 def test_focus_lines_open_with_the_result_selected_caveat() -> None:
     """报告一进「重点归因」就要说样本是按结果选的,否则每档只数会被当淘汰率读。"""
     lines = build_focus_lines(
@@ -573,6 +629,174 @@ def test_review_trace_records_as_run_stages_without_ohlcv(tmp_path):
     assert loaded["config_digest"] == payload["config_digest"]
     with pytest.raises(ValueError, match="date mismatch"):
         load_review_trace_artifact(path, date(2026, 5, 11))
+
+
+def _l3_strict_inputs() -> SimpleNamespace:
+    """L2 过 3 只、L3 按降级口径全放行的最小夹具。"""
+    frame = pd.DataFrame(
+        {
+            "date": pd.bdate_range("2025-08-01", periods=220),
+            "close": [10.0] * 220,
+            "amount": [100_000_000.0] * 220,
+        }
+    )
+    codes = ["000001", "000002", "000003"]
+    return SimpleNamespace(
+        cfg=FunnelConfig(),
+        window=SimpleNamespace(end_trade_date=date(2026, 8, 31)),
+        pool=SimpleNamespace(symbols=codes),
+        ref_data=SimpleNamespace(
+            name_map={code: code for code in codes},
+            sector_map={"000001": "银行", "000002": "地产", "000003": "券商"},
+            market_cap_map={code: 100.0 for code in codes},
+            financial_map={},
+        ),
+        all_df_map={code: frame for code in codes},
+        layers=SimpleNamespace(
+            l1_passed=list(codes),
+            l2_passed=list(codes),
+            # 降级日:l3_passed 等于 l2_passed,这正是那 6 天 L3/L2=100.0% 的成因。
+            l3_passed=list(codes),
+            l2_channel_map={code: "点火破局" for code in codes},
+            l2_rejections={},
+        ),
+        candidates=SimpleNamespace(candidate_entries=[], exit_signals={}),
+    )
+
+
+def test_review_trace_keeps_l3_demotion_counterfactual() -> None:
+    """修复期 L3 降级日,trace 要留下「照常过滤会留下谁」。
+
+    BEAR_REBOUND 那 6 天 Layer 3 从硬过滤降级成 +8 加分项(funnel_layers 里显式
+    分支 + 日志),l3_passed 等于 l2_passed。降级时算出的严格口径通过集此前只存在
+    benchmark_context 里、没人落盘——22 份产物里 l3_passed_normal 零命中,等于每个
+    降级日都白算了一次同日同水温的「L3 开 vs 关」对照。
+    """
+    inputs = _l3_strict_inputs()
+    metrics = {"benchmark_context": {"regime": "BEAR_REBOUND", "l3_passed_normal": ["000001"]}}
+
+    rows = build_review_trace(inputs, {}, metrics)["symbols"]
+
+    # 降级口径:三只都算过 L3。
+    assert [rows[code]["l3_eligible"] for code in ("000001", "000002", "000003")] == [True, True, True]
+    # 严格口径:只有 000001 会留下。这一对差值才是可用的同日对照。
+    assert rows["000001"]["l3_eligible_strict"] is True
+    assert rows["000002"]["l3_eligible_strict"] is False
+    assert rows["000003"]["l3_eligible_strict"] is False
+
+
+def test_review_trace_l3_strict_is_none_on_normal_days() -> None:
+    """非降级日必须是 None,不能是 False。
+
+    `or set()` 兜底会把「今天 L3 就是硬过滤」和「今天降级了且严格口径一只不留」
+    压成同一个空集合,于是 20 个正常日全被读成「L3 本来会全灭」——把缺失读成事实。
+    """
+    inputs = _l3_strict_inputs()
+
+    rows = build_review_trace(inputs, {}, {"benchmark_context": {"regime": "RISK_OFF"}})["symbols"]
+    assert all(rows[code]["l3_eligible_strict"] is None for code in ("000001", "000002", "000003"))
+
+    # metrics 整个缺失(回放路径传 {})也要退成 None,不能抛。
+    assert build_review_trace(inputs, {}, {})["symbols"]["000001"]["l3_eligible_strict"] is None
+
+    # 降级日而严格口径真的一只不留:是 False,与上面的 None 必须分得开。
+    empty = build_review_trace(inputs, {}, {"benchmark_context": {"l3_passed_normal": []}})["symbols"]
+    assert all(empty[code]["l3_eligible_strict"] is False for code in ("000001", "000002", "000003"))
+
+
+def test_review_trace_separates_unevaluated_risk_from_clean_risk() -> None:
+    """空的 risk_signal 有两种来源,trace 必须分得开。
+
+    离场信号只对 L2 通过池 + Markup + 战略旁路算过。2026-09-04 全部 1246 只
+    「只是结构强度不足」的票 stop_loss 都是 0,而隔壁查过的池子 68% 带 stop_loss。
+    这个反差是取值范围造成的,不是市场造成的:不记「查过谁」,复盘就会把「没查」
+    读成「风控干净」(memory one-field-two-meanings-corrupts-column)。
+    """
+    frame = pd.DataFrame(
+        {
+            "date": pd.bdate_range("2025-08-01", periods=220),
+            "close": [10.0] * 220,
+            "amount": [100_000_000.0] * 220,
+        }
+    )
+    inputs = SimpleNamespace(
+        cfg=FunnelConfig(),
+        window=SimpleNamespace(end_trade_date=date(2026, 9, 4)),
+        pool=SimpleNamespace(symbols=["000001", "000002"]),
+        ref_data=SimpleNamespace(
+            name_map={"000001": "已评估", "000002": "未评估"},
+            sector_map={"000001": "银行", "000002": "地产"},
+            market_cap_map={"000001": 100.0, "000002": 100.0},
+            financial_map={},
+        ),
+        all_df_map={"000001": frame, "000002": frame},
+        layers=SimpleNamespace(
+            l1_passed=["000001", "000002"],
+            l2_passed=["000001"],
+            l3_passed=[],
+            l2_channel_map={"000001": "点火破局"},
+            l2_rejections={"000002": "最接近趋势延续(缺口5.0%)"},
+        ),
+        candidates=SimpleNamespace(
+            candidate_entries=[],
+            exit_signals={},
+            exit_evaluated=["000001"],
+        ),
+    )
+    rows = build_review_trace(inputs, {}, {})["symbols"]
+
+    # 两只票 risk_signal 都是空,但只有一只是「查过、干净」
+    assert rows["000001"]["risk_signal"] == ""
+    assert rows["000002"]["risk_signal"] == ""
+    assert rows["000001"]["risk_evaluated"] is True
+    assert rows["000002"]["risk_evaluated"] is False
+
+
+def test_review_trace_leaves_risk_evaluated_unknown_without_the_field() -> None:
+    """回放路径自己拼 candidates 对象,缺 exit_evaluated 时要给 None 而不是 False。
+
+    给 False 等于断言「没查过」,会把老 trace 的缺失读成事实。
+    """
+    frame = pd.DataFrame(
+        {
+            "date": pd.bdate_range("2025-08-01", periods=220),
+            "close": [10.0] * 220,
+            "amount": [100_000_000.0] * 220,
+        }
+    )
+    inputs = SimpleNamespace(
+        cfg=FunnelConfig(),
+        window=SimpleNamespace(end_trade_date=date(2026, 9, 4)),
+        pool=SimpleNamespace(symbols=["000001"]),
+        ref_data=SimpleNamespace(
+            name_map={"000001": "平安银行"},
+            sector_map={"000001": "银行"},
+            market_cap_map={"000001": 100.0},
+            financial_map={},
+        ),
+        all_df_map={"000001": frame},
+        layers=SimpleNamespace(
+            l1_passed=["000001"],
+            l2_passed=["000001"],
+            l3_passed=["000001"],
+            l2_channel_map={},
+            l2_rejections={},
+        ),
+        candidates=SimpleNamespace(candidate_entries=[], exit_signals={}),
+    )
+    rows = build_review_trace(inputs, {}, {})["symbols"]
+
+    assert rows["000001"]["risk_evaluated"] is None
+
+
+def test_state_suffix_marks_unevaluated_risk_but_not_unknown() -> None:
+    """渲染侧只在显式 False 时标「未评估」,None 不标。"""
+    from workflows.review_report_render import _state_suffix
+
+    assert "风控=未评估" in _state_suffix({"risk_signal": "", "risk_evaluated": False})
+    assert "风控" not in _state_suffix({"risk_signal": "", "risk_evaluated": True})
+    assert "风控" not in _state_suffix({"risk_signal": "", "risk_evaluated": None})
+    assert "风控=stop_loss" in _state_suffix({"risk_signal": "stop_loss", "risk_evaluated": True})
 
 
 def test_review_trace_records_signal_day_momentum() -> None:

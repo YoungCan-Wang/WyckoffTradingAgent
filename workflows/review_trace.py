@@ -59,7 +59,7 @@ def dump_review_trace_artifact(payload: dict[str, Any], output_dir: str) -> Path
 def build_review_trace(inputs: Any, triggers: dict, metrics: dict) -> dict[str, Any]:
     layers = inputs.layers
     candidates = inputs.candidates
-    symbols = _decision_rows(inputs, triggers)
+    symbols = _decision_rows(inputs, triggers, metrics)
     config_payload = asdict(inputs.cfg)
     return {
         "schema_version": REVIEW_TRACE_SCHEMA,
@@ -102,22 +102,48 @@ def load_review_trace_artifact(path: str | Path, expected_trade_date: date | str
     return payload
 
 
-def _decision_rows(inputs: Any, triggers: dict) -> dict[str, dict[str, Any]]:
+def _decision_rows(inputs: Any, triggers: dict, metrics: dict | None = None) -> dict[str, dict[str, Any]]:
     layers = inputs.layers
     candidates = inputs.candidates
     l1_set = set(layers.l1_passed)
     l2_set = set(layers.l2_passed)
     l3_set = set(layers.l3_passed)
+    # 修复期(BEAR_REBOUND/PANIC_REPAIR*)Layer 3 从硬过滤降级为 +8 加分项,
+    # l3_passed 会等于 l2_passed——那 6 天 L3/L2 恰好 100.0%,不是 bug 是设计。
+    # 降级时 funnel_layers 把「照常过滤会留下谁」存进 benchmark_context,
+    # 但此前没人落盘:每个降级日都白算了一次同日同水温的「L3 开 vs 关」对照。
+    # 落成逐行三态,原地就能分组比前向收益,不必再去反推分数断层。
+    l3_normal_set = _l3_normal_set(metrics)
     entry_map = best_candidate_entry_map(candidates.candidate_entries)
     hit_map = _trigger_labels(triggers)
     blocked = _blocked_exit_map(candidates.exit_signals)
+    # 离场信号只对 L2 通过池 + Markup + 战略旁路算过,别的票 risk_signal 恒为空。
+    # 不把「查过谁」记下来,复盘就会把「没查」读成「干净」:2026-09-04 全部 1246
+    # 只结构强度不足的票 stop_loss 都是 0,而隔壁查过的池子 68% 带 stop_loss——
+    # 这个反差是取值范围造成的,不是市场造成的。
+    # 用 None 区分「字段缺失」和「查过 0 只」:`or []` 会把缺失也变成空集合,
+    # 于是每一行都被断言成「没查过」——把缺失读成事实,正是这个字段要治的病。
+    raw_evaluated = getattr(candidates, "exit_evaluated", None)
+    evaluated = None if raw_evaluated is None else {str(code) for code in raw_evaluated}
     # watch_score 落进 trace:pre_breakout 车道的排序键。缺了它影子车道只能给
     # 常数分,31 只同分就无法做「取前 N 只看超额」的效果检验。
     # 用 getattr:回放路径自己拼候选对象,不一定带这个字段,缺了就退回不可排序标签。
     score_map = {str(k): v for k, v in (getattr(candidates, "l3_score_map", None) or {}).items()}
     return {
         code: attach_shadow_signal(
-            _decision_row(code, inputs, l1_set, l2_set, l3_set, entry_map, hit_map, blocked, score_map),
+            _decision_row(
+                code,
+                inputs,
+                l1_set,
+                l2_set,
+                l3_set,
+                entry_map,
+                hit_map,
+                blocked,
+                score_map,
+                evaluated,
+                l3_normal_set,
+            ),
             near_l2_max_gap_pct=_SHADOW_NEAR_L2_MAX_GAP_PCT,
         )
         for code in inputs.pool.symbols
@@ -134,6 +160,8 @@ def _decision_row(
     hit_map: dict[str, list[str]],
     blocked: dict[str, dict],
     score_map: dict[str, Any] | None = None,
+    evaluated: set[str] | None = None,
+    l3_normal_set: set[str] | None = None,
 ) -> dict[str, Any]:
     name = str(inputs.ref_data.name_map.get(code, code)).strip() or code
     sector = str(inputs.ref_data.sector_map.get(code, "")).strip()
@@ -143,10 +171,14 @@ def _decision_row(
         "l1_eligible": code in l1_set,
         "l2_eligible": code in l2_set,
         "l3_eligible": code in l3_set,
+        # None=当天 L3 按硬过滤跑,l3_eligible 本身就是严格口径;
+        # True/False=当天 L3 被降级,这一位是「照常过滤会不会留下它」的反事实。
+        "l3_eligible_strict": code in l3_normal_set if l3_normal_set is not None else None,
         "l2_channel": str(inputs.layers.l2_channel_map.get(code, "")),
         "layer3_quality_score": _score_or_none((score_map or {}).get(code)),
         "trigger_labels": list(hit_map.get(code, [])),
         "risk_signal": str((blocked.get(code) or {}).get("signal") or ""),
+        "risk_evaluated": code in evaluated if evaluated is not None else None,
         **_market_state(code, inputs),
     }
     if code not in inputs.all_df_map:
@@ -336,6 +368,20 @@ def _market_context(metrics: dict[str, Any]) -> dict[str, Any]:
         "rps_fast_min": _float(tuned.get("rps_fast_min")),
         "rps_slow_min": _float(tuned.get("rps_slow_min")),
     }
+
+
+def _l3_normal_set(metrics: dict | None) -> set[str] | None:
+    """降级日 Layer 3 的严格口径通过集;非降级日返回 None。
+
+    `None` 与 `set()` 必须区分:前者是「今天 L3 就是硬过滤,别去比」,后者是
+    「今天降级了,而且严格口径一只都不留」。用 `or set()` 兜底会把前者也变成
+    空集合,于是 20 个正常日全被读成「L3 本来会全灭」——把缺失读成事实。
+    """
+    context = (metrics or {}).get("benchmark_context") or {}
+    raw = context.get("l3_passed_normal")
+    if raw is None:
+        return None
+    return {str(code) for code in raw}
 
 
 def _digest(payload: dict[str, Any]) -> str:

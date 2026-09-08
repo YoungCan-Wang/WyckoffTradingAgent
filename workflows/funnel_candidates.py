@@ -49,6 +49,10 @@ class FunnelCandidateOutputs:
     markup_symbols: list[str]
     accum_stage_map: dict[str, str]
     exit_signals: dict[str, dict]
+    # 被送去算离场信号的票。exit_signals 只收有信号的那些,空 dict 项分不出
+    # 「查过、干净」和「根本没查」——L2 未过的票从来没进过这一层,复盘里
+    # 却和查过的干净票长得一样(memory one-field-two-meanings-corrupts-column)。
+    exit_evaluated: list[str]
     candidate_entries: list[dict]
     mainline_candidate_entries: list[dict]
     lane_candidate_entries: list[dict]
@@ -129,8 +133,9 @@ def build_candidate_outputs(
     markup_symbols = sorted(set(detect_markup_stage(layers.l3_passed, all_df_map, cfg)) | set(strategic.markup_symbols))
     accum_stage_map = detect_accum_stage(layers.l2_passed, all_df_map, cfg)
     accum_stage_map.update(strategic.stage_map)
+    exit_evaluated = sorted(set(layers.l2_passed + markup_symbols + strategic.pool))
     exit_signals = layer5_exit_signals(
-        sorted(set(layers.l2_passed + markup_symbols + strategic.pool)),
+        exit_evaluated,
         all_df_map,
         accum_stage_map,
         cfg,
@@ -169,6 +174,7 @@ def build_candidate_outputs(
         markup_symbols=markup_symbols,
         accum_stage_map=accum_stage_map,
         exit_signals=exit_signals,
+        exit_evaluated=exit_evaluated,
         candidate_entries=candidate_entries,
         mainline_candidate_entries=mainline_entries,
         lane_candidate_entries=lane_entries,

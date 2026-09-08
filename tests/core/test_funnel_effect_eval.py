@@ -347,10 +347,16 @@ class TestSummarizeAbsolute:
         assert stat.bench_excess_pct == pytest.approx(-1.0)
 
     def test_bench_columns_absent_without_benchmark(self):
+        """整段没有基准时,判定句不能说「跑赢基准」——没拿到基准就没资格说。
+
+        这条原先断言的是「绝对为正且跑赢基准」,把 bug 钉住了:缺基准时
+        ``bench_excess_pct`` 是 None,「为负」和「跑输」两条都不触发,直接落到最后一句。
+        """
         stat = summarize_absolute(_abs_daily([1.0] * MIN_DAYS))
         assert stat.bench_days == 0
         assert (stat.bench_pct, stat.bench_excess_pct, stat.bench_excess_t) == (None, None, None)
         assert stat.verdict == "绝对收益为正；基准覆盖不足，超额未知"
+        assert "跑赢" not in stat.verdict
 
     def test_bench_excess_needs_its_own_sample_floor(self):
         """基准日数不够时只压掉基准三列,绝对收益本身照出。"""
@@ -359,6 +365,39 @@ class TestSummarizeAbsolute:
         assert stat.net_pct == pytest.approx(1.0)
         assert stat.bench_days == MIN_DAYS - 1
         assert stat.bench_excess_pct is None
+        # 基准站不满 MIN_DAYS 也是「未知」,同样不能宣称跑赢。
+        assert stat.verdict == "绝对收益为正；基准覆盖不足，超额未知"
+
+    def test_nan_bench_does_not_become_beating_the_market(self):
+        """脏基准价比缺基准更隐蔽:NaN 超额下 ``NaN <= 0`` 是 False,也落到「跑赢」。
+
+        ``is not None`` 拦不住 NaN(行情缺值到手上就是 NaN 而不是 None),一天脏基准
+        就能让 bench_excess_pct 变 NaN,再被判定句读成跑赢。这与「样本不足不是对照
+        未通过」是同一种错,方向更坏:它是无据宣称。
+        """
+        nan = float("nan")
+        benches: list[float | None] = [nan] * MIN_DAYS
+        stat = summarize_absolute(_abs_daily([1.0] * MIN_DAYS, benches))
+        assert stat.bench_days == 0, "NaN 基准不该被算作有效基准日"
+        assert stat.bench_excess_pct is None
+        assert stat.verdict == "绝对收益为正；基准覆盖不足，超额未知"
+
+    def test_one_nan_bench_day_does_not_poison_the_column(self):
+        """单日脏基准只该丢那一天,不该把整栏拖成 NaH。"""
+        benches: list[float | None] = [float("nan")] + [2.0] * MIN_DAYS
+        stat = summarize_absolute(_abs_daily([1.0] * (MIN_DAYS + 1), benches))
+        assert stat.bench_days == MIN_DAYS
+        assert stat.bench_excess_pct == pytest.approx(-1.0)
+        assert stat.verdict == "绝对为正但跑输基准：只赚了市场的钱"
+
+    def test_nan_net_day_is_dropped_not_counted(self):
+        """NaN 净收益的日子要当缺失丢掉,不能进分母也不能污染均值。"""
+        rows = _abs_daily([1.0] * (MIN_DAYS + 1))
+        rows[0]["net_abs"] = float("nan")
+        stat = summarize_absolute(rows)
+        assert stat.days == MIN_DAYS
+        assert stat.net_pct == pytest.approx(1.0)
+        assert stat.price_coverage["excluded_days"] == 1
 
     def test_price_coverage_keeps_excluded_days_in_the_audit(self):
         rows = _abs_daily([1.0] * MIN_DAYS, size=3)
@@ -436,6 +475,33 @@ class TestPanels:
         panels = _panels(5, codes=["a"])
         assert panels.gross_return(["ghost"], "2026-06-02", "2026-06-03") is None
 
+    def test_one_nan_close_does_not_poison_the_whole_day(self):
+        """一只脏收盘价不能把整日读数变成 NaN。
+
+        原先的 ``if o and c and o > 0`` 只对 ``o`` 查了正负,``c`` 是裸真值判断,而
+        ``bool(NaN)`` 是 True。NaN 混进逐只收益后被 ``mean`` 一吃,当天的绝对收益、
+        股级胜率全变 NaN,报告里跟真实读数长得一样。
+        """
+        panels = _panels(5, codes=["a", "b"])
+        panels.open["2026-06-02"] = {"a": 100.0, "b": 100.0}
+        panels.close["2026-06-03"] = {"a": 110.0, "b": float("nan")}
+        rets = panels.per_stock_returns(["a", "b"], "2026-06-02", "2026-06-03")
+        assert rets == pytest.approx([10.0]), "NaN 那只该被丢掉,不是记成 NaN"
+        assert panels.gross_return(["a", "b"], "2026-06-02", "2026-06-03") == pytest.approx(10.0)
+
+    def test_nan_open_is_dropped_too(self):
+        panels = _panels(5, codes=["a", "b"])
+        panels.open["2026-06-02"] = {"a": float("nan"), "b": 100.0}
+        panels.close["2026-06-03"] = {"a": 110.0, "b": 90.0}
+        assert panels.per_stock_returns(["a", "b"], "2026-06-02", "2026-06-03") == pytest.approx([-10.0])
+
+    def test_negative_close_is_dropped(self):
+        """负收盘价是脏数据,不该算出 -200% 这种收益。"""
+        panels = _panels(5, codes=["a", "b"])
+        panels.open["2026-06-02"] = {"a": 100.0, "b": 100.0}
+        panels.close["2026-06-03"] = {"a": -100.0, "b": 110.0}
+        assert panels.per_stock_returns(["a", "b"], "2026-06-02", "2026-06-03") == pytest.approx([10.0])
+
     def test_bench_return_spans_the_same_window_as_candidates(self):
         """基准必须 T+1 开盘进、T+1+H 收盘出。用 buy_ds 收盘当起点会把 T+1 的涨跌
         从基准里剔掉却留在候选里,跳空日能造出假超额。"""
@@ -455,6 +521,25 @@ class TestPanels:
         panels = _panels(5, codes=["a"])
         panels.bench_open = {"2026-06-02": 0.0}
         panels.bench_close = {"2026-06-04": 110.0}
+        assert panels.bench_return("2026-06-02", "2026-06-04") is None
+
+    def test_bench_return_none_on_nan_price(self):
+        """``if not start`` 拦不住 NaN(``not NaN`` 是 False),基准会变成 NaN。
+
+        NaN 基准往下走成 NaN 超额,再被 AbsoluteStat.verdict 读成「跑赢基准」——
+        整条链一次都不抛错、不告警。
+        """
+        nan = float("nan")
+        panels = _panels(5, codes=["a"])
+        panels.bench_open = {"2026-06-02": nan, "2026-06-03": 100.0}
+        panels.bench_close = {"2026-06-04": 110.0, "2026-06-05": nan}
+        assert panels.bench_return("2026-06-02", "2026-06-04") is None, "NaN 起点"
+        assert panels.bench_return("2026-06-03", "2026-06-05") is None, "NaN 终点"
+
+    def test_bench_return_none_on_nonpositive_end(self):
+        panels = _panels(5, codes=["a"])
+        panels.bench_open = {"2026-06-02": 100.0}
+        panels.bench_close = {"2026-06-04": 0.0}
         assert panels.bench_return("2026-06-02", "2026-06-04") is None
 
     def test_bench_panels_default_to_empty(self):
