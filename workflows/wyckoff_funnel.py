@@ -946,6 +946,7 @@ def _build_ic_shadow_pool(data) -> list[dict]:
             percentiles_from_df_map,
             to_rows,
         )
+        from core.market_trade_mode import normalize_regime
 
         config = ShadowScoreConfig()
         panels = percentiles_from_df_map(data.all_df_map, config)
@@ -954,7 +955,10 @@ def _build_ic_shadow_pool(data) -> list[dict]:
             return []
         picks = combine_scores(panels, config)
         trade_date = data.window.end_trade_date.isoformat()
-        rows = to_rows(picks, trade_date, config)
+        # benchmark_context 自己在拿不到基准时就填 UNKNOWN，直接透传即可保留
+        # 「没拿到」与「确实中性」的区分，不要在这里折成 NEUTRAL。
+        regime = normalize_regime((data.benchmark_context or {}).get("regime"))
+        rows = to_rows(picks, trade_date, config, regime=regime)
         print(f"[shadow] {trade_date} 选出 {len(rows)} 只（{config.describe()}）")
         for pick in picks[:5]:
             detail = " ".join(f"{k}={v:.0f}" for k, v in pick.factor_ranks.items())

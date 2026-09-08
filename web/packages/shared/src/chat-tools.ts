@@ -413,9 +413,15 @@ function parseTickFlowPayload(json: Record<string, unknown>, symbol: string): Kl
 }
 
 function formatTimestamp(value: unknown): string {
-  const n = Number(value)
-  if (Number.isFinite(n) && n > 0) return new Date(n + 8 * 3600_000).toISOString().slice(0, 10)
-  return String(value || '').replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3').slice(0, 10)
+  // TickFlow columnar klines use epoch seconds; treating them as ms collapses every bar to 1970.
+  const raw = String(value || '').trim()
+  if (/^\d{8}$/.test(raw)) return raw.replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3')
+  const n = Number(raw)
+  if (Number.isFinite(n) && n > 0) {
+    const milliseconds = n < 1_000_000_000_000 ? n * 1000 : n
+    return new Date(milliseconds + 8 * 3600_000).toISOString().slice(0, 10)
+  }
+  return raw.replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3').slice(0, 10)
 }
 
 async function fetchKlineViaTickFlow(deps: ToolDeps, code: string, apiKey: string, count = 250): Promise<KlineRow[]> {

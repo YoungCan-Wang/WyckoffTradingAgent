@@ -959,6 +959,43 @@ describe('execAnalyzeStock', () => {
     )
   })
 
+  it('normalizes TickFlow epoch-second timestamps for analyze_stock digests', async () => {
+    const deps = createMockDeps({ user_settings: { tickflow_api_key: 'tf-test', tushare_token: '' } })
+    deps.fetch = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({
+          data: {
+            '600519.SH': {
+              timestamp: [1704067200, 1704153600],
+              open: [100, 101],
+              high: [102, 103],
+              low: [99, 100],
+              close: [101, 102],
+              volume: [1000, 1200],
+            },
+          },
+        }),
+      })
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ data: {} }) }) as unknown as ToolDeps['fetch']
+
+    await execAnalyzeStock(
+      deps,
+      'user1',
+      { api_key: 'llm-key', model: 'test-model', base_url: 'https://example.com/v1' },
+      {},
+      '600519',
+      '贵州茅台',
+    )
+
+    expect(deps.generateText).toHaveBeenCalledWith(expect.objectContaining({
+      prompt: expect.stringMatching(/2024-01-01[\s\S]*2024-01-02/),
+    }))
+    expect(deps.generateText).toHaveBeenCalledWith(expect.objectContaining({
+      prompt: expect.not.stringContaining('1970-'),
+    }))
+  })
+
   it('explains missing TickFlow key for market symbols', async () => {
     const deps = createMockDeps({ user_settings: { tickflow_api_key: '', tushare_token: '' } })
 

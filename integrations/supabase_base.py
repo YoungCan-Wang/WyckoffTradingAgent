@@ -109,13 +109,24 @@ def create_anon_client() -> Client:
     return create_client(url, key, options=_client_options())
 
 
+def read_client_uses_admin() -> bool:
+    """create_read_client() 这次会不会返回 service-role 客户端。
+
+    调用方判断「要不要再挂一层 admin 兜底重读」时用它，避免各处自己抄
+    一份 ``current_write_context() == SERVER_WRITE_CONTEXT and ...``
+    条件：抄出来的副本一旦与 create_read_client() 走偏，兜底就会在该生效
+    的场景静默不生效。
+    """
+    return current_write_context() == SERVER_WRITE_CONTEXT and is_admin_configured()
+
+
 def create_read_client() -> Client:
     """只读场景客户端。
 
     Server job 可用 service role 读取生产表；CLI 默认走 anon/RLS，
     需要用户级权限的场景应显式传入 create_user_client() 的结果。
     """
-    if current_write_context() == SERVER_WRITE_CONTEXT and is_admin_configured():
+    if read_client_uses_admin():
         return create_admin_client()
     return create_anon_client()
 

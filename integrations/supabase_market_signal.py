@@ -9,6 +9,7 @@ Supabase 最新交易日市场信号读写
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -24,6 +25,7 @@ from core.market_trade_mode import (
 from integrations.supabase_base import create_admin_client as _get_supabase_admin_client
 from integrations.supabase_base import create_read_client as _get_supabase_read_client
 from integrations.supabase_base import is_admin_configured as is_supabase_admin_configured
+from integrations.supabase_base import read_client_uses_admin as _read_client_uses_admin
 from integrations.supabase_base import require_server_write_context, require_shared_writes_enabled
 from utils.safe import finite_float as _safe_float
 
@@ -544,16 +546,27 @@ def _load_market_signal_by_trade_date(client: Client, trade_date: str) -> dict[s
     return dict(resp.data[0])
 
 
-def _iter_market_signal_clients(client: Client | None = None) -> list[Client]:
-    clients: list[Client] = []
+def _iter_market_signal_clients(client: Client | None = None) -> Iterator[tuple[str, Client]]:
+    """按 (来源标签, 客户端) 逐个产出读取通道，anon 读空时兜底到 service role。
+
+    market_signal_daily 有 RLS，anon 读它返回的是 0 行而不是报错，跟「表里
+    真没有这天」完全同形。这里之所以是生成器：admin 客户端只在前一个通道
+    没读到时才创建，server job 场景 read client 本身已经是 service role，
+    不必再连一次。
+    """
     if client is not None:
-        clients.append(client)
-        return clients
+        yield "caller", client
+        return
     try:
-        clients.append(_get_supabase_read_client())
+        yield "read", _get_supabase_read_client()
     except Exception:
         logger.debug("failed to create supabase read client", exc_info=True)
-    return clients
+    if _read_client_uses_admin() or not is_supabase_admin_configured():
+        return
+    try:
+        yield "admin", _get_supabase_admin_client()
+    except Exception:
+        logger.debug("failed to create supabase admin client", exc_info=True)
 
 
 _UPSERT_MAX_RETRIES = 3
@@ -629,10 +642,11 @@ def upsert_market_signal_daily(trade_date: date | str, patch: dict[str, Any]) ->
 
 def load_market_signal_daily(trade_date: date | str, client: Client | None = None) -> dict[str, Any] | None:
     trade_date_text = _normalize_trade_date(trade_date)
-    for sb in _iter_market_signal_clients(client):
+    for source, sb in _iter_market_signal_clients(client):
         try:
             row = _load_market_signal_by_trade_date(sb, trade_date_text)
             if row:
+                _log_admin_rescue(source, "load_market_signal_daily", trade_date_text)
                 return row
         except Exception as e:
             logger.debug("[supabase_market_signal] load_market_signal_daily failed for client: %s", e)
@@ -641,14 +655,31 @@ def load_market_signal_daily(trade_date: date | str, client: Client | None = Non
 
 
 def load_latest_market_signal_daily(client: Client | None = None) -> dict[str, Any] | None:
-    for sb in _iter_market_signal_clients(client):
+    for source, sb in _iter_market_signal_clients(client):
         try:
             if sb is None:
                 continue
             merged = _merge_latest_market_signal_rows(_latest_market_signal_rows(sb))
             if merged:
+                _log_admin_rescue(source, "load_latest_market_signal_daily", str(merged.get("trade_date", "")))
                 return merged
         except Exception as e:
             logger.debug("[supabase_market_signal] load_latest_market_signal_daily failed for client: %s", e)
             continue
     return None
+
+
+def _log_admin_rescue(source: str, fn: str, trade_date_text: str) -> None:
+    """兜底通道读到东西时喊一声：说明 anon 通道刚才被 RLS 读空了。
+
+    下游 step4_market 把「读不到行」直接折成 regime=UNKNOWN（禁买态），
+    所以这条是禁买究竟出于市场还是出于权限的唯一区分依据。
+    """
+    if source != "admin":
+        return
+    logger.warning(
+        "[supabase_market_signal] %s: anon 读到 0 行,已用 service key 重读到 trade_date=%s;"
+        "该进程读 market_signal_daily 走的是 RLS,禁买态可能是权限而非市场",
+        fn,
+        trade_date_text or "unknown",
+    )

@@ -228,11 +228,18 @@ def _last_percentile(panel, eligible) -> dict[str, float]:
     return (row.rank(pct=True) * 100).to_dict()
 
 
-def to_rows(picks: list[ShadowPick], trade_date: str, config: ShadowScoreConfig) -> list[dict]:
+def to_rows(picks: list[ShadowPick], trade_date: str, config: ShadowScoreConfig, *, regime: str) -> list[dict]:
     """转成 signal_observations 行。signal_type 用 ic_shadow 便于与真实买点区分。
 
     放在 core 而非 scripts：workflows/wyckoff_funnel 要调它，而
     tests/test_architecture_boundaries 禁止 runtime 层依赖脚本入口。
+
+    regime 是必填关键字参数，不给默认值：此前这里根本不产出 regime 列，落库时
+    吃 DB 默认值 NEUTRAL，首批 110 行（2026-08-24..09-07，11 个交易日）全被标成
+    NEUTRAL，而这 11 天真实档位是 RISK_OFF 8 天 / BEAR_REBOUND 2 天 / CRASH 1 天，
+    没有一天真的是 NEUTRAL。其中 08-24..08-28 这 5 天表里只有影子行、没有同日
+    其它信号可交叉核对，错标是查不出来的。给默认值等于把这个失效模式原样留着，
+    所以宁可让新调用方编译期就被逼着回答这个问题。
     """
     import json
 
@@ -256,6 +263,9 @@ def to_rows(picks: list[ShadowPick], trade_date: str, config: ShadowScoreConfig)
             # 当时容错生效、漏斗主流程未受影响。
             "track": "Accum",
             "stage": "",
+            # 缺档位写 UNKNOWN 而不是 NEUTRAL：NEUTRAL 是一个真实档位，用它兜底就
+            # 把「没拿到」和「确实中性」压成同一个值，分层归因再也分不开。
+            "regime": str(regime or "").strip().upper() or "UNKNOWN",
             "strategy_version": config.describe(),
             "features_json": json.dumps(pick.as_features(), ensure_ascii=False),
         }
