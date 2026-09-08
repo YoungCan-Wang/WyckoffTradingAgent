@@ -1,5 +1,5 @@
 import integrations.supabase_market_signal as market_signal_module
-from core.market_trade_mode import PROBE_ONLY_REGIMES, merge_premarket_regime, resolve_market_trade_mode
+from core.market_trade_mode import merge_premarket_regime, probe_only_regimes, resolve_market_trade_mode
 from integrations.supabase_market_signal import (
     _merge_latest_market_signal_rows,
     compose_market_state,
@@ -57,7 +57,7 @@ def _assert_banner_matches_trade_mode(benchmark: str, premarket: str) -> None:
         assert "禁止新开仓" in action, f"{where} 横幅越过执行层闸门"
     else:
         assert "禁止新开仓" not in action, f"{where} 横幅比执行层更严"
-        if mode.regime in PROBE_ONLY_REGIMES:
+        if mode.regime in probe_only_regimes():
             assert "PROBE" in action and "禁止 ATTACK" in action, where
 
 

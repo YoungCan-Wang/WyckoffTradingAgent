@@ -43,7 +43,7 @@ from core.candidate_ranker import rank_l3_candidates
 from core.candidate_tracks import candidate_entry_track
 from core.mainline_engine import MainlineEngineConfig
 from core.market_breadth import calc_market_breadth
-from core.market_trade_mode import EXECUTE_BLOCK_NEW_BUY_REGIMES, PROBE_ONLY_REGIMES, normalize_regime
+from core.market_trade_mode import EXECUTE_BLOCK_NEW_BUY_REGIMES, normalize_regime, probe_only_regimes
 from core.signal_confirmation import PendingPool, score_springboard_abc
 from core.wyckoff_engine import FunnelConfig, FunnelResult, run_funnel
 
@@ -401,7 +401,7 @@ def _limit_probe_only_selection(
     regime: str,
     mode: str,
 ) -> tuple[_RankedSelection, int]:
-    if mode != "live" or normalize_regime(regime) not in PROBE_ONLY_REGIMES or len(selected.codes) <= 1:
+    if mode != "live" or normalize_regime(regime) not in probe_only_regimes() or len(selected.codes) <= 1:
         return selected, 0
     kept = selected.codes[:1]
     return (

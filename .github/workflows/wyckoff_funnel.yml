@@ -104,6 +104,16 @@ jobs:
       # 不以近期样本收益解禁」。样本仍偏小（6 笔），但两次同向为负、方向与放开依据相反，
       # 且禁买是保守侧，故先恢复禁买。
       STEP4_BUY_ALLOW_REGIMES: "BEAR_REBOUND"
+      # 把硬防守档降为「小仓试探」而非完全禁买（只认 RISK_OFF，白名单见
+      # core/market_trade_mode.PROBE_DOWNGRADABLE_REGIMES）。默认留空 = 行为与此前逐位相同。
+      # 与 ALLOW 分开是刻意的：ALLOW 在 resolve_market_trade_mode 里对硬防守档故意无效，
+      # 有两条回归测试钉住（test_hard_defense_regimes_ignore_allow_list /
+      # test_defensive_regimes_never_openable_by_allow），不能借道它开这个口。
+      # 开启后 RISK_OFF 走 confirmation_only：配额压到 1 只、禁 ATTACK、禁满配额 L4。
+      # 依据与边界见 _probe_downgraded_regimes 文档串——要点是那句「回测全周期弱势」
+      # 已被实测冲掉（换窗口符号整列翻转、环移 p 全不显著），但漏斗在这些天的选票
+      # 也没跑赢动量匹配对照，故只降档限仓、不整层放开。
+      STEP4_BUY_PROBE_REGIMES: ${{ vars.STEP4_BUY_PROBE_REGIMES || '' }}
       # 留空：叠加验证显示该改动与 5% 止损重复用药。同区间 66 交易日：
       #   仅止损 -5%          总收益 +7.31%  夏普 +0.871  Accum +1.776
       #   禁 evr/sos + 止损5%  总收益 -0.14%  夏普 -0.122  Accum +0.610

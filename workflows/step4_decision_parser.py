@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 
-from core.market_trade_mode import EXECUTE_BLOCK_NEW_BUY_REGIMES, PROBE_ONLY_REGIMES, normalize_regime
+from core.market_trade_mode import EXECUTE_BLOCK_NEW_BUY_REGIMES, normalize_regime, probe_only_regimes
 from core.portfolio_symbol import normalize_portfolio_code
 from utils.json_text import extract_json_block
 from workflows.step4_models import DecisionItem, NewBuyLimits
@@ -98,7 +98,7 @@ def max_new_buy_names(
     blocked = blocked_regimes if blocked_regimes is not None else EXECUTE_BLOCK_NEW_BUY_REGIMES
     if regime in blocked:
         return 0
-    if regime in PROBE_ONLY_REGIMES:
+    if regime in probe_only_regimes():
         return max(min(limits.caution, 1), 0)
     return max(limits.neutral, 0)
 
