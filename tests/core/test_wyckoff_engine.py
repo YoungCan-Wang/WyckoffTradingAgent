@@ -25,7 +25,6 @@ from core.wyckoff_engine import (
     _latest_trade_date,
     _lps_creek_confirmed,
     _recent_sequence_events,
-    _skipped_weekdays,
     _sos_volume_ratio,
     _spring_support_level,
     build_candidate_entries,
@@ -36,6 +35,7 @@ from core.wyckoff_engine import (
     layer2_strength_detailed,
     layer3_sector_resonance,
     layer5_exit_signals,
+    skipped_weekdays,
     sort_by_date_if_needed,
 )
 
@@ -306,10 +306,10 @@ class TestSkippedWeekdays:
         ],
     )
     def test_counts_only_missing_weekdays(self, prev, curr, expected, label):
-        assert _skipped_weekdays(pd.Timestamp(prev), pd.Timestamp(curr)) == expected, label
+        assert skipped_weekdays(pd.Timestamp(prev), pd.Timestamp(curr)) == expected, label
 
     def test_same_day_is_zero(self):
-        assert _skipped_weekdays(pd.Timestamp("2024-01-05"), pd.Timestamp("2024-01-05")) == 0
+        assert skipped_weekdays(pd.Timestamp("2024-01-05"), pd.Timestamp("2024-01-05")) == 0
 
 
 class TestComputeStopLoss:

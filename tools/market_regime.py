@@ -12,7 +12,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from core.market_breadth import calc_market_breadth as calc_core_market_breadth
-from core.wyckoff_engine import FunnelConfig
+from core.wyckoff_engine import FunnelConfig, skipped_weekdays
 from tools.market_liquidity import calc_amount_distribution_health, calc_market_money_flow
 from utils.safe import finite_float as _safe_float
 
@@ -202,6 +202,8 @@ def calc_market_breadth(
 
 
 def _latest_trade_gap_days(df: pd.DataFrame | None) -> int:
+    """最后两个交易日跨了几个自然日。只作观测字段用,别拿它判节后——见
+    :func:`_latest_skipped_weekdays`。"""
     if df is None or df.empty or "date" not in df.columns:
         return 0
     dates = pd.to_datetime(df["date"], errors="coerce").dropna().sort_values()
@@ -210,20 +212,55 @@ def _latest_trade_gap_days(df: pd.DataFrame | None) -> int:
     return int((dates.iloc[-1].date() - dates.iloc[-2].date()).days)
 
 
+def _latest_skipped_weekdays(df: pd.DataFrame | None) -> int:
+    """最后两个交易日之间被跳过的工作日数,0 = 普通周末或连续交易日。"""
+    if df is None or df.empty or "date" not in df.columns:
+        return 0
+    dates = pd.to_datetime(df["date"], errors="coerce").dropna().sort_values()
+    if len(dates) < 2:
+        return 0
+    return skipped_weekdays(dates.iloc[-2], dates.iloc[-1])
+
+
+def _resolve_holiday_grace_from_bench(
+    cfg: FunnelConfig,
+    regime: str,
+    money_flow: dict,
+    bench_df: pd.DataFrame | None,
+) -> dict:
+    return _resolve_holiday_grace_dynamic(
+        cfg,
+        regime,
+        money_flow,
+        _latest_trade_gap_days(bench_df),
+        _latest_skipped_weekdays(bench_df),
+    )
+
+
 def _resolve_holiday_grace_dynamic(
     cfg: FunnelConfig,
     regime: str,
     money_flow: dict,
     gap_days: int,
+    skipped: int,
 ) -> dict:
+    """资金流平稳时把节后宽限期从 1 天放宽到 exit_holiday_grace_max_days。
+
+    判据是「中间有没有整个工作日没开盘」,不是「跨了几个自然日」。原先门是
+    ``gap_days < 3`` 才跳过,而周五→周一正好跨 3 自然日,于是**每个周一都被判成节后**,
+    只要资金流不是撤退就把离场宽限期从 1 放宽到 2,止损多躺一个交易日。
+    这是 #401 修过的同一个 bug 的第二处:当时只改了
+    core/wyckoff_engine.py 的 ``_is_holiday_grace``,本处漏了。
+    """
     result = {
         "enabled": bool(cfg.exit_holiday_grace_dynamic_enabled),
         "gap_days": gap_days,
+        "skipped_weekdays": skipped,
         "extended": False,
         "exit_holiday_grace_days": int(cfg.exit_holiday_grace_days),
         "reason": "",
     }
-    if not cfg.exit_holiday_grace_dynamic_enabled or gap_days < 3:
+    if not cfg.exit_holiday_grace_dynamic_enabled or skipped < 1:
         result["reason"] = "not_holiday_gap"
         return result
     score = float(money_flow.get("score") or 0.0)
@@ -333,6 +370,7 @@ def _base_holiday_grace_context(cfg: FunnelConfig) -> dict:
     return {
         "enabled": bool(cfg.exit_holiday_grace_dynamic_enabled),
         "gap_days": 0,
+        "skipped_weekdays": 0,
         "extended": False,
         "exit_holiday_grace_days": int(cfg.exit_holiday_grace_days),
         "reason": "",
@@ -964,9 +1002,7 @@ def analyze_benchmark_and_tune_cfg(
     regime, bear_rebound_reasons = _apply_bear_rebound_regime(regime, main)
     _apply_evr_policy(cfg, regime, runtime)
     _tune_cfg_for_regime(cfg, regime, main.recent3_cum, runtime)
-    holiday_grace_dynamic = _resolve_holiday_grace_dynamic(
-        cfg, regime, money_flow_context, _latest_trade_gap_days(bench_df)
-    )
+    holiday_grace_dynamic = _resolve_holiday_grace_from_bench(cfg, regime, money_flow_context, bench_df)
     breadth_context = _final_breadth_context(
         breadth_ratio,
         breadth_prev,
