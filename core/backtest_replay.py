@@ -51,6 +51,8 @@ logger = logging.getLogger(__name__)
 ProgressReporter = Callable[[str, str, float], None]
 MarketBreadthCalculator = Callable[[dict[str, pd.DataFrame]], dict]
 MarketRegimeAnalyzer = Callable[..., dict]
+MarketMoneyFlowCalculator = Callable[..., dict]
+AmountDistributionCalculator = Callable[..., dict]
 HistoryEndPositions = dict[str, NDArray[np.intp]]
 
 
@@ -109,6 +111,10 @@ class BacktestReplayConfig:
     enforce_confirmed_loss_guard: bool = False
     market_breadth_calculator: MarketBreadthCalculator | None = None
     market_regime_analyzer: MarketRegimeAnalyzer | None = None
+    # 资金流 / 成交额分布。缺它则 CRASH 拿不到确认判据而降级成 RISK_OFF——
+    # 见 _analyze_market_regime 的说明。
+    market_money_flow_calculator: MarketMoneyFlowCalculator | None = None
+    amount_distribution_calculator: AmountDistributionCalculator | None = None
     # 小盘基准（默认创业板指）。缺它则 CRASH/PANIC_REPAIR 少一条判据，
     # 防守档会塌成 NEUTRAL——见 _analyze_market_regime 的说明。
     smallcap_bench_df: pd.DataFrame | None = None
@@ -483,7 +489,14 @@ def _build_day_context(
         smallcap_slice = None
     day_cfg = replace(base_cfg)
     breadth = _calculate_market_breadth(day_df_map, config)
-    bench_context = _analyze_market_regime(bench_slice, day_cfg, breadth, config, smallcap_slice)
+    bench_context = _analyze_market_regime(
+        bench_slice,
+        day_cfg,
+        breadth,
+        config,
+        smallcap_slice,
+        **_liquidity_context(day_df_map, breadth, day_cfg, config),
+    )
     result = run_funnel(
         all_symbols=list(day_df_map.keys()),
         df_map=day_df_map,
@@ -518,12 +531,50 @@ def _calculate_market_breadth(day_df_map: dict[str, pd.DataFrame], config: Backt
     return calculator(day_df_map)
 
 
+def _liquidity_context(
+    day_df_map: dict[str, pd.DataFrame],
+    breadth: dict,
+    day_cfg: FunnelConfig,
+    config: BacktestReplayConfig,
+) -> dict[str, dict | None]:
+    """CRASH 确认判据的两个入参,见 _analyze_market_regime 的说明。"""
+    return {
+        "money_flow": _calculate_market_money_flow(day_df_map, breadth, config),
+        "amount_distribution": _calculate_amount_distribution(day_df_map, day_cfg, config),
+    }
+
+
+def _calculate_market_money_flow(
+    day_df_map: dict[str, pd.DataFrame],
+    breadth: dict,
+    config: BacktestReplayConfig,
+) -> dict | None:
+    calculator = config.market_money_flow_calculator
+    if calculator is None:
+        return None
+    return calculator(day_df_map, breadth)
+
+
+def _calculate_amount_distribution(
+    day_df_map: dict[str, pd.DataFrame],
+    day_cfg: FunnelConfig,
+    config: BacktestReplayConfig,
+) -> dict | None:
+    calculator = config.amount_distribution_calculator
+    if calculator is None:
+        return None
+    return calculator(day_df_map, day_cfg.min_avg_amount_wan, day_cfg.amount_avg_window)
+
+
 def _analyze_market_regime(
     bench_slice: pd.DataFrame,
     day_cfg: FunnelConfig,
     breadth: dict,
     config: BacktestReplayConfig,
     smallcap_slice: pd.DataFrame | None = None,
+    *,
+    money_flow: dict | None = None,
+    amount_distribution: dict | None = None,
 ) -> dict:
     """按日判定水温。
 
@@ -533,9 +584,24 @@ def _analyze_market_regime(
     在回测里全部塌成 NEUTRAL 或 CAUTION，24 个重叠日仅 14 天判定一致（58%）。
     后果是任何按水温分档的回测结论都不可信——例如防守档流动性门槛改动，
     因该档在回测中从不出现而完全测不出差别。
+
+    money_flow / amount_distribution 是同一处的第二层：此前也只传 breadth，
+    另两个入参留空。tools/market_regime.py 不会报错，而是拿一个空的行情字典兜底
+    重算，于是 money_flow.sample_size=0、分数退化成跟 breadth 涨跌幅同值、
+    成交额分布是「样本不足」。CRASH 要求价格判据 + 一条确认判据（广度断崖或
+    资金撤退），确认永远拿不到，CRASH 就掉到 RISK_OFF——实测 9 天 CRASH 只剩 1 天
+    （2026-08-19 广度 delta=-30.98 自己够到断崖阈值）。两档的下游不同：
+    step4 仓位系数 0.70 vs 0.85、执行优先级 2 vs 3，且 _tune_risk_off_cfg 只认 RISK_OFF。
     """
     analyzer = config.market_regime_analyzer or analyze_benchmark_and_tune_cfg
-    return analyzer(bench_slice, smallcap_slice, day_cfg, breadth=breadth)
+    return analyzer(
+        bench_slice,
+        smallcap_slice,
+        day_cfg,
+        breadth=breadth,
+        money_flow=money_flow,
+        amount_distribution=amount_distribution,
+    )
 
 
 def _day_df_map(

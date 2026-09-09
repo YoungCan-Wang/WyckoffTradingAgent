@@ -23,6 +23,7 @@ from core.dynamic_policy import dynamic_policy_mode
 from core.market_breadth import calc_market_breadth
 from core.theme_activity import build_theme_member_index
 from tools.mainline_config import load_mainline_engine_config
+from tools.market_liquidity import calc_amount_distribution_health, calc_market_money_flow
 from tools.market_regime import analyze_benchmark_and_tune_cfg
 from workflows.ai_candidate_allocation_config import ai_candidate_allocation_config_from_env
 from workflows.backtest_data import (
@@ -74,6 +75,10 @@ from workflows.backtest_strategy_variants import (
 from workflows.candidate_policy_config import candidate_policy_config_from_env
 from workflows.dynamic_policy_config import dynamic_policy_config_from_env
 from workflows.funnel_config_overrides import funnel_cfg_overrides_from_env
+from workflows.market_liquidity_config import (
+    amount_distribution_config_from_env,
+    market_money_flow_config_from_env,
+)
 from workflows.market_regime_config import market_regime_config_from_env
 from workflows.strategy_attribution_policy import attribution_weights_for_funnel, load_attribution_policy_snapshot
 
@@ -246,6 +251,8 @@ def _build_run_config(request: BacktestWorkflowRequest) -> BacktestRunConfig:
             funnel_config_overrides=funnel_overrides,
             market_breadth_calculator=calc_market_breadth,
             market_regime_analyzer=_market_regime_analyzer_from_env(),
+            market_money_flow_calculator=_market_money_flow_calculator_from_env(),
+            amount_distribution_calculator=_amount_distribution_calculator_from_env(),
             candidate_policy=candidate_policy_config_from_env(),
             ai_allocation=ai_candidate_allocation_config_from_env(),
             mainline_config=load_mainline_engine_config(),
@@ -257,6 +264,14 @@ def _build_run_config(request: BacktestWorkflowRequest) -> BacktestRunConfig:
 
 def _market_regime_analyzer_from_env():
     return partial(analyze_benchmark_and_tune_cfg, regime_config=market_regime_config_from_env())
+
+
+def _market_money_flow_calculator_from_env():
+    return partial(calc_market_money_flow, config=market_money_flow_config_from_env())
+
+
+def _amount_distribution_calculator_from_env():
+    return partial(calc_amount_distribution_health, config=amount_distribution_config_from_env())
 
 
 def _signal_weight_map_from_env() -> dict[str, float]:

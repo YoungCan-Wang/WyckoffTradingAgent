@@ -12,7 +12,13 @@ from core.a_share_entry_research import AShareEntryResearchPolicy
 from core.ai_candidate_allocation import AiCandidateAllocationConfig
 from core.backtest_execution import ExitSimulationConfig, IntradayPriceFetcher
 from core.backtest_performance import BacktestPerformanceConfig
-from core.backtest_replay import BacktestReplayConfig, MarketBreadthCalculator, MarketRegimeAnalyzer
+from core.backtest_replay import (
+    AmountDistributionCalculator,
+    BacktestReplayConfig,
+    MarketBreadthCalculator,
+    MarketMoneyFlowCalculator,
+    MarketRegimeAnalyzer,
+)
 from core.candidate_policy import CandidatePolicyConfig
 from core.cash_portfolio import CashPortfolioConfig, expand_portfolio_styles
 from core.mainline_engine import MainlineEngineConfig
@@ -55,6 +61,10 @@ class BacktestRunInput:
     funnel_config_overrides: dict[str, object] = field(default_factory=dict)
     market_breadth_calculator: MarketBreadthCalculator | None = None
     market_regime_analyzer: MarketRegimeAnalyzer | None = None
+    # 资金流 / 成交额分布；缺失时 CRASH 拿不到确认判据而降级成 RISK_OFF，
+    # 见 core/backtest_replay._analyze_market_regime。
+    market_money_flow_calculator: MarketMoneyFlowCalculator | None = None
+    amount_distribution_calculator: AmountDistributionCalculator | None = None
     # 小盘基准；缺失时防守档判据退化，见 core/backtest_replay._analyze_market_regime。
     smallcap_bench_df: pd.DataFrame | None = None
     candidate_policy: CandidatePolicyConfig = field(default_factory=CandidatePolicyConfig)
@@ -297,6 +307,8 @@ def _replay_config(
         intraday_entry_price_fetcher=params.intraday_entry_price_fetcher,
         market_breadth_calculator=params.market_breadth_calculator,
         market_regime_analyzer=params.market_regime_analyzer,
+        market_money_flow_calculator=params.market_money_flow_calculator,
+        amount_distribution_calculator=params.amount_distribution_calculator,
         smallcap_bench_df=getattr(params, "smallcap_bench_df", None),
         exit=params.exit_config,
         candidate_policy=params.candidate_policy,
