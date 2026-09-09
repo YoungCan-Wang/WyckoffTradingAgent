@@ -2199,6 +2199,61 @@ class TestMarketRegime:
         assert cfg.exit_holiday_grace_days == 2
         assert result["holiday_grace_dynamic"]["extended"] is True
 
+    def _holiday_grace_result(self, monkeypatch, last_two_dates: tuple[str, str]):
+        """跑一遍水温,把基准最后两个交易日钉成指定日期。资金流给平稳档,
+        让「是不是节后」成为唯一决定放宽与否的判据。"""
+        import tools.market_regime as market_regime
+        from core.wyckoff_engine import FunnelConfig
+
+        monkeypatch.setattr(market_regime, "_generate_pv_outlook", lambda **_kwargs: "次日推演：测试")
+        closes = list(pd.Series(range(220), dtype=float).map(lambda x: 100.0 + x * 0.2))
+        bench = _benchmark_df(closes)
+        bench.loc[len(bench) - 2, "date"] = last_two_dates[0]
+        bench.loc[len(bench) - 1, "date"] = last_two_dates[1]
+        cfg = FunnelConfig()
+        result = market_regime.analyze_benchmark_and_tune_cfg(
+            bench,
+            None,
+            cfg,
+            breadth={"ratio_pct": 70.0, "delta_pct": 5.0, "sample_size": 100},
+            money_flow={"trend": "entry", "score": 25.0},
+        )
+        return cfg, result["holiday_grace_dynamic"]
+
+    def test_holiday_grace_does_not_extend_over_a_plain_weekend(self, monkeypatch):
+        """周五→周一跨 3 自然日但没跳过任何工作日,不是节后,宽限期必须保持 1。
+
+        原判据是 gap_days < 3 才跳过,周五到周一正好 3 天,于是每个周一都被判成节后、
+        止损多躺一个交易日。#401 修过 core/wyckoff_engine 那处,这是漏掉的第二处。
+        """
+        friday, monday = pd.Timestamp("2026-09-04"), pd.Timestamp("2026-09-07")
+        assert (friday.weekday(), monday.weekday()) == (4, 0)
+
+        cfg, grace = self._holiday_grace_result(monkeypatch, (friday.strftime("%Y-%m-%d"), monday.strftime("%Y-%m-%d")))
+
+        assert grace["gap_days"] == 3, "自然日间隔仍照实上报,只是不再拿它判节后"
+        assert grace["skipped_weekdays"] == 0
+        assert grace["reason"] == "not_holiday_gap"
+        assert grace["extended"] is False
+        assert cfg.exit_holiday_grace_days == 1
+
+    def test_holiday_grace_extends_over_a_midweek_single_day_holiday(self, monkeypatch):
+        """周二→周四只跨 2 自然日,但中间的周三整日休市,这才是节后,要放宽。
+
+        旧判据 gap_days >= 3 会把这天漏掉——两头都错,不只是周一多算。
+        """
+        tuesday, thursday = pd.Timestamp("2026-09-08"), pd.Timestamp("2026-09-10")
+        assert (tuesday.weekday(), thursday.weekday()) == (1, 3)
+
+        cfg, grace = self._holiday_grace_result(
+            monkeypatch, (tuesday.strftime("%Y-%m-%d"), thursday.strftime("%Y-%m-%d"))
+        )
+
+        assert grace["gap_days"] == 2, "跨天数比周末还少,旧判据据此漏判"
+        assert grace["skipped_weekdays"] == 1
+        assert grace["extended"] is True
+        assert cfg.exit_holiday_grace_days == 2
+
     def test_market_pv_policy_shadow_structures_defensive_outlook(self):
         from core.wyckoff_engine import FunnelConfig
         from tools.market_regime import derive_market_pv_policy_shadow

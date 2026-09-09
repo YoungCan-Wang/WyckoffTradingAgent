@@ -2622,13 +2622,17 @@ def _detect_upthrust_after_distribution(df: pd.DataFrame, cfg: FunnelConfig) -> 
     }
 
 
-def _skipped_weekdays(prev: pd.Timestamp, curr: pd.Timestamp) -> int:
+def skipped_weekdays(prev: pd.Timestamp, curr: pd.Timestamp) -> int:
     """两个相邻交易日之间被跳过的工作日数。0 = 连续交易日，**普通周末也算连续**。
 
     判据是「中间有没有整个工作日没开盘」，不是「跨了几个自然日」。跨天数会两头出错：
 
     - 周五 → 周一跨 3 自然日，中间只有周六周日，**是普通周末不是假日**；
     - 周二 → 周四只跨 2 自然日，中间的周三是工作日却没开盘,**这才是假日**。
+
+    公开给 tools/market_regime.py 复用:节后判据原先在两处各抄了一份跨自然日的写法,
+    #401 只修了本文件这处,另一处直到 2026-09-09 才发现同样把每个周一当节后。
+    同一个问题按定义只应有一个实现。
     """
     gap = (curr - prev).days
     if gap <= 1:
@@ -2646,7 +2650,7 @@ def _is_holiday_grace(df_s: pd.DataFrame, grace_days: int) -> bool:
     34.9——那批本该吃 −35 分的票,周一一分不扣。
 
     同一个阈值还漏掉周中单日假(周二→周四跨 2 天,判 False)。改成数「被跳过的
-    工作日」两头都对,见 :func:`_skipped_weekdays`。
+    工作日」两头都对,见 :func:`skipped_weekdays`。
     """
     if grace_days <= 0 or "date" not in df_s.columns or len(df_s) < 2:
         return False
@@ -2656,7 +2660,7 @@ def _is_holiday_grace(df_s: pd.DataFrame, grace_days: int) -> bool:
     for i in range(1, check_pairs + 1):
         if dates.isna().iloc[-i] or dates.isna().iloc[-i - 1]:
             continue
-        if _skipped_weekdays(dates.iloc[-i - 1], dates.iloc[-i]) >= 1:
+        if skipped_weekdays(dates.iloc[-i - 1], dates.iloc[-i]) >= 1:
             return True
     return False
 
