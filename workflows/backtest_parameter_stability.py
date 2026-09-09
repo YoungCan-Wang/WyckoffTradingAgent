@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from core.backtest_grid_ranking import RobustParamScore, rank_robust_params
+from core.backtest_periods import period_rank
 from workflows.backtest_market_report_artifacts import GridCell
 
 ParamKey = tuple[str, int, int, int, int]
@@ -70,8 +71,7 @@ def _representative(cells: list[GridCell]) -> GridCell:
 
 
 def _period_rank(period: str) -> int:
-    order = {"recent_2m": 0, "recent_6m": 1, "bull_2020": 2, "bear_2022": 3}
-    return order.get(period, 9)
+    return period_rank(period)
 
 
 def _neighbors(

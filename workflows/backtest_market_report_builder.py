@@ -14,6 +14,7 @@ from core.backtest_grid_ranking import (
     robust_label,
     weak_period_guardrails,
 )
+from core.backtest_periods import PERIOD_LABELS, PERIOD_ORDER
 from workflows.backtest_market_report_artifacts import GridCell, read_trades
 from workflows.backtest_parameter_stability import build_parameter_stability
 from workflows.backtest_walk_forward import build_walk_forward_validation
@@ -31,15 +32,7 @@ REGIME_LABELS = {
 UNKNOWN_REGIME = "未标注"
 UNKNOWN_REGIME_DESC = "回测样本未写入周期标签"
 
-PERIOD_LABELS = {
-    "recent_2m": "最近2个月",
-    "recent_6m": "最近6个月",
-    "bull_2020": "牛市 2020-07~2021-02",
-    "bear_2022": "熊市 2021-12~2022-10",
-    "custom": "自定义周期",
-}
-
-PERIOD_ORDER = {"recent_2m": 0, "recent_6m": 1, "bull_2020": 2, "bear_2022": 3, "custom": 4}
+# 标签与排序取自 core.backtest_periods，缺周期时报表里会露出裸 period_key。
 STYLE_ORDER = {
     "slot_equal_4": 0,
     "probe_add": 1,
@@ -95,8 +88,9 @@ def _period_label(cell: GridCell) -> str:
     return f"{cell.start} ~ {cell.end}" if cell.start or cell.end else "未标记周期"
 
 
-def _period_sort_key(label: str) -> tuple[int, str]:
-    return PERIOD_ORDER.get(label, 99), label
+def _period_sort_key(period_key: str) -> tuple[int, str]:
+    # 传进来的是 period_key（空 key 时调用方回落成标签串），不是展示名。
+    return PERIOD_ORDER.get(period_key, 99), period_key
 
 
 def _normalize_regime(value: str | None) -> str:
@@ -530,8 +524,7 @@ def _build_conclusion_lines(
             f"稳健分 {_fmt_num(robust_best.score, 2)}。"
         )
     lines.extend(_build_period_guardrail_lines(cells))
-    if best.take_profit == 0:
-        lines.append("- 退出观察: 当前最佳组合关闭固定止盈，说明右尾大赢家对收益贡献很大，固定 TP 容易截断趋势。")
+    lines.extend(_take_profit_comment(cells, best))
     if best.win_rate is not None and best.win_rate < 35 and best.avg_ret is not None and best.avg_ret > 0:
         lines.append(
             "- 胜率结构: 单笔胜率偏低但均收为正，属于低胜率/高赔率的趋势跟踪形态；需要监控右尾依赖，而不是单纯追求高胜率。"
@@ -542,6 +535,21 @@ def _build_conclusion_lines(
             f"去掉前三大盈利单后约 {_fmt_signed(diagnostics['drop_top_3_avg'], 2, '%')}。"
         )
     return lines
+
+
+def _take_profit_comment(cells: list[GridCell], best: GridCell) -> list[str]:
+    """只在参数格里真有固定止盈单元可比时，才说"关闭止盈更好"。
+
+    原来的条件是 `if best.take_profit == 0`。all_defined 的六个周期各 12 格全是
+    take_profit=0（唯一带 TP 的 `15:-8:18:0` 只在 recent_2m，而 recent_2m 不进
+    all_defined），于是这句必然出现，且断言的是一个从未被检验的对比 —— 与
+    「对照行必须量自己」同类：结论无法被数据推翻。
+    """
+    if best.take_profit != 0:
+        return []
+    if not any((cell.take_profit or 0) > 0 for cell in cells):
+        return ["- 退出观察: 本轮参数格未设固定止盈单元，无法判断固定 TP 是否截断趋势；如需结论要补 TP>0 的对照格。"]
+    return ["- 退出观察: 当前最佳组合关闭固定止盈，说明右尾大赢家对收益贡献很大，固定 TP 容易截断趋势。"]
 
 
 def _build_period_guardrail_lines(cells: list[GridCell]) -> list[str]:
