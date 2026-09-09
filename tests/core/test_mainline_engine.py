@@ -294,24 +294,39 @@ def test_mainline_research_entries_default_uncapped_and_ignore_unavailable_score
     assert len(mainline_candidate_entries(candidates, max_count=3)) == 3
 
 
-def test_replay_funnel_retains_mainline_research_beyond_ai_cap() -> None:
+def test_replay_funnel_caps_mainline_entries_at_ai_candidate_limit() -> None:
+    """``run_funnel`` 是回放和实盘共用的主路径,主线名额必须在这里就卡住。
+
+    同一批输入跑两次:cap=3 只放 3 只,cap=0(不限)放满 6 只。两次对比说明缩到 3
+    是名额造成的,不是候选本身不够——只断言 ``== 3`` 的话,候选池恰好只有 3 只
+    也能让用例变绿。
+    """
     codes = [f"{index:06d}" for index in range(1, 7)]
     frame = _frame(_trend_values())
-    result = run_funnel(
-        all_symbols=codes,
-        df_map={code: frame for code in codes},
-        bench_df=frame,
-        name_map={code: code for code in codes},
-        market_cap_map={},
-        sector_map={code: "通信设备" for code in codes},
-        cfg=FunnelConfig(ma_long=60),
-        concept_map={code: ["军工信息化"] for code in codes},
-        concept_heat=[{"name": "军工信息化", "pct": 5.5, "net_inflow": 900_000_000}],
-        mainline_config=MainlineEngineConfig(max_ai_candidates=3),
-    )
 
-    mainline = [item for item in result.candidate_entries if item["signal_key"] == "mainline"]
-    assert {item["code"] for item in mainline} == set(codes)
+    def _run(max_ai_candidates: int) -> list[dict]:
+        result = run_funnel(
+            all_symbols=codes,
+            df_map={code: frame for code in codes},
+            bench_df=frame,
+            name_map={code: code for code in codes},
+            market_cap_map={},
+            sector_map={code: "通信设备" for code in codes},
+            cfg=FunnelConfig(ma_long=60),
+            concept_map={code: ["军工信息化"] for code in codes},
+            concept_heat=[{"name": "军工信息化", "pct": 5.5, "net_inflow": 900_000_000}],
+            mainline_config=MainlineEngineConfig(max_ai_candidates=max_ai_candidates),
+        )
+        return [item for item in result.candidate_entries if item["signal_key"] == "mainline"]
+
+    capped = _run(3)
+    uncapped = _run(0)
+
+    assert {item["code"] for item in uncapped} == set(codes)
+    assert len(capped) == 3
+    assert {item["code"] for item in capped} < {item["code"] for item in uncapped}
+    # 名额内保留的是排序靠前的那几只,不是随机截断。
+    assert [item["code"] for item in capped] == [item["code"] for item in uncapped][:3]
 
 
 def test_replay_funnel_does_not_pass_future_theme_to_mainline_engine(monkeypatch) -> None:

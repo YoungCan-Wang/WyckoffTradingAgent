@@ -958,12 +958,19 @@ def _pending_mainline_fills(signal_days, history, config):
 
 
 @pytest.mark.parametrize("regime,weighted", [("RISK_ON", False), ("RISK_ON", True), ("RISK_OFF", False)])
-def test_pending_only_cash_path_ignores_mainline_research_pool_expansion(regime, weighted):
+def test_mainline_ai_cap_collapses_wider_research_pool_to_same_entries(regime, weighted):
+    """A wider research pool cannot reach selection: the AI cap keeps the same top-N.
+
+    Feeding 6 rows instead of 3 changes nothing downstream because
+    ``_mainline_entries_for_result`` truncates to ``max_ai_candidates`` (3 here) and the
+    extra rows rank below the cut. This is the structural reason the production-shaped
+    ``pending_mode="only"`` arm is byte-identical across pool widths.
+    """
     old_pool = _pending_mainline_compatibility_case(regime, 3, weighted)
     full_pool = _pending_mainline_compatibility_case(regime, 6, weighted)
-    assert [day["research_count"] for day in full_pool["days"]] == [6, 6, 6]
+    assert [day["research_count"] for day in full_pool["days"]] == [3, 3, 3]
     assert [day["confirmed_count"] for day in full_pool["days"]] == [0, 5, 0]
-    assert full_pool["days"][1]["scores"] != old_pool["days"][1]["scores"]
+    assert full_pool["days"][1]["scores"] == old_pool["days"][1]["scores"]
     assert [day["selected"] for day in old_pool["days"]] == [day["selected"] for day in full_pool["days"]]
     for field in ("trades", "fills", "final_cash", "skipped_full"):
         assert full_pool[field] == old_pool[field]

@@ -16,7 +16,12 @@ def _candidates() -> list[dict]:
     ]
 
 
-def test_live_candidate_pool_retains_mainline_rows_beyond_ai_promotion_cap(monkeypatch) -> None:
+def test_live_candidate_pool_caps_mainline_rows_at_ai_promotion_cap(monkeypatch) -> None:
+    """实盘候选池按 ``layers.mainline_ai_cap`` 卡名额。
+
+    同一批 6 只候选跑两次:cap=3 出 3 行,cap=0(不限)出 6 行。留着不限的那次是为了
+    区分「名额卡住了」和「候选本身只有 3 只」。
+    """
     import workflows.funnel_candidates as mod
 
     for name in ("detect_markup_stage", "build_candidate_entries", "build_l1_candidate_lane_entries"):
@@ -25,30 +30,39 @@ def test_live_candidate_pool_retains_mainline_rows_beyond_ai_promotion_cap(monke
         monkeypatch.setattr(mod, name, lambda *args, **kwargs: {})
     monkeypatch.setattr(mod, "annotate_trend_drawdown_risk", lambda *args: None)
     monkeypatch.setattr(mod, "rank_l3_candidates", lambda **kwargs: ([], {}))
-    layers = SimpleNamespace(
-        l1_passed=[],
-        l2_passed=[],
-        l3_passed=[],
-        l2_channel_map={},
-        triggers={},
-        top_sectors=[],
-        mainline_candidates=_candidates(),
-        mainline_ai_cap=3,
-        sector_rotation={},
-    )
     strategic = SimpleNamespace(markup_symbols=[], stage_map={}, pool=[])
 
-    result = mod.build_candidate_outputs(
-        layers=layers,
-        strategic=strategic,
-        all_df_map={},
-        sector_map={},
-        cfg=FunnelConfig(),
-    )
+    def _run(mainline_ai_cap: int):
+        layers = SimpleNamespace(
+            l1_passed=[],
+            l2_passed=[],
+            l3_passed=[],
+            l2_channel_map={},
+            triggers={},
+            top_sectors=[],
+            mainline_candidates=_candidates(),
+            mainline_ai_cap=mainline_ai_cap,
+            sector_rotation={},
+        )
+        return mod.build_candidate_outputs(
+            layers=layers,
+            strategic=strategic,
+            all_df_map={},
+            sector_map={},
+            cfg=FunnelConfig(),
+        )
 
-    assert len(result.mainline_candidate_entries) == 6
-    assert len(result.candidate_entries) == 6
-    assert all(item["score"] > 0 for item in result.candidate_entries)
+    capped = _run(3)
+    uncapped = _run(0)
+
+    assert len(uncapped.mainline_candidate_entries) == 6
+    assert len(uncapped.candidate_entries) == 6
+    assert len(capped.mainline_candidate_entries) == 3
+    assert len(capped.candidate_entries) == 3
+    # 名额内留下的是分数最高的 3 只(_candidates 从 0.89 递减)。
+    assert [item["code"] for item in capped.candidate_entries] == ["000001", "000002", "000003"]
+    assert all(item["score"] > 0 for item in capped.candidate_entries)
+    assert all(item["score"] > 0 for item in uncapped.candidate_entries)
 
 
 def test_mainline_score_map_repairs_truncated_entries_without_lowering_existing_score() -> None:
