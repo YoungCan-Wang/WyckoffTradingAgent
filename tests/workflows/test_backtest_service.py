@@ -81,6 +81,14 @@ def test_run_backtest_workflow_builds_context_without_network(monkeypatch) -> No
     assert captured["config"].performance.cash_portfolio is True
     analyzer = captured["config"].replay.market_regime_analyzer
     assert analyzer.keywords["regime_config"].smallcap_bench_code == "399905"
+    # 资金流/成交额分布必须注入,否则 analyzer 拿空行情字典兜底,
+    # CRASH 拿不到确认判据而降级成 RISK_OFF——见 tests/core/test_backtest_regime_money_flow.py
+    money_flow = captured["config"].replay.market_money_flow_calculator
+    assert money_flow is not None
+    assert money_flow.keywords["config"].lookback == 20
+    amount_distribution = captured["config"].replay.amount_distribution_calculator
+    assert amount_distribution is not None
+    assert amount_distribution.keywords["config"].lookback == 20
 
 
 def test_backtest_signal_weight_map_matches_funnel_policy_gate(monkeypatch) -> None:
