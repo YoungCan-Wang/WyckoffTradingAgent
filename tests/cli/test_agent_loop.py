@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from cli.loop_guard import check_doom_loop, resolve_turn_expectation
 from cli.tools import CONFIRM_TOOLS, ToolRegistry
 from tests.helpers.agent_loop_harness import AgentLoopHarness
@@ -496,3 +498,52 @@ class TestToolConfirm:
         assert "error" not in result_confirmed
         assert result_confirmed["returncode"] == 0
         assert "hi" in result_confirmed["stdout"]
+
+    def test_history_confirm_does_not_skip_confirm_callback(self):
+        """有确认弹窗时，历史里的「继续」不能替用户批掉写工具。"""
+        calls: list[str] = []
+
+        def _confirm(name, _args):
+            calls.append(name)
+            return {"action": "deny"}
+
+        registry = ToolRegistry()
+        registry.set_confirm_callback(_confirm)
+        messages = [
+            {"role": "tool", "name": "ask_user_question", "content": "用户已答复: 继续"},
+        ]
+        result = registry.execute("update_portfolio", {"action": "remove", "code": "000001"}, messages=messages)
+        assert calls == ["update_portfolio"]
+        assert "拒绝" in result["error"]
+
+    def test_negated_ask_user_answer_does_not_unlock_writes(self):
+        registry = ToolRegistry()
+        messages = [
+            {"role": "tool", "name": "ask_user_question", "content": "用户已答复: 先不要执行"},
+        ]
+        result = registry.execute("exec_command", {"command": "echo hi"}, messages=messages)
+        assert "已被拦截" in result["error"]
+
+    def test_stale_ask_user_answer_does_not_unlock_after_newer_refusal(self):
+        registry = ToolRegistry()
+        messages = [
+            {"role": "tool", "name": "ask_user_question", "content": "用户已答复: 确认"},
+            {"role": "tool", "name": "ask_user_question", "content": "用户已答复: 取消"},
+        ]
+        result = registry.execute("exec_command", {"command": "echo hi"}, messages=messages)
+        assert "已被拦截" in result["error"]
+
+    def test_ok_substring_in_unrelated_answer_does_not_unlock(self):
+        registry = ToolRegistry()
+        messages = [
+            {
+                "role": "tool",
+                "name": "ask_user_question",
+                "content": json.dumps(
+                    {"status": "answered", "answer": "look at the book", "result": "用户已答复: look at the book"},
+                    ensure_ascii=False,
+                ),
+            },
+        ]
+        result = registry.execute("exec_command", {"command": "echo hi"}, messages=messages)
+        assert "已被拦截" in result["error"]

@@ -10,7 +10,9 @@
 from __future__ import annotations
 
 import inspect
+import json
 import logging
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -19,6 +21,25 @@ from typing import Any
 from agents.tool_context import ToolContext
 
 logger = logging.getLogger(__name__)
+
+# Headless（无确认弹窗）时，用最近一次 ask_user_question 的答复充当审批。
+# 短英文 token 必须整词匹配，否则 "ok" 会命中 "book"、"no" 会命中 "know"。
+_AFFIRM_TOKENS = ("确认", "允许", "继续", "执行", "yes", "y", "ok", "allow", "confirm")
+_NEGATION_MARKERS = (
+    "不要",
+    "别",
+    "拒绝",
+    "取消",
+    "不行",
+    "不了",
+    "不可以",
+    "不允许",
+    "不确认",
+    "不执行",
+    "deny",
+    "cancel",
+)
+_EN_NEGATION = frozenset({"no", "n", "否"})
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +303,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "买入日期（YYYYMMDD 或 YYYY-MM-DD，须为真实日历日）。add 必填；update 改股数/成本时不要传。update 目标不存在时报错，不会新建。",
                 },
-                "free_cash": {"type": "number", "description": "可用资金（set_cash 时使用）"},
+                "free_cash": {
+                    "type": "number",
+                    "description": "可用资金。set_cash 必须显式传入；省略会报错，不会静默清零。",
+                },
                 "table": {"type": "string", "description": "仅 delete_records：'recommendation' 或 'signal'"},
                 "codes": {
                     "type": "array",
@@ -890,6 +914,51 @@ def is_concurrency_safe(name: str) -> bool:
 ASK_USER_TIMEOUT_SENTINEL = "__ask_user_question_timeout__"
 
 
+def _ask_user_answer_text(content: Any) -> str:
+    """从 tool message content 抽出用户原答复（兼容 JSON 与旧的纯文本格式）。"""
+    text = str(content or "").strip()
+    if not text:
+        return ""
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        payload = None
+    if isinstance(payload, dict):
+        answer = payload.get("answer")
+        if isinstance(answer, str) and answer.strip():
+            return answer.strip()
+        result = payload.get("result")
+        if isinstance(result, str) and result.strip():
+            text = result.strip()
+    marker = "用户已答复:"
+    if marker in text:
+        return text.split(marker, 1)[1].strip()
+    return text
+
+
+def _answer_is_affirmative(answer: str) -> bool:
+    """判断答复是否为对高风险操作的明确同意。
+
+    「先不要执行」这类否定句含「执行」子串，旧实现会当成同意；
+    英文短词必须整词匹配，否则 ``ok`` 会误伤 ``book``。
+    """
+    raw = str(answer or "").strip()
+    if not raw:
+        return False
+    lower = raw.lower()
+    if lower in _EN_NEGATION or any(marker in raw for marker in _NEGATION_MARKERS):
+        return False
+    if lower in _AFFIRM_TOKENS or raw in _AFFIRM_TOKENS:
+        return True
+    for token in _AFFIRM_TOKENS:
+        if token.isascii():
+            if re.search(rf"(?i)(?<![a-z]){re.escape(token)}(?![a-z])", lower):
+                return True
+        elif token in raw:
+            return True
+    return False
+
+
 def ask_user_question(
     question: str,
     options: list[str] | None = None,
@@ -1169,17 +1238,12 @@ class ToolRegistry:
         )
 
     def _check_user_confirmed_in_history(self, messages: list[dict[str, Any]] | None) -> bool:
+        """只看最近一次 ask_user_question；旧答复不再解锁后续所有写工具。"""
         if not messages:
             return False
-        for m in reversed(messages):
-            if m.get("role") == "tool" and m.get("name") == "ask_user_question":
-                content = m.get("content", "")
-                lower_content = content.lower()
-                if any(
-                    word in lower_content
-                    for word in ("确认", "允许", "继续", "执行", "yes", "ok", "allow", "confirm", "opt_0")
-                ):
-                    return True
+        for message in reversed(messages):
+            if message.get("role") == "tool" and message.get("name") == "ask_user_question":
+                return _answer_is_affirmative(_ask_user_answer_text(message.get("content", "")))
         return False
 
     def execute(self, name: str, args: dict[str, Any], messages: list[dict[str, Any]] | None = None) -> Any:
@@ -1294,7 +1358,9 @@ class ToolRegistry:
     ) -> tuple[dict[str, Any], dict[str, str] | None]:
         if not self.requires_approval(name) or name in self._always_allowed:
             return args, None
-        if self._check_user_confirmed_in_history(messages):
+        # 有确认弹窗时必须走弹窗：历史里任意「继续/ok」不能替用户批掉后续写工具。
+        # 无弹窗（headless）才用最近一次 ask_user_question 答复充当审批。
+        if self._confirm_callback is None and self._check_user_confirmed_in_history(messages):
             return args, None
         if not self._confirm_callback:
             return args, {
