@@ -31,14 +31,28 @@ def build_walk_forward_validation(
     }
 
 
+def _period_identity(cell: GridCell) -> str:
+    """period_key 缺失时按日期区间兜底，别让周期整段从时序链里消失。
+
+    2026-08-21 加 bull_2025 时 _parse_period_key 未同步，这里原来写
+    ``if cell.period_key`` 直接过滤掉空 key，于是 run 32537955220 的
+    walk_forward 只有 4 个迁移窗口，bull_2025 出现 0 次——而它是最近的完整年度、
+    也是那次唯一 +29.78% 的周期。判定「1/16 窗口为正」正是在缺它的链上算出来的。
+    """
+    if cell.period_key:
+        return cell.period_key
+    return f"{cell.start}_{cell.end}" if (cell.start or cell.end) else ""
+
+
 def _walk_forward_windows(cells: list[GridCell]) -> list[dict[str, Any]]:
     by_style_period: dict[tuple[str, str], list[GridCell]] = defaultdict(list)
     period_end: dict[str, str] = {}
     for cell in cells:
-        if cell.period_key and cell.cash_total_return is not None:
+        identity = _period_identity(cell)
+        if identity and cell.cash_total_return is not None:
             style = cell.portfolio_style or "slot_equal_4"
-            by_style_period[(style, cell.period_key)].append(cell)
-            period_end[cell.period_key] = max(period_end.get(cell.period_key, ""), cell.end)
+            by_style_period[(style, identity)].append(cell)
+            period_end[identity] = max(period_end.get(identity, ""), cell.end)
     periods = sorted(period_end, key=lambda period: (period_end[period], period))
     styles = sorted({style for style, _period in by_style_period})
     return [

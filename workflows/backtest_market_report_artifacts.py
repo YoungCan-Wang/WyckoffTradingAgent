@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from core.backtest_periods import period_key_from_dirname
+
 
 @dataclass(frozen=True)
 class GridCell:
@@ -163,14 +165,9 @@ def _parse_params(dirname: str) -> tuple[int, int, int, int, int] | None:
 
 
 def _parse_period_key(dirname: str) -> str:
-    # 周期名单必须与 backtest_grid.yml 的 matrix 同步。缺 sideways_2023 / volatile_2024
-    # 会让这两个窗口的 period_key 变成空串，回落到 start_end 兜底——周期数没丢，但
-    # REQUIRED_PERIODS 判定与 _representative 的偏好选择都会失准。
-    match = re.search(
-        r"backtest-grid-(recent_2m|recent_6m|bull_2020|bear_2022|sideways_2023|volatile_2024|custom)-h",
-        dirname,
-    )
-    return match.group(1) if match else ""
+    # 名单收敛到 core.backtest_periods，避免 matrix 加周期时漏改这里：漏改不报错，
+    # 只是 period_key 变空串，而 backtest_walk_forward 会静默丢掉空 key 的周期。
+    return period_key_from_dirname(dirname)
 
 
 def _split_md_row(line: str) -> list[str]:

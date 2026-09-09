@@ -681,3 +681,36 @@ def test_market_report_recognizes_recent_2m_fast_grid(tmp_path):
     assert "| 1 | 等额四仓 / 20天 / SL-8% / 无TP / Trail-5% 🏆 | 1/1 | +1.00%" in report
     assert "- 市场周期: 市场周期未标注" in report
     assert "| 未标注 | 回测样本未写入周期标签 | 1 |" in report
+
+
+def test_market_report_labels_bull_2025(tmp_path):
+    """bull_2025 必须解析出 period_key 并显示成中文标签，而不是裸日期区间。
+
+    旧实现里报表侧的周期正则名单停在 volatile_2024，bull_2025 落到空 key：
+    「各周期最佳」只能打印 `2025-01-02 ~ 2025-12-31`，且 walk_forward 整段丢掉该周期。
+    """
+    from scripts.update_backtest_market_report import build_report, load_grid_cells
+
+    _write_grid_cell(tmp_path, "bull_2025", "2025-01-02", "2025-12-31", 10, 8, 29.78)
+
+    cells = load_grid_cells(tmp_path)
+    assert {cell.period_key for cell in cells} == {"bull_2025"}
+
+    report = build_report(cells)
+    assert "牛市 2025" in report
+
+
+def test_market_report_does_not_claim_tp_hurts_when_no_tp_cell_tested(tmp_path):
+    """参数格里没有 TP>0 的对照单元时，不能断言"关闭止盈更好"。
+
+    all_defined 的六个周期每格都是 take_profit=0，旧条件 `if best.take_profit == 0`
+    因此恒真——结论无法被数据推翻，属于「对照行必须量自己」同一类缺陷。
+    """
+    from scripts.update_backtest_market_report import build_report, load_grid_cells
+
+    _write_grid_cell(tmp_path, "recent_6m", "2026-01-02", "2026-06-30", 10, 8, 4.0)
+
+    report = build_report(load_grid_cells(tmp_path))
+
+    assert "固定 TP 容易截断趋势" not in report
+    assert "本轮参数格未设固定止盈单元" in report

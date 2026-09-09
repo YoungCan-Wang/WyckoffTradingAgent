@@ -221,28 +221,33 @@ jobs:
       # 六个周期各自独立、互不依赖，全部并行即可。此前 max-parallel: 4 会让
       # all_defined 分两轮执行，墙钟时间接近翻倍。
       max-parallel: 6
+      # 2026-09-09 补 hold=2/3 与 hold=5 的止损档:此前参数格只覆盖 5/10/15 天,
+      # 而 5 天只有无退出基线,2~3 天完全没测 —— 实际持有期是 2~10 天不固定,
+      # 于是短持有段既无收益读数也无止损读数,报表里"N天最佳"从 5 天起跳。
+      # 同一周期的所有单元共用一份信号台账(workflows/backtest.py 复用 ledger),
+      # 新增单元只多跑退出重放;台账按最小 hold 建,min 5→2 只多算 3 个交易日。
       matrix:
         include:
           - period_key: recent_2m
             grid_cells: "5:0:0:0,10:0:0:0,10:-7:0:0,15:-8:18:0,20:-8:0:-5"
           - period_key: recent_6m
-            grid_cells: "5:0:0:0,10:0:0:0,10:-5:0:0,10:-7:0:0,10:-8:0:0,15:-5:0:0,15:-7:0:0,15:-8:0:0,10:-5:0:-8,10:-8:0:-8,10:-8:0:-8:5,10:-8:0:-8:7"
+            grid_cells: "2:0:0:0,3:0:0:0,3:-5:0:0,5:0:0:0,5:-5:0:0,5:-8:0:0,10:0:0:0,10:-5:0:0,10:-7:0:0,10:-8:0:0,15:-5:0:0,15:-7:0:0,15:-8:0:0,10:-5:0:-8,10:-8:0:-8,10:-8:0:-8:5,10:-8:0:-8:7"
           - period_key: bull_2020
-            grid_cells: "5:0:0:0,10:0:0:0,10:-5:0:0,10:-7:0:0,10:-8:0:0,15:-5:0:0,15:-7:0:0,15:-8:0:0,10:-5:0:-8,10:-8:0:-8,10:-8:0:-8:5,10:-8:0:-8:7"
+            grid_cells: "2:0:0:0,3:0:0:0,3:-5:0:0,5:0:0:0,5:-5:0:0,5:-8:0:0,10:0:0:0,10:-5:0:0,10:-7:0:0,10:-8:0:0,15:-5:0:0,15:-7:0:0,15:-8:0:0,10:-5:0:-8,10:-8:0:-8,10:-8:0:-8:5,10:-8:0:-8:7"
           - period_key: bear_2022
-            grid_cells: "5:0:0:0,10:0:0:0,10:-5:0:0,10:-7:0:0,10:-8:0:0,15:-5:0:0,15:-7:0:0,15:-8:0:0,10:-5:0:-8,10:-8:0:-8,10:-8:0:-8:5,10:-8:0:-8:7"
+            grid_cells: "2:0:0:0,3:0:0:0,3:-5:0:0,5:0:0:0,5:-5:0:0,5:-8:0:0,10:0:0:0,10:-5:0:0,10:-7:0:0,10:-8:0:0,15:-5:0:0,15:-7:0:0,15:-8:0:0,10:-5:0:-8,10:-8:0:-8,10:-8:0:-8:5,10:-8:0:-8:7"
           # 2026-08-08 补齐：这两个周期此前只有 fetch 快照、grid 矩阵无对应条目，
           # 导致 all_defined 实际只跑 4 个周期，parameter_stability 因覆盖不足
           # 反复判 review。补上后震荡市与高波动市才纳入跨周期稳健性判定。
           - period_key: sideways_2023
-            grid_cells: "5:0:0:0,10:0:0:0,10:-5:0:0,10:-7:0:0,10:-8:0:0,15:-5:0:0,15:-7:0:0,15:-8:0:0,10:-5:0:-8,10:-8:0:-8,10:-8:0:-8:5,10:-8:0:-8:7"
+            grid_cells: "2:0:0:0,3:0:0:0,3:-5:0:0,5:0:0:0,5:-5:0:0,5:-8:0:0,10:0:0:0,10:-5:0:0,10:-7:0:0,10:-8:0:0,15:-5:0:0,15:-7:0:0,15:-8:0:0,10:-5:0:-8,10:-8:0:-8,10:-8:0:-8:5,10:-8:0:-8:7"
           - period_key: volatile_2024
-            grid_cells: "5:0:0:0,10:0:0:0,10:-5:0:0,10:-7:0:0,10:-8:0:0,15:-5:0:0,15:-7:0:0,15:-8:0:0,10:-5:0:-8,10:-8:0:-8,10:-8:0:-8:5,10:-8:0:-8:7"
+            grid_cells: "2:0:0:0,3:0:0:0,3:-5:0:0,5:0:0:0,5:-5:0:0,5:-8:0:0,10:0:0:0,10:-5:0:0,10:-7:0:0,10:-8:0:0,15:-5:0:0,15:-7:0:0,15:-8:0:0,10:-5:0:-8,10:-8:0:-8,10:-8:0:-8:5,10:-8:0:-8:7"
           # 2026-08-21 补齐 bull_2025：此前 5 个时期覆盖 61% 交易日，2025 全年（243 日、
           # 上证 +21.6%、创业板 +55.5%、振幅 30.1%）完全落在空档里，而它是最近的完整年度、
           # 市场结构最接近当前。
           - period_key: bull_2025
-            grid_cells: "5:0:0:0,10:0:0:0,10:-5:0:0,10:-7:0:0,10:-8:0:0,15:-5:0:0,15:-7:0:0,15:-8:0:0,10:-5:0:-8,10:-8:0:-8,10:-8:0:-8:5,10:-8:0:-8:7"
+            grid_cells: "2:0:0:0,3:0:0:0,3:-5:0:0,5:0:0:0,5:-5:0:0,5:-8:0:0,10:0:0:0,10:-5:0:0,10:-7:0:0,10:-8:0:0,15:-5:0:0,15:-7:0:0,15:-8:0:0,10:-5:0:-8,10:-8:0:-8,10:-8:0:-8:5,10:-8:0:-8:7"
     env:
       PYTHONUNBUFFERED: "1"
       TZ: Asia/Shanghai
@@ -278,7 +283,9 @@ jobs:
       # 能不能买由 _live_buy_block_regimes 决定，买多少由 _limit_probe_only_selection 决定。
       STEP4_BUY_PROBE_REGIMES: ${{ vars.STEP4_BUY_PROBE_REGIMES || '' }}
       STEP4_BLOCK_BUY_SIGNAL_TYPES: ${{ vars.STEP4_BLOCK_BUY_SIGNAL_TYPES || '' }}
-      FUNNEL_DYNAMIC_POLICY: ${{ vars.FUNNEL_DYNAMIC_POLICY || 'shadow' }}
+      # 必须与 wyckoff_funnel.yml 同源:少 secrets 兜底时,job 级 env 覆盖 workflow 级,
+      # 于是实盘读 Secret 里的值、回测读字面量 'shadow',量的不是同一条策略通道。
+      FUNNEL_DYNAMIC_POLICY: ${{ vars.FUNNEL_DYNAMIC_POLICY || secrets.FUNNEL_DYNAMIC_POLICY || 'shadow' }}
       FUNNEL_DYNAMIC_POLICY_HORIZON: "5"
       FUNNEL_DEFENSIVE_FORCE_QUOTA: "1"
       FUNNEL_MAX_STRUCTURE_STOP_PCT: "12.0"
@@ -730,6 +737,7 @@ jobs:
           python3 -u - <<'PYEOF'
           import csv, os, glob, json, re, requests
           from core.backtest_grid_ranking import rank_robust_params, robust_label as shared_robust_label, weak_period_guardrails
+          from core.backtest_periods import PERIOD_ORDER, period_label as shared_period_label, resolve_period_key
 
           webhook = os.environ.get('FEISHU_WEBHOOK_URL', '').strip()
           if not webhook:
@@ -785,14 +793,18 @@ jobs:
               return parts if len(parts) == 2 else ['', '']
 
           def parse_period(dirname, start, end):
-              m = re.search(r'backtest-grid-(recent_2m|recent_6m|bull_2020|bear_2022|custom)-h', dirname)
-              if m:
-                  return m.group(1)
-              if start == '2020-07-01' and end == '2021-02-18':
-                  return 'bull_2020'
-              if start == '2021-12-13' and end == '2022-10-31':
-                  return 'bear_2022'
-              return os.environ.get('BT_PERIOD_LABEL', 'recent_6m')
+              # 名单收敛到 core.backtest_periods。原来这里只认 5 个 key，
+              # sideways_2023 / volatile_2024 / bull_2025 全部落到 BT_PERIOD_LABEL 兜底；
+              # all_defined 下该值是整串逗号列表，三个周期于是并成同一个 bucket，
+              # 而 _best_cells_by_period 只留每 bucket 最大值 —— sideways_2023 的
+              # -10.78% 被 bull_2025 的 +29.78% 盖住，period_count 从 6 掉到 4，
+              # 足以把 robust_label 抬到「稳健参数（跨周期全正）」。
+              resolved = resolve_period_key(dirname, start, end)
+              if resolved:
+                  return resolved
+              fallback = os.environ.get('BT_PERIOD_LABEL', 'recent_6m')
+              # 兜底值可能是逗号串（all_defined），拆开只会更错，直接标未知。
+              return 'unknown_period' if ',' in fallback else fallback
 
           def parse_num(raw):
               text = str(raw or '').strip().replace(',', '').replace('%', '')
@@ -825,14 +837,20 @@ jobs:
                   return rows
               return []
 
+          # 卡片宽度有限，这里只覆盖需要缩写的 key；其余回落到登记表的完整展示名。
           period_names = {
               'recent_2m': '最近2月',
               'recent_6m': '最近6月',
-              'bull_2020': '牛市',
-              'bear_2022': '熊市',
+              'bull_2020': '牛市2020',
+              'bear_2022': '熊市2022',
+              'sideways_2023': '震荡2023',
+              'volatile_2024': '高波2024',
+              'bull_2025': '牛市2025',
               'custom': '自定义',
+              'unknown_period': '未识别周期',
           }
-          period_order = {'recent_2m': 0, 'recent_6m': 1, 'bull_2020': 2, 'bear_2022': 3, 'custom': 4}
+          period_order = dict(PERIOD_ORDER)
+          period_order['unknown_period'] = 99
           style_names = {
               'slot_equal_4': '等额四仓',
               'probe_add': '观察补仓',
@@ -843,7 +861,7 @@ jobs:
           style_order = {'slot_equal_4': 0, 'probe_add': 1, 'confirmation_only': 2, 'trend_pyramid': 3, 'concentrated_swap': 4}
 
           def period_label(period):
-              return period_names.get(period, period)
+              return period_names.get(period) or shared_period_label(period)
 
           def period_sort_key(period):
               return (period_order.get(period, 99), period)
