@@ -129,6 +129,7 @@ class BacktestReplayResult:
     regime_day_counts: dict[str, int] = field(default_factory=dict)
     regime_blocked_signal_days: int = 0
     regime_blocked_candidates: int = 0
+    selection_coverage: list[dict[str, object]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -164,6 +165,7 @@ class _SignalDay:
     confirmed_count: int
     blocked_signal_day: bool
     blocked_candidates: int
+    coverage: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -287,6 +289,7 @@ def build_signal_ledger(
             continue
         selected, confirmed_count = _select_ranked_codes(ctx, pending_pool, sector_map, config)
         blocked_day, blocked_count = _apply_execution_gates(ctx, selected, config)
+        coverage = _selection_coverage(ctx, selected, blocked_day.selected, config)
         selected = blocked_day.selected
         days.append(
             _SignalDay(
@@ -295,11 +298,39 @@ def build_signal_ledger(
                 confirmed_count,
                 blocked_day.regime_blocked,
                 blocked_count,
+                coverage,
             )
         )
         selected_total += len(selected.codes) if selected else 0
         _report_progress(idx, limit, selected_total, progress, started_at)
     return BacktestSignalLedger(days)
+
+
+def _selection_coverage(
+    ctx: _DayContext,
+    before_gate: _RankedSelection | None,
+    after_gate: _RankedSelection | None,
+    config: BacktestReplayConfig,
+) -> dict[str, object]:
+    mainline_codes = sorted(
+        {str(item["code"]) for item in ctx.result.candidate_entries or [] if item.get("signal_key") == "mainline"}
+    )
+    selected_before = list(before_gate.codes) if before_gate else []
+    selected_after = list(after_gate.codes) if after_gate else []
+    return {
+        "signal_date": ctx.signal_date.isoformat(),
+        "history_symbols": len(ctx.day_df_map),
+        "layer1_symbols": len(ctx.result.layer1_symbols),
+        "layer2_symbols": len(ctx.result.layer2_symbols),
+        "layer3_symbols": len(ctx.result.layer3_symbols),
+        "candidate_entries": len(ctx.result.candidate_entries or []),
+        "mainline_entry_codes": mainline_codes,
+        "mainline_selection_evaluated": config.pending_mode != "only" and config.selection_mode == "tradeable_l4",
+        "selected_before_gate": selected_before,
+        "selected_after_gate": selected_after,
+        "selected_with_mainline_entry": sorted(set(selected_after) & set(mainline_codes)),
+        "regime": ctx.regime,
+    }
 
 
 @dataclass(frozen=True)
@@ -369,6 +400,7 @@ def replay_signal_ledger(
         regime_day_counts,
         blocked_signal_days,
         blocked_candidates,
+        [dict(day.coverage) for day in ledger.days if day.context.idx < max_idx and day.coverage],
     )
 
 

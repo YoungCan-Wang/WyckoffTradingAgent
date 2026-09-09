@@ -60,6 +60,8 @@ def _overview_lines(summary: dict) -> list[str]:
         f"- 卖出摩擦成本: {fmt_metric(summary.get('sell_friction_pct'), 3)}%",
         f"- 元数据口径: {_meta_mode(summary)}",
         f"- 信号确认模式: {summary.get('pending_mode')}",
+        "- 主线候选排序覆盖: "
+        + ("已进入候选选择路径" if summary.get("mainline_selection_evaluated") else "未覆盖；不能据收益差评价主线排序"),
         _regime_filter_line(summary),
         _execution_regime_gate_line(summary),
         _entry_price_mode_line(summary),

@@ -115,16 +115,21 @@ def load_today_pool() -> tuple[dict[str, str], list[str]]:
 
 
 def run_previous_funnel(previous_trade_date: date, log=print) -> tuple[dict, dict]:
-    log(f"[review] 回放前一交易日 ({previous_trade_date}) 漏斗...")
-    original_end_day = os.getenv("END_CALENDAR_DAY", "")
-    os.environ["END_CALENDAR_DAY"] = previous_trade_date.strftime("%Y-%m-%d")
-    try:
-        return run_funnel_job(include_debug_context=True, direct_source=True)
-    finally:
-        if original_end_day:
-            os.environ["END_CALENDAR_DAY"] = original_end_day
-        else:
-            os.environ.pop("END_CALENDAR_DAY", None)
+    from integrations.supabase_base import read_only_write_context
+
+    log(f"[review] 只读回放 ({previous_trade_date})：使用当前配置，非历史冻结生产决策...")
+    overrides = {"END_CALENDAR_DAY": previous_trade_date.isoformat(), "DAILY_JOB_ARTIFACTS_DIR": ""}
+    previous = {key: os.environ.get(key) for key in overrides}
+    with read_only_write_context():
+        os.environ.update(overrides)
+        try:
+            return run_funnel_job(include_debug_context=True, direct_source=True)
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
 
 def replay_context(triggers: dict, metrics: dict, log=print) -> ReplayContext | None:
@@ -152,6 +157,7 @@ def replay_context(triggers: dict, metrics: dict, log=print) -> ReplayContext | 
         hit_map=build_hit_map(triggers),
         blocked_exit_map=blocked_exit_signal_map(metrics.get("exit_signals", {}) or {}),
         candidate_entry_map=build_candidate_entry_map(metrics.get("candidate_entries", []) or []),
+        source="current_config_replay",
     )
 
 

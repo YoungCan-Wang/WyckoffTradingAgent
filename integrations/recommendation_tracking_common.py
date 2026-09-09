@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from integrations.supabase_base import require_shared_writes_enabled
 from utils.safe import safe_float
 
 
@@ -74,18 +75,22 @@ def close_map_from_tickflow_hist(hist: pd.DataFrame | None) -> dict[str, float]:
     return {str(day): float(price) for day, price in zip(work["trade_date"], work["close"])}
 
 
-def ohlc_map_from_tickflow_hist(hist: pd.DataFrame | None) -> dict[str, dict[str, float]]:
+def ohlc_map_from_tickflow_hist(
+    hist: pd.DataFrame | None, *, preserve_invalid: bool = False
+) -> dict[str, dict[str, float]]:
     if hist is None or hist.empty or not {"date", "high", "low", "close"}.issubset(hist.columns):
         return {}
-    work = hist[["date", "high", "low", "close"]].copy()
+    columns = [col for col in ("open", "high", "low", "close", "volume") if col in hist.columns]
+    work = hist[["date", *columns]].copy()
     work["trade_date"] = pd.to_datetime(work["date"], errors="coerce").dt.strftime("%Y%m%d")
-    for col in ("high", "low", "close"):
+    for col in columns:
         work[col] = pd.to_numeric(work[col], errors="coerce")
-    work = work.dropna(subset=["trade_date", "high", "low", "close"])
-    work = work[(work["high"] > 0) & (work["low"] > 0) & (work["close"] > 0)]
+    work = work.dropna(subset=["trade_date"])
+    if not preserve_invalid:
+        work = work.dropna(subset=["high", "low", "close"])
+        work = work[(work["high"] > 0) & (work["low"] > 0) & (work["close"] > 0)]
     return {
-        str(row.trade_date): {"high": float(row.high), "low": float(row.low), "close": float(row.close)}
-        for row in work.itertuples(index=False)
+        str(row.trade_date): {col: float(getattr(row, col)) for col in columns} for row in work.itertuples(index=False)
     }
 
 
@@ -129,6 +134,8 @@ def upsert_to_table(
     """
     written = 0
     clean = [row for row in updates if row.get("code") and row.get("recommend_date")]
+    if clean:
+        require_shared_writes_enabled(f"upsert {table}")
     for chunk in chunked(clean, max(min(int(batch_size), 1000), 1)):
         try:
             client.table(table).upsert(chunk, on_conflict="code,recommend_date").execute()

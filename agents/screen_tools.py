@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
+from copy import deepcopy
 from typing import Any
 
 from agents.tool_context import ToolContext, ensure_tushare_token
@@ -179,8 +181,7 @@ def _build_screen_result(
     symbols_for_report = list(action_plan.get("report_candidates") or [])
     watch_candidates = list(action_plan.get("watch_candidates") or [])
     diagnosis_targets = list(action_plan.get("diagnosis_targets") or [])
-    summary["report_candidates"] = len(_report_rows(symbols_for_report))
-    summary["watch_candidates"] = len(watch_candidates)
+    summary.update(report_candidates=len(_report_rows(symbols_for_report)), watch_candidates=len(watch_candidates))
     next_tool = _screen_next_tool(selection_brief, action_plan)
     result = _screen_result_payload(
         ok=ok,
@@ -205,6 +206,7 @@ def _build_screen_result(
         symbols_for_report=symbols_for_report,
         watch_candidates=watch_candidates,
         diagnosis_targets=diagnosis_targets,
+        research_discovery=details.get("research_discovery") or {},
     )
     if guard_summary:
         result["candidate_guard_summary"] = guard_summary
@@ -251,6 +253,7 @@ def _screen_result_payload(**payload: Any) -> dict[str, Any]:
         "watch_candidates": payload["watch_candidates"],
         "diagnosis_targets": payload["diagnosis_targets"],
         "quality_gate": action_plan.get("quality_gate", {}),
+        "research_discovery": payload.get("research_discovery") or {},
     }
 
 
@@ -455,7 +458,73 @@ def remember_screen_handoff(tool_context: ToolContext | None, result: dict[str, 
         "report_candidates": list(result.get("report_candidates") or [])[:10],
         "watch_candidates": list(result.get("watch_candidates") or [])[:10],
         "diagnosis_targets": list(result.get("diagnosis_targets") or [])[:5],
+        "research_discovery": research_discovery_agent_view(result.get("research_discovery")),
     }
+
+
+def research_discovery_agent_view(raw: Any, *, detailed: bool = False) -> dict[str, Any]:
+    if not isinstance(raw, dict) or not raw:
+        return {}
+    rows = [row for row in raw.get("candidates") or [] if isinstance(row, dict)]
+    ranked = sorted(
+        rows,
+        key=lambda row: (
+            not bool(set(row.get("discovery_sources") or []) & {"mainline_candidates", "candidate_entries"}),
+            str(row.get("code") or ""),
+        ),
+    )
+    preview = _research_detail_preview(ranked, detailed=detailed)
+    result = {
+        **deepcopy({key: value for key, value in raw.items() if key != "candidates"}),
+        "view": "bounded_agent_preview",
+        "preview_total": len(rows),
+        "preview_limit": 50 if detailed else 3,
+        "preview_detail_budget_bytes": 96_000,
+        "preview_returned": len(preview),
+        "preview_truncated": len(preview) < len(rows),
+        "preview_order": "主线/candidate来源优先，其余按代码；仅展示顺序，非收益排名，不改变研究池或AI选择",
+        "full_details_location": "report/review_trace_when_retained",
+        "full_details_note": "当前预览不包含完整详情；完整研究池未被策略截断。report/review_trace仅在当次保留时可核对，不能假定快照存在",
+        "candidates": preview,
+    }
+    if detailed:
+        index: dict[str, dict[str, list[str]]] = {}
+        for row in rows:
+            signal = str(row.get("signal_state") or "unknown")
+            permission = str(row.get("execution_permission") or "unknown")
+            index.setdefault(signal, {}).setdefault(permission, []).append(str(row.get("code") or ""))
+        result["code_index"] = {
+            signal: {permission: sorted(codes) for permission, codes in sorted(permissions.items())}
+            for signal, permissions in sorted(index.items())
+        }
+        result["code_index_total"] = len(rows)
+    return result
+
+
+def _research_detail_preview(rows: list[dict[str, Any]], *, detailed: bool) -> list[dict[str, Any]]:
+    fields = {
+        "code",
+        "name",
+        "discovery_sources",
+        "research_status",
+        "signal_state",
+        "execution_permission",
+        "trade_readiness",
+        "new_buy_allowed",
+        "direct_buy_allowed",
+    }
+    preview = []
+    size_bytes = 0
+    for row in rows:
+        candidate = row if detailed else {key: value for key, value in row.items() if key in fields}
+        row_bytes = len(json.dumps(candidate, ensure_ascii=False).encode("utf-8"))
+        if size_bytes + row_bytes > 96_000:
+            continue
+        preview.append(deepcopy(candidate))
+        size_bytes += row_bytes
+        if len(preview) >= (50 if detailed else 3):
+            break
+    return preview
 
 
 def _run_funnel_with_board(board: str, *, pool_limit: int | None, include_financial_metrics: bool):

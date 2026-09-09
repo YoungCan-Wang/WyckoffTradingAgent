@@ -1459,6 +1459,7 @@ def _screen_stocks_preview(result: dict[str, Any]) -> str:
         {
             "ok": result.get("ok"),
             "job_kind": result.get("job_kind"),
+            "research_discovery": _research_discovery_preview(result.get("research_discovery")),
             "board": result.get("board"),
             "scan_scope": result.get("scan_scope"),
             "style_preference": result.get("style_preference"),
@@ -1490,6 +1491,31 @@ def _screen_stocks_preview(result: dict[str, Any]) -> str:
         }
     )
     return serialize_tool_result(payload) if payload else ""
+
+
+def _research_discovery_preview(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or not value:
+        return {}
+    rows = [row for row in (value.get("candidates") or [])[:3] if isinstance(row, dict)]
+    return {
+        "counts": value.get("counts") or {},
+        "signal_counts": value.get("signal_counts") or {},
+        "execution_counts": value.get("execution_counts") or {},
+        "coverage": value.get("coverage") or {},
+        "new_buy_allowed": False,
+        "preview_count": len(rows),
+        "examples": [
+            {
+                "code": row.get("code"),
+                "name": row.get("name"),
+                "signal_state": row.get("signal_state"),
+                "execution_permission": row.get("execution_permission"),
+                "reason": _text_excerpt("; ".join(row.get("blocking_reasons") or []), 100),
+            }
+            for row in rows
+        ],
+        "full_inventory": "完整名单见完整结果 research_discovery.candidates；已卸载时读取 result_ref。示例非收益排名。",
+    }
 
 
 def _screen_stocks_brief_lines(result: dict[str, Any], *, max_lines: int) -> list[str]:
