@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 import pandas as pd
@@ -65,9 +66,17 @@ def _close_position(today: dict[str, float], reference_close: float = 0.0) -> fl
 
 
 def _confirm_sos(snap: dict, today: dict, days_elapsed: int) -> tuple[str, str]:
-    # 实盘K线复算：SOS/EVR 点火类信号胜率仅 10-20%（trend_pullback/LPS(确认) 44-47%），
-    # 根因是"低乖离处的放量假突破"——仅"不跌破+缩量"就放行过于宽松，还需确认日
-    # 站稳 MA20 附近，验证点火后确有资金承接而非一日游脉冲。
+    # 收紧依据：仅"不跌破+缩量"就放行过于宽松，补充确认日站稳 MA20 附近，验证点火后
+    # 确有资金承接而非一日游脉冲。
+    #
+    # 注：这里原先写着"点火类胜率仅 10-20%，回踩/LPS 44-47%"。2026-09 用 T+1 复权开盘
+    # 买入、第 h 日复权收盘卖出、扣双边 0.15% 后为正算胜率复算(窗口 05-25~09-08)，
+    # 这个 2~4 倍的差距不存在，点火在短持有期反而略高：
+    #   h=1  sos 44.9 (n=661) / trend_pullback 40.1 (n=374) / lps 37.8 (n=394)
+    #   h=5  sos 38.9 (n=620) / trend_pullback 36.1 (n=338) / lps 35.8 (n=360)
+    # 原数字出自 signal_outcomes.return_pct，那一列从信号日收盘起算——点火当天大涨、
+    # 次日跳空，收盘价买不到，这个偏差对点火类系统性更重，两族不可比。
+    # 下面的 MA20 要求不依赖那组数字，保留。
     snap_low, snap_close, snap_vol = snap.get("snap_low", 0), snap.get("snap_close", 0), snap.get("snap_volume", 0)
     ma20 = today.get("ma20", 0)
     if today["low"] < snap_low:
@@ -117,8 +126,13 @@ def _confirm_lps(snap: dict, today: dict, days_elapsed: int) -> tuple[str, str]:
 
 
 def _confirm_evr(snap: dict, today: dict, days_elapsed: int) -> tuple[str, str]:
-    # 同 _confirm_sos：EVR(二次确认) 实盘胜率仅 9.7%，比未确认样本更差，说明单纯
-    # "收盘不跌破事件低点"不足以过滤滞涨假企稳，补充站稳 MA20 的结构性要求。
+    # 同 _confirm_sos：单纯"收盘不跌破事件低点"不足以过滤滞涨假企稳，补充站稳 MA20。
+    #
+    # 注：这里原先写着"EVR(二次确认) 实盘胜率仅 9.7%，比未确认样本更差"。两点都复现不了。
+    # 一是量级：同口径(T+1 复权开盘进、第 h 日复权收盘出、扣双边 0.15%)下 EVR 是
+    # h=1 46.8 / h=3 40.3 / h=5 47.4 / h=10 36.4 (n=154)，和 sos/回踩/LPS 完全重叠，
+    # 没有一个 horizon 接近 9.7。二是"二次确认"这个子集不存在：signal_pending 全表
+    # 642 行里 evr 是 0 行，EVR 从未进过确认池，也就没有确认/未确认可比。
     event_low, snap_close = snap.get("snap_support", 0), snap.get("snap_close", 0)
     ma20 = today.get("ma20", 0)
     if today["close"] < event_low:
@@ -363,6 +377,18 @@ def build_snap(
     return snap
 
 
+def has_bar_on(df: pd.DataFrame | None, trade_date: str) -> bool:
+    """df 最后一根 K 线是否正好是 trade_date。
+
+    实盘不做 as-of 裁切,停牌股会留着停牌前那根旧 bar；拿它当"今天"去判确认,
+    等于用过期价格决定信号生死。
+    """
+    if df is None or getattr(df, "empty", True) or "date" not in df.columns:
+        return False
+    df_s = df.sort_values("date")
+    return str(df_s["date"].iloc[-1])[:10] == str(trade_date)[:10]
+
+
 def build_today_ohlcv(df: pd.DataFrame) -> dict[str, float]:
     """从 DataFrame 最后一根 K 线构建 today_ohlcv dict。"""
     df_s = df.sort_values("date") if "date" in df.columns else df
@@ -431,6 +457,50 @@ def _pending_code_key(code: Any) -> str:
     return str(code)
 
 
+# 取全市场日历时每只票只看尾部这么多根：max(TTL) 之外再留几天缓冲，
+# 避免为了几个日期去 union 五千多个 DataFrame 的全部行。
+_CALENDAR_TAIL_BARS = 12
+
+
+def market_trade_calendar(df_map: dict[str, pd.DataFrame], trade_date: str) -> list[str]:
+    """从 df_map 里汇出 <= trade_date 的全市场交易日(升序)。
+
+    TTL 以「交易日」计价，不能按函数调用次数计价：同一个 trade_date 被跑两轮
+    (人工重跑、周日补跑) 时，逐次自增会凭空烧掉一天确认窗。这里用全市场日历
+    重算 days_elapsed，让一天内跑几轮都得到同一个结果。
+    """
+    end = str(trade_date)[:10]
+    days: set[str] = set()
+    for frame in df_map.values():
+        if frame is None or getattr(frame, "empty", True) or "date" not in frame.columns:
+            continue
+        col = frame["date"].astype(str).str.slice(0, 10)
+        # 先按 trade_date 截断再取尾：反过来的话,调用方传进越过 trade_date 的
+        # frame 会让日历被过滤空,静默退回自然日,周一就会把 1 个交易日算成 3 天。
+        days.update(col[col <= end].tail(_CALENDAR_TAIL_BARS))
+    days.discard("")
+    return sorted(days)
+
+
+def elapsed_trade_days(calendar: list[str], signal_date: str, trade_date: str) -> int:
+    """信号日之后、trade_date 之前(含)经过了几个交易日。
+
+    停牌不影响计数：日历取自全市场,个股缺 bar 只该让它不可判定,不该让它不老化。
+    """
+    start, end = str(signal_date)[:10], str(trade_date)[:10]
+    if not start or not end or end <= start:
+        return 0
+    if calendar:
+        # 日历非空但窗口内没有交易日 → trade_date 不是交易日,不该老化。
+        return sum(1 for day in calendar if start < day <= end)
+    # 日历为空(df_map 为空)时退回自然日,至少保证 TTL 能到期而不是挂死。
+    try:
+        delta = (datetime.fromisoformat(end).date() - datetime.fromisoformat(start).date()).days
+    except ValueError:
+        return 0
+    return max(delta, 0)
+
+
 def run_confirmation_cycle(
     pending_signals: list[dict],
     df_map: dict[str, pd.DataFrame],
@@ -439,18 +509,33 @@ def run_confirmation_cycle(
     """对一批 pending 信号执行确认/过期判定，返回 (updates, confirmed_symbols)。"""
     updates: list[dict] = []
     confirmed_symbols: list[dict] = []
+    calendar = market_trade_calendar(df_map, trade_date)
 
     for sig in pending_signals:
-        # 信号日当天不做确认检查：当天 K 线 == 信号快照，无法验证"次日回踩"
-        if str(sig.get("signal_date", ""))[:10] == str(trade_date)[:10]:
+        # days_elapsed 按全市场交易日重算,不按调用次数自增：同一个 trade_date
+        # 跑第二轮时结果不变,信号日当天算出 0 天,天然跳过(当天 K 线 == 快照)。
+        days = elapsed_trade_days(calendar, sig.get("signal_date", ""), trade_date)
+        if days <= 0:
             continue
 
         code_str = _pending_code_key(sig["code"])
         df = df_map.get(code_str)
-        if df is None or df.empty:
+        if not has_bar_on(df, trade_date):
+            # 停牌/缺数据：今天判不了确认,但 TTL 照走,不能挂在池子里永不终结。
+            ttl = SIGNAL_TTL_DAYS.get(sig["signal_type"], 3)
+            if days < ttl:
+                continue
+            updates.append(
+                {
+                    "id": sig["id"],
+                    "status": "expired",
+                    "days_elapsed": days,
+                    "confirm_reason": f"TTL {ttl}天已到，期间无可用K线（停牌或缺数据）",
+                    "expire_date": trade_date,
+                }
+            )
             continue
 
-        days = sig.get("days_elapsed", 0) + 1
         today = build_today_ohlcv(df)
         snap = {k: sig[k] for k in sig if k.startswith("snap_")}
         new_status, reason = check_confirmation(sig["signal_type"], snap, today, days)
