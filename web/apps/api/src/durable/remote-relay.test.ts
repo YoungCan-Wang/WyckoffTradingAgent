@@ -195,6 +195,63 @@ describe('RemoteRelay 设备管理', () => {
     expect(b.close).not.toHaveBeenCalled()
   })
 
+  it('按台断开时作废该设备的 grant，凭旧凭证不能重连', async () => {
+    // #389 下发 7 天 device grant 后，只关 socket 等于没断：手机后台/丢包收不到
+    // 4003 时仍会带着 grant 爬回来。桌面文案承诺「需要重新扫码才能再连」。
+    const { relay, store } = createRelay()
+    const issued = await relay.fetch(new Request('https://remote-relay/pair', { method: 'POST' }))
+    const { code } = await issued.json() as { code: string }
+    expect((await relay.fetch(upgrade(`?role=remote&code=${code}`))).status).toBe(101)
+
+    const grants = store.get('device_grants') as Array<{ token: string }>
+    expect(grants).toHaveLength(1)
+    const token = grants[0]!.token
+    const listed = await (await relay.fetch(new Request('https://remote-relay/devices'))).json() as {
+      devices: Array<{ conn_id: string; role: string }>
+    }
+    const connId = listed.devices.find((d) => d.role === 'remote')?.conn_id
+    expect(connId).toBeTruthy()
+
+    const revoked = await relay.fetch(new Request('https://remote-relay/revoke', {
+      method: 'POST', body: JSON.stringify({ conn_id: connId }),
+    }))
+    expect(await revoked.json()).toEqual({ revoked: 1 })
+    expect(store.get('device_grants')).toBeUndefined()
+
+    const reconnect = await relay.fetch(upgrade(`?role=remote&device=${token}`))
+    expect(reconnect.status).toBe(403)
+  })
+
+  it('按台断开只作废被踢设备的 grant，不影响其他手机', async () => {
+    const { relay, store } = createRelay()
+    const firstCode = await (await relay.fetch(new Request('https://remote-relay/pair', { method: 'POST' }))).json() as { code: string }
+    expect((await relay.fetch(upgrade(`?role=remote&code=${firstCode.code}`))).status).toBe(101)
+    const keepToken = (store.get('device_grants') as Array<{ token: string }>)[0]!.token
+
+    const secondCode = await (await relay.fetch(new Request('https://remote-relay/pair', { method: 'POST' }))).json() as { code: string }
+    expect((await relay.fetch(upgrade(`?role=remote&code=${secondCode.code}`))).status).toBe(101)
+    const grants = store.get('device_grants') as Array<{ token: string }>
+    expect(grants).toHaveLength(2)
+    const dropToken = grants.find((g) => g.token !== keepToken)!.token
+
+    const devices = await (await relay.fetch(new Request('https://remote-relay/devices'))).json() as {
+      devices: Array<{ conn_id: string; role: string }>
+    }
+    const remotes = devices.devices.filter((d) => d.role === 'remote')
+    expect(remotes).toHaveLength(2)
+
+    // 踢掉第二台（刚连上的那台）；第一台的 grant 必须还能重连。
+    const dropConn = remotes[remotes.length - 1]!.conn_id
+    await relay.fetch(new Request('https://remote-relay/revoke', {
+      method: 'POST', body: JSON.stringify({ conn_id: dropConn }),
+    }))
+    const kept = store.get('device_grants') as Array<{ token: string }>
+    expect(kept.map((g) => g.token)).toEqual([keepToken])
+    expect(kept.some((g) => g.token === dropToken)).toBe(false)
+    expect((await relay.fetch(upgrade(`?role=remote&device=${keepToken}`))).status).toBe(101)
+    expect((await relay.fetch(upgrade(`?role=remote&device=${dropToken}`))).status).toBe(403)
+  })
+
   it('通配符断开所有远程设备并作废配对码与设备凭证', async () => {
     const h = host()
     const a = remote('phone-a')
