@@ -88,8 +88,17 @@ env:
   BT_MIN_COMMISSION: "5"
   BT_STAMP_DUTY_RATE: "0.0005"
   BT_TRANSFER_FEE_RATE: "0.00001"
-  # off=静态策略；shadow=应用归因调权做回测验证；on=仅正式批准后进入正式调权。
-  FUNNEL_DYNAMIC_POLICY: ${{ vars.FUNNEL_DYNAMIC_POLICY || secrets.FUNNEL_DYNAMIC_POLICY || 'shadow' }}
+  # 回测这条链固定 off,不跟 vars/secrets 走,也不跟实盘漏斗同源——这里是刻意的分叉:
+  #
+  # 1) load_attribution_policy_snapshot 不收 as_of,拿的永远是**当前最新**那份归因报告。
+  #    用它跑 bull_2020 就是拿今天的结论去指导六年前的选股,是前视。
+  # 2) strategy_attribution_reports 最早只有 2026-06-16,历史窗口根本没有同日期的报告,
+  #    按回测日期回溯这件事不是不方便,是做不到。
+  # 3) 这个 workflow 也没有注入任何 Supabase 变量,读取本来就会失败被 except 吞掉。
+  #    留 shadow 只会让报表写「未启用」并挂一个谁都消不掉的待查。
+  #
+  # 想量归因调权的增量,得先给快照加 as_of 并攒够按日期可回溯的报告,那是另一件事。
+  FUNNEL_DYNAMIC_POLICY: "off"
   FUNNEL_DYNAMIC_POLICY_HORIZON: "5"
   STRATEGY_ATTRIBUTION_MAX_AGE_DAYS: "7"
 
@@ -283,9 +292,10 @@ jobs:
       # 能不能买由 _live_buy_block_regimes 决定，买多少由 _limit_probe_only_selection 决定。
       STEP4_BUY_PROBE_REGIMES: ${{ vars.STEP4_BUY_PROBE_REGIMES || '' }}
       STEP4_BLOCK_BUY_SIGNAL_TYPES: ${{ vars.STEP4_BLOCK_BUY_SIGNAL_TYPES || '' }}
-      # 必须与 wyckoff_funnel.yml 同源:少 secrets 兜底时,job 级 env 覆盖 workflow 级,
-      # 于是实盘读 Secret 里的值、回测读字面量 'shadow',量的不是同一条策略通道。
-      FUNNEL_DYNAMIC_POLICY: ${{ vars.FUNNEL_DYNAMIC_POLICY || secrets.FUNNEL_DYNAMIC_POLICY || 'shadow' }}
+      # 与 workflow 级同为 off,理由见文件头 FUNNEL_DYNAMIC_POLICY 那段注释。
+      # env 按 key 合并(step > job > workflow),删掉这一行会继承上面的 off,不会回退到
+      # vars/secrets;写在这里是为了在 job 内直接看见档位,别在两处写成不同的值。
+      FUNNEL_DYNAMIC_POLICY: "off"
       FUNNEL_DYNAMIC_POLICY_HORIZON: "5"
       FUNNEL_DEFENSIVE_FORCE_QUOTA: "1"
       FUNNEL_MAX_STRUCTURE_STOP_PCT: "12.0"
@@ -443,6 +453,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: fetch
     env:
+      # 同上:整条回测链都不接归因报告,理由见文件头 FUNNEL_DYNAMIC_POLICY 那段注释。
       FUNNEL_DYNAMIC_POLICY: "off"
     strategy:
       fail-fast: false

@@ -76,6 +76,9 @@ class BacktestRunInput:
     mainline_config: MainlineEngineConfig | None = None
     signal_weight_map: dict[str, float] = field(default_factory=dict)
     signal_weight_meta: dict[str, object] = field(default_factory=dict)
+    # 归因调权在本轮的档位（off/shadow/on）。空权重表有两种成因——按设计不接、
+    # 或该接却读失败——单看 signal_weight_map 分不出来，报表就只能含糊说「未启用」。
+    signal_weight_mode: str = ""
 
 
 @dataclass(frozen=True)
@@ -320,6 +323,7 @@ def _replay_config(
         mainline_config=params.mainline_config,
         signal_weight_map=dict(params.signal_weight_map),
         signal_weight_meta=dict(params.signal_weight_meta),
+        signal_weight_mode=params.signal_weight_mode,
         a_share_entry_research=params.a_share_entry_research,
     )
 

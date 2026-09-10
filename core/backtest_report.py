@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from core.backtest_metrics import fmt_metric
 from core.cash_portfolio import STYLE_LABELS
-from core.strategy_policy_display import format_policy_meta_text, format_policy_weight_text
+from core.strategy_policy_display import (
+    POLICY_OFF_BY_DESIGN,
+    format_policy_meta_text,
+    format_policy_weight_text,
+)
 
 
 def build_summary_md(summary: dict) -> str:
@@ -90,9 +94,27 @@ def _crash_probe_lines(summary: dict) -> list[str]:
 
 
 def _signal_weight_line(summary: dict) -> str:
+    """策略治理调权那一行。
+
+    空权重表分两种成因,报表必须说清是哪一种:
+
+    - ``mode == "off"``：回测按设计不接归因报告。快照加载取的是**当前最新**一份
+      报告,不按回测日期回溯,拿它去跑 bull_2020 就是用今天的结论指导六年前的选股;
+      归因报告表本身也只有 2026-06 起的数据,历史窗口没有对应日期的报告可用。
+      这一档是正常状态,不该挂待查。
+    - ``mode in {"shadow", "on"}`` 而权重仍空：该接却没接上,要查。读取失败会被
+      load_attribution_policy_snapshot 的 except 吞成空快照,与「报告确实没有可执行
+      权重」同形,两者都会走到这里。
+
+    这行会被 backtest_market_report_artifacts 解析回 GridCell.strategy_policy,
+    再被确认块做前缀匹配,所以措辞是契约的一部分,改动要三处同步。
+    """
     weights = summary.get("signal_weight_map") or {}
     meta_text = format_policy_meta_text(summary.get("signal_weight_meta"))
     if not weights:
+        mode = str(summary.get("signal_weight_mode") or "").strip().lower()
+        if mode == "off":
+            return f"- 策略治理调权: {POLICY_OFF_BY_DESIGN}{meta_text}"
         return f"- 策略治理调权: 未启用{meta_text}"
     weight_text = format_policy_weight_text(weights, limit=12, delimiter="；")
     return f"- 策略治理调权: {weight_text}{meta_text}"

@@ -5,6 +5,14 @@ from __future__ import annotations
 import math
 from typing import Any
 
+# 回测里归因调权按设计不接报告时的措辞。
+#
+# 只有一处定义:这条串要被 core/backtest_report 渲染进 markdown、被
+# workflows/backtest_market_report_artifacts 解析回 GridCell、再被
+# workflows/backtest_market_report_builder 的确认块前缀匹配。三处各抄一份字面量,
+# 改一处就会让确认块把「按设计关闭」重新读成「该开却没开」并挂上没人能消的待查。
+POLICY_OFF_BY_DESIGN = "不接归因报告（回测避免前视）"
+
 
 def policy_weight_rows(weights: dict[str, Any] | None) -> list[dict[str, Any]]:
     rows = []

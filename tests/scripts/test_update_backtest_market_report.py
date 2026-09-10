@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+_DEFAULT_POLICY = (
+    "lps[regime=RISK_ON]×0.50↓（远端, 报告=2026-07-04, 周期=h5, 策略=shadow 对照(shadow), 范围=尾盘+漏斗shadow）"
+)
 
-def _write_grid_cell(tmp_path, period, start, end, hold, stop, cash_return):
+
+def _write_grid_cell(tmp_path, period, start, end, hold, stop, cash_return, policy=_DEFAULT_POLICY):
     artifact = tmp_path / f"backtest-grid-{period}-h{hold}-sl-{stop}-tp0-tr0-37"
     artifact.mkdir()
     (artifact / f"summary_{period}_h{hold}.md").write_text(
@@ -12,7 +16,7 @@ def _write_grid_cell(tmp_path, period, start, end, hold, stop, cash_return):
                 "- 股票池: main_chinext (sample=0)",
                 "- 绩效引擎: legacy",
                 "- 入场价格模式: open",
-                "- 策略治理调权: lps[regime=RISK_ON]×0.50↓（远端, 报告=2026-07-04, 周期=h5, 策略=shadow 对照(shadow), 范围=尾盘+漏斗shadow）",
+                f"- 策略治理调权: {policy}",
                 "- 成交样本: 10",
                 "- 胜率: 40.0%",
                 "- 平均收益: 1.0%",
@@ -221,6 +225,48 @@ def test_backtest_confirmation_passes_only_cross_period_positive(tmp_path):
     assert confirmation["strategy_policy"].startswith("lps[regime=RISK_ON]×0.50↓")
     assert confirmation["entry_price_ready"] is True
     assert confirmation["entry_price_mode"] == "open"
+
+
+def _confirmation_with_policy(tmp_path, policy):
+    from scripts.update_backtest_market_report import build_confirmation, load_grid_cells
+
+    for period, start, end, cash_return in [
+        ("recent_6m", "2025-12-01", "2026-05-31", 6.0),
+        ("bull_2020", "2020-07-01", "2021-02-18", 4.0),
+        ("bear_2022", "2021-12-13", "2022-10-31", 3.0),
+    ]:
+        _write_grid_cell(tmp_path, period, start, end, 15, 8, cash_return, policy=policy)
+
+    return build_confirmation(
+        load_grid_cells(tmp_path),
+        run_url="https://github.com/example/actions/runs/1",
+        generated_at="2026-07-04 00:00:00 Asia/Shanghai",
+    )
+
+
+def test_backtest_confirmation_accepts_policy_off_by_design(tmp_path):
+    """按设计不接归因报告要算口径齐备,不能把 pass 降级成 review。
+
+    回测永远拿不到可回溯的归因报告(快照不收 as_of,报告表也只有 2026-06 起的数据),
+    所以这道闸判它未生效就是天天挂一个谁都消不掉的待查——而天天挂着的待查等于
+    没有待查,真正该查的那次就被埋进噪声里。
+    """
+    from core.strategy_policy_display import POLICY_OFF_BY_DESIGN
+
+    confirmation = _confirmation_with_policy(tmp_path, POLICY_OFF_BY_DESIGN)
+
+    assert confirmation["strategy_policy_ready"] is True
+    assert confirmation["strategy_policy_reason"] == ""
+    assert confirmation["status"] == "pass"
+
+
+def test_backtest_confirmation_still_flags_unset_policy(tmp_path):
+    """「未启用」= 开关开着而权重为空,该查,不能跟着上面一起放行。"""
+    confirmation = _confirmation_with_policy(tmp_path, "未启用（远端, 报告=2026-07-04, 周期=h5）")
+
+    assert confirmation["strategy_policy_ready"] is False
+    assert confirmation["strategy_policy_reason"] == "策略治理调权未实际生效"
+    assert confirmation["status"] == "review"
 
 
 def test_backtest_confirmation_requires_next_open_entry_price(tmp_path):

@@ -109,7 +109,10 @@ def test_backtest_signal_weight_map_matches_funnel_policy_gate(monkeypatch) -> N
         ),
     )
 
-    shadow_weights, shadow_meta = backtest._signal_policy_from_env()
+    shadow_weights, shadow_meta, shadow_mode = backtest._signal_policy_from_env()
+    # mode 要跟着断言,不能用 ``_`` 丢掉:报表靠它区分「按设计没调权(off)」和
+    # 「本该调权却拿到空权重(shadow/on 读失败)」,两者在旧版里都显示成「未启用」。
+    assert shadow_mode == "shadow"
     assert shadow_weights == {"lps": 0.5}
     assert shadow_meta["source"] == "远端"
     assert shadow_meta["active_scope"] == "漏斗shadow"
@@ -128,7 +131,10 @@ def test_backtest_signal_weight_map_matches_funnel_policy_gate(monkeypatch) -> N
         ),
     )
 
-    blocked_weights, blocked_meta = backtest._signal_policy_from_env()
+    blocked_weights, blocked_meta, blocked_mode = backtest._signal_policy_from_env()
+    # 这一格正是要区分的那种:mode=on(要求调权)但权重为空(被 next_action 挡住)。
+    # 报表必须说「读到了但被挡」,而不是跟 off 一样说「未启用」。
+    assert blocked_mode == "on"
     assert blocked_weights == {}
     assert blocked_meta["formal_dynamic_allowed"] is False
     assert blocked_meta["formal_dynamic_block_reason"] == "next_action=keep_static_policy"
@@ -148,12 +154,39 @@ def test_backtest_signal_weight_map_matches_funnel_policy_gate(monkeypatch) -> N
         ),
     )
 
-    weights, meta = backtest._signal_policy_from_env()
+    weights, meta, mode = backtest._signal_policy_from_env()
+    assert mode == "on"
     assert weights == {"sos": 1.15}
     assert meta["source"] == "远端"
     assert meta["report_date"] == "2026-07-04"
     assert meta["active_scope"] == "正式漏斗"
     assert backtest._signal_weight_map_from_env() == {"sos": 1.15}
+
+
+def test_backtest_off_mode_returns_empty_without_reading_the_report(monkeypatch) -> None:
+    """off 档不能去读归因报告——生产的 backtest_grid.yml 就钉在这一档。
+
+    ``load_attribution_policy_snapshot`` 不收 ``as_of``,拿的永远是当前最新那份报告,
+    在回测里读它就是前视。所以这里不只断言权重为空,还断言**根本没调用**那个读取函数:
+    只看空权重表分不清「没读」和「读了但报告为空」,而后者是真前视。
+    """
+    import workflows.backtest as backtest
+
+    monkeypatch.setenv("FUNNEL_DYNAMIC_POLICY", "off")
+    calls: list[dict] = []
+
+    def _explode(**kwargs):
+        calls.append(kwargs)
+        raise AssertionError("off 档不该读归因报告")
+
+    monkeypatch.setattr(backtest, "load_attribution_policy_snapshot", _explode)
+
+    weights, meta, mode = backtest._signal_policy_from_env()
+    assert mode == "off"
+    assert weights == {}
+    assert meta == {}
+    assert calls == []
+    assert backtest._signal_weight_map_from_env() == {}
 
 
 def test_shared_request_key_ignores_atr_params_for_signal_reuse() -> None:

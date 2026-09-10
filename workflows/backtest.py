@@ -208,7 +208,7 @@ def _shared_request_key(request: BacktestWorkflowRequest) -> tuple:
 
 
 def _build_run_config(request: BacktestWorkflowRequest) -> BacktestRunConfig:
-    signal_weight_map, signal_weight_meta = _signal_policy_from_env()
+    signal_weight_map, signal_weight_meta, signal_weight_mode = _signal_policy_from_env()
     strategy_variant = normalize_strategy_variant(request.strategy_variant)
     funnel_overrides = {
         **funnel_cfg_overrides_from_env(),
@@ -258,6 +258,7 @@ def _build_run_config(request: BacktestWorkflowRequest) -> BacktestRunConfig:
             mainline_config=load_mainline_engine_config(),
             signal_weight_map=signal_weight_map,
             signal_weight_meta=signal_weight_meta,
+            signal_weight_mode=signal_weight_mode,
         )
     )
 
@@ -278,14 +279,20 @@ def _signal_weight_map_from_env() -> dict[str, float]:
     return _signal_policy_from_env()[0]
 
 
-def _signal_policy_from_env() -> tuple[dict[str, float], dict[str, object]]:
+def _signal_policy_from_env() -> tuple[dict[str, float], dict[str, object], str]:
+    """回测这一轮的归因调权权重、快照 meta、档位。
+
+    档位要跟着返回：空权重表有两种成因,「off 按设计不接」和「shadow/on 该接
+    却读失败」在 signal_weight_map 上完全同形,只看权重表报表只能含糊说「未启用」,
+    而这两种成因一种不该管、一种必须查。
+    """
     config = dynamic_policy_config_from_env()
     mode = dynamic_policy_mode(config)
     if mode == "off":
-        return {}, {}
+        return {}, {}, mode
     snapshot = load_attribution_policy_snapshot(market="cn", log_fn=lambda message: logger.info(message))
     weights = attribution_weights_for_funnel(snapshot, mode=mode, log_fn=lambda message: logger.info(message))
-    return weights, snapshot.as_dict()
+    return weights, snapshot.as_dict(), mode
 
 
 def _intraday_entry_price_fetcher(request: BacktestWorkflowRequest):

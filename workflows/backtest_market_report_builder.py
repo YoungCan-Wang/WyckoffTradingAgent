@@ -15,6 +15,7 @@ from core.backtest_grid_ranking import (
     weak_period_guardrails,
 )
 from core.backtest_periods import PERIOD_LABELS, PERIOD_ORDER
+from core.strategy_policy_display import POLICY_OFF_BY_DESIGN
 from workflows.backtest_market_report_artifacts import GridCell, read_trades
 from workflows.backtest_parameter_stability import build_parameter_stability
 from workflows.backtest_walk_forward import build_walk_forward_validation
@@ -641,12 +642,24 @@ def _confirmation_param(score: RobustParamScore | None) -> dict[str, object]:
 
 
 def _confirmation_policy_check(cells: list[GridCell]) -> dict[str, object]:
+    """归因调权这一档能不能算「口径齐备」。
+
+    ``POLICY_OFF_BY_DESIGN`` 要算齐备。回测不接归因报告是刻意的——快照只取当前
+    最新一份报告、不按回测日期回溯,历史窗口(bull_2020/bear_2022)也没有对应日期的
+    报告——把它判成未生效会给每一轮回测挂上一个谁都消不掉的待查,而天天挂着的
+    待查等于没有待查,真正该查的那次就被埋进噪声里。
+
+    ``未启用`` 仍然算不齐备:那一档是开关开着(shadow/on)而权重仍空,即读取失败
+    或报告无可执行权重,这是该查的。
+    """
     policies = sorted({cell.strategy_policy for cell in cells if cell.strategy_policy})
     if not policies:
         return {"ready": False, "reason": "缺少策略治理调权记录", "policies": []}
     if len(policies) > 1:
         return {"ready": False, "reason": "策略治理调权口径不一致", "policies": policies}
     policy = policies[0]
+    if policy.startswith(POLICY_OFF_BY_DESIGN):
+        return {"ready": True, "reason": "", "policies": policies}
     if policy.startswith("未启用") or policy == "未写入" or "×" not in policy:
         return {"ready": False, "reason": "策略治理调权未实际生效", "policies": policies}
     return {"ready": True, "reason": "", "policies": policies}

@@ -153,3 +153,48 @@ def test_build_summary_md_renders_inactive_policy_meta() -> None:
         "- 策略治理调权: 未启用（远端, 报告=2026-07-04, 周期=h5, 策略=shadow 对照(shadow), 范围=尾盘+漏斗shadow, 正式dynamic=未进正式漏斗(未启用自动晋级)）"
         in md
     )
+
+
+def _policy_line(md: str) -> str:
+    """摘出策略治理调权那一行。
+
+    不能直接对整篇 md 断言「未启用」不出现:绩效引擎那行写的是「legacy（wbt 未启用）」,
+    整篇匹配会永远命中,断言等于没写。
+    """
+    lines = [line for line in md.splitlines() if line.startswith("- 策略治理调权:")]
+    assert len(lines) == 1, lines
+    return lines[0]
+
+
+def test_build_summary_md_says_off_by_design_when_mode_is_off() -> None:
+    """mode=off 要说「按设计不接」,不能跟读取失败共用「未启用」。
+
+    两种成因在 signal_weight_map 上完全同形(都是空表),但一种是正常状态、
+    一种必须查。报表混成一句,查的人就得每次重新翻一遍代码才能分清。
+    """
+    md = build_summary_md({"signal_weight_map": {}, "signal_weight_mode": "off"})
+
+    assert _policy_line(md) == "- 策略治理调权: 不接归因报告（回测避免前视）"
+
+
+def test_build_summary_md_keeps_unset_wording_when_mode_wants_weights() -> None:
+    """shadow/on 而权重为空 = 该接却没接上,仍要报「未启用」。"""
+    for mode in ("shadow", "on"):
+        md = build_summary_md({"signal_weight_map": {}, "signal_weight_mode": mode})
+
+        assert _policy_line(md) == "- 策略治理调权: 未启用", mode
+
+
+def test_build_summary_md_ignores_mode_when_weights_exist() -> None:
+    """有权重就渲染权重,档位不参与——否则 off 会盖掉真实生效的调权。"""
+    md = build_summary_md(
+        {
+            "signal_weight_map": {"lps[regime=RISK_ON]": 0.5},
+            "signal_weight_mode": "off",
+        }
+    )
+
+    line = _policy_line(md)
+    assert "lps[regime=RISK_ON]" in line
+    assert "不接归因报告" not in line
+    assert "未启用" not in line
