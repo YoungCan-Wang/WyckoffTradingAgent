@@ -6,7 +6,7 @@ from typing import Any
 
 from core.backtest_grid_ranking import RobustParamScore, rank_robust_params
 from core.backtest_periods import period_rank
-from workflows.backtest_market_report_artifacts import GridCell
+from workflows.backtest_market_report_artifacts import GridCell, win_rate_span
 
 ParamKey = tuple[str, int, int, int, int]
 REQUIRED_PERIODS = frozenset({"recent_6m", "bull_2020", "bear_2022"})
@@ -135,6 +135,9 @@ def _summary(
 
 def _score_payload(score: RobustParamScore[GridCell]) -> dict[str, Any]:
     style, hold, stop_loss, take_profit, trailing_stop, trailing_activate = score.key
+    # 胜率随payload一起出,但 ``stable_definition`` 仍只看现金收益:判定口径不能悄悄改,
+    # 那会让历史上所有 pass/fail 的含义变一次。这两列是给人看的对照,不进 ``_verdict``。
+    avg_win_rate, min_win_rate = win_rate_span(score.cells)
     return {
         "portfolio_style": style,
         "hold_days": hold,
@@ -146,6 +149,8 @@ def _score_payload(score: RobustParamScore[GridCell]) -> dict[str, Any]:
         "positive_periods": score.positive_periods,
         "avg_cash_return": _round(score.avg_cash_return),
         "min_cash_return": _round(score.min_cash_return),
+        "avg_win_rate_pct": _round(avg_win_rate),
+        "min_win_rate_pct": _round(min_win_rate),
         "robust_score": _round(score.score),
     }
 

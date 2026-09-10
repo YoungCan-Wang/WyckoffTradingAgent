@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import csv
 import glob
+import math
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -72,6 +74,24 @@ def read_trades(path: Path | None) -> list[dict[str, str]]:
         return []
     with path.open(encoding="utf-8-sig", newline="") as file:
         return list(csv.DictReader(file))
+
+
+def win_rate_span(cells: Iterable[GridCell]) -> tuple[float | None, float | None]:
+    """一组同参数格子的（平均胜率, 最差周期胜率），单位为百分点。
+
+    跨周期稳健性那张表原本整行只报现金收益,于是「赚钱但十次只对四次」和「胜率高但不赚钱」
+    在表上完全同形。这里只做展示用的汇总,不参与排序:排序键按现金收益排,换成胜率会退化——
+    ``_robust_score`` 里权重最大的 ``positive_periods * 4.0`` 判的是「> 0」,而胜率没有负数,
+    60 组参数会全部拿到满格 6/6,那一项就变成人人加同样分的常数。
+
+    非有限值一律剔除而不是当 0:胜率 0.0 是「一笔没赢」这个真实取值,拿 NaN 冒充它会把
+    读数拖低;而 ``min()`` 碰到 NaN 的结果取决于它在序列里的位置(``min([1.0, nan])`` 得
+    1.0,``min([nan, 1.0])`` 得 nan),一个脏值就能静默改写整组的最差周期。
+    """
+    values = [cell.win_rate for cell in cells if cell.win_rate is not None and math.isfinite(cell.win_rate)]
+    if not values:
+        return None, None
+    return sum(values) / len(values), min(values)
 
 
 def _to_float(raw: str | None) -> float | None:
