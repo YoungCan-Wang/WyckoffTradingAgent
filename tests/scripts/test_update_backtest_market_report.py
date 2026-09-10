@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 _DEFAULT_POLICY = (
-    "lps[regime=RISK_ON]×0.50↓（远端, 报告=2026-07-04, 周期=h5, "
-    "策略=shadow 对照(shadow), 范围=尾盘+漏斗shadow）"
+    "lps[regime=RISK_ON]×0.50↓（远端, 报告=2026-07-04, 周期=h5, 策略=shadow 对照(shadow), 范围=尾盘+漏斗shadow）"
 )
 
 
@@ -263,9 +262,7 @@ def test_backtest_confirmation_accepts_policy_off_by_design(tmp_path):
 
 def test_backtest_confirmation_still_flags_unset_policy(tmp_path):
     """「未启用」= 开关开着而权重为空,该查,不能跟着上面一起放行。"""
-    confirmation = _confirmation_with_policy(
-        tmp_path, "未启用（远端, 报告=2026-07-04, 周期=h5）"
-    )
+    confirmation = _confirmation_with_policy(tmp_path, "未启用（远端, 报告=2026-07-04, 周期=h5）")
 
     assert confirmation["strategy_policy_ready"] is False
     assert confirmation["strategy_policy_reason"] == "策略治理调权未实际生效"
