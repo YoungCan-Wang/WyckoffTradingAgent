@@ -27,6 +27,40 @@ CHUNK = 200
 _CONFLICT_KEY = "trade_date,ts_code"
 
 
+def load_capture_rows(since: str = "", until: str = "", *, page: int = 1000) -> list[dict[str, Any]]:
+    """读回捕获行做前瞻收益评估。
+
+    用 ``create_admin_client`` 而不是 ``create_read_client``：后者只在 server job
+    里才返回 service-role，CLI 下走 anon/RLS，而被 RLS 挡住的读**返回 count=0
+    且不报错**，与「表是空的」完全同形（见 memory anon-rls-read-returns-count-zero,
+    已咬过两张表）。评估脚本在本地跑，必须显式要 admin。
+
+    分页取：一年复盘约两万行，超过 PostgREST 默认上限。排序键带 ts_code 兜底，
+    只按 trade_date 排在跨页时会重复或漏行——同一天有几十行，页边界落在中间时
+    未定序的那部分可能两页都出现或都不出现。
+    """
+    client = create_admin_client()
+    rows: list[dict[str, Any]] = []
+    offset = 0
+    while True:
+        query = client.table(TABLE_REVIEW_CAPTURE_DAILY).select("*")
+        if since:
+            query = query.gte("trade_date", since)
+        if until:
+            query = query.lte("trade_date", until)
+        resp = (
+            query.order("trade_date", desc=False)
+            .order("ts_code", desc=False)
+            .range(offset, offset + page - 1)
+            .execute()
+        )
+        batch = list(resp.data or [])
+        rows.extend(batch)
+        if len(batch) < page:
+            return rows
+        offset += page
+
+
 def build_capture_rows(
     rows: list[dict[str, Any]],
     *,
