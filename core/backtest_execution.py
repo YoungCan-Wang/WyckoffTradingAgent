@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from core.funnel_effect_panels import MOM_LOOKBACK_BARS, momentum_pct
 from core.limit_move import limit_pct
 
 CN_ZONE = ZoneInfo("Asia/Shanghai")
@@ -48,6 +49,10 @@ class TradeRecord:
     mae_pct: float | None = None
     signal_confirmed: bool = False
     entry_weight_multiplier: float = 1.0
+    # 信号日已知的 20 日涨幅（%）。没有它就没法给「某触发器收益高」配同动量对照——
+    # 高动量票本身就跑得快，不把动量固定住，量到的是选股增量还是追涨分不开。
+    # None 表示历史不足 20 根（样本头几天/新股），不是 0.0：0.0 是横盘这个真实档位。
+    prior_mom20_pct: float | None = None
 
 
 @dataclass(frozen=True)
@@ -88,6 +93,34 @@ def calc_trade_excursion_pct(
         max_high = max(max_high, float(high))
         min_low = min(min_low, float(low))
     return (max_high / entry_price - 1.0) * 100.0, (min_low / entry_price - 1.0) * 100.0
+
+
+def calc_prior_momentum_pct(
+    sorted_dates: list[date],
+    day_ohlc: dict[date, tuple[float, float, float, float]],
+    signal_date: date,
+    lookback: int = MOM_LOOKBACK_BARS,
+) -> float | None:
+    """信号日已知的 20 日涨幅，口径与效果检验面板同源（见 ``momentum_pct``）。
+
+    ``sorted_dates`` 必须是**这只票自己的**交易日升序序列，不是全市场的：按全市场日历
+    回看 20 格，停牌过的票会把停牌日算作有行情的日子，实际回看窗口被拉长，动量就偏小。
+    这条偏差只在停牌票上出现，均值上看不出来，只会让配对时挑错邻居。
+
+    含信号日当天的收盘（``close[T] / close[T-20]``），T 日收盘可知，无前视。
+    历史不足 20 根返回 ``None``——回测的预热是 ``trading_days * 3`` 个自然日，样本头几天
+    与新股本来就不够长，填 0.0 会被当成横盘。
+    """
+    if lookback <= 0:
+        return None
+    pos = bisect.bisect_left(sorted_dates, signal_date)
+    if pos >= len(sorted_dates) or sorted_dates[pos] != signal_date or pos < lookback:
+        return None
+    now = day_ohlc.get(sorted_dates[pos])
+    past = day_ohlc.get(sorted_dates[pos - lookback])
+    if now is None or past is None:
+        return None
+    return momentum_pct(now[3], past[3])
 
 
 def close_on_or_after(df: pd.DataFrame, day: date) -> tuple[float | None, date | None]:
