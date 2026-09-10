@@ -16,7 +16,7 @@ from core.backtest_grid_ranking import (
 )
 from core.backtest_periods import PERIOD_LABELS, PERIOD_ORDER
 from core.strategy_policy_display import POLICY_OFF_BY_DESIGN
-from workflows.backtest_market_report_artifacts import GridCell, read_trades
+from workflows.backtest_market_report_artifacts import GridCell, read_trades, win_rate_span
 from workflows.backtest_parameter_stability import build_parameter_stability
 from workflows.backtest_walk_forward import build_walk_forward_validation
 
@@ -261,12 +261,16 @@ def _build_robust_param_table(scores: list[RobustParamScore]) -> list[str]:
         "",
         "## 跨周期参数稳健性",
         "",
-        "| 排名 | 参数组合 | 正周期 | 最近收益 | 平均收益 | 最差收益 | 稳健分 | 覆盖周期 |",
-        "|---:|---|---:|---:|---:|---:|---:|---:|",
+        "| 排名 | 参数组合 | 正周期 | 最近收益 | 平均收益 | 最差收益 | 平均胜率 | 最差周期胜率 | 稳健分 | 覆盖周期 |",
+        "|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for idx, score in enumerate(scores[:12], 1):
         cell = score.best_cell
         marker = " 🏆" if idx == 1 else ""
+        # 胜率两列只做展示,排名仍由现金收益决定(理由见 ``win_rate_span``)。摆在收益列右边是
+        # 因为这两个口径经常打架:实测榜首现金收益 +0.56% 但最差周期胜率只有 27.59%,
+        # 只看收益列会把它读成「稳健」。
+        avg_win_rate, min_win_rate = win_rate_span(score.cells)
         lines.append(
             "| "
             + " | ".join(
@@ -277,6 +281,8 @@ def _build_robust_param_table(scores: list[RobustParamScore]) -> list[str]:
                     _fmt_signed(score.recent_cash_return, 2, "%"),
                     _fmt_signed(score.avg_cash_return, 2, "%"),
                     _fmt_signed(score.min_cash_return, 2, "%"),
+                    _fmt_num(avg_win_rate, 2, "%"),
+                    _fmt_num(min_win_rate, 2, "%"),
                     _fmt_num(score.score, 2),
                     str(score.period_count),
                 ]
@@ -518,10 +524,16 @@ def _build_conclusion_lines(
         f"- 参数观察: {_best_per_hold_comment(cells)}",
     ]
     if robust_best:
+        # 胜率要跟现金收益并排出:上面那行「代表单元」的胜率只来自代表格子(按现金收益从
+        # recent_2m/recent_6m 里挑的那一个),跨周期最差的那一档比它低得多——实测榜首代表
+        # 格子 53.85%,最差周期 27.59%。只报代表格子会把跨周期的胜率塌陷藏起来。
+        avg_win_rate, min_win_rate = win_rate_span(robust_best.cells)
         lines.append(
             f"- 跨周期稳健性: 正收益周期 {robust_best.positive_periods}/{robust_best.period_count}；"
             f"平均现金收益 {_fmt_signed(robust_best.avg_cash_return, 2, '%')}；"
             f"最差周期 {_fmt_signed(robust_best.min_cash_return, 2, '%')}；"
+            f"平均胜率 {_fmt_num(avg_win_rate, 2, '%')}；"
+            f"最差周期胜率 {_fmt_num(min_win_rate, 2, '%')}；"
             f"稳健分 {_fmt_num(robust_best.score, 2)}。"
         )
     lines.extend(_build_period_guardrail_lines(cells))

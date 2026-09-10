@@ -5,7 +5,7 @@ _DEFAULT_POLICY = (
 )
 
 
-def _write_grid_cell(tmp_path, period, start, end, hold, stop, cash_return, policy=_DEFAULT_POLICY):
+def _write_grid_cell(tmp_path, period, start, end, hold, stop, cash_return, policy=_DEFAULT_POLICY, win_rate=40.0):
     artifact = tmp_path / f"backtest-grid-{period}-h{hold}-sl-{stop}-tp0-tr0-37"
     artifact.mkdir()
     (artifact / f"summary_{period}_h{hold}.md").write_text(
@@ -18,7 +18,7 @@ def _write_grid_cell(tmp_path, period, start, end, hold, stop, cash_return, poli
                 "- 入场价格模式: open",
                 f"- 策略治理调权: {policy}",
                 "- 成交样本: 10",
-                "- 胜率: 40.0%",
+                f"- 胜率: {win_rate}%",
                 "- 平均收益: 1.0%",
                 "- 中位收益: 0.5%",
                 "- 夏普比 (Sharpe Ratio): 0.3",
@@ -198,6 +198,32 @@ def test_market_report_prefers_cross_period_robust_params(tmp_path):
     assert "RISK_ON / 强主线修复" not in report
     assert "稳健参数（跨周期全正）: **等额四仓 / 15天 / SL-8% / 无TP / 无Trail**" in report
     assert "跨周期参数稳健性" in report
+
+
+def test_robust_param_table_reports_win_rate_next_to_cash_return(tmp_path):
+    """跨周期稳健表要并排给出胜率,否则「赚钱但胜率低」在表上跟真稳健同形。
+
+    代表格子按现金收益从 recent_6m 里挑,所以摘要行原本只会显示那一档的胜率。这里把
+    recent_6m 设成 62.0%、bear_2022 设成 24.0%,断言报表同时出现这两个数——只报代表格子
+    的实现会漏掉 24.00%,这就是这条用例的判别点。实测 09-09 网格上这段落差是 53.85 → 27.59。
+    """
+    from scripts.update_backtest_market_report import build_report, load_grid_cells
+
+    for period, start, end, cash_return, win_rate in [
+        ("recent_6m", "2025-12-01", "2026-05-31", 6.0, 62.0),
+        ("bull_2020", "2020-07-01", "2021-02-18", 4.0, 41.0),
+        ("bear_2022", "2021-12-13", "2022-10-31", 3.0, 24.0),
+    ]:
+        _write_grid_cell(tmp_path, period, start, end, 15, 8, cash_return, win_rate=win_rate)
+        _write_grid_cell(tmp_path, period, start, end, 10, 8, cash_return - 1, win_rate=win_rate - 2)
+
+    report = build_report(load_grid_cells(tmp_path))
+
+    assert "| 平均胜率 | 最差周期胜率 |" in report
+    assert "平均胜率 42.33%" in report
+    assert "最差周期胜率 24.00%" in report
+    # 现金收益那几列必须没被挤掉。
+    assert "最差周期 +3.00%" in report
 
 
 def test_backtest_confirmation_passes_only_cross_period_positive(tmp_path):

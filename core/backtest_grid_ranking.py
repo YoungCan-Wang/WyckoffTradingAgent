@@ -41,6 +41,25 @@ def rank_robust_params(
     recent_period: str | None = None,
     period_rank_fn: Callable[[str], tuple[int, str]] | None = None,
 ) -> list[RobustParamScore[T]]:
+    """按跨周期稳健性给参数组排序。
+
+    ``value_fn`` 虽然是注入的,但这个模块只对「现金收益(百分点,可正可负)」成立,两处写死了:
+    ``RobustParamScore`` 的字段叫 ``*_cash_return``,``robust_label()`` 每个分支的文案也都在
+    说现金收益。换个量纲进来,排序还能跑,读出来的话是错的。
+
+    换成胜率会退化成常数项,不是"另一种排法"。三处判据都把「> 0」当好(:func:`_robust_score`
+    的 ``positive_periods``、:func:`robust_label` 的 ``min_cash_return > 0``、
+    :func:`weak_period_guardrails` 的 ``max(values) <= 0``),而胜率没有负数。实测 09-09 那批
+    网格:传胜率进来,60 组参数的 ``positive_periods`` 全是 6,权重最大的
+    ``positive_periods * 4.0`` 变成人人加 24 的常数;``robust_label`` 把头五名全标成
+    「稳健参数（跨周期全正）」,而这五名里头名现金收益 +0.52%、第二名 -5.71%——那句标签说的
+    是「六个周期都赚钱」,实际只是「胜率都没到 0 以下」。另外 ``representative_fn`` 在两个
+    生产调用方那里都按现金收益挑代表格子,与胜率排序错位(今天两个调用方两处都传现金收益,
+    所以还没错位,换量纲才会)。
+
+    要出胜率口径的对照,用 :func:`workflows.backtest_market_report_artifacts.win_rate_span`
+    在展示层汇总,别改这里的排序键——改它会一次性改掉所有历史格子的排名。
+    """
     groups: dict[Hashable, list[T]] = defaultdict(list)
     for cell in cells:
         groups[key_fn(cell)].append(cell)
