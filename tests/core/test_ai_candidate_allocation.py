@@ -112,6 +112,15 @@ class TestAllocateAiCandidates:
     def test_production_workflows_stay_aligned_with_core_policy_defaults(self):
         default_allocation = AiCandidateAllocationConfig()
         default_policy = CandidatePolicyConfig()
+        # 归因调权是这两条链**唯一**故意不同源的一档,期望值写在这里而不是各自 assert 里:
+        # 让改任一边的人必须同时看见另一边的值。实盘要 shadow(读报告、只做对照),回测必须
+        # off——``load_attribution_policy_snapshot`` 不收 ``as_of``,永远拿当前最新那份报告,
+        # 拿它跑 bull_2020 就是用今天的结论指导六年前的选股;何况报告最早只有 2026-06-16,
+        # 历史窗口没有同日期的报告可回溯。两边写成一样才是 bug,且在回测侧表现为静默前视。
+        expected_dynamic_policy = {
+            ".github/workflows/wyckoff_funnel.yml": "shadow",
+            ".github/workflows/backtest_grid.yml": "off",
+        }
         for path, job_name in (
             (".github/workflows/wyckoff_funnel.yml", "run"),
             (".github/workflows/backtest_grid.yml", "grid"),
@@ -125,9 +134,14 @@ class TestAllocateAiCandidates:
                 assert int(env[f"FUNNEL_AI_{family}_ACCUM"]) == accum_quota
             assert float(env["FUNNEL_LOSS_GUARD_RISK_ON_PRE5_RET"]) == default_policy.risk_on_pre5_ret
             assert "tradeable_l4" in str(env["FUNNEL_AI_SELECTION_MODE"])
-            assert "shadow" in str(env["FUNNEL_DYNAMIC_POLICY"])
             assert int(env["FUNNEL_DYNAMIC_POLICY_HORIZON"]) == 5
             assert int(env["STRATEGY_ATTRIBUTION_MAX_AGE_DAYS"]) == 7
+
+            wanted = expected_dynamic_policy[path]
+            assert wanted in str(env["FUNNEL_DYNAMIC_POLICY"])
+            # 反向也钉一下:回测侧只要出现 shadow 就是把前视放回来了。
+            for other in set(expected_dynamic_policy.values()) - {wanted}:
+                assert other not in str(env["FUNNEL_DYNAMIC_POLICY"])
 
     def test_evr_and_compression_only_hits_enter_quota_tracks(self):
         result = FunnelResult(
