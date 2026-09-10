@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 import pytest
@@ -10,6 +10,7 @@ from core.backtest_execution import (
     TradeRecord,
     build_daily_nav,
     calc_portfolio_metrics,
+    calc_prior_momentum_pct,
     resolve_trade_exit,
 )
 
@@ -246,3 +247,132 @@ def _daily_ohlc_frame(rows: list[tuple[date, float, float, float, float]]):
             "close": [row[4] for row in rows],
         }
     )
+
+
+def _ohlc_from_closes(days: list[date], closes: dict[date, float]) -> dict:
+    return {d: (closes[d], closes[d], closes[d], closes[d]) for d in days}
+
+
+def test_prior_momentum_matches_panel_definition_day_by_day() -> None:
+    """回测标量口径与效果检验面板的向量化口径必须逐日相等。
+
+    这条是整列的意义所在：同动量对照要求两组「用同一把尺子量」。两边各算一遍 20 日
+    涨幅（含不含 T 日、shift 几格）而结果不同的话，不会报错，只会让对照组挑错邻居。
+    """
+    import pandas as pd_
+
+    from core.funnel_effect_panels import MOM_LOOKBACK_BARS, build_panels, normalize_market_frame
+
+    stamps = pd_.bdate_range("2026-01-01", periods=40)
+    closes = [10.0 + i * 0.3 for i in range(40)]
+    panels = build_panels(
+        normalize_market_frame(
+            pd_.DataFrame(
+                {
+                    "ts_code": ["000001.SZ"] * 40,
+                    "trade_date": [d.strftime("%Y%m%d") for d in stamps],
+                    "open": closes,
+                    "close": closes,
+                    "amount": [1e9] * 40,
+                }
+            )
+        ),
+        min_amount_wan=0.0,
+    )
+    days = [d.date() for d in stamps]
+    day_ohlc = _ohlc_from_closes(days, dict(zip(days, closes, strict=True)))
+
+    compared = 0
+    for i in range(MOM_LOOKBACK_BARS, len(days)):
+        panel_value = panels.mom20[stamps[i].strftime("%Y-%m-%d")]["000001"]
+        assert calc_prior_momentum_pct(days, day_ohlc, days[i]) == pytest.approx(panel_value)
+        compared += 1
+    assert compared == len(days) - MOM_LOOKBACK_BARS
+
+
+def test_prior_momentum_is_none_when_history_shorter_than_lookback() -> None:
+    """历史不足 20 根返回 None，不能填 0.0。
+
+    0.0 是「横盘」这个真实档位。用它填缺失会把样本头几天与新股混进零动量那一档，
+    配对时按零动量找邻居，控制组就选错了人，而这种偏差不报错。
+    """
+    days = [d.date() for d in pd.bdate_range("2026-01-01", periods=25)]
+    day_ohlc = _ohlc_from_closes(days, {d: 10.0 + i for i, d in enumerate(days)})
+
+    assert calc_prior_momentum_pct(days, day_ohlc, days[19]) is None
+    assert calc_prior_momentum_pct(days, day_ohlc, days[20]) is not None
+
+
+def test_prior_momentum_counts_the_stocks_own_bars_not_the_market_calendar() -> None:
+    """停牌票要按自己的交易日回看 20 根，不能按全市场日历数 20 格。
+
+    按全市场日历数，停牌日会被算作有行情的日子，实际回看窗口被拉长、动量偏小。
+    这里把停牌区放进回看窗口内，两种做法相差 5.9pct——只在停牌票上出现，均值上看不出来。
+    """
+    market_days = [d.date() for d in pd.bdate_range("2026-01-01", periods=45)]
+    halted = set(market_days[30:35])
+    own_days = [d for d in market_days if d not in halted]
+
+    closes, price = {}, 10.0
+    for day in own_days:
+        closes[day] = price
+        price *= 1.01
+    day_ohlc = _ohlc_from_closes(own_days, closes)
+    target = own_days[-1]
+
+    actual = calc_prior_momentum_pct(own_days, day_ohlc, target)
+    own_ref = own_days[own_days.index(target) - 20]
+    market_ref = market_days[market_days.index(target) - 20]
+
+    assert own_ref != market_ref, "构造无效：停牌区没落在回看窗口内，两种做法本来就同解"
+    assert actual == pytest.approx(100.0 * (closes[target] / closes[own_ref] - 1.0))
+    assert actual != pytest.approx(100.0 * (closes[target] / closes[market_ref] - 1.0))
+
+
+def test_prior_momentum_rejects_dates_outside_the_series() -> None:
+    """信号日不在这只票的行情里就返回 None——不能顺移到最近的一天。
+
+    顺移会让动量的基准日与信号日错开，且错开多少取决于停牌长度，静默不可查。
+    """
+    days = [d.date() for d in pd.bdate_range("2026-01-01", periods=30)]
+    day_ohlc = _ohlc_from_closes(days, {d: 10.0 + i for i, d in enumerate(days)})
+    # 序列里的空档（周六）：必须落在 20 根之后，否则「不足回看」会先命中，用例就废了
+    gap = next(d + timedelta(days=1) for d in days[22:] if (d + timedelta(days=1)) not in day_ohlc)
+
+    assert gap not in day_ohlc and days[0] < gap < days[-1]
+    assert calc_prior_momentum_pct(days, day_ohlc, gap) is None
+    assert calc_prior_momentum_pct(days, day_ohlc, date(2030, 1, 1)) is None
+
+
+def test_prior_momentum_guards_non_positive_and_non_finite_base() -> None:
+    """基准价 <=0 或非有限值返回 None,不能算出 inf 混进配对。"""
+    from core.funnel_effect_panels import momentum_pct
+
+    assert momentum_pct(10.0, 0.0) is None
+    assert momentum_pct(10.0, -1.0) is None
+    assert momentum_pct(None, 5.0) is None
+    assert momentum_pct(10.0, None) is None
+    assert momentum_pct(float("nan"), 5.0) is None
+    assert momentum_pct(11.0, 10.0) == pytest.approx(10.0)
+
+
+def test_trade_record_carries_prior_momentum_into_csv_columns() -> None:
+    """列要落进 trades_*.csv;缺值写空串而不是 0。"""
+    record = TradeRecord(
+        signal_date=date(2026, 3, 2),
+        entry_date=date(2026, 3, 3),
+        exit_date=date(2026, 3, 10),
+        code="000001",
+        name="平安银行",
+        trigger="sos",
+        score=1.0,
+        entry_close=10.0,
+        exit_close=11.0,
+        ret_pct=10.0,
+        prior_mom20_pct=12.5,
+    )
+    frame = pd.DataFrame([record.__dict__, TradeRecord(**{**record.__dict__, "prior_mom20_pct": None}).__dict__])
+
+    assert "prior_mom20_pct" in frame.columns
+    assert frame["prior_mom20_pct"].tolist()[0] == pytest.approx(12.5)
+    assert frame.to_csv(index=False).splitlines()[2].split(",")[-1] == ""

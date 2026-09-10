@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import pandas as pd
@@ -23,6 +24,31 @@ from core.funnel_effect_eval import Panels
 # 20 日均额下限（万元）。低于此的票进不了对照池——流动性差的票的收益噪声与
 # 候选不可比，把它们放进邻域只会放大控制组的方差。
 DEFAULT_MIN_AMOUNT_WAN = 8000.0
+
+# 动量回看的**交易日**根数。面板侧向量化算（``shift``）、回测侧按单只标量算，两条
+# 路径都读这个常量：这是「同一把尺子」里唯一可能被改歪的数字。
+MOM_LOOKBACK_BARS = 20
+
+
+def momentum_pct(now_close: float | None, past_close: float | None) -> float | None:
+    """20 日涨幅的标量口径，与 ``build_panels`` 的向量化算法同源。
+
+    回测的 ``trades_*.csv`` 要给每笔交易记信号前动量，好给「某触发器收益高」配同动量
+    对照；它手里是单只票的日线字典，不是面板那张长表，没法直接套 ``shift``。所以口径
+    在这里各写一次形态、但**回看根数与公式共用**：改 ``MOM_LOOKBACK_BARS`` 两边一起动。
+
+    取不到值时返回 ``None`` 而不是 ``0.0``。0.0 是一个合法的动量值（横盘），拿它填缺失
+    会把新股与停牌票混进「零动量」那一档，配对时按零动量去找邻居，控制组就选错了人，
+    而这种偏差不报错（见 memory nan-passes-every-truthy-guard、
+    blank-risk-signal-means-never-evaluated）。
+    """
+    if now_close is None or past_close is None:
+        return None
+    now = float(now_close)
+    past = float(past_close)
+    if not math.isfinite(now) or not math.isfinite(past) or past <= 0.0:
+        return None
+    return 100.0 * (now / past - 1.0)
 
 
 def normalize_market_frame(frame: pd.DataFrame) -> pd.DataFrame:
@@ -84,7 +110,7 @@ def build_panels(
     grouped = frame.groupby("code", sort=False)
     frame["avg20"] = grouped.amt_wan.transform(lambda s: s.rolling(20, min_periods=10).mean().shift(1))
     # 20 日涨幅按 T 日收盘算（含 T 日），配对时对候选和对照同口径，无前视。
-    frame["mom20"] = grouped.close.transform(lambda s: 100.0 * (s / s.shift(20) - 1.0))
+    frame["mom20"] = grouped.close.transform(lambda s: 100.0 * (s / s.shift(MOM_LOOKBACK_BARS) - 1.0))
     liquid = frame[frame.avg20 >= min_amount_wan]
     bench_open, bench_close = load_benchmark_prices(benchmark)
     return Panels(

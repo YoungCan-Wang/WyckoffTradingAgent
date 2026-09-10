@@ -27,6 +27,7 @@ from core.backtest_execution import (
     IntradayPriceFetcher,
     TradeRecord,
     build_daily_ohlc_lookup,
+    calc_prior_momentum_pct,
     calc_trade_excursion_pct,
     entry_on_or_after,
     market_of_board,
@@ -1013,6 +1014,9 @@ def _make_trade_record(
     actual_exit_idx = _trade_date_index(trade_dates, exit_date, plan.actual_exit_idx)
     window = trade_dates[plan.actual_entry_idx + 1 : actual_exit_idx + 1]
     mfe_pct, mae_pct = calc_trade_excursion_pct(day_ohlc, window, plan.entry_close)
+    # 显式 sorted 而不是复用 day_ohlc 的插入顺序：下游是 bisect，序错了不报错，只会
+    # 静默回看到别的日子。已排序输入上 sorted() 是线性的，这个保险不要钱。
+    prior_mom20_pct = calc_prior_momentum_pct(sorted(day_ohlc), day_ohlc, ctx.signal_date)
     entry_exec = plan.entry_close * (1.0 + config.buy_friction_pct / 100.0)
     exit_exec = exit_close * (1.0 - config.sell_friction_pct / 100.0)
     _, trigger_name = selected.trigger_name_map.get(code, (0.0, "Layer3_Backup"))
@@ -1042,6 +1046,7 @@ def _make_trade_record(
             selected.signal_type_map.get(code),
             ctx.regime,
         ),
+        prior_mom20_pct=prior_mom20_pct,
     )
 
 
