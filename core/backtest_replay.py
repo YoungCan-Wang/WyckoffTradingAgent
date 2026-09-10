@@ -99,6 +99,7 @@ class BacktestReplayConfig:
     mainline_config: MainlineEngineConfig | None = None
     signal_weight_map: dict[str, float] = field(default_factory=dict)
     signal_weight_meta: dict[str, object] = field(default_factory=dict)
+    signal_weight_mode: str = ""
     # 对跨日确认信号补跑损失护栏，与实盘 apply_loss_guard 对齐。
     #
     # 暂时默认关闭（2026-08-08）：机制已就位且语义已修正（只施加风险类护栏、
