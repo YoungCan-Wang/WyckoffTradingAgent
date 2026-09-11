@@ -519,12 +519,12 @@ class TickFlowClient:
         if not clean and not universe_ids:
             return {}
         out: dict[str, dict[str, Any]] = {}
-        bodies: list[dict[str, Any]] = []
+        queries: list[dict[str, str]] = []
         if universe_ids:
-            bodies.append({"universes": universe_ids})
-        bodies.extend({"symbols": chunk} for chunk in _chunks(clean, TICKFLOW_QUOTES_BATCH_SIZE))
-        for index, body in enumerate(bodies, start=1):
-            payload = self._request("/v1/quotes", json_body=body, method="POST")
+            queries.append({"universes": ",".join(universe_ids)})
+        queries.extend({"symbols": ",".join(chunk)} for chunk in _chunks(clean, TICKFLOW_QUOTES_BATCH_SIZE))
+        for index, params in enumerate(queries, start=1):
+            payload = self._request("/v1/quotes", params=params)
             data = payload.get("data") if isinstance(payload, dict) else None
             if isinstance(data, list):
                 for row in data:
@@ -532,5 +532,5 @@ class TickFlowClient:
                         sym = normalize_cn_symbol(str(row.get("symbol", "")).strip())
                         if sym:
                             out[sym] = row
-            _sleep_between_chunks(index, len(bodies), TICKFLOW_QUOTES_BATCH_SLEEP)
+            _sleep_between_chunks(index, len(queries), TICKFLOW_QUOTES_BATCH_SLEEP)
         return out

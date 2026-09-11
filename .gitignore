@@ -45,6 +45,10 @@ data/strategy_shadow/
 logs/
 artifacts/
 tmp/
+# 盘前/复盘脚本的本地产出目录,和 artifacts/ 同类:每天重生成,不进仓库。
+reports/
+# 另一个本地工具(workbuddy)的笔记目录,跟本仓库代码无关,别误提交。
+.workbuddy/
 *.csv
 *.xlsx
 *.xls
