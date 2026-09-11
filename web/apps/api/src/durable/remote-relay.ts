@@ -50,6 +50,8 @@ interface Meta {
   connId: string
   label: string
   since: number
+  /** 远程连接持有的设备凭证；按 conn_id 断开时必须一并作废，否则可凭 grant 重连。 */
+  deviceToken?: string
 }
 
 interface PairRecord {
@@ -113,7 +115,11 @@ export class RemoteRelay {
       return Response.json({ revoked: closed })
     }
     for (const socket of this.ctx.getWebSockets()) {
-      if (this.metaOf(socket)?.connId === connId) {
+      const meta = this.metaOf(socket)
+      if (meta?.connId === connId) {
+        // 只关 socket 不够：#389 下发的 7 天 device grant 仍能重连。
+        // 桌面文案写明「需要重新扫码才能再连」，必须在服务端作废该凭证。
+        if (meta.deviceToken) await this.revokeDeviceGrant(meta.deviceToken)
         this.closeQuietly(socket, 4003, 'revoked')
         return Response.json({ revoked: 1 })
       }
@@ -129,6 +135,7 @@ export class RemoteRelay {
     const label = (url.searchParams.get('label') || '').slice(0, 60) || (role === HOST ? '电脑' : '手机')
 
     let freshGrant: DeviceGrant | null = null
+    let deviceToken = ''
     if (role === REMOTE) {
       // 手机必须出示一次性配对码，或此前配对成功后下发的设备凭证。
       // 仅凭账号 token 不够 —— token 可能在别的未授权设备上。
@@ -138,6 +145,7 @@ export class RemoteRelay {
       )
       if (!auth.ok) return new Response('Pairing required', { status: 403 })
       freshGrant = auth.freshGrant
+      deviceToken = auth.deviceToken
       const online = this.ctx.getWebSockets().filter((s) => this.metaOf(s)?.role === REMOTE).length
       if (online >= MAX_REMOTES) return new Response('Too many devices', { status: 429 })
     } else {
@@ -149,7 +157,13 @@ export class RemoteRelay {
     }
 
     const pair = new WebSocketPair()
-    const meta: Meta = { role, connId: crypto.randomUUID().slice(0, 8), label, since: Date.now() }
+    const meta: Meta = {
+      role,
+      connId: crypto.randomUUID().slice(0, 8),
+      label,
+      since: Date.now(),
+      ...(deviceToken ? { deviceToken } : {}),
+    }
     // Hibernation API：空闲连接不占 DO 时长。serializeAttachment 让 meta 在
     // 休眠后仍然读得到 —— 普通字段会随实例被回收而丢失。
     this.ctx.acceptWebSocket(pair[1])
@@ -171,14 +185,16 @@ export class RemoteRelay {
   private async authorizeRemote(
     code: string,
     deviceToken: string,
-  ): Promise<{ ok: boolean; freshGrant: DeviceGrant | null }> {
+  ): Promise<{ ok: boolean; freshGrant: DeviceGrant | null; deviceToken: string }> {
     if (await this.consumePair(code)) {
-      return { ok: true, freshGrant: await this.mintDeviceGrant() }
+      const grant = await this.mintDeviceGrant()
+      return { ok: true, freshGrant: grant, deviceToken: grant.token }
     }
     if (await this.hasValidDeviceGrant(deviceToken)) {
-      return { ok: true, freshGrant: null }
+      // 重连不换发新凭证，但要把出示的 token 钉到连接上，供按台断开时作废。
+      return { ok: true, freshGrant: null, deviceToken }
     }
-    return { ok: false, freshGrant: null }
+    return { ok: false, freshGrant: null, deviceToken: '' }
   }
 
   private async consumePair(supplied: string): Promise<boolean> {
@@ -212,6 +228,18 @@ export class RemoteRelay {
       await this.ctx.storage.put(DEVICE_GRANTS_KEY, alive)
     }
     return alive.some((g) => g.token === token)
+  }
+
+  private async revokeDeviceGrant(token: string): Promise<void> {
+    if (!token) return
+    const grants = await this.loadDeviceGrants()
+    const kept = grants.filter((g) => g.token !== token)
+    if (kept.length === grants.length) return
+    if (kept.length === 0) {
+      await this.ctx.storage.delete(DEVICE_GRANTS_KEY)
+      return
+    }
+    await this.ctx.storage.put(DEVICE_GRANTS_KEY, kept)
   }
 
   private async loadDeviceGrants(): Promise<DeviceGrant[]> {
