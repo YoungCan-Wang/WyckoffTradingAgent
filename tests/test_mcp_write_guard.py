@@ -88,3 +88,19 @@ class TestMcpEntrypoints:
         monkeypatch.setattr(mcp_server, "_record_trade_fill", _boom)
         result = mcp_server.record_trade_fill(code="605007", side="sell", shares=100, price=13.0)
         assert result["status"] == "error"
+
+    def test_update_portfolio_omitted_free_cash_stays_none(self, monkeypatch):
+        """MCP 旧默认 free_cash=0，省略参数会绕过核心层 None 校验并静默清零。"""
+        import mcp_server
+
+        captured: dict = {}
+
+        def _capture(**kwargs):
+            captured.update(kwargs)
+            return {"error": "set_cash 必须显式传入 free_cash，省略会被当成清零"}
+
+        monkeypatch.setenv("WYCKOFF_MCP_ALLOW_WRITES", "1")
+        monkeypatch.setattr(mcp_server, "_update_portfolio", _capture)
+        result = mcp_server.update_portfolio(action="set_cash")
+        assert captured.get("free_cash") is None
+        assert "清零" in result["error"]

@@ -312,6 +312,16 @@ def _portfolio_write_failed(result: dict[str, Any]) -> str:
     return ""
 
 
+def _optional_free_cash(params: dict[str, Any]) -> float | None:
+    """漏传与显式 0 必须区分：漏传不能变成 0，否则 set_cash 会静默清零。"""
+    if "free_cash" not in params or params.get("free_cash") in (None, ""):
+        return None
+    try:
+        return float(params["free_cash"])
+    except (TypeError, ValueError) as exc:
+        raise MethodError("invalid_params", f"free_cash 不是数字：{params.get('free_cash')!r}") from exc
+
+
 def portfolio_edit(params: dict[str, Any]) -> Iterator[Event]:
     """
     手动增删改持仓。
@@ -333,7 +343,7 @@ def portfolio_edit(params: dict[str, Any]) -> Iterator[Event]:
         shares=_exact_shares(params.get("shares")),
         cost_price=float(params.get("cost_price") or 0),
         buy_dt=str(params.get("buy_dt") or ""),
-        free_cash=float(params.get("free_cash") or 0),
+        free_cash=_optional_free_cash(params),
         tool_context=_write_session().tool_context,
     )
     failure = _portfolio_write_failed(result)

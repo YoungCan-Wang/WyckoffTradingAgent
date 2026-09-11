@@ -149,6 +149,35 @@ class TestPortfolioEdit:
             list(methods.dispatch("portfolio_edit", {"action": "update", "code": "600519"}))
         assert "600519 不存在" in str(excinfo.value)
 
+    def test_set_cash_omitted_free_cash_is_none_not_zero(self, captured: dict[str, Any]) -> None:
+        """漏传不能变成 0：旧写法 float(... or 0) 会绕过 set_cash 的显式校验并清零。"""
+        _result("portfolio_edit", {"action": "set_cash"})
+        assert captured["free_cash"] is None
+
+    def test_set_cash_explicit_zero_is_preserved(self, captured: dict[str, Any]) -> None:
+        _result("portfolio_edit", {"action": "set_cash", "free_cash": 0})
+        assert captured["free_cash"] == 0.0
+
+    def test_set_cash_omit_surfaces_backend_guard(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+        from agents import portfolio_tools
+        from integrations import local_db
+
+        local_db.reset_connection()
+        monkeypatch.setattr("core.constants.LOCAL_DB_PATH", tmp_path / "portfolio.db")
+        local_db.init_db()
+        monkeypatch.setattr(portfolio_tools, "has_cloud", lambda _ctx=None: False)
+        monkeypatch.setattr(portfolio_tools, "_portfolio_id", lambda _ctx=None: "LOCAL")
+        local_db.update_local_free_cash("LOCAL", 88_000.0)
+
+        class FakeSession:
+            tool_context = None
+
+        monkeypatch.setattr("cli.ipc.session.get_session", lambda: FakeSession())
+        with pytest.raises(MethodError) as excinfo:
+            list(methods.dispatch("portfolio_edit", {"action": "set_cash"}))
+        assert "必须显式传入 free_cash" in str(excinfo.value)
+        assert local_db.load_portfolio("LOCAL")["free_cash"] == 88_000.0
+
 
 class TestPortfolioSetStop:
     @pytest.fixture
