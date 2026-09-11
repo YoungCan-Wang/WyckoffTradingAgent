@@ -11,6 +11,7 @@ import pandas as pd
 
 from core.candidate_metadata import CANDIDATE_ATTRIBUTION_COLUMNS, STRATEGY_VERSION_CANDIDATE_LANE_V1
 from core.candidate_metadata import code6 as _code6
+from core.candidate_tracks import strip_lane_status_suffix
 from core.constants import TABLE_RECOMMENDATION_TRACKING
 from utils.safe import safe_float
 
@@ -271,7 +272,13 @@ def _extract_recommendation_attribution(row: dict[str, Any]) -> dict[str, Any]:
     signal_types = _optional_text_list(row.get("signal_types"))
     primary_signal = _optional_text(row.get("primary_signal")) or (signal_types[0] if signal_types else None)
     candidate_lane = (
-        _optional_text(row.get("candidate_lane")) or primary_signal or _optional_text(row.get("selection_source"))
+        _optional_text(row.get("candidate_lane"))
+        or primary_signal
+        # selection_source 走到这里已经带上了 :market_blocked,原样落进车道列会把
+        # 同一条车道按市场状态劈成两个标签,归因侧看成两条车道。后缀留在
+        # selection_source 自己那一列。
+        or strip_lane_status_suffix(row.get("selection_source"))
+        or None
     )
     entry_type = _optional_text(row.get("entry_type")) or candidate_lane
     return {

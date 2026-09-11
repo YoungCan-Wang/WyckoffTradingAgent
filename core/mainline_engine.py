@@ -18,6 +18,7 @@ from core._price_math import upper_shadow_pct as _upper_shadow_pct
 from core._price_math import vol_ratio as _vol_ratio
 from core.candidate_metadata import code6
 from core.candidate_policy import candidate_score_value
+from core.candidate_tracks import lane_slug_or
 from core.main_force_signal import MainForceSignal, analyze_main_force_signal
 from core.theme_radar import normalize_theme_name
 from utils.safe import safe_float as _safe_float
@@ -594,7 +595,10 @@ def _candidate_entry(item: dict[str, Any]) -> dict[str, Any]:
         "code": item["code"],
         "track": "trend",
         "signal_key": "mainline",
-        "entry_type": str(item.get("entry_type") or "mainline"),
+        # 内部 ``item["entry_type"]`` 是 _timing_result 拼的中文买点理由（本文件
+        # 667 行起还按子串匹配它做加减分），契约这一列要的是车道 slug。理由文本
+        # 走下面的 ``timing``,别再落到这里。
+        "entry_type": lane_slug_or(item.get("entry_type"), "mainline"),
         "lane": "mainline",
         "score": score,
         "opportunity": _candidate_opportunity(item),

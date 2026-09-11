@@ -72,12 +72,19 @@ def test_candidate_signal_triggers_treats_invalid_scores_as_zero() -> None:
 
 
 def test_candidate_metadata_signal_key_prefers_structured_signal_over_display_text() -> None:
+    """展示文案不该顶掉结构化字段——包括 entry_type 这一列自己。
+
+    原断言写的是 ``entry_type == "主线回踩MA20"``,与用例名要表达的意思正相反:
+    这一列的契约是车道 slug,中文买点理由属于 candidate_timing。理由文本不丢,
+    但不能占着 slug 的位置,否则下游按它 group by 会碎成散文键。
+    """
     metadata = build_candidate_metadata_map(
         [{"code": "300308", "entry_type": "主线回踩MA20", "signal_key": "mainline", "score": 86.0}]
     )
 
-    assert metadata["300308"]["entry_type"] == "主线回踩MA20"
+    assert metadata["300308"]["entry_type"] == "mainline"
     assert metadata["300308"]["signal_key"] == "mainline"
+    assert metadata["300308"]["candidate_timing"] == "主线回踩MA20"
 
 
 def test_candidate_metadata_materializes_report_semantics() -> None:
@@ -271,3 +278,58 @@ def test_lane_dedup_conflict_ignores_agreeing_and_single_lane_codes() -> None:
     assert stats["multi_lane_codes"] == 1
     assert stats["disagreed_codes"] == 0
     assert stats["details"] == []
+
+
+def test_lane_slug_guard_admits_every_production_lane() -> None:
+    """假阳性一侧:13 个线上合法车道取值一个都不能被拦。
+
+    门槛写歪成「只认白名单」就会把新车道静默换成 fallback,和这次要修的 bug 同形,
+    只是方向相反、更难发现。
+    """
+    from core.candidate_tracks import lane_slug_or
+
+    for lane in (
+        "sos",
+        "evr",
+        "lps",
+        "spring",
+        "compression",
+        "trend_pullback",
+        "trend_lane_pullback",
+        "mainline",
+        "breakout",
+        "main_force_entry",
+        "future_leader",
+        "accumulation_ready",
+        "rotation",
+        "pre_breakout",
+        "volatile_pullback",
+    ):
+        assert lane_slug_or(lane, "FALLBACK") == lane, lane
+
+    # 大小写与分隔符照旧归一,不算「形状不对」
+    assert lane_slug_or("Main Force Entry", "FALLBACK") == "main_force_entry"
+    assert lane_slug_or("trend-pullback", "FALLBACK") == "trend_pullback"
+
+
+def test_lane_slug_guard_rejects_timing_prose() -> None:
+    from core.candidate_tracks import lane_slug_or
+
+    for prose in (
+        "主线回踩MA5 + 主线平台再突破",
+        "主题低位修复",
+        "主线回踩MA20",
+    ):
+        assert lane_slug_or(prose, "mainline") == "mainline", prose
+    assert lane_slug_or(None, "mainline") == "mainline"
+    assert lane_slug_or("", "mainline") == "mainline"
+
+
+def test_mainline_metadata_splits_lane_slug_from_timing_prose() -> None:
+    from core.candidate_metadata import mainline_metadata
+
+    meta = mainline_metadata({"code": "600000", "entry_type": "主线回踩MA5 + 主线平台再突破", "status": "主线买点候选"})
+
+    assert meta["entry_type"] == "mainline"
+    assert meta["candidate_lane"] == "mainline"
+    assert meta["candidate_timing"] == "主线回踩MA5 + 主线平台再突破"

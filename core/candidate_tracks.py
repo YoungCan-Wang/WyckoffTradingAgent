@@ -82,6 +82,48 @@ def normalize_candidate_entry_key(raw: Any) -> str:
     return re.sub(r"_+", "_", key).strip("_")
 
 
+#: 车道 slug 的字面形状:ASCII 字母数字加分隔符。所有 13 个合法取值(sos/evr/lps/
+#: spring/compression/trend_pullback/mainline/…)都落在里面,而中文买点理由
+#: (「主线回踩MA5 + 主线平台再突破」)落不进来。
+_LANE_SLUG_SHAPE = re.compile(r"[A-Za-z0-9 _-]+")
+
+
+#: ``selection_source`` 在市场闸门关闭时被追加的后缀（``_tracking_source``）。它标的是
+#: 「这一行写入时市场闸门是关的」,属于来源/状态维度,不是车道身份的一部分。
+MARKET_BLOCK_SUFFIX = ":market_blocked"
+
+
+def strip_lane_status_suffix(raw: Any) -> str:
+    """把车道取值里的市场闸门后缀摘掉。
+
+    ``recommendation_payload`` 在 candidate_lane 缺失时会退到 ``selection_source``,
+    而那个字段此时已经带了 ``:market_blocked``,于是同一条车道按市场状态被劈成两个
+    标签:实测 ``signal_confirmed`` 开市侧 14 行、拦截侧 94 行,跨 13 个交易日。
+    任何按车道汇总的归因都会把它们当两条车道,而占多数的那半还是带后缀的。
+    """
+    text = str(raw or "").strip()
+    if text.endswith(MARKET_BLOCK_SUFFIX):
+        return text[: -len(MARKET_BLOCK_SUFFIX)].strip()
+    return text
+
+
+def lane_slug_or(raw: Any, fallback: str) -> str:
+    """把 ``raw`` 当车道 slug 用,形状不对就退回 ``fallback``。
+
+    ``entry_type`` 这一列的契约是车道 slug,可主线链路曾把 ``_timing_result`` 的
+    中文买点理由原样塞进来——同一列两种语义,和 ``candidate_status`` 当年一模一样。
+    危害在下游的 group by:``_signal_context_key`` 和治理器的 ``_context_scope``
+    都拿它当分组键,29 个散文键里只有 4 个够 ``MIN_CONTEXT_SAMPLES``,63 行主线候选
+    有 36 行永远进不了治理器,剩下的还被切成 5~8 样本的碎片当「样本不足」处理。
+
+    理由文本本身有 ``timing``/``candidate_timing`` 承载,不在这里丢。
+    """
+    text = str(raw or "").strip()
+    if not text or not _LANE_SLUG_SHAPE.fullmatch(text):
+        return fallback
+    return normalize_candidate_entry_key(text) or fallback
+
+
 def candidate_entry_key(
     item: Mapping[str, Any],
     known_keys: Iterable[str] | None = None,
