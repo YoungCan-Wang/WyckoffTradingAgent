@@ -350,3 +350,33 @@ def test_replay_funnel_does_not_pass_future_theme_to_mainline_engine(monkeypatch
     assert len(received) == 1
     assert received[0]["theme_radar"]["themes"] == []
     assert received[0]["theme_radar"]["trade_date"] == frame["date"].max().date().isoformat()
+
+
+def test_mainline_contract_entry_carries_lane_slug_not_timing_prose() -> None:
+    """契约层 ``entry_type`` 必须是车道 slug,中文买点理由留在 ``timing``。
+
+    内部 MainlineCandidate 的 entry_type 是 ``_timing_result`` 拼的理由文本(本文件
+    另有按子串加减分的逻辑读它),越过契约边界就变成了车道列的取值。实测 63 行主线
+    候选被打散成 29 个键,治理器 MIN_CONTEXT_SAMPLES=5 只放行 4 个,36 行永远不被
+    评估——所以这里要钉住边界两侧各自拿到什么。
+    """
+    candidates = build_mainline_candidates(
+        l1_passed=["000010"],
+        l2_passed=[],
+        concept_map={"000010": ["创新药"]},
+        concept_heat=[{"name": "创新药", "pct": 5.2, "net_inflow": 900_000_000}],
+        theme_radar={"themes": [{"theme": "创新药", "score": 0.70}], "strategic_candidates": []},
+        df_map={"000010": _frame(_event_reversal_values(), amount=200_000_000.0)},
+        financial_map={},
+        name_map={"000010": "事件修复A"},
+        config=MainlineEngineConfig(),
+    )
+
+    # 内部字段保持原样:同文件的子串匹配打分依赖它
+    assert "主题低位修复" in candidates[0]["entry_type"]
+
+    entry = mainline_candidate_entries(candidates, max_count=3)[0]
+    assert entry["entry_type"] == "mainline"
+    assert entry["lane"] == "mainline"
+    assert entry["signal_key"] == "mainline"
+    assert "主题低位修复" in entry["timing"]

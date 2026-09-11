@@ -15,6 +15,7 @@ from core.candidate_tracks import (
     candidate_entry_key,
     candidate_entry_score,
     candidate_entry_sort_key,
+    lane_slug_or,
     normalize_candidate_entry_key,
     stronger_candidate_entry,
 )
@@ -150,12 +151,21 @@ def candidate_metadata_for_signal(
     return metadata_map.get((code_s, signal_key), metadata_map.get(code_s, {}))
 
 
+def _prose_entry_type(item: Mapping[str, Any]) -> str:
+    """``entry_type`` 里那段不是车道 slug 的文字,没有就空串。"""
+    raw = _text(item.get("entry_type"))
+    return "" if not raw or lane_slug_or(raw, "") else raw
+
+
 def candidate_entry_metadata(item: dict[str, Any], mainline: dict[str, Any] | None = None) -> dict[str, Any]:
-    lane = _text(item.get("lane")) or _text(item.get("signal_key")) or _text(item.get("entry_type"))
+    lane = _text(item.get("lane")) or _text(item.get("signal_key")) or lane_slug_or(item.get("entry_type"), "")
     meta = {
         "strategy_version": STRATEGY_VERSION_CANDIDATE_LANE_V1,
         "candidate_lane": lane,
-        "entry_type": _text(item.get("entry_type")) or lane,
+        # 只收 slug 形状:主线链路的 entry_type 是中文买点理由,落进来会把这一列
+        # 变成 29 个散文键,下游按它 group by 的归因与治理器全部碎掉。理由本身在
+        # 下面的 candidate_timing 里。
+        "entry_type": lane_slug_or(item.get("entry_type"), lane),
         "signal_key": candidate_entry_key(item, fields=("signal_key", "lane", "entry_type"))
         or normalize_candidate_entry_key(lane),
         # candidate_status 是语义状态位（主线买点候选 / 过热不追 / AI复核候选…），
@@ -169,7 +179,11 @@ def candidate_entry_metadata(item: dict[str, Any], mainline: dict[str, Any] | No
         # 「主线观察」，is_confirmed_step4_candidate 会因「观察」子串一票否决，把已
         # confirmed 的 SOS/LPS 等正式信号静默踢出推荐写入与 Step4。主题/分数仍可继承。
         "candidate_status": _semantic_status(item),
-        "candidate_timing": _text(item.get("timing")) or _text((mainline or {}).get("entry_type")),
+        # 第三个兜底是上面被 slug 门槛拦下的那段文字:生产者若只在 entry_type 里放了
+        # 中文买点理由、没填 timing,拦下来不能顺手丢掉,挪到它该在的列。
+        "candidate_timing": _text(item.get("timing"))
+        or _text((mainline or {}).get("entry_type"))
+        or _prose_entry_type(item),
         "candidate_risk": _text(item.get("risk")) or _join_texts((mainline or {}).get("risk_flags")),
         "candidate_reasons": _json_object(_candidate_reason_payload(item, mainline)),
         "candidate_metrics": _json_object(item.get("metrics") or _mainline_metrics_payload(mainline or {}) or {}),
@@ -185,14 +199,14 @@ def candidate_entry_metadata(item: dict[str, Any], mainline: dict[str, Any] | No
 
 
 def mainline_metadata(item: dict[str, Any]) -> dict[str, Any]:
-    entry_type = _text(item.get("entry_type")) or "mainline"
+    timing = _text(item.get("entry_type")) or "mainline"
     meta = {
         "strategy_version": STRATEGY_VERSION_CANDIDATE_LANE_V1,
         "candidate_lane": "mainline",
-        "entry_type": entry_type,
+        "entry_type": lane_slug_or(item.get("entry_type"), "mainline"),
         "signal_key": "mainline",
         "candidate_status": _text(item.get("status")),
-        "candidate_timing": entry_type,
+        "candidate_timing": timing,
         "candidate_risk": _join_texts(item.get("risk_flags")),
         "candidate_reasons": _json_object(_candidate_reason_payload(item, item)),
         "candidate_metrics": _json_object(_mainline_metrics_payload(item)),
