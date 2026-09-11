@@ -29,7 +29,54 @@ from core.funnel_taxonomy import (
 from core.review_shadow_lanes import attach_shadow_signal
 from core.wyckoff_engine import sort_by_date_if_needed
 
-REVIEW_TRACE_SCHEMA = "review_trace_v1"
+REVIEW_TRACE_SCHEMA = "review_trace_v2"
+#: 还能被 :func:`load_review_trace_artifact` 读进来的版本号。老号必须留着:v1 与 v2
+#: 的行结构完全一致,v2 只是在头里多声明了一份 ``row_fields``。只把常量一升了事,
+#: 22 份历史 trace 会全部变成「schema mismatch」——而效果检验的样本正是靠它们攒的。
+REVIEW_TRACE_COMPATIBLE_SCHEMAS = frozenset({"review_trace_v1", REVIEW_TRACE_SCHEMA})
+
+#: 每一行都会写的字段。逐行字段是分四批上线的(按 26 份历史产物实测):
+#: ``trigger_labels``/``risk_signal``(以及逐行可选的 ``shadow_*``)从 2026-08-13 起、
+#: ``close``/``layer3_quality_score``/``rps_fast``/``rps_slow`` 从 09-02 起、
+#: ``risk_evaluated``/``l3_eligible_strict`` 从 09-08 起,而 ``schema_version``
+#: 四批都写 v1。于是读侧分不清两件事:「这天的 writer 还没有这个字段」和「这只票
+#: 取不到值」。一个照着 ``if row.get("rps_fast") is None: continue`` 写的筛子会
+#: 静默丢掉 22 个交易日里的 15 个,再把剩下 7 个当成全样本报出来——把「尚未可知」
+#: 读成「事实为空」,和 nan-passes-every-truthy-guard 是同一类病。把 writer 实际
+#: 写了什么声明在 payload 头里,缺失就有据可查。
+REVIEW_TRACE_ROW_FIELDS: tuple[str, ...] = (
+    "name",
+    "sector",
+    "stage",
+    "reason",
+    "l1_eligible",
+    "l2_eligible",
+    "l3_eligible",
+    "l3_eligible_strict",
+    "l2_channel",
+    "layer3_quality_score",
+    "trigger_labels",
+    "risk_signal",
+    "risk_evaluated",
+    "rps_fast",
+    "rps_slow",
+    "close",
+)
+
+#: 只出现在部分行上的字段:``entry`` 只有候选命中行有,``shadow_*`` 只有影子车道
+#: 命中的行有。它们缺席是正常的,不能当成「writer 没有这个字段」,所以从行里反推
+#: 字段集时要先把它们排除掉。
+REVIEW_TRACE_PER_ROW_FIELDS = frozenset(
+    {
+        "entry",
+        "shadow_lane",
+        "shadow_score",
+        "shadow_ranked",
+        "shadow_reason",
+        "shadow_policy_version",
+    }
+)
+
 _BLOCKING_EXIT_SIGNALS = {"stop_loss", "distribution_warning", "upthrust_warning"}
 _SHADOW_NEAR_L2_MAX_GAP_PCT = 10.0
 
@@ -72,6 +119,9 @@ def build_review_trace(inputs: Any, triggers: dict, metrics: dict) -> dict[str, 
             "git_sha": os.getenv("GITHUB_SHA", ""),
         },
         "config_digest": _digest(config_payload),
+        # 这一版 writer 逐行写了哪些字段。读侧靠它把「字段没上线」和「这只票没值」
+        # 分开;新增逐行字段必须同时进 REVIEW_TRACE_ROW_FIELDS,否则声明就在骗人。
+        "row_fields": list(REVIEW_TRACE_ROW_FIELDS),
         "policy": _review_policy(inputs.cfg),
         "data_quality": metrics.get("data_quality") or {},
         "market_context": _market_context(metrics),
@@ -90,7 +140,7 @@ def build_review_trace(inputs: Any, triggers: dict, metrics: dict) -> dict[str, 
 def load_review_trace_artifact(path: str | Path, expected_trade_date: date | str) -> dict[str, Any]:
     with gzip.open(Path(path), "rt", encoding="utf-8") as handle:
         payload = json.load(handle)
-    if not isinstance(payload, dict) or payload.get("schema_version") != REVIEW_TRACE_SCHEMA:
+    if not isinstance(payload, dict) or payload.get("schema_version") not in REVIEW_TRACE_COMPATIBLE_SCHEMAS:
         raise ValueError("review trace schema mismatch")
     if payload.get("market") != "cn":
         raise ValueError("review trace market mismatch")
@@ -100,6 +150,47 @@ def load_review_trace_artifact(path: str | Path, expected_trade_date: date | str
     if not isinstance(payload.get("symbols"), dict):
         raise ValueError("review trace symbols missing")
     return payload
+
+
+def trace_row_fields(payload: dict[str, Any]) -> frozenset[str]:
+    """这份 trace 的 writer 实际写了哪些逐行字段。
+
+    v2 起直接读头里的 ``row_fields``。v1 没有这份声明,退回从行里反推:同一个交易日
+    内,非可选字段要么全行都有、要么全行都没有——26 份历史产物逐键数过,没有一个
+    非可选键是部分行才有的,真正逐行可选的只有 ``entry`` 与 ``shadow_*``。所以取
+    所有行键的交集、再去掉那几个逐行可选键,就是当天 writer 的字段集。
+
+    交集而不是并集:并集会把「只有候选命中行才有的 entry」也算进 writer 字段,于是
+    别的行缺 entry 又被读成「值缺失」,正是这个函数要消掉的那种混淆。
+    """
+    declared = payload.get("row_fields")
+    if isinstance(declared, list | tuple | set | frozenset):
+        names = frozenset(str(name) for name in declared if str(name or "").strip())
+        # 空声明退回反推:行本身才是事实,声明为空只可能是 writer 出错,不该让读侧
+        # 把每个字段都读成「没上线」。
+        if names:
+            return names
+    symbols = payload.get("symbols")
+    if not isinstance(symbols, dict) or not symbols:
+        return frozenset()
+    shared: set[str] | None = None
+    for row in symbols.values():
+        keys = set(row.keys()) if isinstance(row, dict) else set()
+        shared = keys if shared is None else (shared & keys)
+        if not shared:
+            return frozenset()
+    return frozenset(shared or set()) - REVIEW_TRACE_PER_ROW_FIELDS
+
+
+def trace_has_row_field(payload: dict[str, Any], field: str) -> bool:
+    """``field`` 在这份 trace 里是「写过」还是「那天还没有这个字段」。
+
+    历史 trace 里 ``rps_fast``/``risk_evaluated``/``l3_eligible_strict`` 全是 ``None``,
+    与「查过但这只票没值」同形。要按字段拆样本、或要断言某个口径可评估,先问这里,
+    别拿 ``row.get(field) is None`` 当判据——那会把「尚未可知」读成「事实为空」
+    (memory insufficient-sample-is-not-failed-control)。
+    """
+    return str(field or "") in trace_row_fields(payload)
 
 
 def _decision_rows(inputs: Any, triggers: dict, metrics: dict | None = None) -> dict[str, dict[str, Any]]:

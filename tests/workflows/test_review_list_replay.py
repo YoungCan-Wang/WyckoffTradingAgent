@@ -43,7 +43,16 @@ from workflows.review_report_render import (
     build_report_lines,
     short_code_list,
 )
-from workflows.review_trace import build_review_trace, load_review_trace_artifact, write_review_trace_artifact
+from workflows.review_trace import (
+    REVIEW_TRACE_PER_ROW_FIELDS,
+    REVIEW_TRACE_ROW_FIELDS,
+    REVIEW_TRACE_SCHEMA,
+    build_review_trace,
+    load_review_trace_artifact,
+    trace_has_row_field,
+    trace_row_fields,
+    write_review_trace_artifact,
+)
 
 
 def _row(code: str, name: str, stage: str) -> dict[str, str]:
@@ -1077,3 +1086,100 @@ def test_previous_funnel_scope_blocks_persistence_and_restores_environment(monke
     assert is_server_write_context()
     assert os.environ.get("WYCKOFF_SHARED_READ_ONLY") is None
     assert all(os.environ.get(key) == original for key in ("END_CALENDAR_DAY", "DAILY_JOB_ARTIFACTS_DIR"))
+
+
+def test_review_trace_declares_exactly_the_row_fields_it_writes() -> None:
+    """头里的 row_fields 必须等于每行都真写了的那些键，声明不许骗人。
+
+    逐行字段是分四批上线的（trigger_labels/risk_signal 从 2026-08-13、close 与
+    rps_* 从 09-02、risk_evaluated/l3_eligible_strict 从 09-08），而 schema_version
+    四批都写 v1。以后再加逐行字段却忘了进 REVIEW_TRACE_ROW_FIELDS，声明就又开始
+    骗人，这条用例是那道闸。
+    """
+    payload = build_review_trace(_l3_strict_inputs(), {}, {})
+    rows = payload["symbols"]
+    assert len(rows) >= 2
+
+    always_present = set.intersection(*(set(row.keys()) for row in rows.values()))
+    assert always_present - REVIEW_TRACE_PER_ROW_FIELDS == set(REVIEW_TRACE_ROW_FIELDS)
+    assert payload["row_fields"] == list(REVIEW_TRACE_ROW_FIELDS)
+    assert payload["schema_version"] == REVIEW_TRACE_SCHEMA
+    assert trace_row_fields(payload) == frozenset(REVIEW_TRACE_ROW_FIELDS)
+
+
+def test_trace_row_fields_infers_the_writer_field_set_for_legacy_traces() -> None:
+    """v1 没有声明，得从行里反推：非可选字段全行都有或全行都没有。
+
+    反推取交集而不是并集——并集会把「只有候选命中行才有的 entry」也算成 writer
+    字段，于是别的行缺 entry 又被读成「值缺失」，正是这个函数要消掉的混淆。
+    """
+    legacy = {
+        "schema_version": "review_trace_v1",
+        "trade_date": "2026-08-12",
+        "symbols": {
+            "000001": {"stage": "候选命中", "l1_eligible": True, "entry": {"lane": "sos"}},
+            "000002": {"stage": "结构强度不足", "l1_eligible": True, "shadow_lane": "near_l2"},
+        },
+    }
+
+    assert trace_row_fields(legacy) == frozenset({"stage", "l1_eligible"})
+    assert trace_has_row_field(legacy, "l1_eligible") is True
+    # 09-02 才上线的字段：v1 老产物里它是「那天还没有」，不是「这只票没值」。
+    assert trace_has_row_field(legacy, "rps_fast") is False
+    assert trace_has_row_field(legacy, "entry") is False
+
+
+def test_trace_row_fields_separates_absent_field_from_missing_value() -> None:
+    """字段写过但值为 None，和字段没上线，是两件事。
+
+    只看 ``row.get(field) is None`` 两者同形：照那么写的筛子会静默丢掉 22 个交易日
+    里的 15 个，再把剩下 7 个当全样本报出来。
+    """
+    written_but_null = {
+        "schema_version": REVIEW_TRACE_SCHEMA,
+        "row_fields": ["stage", "rps_fast"],
+        "symbols": {"000001": {"stage": "买点未触发", "rps_fast": None}},
+    }
+    never_written = {
+        "schema_version": "review_trace_v1",
+        "symbols": {"000001": {"stage": "买点未触发"}},
+    }
+
+    assert written_but_null["symbols"]["000001"].get("rps_fast") is None
+    assert never_written["symbols"]["000001"].get("rps_fast") is None
+    assert trace_has_row_field(written_but_null, "rps_fast") is True
+    assert trace_has_row_field(never_written, "rps_fast") is False
+
+
+def test_trace_row_fields_falls_back_when_declaration_is_unusable() -> None:
+    """声明为空或缺失就退回反推：行才是事实，别把每个字段都读成「没上线」。"""
+    rows = {"000001": {"stage": "买点未触发", "rps_fast": 92.5}}
+
+    assert trace_row_fields({"row_fields": [], "symbols": rows}) == frozenset({"stage", "rps_fast"})
+    assert trace_row_fields({"symbols": rows}) == frozenset({"stage", "rps_fast"})
+    assert trace_row_fields({"symbols": {}}) == frozenset()
+    assert trace_row_fields({}) == frozenset()
+
+
+def test_load_review_trace_artifact_still_reads_v1_history(tmp_path) -> None:
+    """升版本号不能把 22 份历史 trace 变成 schema mismatch，效果检验全靠它们攒样本。"""
+    import gzip
+    import json
+
+    payload = build_review_trace(_l3_strict_inputs(), {}, {})
+    legacy = {**payload, "schema_version": "review_trace_v1"}
+    legacy.pop("row_fields")
+    path = tmp_path / "review_trace_20260512.json.gz"
+    with gzip.open(path, "wt", encoding="utf-8") as handle:
+        json.dump(legacy, handle, ensure_ascii=False)
+
+    loaded = load_review_trace_artifact(path, legacy["trade_date"])
+    assert loaded["schema_version"] == "review_trace_v1"
+    # 老产物没有声明，字段集从行里反推，照样能答「这天有没有这个字段」。
+    assert trace_has_row_field(loaded, "rps_fast") is True
+
+    broken = tmp_path / "review_trace_20260513.json.gz"
+    with gzip.open(broken, "wt", encoding="utf-8") as handle:
+        json.dump({**legacy, "schema_version": "review_trace_v0"}, handle, ensure_ascii=False)
+    with pytest.raises(ValueError, match="schema mismatch"):
+        load_review_trace_artifact(broken, legacy["trade_date"])
