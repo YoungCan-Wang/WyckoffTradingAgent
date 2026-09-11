@@ -21,6 +21,17 @@ EXECUTABLE_OPEN_GAP_MAX_PCT = 4.0
 class ReviewPool:
     codes: list[str]
     frames: dict[str, pd.DataFrame]
+    previous_pct_map: dict[str, float] | None = None
+    """全市场「前一交易日涨幅」——即漏斗信号日自己的涨幅。
+
+    报告的样本条件有两条:今日>+7% **且前一日<+3%**。第二条会按前一日涨幅筛人,
+    而候选池装的是动量票,信号日自己更容易已经涨过 3%(实测候选 33.8% 越线,
+    非候选 L1 存活只有 11.9%,差近 3 倍)。分子被这条规则削掉一大块,分母若不
+    施加同一条件,算出来的捕获率会系统性低估候选池。
+
+    只有拉了全市场双日截面时才有值;实时快照路径只覆盖已筛出的票,给 None,
+    此时报告不得输出任何比率。
+    """
 
 
 def is_target_cn_board(code: str) -> bool:
@@ -96,7 +107,7 @@ def load_today_review_pool(
     if spot_usable > 0 and spot_coverage >= spot_min_coverage:
         return _load_pool_from_sufficient_spot(spot_codes, all_codes, name_map_today, today_window, logger)
     _log_spot_fallback(spot_usable, spot_coverage, spot_min_coverage, logger)
-    return fetch_review_pool(all_codes, name_map_today, today_window, logger)
+    return fetch_review_pool(all_codes, name_map_today, today_window, logger, cross_section=True)
 
 
 def fetch_review_pool(
@@ -104,7 +115,15 @@ def fetch_review_pool(
     name_map: dict[str, str],
     window,
     log: Callable[[str], None] | None = None,
+    *,
+    cross_section: bool = False,
 ) -> ReviewPool:
+    """拉三日 OHLCV 并筛出今日大涨股。
+
+    cross_section=True 表示 codes 是全市场清单,此时额外产出 previous_pct_map
+    作为报告的分母条件数据;传入的是已收窄的快照候选时必须留 False,否则
+    分母只覆盖分子自己那批票。
+    """
     from tools.data_fetcher import fetch_all_ohlcv
     from workflows.fetch_runtime_config import fetch_runtime_config_from_env
 
@@ -116,7 +135,14 @@ def fetch_review_pool(
         runtime_config=fetch_runtime_config_from_env(),
     )
     _log_fetch_stats(stats, df_map, window, log or (lambda _msg: None))
-    return ReviewPool(find_big_gainers(df_map, name_map), df_map)
+    previous_pct_map: dict[str, float] | None = None
+    if cross_section:
+        previous_pct_map = {}
+        for code, frame in df_map.items():
+            _latest, previous_pct = latest_and_previous_pct(frame)
+            if previous_pct is not None:
+                previous_pct_map[code] = previous_pct
+    return ReviewPool(find_big_gainers(df_map, name_map), df_map, previous_pct_map)
 
 
 def review_spot_min_coverage() -> float:
@@ -319,13 +345,17 @@ def _review_pool_from_tushare(
     allowed = set(all_codes)
     codes: list[str] = []
     frames: dict[str, pd.DataFrame] = {}
+    previous_pct_map: dict[str, float] = {}
     for code, today_row in today_rows.items():
         previous_row = previous_rows.get(code) or {}
         if _skip_cross_section_code(code, allowed, name_map):
             continue
+        previous_pct = _number(previous_row.get("pct_chg"))
+        if previous_pct is not None:
+            previous_pct_map[code] = previous_pct
         if not _daily_candidate_matches(
             _number(today_row.get("pct_chg")),
-            _number(previous_row.get("pct_chg")),
+            previous_pct,
             TODAY_REVIEW_MIN_PCT,
             PREVIOUS_REVIEW_MAX_PCT,
         ):
@@ -334,7 +364,7 @@ def _review_pool_from_tushare(
         if not frame.empty:
             codes.append(code)
             frames[code] = frame
-    return ReviewPool(sorted(codes), frames)
+    return ReviewPool(sorted(codes), frames, previous_pct_map)
 
 
 def _skip_cross_section_code(code: str, allowed: set[str], name_map: dict[str, str]) -> bool:
@@ -380,7 +410,7 @@ def _load_pool_from_sufficient_spot(
         log("[review] 实时快照候选经三日校验为空，回退到全量 OHLCV 校验")
     else:
         log("[review] 实时快照未发现今日候选，回退到全量 OHLCV 校验")
-    return fetch_review_pool(all_codes, name_map_today, today_window, log)
+    return fetch_review_pool(all_codes, name_map_today, today_window, log, cross_section=True)
 
 
 def _log_spot_fallback(

@@ -30,12 +30,15 @@ from workflows.review_list_replay import (
     ReviewDates,
     _write_review_outputs,
     build_candidate_entry_map,
+    build_stage_denominator,
     classify_review_code,
     load_previous_context,
     replay_context_from_trace,
+    review_stage_of,
 )
 from workflows.review_recommendation_lookup import format_recommendation_history, normalize_code6, recommendation_state
 from workflows.review_report_render import (
+    build_capture_rate_lines,
     build_focus_lines,
     build_report_lines,
     short_code_list,
@@ -261,8 +264,9 @@ def test_load_today_review_codes_falls_back_when_spot_candidates_empty(monkeypat
     )
     calls = []
 
-    def fake_fetch(codes, name_map, window, log=None):
+    def fake_fetch(codes, name_map, window, log=None, *, cross_section=False):
         calls.append(list(codes))
+        assert cross_section is True, "全量回退拉的是全市场，必须产出分母条件数据"
         return ReviewPool(["000001"], {})
 
     monkeypatch.setattr("workflows.review_big_gainers.fetch_review_pool", fake_fetch)
@@ -512,6 +516,158 @@ def test_focus_lines_open_with_the_result_selected_caveat() -> None:
     assert lines[0] == "**重点归因**"
     assert "没有分母" in lines[1]
     assert "不能作为放宽" in lines[1]
+
+
+def _denominator_ctx() -> ReplayContext:
+    """一个 6 只票的前一日全市场:2 只进候选池、2 只结构强度不足、2 只基础准入淘汰。"""
+    rows = {
+        "000001": {"name": "候选甲", "stage": REVIEW_STAGE_CANDIDATE_HIT},
+        "000002": {"name": "候选乙", "stage": REVIEW_STAGE_CANDIDATE_HIT},
+        "000003": {"name": "强度甲", "stage": REVIEW_STAGE_STRENGTH_MISS},
+        "000004": {"name": "强度乙", "stage": REVIEW_STAGE_STRENGTH_MISS},
+        "000005": {"name": "准入甲", "stage": REVIEW_STAGE_BASE_REJECT},
+        "000006": {"name": "准入乙", "stage": REVIEW_STAGE_BASE_REJECT},
+    }
+    return ReplayContext(
+        cfg=FunnelConfig(),
+        all_symbol_set=set(rows),
+        name_map={code: str(row["name"]) for code, row in rows.items()},
+        market_cap_map={},
+        sector_map={},
+        df_map={},
+        l1_set={"000001", "000002", "000003", "000004"},
+        l2_set=set(),
+        l3_set=set(),
+        end_trade_date="2026-09-10",
+        l2_ctx={},
+        hit_map={},
+        blocked_exit_map={},
+        candidate_entry_map={},
+        decision_rows=rows,
+    )
+
+
+def test_stage_denominator_only_counts_codes_meeting_the_numerator_condition() -> None:
+    """分母必须和分子共用「信号日涨幅<+3%」这一条,否则候选池比率会被系统性压低。
+
+    候选池装的是动量票、信号日自己更容易已经涨过 3%。这里让 2 只候选中 1 只
+    信号日涨了 5%,若分母不施加同一条件,候选池分母会是 2 而不是 1。
+    """
+    ctx = _denominator_ctx()
+    previous_pct_map = {
+        "000001": 1.0,
+        "000002": 5.0,  # 信号日已涨过 3%，分子会把它筛掉，分母也必须筛掉
+        "000003": 0.5,
+        "000004": -1.0,
+        "000005": 0.0,
+        "000006": 2.0,
+    }
+
+    result = build_stage_denominator(ctx, previous_pct_map, 3.0)
+
+    assert result is not None
+    denominator, total = result
+    assert total == 5
+    assert denominator[REVIEW_STAGE_CANDIDATE_HIT] == 1
+    assert denominator[REVIEW_STAGE_STRENGTH_MISS] == 2
+    assert denominator[REVIEW_STAGE_BASE_REJECT] == 2
+
+
+def test_stage_denominator_absent_without_whole_market_previous_pct() -> None:
+    """实时快照路径只覆盖已筛出的票,拿它当分母就是分子除自己,必须整段不出。"""
+    assert build_stage_denominator(_denominator_ctx(), None, 3.0) is None
+    assert build_stage_denominator(_denominator_ctx(), {}, 3.0) is None
+
+
+def test_capture_rate_lines_compare_funnel_stages_against_l1_survivors() -> None:
+    """漏斗内部各档要跟「基础准入通过者」比,跟全市场混算会把候选池的倍数稀释掉。"""
+    stage_counter = Counter({REVIEW_STAGE_CANDIDATE_HIT: 20, REVIEW_STAGE_STRENGTH_MISS: 10})
+    stats = {
+        "stage_denominator": {
+            REVIEW_STAGE_CANDIDATE_HIT: 100,
+            REVIEW_STAGE_STRENGTH_MISS: 900,
+            REVIEW_STAGE_BASE_REJECT: 900,
+        },
+        "denominator_total": 1900,
+        "denominator_max_previous_pct": 3.0,
+    }
+
+    text = "\n".join(build_capture_rate_lines(stage_counter, stats))
+
+    # 候选池 20/100=20%，基础准入通过者基数 30/1000=3%，倍数 6.67x
+    assert "候选池已捕获：20/100（20.00%）" in text
+    assert "相对基础准入通过者 6.67x" in text
+    # 基础准入淘汰只能跟全市场比：0/900 对 30/1900
+    assert "基础准入淘汰：0/900（0.00%）" in text
+    assert "相对全市场" in text
+    assert "信号日涨幅<3%" in text
+
+
+def test_capture_rate_lines_withhold_lift_when_expected_hits_are_thin() -> None:
+    """期望命中不足 3 只就只出原始只数,不出倍数。
+
+    单日候选池分母只有 100 上下、基数率 1%~2%,期望命中就 1~2 只,此时「命中 0 只」
+    写成 0.00x 会被当成结论。实测 21 天单日倍数在 0.00x~2.44x 之间摆、合起来才 1.36x。
+    分母照常给出——省的只是那个读不出来的比值。
+    """
+    stage_counter = Counter({REVIEW_STAGE_CANDIDATE_HIT: 0, REVIEW_STAGE_STRENGTH_MISS: 10})
+    stats = {
+        # 候选池期望命中 = 100 * (10/1000) = 1.0 只,低于门槛
+        "stage_denominator": {REVIEW_STAGE_CANDIDATE_HIT: 100, REVIEW_STAGE_STRENGTH_MISS: 900},
+        "denominator_total": 1000,
+        "denominator_max_previous_pct": 3.0,
+    }
+
+    text = "\n".join(build_capture_rate_lines(stage_counter, stats))
+
+    assert "候选池已捕获：0/100（0.00%）" in text
+    assert "0.00x" not in text
+    assert "同基数下期望命中1.0只" in text
+    # 分母够厚的档位照常出倍数:结构强度不足期望命中 9.0 只
+    assert "相对基础准入通过者 1.11x" in text
+
+
+def test_capture_rate_lines_suppressed_without_denominator() -> None:
+    """没有同条件分母时一个比率都不许出——错的比率比没有分母更像结论。"""
+    stage_counter = Counter({REVIEW_STAGE_CANDIDATE_HIT: 2})
+
+    assert build_capture_rate_lines(stage_counter, None) == []
+    assert build_capture_rate_lines(stage_counter, {"denominator_total": 0}) == []
+    assert build_capture_rate_lines(stage_counter, {"stage_denominator": {}, "denominator_total": 0}) == []
+
+
+def test_report_switches_caveat_when_denominator_is_available() -> None:
+    rows = [_row("000001", "候选甲", REVIEW_STAGE_CANDIDATE_HIT)]
+    stats = {
+        "candidate": 1,
+        "recommended": 0,
+        "total": 1,
+        "stage_denominator": {REVIEW_STAGE_CANDIDATE_HIT: 10, REVIEW_STAGE_BASE_REJECT: 90},
+        "denominator_total": 100,
+        "denominator_max_previous_pct": 3.0,
+    }
+
+    text = "\n".join(
+        build_report_lines(
+            rows,
+            Counter({REVIEW_STAGE_CANDIDATE_HIT: 1}),
+            today=date(2026, 9, 11),
+            previous_trade_date=date(2026, 9, 10),
+            end_trade_date="2026-09-10",
+            stats=stats,
+        )
+    )
+
+    assert "逐档捕获率" in text
+    assert "这一段的只数是按" in text
+    assert "都**没有分母**" not in text
+
+
+def test_review_stage_of_matches_classify_review_code() -> None:
+    """判据只能有一处:classify_review_code 的层级必须来自 review_stage_of。"""
+    ctx = _ctx()
+    for code in ("000001", "999999"):
+        assert classify_review_code(code, ctx)[1] == review_stage_of(code, ctx)
 
 
 def test_tushare_cross_sections_avoid_full_market_history_fetch(monkeypatch):
