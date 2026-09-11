@@ -18,11 +18,14 @@ from core.candidate_tracks import best_candidate_entry_map
 from core.funnel_taxonomy import (
     REVIEW_STAGE_BASE_REJECT,
     REVIEW_STAGE_CANDIDATE_HIT,
+    REVIEW_STAGE_DATA_FAIL,
+    REVIEW_STAGE_OUT_OF_POOL,
     REVIEW_STAGE_RISK_BLOCK,
     REVIEW_STAGE_STRENGTH_MISS,
     REVIEW_STAGE_THEME_MISS,
     REVIEW_STAGE_TRIGGER_HIT,
     REVIEW_STAGE_TRIGGER_MISS,
+    REVIEW_STAGE_UNKNOWN,
     lane_label,
 )
 from core.wyckoff_engine import (
@@ -34,6 +37,7 @@ from core.wyckoff_engine import (
 from utils.env import env_flag
 from utils.feishu import send_feishu_notification
 from workflows.review_big_gainers import (
+    PREVIOUS_REVIEW_MAX_PCT,
     execution_snapshot,
     is_target_cn_board,
     latest_and_previous_pct,
@@ -88,7 +92,15 @@ def run_review_list_replay(webhook: str, log=print) -> int:
     )
     execution_map = {code: execution_snapshot(pool.frames.get(code)) for code in pool.codes}
     gain_map = {code: latest_and_previous_pct(pool.frames.get(code))[0] for code in pool.codes}
-    return _run_review_for_codes(webhook, pool.codes, dates, log, execution_map, gain_map)
+    return _run_review_for_codes(
+        webhook,
+        pool.codes,
+        dates,
+        log,
+        execution_map,
+        gain_map,
+        pool.previous_pct_map,
+    )
 
 
 def resolve_review_dates() -> ReviewDates:
@@ -161,38 +173,66 @@ def replay_context(triggers: dict, metrics: dict, log=print) -> ReplayContext | 
     )
 
 
-def classify_review_code(code: str, ctx: ReplayContext) -> tuple[str, str, str]:
+def review_stage_of(code: str, ctx: ReplayContext) -> str:
+    """只判层级、不生成解释文案。
+
+    分母要在全市场跑同一套判据,而解释文案逐只构造很贵且分母用不上,
+    所以判据只保留这一处;classify_review_code 复用它再补文案。判据抄成
+    两份就会有两处 bug。
+    """
     if ctx.decision_rows is not None:
         row = ctx.decision_rows.get(code)
         if row is None:
-            return code, "池外", "不在当日全市场去ST股票池"
+            return REVIEW_STAGE_OUT_OF_POOL
+        return str(row.get("stage") or REVIEW_STAGE_UNKNOWN)
+    if code not in ctx.all_symbol_set:
+        return REVIEW_STAGE_OUT_OF_POOL
+    if code not in ctx.df_map:
+        return REVIEW_STAGE_DATA_FAIL
+    if code not in ctx.l1_set:
+        return REVIEW_STAGE_BASE_REJECT
+    if code in ctx.candidate_entry_map:
+        return REVIEW_STAGE_CANDIDATE_HIT
+    if code not in ctx.l2_set:
+        return REVIEW_STAGE_STRENGTH_MISS
+    if code not in ctx.l3_set:
+        return REVIEW_STAGE_THEME_MISS
+    if code in ctx.blocked_exit_map:
+        return REVIEW_STAGE_RISK_BLOCK
+    if code in ctx.hit_map:
+        return REVIEW_STAGE_TRIGGER_HIT
+    return REVIEW_STAGE_TRIGGER_MISS
+
+
+def classify_review_code(code: str, ctx: ReplayContext) -> tuple[str, str, str]:
+    stage = review_stage_of(code, ctx)
+    if ctx.decision_rows is not None:
+        row = ctx.decision_rows.get(code)
+        if row is None:
+            return code, stage, "不在当日全市场去ST股票池"
         return (
             str(row.get("name") or code),
-            str(row.get("stage") or "未知阶段"),
+            stage,
             str(row.get("reason") or "快照未记录淘汰原因"),
         )
     name = str(ctx.name_map.get(code, code)).strip() or code
-    if code not in ctx.all_symbol_set:
-        return name, "池外", "不在当日全市场去ST股票池"
-    if code not in ctx.df_map:
-        return name, "数据失败", "日线拉取失败/超时"
-    if code not in ctx.l1_set:
-        return (
-            name,
-            REVIEW_STAGE_BASE_REJECT,
-            explain_l1_fail(code, ctx.cfg, ctx.name_map, ctx.market_cap_map, ctx.df_map),
-        )
-    if code in ctx.candidate_entry_map:
-        return name, REVIEW_STAGE_CANDIDATE_HIT, explain_candidate_entry(code, ctx.candidate_entry_map)
-    if code not in ctx.l2_set:
-        return name, REVIEW_STAGE_STRENGTH_MISS, explain_l2_fail(code, ctx.cfg, ctx.df_map, ctx.l2_ctx)
-    if code not in ctx.l3_set:
-        return name, REVIEW_STAGE_THEME_MISS, f"题材/行业共振不足（{ctx.sector_map.get(code, '未知行业')}）"
-    if code in ctx.blocked_exit_map:
-        return name, REVIEW_STAGE_RISK_BLOCK, explain_risk_reject(code, ctx.blocked_exit_map, ctx.hit_map)
-    if code in ctx.hit_map:
-        return name, REVIEW_STAGE_TRIGGER_HIT, "、".join(ctx.hit_map.get(code, []))
-    return name, REVIEW_STAGE_TRIGGER_MISS, "未触发 Spring/LPS/EVR/SOS 等买点确认"
+    if stage == REVIEW_STAGE_OUT_OF_POOL:
+        return name, stage, "不在当日全市场去ST股票池"
+    if stage == REVIEW_STAGE_DATA_FAIL:
+        return name, stage, "日线拉取失败/超时"
+    if stage == REVIEW_STAGE_BASE_REJECT:
+        return name, stage, explain_l1_fail(code, ctx.cfg, ctx.name_map, ctx.market_cap_map, ctx.df_map)
+    if stage == REVIEW_STAGE_CANDIDATE_HIT:
+        return name, stage, explain_candidate_entry(code, ctx.candidate_entry_map)
+    if stage == REVIEW_STAGE_STRENGTH_MISS:
+        return name, stage, explain_l2_fail(code, ctx.cfg, ctx.df_map, ctx.l2_ctx)
+    if stage == REVIEW_STAGE_THEME_MISS:
+        return name, stage, f"题材/行业共振不足（{ctx.sector_map.get(code, '未知行业')}）"
+    if stage == REVIEW_STAGE_RISK_BLOCK:
+        return name, stage, explain_risk_reject(code, ctx.blocked_exit_map, ctx.hit_map)
+    if stage == REVIEW_STAGE_TRIGGER_HIT:
+        return name, stage, "、".join(ctx.hit_map.get(code, []))
+    return name, stage, "未触发 Spring/LPS/EVR/SOS 等买点确认"
 
 
 def build_layer2_context(
@@ -337,12 +377,46 @@ def _build_replay_row(
     return row, stage, is_candidate, is_tracked
 
 
+def build_stage_denominator(
+    ctx: ReplayContext,
+    previous_pct_map: dict[str, float] | None,
+    previous_max_pct: float,
+) -> tuple[Counter[str], int] | None:
+    """按信号日层级统计「同样条件下一共有多少只票」。
+
+    分子是「今日涨幅>+7% 且信号日涨幅<+3%」的票,第二条会按信号日涨幅筛人,
+    而候选池装的是动量票、信号日自己更容易已经涨过 3%。分母若不施加同一条件,
+    候选池的捕获率会被系统性压低(实测能把 1.89x 印成 1.03x)。所以这里对全市场
+    也只数信号日涨幅<+3% 的票,分子分母共用一个总体。
+
+    没有全市场信号日涨幅时返回 None,报告随后不得输出任何比率。
+    """
+    if not previous_pct_map:
+        return None
+    universe = set(ctx.decision_rows) if ctx.decision_rows is not None else set(ctx.all_symbol_set)
+    if not universe:
+        return None
+    epsilon = 1e-9
+    denominator: Counter[str] = Counter()
+    eligible = 0
+    for code in universe:
+        previous_pct = previous_pct_map.get(code)
+        if previous_pct is None or not previous_pct < previous_max_pct - epsilon:
+            continue
+        eligible += 1
+        denominator[review_stage_of(code, ctx)] += 1
+    if eligible <= 0:
+        return None
+    return denominator, eligible
+
+
 def build_replay_rows(
     review_codes: list[str],
     ctx: ReplayContext,
     today: date,
     previous_trade_date: date,
     execution_map: dict[str, dict[str, object]] | None = None,
+    previous_pct_map: dict[str, float] | None = None,
 ) -> tuple[list[dict[str, Any]], Counter[str], dict[str, Any]]:
     recommendation_lookup, recommendation_error = load_recommendation_lookup(review_codes)
     execution_map = execution_map or {}
@@ -396,6 +470,12 @@ def build_replay_rows(
         "execution_available": sum(bool(row["execution_available"]) for row in rows),
         "context_source": ctx.source,
     }
+    denominator = build_stage_denominator(ctx, previous_pct_map, PREVIOUS_REVIEW_MAX_PCT)
+    if denominator is not None:
+        stage_denominator, denominator_total = denominator
+        stats["stage_denominator"] = dict(stage_denominator)
+        stats["denominator_total"] = denominator_total
+        stats["denominator_max_previous_pct"] = PREVIOUS_REVIEW_MAX_PCT
     return rows, stage_counter, stats
 
 
@@ -460,6 +540,7 @@ def _run_review_for_codes(
     log,
     execution_map: dict[str, dict[str, object]] | None = None,
     gain_map: dict[str, float | None] | None = None,
+    previous_pct_map: dict[str, float] | None = None,
 ) -> int:
     if not review_codes:
         log("[review] 今日无满足收盘涨幅 > 7% 且前一交易日收盘涨幅 < 3% 的股票，跳过")
@@ -475,7 +556,12 @@ def _run_review_for_codes(
         dates.today,
         dates.previous_trade_date,
         execution_map,
+        previous_pct_map,
     )
+    if previous_pct_map:
+        log(f"[review] 分母口径: 全市场信号日涨幅<{PREVIOUS_REVIEW_MAX_PCT:.0f}% 覆盖 {len(previous_pct_map)} 只")
+    else:
+        log("[review] 未取到全市场信号日涨幅，本次报告不出比率")
     ok = send_replay_report(webhook, rows, stage_counter, dates, ctx.end_trade_date, stats)
     log(f"[review] feishu_sent={ok}")
     _persist_capture_rows(rows, ctx, dates, stats, gain_map, log=log)

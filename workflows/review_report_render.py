@@ -9,6 +9,8 @@ from typing import Any
 from core.funnel_taxonomy import (
     REVIEW_STAGE_BASE_REJECT,
     REVIEW_STAGE_CANDIDATE_HIT,
+    REVIEW_STAGE_DATA_FAIL,
+    REVIEW_STAGE_OUT_OF_POOL,
     REVIEW_STAGE_RISK_BLOCK,
     REVIEW_STAGE_STRENGTH_MISS,
     REVIEW_STAGE_THEME_MISS,
@@ -16,6 +18,31 @@ from core.funnel_taxonomy import (
     REVIEW_STAGE_TRIGGER_MISS,
 )
 from core.review_shadow_lanes import shadow_lane_label
+
+CAPTURE_STAGE_ORDER = (
+    REVIEW_STAGE_CANDIDATE_HIT,
+    REVIEW_STAGE_TRIGGER_HIT,
+    REVIEW_STAGE_RISK_BLOCK,
+    REVIEW_STAGE_TRIGGER_MISS,
+    REVIEW_STAGE_THEME_MISS,
+    REVIEW_STAGE_STRENGTH_MISS,
+    REVIEW_STAGE_BASE_REJECT,
+)
+"""出捕获率的档位顺序:先漏斗内部各档,基础准入淘汰放最后。
+
+池外/数据失败不出比率——它们在分母那一侧根本没有对应总体。
+"""
+
+PRE_FUNNEL_STAGES = (REVIEW_STAGE_BASE_REJECT, REVIEW_STAGE_OUT_OF_POOL, REVIEW_STAGE_DATA_FAIL)
+
+MIN_EXPECTED_HITS_FOR_LIFT = 3.0
+"""某一档在同基数下的期望命中数低于这个值就不出倍数,只出原始只数。
+
+单日里候选池分母只有 100 上下,基数率常在 1%~2%,期望命中就 1~2 只。这时候命中 0 只
+写成「0.00x」会被当成结论,可实测 21 天里候选池单日倍数在 0.00x~2.44x 之间摆,合起来
+才是 1.36x。取 3 是因为期望 3 时泊松下「一只都没中」的概率恰好 e^-3≈0.050——再低于此,
+连空档都说明不了什么,倍数就没有可读性。分母本身照常给出,省的只是那个比值。
+"""
 
 
 def short_code_list(rows: list[dict[str, Any]], limit: int = 8) -> str:
@@ -25,29 +52,47 @@ def short_code_list(rows: list[dict[str, Any]], limit: int = 8) -> str:
     return "、".join(shown) if shown else "无"
 
 
-def build_focus_lines(rows: list[dict[str, Any]], today: date, previous_trade_date: date) -> list[str]:
+def build_focus_lines(
+    rows: list[dict[str, Any]],
+    today: date,
+    previous_trade_date: date,
+    stats: dict[str, Any] | None = None,
+) -> list[str]:
     total = max(len(rows), 1)
     stage_rows = _group_stage_rows(rows)
-    lines = ["**重点归因**", _result_selected_caveat()]
+    lines = ["**重点归因**", _result_selected_caveat(stats)]
     lines.extend(_date_gap_lines(today, previous_trade_date))
     lines.extend(_stage_focus_lines(stage_rows, total))
     return lines
 
 
-def _result_selected_caveat() -> str:
-    """先说清样本是按结果选的,否则下面每一档的只数都会被当成淘汰率读。
+def _result_selected_caveat(stats: dict[str, Any] | None = None) -> str:
+    """先说清这一段的只数是按结果选的,否则会被当成淘汰率读。
 
-    本报告的样本定义是「今日收盘>+7% 且前一日<+3%」——先有结果再回溯原因。
-    被同一道闸门挡住却没涨的票根本不进样本,所以「39 只被基础准入淘汰」这类
-    数字没有分母,不能推出闸门误伤。要检验某车道该不该补强,只能全量打标签 +
-    同动量随机对照,那是 workflows/review_shadow_backtest.py 的事。
+    样本定义是「今日收盘>+7% 且前一日<+3%」——先有结果再回溯原因。被同一道闸门
+    挡住却没涨的票不进样本,所以「39 只被基础准入淘汰」这类数字本身推不出闸门误伤。
+    上面的「逐档捕获率」补了同条件分母,能回答概率高低;但要判断某车道该不该补强,
+    仍得走全量打标签 + 同动量随机对照,那是 workflows/review_shadow_backtest.py 的事。
     """
+    if _has_denominator(stats):
+        return (
+            "- **样本口径**：这一段的只数是按「今日涨幅>+7%」选样后回溯的，本身没有分母，"
+            "只能定位单票卡点；要看概率高低请看上面的「逐档捕获率」，"
+            "要判断某车道该不该补强仍需全量打标签 + 同动量随机对照（影子回放）。"
+        )
     return (
         "- **样本口径**：本报告先按「今日涨幅>+7%」选样、再回溯卡在哪一层，"
-        "被同样阈值挡住却没涨的票不在样本内，因此下面每一档的只数都**没有分母**。"
+        "被同样阈值挡住却没涨的票不在样本内，因此下面每一档的只数都**没有分母**"
+        "（本次未取到全市场信号日涨幅，逐档捕获率已整段省略）。"
         "它只能定位单票卡点，不能作为放宽任何阈值或车道的依据；"
         "「某车道该不该补强」要走全量打标签 + 同动量随机对照（影子回放）。"
     )
+
+
+def _has_denominator(stats: dict[str, Any] | None) -> bool:
+    if not stats:
+        return False
+    return isinstance(stats.get("stage_denominator"), dict) and int(stats.get("denominator_total", 0) or 0) > 0
 
 
 def build_report_lines(
@@ -88,8 +133,9 @@ def build_report_lines(
     lines.extend(
         [
             f"**结果汇总**: {summary}",
+            *build_capture_rate_lines(stage_counter, stats),
             "",
-            *build_focus_lines(rows, today=today, previous_trade_date=previous_trade_date),
+            *build_focus_lines(rows, today=today, previous_trade_date=previous_trade_date, stats=stats),
             "",
             "**逐票复盘（前一日候选链路状态与原因）**",
             "",
@@ -118,6 +164,80 @@ def _buyable_capture_headline(stats: dict[str, Any]) -> str:
         f"**可买到且被捕获**: {captured}/{executable}（{rate:.1f}%）"
         " ← 全篇唯一分母同池的比率：次日开盘还买得到的强势票里，前一日真在候选池的有几只"
     )
+
+
+def build_capture_rate_lines(stage_counter: Counter[str], stats: dict[str, Any] | None) -> list[str]:
+    """逐档捕获率:分子分母共用「信号日涨幅<+3% 的全市场票」这一个总体。
+
+    分子那条「前一日<+3%」会按信号日涨幅筛人,而候选池装的是动量票、信号日自己
+    更容易已经涨过 3%(实测候选 33.8% 越线、非候选 L1 存活只有 11.9%)。分母若不
+    施加同一条件,候选池捕获率会被系统性压低——实测能把 1.89x 印成 1.03x,而那个
+    数看上去比没有分母还像结论。所以分母必须同条件,拿不到就一个比率都不出。
+
+    两个基数分开给:漏斗内部各档跟「基础准入通过者」比,基础准入淘汰跟全市场比。
+    拿基础准入淘汰去跟全市场混算会把候选池的比率稀释掉一半以上。
+    """
+    if not stats:
+        return []
+    denominator = stats.get("stage_denominator")
+    total = int(stats.get("denominator_total", 0) or 0)
+    if not isinstance(denominator, dict) or total <= 0:
+        return []
+    max_previous = float(stats.get("denominator_max_previous_pct", 0.0) or 0.0)
+    counts = {str(key): int(value) for key, value in denominator.items()}
+    pre_funnel = sum(counts.get(stage, 0) for stage in PRE_FUNNEL_STAGES)
+    l1_base = total - pre_funnel
+    matched_numerator = sum(stage_counter.get(stage, 0) for stage in counts)
+    l1_numerator = sum(stage_counter.get(stage, 0) for stage in counts if stage not in PRE_FUNNEL_STAGES)
+
+    lines = [
+        "",
+        f"**逐档捕获率（分子分母同池：信号日涨幅<{max_previous:.0f}% 的票）**",
+        _capture_scope_note(max_previous),
+        f"- **全市场基数**：{matched_numerator}/{total}（{_rate(matched_numerator, total)}）今日涨超+7%",
+    ]
+    if l1_base > 0:
+        lines.append(f"- **基础准入通过者基数**：{l1_numerator}/{l1_base}（{_rate(l1_numerator, l1_base)}）今日涨超+7%")
+    for stage in CAPTURE_STAGE_ORDER:
+        stage_denominator = counts.get(stage, 0)
+        if stage_denominator <= 0:
+            continue
+        hit = stage_counter.get(stage, 0)
+        base_rate = matched_numerator / total if stage in PRE_FUNNEL_STAGES else _safe_ratio(l1_numerator, l1_base)
+        base_label = "全市场" if stage in PRE_FUNNEL_STAGES else "基础准入通过者"
+        lines.append(
+            f"- {stage}：{hit}/{stage_denominator}（{_rate(hit, stage_denominator)}）"
+            f"{_lift_text(hit / stage_denominator, base_rate, base_label, stage_denominator * base_rate)}"
+        )
+    return lines
+
+
+def _capture_scope_note(max_previous: float) -> str:
+    return (
+        f"- 分子分母都只看「信号日涨幅<{max_previous:.0f}%」的票，所以这一段回答的是"
+        "「昨天没怎么动的票里，进到某一档的今天涨超+7% 的概率有多高」，"
+        "不覆盖昨天已经冲高的票；倍数是同一档对同一基数的比值，不是绝对胜率。"
+        "单日各档期望命中常只有 1~2 只，倍数摆动很大，跨日累计口径看 "
+        "scripts/evaluate_review_capture_forward.py。"
+    )
+
+
+def _rate(hit: int, base: int) -> str:
+    if base <= 0:
+        return "无分母"
+    return f"{hit / base * 100.0:.2f}%"
+
+
+def _safe_ratio(hit: int, base: int) -> float:
+    return hit / base if base > 0 else 0.0
+
+
+def _lift_text(rate: float, base_rate: float, base_label: str, expected_hits: float) -> str:
+    if base_rate <= 0:
+        return ""
+    if expected_hits < MIN_EXPECTED_HITS_FOR_LIFT:
+        return f" ← 同基数下期望命中{expected_hits:.1f}只，单日读不出倍数"
+    return f" ← 相对{base_label} {rate / base_rate:.2f}x"
 
 
 def _execution_scope_line(stats: dict[str, Any]) -> str:
