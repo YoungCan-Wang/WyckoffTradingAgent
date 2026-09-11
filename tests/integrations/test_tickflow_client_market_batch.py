@@ -49,7 +49,7 @@ def test_get_quotes_accepts_universe(monkeypatch):
 
     quotes = client.get_quotes(universes=["US_Equity"])
 
-    assert calls == [("/v1/quotes", None, {"universes": ["US_Equity"]}, "POST")]
+    assert calls == [("/v1/quotes", {"universes": "US_Equity"}, None, "GET")]
     assert quotes["AAPL.US"]["last_price"] == 205.0
 
 
@@ -59,7 +59,8 @@ def test_get_quotes_chunks_symbols_at_tickflow_limit(monkeypatch):
 
     def fake_request(path, *, params=None, json_body=None, method="GET"):
         calls.append((path, params, json_body, method))
-        return {"data": [{"symbol": symbol, "last_price": 1.0} for symbol in json_body["symbols"]]}
+        assert method == "GET" and json_body is None
+        return {"data": [{"symbol": symbol, "last_price": 1.0} for symbol in params["symbols"].split(",")]}
 
     monkeypatch.setattr(client, "_request", fake_request)
     monkeypatch.setattr("integrations.tickflow_client.time.sleep", lambda _: None)
@@ -67,7 +68,7 @@ def test_get_quotes_chunks_symbols_at_tickflow_limit(monkeypatch):
     symbols = [f"SYM{idx:03d}.US" for idx in range(121)]
     quotes = client.get_quotes(symbols)
 
-    assert [len(call[2]["symbols"]) for call in calls] == [50, 50, 21]
+    assert [len(call[1]["symbols"].split(",")) for call in calls] == [50, 50, 21]
     assert len(quotes) == 121
 
 
@@ -104,6 +105,47 @@ def test_get_klines_batch_parses_payload(monkeypatch):
     ]
     assert list(result) == ["AAPL.US"]
     assert result["AAPL.US"]["close"].tolist() == [101.0, 102.0]
+
+
+def test_get_klines_batch_splits_at_default_two_hundred(monkeypatch):
+    """日K批次默认 200，不要压到 100。
+
+    2026-09-04 用真 key 实测过 `/v1/klines/batch`：请求 100/101/150/200 只，返回数量与
+    请求数一一相等，厂商在 100 这个数上没有任何限制。按生产真实参数 count=260 再测，
+    100 只耗时 1.9s / 2101KB，200 只耗时 1.9s / 4114KB，客户端默认超时 12s，离得很远，
+    所以超时也不构成压批次的理由。
+
+    压到 100 是有代价的：调用次数翻倍，而 A 股漏斗配了
+    ``TICKFLOW_KLINE_RATE_LIMIT_PER_MIN: 110``、每批之间还有 0.55s sleep。美股通道自己
+    在 ``wyckoff_funnel_us.yml`` 里设了 ``TICKFLOW_KLINE_BATCH_SIZE: "100"``，那是那条
+    通道的选择，不该提成客户端硬顶——硬顶会静默吃掉运维设的任何更大值，且不打日志。
+    """
+    client = TickFlowClient(api_key="test-key")
+    sizes = []
+
+    def fake_request(path, *, params=None):
+        assert path == "/v1/klines/batch"
+        sizes.append(len(params["symbols"].split(",")))
+        return {"data": {}}
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    monkeypatch.setattr("integrations.tickflow_client.time.sleep", lambda _: None)
+    client.get_klines_batch([f"{idx:06d}.SZ" for idx in range(220)], count=260, adjust="forward")
+    assert sizes == [200, 20]
+
+
+def test_get_quotes_deduplicates_universe_and_symbol_requests(monkeypatch):
+    client = TickFlowClient(api_key="test-key")
+    calls = []
+
+    def fake_request(path, *, params=None):
+        calls.append(params)
+        return {"data": []}
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    monkeypatch.setattr("integrations.tickflow_client.time.sleep", lambda _: None)
+    client.get_quotes(["00285.HK", "00285.HK"], universes=["CN_Equity_A", "CN_Equity_A"])
+    assert calls == [{"universes": "CN_Equity_A"}, {"symbols": "00285.HK"}]
 
 
 def test_get_financial_metrics_chunks_at_one_hundred(monkeypatch):
