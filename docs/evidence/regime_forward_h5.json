@@ -1,0 +1,126 @@
+{
+  "horizon": 5,
+  "index_code": "000001",
+  "window": [
+    "2026-05-06",
+    "2026-09-04"
+  ],
+  "baseline": -0.335,
+  "baseline_days": 82,
+  "stats": [
+    {
+      "regime": "CRASH",
+      "days": 14,
+      "forward": 0.807,
+      "excess": 1.142,
+      "positive_pct": 78.57,
+      "p_value": 0.0085,
+      "random_ci": [
+        -0.8523,
+        0.8816
+      ],
+      "verdict": "正向、超出随机（该状态后市场偏涨）",
+      "note": ""
+    },
+    {
+      "regime": "BEAR_REBOUND",
+      "days": 8,
+      "forward": 0.7142,
+      "excess": 1.0492,
+      "positive_pct": 62.5,
+      "p_value": 0.0525,
+      "random_ci": [
+        -1.1978,
+        1.2732
+      ],
+      "verdict": "落在随机区间内：无方向性",
+      "note": ""
+    },
+    {
+      "regime": "PANIC_REPAIR",
+      "days": 4,
+      "forward": 0.067,
+      "excess": 0.402,
+      "positive_pct": 50.0,
+      "p_value": null,
+      "random_ci": [
+        null,
+        null
+      ],
+      "verdict": "样本不足",
+      "note": ""
+    },
+    {
+      "regime": "RISK_OFF",
+      "days": 20,
+      "forward": -0.3223,
+      "excess": 0.0127,
+      "positive_pct": 35.0,
+      "p_value": 0.49,
+      "random_ci": [
+        -0.6808,
+        0.747
+      ],
+      "verdict": "落在随机区间内：无方向性",
+      "note": ""
+    },
+    {
+      "regime": "RISK_ON",
+      "days": 5,
+      "forward": -0.6077,
+      "excess": -0.2727,
+      "positive_pct": 60.0,
+      "p_value": null,
+      "random_ci": [
+        null,
+        null
+      ],
+      "verdict": "样本不足",
+      "note": ""
+    },
+    {
+      "regime": "NEUTRAL",
+      "days": 13,
+      "forward": -1.5187,
+      "excess": -1.1837,
+      "positive_pct": 7.69,
+      "p_value": 0.0055,
+      "random_ci": [
+        -0.8963,
+        0.9448
+      ],
+      "verdict": "负向、超出随机（该状态后市场偏跌）",
+      "note": ""
+    },
+    {
+      "regime": "CAUTION",
+      "days": 1,
+      "forward": -3.4424,
+      "excess": -3.1074,
+      "positive_pct": 0.0,
+      "p_value": null,
+      "random_ci": [
+        null,
+        null
+      ],
+      "verdict": "样本不足",
+      "note": ""
+    }
+  ],
+  "drawdown_control": {
+    "crash_days": 14,
+    "crash_forward": 0.807,
+    "pure_drawdown_forward": -0.039,
+    "baseline_forward": -0.335,
+    "increment_over_drawdown": 0.846,
+    "overlap_days": 5,
+    "verdict": "CRASH 含独立于跌幅的信息"
+  },
+  "action_lines": [
+    "① CRASH 后市场偏涨（超基准 +1.14pct，p=0.0085）。**不要**执行以 CRASH 为由的清仓建议——它标的是底部，不是危险。",
+    "② 该效应独立于「跌多了」（相对纯跌幅对照 +0.85pct，重叠 5/14），不是单纯均值回复。",
+    "③ 后市偏跌且超出随机的状态：NEUTRAL(-1.18) —— 这些才是真正该降低敞口的时点。",
+    "④ 暂不改 `STEP4_BUY_BLOCK_REGIMES`：选股信号本身仍是负超额，「几乎不买」当前是保护而非缺陷；先等选股 alpha 转正。",
+    "⑤ 下一步只做一件事：继续积累样本，下月重跑本检验，看结论是否跨周期稳定。"
+  ]
+}
