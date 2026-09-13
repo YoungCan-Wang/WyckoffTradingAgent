@@ -281,7 +281,7 @@ flowchart LR
 | **Outcome** | Observation 之后 1/3/5/10/20 日的收益和最大回撤，落在 `signal_outcomes`。 |
 | **Health** | 按信号类型聚合后的胜率、均值收益、样本数和权重，落在 `signal_health_daily`。 |
 | **动态影子晋级** | 将当日候选的基础影子分与同信号、同水温的历史健康度合成动态分；通过结构、样本和风险清单后，只获得 Step3 复核席位，不等于正式推荐、跨日确认或 OMS 买入许可。 |
-| **当日盈亏 (same-day P&L)** | 现价相对前收盘的浮动盈亏；若 `buy_dt` 等于当日则改用今日成交价（成本价）作基准，不是相对建仓成本。金额按持仓本币×人民币汇率。账本当日盈亏是各持仓当日盈亏之和，现金记 0，因此不等于「今日净值 − 昨日净值」（后者含同日买卖现金流）。由 16:05 `nav_snapshot` 写入 `daily_nav.day_pnl` / `position_day_pnl`，Step4 Telegram 工单回读展示。 |
+| **当日盈亏 (same-day P&L)** | 现价相对前收盘的浮动盈亏；不是相对建仓成本。`buy_dt` 在成交回填里是 T+1 最近买入日（当日加仓会刷新），不能用来判断整仓今开，故有昨收时一律 vs 昨收；仅昨收缺失时才用今开成本兜底。金额按持仓本币×人民币汇率。账本当日盈亏是各持仓当日盈亏之和，现金记 0，因此不等于「今日净值 − 昨日净值」（后者含同日买卖现金流）。由 16:05 `nav_snapshot` 写入 `daily_nav.day_pnl` / `position_day_pnl`，Step4 Telegram 工单回读展示。 |
 | **影子账本 (paper shadow ledger)** | 漏斗成功后的纸面对照账户，账户号 `USER_SHADOW:<uuid>`。盘后按 Step4 同口径买许可写下夜 `next_open` 计划，次日开盘价成交，遵守 T+1 / 整手 / 涨跌停 / 费用。只写 `shadow_*` 表，绝不写 `USER_LIVE` 的 `portfolios` / `portfolio_positions` / `trade_orders` / `daily_nav`。飞书卡标题必须带「影子账本 / paper」，与 `ic_shadow`、动态影子分不是同一概念。 |
 | **Registry** | 信号生命周期表，控制信号是 `ACTIVE`、`WATCH`、`EXPERIMENTAL` 还是 `RETIRED`。信号级 `status` 以全局行（`regime=""` / `ALL`）为准；regime 拆分行只承载精确权重并跟随全局生命周期。 |
 | **Shadow Run** | 动态策略旁路演练：真实推荐不变，只记录动态策略会新增或移除哪些候选。 |

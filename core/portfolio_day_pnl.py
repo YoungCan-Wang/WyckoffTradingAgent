@@ -1,4 +1,4 @@
-"""持仓与账本的当日盈亏：相对昨收，今日新开仓相对成交价。"""
+"""持仓与账本的当日盈亏：有昨收用昨收；昨收缺失时今开仓才退回成交价。"""
 
 from __future__ import annotations
 
@@ -55,11 +55,17 @@ def opened_on_trade_date(buy_dt: Any, trade_date: str) -> bool:
 
 
 def position_day_basis(row: dict[str, Any], trade_date: str, prev_close: float) -> tuple[float, str] | None:
+    """选当日盈亏基准价。
+
+    ``buy_dt`` 在成交回填里是 T+1 的「最近买入日」：当日加仓会把它刷成今天，但均价
+    仍掺着隔夜仓。若仅因 buy_dt==当日就整仓 vs 成本，隔夜浮盈会被算进「当日盈亏」
+    （可放大两个数量级）。有昨收时一律 vs 昨收；昨收缺失（如新股）才用今开成本兜底。
+    """
+    if prev_close > 0:
+        return prev_close, BASIS_PREV_CLOSE
     if opened_on_trade_date(row.get("buy_dt"), trade_date):
         cost = float(row.get("cost", row.get("cost_price", 0.0)) or 0.0)
         return (cost, BASIS_TODAY_FILL) if cost > 0 else None
-    if prev_close > 0:
-        return prev_close, BASIS_PREV_CLOSE
     return None
 
 

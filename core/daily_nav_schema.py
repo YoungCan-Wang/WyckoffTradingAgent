@@ -10,7 +10,7 @@ from core.constants import TABLE_DAILY_NAV
 
 # 与 upsert_daily_nav 在算全当日盈亏时写入的可选键一致。
 DAY_PNL_COLUMNS: tuple[tuple[str, str, str], ...] = (
-    ("day_pnl", "numeric", "当日盈亏金额（人民币）=各持仓 vs 昨收/今开成交价之和；现金记 0"),
+    ("day_pnl", "numeric", "当日盈亏金额（人民币）=各持仓 vs 昨收之和（昨收缺失才 vs 今开成本）；现金记 0"),
     ("day_pnl_pct", "numeric", "当日盈亏占日初权益（日初市值+现金）的百分比"),
     (
         "position_day_pnl",

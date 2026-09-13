@@ -823,7 +823,7 @@ MCP server 走 ToolSurface，没有确认弹窗也没有待批队列。`tools/wr
 | **Desktop** (`desktop.yml`) | desktop 相关 push/PR / 手动触发 / `desktop-v*` tag | push/PR 只跑三平台 Electron 测试；手动触发才构建 1 天候选包；tag 与 package version 一致时以 Windows 未签名 / macOS 临时签名的零付费方式校验并发布 GitHub Release |
 | **大型 Artifact 清理** (`artifact_cleanup.yml`) | 每天 03:30 / 手动 | 删除超过 24 小时且至少 50 MB 的 Actions artifacts；桌面工作流自身保留期固定为 1 天 |
 | **盘前风控** (`premarket_risk.yml`) | 周一-周五 08:20 | Codex Automation 调用 `workflow_dispatch`；A50 + VIX 预警，Actions 可手动补跑。另有 UTC 02:20 的 `schedule` 兜底，带 `--backstop` 幂等短路，仅在当日盘前态缺失时补跑 |
-| **账户净值快照** (`nav_snapshot.yml`) | 周一-周五 16:05 | `nav_snapshot_job.py` 写 `daily_nav`：真实现金、持仓市值、账本与逐只当日盈亏（vs 昨收；当日新开仓 vs 成交价）。不改股数/现金/止损，不发买卖信号。实盘日预警是随后 Step4 的 Telegram 工单，会回读这张快照 |
+| **账户净值快照** (`nav_snapshot.yml`) | 周一-周五 16:05 | `nav_snapshot_job.py` 写 `daily_nav`：真实现金、持仓市值、账本与逐只当日盈亏（vs 昨收；昨收缺失才 vs 今开成本）。不改股数/现金/止损，不发买卖信号。实盘日预警是随后 Step4 的 Telegram 工单，会回读这张快照 |
 | **港股漏斗筛选** (`wyckoff_funnel_hk.yml`) | 周一-周五 16:35 | `market_funnel_job.py --market hk` |
 | **A 股漏斗筛选 + AI 研报 + 决策** (`wyckoff_funnel.yml`) | 周日-周四 17:17 | `daily_job.py` Step2→3→4；周日正常为周一实盘准备候选，若次日非 A 股交易日才跳过，日频写入 `theme_radar_snapshot` |
 | **板块连续性报告** (`sector_continuity.yml`) | 周一-周五 16:10 | 刷新概念热度历史，辅助主线引擎判断延续性 |
@@ -902,7 +902,7 @@ Web 个股、持仓和股票对抗分析保存历史时写入 `meta`：输入快
 | `recommendation_tracking` | 威科夫形态复盘 |
 | `signal_pending` | 信号确认池 |
 | `market_signal_daily` | 大盘信号 |
-| `daily_nav` | 每日净值（记账户真实现金与持仓市值，不记 OMS「假设照单执行后」的模拟值）。16:05 快照另写 `day_pnl` / `day_pnl_pct` / `position_day_pnl`：当日盈亏相对昨收（当日新开仓相对成交价），账本合计不含现金变动；不是 vs 成本。缺昨收时只写总额、不写半截盈亏。DDL：`scripts/print_daily_nav_ddl.py` |
+| `daily_nav` | 每日净值（记账户真实现金与持仓市值，不记 OMS「假设照单执行后」的模拟值）。16:05 快照另写 `day_pnl` / `day_pnl_pct` / `position_day_pnl`：当日盈亏相对昨收（`buy_dt` 是 T+1 最近买入日，加仓会刷新，不能当整仓今开）；昨收缺失才用今开成本兜底。账本合计不含现金变动；不是 vs 成本。缺基准时只写总额、不写半截盈亏。DDL：`scripts/print_daily_nav_ddl.py` |
 | `shadow_account` / `shadow_positions` / `shadow_events` / `shadow_nav_daily` / `shadow_trade_plans` | 影子账本 paper：盘后定计划、次日开盘成交。只服务 `USER_SHADOW:*`，不写 `USER_LIVE` 实盘表 |
 | `concept_heat_history` | 板块连续性与概念热度历史 |
 | `signal_observations` | L4 信号观察样本 |
