@@ -94,12 +94,16 @@ def load_radar_day(trade_date: str) -> RadarDaySnapshot:
 
 
 def create_radar_client():
-    from supabase import create_client
+    import httpx
+    from supabase import ClientOptions, create_client
 
-    from integrations.supabase_base import _client_options
+    from integrations.supabase_base import CONNECT_TIMEOUT_SECONDS, READ_TIMEOUT_SECONDS
 
     url, key = resolve_radar_credentials()
-    return create_client(url, key, options=_client_options())
+    options = ClientOptions(
+        httpx_client=httpx.Client(timeout=httpx.Timeout(READ_TIMEOUT_SECONDS, connect=CONNECT_TIMEOUT_SECONDS))
+    )
+    return create_client(url, key, options=options)
 
 
 def _first_env(names: tuple[str, ...]) -> str:
