@@ -85,8 +85,26 @@ def persist_step2_outputs(step2: Step2StageResult, cfg: DailyJobConfig) -> tuple
             benchmark_context=step2.benchmark_context,
             trade_mode=trade_mode,
         )
+        _persist_theme_structure_cross(step2, payload, cfg)
         return recommend_date, payload, persistence_ok and recommendation_ok
     return None, [], persistence_ok
+
+
+def _persist_theme_structure_cross(step2: Step2StageResult, payload: list[dict], cfg: DailyJobConfig) -> None:
+    from workflows.theme_structure_cross import persist_daily_theme_structure_cross
+
+    details = step2.details or {}
+    metrics = dict(details.get("metrics") or {})
+    if details.get("name_map") and not metrics.get("name_map"):
+        metrics["name_map"] = details["name_map"]
+    persist_daily_theme_structure_cross(
+        trade_date=latest_trade_date_str(),
+        metrics=metrics,
+        extra_rows=[*(step2.symbols_info or []), *(payload or [])],
+        dry_run=cfg.preview_only,
+        log_fn=log_line,
+        logs_path=cfg.logs_path,
+    )
 
 
 def _prepare_step3_review_input(step2: Step2StageResult, trade_mode: MarketTradeMode, cfg: DailyJobConfig) -> None:

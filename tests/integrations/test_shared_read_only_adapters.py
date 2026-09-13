@@ -87,17 +87,21 @@ def test_factor_ic_write_guard_runs_before_admin_client_creation(monkeypatch):
 def test_replay_reachable_concept_and_shadow_writers_remain_blocked(monkeypatch):
     from integrations import supabase_concept_heat as concepts
     from integrations import supabase_review_shadow_lane as shadow
+    from integrations import supabase_theme_structure_cross as cross
 
     client = RecordingClient()
     monkeypatch.setenv("WYCKOFF_WRITE_CONTEXT", "server_job")
     monkeypatch.setattr(concepts, "_configured", lambda: True)
     monkeypatch.setattr(concepts, "_admin", lambda: client)
     monkeypatch.setattr(shadow, "create_admin_client", lambda: client)
+    monkeypatch.setattr(cross, "create_admin_client", lambda: client)
     with read_only_write_context():
         with pytest.raises(PermissionError):
             concepts.upsert_concept_heat_history("2026-09-04", [{"name": "CPO", "pct": 1.0}])
         with pytest.raises(PermissionError):
             shadow.save_review_shadow_lane_rows([{"code": "300308"}])
+        with pytest.raises(PermissionError):
+            cross.save_theme_structure_cross_rows([{"trade_date": "2026-09-01", "ts_code": "000998"}])
     assert client.calls == []
 
 

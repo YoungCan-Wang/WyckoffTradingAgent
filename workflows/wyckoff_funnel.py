@@ -924,6 +924,9 @@ def run_funnel_job(
     )
     metrics = _build_funnel_metrics(metrics_inputs)
     metrics["ic_shadow"] = _build_ic_shadow_pool(data)
+    from workflows.theme_structure_cross import attach_theme_structure_cross
+
+    attach_theme_structure_cross(metrics)
     _write_review_trace(metrics_inputs, artifacts.layers.triggers, metrics)
     _attach_funnel_debug_context(metrics, metrics_inputs, include_debug_context)
     _log_funnel_summary(metrics, metrics_inputs)

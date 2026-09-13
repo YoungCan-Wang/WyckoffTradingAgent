@@ -9,6 +9,7 @@ from typing import Any
 from core.execution_audit import StaleExit, render_stale_exit_alert
 from core.execution_playbook import oms_playbook_lines
 from core.portfolio_day_pnl import BASIS_TODAY_FILL, BookDayPnl, book_day_pnl_from_stored
+from core.theme_structure_cross import render_cross_ticket_lines
 from utils.trading_clock import CN_TZ
 from workflows.step4_models import ExecutionTicket
 
@@ -24,6 +25,7 @@ def render_trade_ticket(
     stale_exits: list[StaleExit] | None = None,
     model_label: str = "",
     day_pnl: BookDayPnl | dict[str, Any] | None = None,
+    theme_structure_cross: dict[str, Any] | None = None,
 ) -> str:
     now_str = datetime.now(CN_TZ).strftime("%Y-%m-%d")
     sells = [t for t in tickets if t.status == "APPROVED" and t.action in {"EXIT", "TRIM"}]
@@ -51,6 +53,7 @@ def render_trade_ticket(
         # Step4 的模型选型直接决定这张工单的内容（决策经 WyckoffOrderEngine 变成订单），
         # 因此必须与工单同屏可见，而不是只留在 CI 日志里。
         lines.append(f"🤖 决策模型：{model_label}")
+    lines.extend(render_cross_ticket_lines(theme_structure_cross))
     return "\n".join(lines)
 
 

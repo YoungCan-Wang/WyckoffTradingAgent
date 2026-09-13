@@ -109,6 +109,7 @@ def _run_stop_loss_only_fallback(
         atr_period=options.runtime_config.atr_period,
         model_label=f"degraded:{status}",
         day_pnl=_load_ticket_day_pnl(options.portfolio_id, context.trade_date),
+        theme_structure_cross=_theme_structure_cross_payload(context.trade_date),
     )
     _send_trade_ticket(report, options.tg_bot_token, options.tg_chat_id)
     forced = [t for t in tickets if t.action == "EXIT"]
@@ -399,6 +400,7 @@ def _send_and_persist_step4_results(
         stale_exits=stale_exits,
         model_label=_step4_model_label(options),
         day_pnl=_load_ticket_day_pnl(options.portfolio_id, context.trade_date),
+        theme_structure_cross=_theme_structure_cross_payload(context.trade_date),
     )
     persistence = save_step4_orders_and_nav(
         options=options,
@@ -598,3 +600,10 @@ def run(
         context=context,
         report_progress=report_progress,
     )
+
+
+def _theme_structure_cross_payload(trade_date: date | str | None) -> dict:
+    from workflows.theme_structure_cross import load_cross_payload_for_report
+
+    text = trade_date.isoformat() if hasattr(trade_date, "isoformat") else str(trade_date or "").strip()
+    return load_cross_payload_for_report(text) if text else {}

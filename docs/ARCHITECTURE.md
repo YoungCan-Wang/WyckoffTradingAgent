@@ -389,7 +389,7 @@ pip install youngcan-wyckoff-analysis[mcp]
 claude mcp add wyckoff -- wyckoff-mcp
 ```
 
-凭证通过环境变量注入（`TUSHARE_TOKEN`、`SUPABASE_*`），或由 `_get_credential` 自动从 `~/.wyckoff/wyckoff.json` 读取。
+凭证通过环境变量注入（`TUSHARE_TOKEN`、`SUPABASE_*`、Radar 交叉用的 `RADAR_SUPABASE_*`），或由 `_get_credential` 自动从 `~/.wyckoff/wyckoff.json` 读取。威科夫库与 Radar 库禁止混用同一套 URL/Key。
 
 ### TUI 视觉层次
 
@@ -679,6 +679,8 @@ Supabase 不可达时静默跳过，使用本地陈旧数据。`wyckoff sync` �
 
 `core/theme_radar.py` 同时输出中长线 `themes` 和短周期 `rotation_watch`。前者可进入主线候选构建，后者只用于回答“哪些主题正在加速”，即使检测到轮动也不能打开市场总闸、生成正式推荐或改变 OMS。英文主题别名按独立词边界匹配，避免短缩写嵌入其他概念名称时造成跨主题污染。
 
+`theme_structure_cross_daily` 是另一道独立筛选，不要和上面的 `theme_radar_snapshot` 混读。它连接的是 YoungCan-Wang/ashare-mainline-radar 项目库（`RADAR_SUPABASE_URL` / `RADAR_SUPABASE_SERVICE_ROLE_KEY`），用当日 `radar_symbol_snapshots.primary_theme` 去对 `radar_theme_snapshots.rank≤5`。威科夫侧只认漏斗自己的 PRIMARY/BROAD 强标记。两道漏斗的交集才进报告「主线×威科夫交叉」；这是观察筛，不创建 `next_buy`、开盘带或 Step4 工单，东财日热榜也不回写 Radar 主线成立。闸门拦截的票仍落库（只记不执行）。缺 Radar 凭证必须打 ERROR，不能把空结果写成「今日无交叉」。DDL：`python scripts/print_theme_structure_cross_ddl.py`。
+
 日报按“一眼结论 → 主线与轮动 → 候选 → 详细市场证据”的顺序呈现。飞书卡片用状态色、分节和图标突出结论；这些仅是展示层级，不参与计算或门控。
 
 `tradeable_l4` 的送审入口采用质量优先：不再用 Trend/Accum 固定配额提前截断，而是让通过形态与损失护栏的候选、主线及主题补位共同排序，最后统一执行 8 只总上限和单行业 2 只上限。实盘和回测复用同一质量池及裁剪语义。
@@ -825,7 +827,7 @@ MCP server 走 ToolSurface，没有确认弹窗也没有待批队列。`tools/wr
 | **盘前风控** (`premarket_risk.yml`) | 周一-周五 08:20 | Codex Automation 调用 `workflow_dispatch`；A50 + VIX 预警，Actions 可手动补跑。另有 UTC 02:20 的 `schedule` 兜底，带 `--backstop` 幂等短路，仅在当日盘前态缺失时补跑 |
 | **账户净值快照** (`nav_snapshot.yml`) | 周一-周五 16:05 | `nav_snapshot_job.py` 写 `daily_nav`：真实现金、持仓市值、账本与逐只当日盈亏（vs 昨收；当日新开仓 vs 成交价）。不改股数/现金/止损，不发买卖信号。实盘日预警是随后 Step4 的 Telegram 工单，会回读这张快照 |
 | **港股漏斗筛选** (`wyckoff_funnel_hk.yml`) | 周一-周五 16:35 | `market_funnel_job.py --market hk` |
-| **A 股漏斗筛选 + AI 研报 + 决策** (`wyckoff_funnel.yml`) | 周日-周四 17:17 | `daily_job.py` Step2→3→4；周日正常为周一实盘准备候选，若次日非 A 股交易日才跳过，日频写入 `theme_radar_snapshot` |
+| **A 股漏斗筛选 + AI 研报 + 决策** (`wyckoff_funnel.yml`) | 周日-周四 17:17 | `daily_job.py` Step2→3→4；周日正常为周一实盘准备候选，若次日非 A 股交易日才跳过，日频写入 `theme_radar_snapshot` 与 `theme_structure_cross_daily`（主线×威科夫交叉，只观察） |
 | **板块连续性报告** (`sector_continuity.yml`) | 周一-周五 16:10 | 刷新概念热度历史，辅助主线引擎判断延续性 |
 | **强势股复盘** (`review_list_replay.yml`) | 周一-周五 19:25 | 用 Tushare 双日截面发现当日涨幅 > 7% 且前日 < 3% 的完整样本；下载前一交易日生产漏斗的压缩 as-run trace，同时列出逐层状态、跟踪/AI状态、次日开盘及盘中可交易口径，并输出结构化 JSON/Markdown artifact。三条影子召回车道只观察、不写推荐；历史验证严格以每日 trace 为 as-of 候选证据。快照缺失默认不重跑，手动触发可显式允许全市场 fallback |
 | **主线雷达周报** (`theme_radar.yml`) | 周五 21:10 | `theme_radar_job.py --with-news`，周频新闻增强复盘 |
@@ -900,6 +902,7 @@ Web 个股、持仓和股票对抗分析保存历史时写入 `meta`：输入快
 | `trade_orders` | AI 交易建议（**建议单，不是成交流水**；状态只有 APPROVED / NO_TRADE / CANCELLED） |
 | `user_settings` | 用户配置（API Key / Webhook / provider base_url / custom_providers JSON） |
 | `recommendation_tracking` | 威科夫形态复盘 |
+| `theme_structure_cross_daily` | 当日威科夫偏强 ∩ Radar 策划主题 Top5。筛选观察，不生成 next_buy。DDL：`scripts/print_theme_structure_cross_ddl.py` |
 | `signal_pending` | 信号确认池 |
 | `market_signal_daily` | 大盘信号 |
 | `daily_nav` | 每日净值（记账户真实现金与持仓市值，不记 OMS「假设照单执行后」的模拟值）。16:05 快照另写 `day_pnl` / `day_pnl_pct` / `position_day_pnl`：当日盈亏相对昨收（当日新开仓相对成交价），账本合计不含现金变动；不是 vs 成本。缺昨收时只写总额、不写半截盈亏。DDL：`scripts/print_daily_nav_ddl.py` |

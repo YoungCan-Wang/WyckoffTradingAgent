@@ -13,7 +13,7 @@
 flowchart TB
     subgraph UPSTREAM["⬆️ 上游（漏斗运行前已存在）"]
         U1["GitHub Actions 触发<br/>wyckoff_funnel.yml<br/>周日到周四 17:17 北京<br/>周日为周一实盘准备候选"]
-        U2["环境变量 / Secrets<br/>TICKFLOW / TUSHARE / LLM / Supabase / IM"]
+        U2["环境变量 / Secrets<br/>TICKFLOW / TUSHARE / LLM / Supabase / Radar / IM"]
         U3["本地元数据<br/>行业映射 / 概念映射 / 股票池"]
         U4["前日反馈闭环<br/>signal_health_daily<br/>signal_registry"]
         U5["前日盘前风控<br/>Codex Automation → workflow_dispatch<br/>premarket_risk → market_signal_daily"]
@@ -26,6 +26,7 @@ flowchart TB
         S2["Step2 Wyckoff Funnel<br/>workflows/wyckoff_funnel.py"]
         S25["Step2.5 信号确认<br/>pending → survived / confirmed / expired"]
         S26["Step2.6 推荐写库<br/>recommendation_tracking"]
+        S265["Step2.6b 主线×威科夫交叉<br/>theme_structure_cross_daily"]
         S27["Step2.7 起跳板评分"]
         S275["Step2.75 动态影子评分<br/>满足门槛者最多补 1 个 Step3 复核席位"]
         S3["Step3 批量 AI 研报<br/>workflows/step3_batch_report.py"]
@@ -53,6 +54,7 @@ flowchart TB
     U8 --> S4
 
     S2 --> S25 --> S26 --> S27 --> S3 --> S4
+    S26 --> S265
     S3 --> SH
 
     S2 --> D7
@@ -92,7 +94,7 @@ flowchart TD
     STEP2 --> S25
 
     S25["Step2.5: run_step2_5()<br/>signal_pending 确认"] --> S26
-    S26["Step2.6: prepare_recommendation_payload<br/>→ recommendation_tracking<br/>推荐价=首次推荐日收盘"] --> S27
+    S26["Step2.6: prepare_recommendation_payload<br/>→ recommendation_tracking<br/>推荐价=首次推荐日收盘"] --> S265["写 theme_structure_cross_daily<br/>主线×威科夫交叉，只观察"] --> S27
     S27["Step2.7: score_springboard_abc<br/>起跳板评分"] --> S275["Step2.75: dynamic shadow<br/>health 校准 + 晋级清单"] --> S3
 
     S3["Step3: run_step3()<br/>批量 AI 研报"] --> MARK["mark_ai_recommendations<br/>标记起跳板"]
@@ -120,6 +122,7 @@ flowchart TD
 | 编排 | `scripts/daily_job.py` | 主流程 |
 | Step2 | `workflows/wyckoff_funnel.py` | `core/wyckoff_engine.py` |
 | Step2.6 | `integrations/recommendation_payload.py` | `recommendation_tracking` 写库；`initial_price` 按 code 粘住首次推荐日收盘 |
+| Step2.6b | `workflows/theme_structure_cross.py` | 威科夫偏强 ∩ Radar 策划主题 Top5，写入 `theme_structure_cross_daily`；筛选观察，不生成 next_buy / 开盘带 / 工单。缺 `RADAR_SUPABASE_*` 时 fail-closed |
 | Step3 | `workflows/step3_batch_report.py` | `tools/report_builder.py` |
 | Step4 | `workflows/step4_rebalancer.py` | `core/holding_diagnostic.py` / `core/wyckoff_engine.py`；工单回读 16:05 `daily_nav` 当日盈亏 |
 | 净值快照 | `scripts/nav_snapshot_job.py` | `workflows/nav_snapshot.py`；16:05 写总额与当日盈亏，不改持仓 |
@@ -139,6 +142,8 @@ flowchart TD
 写入侧另有 `USER_SHADOW:` 前缀断言，拒绝任何非影子账户。
 
 **推荐价语义**：`recommendation_tracking.initial_price` = 该股票首次 `recommend_date` 的收盘价；同股再次推荐、同日重跑、晚间 reprice/performance 都不得改成新日价。`change_pct` 相对该粘住价；MFE/MAE 仍按该行事件日计算。performance 的 `max_dates` 只限制刷新哪些行，首次推荐日锚点仍按该 code 全量历史计算。存量纠偏入口为 `workflows.recommendation_tracking_reprice.correct_tracking_initial_prices`。
+
+**主线×威科夫交叉**：推荐写库之后按同一交易日做观察筛，写入 `theme_structure_cross_daily`。Radar 策划主题与威科夫结构是两道独立漏斗，交集才进飞书卡 / Telegram 工单的「主线×威科夫交叉」段；文案固定为筛选观察，不生成 next_buy。缺 `RADAR_SUPABASE_URL` / `RADAR_SUPABASE_SERVICE_ROLE_KEY` 时 fail-closed，日志 ERROR，不得写成「今日无交叉」。建表：`python scripts/print_theme_structure_cross_ddl.py`。
 
 **强势股复盘证据**：生产漏斗在同轮 L1-L4 计算结束后，将逐股阶段、淘汰原因、候选车道、配置摘要和代码版本写入压缩 `review_trace_YYYYMMDD.json.gz`。该文件不含 OHLCV，随现有 Daily Job artifact 上传；19:25 Review 按前一交易日精确匹配成功运行的 trace，因此归因反映当时真实代码与配置，不依赖 Supabase，也不会被后来改动的策略重写历史。
 
@@ -495,6 +500,7 @@ flowchart LR
         W2["theme_radar_snapshot"]
         W3["signal_pending<br/>待确认信号"]
         W4["recommendation_tracking<br/>形态复盘"]
+        W13["theme_structure_cross_daily<br/>主线×威科夫交叉观察"]
         W12["external_seed_observations<br/>外部观察验证"]
     end
 

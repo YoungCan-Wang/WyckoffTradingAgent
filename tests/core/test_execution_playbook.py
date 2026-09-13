@@ -79,6 +79,23 @@ def test_oms_ticket_includes_playbook() -> None:
     assert "EXIT/TRIM" in report
     assert "5 日" in report
     assert report.count("市场视图") == 1
+    assert "主线×威科夫交叉" not in report
+
+
+def test_oms_ticket_cross_section_is_observation_only() -> None:
+    report = render_trade_ticket(
+        "NEUTRAL 可执行",
+        100_000,
+        50_000,
+        50_000,
+        [],
+        atr_period=14,
+        theme_structure_cross={"status": "ready", "rows": []},
+    )
+    assert "主线×威科夫交叉" in report
+    assert "今日无交叉" in report
+    assert "筛选观察" in report
+    assert "不是买点" in report
 
 
 def test_step3_and_oms_playbook_helpers() -> None:

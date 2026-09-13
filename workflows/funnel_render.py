@@ -16,6 +16,7 @@ from core.market_trade_mode import resolve_market_trade_mode
 from core.signal_confirmation import compute_support_level, score_springboard_abc
 from core.strategy_policy_display import format_policy_meta_text, format_policy_weight_text
 from core.theme_radar import summarize_theme_radar, summarize_theme_rotation
+from core.theme_structure_cross import render_cross_section_lines
 from workflows.funnel_ai_selection import FunnelAiSelection
 from workflows.funnel_report_payload import (
     display_score,
@@ -730,6 +731,7 @@ def _build_legacy_card_lines(ctx: Any, selection: FunnelAiSelection) -> list[str
     lines = _top_summary_lines(ctx, len(selected_for_ai), money_line)
     lines.extend(_top_candidate_list_lines(ctx, selection))
     lines.extend(_tracking_shape_section_lines(ctx, selection))
+    lines.extend(render_cross_section_lines((getattr(ctx, "metrics", {}) or {}).get("theme_structure_cross")))
     lines.extend(_research_discovery_lines(ctx))
     lines += [
         "**【📊 详细市场证据】**",
@@ -845,6 +847,7 @@ def _build_modern_card_lines(ctx: Any, selection: FunnelAiSelection) -> list[str
     lines = _top_summary_lines(ctx, len(selection.selected_for_ai), money_line)
     lines.extend(_top_candidate_list_lines(ctx, selection))
     lines.extend(_tracking_shape_section_lines(ctx, selection))
+    lines.extend(render_cross_section_lines((getattr(ctx, "metrics", {}) or {}).get("theme_structure_cross")))
     lines.extend(_research_discovery_lines(ctx))
     rejection = ctx.metrics.get("layer_rejections") or {}
     l3_rejected = int((rejection.get("layer3") or {}).get("rejected") or 0)

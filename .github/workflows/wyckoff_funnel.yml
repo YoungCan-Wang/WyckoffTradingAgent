@@ -72,6 +72,9 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      # ashare-mainline-radar 项目库，与威科夫 Supabase 隔离。缺则交叉筛选 fail-closed，不写成「今日无交叉」。
+      RADAR_SUPABASE_URL: ${{ secrets.RADAR_SUPABASE_URL }}
+      RADAR_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.RADAR_SUPABASE_SERVICE_ROLE_KEY }}
       SUPABASE_USER_ID: ${{ secrets.SUPABASE_USER_ID }}
       # 影子账本（paper ledger）：shadow_* 五张表与 seed 账户已建好，开启记账。
       # 只写 USER_SHADOW:*（写入侧有前缀硬断言），挂在 Step4 之后且异常被吞，不影响实盘。

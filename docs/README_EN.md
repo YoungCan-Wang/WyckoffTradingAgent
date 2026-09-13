@@ -237,6 +237,8 @@ Tool call order and frequency are decided by the LLM at runtime — no pre-chore
 **How to trade:** Daily funnel = candidates + market gate; only **confirmed** candidates whose next-day open falls inside the single OMS entry range may be bought.
 NEUTRAL is the main battleground. Tradable structures compete in a quality-first pool capped at 8 names and 2 per sector; **RISK_ON blocks new buys**. See [OPERATOR_PLAYBOOK.md](OPERATOR_PLAYBOOK.md).
 
+The daily **Mainline × Wyckoff cross** (`theme_structure_cross_daily`) is a screen, not an entry: Radar curated themes (top 5 that session) ∩ Wyckoff-strong names. It does not create `next_buy` bands or OMS tickets. Missing `RADAR_SUPABASE_URL` / `RADAR_SUPABASE_SERVICE_ROLE_KEY` fails closed.
+
 ## Daily Automation
 
 Daily automations (GitHub Actions plus Codex Automation):
