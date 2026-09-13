@@ -768,6 +768,9 @@ def upsert_daily_nav(
     free_cash: float,
     total_equity: float,
     positions_value: float,
+    day_pnl: float | None = None,
+    day_pnl_pct: float | None = None,
+    position_day_pnl: list[dict[str, Any]] | None = None,
 ) -> bool:
     if not is_supabase_configured():
         return False
@@ -782,6 +785,10 @@ def upsert_daily_nav(
             "total_equity": float(total_equity),
             "updated_at": datetime.now(UTC).isoformat(),
         }
+        if day_pnl is not None:
+            payload["day_pnl"] = float(day_pnl)
+            payload["day_pnl_pct"] = float(day_pnl_pct or 0.0)
+            payload["position_day_pnl"] = list(position_day_pnl or [])
         client.table(TABLE_DAILY_NAV).upsert(
             payload,
             on_conflict="portfolio_id,trade_date",
@@ -790,3 +797,31 @@ def upsert_daily_nav(
     except Exception as e:
         logger.warning("[supabase_portfolio] upsert_daily_nav failed: %s", e)
         return False
+
+
+def load_daily_nav_day_pnl(portfolio_id: str, trade_date: str) -> dict[str, Any] | None:
+    """读取已落库的当日盈亏；缺列或未计算时返回 None，不补算。"""
+    if not portfolio_id or not trade_date or not is_supabase_configured():
+        return None
+    try:
+        client = _get_supabase_admin_client()
+        resp = (
+            client.table(TABLE_DAILY_NAV)
+            .select("day_pnl,day_pnl_pct,position_day_pnl")
+            .eq("portfolio_id", portfolio_id)
+            .eq("trade_date", trade_date)
+            .limit(1)
+            .execute()
+        )
+        row = (resp.data or [None])[0]
+        if not isinstance(row, dict) or row.get("day_pnl") is None:
+            return None
+        positions = row.get("position_day_pnl") or []
+        return {
+            "day_pnl": float(row["day_pnl"]),
+            "day_pnl_pct": float(row.get("day_pnl_pct") or 0.0),
+            "positions": list(positions) if isinstance(positions, list) else [],
+        }
+    except Exception as e:
+        logger.warning("[supabase_portfolio] load_daily_nav_day_pnl failed: %s", e)
+        return None

@@ -108,6 +108,7 @@ def _run_stop_loss_only_fallback(
         tickets=tickets,
         atr_period=options.runtime_config.atr_period,
         model_label=f"degraded:{status}",
+        day_pnl=_load_ticket_day_pnl(options.portfolio_id, context.trade_date),
     )
     _send_trade_ticket(report, options.tg_bot_token, options.tg_chat_id)
     forced = [t for t in tickets if t.action == "EXIT"]
@@ -397,6 +398,7 @@ def _send_and_persist_step4_results(
         atr_period=options.runtime_config.atr_period,
         stale_exits=stale_exits,
         model_label=_step4_model_label(options),
+        day_pnl=_load_ticket_day_pnl(options.portfolio_id, context.trade_date),
     )
     persistence = save_step4_orders_and_nav(
         options=options,
@@ -431,6 +433,12 @@ def _send_and_persist_step4_results(
     )
     report_progress("决策完成", f"订单={len(tickets)}条", 1.0)
     return True, "ok"
+
+
+def _load_ticket_day_pnl(portfolio_id: str, trade_date: str) -> dict | None:
+    from integrations.supabase_portfolio import load_daily_nav_day_pnl
+
+    return load_daily_nav_day_pnl(portfolio_id, trade_date)
 
 
 def _build_step4_run_options(

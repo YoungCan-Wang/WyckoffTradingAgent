@@ -20,13 +20,23 @@ def load_portfolio_marks(
     positions: list[dict[str, Any]],
     tickflow_api_key: str,
 ) -> tuple[dict[str, float], dict[str, float]]:
+    prices, _prev_closes, rates = load_portfolio_quote_marks(positions, tickflow_api_key)
+    return prices, rates
+
+
+def load_portfolio_quote_marks(
+    positions: list[dict[str, Any]],
+    tickflow_api_key: str,
+) -> tuple[dict[str, float], dict[str, float], dict[str, float]]:
+    """最新价、昨收、人民币汇率。昨收只服务当日盈亏，不影响市值。"""
     codes = _position_codes(positions)
     if not codes:
-        return {}, {"CNY": 1.0}
+        return {}, {}, {"CNY": 1.0}
     quotes = TickFlowClient(api_key=tickflow_api_key).get_quotes([normalize_cn_symbol(code) for code in codes])
     prices = {code: _quote_price(code, quotes) for code in codes}
+    prev_closes = {code: _quote_prev_close(code, quotes) for code in codes}
     currencies = {portfolio_currency(code) for code in codes}
-    return prices, load_cny_rates(currencies)
+    return prices, prev_closes, load_cny_rates(currencies)
 
 
 def load_cny_rates(currencies: set[str]) -> dict[str, float]:
@@ -53,9 +63,24 @@ def _position_codes(positions: list[dict[str, Any]]) -> list[str]:
     return sorted(code for code in codes if code)
 
 
-def _quote_price(code: str, quotes: dict[str, dict[str, Any]]) -> float:
+def _quote_row(code: str, quotes: dict[str, dict[str, Any]]) -> dict[str, Any]:
     symbol = normalize_cn_symbol(code)
-    return resolve_tickflow_quote_price(quotes.get(symbol) or quotes.get(code))
+    return quotes.get(symbol) or quotes.get(code) or {}
+
+
+def _quote_price(code: str, quotes: dict[str, dict[str, Any]]) -> float:
+    return resolve_tickflow_quote_price(_quote_row(code, quotes))
+
+
+def _quote_prev_close(code: str, quotes: dict[str, dict[str, Any]]) -> float:
+    from utils.safe import safe_float
+
+    row = _quote_row(code, quotes)
+    for key in ("prev_close", "pre_close", "previous_close", "preclose"):
+        value = safe_float(row.get(key), 0.0)
+        if value > 0:
+            return value
+    return 0.0
 
 
 def _positive_env_float(name: str) -> float | None:

@@ -25,9 +25,10 @@ def _state(monkeypatch):
         lambda pid, client=None: {"positions": holder["positions"], "free_cash": holder["free_cash"]},
     )
     monkeypatch.setattr("integrations.supabase_portfolio.portfolio_tickflow_key", lambda pid, client: holder["api_key"])
+    holder.setdefault("prev_closes", {"600519": 1_490.0})
     monkeypatch.setattr(
-        "integrations.portfolio_market_value.load_portfolio_marks",
-        lambda positions, api_key: (holder["prices"], holder["rates"]),
+        "integrations.portfolio_market_value.load_portfolio_quote_marks",
+        lambda positions, api_key: (holder["prices"], holder["prev_closes"], holder["rates"]),
     )
     return holder
 
@@ -39,6 +40,8 @@ class TestBuildSnapshot:
         assert result.positions_value == 150_000.0
         assert result.total_equity == 155_000.0
         assert result.free_cash == 5_000.0
+        assert result.day_pnl == 1_000.0
+        assert result.position_day_pnl[0]["code"] == "600519"
 
     def test_empty_position_still_records(self, _state):
         """空仓也要记：净值曲线不能因为清仓而断档。"""
@@ -47,6 +50,8 @@ class TestBuildSnapshot:
         assert result.ok is True
         assert result.positions_value == 0.0
         assert result.total_equity == _state["free_cash"]
+        assert result.day_pnl == 0.0
+        assert result.position_day_pnl == ()
 
     def test_refuses_partial_valuation(self, _state):
         """行情缺失时不写部分估值——偏低的净值比没有净值更有害。"""
@@ -87,11 +92,24 @@ class TestPersist:
             return True
 
         monkeypatch.setattr("integrations.supabase_portfolio.upsert_daily_nav", fake_upsert)
-        snapshot = NavSnapshotResult(True, "USER_LIVE", "2026-08-17", 155_000.0, 5_000.0, 150_000.0, "ok")
+        snapshot = NavSnapshotResult(
+            True,
+            "USER_LIVE",
+            "2026-08-17",
+            155_000.0,
+            5_000.0,
+            150_000.0,
+            "ok",
+            day_pnl=1_000.0,
+            day_pnl_pct=0.65,
+            position_day_pnl=({"code": "600519", "day_pnl": 1_000.0},),
+        )
         result = persist_nav_snapshot(snapshot)
         assert result.written is True
         assert captured["total_equity"] == 155_000.0
         assert captured["trade_date"] == "2026-08-17"
+        assert captured["day_pnl"] == 1_000.0
+        assert captured["position_day_pnl"] == [{"code": "600519", "day_pnl": 1_000.0}]
 
     def test_skips_failed_snapshot(self, monkeypatch):
         called = {"n": 0}

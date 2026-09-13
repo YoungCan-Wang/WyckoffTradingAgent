@@ -77,12 +77,25 @@ def main() -> int:
         f"      total_equity={snapshot.total_equity:,.2f}  "
         f"free_cash={snapshot.free_cash:,.2f}  positions_value={snapshot.positions_value:,.2f}"
     )
+    _print_day_pnl(snapshot)
     if not args.apply:
         print("[nav] dry-run，未写库；加 --apply 落库")
         return 0
     result = persist_nav_snapshot(snapshot)
     print("[nav] 已写入 daily_nav" if result.written else "[nav] 写入失败")
     return 0 if result.written else 1
+
+
+def _print_day_pnl(snapshot) -> None:
+    if snapshot.day_pnl is None:
+        print("      day_pnl=未计算（昨收或今开价不完整）")
+        return
+    print(f"      day_pnl={snapshot.day_pnl:+,.2f} ({snapshot.day_pnl_pct:+.2f}%)")
+    for row in snapshot.position_day_pnl:
+        code = row.get("code", "")
+        name = row.get("name", "")
+        label = f"{code} {name}".strip()
+        print(f"        {label}  {row.get('day_pnl', 0):+,.2f} ({row.get('day_pnl_pct', 0):+.2f}%)")
 
 
 if __name__ == "__main__":

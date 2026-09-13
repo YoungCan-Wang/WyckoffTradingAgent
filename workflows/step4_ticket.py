@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
+from typing import Any
 
 from core.execution_audit import StaleExit, render_stale_exit_alert
 from core.execution_playbook import oms_playbook_lines
+from core.portfolio_day_pnl import BASIS_TODAY_FILL, BookDayPnl, book_day_pnl_from_stored
 from utils.trading_clock import CN_TZ
 from workflows.step4_models import ExecutionTicket
 
@@ -21,6 +23,7 @@ def render_trade_ticket(
     atr_period: int,
     stale_exits: list[StaleExit] | None = None,
     model_label: str = "",
+    day_pnl: BookDayPnl | dict[str, Any] | None = None,
 ) -> str:
     now_str = datetime.now(CN_TZ).strftime("%Y-%m-%d")
     sells = [t for t in tickets if t.status == "APPROVED" and t.action in {"EXIT", "TRIM"}]
@@ -34,6 +37,7 @@ def render_trade_ticket(
     ]
     if market_view:
         lines.append(f"📌 市场视图：{market_view}")
+    lines.extend(_render_day_pnl_lines(day_pnl))
     # 拖延告警排在操作清单之前：读到一半就该知道昨天的单子还没落地。
     lines.extend(render_stale_exit_alert(stale_exits or []))
     lines.append("")
@@ -48,6 +52,31 @@ def render_trade_ticket(
         # 因此必须与工单同屏可见，而不是只留在 CI 日志里。
         lines.append(f"🤖 决策模型：{model_label}")
     return "\n".join(lines)
+
+
+def _render_day_pnl_lines(raw: BookDayPnl | dict[str, Any] | None) -> list[str]:
+    book = _as_book_day_pnl(raw)
+    if book is None:
+        return []
+    lines = [f"📊 当日盈亏：{book.day_pnl:+,.2f}（{book.day_pnl_pct:+.2f}%）"]
+    for row in book.positions:
+        tag = "今开" if row.basis_kind == BASIS_TODAY_FILL else "昨收"
+        label = f"{row.code} {row.name}".strip()
+        lines.append(f"  {label}  {row.day_pnl:+,.2f}（{row.day_pnl_pct:+.2f}% · {tag}）")
+    lines.append("")
+    return lines
+
+
+def _as_book_day_pnl(raw: BookDayPnl | dict[str, Any] | None) -> BookDayPnl | None:
+    if isinstance(raw, BookDayPnl):
+        return raw
+    if not isinstance(raw, dict) or raw.get("day_pnl") is None:
+        return None
+    return book_day_pnl_from_stored(
+        float(raw["day_pnl"]),
+        float(raw.get("day_pnl_pct") or 0.0),
+        list(raw.get("positions") or []),
+    )
 
 
 def _ticket_first_sentence(text: str) -> str:

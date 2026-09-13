@@ -17,6 +17,7 @@ flowchart TB
         U3["本地元数据<br/>行业映射 / 概念映射 / 股票池"]
         U4["前日反馈闭环<br/>signal_health_daily<br/>signal_registry"]
         U5["前日盘前风控<br/>Codex Automation → workflow_dispatch<br/>premarket_risk → market_signal_daily"]
+        U8["当日 16:05 净值快照<br/>nav_snapshot → daily_nav<br/>含账本/逐只当日盈亏"]
         U6["前日漏斗产出<br/>signal_pending 待确认信号"]
         U7["外部观察名单<br/>profile / env / symbols_file"]
     end
@@ -49,6 +50,7 @@ flowchart TB
     U5 --> S4
     U6 --> S25
     U7 --> S2
+    U8 --> S4
 
     S2 --> S25 --> S26 --> S27 --> S3 --> S4
     S3 --> SH
@@ -119,7 +121,8 @@ flowchart TD
 | Step2 | `workflows/wyckoff_funnel.py` | `core/wyckoff_engine.py` |
 | Step2.6 | `integrations/recommendation_payload.py` | `recommendation_tracking` 写库；`initial_price` 按 code 粘住首次推荐日收盘 |
 | Step3 | `workflows/step3_batch_report.py` | `tools/report_builder.py` |
-| Step4 | `workflows/step4_rebalancer.py` | `core/holding_diagnostic.py` / `core/wyckoff_engine.py` |
+| Step4 | `workflows/step4_rebalancer.py` | `core/holding_diagnostic.py` / `core/wyckoff_engine.py`；工单回读 16:05 `daily_nav` 当日盈亏 |
+| 净值快照 | `scripts/nav_snapshot_job.py` | `workflows/nav_snapshot.py`；16:05 写总额与当日盈亏，不改持仓 |
 | 影子账本 | `workflows/shadow_ledger_job.py` | `core/shadow_ledger.py`；只写 `shadow_*`，失败不阻断漏斗 |
 
 **影子账本启用步骤**（默认关，`SHADOW_LEDGER_ENABLED=0`）：

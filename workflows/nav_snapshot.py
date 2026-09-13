@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -31,12 +32,16 @@ class NavSnapshotResult:
     positions_value: float | None = None
     message: str = ""
     written: bool = False
+    day_pnl: float | None = None
+    day_pnl_pct: float | None = None
+    position_day_pnl: tuple[dict[str, Any], ...] = ()
 
 
 def build_nav_snapshot(portfolio_id: str, trade_date: str) -> NavSnapshotResult:
     """按最新行情重估持仓，返回当日净值快照（不写库）。"""
+    from core.portfolio_day_pnl import calculate_book_day_pnl
     from core.portfolio_valuation import PortfolioValuationError, calculate_portfolio_valuation
-    from integrations.portfolio_market_value import load_portfolio_marks
+    from integrations.portfolio_market_value import load_portfolio_quote_marks
     from integrations.supabase_base import create_admin_client
     from integrations.supabase_portfolio import load_portfolio_state, portfolio_tickflow_key
 
@@ -54,18 +59,30 @@ def build_nav_snapshot(portfolio_id: str, trade_date: str) -> NavSnapshotResult:
     free_cash = float(state.get("free_cash", 0.0) or 0.0)
     if not positions:
         # 空仓也要记：净值曲线不能因为清仓而断档。
-        return NavSnapshotResult(True, portfolio_id, trade_date, free_cash, free_cash, 0.0, "空仓，净值等于现金")
+        return NavSnapshotResult(
+            True,
+            portfolio_id,
+            trade_date,
+            free_cash,
+            free_cash,
+            0.0,
+            "空仓，净值等于现金",
+            day_pnl=0.0,
+            day_pnl_pct=0.0,
+        )
     api_key = portfolio_tickflow_key(portfolio_id, client)
     if not api_key:
         return NavSnapshotResult(False, portfolio_id, trade_date, message="未配置 TickFlow API Key")
     try:
-        prices, rates = load_portfolio_marks(positions, api_key)
+        prices, prev_closes, rates = load_portfolio_quote_marks(positions, api_key)
         valuation = calculate_portfolio_valuation(free_cash, positions, prices, rates)
     except PortfolioValuationError as exc:
         # 行情缺失时**不写**部分估值：一个偏低的净值比没有净值更有害。
         return NavSnapshotResult(False, portfolio_id, trade_date, message=f"估值不完整: {exc}")
     except Exception as exc:
         return NavSnapshotResult(False, portfolio_id, trade_date, message=f"估值失败: {exc}")
+    book = calculate_book_day_pnl(free_cash, positions, prices, prev_closes, rates, trade_date)
+    day_pnl, day_pct, day_rows = _complete_day_pnl(book)
     return NavSnapshotResult(
         True,
         portfolio_id,
@@ -74,7 +91,18 @@ def build_nav_snapshot(portfolio_id: str, trade_date: str) -> NavSnapshotResult:
         free_cash,
         valuation.positions_value,
         f"总权益 {valuation.total_equity:,.2f}（现金 {free_cash:,.2f}）",
+        day_pnl=day_pnl,
+        day_pnl_pct=day_pct,
+        position_day_pnl=day_rows,
     )
+
+
+def _complete_day_pnl(book: Any) -> tuple[float | None, float | None, tuple[dict[str, Any], ...]]:
+    if not getattr(book, "complete", False):
+        missing = ",".join(getattr(book, "missing", ()) or ())
+        logger.warning("[nav] 当日盈亏不完整，跳过写入: %s", missing)
+        return None, None, ()
+    return book.day_pnl, book.day_pnl_pct, tuple(item.as_dict() for item in book.positions)
 
 
 def persist_nav_snapshot(snapshot: NavSnapshotResult) -> NavSnapshotResult:
@@ -89,6 +117,9 @@ def persist_nav_snapshot(snapshot: NavSnapshotResult) -> NavSnapshotResult:
         free_cash=float(snapshot.free_cash or 0.0),
         total_equity=float(snapshot.total_equity),
         positions_value=float(snapshot.positions_value or 0.0),
+        day_pnl=snapshot.day_pnl,
+        day_pnl_pct=snapshot.day_pnl_pct,
+        position_day_pnl=list(snapshot.position_day_pnl) if snapshot.day_pnl is not None else None,
     )
     if not written:
         logger.warning("[nav] 写入失败 portfolio=%s date=%s", snapshot.portfolio_id, snapshot.trade_date)
@@ -101,6 +132,9 @@ def persist_nav_snapshot(snapshot: NavSnapshotResult) -> NavSnapshotResult:
         snapshot.positions_value,
         snapshot.message,
         written=written,
+        day_pnl=snapshot.day_pnl,
+        day_pnl_pct=snapshot.day_pnl_pct,
+        position_day_pnl=snapshot.position_day_pnl,
     )
 
 

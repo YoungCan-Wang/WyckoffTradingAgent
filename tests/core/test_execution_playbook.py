@@ -111,6 +111,36 @@ def test_trade_ticket_shows_decision_model():
     assert "决策模型" in report
 
 
+def test_trade_ticket_shows_same_day_pnl():
+    report = render_trade_ticket(
+        market_view="",
+        total_equity=100000.0,
+        free_cash_before=50000.0,
+        free_cash_after=50000.0,
+        tickets=[],
+        atr_period=14,
+        day_pnl={
+            "day_pnl": 150.0,
+            "day_pnl_pct": 0.15,
+            "positions": [
+                {
+                    "code": "600415",
+                    "name": "小商品城",
+                    "shares": 300,
+                    "mark": 13.5,
+                    "basis": 13.0,
+                    "basis_kind": "today_fill",
+                    "day_pnl": 150.0,
+                    "day_pnl_pct": 3.8462,
+                }
+            ],
+        },
+    )
+    assert "当日盈亏：+150.00" in report
+    assert "600415 小商品城" in report
+    assert "今开" in report
+
+
 def test_trade_ticket_omits_model_line_when_unknown():
     """缺 provider/model 时省略该行，不让展示字段中断下单主流程。"""
     from workflows.step4_ticket import render_trade_ticket
