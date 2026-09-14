@@ -4,9 +4,12 @@ name: Star History
 # README 里 api.star-history.com 的实时图会显示 "restricted access"。
 # 本 workflow 用仓库自己的 GITHUB_TOKEN 读本仓 stargazers，生成 SVG 并写回 README。
 
+# 2026-09-14 由周频降到月频。star 曲线是月级形状,周频刷新既看不出差别,又每周往 README
+# 推一次提交(6 次运行 = 6 次图表提交)。没有直接停掉:图是自托管的,停了会冻在最后一次运行
+# 那天且 README 不会显示任何过期提示,比降频更糟。
 on:
   schedule:
-    - cron: "0 12 * * 0" # 每周日 UTC 12:00 ≈ 北京时间 20:00
+    - cron: "0 12 8 * *" # 每月 8 日 UTC 12:00 ≈ 北京时间 20:00
   workflow_dispatch:
 
 # 顶层保持最小权限；写权限只下放给真正要提交图表的 job（check_workflow_hygiene 要求
