@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from utils.feishu_text import normalize_lark_md, split_lark_md
+from utils.feishu_text import annotate_financial_terms, normalize_lark_md, split_lark_md
 
 
 def test_normalize_lark_md_converts_table_to_bullet_lines():
@@ -58,3 +58,32 @@ def test_split_lark_md_keeps_every_tracking_name_across_chunks():
     assert len(chunks) > 1
     combined = "".join(chunks)
     assert all(name in combined for name in names)
+
+
+def test_split_lark_md_never_cuts_a_line_in_half():
+    """漏斗名单是 30+ 行无空行的一个段落，切分必须落在行边界上。
+
+    只断言"数据没丢"是不够的：硬切同样不丢数据，但会在卡片上留下
+    「…现价12.」/「34 起跳板结构…」这种断头行。
+    """
+    lines = [f"  {idx:06d} 形态股{idx:02d}  A+C  分80.00  现价12.34  起跳板结构:A+C(2/3)" for idx in range(1, 33)]
+    content = "**【🧾 今日形态入表观察】32 只**\n\n" + "\n".join(lines)
+    chunks = split_lark_md(content, max_len=280)
+    assert len(chunks) > 1
+    emitted = [line for chunk in chunks for line in chunk.split("\n")]
+    assert set(emitted) <= {"**【🧾 今日形态入表观察】32 只**", "", *lines}
+
+
+def test_split_lark_md_falls_back_to_hard_cut_for_a_single_giant_line():
+    """单行自身就超过上限时无处可切，只能硬切——但不能丢字符。"""
+    chunks = split_lark_md("x" * 700, max_len=280)
+    assert [len(chunk) for chunk in chunks] == [280, 280, 140]
+    assert "".join(chunks) == "x" * 700
+
+
+def test_annotate_financial_terms_only_glosses_capitalized_entry_and_target():
+    """小写 entry/target 是英文普通词，注解它们纯属误伤；Stop-Loss 不受影响。"""
+    assert annotate_financial_terms("- Target: 8.0%") == "- Target（目标位）: 8.0%"
+    assert annotate_financial_terms("| Entry | Label |") == "| Entry（入场区） | Label |"
+    assert annotate_financial_terms("skip: no log entry for target file") == "skip: no log entry for target file"
+    assert annotate_financial_terms("stop-loss 已触发") == "Stop-Loss（止损位） 已触发"

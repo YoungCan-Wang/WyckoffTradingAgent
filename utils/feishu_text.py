@@ -32,9 +32,14 @@ _TERM_GLOSSARY_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"\bEVR\b(?!\s*[（(])"), "EVR（放量不跌）"),
     (re.compile(r"\bJAC\b(?!\s*[（(])"), "JAC（跃过小溪）"),
     (re.compile(r"\bBUEC\b(?!\s*[（(])"), "BUEC（回踩小溪边缘）"),
+    # Stop-Loss 保留 IGNORECASE：连字符复合词在中文报告里没有非金融含义，大小写都该注解。
     (re.compile(r"\bStop[- ]?Loss\b(?!\s*[（(])", re.IGNORECASE), "Stop-Loss（止损位）"),
-    (re.compile(r"\bEntry\b(?!\s*[（(])", re.IGNORECASE), "Entry（入场区）"),
-    (re.compile(r"\bTarget\b(?!\s*[（(])", re.IGNORECASE), "Target（目标位）"),
+    # Entry / Target 必须区分大小写。报告里的真实用法全是首字母大写的列名或标签
+    # （recommendation_event_eval.py:900 的 `- Target: ...`、:1078 表头 `| ... | Entry | ... |`、
+    # :914 的 `Target touch`），而小写的 entry/target 是英文普通词——一旦 IGNORECASE，
+    # 诊断信息里的 "log entry" / "target file" 也会被注解成「入场区」「目标位」，纯属误伤。
+    (re.compile(r"\bEntry\b(?!\s*[（(])"), "Entry（入场区）"),
+    (re.compile(r"\bTarget\b(?!\s*[（(])"), "Target（目标位）"),
 ]
 
 
@@ -161,10 +166,9 @@ def split_lark_md(content: str, max_len: int = 2800) -> list[str]:
     if len(content) <= max_len:
         return [content]
 
-    paragraphs = content.split("\n\n")
     chunks: list[str] = []
     current = ""
-    for paragraph in paragraphs:
+    for paragraph in content.split("\n\n"):
         candidate = paragraph if not current else f"{current}\n\n{paragraph}"
         if len(candidate) <= max_len:
             current = candidate
@@ -175,13 +179,33 @@ def split_lark_md(content: str, max_len: int = 2800) -> list[str]:
         if len(paragraph) <= max_len:
             current = paragraph
             continue
-        start = 0
-        while start < len(paragraph):
-            chunks.append(paragraph[start : start + max_len])
-            start += max_len
+        current = _pack_long_paragraph(paragraph, max_len, chunks)
     if current:
         chunks.append(current)
     return chunks
+
+
+def _pack_long_paragraph(paragraph: str, max_len: int, chunks: list[str]) -> str:
+    """按行装箱超长段落，把装不满一箱的尾巴回给调用方继续累加。
+
+    漏斗的形态名单是 30+ 行连续无空行的一个段落，超长时按段落切分帮不上忙。
+    原实现直接 `paragraph[start : start + max_len]` 硬切，切点必然落在某一行中间，
+    卡片上就会出现「…现价12.」/「34 起跳板结构…」这种断头行——数据没丢，但读不了。
+    先按 \\n 装箱，只有单行自身就超过上限时才退回硬切。
+    """
+    current = ""
+    for line in paragraph.split("\n"):
+        candidate = line if not current else f"{current}\n{line}"
+        if len(candidate) <= max_len:
+            current = candidate
+            continue
+        if current:
+            chunks.append(current)
+        while len(line) > max_len:
+            chunks.append(line[:max_len])
+            line = line[max_len:]
+        current = line
+    return current
 
 
 def lark_md_div(content: str) -> dict:

@@ -27,6 +27,21 @@ def test_generic_report_card_selects_semantic_header_color():
     assert report_card_template("定时任务", "正常运行") == "blue"
 
 
+def test_generic_report_card_demotes_body_only_ops_failures_to_orange():
+    """正文里的取数失败是内部降级，不是市场风险，不该把整张研报刷成红卡。
+
+    `step3_reporting._build_final_content` 末尾恒定追加 `**获取失败**: ...`，
+    `_compact_rag_preview` 的 keep 规则也会保留「拉取异常」——30 只标的里有一只
+    超时是常态，按原实现每天的研报都是红的。
+    """
+    assert report_card_template("AI 研报", "市场平稳\n**获取失败**: 600000(timeout)") == "orange"
+    assert report_card_template("AI 研报", "扫描股票 30 只\n新闻拉取异常 1 次") == "orange"
+    # 标题就是失败告警时仍然判红。
+    assert report_card_template("定时任务失败", "步骤 3 中断") == "red"
+    # 市场风险词在任何位置都压过降级判断。
+    assert report_card_template("AI 研报", "RISK_OFF\n**获取失败**: 600000(timeout)") == "red"
+
+
 def test_generic_report_card_prioritizes_explicit_today_conclusion():
     content = (
         "**【🚦 一眼结论】**\n"
