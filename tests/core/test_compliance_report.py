@@ -47,7 +47,12 @@ def test_public_payload_is_deidentified():
     assert payload["sample_stats"]["springboard_count"] == 1
 
 
-def test_public_payload_includes_market_and_etf_metrics_without_codes():
+def test_public_payload_includes_market_metrics_and_drops_etf_context():
+    """漏斗已剥离 ETF，简报 payload 不得再带 ETF 维度。
+
+    即使上游 benchmark_context 里还残留 etf_* 字段（历史产物或第三方回填),
+    payload 也不能透传 —— 漏斗侧早已不写这些指标，透传出来只会是每天恒为 0 的假数据。
+    """
     from core.compliance_report import build_public_payload
 
     payload = build_public_payload(
@@ -73,9 +78,9 @@ def test_public_payload_includes_market_and_etf_metrics_without_codes():
     text = json.dumps(payload, ensure_ascii=False)
     assert payload["trade_date"] == "2026-06-29"
     assert payload["market"]["regime_label"] == "短线过热禁追"
-    assert payload["etf"]["l2_passed"] == 3
-    assert payload["etf"]["strong_themes"] == ["半导体", "证券"]
+    assert "etf" not in payload
     assert "512480" not in text
+    assert "半导体ETF" not in text
 
 
 def test_public_payload_sanitizes_nonfinite_market_metrics():
@@ -177,10 +182,17 @@ def test_generate_compliance_brief_fallback_has_no_stock_identifiers():
     assert "300001" not in text
     assert "浦发银行" not in text
     assert "特锐德" not in text
-    assert "市场观察简报" in text
-    assert "日期：2026-06-29" in text
-    assert "大盘结构" in text
-    assert "ETF温度" in text
+    # 正文四段固定结构。标题和日期由推送渠道的 title 参数单独渲染，正文不再重复;
+    # ETF 段已随漏斗剥离一起删掉。
+    assert "### 一、大盘结构" in text
+    assert "### 二、威科夫解读" in text
+    assert "### 三、观察要点" in text
+    assert "### 四、风险提示" in text
+    assert "ETF" not in text
+    assert "今日市场观察简报" not in text
+    assert "日期：" not in text
+    # 免责声明由代码兜底，不靠模型自觉
+    assert "不构成投资建议" in text
     assert "模型" not in text
     assert "候选池" not in text
     assert "操作池" not in text
@@ -232,4 +244,34 @@ def test_generate_compliance_brief_rejects_wrong_llm_date():
     )
 
     assert "2025年3月25日" not in text
-    assert "日期：2026-06-29" in text
+    # 已降级为确定性模板。正文不写日期，所以这里认模板的段落结构而不是日期行。
+    assert "### 一、大盘结构" in text
+    assert "### 四、风险提示" in text
+
+
+def test_generate_compliance_brief_appends_disclaimer_to_llm_output():
+    """免责声明由代码兜底追加,而不是指望模型自己写。"""
+    import core.compliance_report as cr
+
+    config = cr.ComplianceLLMConfig(
+        provider="efficiency",
+        api_key="eff-key",
+        model="mimo-v2.5-pro",
+        base_url="https://example.com/v1",
+        source="efficiency",
+        retries=0,
+    )
+    clean_output = "### 一、大盘结构\n- 指数缩量回踩,承接尚可。\n"
+
+    text = cr.generate_compliance_brief(
+        benchmark_context={"trade_date": "20260629", "regime": "NEUTRAL"},
+        selected_df=_sample_df(),
+        llm_config=config,
+        llm_caller=lambda **_kwargs: clean_output,
+    )
+
+    assert "承接尚可" in text, "合规校验应通过,走的是模型产出而不是模板"
+    assert "不构成投资建议" in text
+    # ⚠️ 前缀是给飞书卡片认灰色小字脚注用的,不能丢
+    assert "⚠️ 本简报仅用于市场研究" in text
+    assert text.count("不构成投资建议") == 1, "模型已自带声明时不应重复追加"

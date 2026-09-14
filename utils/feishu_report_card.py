@@ -112,4 +112,6 @@ def _section_icon(text: str) -> str:
         return "💼"
     if any(word in text for word in ("市场", "大盘", "水温", "主线")):
         return "📊"
+    if any(word in text for word in ("威科夫", "结构解读", "量价")):
+        return "🧭"
     return "▎"

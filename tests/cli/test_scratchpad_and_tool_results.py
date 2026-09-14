@@ -684,7 +684,12 @@ def test_screen_stocks_brief_lines_surface_full_scan_scope():
     ]
 
 
-def test_screen_stocks_preview_and_brief_lines_surface_etf_candidates():
+def test_screen_stocks_preview_and_brief_lines_drop_etf_residue():
+    """漏斗剥离 ETF 后，预览层不得再渲染 ETF 池。
+
+    入参故意保留 etf_* 字段：真实链路里漏斗早已停止产出它们，
+    这里验证的是即便有残留也不会漏进预览和摘要行。
+    """
     result = {
         "scan_scope": {
             "scope": "bounded",
@@ -710,15 +715,16 @@ def test_screen_stocks_preview_and_brief_lines_surface_etf_candidates():
         ],
     }
 
-    preview = json.loads(tool_result_preview("screen_stocks", result))
+    raw_preview = tool_result_preview("screen_stocks", result)
+    preview = json.loads(raw_preview)
     lines = tool_result_brief_lines("screen_stocks", result, max_lines=3)
 
-    assert preview["etf_enhancement"]["l2_passed"] == 1
-    assert preview["etf_candidates"][0]["code"] == "512480"
+    assert "etf_enhancement" not in preview
+    assert "etf_candidates" not in preview
+    assert "512480" not in raw_preview
     assert lines == [
         "快扫: all 前1200只，实际扫描1200只，财务过滤: 快扫跳过",
         "本轮股票候选偏观察",
-        "ETF强势池: 池2 → 拉取2 → L2强势1；候选: 512480 半导体ETF",
     ]
 
 

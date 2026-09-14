@@ -246,8 +246,6 @@ def _screen_result_payload(**payload: Any) -> dict[str, Any]:
         "top_candidates": payload["top_candidates"],
         "trigger_groups": payload["trigger_groups"],
         "top_sectors": payload["metrics"].get("top_sectors", []),
-        "etf_enhancement": payload["metrics"].get("etf_enhancement", {}),
-        "etf_candidates": payload["metrics"].get("etf_candidates", []),
         "symbols_for_report": symbols_for_report,
         "report_candidates": symbols_for_report,
         "watch_candidates": payload["watch_candidates"],

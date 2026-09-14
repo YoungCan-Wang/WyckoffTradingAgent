@@ -1470,8 +1470,6 @@ def _screen_stocks_preview(result: dict[str, Any]) -> str:
             "trade_mode": result.get("trade_mode"),
             "strategy_policy": _screen_strategy_policy_preview(result.get("strategy_policy")),
             "theme_context": _screen_theme_context_preview(result.get("theme_context")),
-            "etf_enhancement": _screen_etf_enhancement_preview(result.get("etf_enhancement")),
-            "etf_candidates": _screen_etf_candidate_preview_list(result.get("etf_candidates"), 6),
             "decision_brief": _screen_decision_preview(result.get("decision_brief")),
             "selection_brief": _screen_selection_preview(result.get("selection_brief")),
             "decision_state": _screen_decision_state_preview(result.get("decision_state")),
@@ -1532,9 +1530,8 @@ def _screen_stocks_brief_lines(result: dict[str, Any], *, max_lines: int) -> lis
     conclusion = _candidate_conclusion_preview("last_screen_result", result)
     conclusion_line = _text_excerpt(conclusion.get("line"), 280)
     guard_line = _candidate_guard_brief_line(result.get("candidate_guard_summary"))
-    etf_line = _screen_etf_brief_line(result.get("etf_enhancement"), result.get("etf_candidates"))
     handoff_line = _screen_review_chain_line(result) or _next_tool_brief_line(result.get("next_tool"))
-    reserved = int(bool(conclusion_line)) + int(bool(guard_line)) + int(bool(etf_line)) + int(bool(handoff_line))
+    reserved = int(bool(conclusion_line)) + int(bool(guard_line)) + int(bool(handoff_line))
     if scope_line and len(lines) < max_lines:
         lines.append(scope_line)
     if headline and len(lines) < max(max_lines - reserved, 0):
@@ -1549,8 +1546,6 @@ def _screen_stocks_brief_lines(result: dict[str, Any], *, max_lines: int) -> lis
     if policy_line := _screen_strategy_policy_line(result.get("strategy_policy")):
         if max_lines > 3 and len(lines) < max(max_lines - reserved, 0):
             lines.append(policy_line)
-    if etf_line:
-        lines.append(etf_line)
     if handoff_line:
         lines.append(handoff_line)
     if conclusion_line:
@@ -1630,36 +1625,6 @@ def _screen_diagnosis_call(value: Any) -> str:
             continue
         return _next_tool_call_text(row)
     return ""
-
-
-def _screen_etf_enhancement_preview(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        return {}
-    keys = ("pool", "fetched", "l2_passed", "strong_candidates", "boosted_sectors")
-    return _drop_empty_preview_fields({key: value.get(key) for key in keys})
-
-
-def _screen_etf_candidate_preview_list(value: Any, limit: int) -> list[dict[str, Any]]:
-    rows = _preview_list(value, limit)
-    return [_screen_etf_candidate_preview(row) for row in rows if isinstance(row, dict)]
-
-
-def _screen_etf_candidate_preview(row: dict[str, Any]) -> dict[str, Any]:
-    keys = ("code", "name", "sector", "score", "ret3", "ret20", "vol_ratio", "channel")
-    return _drop_empty_preview_fields({key: row.get(key) for key in keys})
-
-
-def _screen_etf_brief_line(metrics: Any, candidates: Any) -> str:
-    if not isinstance(metrics, dict) and not isinstance(candidates, list):
-        return ""
-    names = [_candidate_name(row) for row in _preview_list(candidates, 3) if isinstance(row, dict)]
-    if not names and not any((metrics or {}).get(key) for key in ("pool", "fetched", "l2_passed", "strong_candidates")):
-        return ""
-    pool = _safe_int_text((metrics or {}).get("pool") if isinstance(metrics, dict) else None)
-    fetched = _safe_int_text((metrics or {}).get("fetched") if isinstance(metrics, dict) else None)
-    l2_passed = _safe_int_text((metrics or {}).get("l2_passed") if isinstance(metrics, dict) else None)
-    head = f"ETF强势池: 池{pool or '-'} → 拉取{fetched or '-'} → L2强势{l2_passed or '-'}"
-    return f"{head}；候选: {', '.join(name for name in names if name)}" if names else head
 
 
 def _next_tool_brief_line(value: Any) -> str:

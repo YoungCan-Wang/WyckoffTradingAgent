@@ -53,6 +53,12 @@ _PROHIBITED_TERMS = (
     "EXIT",
     "TRIM",
 )
+# 以 ⚠️ 起头是有意的：utils.feishu_report_card._WARNING_PREFIXES 认这个前缀，
+# 会把它渲染成灰色小字脚注而不是正文段落。改动前缀会让免责声明退回正文全权重。
+_COMPLIANCE_DISCLAIMER = (
+    "⚠️ 本简报仅用于市场研究与信息交流，不构成投资建议；"
+    "内容可能存在遗漏或偏差，请结合公开信息独立判断。股市有风险，投资需谨慎。"
+)
 ComplianceLLMCaller = Callable[..., str]
 
 
@@ -124,22 +130,6 @@ def _safe_text(value: Any, fallback: str = "待更新") -> str:
     return text if text else fallback
 
 
-def _etf_payload(ctx: dict[str, Any]) -> dict[str, Any]:
-    raw = ctx.get("etf_enhancement") or {}
-    candidates = ctx.get("etf_candidates") or []
-    themes = raw.get("boosted_sectors") or []
-    if not themes and isinstance(candidates, list):
-        themes = [str(item.get("sector", "") or "").strip() for item in candidates if isinstance(item, dict)]
-    clean_themes = [x for x in dict.fromkeys(str(t).strip() for t in themes) if x]
-    return {
-        "pool": int(raw.get("pool") or 0),
-        "fetched": int(raw.get("fetched") or 0),
-        "l2_passed": int(raw.get("l2_passed") or 0),
-        "strong_candidates": int(raw.get("strong_candidates") or len(candidates or [])),
-        "strong_themes": clean_themes[:6],
-    }
-
-
 def _score_bucket(score: float) -> str:
     if score >= 0.75:
         return "高"
@@ -191,7 +181,6 @@ def build_public_payload(
     payload: dict[str, Any] = {
         "trade_date": trade_date,
         "market": _market_payload(ctx),
-        "etf": _etf_payload(ctx),
         "sample_stats": {
             "candidate_count": int(len(df)),
             "springboard_count": int(len(ops_set)),
@@ -292,7 +281,6 @@ def _render_payload_text(payload: dict[str, Any]) -> str:
         "请写成可直接转发给普通读者的市场观察，不要提模型、候选池、操作池、RAG或内部流程。",
         f"报告日期: {payload.get('trade_date') or '待更新'}",
         *_render_market_payload_lines(payload.get("market") or {}),
-        *_render_etf_payload_lines(payload.get("etf") or {}),
         *_render_wyckoff_payload_lines(payload),
         *_render_sector_payload_lines(payload.get("sector_stats") or []),
         *_render_risk_payload_lines(payload.get("risk_flags") or []),
@@ -311,18 +299,6 @@ def _render_market_payload_lines(market: dict[str, Any]) -> list[str]:
         f"- 小盘当日={market.get('smallcap_today_pct')} | 小盘近3日={market.get('smallcap_recent3_cum_pct')}",
         f"- 量价摘要={market.get('pv_summary')}",
         f"- 后续观察={market.get('pv_outlook')}",
-    ]
-
-
-def _render_etf_payload_lines(etf: dict[str, Any]) -> list[str]:
-    themes = "、".join(etf.get("strong_themes") or []) or "暂无明显集中方向"
-    return [
-        "ETF指标:",
-        (
-            f"- ETF覆盖: 方向{etf.get('pool', 0)}，有效行情{etf.get('fetched', 0)}，"
-            f"强势确认{etf.get('l2_passed', 0)}，强势方向{etf.get('strong_candidates', 0)}"
-        ),
-        f"- ETF强势主题={themes}",
     ]
 
 
@@ -372,18 +348,24 @@ def _render_risk_payload_lines(risk_flags: list[str]) -> list[str]:
 
 
 def _system_prompt() -> str:
-    return """你是威科夫方法市场观察简报编辑，只能基于输入的脱敏市场与ETF指标写公开市场研究摘要。
+    return """你是威科夫方法市场观察简报编辑，只能基于输入的脱敏市场指标写公开市场研究摘要。
 
 硬规则：
 - 不得输出任何股票代码、股票名称、个股名单或个股排序。
 - 不得给出买入、卖出、建仓、加仓、清仓、减仓、止损、目标价、参考价等交易指令。
 - 不得承诺收益，不得暗示确定性上涨。
 - 不要提“模型、候选池、操作池、RAG、完整研报、内部流程、样本入库”等背景词。
-- 允许使用威科夫语气分析指数和ETF：供应、需求、承接、测试、吸筹、推进、回撤、派发压力。
+- 允许使用威科夫语气分析指数结构：供应、需求、承接、测试、吸筹、推进、回撤、派发压力。
 - 若引用结构触发，必须翻成普通读者能理解的中文含义，不要堆英文缩写。
 - 若正文需要写日期，只能使用输入里的“报告日期”，不得编造、脱敏或改写日期。
 - 输出应像一篇可直接转发的短评，普通读者无需知道系统背景也能读懂。
-- 输出中文 Markdown，结构固定为：大盘结构、ETF温度、威科夫解读、观察要点、风险提示。
+- 输出中文 Markdown，结构固定为四段：大盘结构、威科夫解读、观察要点、风险提示。
+
+精简要求（推送渠道已单独显示标题和日期，正文重复就是噪音）：
+- 不要写正文大标题，不要单独写一行日期，直接从第一个小节标题开始。
+- 每小节最多 3 条，每条一句话；没有输入数据支撑的泛泛而谈一律不写。
+- 每条都要落到输入里的具体数值或计数上，不要写“需要持续观察”“仍需时间验证”这类空话。
+- 不要复述输入的字段名，也不要为没有数据的维度硬凑段落。
 """
 
 
@@ -423,13 +405,17 @@ def validate_compliance_report(
 
 
 def render_compliance_fallback(payload: dict[str, Any]) -> str:
+    """
+    确定性模板。
+
+    正文不再写大标题和日期：飞书卡片头部、企微/钉钉的 markdown 首行都由
+    `title` 参数单独渲染，正文重复一遍等于每天多两行噪音。而且
+    `## 今日市场观察简报` 会被卡片的 `_section_icon` 判成 🟡（命中“观察”），
+    和真正的待确认级别混在一起。
+    """
     market = payload.get("market") or {}
     lines = [
-        "## 今日市场观察简报",
-        f"日期：{payload.get('trade_date') or '待更新'}",
-        "",
         *_fallback_market_lines(market),
-        *_fallback_etf_lines(payload.get("etf") or {}),
         *_fallback_wyckoff_lines(payload),
         *_fallback_observation_lines(market, payload.get("sector_stats") or []),
         *_fallback_risk_lines(payload.get("risk_flags") or []),
@@ -444,10 +430,7 @@ def _fallback_market_lines(market: dict[str, Any]) -> list[str]:
             f"- 市场处在{market.get('regime_label', market.get('regime', 'NEUTRAL'))}状态，"
             f"当日涨跌 {market.get('main_today_pct')}，近3日累计 {market.get('recent3_cum_pct')}。"
         ),
-        (
-            f"- 指数收在 {market.get('close')}，相对 MA50 {market.get('ma50')}、"
-            f"MA200 {market.get('ma200')} 的位置，是判断中期承接强弱的核心参照。"
-        ),
+        (f"- 指数收在 {market.get('close')}，MA50 {market.get('ma50')}、MA200 {market.get('ma200')}。"),
         (
             f"- 市场广度 {market.get('breadth_ratio')}，广度变化 {market.get('breadth_delta')}；"
             f"量能为{market.get('volume_state')}，5/20量比 {market.get('volume_ratio')}。"
@@ -456,29 +439,12 @@ def _fallback_market_lines(market: dict[str, Any]) -> list[str]:
     ]
 
 
-def _fallback_etf_lines(etf: dict[str, Any]) -> list[str]:
-    etf_themes = "、".join(etf.get("strong_themes") or []) or "暂无明显集中方向"
-    return [
-        "### 二、ETF温度",
-        (
-            f"- ETF观察覆盖 {etf.get('pool', 0)} 个方向，"
-            f"其中 {etf.get('fetched', 0)} 个有可用行情，"
-            f"{etf.get('l2_passed', 0)} 个出现强势确认。"
-        ),
-        f"- 当前相对集中的ETF主题：{etf_themes}。",
-        "",
-    ]
-
-
 def _fallback_wyckoff_lines(payload: dict[str, Any]) -> list[str]:
     style = payload.get("style_stats") or {}
     trigger = payload.get("trigger_stats") or {}
     return [
-        "### 三、威科夫解读",
-        (
-            "- 当前更需要看需求是否能持续承接供应，而不是只看单日涨跌。"
-            f"趋势推进结构 {style.get('trend_count', 0)}，吸筹/测试结构 {style.get('accum_count', 0)}。"
-        ),
+        "### 二、威科夫解读",
+        (f"- 趋势推进结构 {style.get('trend_count', 0)}，吸筹/测试结构 {style.get('accum_count', 0)}。"),
         (
             f"- 结构触发上，强势推进确认 {trigger.get('sos_count', 0)}，"
             f"下探回收测试 {trigger.get('spring_count', 0)}，"
@@ -490,10 +456,14 @@ def _fallback_wyckoff_lines(payload: dict[str, Any]) -> list[str]:
 
 
 def _fallback_observation_lines(market: dict[str, Any], sectors: list[dict[str, Any]]) -> list[str]:
-    lines = ["### 四、观察要点"]
+    lines = ["### 三、观察要点"]
     if sectors:
-        for item in sectors[:5]:
-            lines.append(f"- {item.get('industry')}：结构出现聚集，热度{_bucket_phrase(item.get('score_bucket'))}。")
+        # 逐行「XX：结构出现聚集，热度中等」最多会占 5 行，而变量只有行业名和热度档，
+        # 合成一行读起来更快，也省掉 4 遍重复的句式。
+        clustered = "、".join(
+            f"{item.get('industry')}（热度{_bucket_phrase(item.get('score_bucket'))}）" for item in sectors[:5]
+        )
+        lines.append(f"- 结构聚集行业：{clustered}。")
     else:
         lines.append("- 暂无明显行业聚集，结构分布偏分散。")
     lines.append(f"- 量价摘要：{market.get('pv_summary')}")
@@ -503,24 +473,34 @@ def _fallback_observation_lines(market: dict[str, Any], sectors: list[dict[str, 
 
 
 def _fallback_risk_lines(risk_flags: list[str]) -> list[str]:
-    lines = ["### 五、风险提示"]
+    lines = ["### 四、风险提示"]
     for item in risk_flags:
         lines.append(f"- {item}")
-    lines.extend(
-        [
-            "- 本简报仅用于市场研究与信息交流，不构成投资建议。",
-            "- 内容可能存在遗漏或偏差，请结合公开信息独立判断。",
-            "- 股市有风险，投资需谨慎。",
-        ]
-    )
+    # 三条免责声明每天一字不变，占正文全权重就是三行噪音。合成一句并以 ⚠️ 起头，
+    # 让 build_report_card_elements 走 lark_note（灰色小字脚注）而不是正文 div。
+    # 免责内容一条不少：不构成建议、可能有偏差、股市有风险。
+    lines.append(_COMPLIANCE_DISCLAIMER)
     return lines
+
+
+def _with_disclaimer(text: str) -> str:
+    """
+    给模型产出补免责声明。
+
+    system prompt 从来没要求模型写免责声明，所以走 LLM 那条路的简报此前一条都没有 ——
+    只有确定性模板里硬写着。声明由代码兜底而不是靠模型自觉：模型可能漏、可能改写，
+    而这行是合规底线。已经写了就不重复追加。
+    """
+    body = (text or "").rstrip()
+    if "不构成投资建议" in body:
+        return body + "\n"
+    return f"{body}\n\n{_COMPLIANCE_DISCLAIMER}\n"
 
 
 def _compliance_user_message(payload: dict[str, Any]) -> str:
     return (
-        "请根据以下脱敏市场和ETF指标生成合规版市场观察简报。"
-        "用威科夫语气解释大盘结构和ETF强弱，不要使用任何个股代码、名称或交易动作词。\n\n"
-        + _render_payload_text(payload)
+        "请根据以下脱敏市场指标生成合规版市场观察简报。"
+        "用威科夫语气解释大盘结构强弱，不要使用任何个股代码、名称或交易动作词。\n\n" + _render_payload_text(payload)
     )
 
 
@@ -574,7 +554,7 @@ def generate_compliance_brief(
         )
         if validation.ok:
             logger.info("[step3][compliance] 使用 %s 模型生成合规简报: %s", llm_config.source, llm_config.model)
-            return text.rstrip() + "\n"
+            return _with_disclaimer(text)
         last_reasons = validation.reasons
         logger.warning(
             "[step3][compliance] 合规校验失败: attempt=%s/%s, reasons=%s",

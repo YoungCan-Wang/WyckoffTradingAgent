@@ -2733,6 +2733,7 @@ class TestSymbolPool:
                 {
                     "metrics": {
                         "pool_limit": kwargs.get("pool_limit_count", 0),
+                        # 漏斗已不再产出 etf_* 指标，这里留一份残留字段验证工具层不透传
                         "etf_enhancement": {"pool": 2, "fetched": 2, "l2_passed": 1},
                         "etf_candidates": [{"code": "512480", "name": "半导体ETF", "sector": "半导体"}],
                     },
@@ -2754,8 +2755,8 @@ class TestSymbolPool:
         assert captured_kwargs["pool_board"] == "main_chinext_star"
         assert captured_kwargs["pool_limit_count"] == 25
         assert captured_kwargs["executor_mode"] == "thread"
-        assert result["etf_enhancement"] == {"pool": 2, "fetched": 2, "l2_passed": 1}
-        assert result["etf_candidates"] == [{"code": "512480", "name": "半导体ETF", "sector": "半导体"}]
+        assert "etf_enhancement" not in result
+        assert "etf_candidates" not in result
         assert result["scan_scope"] == {
             "scope": "bounded",
             "board": "main_chinext_star",
