@@ -151,6 +151,7 @@ def build_signal_observation_rows(
         rank_map={str(code): idx + 1 for idx, code in enumerate(selected_for_ai)},
         health_context_map=step2_details.get("dynamic_shadow_health_map") or {},
         dynamic_promotion_map=_dynamic_promotion_map(step2_details),
+        channel_geom_map=_channel_geom_map(step2_details),
     )
 
 
@@ -179,6 +180,7 @@ def build_shadow_observation_rows(step2_details: dict, regime: str, *, trade_dat
         policy_version=f"dynamic:{os.getenv('FUNNEL_DYNAMIC_POLICY', 'off')}",
         health_context_map=step2_details.get("dynamic_shadow_health_map") or {},
         dynamic_promotion_map=_dynamic_promotion_map(step2_details),
+        channel_geom_map=_channel_geom_map(step2_details),
     )
 
 
@@ -217,6 +219,7 @@ def build_external_seed_signal_rows(step2_details: dict, regime: str, *, trade_d
         policy_version=f"external_seed:{metrics.get('external_seed_source') or 'external'}",
         health_context_map=step2_details.get("dynamic_shadow_health_map") or {},
         dynamic_promotion_map=_dynamic_promotion_map(step2_details),
+        channel_geom_map=_channel_geom_map(step2_details),
     )
 
 
@@ -369,6 +372,30 @@ def _build_footprint_map(step2_details: dict) -> dict[str, dict]:
     metrics = step2_details.get("metrics", {}) or {}
     df_map = step2_details.get("all_df_map") or metrics.get("all_df_map") or {}
     return build_price_action_footprint_map(_merge_observation_trigger_maps(step2_details), df_map)
+
+
+def _channel_geom_map(step2_details: dict) -> dict[str, dict[str, Any]]:
+    """当日通道几何(issue #429 第 2 步),纯观测字段,不参与任何决策。
+
+    漏斗每只候选本来就取了 320 个交易日(FunnelConfig.trading_days),窗口 120 + 外推 5 够用,
+    不额外拉数据。三个 builder 共用,故按 footprint 的先例缓存进 step2_details。
+
+    这里**吞掉异常**:观测字段算不出来时,不能连带把当天所有 signal_observations 写库搞挂——
+    那才是真正的证据损失。缺字段的后果只是那天的通道样本少一批。
+    """
+    cached = step2_details.get("channel_geom_map")
+    if cached is not None:
+        return cached
+    try:
+        from core.channel_geometry import build_channel_geometry_map
+
+        metrics = step2_details.get("metrics", {}) or {}
+        df_map = step2_details.get("all_df_map") or metrics.get("all_df_map") or {}
+        built = build_channel_geometry_map(_merge_observation_trigger_maps(step2_details), df_map)
+    except Exception:
+        built = {}
+    step2_details["channel_geom_map"] = built
+    return built
 
 
 def _merge_observation_trigger_maps(step2_details: dict) -> dict[str, list[tuple[str, float]]]:

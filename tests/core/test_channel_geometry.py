@@ -13,7 +13,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from core.channel_geometry import DEFAULT_LAG, DEFAULT_WINDOW, regression_channel_panels
+from core.channel_geometry import (
+    DEFAULT_LAG,
+    DEFAULT_WINDOW,
+    build_channel_geometry_map,
+    regression_channel_panels,
+)
 
 
 def _frame(series: dict[str, list[float]], rows: int) -> pd.DataFrame:
@@ -196,3 +201,78 @@ class TestFibRoom:
 
         assert np.isfinite(room)
         assert room > 0.0
+
+
+def _ohlcv(values: list[float]) -> pd.DataFrame:
+    idx = pd.bdate_range("2024-01-01", periods=len(values))
+    return pd.DataFrame({"date": idx, "close": values})
+
+
+class TestObservationMap:
+    """把当日几何取成观测字段（#429 第 2 步）。这里锁的是「不动决策、不伪造、不串号」。"""
+
+    def test_map_carries_both_key_forms_with_finite_numbers(self):
+        rows = DEFAULT_WINDOW + DEFAULT_LAG + 5
+        df_map = {"600000": _ohlcv(_wiggly(rows)), "600001": _ohlcv(_wiggly(rows, slope=-0.05))}
+
+        out = build_channel_geometry_map({"sos": [("600000", 12.0)], "spring": [("600001", 9.0)]}, df_map)
+
+        # 双键约定与 price_action_footprint 一致：读取端按 `信号:代码` 优先、裸代码兜底。
+        assert out["sos:600000"] == out["600000"]
+        assert out["600000"]["version"] == "channel_geometry_v1"
+        assert out["600000"]["window"] == DEFAULT_WINDOW
+        assert out["600000"]["chan_slope"] > 0
+        assert out["spring:600001"]["chan_slope"] < 0
+        for key in ("chan_pos", "chan_r2", "chan_width", "chan_touches", "chan_fib_room"):
+            assert np.isfinite(out["600000"][key])
+
+    def test_short_history_is_dropped_not_faked(self):
+        """上市不足窗口的票不给字段，而不是给个 0 或插补出来的位置。"""
+        rows = DEFAULT_WINDOW + DEFAULT_LAG + 5
+        df_map = {"600000": _ohlcv(_wiggly(rows)), "301999": _ohlcv(_wiggly(20))}
+
+        out = build_channel_geometry_map({"sos": [("600000", 12.0), ("301999", 8.0)]}, df_map)
+
+        assert "301999" not in out
+        assert "sos:301999" not in out
+        assert np.isfinite(out["600000"]["chan_pos"])
+
+    def test_panel_too_short_returns_empty_instead_of_raising(self):
+        """行情不足时给空 map。观测字段缺一天可以接受，抛异常会把当天写库带下去。"""
+        assert build_channel_geometry_map({"sos": [("600000", 1.0)]}, {"600000": _ohlcv(_wiggly(30))}) == {}
+        assert build_channel_geometry_map({"sos": [("600000", 1.0)]}, {}) == {}
+        assert build_channel_geometry_map({}, {}) == {}
+
+    def test_datetime_index_frames_work_like_date_column_frames(self):
+        """漏斗的 all_df_map 带 `date` 列(ohlc_guard reset_index、asof_cut 丢无列帧),
+        但该不变量由三处调用点分别维持,故日期放索引里的帧也要能算,且两种形状结果一致。
+        """
+        rows = DEFAULT_WINDOW + DEFAULT_LAG + 5
+        with_col = _ohlcv(_wiggly(rows))
+        with_idx = with_col.set_index("date")
+
+        from_col = build_channel_geometry_map({"sos": [("600000", 1.0)]}, {"600000": with_col})
+        from_idx = build_channel_geometry_map({"sos": [("600000", 1.0)]}, {"600000": with_idx})
+
+        assert from_idx["600000"] == from_col["600000"]
+
+    def test_non_date_index_is_refused_rather_than_invented(self):
+        """RangeIndex 当日期会静默拼出错位面板——比跳过这只票坏得多,必须不给字段。"""
+        rows = DEFAULT_WINDOW + DEFAULT_LAG + 5
+        bare = pd.DataFrame({"close": _wiggly(rows)})
+
+        assert build_channel_geometry_map({"sos": [("600000", 1.0)]}, {"600000": bare}) == {}
+
+    def test_ragged_histories_align_by_date_without_shifting_values(self):
+        """两只票起始日不同时必须按日期对齐；按位置拼会把停牌票的轨整体挪位。"""
+        rows = DEFAULT_WINDOW + DEFAULT_LAG + 30
+        full = _wiggly(rows)
+        long_df = _ohlcv(full)
+        short_df = long_df.iloc[10:].reset_index(drop=True)
+        df_map = {"600000": long_df, "600001": short_df}
+
+        out = build_channel_geometry_map({"sos": [("600000", 1.0), ("600001", 1.0)]}, df_map)
+        alone = build_channel_geometry_map({"sos": [("600001", 1.0)]}, {"600001": short_df})
+
+        # 同一只票在混编面板里与单独算的结果必须一致——对齐正确才有这个性质。
+        assert out["600001"] == alone["600001"]

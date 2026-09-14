@@ -86,21 +86,17 @@ def _springboard_observation_fields(
     }
 
 
-def _footprint_fields(
+def _scoped_fields(
     signal_type: str,
     code: str,
-    footprint_map: dict[str, dict[str, Any]] | None,
+    mapping: dict[str, dict[str, Any]] | None,
 ) -> dict[str, Any]:
-    fields = (footprint_map or {}).get(f"{signal_type}:{code}") or (footprint_map or {}).get(code)
-    return dict(fields or {})
+    """按 `信号:代码` 优先、裸代码兜底取值——各 map 构造端都按这两个键各写一份。
 
-
-def _source_context_fields(
-    signal_type: str,
-    code: str,
-    source_context_map: dict[str, dict[str, Any]] | None,
-) -> dict[str, Any]:
-    fields = (source_context_map or {}).get(f"{signal_type}:{code}") or (source_context_map or {}).get(code)
+    同一个信号下同一只票只可能有一条记录,所以裸代码兜底不会串号;而多信号命中同一只票时,
+    优先取带信号前缀的那份,免得两个信号互相盖。
+    """
+    fields = (mapping or {}).get(f"{signal_type}:{code}") or (mapping or {}).get(code)
     return dict(fields or {})
 
 
@@ -279,6 +275,7 @@ def _features_json(
     entry_quality: dict[str, Any] | None = None,
     health_context: dict[str, Any] | None = None,
     dynamic_promotion: dict[str, Any] | None = None,
+    channel_geometry: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     out: dict[str, Any] = {}
     if candidate_metadata:
@@ -287,6 +284,11 @@ def _features_json(
         out["entry_quality"] = entry_quality
     if footprint:
         out["price_action_footprint"] = footprint
+    # 纯观测:通道几何**刻意不进** score_candidate_shadow,只落 JSON。#429 第 2 步的全部意义
+    # 就是在不动任何评分的前提下攒候选集样本;一旦参与打分,后面就分不清是几何有效还是它自己
+    # 把影子分推歪了。要变闸门须等日级 |t|>2,且方向由那时的数据定。
+    if channel_geometry:
+        out["channel_geometry"] = channel_geometry
     if springboard:
         out["springboard"] = springboard
     if source_context:
@@ -346,8 +348,9 @@ def _observation_feature_inputs(
     ctx: dict[str, Any],
 ) -> tuple[float, dict[str, Any]]:
     springboard = _springboard_observation_fields(signal_type, code, ctx["springboard_map"])
-    footprint = _footprint_fields(signal_type, code, ctx["footprint_map"])
-    source_context = _source_context_fields(signal_type, code, ctx["source_context_map"])
+    footprint = _scoped_fields(signal_type, code, ctx["footprint_map"])
+    source_context = _scoped_fields(signal_type, code, ctx["source_context_map"])
+    channel_geometry = _scoped_fields(signal_type, code, ctx["channel_geom_map"])
     candidate_metadata = _candidate_metadata_for_signal(ctx["candidate_metadata_map"], code, signal_type)
     entry_quality = _entry_quality_fields(
         ctx["entry_quality_map"].get(code6(code)) or ctx["entry_quality_map"].get(code)
@@ -382,6 +385,7 @@ def _observation_feature_inputs(
         entry_quality,
         health_context,
         dynamic_promotion,
+        channel_geometry=channel_geometry,
     )
     return priority_score, {"features_json": features, **springboard}
 
@@ -485,6 +489,7 @@ def _observation_context(triggers: dict[str, list[tuple[str, float]]], kwargs: d
         "regime": str(kwargs.get("regime") or "NEUTRAL").strip().upper(),
         "health_context_map": kwargs.get("health_context_map") or {},
         "dynamic_promotion_map": kwargs.get("dynamic_promotion_map") or {},
+        "channel_geom_map": kwargs.get("channel_geom_map") or {},
     }
 
 
@@ -514,6 +519,7 @@ def build_signal_observations(
     rank_map: dict[str, int] | None = None,
     health_context_map: dict[Any, dict[str, Any]] | None = None,
     dynamic_promotion_map: dict[str, dict[str, Any]] | None = None,
+    channel_geom_map: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     ctx = _observation_context(triggers, locals())
     now_iso = datetime.now(UTC).isoformat()

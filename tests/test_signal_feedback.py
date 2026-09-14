@@ -228,6 +228,55 @@ def test_build_signal_observations_writes_candidate_metadata():
     assert row["features_json"]["candidate_metadata"]["timing_score"] == 0.72
 
 
+def _observation_with_channel(geom_map):
+    return build_signal_observations(
+        "2026-09-14",
+        {"sos": [("600000", 12.5)]},
+        selected_for_ai=["600000"],
+        latest_close_map={"600000": 10.5},
+        footprint_map={"sos:600000": {"bias": "demand", "tags": ["quality_breakout"]}},
+        channel_geom_map=geom_map,
+    )[0]
+
+
+def test_channel_geometry_is_observation_only_and_changes_nothing_else():
+    """#429 第 2 步的唯一验收标准：加了通道几何，除了多一个 key，其他字节不能变。
+
+    尤其是 candidate_shadow_score——几何刻意不喂进影子打分。若它参与了打分，日后就分不清
+    候选集上的差异是几何本身有效，还是它把影子分推歪了以后再被漏斗放大的结果。
+    """
+    geom = {
+        "sos:600000": {
+            "version": "channel_geometry_v1",
+            "window": 120,
+            "lag": 5,
+            "chan_pos": 87.4,
+            "chan_slope": 0.12,
+            "chan_r2": 0.71,
+        }
+    }
+    without = _observation_with_channel(None)
+    with_geom = _observation_with_channel(geom)
+
+    assert with_geom["features_json"]["channel_geometry"]["chan_pos"] == 87.4
+    assert "channel_geometry" not in without["features_json"]
+
+    # 除 channel_geometry 与写入时间戳外逐键相等。
+    stripped = {k: v for k, v in with_geom["features_json"].items() if k != "channel_geometry"}
+    assert stripped == without["features_json"]
+    ignore = {"created_at", "updated_at", "observed_at", "features_json"}
+    assert {k: v for k, v in with_geom.items() if k not in ignore} == {
+        k: v for k, v in without.items() if k not in ignore
+    }
+
+
+def test_channel_geometry_falls_back_to_bare_code_key():
+    """map 构造端两种键各写一份，读取端两条路都要通——否则多信号命中时会静默丢字段。"""
+    row = _observation_with_channel({"600000": {"chan_pos": 12.0}})
+
+    assert row["features_json"]["channel_geometry"]["chan_pos"] == 12.0
+
+
 def test_daily_job_marks_bypass_observations_as_shadow(monkeypatch):
     from workflows import daily_signal_observations
 
