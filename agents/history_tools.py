@@ -263,8 +263,8 @@ def attribution_dates(limit: int = 60, tool_context: ToolContext | None = None) 
     """
     只取报告日期列表，不取正文。
 
-    整份报告约 14 KB（signal_actions 占大头），一次拉 20 份要 8 秒、174 KB。
-    页签只需要日期，所以单独走一条 select 只要两列 —— 页签能立刻出来，正文按
+    整份报告是按天累积的宽行：2026-09 的单行已到 870 KB，一次拉 20 份约 17 MB。
+    页签只需要日期，所以单独走一条 select 只要三列 —— 页签能立刻出来，正文按
     点开的那一份再取。
     """
     try:
@@ -307,7 +307,14 @@ def _load_remote_attribution_rows(
     from integrations.supabase_base import create_read_client
 
     client = get_user_client(tool_context) or create_read_client()
-    query = client.table(TABLE_STRATEGY_ATTRIBUTION_REPORTS).select("*").eq("market", "cn")
+    # 逐列列出而不是 select("*")：_attribution_record 只用到这几列，而整行里
+    # signal_stats_json/score_bucket_stats_json/top_*_json 加起来是几百 KB，
+    # 拉回来当场丢掉。created_at 是 _attribution_sort_key 排序用的。
+    query = (
+        client.table(TABLE_STRATEGY_ATTRIBUTION_REPORTS)
+        .select("report_date,window_start,window_end,created_at,shadow_diff_stats_json,recommendations_json")
+        .eq("market", "cn")
+    )
     # 指定日期时只取那一份 —— 这是「一次只拉一页」的实际落点。
     if report_date:
         query = query.eq("report_date", report_date)

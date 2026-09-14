@@ -161,9 +161,13 @@ interface PolicyOperationsPayload {
 }
 
 async function fetchLatestReport(): Promise<AttributionReport | null> {
+  // 逐列列出而不是 select('*')：整行里 signal_context_stats_json 一列就有两百多 KB，
+  // 页面从来不读它，拉回来只是让首屏多等。列表跟着 AttributionReport 接口走。
   const { data, error } = await supabase
     .from('strategy_attribution_reports')
-    .select('*')
+    .select(
+      'report_date,market,window_start,window_end,horizons,signal_stats_json,score_bucket_stats_json,shadow_diff_stats_json,top_winners_json,top_losers_json,recommendations_json,created_at',
+    )
     .eq('market', 'cn')
     .order('report_date', { ascending: false })
     .limit(1)

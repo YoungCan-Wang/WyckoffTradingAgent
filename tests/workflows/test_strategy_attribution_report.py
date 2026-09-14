@@ -1004,3 +1004,116 @@ def test_attribution_stats_ignore_nonfinite_scores_and_returns():
     assert score_stats["5"]["high"]["count"] == 1
     assert score_stats["5"]["high"]["avg_return_pct"] == 4.0
     assert "BAD_RETURN" not in {row["code"] for row in ranked}
+
+
+def _fat_report() -> dict:
+    """一份缩微的胖报告：每个被瘦身的字段都放一个可辨认的样本。"""
+    return {
+        "report_date": "2026-09-11",
+        "market": "cn",
+        "signal_context_stats_json": {"5": {"regime": {"count": 1}}},
+        "score_bucket_stats_json": {
+            "5": {"low": {"count": 2}},
+            "_selection_mode": {"shadow": 1},
+            "_strategy_version": {"v2": 1},
+            "_candidate_lane": {"core": 1},
+            "_entry_type": {"spring": 1},
+            "_candidate_shadow_grade": {"a": 1},
+            "_entry_quality_grade": {"a": 1},
+            "_data_lineage": {"a": 1},
+            "_observation_coverage": {"a": 1},
+        },
+        "shadow_diff_stats_json": {
+            "count": 3,
+            "policy_governor": {
+                "horizon": "5",
+                "status": "observe_only",
+                "signal_actions": [{"action": "downweight", "horizon": "5"}],
+                "context_actions": [{"action": "avoid", "horizon": "1"}],
+                "selection_actions": [{"action": "watch", "horizon": "20"}],
+            },
+        },
+        "recommendations_json": [
+            {"type": "policy_governor", "horizon": "5", "target": "dynamic_policy"},
+            {"type": "downweight", "horizon": "5", "target": "spring"},
+            {"type": "avoid", "horizon": "1", "target": "regime:bear"},
+            {"type": "watch", "horizon": "20", "target": "lane:core"},
+        ],
+    }
+
+
+def test_slim_report_for_storage_drops_write_only_payloads():
+    import workflows.strategy_attribution_report as report_mod
+
+    slim = report_mod.slim_report_for_storage(_fat_report())
+
+    assert slim["signal_context_stats_json"] is None
+    assert set(slim["score_bucket_stats_json"]) == {
+        "5",
+        "_candidate_shadow_grade",
+        "_entry_quality_grade",
+        "_data_lineage",
+        "_observation_coverage",
+    }
+    governor = slim["shadow_diff_stats_json"]["policy_governor"]
+    assert not {"signal_actions", "context_actions", "selection_actions"} & set(governor)
+    assert governor["status"] == "observe_only"
+    assert slim["shadow_diff_stats_json"]["count"] == 3
+    # 只留焦点档，governor 汇总行无论哪档都保留
+    assert [(row["type"], row["horizon"]) for row in slim["recommendations_json"]] == [
+        ("policy_governor", "5"),
+        ("downweight", "5"),
+    ]
+    assert slim["report_date"] == "2026-09-11"
+
+
+def test_slim_report_for_storage_leaves_input_intact():
+    """write_artifacts 随后要写全量 report.json，所以瘦身必须返回副本。"""
+    import workflows.strategy_attribution_report as report_mod
+
+    report = _fat_report()
+    report_mod.slim_report_for_storage(report)
+
+    assert report["signal_context_stats_json"] is not None
+    assert len(report["score_bucket_stats_json"]) == 9
+    assert report["shadow_diff_stats_json"]["policy_governor"]["signal_actions"]
+    assert len(report["recommendations_json"]) == 4
+
+
+def test_slim_report_for_storage_keeps_all_rows_without_horizon():
+    """拿不到焦点档时不裁 —— 宁可存胖，也不能把整列清空。"""
+    import workflows.strategy_attribution_report as report_mod
+
+    report = _fat_report()
+    report["shadow_diff_stats_json"]["policy_governor"]["horizon"] = ""
+    slim = report_mod.slim_report_for_storage(report)
+
+    assert len(slim["recommendations_json"]) == 4
+
+
+def test_write_report_upserts_slimmed_payload():
+    import workflows.strategy_attribution_report as report_mod
+
+    captured: dict = {}
+
+    class Table:
+        def upsert(self, payload, on_conflict=""):
+            captured["payload"] = payload
+            captured["on_conflict"] = on_conflict
+            return self
+
+        def execute(self):
+            return None
+
+    class Client:
+        def table(self, name):
+            captured["table"] = name
+            return Table()
+
+    report_mod.write_report(Client(), _fat_report())
+
+    payload = captured["payload"]
+    assert payload["signal_context_stats_json"] is None
+    assert "signal_actions" not in payload["shadow_diff_stats_json"]["policy_governor"]
+    assert len(payload["recommendations_json"]) == 2
+    assert captured["on_conflict"] == "report_date,market,window_start,window_end"

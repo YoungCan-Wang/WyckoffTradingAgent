@@ -146,9 +146,77 @@ def fetch_all(client: Any, table: str, select: str, *, market: str, start: date,
         offset += 1000
 
 
+# 落库瘦身。报告是**每交易日一行**，单行从 2026-07-02 的 99KB 涨到 2026-09-11 的 870KB，
+# 按 245 交易日/年算约 208MB/年，是全库最大的字节增长源。涨的是四个 JSON 列，而它们里面
+# 有相当一部分写完就没有读取方——同一批 action 在一行里存了三份，粒度递减：
+#   governor.{signal,context,selection}_actions  168KB  全 5 档  写后无人读
+#   recommendations_json                         223KB  全 5 档  读取方只用焦点档
+#   shadow_diff.policy_execution_state            38KB  仅焦点档 chat-tools 优先读它
+# 第三份才是消费者要的形状。下面把前两份收敛到同一口径，只在**落库时**裁，
+# write_artifacts 写的 report.json 仍是全量，所以排查证据不丢（artifact 活 90 天），
+# 且这些派生量都能由 signal_observations/signal_outcomes 重算（两表留存 365 天）。
+
+# governor 的三个 action 列表：_selection_actions/_context_actions/_signal_actions 的产物，
+# 已被 governor_recommendation_rows 拍平进 recommendations_json。落库后读 governor 的
+# 三处（history_tools._policy_governor_record、attribution.tsx 的 policyGovernor、
+# strategy_attribution_policy._policy_governor）都只取标量键和 promotion_checklist。
+_GOVERNOR_ACTION_KEYS = ("signal_actions", "context_actions", "selection_actions")
+
+# score_bucket_stats_json 里这四个桶只在写时被 core.strategy_policy_governor._selection_actions
+# 消费；web 侧四个 flatten 函数读的是 _candidate_shadow_grade/_entry_quality_grade/
+# _data_lineage/_observation_coverage。用「丢弃名单」而非「保留名单」，
+# 这样 web 以后加新桶不会被这里静默吃掉。
+_STORAGE_DROP_SCORE_BUCKETS = ("_selection_mode", "_strategy_version", "_candidate_lane", "_entry_type")
+
+
+def slim_report_for_storage(report: dict[str, Any]) -> dict[str, Any]:
+    """返回落库用的瘦身副本，不改动入参（artifact 随后还要写全量）。"""
+    slim = dict(report)
+    # 写后无读取方，且可由 observations+outcomes 重算。显式写 None 而不是省略键，
+    # 这样同一 report_date 重跑时能把历史上那些胖行一并清掉。
+    slim["signal_context_stats_json"] = None
+    slim["score_bucket_stats_json"] = _slim_score_buckets(report.get("score_bucket_stats_json"))
+    shadow = report.get("shadow_diff_stats_json")
+    horizon = ""
+    if isinstance(shadow, dict):
+        governor = shadow.get("policy_governor")
+        if isinstance(governor, dict):
+            horizon = str(governor.get("horizon") or "")
+            slim_shadow = dict(shadow)
+            slim_shadow["policy_governor"] = {
+                key: value for key, value in governor.items() if key not in _GOVERNOR_ACTION_KEYS
+            }
+            slim["shadow_diff_stats_json"] = slim_shadow
+    slim["recommendations_json"] = _slim_recommendations(report.get("recommendations_json"), horizon)
+    return slim
+
+
+def _slim_score_buckets(score_buckets: Any) -> Any:
+    if not isinstance(score_buckets, dict):
+        return score_buckets
+    return {key: value for key, value in score_buckets.items() if key not in _STORAGE_DROP_SCORE_BUCKETS}
+
+
+def _slim_recommendations(rows: Any, horizon: str) -> Any:
+    """只留焦点档。所有读取方本来就按 governor.horizon 过滤，故非焦点档落库即死数据。
+
+    signal_weight_multipliers_from_rows 传的 horizon 来自 policy_horizon(row)，
+    attribution_execution_state 用 governor["horizon"]，attribution.tsx 的
+    policyExecutionStats 用 executionPayload.horizon——三者都是同一个焦点档。
+    horizon 拿不到时不裁，避免把整列清空。
+    """
+    if not isinstance(rows, list) or not horizon:
+        return rows
+    return [
+        row
+        for row in rows
+        if not isinstance(row, dict) or row.get("type") == "policy_governor" or str(row.get("horizon") or "") == horizon
+    ]
+
+
 def write_report(client: Any, report: dict[str, Any]) -> None:
     client.table(TABLE_STRATEGY_ATTRIBUTION_REPORTS).upsert(
-        report,
+        slim_report_for_storage(report),
         on_conflict="report_date,market,window_start,window_end",
     ).execute()
 
