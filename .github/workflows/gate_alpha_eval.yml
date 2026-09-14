@@ -12,7 +12,10 @@ name: Gate Alpha Eval
 # 跳过，题材层与止损层照跑——artifact 有 90 天保留期，这一节的窗口只会短不会错。
 on:
   schedule:
-    # UTC 周六 02:40 = 北京时间周六 10:40，紧随 regime 与卖出归因之后。
+    # UTC 周六 02:40 = 北京时间周六 10:40，与 regime(01:40)、卖出归因(02:10)错开取数配额。
+    # 错开不构成先后(实测派发晚 3~4.5 小时且顺序不可控,见 AGENTS.md 评审规则 7)。
+    # 本任务确实读 wyckoff_funnel 的 artifact,但那是 90 天历史窗口、取不到就整节跳过,
+    # 不依赖它「今天先跑完」——若哪天要读同批 eval 的产物,必须改用同一 workflow + needs。
     - cron: "40 2 * * 6"
   workflow_dispatch:
     inputs:

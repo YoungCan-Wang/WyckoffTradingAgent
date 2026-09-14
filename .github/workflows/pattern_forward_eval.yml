@@ -20,8 +20,12 @@ name: Pattern Forward Evaluation
 # 这个按形态口径查「这类票值不值得进」。
 on:
   schedule:
-    # UTC 周六 04:10 = 北京时间周六 12:10。排在 regime_forward_eval(09:40)、
-    # gate_alpha_eval(10:40)、purity_eval(11:10) 之后，避免同时抢 Tushare 配额。
+    # UTC 周六 04:10 = 北京时间周六 12:10，与 regime_forward_eval(01:40)、
+    # gate_alpha_eval(02:40)、trigger_weight_eval(03:35)、momentum_regime_eval(03:40)
+    # 错开，避免同时抢 Tushare 配额。错开不构成先后(实测派发晚 3~4.5 小时且顺序不可控,
+    # 见 AGENTS.md 评审规则 7);本任务不读同批 eval 的产物,故不需要顺序。
+    # 早先这里还列了 purity_eval —— 它是**按月**跑的(每月 1 日 03:10),只有 1 号恰好
+    # 是周六时才同天,不该写在周六的错开清单里。
     - cron: "10 4 * * 6"
   workflow_dispatch:
     inputs:

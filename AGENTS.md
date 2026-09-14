@@ -62,6 +62,16 @@ pnpm --filter @wyckoff/api test
 
 6. **No debug artifacts** — Don't commit `console.log`, `breakpoint()`, `TODO/FIXME`, temporary dumps, or `print("debug")`-style traces. In `core/`, `integrations/`, `tools/`, and `agents/`, use logging instead of print-style diagnostics. In `scripts/` and `cli/`, user-facing progress/output via `print()` is allowed.
 
+7. **Cron 间隔不构成执行顺序** — 两个 workflow 的 cron 相差多久,都不代表先后。实测 GitHub
+   `schedule` 派发比 cron 晚 3~4.5 小时**且顺序不可控**:2026-09-12 之前 trigger points 与
+   trigger weight 相隔 40 分钟、靠 `actions/cache` 跨流程接面板,实跑直接失败在「缺少
+   `trigger_panel.csv`」(记在 `.github/workflows/trigger_weight_eval.yml` 头部)。所以
+   **B 要用 A 的产物,就把两者放进同一个 workflow 用 `needs`**,别靠错开 cron。
+   周六那批 eval 之间错开 cron 只为分摊 Tushare / TickFlow 取数配额,不为排序;写注释时别
+   写成「紧随 X 之后」,那是一句给不出的保证。这条无法机械检查:跨流程读产物与读上游生产
+   漏斗的 `daily-job-artifacts-*`(90 天历史窗口、取不到就整节跳过)在 YAML 里长得一样,
+   差别只在读的是同一批次的产物还是历史窗口。
+
 ## Strategy Evidence Rules (策略结论的证据要求)
 
 These exist because ad-hoc reimplementations of production signal logic produced three

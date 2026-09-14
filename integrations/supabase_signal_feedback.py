@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import time
 from datetime import date, timedelta
 from typing import Any
 
@@ -68,12 +70,34 @@ def _fetch_paginated(query_factory, limit: int, page_size: int = 1000) -> list[d
     while len(rows) < limit:
         remaining = limit - len(rows)
         stop = start + min(page, remaining) - 1
-        batch = query_factory().range(start, stop).execute().data or []
+        batch = _fetch_page(query_factory, start, stop)
         rows.extend(batch)
         if len(batch) < min(page, remaining):
             break
         start += len(batch)
     return rows
+
+
+def _fetch_page(query_factory, start: int, stop: int) -> list[dict[str, Any]]:
+    """单页拉取，瞬时故障重试。
+
+    2026-09-12 signal_feedback 整轮失败于此：Supabase 返回 504 Gateway Timeout，异常一路
+    冒到 ``load_recent_signal_outcomes`` 抛 RuntimeError，反馈闭环当周没有产出。504/超时
+    是瞬时的，重试一次就能过；schema 类错误重试无用，交给上层 ``_looks_like_schema_miss``
+    降列重试，不在这里吞掉。
+    """
+    attempts = max(int(os.getenv("SIGNAL_FEEDBACK_MAX_RETRIES", "3")), 1)
+    backoff = max(float(os.getenv("SIGNAL_FEEDBACK_RETRY_BACKOFF_SECONDS", "1")), 0.0)
+    for attempt in range(1, attempts + 1):
+        try:
+            return query_factory().range(start, stop).execute().data or []
+        except Exception as exc:
+            if attempt >= attempts or _looks_like_schema_miss(exc):
+                raise
+            logger.warning("fetch page [%d,%d] attempt %d/%d failed: %s", start, stop, attempt, attempts, exc)
+            if backoff > 0:
+                time.sleep(backoff * attempt)
+    return []
 
 
 def _looks_like_schema_miss(exc: Exception) -> bool:

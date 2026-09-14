@@ -14,7 +14,12 @@ import pandas as pd
 from core.funnel_effect_panels import build_panels_from_snapshot
 from core.review_shadow_lanes import ReviewShadowSignal, shadow_lane_label, shadow_signal_from_decision
 from workflows.backtest_data import load_snapshot_hist_map
-from workflows.review_shadow_control import control_verdict_lines, lane_control_summary
+from workflows.review_shadow_control import (
+    control_verdict_lines,
+    direction_verdict_lines,
+    lane_control_summary,
+    score_direction_summary,
+)
 
 
 @dataclass(frozen=True)
@@ -116,6 +121,9 @@ def summarize_shadow_trades(
         "overall": _lane_summary(trades),
         # 裸收益混着动量 beta。「要不要补强」只有配对超额跑赢随机负控制才算是"要"。
         "momentum_control": lane_control_summary(trades, panels),
+        # 上面那栏答「含不含选股信息」,答不了「排序键符号对不对」。两者指向的动作相反
+        # (删掉这一项 vs 乘 -1),而在超额上长得一样,只有切两半比才分得开。
+        "score_direction": score_direction_summary(trades, panels),
     }
 
 
@@ -380,6 +388,7 @@ def _markdown_report(report: dict[str, Any]) -> str:
     lines.extend(_risk_screen_caveat_lines(report))
     lines.extend(_score_band_lines(report))
     lines.extend(["", *control_verdict_lines(report.get("momentum_control") or {})])
+    lines.extend(["", *direction_verdict_lines(report.get("score_direction") or {})])
     return "\n".join(lines) + "\n"
 
 

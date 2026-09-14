@@ -41,7 +41,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="卖出建议归因")
     parser.add_argument("--days", type=int, default=60, help="回看天数")
     parser.add_argument("--portfolio-id", default="", help="限定组合，留空则全部")
-    parser.add_argument("--out", default="artifacts/evidence", help="输出目录")
+    # docs/evidence 而非 artifacts/：后者被 .gitignore 收掉，workflow 上传的却是
+    # docs/evidence/exit_attribution.json，于是每轮 artifact 都空、结论只剩日志和飞书，
+    # 下周想做「改前 vs 改后」时没有基线可比。与另两个 eval 脚本口径一致。
+    parser.add_argument("--out", default="docs/evidence", help="输出目录")
     parser.add_argument("--no-notify", action="store_true", help="不推飞书")
     return parser.parse_args()
 

@@ -1034,6 +1034,67 @@ P90 港股 8.39%、美股 **13.18%**——**该收紧的是美股，方向与直
 `manual_review_required` 只表示可以开始人工评审，不能解释为自动批准。信号级调权、主题轮动、候选影子分
 和 AI 结论都不能单独打开市场总闸或越过 OMS。
 
+## 周末 eval 收敛：可疑的是信号方向，不是信号强度（2026-09-13）
+
+2026-09-12/13 周末全套 eval 结论一致，且都指向**符号**而非强度：
+
+- 触发信号本身负超额：有触发 vs 同日流动性域 −0.284pct（t=−4.00），六种触发类型全为负。
+- `factor_ic_eval` 50 行里 16 行判「可用」，其中 15 行是**反向**可用（`ret60` IC −0.057 / IR −0.33，
+  `rps_fast` H10 IC −0.074 / IR −0.39）。唯一正向是 `vs_price_vol_divergence` H10（+0.0228）。
+- `review_shadow` 同动量配平后 near_l2 −0.22pct（t=−2.92）、pre_breakout −0.29pct，
+  低于**每一个**随机负控制种子。
+- 主漏斗当日 `observe_only` 空转：RISK_OFF 禁买，`funnel_selected=0`、`step3_input=0`。
+
+「几乎不买」在当前 alpha 下是保护而不是缺陷。放开闸门的前提是选股 alpha 转正，不是样本变多。
+15/16 反向强烈提示「方向反了」而非「无信息」，但反向因子不等于反向可交易——反向排序键
+要能上生产，先得在影子车道上证明高分半确实跑输低分半（见下面的反向臂）。
+
+### 触发分值拍平：只进候选名单，不改生产
+
+`core/ai_candidate_allocation.py` 那六个硬编码触发分值（sos 15/50、spring 12、lps 30、evr 12、
+compression 22、trend_pullback 34）是本轮唯一有正向走前信号的改动方向，**仍不改生产**，
+三条理由各自独立成立：
+
+1. 证据规则 7：单改动证据只能进候选名单。2026-08-21 那次单独封 evr/sos（−15.82%→−6.31%）
+   与单独把止损 12% 收到 5%（−5.71%→+7.31%）都过线，两个叠一起只剩 −0.14%。
+2. `trigger_points_eval` 自己的走前挑表没过线：H=10 top10 +0.144（t=1.08）、H=5 top10
+   +0.243（t=1.74）。1.80≤t<2.0 明确算没过，不四舍五入。
+3. `_trigger_score` 在回测 `tradeable_l4` 口径下不被触达（`_select_candidate_entries` 提前
+   return），所以**回测无法验证这个改动**，它只影响实盘。缺的不是算力而是量具。
+
+量具不需要新建：`scripts/evaluate_trigger_points.py` 的 `candidate_tables()` 早就把 `flat`
+（六个分值加 sos 两档全部取同一常数）作为四张候选表之一发出去，`build_report()` 每个 topN
+都跑一遍 `summarize_arm("flat", …, prod=prod)` 给同日配对差，`walk_forward_narrow` 还专门留
+一格只比 prod vs flat。三闸判据写成代码在 `core/trigger_points_eval.py` 的 `_points_action`
+（替代表显著优于生产 + 走前 `diff_t>=2.0` + 选中集中）与 `_narrow_finding`（两方集中度等价于
+diff 的符号，不算第三闸）里，52 个测试钉着。所以这一项**每周照跑即可，读报告 ④⑤ 两节**，
+本轮判定是不发。
+
+真正缺的是 `candidate_tables()` 自己没有测试钉——它在 `scripts/` 下，核心侧的测试一个都没
+导入它，而判据全部作用在它造出来的四张表上。最坏的一条静默失效在 `flat`：narrow 那格「问题
+从换成哪 6 个变成这 6 个值不值」的整段论证押在「自由参数 0 个」这一条上，哪天 `flat` 退化成
+只拍平五个分值、sos 两档留着，narrow 就变成 prod 跟一张近似 prod 的表相比，读出来是「不显著
+→ 维持生产」——一个长得跟正常证据一模一样的假阴性。已补
+`tests/scripts/test_evaluate_trigger_points.py`（11 项）钉住四张表各自的口径。
+
+路径 A（`trigger_q=0.30`）同期保持不动——同一个信号不能被罚两次，两条路径同时下调会把两个
+改动的效果混在一起，正是规则 7 禁止的形状。
+
+### 三处 eval 断链的根因（均已修）
+
+结论链上的三个量具当周全部失效，且都不是统计口径问题：
+
+| 任务 | 现象 | 根因 |
+|---|---|---|
+| `exit_attribution` | artifact 上传空，`No files were found` | 脚本 `--out` 默认 `artifacts/evidence`，被 `.gitignore` 收掉，而 workflow 上传 `docs/evidence/` |
+| `signal_feedback` | `RuntimeError: failed to load signal outcomes` | Supabase 504 瞬时超时落在 `_fetch_paginated` 里，该函数无重试 |
+| `trigger_points_eval` | `缺少 docs/evidence/.cache/trigger_panel.csv` | 靠 `actions/cache` 跨 workflow 接 `trigger_weight_eval` 的面板，两者 cron 只隔 40 分钟 |
+
+第三条是设计问题而非偶发：实测 26 个 `schedule` workflow 的 `createdAt` 比 cron 晚
+**3~4.5 小时**（主漏斗 cron 北京 17:17 → 实际 21:47；Trigger Points Eval 12:15 → 16:38），
+派发顺序不可控，40 分钟的 cron 间隔保证不了先后。任何靠 cron 先后传递中间产物的设计都不可靠。
+已把两个 eval 合成一条 workflow 的两个 job，用 `needs` 串起来。
+
 ## 研究优先级
 
 | 优先级 | 工作 | 完成定义 |
@@ -1051,6 +1112,10 @@ P90 港股 8.39%、美股 **13.18%**——**该收紧的是美股，方向与直
 | P0 | 「某条规则误伤了某只票」须在同一子总体内做对照 | 只看被拦下的票后来涨了没有意义；要比同特征未被拦的票涨得更多还是更少 |
 | P2 | 验证 `priority_score` 能否被更简单的键替代 | 见「`priority_score`：当前样本无判别力」；**暂缓**——替代对照须先过多种子随机带宽检验，现行分与替代的差值需超出随机离散度。`_exit_penalty` 单独保留，不随排序分一起改 |
 | P0 | 排序键类对照必须附多种子随机负控制 | 见上；只报「A 键 +0.9% vs B 键 +0.6%」而不报随机离散度 ±1.2%，会把噪声读成增量 |
+| P0 | 先定「信号无效」还是「信号符号反了」 | 见「周末 eval 收敛」；15/16 可用因子为反向。判据用影子车道反向臂（`score_direction`）：高分半 vs 低分半的配对超额差，t 值须超随机负控制离散度。低半显著更好→符号反；两半都负且无显著差→无信息。方向未定之前不动排序权重 |
+| P0 | **停止**在选股 alpha 为负时优化排序细节 | 见「周末 eval 收敛」；触发信号负超额 −0.284pct（t=−4.00）时，调权重只是在负 alpha 内部重排 |
+| P0 | 触发分值拍平须走组合口径 | 见「触发分值拍平」；单改动走前证据只进候选名单，且回测 `tradeable_l4` 触达不到 `_trigger_score`，故只读 `trigger_points_eval` 的 `flat` 消融臂 + 收窄走前那格，三闸（消融显著 + 走前 `diff_t>=2.0` + 选中集中）全过才谈发，不可先发后观察 |
+| P0 | 跨 workflow 不用 `actions/cache` 传中间产物 | 见「三处 eval 断链」；派发延迟 3~4.5h 使 cron 先后不可控，须同 workflow 内用 `needs` 串 job |
 | P2 | 验收 Step3 财务字段 | 见「Step3 财务字段的验收协议」；改为送审池内档位对照，约需 90 个交易日，不得为加速而放宽门槛 |
 | P1 | 用完整 PIT 快照（含 PIT 名称）重跑并复核 | 取数侧已全部实现（见「PIT 名称已实现」）；bull_2020 补回 174 只、recent_6m 补回 35 只。**现有 `snapshot_data/` 尚未含 PIT 名称**，需重跑才生效 |
 | P1 | 决定美股漏斗去留 | 见「港美漏斗」；2,098 条样本超额 −1.63%、按日 t=−4.39、排序反向。属运营决策，不自动停跑 |

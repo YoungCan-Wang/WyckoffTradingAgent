@@ -187,6 +187,8 @@ LPS、确认状态或候选血缘发生语义变更时，先做 dry-run，检查
 
 回刷会强制要求历史市值、沪指/小盘双基准完整，并在 TickFlow 任一批次最终失败时中止，不允许用降级数据覆盖生产表。指数和历史市值默认各重试 3 次，可通过 `INDEX_DATA_MAX_RETRIES`、`INDEX_DATA_RETRY_BACKOFF_SECONDS`、`MARKET_METADATA_MAX_RETRIES`、`MARKET_METADATA_RETRY_BACKOFF_SECONDS` 调整；维护任务还可提高 `TICKFLOW_MAX_RETRIES`。这些参数只改变容错，不改变策略口径。
 
+上面提到的重跑 `scripts/signal_feedback_job.py` 有同族的一对：`SIGNAL_FEEDBACK_MAX_RETRIES`（默认 3）和 `SIGNAL_FEEDBACK_RETRY_BACKOFF_SECONDS`（默认 1），管的是分页拉取 `signal_outcomes` 时的瞬时故障——单页一个 504 就会让整轮抛 `failed to load signal outcomes`，2026-09-12 即如此。同样只改容错不改口径；若持续失败是 Supabase 侧不可用，调大次数没有意义。
+
 ---
 
 ## 8. 相关代码与配置

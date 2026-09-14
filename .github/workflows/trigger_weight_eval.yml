@@ -1,5 +1,14 @@
-name: Trigger Weight Eval
+name: Trigger Eval
 
+# 两条路径的体检合在一条流程里，因为它们共用同一份 90 分钟的触发面板：
+#   job weight  路径 A —— watch_score 里的 trigger_q（生产 0.30）
+#   job points  路径 B —— _trigger_score 那六个硬编码分值（12~50 分）
+# 2026-09-12 之前 points 是独立 workflow，靠 actions/cache 跨流程接面板、两者 cron
+# 只隔 40 分钟。实测 schedule 派发比 cron 晚 3~4.5 小时且顺序不可控，那一轮 points
+# 直接失败在「缺少 trigger_panel.csv」。cron 间隔保证不了先后，needs 才保证。
+# 代价是 points 挪到 weight（最长 300 分钟）之后，出结果更晚 —— 晚而对得上，
+# 好过准点失败。
+#
 # 排序权重体检：watch_score 里的 trigger_q（生产 0.30，单项最大）值不值这个分量。
 # 首轮（2026-08-31，423 个交易日 20241118..20260813）结论与 dry_q 那轮相反 —— 这一项
 # 是**负贡献，但幅度不稳到不足以定档**，故本轮不改生产权重：
@@ -24,7 +33,8 @@ name: Trigger Weight Eval
 # 触发面板要逐票逐日重放六个检测器（约 90 分钟）且需 210 个 bar 预热，故与行情一起缓存。
 on:
   schedule:
-    # UTC 周六 03:35 = 北京时间周六 11:35，排在 ranker-weight（10:55）之后，错开取数配额。
+    # UTC 周六 03:35 = 北京时间周六 11:35，与 ranker-weight（02:55）错开取数配额。
+    # 错开只为分摊配额,不构成先后 —— 上面头部记的就是踩过这一脚的经过。
     - cron: "35 3 * * 6"
   workflow_dispatch:
     inputs:
@@ -40,14 +50,14 @@ on:
         default: false
 
 concurrency:
-  group: trigger-weight-${{ github.ref }}
+  group: trigger-eval-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  run:
+  weight:
     runs-on: ubuntu-latest
     # 六个检测器 × 5600 只票 × 600 余日；默认 360 分钟留不出余量，显式收到 300。
     timeout-minutes: 300
@@ -102,4 +112,97 @@ jobs:
           # docs/evidence 而非 artifacts/：后者被 .gitignore 收掉，upload 会静默匹配不到文件。
           name: trigger-weight-evidence
           path: docs/evidence/trigger_weight_h*
+          if-no-files-found: warn
+
+  # 触发分值体检：_trigger_score 那六个硬编码分值（core/ai_candidate_allocation.py:559-582，
+  # sos 15/50、spring 12、lps 30、evr 12、compression 22、trend_pullback 34）排得对不对。
+  # 一次 lps 命中（30 分）等于路径 A 整个摆幅（2.4 分）的 12.5 倍，所以真正决定「已触发的
+  # 票谁排前面」的是这条路径，不是上面那条。
+  #
+  # 首轮（2026-08-31，423/428 个交易日 20241118..20260813，69110 触发行）结论是
+  # **反校准但不动生产**：
+  #   置换检验：生产表落在 200 次「同一组数字随机重排」的第 0.5 百分位（H=10 top10）、
+  #     3.0%（top20）；H=5 top10 也是 0.5%。生产恰好等于带下沿 —— 12.0 出现两次
+  #     （spring/evr）使若干置换与生产同构，所以「不存在比它更差的排法」。
+  #   秩相关：分值 vs 实测超额 −0.435（H=10）、−0.464（H=5），高分档反而更差。
+  #     最高分档 trend_pullback(34) 超额 −0.490，最低分档 spring(12) −0.299。
+  #   sos 共振（15 → 50，全表最大的一次加分 +35）方向是反的：共振 −1.007 差于单独
+  #     −0.797（H=10，共振仅 833 行）。与路径 A 那轮查到的 n_hits 分布同源 —— 共振本就稀少。
+  #   拍平成 25 分优于生产 +0.339(t=+3.58, H=10) / +0.266(t=+3.72, H=5)。
+  #   但**走前挑表没过线**：H=10 top10 +0.144(t=1.08)、H=5 top10 +0.243(t=1.74)，且选中
+  #     在 flat/no_res/by_excess 之间三分（无一到 80%）。消融测「这一项好不好」，走前测
+  #     「换一张能不能真的更好」，后者才是上线依据 —— 故本轮不改 _trigger_score。
+  # 拍平不需要额外开关：`flat` 已经是四张候选表之一（消融格给同日配对差，收窄走前那格
+  # 只比 prod vs flat），三闸判据写在 core/trigger_points_eval.py 的 _points_action /
+  # _narrow_finding 里。每周照跑即可，读报告的 ④⑤ 两节。
+  #
+  # 并列打破方式是这轮最大的方法论坑：六个分值只组合出 11 个唯一分数，每日 topN 的边界
+  # 并列桶中位 23 只、最大 523 只。nlargest 按 index 顺序打破并列，index 跟着 ts_code 排、
+  # ts_code 又与交易所相关 —— 等于偷偷按代码字典序选票。同一份数据：nlargest 读成
+  # 拍平-生产 +0.131(t=+0.86)（看着没信号），按边界桶比例分权后是 +0.339(t=+3.58)。
+  # 分权即随机打破并列的期望值，且确定可复。改 topn_mean 前先看这条。
+  #
+  # **不与路径 A 同时下调**：同一个信号被罚两次，净效果会超过任一轮量到的幅度，正是证据
+  # 规则 7 禁止的形状。路径 A 那轮（上面 weight job）结论已是维持 0.30。
+  #
+  # 每周重跑盯三件事：
+  #   1) 走前那格 —— t>=2 且选中集中（>=80%）在同一张候选表上，才是动分值的依据；
+  #      1.80<=t<2.0 明确算没过，不四舍五入；
+  #   2) 选中分布是否从三分收敛到一张表 —— 方向已明（离开生产表 100%），缺的是「换成哪张」；
+  #   3) sos 共振行数（833 行 / 428 日）是否长起来 —— 全表最大的加分却是最小的样本。
+  #
+  # 统计窗口由缓存面板决定，不是 --start：核对报告里的 window.days。
+  points:
+    runs-on: ubuntu-latest
+    # 面板由 weight job 生成并存进缓存；needs 保证它的 save 已完成才轮到这里。
+    # 这一层依赖不能退回成两条 workflow 靠 cron 先后接力 —— 见文件头。
+    needs: weight
+    # 只做统计，不重放面板，60 分钟够。
+    timeout-minutes: 60
+    env:
+      PYTHONUNBUFFERED: "1"
+      # 只读面板，不写库；故不设 WYCKOFF_WRITE_CONTEXT。
+      TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+      FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+      TZ: Asia/Shanghai
+      HORIZON: ${{ github.event.inputs.horizon || '10' }}
+      START: ${{ github.event.inputs.start || '2024-01-01' }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Restore panel cache
+        # restore 而非 cache：只读不存，避免 post 阶段因 key 已存在而告警。
+        uses: actions/cache/restore@v4
+        with:
+          path: docs/evidence/.cache
+          # 精确命中 weight job 本轮存的那份，故意不留 restore-keys 兜底：
+          # 退到上一轮的旧面板会让统计窗口静默停在旧区间，比直接失败更难发现。
+          key: trigger-panel-${{ env.START }}-${{ github.run_id }}
+
+      - name: Evaluate trigger points
+        run: |
+          if [ ! -f docs/evidence/.cache/trigger_panel.csv ]; then
+            echo "::error::缺少 docs/evidence/.cache/trigger_panel.csv；weight job 已成功却没留下面板，查它的 skip_panel 输入与缓存步骤"
+            exit 1
+          fi
+          python scripts/evaluate_trigger_points.py --horizon "$HORIZON"
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: trigger-points-evidence
+          path: docs/evidence/trigger_points_h*
           if-no-files-found: warn

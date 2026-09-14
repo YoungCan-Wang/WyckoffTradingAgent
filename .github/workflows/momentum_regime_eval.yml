@@ -19,7 +19,8 @@ name: Momentum Regime Eval
 # 每周重跑的意义：持续确认闸门方向，并在它转为持续为负时能被看见——这恰恰要求样本够长。
 on:
   schedule:
-    # UTC 周六 03:40 = 北京时间周六 11:40，紧随 gate-alpha（10:40）之后，错开取数高峰。
+    # UTC 周六 03:40 = 北京时间周六 11:40，与 gate-alpha（02:40）错开取数高峰。
+    # 错开只为分摊配额,不构成先后（见 AGENTS.md 评审规则 7）。
     - cron: "40 3 * * 6"
   workflow_dispatch:
     inputs:

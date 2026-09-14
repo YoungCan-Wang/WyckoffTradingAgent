@@ -8,7 +8,9 @@ name: Exit Attribution
 # 样本撑不起改风控代码，所以每周重跑，等跨越不同市场环境后再重判。
 on:
   schedule:
-    # UTC 周六 02:10 = 北京时间周六 10:10，紧随 regime 前瞻检验之后。
+    # UTC 周六 02:10 = 北京时间周六 10:10，与 regime 前瞻检验(01:40)错开取数配额。
+    # 错开只为分摊配额,不构成先后:实测派发比 cron 晚 3~4.5 小时且顺序不可控
+    # (见 AGENTS.md 评审规则 7)。本任务不读任何同批 eval 的产物,故不需要顺序。
     - cron: "10 2 * * 6"
   workflow_dispatch:
     inputs:
@@ -51,8 +53,10 @@ jobs:
           pip install -e .
 
       - name: Evaluate exit attribution
+        env:
+          DAYS: ${{ github.event.inputs.days || '60' }}
         run: |
-          python scripts/evaluate_exit_attribution.py --days "${{ github.event.inputs.days || '60' }}"
+          python scripts/evaluate_exit_attribution.py --days "$DAYS"
 
       - name: Upload evidence
         uses: actions/upload-artifact@v7

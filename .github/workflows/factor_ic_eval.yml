@@ -19,8 +19,9 @@ name: Factor IC Evaluation
 # 结果落 factor_ic_daily（TTL 365 天，由 db_maintenance 清理）以便跨期对比。
 on:
   schedule:
-    # UTC 周六 05:10 = 北京时间周六 13:10。排在 pattern_forward_eval(12:10) 之后，
-    # 与其它评估任务错开，避免同时抢 Tushare 配额。
+    # UTC 周六 05:10 = 北京时间周六 13:10，与 pattern_forward_eval(04:10) 及其它周六
+    # 评估任务错开，避免同时抢 Tushare 配额。错开只为分摊配额,不构成先后
+    # （见 AGENTS.md 评审规则 7）。
     - cron: "10 5 * * 6"
   workflow_dispatch:
     inputs:

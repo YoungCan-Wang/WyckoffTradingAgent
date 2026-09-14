@@ -35,8 +35,10 @@ name: Review Shadow Backtest
 # 只读 artifact 与行情，不写任何表，故不设 WYCKOFF_WRITE_CONTEXT。
 on:
   schedule:
-    # UTC 周六 05:40 = 北京时间周六 13:40，排在 factor_ic_eval(05:10) 之后，
-    # 与其它周六评估任务错开，避免同时抢 Tushare / TickFlow 配额。
+    # UTC 周六 05:40 = 北京时间周六 13:40，与 factor_ic_eval(05:10) 及其它周六评估任务
+    # 错开，避免同时抢 Tushare / TickFlow 配额。错开只为分摊配额,不构成先后
+    # （见 AGENTS.md 评审规则 7）：本任务读的是 wyckoff_funnel 的 90 天历史 artifact，
+    # 不读同批 eval 的产物，所以顺序无关紧要。
     - cron: "40 5 * * 6"
   workflow_dispatch:
     inputs:
@@ -183,5 +185,11 @@ jobs:
         with:
           name: review-shadow-backtest-${{ github.run_number }}
           path: artifacts/review_shadow_backtest/*
-          retention-days: 30
+          # 90 天 ≈ 12 次周跑。本任务每周一次，T+5 又要攒到 25 个交易日才出第一个判定，
+          # 30 天只留得下约 4 个判定 —— 而「判定稳不稳」是要看连着几周同不同向的，
+          # 中间只要停跑或失败几次就不够看了。同批周六 eval 都不设这一行(走默认 90)，
+          # 只有这里显式压到 30，是这组证据里活得最短的一份。
+          # 而 tests/workflows/test_market_gate_frozen.py 的解锁条件恰好点名读这份产物的
+          # score_direction —— 证据比判据先过期，条件就成了空文。
+          retention-days: 90
           if-no-files-found: warn

@@ -10,7 +10,9 @@ name: Ranker Weight Eval
 # 一旦配对差在新行情段转不显著，就该重新审这个权重。
 on:
   schedule:
-    # UTC 周六 02:55 = 北京时间周六 10:55，紧随门槛层 alpha 检验之后。
+    # UTC 周六 02:55 = 北京时间周六 10:55，与门槛层 alpha 检验(02:40)错开取数配额。
+    # 错开只为分摊配额,不构成先后:实测派发比 cron 晚 3~4.5 小时且顺序不可控
+    # (见 AGENTS.md 评审规则 7)。本任务不读任何同批 eval 的产物,故不需要顺序。
     - cron: "55 2 * * 6"
   workflow_dispatch:
     inputs:
