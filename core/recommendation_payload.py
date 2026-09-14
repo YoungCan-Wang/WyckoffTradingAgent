@@ -15,6 +15,13 @@ from core.candidate_tracks import strip_lane_status_suffix
 from core.constants import TABLE_RECOMMENDATION_TRACKING
 from utils.safe import safe_float
 
+
+def event_change_pct(initial_price: float, current_price: float) -> float | None:
+    if initial_price <= 0 or current_price <= 0:
+        return None
+    return round((current_price - initial_price) / initial_price * 100.0, 2)
+
+
 RECOMMENDATION_ATTRIBUTION_COLUMNS = (
     "primary_signal",
     "signal_types",
@@ -91,15 +98,15 @@ def build_recommendation_payload(
     symbols_info: list[dict[str, Any]],
     existing_counts: dict[int, int],
     existing_code_dates: dict[int, set[int]],
-    existing_first_prices: dict[int, float] | None = None,
+    existing_event_quotes: dict[tuple[int, int], tuple[float, float]] | None = None,
 ) -> list[dict[str, Any]]:
-    first_prices = existing_first_prices or {}
+    event_quotes = existing_event_quotes or {}
     payload_by_code: dict[int, dict[str, Any]] = {}
     for item in symbols_info:
         code_int = _extract_recommendation_code(item.get("code"))
         if code_int is None:
             continue
-        row = _recommendation_row(recommend_date, item, existing_counts, existing_code_dates, code_int, first_prices)
+        row = _recommendation_row(recommend_date, item, existing_counts, existing_code_dates, code_int, event_quotes)
         existing = payload_by_code.get(code_int)
         if existing:
             merge_recommendation_payload_row(existing, row)
@@ -128,6 +135,11 @@ def merge_recommendation_payload_row(existing: dict[str, Any], row: dict[str, An
         existing["current_price"] = new_current
     elif old_price <= 0 < new_price:
         existing["current_price"] = new_price
+    change = event_change_pct(
+        safe_float(existing.get("initial_price"), 0.0),
+        safe_float(existing.get("current_price"), 0.0),
+    )
+    existing["change_pct"] = 0.0 if change is None else change
 
 
 def recommendation_backup_rows(rows: list[dict[str, Any]], ai_codes: list[str] | None) -> list[dict[str, Any]]:
@@ -147,7 +159,7 @@ def recommendation_restore_sql(rows: list[dict[str, Any]], table: str = TABLE_RE
         return "-- no recommendation rows to restore\n"
     values = ["  (" + ", ".join(_sql_literal(row.get(col)) for col in columns) + ")" for row in rows]
     updates = ",\n  ".join(
-        _restore_conflict_assignment(col, table) for col in columns if col not in {"code", "recommend_date"}
+        _restore_conflict_assignment(col) for col in columns if col not in {"code", "recommend_date"}
     )
     return "\n".join(
         [
@@ -163,10 +175,7 @@ def recommendation_restore_sql(rows: list[dict[str, Any]], table: str = TABLE_RE
     )
 
 
-def _restore_conflict_assignment(column: str, table: str) -> str:
-    # 推荐价按 code 粘住首次值：备份恢复时不覆盖已有非零 initial_price。
-    if column == "initial_price":
-        return f"{column} = coalesce(nullif({table}.{column}, 0), excluded.{column})"
+def _restore_conflict_assignment(column: str) -> str:
     return f"{column} = excluded.{column}"
 
 
@@ -215,28 +224,38 @@ def _recommendation_row(
     existing_counts: dict[int, int],
     existing_code_dates: dict[int, set[int]],
     code_int: int,
-    existing_first_prices: dict[int, float],
+    existing_event_quotes: dict[tuple[int, int], tuple[float, float]],
 ) -> dict[str, Any]:
     old_cnt = existing_counts.get(code_int, 0)
     seen_dates = existing_code_dates.get(code_int, set())
     new_cnt = old_cnt if recommend_date in seen_dates else max(old_cnt, 0) + 1
     day_price = _extract_recommendation_price(item)
-    sticky = safe_float(existing_first_prices.get(code_int), 0.0)
-    initial_price = sticky if sticky > 0 else day_price
+    initial_price, current_price = _event_prices(
+        day_price, existing_event_quotes.get((code_int, recommend_date), (0.0, 0.0))
+    )
+    change = event_change_pct(initial_price, current_price)
     return {
         "code": code_int,
         "name": str(item.get("name", "")).strip(),
         "recommend_reason": str(item.get("tag", "")).strip(),
         "recommend_date": recommend_date,
         "initial_price": initial_price,
-        "current_price": day_price if day_price > 0 else initial_price,
-        "change_pct": 0.0,
+        "current_price": current_price,
+        "change_pct": 0.0 if change is None else change,
         "recommend_count": new_cnt,
         "funnel_score": _extract_recommendation_score(item),
         "is_ai_recommended": False,
         "updated_at": datetime.now(UTC).isoformat(),
         **_extract_recommendation_attribution(item),
     }
+
+
+def _event_prices(day_price: float, existing_quote: tuple[float, float]) -> tuple[float, float]:
+    old_initial, old_current = existing_quote
+    initial_price = day_price if day_price > 0 else old_initial
+    already_repriced = old_current > 0 and old_initial > 0 and abs(old_current - old_initial) > 1e-9
+    current_price = old_current if already_repriced else (day_price if day_price > 0 else old_current)
+    return initial_price, current_price if current_price > 0 else initial_price
 
 
 def _extract_recommendation_code(raw_code: Any) -> int | None:

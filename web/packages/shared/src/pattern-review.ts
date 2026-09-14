@@ -167,54 +167,89 @@ export function preferTrackingRow(next: DedupeTrackingRow, current: DedupeTracki
   return (next.funnel_score ?? -Infinity) > (current.funnel_score ?? -Infinity)
 }
 
-function stickyInitialPrice(preferred: DedupeTrackingRow, other: DedupeTrackingRow): number | null {
-  const trackingPrices = [preferred, other]
-    .filter((row) => row.source_type !== 'signal_pending')
-    .map((row) => ({ date: reviewDateNumber(row.recommend_date), price: positivePrice(row.initial_price) }))
-    .filter((row): row is { date: number; price: number } => row.price != null)
-    .sort((a, b) => a.date - b.date)
-  if (trackingPrices[0]) return trackingPrices[0].price
-  return positivePrice(preferred.initial_price) ?? positivePrice(other.initial_price)
+export function eventChangePct(initialPrice: number | null | undefined, currentPrice: number | null | undefined): number | null {
+  const initial = positivePrice(initialPrice)
+  const current = positivePrice(currentPrice)
+  if (initial == null || current == null) return null
+  return Number((((current - initial) / initial) * 100).toFixed(2))
 }
 
 function mergeTrackingPrices<T extends DedupeTrackingRow>(preferred: T, other: T): T {
-  const initialPrice = stickyInitialPrice(preferred, other)
+  const trackingFirst = preferred.source_type !== 'signal_pending' ? preferred : other
+  const initialPrice = positivePrice(trackingFirst.initial_price)
+    ?? positivePrice(preferred.initial_price)
+    ?? positivePrice(other.initial_price)
   const currentPrice = positivePrice(preferred.current_price) ?? positivePrice(other.current_price)
-  let changePct = preferred.change_pct ?? null
-  if (currentPrice != null && (positivePrice(preferred.current_price) == null || preferred.change_pct == null)) {
-    if (initialPrice != null) {
-      changePct = Number((((currentPrice - initialPrice) / initialPrice) * 100).toFixed(2))
-    } else if (other.change_pct != null) {
-      changePct = other.change_pct
-    }
-  }
   return {
     ...preferred,
     initial_price: initialPrice ?? preferred.initial_price ?? null,
     current_price: currentPrice ?? preferred.current_price ?? null,
-    change_pct: changePct,
+    change_pct: eventChangePct(initialPrice, currentPrice) ?? preferred.change_pct ?? other.change_pct ?? null,
   }
 }
 
-/** 按 code 去重：较新日期优先；同日 tracking 优于 signal_pending；价格字段从 tracking 行补齐。 */
+function trackingEventKey(row: DedupeTrackingRow): string {
+  return `${reviewDateNumber(row.recommend_date)}\u0000${normalizeCode(row.code)}`
+}
+
+/** 按 (code, 入选日) 合并数据源：同日 tracking 优于 signal_pending；涨跌幅按事件价重算。 */
 export function dedupeTrackingRows<T extends DedupeTrackingRow>(rows: T[]): T[] {
-  const byCode = new Map<string, T>()
+  const byEvent = new Map<string, T>()
   for (const row of rows) {
-    const key = normalizeCode(row.code)
-    const existing = byCode.get(key)
+    const key = trackingEventKey(row)
+    const existing = byEvent.get(key)
+    const normalized = { ...row, recommend_count: formatCount(row.recommend_count), change_pct: eventChangePct(row.initial_price, row.current_price) ?? row.change_pct ?? null }
     if (!existing) {
-      byCode.set(key, { ...row, recommend_count: formatCount(row.recommend_count) })
+      byEvent.set(key, normalized)
       continue
     }
-    const preferred = preferTrackingRow(row, existing) ? row : existing
-    const other = preferred === row ? existing : row
+    const preferred = preferTrackingRow(normalized, existing) ? normalized : existing
+    const other = preferred === normalized ? existing : normalized
     const merged = mergeTrackingPrices(preferred, other)
-    byCode.set(key, {
+    byEvent.set(key, {
       ...merged,
-      is_ai_recommended: isAiRecommended(existing.is_ai_recommended) || isAiRecommended(row.is_ai_recommended),
-      rag_vetoed: Boolean(existing.rag_vetoed || row.rag_vetoed),
-      recommend_count: Math.max(formatCount(existing.recommend_count), formatCount(row.recommend_count)),
+      is_ai_recommended: isAiRecommended(existing.is_ai_recommended) || isAiRecommended(normalized.is_ai_recommended),
+      rag_vetoed: Boolean(existing.rag_vetoed || normalized.rag_vetoed),
+      recommend_count: Math.max(formatCount(existing.recommend_count), formatCount(normalized.recommend_count)),
     })
   }
-  return [...byCode.values()]
+  return [...byEvent.values()]
+}
+
+export interface TrackingStockGroup<T extends DedupeTrackingRow = DedupeTrackingRow> {
+  code: string
+  firstDate: number
+  lastDate: number
+  eventCount: number
+  firstPrice: number | null
+  currentPrice: number | null
+  sinceFirstPct: number | null
+  events: T[]
+}
+
+export function groupTrackingByCode<T extends DedupeTrackingRow>(rows: T[]): TrackingStockGroup<T>[] {
+  const groups = new Map<string, T[]>()
+  for (const row of rows) {
+    const code = normalizeCode(row.code)
+    const list = groups.get(code)
+    if (list) list.push(row)
+    else groups.set(code, [row])
+  }
+  return [...groups.entries()].map(([code, events]) => {
+    const ordered = [...events].sort((a, b) => reviewDateNumber(a.recommend_date) - reviewDateNumber(b.recommend_date))
+    const first = ordered[0]
+    const last = ordered[ordered.length - 1]
+    const firstPrice = positivePrice(first?.initial_price)
+    const currentPrice = positivePrice(last?.current_price) ?? ordered.map((row) => positivePrice(row.current_price)).find((price) => price != null) ?? null
+    return {
+      code,
+      firstDate: reviewDateNumber(first?.recommend_date ?? 0),
+      lastDate: reviewDateNumber(last?.recommend_date ?? 0),
+      eventCount: ordered.length,
+      firstPrice,
+      currentPrice,
+      sinceFirstPct: eventChangePct(firstPrice, currentPrice),
+      events: ordered,
+    }
+  })
 }

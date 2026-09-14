@@ -92,7 +92,7 @@ flowchart TD
     STEP2 --> S25
 
     S25["Step2.5: run_step2_5()<br/>signal_pending 确认"] --> S26
-    S26["Step2.6: prepare_recommendation_payload<br/>→ recommendation_tracking<br/>推荐价=首次推荐日收盘"] --> S27
+    S26["Step2.6: prepare_recommendation_payload<br/>→ recommendation_tracking<br/>事件价=该入选日收盘"] --> S27
     S27["Step2.7: score_springboard_abc<br/>起跳板评分"] --> S275["Step2.75: dynamic shadow<br/>health 校准 + 晋级清单"] --> S3
 
     S3["Step3: run_step3()<br/>批量 AI 研报"] --> MARK["mark_ai_recommendations<br/>标记起跳板"]
@@ -119,7 +119,7 @@ flowchart TD
 | 调度 | `wyckoff_funnel.yml` | GitHub Actions |
 | 编排 | `scripts/daily_job.py` | 主流程 |
 | Step2 | `workflows/wyckoff_funnel.py` | `core/wyckoff_engine.py` |
-| Step2.6 | `integrations/recommendation_payload.py` | `recommendation_tracking` 写库；`initial_price` 按 code 粘住首次推荐日收盘 |
+| Step2.6 | `integrations/recommendation_payload.py` | `recommendation_tracking` 写库；`initial_price` 为该行入选日收盘（事件价） |
 | Step3 | `workflows/step3_batch_report.py` | `tools/report_builder.py` |
 | Step4 | `workflows/step4_rebalancer.py` | `core/holding_diagnostic.py` / `core/wyckoff_engine.py`；工单回读 16:05 `daily_nav` 当日盈亏 |
 | 净值快照 | `scripts/nav_snapshot_job.py` | `workflows/nav_snapshot.py`；16:05 写总额与当日盈亏，不改持仓 |
@@ -138,7 +138,7 @@ flowchart TD
 让"建表"成为显式的启用动作。买许可复用 `step4_candidate_meta` 的规则准入，与实盘同一套口径；
 写入侧另有 `USER_SHADOW:` 前缀断言，拒绝任何非影子账户。
 
-**推荐价语义**：`recommendation_tracking.initial_price` = 该股票首次 `recommend_date` 的收盘价；同股再次推荐、同日重跑、晚间 reprice/performance 都不得改成新日价。`change_pct` 相对该粘住价；MFE/MAE 仍按该行事件日计算。performance 的 `max_dates` 只限制刷新哪些行，首次推荐日锚点仍按该 code 全量历史计算。存量纠偏入口为 `workflows.recommendation_tracking_reprice.correct_tracking_initial_prices`。
+**推荐价语义**：`recommendation_tracking.initial_price` = 该行 `recommend_date` 的收盘价（事件价）。跨日再入选新增一行，不粘住首次价。`change_pct` = `(现价 − 事件价) / 事件价`。同日重跑不得把已重定价的 `current_price` 盖回当日收盘，也不得把已算对的 `change_pct` 写死为 0。MFE/MAE 仍按该行事件日计算。存量纠偏入口为 `workflows.recommendation_tracking_reprice.correct_tracking_initial_prices`（按每行自己的入选日收盘改回事件价）。
 
 **强势股复盘证据**：生产漏斗在同轮 L1-L4 计算结束后，将逐股阶段、淘汰原因、候选车道、配置摘要和代码版本写入压缩 `review_trace_YYYYMMDD.json.gz`。该文件不含 OHLCV，随现有 Daily Job artifact 上传；19:25 Review 按前一交易日精确匹配成功运行的 trace，因此归因反映当时真实代码与配置，不依赖 Supabase，也不会被后来改动的策略重写历史。
 

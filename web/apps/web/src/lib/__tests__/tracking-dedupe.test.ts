@@ -2,12 +2,14 @@ import { describe, expect, it } from 'vitest'
 import {
   countTrackingOccurrences,
   dedupeTrackingRows,
+  eventChangePct,
+  groupTrackingByCode,
   hasCompleteTrackingWindow,
   latestTrackingDates,
 } from '@wyckoff/shared'
 
 describe('dedupeTrackingRows', () => {
-  it('fills current_price from tracking when newer signal_pending wins', () => {
+  it('keeps different dates as separate events', () => {
     const rows = dedupeTrackingRows([
       {
         code: 600750,
@@ -15,7 +17,7 @@ describe('dedupeTrackingRows', () => {
         recommend_count: 3,
         initial_price: 26.36,
         current_price: 28.1,
-        change_pct: 6.6,
+        change_pct: 0,
         source_type: 'recommendation_tracking',
         is_ai_recommended: false,
       },
@@ -24,20 +26,18 @@ describe('dedupeTrackingRows', () => {
         recommend_date: 20260803,
         recommend_count: 1,
         initial_price: 27.0,
-        current_price: null,
+        current_price: 28.1,
         change_pct: null,
         source_type: 'signal_pending',
         is_ai_recommended: false,
       },
     ])
 
-    expect(rows).toHaveLength(1)
-    expect(rows[0]?.recommend_date).toBe(20260803)
-    expect(rows[0]?.source_type).toBe('signal_pending')
-    expect(rows[0]?.initial_price).toBe(26.36)
-    expect(rows[0]?.current_price).toBe(28.1)
-    expect(rows[0]?.change_pct).toBe(6.6)
-    expect(rows[0]?.recommend_count).toBe(3)
+    expect(rows).toHaveLength(2)
+    const later = rows.find((row) => row.recommend_date === 20260803)
+    expect(later?.source_type).toBe('signal_pending')
+    expect(later?.initial_price).toBe(27.0)
+    expect(later?.change_pct).toBe(4.07)
   })
 
   it('keeps tracking row on same date over signal_pending', () => {
@@ -63,6 +63,22 @@ describe('dedupeTrackingRows', () => {
     expect(rows[0]?.source_type).toBe('recommendation_tracking')
     expect(rows[0]?.current_price).toBe(11)
     expect(rows[0]?.recommend_count).toBe(2)
+    expect(rows[0]?.change_pct).toBe(15.79)
+  })
+
+  it('recomputes change from the event prices instead of keeping a stale zero', () => {
+    expect(eventChangePct(294.2, 327.07)).toBe(11.17)
+  })
+
+  it('groups events by code for first-to-now stats', () => {
+    const groups = groupTrackingByCode([
+      { code: '688519', recommend_date: 20260827, initial_price: 294.2, current_price: 327.07 },
+      { code: '688519', recommend_date: 20260911, initial_price: 327.07, current_price: 327.07 },
+    ])
+
+    expect(groups).toHaveLength(1)
+    expect(groups[0]?.eventCount).toBe(2)
+    expect(groups[0]?.sinceFirstPct).toBe(11.17)
   })
 })
 

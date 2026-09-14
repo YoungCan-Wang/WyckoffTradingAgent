@@ -38,24 +38,24 @@ class _Client:
         return _Query(self)
 
 
-def test_global_upsert_preserves_first_price_across_new_and_same_day_runs(monkeypatch):
+def test_global_upsert_uses_event_day_price(monkeypatch):
     monkeypatch.setenv("WYCKOFF_WRITE_CONTEXT", "server_job")
     monkeypatch.setattr(mod, "is_admin_configured", lambda: True)
     scenarios = [
         (
             [
-                {"code": "AAPL.US", "recommend_date": 20260801, "initial_price": 200.0},
-                {"code": "AAPL.US", "recommend_date": 20260802, "initial_price": 205.0},
+                {"code": "AAPL.US", "recommend_date": 20260801, "initial_price": 200.0, "current_price": 210.0},
+                {"code": "AAPL.US", "recommend_date": 20260802, "initial_price": 205.0, "current_price": 210.0},
             ],
             {"code": "AAPL.US", "name": "Apple", "latest_close": 220.0},
             "us",
-            (200.0, 220.0, 10.0),
+            (220.0, 220.0, 0.0),
         ),
         (
-            [{"code": "00700.HK", "recommend_date": 20260803, "initial_price": 500.0}],
+            [{"code": "00700.HK", "recommend_date": 20260803, "initial_price": 500.0, "current_price": 530.0}],
             {"code": "00700.HK", "name": "Tencent", "latest_close": 510.0},
             "hk",
-            (500.0, 510.0, 2.0),
+            (510.0, 530.0, round((530.0 - 510.0) / 510.0 * 100.0, 2)),
         ),
     ]
 

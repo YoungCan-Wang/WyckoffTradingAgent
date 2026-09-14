@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from core.constants import TABLE_RECOMMENDATION_TRACKING_HK, TABLE_RECOMMENDATION_TRACKING_US
+from core.recommendation_payload import event_change_pct
 from integrations.recommendation_tracking_common import (
     fetch_records_from_table,
     upsert_to_table,
@@ -32,9 +33,9 @@ def upsert_global_recommendations(
     require_server_write_context(f"upsert global recommendations {market}")
     try:
         client = create_admin_client()
-        history = fetch_records_from_table(client, table, "code,recommend_date,initial_price")
-        first_prices = _first_prices_by_code(history)
-        payload = [_global_recommendation_payload(row, recommend_date, first_prices) for row in candidates]
+        history = fetch_records_from_table(client, table, "code,recommend_date,initial_price,current_price")
+        existing_quotes = _event_quotes_by_code_date(history)
+        payload = [_global_recommendation_payload(row, recommend_date, existing_quotes) for row in candidates]
         payload = [row for row in payload if row]
         if payload:
             client.table(table).upsert(payload, on_conflict="code,recommend_date").execute()
@@ -74,14 +75,19 @@ def resolve_global_table(market: str) -> str:
 def _global_recommendation_payload(
     candidate: dict[str, Any],
     recommend_date: int,
-    first_prices: dict[str, float] | None = None,
+    existing_quotes: dict[tuple[str, int], tuple[float, float]] | None = None,
 ) -> dict[str, Any] | None:
     code = str(candidate.get("code") or candidate.get("symbol") or "").strip()
     if not code:
         return None
-    current_price = _extract_price(candidate)
-    sticky_price = float((first_prices or {}).get(code, 0.0) or 0.0)
-    initial_price = sticky_price if sticky_price > 0 else current_price
+    day_price = _extract_price(candidate)
+    old_initial, old_current = (existing_quotes or {}).get((code, recommend_date), (0.0, 0.0))
+    initial_price = day_price if day_price > 0 else old_initial
+    already_repriced = old_current > 0 and old_initial > 0 and abs(old_current - old_initial) > 1e-9
+    current_price = old_current if already_repriced else (day_price if day_price > 0 else old_current)
+    if current_price <= 0:
+        current_price = initial_price
+    change = event_change_pct(initial_price, current_price)
     return {
         "code": code,
         "name": str(candidate.get("name", "")).strip(),
@@ -89,34 +95,26 @@ def _global_recommendation_payload(
         "recommend_date": recommend_date,
         "initial_price": initial_price,
         "current_price": current_price,
-        "change_pct": _change_pct(initial_price, current_price),
+        "change_pct": 0.0 if change is None else change,
         "funnel_score": _extract_score(candidate),
         "is_ai_recommended": False,
         "updated_at": datetime.now(UTC).isoformat(),
     }
 
 
-def _first_prices_by_code(rows: list[dict[str, Any]]) -> dict[str, float]:
-    earliest: dict[str, tuple[int, float]] = {}
+def _event_quotes_by_code_date(rows: list[dict[str, Any]]) -> dict[tuple[str, int], tuple[float, float]]:
+    quotes: dict[tuple[str, int], tuple[float, float]] = {}
     for row in rows:
         code = str(row.get("code") or "").strip()
         try:
             recommend_date = int(row.get("recommend_date"))
-            price = float(row.get("initial_price") or 0.0)
+            initial = float(row.get("initial_price") or 0.0)
+            current = float(row.get("current_price") or 0.0)
         except (TypeError, ValueError):
             continue
-        previous = earliest.get(code)
-        if code and (previous is None or recommend_date < previous[0]):
-            earliest[code] = (recommend_date, price if price > 0 else 0.0)
-        elif code and previous and recommend_date == previous[0] and price > 0:
-            earliest[code] = (recommend_date, price)
-    return {code: price for code, (_, price) in earliest.items() if price > 0}
-
-
-def _change_pct(initial_price: float, current_price: float) -> float:
-    if initial_price <= 0 or current_price <= 0:
-        return 0.0
-    return round((current_price - initial_price) / initial_price * 100.0, 2)
+        if code:
+            quotes[(code, recommend_date)] = (initial if initial > 0 else 0.0, current if current > 0 else 0.0)
+    return quotes
 
 
 def _extract_price(candidate: dict[str, Any]) -> float:

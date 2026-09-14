@@ -180,24 +180,22 @@ def _build_payloads(target_dates: tuple[date, ...], day_results: list[dict[str, 
         TABLE_RECOMMENDATION_TRACKING,
         "code,recommend_count,recommend_date,initial_price",
     )
-    counts, code_dates, first_prices = _history_state(
+    counts, code_dates = _history_state(
         [row for row in rows if _int_date(row.get("recommend_date")) not in target_ints]
     )
     payloads: dict[int, list[dict]] = {}
     for result in sorted(day_results, key=lambda item: int(item["recommend_date"])):
         rec_date = int(result["recommend_date"])
-        rows_for_date = build_recommendation_payload(rec_date, result["symbols_info"], counts, code_dates, first_prices)
+        rows_for_date = build_recommendation_payload(rec_date, result["symbols_info"], counts, code_dates)
         _apply_ai_marks(rows_for_date, result["ai_codes"], result["springboard_updates"])
         payloads[rec_date] = rows_for_date
-        _advance_history(counts, code_dates, first_prices, rows_for_date)
+        _advance_history(counts, code_dates, rows_for_date)
     return payloads
 
 
-def _history_state(rows: list[dict[str, Any]]) -> tuple[dict[int, int], dict[int, set[int]], dict[int, float]]:
+def _history_state(rows: list[dict[str, Any]]) -> tuple[dict[int, int], dict[int, set[int]]]:
     counts: dict[int, int] = {}
     code_dates: dict[int, set[int]] = {}
-    first_dates: dict[int, int] = {}
-    first_prices: dict[int, float] = {}
     for row in rows:
         code = _int_code(row.get("code"))
         rec_date = _int_date(row.get("recommend_date"))
@@ -206,19 +204,12 @@ def _history_state(rows: list[dict[str, Any]]) -> tuple[dict[int, int], dict[int
         count = _safe_int(row.get("recommend_count"), 1)
         counts[code] = max(counts.get(code, 0), count)
         code_dates.setdefault(code, set()).add(rec_date)
-        price = _safe_float(row.get("initial_price"))
-        if code not in first_dates or rec_date < first_dates[code]:
-            first_dates[code] = rec_date
-            first_prices[code] = price
-        elif rec_date == first_dates[code] and price > 0:
-            first_prices[code] = price
-    return counts, code_dates, first_prices
+    return counts, code_dates
 
 
 def _advance_history(
     counts: dict[int, int],
     code_dates: dict[int, set[int]],
-    first_prices: dict[int, float],
     rows: list[dict],
 ) -> None:
     for row in rows:
@@ -228,10 +219,6 @@ def _advance_history(
             continue
         counts[code] = max(counts.get(code, 0), _safe_int(row.get("recommend_count"), 1))
         code_dates.setdefault(code, set()).add(rec_date)
-        price = _safe_float(row.get("initial_price"))
-        # days are applied ascending, so the first non-zero price seen is the sticky recommend price
-        if price > 0 and first_prices.get(code, 0) <= 0:
-            first_prices[code] = price
 
 
 def _apply_ai_marks(rows: list[dict], ai_codes: list[str], springboard_updates: dict[str, dict[str, Any]]) -> None:

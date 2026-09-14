@@ -71,7 +71,7 @@ A 股主漏斗先写观察样本，盘后 feedback 再计算 outcomes，下一�
 
 A 股主漏斗使用本地股票池和行业映射；港股、美股、ETF 的代码 universe 维护在 `data/market_universes/*.txt`。港股 / 美股漏斗使用 TickFlow 批量日线接口拉取 320 个交易日窗口，和 A 股主流程共享结构识别口径，但不走 A 股专属的 Tushare 兜底。港美回测按需手动执行，不再维护独立定时 Actions。
 
-三市场推荐表与 Web 使用同一价格口径：`initial_price` 按 code 粘住首次推荐日收盘价，后续再次推荐或同日重跑只更新 `current_price` 与相对首次价的 `change_pct`；MFE/MAE 仍以各行事件日收盘为基准。港美漏斗写入时先读取既有推荐历史，因此新记录无需等晚间重估后才与 A 股口径一致。
+三市场推荐表与 Web 使用同一价格口径：`initial_price` 为该行入选日收盘（事件价），`change_pct` 相对该价；跨日再入选新增一行。同日重跑不得把已重定价的 `current_price` 盖回当日收盘，也不得把已算对的 `change_pct` 写死为 0。MFE/MAE 仍以各行事件日收盘为基准。港美漏斗写入时先读取既有事件报价，因此新记录无需等晚间重估后才与 A 股口径一致。
 
 ### 盘前风控
 

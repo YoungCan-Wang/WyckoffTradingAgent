@@ -119,7 +119,9 @@ export type { ValueDataQuality, ValueDataQualityLevel, ValueRule, ValueScore, Va
 export {
   countTrackingOccurrences,
   dedupeTrackingRows,
+  eventChangePct,
   formatPatternReviewDigest,
+  groupTrackingByCode,
   formatPatternReviewLine,
   hasCompleteTrackingWindow,
   labelCandidateTerm,
@@ -129,7 +131,7 @@ export {
   PATTERN_REVIEW_EMPTY_MESSAGE,
   PATTERN_REVIEW_SCOPE_NOTE,
 } from './pattern-review'
-export type { DedupeTrackingRow, PatternReviewRow } from './pattern-review'
+export type { DedupeTrackingRow, PatternReviewRow, TrackingStockGroup } from './pattern-review'
 export {
   attributionExecutionImpactText,
   attributionFormalDynamicLabel,

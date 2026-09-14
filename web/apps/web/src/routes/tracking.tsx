@@ -9,6 +9,8 @@ import { SortableHeader, type SortOrder } from '@/components/sortable-header'
 import {
   countTrackingOccurrences,
   dedupeTrackingRows,
+  eventChangePct,
+  groupTrackingByCode,
   hasCompleteTrackingWindow,
   labelCandidateTerm,
   latestTrackingDates,
@@ -72,6 +74,7 @@ interface Recommendation {
   source_type?: string | null
   signal_status?: string | null
   signal_type?: string | null
+  since_first_pct?: number | null
 }
 
 interface SignalPendingRow {
@@ -101,6 +104,7 @@ interface SignalPendingRow {
 interface SummaryStats {
   count: number
   avg: number | null
+  sinceFirstAvg: number | null
   best: number | null
   worst: number | null
   totalRecommendations: number
@@ -248,7 +252,7 @@ export function TrackingPage() {
     const dateSet = new Set(activeDates)
     return data.filter((row) => dateSet.has(row.recommend_date))
   }, [data, activeDates])
-  const visibleData = useMemo(() => dedupeRecommendations(windowRows), [windowRows])
+  const visibleData = useMemo(() => annotateTrackingRows(dedupeRecommendations(windowRows)), [windowRows])
 
   const filtered = useMemo(() => {
     let result = visibleData
@@ -341,7 +345,7 @@ function TrackingReadyContent(props: TrackingReadyContentProps) {
       <DateWindowFilter activeDateCount={activeDates.length} activeOldestDate={activeOldestDate} latestDate={latestDate} rawCount={windowRows.length} selectedWindow={selectedWindow} onWindowChange={onSelectedWindowChange} />
       {stats && <SummaryCards selectedWindow={selectedWindow} stats={stats} />}
       <WinRatePanel rows={visibleData} />
-      <TrackingFilters filteredCount={filtered.length} market={market} onlyAI={onlyAI} search={search} sortBy={sortBy} sortOrder={sortOrder} visibleCount={visibleData.length} onOnlyAIChange={onOnlyAIChange} onSearchChange={onSearchChange} onSortByChange={onSortByChange} onSortOrderChange={onSortOrderChange} />
+      <TrackingFilters filteredCount={filtered.length} filteredStockCount={uniqueTrackingCodes(filtered)} market={market} onlyAI={onlyAI} search={search} sortBy={sortBy} sortOrder={sortOrder} visibleCount={visibleData.length} visibleStockCount={uniqueTrackingCodes(visibleData)} onOnlyAIChange={onOnlyAIChange} onSearchChange={onSearchChange} onSortByChange={onSortByChange} onSortOrderChange={onSortOrderChange} />
       <TrackingTable rows={filtered} sortBy={sortBy} sortOrder={sortOrder} onSortChange={handleSort} market={market} />
     </>
   )
@@ -506,9 +510,10 @@ function SummaryCards({ selectedWindow, stats }: { selectedWindow: Recommendatio
   const { t } = usePreferences()
 
   return (
-    <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-5">
+    <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-6">
       <StatCard label={t('tracking.coveredStocks')} value={`${stats.count} ${t('common.stocks')}`} />
-      <StatCard label={t('tracking.avgChange', { size: selectedWindow })} value={formatPct(stats.avg)} color={financialValueClass(stats.avg)} />
+      <StatCard label={t('tracking.avgChange', { size: selectedWindow })} value={formatPct(stats.avg)} color={financialValueClass(stats.avg)} hint={t('tracking.avgChangeHint')} />
+      <StatCard label={t('tracking.avgSinceFirst')} value={formatPct(stats.sinceFirstAvg)} color={financialValueClass(stats.sinceFirstAvg)} hint={t('tracking.avgSinceFirstHint')} />
       <StatCard label={t('tracking.bestChange')} value={formatPct(stats.best)} color={financialValueClass(stats.best)} />
       <StatCard label={t('tracking.worstChange')} value={formatPct(stats.worst)} color={financialValueClass(stats.worst)} />
       <StatCard label={t('tracking.totalRecommendations')} value={`${stats.totalRecommendations} ${t('tracking.times')}`} />
@@ -518,24 +523,28 @@ function SummaryCards({ selectedWindow, stats }: { selectedWindow: Recommendatio
 
 function TrackingFilters({
   filteredCount,
+  filteredStockCount,
   market,
   onlyAI,
   search,
   sortBy,
   sortOrder,
   visibleCount,
+  visibleStockCount,
   onOnlyAIChange,
   onSearchChange,
   onSortByChange,
   onSortOrderChange,
 }: {
   filteredCount: number
+  filteredStockCount: number
   market: MarketTab
   onlyAI: boolean
   search: string
   sortBy: SortBy
   sortOrder: SortOrder
   visibleCount: number
+  visibleStockCount: number
   onOnlyAIChange: (value: boolean) => void
   onSearchChange: (value: string) => void
   onSortByChange: (value: SortBy) => void
@@ -569,7 +578,7 @@ function TrackingFilters({
         onSortOrderChange={onSortOrderChange}
       />
       <span className="text-xs text-muted-foreground">
-        {filteredCount} / {visibleCount} {t('common.stocks')}
+        {filteredCount}/{visibleCount} {t('tracking.events')} · {filteredStockCount}/{visibleStockCount} {t('common.stocks')}
       </span>
     </div>
   )
@@ -712,6 +721,11 @@ function TrackingRow({ row, market = 'cn' }: { row: Recommendation; market?: Mar
           <span>{row.name || '-'}</span>
           <SignalPendingBadge row={row} />
         </div>
+        {recommendationCount(row.recommend_count) > 1 && (
+          <div className="mt-0.5 text-[11px] text-muted-foreground">
+            {t('tracking.sinceFirstHint', { pct: formatPct(row.since_first_pct ?? null), count: recommendationCount(row.recommend_count) })}
+          </div>
+        )}
       </td>
       <td className="px-3 py-2 text-right text-muted-foreground">{formatDate(row.recommend_date)}</td>
       <td className="px-3 py-2 text-right font-medium">{recommendationCount(row.recommend_count)}</td>
@@ -999,25 +1013,41 @@ function dedupeRecommendations(rows: Recommendation[]): Recommendation[] {
   return dedupeTrackingRows(rows)
 }
 
+function annotateTrackingRows(rows: Recommendation[]): Recommendation[] {
+  const groups = groupTrackingByCode(rows)
+  const byCode = new Map(groups.map((group) => [group.code, group]))
+  return rows.map((row) => {
+    const group = byCode.get(normalizeCode(row.code))
+    return {
+      ...row,
+      change_pct: eventChangePct(row.initial_price, row.current_price) ?? row.change_pct,
+      recommend_count: group?.eventCount ?? 1,
+      since_first_pct: group?.sinceFirstPct ?? null,
+    }
+  })
+}
+
+function uniqueTrackingCodes(rows: Recommendation[]): number {
+  return new Set(rows.map((row) => normalizeCode(row.code)).filter(Boolean)).size
+}
+
+function averageFinite(values: number[]): number | null {
+  return values.length > 0 ? values.reduce((total, value) => total + value, 0) / values.length : null
+}
+
 function buildSummaryStats(rows: Recommendation[], totalRecommendations: number): SummaryStats | null {
   if (rows.length === 0) return null
   const activeRows = rows.filter((row) => !row.rag_vetoed)
-  const values = activeRows.map((row) => row.change_pct).filter(isFiniteNumber)
-  if (values.length === 0) {
-    return {
-      count: rows.length,
-      avg: null,
-      best: null,
-      worst: null,
-      totalRecommendations,
-    }
-  }
-  const sum = values.reduce((total, value) => total + value, 0)
+  const eventValues = activeRows.map((row) => row.change_pct).filter(isFiniteNumber)
+  const sinceFirstValues = groupTrackingByCode(activeRows)
+    .map((group) => group.sinceFirstPct)
+    .filter(isFiniteNumber)
   return {
-    count: rows.length,
-    avg: sum / values.length,
-    best: Math.max(...values),
-    worst: Math.min(...values),
+    count: uniqueTrackingCodes(rows),
+    avg: averageFinite(eventValues),
+    sinceFirstAvg: averageFinite(sinceFirstValues),
+    best: eventValues.length > 0 ? Math.max(...eventValues) : null,
+    worst: eventValues.length > 0 ? Math.min(...eventValues) : null,
     totalRecommendations,
   }
 }

@@ -115,13 +115,22 @@ def test_upsert_recommendations_preserves_existing_recommend_count(monkeypatch):
 
     assert ok is True
     assert client.upserts[0][0]["recommend_count"] == 4
-    assert client.upserts[0][0]["initial_price"] == 9.0
+    assert client.upserts[0][0]["initial_price"] == 10.0
     assert client.upserts[0][0]["current_price"] == 10.0
+    assert client.upserts[0][0]["change_pct"] == 0.0
 
 
-def test_upsert_recommendations_sticks_first_recommend_price_on_same_day_rerun(monkeypatch):
+def test_upsert_recommendations_keeps_repriced_current_on_same_day_rerun(monkeypatch):
     client = FakeSupabaseClient(
-        rows=[{"code": 1, "recommend_count": 1, "recommend_date": 20260518, "initial_price": 8.8}]
+        rows=[
+            {
+                "code": 1,
+                "recommend_count": 1,
+                "recommend_date": 20260518,
+                "initial_price": 8.8,
+                "current_price": 11.0,
+            }
+        ]
     )
     _enable_fake_supabase(monkeypatch, client)
 
@@ -129,8 +138,9 @@ def test_upsert_recommendations_sticks_first_recommend_price_on_same_day_rerun(m
 
     assert ok is True
     assert client.upserts[0][0]["recommend_count"] == 1
-    assert client.upserts[0][0]["initial_price"] == 8.8
-    assert client.upserts[0][0]["current_price"] == 10.0
+    assert client.upserts[0][0]["initial_price"] == 10.0
+    assert client.upserts[0][0]["current_price"] == 11.0
+    assert client.upserts[0][0]["change_pct"] == 10.0
 
 
 def test_upsert_recommendations_dedupes_same_code_same_date(monkeypatch):
@@ -360,7 +370,7 @@ def test_write_recommendation_backup_artifact_marks_ai_and_sql(tmp_path):
     sql = (tmp_path / "recommendation_tracking_20260526.sql").read_text(encoding="utf-8")
     assert "insert into public.recommendation_tracking" in sql
     assert "on conflict (code, recommend_date) do update set" in sql
-    assert "initial_price = coalesce(nullif(recommendation_tracking.initial_price, 0), excluded.initial_price)" in sql
+    assert "initial_price = excluded.initial_price" in sql
     assert "array['sos', 'lps']::text[]" in sql
     assert '\'{"c_support": {"touch_dates": ["2026-05-24"]}}\'::jsonb' in sql
     assert "'O''Reilly setup'" in sql

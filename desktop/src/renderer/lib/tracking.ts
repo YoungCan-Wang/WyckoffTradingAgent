@@ -27,61 +27,19 @@ export type SortDir = 'asc' | 'desc'
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
 
 /**
- * 同一代码只保留一条：取最新推荐日那条。
- *
- * web 端同样去重（dedupeTrackingRows）。不去重的话一只票被连续推荐五天就占
- * 五行，把别的票挤出屏幕，而这五行说的是同一件事。
- *
- * initial_price 沿用最早那条 —— 那才是「推荐时的价格」，用最新一条的初始价
- * 算涨跌等于把已经走过的一段抹掉。
+ * 跨日入选保留多行。只丢掉空代码，并按该行自己的事件价重算涨跌。
  */
 export function dedupeByCode (rows: TrackRecord[]): TrackRecord[] {
-  const byCode = new Map<string, TrackRecord>()
-  for (const row of rows) {
-    const key = String(row.code || '')
-    if (!key) continue
-    const prev = byCode.get(key)
-    if (!prev) {
-      byCode.set(key, row)
-      continue
-    }
-    // 两个方向都要处理。后端按 recommend_date 倒序返回，也就是先遇到的那条
-    // 已经是最新的 —— 只在「后来的更新」时合并，等于永远走不到合并分支，
-    // 最早的推荐价拿不回来，重复推荐会把展示基准重置成最近一次的价格。
-    const date = String(row.recommend_date || '')
-    const prevDate = String(prev.recommend_date || '')
-    // 取更新那条作为展示主体，推荐价取更早那条 —— 那才是「推荐时的价格」。
-    const newer = date > prevDate ? row : prev
-    const older = date > prevDate ? prev : row
-    byCode.set(key, withBasePrice(newer, older.recommend_price))
-  }
-  return [...byCode.values()]
+  return rows.filter((row) => String(row.code || '')).map(withEventReturn)
 }
 
-/**
- * 换掉基准价之后，涨跌必须跟着重算。
- *
- * 只换 recommend_price 会得到自相矛盾的一行：基准显示 50、现价 90，涨跌却还是
- * 后端按 80 算出来的 +12.5%（真实应为 +80%）。而这一行恰恰出现在「重复推荐」
- * 这个我们想修的场景里 —— 数字对不上账，用户没法判断该信哪个。
- *
- * pnl_pct 只依赖现价，能精确重算。max/min 是那条记录窗口内的极值，改了基准和
- * 起点之后无从推算（中间的价格路径我们没有），所以置空显示破折号 —— 宁可说
- * 「不知道」，也不要给一个换了基准就不成立的数字。
- */
-function withBasePrice (record: TrackRecord, basePrice: number | null): TrackRecord {
-  const base = basePrice ?? record.recommend_price
-  // 基准没变（只有一条推荐，或两条价格相同）就原样返回，不动后端算好的字段。
-  if (base === record.recommend_price) return record
-
+function withEventReturn (record: TrackRecord): TrackRecord {
+  const base = record.recommend_price
   const current = record.current_price
   const canCompute = isNum(base) && base !== 0 && isNum(current)
   return {
     ...record,
-    recommend_price: base,
-    pnl_pct: canCompute ? ((current - base) / base) * 100 : null,
-    max_pnl_pct: null,
-    min_pnl_pct: null
+    pnl_pct: canCompute ? ((current - base) / base) * 100 : record.pnl_pct
   }
 }
 

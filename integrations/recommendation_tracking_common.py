@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from core.recommendation_payload import event_change_pct
 from integrations.supabase_base import require_shared_writes_enabled
 from utils.safe import safe_float
 
@@ -175,11 +176,6 @@ def fetch_tickflow_tracking_market_data(
     return quotes, hist_map
 
 
-def first_recommend_date_yyyymmdd(rows: list[dict[str, Any]]) -> str:
-    dates = [day for day in (recommend_date_to_yyyymmdd(row.get("recommend_date")) for row in rows) if day]
-    return min(dates) if dates else ""
-
-
 def tracking_update_from_close_map(
     row: dict[str, Any],
     code: int | str,
@@ -187,14 +183,12 @@ def tracking_update_from_close_map(
     close_map: dict[str, float],
     current_close: float,
     now_iso: str,
-    *,
-    first_recommend_date: str = "",
 ) -> dict[str, Any] | None:
     recommend_date = recommend_date_to_yyyymmdd(row.get("recommend_date"))
-    anchor_date = first_recommend_date or recommend_date
-    pick_date = pick_close_on_or_before(trade_dates, anchor_date)
+    pick_date = pick_close_on_or_before(trade_dates, recommend_date)
     initial_close = float(close_map.get(pick_date, 0.0)) if pick_date else 0.0
-    if initial_close <= 0 or current_close <= 0:
+    change_pct = event_change_pct(initial_close, current_close)
+    if initial_close <= 0 or current_close <= 0 or change_pct is None:
         return None
     return {
         "id": row.get("id"),
@@ -202,6 +196,6 @@ def tracking_update_from_close_map(
         "recommend_date": int(recommend_date) if recommend_date.isdigit() else None,
         "initial_price": round(initial_close, 4),
         "current_price": round(current_close, 4),
-        "change_pct": round((current_close - initial_close) / initial_close * 100.0, 2),
+        "change_pct": change_pct,
         "updated_at": now_iso,
     }
