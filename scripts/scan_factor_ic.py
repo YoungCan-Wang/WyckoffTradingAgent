@@ -31,6 +31,7 @@ import _bootstrap  # noqa: F401
 import numpy as np
 import pandas as pd
 
+from core.channel_geometry import regression_channel_panels
 from core.factor_ic import (
     MIN_CROSS_SECTION,
     FactorICResult,
@@ -169,6 +170,7 @@ def build_factors(market: pd.DataFrame) -> tuple[dict[str, pd.DataFrame], pd.Dat
     factors["close_position"] = ((close - low) / rng.where(rng > 0)) * 100
 
     _add_volume_school_factors(factors, close, vol)
+    _add_channel_factors(factors, close)
 
     # --- 板块强度因子 ---
     # 2026-08-26 实测（169 个交易日、日均 3823 只、扣 0.202%），这是当前唯一测出**正 IC**
@@ -238,6 +240,33 @@ def _add_volume_school_factors(factors: dict[str, pd.DataFrame], close: pd.DataF
     factors["vs_price_vol_divergence"] = (close.pct_change(5, fill_method=None) * 100) * (
         1 - v5 / v5_prev.where(v5_prev > 0)
     )
+
+
+CHANNEL_CLEAR_MIN_R2 = 0.6
+CHANNEL_CLEAR_MIN_TOUCHES = 4
+
+
+def _add_channel_factors(factors: dict[str, pd.DataFrame], close: pd.DataFrame) -> None:
+    """价格通道几何因子（issue #429，雪球「趋势前沿」的两句纲领）。
+
+    作者只用两样东西：价格通道定趋势、黄金分割定目标；明确不用均线、不用量。
+    #429 想拿它当**否决层**（在下行通道内部就否掉候选），但那份 RFC 是先上代码再量测。
+    这里先把纲领拆成连续因子过一遍 IC，因为它要否决的状态与已在池子里的动量因子高度同形：
+    `chan_slope` 之于 ret60、`chan_pos` 之于 dist_to_high60 / price_from_low250。
+    **零假设是「通道只是动量的更噪版本」**，不否掉它就没有理由动漏斗。
+
+    `chan_pos_clear` 是同一个 pos 只在「通道清晰」时保留（r2>=0.6 且触轨>=4，日均约
+    1500 只 / 全市场 32%），用来测 RFC 真正的条件性主张——几何只在通道干净时说话。
+    """
+    panels = regression_channel_panels(close)
+    factors["chan_slope"] = panels.slope
+    factors["chan_pos"] = panels.pos
+    factors["chan_width"] = panels.width
+    factors["chan_r2"] = panels.r2
+    factors["chan_fib_room"] = panels.fib_room
+    clear = (panels.r2 >= CHANNEL_CLEAR_MIN_R2) & (panels.touches >= CHANNEL_CLEAR_MIN_TOUCHES)
+    factors["chan_pos_clear"] = panels.pos.where(clear)
+    factors["chan_slope_clear"] = panels.slope.where(clear)
 
 
 @lru_cache(maxsize=1)
