@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { apiUrl } from '@/lib/api-url'
+import { apiWsUrl } from '@/lib/api-url'
 import { parseAgentRunRecord, type AgentRunRecord } from './agent-runs'
 
 export function agentRunSocketUrl(): string {
-  return apiUrl('/api/agent-runs/ws').replace(/^http/, 'ws')
+  return apiWsUrl('/api/agent-runs/ws')
 }
 
 export function parseAgentRunPush(data: unknown): AgentRunRecord | null {

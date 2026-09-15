@@ -56,9 +56,9 @@
   │
   ├─→ Supabase (Auth + DB)     ← Auth、星球会员、配置、持仓、复盘表等仍按 RLS 直连
   │
-  ├─→ /api/chat/*              ← Pages Function 转发到 Hono Worker API
+  ├─→ 同源 /api/chat|settings|portfolio|agent-runs|remote
   │       │
-  │       └─→ Vercel AI SDK streamText + tools + 协议层工具审批
+  │       └─→ Pages Function fetch() 反代到完整 wyckoff-api Worker（不缓冲 SSE）
   │
   ├─→ /api/llm-proxy/*         ← 兼容代理，用于行情/LLM 直连能力
   │       │
@@ -69,7 +69,7 @@
 
 **为什么需要 API 层与边缘代理？**
 
-读盘室主链路已经后端化到 `web/apps/api/src/routes/chat.ts`：独立 `wyckoff-api` Worker 通过 `worker-chat.ts` 注入沙箱工具，负责读取用户模型配置、执行工具、限流、返回 UIMessage stream，并通过 Vercel AI SDK 的 approval parts 约束 `execute_portfolio_update`。生产 React 通过 `VITE_API_URL` 调用这个 Worker；`web/functions/api/{chat,portfolio,settings}/[[path]].ts` 保留为同源兼容入口，但不是生产前端的默认链路。Pages 兼容 app 使用不含沙箱工具的 `chatRoutes`，并明确不挂载 `/api/agent-runs`。Vercel Sandbox 的 Node.js SDK 只在 `web/apps/sandbox-bridge/` 的 Vercel Node Function 中运行，Worker 与 Pages Functions 都不会加载它。
+读盘室主链路已经后端化到 `web/apps/api/src/routes/chat.ts`：独立 `wyckoff-api` Worker 通过 `worker-chat.ts` 注入沙箱工具，负责读取用户模型配置、执行工具、限流、返回 UIMessage stream，并通过 Vercel AI SDK 的 approval parts 约束 `execute_portfolio_update`。生产 React 只请求 Pages 同源 `/api/*`，不直连 `*.workers.dev`：国内浏览器能打开 `pages.dev`，但常访问不了 `workers.dev`，单股分析走的 `/api/llm-proxy` 因此可用，读盘室和设置连通性测试却会 `Failed to fetch`。`web/functions/api/[[path]].ts` 在边缘用 `fetch()` 把 `/api/chat`、`/api/settings`、`/api/portfolio`、`/api/agent-runs`、`/api/remote` 反代到完整 Worker，原样转发 `Authorization` 与 WebSocket 升级头，不缓冲 SSE / UIMessage 流。这不需要新的自定义域名，也不需要改 Cloudflare Dashboard；Worker 源站默认已是公开的 `https://wyckoff-api.yongkai-wang.workers.dev`，Pages 可用可选变量 `WYCKOFF_API_ORIGIN` 覆盖。Service Binding 是后续优化，不是这条路径的前置条件。`web/apps/api/src/pages.ts` 仍是不含沙箱工具、不挂载 `/api/agent-runs` 的兼容 app，只供测试，不是生产读盘室后端。Vercel Sandbox 的 Node.js SDK 只在 `web/apps/sandbox-bridge/` 的 Vercel Node Function 中运行，Worker 与 Pages Functions 都不会加载它。
 
 Hono app 的公共中间件按请求 ID、安全响应头、CORS、256 KiB 请求体上限的顺序执行；路由随后执行 Supabase JWT 鉴权与业务校验。聊天 POST 在鉴权后执行用户限流：同时配置 `UPSTASH_REDIS_REST_URL` 和 `UPSTASH_REDIS_REST_TOKEN` 时使用 Upstash Redis REST 共享额度，未配置时保留单 Worker 实例内的软限流，Redis 超时或不可用时返回 `X-RateLimit-Backend: local-fallback` 并启用本地保护。只配置一个 Upstash 变量属于部署错误，请求会失败而不会静默使用不完整连接。
 
@@ -105,7 +105,7 @@ Worker 负责鉴权、输入校验、队列控制面和 HMAC 签名。Vercel Nod
 
 读盘室只在用户问题命中观察篮代码，或明确要求复盘观察篮时，从 TickFlow 拉取相关标的的最新可用行情。快照只在浏览器保存 45 秒，随请求传入 Worker 并校验代码集合、时间和数值类型；它不写入 Supabase 或 Redis，数据源不可用时模型必须明确说明缺失，不得估算价格。行情块以当轮额外 user 消息注入模型上下文，**不拼进 system prompt**，避免价/时间戳变动打爆 prompt cache。
 
-前端的 `web/apps/web/src/lib/api-url.ts` 统一生成 chat、portfolio 和 settings 的后端地址。本地开发默认连接 `http://127.0.0.1:8787`，生产默认连接 `https://wyckoff-api.yongkai-wang.workers.dev`；部署环境可用公开的构建变量 `VITE_API_URL` 覆盖地址。该变量只包含公开服务地址，不能放 Token。
+前端的 `web/apps/web/src/lib/api-url.ts` 统一生成 chat、portfolio、settings、agent-runs 和 remote 的后端地址。本地开发默认连接 `http://127.0.0.1:8787`；生产默认返回同源相对路径 `/api/...`，由 Pages Function 反代到 `wyckoff-api` Worker。调试可用公开构建变量 `VITE_API_URL` 覆盖（例如仍指向 `workers.dev`）；该变量只包含公开服务地址，不能放 Token。生产浏览器不再依赖对 `workers.dev` 的 CORS。
 
 **免费可观测（不写 Supabase）**：`wyckoff-api` 在 `wrangler.toml` 打开 Workers Logs。未捕获 500 会打一条 `worker_error` JSON（`requestId`、方法、路径、已鉴权则带 `userId`），脱敏后不含 Token。查日志：Cloudflare Dashboard → Workers & Pages → `wyckoff-api` → Logs，免费档约留 3 天。页面 PV/UV 用 Cloudflare Web Analytics：优先在 Pages 项目打开；若要用脚本注入，给 Pages 构建加上公开变量 `VITE_CF_WEB_ANALYTICS_TOKEN`。按钮点击/热力图用 Microsoft Clarity 项目 `y6albpfin1`，只对有效星球会员加载脚本；可用公开构建变量 `VITE_CLARITY_PROJECT_ID` 覆盖。这两类变量都是前端公开 ID，不是密钥，不要写进 `wrangler secret`。Clarity 控制台里不用选 Gatsby/GTM，应用会自己注入官方脚本。
 
@@ -140,7 +140,7 @@ CLI Agent 的本地命令工具只允许明确的只读命令；文件工具继�
 | AI SDK | 前端 `@ai-sdk/react` + Worker 端 `ai` / `@ai-sdk/openai` / `@ai-sdk/anthropic` |
 | 样式 | Tailwind CSS 4 + shadcn/ui 组件 |
 | 构建 | Vite 6 → CF Pages 部署 |
-| API 层 | Hono Worker app（`web/apps/api/src/index.ts`），由 Pages Function `/api/chat` 转发 |
+| API 层 | Hono Worker app（`web/apps/api/src/index.ts`），由 Pages Function `web/functions/api/[[path]].ts` 边缘反代 |
 | 兼容代理 | CF Pages Functions（`web/functions/api/llm-proxy/[[path]].ts`） |
 | 状态管理 | Zustand（auth store） |
 | 数据 | Supabase JS SDK 直连 |
@@ -959,7 +959,7 @@ Web 个股、持仓和股票对抗分析保存历史时写入 `meta`：输入快
 
 Web `/portfolio` 的数据库模式仅对星球会员开放。浏览器把 Supabase JWT 发送给 `/api/portfolio`，API
 从已验证令牌取得 `user_id` 并固定映射到 `USER_LIVE:<user_id>`，请求体不能指定 `portfolio_id`。
-Cloudflare Pages 通过 `web/functions/api/portfolio/[[path]].ts` 将同域请求交给 Hono API，前端同时校验
+Cloudflare Pages 通过 `web/functions/api/[[path]].ts` 将同域 `/api/portfolio` 反代到完整 Worker，前端同时校验
 响应结构，避免 SPA fallback 的 HTML 或缺失字段被误当成持仓数据。
 API 响应同时返回 `total_equity`、`valuation_updated_at`；刷新失败时另带 `valuation_warning`，前端不得
 把旧值展示成刚刚成功刷新的实时净值。
@@ -1039,6 +1039,6 @@ web/             React Web App（CF Pages 部署）
   apps/api/      Hono Worker API（/api/chat、/api/agent-runs、/api/portfolio、/api/settings）
   packages/shared/  Web/Worker 共享工具、schema 与 SSE 归一化
   functions/     CF Pages Functions（边缘代理）
-    api/chat/       Pages 请求转发到 Hono app
+    api/[[path]].ts 同源 /api/{chat,settings,portfolio,agent-runs,remote} 反代到 Worker
     api/llm-proxy/  LLM / 行情 API 兼容代理
 ```

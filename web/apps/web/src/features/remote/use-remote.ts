@@ -9,7 +9,7 @@
  */
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react'
 import { supabase } from '@/lib/supabase'
-import { apiUrl } from '@/lib/api-url'
+import { apiWsUrl } from '@/lib/api-url'
 
 export interface RemoteEvent {
   id?: number | string
@@ -142,11 +142,14 @@ async function resolveSocketUrl (setState: (n: LinkState) => void): Promise<{ ur
     return null
   }
 
-  // 复用 apiUrl 而不是自己拼 base：它已经处理了 dev/prod 与 VITE_API_URL 覆盖。
+  // 复用 apiWsUrl：dev 走本地 Worker，生产走 Pages 同源，再由边缘反代。
   const label = encodeURIComponent(navigator.userAgent.includes('iPhone') ? 'iPhone' : '手机')
   const authQuery = code ? `&code=${code}` : `&device=${encodeURIComponent(device)}`
-  const http = apiUrl(`/api/remote/ws?role=remote&label=${label}${authQuery}`)
-  return { url: http.replace(/^http/, 'ws'), token, code }
+  return {
+    url: apiWsUrl(`/api/remote/ws?role=remote&label=${label}${authQuery}`),
+    token,
+    code,
+  }
 }
 
 export function useRemote () {

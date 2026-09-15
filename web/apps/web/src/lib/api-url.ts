@@ -1,8 +1,25 @@
 const LOCAL_API_URL = 'http://127.0.0.1:8787'
-const PRODUCTION_API_URL = 'https://wyckoff-api.yongkai-wang.workers.dev'
 
-export function apiUrl(path: `/api/${string}`): string {
-  const configured = import.meta.env.VITE_API_URL?.trim()
-  const base = configured || (import.meta.env.DEV ? LOCAL_API_URL : PRODUCTION_API_URL)
-  return `${base.replace(/\/$/, '')}${path}`
+export type ApiUrlEnv = {
+  VITE_API_URL?: string
+  DEV: boolean
+}
+
+export function apiUrl(path: `/api/${string}`, env: ApiUrlEnv = import.meta.env): string {
+  const configured = env.VITE_API_URL?.trim()
+  if (configured) return `${configured.replace(/\/$/, '')}${path}`
+  if (env.DEV) return `${LOCAL_API_URL}${path}`
+  return path
+}
+
+export function toWebSocketUrl(httpUrl: string, pageOrigin?: string): string {
+  if (httpUrl.startsWith('http://') || httpUrl.startsWith('https://')) {
+    return httpUrl.replace(/^http/, 'ws')
+  }
+  if (pageOrigin) return `${pageOrigin.replace(/^http/, 'ws')}${httpUrl}`
+  return httpUrl
+}
+
+export function apiWsUrl(path: `/api/${string}`, env: ApiUrlEnv = import.meta.env): string {
+  return toWebSocketUrl(apiUrl(path, env), globalThis.location?.origin)
 }
