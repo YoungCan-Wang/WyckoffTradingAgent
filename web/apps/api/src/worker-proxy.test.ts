@@ -64,8 +64,7 @@ describe('proxyToWorker', () => {
     const response = await proxyToWorker(request)
 
     expect(fetchMock).toHaveBeenCalledOnce()
-    expect(fetchMock.mock.calls[0]?.[0]).toBe(`${DEFAULT_WORKER_ORIGIN}/api/chat`)
-    expect(fetchMock.mock.calls[0]?.[1]).toBe(request)
+    expect(fetchMock).toHaveBeenCalledWith(`${DEFAULT_WORKER_ORIGIN}/api/chat`, request)
     expect(response.headers.get('content-type')).toBe('text/event-stream')
     expect(await response.text()).toBe('data: hi\n\n')
   })
