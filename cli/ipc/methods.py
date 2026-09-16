@@ -1401,9 +1401,10 @@ def chat_reset(_params: dict[str, Any]) -> Iterator[Event]:
     yield _ok(reset=True, session_id=session.session_id)
 
 
-# 云端信箱的地址。与 web 端硬编码的同一个 Worker（web/apps/web/src/lib/api-url.ts）。
-# 允许用环境变量覆盖，好在本地 wrangler dev 上联调。
+# 云端信箱 API（配对 / 设备 / WS）。本地可用 WYCKOFF_API_BASE 指到 wrangler dev。
 REMOTE_API_BASE = os.environ.get("WYCKOFF_API_BASE", "https://wyckoff-api.yongkai-wang.workers.dev")
+# 手机扫码打开的是 Pages 上的 /m，不是 Worker：Worker 对 /m 返回 JSON 404。
+REMOTE_WEB_BASE = os.environ.get("WYCKOFF_WEB_BASE", "https://wyckoff-analysis.pages.dev")
 
 
 def _teardown_remote_on_identity_change() -> None:
@@ -1517,9 +1518,8 @@ def remote_pair(_params: dict[str, Any]) -> Iterator[Event]:
     code = str(data.get("code") or "")
     if not code:
         raise MethodError("relay_error", "云端没有返回配对码")
-    # 手机扫码后打开的地址。带着 code，登录同一账号后即可配对。
-    _, user_id = _remote_credentials()
-    url = f"{REMOTE_API_BASE.rstrip('/')}/m/#code={code}"
+    # 手机扫码打开 Pages SPA 的 /m；API/WS 仍走 REMOTE_API_BASE（或 Pages 同源反代）。
+    url = f"{REMOTE_WEB_BASE.rstrip('/')}/m/#code={code}"
     yield _ok(code=code, url=url, expires_in_ms=int(data.get("expires_in_ms") or 0))
 
 

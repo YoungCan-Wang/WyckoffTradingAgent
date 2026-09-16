@@ -105,7 +105,7 @@ Worker 负责鉴权、输入校验、队列控制面和 HMAC 签名。Vercel Nod
 
 读盘室只在用户问题命中观察篮代码，或明确要求复盘观察篮时，从 TickFlow 拉取相关标的的最新可用行情。快照只在浏览器保存 45 秒，随请求传入 Worker 并校验代码集合、时间和数值类型；它不写入 Supabase 或 Redis，数据源不可用时模型必须明确说明缺失，不得估算价格。行情块以当轮额外 user 消息注入模型上下文，**不拼进 system prompt**，避免价/时间戳变动打爆 prompt cache。
 
-前端的 `web/apps/web/src/lib/api-url.ts` 统一生成 chat、portfolio、settings、agent-runs 和 remote 的后端地址。本地开发默认连接 `http://127.0.0.1:8787`；生产默认返回同源相对路径 `/api/...`，由 Pages Function 反代到 `wyckoff-api` Worker。调试可用公开构建变量 `VITE_API_URL` 覆盖（例如仍指向 `workers.dev`）；该变量只包含公开服务地址，不能放 Token。生产浏览器不再依赖对 `workers.dev` 的 CORS。
+前端的 `web/apps/web/src/lib/api-url.ts` 统一生成 chat、portfolio、settings、agent-runs 和 remote 的后端地址。本地开发默认连接 `http://127.0.0.1:8787`；生产默认返回同源相对路径 `/api/...`，由 Pages Function 反代到 `wyckoff-api` Worker。调试可用公开构建变量 `VITE_API_URL` 覆盖（例如仍指向 `workers.dev`）；该变量只包含公开服务地址，不能放 Token。生产浏览器不再依赖对 `workers.dev` 的 CORS。桌面 `remote_pair` 编进二维码的是 Pages 上的 `/m/#code=…`（默认 `WYCKOFF_WEB_BASE=https://wyckoff-analysis.pages.dev`），不是 Worker 根路径——Worker 对 `/m` 只返回 JSON 404；配对 / 设备 / host WS 仍走 `WYCKOFF_API_BASE`。
 
 **免费可观测（不写 Supabase）**：`wyckoff-api` 在 `wrangler.toml` 打开 Workers Logs。未捕获 500 会打一条 `worker_error` JSON（`requestId`、方法、路径、已鉴权则带 `userId`），脱敏后不含 Token。查日志：Cloudflare Dashboard → Workers & Pages → `wyckoff-api` → Logs，免费档约留 3 天。页面 PV/UV 用 Cloudflare Web Analytics：优先在 Pages 项目打开；若要用脚本注入，给 Pages 构建加上公开变量 `VITE_CF_WEB_ANALYTICS_TOKEN`。按钮点击/热力图用 Microsoft Clarity 项目 `y6albpfin1`，只对有效星球会员加载脚本；可用公开构建变量 `VITE_CLARITY_PROJECT_ID` 覆盖。这两类变量都是前端公开 ID，不是密钥，不要写进 `wrangler secret`。Clarity 控制台里不用选 Gatsby/GTM，应用会自己注入官方脚本。
 

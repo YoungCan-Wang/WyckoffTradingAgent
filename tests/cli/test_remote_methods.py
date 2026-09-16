@@ -171,10 +171,23 @@ def test_pair_returns_a_scannable_url(signed_in, monkeypatch):
     )
     out = _result("remote_pair")
     assert out["code"] == "abc1234567"
-    # 手机扫到的是一个能打开的地址，不是裸 code
-    assert out["url"].startswith("https://")
-    assert "abc1234567" in out["url"]
+    # 手机扫到的是 Pages 上的 /m，不是 Worker API 根（Worker 对 /m 是 JSON 404）
+    assert out["url"] == "https://wyckoff-analysis.pages.dev/m/#code=abc1234567"
     assert out["expires_in_ms"] == 180000
+
+
+def test_pair_url_uses_web_base_not_api_base(signed_in, monkeypatch):
+    import cli.ipc.methods as M
+
+    monkeypatch.setattr(
+        "cli.ipc.methods._remote_http",
+        FakeHttp({"code": "paircode99", "expires_in_ms": 180000}),
+    )
+    monkeypatch.setattr(M, "REMOTE_API_BASE", "https://wyckoff-api.example.workers.dev")
+    monkeypatch.setattr(M, "REMOTE_WEB_BASE", "https://app.example.com")
+    out = _result("remote_pair")
+    assert out["url"] == "https://app.example.com/m/#code=paircode99"
+    assert "workers.dev" not in out["url"]
 
 
 def test_pair_fails_loudly_when_the_relay_returns_nothing(signed_in, monkeypatch):
