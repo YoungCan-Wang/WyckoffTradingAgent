@@ -30,6 +30,11 @@ STEP4_REASON_MAP = {
 
 _CONFIRMED_STATUS_VALUES = {"confirmed", "已确认", "确认", "二次确认", "跨日确认"}
 _CONFIRMED_SOURCE_VALUES = {"signal_confirmed", "二次确认", "跨日确认"}
+# 入库后的跟踪标签：只有通过 is_recommendation_tracking_candidate（即本函数）的行
+# 才会被写成这些字面量。其中「跨日确认观察」含「观察」子串——若先跑
+# _UNCONFIRMED_MARKERS，step4_from_supabase 回读时会把起跳板买单整批否决。
+# 「市场拦截观察」「禁新仓-影子观察」不在此列，仍按观察态拦截。
+_TRACKING_POST_CONFIRM_STATUSES = frozenset({"跨日确认观察", "ai复核候选"})
 _UNCONFIRMED_MARKERS = (
     "unconfirmed",
     "not_confirmed",
@@ -95,6 +100,9 @@ def load_step4_target() -> tuple[dict | None, str]:
 
 
 def is_confirmed_step4_candidate(item: dict) -> bool:
+    tracking_status = str(item.get("candidate_status") or "").strip().lower()
+    if tracking_status in _TRACKING_POST_CONFIRM_STATUSES:
+        return True
     state_values = [
         str(item.get(field) or "").strip().lower()
         for field in (

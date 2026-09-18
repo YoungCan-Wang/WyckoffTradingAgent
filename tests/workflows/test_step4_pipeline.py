@@ -38,10 +38,43 @@ def test_step4_confirmation_rejects_negative_or_observation_states(item):
         {"recommend_reason": "LPS二次确认(A+C)"},
         {"recommend_reason": "LPS跨日确认(A+C)"},
         {"tag": "主线买点确认 | 威科夫候选"},
+        # 跟踪表回读：入库标签含「观察」，但不能否决已确认起跳板。
+        {
+            "candidate_status": "跨日确认观察",
+            "selection_source": "l4_springboard",
+            "tag": "SOS起跳板结构(A+C)",
+        },
+        {"candidate_status": "AI复核候选", "selection_source": "funnel"},
     ],
 )
 def test_step4_confirmation_accepts_explicit_confirmed_states(item):
     assert is_confirmed_step4_candidate(item)
+
+
+def test_step4_from_supabase_springboard_tracking_status_stays_buy_eligible():
+    """step4_from_supabase 回读 recommendation_tracking 后仍须认起跳板为可买。
+
+    recommendation_write_symbols 把起跳板写成 candidate_status=跨日确认观察；
+    若「观察」子串一票否决排在确认检查之前，OMS 重跑会静默丢掉全部买单。
+    """
+    from workflows.step4_from_supabase import recommendation_item
+
+    item = recommendation_item(
+        {
+            "code": 7,
+            "name": "全新好",
+            "recommend_reason": "SOS起跳板结构(A+C)",
+            "funnel_score": 9.0,
+            "selection_source": "l4_springboard",
+            "candidate_status": "跨日确认观察",
+            "is_ai_recommended": True,
+        }
+    )
+    assert item is not None
+    assert is_confirmed_step4_candidate(item)
+    assert not is_confirmed_step4_candidate(
+        {**item, "candidate_status": "市场拦截观察", "selection_source": "l4_springboard:market_blocked"}
+    )
 
 
 def test_step4_candidate_meta_veto_only_uses_rules_and_ai_invalidations(monkeypatch):

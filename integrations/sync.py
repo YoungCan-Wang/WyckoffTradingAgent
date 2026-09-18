@@ -87,6 +87,9 @@ def sync_portfolio(portfolio_id: str = "USER_LIVE", client=None) -> int:
     if not state:
         return 0
     positions = state.get("positions", [])
+    # buy_dt 必须带回：save_portfolio 是删后插，漏字段会把本地建仓日抹成空串。
+    # 云端挂了时 portfolio_tools 落到这份缓存，空 buy_dt 会让结构退出 fail-closed，
+    # 也会让界面/诊断把已建仓票当成「未知建仓日」。
     save_portfolio(
         portfolio_id,
         float(state.get("free_cash", 0) or 0),
@@ -96,6 +99,7 @@ def sync_portfolio(portfolio_id: str = "USER_LIVE", client=None) -> int:
                 "name": p.get("name", ""),
                 "shares": p.get("shares", 0),
                 "cost_price": p.get("cost", p.get("cost_price", 0)),
+                "buy_dt": p.get("buy_dt", ""),
                 "stop_loss": p.get("stop_loss"),
             }
             for p in positions
