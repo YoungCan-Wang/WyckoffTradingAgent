@@ -66,12 +66,20 @@ class TestBatchClearSemantics:
         assert rows == []
         assert error is not None
 
-    def test_missing_stop_key_is_treated_as_clear(self) -> None:
-        """缺 key 与显式 None 同义：item.get() 都返回 None。
+    def test_missing_stop_key_is_rejected(self) -> None:
+        """缺 key 必须报错，不能当清除。
 
-        这是刻意接受的——调用方省略字段时的意图只能是「不要止损」。
+        approval_policy 把「没传 stop_loss」当成参数不全并保持 AUTO；若这里再
+        把缺 key 写成 null，无人值守会静默撤止损。清除必须显式传 null。
         """
         rows, error = _normalize_stop_rows("", 0, [{"code": "600519"}])
+        assert rows == []
+        assert error is not None
+        assert "缺少 stop_loss" in error["error"]
+
+    def test_empty_string_means_clear(self) -> None:
+        """空串与显式 None 同义（approval_policy 同样视为清除）。"""
+        rows, error = _normalize_stop_rows("", 0, [{"code": "600519", "stop_loss": ""}])
         assert error is None
         assert rows == [{"code": "600519", "stop_loss": None}]
 
