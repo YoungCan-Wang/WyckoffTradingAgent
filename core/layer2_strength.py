@@ -1097,7 +1097,7 @@ def _diagnose_breakout_accel(
     rps_fast: float | None,
     state: Any,
 ) -> tuple[float, list[str]]:
-    if not getattr(cfg, "enable_breakout_accel_channel", True):
+    if not getattr(cfg, "enable_breakout_accel_channel", False):
         return 999.0, ["通道未启用"]
 
     gaps = []

@@ -1373,3 +1373,14 @@ class TestTrendPullbackVolThresholdIsBoardAgnostic:
         for code in boards:
             assert _detect(cfg.trend_pb_vol_shrink_ratio * 1.1, code) is None
             assert _detect(cfg.trend_pb_vol_shrink_ratio * 0.9, code) is not None
+
+
+# ─── BreakoutAccel 默认关闭与向后兼容 ─────────────────────────────────────────
+class TestBreakoutAccelChannelConfig:
+    def test_breakout_accel_channel_defaults_to_false(self):
+        cfg = FunnelConfig()
+        assert cfg.enable_breakout_accel_channel is False
+
+    def test_breakout_accel_channel_can_be_explicitly_enabled(self):
+        cfg = FunnelConfig(enable_breakout_accel_channel=True)
+        assert cfg.enable_breakout_accel_channel is True

@@ -210,8 +210,9 @@ class FunnelConfig:
     trend_cont_vol_ratio_min: float = 0.70  # 近5日均量 / 20日均量，过滤缩量趋势末端
 
     # Layer 2 加速突破通道（Breakout Acceleration Channel）
-    # 从底部结构刚起步：价格站上 MA50 但 MA50 尚未上穿 MA200，短期动量已爆发。
-    enable_breakout_accel_channel: bool = True
+    # 弃用标记：实测 2021-2026 全市场 5,510 只股票 45,954 笔交易，扣费后净均值 -0.096% (t=-2.01)，
+    # 5/6 年负收益，追高突破在 A 股呈现统计显著负超额，默认关闭以减少亏损敞口。
+    enable_breakout_accel_channel: bool = False
     breakout_accel_rps_fast_min: float = 70.0  # RPS50 >= 此值
     breakout_accel_ret_window: int = 20  # 近 N 日涨幅计算窗口
     breakout_accel_ret_min: float = 15.0  # 近 N 日涨幅 >= 此值(%)
