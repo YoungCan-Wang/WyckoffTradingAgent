@@ -740,7 +740,7 @@ def layer3_sector_resonance(
     symbols: list[str],
     sector_map: dict[str, str],
     cfg: FunnelConfig,
-    base_symbols: list[str] | None = None,
+    base_symbols: list[str] | None = None,  # 保留仅为兼容旧调用方签名
     df_map: dict[str, pd.DataFrame] | None = None,
     concept_map: dict[str, list[str]] | None = None,
     hot_concepts: list[str] | None = None,
@@ -773,7 +773,7 @@ def layer3_sector_resonance(
         sym_theme_secs = {normalize_theme_name(s) for s in sym_secs}
         if sym_secs & top_set:
             filtered.append(sym)
-        elif hot_set and (sym_secs & hot_set or sym_theme_secs & normalized_hot_set):
+        elif use_concept and hot_set and (sym_secs & hot_set or sym_theme_secs & normalized_hot_set):
             filtered.append(sym)
 
     if len(filtered) < 3:

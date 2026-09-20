@@ -681,7 +681,7 @@ class TestSectorHeatBypass:
         assert "A2" in result
 
     def test_hot_concept_matches_normalized_aliases(self):
-        cfg = FunnelConfig()
+        cfg = FunnelConfig(use_concept_map=True)
         cfg.sector_min_count = 1
         cfg.l3_keep_strength_min = 0.0
         n = 30
@@ -714,7 +714,7 @@ class TestSectorHeatBypass:
         assert {"减速器", "机器视觉"} & set(top)
 
     def test_hot_concepts_match_normalized_theme_aliases(self):
-        cfg = FunnelConfig()
+        cfg = FunnelConfig(use_concept_map=True)
         cfg.sector_min_count = 2
         cfg.top_n_sectors = 1
         cfg.l3_hot_leader_strength_min = 0.50
