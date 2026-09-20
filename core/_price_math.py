@@ -109,3 +109,33 @@ def vol_ratio(volume: pd.Series) -> float:
         return 1.0
     base = float(volume.tail(20).mean())
     return 1.0 if base <= 0 else float(volume.tail(5).mean()) / base
+
+
+def fib_retracement_levels(
+    swing_high: float,
+    swing_low: float,
+    levels: tuple[float, ...] = (0.382, 0.500, 0.618),
+) -> dict[float, float]:
+    """Calculate price retracement levels from swing high towards swing low."""
+    if swing_high <= swing_low or swing_low <= 0:
+        return {}
+    span = swing_high - swing_low
+    return {lvl: swing_high - span * lvl for lvl in levels}
+
+
+def fib_absorption_check(
+    curr_low: float,
+    curr_close: float,
+    price_level: float,
+    curr_vol: float,
+    avg_vol: float,
+    *,
+    min_vol_ratio: float = 1.0,
+) -> tuple[bool, bool]:
+    """Check if price touched fib level, closed above it, and showed volume absorption."""
+    if price_level <= 0 or curr_close <= 0:
+        return False, False
+    touched_and_held = bool(curr_low <= price_level and curr_close >= price_level)
+    vol_ratio_val = (curr_vol / avg_vol) if avg_vol > 0 else 1.0
+    absorption = bool(touched_and_held and vol_ratio_val >= min_vol_ratio)
+    return touched_and_held, absorption
