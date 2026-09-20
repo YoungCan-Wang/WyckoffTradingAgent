@@ -1426,3 +1426,11 @@ class TestLayer4TriggerSwitches:
         assert len(res_comp["compression"]) == 1
         assert len(res_comp["sos"]) == 0
         assert len(res_comp["lps"]) == 0
+
+
+# ─── 顶层大盘生命线门控默认配置测试（Issue #461 实证驱动落地）───────────────────────
+class TestMarketRegimeGateConfig:
+    def test_market_regime_gate_defaults_to_true_with_ma20(self):
+        cfg = FunnelConfig()
+        assert cfg.enable_market_regime_gate is True
+        assert cfg.market_regime_gate_ma == 20
