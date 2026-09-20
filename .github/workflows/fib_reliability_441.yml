@@ -4,8 +4,6 @@ on:
     branches: [research/fib-reliability-441-20260920]
     paths:
       - .github/workflows/fib_reliability_441.yml
-      - scripts/fib_audit/**
-      - tests/test_fib_audit.py
   workflow_dispatch:
 concurrency:
   group: fib-reliability-441-${{ github.ref }}
@@ -13,53 +11,40 @@ concurrency:
 permissions:
   contents: read
 jobs:
-  research:
+  historical-data:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 60
     env:
       TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
       PYTHONUNBUFFERED: '1'
+      TZ: Asia/Shanghai
     steps:
       - uses: actions/checkout@v4
-      - name: Read-only data preflight
-        run: |
-          mkdir -p artifacts/fib-audit
-          python - <<'PY'
-          import json, os, urllib.request
-          from pathlib import Path
-          token = os.environ.get('TUSHARE_TOKEN', '').strip()
-          result = {'phase': 'data_preflight', 'token_configured': bool(token), 'checks': {}}
-          out = Path('artifacts/fib-audit/preflight.json')
-          if not token:
-              out.write_text(json.dumps(result, indent=2))
-              raise SystemExit('TUSHARE_TOKEN is not configured; no backtest was run.')
-          for api, fields in [
-              ('daily', 'ts_code,trade_date,open,high,low,close,vol,amount'),
-              ('adj_factor', 'ts_code,trade_date,adj_factor'),
-              ('stk_limit', 'ts_code,trade_date,up_limit,down_limit'),
-          ]:
-              body = json.dumps({'api_name': api, 'token': token,
-                                 'params': {'trade_date': '20260918'}, 'fields': fields}).encode()
-              request = urllib.request.Request('https://api.tushare.pro', data=body,
-                                               headers={'Content-Type': 'application/json'})
-              try:
-                  with urllib.request.urlopen(request, timeout=40) as response:
-                      payload = json.load(response)
-                  data = payload.get('data') or {}
-                  result['checks'][api] = {'code': payload.get('code'),
-                      'rows': len(data.get('items') or []), 'fields': data.get('fields')}
-              except Exception as exc:
-                  result['checks'][api] = {'error_type': type(exc).__name__}
-              out.write_text(json.dumps(result, indent=2))
-          print(json.dumps(result, indent=2))
-          if not all(v.get('rows', 0) > 0 for v in result['checks'].values()):
-              raise SystemExit('Data preflight failed; no backtest was run.')
-          PY
-      - name: Upload preflight evidence
+        with:
+          persist-credentials: false
+      - name: Collect date-based historical data
+        run: python scripts/fib_audit/collect.py --start 20200901 --end 20260918
+      - name: Upload immutable data snapshot
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fib-audit-preflight
-          path: artifacts/fib-audit
-          if-no-files-found: warn
-          retention-days: 14
+          name: fib-audit-market-snapshot
+          path: artifacts/fib-audit-data
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 90
+      - name: Upload research source snapshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fib-audit-source
+          path: |
+            scripts/fib_audit
+            core/trade_friction.py
+            core/cash_portfolio.py
+            core/market_trade_cost.py
+            pyproject.toml
+            uv.lock
+            AGENTS.md
+          if-no-files-found: error
+          retention-days: 90
