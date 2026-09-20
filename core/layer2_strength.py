@@ -18,6 +18,7 @@ class BenchmarkContext:
     latest_date: object | None
     dropping: bool
     pct_by_date: dict[object, object] = field(default_factory=dict)
+    regime_gate_passed: bool = True
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,17 @@ def close_return_pct(close_series: pd.Series, lookback: int) -> float | None:
     return None if start == 0 else (end - start) / start * 100.0
 
 
+def _benchmark_regime_gate_passed(bench_sorted: pd.DataFrame, cfg: Any) -> bool:
+    if not getattr(cfg, "enable_market_regime_gate", False):
+        return True
+    ma_w = int(getattr(cfg, "market_regime_gate_ma", 50))
+    close = pd.to_numeric(bench_sorted.get("close"), errors="coerce").dropna()
+    if len(close) < ma_w:
+        return True
+    ma_val = float(close.rolling(ma_w).mean().iloc[-1])
+    return float(close.iloc[-1]) >= ma_val
+
+
 def build_benchmark_context(
     bench_df: pd.DataFrame | None,
     cfg: Any,
@@ -85,7 +97,14 @@ def build_benchmark_context(
     bench_sorted = sort_frame(bench_df)
     latest_date = latest_trade_date(bench_sorted)
     dropping = _benchmark_dropping(bench_sorted, int(cfg.bench_drop_days), float(cfg.bench_drop_threshold))
-    return BenchmarkContext(bench_sorted, latest_date, dropping, _benchmark_pct_lookup(bench_sorted))
+    gate_passed = _benchmark_regime_gate_passed(bench_sorted, cfg)
+    return BenchmarkContext(
+        bench_sorted,
+        latest_date,
+        dropping,
+        _benchmark_pct_lookup(bench_sorted),
+        regime_gate_passed=gate_passed,
+    )
 
 
 def build_rps_context(
@@ -167,6 +186,8 @@ def evaluate_layer2_symbol(
     channels = _layer2_channels(
         df_sorted, state, cfg, bench_ctx, rps_ctx, rps_state, momentum_rs_ok, ambush_rs_ok, detect_sos
     )
+    if not bench_ctx.regime_gate_passed:
+        return Layer2SymbolResult(False, "", False, channels)
     if any(channels.values()):
         return Layer2SymbolResult(True, "+".join(channel_labels(channels)), False, channels)
     pre_ignition = cfg.enable_pre_ignition_watch and pre_ignition_ok(
@@ -1170,6 +1191,8 @@ def diagnose_layer2_symbol_failure(
     ambush_rs_ok: bool,
     detect_sos: Callable[[pd.DataFrame, Any], float | None],
 ) -> str:
+    if not bench_ctx.regime_gate_passed:
+        return "大盘处于MA50空头生命线下方(市场门控拦截)"
     state = _symbol_state(df_sorted, cfg, bench_ctx)
     close_series = state.close
     last_close = state.last_close

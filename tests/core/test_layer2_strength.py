@@ -7,8 +7,11 @@ from types import SimpleNamespace
 import pandas as pd
 
 from core.layer2_strength import (
+    BenchmarkContext,
     Layer2RpsState,
     Layer2SymbolState,
+    RpsContext,
+    _benchmark_regime_gate_passed,
     _diagnose_momentum,
     _layer2_channels,
     accum_track_ok,
@@ -17,6 +20,8 @@ from core.layer2_strength import (
     calc_relative_strength,
     channel_labels,
     close_return_pct,
+    diagnose_layer2_symbol_failure,
+    evaluate_layer2_symbol,
     markup_track_ok,
     rps_filter_flags,
     trend_continuation_channel_ok,
@@ -26,6 +31,7 @@ from core.trend_drawdown_risk import (
     classify_trend_drawdown,
     classify_trend_drawdown_pct,
 )
+from core.wyckoff_engine import FunnelConfig
 
 
 def test_close_return_pct_uses_lookback_start() -> None:
@@ -441,3 +447,52 @@ def test_layer2_two_track_mode_integration() -> None:
     assert set(channels.keys()) == {"markup_track", "accum_track"}
     assert channels["markup_track"] is True
     assert channels["accum_track"] is True
+
+
+def test_benchmark_regime_gate_passed_evaluates_ma50() -> None:
+    cfg_off = SimpleNamespace(enable_market_regime_gate=False)
+    bench_down = pd.DataFrame({"close": [100.0] * 50 + [80.0]})
+    assert _benchmark_regime_gate_passed(bench_down, cfg_off) is True
+
+    cfg_on = SimpleNamespace(enable_market_regime_gate=True, market_regime_gate_ma=50)
+    bench_up = pd.DataFrame({"close": [100.0] * 50 + [105.0]})
+    assert _benchmark_regime_gate_passed(bench_up, cfg_on) is True
+
+    bench_below = pd.DataFrame({"close": [100.0] * 50 + [90.0]})
+    assert _benchmark_regime_gate_passed(bench_below, cfg_on) is False
+
+
+def test_evaluate_layer2_symbol_blocks_when_regime_gate_fails() -> None:
+    cfg = FunnelConfig(
+        enable_two_track_mode=True,
+        enable_market_regime_gate=True,
+        market_regime_gate_ma=50,
+    )
+    df = pd.DataFrame({"close": [100.0] * 30, "volume": [1000.0] * 30})
+    bench_ctx = BenchmarkContext(sorted_df=None, latest_date=None, dropping=False, regime_gate_passed=False)
+    rps_ctx = RpsContext(fast={}, slow={}, active=False)
+
+    res = evaluate_layer2_symbol(
+        "600000",
+        df,
+        cfg,
+        bench_ctx=bench_ctx,
+        rps_ctx=rps_ctx,
+        detect_sos=lambda d, c: None,
+    )
+    assert res.passed is False
+    assert res.channel == ""
+
+    rps_state = Layer2RpsState(None, None, True, True, True, 0.0)
+    diag = diagnose_layer2_symbol_failure(
+        "600000",
+        df,
+        cfg,
+        bench_ctx=bench_ctx,
+        rps_ctx=rps_ctx,
+        rps_state=rps_state,
+        momentum_rs_ok=True,
+        ambush_rs_ok=True,
+        detect_sos=lambda d, c: None,
+    )
+    assert "大盘处于MA50空头生命线下方(市场门控拦截)" in diag

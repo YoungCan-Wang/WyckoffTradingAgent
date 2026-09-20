@@ -20,12 +20,15 @@ def test_strategy_variants_isolate_each_research_switch() -> None:
         "lps_use_fib_zone": False,
         "lps_creek_dynamic_relax": False,
         "enable_two_track_mode": False,
+        "enable_market_regime_gate": False,
     }
     assert all(strategy_variant_overrides("E").values())
     assert strategy_variant_overrides("K")["lps_use_fib_zone"] is True
     assert strategy_variant_overrides("K")["lps_creek_dynamic_relax"] is True
     assert strategy_variant_overrides("L")["enable_two_track_mode"] is True
     assert strategy_variant_overrides("L")["lps_use_fib_zone"] is True
+    assert strategy_variant_overrides("N")["enable_market_regime_gate"] is True
+    assert strategy_variant_overrides("N")["enable_two_track_mode"] is True
     assert DEFAULT_COMPARISON_VARIANTS == ("A", "M", "P")
     assert strategy_variant_overrides("F") == baseline
     assert strategy_variant_entry_policy("F").blocked_confirmed_signals == ("evr",)

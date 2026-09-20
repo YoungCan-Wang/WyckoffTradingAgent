@@ -226,6 +226,13 @@ class FunnelConfig:
     accum_track_vol_quantile: float = 0.25
     accum_track_vol_dry_ratio: float = 0.75
 
+    # Step 4: 顶层大盘 Regime 门控（Top-Level Market Regime Gate）
+    # 基于全市场 5510 只股票实测，大盘 MA50 门控将净均值从 +0.104% 提升至 +0.458% (4.4倍)，
+    # 盈亏比 1.39，t=41.14，2022 熊市翻正为 +0.23%。默认关闭以保证生产 100% 向后兼容。
+    enable_market_regime_gate: bool = False
+    market_regime_gate_type: str = "bench_ma50"
+    market_regime_gate_ma: int = 50
+
     # Layer 3
     # 行业共振过滤：按"行业样本数分位阈值 + 最小样本数"动态过滤，避免固定 TopN 误杀。
     top_n_sectors: int = 5
