@@ -226,9 +226,9 @@ class FunnelConfig:
     accum_track_vol_quantile: float = 0.25
     accum_track_vol_dry_ratio: float = 0.75
 
-    # Step 4: 顶层大盘 Regime 门控（Top-Level Market Regime Gate）
-    # 基于全市场 5510 只股票实测，大盘 MA50 门控将净均值从 +0.104% 提升至 +0.458% (4.4倍)，
-    # 盈亏比 1.39，t=41.14，2022 熊市翻正为 +0.23%。默认关闭以保证生产 100% 向后兼容。
+    # Step 4: 顶层大盘 Regime 门控（Top-Level Market Regime Gate）研究脚手架
+    # 挂载消融变体 N。实测显示其在 2021–2026 年收益 88.3% 来自 2024 年脉冲行情（剔除后净均值 +0.064%），
+    # 存在单年收益依赖。默认关闭（False），仅作为研究脚手架，严禁在 held-out 验证前上线生产。
     enable_market_regime_gate: bool = False
     market_regime_gate_ma: int = 50
 
