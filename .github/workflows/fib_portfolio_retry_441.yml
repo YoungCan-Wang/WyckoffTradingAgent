@@ -1,0 +1,71 @@
+name: Fibonacci Corporate Action Missing Dates 441
+on:
+  push:
+    branches: [research/fib-reliability-441-20260920]
+    paths: [.github/workflows/fib_portfolio_retry_441.yml]
+  workflow_dispatch:
+concurrency:
+  group: fib-portfolio-retry-441-${{ github.ref }}
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  retry-missing-dates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - name: Retry missing data dates only
+        run: |
+          mkdir -p artifacts/fib-portfolio-retry
+          python - <<'PY'
+          import datetime, gzip, hashlib, json, os, time, urllib.request
+          from pathlib import Path
+          out = Path('artifacts/fib-portfolio-retry')
+          token = os.environ.get('TUSHARE_TOKEN', '').strip()
+          if not token:
+              raise SystemExit('Missing data-provider configuration')
+          days = sorted('20211103 20211104 20211105 20211108 20211110 20211109 20211111 20211112 20211115 20211116 20211118 20211117 20220914 20220916 20220915 20220919 20220920 20220921 20220922 20220923 20220928 20220926 20220927 20220929 20230731 20230802 20230803 20230807 20230804 20230808 20230810 20230809 20230814 20230815 20230811 20230816 20240619 20240620 20240621 20240624 20240625 20240626 20240627 20240628 20240701 20240702 20240703 20240704 20250430 20250508 20250509 20250512 20250514 20250513 20250515 20250516 20250519 20250520 20250521 20250522 20260320 20260324 20260323 20260326 20260325 20260327 20260330 20260401 20260331 20260402 20260403 20260407'.split())
+          fields = 'ts_code,end_date,ann_date,div_proc,stk_div,stk_bo_rate,stk_co_rate,cash_div,cash_div_tax,record_date,ex_date,pay_date,div_listdate,imp_ann_date'
+          manifest = {'retrieved_at_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                      'commit': os.environ.get('GITHUB_SHA'), 'retry_of_run': 35503962219,
+                      'requested_days': days, 'files': {}, 'errors': []}
+          for number, day in enumerate(days, 1):
+              for attempt in range(4):
+                  time.sleep(1.0 if attempt == 0 else 65.0)
+                  try:
+                      body = json.dumps({'api_name': 'dividend', 'token': token,
+                                         'params': {'ex_date': day}, 'fields': fields}).encode()
+                      req = urllib.request.Request('https://api.tushare.pro', data=body,
+                                                   headers={'Content-Type': 'application/json'})
+                      with urllib.request.urlopen(req, timeout=45) as response:
+                          payload = json.load(response)
+                      if payload.get('code') != 0:
+                          raise ValueError('Provider rejection code ' + str(payload.get('code')))
+                      data = payload.get('data') or {}
+                      if len(data.get('items') or []) >= 2000:
+                          raise ValueError('Possible row truncation')
+                      raw = gzip.compress(json.dumps(data, ensure_ascii=False).encode(), mtime=0)
+                      (out / (day + '.json.gz')).write_bytes(raw)
+                      manifest['files'][day] = {'rows': len(data.get('items') or []), 'sha256': hashlib.sha256(raw).hexdigest()}
+                      break
+                  except Exception as exc:
+                      if attempt == 3:
+                          manifest['errors'].append({'date': day, 'error_type': type(exc).__name__})
+              (out / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
+              if number % 12 == 0:
+                  print('Completed:', number, 'errors:', len(manifest['errors']), flush=True)
+          print('Recovered rows:', sum(v['rows'] for v in manifest['files'].values()))
+          if manifest['errors']:
+              raise SystemExit('Retry still incomplete')
+          PY
+      - name: Upload retry evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: fib-portfolio-corporate-actions-retry
+          path: artifacts/fib-portfolio-retry
+          if-no-files-found: error
+          retention-days: 90
