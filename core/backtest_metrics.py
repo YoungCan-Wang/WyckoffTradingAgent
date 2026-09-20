@@ -145,7 +145,18 @@ def group_trade_stats(trades_df: pd.DataFrame, column: str, hold_days: int) -> d
 
 
 def calc_stratified_stats(trades_df: pd.DataFrame, hold_days: int = DEFAULT_METRIC_HOLD_DAYS) -> dict[str, dict]:
-    result = {key: {} for key in ("by_track", "by_regime", "by_trigger", "by_exit_reason", "by_entry_price_source")}
+    result = {
+        key: {}
+        for key in (
+            "by_track",
+            "by_regime",
+            "by_trigger",
+            "by_exit_reason",
+            "by_entry_price_source",
+            "by_year",
+            "excl_2024",
+        )
+    }
     if trades_df.empty:
         return result
     for track in ("Trend", "Accum"):
@@ -159,6 +170,22 @@ def calc_stratified_stats(trades_df: pd.DataFrame, hold_days: int = DEFAULT_METR
     cross = _track_regime_stats(trades_df, hold_days)
     if cross:
         result["by_track_regime"] = cross
+
+    date_col = (
+        "entry_date"
+        if "entry_date" in trades_df.columns
+        else ("signal_date" if "signal_date" in trades_df.columns else None)
+    )
+    if date_col:
+        years = trades_df[date_col].dropna().apply(lambda d: str(d.year) if hasattr(d, "year") else str(d)[:4])
+        for yr in sorted(years.unique()):
+            yr_mask = years == yr
+            if yr_mask.any():
+                result["by_year"][yr] = stats_for_trade_slice(trades_df[yr_mask], hold_days)
+        ex24_mask = years != "2024"
+        if ex24_mask.any():
+            result["excl_2024"] = stats_for_trade_slice(trades_df[ex24_mask], hold_days)
+
     return result
 
 

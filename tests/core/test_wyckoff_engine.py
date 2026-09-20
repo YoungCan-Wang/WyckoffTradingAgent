@@ -334,6 +334,19 @@ class TestComputeStopLoss:
         assert price is not None
         assert "吸筹底线" in reason
 
+    def test_atr_dynamic_stop(self):
+        cfg = FunnelConfig()
+        cfg.exit_use_atr_stop = True
+        cfg.exit_atr_multiple = 2.0
+        n = 30
+        closes = pd.Series([10.0] * n)
+        lows = pd.Series([9.5] * n)
+        highs = pd.Series([10.5] * n)
+        price, reason = _compute_stop_loss(closes, lows, highs, "Markup", cfg)
+        assert price is not None
+        assert "ATR波动率动态止损" in reason
+        assert price == 9.0
+
 
 def test_upthrust_detects_high_volume_false_breakout_and_blocks_candidate() -> None:
     cfg = FunnelConfig()
