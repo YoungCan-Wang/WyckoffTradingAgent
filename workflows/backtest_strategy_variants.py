@@ -18,6 +18,7 @@ VARIANT_LABELS = {
     "H": "A股实证：NEUTRAL 入场需广度确认",
     "I": "A股实证：按历史命中先验重排确认信号",
     "K": "A股实证：Fib-LPS 几何增强 + 动态小溪放宽",
+    "L": "A股实证：Layer 2 两轨制整合（趋势主升轨 + 底部蓄势轨）",
     "M": "A股实证：弱水温信号缩仓",
     "P": "A股实证：M + NEUTRAL Spring 缩仓至 25%",
 }
@@ -31,6 +32,7 @@ _ALL_SWITCHES = {
     "signal_sequence_bonus_enabled": False,
     "lps_use_fib_zone": False,
     "lps_creek_dynamic_relax": False,
+    "enable_two_track_mode": False,
 }
 
 _VARIANT_SWITCHES = {
@@ -45,12 +47,19 @@ _VARIANT_SWITCHES = {
         "signal_sequence_bonus_enabled": True,
         "lps_use_fib_zone": True,
         "lps_creek_dynamic_relax": True,
+        "enable_two_track_mode": True,
     },
     "F": {},
     "G": {},
     "H": {},
     "I": {},
     "K": {
+        "lps_creek_confirmation_enabled": True,
+        "lps_use_fib_zone": True,
+        "lps_creek_dynamic_relax": True,
+    },
+    "L": {
+        "enable_two_track_mode": True,
         "lps_creek_confirmation_enabled": True,
         "lps_use_fib_zone": True,
         "lps_creek_dynamic_relax": True,

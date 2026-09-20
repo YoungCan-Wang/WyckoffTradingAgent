@@ -220,6 +220,8 @@ def channel_labels(channels: dict[str, bool]) -> list[str]:
     labels = [
         label
         for key, label in (
+            ("markup_track", "趋势主升轨"),
+            ("accum_track", "底部蓄势轨"),
             ("momentum", "主升通道"),
             ("ambush", "潜伏通道"),
             ("accum", "吸筹通道"),
@@ -255,6 +257,65 @@ def pre_ignition_ok(
         and has_rps
         and _pre_ignition_volume_ok(df_sorted, int(cfg.sos_vol_window), float(cfg.pre_ignition_vol_ratio_min))
     )
+
+
+def markup_track_ok(
+    df_sorted: pd.DataFrame,
+    state: Layer2SymbolState,
+    cfg: Any,
+    rps_state: Layer2RpsState | None = None,
+) -> bool:
+    """趋势主升轨：上升趋势或初升段突破，伴随动量与位阶保护。"""
+    if rps_state is not None and not rps_state.momentum_ok:
+        return False
+    if pd.isna(state.last_ma_short) or float(state.last_ma_short) <= 0 or pd.isna(state.last_close):
+        return False
+
+    bias_max = float(getattr(cfg, "markup_track_bias_200_max", 0.30))
+    if pd.notna(state.last_ma_long) and float(state.last_ma_long) > 0:
+        bias_200 = (float(state.last_close) - float(state.last_ma_long)) / float(state.last_ma_long)
+        if bias_200 > bias_max:
+            return False
+
+    if state.bullish_alignment and float(state.last_close) >= float(state.last_ma_short):
+        return True
+
+    vol = pd.to_numeric(df_sorted.get("volume"), errors="coerce")
+    if len(vol) >= 20:
+        vol20 = float(vol.tail(20).mean())
+        curr_vol = float(vol.iloc[-1])
+        pct = close_return_pct(state.close, 1)
+        if float(state.last_close) > float(state.last_ma_short) and vol20 > 0:
+            if curr_vol >= 1.2 * vol20 and (pct is not None and pct >= 1.5):
+                return True
+    return False
+
+
+def accum_track_ok(
+    df_sorted: pd.DataFrame,
+    state: Layer2SymbolState,
+    cfg: Any,
+) -> bool:
+    """底部蓄势轨：年内相对低位 + 地量沉淀或缩量蓄势。"""
+    ref_window = int(getattr(cfg, "dry_vol_ref_window", 250))
+    if len(df_sorted) < min(ref_window, 80):
+        return False
+
+    price_from_low_max = float(getattr(cfg, "accum_track_price_from_low_max", 0.35))
+    if not _low_position_ok(state.close, state.last_close, ref_window, price_from_low_max):
+        return False
+
+    vol = pd.to_numeric(df_sorted.get("volume"), errors="coerce")
+    lookback = int(getattr(cfg, "dry_vol_lookback", 10))
+    vol_quantile = float(getattr(cfg, "accum_track_vol_quantile", 0.25))
+    ref_vol = vol.tail(max(ref_window, 2)).dropna()
+    if len(ref_vol) >= 50:
+        threshold = float(np.quantile(ref_vol.values, vol_quantile))
+        if float(vol.tail(lookback).min()) <= threshold:
+            return True
+
+    dry_ratio = float(getattr(cfg, "accum_track_vol_dry_ratio", 0.75))
+    return _volume_dry_ok(df_sorted, 20, 120, dry_ratio)
 
 
 def ambush_channel_ok(
@@ -439,6 +500,11 @@ def _layer2_channels(
     ambush_rs_ok: bool,
     detect_sos: Callable[[pd.DataFrame, Any], float | None],
 ) -> dict[str, bool]:
+    if getattr(cfg, "enable_two_track_mode", False):
+        return {
+            "markup_track": markup_track_ok(df_sorted, state, cfg, rps_state),
+            "accum_track": accum_track_ok(df_sorted, state, cfg),
+        }
     return {
         "momentum": _momentum_channel_ok(state, cfg, momentum_rs_ok, rps_state.momentum_ok),
         "ambush": ambush_channel_ok(
