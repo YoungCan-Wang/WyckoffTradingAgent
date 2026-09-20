@@ -656,7 +656,7 @@ def _weight_action(walk_forward: list[WalkForwardStat], weights: dict[int, list[
 
 
 def render(report: RankerReport, *, horizon: int, start: int, end: int) -> str:
-    """渲染 markdown。落到 docs/evidence，不要落 artifacts/（已被 gitignore）。"""
+    """渲染 markdown。CI 工作目录是 docs/evidence（upload-artifact 用），不要提交。"""
     lines = [
         "# 排序权重体检：dry_q",
         "",

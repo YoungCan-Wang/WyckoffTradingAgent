@@ -92,6 +92,9 @@ config/profiles/*private*.yaml
 .claude/settings.local.json
 .claude/plans/
 
+# 回测/eval 证据不得入库；CI 可在此目录写 artifact，结论请开 GitHub Issue。
+docs/evidence/
+
 # 回测产物与快照缓存（体积大，本地生成即可）
 analysis/backtest/
 analysis/

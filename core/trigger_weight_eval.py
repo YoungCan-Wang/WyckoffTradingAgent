@@ -2,7 +2,7 @@
 
 结论与 dry_q 相反：**这一项是负贡献，但「该降多少」这个问题当前证据答不了**。
 方向稳、幅度不稳，见下文「窗口长度改变了结论强度」。
-详见 :func:`decision` 与 docs/evidence/trigger_weight_h*.md。
+详见 :func:`decision`；冻结表格请写 GitHub Issue，不要提交 docs/evidence。
 
 三个结构性事实，先于任何统计
 ----------------------------
@@ -1088,7 +1088,7 @@ def _weight_action(ablation: list[AblationStat], walk_forward: list[WalkForwardS
 
 
 def render(report: TriggerReport, *, horizon: int, start: int, end: int) -> str:
-    """渲染 markdown。落到 docs/evidence，不要落 artifacts/（已被 gitignore）。"""
+    """渲染 markdown。CI 工作目录是 docs/evidence（upload-artifact 用），不要提交。"""
     lines = [
         "# 排序权重体检：trigger_q",
         "",

@@ -12,7 +12,7 @@ name: Style Timing Evaluation
 # 目标,在当前落地方式下不可能达成。本任务证据只落 Actions artifact,本仓保留期是
 # `{"days":90,"maximum_allowed_days":90}` —— 90 天既是默认也是上限。月频最多同时存在 3 份,
 # 第 4 个月挤掉第 1 份:要攒的样本会先于结论过期。截至停用只跑过 1 次(2026-09-05)。
-# 恢复条件不是加回 cron,而是先把结果落进能长期保留的地方(docs/evidence/ 或 Supabase
+# 恢复条件不是加回 cron,而是先把结果落进能长期保留的地方(GitHub Issue 或 Supabase
 # 建表 + db_maintenance TTL,参照 factor_ic_daily 的 365 天)。
 on:
   # schedule:

@@ -6,7 +6,7 @@
 与 dry_q 那轮不同，这一轮方向指向负：触发本身是负超额、幅度排序不带信息、
 六种触发无一为正。但幅度不稳（192 日窗口 -1.461，补到 423 日腰斩到 -0.735），
 走前挑权重 t<2 没过线，故**本轮不改生产参数**。详见
-core/trigger_weight_eval.py 模块头与 docs/evidence/trigger_weight_h*.md。
+core/trigger_weight_eval.py 模块头；冻结表格请写 GitHub Issue，不要提交 docs/evidence。
 
 两段式：``--gen-panel`` 先逐票逐日重放生产 ``layer4_triggers`` 的六个检测器
 （多进程，全市场约 90 分钟），落一份触发面板缓存；之后的统计直接读缓存。

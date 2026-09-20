@@ -69,7 +69,7 @@
 3. 选中集中:走前挑中的表不能在多个候选间乱跳
 
 第 1 闸已过。第 2、3 闸由 :func:`walk_forward_table` 计算,结论见
-:func:`decision` 与 docs/evidence/trigger_points_h*.md。
+:func:`decision`；冻结表格请写 GitHub Issue，不要提交 docs/evidence。
 
 只改一条路径
 ------------

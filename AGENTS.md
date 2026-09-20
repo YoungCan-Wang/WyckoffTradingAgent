@@ -139,6 +139,11 @@ the error direction favored acting. So:
 - The standalone `wiki_repo_new/` checkout is intentionally hidden and independently versioned; keep it ignored and do not merge it into `docs/`.
 - **Chart annotations are desktop-only and display-only** — `annotate_chart` writes to `~/.wyckoff/annotations.json`, is visible only in the Electron app, and never touches positions or orders, so it is a read tool and must not require approval. Drawing an annotation is not a substitute for stating the conclusion in the reply.
 
+## Research Evidence Location（研究证据存放）
+
+研究假设与回测证据请开/更新 GitHub Issue；不要把 RESULTS/图表/ablation 证据落到仓库 docs。
+Eval workflow 可以把运行产物写到 `docs/evidence/` 作为 CI artifact 工作目录，但该目录不得提交。
+
 ## Documentation Synchronization
 
 - Current code, workflow configuration, and live data contracts are the source of truth. Do not preserve documentation text that conflicts with implementation.

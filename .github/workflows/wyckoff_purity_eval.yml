@@ -15,7 +15,7 @@ name: Wyckoff Purity Eval
 # `{"days":90,"maximum_allowed_days":90}` —— 90 天既是默认也是上限,调不长。月频意味着
 # 最多同时存在 3 份产物,第 4 个月挤掉第 1 份,永远攒不出可比的衰减序列。截至停用只跑过
 # 1 次(2026-09-01),起因的理论质疑已被首轮结论回答:偏离原版的方向是对的。
-# 要重新开启,先解决落地(提交进 docs/evidence/ 或写 Supabase 由 db_maintenance 控 TTL),
+# 要重新开启,先解决落地(开/更新 GitHub Issue 或写 Supabase 由 db_maintenance 控 TTL),
 # 否则加回 cron 只是每月烧 25 分钟 runner 换一份 90 天后消失的报告。
 on:
   # schedule:
