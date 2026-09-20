@@ -1,0 +1,85 @@
+name: Fibonacci Portfolio Corporate Actions 441
+on:
+  push:
+    branches: [research/fib-reliability-441-20260920]
+    paths: [.github/workflows/fib_portfolio_441.yml]
+  workflow_dispatch:
+concurrency:
+  group: fib-portfolio-441-${{ github.ref }}
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  corporate-actions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Collect corporate-action snapshot
+        run: |
+          mkdir -p artifacts/fib-portfolio
+          python - <<'PY'
+          import concurrent.futures, datetime, gzip, hashlib, json, os, time, urllib.request
+          from pathlib import Path
+          out = Path('artifacts/fib-portfolio')
+          token = os.environ.get('TUSHARE_TOKEN', '').strip()
+          if not token:
+              raise SystemExit('Missing data-provider configuration')
+          def query(api, params, fields=''):
+              for attempt in range(4):
+                  try:
+                      body = json.dumps({'api_name': api, 'token': token, 'params': params, 'fields': fields}).encode()
+                      req = urllib.request.Request('https://api.tushare.pro', data=body,
+                                                   headers={'Content-Type': 'application/json'})
+                      with urllib.request.urlopen(req, timeout=45) as response:
+                          payload = json.load(response)
+                      if payload.get('code') != 0:
+                          raise ValueError('Provider rejected request')
+                      data = payload.get('data') or {}
+                      if len(data.get('items') or []) >= 2000 and api == 'dividend':
+                          raise ValueError('Possible row truncation')
+                      return data
+                  except Exception:
+                      if attempt == 3:
+                          raise
+                      time.sleep(2 ** attempt)
+          cal = query('trade_cal', {'exchange': 'SSE', 'start_date': '20210101', 'end_date': '20260930', 'is_open': '1'}, 'cal_date')
+          days = sorted(row[0] for row in cal['items'])
+          fields = 'ts_code,end_date,ann_date,div_proc,stk_div,stk_bo_rate,stk_co_rate,cash_div,cash_div_tax,record_date,ex_date,pay_date,div_listdate,imp_ann_date'
+          manifest = {'retrieved_at_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                      'commit': os.environ.get('GITHUB_SHA'), 'requested_days': days, 'files': {}, 'errors': []}
+          def collect(day):
+              data = query('dividend', {'ex_date': day}, fields)
+              raw = gzip.compress(json.dumps(data, ensure_ascii=False).encode(), mtime=0)
+              (out / (day + '.json.gz')).write_bytes(raw)
+              return day, {'rows': len(data.get('items') or []), 'sha256': hashlib.sha256(raw).hexdigest()}
+          with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+              tasks = {pool.submit(collect, day): day for day in days}
+              for number, future in enumerate(concurrent.futures.as_completed(tasks), 1):
+                  day = tasks[future]
+                  try:
+                      key, info = future.result()
+                      manifest['files'][key] = info
+                  except Exception as exc:
+                      manifest['errors'].append({'date': day, 'error_type': type(exc).__name__})
+                  if number % 100 == 0:
+                      print('Completed dates:', number, 'errors:', len(manifest['errors']), flush=True)
+          for status in ['L', 'D', 'P']:
+              data = query('stock_basic', {'list_status': status}, 'ts_code,name,list_date,delist_date,list_status')
+              (out / ('stock_basic_' + status + '.json')).write_text(json.dumps(data, ensure_ascii=False))
+          (out / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
+          print('Corporate-action rows:', sum(v['rows'] for v in manifest['files'].values()))
+          if manifest['errors']:
+              raise SystemExit('Incomplete collection; inspect manifest before analysis')
+          PY
+      - name: Upload corporate-action evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: fib-portfolio-corporate-actions
+          path: artifacts/fib-portfolio
+          if-no-files-found: error
+          retention-days: 90
