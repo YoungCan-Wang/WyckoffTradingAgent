@@ -1,0 +1,91 @@
+{
+  "generated_at": "2026-09-20T15:26:55",
+  "timezone": "Asia/Shanghai",
+  "sample_mode": "full_universe_2024",
+  "n_stocks": 5334,
+  "signal_window": [
+    "2024-01-02",
+    "2024-12-31"
+  ],
+  "cost_roundtrip": 0.00202,
+  "hold_trading_days": 5,
+  "levels": [
+    0.382,
+    0.5,
+    0.618
+  ],
+  "overall": {
+    "n": 51456,
+    "mean": 0.0103128361951251,
+    "median": -0.0007823762376238724,
+    "win_rate": 0.4949665733830846,
+    "t": 24.807571076300583,
+    "mean_pct": 1.0312836195125101,
+    "median_pct": -0.07823762376238724,
+    "win_pct": 49.49665733830846
+  },
+  "by_level": {
+    "0.382": {
+      "n": 23179,
+      "mean": 0.007292509614291823,
+      "median": -0.004772688172042883,
+      "win_rate": 0.4724535139565986,
+      "t": 11.613630501845291,
+      "mean_pct": 0.7292509614291823,
+      "median_pct": -0.4772688172042883,
+      "win_pct": 47.24535139565986
+    },
+    "0.5": {
+      "n": 18283,
+      "mean": 0.012714712621805568,
+      "median": 0.0019906951871656803,
+      "win_rate": 0.5128261226275775,
+      "t": 18.42610754224581,
+      "mean_pct": 1.2714712621805568,
+      "median_pct": 0.19906951871656803,
+      "win_pct": 51.28261226275775
+    },
+    "0.618": {
+      "n": 9994,
+      "mean": 0.012923867124496273,
+      "median": 0.0024756451989819345,
+      "win_rate": 0.5145087052231339,
+      "t": 13.911421948828552,
+      "mean_pct": 1.2923867124496273,
+      "median_pct": 0.24756451989819345,
+      "win_pct": 51.45087052231339
+    }
+  },
+  "random_baseline": {
+    "n": 20000,
+    "mean": 0.002047109888997655,
+    "median": -0.007167016460905429,
+    "win_rate": 0.4489,
+    "t": 3.2555971917354762,
+    "mean_pct": 0.20471098889976552,
+    "median_pct": -0.7167016460905429,
+    "win_pct": 44.89
+  },
+  "ranking_by_mean_net": [
+    {
+      "level": 0.618,
+      "mean": 0.012923867124496273
+    },
+    {
+      "level": 0.5,
+      "mean": 0.012714712621805568
+    },
+    {
+      "level": 0.382,
+      "mean": 0.007292509614291823
+    }
+  ],
+  "best_level": 0.618,
+  "caveats": [
+    "Observation/research only; not trading advice.",
+    "Limit-up/down proxied by ±9.5% (20cm boards misclassified).",
+    "Survivor bias: delisted names may be missing from current universe.",
+    "ST not PIT-filtered.",
+    "Sample mode: full_universe_2024"
+  ]
+}
