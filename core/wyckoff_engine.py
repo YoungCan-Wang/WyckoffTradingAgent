@@ -300,7 +300,7 @@ class FunnelConfig:
     evr_confirm_allow_break_pct: float = 0.0
 
     # Layer 4 - Compression (压缩蓄势)
-    enable_compression_trigger: bool = True
+    enable_compression_trigger: bool = False
     compression_lookback: int = 5
     compression_atr_window: int = 20
     compression_atr_quantile: float = 0.20
@@ -319,6 +319,7 @@ class FunnelConfig:
     min_funnel_score: float = 0.15
 
     # Layer 4 - SOS / JAC (Sign of Strength / Jump Across the Creek)
+    enable_sos_trigger: bool = False
     sos_pct_min: float = 6.0  # 提高门槛过滤弱突破（原 4.5 追高触发止损率极高）
     sos_vol_ratio: float = 3.0  # 要求更暴力抢筹（原 2.5 噪音太多，修改为 3.0）
     sos_vol_window: int = 20  # 计算点火爆量时的参考窗口
@@ -1666,9 +1667,10 @@ def layer4_triggers(
             score = _detect_compression(df, cfg, max_bias_200=max_bias_200, code=sym)
             if score is not None:
                 results["compression"].append((sym, score))
-        score = _detect_sos(df, cfg, max_bias_200=max_bias_200, code=sym)
-        if score is not None:
-            results["sos"].append((sym, score))
+        if cfg.enable_sos_trigger:
+            score = _detect_sos(df, cfg, max_bias_200=max_bias_200, code=sym)
+            if score is not None:
+                results["sos"].append((sym, score))
         if cfg.enable_trend_pullback_trigger:
             if any(t in channel for t in TREND_CHANNEL_TAGS):
                 cap_yi = float(cap_map.get(sym, 0.0) or 0.0)

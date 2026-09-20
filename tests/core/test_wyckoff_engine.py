@@ -35,6 +35,7 @@ from core.wyckoff_engine import (
     layer1_filter,
     layer2_strength_detailed,
     layer3_sector_resonance,
+    layer4_triggers,
     layer5_exit_signals,
     skipped_weekdays,
     sort_by_date_if_needed,
@@ -1397,3 +1398,28 @@ class TestBreakoutAccelChannelConfig:
     def test_breakout_accel_channel_can_be_explicitly_enabled(self):
         cfg = FunnelConfig(enable_breakout_accel_channel=True)
         assert cfg.enable_breakout_accel_channel is True
+
+
+# ─── Layer 4 核心形态开关与门禁测试（Issue #457 实证驱动瘦身）────────────────────
+class TestLayer4TriggerSwitches:
+    def test_compression_and_sos_default_to_false(self):
+        cfg = FunnelConfig()
+        assert cfg.enable_compression_trigger is False
+        assert cfg.enable_sos_trigger is False
+
+    def test_layer4_triggers_respects_compression_and_sos_switches(self):
+        df = TestDetectCompression()._build_compression_df()
+        sym = "000001"
+        df_map = {sym: df}
+
+        # 默认生产配置：两者均关闭，compression 与 sos 均不触发
+        cfg_default = FunnelConfig()
+        res_default = layer4_triggers([sym], df_map, cfg_default)
+        assert len(res_default["compression"]) == 0
+        assert len(res_default["sos"]) == 0
+
+        # 显式开启 compression
+        cfg_comp = FunnelConfig(enable_compression_trigger=True)
+        res_comp = layer4_triggers([sym], df_map, cfg_comp)
+        assert len(res_comp["compression"]) == 1
+        assert len(res_comp["sos"]) == 0
