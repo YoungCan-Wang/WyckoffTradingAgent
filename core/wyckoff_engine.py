@@ -230,7 +230,6 @@ class FunnelConfig:
     # 基于全市场 5510 只股票实测，大盘 MA50 门控将净均值从 +0.104% 提升至 +0.458% (4.4倍)，
     # 盈亏比 1.39，t=41.14，2022 熊市翻正为 +0.23%。默认关闭以保证生产 100% 向后兼容。
     enable_market_regime_gate: bool = False
-    market_regime_gate_type: str = "bench_ma50"
     market_regime_gate_ma: int = 50
 
     # Layer 3
