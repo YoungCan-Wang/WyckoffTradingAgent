@@ -262,6 +262,8 @@ def _run_sector_layer(
         l3_passed = list(l2_passed)
     else:
         l3_passed = list(l3_raw)
+    top_str = ", ".join(top_sectors) if top_sectors else "无"
+    print(f"[funnel] Layer 3 行业共振 Top {len(top_sectors)}: {top_str} (入选 {len(l3_passed)} 只)")
     sector_rotation = analyze_sector_rotation(
         all_df_map,
         ref_data.sector_map,

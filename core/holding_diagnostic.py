@@ -31,7 +31,7 @@ from core.intraday_shakeout import (
     describe_intraday_path,
 )
 from core.limit_move import classify_limit_move, describe_limit_move
-from core.price_targets import PriceTargets, compute_price_targets
+from core.price_targets import PriceTargets, calc_atr, compute_price_targets
 from core.wyckoff_engine import (
     FunnelConfig,
     _detect_evr,
@@ -111,6 +111,9 @@ class HoldingDiagnostic:
     # 三周期方向一致），-7% 与 -8% 差异很小。
     stop_loss_7pct: float = 0.0  # 成本 × 0.93
     stop_loss_status: str = "安全"  # 已穿止损 / 逼近止损 / 安全
+    stop_loss_atr: float = 0.0  # 动态止损：max(成本 - 2*ATR, 成本 * 0.90)
+    stop_loss_atr_status: str = "安全"  # 已穿止损 / 逼近止损 / 安全
+    atr_14: float = 0.0
     # 止盈参考：默认关闭。2026-08-08 跨周期回测（run 31237549718，三周期 ×
     # 10 参数格、1983 笔）配对比较显示固定 +18% 止盈在 12 个配对中 11 个损害
     # 夏普，牛市尤甚（bull_2020 h10-sl7 由 +0.991 降到 -0.131）。原注释声称
@@ -185,12 +188,15 @@ class _RiskSnapshot:
     ret_20d: float
     from_year_high: float
     from_year_low: float
+    stop_loss_atr: float = 0.0
+    stop_loss_atr_status: str = "安全"
+    atr_14: float = 0.0
 
 
 # ── 通道 → 轨道映射 ──
 
-_TREND_CHANNELS = {"主升通道", "趋势延续", "点火破局"}
-_ACCUM_CHANNELS = {"潜伏通道", "吸筹通道", "地量蓄势", "暗中护盘"}
+_TREND_CHANNELS = {"主升通道", "趋势延续", "点火破局", "趋势主升轨"}
+_ACCUM_CHANNELS = {"潜伏通道", "吸筹通道", "地量蓄势", "暗中护盘", "底部蓄势轨"}
 
 
 def _classify_track(channel: str) -> str:
@@ -345,6 +351,24 @@ def _stop_status(cost: float, latest_close: float) -> tuple[float, str]:
     return stop_loss_7pct, "安全"
 
 
+def _stop_status_atr(
+    cost: float,
+    latest_close: float,
+    atr: float | None,
+    mult: float = 2.0,
+) -> tuple[float, str, float]:
+    if cost <= 0:
+        return 0.0, "无成本价", 0.0
+    if atr is None or atr <= 0:
+        return 0.0, "数据不足", 0.0
+    stop_loss_atr = max(cost - mult * atr, cost * 0.90)
+    if latest_close <= stop_loss_atr:
+        return stop_loss_atr, "已穿止损", atr
+    if (latest_close - stop_loss_atr) / stop_loss_atr < 0.02:
+        return stop_loss_atr, "逼近止损(<2%)", atr
+    return stop_loss_atr, "安全", atr
+
+
 def holding_take_profit_pct() -> float:
     """固定止盈目标百分比；<=0 表示关闭（默认）。
 
@@ -372,8 +396,11 @@ def _take_profit_status(cost: float, latest_close: float) -> tuple[float, str]:
     return take_profit_18pct, "未达标"
 
 
-def _risk_snapshot(series: _SeriesSnapshot, cost: float) -> _RiskSnapshot:
+def _risk_snapshot(series: _SeriesSnapshot, cost: float, cfg: FunnelConfig | None = None) -> _RiskSnapshot:
     stop_loss_7pct, stop_status = _stop_status(cost, series.latest_close)
+    atr = calc_atr(series.high, series.low, series.close, getattr(cfg, "exit_atr_period", 14) if cfg else 14)
+    mult = float(getattr(cfg, "exit_atr_multiple", 2.0)) if cfg else 2.0
+    stop_loss_atr, stop_loss_atr_status, atr_val = _stop_status_atr(cost, series.latest_close, atr, mult)
     take_profit_18pct, take_profit_status = _take_profit_status(cost, series.latest_close)
     vol_20 = float(series.volume.tail(20).mean()) if len(series.volume) >= 20 else 0
     vol_60 = float(series.volume.tail(60).mean()) if len(series.volume) >= 60 else 0
@@ -393,6 +420,9 @@ def _risk_snapshot(series: _SeriesSnapshot, cost: float) -> _RiskSnapshot:
         ret_20d=(series.latest_close / float(series.close.iloc[-21]) - 1) * 100 if len(series.close) >= 21 else 0,
         from_year_high=(series.latest_close - h_year) / h_year * 100 if h_year > 0 else 0,
         from_year_low=(series.latest_close - l_year) / l_year * 100 if l_year > 0 else 0,
+        stop_loss_atr=stop_loss_atr,
+        stop_loss_atr_status=stop_loss_atr_status,
+        atr_14=atr_val,
     )
 
 
@@ -445,6 +475,8 @@ def _health_rating(
     reasons: list[str] = []
     if risk.stop_status == "已穿止损":
         reasons.append("已穿止损线(-7%)")
+    elif risk.stop_loss_atr_status == "已穿止损":
+        reasons.append("已穿动态止损线(ATR)")
     if wyckoff.exit_signal == "stop_loss":
         reasons.append("结构止损（从高点回撤>10%）")
     if ma.pattern == "空头排列":
@@ -458,6 +490,8 @@ def _health_rating(
         reasons.append("高位派发预警")
     if risk.stop_status == "逼近止损(<2%)":
         reasons.append("逼近止损线")
+    elif risk.stop_loss_atr_status == "逼近止损(<2%)":
+        reasons.append("逼近动态止损线(ATR)")
     if pnl_pct < -5:
         reasons.append("浮亏超过5%")
     if ma.pattern == "MA50<MA200(偏弱)" and pnl_pct < 0:
@@ -496,7 +530,11 @@ def _positive_reasons(ma: _MaSnapshot, wyckoff: _WyckoffSnapshot, risk: _RiskSna
     return positive
 
 
-def _candidate_lane_entry(code: str, series: _SeriesSnapshot, wyckoff: _WyckoffSnapshot) -> dict:
+def _candidate_lane_entry(
+    code: str,
+    series: _SeriesSnapshot,
+    wyckoff: _WyckoffSnapshot,
+) -> dict:
     l2_symbols = [code] if wyckoff.l2_channel and wyckoff.l2_channel != "未入选" else []
     entries = build_l1_candidate_lane_entries(
         l1_symbols=[code],
@@ -541,7 +579,7 @@ def diagnose_one_stock(
     ma = _ma_snapshot(series.close, series.latest_close)
     wyckoff = _wyckoff_snapshot(code, series, bench_df, cfg, buy_dt)
     candidate_entry = _candidate_lane_entry(code, series, wyckoff)
-    risk = _risk_snapshot(series, cost)
+    risk = _risk_snapshot(series, cost, cfg)
     targets = compute_price_targets(series.close, series.high, series.low)
     extreme = _extreme_day_snapshot(code, name, series, intraday_df)
     health, reasons = _health_rating(ma, wyckoff, risk, series.pnl_pct, extreme[2])
@@ -589,6 +627,9 @@ def _build_diagnostic(
         exit_reason=wyckoff.exit_reason,
         stop_loss_7pct=risk.stop_loss_7pct,
         stop_loss_status=risk.stop_status,
+        stop_loss_atr=risk.stop_loss_atr,
+        stop_loss_atr_status=risk.stop_loss_atr_status,
+        atr_14=risk.atr_14,
         take_profit_18pct=risk.take_profit_18pct,
         take_profit_status=risk.take_profit_status,
         target_conservative=targets.conservative if targets else None,
@@ -659,6 +700,23 @@ def diagnose_holdings(
     return results
 
 
+def _format_stop_and_targets(d: HoldingDiagnostic) -> list[str]:
+    lines = [f"  止损(-7%): {d.stop_loss_7pct:.2f} → {d.stop_loss_status}"]
+    if d.stop_loss_atr > 0:
+        lines.append(f"  动态止损(ATR2.0): {d.stop_loss_atr:.2f} (ATR={d.atr_14:.2f}) → {d.stop_loss_atr_status}")
+    if d.take_profit_status != "未启用":
+        target_pct = holding_take_profit_pct()
+        lines.append(f"  止盈(+{target_pct:.0f}%): {d.take_profit_18pct:.2f} → {d.take_profit_status}")
+    if d.target_conservative is not None or d.target_aggressive is not None:
+        target_parts = []
+        if d.target_conservative is not None:
+            target_parts.append(f"保守{d.target_conservative:.2f}")
+        if d.target_aggressive is not None:
+            target_parts.append(f"乐观{d.target_aggressive:.2f}")
+        lines.append(f"  目标价(技术位参考): {' / '.join(target_parts)}")
+    return lines
+
+
 def format_diagnostic_text(d: HoldingDiagnostic) -> str:
     """将诊断结果格式化为结构化文本，可注入 LLM prompt 或终端显示。"""
     lines = [
@@ -691,20 +749,8 @@ def format_diagnostic_text(d: HoldingDiagnostic) -> str:
             exit_parts.append(d.exit_reason)
         lines.append("  " + " | ".join(exit_parts))
 
-    # 止损 / 止盈（止盈默认关闭，关闭时不渲染以免误导为"有目标但未达标"）
-    lines.append(f"  止损(-7%): {d.stop_loss_7pct:.2f} → {d.stop_loss_status}")
-    if d.take_profit_status != "未启用":
-        target_pct = holding_take_profit_pct()
-        lines.append(f"  止盈(+{target_pct:.0f}%): {d.take_profit_18pct:.2f} → {d.take_profit_status}")
-
-    # 技术位目标价（量度运动/前高/ATR倍数，仅供参考）
-    if d.target_conservative is not None or d.target_aggressive is not None:
-        target_parts = []
-        if d.target_conservative is not None:
-            target_parts.append(f"保守{d.target_conservative:.2f}")
-        if d.target_aggressive is not None:
-            target_parts.append(f"乐观{d.target_aggressive:.2f}")
-        lines.append(f"  目标价(技术位参考): {' / '.join(target_parts)}")
+    # 止损 / 止盈 / 技术位目标
+    lines.extend(_format_stop_and_targets(d))
 
     # 量能
     lines.append(
@@ -748,6 +794,8 @@ def format_diagnostic_for_llm(d: HoldingDiagnostic) -> str:
         if d.exit_price is not None:
             parts.append(f"触发价:{d.exit_price:.2f}")
     parts.append(f"止损状态:{d.stop_loss_status}")
+    if d.stop_loss_atr > 0:
+        parts.append(f"ATR止损:{d.stop_loss_atr:.2f}({d.stop_loss_atr_status})")
     parts.append(f"止盈状态:{d.take_profit_status}")
     parts.append(f"量比:{d.vol_ratio_20_60:.2f} 振幅:{d.range_60d_pct:.0f}%")
     if d.intraday_path_desc:

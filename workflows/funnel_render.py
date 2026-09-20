@@ -761,7 +761,7 @@ def _build_legacy_card_lines(ctx: Any, selection: FunnelAiSelection) -> list[str
         f"战略主题 {sum(1 for c in selected_for_ai if c in ctx.strategic_l2_bypass_set)} / "
         f"主线 {sum(1 for c in selected_for_ai if c in ctx.mainline_candidate_set)}; "
         f"旁路预算 {FUNNEL_L2_BYPASS_AI_CAP or 'unlimited'})",
-        f"**候选集中概念**: {', '.join(ctx.metrics['top_sectors']) if ctx.metrics['top_sectors'] else '无'}",
+        f"**共振行业 Top{len(ctx.metrics.get('top_sectors', [])) or 5}**: {', '.join(ctx.metrics.get('top_sectors', [])) if ctx.metrics.get('top_sectors') else '无'}",
         "",
     ]
     if ctx.external_seed_line:

@@ -283,3 +283,28 @@ class TestFormatDiagnosticText:
         d = diagnose_one_stock("000001", "平安银行", cost=latest * 1.15, df=df, buy_dt=str(df["date"].iloc[0]))
         text = format_diagnostic_text(d)
         assert_golden("diagnostic_danger.txt", text)
+
+
+class TestAtrDynamicStopAndTrackMapping:
+    def test_atr_dynamic_stop_calculation(self):
+        df = make_ohlcv(n=250, trend="up", base=10.0, volatility=0.01, seed=1)
+        d = diagnose_one_stock("600519", "贵州茅台", cost=10.0, df=df)
+        assert d.stop_loss_atr > 0.0
+        assert d.atr_14 > 0.0
+        assert d.stop_loss_atr_status == "安全"
+        assert d.stop_loss_atr >= 10.0 * 0.90  # capped at -10% hard stop
+
+    def test_two_track_mapping(self):
+        from core.holding_diagnostic import _classify_track
+
+        assert _classify_track("趋势主升轨") == "Trend"
+        assert _classify_track("底部蓄势轨") == "Accum"
+        assert _classify_track("主升通道+趋势主升轨") == "Trend"
+
+    def test_format_diagnostic_for_llm_contains_atr(self):
+        from core.holding_diagnostic import format_diagnostic_for_llm
+
+        df = make_ohlcv(n=250, trend="up", base=10.0, volatility=0.01, seed=1)
+        d = diagnose_one_stock("600519", "贵州茅台", cost=10.0, df=df)
+        llm_text = format_diagnostic_for_llm(d)
+        assert "ATR止损:" in llm_text
