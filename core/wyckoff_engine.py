@@ -256,6 +256,11 @@ class FunnelConfig:
     lps_creek_breakout_pct: float = 0.5
     lps_creek_hold_tolerance_pct: float = 2.0
     lps_creek_max_rise_pct_per_bar: float = 0.1
+    # LPS 斐波那契几何自适应与动态小溪放宽（Issue #444）
+    lps_use_fib_zone: bool = False
+    lps_fib_min_level: float = 0.382
+    lps_fib_max_level: float = 0.618
+    lps_creek_dynamic_relax: bool = False
 
     # Layer 4 research switches (disabled in production until ablation passes)
     regime_trigger_profiles_enabled: bool = False
@@ -1150,11 +1155,35 @@ def _detect_spring(
     return float(recovery)
 
 
+def _lps_fib_zone_ok(df_s: pd.DataFrame, cfg: FunnelConfig) -> bool:
+    if len(df_s) < 65:
+        return False
+    highs = pd.to_numeric(df_s["high"], errors="coerce").values
+    lows = pd.to_numeric(df_s["low"], errors="coerce").values
+    closes = pd.to_numeric(df_s["close"], errors="coerce").values
+    window_highs = highs[-61:-1]
+    if len(window_highs) == 0:
+        return False
+    rel_high_idx = int(np.argmax(window_highs))
+    high_idx = len(highs) - 61 + rel_high_idx
+    swing_high = float(window_highs[rel_high_idx])
+
+    if (len(highs) - 1 - high_idx) > 30 or high_idx <= len(highs) - 61:
+        return False
+    swing_low = float(np.min(lows[len(highs) - 61 : high_idx + 1]))
+    if swing_low <= 0 or (swing_high - swing_low) / swing_low < 0.20:
+        return False
+
+    span = swing_high - swing_low
+    price_top = swing_high - span * float(cfg.lps_fib_min_level)
+    price_bottom = swing_high - span * float(cfg.lps_fib_max_level)
+    last_low = float(lows[-1])
+    last_close = float(closes[-1])
+    return bool(last_low <= price_top and last_close >= price_bottom)
+
+
 def _detect_lps(df: pd.DataFrame, cfg: FunnelConfig, max_bias_200: float | None = None, code: str = "") -> float | None:
-    """
-    LPS（最后支撑点缩量）：近 N 日回踩 MA20 且缩量。
-    返回 score（缩量比）或 None。
-    """
+    """LPS（最后支撑点缩量）：近 N 日回踩 MA20 且缩量，可结合 Fib 黄金区自适应。"""
     if len(df) < max(cfg.lps_vol_ref_window, cfg.lps_ma) + cfg.lps_lookback:
         return None
     df_s = sort_by_date_if_needed(df)
@@ -1178,9 +1207,14 @@ def _detect_lps(df: pd.DataFrame, cfg: FunnelConfig, max_bias_200: float | None 
         if pd.isna(ma_prev) or last_ma <= float(ma_prev):
             return None
 
-    low_near_ma = recent["low"].min()
-    if abs(low_near_ma - last_ma) / last_ma > cfg.lps_ma_tolerance:
+    fib_ok = _lps_fib_zone_ok(df_s, cfg) if cfg.lps_use_fib_zone else False
+    if cfg.lps_use_fib_zone and not fib_ok:
         return None
+
+    low_near_ma = recent["low"].min()
+    if not (cfg.lps_use_fib_zone and fib_ok):
+        if abs(low_near_ma - last_ma) / last_ma > cfg.lps_ma_tolerance:
+            return None
 
     recent_typical_vol = pd.to_numeric(recent["volume"], errors="coerce").median()
     ref_window_df = df_s.tail(cfg.lps_vol_ref_window + cfg.lps_lookback).iloc[: -cfg.lps_lookback]
@@ -1190,8 +1224,10 @@ def _detect_lps(df: pd.DataFrame, cfg: FunnelConfig, max_bias_200: float | None 
     vol_ratio = recent_typical_vol / ref_typical_vol
     if vol_ratio > cfg.lps_vol_dry_ratio:
         return None
-    if cfg.lps_creek_confirmation_enabled and not _lps_creek_confirmed(df_s, cfg):
-        return None
+
+    if cfg.lps_creek_confirmation_enabled:
+        if not (cfg.lps_creek_dynamic_relax and fib_ok) and not _lps_creek_confirmed(df_s, cfg):
+            return None
     return float(vol_ratio)
 
 

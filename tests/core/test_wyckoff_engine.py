@@ -24,6 +24,7 @@ from core.wyckoff_engine import (
     _is_holiday_grace,
     _latest_trade_date,
     _lps_creek_confirmed,
+    _lps_fib_zone_ok,
     _recent_sequence_events,
     _sos_volume_ratio,
     _spring_support_level,
@@ -1070,6 +1071,49 @@ def test_lps_creek_confirmation_requires_prior_breakout_and_hold() -> None:
     assert _lps_creek_confirmed(frame, cfg) is True
     frame.loc[anchor_end:, "close"] = 9.5
     assert _lps_creek_confirmed(frame, cfg) is False
+
+
+def test_lps_fib_zone_ok_and_detection() -> None:
+    dates = pd.date_range("2024-01-01", periods=70, freq="B")
+    closes = [10.0] * 70
+    highs = [10.2] * 70
+    lows = [9.8] * 70
+
+    for i in range(10, 46):
+        closes[i] = 10.0 + (i - 10) * (5.0 / 35.0)
+        highs[i] = closes[i] + 0.1
+        lows[i] = closes[i] - 0.1
+
+    highs[45] = 15.0
+    closes[45] = 14.9
+
+    closes[-1] = 12.60
+    lows[-1] = 12.40
+    highs[-1] = 12.80
+
+    frame = pd.DataFrame(
+        {
+            "date": dates,
+            "open": closes,
+            "high": highs,
+            "low": lows,
+            "close": closes,
+            "volume": [1_000_000.0] * 70,
+            "pct_chg": [0.0] * 70,
+        }
+    )
+
+    cfg = FunnelConfig(lps_use_fib_zone=True, lps_creek_dynamic_relax=True)
+    assert _lps_fib_zone_ok(frame, cfg) is True
+
+    frame_broken = frame.copy()
+    frame_broken.loc[69, "close"] = 11.0
+    assert _lps_fib_zone_ok(frame_broken, cfg) is False
+
+    frame_shallow = frame.copy()
+    frame_shallow.loc[69, "low"] = 14.0
+    frame_shallow.loc[69, "close"] = 14.2
+    assert _lps_fib_zone_ok(frame_shallow, cfg) is False
 
 
 def test_recent_sequence_events_detects_spring_before_current_signal() -> None:

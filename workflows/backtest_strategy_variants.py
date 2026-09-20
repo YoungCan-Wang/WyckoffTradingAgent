@@ -17,6 +17,7 @@ VARIANT_LABELS = {
     "G": "A股实证：剔除 EVR 与 SOS 确认信号",
     "H": "A股实证：NEUTRAL 入场需广度确认",
     "I": "A股实证：按历史命中先验重排确认信号",
+    "K": "A股实证：Fib-LPS 几何增强 + 动态小溪放宽",
     "M": "A股实证：弱水温信号缩仓",
     "P": "A股实证：M + NEUTRAL Spring 缩仓至 25%",
 }
@@ -28,6 +29,8 @@ _ALL_SWITCHES = {
     "regime_trigger_profiles_enabled": False,
     "lps_creek_confirmation_enabled": False,
     "signal_sequence_bonus_enabled": False,
+    "lps_use_fib_zone": False,
+    "lps_creek_dynamic_relax": False,
 }
 
 _VARIANT_SWITCHES = {
@@ -40,11 +43,18 @@ _VARIANT_SWITCHES = {
         "regime_trigger_profiles_enabled": True,
         "lps_creek_confirmation_enabled": True,
         "signal_sequence_bonus_enabled": True,
+        "lps_use_fib_zone": True,
+        "lps_creek_dynamic_relax": True,
     },
     "F": {},
     "G": {},
     "H": {},
     "I": {},
+    "K": {
+        "lps_creek_confirmation_enabled": True,
+        "lps_use_fib_zone": True,
+        "lps_creek_dynamic_relax": True,
+    },
     "M": {},
     "P": {},
 }
