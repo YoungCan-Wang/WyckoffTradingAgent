@@ -1400,26 +1400,29 @@ class TestBreakoutAccelChannelConfig:
         assert cfg.enable_breakout_accel_channel is True
 
 
-# ─── Layer 4 核心形态开关与门禁测试（Issue #457 实证驱动瘦身）────────────────────
+# ─── Layer 4 核心形态开关与门禁测试（Issue #457 & #459 实证驱动瘦身）────────────────────
 class TestLayer4TriggerSwitches:
-    def test_compression_and_sos_default_to_false(self):
+    def test_compression_sos_and_lps_default_to_false(self):
         cfg = FunnelConfig()
         assert cfg.enable_compression_trigger is False
         assert cfg.enable_sos_trigger is False
+        assert cfg.enable_lps_trigger is False
 
-    def test_layer4_triggers_respects_compression_and_sos_switches(self):
+    def test_layer4_triggers_respects_compression_sos_and_lps_switches(self):
         df = TestDetectCompression()._build_compression_df()
         sym = "000001"
         df_map = {sym: df}
 
-        # 默认生产配置：两者均关闭，compression 与 sos 均不触发
+        # 默认生产配置：三者均关闭，compression、sos 与 lps 均不触发
         cfg_default = FunnelConfig()
         res_default = layer4_triggers([sym], df_map, cfg_default)
         assert len(res_default["compression"]) == 0
         assert len(res_default["sos"]) == 0
+        assert len(res_default["lps"]) == 0
 
         # 显式开启 compression
         cfg_comp = FunnelConfig(enable_compression_trigger=True)
         res_comp = layer4_triggers([sym], df_map, cfg_comp)
         assert len(res_comp["compression"]) == 1
         assert len(res_comp["sos"]) == 0
+        assert len(res_comp["lps"]) == 0

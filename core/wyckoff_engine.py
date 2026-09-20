@@ -260,6 +260,7 @@ class FunnelConfig:
     spring_vol_expand_ratio: float = 1.15  # 收回时的成交量 / 下探时的成交量 > 此值（原 1.3 过严）
 
     # Layer 4 - LPS
+    enable_lps_trigger: bool = False
     lps_lookback: int = 3
     lps_ma: int = 20
     lps_ma_tolerance: float = 0.02
@@ -1656,9 +1657,10 @@ def layer4_triggers(
         score = _detect_spring(df, cfg, max_bias_200=max_bias_200, code=sym)
         if score is not None:
             results["spring"].append((sym, score))
-        score = _detect_lps(df, cfg, max_bias_200=max_bias_200, code=sym)
-        if score is not None:
-            results["lps"].append((sym, score))
+        if cfg.enable_lps_trigger:
+            score = _detect_lps(df, cfg, max_bias_200=max_bias_200, code=sym)
+            if score is not None:
+                results["lps"].append((sym, score))
         if cfg.enable_evr_trigger:
             score = _detect_evr(df, cfg, max_bias_200=max_bias_200, code=sym)
             if score is not None:
