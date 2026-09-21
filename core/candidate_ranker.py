@@ -41,16 +41,16 @@ TRIGGER_SHORT_LABELS = {
     "accumulation_ready": "AccumReady",
 }
 
-# 分组展示优先级：SOS > EVR > Spring > LPS > TrendPB > Compression
+# 分组展示优先级：三强核心（Spring > EVR > TrendPB）优先，随后为早期突破与预备形态
 TRIGGER_GROUP_ORDER = [
+    "spring",
+    "evr",
+    "trend_pullback",
     "early_breakout",
     "launchpad",
     "tight_base",
-    "sos",
-    "trend_pullback",
     "accumulation_ready",
-    "evr",
-    "spring",
+    "sos",
     "lps",
     "compression",
 ]

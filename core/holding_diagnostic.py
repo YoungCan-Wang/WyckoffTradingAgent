@@ -38,6 +38,7 @@ from core.wyckoff_engine import (
     _detect_lps,
     _detect_sos,
     _detect_spring,
+    _detect_trend_pullback,
     analyze_accum_stage,
     layer2_strength_detailed,
     layer5_exit_signals,
@@ -272,14 +273,16 @@ def _accum_stage(df: pd.DataFrame, cfg: FunnelConfig) -> str | None:
 def _l4_triggers(code: str, df: pd.DataFrame, cfg: FunnelConfig) -> list[str]:
     try:
         triggers = []
-        if _detect_sos(df, cfg, code=code) is not None:
-            triggers.append("SOS")
         if _detect_spring(df, cfg, code=code) is not None:
             triggers.append("Spring")
-        if _detect_lps(df, cfg, code=code) is not None:
-            triggers.append("LPS")
         if _detect_evr(df, cfg, code=code) is not None:
             triggers.append("EVR")
+        if _detect_trend_pullback(df, cfg, code=code) is not None:
+            triggers.append("TrendPB")
+        if getattr(cfg, "enable_sos_trigger", False) and _detect_sos(df, cfg, code=code) is not None:
+            triggers.append("SOS")
+        if getattr(cfg, "enable_lps_trigger", False) and _detect_lps(df, cfg, code=code) is not None:
+            triggers.append("LPS")
         return triggers
     except Exception:
         logger.debug("L4 trigger detection failed", exc_info=True)

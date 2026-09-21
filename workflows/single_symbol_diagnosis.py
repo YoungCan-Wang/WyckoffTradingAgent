@@ -406,7 +406,7 @@ def l3_reason(spec: SymbolSpec, ctx: ReplayContext) -> str:
 
 def l4_reason(df: pd.DataFrame) -> str:
     abc = best_abc(df, [])
-    return f"通过前置层，但未触发正式 Spring/SOS/LPS/EVR/Compression；ABC={abc['grade']}({abc['met_count']}/3)"
+    return f"通过前置层，但未触发正式 Spring/EVR/TrendPB；ABC={abc['grade']}({abc['met_count']}/3)"
 
 
 def selected_reason(scores: dict[str, float], df: pd.DataFrame) -> str:
