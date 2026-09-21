@@ -1116,8 +1116,10 @@ def _diagnose_dry_vol(
 def _diagnose_rs_div(
     cfg: Any, df_sorted: pd.DataFrame, close_series: pd.Series, last_close: float | None, bench_ctx: Any
 ) -> tuple[float, list[str]]:
-    if not _rs_divergence_base_ok(cfg, df_sorted, bench_ctx.sorted_df):
-        return 999.0, ["不满足底背离基础条件"]
+    if not getattr(cfg, "enable_rs_divergence_channel", False) or not _rs_divergence_base_ok(
+        cfg, df_sorted, bench_ctx.sorted_df
+    ):
+        return 999.0, ["通道未启用"]
 
     gaps = []
     fail = []
@@ -1248,6 +1250,85 @@ def _diagnose_sos(
     return (max(gaps), reasons) if gaps else (0.0, [])
 
 
+def _diagnose_markup_track(
+    cfg: Any,
+    state: Layer2SymbolState,
+    df_sorted: pd.DataFrame,
+    rps_state: Layer2RpsState,
+) -> tuple[float, list[str]]:
+    gaps: list[float] = []
+    fail: list[str] = []
+    if not rps_state.momentum_ok:
+        _append_momentum_rps_gaps(cfg, rps_state.fast, rps_state.slope_ok, rps_state.slope_value, gaps, fail)
+    if pd.isna(state.last_ma_short) or float(state.last_ma_short) <= 0 or pd.isna(state.last_close):
+        return 1.0, ["均线或收盘价数据缺失"]
+    bias_max = float(getattr(cfg, "markup_track_bias_200_max", 0.30))
+    if pd.notna(state.last_ma_long) and float(state.last_ma_long) > 0:
+        bias_200 = (float(state.last_close) - float(state.last_ma_long)) / float(state.last_ma_long)
+        if bias_200 > bias_max:
+            gaps.append((bias_200 - bias_max) / max(bias_max, 1e-9))
+            fail.append(f"偏离MA200过高: 当前 {bias_200 * 100:.1f}%, 上限 {bias_max * 100:.1f}%")
+    if not (state.bullish_alignment and float(state.last_close) >= float(state.last_ma_short)):
+        vol = pd.to_numeric(df_sorted.get("volume"), errors="coerce")
+        pct = close_return_pct(state.close, 1)
+        if len(vol) >= 20:
+            vol20 = float(vol.tail(20).mean())
+            curr_vol = float(vol.iloc[-1])
+            vol_ok = vol20 > 0 and curr_vol >= 1.2 * vol20
+            pct_ok = pct is not None and pct >= 1.5
+            close_above_ma50 = float(state.last_close) > float(state.last_ma_short)
+            if not (close_above_ma50 and vol_ok and pct_ok):
+                if not state.bullish_alignment:
+                    gaps.append(0.3)
+                    fail.append("未形成均线多头排列且未见放量突破")
+                if float(state.last_close) < float(state.last_ma_short):
+                    gap = (float(state.last_ma_short) - float(state.last_close)) / float(state.last_ma_short)
+                    gaps.append(gap)
+                    fail.append(f"收盘低于MA50: 当前 {state.last_close:.2f}, 阈值MA50 {state.last_ma_short:.2f}")
+        else:
+            gaps.append(0.5)
+            fail.append("历史数据不足")
+    if not gaps:
+        return 0.0, []
+    return max(gaps), fail
+
+
+def _diagnose_accum_track(
+    cfg: Any,
+    state: Layer2SymbolState,
+    df_sorted: pd.DataFrame,
+) -> tuple[float, list[str]]:
+    ref_window = int(getattr(cfg, "dry_vol_ref_window", 250))
+    if len(df_sorted) < min(ref_window, 80):
+        return 1.0, ["历史长度不足"]
+    gaps: list[float] = []
+    fail: list[str] = []
+    price_from_low_max = float(getattr(cfg, "accum_track_price_from_low_max", 0.35))
+    period_low = float(state.close.tail(max(ref_window, 2)).min())
+    if period_low > 0:
+        price_from_low = float(state.last_close) / period_low - 1.0
+        if price_from_low > price_from_low_max:
+            gaps.append((price_from_low - price_from_low_max) / max(price_from_low_max, 1e-9))
+            fail.append(f"偏离低位过高: 当前 {price_from_low * 100:.1f}%, 上限 {price_from_low_max * 100:.1f}%")
+    vol = pd.to_numeric(df_sorted.get("volume"), errors="coerce")
+    lookback = int(getattr(cfg, "dry_vol_lookback", 10))
+    vol_quantile = float(getattr(cfg, "accum_track_vol_quantile", 0.25))
+    ref_vol = vol.tail(max(ref_window, 2)).dropna()
+    dry_quantile_ok = False
+    if len(ref_vol) >= 50:
+        threshold = float(np.quantile(ref_vol.values, vol_quantile))
+        min_vol = float(vol.tail(lookback).min())
+        dry_quantile_ok = min_vol <= threshold
+    dry_ratio = float(getattr(cfg, "accum_track_vol_dry_ratio", 0.75))
+    dry_ratio_ok = _volume_dry_ok(df_sorted, 20, 120, dry_ratio)
+    if not (dry_quantile_ok or dry_ratio_ok):
+        gaps.append(0.3)
+        fail.append("量能未沉淀: 既无地量分位数突破也未达缩量标准")
+    if not gaps:
+        return 0.0, []
+    return max(gaps), fail
+
+
 def diagnose_layer2_symbol_failure(
     sym: str,
     df_sorted: pd.DataFrame,
@@ -1263,6 +1344,15 @@ def diagnose_layer2_symbol_failure(
     if not bench_ctx.regime_gate_passed:
         return "大盘处于MA50空头生命线下方(市场门控拦截)"
     state = _symbol_state(df_sorted, cfg, bench_ctx)
+    if getattr(cfg, "enable_two_track_mode", False):
+        track_failures = {
+            "趋势主升轨": _diagnose_markup_track(cfg, state, df_sorted, rps_state),
+            "底部蓄势轨": _diagnose_accum_track(cfg, state, df_sorted),
+        }
+        sorted_fails = sorted(track_failures.items(), key=lambda item: item[1][0])
+        closest_name, (closest_gap, closest_reasons) = sorted_fails[0]
+        return f"最接近轨道[{closest_name}](缺口{closest_gap * 100:.1f}%): {', '.join(closest_reasons)}"
+
     close_series = state.close
     last_close = state.last_close
     last_ma_short = state.last_ma_short

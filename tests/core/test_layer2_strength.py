@@ -505,3 +505,58 @@ def test_evaluate_layer2_symbol_blocks_when_regime_gate_fails() -> None:
         detect_sos=lambda d, c: None,
     )
     assert "大盘处于MA50空头生命线下方(市场门控拦截)" in diag
+
+
+def test_diagnose_layer2_symbol_failure_two_track_mode() -> None:
+    cfg = FunnelConfig(
+        enable_two_track_mode=True,
+        markup_track_bias_200_max=0.30,
+        accum_track_price_from_low_max=0.35,
+    )
+    # Price is 15.0, MA50=12.0, MA200=10.0 -> bias_200 = 50% > 30%
+    closes = [10.0] * 50 + [12.0] * 50 + [15.0] * 50
+    df = pd.DataFrame({"close": closes, "volume": [1000.0] * 150})
+    bench_ctx = BenchmarkContext(sorted_df=None, latest_date=None, dropping=False, regime_gate_passed=True)
+    rps_ctx = RpsContext(fast={}, slow={}, active=False)
+    rps_state = Layer2RpsState(None, None, True, True, True, 0.0)
+
+    diag = diagnose_layer2_symbol_failure(
+        "600000",
+        df,
+        cfg,
+        bench_ctx=bench_ctx,
+        rps_ctx=rps_ctx,
+        rps_state=rps_state,
+        momentum_rs_ok=True,
+        ambush_rs_ok=True,
+        detect_sos=lambda d, c: None,
+    )
+    assert "最接近轨道" in diag
+    assert "趋势主升轨" in diag or "底部蓄势轨" in diag
+
+
+def test_diagnose_layer2_symbol_failure_ignores_disabled_channels() -> None:
+    cfg = FunnelConfig(
+        enable_two_track_mode=False,
+        enable_rs_divergence_channel=False,
+        enable_breakout_accel_channel=False,
+    )
+    closes = [10.0] * 100
+    df = pd.DataFrame({"close": closes, "volume": [1000.0] * 100})
+    bench_ctx = BenchmarkContext(sorted_df=None, latest_date=None, dropping=False, regime_gate_passed=True)
+    rps_ctx = RpsContext(fast={}, slow={}, active=False)
+    rps_state = Layer2RpsState(None, None, False, False, True, 0.0)
+
+    diag = diagnose_layer2_symbol_failure(
+        "600000",
+        df,
+        cfg,
+        bench_ctx=bench_ctx,
+        rps_ctx=rps_ctx,
+        rps_state=rps_state,
+        momentum_rs_ok=False,
+        ambush_rs_ok=False,
+        detect_sos=lambda d, c: None,
+    )
+    assert "暗中护盘" not in diag
+    assert "加速突破" not in diag
