@@ -19,6 +19,7 @@ class BenchmarkContext:
     dropping: bool
     pct_by_date: dict[object, object] = field(default_factory=dict)
     regime_gate_passed: bool = True
+    regime_gate_shadow: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -87,12 +88,72 @@ def _benchmark_regime_gate_passed(bench_sorted: pd.DataFrame, cfg: Any) -> bool:
     return float(close.iloc[-1]) >= threshold
 
 
+def eval_scheme_a_shadow_gate(
+    bench_df: pd.DataFrame | None,
+    *,
+    bench_code: str = "000985",
+    ma_w: int = 20,
+    buffer_pct: float = 0.01,
+) -> dict:
+    """Evaluate Scheme A market regime gate in shadow mode without blocking production."""
+    if bench_df is None or bench_df.empty:
+        return {
+            "bench_code": bench_code,
+            "action": "UNKNOWN",
+            "passed": True,
+            "close": None,
+            "ma_val": None,
+            "threshold": None,
+            "distance_pct": None,
+            "reason": "基准数据缺失",
+        }
+    if "close" not in bench_df.columns:
+        return {
+            "bench_code": bench_code,
+            "action": "UNKNOWN",
+            "passed": True,
+            "close": None,
+            "ma_val": None,
+            "threshold": None,
+            "distance_pct": None,
+            "reason": "基准数据缺少close列",
+        }
+    close = pd.to_numeric(bench_df["close"], errors="coerce").dropna()
+    if len(close) < ma_w:
+        return {
+            "bench_code": bench_code,
+            "action": "UNKNOWN",
+            "passed": True,
+            "close": float(close.iloc[-1]) if not close.empty else None,
+            "ma_val": None,
+            "threshold": None,
+            "distance_pct": None,
+            "reason": f"样本不足{ma_w}日",
+        }
+    ma_val = float(close.rolling(ma_w).mean().iloc[-1])
+    threshold = ma_val * (1.0 + buffer_pct)
+    last_close = float(close.iloc[-1])
+    passed = last_close >= threshold
+    distance_pct = (last_close - threshold) / threshold * 100.0
+    return {
+        "bench_code": bench_code,
+        "action": "ALLOW" if passed else "BLOCK",
+        "passed": passed,
+        "close": round(last_close, 2),
+        "ma_val": round(ma_val, 2),
+        "threshold": round(threshold, 2),
+        "distance_pct": round(distance_pct, 2),
+        "reason": f"{bench_code} close={last_close:.2f} {'高于' if passed else '低于'} 门控阈值{threshold:.2f} ({distance_pct:+.2f}%)",
+    }
+
+
 def build_benchmark_context(
     bench_df: pd.DataFrame | None,
     cfg: Any,
     *,
     sort_frame: Callable[[pd.DataFrame], pd.DataFrame],
     latest_trade_date: Callable[[pd.DataFrame], object | None],
+    shadow_bench_df: pd.DataFrame | None = None,
 ) -> BenchmarkContext:
     if bench_df is None or bench_df.empty:
         return BenchmarkContext(None, None, False)
@@ -100,12 +161,18 @@ def build_benchmark_context(
     latest_date = latest_trade_date(bench_sorted)
     dropping = _benchmark_dropping(bench_sorted, int(cfg.bench_drop_days), float(cfg.bench_drop_threshold))
     gate_passed = _benchmark_regime_gate_passed(bench_sorted, cfg)
+    gate_shadow = eval_scheme_a_shadow_gate(
+        shadow_bench_df if shadow_bench_df is not None else bench_sorted,
+        ma_w=int(getattr(cfg, "market_regime_gate_ma", 20)),
+        buffer_pct=float(getattr(cfg, "market_regime_gate_buffer_pct", 0.01)),
+    )
     return BenchmarkContext(
         bench_sorted,
         latest_date,
         dropping,
         _benchmark_pct_lookup(bench_sorted),
         regime_gate_passed=gate_passed,
+        regime_gate_shadow=gate_shadow,
     )
 
 

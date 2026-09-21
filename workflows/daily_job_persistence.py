@@ -113,9 +113,13 @@ def recommendation_write_symbols(
     trade_mode: MarketTradeMode | None = None,
 ) -> list[dict]:
     mode = trade_mode or resolve_market_trade_mode((benchmark_context or {}).get("regime"))
-    rows = [_tracking_symbol(item, mode) for item in symbols_info if is_recommendation_tracking_candidate(item)]
+    rows = [
+        _tracking_symbol(item, mode, benchmark_context)
+        for item in symbols_info
+        if is_recommendation_tracking_candidate(item)
+    ]
     if step2_details:
-        rows.extend(_springboard_tracking_symbols(step2_details, mode))
+        rows.extend(_springboard_tracking_symbols(step2_details, mode, benchmark_context))
         _enrich_tracking_rows(rows, step2_details)
     return _dedupe_tracking_symbols(rows)
 
@@ -300,17 +304,45 @@ def _is_strategic_theme_recommendation(item: dict) -> bool:
     )
 
 
-def _tracking_symbol(item: dict, trade_mode: MarketTradeMode) -> dict:
+def _attach_shadow_gate(row: dict, benchmark_context: dict | None) -> None:
+    if not benchmark_context:
+        return
+    shadow = benchmark_context.get("market_regime_gate_shadow") or {}
+    if not shadow or shadow.get("action") == "UNKNOWN":
+        return
+    row["shadow_gate_action"] = shadow.get("action")
+    row["shadow_gate_detail"] = shadow.get("reason")
+    metrics = dict(row.get("candidate_metrics") or {})
+    metrics["regime_gate_shadow"] = {
+        "bench_code": shadow.get("bench_code"),
+        "action": shadow.get("action"),
+        "distance_pct": shadow.get("distance_pct"),
+        "close": shadow.get("close"),
+        "threshold": shadow.get("threshold"),
+    }
+    row["candidate_metrics"] = metrics
+
+
+def _tracking_symbol(
+    item: dict,
+    trade_mode: MarketTradeMode,
+    benchmark_context: dict | None = None,
+) -> dict:
     row = dict(item)
     row["market_regime"] = str(row.get("market_regime") or trade_mode.regime)
     row["candidate_status"] = _tracking_status(row, trade_mode)
     row["selection_source"] = _tracking_source(row, trade_mode)
     if not _clean_text(row.get("tag")):
         row["tag"] = row["candidate_status"]
+    _attach_shadow_gate(row, benchmark_context)
     return row
 
 
-def _springboard_tracking_symbols(step2_details: dict, trade_mode: MarketTradeMode) -> list[dict]:
+def _springboard_tracking_symbols(
+    step2_details: dict,
+    trade_mode: MarketTradeMode,
+    benchmark_context: dict | None = None,
+) -> list[dict]:
     triggers = (
         step2_details.get("formal_triggers")
         or step2_details.get("review_triggers")
@@ -328,17 +360,17 @@ def _springboard_tracking_symbols(step2_details: dict, trade_mode: MarketTradeMo
             springboard = springboard_map.get(f"{str(signal_type).lower()}:{code}") or springboard_map.get(code) or {}
             if int(springboard.get("springboard_met_count") or 0) < 2:
                 continue
-            rows.append(
-                _springboard_tracking_row(
-                    code,
-                    str(signal_type),
-                    raw_score,
-                    step2_details,
-                    springboard,
-                    metadata_map.get(code, {}),
-                    trade_mode,
-                )
+            row = _springboard_tracking_row(
+                code,
+                str(signal_type),
+                raw_score,
+                step2_details,
+                springboard,
+                metadata_map.get(code, {}),
+                trade_mode,
             )
+            _attach_shadow_gate(row, benchmark_context)
+            rows.append(row)
     return rows
 
 

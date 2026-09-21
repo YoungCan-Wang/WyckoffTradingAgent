@@ -10,6 +10,7 @@ from typing import Any
 
 import pandas as pd
 
+from core.layer2_strength import eval_scheme_a_shadow_gate
 from core.market_breadth import calc_market_breadth
 from core.wyckoff_engine import FunnelConfig
 from integrations.fetch_a_share_csv import resolve_trading_window
@@ -131,6 +132,7 @@ def prepare_funnel_job_data(
     pool = _resolve_funnel_symbol_pool(pool_board, pool_limit_count=pool_limit_count)
     ref_data = _load_reference_data(pool.symbols, window, cfg, include_financial_metrics=include_financial_metrics)
     bench_df, smallcap_df = _load_benchmark_indices(start_s, end_s)
+    shadow_bench_df = _load_shadow_benchmark(start_s, end_s, bench_df)
     all_df_map, fetch_stats = _fetch_funnel_ohlcv(
         pool,
         window,
@@ -160,7 +162,9 @@ def prepare_funnel_job_data(
         bench_df=bench_df,
         smallcap_df=smallcap_df,
     )
-    benchmark_context = _build_benchmark_context(all_df_map, bench_df, smallcap_df, cfg)
+    benchmark_context = _build_benchmark_context(
+        all_df_map, bench_df, smallcap_df, cfg, shadow_bench_df=shadow_bench_df
+    )
     benchmark_context["trade_date"] = window.end_trade_date.isoformat()
     return FunnelJobData(
         cfg=cfg,
@@ -272,6 +276,19 @@ def _load_benchmark_indices(start_s: str, end_s: str) -> tuple[pd.DataFrame | No
         raise RuntimeError("回放基准数据不完整，拒绝继续回刷")
     _report_progress("指数加载", "基准加载完成", 0.35)
     return bench_df, smallcap_df
+
+
+def _load_shadow_benchmark(start_s: str, end_s: str, bench_df: pd.DataFrame | None) -> pd.DataFrame | None:
+    if MAIN_BENCH_CODE == "000985":
+        return bench_df
+    try:
+        df = fetch_index_hist("000985", start_s, end_s)
+        if df is not None and not df.empty:
+            print("[funnel] 方案A影子基准加载成功: 000985")
+            return df
+    except Exception as e:
+        logger.debug("方案A影子基准 000985 加载跳过: %s", e)
+    return None
 
 
 def _resolve_external_seed_pool(all_symbols: list[str]) -> tuple[ExternalSeedConfig, list[str], int]:
@@ -579,6 +596,7 @@ def _build_benchmark_context(
     bench_df: pd.DataFrame | None,
     smallcap_df: pd.DataFrame | None,
     cfg: FunnelConfig,
+    shadow_bench_df: pd.DataFrame | None = None,
 ) -> dict:
     _report_progress("大盘水温", "计算广度/资金/总闸", 0.78)
     breadth_context = calc_market_breadth(all_df_map, BREADTH_MA_WINDOW)
@@ -601,6 +619,12 @@ def _build_benchmark_context(
         money_flow=money_flow_context,
         amount_distribution=amount_distribution_context,
         regime_config=market_regime_config_from_env(),
+    )
+    benchmark_context["market_regime_gate_shadow"] = eval_scheme_a_shadow_gate(
+        shadow_bench_df if shadow_bench_df is not None else (bench_df if MAIN_BENCH_CODE == "000985" else None),
+        bench_code="000985",
+        ma_w=int(getattr(cfg, "market_regime_gate_ma", 20)),
+        buffer_pct=float(getattr(cfg, "market_regime_gate_buffer_pct", 0.01)),
     )
     _print_benchmark_gate(benchmark_context)
     _report_progress("大盘水温", f"regime={benchmark_context.get('regime')}", 0.82)
@@ -625,6 +649,14 @@ def _print_benchmark_gate(benchmark_context: dict) -> None:
         f"repair_triggered={benchmark_context.get('repair_triggered')}, "
         f"repair_reasons={benchmark_context.get('repair_reasons')}, tuned={benchmark_context['tuned']}"
     )
+    shadow_gate = benchmark_context.get("market_regime_gate_shadow") or {}
+    if shadow_gate and shadow_gate.get("action") != "UNKNOWN":
+        print(
+            f"[funnel] 方案A影子门控: {shadow_gate.get('bench_code')} "
+            f"action={shadow_gate.get('action')}, "
+            f"close={shadow_gate.get('close')}, threshold={shadow_gate.get('threshold')}, "
+            f"dist={shadow_gate.get('distance_pct')}% ({shadow_gate.get('reason')})"
+        )
 
 
 def _funnel_asof_cut_enabled() -> bool:
