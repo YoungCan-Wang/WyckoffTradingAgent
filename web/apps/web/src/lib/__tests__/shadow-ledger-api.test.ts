@@ -52,4 +52,10 @@ describe('requestShadowLedger', () => {
     const fetcher = vi.fn().mockResolvedValue(response({ error: 'Not Found' }, { status: 404 }))
     await expect(requestShadowLedger(undefined, undefined, fetcher)).rejects.toThrow('尚未就绪')
   })
+
+  it('does not surface a raw unconfigured 503 to the page', async () => {
+    expect(shadowLedgerErrorMessage({ error: '影子账本服务未配置' }, 503)).toContain('尚未就绪')
+    const fetcher = vi.fn().mockResolvedValue(response({ error: '影子账本服务未配置' }, { status: 503 }))
+    await expect(requestShadowLedger(undefined, undefined, fetcher)).rejects.toThrow('尚未就绪')
+  })
 })

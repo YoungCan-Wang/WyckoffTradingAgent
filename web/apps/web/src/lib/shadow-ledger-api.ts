@@ -67,7 +67,7 @@ export type ShadowPositionRow = z.infer<typeof ledgerSchema>['positions'][number
 export function shadowLedgerErrorMessage(payload: unknown, status: number): string {
   const parsed = errorSchema.safeParse(payload)
   const raw = parsed.success ? parsed.data.error : ''
-  if (status === 404 || raw === 'Not Found') {
+  if (status === 404 || status === 503 || raw === 'Not Found' || raw.includes('未配置')) {
     return '影子账户接口尚未就绪，请稍后重试。未登录也可看橱窗，这不是实盘。'
   }
   return raw || '影子账本请求失败'
