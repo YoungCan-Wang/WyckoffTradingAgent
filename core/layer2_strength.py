@@ -1122,10 +1122,8 @@ def _diagnose_dry_vol(
 def _diagnose_rs_div(
     cfg: Any, df_sorted: pd.DataFrame, close_series: pd.Series, last_close: float | None, bench_ctx: Any
 ) -> tuple[float, list[str]]:
-    if not getattr(cfg, "enable_rs_divergence_channel", False) or not _rs_divergence_base_ok(
-        cfg, df_sorted, bench_ctx.sorted_df
-    ):
-        return 999.0, ["通道未启用"]
+    if not _rs_divergence_base_ok(cfg, df_sorted, bench_ctx.sorted_df):
+        return 999.0, ["不满足底背离基础条件"]
 
     gaps = []
     fail = []
@@ -1265,7 +1263,7 @@ def _diagnose_markup_track(
     gaps: list[float] = []
     fail: list[str] = []
 
-    if rps_state is not None and not rps_state.momentum_ok:
+    if not rps_state.momentum_ok:
         val_slow = float(rps_state.slow or 0.0)
         thresh_slow = float(cfg.rps_slow_min)
         if val_slow < thresh_slow:
