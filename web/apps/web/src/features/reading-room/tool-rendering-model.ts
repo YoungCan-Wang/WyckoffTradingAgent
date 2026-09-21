@@ -19,6 +19,8 @@ const TOOL_LABEL_KEYS: Record<string, TranslationKey> = {
   intraday_analysis: 'tool.intraday_analysis',
   run_python_research: 'tool.run_python_research',
   web_search: 'tool.web_search',
+  stock_news: 'tool.stock_news',
+  scan_corporate_events: 'tool.scan_corporate_events',
 }
 
 const TOOL_TONES: Record<string, string> = {

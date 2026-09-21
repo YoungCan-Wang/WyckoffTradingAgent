@@ -62,6 +62,19 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "scan_corporate_events",
+        "description": "扫描已公告与媒体电报中的重大资产重组、借壳、筹划购买与股票停牌。观察结果，不是实盘，也不改漏斗或买卖许可。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "最多返回条数，默认 20，最大 50",
+                },
+            },
+        },
+    },
+    {
         "name": "analyze_stock",
         "description": "分析单只股票：A 股/ETF 支持 6 位代码；美股/港股使用 TickFlow 标准代码。支持 Wyckoff 健康诊断、近期行情或基本面质量查询。",
         "parameters": {
@@ -849,6 +862,7 @@ class ToolSpec:
 # 工具行为元数据：runtime / TUI / 执行器都从这里派生策略。
 TOOL_SPECS: dict[str, ToolSpec] = {
     "search_stock_by_name": ToolSpec("search_stock_by_name", "搜索股票", concurrency_safe=True),
+    "scan_corporate_events": ToolSpec("scan_corporate_events", "公司大事停牌扫描", concurrency_safe=True),
     "analyze_stock": ToolSpec("analyze_stock", "个股分析", concurrency_safe=True),
     "portfolio": ToolSpec("portfolio", "持仓", concurrency_safe=True),
     "get_market_overview": ToolSpec("get_market_overview", "大盘水温", concurrency_safe=True),
@@ -1111,6 +1125,7 @@ class ToolRegistry:
         from agents.backtest_tools import run_backtest
         from agents.browser_tools import browser_research
         from agents.chart_annotation_tools import annotate_chart
+        from agents.corporate_event_tools import scan_corporate_events
         from agents.dashboard_tools import render_dashboard
         from agents.diagnosis_tools import analyze_stock
         from agents.engine_tools import (
@@ -1140,6 +1155,7 @@ class ToolRegistry:
 
         return {
             "search_stock_by_name": search_stock_by_name,
+            "scan_corporate_events": scan_corporate_events,
             "analyze_stock": analyze_stock,
             "portfolio": portfolio,
             "get_market_overview": get_market_overview,

@@ -42,9 +42,16 @@ def load_news_chart_events(
 
 
 def fetch_eastmoney_stock_news(code: str, *, pages: int = _MAX_PAGES) -> list[dict[str, Any]]:
+    return fetch_eastmoney_news(str(code or "").strip(), pages=pages)
+
+
+def fetch_eastmoney_news(keyword: str, *, pages: int = _MAX_PAGES) -> list[dict[str, Any]]:
+    query = str(keyword or "").strip()
+    if not query:
+        return []
     rows: list[dict[str, Any]] = []
     for page in range(1, max(int(pages), 1) + 1):
-        payload = _request_news_page(code, page)
+        payload = _request_news_page(query, page)
         batch = payload.get("result", {}).get("cmsArticleWebOld") if isinstance(payload, dict) else None
         if not isinstance(batch, list) or not batch:
             break
@@ -54,11 +61,11 @@ def fetch_eastmoney_stock_news(code: str, *, pages: int = _MAX_PAGES) -> list[di
     return rows
 
 
-def _request_news_page(code: str, page: int) -> dict[str, Any]:
+def _request_news_page(keyword: str, page: int) -> dict[str, Any]:
     params = urlencode(
         {
             "cb": "jQuery3510",
-            "param": json.dumps(_search_param(code, page), ensure_ascii=False),
+            "param": json.dumps(_search_param(keyword, page), ensure_ascii=False),
             "_": "1",
         }
     )
@@ -66,17 +73,17 @@ def _request_news_page(code: str, page: int) -> dict[str, Any]:
         f"{EASTMONEY_NEWS_URL}?{params}",
         headers={
             "User-Agent": "Mozilla/5.0",
-            "Referer": f"https://so.eastmoney.com/news/s?keyword={code}",
+            "Referer": f"https://so.eastmoney.com/news/s?keyword={keyword}",
         },
     )
     with urlopen(request, timeout=_TIMEOUT_SECONDS) as response:
         return _parse_jsonp(response.read().decode("utf-8", errors="replace"))
 
 
-def _search_param(code: str, page: int) -> dict[str, Any]:
+def _search_param(keyword: str, page: int) -> dict[str, Any]:
     return {
         "uid": "",
-        "keyword": code,
+        "keyword": keyword,
         "type": ["cmsArticleWebOld"],
         "client": "web",
         "clientType": "web",

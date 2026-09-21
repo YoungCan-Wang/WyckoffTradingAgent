@@ -128,6 +128,15 @@ _TASK_SCREEN_INTENT_MARKERS = (
     "好票",
     "好标的",
 )
+_TASK_CORP_EVENT_INTENT_MARKERS = (
+    "停牌扫描",
+    "公司大事",
+    "重大资产重组",
+    "重组并购",
+    "借壳",
+    "筹划购买",
+    "股票停牌",
+)
 _TASK_REPORT_INTENT_MARKERS = ("研报", "报告", "深度复核", "深度审讯")
 _TASK_DECISION_INTENT_MARKERS = ("攻防", "触发", "失效", "买卖", "风险边界", "去留", "止损", "入场", "动作", "下一步")
 _TASK_MARKET_INTENT_MARKERS = ("大盘", "市场", "水温", "盘面", "市场环境")
@@ -1328,7 +1337,11 @@ def _task_text_matches_tool_intent(name: str, text: str) -> bool:
         return not _looks_like_synthesis_intent_text(text) and any(
             marker in text for marker in _TASK_MARKET_INTENT_MARKERS
         )
+    if name == "scan_corporate_events":
+        return any(marker in text for marker in _TASK_CORP_EVENT_INTENT_MARKERS)
     if name == "screen_stocks":
+        if any(marker in text for marker in _TASK_CORP_EVENT_INTENT_MARKERS):
+            return False
         return any(marker in text for marker in _TASK_SCREEN_INTENT_MARKERS)
     if name == "analyze_stock":
         return _task_text_matches_stock_analysis(text)

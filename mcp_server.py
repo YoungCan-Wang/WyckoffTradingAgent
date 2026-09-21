@@ -182,6 +182,7 @@ def research_hypothesis(
 # ---------------------------------------------------------------------------
 
 from agents.backtest_tools import run_backtest as _run_backtest
+from agents.corporate_event_tools import scan_corporate_events as _scan_corporate_events
 from agents.diagnosis_tools import analyze_stock as _analyze_stock
 from agents.market_tools import (
     get_market_overview as _get_market_overview,
@@ -195,6 +196,16 @@ from agents.search_tools import search_stock_by_name as _search_stock_by_name
 def search_stock_by_name(keyword: str) -> list[dict]:
     """根据关键词搜索 A 股股票，支持名称、代码、拼音首字母模糊搜索。"""
     return _execute_mcp_tool("search_stock_by_name", _search_stock_by_name, {"keyword": keyword})
+
+
+@mcp.tool()
+def scan_corporate_events(limit: int = 20) -> dict:
+    """扫描已公告与媒体电报中的重大资产重组 / 停牌。
+
+    **调用时机**：用户问停牌、重组、借壳、筹划购买、公司大事扫描时调用。
+    观察结果，不是实盘，也不改漏斗或买卖许可。
+    """
+    return _execute_mcp_tool("scan_corporate_events", _scan_corporate_events, {"limit": limit})
 
 
 @mcp.tool()

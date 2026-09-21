@@ -1,0 +1,62 @@
+name: Corporate Event Halt Scan
+
+on:
+  schedule:
+    # 北京 19:40（UTC 11:40）：覆盖盘后财联社电报。GitHub schedule 实测晚 3~4.5 小时
+    # 且顺序不可控，不能当成 19:40 准时，更不能靠它排在另一条 cron 之前。
+    - cron: "40 11 * * *"
+    # 北京 08:15（UTC 00:15）：独立再扫一夜公告 / 迟到电报。两档各自完整拉源，
+    # cron 间隔不构成执行顺序。
+    - cron: "15 0 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: corporate-event-scan-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONUNBUFFERED: "1"
+      WYCKOFF_WRITE_CONTEXT: "server_job"
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+      TZ: Asia/Shanghai
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Prepare logs dir
+        run: mkdir -p logs
+
+      - name: Run corporate event scan
+        run: |
+          set -o pipefail
+          python -u scripts/corporate_event_scan_job.py \
+            --output "${{ github.workspace }}/logs/corporate_event_scan.md" \
+            --json-output "${{ github.workspace }}/logs/corporate_event_scan.json" \
+            2>&1 | tee -a "${{ github.workspace }}/logs/corporate_event_scan.console.log"
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: corporate-event-scan-${{ github.run_number }}
+          path: logs/*
+          retention-days: 30
+          if-no-files-found: warn

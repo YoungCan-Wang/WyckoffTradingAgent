@@ -10,6 +10,9 @@ def test_classify_keeps_shareholding_deal_and_drops_limit_up_noise() -> None:
     assert classify_headline("20%涨停！万亿巨头17亿重仓杀入", "拟入股中石科技") is None
     assert classify_headline("万亿龙头入股！300684，20cm两连板！") is None
     assert classify_headline("净利同比增长10.92倍！盘后公告集锦") is None
+    halt = classify_headline("星帅尔002860：筹划购买PCB刀具设备公司湘鹰新材料等100%股权，股票停牌")
+    assert halt is not None
+    assert halt[0] in {"risk", "deal"}
 
 
 def test_select_news_chart_events_snaps_weekend_and_keeps_one_per_day() -> None:

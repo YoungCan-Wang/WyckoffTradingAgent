@@ -13,6 +13,7 @@ from cli.workflows.planner import (
     _PLAN_SYSTEM_PROMPT,
     _REPAIR_SYSTEM_PROMPT,
     _adaptation_handoff_summary,
+    _task_text_matches_tool_intent,
     _tool_catalog,
     adapt_workflow_script,
     plan_workflow,
@@ -221,6 +222,13 @@ def test_ask_user_question_schema_makes_clarification_last_resort():
     assert "先按假设执行并说明" in schema["description"]
     assert "写入/交易/高风险确认" in schema["description"]
     assert "优先使用" not in schema["description"]
+
+
+def test_corporate_event_scan_intent_is_not_funnel_screen():
+    text = "今晚公司大事停牌扫描漏了星帅尔没有"
+    assert _task_text_matches_tool_intent("scan_corporate_events", text)
+    assert not _task_text_matches_tool_intent("screen_stocks", text)
+    assert "scan_corporate_events" in infer_direct_allowed_tools(text)
 
 
 def test_screen_stocks_schema_exposes_optional_scan_limit():

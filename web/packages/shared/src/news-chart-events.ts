@@ -8,6 +8,8 @@ export interface RawNewsItem {
   date?: string
   source?: string
   url?: string
+  code?: string
+  name?: string
 }
 
 export interface NewsChartEvent {
@@ -34,7 +36,7 @@ const KIND_KEYWORDS: Record<NewsEventKind, readonly string[]> = {
   risk: ['风险提示', '停牌', '退市', '债务违约', '暴雷'],
   earnings: ['业绩预增', '业绩预减', '业绩预亏', '扭亏', '年报', '中报', '一季报', '三季报'],
   holder: ['减持', '增持', '回购', '股权激励'],
-  deal: ['中标', '签订合同', '战略投资', '入股', '定增', '收购'],
+  deal: ['中标', '签订合同', '战略投资', '入股', '定增', '收购', '重大资产重组', '资产重组', '并购', '借壳', '筹划购买', '100%股权'],
 }
 
 const BULLISH_KEYWORDS = ['预增', '扭亏', '增持', '回购', '中标', '入股', '超预期', '增长'] as const
@@ -137,9 +139,19 @@ export function selectStockNewsHeadlines(items: RawNewsItem[], limit = 12, symbo
 }
 
 export async function fetchEastMoneyStockNews(code: string, fetcher: typeof fetch = fetch): Promise<RawNewsItem[]> {
+  return fetchEastMoneyNews(code, fetcher)
+}
+
+export async function fetchEastMoneyNews(
+  keyword: string,
+  fetcher: typeof fetch = fetch,
+  pages = MAX_PAGES,
+): Promise<RawNewsItem[]> {
+  const query = keyword.trim()
+  if (!query) return []
   const rows: RawNewsItem[] = []
-  for (let page = 1; page <= MAX_PAGES; page += 1) {
-    const payload = await requestNewsPage(code, page, fetcher)
+  for (let page = 1; page <= Math.max(pages, 1); page += 1) {
+    const payload = await requestNewsPage(query, page, fetcher)
     const batch = payload?.result?.cmsArticleWebOld
     if (!Array.isArray(batch) || batch.length === 0) break
     rows.push(...batch.filter(isRecord).map(normalizeArticle))
@@ -166,26 +178,26 @@ export async function handleNewsEventsRequest(request: Request, fetcher: typeof 
   }
 }
 
-async function requestNewsPage(code: string, page: number, fetcher: typeof fetch): Promise<EastMoneySearchPayload | null> {
+async function requestNewsPage(keyword: string, page: number, fetcher: typeof fetch): Promise<EastMoneySearchPayload | null> {
   const params = new URLSearchParams({
     cb: 'jQuery3510',
-    param: JSON.stringify(searchParam(code, page)),
+    param: JSON.stringify(searchParam(keyword, page)),
     _: '1',
   })
   const response = await fetcher(`${EASTMONEY_NEWS_URL}?${params}`, {
     headers: {
       'User-Agent': 'Mozilla/5.0',
-      Referer: `https://so.eastmoney.com/news/s?keyword=${code}`,
+      Referer: `https://so.eastmoney.com/news/s?keyword=${encodeURIComponent(keyword)}`,
     },
   })
   if (!response.ok) return null
   return parseJsonp(await response.text())
 }
 
-function searchParam(code: string, page: number) {
+function searchParam(keyword: string, page: number) {
   return {
     uid: '',
-    keyword: code,
+    keyword,
     type: ['cmsArticleWebOld'],
     client: 'web',
     clientType: 'web',

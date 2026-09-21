@@ -33,6 +33,11 @@ import {
 } from './pattern-review'
 import { ANALYSIS_CONTEXT_PACK_SCHEMA, buildStockAnalysisContextPack } from './analysis-context'
 import {
+  collectCorporateEventItems,
+  renderCorporateEventReport,
+  scanCorporateEvents,
+} from './corporate-event-scan'
+import {
   fetchEastMoneyStockNews,
   selectStockNewsHeadlines,
   type NewsEventKind,
@@ -746,6 +751,17 @@ export async function execStockNews(deps: ToolDeps, code: string, name: string |
     '',
     ...headlines.map(formatNewsHeadlineLine),
   ].join('\n')
+}
+
+export async function execScanCorporateEvents(deps: ToolDeps, limit = 20): Promise<string> {
+  const cap = Math.min(Math.max(limit, 1), 50)
+  const rows = await collectCorporateEventItems(deps.fetch).catch(() => null)
+  if (rows === null) {
+    return '公司大事 / 停牌扫描：消息源暂时不可用。不要据此断定没有重组或停牌。这不是实盘，也不是漏斗买许可。'
+  }
+  const hits = scanCorporateEvents(rows).slice(0, cap)
+  const asOf = new Date().toISOString().slice(0, 16).replace('T', ' ')
+  return renderCorporateEventReport(hits, asOf)
 }
 
 function formatNewsHeadlineLine(row: StockNewsHeadline): string {

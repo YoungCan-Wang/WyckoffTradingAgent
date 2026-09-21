@@ -52,6 +52,7 @@ RESEARCH_AGENT = SubAgent(
     tool_timeout_seconds=90,
     tool_names=(
         "search_stock_by_name",
+        "scan_corporate_events",
         "analyze_stock",
         "get_market_overview",
         "get_market_history",
@@ -110,6 +111,7 @@ WORKFLOW_TASK_AGENT = SubAgent(
     tool_timeout_seconds=75,
     tool_names=(
         "search_stock_by_name",
+        "scan_corporate_events",
         "analyze_stock",
         "portfolio",
         "get_market_overview",

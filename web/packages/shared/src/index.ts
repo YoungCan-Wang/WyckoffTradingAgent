@@ -171,6 +171,7 @@ export {
 } from './model-generation-clock'
 export {
   classifyHeadline,
+  fetchEastMoneyNews,
   fetchEastMoneyStockNews,
   handleNewsEventsRequest,
   headlineSentiment,
@@ -180,3 +181,15 @@ export {
   snapToSession,
 } from './news-chart-events'
 export type { NewsChartEvent, NewsEventKind, NewsSentiment, RawNewsItem, StockNewsHeadline } from './news-chart-events'
+export {
+  SEARCH_KEYWORDS,
+  XINGSHUAIER_TELEGRAPH,
+  XINHUA_MEDIA_TELEGRAPH,
+  classifyCorporateEventReason,
+  collectCorporateEventItems,
+  isMaterialRestructureOrHalt,
+  parseTelegraphSymbol,
+  renderCorporateEventReport,
+  scanCorporateEvents,
+} from './corporate-event-scan'
+export type { CorporateEventHit } from './corporate-event-scan'

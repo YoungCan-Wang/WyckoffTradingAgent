@@ -40,6 +40,7 @@ WORKFLOWS: dict[str, WorkflowContext] = {
         label="选股扫描",
         allowed_tools=(
             "screen_stocks",
+            "scan_corporate_events",
             "generate_ai_report",
             "query_history",
             "evaluate_recommendation_events",
@@ -70,6 +71,7 @@ WORKFLOWS: dict[str, WorkflowContext] = {
         label="动态任务",
         allowed_tools=(
             "search_stock_by_name",
+            "scan_corporate_events",
             "analyze_stock",
             "portfolio",
             "get_market_overview",

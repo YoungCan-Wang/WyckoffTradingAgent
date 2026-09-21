@@ -15,6 +15,7 @@ from cli.workflows.router import WORKFLOWS
 
 _DIRECT_TOOL_ORDER = (
     "search_stock_by_name",
+    "scan_corporate_events",
     "analyze_stock",
     "portfolio",
     "get_market_overview",

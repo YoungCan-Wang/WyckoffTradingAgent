@@ -31,6 +31,7 @@ HELP_SCRIPTS = [
     "scripts/single_symbol_funnel_diagnosis.py",
     "scripts/step4_from_supabase.py",
     "scripts/theme_radar_job.py",
+    "scripts/corporate_event_scan_job.py",
     "scripts/update_backtest_market_report.py",
     "scripts/us_recommendation_performance_job.py",
     "scripts/web_background_job.py",
