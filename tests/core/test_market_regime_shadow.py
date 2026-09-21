@@ -68,16 +68,29 @@ def test_build_benchmark_context_includes_shadow_gate() -> None:
         bench_drop_threshold = -3.0
 
     bench_df = _make_bench_df([100.0] * 25)
-    ctx = build_benchmark_context(
+    # 1. When shadow_bench_df is None, shadow action is UNKNOWN (avoids mislabeling 000001 as 000985)
+    ctx_default = build_benchmark_context(
         bench_df,
         DummyCfg(),
         sort_frame=lambda df: df,
         latest_trade_date=lambda df: df["trade_date"].iloc[-1],
     )
-    assert isinstance(ctx, BenchmarkContext)
-    assert ctx.regime_gate_passed is True  # production gate remains open (False config)
-    assert "action" in ctx.regime_gate_shadow
-    assert ctx.regime_gate_shadow["bench_code"] == "000985"
+    assert isinstance(ctx_default, BenchmarkContext)
+    assert ctx_default.regime_gate_passed is True  # production gate remains open (False config)
+    assert ctx_default.regime_gate_shadow["action"] == "UNKNOWN"
+    assert ctx_default.regime_gate_shadow["reason"] == "基准数据缺失"
+
+    # 2. When shadow_bench_df is explicitly provided, evaluates Scheme A shadow gate
+    shadow_df = _make_bench_df([100.0] * 20 + [102.0])
+    ctx_with_shadow = build_benchmark_context(
+        bench_df,
+        DummyCfg(),
+        sort_frame=lambda df: df,
+        latest_trade_date=lambda df: df["trade_date"].iloc[-1],
+        shadow_bench_df=shadow_df,
+    )
+    assert ctx_with_shadow.regime_gate_shadow["action"] == "ALLOW"
+    assert ctx_with_shadow.regime_gate_shadow["bench_code"] == "000985"
 
 
 def test_tracking_symbol_attaches_shadow_gate() -> None:

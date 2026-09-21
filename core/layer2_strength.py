@@ -162,7 +162,7 @@ def build_benchmark_context(
     dropping = _benchmark_dropping(bench_sorted, int(cfg.bench_drop_days), float(cfg.bench_drop_threshold))
     gate_passed = _benchmark_regime_gate_passed(bench_sorted, cfg)
     gate_shadow = eval_scheme_a_shadow_gate(
-        shadow_bench_df if shadow_bench_df is not None else bench_sorted,
+        shadow_bench_df,
         ma_w=int(getattr(cfg, "market_regime_gate_ma", 20)),
         buffer_pct=float(getattr(cfg, "market_regime_gate_buffer_pct", 0.01)),
     )
