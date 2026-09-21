@@ -6,11 +6,12 @@ from datetime import date, datetime
 
 from core.concept_filters import is_user_facing_etf
 from core.market_trade_mode import resolve_market_trade_mode
-from core.shadow_ledger import SHADOW_ACCOUNT_ID, ShadowBook, ShadowPlan, ShadowSession, book_nav, run_shadow_session
+from core.shadow_ledger import SHADOW_ACCOUNT_ID, ShadowSession, book_nav, run_shadow_session
 from utils.env import env_bool
 from utils.feishu import send_feishu_notification
 from workflows.daily_job_common import log_line, stage_summary
 from workflows.daily_job_runtime import DailyJobConfig
+from workflows.shadow_ledger_card import render_shadow_card
 from workflows.step4_pipeline import TZ, latest_trade_date_str, step4_candidate_meta
 
 
@@ -69,26 +70,6 @@ def run_shadow_ledger_stage(
         }
 
 
-def render_shadow_card(session: ShadowSession, as_of: date) -> tuple[str, str]:
-    title = f"📒 影子账本 / paper {as_of.isoformat()}"
-    nav = session.nav
-    lines = [
-        "纸面对照账本，不是实盘。",
-        f"**现金** {nav.get('cash', 0):,.2f}  **净值** {nav.get('equity', 0):,.2f}  "
-        f"**市值** {nav.get('market_value', 0):,.2f}  **累计** {nav.get('pnl_total', 0):+,.2f}",
-        "",
-        "**今日成交**",
-        *_fill_lines(session.fills),
-        "",
-        "**今夜计划（次日开盘）**",
-        *_plan_lines(session.new_plans),
-        "",
-        "**持仓**",
-        *_position_lines(session.book),
-    ]
-    return title, "\n".join(lines)
-
-
 def _run_shadow_session(
     step2_details: dict,
     symbols_info: list[dict],
@@ -137,36 +118,3 @@ def _buy_candidates(symbols_info: list[dict], step3_report_text: str) -> list[di
 
 def _as_of() -> date:
     return date.fromisoformat(latest_trade_date_str())
-
-
-def _fill_lines(fills: list[ShadowPlan]) -> list[str]:
-    done = [plan for plan in fills if plan.status == "filled"]
-    if not done:
-        return ["今日无成交"]
-    return [
-        f"  {plan.action} {plan.code} {plan.name}  {plan.qty}股 @ {plan.entry_price:.2f}  {plan.fill_reason}"
-        for plan in done
-    ]
-
-
-def _plan_lines(plans: list[ShadowPlan]) -> list[str]:
-    if not plans:
-        return ["今夜无新计划"]
-    return [
-        f"  {plan.action} {plan.code} {plan.name}  约{plan.shares_hint}股  参考{plan.suggested_price}  {plan.reason}"
-        for plan in plans
-    ]
-
-
-def _position_lines(book: ShadowBook) -> list[str]:
-    rows = [pos for pos in book.positions.values() if pos.shares > 0]
-    if not rows:
-        return ["空仓"]
-    lines = []
-    for pos in rows:
-        mark = pos.last_mark if pos.last_mark is not None else pos.avg_cost
-        lines.append(
-            f"  {pos.code} {pos.name}  {pos.shares}股  成本{pos.avg_cost:.2f}  现价{mark:.2f}  "
-            f"可卖{pos.sellable_shares}"
-        )
-    return lines

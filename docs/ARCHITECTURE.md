@@ -903,7 +903,7 @@ Web 个股、持仓和股票对抗分析保存历史时写入 `meta`：输入快
 | `signal_pending` | 信号确认池 |
 | `market_signal_daily` | 大盘信号 |
 | `daily_nav` | 每日净值（记账户真实现金与持仓市值，不记 OMS「假设照单执行后」的模拟值）。16:05 快照另写 `day_pnl` / `day_pnl_pct` / `position_day_pnl`：当日盈亏相对昨收（`buy_dt` 是 T+1 最近买入日，加仓会刷新，不能当整仓今开）；昨收缺失才用今开成本兜底。账本合计不含现金变动；不是 vs 成本。缺基准时只写总额、不写半截盈亏。DDL：`scripts/print_daily_nav_ddl.py` |
-| `shadow_account` / `shadow_positions` / `shadow_events` / `shadow_nav_daily` / `shadow_trade_plans` | 影子账本 paper：盘后定计划、次日开盘成交。只服务 `USER_SHADOW:*`，不写 `USER_LIVE` 实盘表 |
+| `shadow_account` / `shadow_positions` / `shadow_events` / `shadow_nav_daily` / `shadow_trade_plans` | 影子账本 paper：盘后定计划、次日开盘成交。只服务 `USER_SHADOW:*`，不写 `USER_LIVE` 实盘表。飞书卡持仓行的开仓净收益 = `shares * (last_mark − avg_cost)`，`avg_cost` 含买费；已平仓不展示 |
 | `concept_heat_history` | 板块连续性与概念热度历史 |
 | `signal_observations` | L4 信号观察样本 |
 | `signal_outcomes` | 信号后续收益 / 回撤结果 |
