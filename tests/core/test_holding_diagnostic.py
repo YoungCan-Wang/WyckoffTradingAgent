@@ -294,6 +294,45 @@ class TestAtrDynamicStopAndTrackMapping:
         assert d.stop_loss_atr_status == "安全"
         assert d.stop_loss_atr >= 10.0 * 0.90  # capped at -10% hard stop
 
+    def test_reference_atr_breach_does_not_force_danger_when_atr_stop_disabled(self):
+        """Production keeps exit_use_atr_stop=False; ATR is display-only then.
+
+        Low-vol names can breach cost-2*ATR while still above the operational -7%
+        line. Health must not escalate to 危险 from that reference line alone,
+        or Step4/Agent prompts will overstate risk.
+        """
+        import numpy as np
+        import pandas as pd
+
+        from core.wyckoff_engine import FunnelConfig
+
+        n = 60
+        rng = np.random.default_rng(0)
+        close = 100 + np.cumsum(rng.normal(0, 0.3, n))
+        close = close - close[-1] + 97.0
+        df = pd.DataFrame(
+            {
+                "date": pd.date_range("2024-01-01", periods=n, freq="B"),
+                "open": close,
+                "high": close + 0.4,
+                "low": close - 0.4,
+                "close": close,
+                "volume": np.full(n, 1_000_000.0),
+            }
+        )
+        cost = 100.0
+        off = diagnose_one_stock("600000", "浦发银行", cost=cost, df=df, cfg=FunnelConfig())
+        assert off.stop_loss_status == "安全"
+        assert off.stop_loss_atr_status == "已穿止损"
+        assert off.health != "🔴危险"
+        assert "已穿动态止损线(ATR)" not in off.health_reasons
+
+        on_cfg = FunnelConfig()
+        on_cfg.exit_use_atr_stop = True
+        on = diagnose_one_stock("600000", "浦发银行", cost=cost, df=df, cfg=on_cfg)
+        assert on.health == "🔴危险"
+        assert "已穿动态止损线(ATR)" in on.health_reasons
+
     def test_two_track_mapping(self):
         from core.holding_diagnostic import _classify_track
 

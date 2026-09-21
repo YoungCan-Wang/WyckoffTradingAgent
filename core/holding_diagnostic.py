@@ -474,11 +474,15 @@ def _health_rating(
     risk: _RiskSnapshot,
     pnl_pct: float,
     intraday_path: IntradayPathResult | None = None,
+    *,
+    atr_stop_active: bool = False,
 ) -> tuple[str, list[str]]:
+    # ATR 线默认只是展现参考；生产 exit_use_atr_stop=False 时不得单独抬升健康等级，
+    # 否则低波动浮亏 2%~3% 就会因参考 ATR 被标成「已穿 → 危险」，并污染 Step4/Agent 诊断。
     reasons: list[str] = []
     if risk.stop_status == "已穿止损":
         reasons.append("已穿止损线(-7%)")
-    elif risk.stop_loss_atr_status == "已穿止损":
+    elif atr_stop_active and risk.stop_loss_atr_status == "已穿止损":
         reasons.append("已穿动态止损线(ATR)")
     if wyckoff.exit_signal == "stop_loss":
         reasons.append("结构止损（从高点回撤>10%）")
@@ -493,7 +497,7 @@ def _health_rating(
         reasons.append("高位派发预警")
     if risk.stop_status == "逼近止损(<2%)":
         reasons.append("逼近止损线")
-    elif risk.stop_loss_atr_status == "逼近止损(<2%)":
+    elif atr_stop_active and risk.stop_loss_atr_status == "逼近止损(<2%)":
         reasons.append("逼近动态止损线(ATR)")
     if pnl_pct < -5:
         reasons.append("浮亏超过5%")
@@ -585,7 +589,14 @@ def diagnose_one_stock(
     risk = _risk_snapshot(series, cost, cfg)
     targets = compute_price_targets(series.close, series.high, series.low)
     extreme = _extreme_day_snapshot(code, name, series, intraday_df)
-    health, reasons = _health_rating(ma, wyckoff, risk, series.pnl_pct, extreme[2])
+    health, reasons = _health_rating(
+        ma,
+        wyckoff,
+        risk,
+        series.pnl_pct,
+        extreme[2],
+        atr_stop_active=bool(getattr(cfg, "exit_use_atr_stop", False)),
+    )
     return _build_diagnostic(
         code, name, cost, series, ma, wyckoff, candidate_entry, risk, targets, extreme, health, reasons
     )
