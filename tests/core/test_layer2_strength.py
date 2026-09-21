@@ -511,28 +511,42 @@ def test_diagnose_layer2_symbol_failure_two_track_mode() -> None:
     cfg = FunnelConfig(
         enable_two_track_mode=True,
         markup_track_bias_200_max=0.30,
-        accum_track_price_from_low_max=0.35,
+        accum_track_price_from_low_max=0.20,
     )
-    # Price is 15.0, MA50=12.0, MA200=10.0 -> bias_200 = 50% > 30%
-    closes = [10.0] * 50 + [12.0] * 50 + [15.0] * 50
-    df = pd.DataFrame({"close": closes, "volume": [1000.0] * 150})
     bench_ctx = BenchmarkContext(sorted_df=None, latest_date=None, dropping=False, regime_gate_passed=True)
     rps_ctx = RpsContext(fast={}, slow={}, active=False)
-    rps_state = Layer2RpsState(None, None, True, True, True, 0.0)
 
-    diag = diagnose_layer2_symbol_failure(
+    # 1. Markup track closest: MA200 bias = (15.0 - 11.25)/11.25 = 33.33% > 30% (gap 11.1%)
+    df_markup = pd.DataFrame({"close": [10.0] * 200 + [15.0] * 50, "volume": [1000.0] * 250})
+    rps_state_markup = Layer2RpsState(None, None, True, True, True, 0.0)
+    diag_markup = diagnose_layer2_symbol_failure(
         "600000",
-        df,
+        df_markup,
         cfg,
         bench_ctx=bench_ctx,
         rps_ctx=rps_ctx,
-        rps_state=rps_state,
+        rps_state=rps_state_markup,
         momentum_rs_ok=True,
         ambush_rs_ok=True,
         detect_sos=lambda d, c: None,
     )
-    assert "最接近轨道" in diag
-    assert "趋势主升轨" in diag or "底部蓄势轨" in diag
+    assert diag_markup == "最接近轨道[趋势主升轨](缺口11.1%): 偏离MA200过高: 当前 33.3%, 上限 30.0%"
+
+    # 2. Accum track closest: price from low = (12.5 - 10.0)/10.0 = 25% > 20% (gap 25.0%)
+    df_accum = pd.DataFrame({"close": [10.0] * 200 + [12.5] * 50, "volume": [100.0] * 250})
+    rps_state_accum = Layer2RpsState(None, None, False, False, False, 0.0)
+    diag_accum = diagnose_layer2_symbol_failure(
+        "600001",
+        df_accum,
+        cfg,
+        bench_ctx=bench_ctx,
+        rps_ctx=rps_ctx,
+        rps_state=rps_state_accum,
+        momentum_rs_ok=False,
+        ambush_rs_ok=False,
+        detect_sos=lambda d, c: None,
+    )
+    assert diag_accum == "最接近轨道[底部蓄势轨](缺口25.0%): 偏离低位过高: 当前 25.0%, 上限 20.0%"
 
 
 def test_diagnose_layer2_symbol_failure_ignores_disabled_channels() -> None:
