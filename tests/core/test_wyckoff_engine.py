@@ -1433,3 +1433,6 @@ class TestMarketRegimeGateConfig:
     def test_market_regime_gate_defaults_to_false(self):
         cfg = FunnelConfig()
         assert cfg.enable_market_regime_gate is False
+        assert cfg.market_regime_gate_ma == 20
+        assert cfg.market_regime_gate_buffer_pct == 0.01
+        assert cfg.market_regime_benchmark_code == "000985"

@@ -77,12 +77,14 @@ def close_return_pct(close_series: pd.Series, lookback: int) -> float | None:
 def _benchmark_regime_gate_passed(bench_sorted: pd.DataFrame, cfg: Any) -> bool:
     if not getattr(cfg, "enable_market_regime_gate", False):
         return True
-    ma_w = int(getattr(cfg, "market_regime_gate_ma", 50))
+    ma_w = int(getattr(cfg, "market_regime_gate_ma", 20))
+    buffer_pct = float(getattr(cfg, "market_regime_gate_buffer_pct", 0.0))
     close = pd.to_numeric(bench_sorted.get("close"), errors="coerce").dropna()
     if len(close) < ma_w:
         return True
     ma_val = float(close.rolling(ma_w).mean().iloc[-1])
-    return float(close.iloc[-1]) >= ma_val
+    threshold = ma_val * (1.0 + buffer_pct)
+    return float(close.iloc[-1]) >= threshold
 
 
 def build_benchmark_context(

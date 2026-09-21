@@ -45,28 +45,51 @@ def _fetch_index_hist_once(code: str, start_s: str, end_s: str) -> pd.DataFrame 
     return None
 
 
+def _index_to_em_symbol(code: str) -> str:
+    text = str(code).split(".")[0].strip()
+    return f"sh{text}" if text.startswith(("000", "880", "899")) else f"sz{text}"
+
+
 def fetch_index_akshare(code: str, start: str, end: str) -> pd.DataFrame:
     import akshare as ak
 
-    df = ak.index_zh_a_hist(symbol=code, period="daily", start_date=start, end_date=end)
+    df = None
+    try:
+        df = ak.index_zh_a_hist(symbol=code, period="daily", start_date=start, end_date=end)
+        if df is not None and not df.empty:
+            df = df.rename(
+                columns={
+                    "日期": "date",
+                    "开盘": "open",
+                    "最高": "high",
+                    "最低": "low",
+                    "收盘": "close",
+                    "成交量": "volume",
+                    "涨跌幅": "pct_chg",
+                }
+            )
+    except Exception:
+        df = None
+
+    if df is None or df.empty:
+        em_sym = _index_to_em_symbol(code)
+        try:
+            df = ak.stock_zh_index_daily_em(symbol=em_sym, start_date=start, end_date=end)
+        except Exception:
+            df = None
+
     if df is None or df.empty:
         raise RuntimeError("akshare 大盘指数返回空数据")
-    df = df.rename(
-        columns={
-            "日期": "date",
-            "开盘": "open",
-            "最高": "high",
-            "最低": "low",
-            "收盘": "close",
-            "成交量": "volume",
-            "涨跌幅": "pct_chg",
-        }
-    )
+
+    df = df.copy()
     df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.strftime("%Y-%m-%d")
     for col in ["open", "high", "low", "close", "volume", "pct_chg"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
-    return df[["date", "open", "high", "low", "close", "volume", "pct_chg"]].sort_values("date").reset_index(drop=True)
+        elif col == "pct_chg" and "close" in df.columns:
+            df["pct_chg"] = df["close"].pct_change() * 100.0
+    cols = [c for c in ["date", "open", "high", "low", "close", "volume", "pct_chg"] if c in df.columns]
+    return df[cols].sort_values("date").reset_index(drop=True)
 
 
 def fetch_index_baostock(code: str, start: str, end: str) -> pd.DataFrame:

@@ -461,6 +461,15 @@ def test_benchmark_regime_gate_passed_evaluates_ma50() -> None:
     bench_below = pd.DataFrame({"close": [100.0] * 50 + [90.0]})
     assert _benchmark_regime_gate_passed(bench_below, cfg_on) is False
 
+    # Test buffer_pct (1% buffer)
+    cfg_band = SimpleNamespace(
+        enable_market_regime_gate=True, market_regime_gate_ma=20, market_regime_gate_buffer_pct=0.01
+    )
+    bench_barely_above = pd.DataFrame({"close": [100.0] * 20 + [100.5]})
+    assert _benchmark_regime_gate_passed(bench_barely_above, cfg_band) is False  # 100.5 < 101.0
+    bench_well_above = pd.DataFrame({"close": [100.0] * 20 + [101.5]})
+    assert _benchmark_regime_gate_passed(bench_well_above, cfg_band) is True  # 101.5 >= 101.0
+
 
 def test_evaluate_layer2_symbol_blocks_when_regime_gate_fails() -> None:
     cfg = FunnelConfig(

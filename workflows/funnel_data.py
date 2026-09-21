@@ -56,6 +56,7 @@ from workflows.funnel_settings import (
     EXECUTOR_MODE,
     FUNNEL_EXPORT_DIR,
     FUNNEL_EXPORT_FULL_FETCH,
+    MAIN_BENCH_CODE,
     MAX_WORKERS,
     SMALLCAP_BENCH_CODE,
     TRADING_DAYS,
@@ -253,10 +254,15 @@ def _load_benchmark_indices(start_s: str, end_s: str) -> tuple[pd.DataFrame | No
     _report_progress("指数加载", "加载大盘/小盘基准", 0.30)
     bench_df = smallcap_df = None
     try:
-        bench_df = fetch_index_hist("000001", start_s, end_s)
-        print("[funnel] 大盘基准加载成功")
+        bench_df = fetch_index_hist(MAIN_BENCH_CODE, start_s, end_s)
+        print(f"[funnel] 大盘基准加载成功: {MAIN_BENCH_CODE}")
     except Exception as e:
-        logger.error("大盘基准加载失败: %s", e, exc_info=True)
+        logger.warning("大盘基准加载失败 %s: %s，尝试回退 000001", MAIN_BENCH_CODE, e)
+        try:
+            bench_df = fetch_index_hist("000001", start_s, end_s)
+            print("[funnel] 回退大盘基准 000001 加载成功")
+        except Exception as e2:
+            logger.error("回退大盘基准 000001 加载失败: %s", e2, exc_info=True)
     try:
         smallcap_df = fetch_index_hist(SMALLCAP_BENCH_CODE, start_s, end_s)
         print(f"[funnel] 小盘基准加载成功: {SMALLCAP_BENCH_CODE}")

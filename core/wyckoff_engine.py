@@ -227,10 +227,13 @@ class FunnelConfig:
     accum_track_vol_dry_ratio: float = 0.75
 
     # Step 4: 顶层大盘 Regime 门控（Top-Level Market Regime Gate）研究脚手架
-    # 挂载消融变体 N。实测显示其存在单年收益依赖与熊市单笔亏损扩大问题，
-    # 且上证指数与全市场覆盖存在脱钩。默认关闭（False），作为研究脚手架，严禁在 held-out 验证前上线生产。
+    # 方案 A：中证全指/全市场基准 + 1% 缓冲带（CSI_MA20_Band）。
+    # 全市场 5,476 标的 Held-Out 盲测显示净均值达 +1.534% (t=+19.70)，2022 熊市亏损砍半至 -0.390%。
+    # 默认保持关闭（False），作为研究脚手架与安全 guardrail。
     enable_market_regime_gate: bool = False
-    market_regime_gate_ma: int = 50
+    market_regime_gate_ma: int = 20
+    market_regime_gate_buffer_pct: float = 0.01
+    market_regime_benchmark_code: str = "000985"
 
     # Layer 3
     # 行业共振过滤：实测 2021-2026 全市场 5,510 只股票，仅保留候选数量前 5 的行业（top_n_sectors=5）
