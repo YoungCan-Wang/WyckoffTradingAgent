@@ -1,6 +1,7 @@
 import { Outlet, Link, useLocation, useNavigate } from 'react-router'
 import { useCallback, useEffect, useState } from 'react'
-import { MessageSquare, Briefcase, TrendingUp, Settings, LogOut, BarChart3, Moon, FileDown, Crown, Home, Github, Sun, Languages, Swords, History, Microscope, BookOpen, PanelLeftClose, PanelLeftOpen, type LucideIcon } from 'lucide-react'
+import { LogOut, Moon, Home, Github, Sun, Languages, PanelLeftClose, PanelLeftOpen, type LucideIcon } from 'lucide-react'
+import { APP_NAV_GROUPS } from '@/lib/app-nav'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/auth'
 import { MarketBar } from '@/components/market-bar'
@@ -9,39 +10,7 @@ import { trackRouteActivity } from '@/lib/activity'
 import { installPlanetMemberClarity } from '@/lib/product-analytics'
 import { usePlanetMembership } from '@/lib/planet-membership-gate'
 
-const navGroups = [
-  {
-    titleKey: 'nav.group.core',
-    items: [
-      { to: '/chat', icon: MessageSquare, labelKey: 'nav.chat' },
-      { to: '/analysis', icon: BarChart3, labelKey: 'nav.analysis' },
-      { to: '/battle', icon: Swords, labelKey: 'nav.battle' },
-      { to: '/portfolio', icon: Briefcase, labelKey: 'nav.portfolio' },
-      { to: '/shadow', icon: BookOpen, labelKey: 'nav.shadow' },
-    ]
-  },
-  {
-    titleKey: 'nav.group.data',
-    items: [
-      { to: '/history', icon: History, labelKey: 'nav.history' },
-      { to: '/export', icon: FileDown, labelKey: 'nav.export' },
-    ]
-  },
-  {
-    titleKey: 'nav.group.models',
-    items: [
-      { to: '/tracking', icon: TrendingUp, labelKey: 'nav.tracking' },
-      { to: '/attribution', icon: Microscope, labelKey: 'nav.attribution' },
-    ]
-  },
-  {
-    titleKey: 'nav.group.system',
-    items: [
-      { to: '/membership', icon: Crown, labelKey: 'nav.membership' },
-      { to: '/settings', icon: Settings, labelKey: 'nav.settings' },
-    ]
-  }
-] as const
+const navGroups = APP_NAV_GROUPS
 
 const externalLinks = [
   { href: 'https://youngcan-wang.github.io/wyckoff-homepage/', icon: Home, labelKey: 'external.home' },

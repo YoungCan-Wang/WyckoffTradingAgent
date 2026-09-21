@@ -32,10 +32,27 @@ export function proxyToWorker(request: Request, env?: WorkerProxyEnv): Promise<R
   return fetch(workerProxyUrl(request.url, resolveWorkerOrigin(env)), request)
 }
 
-export function handleWorkerProxyRequest(request: Request, env?: WorkerProxyEnv): Promise<Response> {
+export function isPagesFallbackPath(pathname: string): boolean {
+  return pathname === '/api/shadow-ledger' || pathname.startsWith('/api/shadow-ledger/')
+}
+
+export async function handleWorkerProxyRequest(
+  request: Request,
+  env?: WorkerProxyEnv,
+  localFetch?: (request: Request) => Promise<Response> | Response,
+): Promise<Response> {
   const pathname = new URL(request.url).pathname
   if (!isWorkerProxyPath(pathname)) {
-    return Promise.resolve(Response.json({ error: 'Not Found' }, { status: 404 }))
+    return Response.json({ error: 'Not Found' }, { status: 404 })
   }
-  return proxyToWorker(request, env)
+  try {
+    const proxied = await proxyToWorker(request, env)
+    if (proxied.status !== 404 || !localFetch || !isPagesFallbackPath(pathname)) {
+      return proxied
+    }
+    return localFetch(request)
+  } catch (error) {
+    if (localFetch && isPagesFallbackPath(pathname)) return localFetch(request)
+    throw error
+  }
 }

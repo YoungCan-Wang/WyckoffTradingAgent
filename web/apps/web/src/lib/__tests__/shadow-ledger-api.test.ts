@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { requestShadowLedger } from '../shadow-ledger-api'
+import { requestShadowLedger, shadowLedgerErrorMessage } from '../shadow-ledger-api'
 
 function response(body: unknown, init?: ResponseInit): Response {
   return new Response(typeof body === 'string' ? body : JSON.stringify(body), init)
@@ -45,5 +45,11 @@ describe('requestShadowLedger', () => {
     }))
 
     await expect(requestShadowLedger('token', undefined, fetcher)).rejects.toThrow('不完整')
+  })
+
+  it('does not surface a raw Not Found to the page', async () => {
+    expect(shadowLedgerErrorMessage({ error: 'Not Found' }, 404)).toContain('影子账户')
+    const fetcher = vi.fn().mockResolvedValue(response({ error: 'Not Found' }, { status: 404 }))
+    await expect(requestShadowLedger(undefined, undefined, fetcher)).rejects.toThrow('尚未就绪')
   })
 })

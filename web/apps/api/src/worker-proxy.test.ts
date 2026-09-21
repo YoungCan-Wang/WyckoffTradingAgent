@@ -70,6 +70,23 @@ describe('proxyToWorker', () => {
     expect(await response.text()).toBe('data: hi\n\n')
   })
 
+  it('falls back to the Pages app when production Worker lacks shadow-ledger', async () => {
+    const fetchMock = vi.fn(async () => Response.json({ error: 'Not Found' }, { status: 404 }))
+    const localFetch = vi.fn(async () => Response.json({ tier: 'showcase' }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const response = await handleWorkerProxyRequest(
+      new Request('https://preview.wyckoff-analysis.pages.dev/api/shadow-ledger'),
+      undefined,
+      localFetch,
+    )
+
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(localFetch).toHaveBeenCalledOnce()
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ tier: 'showcase' })
+  })
+
   it('does not proxy Pages-only routes such as llm-proxy', async () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)

@@ -69,7 +69,7 @@
 
 **为什么需要 API 层与边缘代理？**
 
-读盘室主链路已经后端化到 `web/apps/api/src/routes/chat.ts`：独立 `wyckoff-api` Worker 通过 `worker-chat.ts` 注入沙箱工具，负责读取用户模型配置、执行工具、限流、返回 UIMessage stream，并通过 Vercel AI SDK 的 approval parts 约束 `execute_portfolio_update`。生产 React 只请求 Pages 同源 `/api/*`，不直连 `*.workers.dev`：国内浏览器能打开 `pages.dev`，但常访问不了 `workers.dev`，单股分析走的 `/api/llm-proxy` 因此可用，读盘室和设置连通性测试却会 `Failed to fetch`。`web/functions/api/[[path]].ts` 在边缘用 `fetch()` 把 `/api/chat`、`/api/settings`、`/api/portfolio`、`/api/shadow-ledger`、`/api/agent-runs`、`/api/remote` 反代到完整 Worker，原样转发 `Authorization` 与 WebSocket 升级头，不缓冲 SSE / UIMessage 流。这不需要新的自定义域名，也不需要改 Cloudflare Dashboard；Worker 源站默认已是公开的 `https://wyckoff-api.yongkai-wang.workers.dev`，Pages 可用可选变量 `WYCKOFF_API_ORIGIN` 覆盖。Service Binding 是后续优化，不是这条路径的前置条件。`web/apps/api/src/pages.ts` 仍是不含沙箱工具、不挂载 `/api/agent-runs` 的兼容 app，只供测试，不是生产读盘室后端。Vercel Sandbox 的 Node.js SDK 只在 `web/apps/sandbox-bridge/` 的 Vercel Node Function 中运行，Worker 与 Pages Functions 都不会加载它。
+读盘室主链路已经后端化到 `web/apps/api/src/routes/chat.ts`：独立 `wyckoff-api` Worker 通过 `worker-chat.ts` 注入沙箱工具，负责读取用户模型配置、执行工具、限流、返回 UIMessage stream，并通过 Vercel AI SDK 的 approval parts 约束 `execute_portfolio_update`。生产 React 只请求 Pages 同源 `/api/*`，不直连 `*.workers.dev`：国内浏览器能打开 `pages.dev`，但常访问不了 `workers.dev`，单股分析走的 `/api/llm-proxy` 因此可用，读盘室和设置连通性测试却会 `Failed to fetch`。`web/functions/api/[[path]].ts` 在边缘用 `fetch()` 把 `/api/chat`、`/api/settings`、`/api/portfolio`、`/api/shadow-ledger`、`/api/agent-runs`、`/api/remote` 反代到完整 Worker；`/api/shadow-ledger` 在生产 Worker 尚未挂上该路由（预发常见 404）时回退到 Pages 兼容 app，保证未登录也能看橱窗，原样转发 `Authorization` 与 WebSocket 升级头，不缓冲 SSE / UIMessage 流。这不需要新的自定义域名，也不需要改 Cloudflare Dashboard；Worker 源站默认已是公开的 `https://wyckoff-api.yongkai-wang.workers.dev`，Pages 可用可选变量 `WYCKOFF_API_ORIGIN` 覆盖。Service Binding 是后续优化，不是这条路径的前置条件。`web/apps/api/src/pages.ts` 仍是不含沙箱工具、不挂载 `/api/agent-runs` 的兼容 app，只供测试，不是生产读盘室后端。Vercel Sandbox 的 Node.js SDK 只在 `web/apps/sandbox-bridge/` 的 Vercel Node Function 中运行，Worker 与 Pages Functions 都不会加载它。
 
 Hono app 的公共中间件按请求 ID、安全响应头、CORS、256 KiB 请求体上限的顺序执行；路由随后执行 Supabase JWT 鉴权与业务校验。聊天 POST 在鉴权后执行用户限流：同时配置 `UPSTASH_REDIS_REST_URL` 和 `UPSTASH_REDIS_REST_TOKEN` 时使用 Upstash Redis REST 共享额度，未配置时保留单 Worker 实例内的软限流，Redis 超时或不可用时返回 `X-RateLimit-Backend: local-fallback` 并启用本地保护。只配置一个 Upstash 变量属于部署错误，请求会失败而不会静默使用不完整连接。
 
@@ -152,7 +152,7 @@ CLI Agent 的本地命令工具只允许明确的只读命令；文件工具继�
 | `/chat` | 读盘室 | Agent 多轮对话、漏斗筛选、研报生成、模型快速切换 |
 | `/analysis` | 单股分析 | 输入代码 → K 线图 + 新闻打点叠加 + LLM 诊断 |
 | `/portfolio` | 持仓 | 持仓明细 + 收益率 |
-| `/shadow` | 纸面影子账 | 非会员看净值橱窗与板块标签；会员看日流水和仍持仓净收益 |
+| `/shadow` | 影子账户 | 侧栏「会员权限」组；非会员看净值橱窗与板块标签；会员看日流水和仍持仓净收益 |
 | `/tracking` | 跟踪 | 形态复盘 + 涨跌幅 |
 | `/export` | 数据导出 | CSV 导出 |
 | `/membership` | 星球会员 | 会员状态、专属能力、普通用户能力和加入方式 |

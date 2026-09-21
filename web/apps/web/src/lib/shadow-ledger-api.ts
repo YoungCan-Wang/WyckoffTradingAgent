@@ -64,6 +64,15 @@ export type ShadowNavDailyRow = z.infer<typeof ledgerSchema>['navDaily'][number]
 export type ShadowEventRow = z.infer<typeof ledgerSchema>['events'][number]
 export type ShadowPositionRow = z.infer<typeof ledgerSchema>['positions'][number]
 
+export function shadowLedgerErrorMessage(payload: unknown, status: number): string {
+  const parsed = errorSchema.safeParse(payload)
+  const raw = parsed.success ? parsed.data.error : ''
+  if (status === 404 || raw === 'Not Found') {
+    return '影子账户接口尚未就绪，请稍后重试。未登录也可看橱窗，这不是实盘。'
+  }
+  return raw || '影子账本请求失败'
+}
+
 export async function requestShadowLedger(
   accessToken?: string,
   asOf?: string,
@@ -75,8 +84,7 @@ export async function requestShadowLedger(
   })
   const payload = await response.json().catch(() => null)
   if (!response.ok) {
-    const message = errorSchema.safeParse(payload)
-    throw new Error(message.success ? message.data.error : '影子账本请求失败')
+    throw new Error(shadowLedgerErrorMessage(payload, response.status))
   }
   const parsed = payloadSchema.safeParse(payload)
   if (!parsed.success) throw new Error('影子账本返回数据不完整，请稍后重试')

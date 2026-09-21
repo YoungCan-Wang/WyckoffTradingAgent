@@ -18,7 +18,14 @@ export function ShadowLedgerPage() {
   const [selectedAsOf, setSelectedAsOf] = useState<string | null>(null)
   if (query.isLoading) return <WyckoffLoading />
   if (query.isError || !query.data) {
-    return <p className="p-6 text-sm text-destructive">{query.error instanceof Error ? query.error.message : copy.empty}</p>
+    return (
+      <div className="mx-auto max-w-3xl p-6">
+        <h1 className="text-xl font-semibold">{copy.title}</h1>
+        <p className="mt-3 text-sm text-destructive">
+          {query.error instanceof Error ? query.error.message : copy.empty}
+        </p>
+      </div>
+    )
   }
   const payload = query.data
   const selected = selectedAsOf || payload.asOf

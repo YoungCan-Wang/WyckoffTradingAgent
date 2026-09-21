@@ -17,6 +17,14 @@ describe('API middleware', () => {
     expect(response.headers.get('Access-Control-Allow-Origin')).toBe('http://localhost:5173')
   })
 
+  it('allows Cloudflare Pages preview subdomains', async () => {
+    const origin = 'https://cursor-shadow-ledger-web-a967.wyckoff-analysis.pages.dev'
+    const response = await app.request('/api/health', {
+      headers: { Origin: origin },
+    }, { CHAT_TOOL_APPROVAL_SECRET: 'a'.repeat(64) })
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBe(origin)
+  })
+
   it('fails readiness when the production chat signing secret is absent', async () => {
     const response = await app.request('/api/health')
 

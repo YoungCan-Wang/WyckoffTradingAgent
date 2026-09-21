@@ -143,6 +143,8 @@ function appVersionPlugin(): Plugin {
         path.join(outDir, 'version.json'),
         JSON.stringify({ version: BUILD_VERSION, buildTime: BUILD_TIME }, null, 2),
       )
+      const indexHtml = path.join(outDir, 'index.html')
+      await fs.copyFile(indexHtml, path.join(outDir, '404.html'))
     },
   }
 }
