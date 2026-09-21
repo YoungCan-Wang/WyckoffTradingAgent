@@ -242,15 +242,6 @@ class FunnelConfig:
     theme_line_min_days: int = 3  # 主线判定最少连续天数
     theme_line_top_n: int = 20  # 每日取 Top N 概念计入热度历史
 
-    # 弃用标记：以下 7 个参数在全市场实测中确认无正向 Alpha，已废弃以精简参数
-    sector_min_count: int = 3
-    sector_count_quantile: float = 0.70
-    sector_super_strength_quantile: float = 0.90  # 小而强板块免死阈值（已废弃）
-    sector_heat_bypass_min_count: int = 0  # 0=关闭；>0时 L2 通过 ≥ 此数的板块直接绕行 L3（已废弃）
-    l3_keep_strength_min: float = 0.60  # 已废弃
-    l3_leader_strength_min: float = 0.80  # 已废弃
-    l3_hot_leader_strength_min: float = 0.55  # 已废弃
-
     # Layer 4 - Spring
     spring_support_window: int = 60
     spring_vol_ratio: float = 1.3

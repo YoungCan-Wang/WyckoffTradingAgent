@@ -654,7 +654,6 @@ class TestDetectCompression:
 class TestSectorHeatBypass:
     def test_heat_bypass_includes_sector(self):
         cfg = FunnelConfig()
-        cfg.sector_heat_bypass_min_count = 2
         n = 30
         dates = pd.date_range("2024-01-01", periods=n, freq="B")
         base_closes = [10.0 + i * 0.1 for i in range(n)]
@@ -683,8 +682,6 @@ class TestSectorHeatBypass:
 
     def test_hot_concept_matches_normalized_aliases(self):
         cfg = FunnelConfig(use_concept_map=True)
-        cfg.sector_min_count = 1
-        cfg.l3_keep_strength_min = 0.0
         n = 30
         dates = pd.date_range("2024-01-01", periods=n, freq="B")
         closes = [10.0 + i * 0.1 for i in range(n)]
@@ -715,10 +712,7 @@ class TestSectorHeatBypass:
         assert {"减速器", "机器视觉"} & set(top)
 
     def test_hot_concepts_match_normalized_theme_aliases(self):
-        cfg = FunnelConfig(use_concept_map=True)
-        cfg.sector_min_count = 2
-        cfg.top_n_sectors = 1
-        cfg.l3_hot_leader_strength_min = 0.50
+        cfg = FunnelConfig(use_concept_map=True, top_n_sectors=1)
         dates = pd.date_range("2024-01-01", periods=30, freq="B")
 
         def frame(start: float, step: float) -> pd.DataFrame:
