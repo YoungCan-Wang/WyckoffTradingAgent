@@ -540,6 +540,7 @@ def test_diagnose_layer2_symbol_failure_ignores_disabled_channels() -> None:
         enable_two_track_mode=False,
         enable_rs_divergence_channel=False,
         enable_breakout_accel_channel=False,
+        enable_sos_trigger=False,
     )
     closes = [10.0] * 100
     df = pd.DataFrame({"close": closes, "volume": [1000.0] * 100})
@@ -560,3 +561,4 @@ def test_diagnose_layer2_symbol_failure_ignores_disabled_channels() -> None:
     )
     assert "暗中护盘" not in diag
     assert "加速突破" not in diag
+    assert "点火破局" not in diag

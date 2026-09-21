@@ -1235,7 +1235,7 @@ def _diagnose_sos(
     rps_slow: float | None,
     detect_sos: Callable[[pd.DataFrame, Any], float | None],
 ) -> tuple[float, list[str]]:
-    if not hasattr(cfg, "sos_vol_ratio"):
+    if not getattr(cfg, "enable_sos_trigger", False) or not hasattr(cfg, "sos_vol_ratio"):
         return 999.0, ["通道未启用"]
     gaps = []
     reasons = []
