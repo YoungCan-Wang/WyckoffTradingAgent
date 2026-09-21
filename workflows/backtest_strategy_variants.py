@@ -22,6 +22,7 @@ VARIANT_LABELS = {
     "M": "A股实证：弱水温信号缩仓",
     "N": "A股实证：两轨制 + Fib自适应 + 顶层大盘 MA50 门控",
     "P": "A股实证：M + NEUTRAL Spring 缩仓至 25%",
+    "Q": "A股实证：候选入口层真剪枝（live + 剔除 6 个弱动量通道）",
 }
 
 DEFAULT_COMPARISON_VARIANTS = ("A", "M", "P")
@@ -76,6 +77,18 @@ _VARIANT_SWITCHES = {
         "lps_creek_dynamic_relax": True,
     },
     "P": {},
+    "Q": {
+        "dist_upthrust_enabled": True,
+        "lps_creek_confirmation_enabled": True,
+        "blocked_candidate_entry_types": (
+            "launchpad",
+            "early_breakout",
+            "volatile_pullback",
+            "trend_lane_pullback",
+            "trend_breakout",
+            "main_force_entry",
+        ),
+    },
 }
 
 _WEAK_REGIME_WEIGHTS = (
@@ -110,7 +123,7 @@ def normalize_strategy_variant(raw: str) -> str:
     value = str(raw or "live").strip()
     normalized = value.upper() if value.lower() != "live" else "live"
     if normalized not in VARIANT_LABELS:
-        raise ValueError("strategy_variant 必须是 live / A / B / C / D / E / F / G / H / I / M / P")
+        raise ValueError(f"strategy_variant 必须是 {' / '.join(VARIANT_LABELS)}")
     return normalized
 
 

@@ -20,7 +20,7 @@ import pandas as pd
 
 from core._price_math import sort_by_date_if_needed, swing_values
 from core.candidate_lanes import build_l1_candidate_lane_entries, merge_candidate_entries
-from core.candidate_tracks import candidate_entry_sort_key
+from core.candidate_tracks import candidate_entry_sort_key, normalize_candidate_entry_key
 from core.cn_boards import cn_board, is_supported_cn_board
 from core.funnel_theme import DEFAULT_THEME_RADAR_MAX_AGE_DAYS, empty_theme_snapshot, select_linked_theme_radar
 from core.layer2_strength import (
@@ -413,6 +413,9 @@ class FunnelConfig:
     dist_upthrust_upper_shadow_ratio: float = 0.35
     dist_upthrust_vol_ratio: float = 1.5
     dist_upthrust_min_bias_200_pct: float = 15.0
+
+    # 候选入口层剪枝（按 entry_type / signal_key 过滤候选车道，默认不过滤）
+    blocked_candidate_entry_types: tuple[str, ...] = ()
 
 
 class FunnelResult(NamedTuple):
@@ -2182,7 +2185,8 @@ def _alpha_entry_options(row: dict[str, Any], cfg: FunnelConfig) -> list[tuple[s
         _alpha_volatile_pullback_option(row, cfg, values),
         _alpha_accum_ready_option(row, cfg, values),
     ]
-    return [item for item in options if item is not None]
+    blocked = {normalize_candidate_entry_key(t) for t in (cfg.blocked_candidate_entry_types or ())}
+    return [item for item in options if item is not None and normalize_candidate_entry_key(item[1]) not in blocked]
 
 
 def _alpha_score(row: dict[str, Any], q60: float, q120: float, timing: float, risk: float) -> tuple[float, float]:
@@ -2257,7 +2261,9 @@ def _formal_candidate_entries(
     triggers: dict[str, list[tuple[str, float]]],
     stage_map: dict[str, str],
     exit_signals: dict[str, dict],
+    blocked_types: tuple[str, ...] | set[str] = (),
 ) -> list[dict[str, Any]]:
+    blocked = {normalize_candidate_entry_key(t) for t in (blocked_types or ())}
     track_map = {
         "spring": "accumulation",
         "lps": "accumulation",
@@ -2269,6 +2275,8 @@ def _formal_candidate_entries(
     base_map = {"spring": 70.0, "lps": 64.0, "compression": 58.0, "trend_pullback": 66.0, "sos": 56.0, "evr": 52.0}
     entries: list[dict[str, Any]] = []
     for key, rows in (triggers or {}).items():
+        if normalize_candidate_entry_key(key) in blocked:
+            continue
         for code, raw_score in rows or []:
             risk = 0.0
             sig = str((exit_signals.get(str(code), {}) or {}).get("signal", "")).strip()
@@ -2322,7 +2330,9 @@ def build_candidate_entries(
     exit_signals: dict[str, dict],
     cfg: FunnelConfig,
 ) -> list[dict[str, Any]]:
-    formal = _formal_candidate_entries(triggers, stage_map, exit_signals)
+    formal = _formal_candidate_entries(
+        triggers, stage_map, exit_signals, blocked_types=cfg.blocked_candidate_entry_types
+    )
     alpha = (
         _alpha_candidate_entries(alpha_symbols, df_map, sector_map, channel_map, cfg) if cfg.alpha_board_enabled else []
     )
@@ -2899,6 +2909,7 @@ def _candidate_entries_for_result(
         l2_symbols=l2,
         channel_map=channel_map,
         main_force_map=main_force_map,
+        blocked_lanes=cfg.blocked_candidate_entry_types,
     )
     mainline_entries = _mainline_entries_for_result(
         l1,
@@ -2914,7 +2925,9 @@ def _candidate_entries_for_result(
         mainline_config=mainline_config,
         main_force_map=main_force_map,
     )
-    merged = merge_candidate_entries(wyckoff_entries, lane_entries, mainline_entries)
+    merged = merge_candidate_entries(
+        wyckoff_entries, lane_entries, mainline_entries, blocked_types=cfg.blocked_candidate_entry_types
+    )
     annotate_trend_drawdown_risk(merged, df_map, channel_map)
     _attach_price_targets(merged, df_map)
     return merged

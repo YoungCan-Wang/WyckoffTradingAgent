@@ -14,7 +14,12 @@ from core._price_math import range_pos, sort_by_date_if_needed
 from core._price_math import ret_pct as _ret_pct
 from core._price_math import upper_shadow_pct as _upper_shadow_pct
 from core._price_math import vol_ratio as _vol_ratio
-from core.candidate_tracks import candidate_entry_key, candidate_entry_score, sanitized_candidate_entry
+from core.candidate_tracks import (
+    candidate_entry_key,
+    candidate_entry_score,
+    normalize_candidate_entry_key,
+    sanitized_candidate_entry,
+)
 from core.main_force_signal import MainForceSignal, analyze_main_force_signal
 
 
@@ -28,9 +33,11 @@ def build_l1_candidate_lane_entries(
     channel_map: dict[str, str],
     main_force_map: dict[str, MainForceSignal] | None = None,
     limit: int = 80,
+    blocked_lanes: tuple[str, ...] | set[str] = (),
 ) -> list[dict[str, Any]]:
     top_sector_set = {str(item).strip() for item in top_sectors if str(item).strip()}
     l2_set = {str(item).strip() for item in l2_symbols if str(item).strip()}
+    blocked = {normalize_candidate_entry_key(t) for t in (blocked_lanes or ())}
     rows = [
         _entry_for_code(
             code,
@@ -40,6 +47,7 @@ def build_l1_candidate_lane_entries(
             channel_map.get(code, ""),
             top_sector_set,
             (main_force_map or {}).get(code),
+            blocked_lanes=blocked,
         )
         for code in l1_symbols
     ]
@@ -48,12 +56,19 @@ def build_l1_candidate_lane_entries(
     return valid[: max(int(limit), 0)] if limit > 0 else valid
 
 
-def merge_candidate_entries(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def merge_candidate_entries(
+    *groups: list[dict[str, Any]],
+    blocked_types: tuple[str, ...] | set[str] = (),
+) -> list[dict[str, Any]]:
+    blocked = {normalize_candidate_entry_key(t) for t in (blocked_types or ())}
     merged: dict[str, dict[str, Any]] = {}
     for group in groups:
         for item in group or []:
             code = str(item.get("code", "")).strip()
             if not code:
+                continue
+            entry_type = normalize_candidate_entry_key(item.get("entry_type") or item.get("signal_key") or "")
+            if blocked and entry_type in blocked:
                 continue
             current = merged.get(code)
             if current is None or _entry_rank(item) < _entry_rank(current):
@@ -69,6 +84,7 @@ def _entry_for_code(
     channel: str,
     top_sector_set: set[str],
     main_force: MainForceSignal | None,
+    blocked_lanes: set[str] = frozenset(),
 ) -> dict[str, Any] | None:
     metrics = _price_metrics(df, main_force)
     if not metrics:
@@ -76,7 +92,7 @@ def _entry_for_code(
     risks = _risk_flags(metrics)
     if _hard_blocked(risks):
         return None
-    lane = _lane(metrics, sector in top_sector_set, l2_passed)
+    lane = _lane(metrics, sector in top_sector_set, l2_passed, blocked_lanes=blocked_lanes)
     if not lane:
         return None
     score = _lane_score(lane, metrics, sector in top_sector_set, l2_passed)
@@ -111,16 +127,18 @@ def _candidate_entry(
     }
 
 
-def _lane(metrics: dict[str, float], in_top_sector: bool, l2_passed: bool) -> str:
-    if _trend_breakout(metrics):
+def _lane(
+    metrics: dict[str, float], in_top_sector: bool, l2_passed: bool, blocked_lanes: set[str] = frozenset()
+) -> str:
+    if "trend_breakout" not in blocked_lanes and _trend_breakout(metrics):
         return "trend_breakout"
-    if _main_force_entry(metrics):
+    if "main_force_entry" not in blocked_lanes and _main_force_entry(metrics):
         return "main_force_entry"
-    if _trend_pullback(metrics):
+    if "trend_lane_pullback" not in blocked_lanes and _trend_pullback(metrics):
         return "trend_lane_pullback"
-    if in_top_sector and _sector_strength(metrics):
+    if "sector_strength" not in blocked_lanes and in_top_sector and _sector_strength(metrics):
         return "sector_strength"
-    if l2_passed and _trend_follow(metrics):
+    if "wyckoff_structure" not in blocked_lanes and l2_passed and _trend_follow(metrics):
         return "wyckoff_structure"
     return ""
 
