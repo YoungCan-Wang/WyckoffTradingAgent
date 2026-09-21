@@ -294,7 +294,7 @@ flowchart LR
 | **Health** | 按信号类型聚合后的胜率、均值收益、样本数和权重，落在 `signal_health_daily`。 |
 | **动态影子晋级** | 将当日候选的基础影子分与同信号、同水温的历史健康度合成动态分；通过结构、样本和风险清单后，只获得 Step3 复核席位，不等于正式推荐、跨日确认或 OMS 买入许可。 |
 | **当日盈亏 (same-day P&L)** | 现价相对前收盘的浮动盈亏；不是相对建仓成本。`buy_dt` 在成交回填里是 T+1 最近买入日（当日加仓会刷新），不能用来判断整仓今开，故有昨收时一律 vs 昨收；仅昨收缺失时才用今开成本兜底。金额按持仓本币×人民币汇率。账本当日盈亏是各持仓当日盈亏之和，现金记 0，因此不等于「今日净值 − 昨日净值」（后者含同日买卖现金流）。由 16:05 `nav_snapshot` 写入 `daily_nav.day_pnl` / `position_day_pnl`，Step4 Telegram 工单回读展示。 |
-| **影子账本 (paper shadow ledger)** | 漏斗成功后的纸面对照账户，账户号 `USER_SHADOW:<uuid>`。盘后按 Step4 同口径买许可写下夜 `next_open` 计划，次日开盘价成交，遵守 T+1 / 整手 / 涨跌停 / 费用。只写 `shadow_*` 表，绝不写 `USER_LIVE` 的 `portfolios` / `portfolio_positions` / `trade_orders` / `daily_nav`。飞书卡标题必须带「影子账本 / paper」，与 `ic_shadow`、动态影子分不是同一概念。持仓区只列 `shadow_positions.shares > 0` 的开仓；逐只**净收益**是盯市浮盈 `shares * last_mark − shares * avg_cost`（`avg_cost` 已摊入买侧费用），百分比分母为 `shares * avg_cost`。已平仓不进持仓列表。账户行的现金/净值/市值/**累计**（权益 − 初始资金）口径不变。此数不是实盘 `当日盈亏`（相对昨收），也未扣尚未发生的卖费。 |
+| **影子账本 (paper shadow ledger)** | 漏斗成功后的纸面对照账户，账户号 `USER_SHADOW:<uuid>`。盘后按 Step4 同口径买许可写下夜 `next_open` 计划，次日开盘价成交，遵守 T+1 / 整手 / 涨跌停 / 费用。只写 `shadow_*` 表，绝不写 `USER_LIVE` 的 `portfolios` / `portfolio_positions` / `trade_orders` / `daily_nav`。飞书卡标题必须带「影子账本 / paper」，与 `ic_shadow`、动态影子分不是同一概念。持仓区只列 `shadow_positions.shares > 0` 的开仓；逐只**净收益**是盯市浮盈 `shares * last_mark − shares * avg_cost`（`avg_cost` 已摊入买侧费用），百分比分母为 `shares * avg_cost`。已平仓不进持仓列表。账户行的现金/净值/市值/**累计**（权益 − 初始资金）口径不变。此数不是实盘 `当日盈亏`（相对昨收），也未扣尚未发生的卖费。Web `/shadow` 只读 `USER_SHADOW:*`：非会员只拿橱窗 DTO（净值曲线、区间收益、回撤、粗胜率、开仓只数、板块标签），有效星球会员才拿日净值与开平仓流水；服务端按会员身份裁剪，不靠前端藏字段。 |
 | **Registry** | 信号生命周期表，控制信号是 `ACTIVE`、`WATCH`、`EXPERIMENTAL` 还是 `RETIRED`。信号级 `status` 以全局行（`regime=""` / `ALL`）为准；regime 拆分行只承载精确权重并跟随全局生命周期。 |
 | **Shadow Run** | 动态策略旁路演练：真实推荐不变，只记录动态策略会新增或移除哪些候选。 |
 | **Dynamic Policy** | 根据信号健康度、registry 和市场广度，动态调整 Trend / Accum 候选配额。 |
@@ -387,7 +387,7 @@ flowchart LR
 | **本地软限流** | 未配置 Redis 或 Redis 临时故障时，单个 Worker 实例内的保护计数。实例回收或扩容后不保证全局一致，响应头通过 `local` / `local-fallback` 明确标识。 |
 | **Workers Logs** | Cloudflare Worker 免费日志：未捕获异常和 `console.error` 进控制台，约保留 3 天。不写 Supabase。 |
 | **Web Analytics** | Cloudflare 免费网站统计：匿名 PV/UV 和页面访问。可在 Pages 项目里打开，或用公开构建变量 `VITE_CF_WEB_ANALYTICS_TOKEN` 注入 beacon。不做按钮点击率。 |
-| **星球会员（Planet Member）** | 已在 `planet_members` 表绑定且未过期的登录账号。会员可使用形态跟踪、策略归因、云端持仓、隔离研究计算和手机遥控等共享云端能力；会员身份不会自动写入用户的私人模型或数据源 Key。 |
+| **星球会员（Planet Member）** | 已在 `planet_members` 表绑定且未过期的登录账号。会员可使用形态跟踪、策略归因、云端持仓、隔离研究计算、手机遥控和影子纸面账详账等共享云端能力；会员身份不会自动写入用户的私人模型或数据源 Key。 |
 | **Clarity（星球会员）** | Microsoft Clarity 点击热力图/录屏。只对有效星球会员加载，默认项目 `y6albpfin1`，可用 `VITE_CLARITY_PROJECT_ID` 覆盖。事件进 Clarity，不写业务库。 |
 | **新闻打点 / News chart overlay** | 单股分析页和 `analyze_stock` 诊断上的读盘叠加层：用规则过滤东方财富个股新闻，把业绩/监管/股东/交易事件对齐到交易日并标在 K 线上。不进漏斗、不改候选、不构成买卖依据。 |
 | **web_search（读盘室）** | DeepSeek Responses API 的服务端联网搜索工具；在读盘室使用官方 `deepseek-v4-flash` 或 `deepseek-v4-pro` 时注入。用于公开网页/舆情检索，不替代行情与持仓工具；搜索证据仅当轮有效。与 CLI 本机 CDP `browser_research` 不同路径。 |

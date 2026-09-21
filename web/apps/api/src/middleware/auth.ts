@@ -14,6 +14,13 @@ export function createUserSupabase(env: Env, accessToken: string) {
   return createClient(url, key, { global: { headers: { Authorization: `Bearer ${accessToken}` } } })
 }
 
+export function createAdminSupabase(env: Env) {
+  const url = env.SUPABASE_URL || env.VITE_SUPABASE_URL
+  const key = env.SUPABASE_SERVICE_ROLE_KEY
+  if (!url || !key) throw new Error('Supabase admin env is missing')
+  return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } })
+}
+
 export async function resolveUserId(env: Env, accessToken: string): Promise<string | null> {
   const url = env.SUPABASE_URL || env.VITE_SUPABASE_URL
   const anonKey = env.SUPABASE_ANON_KEY || env.VITE_SUPABASE_ANON_KEY

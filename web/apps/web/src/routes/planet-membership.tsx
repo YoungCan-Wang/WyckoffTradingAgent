@@ -61,7 +61,7 @@ const capabilityCopy = {
     title: 'Web 是日常工作台，后台负责重任务',
     intro: '当前 Web 端已经覆盖读盘、单股、多股、持仓、跟踪和导出这些高频动作；全市场漏斗、回测、回刷和运维任务继续放在 GitHub Actions、CLI 或数据库后台，避免把长任务和敏感权限塞进浏览器。',
     webTitle: 'Web 端已经接入',
-    webItems: ['单股 320 日日线结构图、价值快照、AI 报告与本地历史', '多股对抗的相对强弱、叠加/分图、价值面校准与本地历史', '持仓诊断支持数据库持仓和手动持仓，结果保存在当前浏览器', '星球会员形态跟踪、批量行情导出、模型和数据源配置'],
+    webItems: ['单股 320 日日线结构图、价值快照、AI 报告与本地历史', '多股对抗的相对强弱、叠加/分图、价值面校准与本地历史', '持仓诊断支持数据库持仓和手动持仓，结果保存在当前浏览器', '星球会员形态跟踪、批量行情导出、模型和数据源配置', '影子纸面账橱窗（非会员）与完整日流水/持仓净收益（会员）'],
     gapTitle: '系统有，但不放在 Web 里主跑',
     whyTitle: '为什么不全塞进 Web',
     costLinkText: '成本详见：COST_MODEL.md',
@@ -72,7 +72,7 @@ const capabilityCopy = {
     title: 'The web UI is the daily desk; background jobs carry the heavy work',
     intro: 'The web UI now covers the high-frequency loops: reading, single-stock analysis, stock battle, portfolio diagnosis, tracking, and export. Full-market funnels, backtests, repricing, and maintenance stay in GitHub Actions, CLI, or database-side jobs instead of pushing long jobs and sensitive permissions into the browser.',
     webTitle: 'Covered by the web UI',
-    webItems: ['Single-stock 320-day chart, value snapshot, AI report, and local history', 'Stock battle with relative strength, overlay/separate charts, value calibration, and local history', 'Portfolio diagnosis for database or manual positions, with browser-local result history', 'Planet-member pattern tracking, batch market-data export, model and data-source settings'],
+    webItems: ['Single-stock 320-day chart, value snapshot, AI report, and local history', 'Stock battle with relative strength, overlay/separate charts, value calibration, and local history', 'Portfolio diagnosis for database or manual positions, with browser-local result history', 'Planet-member pattern tracking, batch market-data export, model and data-source settings', 'Paper shadow-ledger showcase for everyone and the full daily book for members'],
     gapTitle: 'Available in the system, but not browser-first',
     whyTitle: 'Why not put everything in the browser',
     costLinkText: 'Cost details: COST_MODEL.md',
@@ -121,19 +121,19 @@ const capabilityLaunch = {
     kicker: '正式开放',
     date: '2026-06-03',
     title: '「威科夫策略交流学习」知识星球',
-    desc: '知识星球现已正式开放！年费 518 元/年（折合每天约 1.4 元）。项目本身始终保持开源，也欢迎 fork、自行部署、提交 Issue 与 PR。星球会员共享云端持仓、30 日形态跟踪、策略归因、隔离研究计算、手机遥控、每日漏斗产物和专属交流；个人模型与数据源 Key 仍由用户自行管理。',
+    desc: '知识星球现已正式开放！年费 518 元/年（折合每天约 1.4 元）。项目本身始终保持开源，也欢迎 fork、自行部署、提交 Issue 与 PR。星球会员共享云端持仓、30 日形态跟踪、策略归因、隔离研究计算、手机遥控、每日漏斗产物、影子纸面账详账和专属交流；个人模型与数据源 Key 仍由用户自行管理。',
     note: '费用主要用于共同平摊数据源、数据库、云服务器、AI API 和自动化任务等系统运维硬成本；不是投资顾问费，也不构成任何收益承诺。',
     badge: '星球会员特权',
-    tags: ['云端持仓', '30 日跟踪', '策略归因', '隔离研究', '手机遥控', '每日漏斗'],
+    tags: ['云端持仓', '30 日跟踪', '策略归因', '隔离研究', '手机遥控', '每日漏斗', '纸面账'],
   },
   'en-US': {
     kicker: 'Now Open',
     date: '2026-06-03',
     title: 'Wyckoff Strategy Learning Planet',
-    desc: 'Knowledge Planet is officially open at 518 CNY/year (about 1.4 CNY/day). The project remains open source and welcomes forks, issues, and PRs. Members share cloud portfolios, 30-day pattern tracking, strategy attribution, isolated research, phone remote control, daily funnel artifacts, and the private community. Personal model and data-source keys remain user-managed.',
+    desc: 'Knowledge Planet is officially open at 518 CNY/year (about 1.4 CNY/day). The project remains open source and welcomes forks, issues, and PRs. Members share cloud portfolios, 30-day pattern tracking, strategy attribution, isolated research, phone remote control, daily funnel artifacts, the full paper shadow ledger, and the private community. Personal model and data-source keys remain user-managed.',
     note: 'The fee mainly helps share hard operating costs such as data feeds, databases, cloud servers, AI APIs, and scheduled automation; it is not an investment advisory fee and does not imply any return guarantee.',
     badge: 'Member Benefits',
-    tags: ['Cloud Portfolio', '30-Day Tracking', 'Attribution', 'Isolated Research', 'Phone Remote', 'Daily Funnel'],
+    tags: ['Cloud Portfolio', '30-Day Tracking', 'Attribution', 'Isolated Research', 'Phone Remote', 'Daily Funnel', 'Paper Ledger'],
   },
 } satisfies Record<Locale, {
   kicker: string
@@ -287,8 +287,8 @@ function PlanetMembershipOverview({
 }) {
   const zh = locale === 'zh-CN'
   const benefits = zh
-    ? ['最近 30 个复盘交易日的形态跟踪', '策略归因与信号分层报告', '云端持仓保存与多端同步', '隔离 Python 研究计算', '手机遥控桌面读盘室', '每日漏斗产物与星球交流']
-    : ['30 recent review trading days', 'Strategy attribution reports', 'Cloud portfolio sync', 'Isolated Python research', 'Phone remote for the desktop', 'Daily funnel artifacts and community']
+    ? ['最近 30 个复盘交易日的形态跟踪', '策略归因与信号分层报告', '云端持仓保存与多端同步', '隔离 Python 研究计算', '手机遥控桌面读盘室', '每日漏斗产物与星球交流', '影子纸面账橱窗/详账']
+    : ['30 recent review trading days', 'Strategy attribution reports', 'Cloud portfolio sync', 'Isolated Python research', 'Phone remote for the desktop', 'Daily funnel artifacts and community', 'Paper shadow-ledger showcase and full book']
   const status = isLoading ? (zh ? '正在核验' : 'Checking') : hasError ? (zh ? '会员状态暂时无法核验' : 'Membership check unavailable') : isActive ? (zh ? '星球会员已生效' : 'Planet membership active') : (zh ? '当前账号未开通' : 'Membership not active')
   const expiry = isActive ? (expiresOn || (zh ? '长期有效' : 'No expiry')) : '—'
   return (

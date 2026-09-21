@@ -18,6 +18,7 @@ describe('worker proxy routing', () => {
     expect(isWorkerProxyPath('/api/chat/config')).toBe(true)
     expect(isWorkerProxyPath('/api/settings/test-model')).toBe(true)
     expect(isWorkerProxyPath('/api/portfolio')).toBe(true)
+    expect(isWorkerProxyPath('/api/shadow-ledger')).toBe(true)
     expect(isWorkerProxyPath('/api/agent-runs/ws')).toBe(true)
     expect(isWorkerProxyPath('/api/remote/ws')).toBe(true)
     expect(isWorkerProxyPath('/api/health')).toBe(true)

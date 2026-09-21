@@ -28,6 +28,7 @@ const StockBattlePage = lazy(() => import('@/routes/stock-battle').then(m => ({ 
 const HistoryPage = lazy(() => import('@/routes/history').then(m => ({ default: m.HistoryPage })))
 const ExportPage = lazy(() => import('@/routes/export').then(m => ({ default: m.ExportPage })))
 const PlanetMembershipPage = lazy(() => import('@/routes/planet-membership').then(m => ({ default: m.PlanetMembershipPage })))
+const ShadowPage = lazy(() => import('@/routes/shadow').then(m => ({ default: m.ShadowPage })))
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -51,6 +52,7 @@ createRoot(document.getElementById('root')!).render(
                   <Route index element={<Navigate to="/chat" replace />} />
                   <Route path="/chat" element={<ChatPage />} />
                   <Route path="/portfolio" element={<PortfolioPage />} />
+                  <Route path="/shadow" element={<ShadowPage />} />
                   <Route path="/tracking" element={<TrackingPage />} />
                   <Route path="/attribution" element={<AttributionPage />} />
                   <Route path="/analysis" element={<AnalysisPage />} />
