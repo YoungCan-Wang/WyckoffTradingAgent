@@ -138,15 +138,19 @@ function ExpandedPreferenceControls(props: PreferenceControlState) {
 interface SidebarFooterProps {
   collapsed: boolean
   email: string
-  onLogout: () => void
+  signedIn: boolean
+  onAccountAction: () => void
 }
 
 function SidebarFooter(props: SidebarFooterProps) {
-  return props.collapsed ? <CollapsedSidebarFooter onLogout={props.onLogout} /> : <ExpandedSidebarFooter email={props.email} onLogout={props.onLogout} />
+  return props.collapsed
+    ? <CollapsedSidebarFooter signedIn={props.signedIn} onAccountAction={props.onAccountAction} />
+    : <ExpandedSidebarFooter email={props.email} signedIn={props.signedIn} onAccountAction={props.onAccountAction} />
 }
 
-function CollapsedSidebarFooter({ onLogout }: { onLogout: () => void }) {
+function CollapsedSidebarFooter({ signedIn, onAccountAction }: { signedIn: boolean; onAccountAction: () => void }) {
   const { t } = usePreferences()
+  const accountLabel = signedIn ? t('action.logout') : t('login.submit')
   return (
     <div className="border-t border-border p-2">
       <PreferenceControls collapsed />
@@ -164,9 +168,9 @@ function CollapsedSidebarFooter({ onLogout }: { onLogout: () => void }) {
         </a>
       ))}
       <button
-        onClick={onLogout}
-        title={t('action.logout')}
-        aria-label={t('action.logout')}
+        onClick={onAccountAction}
+        title={accountLabel}
+        aria-label={accountLabel}
         className="flex h-9 w-full items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
       >
         <LogOut size={16} />
@@ -175,8 +179,9 @@ function CollapsedSidebarFooter({ onLogout }: { onLogout: () => void }) {
   )
 }
 
-function ExpandedSidebarFooter({ email, onLogout }: { email: string; onLogout: () => void }) {
+function ExpandedSidebarFooter({ email, signedIn, onAccountAction }: { email: string; signedIn: boolean; onAccountAction: () => void }) {
   const { t } = usePreferences()
+  const accountLabel = signedIn ? t('action.logout') : t('login.submit')
   return (
     <div className="border-t border-border p-3">
       <PreferenceControls />
@@ -195,13 +200,13 @@ function ExpandedSidebarFooter({ email, onLogout }: { email: string; onLogout: (
       <div className="px-3">
         <GitHubStarBadge repo={GITHUB_REPO} />
       </div>
-      <div className="mb-2 truncate px-3 text-[11px] text-muted-foreground">{email}</div>
+      {email && <div className="mb-2 truncate px-3 text-[11px] text-muted-foreground">{email}</div>}
       <button
-        onClick={onLogout}
+        onClick={onAccountAction}
         className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
       >
         <LogOut size={15} />
-        {t('action.logout')}
+        {accountLabel}
       </button>
     </div>
   )
@@ -227,9 +232,10 @@ export function AppLayout() {
     <div className="flex h-dvh overflow-hidden">
       <AppSidebar
         collapsed={sidebarCollapsed}
-        email={user?.email || 'dev@preview'}
+        email={user?.email || ''}
+        signedIn={Boolean(user)}
         location={location}
-        onLogout={handleLogout}
+        onAccountAction={handleLogout}
         onToggle={toggleSidebar}
       />
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
@@ -245,21 +251,23 @@ export function AppLayout() {
 function AppSidebar({
   collapsed,
   email,
+  signedIn,
   location,
-  onLogout,
+  onAccountAction,
   onToggle,
 }: {
   collapsed: boolean
   email: string
+  signedIn: boolean
   location: ReturnType<typeof useLocation>
-  onLogout: () => void
+  onAccountAction: () => void
   onToggle: () => void
 }) {
   return (
     <aside className={`flex h-full shrink-0 flex-col overflow-hidden border-r border-border bg-sidebar transition-[width] duration-200 ${collapsed ? 'w-16' : 'w-56'}`}>
       <SidebarHeader collapsed={collapsed} onToggle={onToggle} />
       <SidebarNavigation collapsed={collapsed} location={location} />
-      <SidebarFooter collapsed={collapsed} email={email} onLogout={onLogout} />
+      <SidebarFooter collapsed={collapsed} email={email} signedIn={signedIn} onAccountAction={onAccountAction} />
     </aside>
   )
 }
