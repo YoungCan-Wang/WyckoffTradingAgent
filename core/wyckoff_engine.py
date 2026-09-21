@@ -226,12 +226,11 @@ class FunnelConfig:
     accum_track_vol_quantile: float = 0.25
     accum_track_vol_dry_ratio: float = 0.75
 
-    # 顶层大盘 Regime 门控（Top-Level Market Regime Gate）
-    # 实证结论（Issue #461）：全市场 5,476 标的 6 年全周期实测，配合三强核心与 Top 5 行业共振，
-    # 开启大盘 MA20 门控后扣费净均值突破 1%（达 +1.073%），剔除 2024 单年达 +0.806%，
-    # 盈亏比 1.62，t 统计量达 +14.35，生产默认开启。
-    enable_market_regime_gate: bool = True
-    market_regime_gate_ma: int = 20
+    # Step 4: 顶层大盘 Regime 门控（Top-Level Market Regime Gate）研究脚手架
+    # 挂载消融变体 N。实测显示其存在单年收益依赖与熊市单笔亏损扩大问题，
+    # 且上证指数与全市场覆盖存在脱钩。默认关闭（False），作为研究脚手架，严禁在 held-out 验证前上线生产。
+    enable_market_regime_gate: bool = False
+    market_regime_gate_ma: int = 50
 
     # Layer 3
     # 行业共振过滤：实测 2021-2026 全市场 5,510 只股票，仅保留候选数量前 5 的行业（top_n_sectors=5）
