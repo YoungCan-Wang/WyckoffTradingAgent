@@ -227,9 +227,8 @@ class FunnelConfig:
     accum_track_vol_dry_ratio: float = 0.75
 
     # Step 4: 顶层大盘 Regime 门控（Top-Level Market Regime Gate）研究脚手架
-    # 方案 A：中证全指/全市场基准 + 1% 缓冲带（CSI_MA20_Band）。
-    # 全市场 5,476 标的 Held-Out 盲测显示净均值达 +1.534% (t=+19.70)，2022 熊市亏损砍半至 -0.390%。
-    # 默认保持关闭（False），作为研究脚手架与安全 guardrail。
+    # 方案 A：中证全指/全市场基准 + 1% 缓冲 hurdle（CSI_MA20_Band）。
+    # 默认保持关闭（False）。生产开启须经独立评审批准。
     enable_market_regime_gate: bool = False
     market_regime_gate_ma: int = 20
     market_regime_gate_buffer_pct: float = 0.01
