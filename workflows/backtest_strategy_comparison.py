@@ -18,7 +18,7 @@ DEFAULT_COMPARISON_PERIODS = ("bull_2020", "bear_2022", "sideways_2023", "volati
 MAX_CASH_DRAWDOWN_PCT = 20.0
 _DIR_PATTERN = re.compile(
     r"backtest-strategy-"
-    r"(?P<period>recent_2m|recent_6m|bull_2020|bear_2022|sideways_2023|volatile_2024|custom)-"
+    r"(?P<period>recent_2m|recent_6m|bull_2020|bear_2022|sideways_2023|volatile_2024|bull_2025|custom)-"
     r"(?P<variant>[A-P])"
     r"(?:-\d+)?$"
 )

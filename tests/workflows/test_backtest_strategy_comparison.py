@@ -82,6 +82,17 @@ def test_strategy_comparison_accepts_github_artifact_run_suffix(tmp_path: Path) 
     assert [(row.period, row.variant) for row in rows] == [("recent_6m", "A")]
 
 
+def test_strategy_comparison_loads_bull_2025_single_variant_shard_against_baseline(tmp_path: Path) -> None:
+    _write_summary(tmp_path / "backtest-strategy-bull_2025-amp-91", "bull_2025", "A", 2.0, -4.0)
+    _write_summary(tmp_path / "backtest-strategy-bull_2025-two_track-91", "bull_2025", "J", 3.0, -4.0)
+
+    report = build_strategy_comparison(load_strategy_comparison_rows(tmp_path))
+
+    assert [(row["period"], row["variant"]) for row in report["rows"]] == [("bull_2025", "A"), ("bull_2025", "J")]
+    assert report["evaluations"]["J"]["reference_variant"] == "A"
+    assert report["evaluations"]["J"]["status"] == "insufficient"
+
+
 def test_strategy_comparison_marks_identical_trade_sets_as_no_effect(tmp_path: Path) -> None:
     for period in ("bull_2020", "bear_2022", "recent_6m"):
         _write_summary(tmp_path, period, "A", 2.0, -4.0)

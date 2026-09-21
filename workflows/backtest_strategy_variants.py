@@ -17,6 +17,7 @@ VARIANT_LABELS = {
     "G": "A股实证：剔除 EVR 与 SOS 确认信号",
     "H": "A股实证：NEUTRAL 入场需广度确认",
     "I": "A股实证：按历史命中先验重排确认信号",
+    "J": "A股实证：Layer 2 纯两轨制（仅开 enable_two_track_mode，单变量对照 A）",
     "K": "A股实证：Fib-LPS 几何增强 + 动态小溪放宽",
     "L": "A股实证：Layer 2 两轨制整合（趋势主升轨 + 底部蓄势轨）",
     "M": "A股实证：弱水温信号缩仓",
@@ -58,6 +59,7 @@ _VARIANT_SWITCHES = {
     "G": {},
     "H": {},
     "I": {},
+    "J": {"enable_two_track_mode": True},
     "K": {
         "lps_creek_confirmation_enabled": True,
         "lps_use_fib_zone": True,

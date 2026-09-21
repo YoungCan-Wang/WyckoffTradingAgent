@@ -462,7 +462,8 @@ jobs:
         period_key: [recent_2m, recent_6m, bull_2020, bear_2022, sideways_2023, volatile_2024, bull_2025]
         # amp  = A,M,P 共享一次信号台账（三者只改入场仓位权重，故可复用）
         # calib = 仅变体 I（calibrate_confirmed_score），必须独立算台账
-        variant_set: [amp, calib]
+        # two_track = 仅变体 J（enable_two_track_mode 单开，#476），改 L2 通道即改台账，同样独立算
+        variant_set: [amp, calib, two_track]
     steps:
       - name: Resolve period dates
         id: period
@@ -546,8 +547,13 @@ jobs:
         run: |
           if [ "$VARIANT_SET" = "calib" ]; then
             echo "STRATEGY_VARIANT_ARGS=--strategy-variant I" >> "$GITHUB_ENV"
+            echo "STRATEGY_RUN_SUBDIR=backtest-strategy-${BT_PERIOD_KEY}-I" >> "$GITHUB_ENV"
+          elif [ "$VARIANT_SET" = "two_track" ]; then
+            echo "STRATEGY_VARIANT_ARGS=--strategy-variant J" >> "$GITHUB_ENV"
+            echo "STRATEGY_RUN_SUBDIR=backtest-strategy-${BT_PERIOD_KEY}-J" >> "$GITHUB_ENV"
           else
             echo "STRATEGY_VARIANT_ARGS=--strategy-variants A,M,P --strategy-prefix backtest-strategy-${BT_PERIOD_KEY}" >> "$GITHUB_ENV"
+            echo "STRATEGY_RUN_SUBDIR=" >> "$GITHUB_ENV"
           fi
 
       # --strategy-variants（复数）会复用一次信号台账，因此只能放"仅改入场仓位
@@ -555,7 +561,12 @@ jobs:
       # 会改变台账本身，塞进复数参数会被 backtest.py 的护栏拒绝
       # （「复用信号台账的策略组只能改变入场仓位权重」）。故 I 走 --strategy-variant
       # （单数）单独算一次台账，与 amp 组分属不同 matrix 分片，产物也分开命名。
-      # A 组基线在 amp 分片里，故 A vs I 的差值即校准的净效应。
+      # 变体 J 单开 enable_two_track_mode，改的是 L2 通道集合，同理必须单独算台账。
+      # A 组基线在 amp 分片里，故 A vs I、A vs J 的差值即各自的净效应。
+      #
+      # 单数分片的产物必须落在 backtest-strategy-<period>-<variant>/ 子目录：汇总脚本
+      # build_backtest_strategy_comparison 按该目录名识别周期与组别，直接写在 artifact
+      # 根目录（如 ...-calib-<run>/summary.md）会被静默跳过，报表里就永远缺这一组。
       #
       # 注意：shell 续行(\)之间不能插注释，否则命令被截断、后续参数全部丢失
       # （2026-08-09 曾因此丢掉 --snapshot-dir，回测转为实时拉数据而被限流）。
@@ -566,7 +577,8 @@ jobs:
           set -euo pipefail
           OUT_DIR="analysis/backtest_strategy_actions"
           echo "OUT_DIR=${OUT_DIR}" >> "$GITHUB_ENV"
-          mkdir -p "$OUT_DIR"
+          RUN_DIR="${OUT_DIR}${STRATEGY_RUN_SUBDIR:+/${STRATEGY_RUN_SUBDIR}}"
+          mkdir -p "$RUN_DIR"
           python -u -m scripts.backtest_runner \
             --start "$BT_START" \
             --end "$BT_END" \
@@ -598,7 +610,7 @@ jobs:
             --wbt-n-jobs 2 \
             --snapshot-dir snapshot_data \
             --allow-static-meta \
-            --output-dir "$OUT_DIR" \
+            --output-dir "$RUN_DIR" \
             | tee "$OUT_DIR/run.log"
 
       - name: Upload strategy artifact
