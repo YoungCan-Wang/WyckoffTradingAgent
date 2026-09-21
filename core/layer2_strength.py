@@ -349,18 +349,30 @@ def pre_ignition_ok(
     )
 
 
-def _markup_track_rps_ok(cfg: Any, rps_state: Layer2RpsState | None, is_vol_breakout: bool) -> bool:
-    if rps_state is None:
-        return True
-    if rps_state.momentum_ok:
-        return True
-    slow_min = float(getattr(cfg, "markup_track_rps_slow_min", 60.0))
-    if rps_state.slow is not None and rps_state.slow >= slow_min:
-        return True
-    fast_min = float(getattr(cfg, "markup_track_rps_fast_min", 50.0))
-    if is_vol_breakout and rps_state.fast is not None and rps_state.fast >= fast_min:
-        return True
+def _markup_vol_breakout(df_sorted: pd.DataFrame, state: Layer2SymbolState) -> bool:
+    vol = pd.to_numeric(df_sorted.get("volume"), errors="coerce")
+    if len(vol) < 20 or pd.isna(state.last_ma_short) or float(state.last_ma_short) <= 0 or pd.isna(state.last_close):
+        return False
+    vol20 = float(vol.tail(20).mean())
+    curr_vol = float(vol.iloc[-1])
+    pct = close_return_pct(state.close, 1)
+    if float(state.last_close) > float(state.last_ma_short) and vol20 > 0:
+        return curr_vol >= 1.2 * vol20 and (pct is not None and pct >= 1.5)
     return False
+
+
+def _accum_volume_dry(df_sorted: pd.DataFrame, cfg: Any, ref_window: int) -> bool:
+    vol = pd.to_numeric(df_sorted.get("volume"), errors="coerce")
+    lookback = int(getattr(cfg, "dry_vol_lookback", 10))
+    vol_quantile = float(getattr(cfg, "accum_track_vol_quantile", 0.25))
+    ref_vol = vol.tail(max(ref_window, 2)).dropna()
+    if len(ref_vol) >= 50:
+        threshold = float(np.quantile(ref_vol.values, vol_quantile))
+        if float(vol.tail(lookback).min()) <= threshold:
+            return True
+
+    dry_ratio = float(getattr(cfg, "accum_track_vol_dry_ratio", 0.75))
+    return _volume_dry_ok(df_sorted, 20, 120, dry_ratio)
 
 
 def markup_track_ok(
@@ -370,6 +382,8 @@ def markup_track_ok(
     rps_state: Layer2RpsState | None = None,
 ) -> bool:
     """趋势主升轨：上升趋势或初升段突破，伴随动量与位阶保护。"""
+    if rps_state is not None and not rps_state.momentum_ok:
+        return False
     if pd.isna(state.last_ma_short) or float(state.last_ma_short) <= 0 or pd.isna(state.last_close):
         return False
 
@@ -379,21 +393,8 @@ def markup_track_ok(
         if bias_200 > bias_max:
             return False
 
-    is_vol_breakout = False
-    vol = pd.to_numeric(df_sorted.get("volume"), errors="coerce")
-    if len(vol) >= 20:
-        vol20 = float(vol.tail(20).mean())
-        curr_vol = float(vol.iloc[-1])
-        pct = close_return_pct(state.close, 1)
-        if float(state.last_close) > float(state.last_ma_short) and vol20 > 0:
-            if curr_vol >= 1.2 * vol20 and (pct is not None and pct >= 1.5):
-                is_vol_breakout = True
-
     is_bullish = state.bullish_alignment and float(state.last_close) >= float(state.last_ma_short)
-    if not (is_bullish or is_vol_breakout):
-        return False
-
-    return _markup_track_rps_ok(cfg, rps_state, is_vol_breakout)
+    return is_bullish or _markup_vol_breakout(df_sorted, state)
 
 
 def accum_track_ok(
@@ -410,17 +411,7 @@ def accum_track_ok(
     if not _low_position_ok(state.close, state.last_close, ref_window, price_from_low_max):
         return False
 
-    vol = pd.to_numeric(df_sorted.get("volume"), errors="coerce")
-    lookback = int(getattr(cfg, "dry_vol_lookback", 10))
-    vol_quantile = float(getattr(cfg, "accum_track_vol_quantile", 0.25))
-    ref_vol = vol.tail(max(ref_window, 2)).dropna()
-    if len(ref_vol) >= 50:
-        threshold = float(np.quantile(ref_vol.values, vol_quantile))
-        if float(vol.tail(lookback).min()) <= threshold:
-            return True
-
-    dry_ratio = float(getattr(cfg, "accum_track_vol_dry_ratio", 0.75))
-    return _volume_dry_ok(df_sorted, 20, 120, dry_ratio)
+    return _accum_volume_dry(df_sorted, cfg, ref_window)
 
 
 def ambush_channel_ok(
@@ -1250,7 +1241,7 @@ def _diagnose_sos(
     rps_slow: float | None,
     detect_sos: Callable[[pd.DataFrame, Any], float | None],
 ) -> tuple[float, list[str]]:
-    if not getattr(cfg, "enable_sos_trigger", False) or not hasattr(cfg, "sos_vol_ratio"):
+    if not hasattr(cfg, "sos_vol_ratio"):
         return 999.0, ["通道未启用"]
     gaps = []
     reasons = []
@@ -1265,27 +1256,6 @@ def _diagnose_sos(
     return (max(gaps), reasons) if gaps else (0.0, [])
 
 
-def _append_markup_track_rps_gaps(
-    cfg: Any,
-    rps_state: Layer2RpsState,
-    is_vol_breakout: bool,
-    gaps: list[float],
-    fail: list[str],
-) -> None:
-    if is_vol_breakout:
-        fast_min = float(getattr(cfg, "markup_track_rps_fast_min", 50.0))
-        val_fast = float(rps_state.fast or 0.0)
-        gap = max((fast_min - val_fast) / max(fast_min, 1.0), 0.0)
-        gaps.append(gap)
-        fail.append(f"放量突破但RPS(fast)不足: 当前 {val_fast:.1f}, 阈值 {fast_min:.1f}")
-    else:
-        slow_min = float(getattr(cfg, "markup_track_rps_slow_min", 60.0))
-        val_slow = float(rps_state.slow or 0.0)
-        gap = max((slow_min - val_slow) / max(slow_min, 1.0), 0.0)
-        gaps.append(gap)
-        fail.append(f"RPS动量不足: 当前慢速 {val_slow:.1f}, 阈值 {slow_min:.1f}")
-
-
 def _diagnose_markup_track(
     cfg: Any,
     state: Layer2SymbolState,
@@ -1295,18 +1265,18 @@ def _diagnose_markup_track(
     gaps: list[float] = []
     fail: list[str] = []
 
-    is_vol_breakout = False
-    vol = pd.to_numeric(df_sorted.get("volume"), errors="coerce")
-    pct = close_return_pct(state.close, 1)
-    if len(vol) >= 20:
-        vol20 = float(vol.tail(20).mean())
-        curr_vol = float(vol.iloc[-1])
-        if pd.notna(state.last_ma_short) and float(state.last_close) > float(state.last_ma_short) and vol20 > 0:
-            if curr_vol >= 1.2 * vol20 and (pct is not None and pct >= 1.5):
-                is_vol_breakout = True
-
-    if not _markup_track_rps_ok(cfg, rps_state, is_vol_breakout):
-        _append_markup_track_rps_gaps(cfg, rps_state, is_vol_breakout, gaps, fail)
+    if rps_state is not None and not rps_state.momentum_ok:
+        val_slow = float(rps_state.slow or 0.0)
+        thresh_slow = float(cfg.rps_slow_min)
+        if val_slow < thresh_slow:
+            gaps.append((thresh_slow - val_slow) / max(thresh_slow, 1.0))
+            fail.append(
+                f"RPS(slow)不足: 当前 {val_slow:.1f}, 阈值 {thresh_slow:.1f}, 差距 {thresh_slow - val_slow:.1f}"
+            )
+        _append_momentum_rps_gaps(cfg, rps_state.fast, rps_state.slope_ok, rps_state.slope_value, gaps, fail)
+        if not gaps:
+            gaps.append(0.3)
+            fail.append("动量未达标(momentum_ok=False)")
 
     if pd.isna(state.last_ma_short) or float(state.last_ma_short) <= 0 or pd.isna(state.last_close):
         return 1.0, ["均线或收盘价数据缺失"]
@@ -1316,7 +1286,10 @@ def _diagnose_markup_track(
         if bias_200 > bias_max:
             gaps.append((bias_200 - bias_max) / max(bias_max, 1e-9))
             fail.append(f"偏离MA200过高: 当前 {bias_200 * 100:.1f}%, 上限 {bias_max * 100:.1f}%")
-    if not (state.bullish_alignment and float(state.last_close) >= float(state.last_ma_short)) and not is_vol_breakout:
+
+    is_vol_breakout = _markup_vol_breakout(df_sorted, state)
+    is_bullish = state.bullish_alignment and float(state.last_close) >= float(state.last_ma_short)
+    if not (is_bullish or is_vol_breakout):
         if not state.bullish_alignment:
             gaps.append(0.3)
             fail.append("未形成均线多头排列且未见放量突破")
@@ -1324,6 +1297,7 @@ def _diagnose_markup_track(
             gap = (float(state.last_ma_short) - float(state.last_close)) / float(state.last_ma_short)
             gaps.append(gap)
             fail.append(f"收盘低于MA50: 当前 {state.last_close:.2f}, 阈值MA50 {state.last_ma_short:.2f}")
+
     if not gaps:
         return 0.0, []
     return max(gaps), fail
@@ -1346,23 +1320,27 @@ def _diagnose_accum_track(
         if price_from_low > price_from_low_max:
             gaps.append((price_from_low - price_from_low_max) / max(price_from_low_max, 1e-9))
             fail.append(f"偏离低位过高: 当前 {price_from_low * 100:.1f}%, 上限 {price_from_low_max * 100:.1f}%")
-    vol = pd.to_numeric(df_sorted.get("volume"), errors="coerce")
-    lookback = int(getattr(cfg, "dry_vol_lookback", 10))
-    vol_quantile = float(getattr(cfg, "accum_track_vol_quantile", 0.25))
-    ref_vol = vol.tail(max(ref_window, 2)).dropna()
-    dry_quantile_ok = False
-    if len(ref_vol) >= 50:
-        threshold = float(np.quantile(ref_vol.values, vol_quantile))
-        min_vol = float(vol.tail(lookback).min())
-        dry_quantile_ok = min_vol <= threshold
-    dry_ratio = float(getattr(cfg, "accum_track_vol_dry_ratio", 0.75))
-    dry_ratio_ok = _volume_dry_ok(df_sorted, 20, 120, dry_ratio)
-    if not (dry_quantile_ok or dry_ratio_ok):
+    if not _accum_volume_dry(df_sorted, cfg, ref_window):
         gaps.append(0.3)
         fail.append("量能未沉淀: 既无地量分位数突破也未达缩量标准")
     if not gaps:
         return 0.0, []
     return max(gaps), fail
+
+
+def _diagnose_two_track(
+    cfg: Any,
+    state: Layer2SymbolState,
+    df_sorted: pd.DataFrame,
+    rps_state: Layer2RpsState,
+) -> str:
+    track_failures = {
+        "趋势主升轨": _diagnose_markup_track(cfg, state, df_sorted, rps_state),
+        "底部蓄势轨": _diagnose_accum_track(cfg, state, df_sorted),
+    }
+    sorted_fails = sorted(track_failures.items(), key=lambda item: item[1][0])
+    closest_name, (closest_gap, closest_reasons) = sorted_fails[0]
+    return f"最接近轨道[{closest_name}](缺口{closest_gap * 100:.1f}%): {', '.join(closest_reasons)}"
 
 
 def diagnose_layer2_symbol_failure(
@@ -1381,13 +1359,7 @@ def diagnose_layer2_symbol_failure(
         return "大盘处于MA50空头生命线下方(市场门控拦截)"
     state = _symbol_state(df_sorted, cfg, bench_ctx)
     if getattr(cfg, "enable_two_track_mode", False):
-        track_failures = {
-            "趋势主升轨": _diagnose_markup_track(cfg, state, df_sorted, rps_state),
-            "底部蓄势轨": _diagnose_accum_track(cfg, state, df_sorted),
-        }
-        sorted_fails = sorted(track_failures.items(), key=lambda item: item[1][0])
-        closest_name, (closest_gap, closest_reasons) = sorted_fails[0]
-        return f"最接近轨道[{closest_name}](缺口{closest_gap * 100:.1f}%): {', '.join(closest_reasons)}"
+        return _diagnose_two_track(cfg, state, df_sorted, rps_state)
 
     close_series = state.close
     last_close = state.last_close
@@ -1420,7 +1392,6 @@ def diagnose_layer2_symbol_failure(
     if not valid_channels:
         valid_channels = channel_failures
 
-    # Sort by gap float value (v[0])
     sorted_fails = sorted(valid_channels.items(), key=lambda item: item[1][0])
     closest_name, (closest_gap, closest_reasons) = sorted_fails[0]
 
