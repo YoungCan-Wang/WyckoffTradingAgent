@@ -13,12 +13,14 @@ from core.layer2_strength import (
     RpsContext,
     _benchmark_regime_gate_passed,
     _diagnose_accum_track,
+    _diagnose_ambush,
     _diagnose_markup_track,
     _diagnose_momentum,
     _diagnose_sos,
     _layer2_channels,
     _sos_channel_ok,
     accum_track_ok,
+    ambush_channel_ok,
     build_benchmark_context,
     build_rps_context,
     calc_relative_strength,
@@ -643,3 +645,50 @@ def test_layer2_channels_and_diagnose_consistency() -> None:
     assert sos_rejected is False
     gap, reasons = _diagnose_sos(cfg_tt, df, rps_ctx, rps_slow=80.0, detect_sos=lambda d, c: None)
     assert gap > 0.0 and "未形成放量突破阻力的SOS结构" in reasons
+
+
+def _ambush_rps_state(cfg: FunnelConfig, *, active: bool, fast: float | None, slow: float | None) -> Layer2RpsState:
+    momentum_ok, ambush_ok = rps_filter_flags(
+        cfg, active=active, rps_fast=fast, rps_slow=slow, slope_ok=True, slope_value=0.0
+    )
+    return Layer2RpsState(fast=fast, slow=slow, momentum_ok=momentum_ok, ambush_ok=ambush_ok)
+
+
+def test_ambush_channel_and_diagnose_consistency() -> None:
+    """潜伏通道：生产 ambush_channel_ok ⇔ 诊断缺口 0.0，RPS 判定必须复用生产 ambush_ok 而非只看 slow。"""
+    cfg = FunnelConfig()
+    close = pd.Series([10.5] * 11 + [10.0] * 20)  # 20 日跌 4.8%，贴近 MA200：形态本身满足潜伏
+
+    def production(rps_state: Layer2RpsState) -> bool:
+        return ambush_channel_ok(
+            cfg, close=close, last_close=10.0, last_ma_long=10.0, rs_ok=True, rps_ok=rps_state.ambush_ok
+        )
+
+    def diagnose(rps_state: Layer2RpsState) -> tuple[float, list[str]]:
+        return _diagnose_ambush(cfg, 10.0, 10.0, close, True, rps_state)
+
+    weak_fast_strong_slow = _ambush_rps_state(cfg, active=True, fast=30.0, slow=80.0)
+    assert production(weak_fast_strong_slow) is True
+    assert diagnose(weak_fast_strong_slow) == (0.0, [])
+
+    # 2026-09-17 生产 trace 里 688265 的真实读数：slow 达标但 fast 早已不"弱"，生产拒绝而旧诊断报缺口 0.0
+    hot_fast = _ambush_rps_state(cfg, active=True, fast=88.0, slow=76.0)
+    assert production(hot_fast) is False
+    gap, reasons = diagnose(hot_fast)
+    assert gap > 0.0
+    assert any(reason.startswith("RPS(fast)过高") for reason in reasons)
+    assert not any(reason.startswith("RPS(slow)不足") for reason in reasons)
+
+    low_slow = _ambush_rps_state(cfg, active=True, fast=30.0, slow=50.0)
+    assert production(low_slow) is False
+    gap, reasons = diagnose(low_slow)
+    assert gap > 0.0 and any(reason.startswith("RPS(slow)不足") for reason in reasons)
+
+    missing = _ambush_rps_state(cfg, active=True, fast=None, slow=76.0)
+    assert production(missing) is False
+    assert diagnose(missing) == (0.5, ["RPS数据缺失"])
+
+    # RPS 过滤未激活时生产放行，诊断不得再拿 slow=None 当 0 报"RPS(slow)不足"
+    inactive = _ambush_rps_state(cfg, active=False, fast=None, slow=None)
+    assert production(inactive) is True
+    assert diagnose(inactive) == (0.0, [])

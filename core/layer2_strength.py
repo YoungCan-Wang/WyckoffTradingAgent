@@ -938,15 +938,15 @@ def _diagnose_ambush(
     last_close: float | None,
     close_series: pd.Series,
     ambush_rs_ok: bool,
-    rps_slow: float | None,
+    rps_state: Layer2RpsState,
 ) -> tuple[float, list[str]]:
     if not getattr(cfg, "enable_ambush_channel", True):
         return 999.0, ["通道未启用"]
     if pd.isna(last_ma_long) or float(last_ma_long) <= 0 or pd.isna(last_close):
         return 1.0, ["均线或价格数据缺失"]
 
-    gaps = []
-    fail = []
+    gaps: list[float] = []
+    fail: list[str] = []
     bias_200 = (float(last_close) - float(last_ma_long)) / float(last_ma_long)
     ret20 = close_return_pct(close_series, 20)
     bias_ok = abs(bias_200) <= cfg.ambush_bias_200_abs_max
@@ -967,15 +967,35 @@ def _diagnose_ambush(
     if not ambush_rs_ok:
         gaps.append(0.5)
         fail.append("RS强度未确认: 当前未通过")
-    thresh_rps = cfg.ambush_rps_slow_min
-    val_rps = rps_slow or 0.0
-    if val_rps < thresh_rps:
-        gaps.append((thresh_rps - val_rps) / thresh_rps)
-        fail.append(f"RPS(slow)不足: 当前 {val_rps:.1f}, 阈值 {thresh_rps:.1f}, 差距 {thresh_rps - val_rps:.1f}")
+    # 以生产 rps_filter_flags 算出的 ambush_ok 为准：RPS 过滤未启用/未激活时它恒为 True，
+    # 激活时要求 fast 不高于上限且 slow 不低于下限，这里只解释它为何为 False。
+    if not rps_state.ambush_ok:
+        _append_ambush_rps_gaps(cfg, rps_state.fast, rps_state.slow, gaps, fail)
 
     if not gaps:
         return 0.0, []
     return max(gaps), fail
+
+
+def _append_ambush_rps_gaps(
+    cfg: Any,
+    rps_fast: float | None,
+    rps_slow: float | None,
+    gaps: list[float],
+    fail: list[str],
+) -> None:
+    if rps_fast is None or rps_slow is None:
+        gaps.append(0.5)
+        fail.append("RPS数据缺失")
+        return
+    slow_min = float(cfg.ambush_rps_slow_min)
+    if rps_slow < slow_min:
+        gaps.append((slow_min - rps_slow) / max(slow_min, 1.0))
+        fail.append(f"RPS(slow)不足: 当前 {rps_slow:.1f}, 阈值 {slow_min:.1f}, 差距 {slow_min - rps_slow:.1f}")
+    fast_max = float(cfg.ambush_rps_fast_max)
+    if rps_fast > fast_max:
+        gaps.append((rps_fast - fast_max) / max(fast_max, 1.0))
+        fail.append(f"RPS(fast)过高: 当前 {rps_fast:.1f}, 上限 {fast_max:.1f}, 差距 {rps_fast - fast_max:.1f}")
 
 
 def _accum_low_gap(cfg: Any, last_close: float | None, close_series: pd.Series) -> tuple[float | None, str | None]:
@@ -1377,7 +1397,7 @@ def diagnose_layer2_symbol_failure(
             slope_value=rps_state.slope_value,
             momentum_rps_ok=rps_state.momentum_ok,
         ),
-        "潜伏": _diagnose_ambush(cfg, last_ma_long, last_close, close_series, ambush_rs_ok, rps_slow),
+        "潜伏": _diagnose_ambush(cfg, last_ma_long, last_close, close_series, ambush_rs_ok, rps_state),
         "吸筹": _diagnose_accum(cfg, df_sorted, close_series, last_close, last_ma_short, last_ma_long),
         "地量蓄势": _diagnose_dry_vol(cfg, df_sorted, close_series, last_close),
         "暗中护盘": _diagnose_rs_div(cfg, df_sorted, close_series, last_close, bench_ctx),
