@@ -222,6 +222,8 @@ class FunnelConfig:
     # Layer 2 两轨制整合（Two-Track Consolidated Architecture）
     enable_two_track_mode: bool = False
     markup_track_bias_200_max: float = 0.30
+    markup_track_rps_slow_min: float = 60.0  # 中期极强梯级：RPS120 >= 60 即认可趋势
+    markup_track_rps_fast_min: float = 50.0  # 放量初升梯级：放量突破时 RPS50 >= 50 即放行
     accum_track_price_from_low_max: float = 0.35
     accum_track_vol_quantile: float = 0.25
     accum_track_vol_dry_ratio: float = 0.75

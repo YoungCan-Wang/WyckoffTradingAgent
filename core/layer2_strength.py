@@ -349,6 +349,20 @@ def pre_ignition_ok(
     )
 
 
+def _markup_track_rps_ok(cfg: Any, rps_state: Layer2RpsState | None, is_vol_breakout: bool) -> bool:
+    if rps_state is None:
+        return True
+    if rps_state.momentum_ok:
+        return True
+    slow_min = float(getattr(cfg, "markup_track_rps_slow_min", 60.0))
+    if rps_state.slow is not None and rps_state.slow >= slow_min:
+        return True
+    fast_min = float(getattr(cfg, "markup_track_rps_fast_min", 50.0))
+    if is_vol_breakout and rps_state.fast is not None and rps_state.fast >= fast_min:
+        return True
+    return False
+
+
 def markup_track_ok(
     df_sorted: pd.DataFrame,
     state: Layer2SymbolState,
@@ -356,8 +370,6 @@ def markup_track_ok(
     rps_state: Layer2RpsState | None = None,
 ) -> bool:
     """趋势主升轨：上升趋势或初升段突破，伴随动量与位阶保护。"""
-    if rps_state is not None and not rps_state.momentum_ok:
-        return False
     if pd.isna(state.last_ma_short) or float(state.last_ma_short) <= 0 or pd.isna(state.last_close):
         return False
 
@@ -367,9 +379,7 @@ def markup_track_ok(
         if bias_200 > bias_max:
             return False
 
-    if state.bullish_alignment and float(state.last_close) >= float(state.last_ma_short):
-        return True
-
+    is_vol_breakout = False
     vol = pd.to_numeric(df_sorted.get("volume"), errors="coerce")
     if len(vol) >= 20:
         vol20 = float(vol.tail(20).mean())
@@ -377,8 +387,13 @@ def markup_track_ok(
         pct = close_return_pct(state.close, 1)
         if float(state.last_close) > float(state.last_ma_short) and vol20 > 0:
             if curr_vol >= 1.2 * vol20 and (pct is not None and pct >= 1.5):
-                return True
-    return False
+                is_vol_breakout = True
+
+    is_bullish = state.bullish_alignment and float(state.last_close) >= float(state.last_ma_short)
+    if not (is_bullish or is_vol_breakout):
+        return False
+
+    return _markup_track_rps_ok(cfg, rps_state, is_vol_breakout)
 
 
 def accum_track_ok(
@@ -1250,6 +1265,27 @@ def _diagnose_sos(
     return (max(gaps), reasons) if gaps else (0.0, [])
 
 
+def _append_markup_track_rps_gaps(
+    cfg: Any,
+    rps_state: Layer2RpsState,
+    is_vol_breakout: bool,
+    gaps: list[float],
+    fail: list[str],
+) -> None:
+    if is_vol_breakout:
+        fast_min = float(getattr(cfg, "markup_track_rps_fast_min", 50.0))
+        val_fast = float(rps_state.fast or 0.0)
+        gap = max((fast_min - val_fast) / max(fast_min, 1.0), 0.0)
+        gaps.append(gap)
+        fail.append(f"放量突破但RPS(fast)不足: 当前 {val_fast:.1f}, 阈值 {fast_min:.1f}")
+    else:
+        slow_min = float(getattr(cfg, "markup_track_rps_slow_min", 60.0))
+        val_slow = float(rps_state.slow or 0.0)
+        gap = max((slow_min - val_slow) / max(slow_min, 1.0), 0.0)
+        gaps.append(gap)
+        fail.append(f"RPS动量不足: 当前慢速 {val_slow:.1f}, 阈值 {slow_min:.1f}")
+
+
 def _diagnose_markup_track(
     cfg: Any,
     state: Layer2SymbolState,
@@ -1258,8 +1294,20 @@ def _diagnose_markup_track(
 ) -> tuple[float, list[str]]:
     gaps: list[float] = []
     fail: list[str] = []
-    if not rps_state.momentum_ok:
-        _append_momentum_rps_gaps(cfg, rps_state.fast, rps_state.slope_ok, rps_state.slope_value, gaps, fail)
+
+    is_vol_breakout = False
+    vol = pd.to_numeric(df_sorted.get("volume"), errors="coerce")
+    pct = close_return_pct(state.close, 1)
+    if len(vol) >= 20:
+        vol20 = float(vol.tail(20).mean())
+        curr_vol = float(vol.iloc[-1])
+        if pd.notna(state.last_ma_short) and float(state.last_close) > float(state.last_ma_short) and vol20 > 0:
+            if curr_vol >= 1.2 * vol20 and (pct is not None and pct >= 1.5):
+                is_vol_breakout = True
+
+    if not _markup_track_rps_ok(cfg, rps_state, is_vol_breakout):
+        _append_markup_track_rps_gaps(cfg, rps_state, is_vol_breakout, gaps, fail)
+
     if pd.isna(state.last_ma_short) or float(state.last_ma_short) <= 0 or pd.isna(state.last_close):
         return 1.0, ["均线或收盘价数据缺失"]
     bias_max = float(getattr(cfg, "markup_track_bias_200_max", 0.30))
@@ -1268,26 +1316,14 @@ def _diagnose_markup_track(
         if bias_200 > bias_max:
             gaps.append((bias_200 - bias_max) / max(bias_max, 1e-9))
             fail.append(f"偏离MA200过高: 当前 {bias_200 * 100:.1f}%, 上限 {bias_max * 100:.1f}%")
-    if not (state.bullish_alignment and float(state.last_close) >= float(state.last_ma_short)):
-        vol = pd.to_numeric(df_sorted.get("volume"), errors="coerce")
-        pct = close_return_pct(state.close, 1)
-        if len(vol) >= 20:
-            vol20 = float(vol.tail(20).mean())
-            curr_vol = float(vol.iloc[-1])
-            vol_ok = vol20 > 0 and curr_vol >= 1.2 * vol20
-            pct_ok = pct is not None and pct >= 1.5
-            close_above_ma50 = float(state.last_close) > float(state.last_ma_short)
-            if not (close_above_ma50 and vol_ok and pct_ok):
-                if not state.bullish_alignment:
-                    gaps.append(0.3)
-                    fail.append("未形成均线多头排列且未见放量突破")
-                if float(state.last_close) < float(state.last_ma_short):
-                    gap = (float(state.last_ma_short) - float(state.last_close)) / float(state.last_ma_short)
-                    gaps.append(gap)
-                    fail.append(f"收盘低于MA50: 当前 {state.last_close:.2f}, 阈值MA50 {state.last_ma_short:.2f}")
-        else:
-            gaps.append(0.5)
-            fail.append("历史数据不足")
+    if not (state.bullish_alignment and float(state.last_close) >= float(state.last_ma_short)) and not is_vol_breakout:
+        if not state.bullish_alignment:
+            gaps.append(0.3)
+            fail.append("未形成均线多头排列且未见放量突破")
+        if float(state.last_close) < float(state.last_ma_short):
+            gap = (float(state.last_ma_short) - float(state.last_close)) / float(state.last_ma_short)
+            gaps.append(gap)
+            fail.append(f"收盘低于MA50: 当前 {state.last_close:.2f}, 阈值MA50 {state.last_ma_short:.2f}")
     if not gaps:
         return 0.0, []
     return max(gaps), fail
