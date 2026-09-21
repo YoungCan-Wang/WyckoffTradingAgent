@@ -394,13 +394,22 @@ def test_markup_track_ok_tiered_rps() -> None:
     rps_high_slow = Layer2RpsState(fast=24.9, slow=93.2, momentum_ok=False, ambush_ok=False)
     assert markup_track_ok(df, state, cfg, rps_high_slow) is True
 
-    # 2. Volume breakout with fast=55.0 >= 50.0, slow lags (40.0), momentum_ok=False -> PASS
+    # 2. Pure volume breakout (bullish_alignment=False) with fast=55.0 >= 50.0, slow lags (40.0) -> PASS
+    state_breakout_no_bullish = Layer2SymbolState(
+        close=pd.Series(closes),
+        last_close=10.3,
+        last_ma_short=10.1,
+        last_ma_long=10.5,  # MA50 < MA200: no bullish alignment
+        bullish_alignment=False,
+        holding_ma20=False,
+    )
     rps_fast_breakout = Layer2RpsState(fast=55.0, slow=40.0, momentum_ok=False, ambush_ok=False)
-    assert markup_track_ok(df, state, cfg, rps_fast_breakout) is True
+    assert markup_track_ok(df, state_breakout_no_bullish, cfg, rps_fast_breakout) is True
 
     # 3. Both low (fast=30.0, slow=40.0) -> FAIL
     rps_both_low = Layer2RpsState(fast=30.0, slow=40.0, momentum_ok=False, ambush_ok=False)
     assert markup_track_ok(df, state, cfg, rps_both_low) is False
+    assert markup_track_ok(df, state_breakout_no_bullish, cfg, rps_both_low) is False
 
 
 def test_accum_track_ok_passes_dry_volume_and_rejects_high_position() -> None:
