@@ -144,7 +144,11 @@ function appVersionPlugin(): Plugin {
         JSON.stringify({ version: BUILD_VERSION, buildTime: BUILD_TIME }, null, 2),
       )
       const indexHtml = path.join(outDir, 'index.html')
-      await fs.copyFile(indexHtml, path.join(outDir, '404.html'))
+      // Pretty URLs 会把 /shadow → /index.html 的 rewrite 再 308 到 /；shadow.html 让 /shadow 直接命中 SPA。
+      await Promise.all([
+        fs.copyFile(indexHtml, path.join(outDir, '404.html')),
+        fs.copyFile(indexHtml, path.join(outDir, 'shadow.html')),
+      ])
     },
   }
 }

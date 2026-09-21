@@ -152,7 +152,7 @@ CLI Agent 的本地命令工具只允许明确的只读命令；文件工具继�
 | `/chat` | 读盘室 | Agent 多轮对话、漏斗筛选、研报生成、模型快速切换 |
 | `/analysis` | 单股分析 | 输入代码 → K 线图 + 新闻打点叠加 + LLM 诊断 |
 | `/portfolio` | 持仓 | 持仓明细 + 收益率 |
-| `/shadow` | 影子账户 | 侧栏「会员权限」组；非会员看净值橱窗与板块标签；会员看日流水和仍持仓净收益。SPA 回退只用 `/* /index.html 200`，不要把 `/shadow` 单独改写到 `/index.html`（Cloudflare Pretty URLs 会再 308 到 `/`） |
+| `/shadow` | 影子账户 | 侧栏「会员权限」组；非会员看净值橱窗与板块标签；会员看日流水和仍持仓净收益。SPA 回退只用 `/* /index.html 200`，并在构建时复制 `shadow.html`（不要把 `/shadow` 改写到 `/index.html`，Pretty URLs 会再 308 到 `/`） |
 | `/tracking` | 跟踪 | 形态复盘 + 涨跌幅 |
 | `/export` | 数据导出 | CSV 导出 |
 | `/membership` | 星球会员 | 会员状态、专属能力、普通用户能力和加入方式 |
