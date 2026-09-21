@@ -186,8 +186,8 @@ flowchart TD
         L2F["趋势延续 Trend Continuation"]
         L2G["加速突破 Breakout Acceleration"]
         L2H["点火破局 SOS Bypass"]
-        L3["L3 layer3_sector_resonance<br/>行业/概念共振<br/>强个股与主线绕行"]
-        L4["L4 layer4_triggers<br/>SOS / Spring / LPS / EVR / Compression / Trend Pullback"]
+        L3["L3 layer3_sector_resonance<br/>Top 5 行业共振<br/>极简单标签筛选"]
+        L4["L4 layer4_triggers<br/>Spring / EVR / Trend Pullback (三强核心)<br/>负超额形态默认关闭"]
         LN["Candidate Lane<br/>趋势回踩 / 平台突破 / 强承接"]
         MLBUY["主线买点候选<br/>timing_score 过关"]
         L5["L5 layer5_exit_signals<br/>派发 / 止损预警"]
@@ -295,6 +295,7 @@ ABC 门槛松紧不是问题所在：met=2 与 met=3 的差异在 1/3/5/10 日�
 - L2 保留多标签；没有通道命中时返回空标签，不再兜底伪装成“点火破局”。概念聚合按股票稳定去重，同一股票不会对同一概念重复计数。
 - CLI/MCP 的 `get_market_overview` 支持 `trade_date` 历史截面；设置 `include_breadth=true` 后，同时返回该交易日全市上涨、下跌、平盘家数、涨跌占比和均值/中位数。指数涨跌与个股宽度必须使用同一交易日截面解释，不得用指数方向代替涨跌家数。
 - 大盘先独立输出结构周期 BULL / TRANSITION / BEAR，再叠加中期宽度（站上 MA20 的股票占比）和当日宽度（上涨家数占比及涨跌幅中位数）。结构 BEAR 不再要求近 3 日继续大跌才判 RISK_OFF；短反弹仍禁止普通新仓，全市场广度达到风险偏好阈值时只进入 `BEAR_REBOUND` 观察。恐慌修复按三日状态机处理：恐慌日为 `CRASH`；恐慌次日只有在指数反弹且上涨家数占比不低于 60%、涨跌幅中位数为正时才进入 `PANIC_REPAIR` 修复候选，此时只复核、禁止新仓；再下一交易日指数收益不低于 0%、上涨家数占比不低于 50%且涨跌幅中位数不为负，才进入 `PANIC_REPAIR_CONFIRMED`。
+- 大盘门控前瞻影子跟踪（方案 A，#470/#471）：每日漏斗并行以中证全指（`000985`）评估 MA20 + 1% 缓冲 hurdle 的 ALLOW/BLOCK 裁决，写入研报与 `strategy_signals`（`market_regime_shadow`）；生产总门控保持 `enable_market_regime_gate=False`（零阻断、零干扰），以无偏前瞻样本检验大盘择时有效性。
 
 ### L4 触发信号
 

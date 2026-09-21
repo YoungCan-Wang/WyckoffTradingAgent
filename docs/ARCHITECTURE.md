@@ -671,8 +671,8 @@ Supabase 不可达时静默跳过，使用本地陈旧数据。`wyckoff sync` �
 | Mainline | 主线发现 | 基于概念热度、概念映射、主题雷达和财务质量构建 `主线买点候选 / 主线观察 / 过热不追`；主题雷达的 `rotation_watch` 仅作为短周期 Shadow 报告提示，不参与正式晋级 |
 | Candidate Lane | 候选车道 | L1 后的趋势回踩、平台突破、强承接等观察样本，避免只靠传统 Wyckoff 触发 |
 | L2.5 | Markup 识别 | MA50 上穿 MA200 + 角度验证 |
-| L3 | 行业/概念共振 | 过滤弱板块，同时允许强个股和主线概念绕过固定 Top-N 行业限制 |
-| L4 | 微观狙击 | Spring / LPS / SOS / EVR / Compression / Trend Pullback 等触发信号 |
+| L3 | 行业共振 | 生产全面采用 Top 5 单标签行业共振（`top_n_sectors: 5`），移除了旧版 7 个过拟合分位数参数 |
+| L4 | 微观狙击 | 生产默认仅启用三强核心形态（Spring / EVR / Trend Pullback）；已废弃负超额形态（SOS/LPS/Compression）默认关闭 |
 | L5 | 退出信号 | 初始止损、利润激活与跟踪止损；派发风险同时检测高位缩量和 Upthrust/UTAD 放量假突破回落 |
 
 正式推荐不是“过某一层就买”。传统 Wyckoff 候选、主线候选和候选车道会合并进统一候选池；漏斗 `selected_for_ai` 直接作为 Step3 的实际审判输入。默认 `STEP4_AI_CANDIDATE_POLICY=veto_only` 时，Step3 只剔除明确的逻辑破产，Step4 入口由跨日确认、市场许可和候选护栏确定；未确认候选即使被 AI 评为起跳板也只能观察。OMS 再把 AI 结构入场区间、涨幅与 ATR 防追高上限收敛为唯一允许买入区间，缺失或无交集就拒单。`shadow` 完全忽略 Step3 分类，只用于实验对照。
