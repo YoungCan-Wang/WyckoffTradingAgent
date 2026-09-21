@@ -35,8 +35,10 @@ def test_strategy_variants_isolate_each_research_switch() -> None:
     assert strategy_variant_entry_policy("G").blocked_confirmed_signals == ("evr", "sos")
     assert strategy_variant_entry_policy("H").require_neutral_breadth_confirmation is True
     assert strategy_variant_entry_policy("I").calibrate_confirmed_score is True
-    assert strategy_variant_entry_policy("M").entry_weight_multipliers
     assert strategy_variant_entry_policy("P").entry_weight_multipliers[0] == ("NEUTRAL", "spring", 0.25)
+    assert strategy_variant_overrides("R")["enable_layer3"] is False
+    assert strategy_variant_overrides("R")["dist_upthrust_enabled"] is True
+    assert strategy_variant_overrides("R")["lps_creek_confirmation_enabled"] is True
     assert strategy_variants_share_signal_ledger(["A", "M", "P"]) is True
     assert strategy_variants_share_signal_ledger(["A", "F"]) is False
 

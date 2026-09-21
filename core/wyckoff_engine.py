@@ -237,6 +237,7 @@ class FunnelConfig:
     # Layer 3
     # 行业共振过滤：实测 2021-2026 全市场 5,510 只股票，仅保留候选数量前 5 的行业（top_n_sectors=5）
     # 扣费后净均值达 +0.235% (t=15.57)，较 11 参数旧版概念模式（-0.027%）净提升 +0.262pp。
+    enable_layer3: bool = True
     top_n_sectors: int = 5
     use_concept_map: bool = False  # 默认使用纯行业单标签聚类（实测优于多标签概念模式）
     theme_line_min_days: int = 3  # 主线判定最少连续天数
@@ -761,6 +762,9 @@ def layer3_sector_resonance(
     sorted_sectors = sorted(counts.items(), key=lambda x: (-x[1], x[0]))
     top_sectors = [s for s, _ in sorted_sectors[:top_n]]
     top_set = set(top_sectors)
+
+    if not getattr(cfg, "enable_layer3", True):
+        return list(symbols), top_sectors
 
     hot_set = set(hot_concepts or [])
     normalized_hot_set = {normalize_theme_name(item) for item in hot_set}

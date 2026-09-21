@@ -23,6 +23,7 @@ VARIANT_LABELS = {
     "N": "A股实证：两轨制 + Fib自适应 + 顶层大盘 MA50 门控",
     "P": "A股实证：M + NEUTRAL Spring 缩仓至 25%",
     "Q": "A股实证：候选入口层真剪枝（live + 剔除 6 个弱动量通道）",
+    "R": "A股实证：关闭 Layer 3 行业共振（全量 L2 直通 L4）",
 }
 
 DEFAULT_COMPARISON_VARIANTS = ("A", "M", "P")
@@ -88,6 +89,11 @@ _VARIANT_SWITCHES = {
             "trend_breakout",
             "main_force_entry",
         ),
+    },
+    "R": {
+        "dist_upthrust_enabled": True,
+        "lps_creek_confirmation_enabled": True,
+        "enable_layer3": False,
     },
 }
 

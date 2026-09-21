@@ -680,6 +680,17 @@ class TestSectorHeatBypass:
         assert "A1" in result
         assert "A2" in result
 
+    def test_layer3_can_be_disabled(self):
+        cfg = FunnelConfig(enable_layer3=False, top_n_sectors=1)
+        sector_map = {"A1": "行业A", "A2": "行业A", "B1": "行业B", "C1": "行业C"}
+        result, top = layer3_sector_resonance(
+            ["A1", "A2", "B1", "C1"],
+            sector_map,
+            cfg,
+        )
+        assert result == ["A1", "A2", "B1", "C1"]
+        assert "行业A" in top
+
     def test_hot_concept_matches_normalized_aliases(self):
         cfg = FunnelConfig(use_concept_map=True)
         n = 30

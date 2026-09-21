@@ -63,6 +63,7 @@
 | **A股实证消融 A/M/P** | 已完成的 confirmed-only 实验：A 基线，M=弱水温信号缩仓，P=M + 将 NEUTRAL Spring 仓位由 50% 再降至 25%。三组只改变入场权重，手动复跑时每个窗口共享一次信号台账、分别重放现金组合；默认 Backtest Grid 已关闭该任务，仅 `run_strategy_compare=true` 时复现。Q/N/O 与后续 Q/R/S/T 门控均未晋级生产 |
 | **方案 A 前瞻影子跟踪** | Forward Shadow Mode（#470/#471）：日常漏斗并行计算中证全指（`000985`）MA20 + 1% 缓冲 hurdle 的 `ALLOW`/`BLOCK` 裁决，打标入库并写入研报 `market_regime_shadow`。生产总门控保持关闭（`enable_market_regime_gate=False`，零阻断、零干扰），以无偏前瞻样本检验大盘择时有效性。 |
 | **候选车道真剪枝 (变体 Q)** | Candidate Lane Pruning（#467/#472）：通过 `FunnelConfig.blocked_candidate_entry_types` 实现车道级入口拦截与通道降级回退，使被拦候选彻底不进入统一质量池竞争；消融变体 Q 显式锁定其它开关，用于离线隔离度量特定车道的纯净贡献；生产默认为空元组 `()`。 |
+| **Layer 3 剥离消融 (变体 R)** | Layer 3 Bypass Ablation：通过 `FunnelConfig.enable_layer3=False` 完全跳过行业共振过滤，所有 L2 候选全量直通 L4，用于在多周期回测中验证关闭行业共振对整体收益与回撤的真实影响；生产默认开启（`True`）。 |
 | **confirmed 分数校准** | 不再把不同 Wyckoff 触发器的原始分数直接横比；研究组 I 用信号族历史先验与封顶后的形态强度合成可比分数，避免极高原始分主导 Top1 |
 | **Treatment exposure** | 消融组相对参照组实际改变的交易键，包括 `(signal_date, code)`、仓位倍率和退出日期；零暴露表示规则没有改变真实成交，不能据此评价收益贡献 |
 | **逐次推荐事件收益** | 每条推荐使用该信号日期之后首根可用 K 线的开盘价，不使用同票首次推荐价；必须有开盘前的有效发布时间。H 表示入场后的 H 根观测 K 线，标签未成熟/缺开盘/停牌/开盘涨停/发布过晚均单列，不按零收益或成功样本填充。净收益扣 `round_trip_cost_pct()`；仍非账户成交或超额收益 |
