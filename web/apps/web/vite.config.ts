@@ -6,6 +6,7 @@ import fs from 'node:fs/promises'
 import { Readable } from 'node:stream'
 import path from 'path'
 import type { Plugin } from 'vite'
+import { SPA_HTML_ENTRIES } from './src/lib/spa-html-entries'
 
 const GEMINI_ORIGIN = 'https://generativelanguage.googleapis.com'
 const SSE_CONTENT_RE = /\btext\/event-stream\b/i
@@ -144,10 +145,11 @@ function appVersionPlugin(): Plugin {
         JSON.stringify({ version: BUILD_VERSION, buildTime: BUILD_TIME }, null, 2),
       )
       const indexHtml = path.join(outDir, 'index.html')
-      // Pretty URLs 会把 /shadow → /index.html 的 rewrite 再 308 到 /；shadow.html 让 /shadow 直接命中 SPA。
+      // Pretty URLs + 404.html 会让没有同名 html 的客户端路由变成 HTTP 404。
+      // 生产 Web deployment health 用 curl --fail 打 /chat，必须有 chat.html。
       await Promise.all([
         fs.copyFile(indexHtml, path.join(outDir, '404.html')),
-        fs.copyFile(indexHtml, path.join(outDir, 'shadow.html')),
+        ...SPA_HTML_ENTRIES.map((name) => fs.copyFile(indexHtml, path.join(outDir, `${name}.html`))),
       ])
     },
   }
