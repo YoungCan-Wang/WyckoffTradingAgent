@@ -1,0 +1,75 @@
+name: Refresh HK US Universe
+
+# 每周日 UTC 13:30（北京时间 21:30）。放在周日是为了避开交易日的港美漏斗，
+# 不是为了排在其他周日任务之后。有差异才开 PR，不直接推 main。
+on:
+  schedule:
+    - cron: "30 13 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hk-us-universe-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      PYTHONUNBUFFERED: "1"
+      TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+      TZ: Asia/Shanghai
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Refresh HK and US universes
+        run: python scripts/refresh_hk_us_universe.py
+
+      - name: Open pull request when listings changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git add data/market_universes/hk.txt data/market_universes/us.txt \
+            data/market_universes/hk_names.json data/market_universes/us_names.json \
+            data/market_universes/hk_meta.json data/market_universes/us_meta.json
+          if git diff --staged --quiet; then
+            echo "No universe changes"
+            exit 0
+          fi
+          branch="chore/hk-us-universe-${GITHUB_RUN_ID}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git commit -m "chore: refresh HK and US symbol universes"
+          git push -u origin "$branch"
+          gh pr create --base main --head "$branch" \
+            --title "chore: refresh HK and US symbol universes" \
+            --body "$(cat <<'EOF'
+          ## 变更摘要
+
+          按 Tushare 港股上市名单和 Nasdaq Trader 美股正股目录刷新 `data/market_universes`。
+
+          ## 验证
+
+          `scripts/refresh_hk_us_universe.py` 在名单过短时会拒绝覆盖。请看 diff 里新增和删除的代码是否符合预期后再合并。
+
+          EOF
+          )"
