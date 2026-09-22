@@ -10,8 +10,8 @@ from typing import Any
 from core.candidate_tracks import candidate_entry_sort_key, candidate_entry_track
 from core.strategy_policy_governor import resolve_signal_weight_multiplier
 
-TREND_CHANNEL_TAGS = {"主升通道", "趋势延续", "点火破局", "加速突破", "趋势主升轨"}
-ACCUM_CHANNEL_TAGS = {"潜伏通道", "吸筹通道", "地量蓄势", "暗中护盘", "底部蓄势轨"}
+TREND_CHANNEL_TAGS = {"主升通道", "趋势延续", "点火破局", "加速突破"}
+ACCUM_CHANNEL_TAGS = {"潜伏通道", "吸筹通道", "地量蓄势", "暗中护盘"}
 HIT_KEYS = ("sos", "spring", "lps", "evr", "compression", "trend_pullback")
 BLOCKED_EXIT_SIGNALS = {"stop_loss", "distribution_warning", "upthrust_warning"}
 DEFAULT_AI_QUOTA_BY_FAMILY: dict[str, tuple[int, int]] = {
