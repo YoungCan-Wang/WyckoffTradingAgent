@@ -1,10 +1,9 @@
 import { useEffect } from 'react'
-import { Outlet, Navigate, useLocation } from 'react-router'
+import { Outlet, Navigate } from 'react-router'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/auth'
 
 export function AuthGuard() {
-  const location = useLocation()
   const { user, loading, setAuth } = useAuthStore()
 
   useEffect(() => {
@@ -45,7 +44,7 @@ export function AuthGuard() {
     )
   }
 
-  if (!user && location.pathname !== '/shadow') {
+  if (!user) {
     return <Navigate to="/login" replace />
   }
 

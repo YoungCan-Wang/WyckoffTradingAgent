@@ -58,4 +58,20 @@ describe('requestShadowLedger', () => {
     const fetcher = vi.fn().mockResolvedValue(response({ error: '影子账本服务未配置' }, { status: 503 }))
     await expect(requestShadowLedger(undefined, undefined, fetcher)).rejects.toThrow('尚未就绪')
   })
+
+  it('falls back to the signed-in RPC when Pages API is unconfigured', async () => {
+    const fetcher = vi.fn().mockResolvedValue(response({ error: '影子账本服务未配置' }, { status: 503 }))
+    const rpcLoader = vi.fn().mockResolvedValue({
+      tier: 'showcase',
+      accountId: 'USER_SHADOW:demo',
+      asOf: '2026-09-18',
+      disclaimer: '策略按威科夫漏斗跑纸面账；非投资建议',
+      showcase,
+    })
+    await expect(requestShadowLedger('token', undefined, fetcher, rpcLoader)).resolves.toMatchObject({
+      tier: 'showcase',
+      showcase: { openPositionCount: 2 },
+    })
+    expect(rpcLoader).toHaveBeenCalledOnce()
+  })
 })

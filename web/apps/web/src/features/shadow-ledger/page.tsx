@@ -12,7 +12,6 @@ import { ShadowShowcasePanel } from './showcase-panel'
 
 export function ShadowLedgerPage() {
   const { locale } = usePreferences()
-  const userId = useAuthStore((state) => state.user?.id)
   const copy = shadowCopy(locale)
   const query = useShadowLedger()
   const [selectedAsOf, setSelectedAsOf] = useState<string | null>(null)
@@ -57,7 +56,6 @@ export function ShadowLedgerPage() {
           onSelectAsOf={setSelectedAsOf}
         />
       )}
-      {!userId && <p className="text-xs text-muted-foreground">{copy.login}</p>}
     </div>
   )
 }

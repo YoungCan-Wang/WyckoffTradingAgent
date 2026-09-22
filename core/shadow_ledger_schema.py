@@ -18,6 +18,7 @@ from core.constants import (
     TABLE_SHADOW_POSITIONS,
     TABLE_SHADOW_TRADE_PLANS,
 )
+from core.shadow_ledger_rpc import PAYLOAD_RPC_DDL
 
 _ACCOUNT_COLUMNS = (
     ("account_id", "text primary key", "只接受 USER_SHADOW: 前缀，写入侧另有断言"),
@@ -135,4 +136,6 @@ def build_ddl() -> str:
         f"  '{SEED_ACCOUNT_ID}',\n  {SEED_CAPITAL},\n  {SEED_CAPITAL},\n  0,\n  {SEED_CAPITAL}\n)\n"
         "on conflict (account_id) do nothing;"
     )
+    blocks.append("")
+    blocks.append(PAYLOAD_RPC_DDL.strip())
     return "\n".join(blocks).rstrip() + "\n"

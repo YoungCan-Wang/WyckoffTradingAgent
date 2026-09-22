@@ -3,17 +3,17 @@ import { apiUrl } from './api-url'
 
 const navPointSchema = z.object({
   asOf: z.string(),
-  nav: z.number(),
+  nav: z.coerce.number(),
 })
 
 const showcaseSchema = z.object({
   navCurve: z.array(navPointSchema),
-  periodPnlAmount: z.number(),
-  periodPnlPct: z.number(),
-  maxDrawdownPct: z.number(),
+  periodPnlAmount: z.coerce.number(),
+  periodPnlPct: z.coerce.number(),
+  maxDrawdownPct: z.coerce.number(),
   winRatePct: z.number().nullable(),
   winRateNote: z.string().nullable(),
-  openPositionCount: z.number(),
+  openPositionCount: z.coerce.number(),
   sectorTags: z.array(z.string()),
 })
 
@@ -63,33 +63,47 @@ export type ShadowLedgerShowcase = z.infer<typeof showcaseSchema>
 export type ShadowNavDailyRow = z.infer<typeof ledgerSchema>['navDaily'][number]
 export type ShadowEventRow = z.infer<typeof ledgerSchema>['events'][number]
 export type ShadowPositionRow = z.infer<typeof ledgerSchema>['positions'][number]
+export type ShadowRpcLoader = (asOf?: string) => Promise<unknown | null>
 
 export function shadowLedgerErrorMessage(payload: unknown, status: number): string {
   const parsed = errorSchema.safeParse(payload)
   const raw = parsed.success ? parsed.data.error : ''
   if (status === 404 || status === 503 || raw === 'Not Found' || raw.includes('未配置')) {
-    return '影子账户接口尚未就绪，请稍后重试。未登录也可看橱窗，这不是实盘。'
+    return '影子账户接口尚未就绪，请登录后重试。这不是实盘。'
   }
   return raw || '影子账本请求失败'
 }
 
-export async function requestShadowLedger(
-  accessToken?: string,
-  asOf?: string,
-  fetcher: typeof fetch = fetch,
-): Promise<ShadowLedgerPayload> {
-  const query = asOf ? `?asOf=${encodeURIComponent(asOf)}` : ''
-  const response = await fetcher(apiUrl(`/api/shadow-ledger${query}` as `/api/${string}`), {
-    headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
-  })
-  const payload = await response.json().catch(() => null)
-  if (!response.ok) {
-    throw new Error(shadowLedgerErrorMessage(payload, response.status))
-  }
+export function parseShadowLedgerPayload(payload: unknown): ShadowLedgerPayload {
   const parsed = payloadSchema.safeParse(payload)
   if (!parsed.success) throw new Error('影子账本返回数据不完整，请稍后重试')
   if (parsed.data.tier === 'full' && !parsed.data.ledger) {
     throw new Error('影子账本返回数据不完整，请稍后重试')
   }
   return parsed.data
+}
+
+export async function loadShadowLedgerViaRpc(asOf?: string): Promise<unknown | null> {
+  const { supabase } = await import('@/lib/supabase')
+  const { data, error } = await supabase.rpc('shadow_ledger_payload', { p_as_of: asOf ?? null })
+  return error ? null : data
+}
+
+export async function requestShadowLedger(
+  accessToken?: string,
+  asOf?: string,
+  fetcher: typeof fetch = fetch,
+  rpcLoader: ShadowRpcLoader = loadShadowLedgerViaRpc,
+): Promise<ShadowLedgerPayload> {
+  const query = asOf ? `?asOf=${encodeURIComponent(asOf)}` : ''
+  const response = await fetcher(apiUrl(`/api/shadow-ledger${query}` as `/api/${string}`), {
+    headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+  })
+  const payload = await response.json().catch(() => null)
+  if (response.ok) return parseShadowLedgerPayload(payload)
+  if (accessToken && (response.status === 404 || response.status === 503)) {
+    const fallback = await rpcLoader(asOf)
+    if (fallback) return parseShadowLedgerPayload(fallback)
+  }
+  throw new Error(shadowLedgerErrorMessage(payload, response.status))
 }
