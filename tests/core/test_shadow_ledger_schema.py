@@ -17,7 +17,8 @@ def test_ddl_is_idempotent() -> None:
     """迁移会被重复执行（本地、CI、线上各一次），不能覆盖已有数据。"""
     ddl = build_ddl()
 
-    assert ddl.count("if not exists") == len(table_names())
+    assert ddl.count("create table if not exists") == len(table_names())
+    assert "shadow_ledger_payload" in ddl
     assert "on conflict (account_id) do nothing" in ddl
     assert "drop table" not in ddl.lower()
 

@@ -56,7 +56,7 @@
   │
   ├─→ Supabase (Auth + DB)     ← Auth、星球会员、配置、持仓、复盘表等仍按 RLS 直连
   │
-  ├─→ 同源 /api/chat|settings|portfolio|agent-runs|remote
+  ├─→ 同源 /api/chat|settings|portfolio|shadow-ledger|agent-runs|remote
   │       │
   │       └─→ Pages Function fetch() 反代到完整 wyckoff-api Worker（不缓冲 SSE）
   │
@@ -69,7 +69,7 @@
 
 **为什么需要 API 层与边缘代理？**
 
-读盘室主链路已经后端化到 `web/apps/api/src/routes/chat.ts`：独立 `wyckoff-api` Worker 通过 `worker-chat.ts` 注入沙箱工具，负责读取用户模型配置、执行工具、限流、返回 UIMessage stream，并通过 Vercel AI SDK 的 approval parts 约束 `execute_portfolio_update`。生产 React 只请求 Pages 同源 `/api/*`，不直连 `*.workers.dev`：国内浏览器能打开 `pages.dev`，但常访问不了 `workers.dev`，单股分析走的 `/api/llm-proxy` 因此可用，读盘室和设置连通性测试却会 `Failed to fetch`。`web/functions/api/[[path]].ts` 在边缘用 `fetch()` 把 `/api/chat`、`/api/settings`、`/api/portfolio`、`/api/agent-runs`、`/api/remote` 反代到完整 Worker，原样转发 `Authorization` 与 WebSocket 升级头，不缓冲 SSE / UIMessage 流。这不需要新的自定义域名，也不需要改 Cloudflare Dashboard；Worker 源站默认已是公开的 `https://wyckoff-api.yongkai-wang.workers.dev`，Pages 可用可选变量 `WYCKOFF_API_ORIGIN` 覆盖。Service Binding 是后续优化，不是这条路径的前置条件。`web/apps/api/src/pages.ts` 仍是不含沙箱工具、不挂载 `/api/agent-runs` 的兼容 app，只供测试，不是生产读盘室后端。Vercel Sandbox 的 Node.js SDK 只在 `web/apps/sandbox-bridge/` 的 Vercel Node Function 中运行，Worker 与 Pages Functions 都不会加载它。
+读盘室主链路已经后端化到 `web/apps/api/src/routes/chat.ts`：独立 `wyckoff-api` Worker 通过 `worker-chat.ts` 注入沙箱工具，负责读取用户模型配置、执行工具、限流、返回 UIMessage stream，并通过 Vercel AI SDK 的 approval parts 约束 `execute_portfolio_update`。生产 React 只请求 Pages 同源 `/api/*`，不直连 `*.workers.dev`：国内浏览器能打开 `pages.dev`，但常访问不了 `workers.dev`，单股分析走的 `/api/llm-proxy` 因此可用，读盘室和设置连通性测试却会 `Failed to fetch`。`web/functions/api/[[path]].ts` 在边缘用 `fetch()` 把 `/api/chat`、`/api/settings`、`/api/portfolio`、`/api/shadow-ledger`、`/api/agent-runs`、`/api/remote` 反代到完整 Worker；`/api/shadow-ledger` 在生产 Worker 尚未挂上该路由（预发常见 404）时回退到 Pages 兼容 app，原样转发 `Authorization` 与 WebSocket 升级头，不缓冲 SSE / UIMessage 流。 Web `/shadow` 与其它业务页一样走 AuthGuard：未登录只进 `/login`。登录后非会员看橱窗，有效星球会员看详账。这不需要新的自定义域名，也不需要改 Cloudflare Dashboard；Worker 源站默认已是公开的 `https://wyckoff-api.yongkai-wang.workers.dev`，Pages 可用可选变量 `WYCKOFF_API_ORIGIN` 覆盖。Service Binding 是后续优化，不是这条路径的前置条件。`web/apps/api/src/pages.ts` 仍是不含沙箱工具、不挂载 `/api/agent-runs` 的兼容 app，只供测试，不是生产读盘室后端。Vercel Sandbox 的 Node.js SDK 只在 `web/apps/sandbox-bridge/` 的 Vercel Node Function 中运行，Worker 与 Pages Functions 都不会加载它。
 
 Hono app 的公共中间件按请求 ID、安全响应头、CORS、256 KiB 请求体上限的顺序执行；路由随后执行 Supabase JWT 鉴权与业务校验。聊天 POST 在鉴权后执行用户限流：同时配置 `UPSTASH_REDIS_REST_URL` 和 `UPSTASH_REDIS_REST_TOKEN` 时使用 Upstash Redis REST 共享额度，未配置时保留单 Worker 实例内的软限流，Redis 超时或不可用时返回 `X-RateLimit-Backend: local-fallback` 并启用本地保护。只配置一个 Upstash 变量属于部署错误，请求会失败而不会静默使用不完整连接。
 
@@ -152,6 +152,7 @@ CLI Agent 的本地命令工具只允许明确的只读命令；文件工具继�
 | `/chat` | 读盘室 | Agent 多轮对话、漏斗筛选、研报生成、模型快速切换 |
 | `/analysis` | 单股分析 | 输入代码 → K 线图 + 新闻打点叠加 + LLM 诊断 |
 | `/portfolio` | 持仓 | 持仓明细 + 收益率 |
+| `/shadow` | 影子账户 | 侧栏「会员权限」组；非会员看净值橱窗与板块标签；会员看日流水和仍持仓净收益。SPA 回退只用 `/* /index.html 200`，并在构建时复制 `shadow.html`（不要把 `/shadow` 改写到 `/index.html`，Pretty URLs 会再 308 到 `/`） |
 | `/tracking` | 跟踪 | 形态复盘 + 涨跌幅 |
 | `/export` | 数据导出 | CSV 导出 |
 | `/membership` | 星球会员 | 会员状态、专属能力、普通用户能力和加入方式 |
@@ -957,6 +958,13 @@ Web 个股、持仓和股票对抗分析保存历史时写入 `meta`：输入快
 
 星球会员身份以 `public.planet_members` 为唯一事实表：`user_id text` 为主键，`created_at timestamptz` 记录绑定时间，`expires_on date` 按 `Asia/Shanghai` 判断最后有效日，`NULL` 表示长期有效。会员身份与个人模型/行情配置相互独立，单股分析不会因会员身份绕过 TickFlow/Tushare Key 检查。客户端只有按 `auth.uid()` 读取自己记录的 RLS 权限，没有会员写权限。旧表采用一次性 breaking cutover，发布与回滚顺序见 [PLANET_MEMBERSHIP.md](PLANET_MEMBERSHIP.md)。
 
+Web `/shadow` 只读 `USER_SHADOW:*` 纸面账，且与其它业务页一样走 AuthGuard：未登录只进 `/login`。
+登录后 `GET /api/shadow-ledger` 用服务端角色查 `shadow_*`，按 `planet_members` 裁剪 payload。
+非会员只返回橱窗字段（净值曲线、区间净收益、最大回撤、粗胜率、开仓只数、板块标签），不含代码/
+名称/价格/数量/止损；有效会员才返回日净值、事件流水和仍开仓净收益（公式与飞书卡一致：
+`shares*last_mark - shares*avg_cost`）。预发 Pages 没有 service-role、生产 Worker 尚未挂路由时，
+已登录前端回退调用 `shadow_ledger_payload` RPC（须登录；非会员橱窗，会员详账）。不写实盘表，也不读雷达库。
+
 Web `/portfolio` 的数据库模式仅对星球会员开放。浏览器把 Supabase JWT 发送给 `/api/portfolio`，API
 从已验证令牌取得 `user_id` 并固定映射到 `USER_LIVE:<user_id>`，请求体不能指定 `portfolio_id`。
 Cloudflare Pages 通过 `web/functions/api/[[path]].ts` 将同域 `/api/portfolio` 反代到完整 Worker，前端同时校验
@@ -1036,9 +1044,9 @@ web/             React Web App（CF Pages 部署）
     src/lib/     supabase 客户端、行情/LLM 辅助工具
     src/features/reading-room/  useChat、消息队列、工具渲染、对话历史
     src/stores/  Zustand 状态管理（auth）
-  apps/api/      Hono Worker API（/api/chat、/api/agent-runs、/api/portfolio、/api/settings）
+  apps/api/      Hono Worker API（/api/chat、/api/agent-runs、/api/portfolio、/api/shadow-ledger、/api/settings）
   packages/shared/  Web/Worker 共享工具、schema 与 SSE 归一化
   functions/     CF Pages Functions（边缘代理）
-    api/[[path]].ts 同源 /api/{chat,settings,portfolio,agent-runs,remote} 反代到 Worker
+    api/[[path]].ts 同源 /api/{chat,settings,portfolio,shadow-ledger,agent-runs,remote} 反代到 Worker
     api/llm-proxy/  LLM / 行情 API 兼容代理
 ```
