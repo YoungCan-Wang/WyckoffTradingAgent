@@ -61,7 +61,7 @@
 | **SOW (Sign of Weakness)** | 放量下跌，确认派发结束、下跌开始的信号 |
 | **Strategy ablation A-E** | 同一数据与执行参数下的规则消融：A 基线，B=UTAD，C=regime 阈值，D=Creek/LPS+时序，E=全部组合；用于区分单项贡献和组合交互 |
 | **A股实证消融 A/M/P** | 已完成的 confirmed-only 实验：A 基线，M=弱水温信号缩仓，P=M + 将 NEUTRAL Spring 仓位由 50% 再降至 25%。三组只改变入场权重，手动复跑时每个窗口共享一次信号台账、分别重放现金组合；默认 Backtest Grid 已关闭该任务，仅 `run_strategy_compare=true` 时复现。Q/N/O 与后续 Q/R/S/T 门控均未晋级生产 |
-| **Layer 2 纯两轨制消融 (变体 J)** | Two-Track Pure Ablation（#476）：在基线 A 上仅打开 `enable_two_track_mode`，其余研究开关全关，L2 由八通道换成"趋势主升轨 + 底部蓄势轨"两条；改变 L2 通过集合即改变信号台账，故在 `strategy_compare` 里独立分片 `two_track` 单独算台账，与 A 的差值即两轨制净效应。仅回测研究，生产默认关闭 |
+| **边际成交 (Marginal Trades)** | 策略消融报表按 `signal_date + code` 把某组与其参照组的信号级成交配成三集：共同、仅参照（被本组踢掉）、仅本组（本组新放进来），分别给出笔数、均收、胜率。现金收益差只说明结果，边际成交说明「换进来的票是否比换掉的好」；两轨制 J（#476）即由此被否决：新增 171 笔均收 −2.07%，踢掉 227 笔均收 −1.17% |
 | **方案 A 前瞻影子跟踪** | Forward Shadow Mode（#470/#471）：日常漏斗并行计算中证全指（`000985`）MA20 + 1% 缓冲 hurdle 的 `ALLOW`/`BLOCK` 裁决，打标入库并写入研报 `market_regime_shadow`。生产总门控保持关闭（`enable_market_regime_gate=False`，零阻断、零干扰），以无偏前瞻样本检验大盘择时有效性。 |
 | **候选车道真剪枝 (变体 Q)** | Candidate Lane Pruning（#467/#472）：通过 `FunnelConfig.blocked_candidate_entry_types` 实现车道级入口拦截与通道降级回退，使被拦候选彻底不进入统一质量池竞争；消融变体 Q 显式锁定其它开关，用于离线隔离度量特定车道的纯净贡献；生产默认为空元组 `()`。 |
 | **Layer 3 剥离消融 (变体 R)** | Layer 3 Bypass Ablation：通过 `FunnelConfig.enable_layer3=False` 完全跳过行业共振过滤，所有 L2 候选全量直通 L4，用于在多周期回测中验证关闭行业共振对整体收益与回撤的真实影响；生产默认开启（`True`）。 |

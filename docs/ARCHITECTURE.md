@@ -834,7 +834,7 @@ MCP server 走 ToolSurface，没有确认弹窗也没有待批队列。`tools/wr
 | **美股漏斗筛选 + 推荐表现** (`wyckoff_funnel_us.yml`) | 周二-周六 05:35 | `market_funnel_job.py --market us` 后续跑 `us_recommendation_performance_job.py` |
 | **数据库维护** (`db_maintenance.yml`) | 每周六 06:20 | 清理过期行情、订单、信号、市场信号等滑动窗口数据 |
 | **回测网格** (`backtest_grid.yml`) | 手动触发 | 多周期 × 多交易风格回放，同时输出参数邻域稳定性与按时间前推的 walk-forward 样本外验证 |
-| **策略消融** (`backtest_grid.yml: strategy_compare`) | 手动显式开启 | A/M/P 五窗口结论已稳定为不晋级，默认网格不再重复消耗五个全市场任务；仅在 `run_strategy_compare=true` 时复现历史证据。手动复跑仍按窗口共用一次信号台账、分别重放权重与现金组合；候选/触发规则不同的策略禁止共享，故 matrix 分三片：`amp`（A/M/P 共享台账）、`calib`（I 独算）、`two_track`（J 独算，仅开 `enable_two_track_mode`，#476）。Q/N/O 与本轮 Q/R/S/T 形态门控均已否决，不改变生产漏斗 |
+| **策略消融** (`backtest_grid.yml: strategy_compare`) | 手动显式开启 | A/M/P 五窗口结论已稳定为不晋级，默认网格不再重复消耗五个全市场任务；仅在 `run_strategy_compare=true` 时复现历史证据。手动复跑仍按窗口共用一次信号台账、分别重放权重与现金组合；候选/触发规则不同的策略禁止共享，故 matrix 分两片：`amp`（A/M/P 共享台账）、`calib`（I 独算）。Q/N/O、Q/R/S/T 形态门控与 Layer 2 两轨制 J（#476，六窗口三胜三负、边际成交更差，代码已删）均已否决，不改变生产漏斗 |
 | **触发阈值标定** (`backtest_trigger_calibration.yml`) | 手动触发 | 按周期 × 取值扇出，每个 job 完整重跑一次全市场漏斗；扫触发阈值时按目标触发器单信号均收做跨周期 walk-forward 选值，扫 `top_n` 时按全样本均收对比选择层增益；填 `grid_cells` 则改走共享台账的退出网格，在 `top_n=0` 原始池上取退出基准 |
 
 回测回放在每个历史区间开始时一次性预计算各股票在所有交易日的历史终点位置，日循环直接按整数位置切片；

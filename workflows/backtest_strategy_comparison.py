@@ -12,6 +12,7 @@ from pathlib import Path
 from statistics import mean
 from typing import Any
 
+from core.trade_friction import round_trip_cost_pct
 from workflows.backtest_strategy_variants import DEFAULT_COMPARISON_VARIANTS, VARIANT_LABELS
 
 DEFAULT_COMPARISON_PERIODS = ("bull_2020", "bear_2022", "sideways_2023", "volatile_2024", "recent_6m")
@@ -38,6 +39,9 @@ class StrategyComparisonRow:
     sharpe: float | None
     trade_keys: tuple[str, ...] = ()
     executed_trades: tuple[StrategyExecutedTrade, ...] = ()
+    signal_trades: tuple[tuple[str, float | None], ...] = ()
+    buy_friction_pct: float | None = None
+    sell_friction_pct: float | None = None
 
 
 @dataclass(frozen=True)
@@ -50,12 +54,22 @@ class StrategyExecutedTrade:
     cost_total: float | None
 
 
-def load_strategy_comparison_rows(artifacts_dir: Path) -> list[StrategyComparisonRow]:
+def load_strategy_comparison_rows(
+    artifacts_dir: Path,
+    ignored_dirs: list[str] | None = None,
+) -> list[StrategyComparisonRow]:
+    """Collect rows from ``backtest-strategy-<period>-<variant>/summary_*.md``.
+
+    Summaries whose directory does not follow that naming are skipped; pass ``ignored_dirs`` to
+    have them reported instead of vanishing from the comparison silently.
+    """
     rows: list[StrategyComparisonRow] = []
     paths = sorted(Path(path) for path in glob.glob(str(artifacts_dir / "**" / "summary_*.md"), recursive=True))
     for path in paths:
         match = _DIR_PATTERN.search(path.parent.name)
         if not match:
+            if ignored_dirs is not None:
+                ignored_dirs.append(str(path.parent.relative_to(artifacts_dir)))
             continue
         content = path.read_text(encoding="utf-8")
         start, end = _date_range(content)
@@ -73,12 +87,18 @@ def load_strategy_comparison_rows(artifacts_dir: Path) -> list[StrategyCompariso
                 sharpe=_metric(content, r"夏普比(?:\s*\(Sharpe Ratio\))?"),
                 trade_keys=_trade_keys(path.parent),
                 executed_trades=_executed_trades(path.parent),
+                signal_trades=_signal_trades(path.parent),
+                buy_friction_pct=_metric(content, "买入摩擦成本"),
+                sell_friction_pct=_metric(content, "卖出摩擦成本"),
             )
         )
     return rows
 
 
-def build_strategy_comparison(rows: list[StrategyComparisonRow]) -> dict[str, Any]:
+def build_strategy_comparison(
+    rows: list[StrategyComparisonRow],
+    ignored_dirs: list[str] | None = None,
+) -> dict[str, Any]:
     by_variant = _by_variant(rows)
     available = {(row.period, row.variant) for row in rows}
     required = {(period, variant) for period in DEFAULT_COMPARISON_PERIODS for variant in DEFAULT_COMPARISON_VARIANTS}
@@ -90,6 +110,8 @@ def build_strategy_comparison(rows: list[StrategyComparisonRow]) -> dict[str, An
         "status": "ready" if required.issubset(available) else "incomplete",
         "baseline": "A",
         "missing_cells": [f"{period}/{variant}" for period, variant in sorted(required - available)],
+        "ignored_dirs": sorted(ignored_dirs or []),
+        "cost_basis": _cost_basis(rows),
         "variant_labels": {key: VARIANT_LABELS[key] for key in by_variant if key in VARIANT_LABELS},
         "rows": [_row_payload(row) for row in sorted(rows, key=lambda row: (row.period, row.variant))],
         "evaluations": evaluations,
@@ -111,8 +133,17 @@ def render_strategy_comparison(report: dict[str, Any]) -> str:
         "|---|---|---:|---:|---:|---:|---:|---:|",
     ]
     lines.extend(_row_line(row) for row in report.get("rows", []))
+    lines.extend(_cost_basis_lines(report.get("cost_basis") or {}))
     if report.get("missing_cells"):
         lines.extend(["", f"- 证据不完整，缺少：{', '.join(report['missing_cells'])}。"])
+    if report.get("ignored_dirs"):
+        lines.extend(
+            [
+                "",
+                "- ⚠️ 以下产物目录不符合 `backtest-strategy-<period>-<variant>` 命名，已被忽略、未进入任何对照："
+                f"{', '.join(report['ignored_dirs'])}。",
+            ]
+        )
     lines.extend(
         [
             "",
@@ -132,6 +163,7 @@ def render_strategy_comparison(report: dict[str, Any]) -> str:
             f"{_fmt(item.get('max_drawdown_worsening'), 'pp')} | "
             f"{item.get('status', 'missing')} |"
         )
+    lines.extend(_marginal_lines(report.get("evaluations") or {}))
     lines.extend(_loss_attribution_lines(report.get("loss_attribution") or {}))
     lines.extend(_walk_forward_lines(report.get("walk_forward") or {}))
     return "\n".join(lines) + "\n"
@@ -187,7 +219,87 @@ def _evaluate_variant(
         "max_abs_drawdown": max_abs_drawdown,
         "mean_return_delta": mean(deltas) if deltas else None,
         "max_drawdown_worsening": max(drawdown_worsening, default=None),
+        "marginal": _marginal_trades(rows, baseline_rows),
     }
+
+
+def _marginal_trades(
+    rows: list[StrategyComparisonRow],
+    baseline_rows: list[StrategyComparisonRow],
+) -> dict[str, dict[str, Any]]:
+    """Split signal-level trades into common / reference-only / variant-only sets.
+
+    Cash return deltas hide *which* trades a variant swapped; the two exclusive sets answer
+    whether the variant's marginal picks beat the ones it dropped.
+    """
+    baseline = {row.period: dict(row.signal_trades) for row in baseline_rows if row.signal_trades}
+    groups: dict[str, list[float | None]] = {"common": [], "reference_only": [], "variant_only": []}
+    for row in rows:
+        base = baseline.get(row.period)
+        if base is None or not row.signal_trades:
+            continue
+        variant = dict(row.signal_trades)
+        common = base.keys() & variant.keys()
+        groups["common"].extend(variant[key] for key in common)
+        groups["reference_only"].extend(value for key, value in base.items() if key not in common)
+        groups["variant_only"].extend(value for key, value in variant.items() if key not in common)
+    return {name: _return_stats(values) for name, values in groups.items()}
+
+
+def _return_stats(values: list[float | None]) -> dict[str, Any]:
+    returns = [value for value in values if value is not None]
+    return {
+        "trades": len(values),
+        "avg_return": mean(returns) if returns else None,
+        "win_rate": sum(value > 0 for value in returns) / len(returns) * 100.0 if returns else None,
+    }
+
+
+def _marginal_lines(evaluations: dict[str, Any]) -> list[str]:
+    lines = [
+        "",
+        "## 边际成交（信号级，按 signal_date + code 配对）",
+        "",
+        "`仅参照` 是本组踢掉的成交，`仅本组` 是本组新放进来的成交；两者均收之差直接回答"
+        "「换进来的票是否比换掉的好」，比现金收益差更早给出选股方向。",
+        "",
+        "| 组别 | 参照 | 共同 | 仅参照 n / 均收 / 胜率 | 仅本组 n / 均收 / 胜率 |",
+        "|---|---|---:|---:|---:|",
+    ]
+    for variant in sorted(key for key in evaluations if key != "A"):
+        item = evaluations.get(variant, {})
+        marginal = item.get("marginal") or {}
+        lines.append(
+            f"| {variant} | {item.get('reference_variant', 'A')} | "
+            f"{(marginal.get('common') or {}).get('trades', 0)} | "
+            f"{_stats_cell(marginal.get('reference_only'))} | {_stats_cell(marginal.get('variant_only'))} |"
+        )
+    return lines
+
+
+def _stats_cell(stats: dict[str, Any] | None) -> str:
+    stats = stats or {}
+    return f"{stats.get('trades', 0)} / {_fmt(stats.get('avg_return'), '%')} / {_fmt(stats.get('win_rate'), '%')}"
+
+
+def _cost_basis(rows: list[StrategyComparisonRow]) -> dict[str, Any]:
+    buy = sorted({row.buy_friction_pct for row in rows if row.buy_friction_pct is not None})
+    sell = sorted({row.sell_friction_pct for row in rows if row.sell_friction_pct is not None})
+    return {"buy_friction_pct": buy, "sell_friction_pct": sell, "production_round_trip_pct": round_trip_cost_pct()}
+
+
+def _cost_basis_lines(cost_basis: dict[str, Any]) -> list[str]:
+    buy, sell = cost_basis.get("buy_friction_pct") or [], cost_basis.get("sell_friction_pct") or []
+    if not buy or not sell:
+        return []
+    buy_text = "/".join(f"{value:.2f}%" for value in buy)
+    sell_text = "/".join(f"{value:.2f}%" for value in sell)
+    return [
+        "",
+        f"- 成本口径：成交价已含买入 {buy_text} + 卖出 {sell_text} 摩擦，另计佣金、过户费与印花税；"
+        f"比生产成本模型 `round_trip_cost_pct()` ≈ {cost_basis.get('production_round_trip_pct', 0.0):.3f}% 往返"
+        "刻意保守。各组口径相同，只压低绝对收益，不影响组间对照。",
+    ]
 
 
 def _walk_forward(rows: list[StrategyComparisonRow]) -> dict[str, Any]:
@@ -351,6 +463,17 @@ def _cash_trade_average(directory: Path) -> float | None:
             except (TypeError, ValueError):
                 continue
     return mean(values) if values else None
+
+
+def _signal_trades(directory: Path) -> tuple[tuple[str, float | None], ...]:
+    paths = sorted(directory.glob("trades_*.csv"))
+    if not paths:
+        return ()
+    with paths[0].open(encoding="utf-8-sig", newline="") as handle:
+        return tuple(
+            (f"{row.get('signal_date', '')}:{row.get('code', '')}", _optional_float(row.get("ret_pct")))
+            for row in csv.DictReader(handle)
+        )
 
 
 def _executed_trades(directory: Path) -> tuple[StrategyExecutedTrade, ...]:

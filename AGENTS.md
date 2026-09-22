@@ -117,6 +117,20 @@ the error direction favored acting. So:
    because both target the same failure (Trend-track losses) and the freed slots went to
    weaker second-tier Accum candidates. Ship the ablation, not the sum of the parts.
 
+8. **A conclusion posted to an Issue must link the production run that produced it** — Cite
+   the `backtest_grid.yml` run URL (or the artifact name) and the variant letters compared.
+   Numbers without a run link are treated as a proxy under rule 1, regardless of how many
+   tables accompany them. On 2026-09-17 the two-track RFC (#476) argued from a hand-rolled
+   one-day replay that it "raised recall"; the production replay over 1125 trading days
+   showed Layer 2 admitted *fewer* symbols on 1078 of them.
+
+9. **A variant that changes the candidate set must be judged on its marginal trades** — The
+   strategy comparison report pairs signal-level trades by `signal_date + code` and splits
+   them into common / reference-only / variant-only. Quote the two exclusive sets (count,
+   mean return, win rate): a cash-return delta can be carried by one window while the trades
+   the variant actually swapped in are worse than the ones it dropped (#476: +0.52pp mean
+   delta, but the 171 added trades averaged −2.07% against −1.17% for the 227 removed).
+
 ## Gate Levels
 
 - **Fast gate (local/default)**: `.venv/bin/ruff check .`, `.venv/bin/ruff format --check .`, `.venv/bin/python scripts/quality_gate.py --check-functions`, and focused tests for touched code.
