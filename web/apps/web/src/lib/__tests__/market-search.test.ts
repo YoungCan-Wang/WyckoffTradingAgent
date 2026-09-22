@@ -53,6 +53,11 @@ describe('market search', () => {
     expect(aliasRow?.analysisCode).toBe('00700.HK')
   })
 
+  it('revalidates market files instead of pinning the first response', async () => {
+    await searchStocks('00700', 1)
+    expect(fetch).toHaveBeenCalledWith('/market-data/hk_meta.json', { cache: 'no-cache' })
+  })
+
   it('keeps CN ETF analysis code as six digits', async () => {
     const row = await resolveStockQuery('纳指')
     expect(row?.analysisCode).toBe('513100')
