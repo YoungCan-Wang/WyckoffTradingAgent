@@ -37,13 +37,26 @@ def clean_symbol_lines(path: Path) -> list[str]:
     return sorted(dict.fromkeys(out))
 
 
-def market_entry(symbol: str, market: str) -> dict[str, Any]:
+def load_name_map(path: Path) -> dict[str, str]:
+    if not path.is_file():
+        return {}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        str(key).strip().upper(): str(value).strip()
+        for key, value in payload.items()
+        if str(key).strip() and str(value).strip()
+    }
+
+
+def market_entry(symbol: str, market: str, name: str = "") -> dict[str, Any]:
     code = symbol.split(".", 1)[0]
     currency = "USD" if market == "us" else "HKD"
     return {
         "symbol": symbol,
         "code": code,
-        "name": "",
+        "name": name,
         "market": market,
         "asset_type": "stock",
         "currency": currency,
@@ -85,9 +98,13 @@ def etf_entries(path: Path) -> list[dict[str, Any]]:
 
 
 def build_metadata(universe_dir: Path) -> dict[str, list[dict[str, Any]]]:
+    us_names = load_name_map(universe_dir / "us_names.json")
+    hk_names = load_name_map(universe_dir / "hk_names.json")
+    us_symbols = clean_symbol_lines(universe_dir / "us.txt")
+    hk_symbols = clean_symbol_lines(universe_dir / "hk.txt")
     return {
-        "us": [market_entry(symbol, "us") for symbol in clean_symbol_lines(universe_dir / "us.txt")],
-        "hk": [market_entry(symbol, "hk") for symbol in clean_symbol_lines(universe_dir / "hk.txt")],
+        "us": [market_entry(symbol, "us", us_names.get(symbol, "")) for symbol in us_symbols],
+        "hk": [market_entry(symbol, "hk", hk_names.get(symbol, "")) for symbol in hk_symbols],
         "etf_cn": etf_entries(universe_dir / "etf_cn.txt"),
     }
 
