@@ -391,8 +391,6 @@ def l2_reason(spec: SymbolSpec, df: pd.DataFrame, cfg: FunnelConfig) -> str:
         return "历史不足 200 日，主升/吸筹/RPS 等 Layer2 指标不完整"
     if metrics["close"] and metrics["ma50"] and metrics["close"] < metrics["ma50"]:
         return f"收盘 {metrics['close']:.2f} 低于 MA50 {metrics['ma50']:.2f}，强弱通道不足"
-    if getattr(cfg, "enable_two_track_mode", False):
-        return "未通过 Layer2 两轨制（趋势主升轨 / 底部蓄势轨）"
     if spec.market == "cn" and cfg.enable_rps_filter:
         return "未通过 Layer2 强度通道，常见原因是 RPS/相对强弱或吸筹结构不足"
     return "未通过 Layer2 强度通道（主升/潜伏/吸筹/地量/护盘/趋势延续/点火）"
