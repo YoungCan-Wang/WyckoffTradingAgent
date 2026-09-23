@@ -11,6 +11,7 @@ import {
   publicDailyBarsUrl,
   resolveFibTarget,
   tradingViewSymbol,
+  tradingViewWidgetOptions,
   type FibBar,
 } from '../fib-drawing'
 
@@ -41,6 +42,15 @@ describe('tradingViewSymbol', () => {
     expect(tradingViewSymbol('00700.HK')).toBeNull()
     expect(eastmoneySecId('600519')).toBe('1.600519')
     expect(eastmoneySecId('000001')).toBe('0.000001')
+  })
+})
+
+describe('tradingViewWidgetOptions', () => {
+  it('asks for daily bars the Shanghai end-of-day feed can plot', () => {
+    const options = tradingViewWidgetOptions({ symbol: 'SSE:600519', theme: 'light', locale: 'zh_CN' })
+    expect(options.interval).toBe('1D')
+    expect(options.symbol).toBe('SSE:600519')
+    expect('range' in options).toBe(false)
   })
 })
 

@@ -142,6 +142,26 @@ export function formatFibPrice(price: number): string {
   return price.toFixed(price >= 100 ? 2 : 3)
 }
 
+export function tradingViewWidgetOptions(input: { symbol: string; theme: 'light' | 'dark'; locale: 'zh_CN' | 'en' }) {
+  return {
+    autosize: true,
+    symbol: input.symbol,
+    // The embed treats "D" as unknown and opens 120-minute bars. A "6M" range does the
+    // same. Shanghai end-of-day symbols only plot D/W/M, so either choice leaves a blank chart.
+    interval: '1D',
+    timezone: 'Asia/Shanghai',
+    theme: input.theme,
+    style: '1',
+    locale: input.locale,
+    hide_side_toolbar: true,
+    allow_symbol_change: false,
+    save_image: false,
+    calendar: false,
+    withdateranges: false,
+    support_host: 'https://www.tradingview.com',
+  }
+}
+
 export async function resolveFibTarget(raw: string, selected: StockSearchResult | null): Promise<FibTarget | null> {
   const stock = matchesSelectedQuery(raw, selected, 'analysis') ? selected : await resolveStockQuery(raw)
   const code = normalizeAshareCode(stock?.analysisCode || raw)
