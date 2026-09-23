@@ -1,0 +1,55 @@
+name: MCP contracts
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "mcp_server.py"
+      - "integrations/mcp_public/**"
+      - "tests/mcp/**"
+      - "tests/test_mcp*"
+      - "scripts/build_mcp*"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/mcp-contracts.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mcp-contracts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Prepare reproducible source and protocol dependencies
+        run: |
+          mkdir -p "$RUNNER_TEMP/mcp-artifacts/wheels"
+          git archive --format=tar.gz HEAD > "$RUNNER_TEMP/mcp-artifacts/source.tar.gz"
+          git rev-parse HEAD > "$RUNNER_TEMP/mcp-artifacts/source-commit.txt"
+          python - <<'PY' > "$RUNNER_TEMP/mcp-artifacts/sdk-requirements.txt"
+          import tomllib
+          from pathlib import Path
+          lock = tomllib.loads(Path("uv.lock").read_text())
+          for package in lock["package"]:
+              if package["name"] in {"mcp", "ruff"}:
+                  print(f"{package['name']}=={package['version']}")
+          PY
+          python -m pip download --only-binary=:all: \
+            -r "$RUNNER_TEMP/mcp-artifacts/sdk-requirements.txt" \
+            -d "$RUNNER_TEMP/mcp-artifacts/wheels"
+      - name: Upload MCP reproducibility artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mcp-reproducibility-${{ github.run_number }}
+          path: ${{ runner.temp }}/mcp-artifacts/
+          retention-days: 3
+          if-no-files-found: error
