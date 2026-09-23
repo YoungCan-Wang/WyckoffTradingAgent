@@ -860,8 +860,10 @@ def _clip_report_output(text: str, limit: int = 6000) -> str:
 
 
 def _cmd_mcp(_args):
-    print("启动 Wyckoff MCP Server ...")
-    print("按 Ctrl+C 停止\n")
+    import sys
+
+    print("启动 Wyckoff MCP Server ...", file=sys.stderr)
+    print("按 Ctrl+C 停止\n", file=sys.stderr)
     from mcp_server import main as mcp_main
 
     try:

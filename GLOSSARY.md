@@ -420,7 +420,7 @@ flowchart LR
 
 | 名词 | 含义 |
 |------|------|
-| **两个方向** | `mcp_server.py` 是本项目**作为 server** 被 Claude Desktop / Cursor 连接；`cli/mcp_client.py` 是本项目**作为客户端**去连第三方 server。两者工具集不同、审批路径不同，不要混谈。 |
+| **两个方向** | `mcp_server.py`（兼容入口）与 `integrations/public_mcp/`（实现）是本项目**作为 server** 被 Claude Desktop / Cursor 连接；`cli/mcp_client.py` 是本项目**作为客户端**去连第三方 server。两者工具集不同、审批路径不同，不要混谈。 |
 | **配置即信任边界** | 接入一个外部 server 等于允许在本机 spawn 它的命令。因此 `~/.wyckoff/mcp_servers.json` 只由用户手写，模型不能新增 server，新增条目默认 `enabled: false`；文件权限固定为 0600。 |
 | **工具前缀** | 外部工具统一命名 `mcp__<server>__<tool>`，避免与原生工具撞名。前缀在读写判定时会被剥掉，所以 server 名叫 `deploy` 不会让它的只读工具被误判为写。 |
 | **写工具启发式** | MCP 的 `annotations` 是可选的，server 不保证声明副作用。判定顺序：`readOnlyHint=True` → 读；`destructiveHint=True` → 写；工具名含 create/delete/update/send/deploy 等动词 → 写；**其余一律按写**。判错代价不对称：把读当写只多一次确认，把写当读是静默执行了副作用。 |
@@ -430,3 +430,7 @@ flowchart LR
 | **同步桥接** | MCP SDK 只有 async API，而 `ToolRegistry.execute` 是同步的。唯一可行写法是 anyio `start_blocking_portal()` + `portal.wrap_async_context_manager()`；手工 `AsyncExitStack` 配 `portal.call` 会抛 "Attempted to exit a cancel scope that isn't the current task's"，因为 cancel scope 必须在创建它的 task 里退出。 |
 | **env 白名单** | `stdio_client` 只继承 `HOME/LOGNAME/PATH/SHELL/USER`，server 需要的 API key 必须在配置的 `env` 里显式给出。 |
 | **描述截断** | 外部工具描述会进 system prompt，等于第三方能往模型上下文里写字。描述截断到 600 字符并加 `[外部 MCP: <server>]` 前缀标明来源。 |
+
+## 对外 MCP 契约
+
+工具发现与业务执行分离；可握手不代表所有工具免认证。写入默认拒绝，业务错误映射为 `isError`。详见 [PUBLIC_MCP.md](docs/PUBLIC_MCP.md)。

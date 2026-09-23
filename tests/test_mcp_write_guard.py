@@ -62,45 +62,32 @@ class TestExplicitOptIn:
 
 
 class TestMcpEntrypoints:
-    """MCP 工具必须真的走到闸门——此前 update_portfolio 直接调底层函数。"""
+    def test_update_portfolio_refuses_without_touching_data(self):
+        from integrations.public_mcp.runtime import Runtime
 
-    def test_update_portfolio_refuses_without_touching_data(self, monkeypatch):
-        import mcp_server
+        runtime = Runtime()
+        result = runtime.call("update_portfolio", {"action": "remove", "code": "605007"})
+        assert result.is_error and result.data["code"] == "WRITE_DENIED"
+        assert runtime._backend is None
 
-        called = False
+    def test_record_trade_fill_refuses_without_touching_data(self):
+        from integrations.public_mcp.runtime import Runtime
 
-        def _boom(**_kwargs):
-            nonlocal called
-            called = True
-            raise AssertionError("write reached the data layer")
-
-        monkeypatch.setattr(mcp_server, "_update_portfolio", _boom)
-        result = mcp_server.update_portfolio(action="remove", code="605007")
-        assert result["status"] == "error"
-        assert called is False
-
-    def test_record_trade_fill_refuses_without_touching_data(self, monkeypatch):
-        import mcp_server
-
-        def _boom(**_kwargs):
-            raise AssertionError("write reached the data layer")
-
-        monkeypatch.setattr(mcp_server, "_record_trade_fill", _boom)
-        result = mcp_server.record_trade_fill(code="605007", side="sell", shares=100, price=13.0)
-        assert result["status"] == "error"
+        runtime = Runtime()
+        result = runtime.call("record_trade_fill", {"code": "605007", "side": "sell", "shares": 100, "price": 13.0})
+        assert result.is_error and result.data["code"] == "WRITE_DENIED"
+        assert runtime._backend is None
 
     def test_update_portfolio_omitted_free_cash_stays_none(self, monkeypatch):
-        """MCP 旧默认 free_cash=0，省略参数会绕过核心层 None 校验并静默清零。"""
-        import mcp_server
+        from integrations.public_mcp.runtime import Runtime
 
-        captured: dict = {}
+        captured = {}
 
-        def _capture(**kwargs):
-            captured.update(kwargs)
+        def capture(spec, args):
+            captured.update(args)
             return {"error": "set_cash 必须显式传入 free_cash，省略会被当成清零"}
 
         monkeypatch.setenv("WYCKOFF_MCP_ALLOW_WRITES", "1")
-        monkeypatch.setattr(mcp_server, "_update_portfolio", _capture)
-        result = mcp_server.update_portfolio(action="set_cash")
-        assert captured.get("free_cash") is None
-        assert "清零" in result["error"]
+        result = Runtime(capture).call("update_portfolio", {"action": "set_cash"})
+        assert "free_cash" in captured and captured["free_cash"] is None
+        assert result.is_error and "清零" in result.data["error"]
