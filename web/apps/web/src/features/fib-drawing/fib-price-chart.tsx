@@ -1,3 +1,8 @@
+/** The free TradingView Advanced Chart widget cannot create official drawings and does
+ *  not expose price→pixel. An HTML overlay on that iframe drifts when the widget
+ *  auto-scales, draws a volume pane, or the user zooms. Levels here are painted on
+ *  the same series as the forward-adjusted daily bars, so each price keeps its pixel.
+ */
 import { useEffect, useRef } from 'react'
 import {
   CandlestickSeries,
@@ -64,7 +69,7 @@ function mountFibChart(
     layout: { background: { color: colors.background }, textColor: colors.mutedText, fontSize: 11 },
     grid: { vertLines: { color: colors.grid }, horzLines: { color: colors.grid } },
     rightPriceScale: { borderColor: colors.border, scaleMargins: { top: 0.06, bottom: 0.2 } },
-    timeScale: { borderColor: colors.border, timeVisible: false },
+    timeScale: { borderColor: colors.border, timeVisible: false, fixLeftEdge: true, fixRightEdge: true },
     crosshair: { mode: 1 },
   })
   const precision = fibPricePrecision(drawing.swingHigh)
