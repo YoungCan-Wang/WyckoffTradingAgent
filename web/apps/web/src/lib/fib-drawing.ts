@@ -7,6 +7,11 @@ import { resolveStockQuery, type StockSearchResult } from '@/lib/market-search'
  *  This is a display grid, not a funnel gate. */
 export const FIB_LOOKBACK = 120
 export const FIB_MIN_BARS = 20
+/** 3 calendar years of A-share sessions, plus a short buffer. */
+export const FIB_HISTORY_BARS = 1200
+
+export const FIB_PRESETS = ['d120', 'month', 'm6', 'y1', 'y3'] as const
+export type FibPreset = (typeof FIB_PRESETS)[number]
 
 /** Free-widget plot is not a price scale we can read. These insets keep lines off
  *  the symbol header, time axis, and TradingView attribution row. */
@@ -95,7 +100,7 @@ export function publicDailyBarsUrl(raw: string): string | null {
     klt: '101',
     fqt: '1',
     end: '20500101',
-    lmt: '250',
+    lmt: String(FIB_HISTORY_BARS),
   })
   return `${EASTMONEY_KLINE}?${params}`
 }
@@ -111,9 +116,22 @@ export function parseEastmoneyKlines(payload: unknown): FibBar[] {
   return bars
 }
 
-export function computeFibDrawing(bars: FibBar[], lookback = FIB_LOOKBACK): FibDrawing | null {
-  const slice = bars.slice(-lookback)
-  if (slice.length < FIB_MIN_BARS) return null
+export function lookbackStart(preset: FibPreset, now: Date): string | null {
+  if (preset === 'd120') return null
+  if (preset === 'month') return formatDay(new Date(now.getFullYear(), now.getMonth(), 1))
+  const months = preset === 'm6' ? -6 : preset === 'y1' ? -12 : -36
+  return formatDay(addMonths(now, months))
+}
+
+export function barsForPreset(bars: FibBar[], preset: FibPreset, now = new Date()): FibBar[] {
+  if (preset === 'd120') return bars.slice(-FIB_LOOKBACK)
+  const start = lookbackStart(preset, now) ?? ''
+  return bars.filter((bar) => bar.date >= start)
+}
+
+export function computeFibDrawing(bars: FibBar[], preset: FibPreset = 'd120', now = new Date()): FibDrawing | null {
+  const slice = barsForPreset(bars, preset, now)
+  if (slice.length < presetMinBars(preset)) return null
   const extreme = windowExtreme(slice)
   if (!extreme) return null
   const span = extreme.swingHigh - extreme.swingLow
@@ -173,13 +191,15 @@ export async function resolveFibTarget(raw: string, selected: StockSearchResult 
 export async function buildFibChartView(
   raw: string,
   selected: StockSearchResult | null,
+  preset: FibPreset = 'd120',
   fetcher: typeof fetch = globalThis.fetch,
+  now = new Date(),
 ): Promise<FibChartResult> {
   const target = await resolveFibTarget(raw, selected)
   if (!target) return { ok: false, reason: 'unsupported' }
   try {
     const bars = await fetchPublicDailyBars(target.code, fetcher)
-    const drawing = computeFibDrawing(bars)
+    const drawing = computeFibDrawing(bars, preset, now)
     if (!drawing) return { ok: false, reason: 'short' }
     return { ok: true, view: { ...target, drawing } }
   } catch {
@@ -208,6 +228,23 @@ function parseKlineRow(row: string): FibBar | null {
   const close = Number(closeRaw)
   if (!date || !(high > 0) || !(low > 0) || !(close > 0) || high < low) return null
   return { date, high, low, close }
+}
+
+function presetMinBars(preset: FibPreset): number {
+  return preset === 'month' ? 1 : FIB_MIN_BARS
+}
+
+function addMonths(date: Date, months: number): Date {
+  const next = new Date(date.getFullYear(), date.getMonth() + months, 1)
+  const last = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate()
+  next.setDate(Math.min(date.getDate(), last))
+  return next
+}
+
+function formatDay(date: Date): string {
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${date.getFullYear()}-${month}-${day}`
 }
 
 function windowExtreme(slice: FibBar[]): Omit<FibDrawing, 'bars' | 'levels'> | null {
