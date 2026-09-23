@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import type { StockSearchController } from '@/components/stock-search-box'
-import { buildFibChartView, type FibChartView } from '@/lib/fib-drawing'
+import { buildFibChartView, type FibChartView, type FibPreset } from '@/lib/fib-drawing'
 import { usePreferences, type TranslationKey } from '@/lib/preferences'
 
 const REASON_KEY = {
@@ -13,9 +13,12 @@ export function useFibGenerate(search: StockSearchController) {
   const { t } = usePreferences()
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [preset, setPreset] = useState<FibPreset>('d120')
   const [view, setView] = useState<FibChartView | null>(null)
+  const viewRef = useRef(view)
+  viewRef.current = view
 
-  async function generate() {
+  async function generate(nextPreset = preset) {
     const raw = search.symbol.trim()
     if (!raw) {
       setError(t('fib.needSymbol'))
@@ -23,7 +26,7 @@ export function useFibGenerate(search: StockSearchController) {
     }
     setLoading(true)
     setError('')
-    const result = await buildFibChartView(raw, search.selectedStock)
+    const result = await buildFibChartView(raw, search.selectedStock, nextPreset)
     setLoading(false)
     if (!result.ok) {
       setView(null)
@@ -33,5 +36,10 @@ export function useFibGenerate(search: StockSearchController) {
     setView(result.view)
   }
 
-  return { loading, error, view, generate, clearError: () => setError('') }
+  function selectPreset(next: FibPreset) {
+    setPreset(next)
+    if (next !== preset && viewRef.current) void generate(next)
+  }
+
+  return { loading, error, view, preset, generate, selectPreset, clearError: () => setError('') }
 }

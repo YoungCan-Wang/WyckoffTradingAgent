@@ -2,8 +2,10 @@ import { describe, expect, it, vi } from 'vitest'
 import type { StockSearchResult } from '../market-search'
 import {
   buildFibChartView,
+  barsForPreset,
   computeFibDrawing,
   eastmoneySecId,
+  lookbackStart,
   fetchPublicDailyBars,
   fibPlotY,
   formatFibPrice,
@@ -63,7 +65,7 @@ describe('computeFibDrawing', () => {
       low: index === 3 ? 50 : 60,
       close: 70,
     }))
-    const drawing = computeFibDrawing([...older, ...window], 20)
+    const drawing = computeFibDrawing([...older, ...window], 'month', new Date(2024, 1, 20))
     expect(drawing?.bars).toBe(20)
     expect(drawing?.swingLow).toBe(50)
     expect(drawing?.swingHigh).toBe(100)
@@ -76,10 +78,46 @@ describe('computeFibDrawing', () => {
     expect(byRatio[1.618]).toBeCloseTo(50 + 50 * 1.618)
   })
 
-  it('refuses a window that is too short or flat', () => {
-    expect(computeFibDrawing(risingBars(10), 30)).toBeNull()
+  it('refuses a default window that is too short or flat', () => {
+    expect(computeFibDrawing(risingBars(10))).toBeNull()
     const flat = Array.from({ length: 20 }, (_, i) => ({ date: `2024-01-${String(i + 1).padStart(2, '0')}`, high: 10, low: 10, close: 10 }))
-    expect(computeFibDrawing(flat, 30)).toBeNull()
+    expect(computeFibDrawing(flat)).toBeNull()
+  })
+})
+
+describe('fib lookback presets', () => {
+  const now = new Date(2026, 8, 23)
+
+  it('anchors calendar windows to the selected preset', () => {
+    expect(lookbackStart('d120', now)).toBeNull()
+    expect(lookbackStart('month', now)).toBe('2026-09-01')
+    expect(lookbackStart('m6', now)).toBe('2026-03-23')
+    expect(lookbackStart('y1', now)).toBe('2025-09-23')
+    expect(lookbackStart('y3', now)).toBe('2023-09-23')
+    const bars = [
+      bar('2023-09-22', 10),
+      bar('2023-09-23', 30),
+      bar('2025-09-23', 40),
+      bar('2026-03-23', 50),
+      bar('2026-08-31', 70),
+      bar('2026-09-01', 80),
+      bar('2026-09-23', 90),
+    ]
+    expect(barsForPreset(bars, 'month', now).map((item) => item.date)).toEqual(['2026-09-01', '2026-09-23'])
+    expect(barsForPreset(bars, 'm6', now).map((item) => item.date)).toEqual(['2026-03-23', '2026-08-31', '2026-09-01', '2026-09-23'])
+    expect(barsForPreset(bars, 'y3', now)[0]?.date).toBe('2023-09-23')
+    expect(barsForPreset(bars, 'y1', now)[0]?.date).toBe('2025-09-23')
+  })
+
+  it('keeps the default window at the latest 120 bars and still draws a short month', () => {
+    const bars = Array.from({ length: 130 }, (_, index) => bar(`2024-01-${String(index + 1).padStart(2, '0')}`, 20 + index))
+    expect(barsForPreset(bars, 'd120').length).toBe(120)
+    expect(barsForPreset(bars, 'd120')[0]?.high).toBe(31)
+    const month = computeFibDrawing([bar('2026-08-31', 10), bar('2026-09-02', 20), bar('2026-09-03', 40)], 'month', now)
+    expect(month?.bars).toBe(2)
+    expect(month?.swingLow).toBe(20)
+    expect(month?.swingHigh).toBe(41)
+    expect(month?.levels.find((level) => level.ratio === 0.382)?.price).toBeCloseTo(20 + 21 * 0.382)
   })
 })
 
@@ -92,6 +130,7 @@ describe('eastmoney kline', () => {
     expect(publicDailyBarsUrl('600519')).toContain('secid=1.600519')
     expect(publicDailyBarsUrl('600519')).toContain('fqt=1')
     expect(publicDailyBarsUrl('600519')).toContain('klt=101')
+    expect(publicDailyBarsUrl('600519')).toContain('lmt=1200')
   })
 
   it('loads bars through the injected fetcher', async () => {
@@ -149,7 +188,7 @@ describe('buildFibChartView', () => {
       ok: true,
       json: async () => ({ data: { klines: klineRows(25) } }),
     }))
-    const result = await buildFibChartView('000001', cn('000001', '平安银行'), fetcher as unknown as typeof fetch)
+    const result = await buildFibChartView('000001', cn('000001', '平安银行'), 'd120', fetcher as unknown as typeof fetch)
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.view.tvSymbol).toBe('SZSE:000001')
@@ -157,6 +196,10 @@ describe('buildFibChartView', () => {
     expect(formatFibPrice(result.view.drawing.swingHigh)).toMatch(/^\d+\.\d+$/)
   })
 })
+
+function bar(date: string, low: number): FibBar {
+  return { date, low, high: low + 1, close: low + 0.5 }
+}
 
 function risingBars(count: number): FibBar[] {
   return Array.from({ length: count }, (_, index) => {

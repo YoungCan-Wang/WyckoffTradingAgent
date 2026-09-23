@@ -1,8 +1,7 @@
 import { Loader2 } from 'lucide-react'
 import { StockSearchBox, useStockSearch } from '@/components/stock-search-box'
-import { FibLegend } from '@/features/fib-drawing/fib-legend'
-import { FibOverlay } from '@/features/fib-drawing/fib-overlay'
-import { TradingViewChart } from '@/features/fib-drawing/tradingview-chart'
+import { FibChartPanel } from '@/features/fib-drawing/fib-chart-panel'
+import { FibPresetBar } from '@/features/fib-drawing/fib-preset-bar'
 import { useFibGenerate } from '@/features/fib-drawing/use-fib-generate'
 import { usePreferences } from '@/lib/preferences'
 
@@ -21,7 +20,7 @@ export function FibonacciPage() {
           <div className="min-w-[240px] flex-1 lg:max-w-3xl">
             <StockSearchBox
               search={search}
-              onSubmit={drawing.generate}
+              onSubmit={() => void drawing.generate()}
               onClearError={drawing.clearError}
               placeholder={t('fib.searchPlaceholder')}
               listboxId="fib-stock-search"
@@ -29,7 +28,7 @@ export function FibonacciPage() {
           </div>
           <button
             type="button"
-            onClick={drawing.generate}
+            onClick={() => void drawing.generate()}
             disabled={disabled}
             className="flex h-10 shrink-0 items-center gap-2 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50"
           >
@@ -37,26 +36,16 @@ export function FibonacciPage() {
             {drawing.loading ? t('fib.generating') : t('fib.generate')}
           </button>
         </div>
+        <div className="mt-3">
+          <FibPresetBar preset={drawing.preset} onChange={drawing.selectPreset} />
+        </div>
         {drawing.error && (
           <div className="mt-3 rounded-lg bg-red-50 px-4 py-2.5 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-200">
             {drawing.error}
           </div>
         )}
       </div>
-      <div className="mt-4 flex min-h-0 flex-1 flex-col gap-3 lg:flex-row">
-        <div className="relative min-h-[420px] min-w-0 flex-1 rounded-xl border border-border">
-          {drawing.view ? (
-            <>
-              <TradingViewChart symbol={drawing.view.tvSymbol} theme={theme} locale={locale} />
-              <FibOverlay drawing={drawing.view.drawing} />
-            </>
-          ) : (
-            <div className="flex h-full items-center justify-center px-6 text-sm text-muted-foreground">{t('fib.empty')}</div>
-          )}
-        </div>
-        {drawing.view && <FibLegend view={drawing.view} />}
-      </div>
-      <p className="mt-3 shrink-0 text-xs leading-5 text-muted-foreground">{t('fib.overlayNote')}</p>
+      <FibChartPanel view={drawing.view} loading={drawing.loading} theme={theme} locale={locale} />
     </div>
   )
 }
