@@ -4,6 +4,7 @@ export const SPA_HTML_ENTRIES = [
   'battle',
   'chat',
   'export',
+  'fib',
   'history',
   'login',
   'm',

@@ -25,6 +25,9 @@
 /analysis
   Cache-Control: no-cache, max-age=0, must-revalidate
 
+/fib
+  Cache-Control: no-cache, max-age=0, must-revalidate
+
 /battle
   Cache-Control: no-cache, max-age=0, must-revalidate
 

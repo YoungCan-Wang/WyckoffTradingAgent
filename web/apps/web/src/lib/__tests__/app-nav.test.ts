@@ -7,11 +7,13 @@ describe('APP_NAV_GROUPS', () => {
     const membership = APP_NAV_GROUPS.find((group) => group.titleKey === 'nav.group.membership')
     expect(membership?.items.map((item) => item.to)).toEqual(['/shadow', '/tracking', '/attribution'])
     const core = APP_NAV_GROUPS.find((group) => group.titleKey === 'nav.group.core')
-    expect(core?.items.map((item) => item.to)).toEqual(['/chat', '/analysis', '/battle', '/portfolio'])
+    expect(core?.items.map((item) => item.to)).toEqual(['/chat', '/analysis', '/fib', '/battle', '/portfolio'])
+    expect(membership?.items.map((item) => item.to)).not.toContain('/fib')
   })
 
   it('emits chat.html so production health can curl --fail /chat', () => {
     expect(SPA_HTML_ENTRIES).toContain('chat')
     expect(SPA_HTML_ENTRIES).toContain('shadow')
+    expect(SPA_HTML_ENTRIES).toContain('fib')
   })
 })

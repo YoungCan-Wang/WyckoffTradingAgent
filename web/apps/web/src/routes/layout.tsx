@@ -9,6 +9,7 @@ import { usePreferences, type Locale, type TranslationKey } from '@/lib/preferen
 import { trackRouteActivity } from '@/lib/activity'
 import { installPlanetMemberClarity } from '@/lib/product-analytics'
 import { usePlanetMembership } from '@/lib/planet-membership-gate'
+import { useSupabaseAuth } from '@/lib/auth-session'
 
 const navGroups = APP_NAV_GROUPS
 
@@ -182,6 +183,7 @@ function ExpandedSidebarFooter({ email, signedIn, onAccountAction }: { email: st
 }
 
 export function AppLayout() {
+  useSupabaseAuth()
   const location = useLocation()
   const user = useAuthStore((s) => s.user)
   const handleLogout = useLogoutHandler()

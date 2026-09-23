@@ -1,4 +1,4 @@
-import { MessageSquare, Briefcase, TrendingUp, Settings, BarChart3, FileDown, Crown, Swords, History, Microscope, BookOpen, type LucideIcon } from 'lucide-react'
+import { MessageSquare, Briefcase, TrendingUp, Settings, BarChart3, FileDown, Crown, Swords, History, Microscope, BookOpen, Ruler, type LucideIcon } from 'lucide-react'
 import type { TranslationKey } from '@/lib/preferences'
 
 export interface AppNavItem {
@@ -18,6 +18,7 @@ export const APP_NAV_GROUPS = [
     items: [
       { to: '/chat', icon: MessageSquare, labelKey: 'nav.chat' },
       { to: '/analysis', icon: BarChart3, labelKey: 'nav.analysis' },
+      { to: '/fib', icon: Ruler, labelKey: 'nav.fib' },
       { to: '/battle', icon: Swords, labelKey: 'nav.battle' },
       { to: '/portfolio', icon: Briefcase, labelKey: 'nav.portfolio' },
     ],

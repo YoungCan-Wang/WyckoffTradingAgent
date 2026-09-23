@@ -29,6 +29,7 @@ const HistoryPage = lazy(() => import('@/routes/history').then(m => ({ default: 
 const ExportPage = lazy(() => import('@/routes/export').then(m => ({ default: m.ExportPage })))
 const PlanetMembershipPage = lazy(() => import('@/routes/planet-membership').then(m => ({ default: m.PlanetMembershipPage })))
 const ShadowPage = lazy(() => import('@/routes/shadow').then(m => ({ default: m.ShadowPage })))
+const FibonacciPage = lazy(() => import('@/routes/fibonacci').then(m => ({ default: m.FibonacciPage })))
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -47,6 +48,10 @@ createRoot(document.getElementById('root')!).render(
             <Routes>
               <Route path="/login" element={<LoginPage />} />
               <Route path="/m" element={<RemotePage />} />
+              {/* 斐波那契画线对未登录访客开放：不套 AuthGuard，页面内也不查星球会员。 */}
+              <Route element={<AppLayout />}>
+                <Route path="/fib" element={<FibonacciPage />} />
+              </Route>
               <Route element={<AuthGuard />}>
                 <Route element={<AppLayout />}>
                   <Route index element={<Navigate to="/chat" replace />} />
