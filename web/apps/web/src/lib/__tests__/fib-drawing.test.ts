@@ -7,13 +7,11 @@ import {
   eastmoneySecId,
   lookbackStart,
   fetchPublicDailyBars,
-  fibPlotY,
   formatFibPrice,
   parseEastmoneyKlines,
   publicDailyBarsUrl,
   resolveFibTarget,
   tradingViewSymbol,
-  tradingViewWidgetOptions,
   type FibBar,
 } from '../fib-drawing'
 
@@ -47,22 +45,13 @@ describe('tradingViewSymbol', () => {
   })
 })
 
-describe('tradingViewWidgetOptions', () => {
-  it('asks for daily bars the Shanghai end-of-day feed can plot', () => {
-    const options = tradingViewWidgetOptions({ symbol: 'SSE:600519', theme: 'light', locale: 'zh_CN' })
-    expect(options.interval).toBe('1D')
-    expect(options.symbol).toBe('SSE:600519')
-    expect('range' in options).toBe(false)
-  })
-})
-
 describe('computeFibDrawing', () => {
   it('measures levels upward from the window low, with 0.382 as the room floor', () => {
-    const older: FibBar[] = [{ date: '2020-01-01', high: 200, low: 1, close: 10 }]
+    const older: FibBar[] = [bar('2020-01-01', 1)]
+    older[0] = { ...older[0]!, high: 200, low: 1, close: 10 }
     const window = Array.from({ length: 20 }, (_, index) => ({
-      date: `2024-02-${String(index + 1).padStart(2, '0')}`,
+      ...bar(`2024-02-${String(index + 1).padStart(2, '0')}`, index === 3 ? 50 : 60),
       high: index === 10 ? 100 : 80,
-      low: index === 3 ? 50 : 60,
       close: 70,
     }))
     const drawing = computeFibDrawing([...older, ...window], 'month', new Date(2024, 1, 20))
@@ -80,7 +69,7 @@ describe('computeFibDrawing', () => {
 
   it('refuses a default window that is too short or flat', () => {
     expect(computeFibDrawing(risingBars(10))).toBeNull()
-    const flat = Array.from({ length: 20 }, (_, i) => ({ date: `2024-01-${String(i + 1).padStart(2, '0')}`, high: 10, low: 10, close: 10 }))
+    const flat = Array.from({ length: 20 }, (_, i) => ({ ...bar(`2024-01-${String(i + 1).padStart(2, '0')}`, 10), high: 10, close: 10 }))
     expect(computeFibDrawing(flat)).toBeNull()
   })
 })
@@ -126,7 +115,7 @@ describe('eastmoney kline', () => {
     const bars = parseEastmoneyKlines({
       data: { klines: ['2026-09-23,1255.03,1266.05,1271.50,1252.02,11615'] },
     })
-    expect(bars).toEqual([{ date: '2026-09-23', high: 1271.5, low: 1252.02, close: 1266.05 }])
+    expect(bars).toEqual([{ date: '2026-09-23', open: 1255.03, high: 1271.5, low: 1252.02, close: 1266.05, volume: 11615 }])
     expect(publicDailyBarsUrl('600519')).toContain('secid=1.600519')
     expect(publicDailyBarsUrl('600519')).toContain('fqt=1')
     expect(publicDailyBarsUrl('600519')).toContain('klt=101')
@@ -144,20 +133,6 @@ describe('eastmoney kline', () => {
     expect(bars[0]?.high).toBe(3)
     const failed = vi.fn(async () => ({ ok: false, status: 503, json: async () => ({}) }))
     await expect(fetchPublicDailyBars('600519', failed as unknown as typeof fetch)).rejects.toThrow(/503/)
-  })
-})
-
-describe('fibPlotY', () => {
-  it('places the window high above the window low inside the plot', () => {
-    const highY = fibPlotY(100, 50, 100)
-    const lowY = fibPlotY(50, 50, 100)
-    const floorY = fibPlotY(50 + 50 * 0.382, 50, 100)
-    expect(highY).not.toBeNull()
-    expect(lowY).not.toBeNull()
-    expect(highY!).toBeGreaterThan(0)
-    expect(highY!).toBeLessThan(floorY!)
-    expect(floorY!).toBeLessThan(lowY!)
-    expect(lowY!).toBeLessThan(1)
   })
 })
 
@@ -192,22 +167,21 @@ describe('buildFibChartView', () => {
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.view.tvSymbol).toBe('SZSE:000001')
+    expect(result.view.bars).toHaveLength(result.view.drawing.bars)
+    expect(result.view.bars[0]?.open).toBeGreaterThan(0)
     expect(result.view.drawing.levels.map((level) => level.ratio)).toContain(0.382)
     expect(formatFibPrice(result.view.drawing.swingHigh)).toMatch(/^\d+\.\d+$/)
   })
 })
 
 function bar(date: string, low: number): FibBar {
-  return { date, low, high: low + 1, close: low + 0.5 }
+  return { date, open: low + 0.4, low, high: low + 1, close: low + 0.5, volume: 100 }
 }
 
 function risingBars(count: number): FibBar[] {
-  return Array.from({ length: count }, (_, index) => {
-    const low = 10 + index
-    return { date: `2024-03-${String(index + 1).padStart(2, '0')}`, high: low + 1, low, close: low + 0.5 }
-  })
+  return Array.from({ length: count }, (_, index) => bar(`2024-03-${String(index + 1).padStart(2, '0')}`, 10 + index))
 }
 
 function klineRows(count: number): string[] {
-  return risingBars(count).map((bar) => `${bar.date},${bar.low},${bar.close},${bar.high},${bar.low},100`)
+  return risingBars(count).map((item) => `${item.date},${item.open},${item.close},${item.high},${item.low},${item.volume}`)
 }

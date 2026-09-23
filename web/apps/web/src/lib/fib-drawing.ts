@@ -13,11 +13,6 @@ export const FIB_HISTORY_BARS = 1200
 export const FIB_PRESETS = ['d120', 'month', 'm6', 'y1', 'y3'] as const
 export type FibPreset = (typeof FIB_PRESETS)[number]
 
-/** Free-widget plot is not a price scale we can read. These insets keep lines off
- *  the symbol header, time axis, and TradingView attribution row. */
-export const FIB_PLOT_INSET = { top: 0.09, right: 0.1, bottom: 0.14, left: 0.02 }
-export const FIB_SCALE_PAD = 0.05
-
 export const FIB_LEVEL_SPECS = [
   { ratio: 0, label: '0%', role: 'low' },
   { ratio: 0.236, label: '23.6%', role: 'retracement' },
@@ -33,9 +28,11 @@ export type FibRole = (typeof FIB_LEVEL_SPECS)[number]['role']
 
 export interface FibBar {
   date: string
+  open: number
   high: number
   low: number
   close: number
+  volume: number
 }
 
 export interface FibLevel {
@@ -62,6 +59,8 @@ export interface FibTarget {
 
 export interface FibChartView extends FibTarget {
   drawing: FibDrawing
+  /** The same window the levels were measured on, so the candles and the lines share one scale. */
+  bars: FibBar[]
 }
 
 export type FibChartResult =
@@ -74,7 +73,7 @@ export function normalizeAshareCode(raw: string): string {
   return raw.trim().toUpperCase().replace(/\.(SH|SZ|BJ)$/, '')
 }
 
-/** TradingView advanced-chart symbols. Beijing listings are absent from that widget. */
+/** Shanghai / Shenzhen prefix for the legend. Beijing, HK, and US stay off this public chart. */
 export function tradingViewSymbol(raw: string): string | null {
   const code = normalizeAshareCode(raw)
   if (!isCnSymbol(code)) return null
@@ -145,39 +144,12 @@ export function computeFibDrawing(bars: FibBar[], preset: FibPreset = 'd120', no
   }
 }
 
-/** Fraction of the chart box height. 0 is the top. Ratios above 1 sit off-scale. */
-export function fibPlotY(price: number, swingLow: number, swingHigh: number): number | null {
-  const span = swingHigh - swingLow
-  if (!(span > 0)) return null
-  const top = swingHigh + span * FIB_SCALE_PAD
-  const bottom = swingLow - span * FIB_SCALE_PAD
-  const t = (top - price) / (top - bottom)
-  const plot = 1 - FIB_PLOT_INSET.top - FIB_PLOT_INSET.bottom
-  return FIB_PLOT_INSET.top + t * plot
-}
-
 export function formatFibPrice(price: number): string {
-  return price.toFixed(price >= 100 ? 2 : 3)
+  return price.toFixed(fibPricePrecision(price))
 }
 
-export function tradingViewWidgetOptions(input: { symbol: string; theme: 'light' | 'dark'; locale: 'zh_CN' | 'en' }) {
-  return {
-    autosize: true,
-    symbol: input.symbol,
-    // The embed treats "D" as unknown and opens 120-minute bars. A "6M" range does the
-    // same. Shanghai end-of-day symbols only plot D/W/M, so either choice leaves a blank chart.
-    interval: '1D',
-    timezone: 'Asia/Shanghai',
-    theme: input.theme,
-    style: '1',
-    locale: input.locale,
-    hide_side_toolbar: true,
-    allow_symbol_change: false,
-    save_image: false,
-    calendar: false,
-    withdateranges: false,
-    support_host: 'https://www.tradingview.com',
-  }
+export function fibPricePrecision(price: number): number {
+  return price >= 100 ? 2 : 3
 }
 
 export async function resolveFibTarget(raw: string, selected: StockSearchResult | null): Promise<FibTarget | null> {
@@ -201,7 +173,7 @@ export async function buildFibChartView(
     const bars = await fetchPublicDailyBars(target.code, fetcher)
     const drawing = computeFibDrawing(bars, preset, now)
     if (!drawing) return { ok: false, reason: 'short' }
-    return { ok: true, view: { ...target, drawing } }
+    return { ok: true, view: { ...target, drawing, bars: barsForPreset(bars, preset, now) } }
   } catch {
     return { ok: false, reason: 'fetch' }
   }
@@ -222,12 +194,14 @@ function readKlines(payload: unknown): unknown[] {
 }
 
 function parseKlineRow(row: string): FibBar | null {
-  const [date = '', , closeRaw = '', highRaw = '', lowRaw = ''] = row.split(',')
+  const [date = '', openRaw = '', closeRaw = '', highRaw = '', lowRaw = '', volumeRaw = ''] = row.split(',')
+  const open = Number(openRaw)
   const high = Number(highRaw)
   const low = Number(lowRaw)
   const close = Number(closeRaw)
-  if (!date || !(high > 0) || !(low > 0) || !(close > 0) || high < low) return null
-  return { date, high, low, close }
+  const volume = Number(volumeRaw)
+  if (!date || !(open > 0) || !(high > 0) || !(low > 0) || !(close > 0) || high < low) return null
+  return { date, open, high, low, close, volume: Number.isFinite(volume) ? volume : 0 }
 }
 
 function presetMinBars(preset: FibPreset): number {

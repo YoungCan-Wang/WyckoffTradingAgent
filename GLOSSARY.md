@@ -390,7 +390,7 @@ flowchart LR
 | **星球会员（Planet Member）** | 已在 `planet_members` 表绑定且未过期的登录账号。会员可使用形态跟踪、策略归因、云端持仓、隔离研究计算、手机遥控和影子纸面账详账等共享云端能力；会员身份不会自动写入用户的私人模型或数据源 Key。 |
 | **Clarity（星球会员）** | Microsoft Clarity 点击热力图/录屏。只对有效星球会员加载，默认项目 `y6albpfin1`，可用 `VITE_CLARITY_PROJECT_ID` 覆盖。事件进 Clarity，不写业务库。 |
 | **新闻打点 / News chart overlay** | 单股分析页和 `analyze_stock` 诊断上的读盘叠加层：用规则过滤东方财富个股新闻，把业绩/监管/股东/交易事件对齐到交易日并标在 K 线上。不进漏斗、不改候选、不构成买卖依据。 |
-| **斐波那契画线** | 公开 Web 页 `/fib`，侧栏在「投研终端」，不要求登录或星球会员。底图是 TradingView。区间默认约 120 个交易日，也可改当月、6 个月、1 年、3 年。价位按该窗口前复权日 K 的最低到最高向上量（与 `channel_geometry` 的黄金分割房间同一方向）：38.2% 到 100% 是赚钱空间，78.6%–100% 是供给区，161.8% 是扩展目标。只是读盘参考，不进漏斗、不产生买卖指令。 |
+| **斐波那契画线** | 公开 Web 页 `/fib`，侧栏在「投研终端」，不要求登录或星球会员。K 线和水平线画在同一套前复权日 K 上（lightweight-charts）。免费 TradingView 组件不能官方画线，也读不到价格像素，所以不用它当底图再叠一层。区间默认约 120 个交易日，也可改当月、6 个月、1 年、3 年。价位按该窗口最低到最高向上量（与 `channel_geometry` 的黄金分割房间同一方向）：38.2% 到 100% 是赚钱空间，78.6%–100% 是供给区，161.8% 是扩展目标。只是读盘参考，不进漏斗、不产生买卖指令。 |
 | **web_search（读盘室）** | DeepSeek Responses API 的服务端联网搜索工具；在读盘室使用官方 `deepseek-v4-flash` 或 `deepseek-v4-pro` 时注入。用于公开网页/舆情检索，不替代行情与持仓工具；搜索证据仅当轮有效。与 CLI 本机 CDP `browser_research` 不同路径。 |
 | **DeepSeek V4 思考策略** | 仅官方 DeepSeek V4 端点启用 `thinking` / `reasoning_effort`。读盘室主 Agent 使用 `high`，网页专项报告和后台结构化任务使用 `low`，读盘室嵌套 Chat 调用使用 `off`；TUI/桌面可在 `off/low/high/max` 中配置。无工具报告不会回传会被官方忽略的 `reasoning_content`：纯推理截断时提高预算重试，有正文时只按正文续写；工具型 Agent 才完整回传推理。 |
 | **browser_research（CLI）** | TUI/CLI 专用公开网页检索：Playwright 附着本机 Chrome CDP。CDP 未就绪时弹窗授权，同意后自动拉起独立调试 Chrome（`~/.wyckoff/chrome-cdp`），授权本会话有效；可用 `/browser start|status`。 |

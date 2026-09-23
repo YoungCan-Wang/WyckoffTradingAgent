@@ -6,7 +6,7 @@ import { useFibGenerate } from '@/features/fib-drawing/use-fib-generate'
 import { usePreferences } from '@/lib/preferences'
 
 export function FibonacciPage() {
-  const { t, theme, locale } = usePreferences()
+  const { t, theme } = usePreferences()
   const search = useStockSearch('analysis')
   const drawing = useFibGenerate(search)
   const disabled = drawing.loading || !search.symbol.trim()
@@ -14,8 +14,7 @@ export function FibonacciPage() {
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden px-6 py-5">
       <div className="shrink-0 border-b border-border/70 pb-4">
-        <h1 className="mb-1 text-xl font-semibold">{t('fib.title')}</h1>
-        <p className="mb-4 text-sm text-muted-foreground">{t('fib.intro')}</p>
+        <h1 className="mb-4 text-xl font-semibold">{t('fib.title')}</h1>
         <div className="flex flex-wrap items-end gap-3">
           <div className="min-w-[240px] flex-1 lg:max-w-3xl">
             <StockSearchBox
@@ -45,7 +44,7 @@ export function FibonacciPage() {
           </div>
         )}
       </div>
-      <FibChartPanel view={drawing.view} loading={drawing.loading} theme={theme} locale={locale} />
+      <FibChartPanel view={drawing.view} loading={drawing.loading} theme={theme} />
     </div>
   )
 }
