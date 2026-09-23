@@ -370,28 +370,15 @@ OpenAI provider 兼容 Qwen / Kimi / LongCat / Minimax 等 OpenAI API 格式端�
 
 ### MCP Server
 
-`mcp_server.py` — 通过 [Model Context Protocol](https://modelcontextprotocol.io) 将 Wyckoff 分析能力暴露给外部 AI Agent（Claude Code、Cursor 等）。
+`mcp_server.py` 是兼容入口，对外实现位于 `integrations/public_mcp/`。
+工具契约独立于业务导入，`initialize`/`tools/list` 不初始化用户状态或数据库；
+调用先校验 JSON Schema 和写权限，再延迟加载生产 `ToolSurface` 与用户上下文。
+所有 19 个工具均走同一边界，业务错误用 MCP `isError` 返回，标准输出仅承载协议消息。
 
-```
-Claude Code / Cursor / 其他 MCP 客户端
-  │
-  ├─→ stdio 连接 → wyckoff-mcp 进程
-  │
-  ├─→ MCP 协议 → FastMCP 路由 → chat_tools.py 中的函数
-  │
-  └─→ 工具结果 JSON ← 返回
-```
-
-**与 CLI / Web 的关键区别**：MCP Server 不具备对话能力，它只是一个工具服务——LLM 的推理和多轮编排由外部客户端（如 Claude Code）负责，Wyckoff MCP 只响应单次工具调用。
-
-安装与注册：
-
-```bash
-pip install youngcan-wyckoff-analysis[mcp]
-claude mcp add wyckoff -- wyckoff-mcp
-```
-
-凭证通过环境变量注入（`TUSHARE_TOKEN`、`SUPABASE_*`），或由 `_get_credential` 自动从 `~/.wyckoff/wyckoff.json` 读取。
+这是本地单用户 stdio 接口，不是带 OAuth 的公共 HTTP 服务，也未实现 MCP Tasks。
+当前主包依赖图未缩减；延迟导入不能解决安装阶段的磁盘不足。
+安装、参数默认值、权限、响应格式、长任务与验证契约的唯一维护位置是
+[PUBLIC_MCP.md](PUBLIC_MCP.md)。作为客户端接入第三方 MCP 的实现不在本次重构范围。
 
 ### TUI 视觉层次
 

@@ -17,10 +17,15 @@ def test_run_funnel_simulation_maps_main_chinext_without_mutating_env(monkeypatc
 
     def fake_run(*args, **kwargs):
         captured.update(kwargs)
-        return True, [{"code": "000001"}], {"regime": "NEUTRAL"}, {
-            "metrics": {"layer1": 1, "all_df_map": {"000001": object()}},
-            "all_df_map": {"000001": object()},
-        }
+        return (
+            True,
+            [{"code": "000001"}],
+            {"regime": "NEUTRAL"},
+            {
+                "metrics": {"layer1": 1, "all_df_map": {"000001": object()}},
+                "all_df_map": {"000001": object()},
+            },
+        )
 
     module = ModuleType("workflows.wyckoff_funnel")
     module.run = fake_run
@@ -73,10 +78,15 @@ def test_research_hypothesis_maps_mcp_arguments(monkeypatch):
         captured.update(args)
         return {"status": "created", "hypothesis": {"hypothesis_id": "hyp_1"}}
 
-    result = Runtime(backend).call("research_hypothesis", {
-        "action": "create", "title": "Spring 样本外", "thesis": "待验证假设",
-        "invalidation_criteria": "十日均值收益为负",
-    })
+    result = Runtime(backend).call(
+        "research_hypothesis",
+        {
+            "action": "create",
+            "title": "Spring 样本外",
+            "thesis": "待验证假设",
+            "invalidation_criteria": "十日均值收益为负",
+        },
+    )
     assert not result.is_error
     assert result.data["hypothesis"]["hypothesis_id"] == "hyp_1"
     assert captured["title"] == "Spring 样本外"
@@ -98,13 +108,22 @@ def test_mcp_screen_bounds_only_research_view_without_modifying_raw_result(monke
     tech_codes = ("300308", "300502", "002463", "002281", "300394", "603083")
     codes = [f"{100000 + idx:06d}" for idx in range(1994)] + list(tech_codes)
     raw = {
-        "action_plan": {"new_buy_allowed": False}, "report_candidates": [],
+        "action_plan": {"new_buy_allowed": False},
+        "report_candidates": [],
         "research_discovery": {
             "counts": {"total": 2000, "execution_blocked": 2000},
-            "signal_counts": {"awaiting_confirmation": 2000}, "execution_counts": {"blocked": 2000},
-            "candidates": [{"code": code, "name": "科技观察", "signal_state": "awaiting_confirmation",
-                            "execution_permission": "blocked", "discovery_reason": "不可直接买入，等待确认；" * 30}
-                           for code in codes],
+            "signal_counts": {"awaiting_confirmation": 2000},
+            "execution_counts": {"blocked": 2000},
+            "candidates": [
+                {
+                    "code": code,
+                    "name": "科技观察",
+                    "signal_state": "awaiting_confirmation",
+                    "execution_permission": "blocked",
+                    "discovery_reason": "不可直接买入，等待确认；" * 30,
+                }
+                for code in codes
+            ],
         },
     }
     before = deepcopy(raw)

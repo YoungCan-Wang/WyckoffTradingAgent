@@ -194,6 +194,17 @@ wyckoff approve no <id>        # 拒绝
 wyckoff run "盘前风控检查"
 ```
 
+### 向外部客户端提供 MCP 工具
+
+```bash
+uvx --from 'youngcan-wyckoff-analysis[mcp]' wyckoff-mcp
+```
+
+`mcp_server.py` 保留兼容入口；19 个公开工具由 `integrations/public_mcp/` 管理。
+握手与工具发现不加载业务模块、不读登录态、不初始化数据库。具体业务仍需要相应依赖和凭证，
+持仓写入默认拒绝；不是匿名多租户服务。当前重构不缩减主包安装依赖，合并后还需发布 PyPI 才能通过上述命令获得新版。
+完整契约、MCPVault 配置与验证方式见 [PUBLIC_MCP.md](docs/PUBLIC_MCP.md)。
+
 ### 接入外部 MCP server
 
 第三方 MCP server（GitHub、文件系统、你自己的数据源）的工具可以接进同一个会话，
@@ -256,7 +267,7 @@ wyckoff mcp-list
 - **观察篮临时行情** — 只为当前问题拉取相关 TickFlow 报价，浏览器快照 45 秒后失效，不写入 Redis 或业务数据库
 - **依赖卫生检查** — CI 运行 `scripts/check_dependency_hygiene.py`，提示 Python/Web 依赖锁定和 lockfile 风险
 - **测试隔离与单次覆盖率** — pytest 不读取本机 `.env`、底层 socket 默认断网；CI 只执行一次 coverage-instrumented Python 全量套件并复用结果生成覆盖率 artifact
-- **MCP Server** — 18 个工具通过 MCP 协议对外暴露，Claude Code / Cursor 即插即用；包含研究假设与证据台账
+- **MCP Server** — 19 个公开工具，契约、权限与业务执行分层；[安装与安全边界](docs/PUBLIC_MCP.md)
 - **多通道推送** — 飞书 / 企微 / 钉钉 / Telegram
 - **本地面板** — `wyckoff dashboard` 一条命令启动可视化
 

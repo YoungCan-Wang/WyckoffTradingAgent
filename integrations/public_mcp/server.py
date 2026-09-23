@@ -52,6 +52,8 @@ def main() -> None:
 
         anyio.run(serve_stdio)
     except ImportError as exc:
-        raise SystemExit("MCP dependencies are missing. Install: uv pip install 'youngcan-wyckoff-analysis[mcp]'") from exc
+        raise SystemExit(
+            "MCP dependencies are missing. Install: uv pip install 'youngcan-wyckoff-analysis[mcp]'"
+        ) from exc
     except KeyboardInterrupt:
         pass

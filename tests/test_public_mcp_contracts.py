@@ -14,10 +14,25 @@ from integrations.public_mcp.contracts import TOOL_BY_NAME, TOOLS
 from integrations.public_mcp.runtime import MAX_INPUT_BYTES, MAX_RESULT_BYTES, Runtime, normalize
 
 NAMES = {
-    "query_history", "research_hypothesis", "search_stock_by_name", "analyze_stock", "get_market_overview",
-    "screen_stocks", "run_backtest", "market_regime", "wyckoff_diagnose", "intraday_analysis",
-    "intraday_rescue_check", "run_funnel_simulation", "portfolio", "update_portfolio", "record_trade_fill",
-    "generate_ai_report", "generate_strategy_decision", "reassess_profile", "diagnose_backend",
+    "query_history",
+    "research_hypothesis",
+    "search_stock_by_name",
+    "analyze_stock",
+    "get_market_overview",
+    "screen_stocks",
+    "run_backtest",
+    "market_regime",
+    "wyckoff_diagnose",
+    "intraday_analysis",
+    "intraday_rescue_check",
+    "run_funnel_simulation",
+    "portfolio",
+    "update_portfolio",
+    "record_trade_fill",
+    "generate_ai_report",
+    "generate_strategy_decision",
+    "reassess_profile",
+    "diagnose_backend",
 }
 
 
@@ -59,25 +74,35 @@ import mcp_server
 assert len(TOOLS) == 19
 assert Runtime()._backend is None
 """
-    env = {"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path), "PYTHONPATH": root, "PYTHONDONTWRITEBYTECODE": "1"}
-    result = subprocess.run([sys.executable, "-c", probe], env=env, cwd=tmp_path, capture_output=True, text=True, timeout=15)
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": str(tmp_path),
+        "PYTHONPATH": root,
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    result = subprocess.run(
+        [sys.executable, "-c", probe], env=env, cwd=tmp_path, capture_output=True, text=True, timeout=15
+    )
     assert result.returncode == 0, result.stderr
     assert result.stdout == ""
     assert not list(tmp_path.iterdir())
 
 
-@pytest.mark.parametrize("name,args", [
-    ("not_a_tool", {}),
-    ("analyze_stock", {}),
-    ("analyze_stock", {"code": "000001", "tool_context": {"user_id": "other"}}),
-    ("analyze_stock", {"code": "000001", "days": True}),
-    ("analyze_stock", {"code": "000001", "cost": math.nan}),
-    ("screen_stocks", {"limit": -1}),
-    ("screen_stocks", {"limit": 3001}),
-    ("market_regime", {"unexpected": 1}),
-    ("market_regime", []),
-    ("record_trade_fill", {"code": "000001", "side": "sell", "shares": 0, "price": 10}),
-])
+@pytest.mark.parametrize(
+    "name,args",
+    [
+        ("not_a_tool", {}),
+        ("analyze_stock", {}),
+        ("analyze_stock", {"code": "000001", "tool_context": {"user_id": "other"}}),
+        ("analyze_stock", {"code": "000001", "days": True}),
+        ("analyze_stock", {"code": "000001", "cost": math.nan}),
+        ("screen_stocks", {"limit": -1}),
+        ("screen_stocks", {"limit": 3001}),
+        ("market_regime", {"unexpected": 1}),
+        ("market_regime", []),
+        ("record_trade_fill", {"code": "000001", "side": "sell", "shares": 0, "price": 10}),
+    ],
+)
 def test_invalid_calls_never_reach_backend(name, args):
     def backend(*_args):
         raise AssertionError("backend must not run")
@@ -111,10 +136,13 @@ def test_research_reads_are_not_blocked(action):
     assert not result.is_error
 
 
-@pytest.mark.parametrize("name,args", [
-    ("update_portfolio", {"action": "remove", "code": "000001"}),
-    ("record_trade_fill", {"code": "000001", "side": "sell", "shares": 100, "price": 10}),
-])
+@pytest.mark.parametrize(
+    "name,args",
+    [
+        ("update_portfolio", {"action": "remove", "code": "000001"}),
+        ("record_trade_fill", {"code": "000001", "side": "sell", "shares": 100, "price": 10}),
+    ],
+)
 def test_portfolio_writes_remain_denied_without_loading_backend(name, args):
     runtime = Runtime()
     result = runtime.call(name, args)

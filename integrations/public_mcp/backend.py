@@ -24,11 +24,13 @@ def build_context():
 
         session = load_session()
         if session:
-            state.update({
-                "user_id": session.get("user_id") or session.get("user", {}).get("id", ""),
-                "access_token": session.get("access_token", ""),
-                "refresh_token": session.get("refresh_token", ""),
-            })
+            state.update(
+                {
+                    "user_id": session.get("user_id") or session.get("user", {}).get("id", ""),
+                    "access_token": session.get("access_token", ""),
+                    "refresh_token": session.get("refresh_token", ""),
+                }
+            )
     return ToolContext(state=state)
 
 
@@ -68,5 +70,8 @@ class DomainBackend:
         if spec.name == "screen_stocks" and isinstance(payload, dict) and "research_discovery" in payload:
             from agents.screen_tools import research_discovery_agent_view
 
-            payload = {**payload, "research_discovery": research_discovery_agent_view(payload["research_discovery"], detailed=True)}
+            payload = {
+                **payload,
+                "research_discovery": research_discovery_agent_view(payload["research_discovery"], detailed=True),
+            }
         return payload

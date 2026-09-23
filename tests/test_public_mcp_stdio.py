@@ -27,9 +27,15 @@ def test_real_stdio_handshake_and_errors_without_domain_dependencies(tmp_path):
 
     root = str(Path(__file__).resolve().parents[1])
     params = StdioServerParameters(
-        command=sys.executable, args=["-c", _PROBE],
-        env={"HOME": str(tmp_path), "USERPROFILE": str(tmp_path), "PYTHONPATH": root,
-             "PYTHONDONTWRITEBYTECODE": "1", "WYCKOFF_MCP_ALLOW_WRITES": "0"},
+        command=sys.executable,
+        args=["-c", _PROBE],
+        env={
+            "HOME": str(tmp_path),
+            "USERPROFILE": str(tmp_path),
+            "PYTHONPATH": root,
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "WYCKOFF_MCP_ALLOW_WRITES": "0",
+        },
         cwd=str(tmp_path),
     )
 

@@ -348,3 +348,7 @@ If this project helps, a GitHub Star is appreciated. If it helps you make money,
 
 <!-- star-history:start -->
 <!-- star-history:end -->
+
+## Public MCP server
+
+See [PUBLIC_MCP.md](PUBLIC_MCP.md) for installation, the 19-tool contract, lazy discovery, default-deny writes and stdio compatibility. This is separate from the external MCP client. Base package dependencies are not reduced by this refactor.

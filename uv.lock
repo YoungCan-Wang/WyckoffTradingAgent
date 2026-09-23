@@ -3879,7 +3879,7 @@ requires-dist = [
     { name = "jsonschema", marker = "extra == 'mcp'", specifier = ">=4.20" },
     { name = "litellm", specifier = ">=1.83.11" },
     { name = "matplotlib", specifier = ">=3.8.0" },
-    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.28.0" },
+    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.28.0,<2.0" },
     { name = "openai", specifier = ">=1.30.0" },
     { name = "pandas", specifier = ">=2.2.0,<3.0" },
     { name = "pillow", specifier = ">=10.0.0" },

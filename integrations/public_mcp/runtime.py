@@ -16,10 +16,20 @@ from integrations.public_mcp.contracts import TOOL_BY_NAME, ToolSpec
 logger = logging.getLogger(__name__)
 MAX_INPUT_BYTES = 65_536
 MAX_RESULT_BYTES = 1_048_576
-_SECRET_FIELDS = frozenset({
-    "api_key", "access_token", "refresh_token", "authorization", "proxy_authorization",
-    "password", "secret", "client_secret", "cookie", "set_cookie",
-})
+_SECRET_FIELDS = frozenset(
+    {
+        "api_key",
+        "access_token",
+        "refresh_token",
+        "authorization",
+        "proxy_authorization",
+        "password",
+        "secret",
+        "client_secret",
+        "cookie",
+        "set_cookie",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -77,9 +87,13 @@ class Runtime:
             return invalid
         args = spec.arguments(supplied)
         if needs_write_permission(spec, args) and os.getenv("WYCKOFF_MCP_ALLOW_WRITES", "").strip().lower() not in (
-            "1", "true", "yes"
+            "1",
+            "true",
+            "yes",
         ):
-            return failure("WRITE_DENIED", "MCP 没有审批环节。请使用 CLI/桌面端，或显式设置 WYCKOFF_MCP_ALLOW_WRITES=1。")
+            return failure(
+                "WRITE_DENIED", "MCP 没有审批环节。请使用 CLI/桌面端，或显式设置 WYCKOFF_MCP_ALLOW_WRITES=1。"
+            )
         # The local domain shares SQLite and user configuration. Do not run overlapping calls
         # or abandon a write in a background thread and report it as safely cancelled.
         with self._lock:
@@ -90,7 +104,10 @@ class Runtime:
                     self._backend = DomainBackend()
                 return normalize(self._backend(spec, deepcopy(args)))
             except ImportError:
-                return failure("MISSING_DEPENDENCY", "A domain dependency is unavailable. Install the full project with its mcp extra.")
+                return failure(
+                    "MISSING_DEPENDENCY",
+                    "A domain dependency is unavailable. Install the full project with its mcp extra.",
+                )
             except Exception as exc:
                 # Exception strings can contain provider keys, URLs or user records.
                 logger.error("public MCP tool %s failed (%s)", name, type(exc).__name__)
