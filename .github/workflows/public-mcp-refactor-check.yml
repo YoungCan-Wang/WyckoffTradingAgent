@@ -28,6 +28,11 @@ jobs:
           cache: pip
       - name: Integrate compatibility entrypoints and documentation
         run: python scripts/_apply_public_mcp_refactor.py
+      - name: Synchronize the SDK major-version boundary with the lockfile
+        run: |
+          python -m pip install uv
+          uv lock
+          uv lock --check
       - name: Install project test dependencies
         run: python -m pip install -e '.[dev,mcp]'
       - name: Format and lint only changed Python files
@@ -40,8 +45,11 @@ jobs:
       - name: Run focused real SDK and compatibility tests
         shell: bash
         run: |
-          python -m pytest tests/test_public_mcp_contracts.py tests/test_public_mcp_stdio.py tests/test_public_mcp_routing.py tests/test_mcp_server.py tests/test_mcp_write_guard.py -q 2>&1 | tee "$RUNNER_TEMP/public-mcp-tests.log"
+          python -m pytest tests/test_public_mcp_contracts.py tests/test_public_mcp_stdio.py tests/test_public_mcp_routing.py tests/test_mcp_server.py tests/test_mcp_write_guard.py tests/cli/test_mcp_client.py -q 2>&1 | tee "$RUNNER_TEMP/public-mcp-tests.log"
           python scripts/quality_gate.py --check-functions
+      - name: Save reviewable integration diff
+        if: always()
+        run: git diff --binary > "$RUNNER_TEMP/public-mcp-integration.patch"
       - name: Commit validated integration on the refactor branch only
         shell: bash
         run: |
@@ -49,7 +57,7 @@ jobs:
           rm scripts/_apply_public_mcp_refactor.py .github/workflows/public-mcp-refactor-check.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add mcp_server.py cli/__main__.py integrations/public_mcp tests/test_mcp_server.py tests/test_mcp_write_guard.py tests/test_public_mcp_*.py README.md GLOSSARY.md docs/ARCHITECTURE.md docs/README_EN.md docs/PUBLIC_MCP.md .github/workflows/ci.yml
+          git add mcp_server.py cli/__main__.py integrations/public_mcp tests/test_mcp_server.py tests/test_mcp_write_guard.py tests/test_public_mcp_*.py README.md GLOSSARY.md docs/ARCHITECTURE.md docs/README_EN.md docs/PUBLIC_MCP.md .github/workflows/ci.yml pyproject.toml uv.lock
           git add -u scripts/_apply_public_mcp_refactor.py .github/workflows/public-mcp-refactor-check.yml
           git commit -m 'refactor(mcp): finalize integration after focused SDK validation'
           git push origin HEAD:refs/heads/refactor/public-mcp-boundary
@@ -57,6 +65,8 @@ jobs:
         if: always()
         with:
           name: public-mcp-focused-validation
-          path: ${{ runner.temp }}/public-mcp-tests.log
+          path: |
+            ${{ runner.temp }}/public-mcp-tests.log
+            ${{ runner.temp }}/public-mcp-integration.patch
           if-no-files-found: ignore
           retention-days: 3
