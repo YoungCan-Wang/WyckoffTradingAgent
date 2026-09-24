@@ -187,9 +187,12 @@ export {
   XINHUA_MEDIA_TELEGRAPH,
   classifyCorporateEventReason,
   collectCorporateEventItems,
+  corporateEventTime,
+  corporateShanghaiTime,
+  filterRecentCorporateHits,
   isMaterialRestructureOrHalt,
   parseTelegraphSymbol,
   renderCorporateEventReport,
   scanCorporateEvents,
 } from './corporate-event-scan'
-export type { CorporateEventHit } from './corporate-event-scan'
+export type { CorporateEventHit, CorporateEventCollection, CorporateSourceResult } from './corporate-event-scan'
