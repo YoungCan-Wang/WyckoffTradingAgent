@@ -137,7 +137,20 @@ def run_shadow_session(
     fills = [filled for plan in ordered if (filled := try_fill_plan(book, plan, bars, as_of)) is not None]
     mark_to_market(book, bars, as_of)
     sells = _stop_sell_plans(book, as_of, account_id)
-    buys = propose_buy_plans(book, buy_candidates, bars, as_of, account_id) if allow_new_buys else []
+    # no_open 买单仍占槽/占代码：propose 若只看持仓，会在缺 K 线日又写下夜重复计划，
+    # 次日与积压单一起成交 → 突破 MAX_POSITIONS 或同票双倍仓。
+    buys = (
+        propose_buy_plans(
+            book,
+            buy_candidates,
+            bars,
+            as_of,
+            account_id,
+            pending_plans=_pending_buy_plans(planned, fills),
+        )
+        if allow_new_buys
+        else []
+    )
     nav = book_nav(book)
     nav["pnl_day"] = round(nav["equity"] - float(prev_equity if prev_equity is not None else book.initial_capital), 2)
     return ShadowSession(book, fills, sells + buys, nav)
@@ -185,9 +198,13 @@ def propose_buy_plans(
     bars: dict[str, pd.DataFrame],
     as_of: date,
     account_id: str,
+    *,
+    pending_plans: list[ShadowPlan] | None = None,
 ) -> list[ShadowPlan]:
     open_codes = {code for code, pos in book.positions.items() if pos.shares > 0}
-    slots = max(MAX_POSITIONS - len(open_codes), 0)
+    pending_codes = {p.code for p in (pending_plans or []) if p.action == BUY and p.status == "planned" and p.code}
+    reserved = open_codes | pending_codes
+    slots = max(MAX_POSITIONS - len(reserved), 0)
     if slots <= 0:
         return []
     nav = book_nav(book)
@@ -196,13 +213,20 @@ def propose_buy_plans(
     for item in candidates:
         if slots <= 0:
             break
-        plan = _candidate_buy_plan(book, item, bars, as_of, account_id, open_codes, budget)
+        plan = _candidate_buy_plan(book, item, bars, as_of, account_id, reserved, budget)
         if plan is None:
             continue
         plans.append(plan)
-        open_codes.add(plan.code)
+        reserved.add(plan.code)
         slots -= 1
     return plans
+
+
+def _pending_buy_plans(planned: list[ShadowPlan], fills: list[ShadowPlan]) -> list[ShadowPlan]:
+    resolved = {plan.plan_key for plan in fills}
+    return [
+        plan for plan in planned if plan.plan_key not in resolved and plan.status == "planned" and plan.action == BUY
+    ]
 
 
 def _candidate_buy_plan(
