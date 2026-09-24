@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from core.news_chart_events import events_as_dicts, select_news_chart_events
@@ -45,7 +45,7 @@ def fetch_eastmoney_stock_news(code: str, *, pages: int = _MAX_PAGES) -> list[di
     return fetch_eastmoney_news(str(code or "").strip(), pages=pages)
 
 
-def fetch_eastmoney_news(keyword: str, *, pages: int = _MAX_PAGES) -> list[dict[str, Any]]:
+def fetch_eastmoney_news(keyword: str, *, pages: int = _MAX_PAGES, strict: bool = False) -> list[dict[str, Any]]:
     query = str(keyword or "").strip()
     if not query:
         return []
@@ -53,7 +53,13 @@ def fetch_eastmoney_news(keyword: str, *, pages: int = _MAX_PAGES) -> list[dict[
     for page in range(1, max(int(pages), 1) + 1):
         payload = _request_news_page(query, page)
         batch = payload.get("result", {}).get("cmsArticleWebOld") if isinstance(payload, dict) else None
-        if not isinstance(batch, list) or not batch:
+        if not isinstance(batch, list):
+            if strict:
+                raise ValueError("Invalid East Money news payload")
+            break
+        if strict and any(not isinstance(item, dict) for item in batch):
+            raise ValueError("Invalid East Money article")
+        if not batch:
             break
         rows.extend(_normalize_article(item) for item in batch if isinstance(item, dict))
         if len(batch) < _PAGE_SIZE:
@@ -73,7 +79,7 @@ def _request_news_page(keyword: str, page: int) -> dict[str, Any]:
         f"{EASTMONEY_NEWS_URL}?{params}",
         headers={
             "User-Agent": "Mozilla/5.0",
-            "Referer": f"https://so.eastmoney.com/news/s?keyword={keyword}",
+            "Referer": f"https://so.eastmoney.com/news/s?keyword={quote(keyword, safe='')}",
         },
     )
     with urlopen(request, timeout=_TIMEOUT_SECONDS) as response:
@@ -114,7 +120,7 @@ def _normalize_article(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "title": str(item.get("title") or "").strip(),
         "content": str(item.get("content") or "").strip(),
-        "published_at": str(item.get("date") or "")[:19],
+        "published_at": str(item.get("date") or ""),
         "source": str(item.get("mediaName") or "eastmoney"),
         "url": f"https://finance.eastmoney.com/a/{code}.html" if code else "",
     }

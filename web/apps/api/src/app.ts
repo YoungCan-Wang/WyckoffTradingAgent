@@ -35,22 +35,35 @@ export type Env = {
 
 export type RuntimeReadinessCheck = (env: Env) => string[]
 
+const LOCAL_DEV_ORIGINS = [
+  'http://localhost:5173',
+  'http://localhost:5174',
+  'http://localhost:5175',
+  'http://127.0.0.1:5173',
+  'http://127.0.0.1:5174',
+  'http://127.0.0.1:5175',
+]
+const STATIC_PAGES_ORIGINS = new Set([
+  'https://wyckoff-analysis.pages.dev',
+  'https://wyckoff.pages.dev',
+])
+
+export function isAllowedCorsOrigin(origin: string): boolean {
+  if (LOCAL_DEV_ORIGINS.includes(origin) || STATIC_PAGES_ORIGINS.has(origin)) return true
+  try {
+    return new URL(origin).hostname.endsWith('.pages.dev')
+  } catch {
+    return false
+  }
+}
+
 export function createApiApp(readinessCheck: RuntimeReadinessCheck = () => []) {
   const app = new Hono<{ Bindings: Env }>()
 
   app.use('*', requestId({ limitLength: 128 }))
   app.use('*', secureHeaders())
   app.use('*', cors({
-    origin: [
-      'http://localhost:5173',
-      'http://localhost:5174',
-      'http://localhost:5175',
-      'http://127.0.0.1:5173',
-      'http://127.0.0.1:5174',
-      'http://127.0.0.1:5175',
-      'https://wyckoff-analysis.pages.dev',
-      'https://wyckoff.pages.dev',
-    ],
+    origin: (origin) => (origin && isAllowedCorsOrigin(origin) ? origin : null),
     credentials: true,
   }))
   app.use('/api/*', bodyLimit({

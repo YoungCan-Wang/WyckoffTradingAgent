@@ -1,0 +1,187 @@
+import { describe, expect, it, vi } from 'vitest'
+import type { StockSearchResult } from '../market-search'
+import {
+  buildFibChartView,
+  barsForPreset,
+  computeFibDrawing,
+  eastmoneySecId,
+  lookbackStart,
+  fetchPublicDailyBars,
+  formatFibPrice,
+  parseEastmoneyKlines,
+  publicDailyBarsUrl,
+  resolveFibTarget,
+  tradingViewSymbol,
+  type FibBar,
+} from '../fib-drawing'
+
+const cn = (code: string, name: string): StockSearchResult => ({
+  analysisCode: code,
+  symbol: code,
+  code,
+  name,
+  market: 'cn',
+  assetType: 'stock',
+  aliases: [],
+})
+
+describe('tradingViewSymbol', () => {
+  it('maps Shanghai and Shenzhen codes the way the public widget lists them', () => {
+    expect(tradingViewSymbol('600519')).toBe('SSE:600519')
+    expect(tradingViewSymbol('688981')).toBe('SSE:688981')
+    expect(tradingViewSymbol('510300')).toBe('SSE:510300')
+    expect(tradingViewSymbol('600519.SH')).toBe('SSE:600519')
+    expect(tradingViewSymbol('000001')).toBe('SZSE:000001')
+    expect(tradingViewSymbol('300750')).toBe('SZSE:300750')
+    expect(tradingViewSymbol('159915')).toBe('SZSE:159915')
+  })
+
+  it('rejects markets the public widget does not chart', () => {
+    expect(tradingViewSymbol('832735')).toBeNull()
+    expect(tradingViewSymbol('AAPL')).toBeNull()
+    expect(tradingViewSymbol('00700.HK')).toBeNull()
+    expect(eastmoneySecId('600519')).toBe('1.600519')
+    expect(eastmoneySecId('000001')).toBe('0.000001')
+  })
+})
+
+describe('computeFibDrawing', () => {
+  it('measures levels upward from the window low, with 0.382 as the room floor', () => {
+    const older: FibBar[] = [bar('2020-01-01', 1)]
+    older[0] = { ...older[0]!, high: 200, low: 1, close: 10 }
+    const window = Array.from({ length: 20 }, (_, index) => ({
+      ...bar(`2024-02-${String(index + 1).padStart(2, '0')}`, index === 3 ? 50 : 60),
+      high: index === 10 ? 100 : 80,
+      close: 70,
+    }))
+    const drawing = computeFibDrawing([...older, ...window], 'month', new Date(2024, 1, 20))
+    expect(drawing?.bars).toBe(20)
+    expect(drawing?.swingLow).toBe(50)
+    expect(drawing?.swingHigh).toBe(100)
+    expect(drawing?.lowDate).toBe('2024-02-04')
+    expect(drawing?.highDate).toBe('2024-02-11')
+    const byRatio = Object.fromEntries((drawing?.levels ?? []).map((level) => [level.ratio, level.price]))
+    expect(byRatio[0]).toBe(50)
+    expect(byRatio[0.382]).toBeCloseTo(50 + 50 * 0.382)
+    expect(byRatio[1]).toBe(100)
+    expect(byRatio[1.618]).toBeCloseTo(50 + 50 * 1.618)
+  })
+
+  it('refuses a default window that is too short or flat', () => {
+    expect(computeFibDrawing(risingBars(10))).toBeNull()
+    const flat = Array.from({ length: 20 }, (_, i) => ({ ...bar(`2024-01-${String(i + 1).padStart(2, '0')}`, 10), high: 10, close: 10 }))
+    expect(computeFibDrawing(flat)).toBeNull()
+  })
+})
+
+describe('fib lookback presets', () => {
+  const now = new Date(2026, 8, 23)
+
+  it('anchors calendar windows to the selected preset', () => {
+    expect(lookbackStart('d120', now)).toBeNull()
+    expect(lookbackStart('month', now)).toBe('2026-09-01')
+    expect(lookbackStart('m6', now)).toBe('2026-03-23')
+    expect(lookbackStart('y1', now)).toBe('2025-09-23')
+    expect(lookbackStart('y3', now)).toBe('2023-09-23')
+    const bars = [
+      bar('2023-09-22', 10),
+      bar('2023-09-23', 30),
+      bar('2025-09-23', 40),
+      bar('2026-03-23', 50),
+      bar('2026-08-31', 70),
+      bar('2026-09-01', 80),
+      bar('2026-09-23', 90),
+    ]
+    expect(barsForPreset(bars, 'month', now).map((item) => item.date)).toEqual(['2026-09-01', '2026-09-23'])
+    expect(barsForPreset(bars, 'm6', now).map((item) => item.date)).toEqual(['2026-03-23', '2026-08-31', '2026-09-01', '2026-09-23'])
+    expect(barsForPreset(bars, 'y3', now)[0]?.date).toBe('2023-09-23')
+    expect(barsForPreset(bars, 'y1', now)[0]?.date).toBe('2025-09-23')
+  })
+
+  it('keeps the default window at the latest 120 bars and still draws a short month', () => {
+    const bars = Array.from({ length: 130 }, (_, index) => bar(`2024-01-${String(index + 1).padStart(2, '0')}`, 20 + index))
+    expect(barsForPreset(bars, 'd120').length).toBe(120)
+    expect(barsForPreset(bars, 'd120')[0]?.high).toBe(31)
+    const month = computeFibDrawing([bar('2026-08-31', 10), bar('2026-09-02', 20), bar('2026-09-03', 40)], 'month', now)
+    expect(month?.bars).toBe(2)
+    expect(month?.swingLow).toBe(20)
+    expect(month?.swingHigh).toBe(41)
+    expect(month?.levels.find((level) => level.ratio === 0.382)?.price).toBeCloseTo(20 + 21 * 0.382)
+  })
+})
+
+describe('eastmoney kline', () => {
+  it('parses date, close, high, low from the kline string', () => {
+    const bars = parseEastmoneyKlines({
+      data: { klines: ['2026-09-23,1255.03,1266.05,1271.50,1252.02,11615'] },
+    })
+    expect(bars).toEqual([{ date: '2026-09-23', open: 1255.03, high: 1271.5, low: 1252.02, close: 1266.05, volume: 11615 }])
+    expect(publicDailyBarsUrl('600519')).toContain('secid=1.600519')
+    expect(publicDailyBarsUrl('600519')).toContain('fqt=1')
+    expect(publicDailyBarsUrl('600519')).toContain('klt=101')
+    expect(publicDailyBarsUrl('600519')).toContain('lmt=1200')
+  })
+
+  it('loads bars through the injected fetcher', async () => {
+    const fetcher = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ data: { klines: ['2026-09-23,1,2,3,1.5,9'] } }),
+    }))
+    const bars = await fetchPublicDailyBars('000001', fetcher as unknown as typeof fetch)
+    const calls = fetcher.mock.calls as unknown as unknown[][]
+    expect(String(calls[0]?.[0])).toContain('secid=0.000001')
+    expect(bars[0]?.high).toBe(3)
+    const failed = vi.fn(async () => ({ ok: false, status: 503, json: async () => ({}) }))
+    await expect(fetchPublicDailyBars('600519', failed as unknown as typeof fetch)).rejects.toThrow(/503/)
+  })
+})
+
+describe('resolveFibTarget', () => {
+  it('keeps a selected Shanghai code and drops unsupported markets', async () => {
+    await expect(resolveFibTarget('600519', cn('600519', '贵州茅台'))).resolves.toEqual({
+      code: '600519',
+      name: '贵州茅台',
+      tvSymbol: 'SSE:600519',
+    })
+    const us: StockSearchResult = {
+      analysisCode: 'AAPL.US',
+      symbol: 'AAPL.US',
+      code: 'AAPL',
+      name: 'Apple',
+      market: 'us',
+      assetType: 'stock',
+      aliases: [],
+    }
+    await expect(resolveFibTarget('AAPL.US', us)).resolves.toBeNull()
+    await expect(resolveFibTarget('832735', cn('832735', '北交示例'))).resolves.toBeNull()
+  })
+})
+
+describe('buildFibChartView', () => {
+  it('returns a drawing when the public bars cover the lookback', async () => {
+    const fetcher = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ data: { klines: klineRows(25) } }),
+    }))
+    const result = await buildFibChartView('000001', cn('000001', '平安银行'), 'd120', fetcher as unknown as typeof fetch)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.view.tvSymbol).toBe('SZSE:000001')
+    expect(result.view.bars).toHaveLength(result.view.drawing.bars)
+    expect(result.view.bars[0]?.open).toBeGreaterThan(0)
+    expect(result.view.drawing.levels.map((level) => level.ratio)).toContain(0.382)
+    expect(formatFibPrice(result.view.drawing.swingHigh)).toMatch(/^\d+\.\d+$/)
+  })
+})
+
+function bar(date: string, low: number): FibBar {
+  return { date, open: low + 0.4, low, high: low + 1, close: low + 0.5, volume: 100 }
+}
+
+function risingBars(count: number): FibBar[] {
+  return Array.from({ length: count }, (_, index) => bar(`2024-03-${String(index + 1).padStart(2, '0')}`, 10 + index))
+}
+
+function klineRows(count: number): string[] {
+  return risingBars(count).map((item) => `${item.date},${item.open},${item.close},${item.high},${item.low},${item.volume}`)
+}

@@ -22,7 +22,11 @@ def main() -> int:
     parser.add_argument("--json-output", type=Path, required=True)
     parser.add_argument("--require-complete", action="store_true")
     args = parser.parse_args()
-    report = build_strategy_comparison(load_strategy_comparison_rows(args.artifacts_dir))
+    ignored_dirs: list[str] = []
+    rows = load_strategy_comparison_rows(args.artifacts_dir, ignored_dirs)
+    report = build_strategy_comparison(rows, ignored_dirs)
+    for directory in ignored_dirs:
+        print(f"[strategy-comparison] 忽略无法归组的产物目录: {directory}")
     args.markdown_output.write_text(render_strategy_comparison(report), encoding="utf-8")
     args.json_output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return int(args.require_complete and report["status"] != "ready")

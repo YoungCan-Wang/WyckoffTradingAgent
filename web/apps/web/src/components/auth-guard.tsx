@@ -1,40 +1,10 @@
-import { useEffect } from 'react'
 import { Outlet, Navigate } from 'react-router'
-import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/auth'
+import { useSupabaseAuth } from '@/lib/auth-session'
 
 export function AuthGuard() {
-  const { user, loading, setAuth } = useAuthStore()
-
-  useEffect(() => {
-    let active = true
-
-    supabase.auth
-      .getSession()
-      .then(({ data: { session } }) => {
-        if (active) {
-          setAuth(session?.user ?? null, session)
-        }
-      })
-      .catch(() => {
-        if (active) {
-          setAuth(null, null)
-        }
-      })
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
-        if (active) {
-          setAuth(session?.user ?? null, session)
-        }
-      },
-    )
-
-    return () => {
-      active = false
-      subscription.unsubscribe()
-    }
-  }, [setAuth])
+  const { user, loading } = useAuthStore()
+  useSupabaseAuth()
 
   if (loading) {
     return (

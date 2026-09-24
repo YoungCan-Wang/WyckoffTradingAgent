@@ -39,7 +39,11 @@ def main() -> int:
     print(f"[corporate_event_scan] hits={len(result.hits)} markdown={result.markdown_path}")
     print(f"[corporate_event_scan] json={result.json_path}")
     print(f"[corporate_event_scan] notification: {notification.reason}")
-    return 0 if not notification.attempted or notification.ok else 1
+    if not result.source_ok:
+        return 2
+    if not args.dry_run and not notification.ok:
+        return 1
+    return 0
 
 
 def _load_extra(path: str) -> list | None:

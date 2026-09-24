@@ -82,15 +82,55 @@ def test_strategy_comparison_accepts_github_artifact_run_suffix(tmp_path: Path) 
     assert [(row.period, row.variant) for row in rows] == [("recent_6m", "A")]
 
 
+def test_strategy_comparison_reports_marginal_trades_and_cost_basis(tmp_path: Path) -> None:
+    _write_summary(tmp_path, "recent_6m", "A", 2.0, -4.0)
+    _write_summary(tmp_path, "recent_6m", "M", 3.0, -4.0)
+    (tmp_path / "backtest-strategy-recent_6m-A" / "trades_fixture.csv").write_text(
+        "signal_date,code,ret_pct\n2020-01-02,000001,1.0\n2020-01-03,000002,-8.0\n2020-01-06,000003,-2.0\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "backtest-strategy-recent_6m-M" / "trades_fixture.csv").write_text(
+        "signal_date,code,ret_pct\n2020-01-02,000001,1.0\n2020-01-03,000009,5.0\n",
+        encoding="utf-8",
+    )
+    for variant in "AM":
+        summary = tmp_path / f"backtest-strategy-recent_6m-{variant}" / "summary_fixture.md"
+        summary.write_text(summary.read_text(encoding="utf-8") + "\n- 买入摩擦成本: 0.500%\n- 卖出摩擦成本: 0.500%\n")
+
+    report = build_strategy_comparison(load_strategy_comparison_rows(tmp_path))
+    marginal = report["evaluations"]["M"]["marginal"]
+
+    assert marginal["common"]["trades"] == 1
+    assert marginal["reference_only"] == {"trades": 2, "avg_return": -5.0, "win_rate": 0.0}
+    assert marginal["variant_only"] == {"trades": 1, "avg_return": 5.0, "win_rate": 100.0}
+    assert report["cost_basis"]["buy_friction_pct"] == [0.5]
+    rendered = render_strategy_comparison(report)
+    assert "| M | A | 1 | 2 / -5.00% / +0.00% | 1 / +5.00% / +100.00% |" in rendered
+    assert "成交价已含买入 0.50% + 卖出 0.50% 摩擦" in rendered
+
+
+def test_strategy_comparison_reports_unmatched_artifact_dirs(tmp_path: Path) -> None:
+    _write_summary(tmp_path, "recent_6m", "A", 2.0, -4.0)
+    _write_summary(tmp_path / "backtest-strategy-recent_6m-calib-91", "recent_6m", "stray", 2.0, -4.0)
+
+    ignored: list[str] = []
+    rows = load_strategy_comparison_rows(tmp_path, ignored)
+    report = build_strategy_comparison(rows, ignored)
+
+    assert [(row.period, row.variant) for row in rows] == [("recent_6m", "A")]
+    assert report["ignored_dirs"] == ["backtest-strategy-recent_6m-calib-91/backtest-strategy-recent_6m-stray"]
+    assert "已被忽略、未进入任何对照" in render_strategy_comparison(report)
+
+
 def test_strategy_comparison_loads_bull_2025_single_variant_shard_against_baseline(tmp_path: Path) -> None:
     _write_summary(tmp_path / "backtest-strategy-bull_2025-amp-91", "bull_2025", "A", 2.0, -4.0)
-    _write_summary(tmp_path / "backtest-strategy-bull_2025-two_track-91", "bull_2025", "J", 3.0, -4.0)
+    _write_summary(tmp_path / "backtest-strategy-bull_2025-calib-91", "bull_2025", "I", 3.0, -4.0)
 
     report = build_strategy_comparison(load_strategy_comparison_rows(tmp_path))
 
-    assert [(row["period"], row["variant"]) for row in report["rows"]] == [("bull_2025", "A"), ("bull_2025", "J")]
-    assert report["evaluations"]["J"]["reference_variant"] == "A"
-    assert report["evaluations"]["J"]["status"] == "insufficient"
+    assert [(row["period"], row["variant"]) for row in report["rows"]] == [("bull_2025", "A"), ("bull_2025", "I")]
+    assert report["evaluations"]["I"]["reference_variant"] == "A"
+    assert report["evaluations"]["I"]["status"] == "insufficient"
 
 
 def test_strategy_comparison_marks_identical_trade_sets_as_no_effect(tmp_path: Path) -> None:

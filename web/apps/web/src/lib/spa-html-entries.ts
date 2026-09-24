@@ -1,0 +1,16 @@
+export const SPA_HTML_ENTRIES = [
+  'analysis',
+  'attribution',
+  'battle',
+  'chat',
+  'export',
+  'fib',
+  'history',
+  'login',
+  'm',
+  'membership',
+  'portfolio',
+  'settings',
+  'shadow',
+  'tracking',
+] as const

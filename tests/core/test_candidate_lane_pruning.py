@@ -127,7 +127,7 @@ def test_build_l1_candidate_lane_entries_and_merge_filtering():
         sector_map={"000001": "Tech"},
         top_sectors=["Tech"],
         l2_symbols=["000001"],
-        channel_map={"000001": "markup_track"},
+        channel_map={"000001": "momentum"},
     )
     assert len(lanes_all) > 0
     chosen_lane = lanes_all[0]["entry_type"]
@@ -139,7 +139,7 @@ def test_build_l1_candidate_lane_entries_and_merge_filtering():
         sector_map={"000001": "Tech"},
         top_sectors=["Tech"],
         l2_symbols=["000001"],
-        channel_map={"000001": "markup_track"},
+        channel_map={"000001": "momentum"},
         blocked_lanes=(chosen_lane,),
     )
     assert all(item["entry_type"] != chosen_lane for item in lanes_pruned)

@@ -63,13 +63,15 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "scan_corporate_events",
-        "description": "扫描已公告与媒体电报中的重大资产重组、借壳、筹划购买与股票停牌。观察结果，不是实盘，也不改漏斗或买卖许可。",
+        "description": "检索最近48小时重组与停复牌消息；来源失败、否认/终止与未知时间单列。不保证全量覆盖，不改实盘或漏斗。",
         "parameters": {
             "type": "object",
             "properties": {
                 "limit": {
                     "type": "integer",
-                    "description": "最多返回条数，默认 20，最大 50",
+                    "description": "最多返回条数，默认 20，范围 1–50",
+                    "minimum": 1,
+                    "maximum": 50,
                 },
             },
         },

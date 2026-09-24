@@ -71,7 +71,7 @@ A 股主漏斗先写观察样本，盘后 feedback 再计算 outcomes，下一�
 
 ### 跨市场 universe
 
-A 股主漏斗使用本地股票池和行业映射；港股、美股、ETF 的代码 universe 维护在 `data/market_universes/*.txt`。港股 / 美股漏斗使用 TickFlow 批量日线接口拉取 320 个交易日窗口，和 A 股主流程共享结构识别口径，但不走 A 股专属的 Tushare 兜底。港美回测按需手动执行，不再维护独立定时 Actions。
+A 股主漏斗使用本地股票池和行业映射；港股、美股、ETF 的代码 universe 维护在 `data/market_universes/*.txt`。港股名单是 Tushare `hk_basic` 的上市股票，美股名单是 Nasdaq Trader 上市正股目录（不含 ETF、权证、优先股和测试代码），名称在对应的 `*_names.json`。`hk_us_universe_refresh.yml` 每周日北京时间 21:30 重新拉取这两份名单，有差异就开 PR，不直接改 `main`。港股 / 美股漏斗使用 TickFlow 批量日线接口拉取 320 个交易日窗口，和 A 股主流程共享结构识别口径，但不走 A 股专属的 Tushare 兜底。港美回测按需手动执行，不再维护独立定时 Actions。
 
 三市场推荐表与 Web 使用同一价格口径：`initial_price` 为该行入选日收盘（事件价），`change_pct` 相对该价；跨日再入选新增一行。同日重跑不得把已重定价的 `current_price` 盖回当日收盘，也不得把已算对的 `change_pct` 写死为 0。MFE/MAE 仍以各行事件日收盘为基准。港美漏斗写入时先读取既有事件报价，因此新记录无需等晚间重估后才与 A 股口径一致。
 
@@ -249,7 +249,9 @@ B 组衡量 Upthrust 当日对新候选的 veto 价值；所有组的持仓退�
 改变信号、成交或绩效口径，并把单时期完整漏斗回放从 10 次降为 1 次。
 手动 A/M/P 消融共用一次信号台账：三组只改变入场仓位权重，随后分别重放退出和现金组合。运行时会校验
 策略差异，若包含会改变候选集合、打分或触发器的变体则拒绝复用，必须完整重跑；`strategy_compare` 因此
-把 I（确认分校准）和 J（仅开 `enable_two_track_mode` 的 Layer 2 纯两轨制）放在独立分片各自重跑。
+把 I（确认分校准）放在独立分片重跑；改变 L2 通道集合的两轨制 J 曾同样独立分片，六窗口对照 A 三胜三负、
+边际成交更差后已删除（#476）。汇总报表按 signal_date+code 配对列出每组相对参照的边际成交，并把不合
+`backtest-strategy-<period>-<variant>/` 命名的产物目录列为已忽略。
 回测还会跳过不参与候选选择和成交计算的 Leader Radar 展示行；线上漏斗仍正常生成该诊断。
 
 `tradeable_l4` 不再按 Trend/Accum 固定配额截断候选：形态通过统一损失护栏后进入质量池，最终按质量排序，最多送审 8 只且同一行业最多 2 只。CAUTION 下未确认 launchpad 只观察；

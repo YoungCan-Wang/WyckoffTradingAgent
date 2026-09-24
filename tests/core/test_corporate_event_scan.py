@@ -55,7 +55,7 @@ def test_scan_parses_code_from_body_and_ignores_article_id() -> None:
     assert hits[0].name == "星帅尔"
 
 
-def test_filter_recent_keeps_same_evening_and_missing_timestamp() -> None:
+def test_filter_recent_keeps_same_evening_but_quarantines_missing_timestamp() -> None:
     hits = scan_corporate_events(
         [
             {"title": XINGSHUAIER_TELEGRAPH, "published_at": "2026-09-21 19:20:00"},
@@ -64,4 +64,63 @@ def test_filter_recent_keeps_same_evening_and_missing_timestamp() -> None:
         ]
     )
     kept = filter_recent_hits(hits, as_of="2026-09-21 23:00", lookback_days=2)
-    assert {hit.code for hit in kept} == {"002860", "000002"}
+    assert {hit.code for hit in kept} == {"002860"}
+
+
+import json
+from pathlib import Path
+
+import pytest
+
+from core.corporate_event_scan import normalize_stock_code
+from core.corporate_event_time import event_time
+
+CASES = json.loads((Path(__file__).resolve().parents[1] / "fixtures/corporate_event_cases.json").read_text())
+
+
+@pytest.mark.parametrize("case", CASES, ids=lambda case: case["title"])
+def test_shared_classification_cases(case):
+    [hit] = scan_corporate_events([{key: case[key] for key in ("title", "content") if key in case}])
+    for key in ("code", "event_status", "halt_status", "reason"):
+        assert getattr(hit, key) == case[key]
+
+
+@pytest.mark.parametrize("code", ["20260921001", "16008251", "id600825", "6008259", "123456", "600825abc"])
+def test_numeric_identifiers_are_not_stock_codes(code):
+    assert normalize_stock_code(code) == ""
+    assert parse_telegraph_symbol(f"公告编号{code}，筹划重大资产重组")[0] == ""
+
+
+def test_full_title_and_time_distinguish_updates():
+    prefix = "测试公司002860：关于筹划重大资产重组进展事项及股票停牌的公告"
+    hits = scan_corporate_events(
+        [
+            {"title": prefix + "（继续推进）", "published_at": "2026-09-21 08:00:00"},
+            {"title": prefix + "（终止事项）", "published_at": "2026-09-21 08:00:00"},
+        ]
+    )
+    assert len(hits) == 2
+
+
+@pytest.mark.parametrize("as_of", ["2026-09-21 08:15", "2026-09-21T00:15:00Z", "2026-09-20T20:15:00-04:00"])
+def test_window_enforces_time_of_day_offsets_and_unknown_dates(as_of):
+    dates = [
+        "2026-09-21 08:15:00",
+        "2026-09-21 19:20:00",
+        "2026-09-19 08:14:59",
+        "2026-09-19 08:15:00",
+        "",
+        "not-a-time",
+        "2026-09-21",
+    ]
+    hits = scan_corporate_events([{"title": XINGSHUAIER_TELEGRAPH, "published_at": value} for value in dates])
+    kept = filter_recent_hits(hits, as_of=as_of)
+    assert {hit.published_at for hit in kept} == {dates[0], dates[3]}
+
+
+def test_date_only_cutoff_is_day_end_and_invalid_cutoff_is_rejected():
+    hits = scan_corporate_events([{"title": XINGSHUAIER_TELEGRAPH, "published_at": "2026-09-21"}])
+    assert filter_recent_hits(hits, as_of="2026-09-21") == hits
+    with pytest.raises(ValueError):
+        filter_recent_hits(hits, as_of="bad date")
+    assert event_time("2026-02-30 08:00") is None

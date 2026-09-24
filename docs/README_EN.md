@@ -58,7 +58,7 @@ No installation required.
 
 **React Web App**: **[wyckoff-analysis.pages.dev](https://wyckoff-analysis.pages.dev/)**
 
-Modern React SPA with AI Agent chat, portfolio management, funnel screening, recommendation tracking, data export, streaming output, and tool-call visualization.
+Modern React SPA with AI Agent chat, portfolio management, funnel screening, recommendation tracking, the paper shadow-ledger showcase/full book, data export, streaming output, and tool-call visualization.
 
 | Chat Room | Funnel Screener |
 |:---:|:---:|
@@ -205,7 +205,7 @@ The agent's arsenal — 10 quant tools + 5 general capabilities:
 | Tool | Capability |
 |---|---|
 | `search_stock_by_name` | Fuzzy search by name, ticker, or pinyin |
-| `scan_corporate_events` | Market-wide announced restructure / halt scan from media telegrams; observation only, not a live or funnel buy gate |
+| `scan_corporate_events` | Bounded 48-hour restructure/halt news observations; explicit source health, denied/terminated/resumed states, no trading writes |
 | `analyze_stock` | Wyckoff diagnosis / recent OHLCV quotes / fundamental quality overlay (mode switch) |
 | `portfolio` | View holdings / batch portfolio health scan (mode switch) |
 | `update_portfolio` | Add / modify / delete holdings (use `items` for multi-symbol batches), set available cash, delete tracking records |
@@ -349,3 +349,12 @@ If this project helps, a GitHub Star is appreciated. If it helps you make money,
 
 <!-- star-history:start -->
 <!-- star-history:end -->
+
+## Public MCP server
+
+See [PUBLIC_MCP.md](PUBLIC_MCP.md) for installation, the 19-tool contract, lazy discovery, default-deny writes and stdio compatibility. This is separate from the external MCP client. Base package dependencies are not reduced by this refactor.
+
+Corporate-event observations use the same bounded East Money keyword searches and latest CLS batch in
+Python and Web. `source_status` is `ok`, `partial`, or `unavailable`; a source failure never means no
+corporate events. Undated results are excluded from recent hits. Shanghai-local cutoffs include time of day.
+See [the corporate-event contract](CORPORATE_EVENT_SCAN.md) for coverage limits and job exit codes.

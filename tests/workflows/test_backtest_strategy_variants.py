@@ -19,17 +19,11 @@ def test_strategy_variants_isolate_each_research_switch() -> None:
         "signal_sequence_bonus_enabled": True,
         "lps_use_fib_zone": False,
         "lps_creek_dynamic_relax": False,
-        "enable_two_track_mode": False,
         "enable_market_regime_gate": False,
     }
     assert all(strategy_variant_overrides("E").values())
     assert strategy_variant_overrides("K")["lps_use_fib_zone"] is True
     assert strategy_variant_overrides("K")["lps_creek_dynamic_relax"] is True
-    assert strategy_variant_overrides("J") == {**baseline, "enable_two_track_mode": True}
-    assert strategy_variant_overrides("L")["enable_two_track_mode"] is True
-    assert strategy_variant_overrides("L")["lps_use_fib_zone"] is True
-    assert strategy_variant_overrides("N")["enable_market_regime_gate"] is True
-    assert strategy_variant_overrides("N")["enable_two_track_mode"] is True
     assert DEFAULT_COMPARISON_VARIANTS == ("A", "M", "P")
     assert strategy_variant_overrides("F") == baseline
     assert strategy_variant_entry_policy("F").blocked_confirmed_signals == ("evr",)
@@ -42,7 +36,7 @@ def test_strategy_variants_isolate_each_research_switch() -> None:
     assert strategy_variant_overrides("R")["lps_creek_confirmation_enabled"] is True
     assert strategy_variants_share_signal_ledger(["A", "M", "P"]) is True
     assert strategy_variants_share_signal_ledger(["A", "F"]) is False
-    assert strategy_variants_share_signal_ledger(["A", "J"]) is False
+    assert strategy_variants_share_signal_ledger(["A", "I"]) is False
 
 
 def test_live_variant_preserves_production_configuration() -> None:

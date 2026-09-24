@@ -294,13 +294,6 @@ class TestAtrDynamicStopAndTrackMapping:
         assert d.stop_loss_atr_status == "安全"
         assert d.stop_loss_atr >= 10.0 * 0.90  # capped at -10% hard stop
 
-    def test_two_track_mapping(self):
-        from core.holding_diagnostic import _classify_track
-
-        assert _classify_track("趋势主升轨") == "Trend"
-        assert _classify_track("底部蓄势轨") == "Accum"
-        assert _classify_track("主升通道+趋势主升轨") == "Trend"
-
     def test_format_diagnostic_for_llm_contains_atr(self):
         from core.holding_diagnostic import format_diagnostic_for_llm
 

@@ -3,6 +3,7 @@ import { createApiApp } from './app'
 import { portfolioRoutes } from './routes/portfolio'
 import { remoteRoutes } from './routes/remote'
 import { settingsRoutes } from './routes/settings'
+import { shadowLedgerRoutes } from './routes/shadow-ledger'
 import { workerChatRoutes } from './routes/worker-chat'
 import { handleAgentRunQueue } from './services/agent-run-queue'
 import type { AgentRunMessage } from './services/agent-run'
@@ -18,6 +19,7 @@ app.route('/api/chat', workerChatRoutes)
 app.route('/api/agent-runs', agentRunRoutes)
 app.route('/api/portfolio', portfolioRoutes)
 app.route('/api/settings', settingsRoutes)
+app.route('/api/shadow-ledger', shadowLedgerRoutes)
 app.route('/api/remote', remoteRoutes)
 
 export default {

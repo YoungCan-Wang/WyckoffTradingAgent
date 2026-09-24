@@ -34,6 +34,9 @@ import {
 import { ANALYSIS_CONTEXT_PACK_SCHEMA, buildStockAnalysisContextPack } from './analysis-context'
 import {
   collectCorporateEventItems,
+  corporateEventTime,
+  corporateShanghaiTime,
+  filterRecentCorporateHits,
   renderCorporateEventReport,
   scanCorporateEvents,
 } from './corporate-event-scan'
@@ -753,15 +756,13 @@ export async function execStockNews(deps: ToolDeps, code: string, name: string |
   ].join('\n')
 }
 
-export async function execScanCorporateEvents(deps: ToolDeps, limit = 20): Promise<string> {
-  const cap = Math.min(Math.max(limit, 1), 50)
-  const rows = await collectCorporateEventItems(deps.fetch).catch(() => null)
-  if (rows === null) {
-    return '公司大事 / 停牌扫描：消息源暂时不可用。不要据此断定没有重组或停牌。这不是实盘，也不是漏斗买许可。'
-  }
-  const hits = scanCorporateEvents(rows).slice(0, cap)
-  const asOf = new Date().toISOString().slice(0, 16).replace('T', ' ')
-  return renderCorporateEventReport(hits, asOf)
+export async function execScanCorporateEvents(deps: ToolDeps, limit = 20, asOf = corporateShanghaiTime(Date.now())): Promise<string> {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 50) return 'limit 必须是 1–50 的整数。'
+  const collection = await collectCorporateEventItems(deps.fetch)
+  const classified = scanCorporateEvents(collection.items)
+  const undatedCount = classified.filter((hit) => corporateEventTime(hit.published_at) === null).length
+  const hits = filterRecentCorporateHits(classified, asOf).slice(0, limit)
+  return renderCorporateEventReport(hits, asOf, collection.status, collection.sources.filter((source) => !source.ok).map((source) => source.source), undatedCount)
 }
 
 function formatNewsHeadlineLine(row: StockNewsHeadline): string {

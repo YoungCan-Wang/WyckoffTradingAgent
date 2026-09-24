@@ -196,8 +196,8 @@ class _RiskSnapshot:
 
 # ── 通道 → 轨道映射 ──
 
-_TREND_CHANNELS = {"主升通道", "趋势延续", "点火破局", "趋势主升轨"}
-_ACCUM_CHANNELS = {"潜伏通道", "吸筹通道", "地量蓄势", "暗中护盘", "底部蓄势轨"}
+_TREND_CHANNELS = {"主升通道", "趋势延续", "点火破局"}
+_ACCUM_CHANNELS = {"潜伏通道", "吸筹通道", "地量蓄势", "暗中护盘"}
 
 
 def _classify_track(channel: str) -> str:

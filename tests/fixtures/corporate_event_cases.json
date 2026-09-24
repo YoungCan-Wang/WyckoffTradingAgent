@@ -1,0 +1,73 @@
+[
+  {
+    "title": "星帅尔002860：筹划购买PCB刀具设备公司湘鹰新材料等100%股权，股票停牌",
+    "code": "002860",
+    "event_status": "announced",
+    "halt_status": "announced",
+    "reason": "halt_and_restructure"
+  },
+  {
+    "title": "新华传媒600825：筹划重大资产重组，股票停牌",
+    "code": "600825",
+    "event_status": "announced",
+    "halt_status": "announced",
+    "reason": "halt_and_restructure"
+  },
+  {
+    "title": "测试公司002860：未筹划重大资产重组，股票不停牌",
+    "code": "002860",
+    "event_status": "denied",
+    "halt_status": "not_halted",
+    "reason": "denied"
+  },
+  {
+    "title": "测试公司002860：终止筹划重大资产重组，明日起复牌",
+    "code": "002860",
+    "event_status": "terminated",
+    "halt_status": "resumed",
+    "reason": "terminated"
+  },
+  {
+    "title": "测试公司（600825）：重大资产重组进展，股票复牌",
+    "code": "600825",
+    "event_status": "resumed",
+    "halt_status": "resumed",
+    "reason": "resumed"
+  },
+  {
+    "title": "测试公司002860：否认借壳传闻",
+    "content": "此前媒体称该股拟筹划重大资产重组并停牌。",
+    "code": "002860",
+    "event_status": "denied",
+    "halt_status": "unknown",
+    "reason": "denied"
+  },
+  {
+    "title": "公告编号20260921001，关于筹划重大资产重组",
+    "code": "",
+    "event_status": "announced",
+    "halt_status": "unknown",
+    "reason": "restructure"
+  },
+  {
+    "title": "重大资产重组公告编号：600825",
+    "code": "",
+    "event_status": "unknown",
+    "halt_status": "unknown",
+    "reason": "unknown"
+  },
+  {
+    "title": "000001与600825重大资产重组讨论",
+    "code": "",
+    "event_status": "unknown",
+    "halt_status": "unknown",
+    "reason": "unknown"
+  },
+  {
+    "title": "测试公司002860：筹划重大资产重组，尚未复牌，继续停牌",
+    "code": "002860",
+    "event_status": "announced",
+    "halt_status": "announced",
+    "reason": "halt_and_restructure"
+  }
+]

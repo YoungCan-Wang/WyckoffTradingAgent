@@ -8,6 +8,11 @@ describe('Pages compatibility API', () => {
     expect(response.status).toBe(404)
   })
 
+  it('exposes shadow-ledger on the Pages compatibility app', async () => {
+    const response = await app.request('/api/shadow-ledger')
+    expect(response.status).not.toBe(404)
+  })
+
   it('keeps shared API middleware and health checks', async () => {
     const response = await app.request('/api/health')
 

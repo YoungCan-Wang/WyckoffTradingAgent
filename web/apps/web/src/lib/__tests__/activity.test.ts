@@ -37,6 +37,7 @@ describe('featureForRoute', () => {
     expect(featureForRoute('/')).toBe('chat')
     expect(featureForRoute('/battle?x=1')).toBe('battle')
     expect(featureForRoute('/membership#capability-boundary')).toBe('membership')
+    expect(featureForRoute('/shadow')).toBe('shadow')
   })
 })
 

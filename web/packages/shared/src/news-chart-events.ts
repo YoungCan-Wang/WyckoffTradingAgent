@@ -146,6 +146,7 @@ export async function fetchEastMoneyNews(
   keyword: string,
   fetcher: typeof fetch = fetch,
   pages = MAX_PAGES,
+  strict = false,
 ): Promise<RawNewsItem[]> {
   const query = keyword.trim()
   if (!query) return []
@@ -153,7 +154,12 @@ export async function fetchEastMoneyNews(
   for (let page = 1; page <= Math.max(pages, 1); page += 1) {
     const payload = await requestNewsPage(query, page, fetcher)
     const batch = payload?.result?.cmsArticleWebOld
-    if (!Array.isArray(batch) || batch.length === 0) break
+    if (!Array.isArray(batch)) {
+      if (strict) throw new Error('Invalid East Money news payload')
+      break
+    }
+    if (strict && batch.some((item) => !isRecord(item))) throw new Error('Invalid East Money article')
+    if (batch.length === 0) break
     rows.push(...batch.filter(isRecord).map(normalizeArticle))
     if (batch.length < PAGE_SIZE) break
   }
@@ -185,6 +191,7 @@ async function requestNewsPage(keyword: string, page: number, fetcher: typeof fe
     _: '1',
   })
   const response = await fetcher(`${EASTMONEY_NEWS_URL}?${params}`, {
+    signal: AbortSignal.timeout(12_000),
     headers: {
       'User-Agent': 'Mozilla/5.0',
       Referer: `https://so.eastmoney.com/news/s?keyword=${encodeURIComponent(keyword)}`,
@@ -261,7 +268,7 @@ function normalizeArticle(item: Record<string, unknown>): RawNewsItem {
   return {
     title: String(item.title || '').trim(),
     content: String(item.content || '').trim(),
-    published_at: String(item.date || '').slice(0, 19),
+    published_at: String(item.date || ''),
     source: String(item.mediaName || 'eastmoney'),
     url: code ? `https://finance.eastmoney.com/a/${code}.html` : '',
   }

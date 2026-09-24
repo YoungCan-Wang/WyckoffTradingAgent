@@ -139,7 +139,7 @@ const WYCKOFF_CHAT_SYSTEM_PROMPT = `# 角色设定
 9. 复权口径以本轮注入的「复权口径」为准：结构价位来自前复权，委托价须是不复权实时价。两者被判定错开时，先说明差异，不得把结构价位直接当作委托价。
 10. analyze_stock 的 chart_plan 用于前端作图：日期必须取自工具返回的真实交易日，判断不出的阶段就留空，不要为了凑齐五个阶段而编。若处于可盘中交易时段且该股已有持仓，则不填 chart_plan（置为 null），直接给结论与操作口径 —— 盘中持仓看的是当下怎么办，不是回顾结构。
 11. 消息只用于核证，顺序不可颠倒：先用 analyze_stock 得出量价结构结论，再调用 stock_news 看消息能否对上。消息与结构冲突时说明冲突，不要用消息改写结构判断，也不要把消息当作买卖依据。stock_news 返回空只说明检索没命中，不等于无事发生，不得据此断言「没有利空」。
-12. 用户问停牌、重大资产重组、借壳、筹划购买或公司大事扫描时，调用 scan_corporate_events。这是全市场观察，不是漏斗买许可，也不是实盘。`
+12. 用户问停牌、重大资产重组、借壳、筹划购买或公司大事扫描时，调用 scan_corporate_events。这是有限来源的最近48小时观察，不是全量公告核对、漏斗买许可或实盘。必须保留消息源异常和时间未知提示，不得把否认、终止或复牌解释为新停牌。`
 
 const WEB_SEARCH_GUIDANCE = `# 联网搜索
 
@@ -686,7 +686,7 @@ function buildReadTools(deps: ToolDeps, userId: string, model: unknown) {
     market_overview: tool({ description: '查看当前/最新大盘行情信号。', inputSchema: z.object({}), execute: () => execMarketOverview(deps) }),
     market_history: tool({ description: '回看大盘指数过去N个交易日K线，分析量价关系和威科夫阶段。', inputSchema: z.object({ days: z.number().nullable(), index: z.enum(['sse', 'csi300', 'szse', 'chinext']).nullable() }), execute: ({ days, index }) => execMarketHistory(deps, userId, model, days ?? 100, index ?? 'sse') }),
     stock_news: tool({ description: 'A股个股近期消息（东方财富），用于核证量价结构判断。两条模型通道都可用，不依赖服务端联网检索。', inputSchema: z.object({ code: z.string(), name: z.string().nullable(), limit: z.number().nullable() }), execute: ({ code, name, limit }) => execStockNews(deps, code, name, limit ?? 12) }),
-    scan_corporate_events: tool({ description: '扫描已公告与媒体电报中的重大资产重组、借壳、筹划购买与股票停牌。观察结果，不是实盘，也不改漏斗。', inputSchema: z.object({ limit: z.number().nullable() }), execute: ({ limit }) => execScanCorporateEvents(deps, limit ?? 20) }),
+    scan_corporate_events: tool({ description: '扫描已公告与媒体电报中的重大资产重组、借壳、筹划购买与股票停牌。观察结果，不是实盘，也不改漏斗。', inputSchema: z.object({ limit: z.number().int().min(1).max(50).nullable() }), execute: ({ limit }) => execScanCorporateEvents(deps, limit ?? 20) }),
     query_recommendations: tool({ description: '查询形态复盘记录。', inputSchema: z.object({ limit: z.number() }), execute: ({ limit }) => execQueryRecommendations(deps, limit) }),
     query_attribution: tool({ description: '查询远端策略归因治理器、operator_summary、latest_policy_display、latest_execution_summary、promotion_checklist 和 latest_operations；本地 --no-write 报告需走 CLI/MCP。', inputSchema: z.object({ limit: z.number() }), execute: ({ limit }) => execQueryAttribution(deps, limit) }),
   }
