@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import casesJson from '../../../../../../tests/fixtures/corporate_event_cases.json?raw'
 import { describe, expect, it } from 'vitest'
 import {
   XINGSHUAIER_TELEGRAPH, XINHUA_MEDIA_TELEGRAPH, classifyHeadline, execScanCorporateEvents,
@@ -7,7 +7,7 @@ import {
 } from '@wyckoff/shared'
 
 const AS_OF = '2026-09-21T19:40:00+08:00'
-const cases = JSON.parse(readFileSync(new URL('../../../../../../tests/fixtures/corporate_event_cases.json', import.meta.url), 'utf8')) as Array<{
+const cases = JSON.parse(casesJson) as Array<{
   title: string; content?: string; code: string; event_status: string; halt_status: string; reason: string
 }>
 
@@ -36,7 +36,7 @@ describe('corporate event scan', () => {
     expect(['risk', 'deal']).toContain(classifyHeadline(XINGSHUAIER_TELEGRAPH)?.kind)
   })
 
-  it('queries two East Money pages and CLS, preserving source health', async () => {
+  it('queries both sources and preserves source health', async () => {
     const keywords: string[] = []
     const text = await execScanCorporateEvents(depsWith(async (url, init) => {
       if (String(url).includes('cls.cn')) return emptyCls()

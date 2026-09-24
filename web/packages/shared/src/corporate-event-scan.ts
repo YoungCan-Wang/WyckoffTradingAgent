@@ -77,8 +77,9 @@ export function parseTelegraphSymbol(title: string): { code: string; name: strin
   const match = TELEGRAPH.exec(text) || PAREN_CODE.exec(text)
   if (match) return { code: match.groups?.code || '', name: match.groups?.name || '' }
   const matches = [...text.matchAll(LOOSE_CODE)]
-  if (matches.length !== 1 || /(?:编号|金额|订单|日期)[：: ]*$/.test(text.slice(0, matches[0].index))) return { code: '', name: '' }
-  return { code: matches[0].groups?.code || '', name: '' }
+  const only = matches.length === 1 ? matches[0] : undefined
+  if (!only || /(?:编号|金额|订单|日期)[：: ]*$/.test(text.slice(0, only.index))) return { code: '', name: '' }
+  return { code: only.groups?.code || '', name: '' }
 }
 
 export function corporateEventTime(raw: string): number | null {
@@ -144,7 +145,9 @@ export async function collectCorporateEventItems(fetcher: typeof fetch = fetch):
     try {
       const items = await fetchItems()
       const stamps = items.map((item) => corporateEventTime(item.published_at || item.date || '')).filter((stamp): stamp is number => stamp !== null).sort((a, b) => a - b)
-      return { items, source: { source, ok: true, item_count: items.length, error: '', oldest_at: stamps.length ? corporateShanghaiTime(stamps[0]) : '', newest_at: stamps.length ? corporateShanghaiTime(stamps[stamps.length - 1]) : '' } }
+      const oldest = stamps.at(0)
+      const newest = stamps.at(-1)
+      return { items, source: { source, ok: true, item_count: items.length, error: '', oldest_at: oldest === undefined ? '' : corporateShanghaiTime(oldest), newest_at: newest === undefined ? '' : corporateShanghaiTime(newest) } }
     } catch (error) {
       return { items: [], source: { source, ok: false, item_count: 0, error: error instanceof Error ? error.name : 'Error', oldest_at: '', newest_at: '' } }
     }
