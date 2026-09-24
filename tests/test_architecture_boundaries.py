@@ -19,6 +19,10 @@ RUNTIME_LAYERS = ("agents", "cli", "core", "integrations", "tools", "workflows")
 RUNTIME_IMPORT_ROOTS = ("cli", "core", "integrations", "tools", "workflows")
 CHANNEL_SENDERS = {"send_to_telegram", "send_wecom_notification", "send_dingtalk_notification"}
 PRIVATE_MODULE_ALLOWLIST = {"cli.workflows._shared", "integrations._llm_types"}
+# #495 put the public MCP bridge under integrations/; it must lazy-call tools/agents/
+# workflows at runtime. Keep those files out of the nest-all scan and assert top-level
+# only (same shape as agents→workflows).
+PUBLIC_MCP_BRIDGE = ROOT / "integrations" / "public_mcp"
 
 
 def _python_files(*locations: Path) -> list[Path]:
@@ -27,6 +31,14 @@ def _python_files(*locations: Path) -> list[Path]:
         candidates = [location] if location.is_file() else location.rglob("*.py")
         paths.extend(path for path in candidates if "__pycache__" not in path.parts)
     return sorted(paths)
+
+
+def _is_public_mcp_bridge(path: Path) -> bool:
+    try:
+        path.relative_to(PUBLIC_MCP_BRIDGE)
+    except ValueError:
+        return False
+    return True
 
 
 def _display_path(path: Path, relative_to: Path = ROOT) -> str:
@@ -177,7 +189,17 @@ def test_boundary_scanners_cover_aliases_and_private_modules(tmp_path: Path):
 
 @pytest.mark.parametrize(("layer", "forbidden"), LAYER_IMPORT_RULES)
 def test_package_imports_follow_layer_direction(layer: str, forbidden: set[str]):
-    assert _scan_import_boundaries(_python_files(ROOT / layer), forbidden) == []
+    paths = _python_files(ROOT / layer)
+    if layer == "integrations":
+        paths = [path for path in paths if not _is_public_mcp_bridge(path)]
+    assert _scan_import_boundaries(paths, forbidden) == []
+
+
+def test_public_mcp_bridge_only_reaches_upper_layers_lazily():
+    """integrations/public_mcp may call tools/agents/workflows, but only inside callables."""
+    forbidden = dict(LAYER_IMPORT_RULES)["integrations"]
+    paths = _python_files(PUBLIC_MCP_BRIDGE)
+    assert _scan_import_boundaries(paths, forbidden, top_level_only=True) == []
 
 
 def test_public_mcp_entrypoint_does_not_depend_on_cli():
