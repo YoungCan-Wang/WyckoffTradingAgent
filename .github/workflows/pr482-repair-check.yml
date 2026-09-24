@@ -1,0 +1,38 @@
+name: PR482 repair workspace
+
+on:
+  push:
+    branches: [cursor/corp-halt-scan-a967]
+    paths: [.github/workflows/pr482-repair-check.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr482-repair-workspace
+  cancel-in-progress: true
+
+jobs:
+  workspace:
+    if: github.ref == 'refs/heads/cursor/corp-halt-scan-a967'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Export tracked source and offline test dependencies
+        run: |
+          mkdir -p "$RUNNER_TEMP/pr482/wheels"
+          git bundle create "$RUNNER_TEMP/pr482/source.bundle" HEAD refs/remotes/origin/main
+          python -m pip download --only-binary=:all: 'ruff==0.16.2' 'mcp>=1.28,<2' -d "$RUNNER_TEMP/pr482/wheels"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pr482-repair-workspace
+          path: ${{ runner.temp }}/pr482/
+          retention-days: 2
+          if-no-files-found: error
