@@ -1,0 +1,41 @@
+name: PR 482 pinned source export
+on:
+  push:
+    branches: [automation/pr482-iteration-20260925]
+    paths: [.github/workflows/pr482_source_export.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: pr482-source-export-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: 1238d3d923a81345a3bd7c7fa487a176827bd0b8
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Export committed source objects only
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pr482-sources"
+          git update-ref refs/heads/audit-main 1238d3d923a81345a3bd7c7fa487a176827bd0b8
+          git update-ref refs/heads/audit-pr482 50b175ff044e22e7a886ed92ff78d61e48b8be1f
+          git bundle create "$RUNNER_TEMP/pr482-sources/source.bundle" refs/heads/audit-main refs/heads/audit-pr482
+          if git clone --quiet https://github.com/YoungCan-Wang/WyckoffTradingAgent.wiki.git "$RUNNER_TEMP/pr482-wiki"; then
+            git -C "$RUNNER_TEMP/pr482-wiki" bundle create "$RUNNER_TEMP/pr482-sources/wiki.bundle" --all
+          else
+            printf '%s\n' 'Wiki clone unavailable; no Wiki content was changed.' > "$RUNNER_TEMP/pr482-sources/wiki-status.txt"
+          fi
+          sha256sum "$RUNNER_TEMP/pr482-sources/"* > "$RUNNER_TEMP/pr482-sources/SHA256SUMS.txt"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: pr482-pinned-sources
+          path: ${{ runner.temp }}/pr482-sources
+          retention-days: 7
+          if-no-files-found: error
