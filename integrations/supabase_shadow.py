@@ -66,6 +66,14 @@ def seed_shadow_account(account_id: str = SHADOW_ACCOUNT_ID) -> None:
     ).execute()
 
 
+def _money_or_default(value: object, default: float) -> float:
+    # ``0`` is a real cash balance after a fill that exhausts the book; ``x or default``
+    # would treat it as missing and reinflate to INITIAL_CAPITAL on the next session.
+    if value is None or value == "":
+        return float(default)
+    return float(value)
+
+
 def load_shadow_book(account_id: str = SHADOW_ACCOUNT_ID) -> ShadowBook:
     account_id = assert_shadow_account(account_id)
     seed_shadow_account(account_id)
@@ -73,8 +81,8 @@ def load_shadow_book(account_id: str = SHADOW_ACCOUNT_ID) -> ShadowBook:
     rows = _table(TABLE_SHADOW_POSITIONS).select("*").eq("account_id", account_id).execute().data or []
     positions = {str(row["code"]): _row_to_position(row) for row in rows if int(row.get("shares") or 0) > 0}
     return ShadowBook(
-        cash=float(acc.get("cash") or INITIAL_CAPITAL),
-        initial_capital=float(acc.get("initial_capital") or INITIAL_CAPITAL),
+        cash=_money_or_default(acc.get("cash"), INITIAL_CAPITAL),
+        initial_capital=_money_or_default(acc.get("initial_capital"), INITIAL_CAPITAL),
         positions=positions,
     )
 
