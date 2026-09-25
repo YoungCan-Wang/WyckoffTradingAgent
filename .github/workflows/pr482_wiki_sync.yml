@@ -1,0 +1,69 @@
+name: PR 482 independent Wiki sync
+on:
+  push:
+    branches: [automation/pr482-iteration-20260925]
+    paths: [.github/workflows/pr482_wiki_sync.yml]
+permissions:
+  contents: write
+concurrency:
+  group: pr482-wiki-sync-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  wiki:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Update only pending feature documentation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/pr482-wiki-evidence
+          gh auth setup-git
+          git clone --quiet https://github.com/YoungCan-Wang/WyckoffTradingAgent.wiki.git /tmp/pr482-wiki
+          cd /tmp/pr482-wiki
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          cat > PR482_Corporate_Event_Observation.md <<'DOC'
+          # PR #482 公司事件观察（待合并）
+
+          本页描述 cursor/corp-halt-scan-a967 中待审核能力，不代表 main 或已发布包已经上线。
+          验收记录以 PR #482 为准；本页不是生产启用公告。
+
+          CLI/MCP/读盘室的 scan_corporate_events 是有限来源48小时观察，不是公告全量核对或交易信号。
+          来源为东方财富四个关键词（每词最多两页）和财联社最新批次，计划北京时间08:15、19:40独立调度，可能延迟。
+
+          request_status/source_status 区分正常、部分成功、不可用；第一页成功而第二页失败时保留第一页。
+          failed_pages 标记失败页，rejected_items 计数坏记录；coverage_status 只有 unknown/possibly_truncated，不宣称覆盖完整。
+
+          收购事件与停牌独立判断。related_codes 保留多标的；subject_status 为 single_candidate、ambiguous、conflict 或 unknown，
+          不能擅自选择第一只。计划复牌属于 halt_status=resume_announced，event_status=resumption_announced（终止或否认优先）。
+          effective_date 仅是上海日历日期，不是已经复牌或可下单证明。下一交易日、非法日期或缺失发布日期无法推算时留空。
+
+          MCP 业务桥迁往 agents 后仍保留写调用同步执行、串行锁和默认禁止写入的边界。
+          真实来源验收与离线CI分开，通知API接受不等于人工已读。
+          本轮不增加跨运行去重、持久化通知台账、候选评分、仓位或OMS改动。
+
+          详细契约位于仓库 docs/CORPORATE_EVENT_SCAN.md；本页不保存冻结回测数字。
+          DOC
+          git add PR482_Corporate_Event_Observation.md
+          if git diff --cached --quiet; then
+            printf 'unchanged\n' > /tmp/pr482-wiki-evidence/status.txt
+          else
+            git commit -m 'docs: document pending corporate observation contract'
+            if git push origin HEAD; then
+              git rev-parse HEAD > /tmp/pr482-wiki-evidence/pushed_commit.txt
+              printf 'synced_pending_documentation\n' > /tmp/pr482-wiki-evidence/status.txt
+            else
+              printf 'push_denied_or_failed; no successful remote update claimed\n' > /tmp/pr482-wiki-evidence/status.txt
+              cp PR482_Corporate_Event_Observation.md /tmp/pr482-wiki-evidence/
+              exit 1
+            fi
+          fi
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: pr482-wiki-sync
+          path: /tmp/pr482-wiki-evidence
+          retention-days: 14
+          if-no-files-found: warn
