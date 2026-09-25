@@ -1,0 +1,203 @@
+name: Prepare PR 478 conflict resolution
+on:
+  push:
+    branches: [automation/pr478-conflict-repair-20260925]
+    paths: [.github/workflows/pr478_conflict_repair.yml]
+concurrency:
+  group: pr478-conflict-repair
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  resolve-and-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      EXPECTED_MAIN: 94d3d3642177106c38e246c3406df03d74e66838
+      EXPECTED_PR: fd9713ed932200d412e6d7dd7694a3f84e11b9c9
+      PR_BRANCH: cursor/critical-bug-management-9199
+      CANDIDATE_BRANCH: automation/pr478-resolved-20260925
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Merge main and preserve both fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pr478-evidence"
+          git fetch origin main "$PR_BRANCH"
+          test "$(git rev-parse origin/main)" = "$EXPECTED_MAIN"
+          test "$(git rev-parse "origin/$PR_BRANCH")" = "$EXPECTED_PR"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout --detach "$EXPECTED_PR"
+          set +e
+          git merge --no-ff --no-commit "$EXPECTED_MAIN" > "$RUNNER_TEMP/pr478-evidence/merge.log" 2>&1
+          status=$?
+          set -e
+          test "$status" -le 1
+          cat "$RUNNER_TEMP/pr478-evidence/merge.log"
+          python - <<'PY'
+          import ast
+          import os
+          import subprocess
+          import textwrap
+          from pathlib import Path
+
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True)
+
+          main, head = os.environ['EXPECTED_MAIN'], os.environ['EXPECTED_PR']
+          path = 'core/holding_diagnostic.py'
+          test_path = 'tests/core/test_holding_diagnostic.py'
+          permitted = {path, test_path}
+          conflicts = set(git('diff', '--name-only', '--diff-filter=U').splitlines())
+          assert conflicts and conflicts <= permitted, conflicts
+          main_text = git('show', f'{main}:{path}')
+          pr_text = git('show', f'{head}:{path}')
+          ancestor = git('merge-base', main, head).strip()
+          old_text = git('show', f'{ancestor}:{path}')
+
+          def function(text, name):
+              return next(n for n in ast.walk(ast.parse(text)) if isinstance(n, ast.FunctionDef) and n.name == name)
+
+          current_fn = function(main_text, '_health_rating')
+          old_fn = function(old_text, '_health_rating')
+          assert ast.dump(current_fn) == ast.dump(old_fn), 'Upstream health changes need a separate review'
+          pr_fn = function(pr_text, '_health_rating')
+          lines = main_text.splitlines(keepends=True)
+          replacement = ast.get_source_segment(pr_text, pr_fn) + '\n'
+          lines[current_fn.lineno - 1:current_fn.end_lineno] = [replacement]
+          merged = ''.join(lines)
+          old_call = '    health, reasons = _health_rating(ma, wyckoff, risk, series.pnl_pct, extreme[2])'
+          new_call = '''    health, reasons = _health_rating(
+              ma,
+              wyckoff,
+              risk,
+              series.pnl_pct,
+              extreme[2],
+              atr_stop_active=bool(getattr(cfg, "exit_use_atr_stop", False)),
+          )'''
+          assert merged.count(old_call) == 1
+          merged = merged.replace(old_call, new_call)
+          assert 'wyckoff = _wyckoff_snapshot(code, series, bench_df, cfg, buy_dt)' in merged
+          assert '    buy_dt: str = "",' in merged
+          Path(path).write_text(merged)
+          expected_functions = {
+              n.name: ast.dump(n) for n in ast.parse(main_text).body
+              if isinstance(n, (ast.FunctionDef, ast.ClassDef))
+          }
+          for node in ast.parse(merged).body:
+              if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name not in {'_health_rating', 'diagnose_one_stock'}:
+                  assert ast.dump(node) == expected_functions[node.name], node.name
+
+          main_tests = git('show', f'{main}:{test_path}')
+          pr_tests = git('show', f'{head}:{test_path}')
+          test_name = 'test_reference_atr_breach_does_not_force_danger_when_atr_stop_disabled'
+          test_fn = function(pr_tests, test_name)
+          parent = next(n for n in ast.parse(pr_tests).body if isinstance(n, ast.ClassDef) and any(getattr(x, 'name', '') == test_name for x in n.body))
+          target = next(n for n in ast.parse(main_tests).body if isinstance(n, ast.ClassDef) and n.name == parent.name)
+          assert test_name not in main_tests
+          test_lines = main_tests.splitlines(keepends=True)
+          test_lines[target.end_lineno:target.end_lineno] = ['\n', ''.join(pr_tests.splitlines(keepends=True)[test_fn.lineno - 1:test_fn.end_lineno]), '\n']
+          merged_tests = ''.join(test_lines)
+          merged_tests += textwrap.dedent('''
+
+          def test_atr_reference_near_stop_respects_activation():
+              from types import SimpleNamespace
+
+              from core.holding_diagnostic import _health_rating
+
+              ma = SimpleNamespace(pattern="中性")
+              wyckoff = SimpleNamespace(exit_signal=None, l2_channel="", l4_triggers=[])
+              risk = SimpleNamespace(
+                  stop_status="安全", stop_loss_atr_status="逼近止损(<2%)",
+                  range_60d=10.0, ret_10d=0.0, vol_ratio=1.0, take_profit_status="未启用",
+              )
+              off, off_reasons = _health_rating(ma, wyckoff, risk, -1.0, atr_stop_active=False)
+              on, on_reasons = _health_rating(ma, wyckoff, risk, -1.0, atr_stop_active=True)
+              assert off == "🟢健康"
+              assert "逼近动态止损线(ATR)" not in off_reasons
+              assert on == "🟡警戒"
+              assert "逼近动态止损线(ATR)" in on_reasons
+              risk.stop_status = "已穿止损"
+              fixed, reasons = _health_rating(ma, wyckoff, risk, -8.0, atr_stop_active=False)
+              assert fixed == "🔴危险"
+              assert "已穿止损线(-7%)" in reasons
+
+
+          def test_atr_activation_preserves_buy_date_forwarding(monkeypatch):
+              from core import holding_diagnostic as module
+
+              frame = make_ohlcv(n=250, trend="up", base=10.0, volatility=0.008, seed=1)
+              buy_date = str(frame["date"].iloc[-10])
+              original = module._wyckoff_snapshot
+              seen = []
+
+              def snapshot(code, series, bench_df, cfg, buy_dt):
+                  seen.append((buy_dt, cfg.exit_use_atr_stop))
+                  return original(code, series, bench_df, cfg, buy_dt)
+
+              monkeypatch.setattr(module, "_wyckoff_snapshot", snapshot)
+              for active in (False, True):
+                  cfg = FunnelConfig(exit_use_atr_stop=active)
+                  diagnose_one_stock("600519", "test", cost=10.0, df=frame, cfg=cfg, buy_dt=buy_date)
+              assert seen == [(buy_date, False), (buy_date, True)]
+          ''')
+          Path(test_path).write_text(merged_tests)
+          original_nodes = {n.name: ast.dump(n) for n in ast.walk(ast.parse(main_tests)) if isinstance(n, ast.FunctionDef)}
+          actual_nodes = {n.name: ast.dump(n) for n in ast.walk(ast.parse(merged_tests)) if isinstance(n, ast.FunctionDef)}
+          assert all(actual_nodes[name] == body for name, body in original_nodes.items()), 'Existing tests were altered'
+          for filename in permitted:
+              assert '<<<<<<<' not in Path(filename).read_text()
+          PY
+          git add core/holding_diagnostic.py tests/core/test_holding_diagnostic.py
+          test -z "$(git diff --name-only --diff-filter=U)"
+          git diff --cached "$EXPECTED_MAIN" --check
+          git diff --cached "$EXPECTED_MAIN" > "$RUNNER_TEMP/pr478-evidence/resolution.patch"
+      - name: Install validation dependencies
+        run: python -m pip install -e '.[dev,mcp]'
+      - name: Run focused regression and quality checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruff format core/holding_diagnostic.py tests/core/test_holding_diagnostic.py
+          ruff check core/holding_diagnostic.py tests/core/test_holding_diagnostic.py
+          ruff format --check core/holding_diagnostic.py tests/core/test_holding_diagnostic.py
+          python scripts/quality_gate.py --check-functions
+          python -m pytest tests/core/test_holding_diagnostic.py tests/core/test_wyckoff_engine.py tests/core/test_shadow_ledger.py tests/integrations/test_supabase_shadow_persist.py tests/test_public_mcp_routing.py -q | tee "$RUNNER_TEMP/pr478-evidence/focused-tests.log"
+          git add core/holding_diagnostic.py tests/core/test_holding_diagnostic.py
+          git diff --cached "$EXPECTED_MAIN" --check
+          python - <<'PY'
+          import os
+          import subprocess
+          allowed = {'core/holding_diagnostic.py', 'tests/core/test_holding_diagnostic.py'}
+          changed = set(subprocess.check_output(['git', 'diff', '--cached', '--name-only', os.environ['EXPECTED_MAIN']], text=True).splitlines())
+          assert changed == allowed, changed
+          PY
+      - name: Publish validated candidate without moving PR or main
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$EXPECTED_MAIN"
+          test "$(git ls-remote origin "refs/heads/$PR_BRANCH" | cut -f1)" = "$EXPECTED_PR"
+          git commit -m 'fix(holding): resolve main conflict while preserving buy-date diagnostics'
+          git push origin "HEAD:refs/heads/$CANDIDATE_BRANCH"
+          git diff "$EXPECTED_MAIN" HEAD > "$RUNNER_TEMP/pr478-evidence/resolution.patch"
+          git show -s --format='%H%n%P%n%T' HEAD | tee "$RUNNER_TEMP/pr478-evidence/commit.txt"
+      - name: Upload resolution evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pr478-conflict-resolution
+          path: ${{ runner.temp }}/pr478-evidence/
+          if-no-files-found: warn
+          retention-days: 14
