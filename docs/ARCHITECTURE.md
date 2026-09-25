@@ -56,7 +56,7 @@
   │
   ├─→ Supabase (Auth + DB)     ← Auth、星球会员、配置、持仓、复盘表等仍按 RLS 直连
   │
-  ├─→ 同源 /api/chat|settings|portfolio|agent-runs|remote
+  ├─→ 同源 /api/chat|settings|portfolio|shadow-ledger|agent-runs|remote
   │       │
   │       └─→ Pages Function fetch() 反代到完整 wyckoff-api Worker（不缓冲 SSE）
   │
@@ -69,7 +69,7 @@
 
 **为什么需要 API 层与边缘代理？**
 
-读盘室主链路已经后端化到 `web/apps/api/src/routes/chat.ts`：独立 `wyckoff-api` Worker 通过 `worker-chat.ts` 注入沙箱工具，负责读取用户模型配置、执行工具、限流、返回 UIMessage stream，并通过 Vercel AI SDK 的 approval parts 约束 `execute_portfolio_update`。生产 React 只请求 Pages 同源 `/api/*`，不直连 `*.workers.dev`：国内浏览器能打开 `pages.dev`，但常访问不了 `workers.dev`，单股分析走的 `/api/llm-proxy` 因此可用，读盘室和设置连通性测试却会 `Failed to fetch`。`web/functions/api/[[path]].ts` 在边缘用 `fetch()` 把 `/api/chat`、`/api/settings`、`/api/portfolio`、`/api/agent-runs`、`/api/remote` 反代到完整 Worker，原样转发 `Authorization` 与 WebSocket 升级头，不缓冲 SSE / UIMessage 流。这不需要新的自定义域名，也不需要改 Cloudflare Dashboard；Worker 源站默认已是公开的 `https://wyckoff-api.yongkai-wang.workers.dev`，Pages 可用可选变量 `WYCKOFF_API_ORIGIN` 覆盖。Service Binding 是后续优化，不是这条路径的前置条件。`web/apps/api/src/pages.ts` 仍是不含沙箱工具、不挂载 `/api/agent-runs` 的兼容 app，只供测试，不是生产读盘室后端。Vercel Sandbox 的 Node.js SDK 只在 `web/apps/sandbox-bridge/` 的 Vercel Node Function 中运行，Worker 与 Pages Functions 都不会加载它。
+读盘室主链路已经后端化到 `web/apps/api/src/routes/chat.ts`：独立 `wyckoff-api` Worker 通过 `worker-chat.ts` 注入沙箱工具，负责读取用户模型配置、执行工具、限流、返回 UIMessage stream，并通过 Vercel AI SDK 的 approval parts 约束 `execute_portfolio_update`。生产 React 只请求 Pages 同源 `/api/*`，不直连 `*.workers.dev`：国内浏览器能打开 `pages.dev`，但常访问不了 `workers.dev`，单股分析走的 `/api/llm-proxy` 因此可用，读盘室和设置连通性测试却会 `Failed to fetch`。`web/functions/api/[[path]].ts` 在边缘用 `fetch()` 把 `/api/chat`、`/api/settings`、`/api/portfolio`、`/api/shadow-ledger`、`/api/agent-runs`、`/api/remote` 反代到完整 Worker；`/api/shadow-ledger` 在生产 Worker 尚未挂上该路由（预发常见 404）时回退到 Pages 兼容 app，原样转发 `Authorization` 与 WebSocket 升级头，不缓冲 SSE / UIMessage 流。 Web `/shadow` 与其它业务页一样走 AuthGuard：未登录只进 `/login`。登录后非会员看橱窗，有效星球会员看详账。这不需要新的自定义域名，也不需要改 Cloudflare Dashboard；Worker 源站默认已是公开的 `https://wyckoff-api.yongkai-wang.workers.dev`，Pages 可用可选变量 `WYCKOFF_API_ORIGIN` 覆盖。Service Binding 是后续优化，不是这条路径的前置条件。`web/apps/api/src/pages.ts` 仍是不含沙箱工具、不挂载 `/api/agent-runs` 的兼容 app，只供测试，不是生产读盘室后端。Vercel Sandbox 的 Node.js SDK 只在 `web/apps/sandbox-bridge/` 的 Vercel Node Function 中运行，Worker 与 Pages Functions 都不会加载它。
 
 Hono app 的公共中间件按请求 ID、安全响应头、CORS、256 KiB 请求体上限的顺序执行；路由随后执行 Supabase JWT 鉴权与业务校验。聊天 POST 在鉴权后执行用户限流：同时配置 `UPSTASH_REDIS_REST_URL` 和 `UPSTASH_REDIS_REST_TOKEN` 时使用 Upstash Redis REST 共享额度，未配置时保留单 Worker 实例内的软限流，Redis 超时或不可用时返回 `X-RateLimit-Backend: local-fallback` 并启用本地保护。只配置一个 Upstash 变量属于部署错误，请求会失败而不会静默使用不完整连接。
 
@@ -151,7 +151,9 @@ CLI Agent 的本地命令工具只允许明确的只读命令；文件工具继�
 |------|------|------|
 | `/chat` | 读盘室 | Agent 多轮对话、漏斗筛选、研报生成、模型快速切换 |
 | `/analysis` | 单股分析 | 输入代码 → K 线图 + 新闻打点叠加 + LLM 诊断 |
+| `/fib` | 斐波那契画线 | 公开页，不经 AuthGuard、不查星球会员。搜索复用股票搜索框。区间可选约 120 个交易日（默认）、当月、6 个月、1 年、3 年。点击「生成画线」后，浏览器直接读东方财富前复权日 K。免费 TradingView Advanced Chart 不能写入官方画线，也没有可靠的价格到像素接口，叠在它上面的线会在自动缩放、成交量区或用户缩放时错位，所以这里用 lightweight-charts 画这批日 K，并在同一价格坐标上标 0 / 23.6% / 38.2%（赚钱空间下沿）/ 50% / 61.8% / 78.6%–100%（供给区）。38.2% 到 100% 涂成赚钱空间，78.6%–100% 另涂供给区。161.8% 只在图例。图和线一起出现。构建时复制 `fib.html`，避免 Pretty URLs 把 `/fib` 折回 `/`。 |
 | `/portfolio` | 持仓 | 持仓明细 + 收益率 |
+| `/shadow` | 影子账户 | 侧栏「会员权限」组；非会员看净值橱窗与板块标签；会员看日流水和仍持仓净收益。SPA 回退只用 `/* /index.html 200`，并在构建时为 `/chat`、`/shadow` 等客户端路由复制同名 html（不要把路径改写到 `/index.html`，Pretty URLs 会再 308 到 `/`；也不要只靠 `404.html`，生产 health 的 `curl --fail` 会把 `/chat` 判失败） |
 | `/tracking` | 跟踪 | 形态复盘 + 涨跌幅 |
 | `/export` | 数据导出 | CSV 导出 |
 | `/membership` | 星球会员 | 会员状态、专属能力、普通用户能力和加入方式 |
@@ -368,28 +370,15 @@ OpenAI provider 兼容 Qwen / Kimi / LongCat / Minimax 等 OpenAI API 格式端�
 
 ### MCP Server
 
-`mcp_server.py` — 通过 [Model Context Protocol](https://modelcontextprotocol.io) 将 Wyckoff 分析能力暴露给外部 AI Agent（Claude Code、Cursor 等）。
+`mcp_server.py` 是兼容入口，对外实现位于 `integrations/public_mcp/`。
+工具契约独立于业务导入，`initialize`/`tools/list` 不初始化用户状态或数据库；
+调用先校验 JSON Schema 和写权限，再延迟加载生产 `ToolSurface` 与用户上下文。
+所有 19 个工具均走同一边界，业务错误用 MCP `isError` 返回，标准输出仅承载协议消息。
 
-```
-Claude Code / Cursor / 其他 MCP 客户端
-  │
-  ├─→ stdio 连接 → wyckoff-mcp 进程
-  │
-  ├─→ MCP 协议 → FastMCP 路由 → chat_tools.py 中的函数
-  │
-  └─→ 工具结果 JSON ← 返回
-```
-
-**与 CLI / Web 的关键区别**：MCP Server 不具备对话能力，它只是一个工具服务——LLM 的推理和多轮编排由外部客户端（如 Claude Code）负责，Wyckoff MCP 只响应单次工具调用。
-
-安装与注册：
-
-```bash
-pip install youngcan-wyckoff-analysis[mcp]
-claude mcp add wyckoff -- wyckoff-mcp
-```
-
-凭证通过环境变量注入（`TUSHARE_TOKEN`、`SUPABASE_*`），或由 `_get_credential` 自动从 `~/.wyckoff/wyckoff.json` 读取。
+这是本地单用户 stdio 接口，不是带 OAuth 的公共 HTTP 服务，也未实现 MCP Tasks。
+当前主包依赖图未缩减；延迟导入不能解决安装阶段的磁盘不足。
+安装、参数默认值、权限、响应格式、长任务与验证契约的唯一维护位置是
+[PUBLIC_MCP.md](PUBLIC_MCP.md)。作为客户端接入第三方 MCP 的实现不在本次重构范围。
 
 ### TUI 视觉层次
 
@@ -833,8 +822,9 @@ MCP server 走 ToolSurface，没有确认弹窗也没有待批队列。`tools/wr
 | **信号反馈闭环** (`signal_feedback.yml`) | 周一-周五 23:30 | 只结算缺失/`pending` outcomes，同股共享一次 K 线；刷新 health / registry，周五续跑策略反思 Shadow |
 | **美股漏斗筛选 + 推荐表现** (`wyckoff_funnel_us.yml`) | 周二-周六 05:35 | `market_funnel_job.py --market us` 后续跑 `us_recommendation_performance_job.py` |
 | **数据库维护** (`db_maintenance.yml`) | 每周六 06:20 | 清理过期行情、订单、信号、市场信号等滑动窗口数据 |
+| **港美股票池刷新** (`hk_us_universe_refresh.yml`) | 每周日 21:30 | 拉取 Tushare 港股上市名单和 Nasdaq Trader 美股正股目录，有差异则开 PR。周日是为了避开交易日漏斗，不表示它排在其他任务之后 |
 | **回测网格** (`backtest_grid.yml`) | 手动触发 | 多周期 × 多交易风格回放，同时输出参数邻域稳定性与按时间前推的 walk-forward 样本外验证 |
-| **策略消融** (`backtest_grid.yml: strategy_compare`) | 手动显式开启 | A/M/P 五窗口结论已稳定为不晋级，默认网格不再重复消耗五个全市场任务；仅在 `run_strategy_compare=true` 时复现历史证据。手动复跑仍按窗口共用一次信号台账、分别重放权重与现金组合；候选/触发规则不同的策略禁止共享。Q/N/O 与本轮 Q/R/S/T 形态门控均已否决，不改变生产漏斗 |
+| **策略消融** (`backtest_grid.yml: strategy_compare`) | 手动显式开启 | A/M/P 五窗口结论已稳定为不晋级，默认网格不再重复消耗五个全市场任务；仅在 `run_strategy_compare=true` 时复现历史证据。手动复跑仍按窗口共用一次信号台账、分别重放权重与现金组合；候选/触发规则不同的策略禁止共享，故 matrix 分两片：`amp`（A/M/P 共享台账）、`calib`（I 独算）。Q/N/O、Q/R/S/T 形态门控与 Layer 2 两轨制 J（#476，六窗口三胜三负、边际成交更差，代码已删）均已否决，不改变生产漏斗 |
 | **触发阈值标定** (`backtest_trigger_calibration.yml`) | 手动触发 | 按周期 × 取值扇出，每个 job 完整重跑一次全市场漏斗；扫触发阈值时按目标触发器单信号均收做跨周期 walk-forward 选值，扫 `top_n` 时按全样本均收对比选择层增益；填 `grid_cells` 则改走共享台账的退出网格，在 `top_n=0` 原始池上取退出基准 |
 
 回测回放在每个历史区间开始时一次性预计算各股票在所有交易日的历史终点位置，日循环直接按整数位置切片；
@@ -957,6 +947,13 @@ Web 个股、持仓和股票对抗分析保存历史时写入 `meta`：输入快
 
 星球会员身份以 `public.planet_members` 为唯一事实表：`user_id text` 为主键，`created_at timestamptz` 记录绑定时间，`expires_on date` 按 `Asia/Shanghai` 判断最后有效日，`NULL` 表示长期有效。会员身份与个人模型/行情配置相互独立，单股分析不会因会员身份绕过 TickFlow/Tushare Key 检查。客户端只有按 `auth.uid()` 读取自己记录的 RLS 权限，没有会员写权限。旧表采用一次性 breaking cutover，发布与回滚顺序见 [PLANET_MEMBERSHIP.md](PLANET_MEMBERSHIP.md)。
 
+Web `/shadow` 只读 `USER_SHADOW:*` 纸面账，且与其它业务页一样走 AuthGuard：未登录只进 `/login`。
+登录后 `GET /api/shadow-ledger` 用服务端角色查 `shadow_*`，按 `planet_members` 裁剪 payload。
+非会员只返回橱窗字段（净值曲线、区间净收益、最大回撤、粗胜率、开仓只数、板块标签），不含代码/
+名称/价格/数量/止损；有效会员才返回日净值、事件流水和仍开仓净收益（公式与飞书卡一致：
+`shares*last_mark - shares*avg_cost`）。预发 Pages 没有 service-role、生产 Worker 尚未挂路由时，
+已登录前端回退调用 `shadow_ledger_payload` RPC（须登录；非会员橱窗，会员详账）。不写实盘表，也不读雷达库。
+
 Web `/portfolio` 的数据库模式仅对星球会员开放。浏览器把 Supabase JWT 发送给 `/api/portfolio`，API
 从已验证令牌取得 `user_id` 并固定映射到 `USER_LIVE:<user_id>`，请求体不能指定 `portfolio_id`。
 Cloudflare Pages 通过 `web/functions/api/[[path]].ts` 将同域 `/api/portfolio` 反代到完整 Worker，前端同时校验
@@ -1036,9 +1033,9 @@ web/             React Web App（CF Pages 部署）
     src/lib/     supabase 客户端、行情/LLM 辅助工具
     src/features/reading-room/  useChat、消息队列、工具渲染、对话历史
     src/stores/  Zustand 状态管理（auth）
-  apps/api/      Hono Worker API（/api/chat、/api/agent-runs、/api/portfolio、/api/settings）
+  apps/api/      Hono Worker API（/api/chat、/api/agent-runs、/api/portfolio、/api/shadow-ledger、/api/settings）
   packages/shared/  Web/Worker 共享工具、schema 与 SSE 归一化
   functions/     CF Pages Functions（边缘代理）
-    api/[[path]].ts 同源 /api/{chat,settings,portfolio,agent-runs,remote} 反代到 Worker
+    api/[[path]].ts 同源 /api/{chat,settings,portfolio,shadow-ledger,agent-runs,remote} 反代到 Worker
     api/llm-proxy/  LLM / 行情 API 兼容代理
 ```

@@ -95,3 +95,53 @@ def test_persist_upserts_plans_before_account_and_positions(persist_log):
     plan_upsert = names_ops.index((TABLE_SHADOW_TRADE_PLANS, "upsert"))
     account_upsert = names_ops.index((TABLE_SHADOW_ACCOUNT, "upsert"))
     assert plan_upsert < account_upsert
+
+
+def test_money_or_default_keeps_zero_cash() -> None:
+    """买满后 cash=0 必须原样读回，否则次日会话会凭空灌回 INITIAL_CAPITAL。"""
+    assert ss._money_or_default(0, ss.INITIAL_CAPITAL) == 0.0
+    assert ss._money_or_default(0.0, ss.INITIAL_CAPITAL) == 0.0
+    assert ss._money_or_default(None, ss.INITIAL_CAPITAL) == ss.INITIAL_CAPITAL
+    assert ss._money_or_default("", ss.INITIAL_CAPITAL) == ss.INITIAL_CAPITAL
+
+
+def test_load_shadow_book_preserves_zero_cash(monkeypatch):
+    """成交把现金耗尽后落库 cash=0；次日 load 不得再当成缺字段灌回 10 万。"""
+
+    class _Result:
+        def __init__(self, data):
+            self.data = data
+
+    class _Query:
+        def __init__(self, data):
+            self._data = data
+
+        def select(self, *_a, **_k):
+            return self
+
+        def eq(self, *_a, **_k):
+            return self
+
+        def limit(self, *_a, **_k):
+            return self
+
+        def execute(self):
+            return _Result(self._data)
+
+    account = {
+        "account_id": "USER_SHADOW:test",
+        "cash": 0.0,
+        "initial_capital": 100_000.0,
+    }
+    monkeypatch.setattr(ss, "_configured", lambda: True)
+    monkeypatch.setattr(ss, "seed_shadow_account", lambda _aid: None)
+    monkeypatch.setattr(
+        ss,
+        "_table",
+        lambda name: _Query([account] if name == TABLE_SHADOW_ACCOUNT else []),
+    )
+
+    book = ss.load_shadow_book("USER_SHADOW:test")
+    assert book.cash == 0.0
+    assert book.initial_capital == 100_000.0
+    assert book.positions == {}

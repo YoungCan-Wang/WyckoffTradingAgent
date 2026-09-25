@@ -61,6 +61,7 @@
 | **SOW (Sign of Weakness)** | 放量下跌，确认派发结束、下跌开始的信号 |
 | **Strategy ablation A-E** | 同一数据与执行参数下的规则消融：A 基线，B=UTAD，C=regime 阈值，D=Creek/LPS+时序，E=全部组合；用于区分单项贡献和组合交互 |
 | **A股实证消融 A/M/P** | 已完成的 confirmed-only 实验：A 基线，M=弱水温信号缩仓，P=M + 将 NEUTRAL Spring 仓位由 50% 再降至 25%。三组只改变入场权重，手动复跑时每个窗口共享一次信号台账、分别重放现金组合；默认 Backtest Grid 已关闭该任务，仅 `run_strategy_compare=true` 时复现。Q/N/O 与后续 Q/R/S/T 门控均未晋级生产 |
+| **边际成交 (Marginal Trades)** | 策略消融报表按 `signal_date + code` 把某组与其参照组的信号级成交配成三集：共同、仅参照（被本组踢掉）、仅本组（本组新放进来），分别给出笔数、均收、胜率。现金收益差只说明结果，边际成交说明「换进来的票是否比换掉的好」；两轨制 J（#476）即由此被否决：新增 171 笔均收 −2.07%，踢掉 227 笔均收 −1.17% |
 | **方案 A 前瞻影子跟踪** | Forward Shadow Mode（#470/#471）：日常漏斗并行计算中证全指（`000985`）MA20 + 1% 缓冲 hurdle 的 `ALLOW`/`BLOCK` 裁决，打标入库并写入研报 `market_regime_shadow`。生产总门控保持关闭（`enable_market_regime_gate=False`，零阻断、零干扰），以无偏前瞻样本检验大盘择时有效性。 |
 | **候选车道真剪枝 (变体 Q)** | Candidate Lane Pruning（#467/#472）：通过 `FunnelConfig.blocked_candidate_entry_types` 实现车道级入口拦截与通道降级回退，使被拦候选彻底不进入统一质量池竞争；消融变体 Q 显式锁定其它开关，用于离线隔离度量特定车道的纯净贡献；生产默认为空元组 `()`。 |
 | **Layer 3 剥离消融 (变体 R)** | Layer 3 Bypass Ablation：通过 `FunnelConfig.enable_layer3=False` 完全跳过行业共振过滤，所有 L2 候选全量直通 L4，用于在多周期回测中验证关闭行业共振对整体收益与回撤的真实影响；生产默认开启（`True`）。 |
@@ -293,7 +294,7 @@ flowchart LR
 | **Health** | 按信号类型聚合后的胜率、均值收益、样本数和权重，落在 `signal_health_daily`。 |
 | **动态影子晋级** | 将当日候选的基础影子分与同信号、同水温的历史健康度合成动态分；通过结构、样本和风险清单后，只获得 Step3 复核席位，不等于正式推荐、跨日确认或 OMS 买入许可。 |
 | **当日盈亏 (same-day P&L)** | 现价相对前收盘的浮动盈亏；不是相对建仓成本。`buy_dt` 在成交回填里是 T+1 最近买入日（当日加仓会刷新），不能用来判断整仓今开，故有昨收时一律 vs 昨收；仅昨收缺失时才用今开成本兜底。金额按持仓本币×人民币汇率。账本当日盈亏是各持仓当日盈亏之和，现金记 0，因此不等于「今日净值 − 昨日净值」（后者含同日买卖现金流）。由 16:05 `nav_snapshot` 写入 `daily_nav.day_pnl` / `position_day_pnl`，Step4 Telegram 工单回读展示。 |
-| **影子账本 (paper shadow ledger)** | 漏斗成功后的纸面对照账户，账户号 `USER_SHADOW:<uuid>`。盘后按 Step4 同口径买许可写下夜 `next_open` 计划，次日开盘价成交，遵守 T+1 / 整手 / 涨跌停 / 费用。只写 `shadow_*` 表，绝不写 `USER_LIVE` 的 `portfolios` / `portfolio_positions` / `trade_orders` / `daily_nav`。飞书卡标题必须带「影子账本 / paper」，与 `ic_shadow`、动态影子分不是同一概念。持仓区只列 `shadow_positions.shares > 0` 的开仓；逐只**净收益**是盯市浮盈 `shares * last_mark − shares * avg_cost`（`avg_cost` 已摊入买侧费用），百分比分母为 `shares * avg_cost`。已平仓不进持仓列表。账户行的现金/净值/市值/**累计**（权益 − 初始资金）口径不变。此数不是实盘 `当日盈亏`（相对昨收），也未扣尚未发生的卖费。 |
+| **影子账本 (paper shadow ledger)** | 漏斗成功后的纸面对照账户，账户号 `USER_SHADOW:<uuid>`。盘后按 Step4 同口径买许可写下夜 `next_open` 计划，次日开盘价成交，遵守 T+1 / 整手 / 涨跌停 / 费用。只写 `shadow_*` 表，绝不写 `USER_LIVE` 的 `portfolios` / `portfolio_positions` / `trade_orders` / `daily_nav`。飞书卡标题必须带「影子账本 / paper」，与 `ic_shadow`、动态影子分不是同一概念。持仓区只列 `shadow_positions.shares > 0` 的开仓；逐只**净收益**是盯市浮盈 `shares * last_mark − shares * avg_cost`（`avg_cost` 已摊入买侧费用），百分比分母为 `shares * avg_cost`。已平仓不进持仓列表。账户行的现金/净值/市值/**累计**（权益 − 初始资金）口径不变。此数不是实盘 `当日盈亏`（相对昨收），也未扣尚未发生的卖费。Web `/shadow` 只读 `USER_SHADOW:*`：未登录只进登录页；登录后非会员只拿橱窗 DTO（净值曲线、区间收益、回撤、粗胜率、开仓只数、板块标签），有效星球会员才拿日净值与开平仓流水；服务端按会员身份裁剪，不靠前端藏字段。 |
 | **Registry** | 信号生命周期表，控制信号是 `ACTIVE`、`WATCH`、`EXPERIMENTAL` 还是 `RETIRED`。信号级 `status` 以全局行（`regime=""` / `ALL`）为准；regime 拆分行只承载精确权重并跟随全局生命周期。 |
 | **Shadow Run** | 动态策略旁路演练：真实推荐不变，只记录动态策略会新增或移除哪些候选。 |
 | **Dynamic Policy** | 根据信号健康度、registry 和市场广度，动态调整 Trend / Accum 候选配额。 |
@@ -386,9 +387,10 @@ flowchart LR
 | **本地软限流** | 未配置 Redis 或 Redis 临时故障时，单个 Worker 实例内的保护计数。实例回收或扩容后不保证全局一致，响应头通过 `local` / `local-fallback` 明确标识。 |
 | **Workers Logs** | Cloudflare Worker 免费日志：未捕获异常和 `console.error` 进控制台，约保留 3 天。不写 Supabase。 |
 | **Web Analytics** | Cloudflare 免费网站统计：匿名 PV/UV 和页面访问。可在 Pages 项目里打开，或用公开构建变量 `VITE_CF_WEB_ANALYTICS_TOKEN` 注入 beacon。不做按钮点击率。 |
-| **星球会员（Planet Member）** | 已在 `planet_members` 表绑定且未过期的登录账号。会员可使用形态跟踪、策略归因、云端持仓、隔离研究计算和手机遥控等共享云端能力；会员身份不会自动写入用户的私人模型或数据源 Key。 |
+| **星球会员（Planet Member）** | 已在 `planet_members` 表绑定且未过期的登录账号。会员可使用形态跟踪、策略归因、云端持仓、隔离研究计算、手机遥控和影子纸面账详账等共享云端能力；会员身份不会自动写入用户的私人模型或数据源 Key。 |
 | **Clarity（星球会员）** | Microsoft Clarity 点击热力图/录屏。只对有效星球会员加载，默认项目 `y6albpfin1`，可用 `VITE_CLARITY_PROJECT_ID` 覆盖。事件进 Clarity，不写业务库。 |
 | **新闻打点 / News chart overlay** | 单股分析页和 `analyze_stock` 诊断上的读盘叠加层：用规则过滤东方财富个股新闻，把业绩/监管/股东/交易事件对齐到交易日并标在 K 线上。不进漏斗、不改候选、不构成买卖依据。 |
+| **斐波那契画线** | 公开 Web 页 `/fib`，侧栏在「投研终端」，不要求登录或星球会员。K 线和水平线画在同一套前复权日 K 上（lightweight-charts）。免费 TradingView 组件不能官方画线，也读不到价格像素，所以不用它当底图再叠一层。区间默认约 120 个交易日，也可改当月、6 个月、1 年、3 年。价位按该窗口最低到最高向上量（与 `channel_geometry` 的黄金分割房间同一方向）：38.2% 到 100% 是赚钱空间，78.6%–100% 是供给区，161.8% 是扩展目标。只是读盘参考，不进漏斗、不产生买卖指令。 |
 | **web_search（读盘室）** | DeepSeek Responses API 的服务端联网搜索工具；在读盘室使用官方 `deepseek-v4-flash` 或 `deepseek-v4-pro` 时注入。用于公开网页/舆情检索，不替代行情与持仓工具；搜索证据仅当轮有效。与 CLI 本机 CDP `browser_research` 不同路径。 |
 | **DeepSeek V4 思考策略** | 仅官方 DeepSeek V4 端点启用 `thinking` / `reasoning_effort`。读盘室主 Agent 使用 `high`，网页专项报告和后台结构化任务使用 `low`，读盘室嵌套 Chat 调用使用 `off`；TUI/桌面可在 `off/low/high/max` 中配置。无工具报告不会回传会被官方忽略的 `reasoning_content`：纯推理截断时提高预算重试，有正文时只按正文续写；工具型 Agent 才完整回传推理。 |
 | **browser_research（CLI）** | TUI/CLI 专用公开网页检索：Playwright 附着本机 Chrome CDP。CDP 未就绪时弹窗授权，同意后自动拉起独立调试 Chrome（`~/.wyckoff/chrome-cdp`），授权本会话有效；可用 `/browser start|status`。 |
@@ -418,7 +420,7 @@ flowchart LR
 
 | 名词 | 含义 |
 |------|------|
-| **两个方向** | `mcp_server.py` 是本项目**作为 server** 被 Claude Desktop / Cursor 连接；`cli/mcp_client.py` 是本项目**作为客户端**去连第三方 server。两者工具集不同、审批路径不同，不要混谈。 |
+| **两个方向** | `mcp_server.py`（兼容入口）与 `integrations/public_mcp/`（实现）是本项目**作为 server** 被 Claude Desktop / Cursor 连接；`cli/mcp_client.py` 是本项目**作为客户端**去连第三方 server。两者工具集不同、审批路径不同，不要混谈。 |
 | **配置即信任边界** | 接入一个外部 server 等于允许在本机 spawn 它的命令。因此 `~/.wyckoff/mcp_servers.json` 只由用户手写，模型不能新增 server，新增条目默认 `enabled: false`；文件权限固定为 0600。 |
 | **工具前缀** | 外部工具统一命名 `mcp__<server>__<tool>`，避免与原生工具撞名。前缀在读写判定时会被剥掉，所以 server 名叫 `deploy` 不会让它的只读工具被误判为写。 |
 | **写工具启发式** | MCP 的 `annotations` 是可选的，server 不保证声明副作用。判定顺序：`readOnlyHint=True` → 读；`destructiveHint=True` → 写；工具名含 create/delete/update/send/deploy 等动词 → 写；**其余一律按写**。判错代价不对称：把读当写只多一次确认，把写当读是静默执行了副作用。 |
@@ -428,3 +430,7 @@ flowchart LR
 | **同步桥接** | MCP SDK 只有 async API，而 `ToolRegistry.execute` 是同步的。唯一可行写法是 anyio `start_blocking_portal()` + `portal.wrap_async_context_manager()`；手工 `AsyncExitStack` 配 `portal.call` 会抛 "Attempted to exit a cancel scope that isn't the current task's"，因为 cancel scope 必须在创建它的 task 里退出。 |
 | **env 白名单** | `stdio_client` 只继承 `HOME/LOGNAME/PATH/SHELL/USER`，server 需要的 API key 必须在配置的 `env` 里显式给出。 |
 | **描述截断** | 外部工具描述会进 system prompt，等于第三方能往模型上下文里写字。描述截断到 600 字符并加 `[外部 MCP: <server>]` 前缀标明来源。 |
+
+## 对外 MCP 契约
+
+工具发现与业务执行分离；可握手不代表所有工具免认证。写入默认拒绝，业务错误映射为 `isError`。详见 [PUBLIC_MCP.md](docs/PUBLIC_MCP.md)。

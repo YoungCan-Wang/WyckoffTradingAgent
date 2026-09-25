@@ -294,6 +294,14 @@ class TestAtrDynamicStopAndTrackMapping:
         assert d.stop_loss_atr_status == "安全"
         assert d.stop_loss_atr >= 10.0 * 0.90  # capped at -10% hard stop
 
+    def test_format_diagnostic_for_llm_contains_atr(self):
+        from core.holding_diagnostic import format_diagnostic_for_llm
+
+        df = make_ohlcv(n=250, trend="up", base=10.0, volatility=0.01, seed=1)
+        d = diagnose_one_stock("600519", "贵州茅台", cost=10.0, df=df)
+        llm_text = format_diagnostic_for_llm(d)
+        assert "ATR止损:" in llm_text
+
     def test_reference_atr_breach_does_not_force_danger_when_atr_stop_disabled(self):
         """Production keeps exit_use_atr_stop=False; ATR is display-only then.
 
@@ -333,17 +341,48 @@ class TestAtrDynamicStopAndTrackMapping:
         assert on.health == "🔴危险"
         assert "已穿动态止损线(ATR)" in on.health_reasons
 
-    def test_two_track_mapping(self):
-        from core.holding_diagnostic import _classify_track
 
-        assert _classify_track("趋势主升轨") == "Trend"
-        assert _classify_track("底部蓄势轨") == "Accum"
-        assert _classify_track("主升通道+趋势主升轨") == "Trend"
+def test_atr_reference_near_stop_respects_activation():
+    from types import SimpleNamespace
 
-    def test_format_diagnostic_for_llm_contains_atr(self):
-        from core.holding_diagnostic import format_diagnostic_for_llm
+    from core.holding_diagnostic import _health_rating
 
-        df = make_ohlcv(n=250, trend="up", base=10.0, volatility=0.01, seed=1)
-        d = diagnose_one_stock("600519", "贵州茅台", cost=10.0, df=df)
-        llm_text = format_diagnostic_for_llm(d)
-        assert "ATR止损:" in llm_text
+    ma = SimpleNamespace(pattern="中性")
+    wyckoff = SimpleNamespace(exit_signal=None, l2_channel="", l4_triggers=[])
+    risk = SimpleNamespace(
+        stop_status="安全",
+        stop_loss_atr_status="逼近止损(<2%)",
+        range_60d=10.0,
+        ret_10d=0.0,
+        vol_ratio=1.0,
+        take_profit_status="未启用",
+    )
+    off, off_reasons = _health_rating(ma, wyckoff, risk, -1.0, atr_stop_active=False)
+    on, on_reasons = _health_rating(ma, wyckoff, risk, -1.0, atr_stop_active=True)
+    assert off == "🟢健康"
+    assert "逼近动态止损线(ATR)" not in off_reasons
+    assert on == "🟡警戒"
+    assert "逼近动态止损线(ATR)" in on_reasons
+    risk.stop_status = "已穿止损"
+    fixed, reasons = _health_rating(ma, wyckoff, risk, -8.0, atr_stop_active=False)
+    assert fixed == "🔴危险"
+    assert "已穿止损线(-7%)" in reasons
+
+
+def test_atr_activation_preserves_buy_date_forwarding(monkeypatch):
+    from core import holding_diagnostic as module
+
+    frame = make_ohlcv(n=250, trend="up", base=10.0, volatility=0.008, seed=1)
+    buy_date = str(frame["date"].iloc[-10])
+    original = module._wyckoff_snapshot
+    seen = []
+
+    def snapshot(code, series, bench_df, cfg, buy_dt):
+        seen.append((buy_dt, cfg.exit_use_atr_stop))
+        return original(code, series, bench_df, cfg, buy_dt)
+
+    monkeypatch.setattr(module, "_wyckoff_snapshot", snapshot)
+    for active in (False, True):
+        cfg = FunnelConfig(exit_use_atr_stop=active)
+        diagnose_one_stock("600519", "test", cost=10.0, df=frame, cfg=cfg, buy_dt=buy_date)
+    assert seen == [(buy_date, False), (buy_date, True)]

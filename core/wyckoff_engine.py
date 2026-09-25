@@ -219,13 +219,6 @@ class FunnelConfig:
     breakout_accel_vol_ratio: float = 1.3  # 近 N 日均量 / 前 ref 均量 >= 此值
     breakout_accel_vol_ref_window: int = 60  # 量能参考窗口
 
-    # Layer 2 两轨制整合（Two-Track Consolidated Architecture）
-    enable_two_track_mode: bool = False
-    markup_track_bias_200_max: float = 0.30
-    accum_track_price_from_low_max: float = 0.35
-    accum_track_vol_quantile: float = 0.25
-    accum_track_vol_dry_ratio: float = 0.75
-
     # Step 4: 顶层大盘 Regime 门控（Top-Level Market Regime Gate）研究脚手架
     # 方案 A：中证全指/全市场基准 + 1% 缓冲 hurdle（CSI_MA20_Band）。
     # 默认保持关闭（False）。生产开启须经独立评审批准。
@@ -784,7 +777,7 @@ def layer3_sector_resonance(
     return filtered, top_sectors
 
 
-TREND_CHANNEL_TAGS = ("主升通道", "趋势延续", "点火破局", "加速突破", "趋势主升轨")
+TREND_CHANNEL_TAGS = ("主升通道", "趋势延续", "点火破局", "加速突破")
 
 
 def _is_star_board(code: str) -> bool:
@@ -2790,8 +2783,6 @@ def run_funnel(
 
 
 _CHANNEL_HIT_LABELS = {
-    "markup_track": "趋势主升轨",
-    "accum_track": "底部蓄势轨",
     "momentum": "主升",
     "ambush": "潜伏",
     "accum": "吸筹",

@@ -546,8 +546,10 @@ jobs:
         run: |
           if [ "$VARIANT_SET" = "calib" ]; then
             echo "STRATEGY_VARIANT_ARGS=--strategy-variant I" >> "$GITHUB_ENV"
+            echo "STRATEGY_RUN_SUBDIR=backtest-strategy-${BT_PERIOD_KEY}-I" >> "$GITHUB_ENV"
           else
             echo "STRATEGY_VARIANT_ARGS=--strategy-variants A,M,P --strategy-prefix backtest-strategy-${BT_PERIOD_KEY}" >> "$GITHUB_ENV"
+            echo "STRATEGY_RUN_SUBDIR=" >> "$GITHUB_ENV"
           fi
 
       # --strategy-variants（复数）会复用一次信号台账，因此只能放"仅改入场仓位
@@ -555,7 +557,12 @@ jobs:
       # 会改变台账本身，塞进复数参数会被 backtest.py 的护栏拒绝
       # （「复用信号台账的策略组只能改变入场仓位权重」）。故 I 走 --strategy-variant
       # （单数）单独算一次台账，与 amp 组分属不同 matrix 分片，产物也分开命名。
-      # A 组基线在 amp 分片里，故 A vs I 的差值即校准的净效应。
+      # A 组基线在 amp 分片里，故 A vs I 的差值即校准的净效应。改变候选集合的新变体
+      # （如 2026-09 的两轨制 J）同样要走独立分片；J 六窗口三胜三负未晋级后已删除。
+      #
+      # 单数分片的产物必须落在 backtest-strategy-<period>-<variant>/ 子目录：汇总脚本
+      # build_backtest_strategy_comparison 按该目录名识别周期与组别，直接写在 artifact
+      # 根目录（如 ...-calib-<run>/summary.md）会被静默跳过，报表里就永远缺这一组。
       #
       # 注意：shell 续行(\)之间不能插注释，否则命令被截断、后续参数全部丢失
       # （2026-08-09 曾因此丢掉 --snapshot-dir，回测转为实时拉数据而被限流）。
@@ -566,7 +573,8 @@ jobs:
           set -euo pipefail
           OUT_DIR="analysis/backtest_strategy_actions"
           echo "OUT_DIR=${OUT_DIR}" >> "$GITHUB_ENV"
-          mkdir -p "$OUT_DIR"
+          RUN_DIR="${OUT_DIR}${STRATEGY_RUN_SUBDIR:+/${STRATEGY_RUN_SUBDIR}}"
+          mkdir -p "$RUN_DIR"
           python -u -m scripts.backtest_runner \
             --start "$BT_START" \
             --end "$BT_END" \
@@ -598,7 +606,7 @@ jobs:
             --wbt-n-jobs 2 \
             --snapshot-dir snapshot_data \
             --allow-static-meta \
-            --output-dir "$OUT_DIR" \
+            --output-dir "$RUN_DIR" \
             | tee "$OUT_DIR/run.log"
 
       - name: Upload strategy artifact

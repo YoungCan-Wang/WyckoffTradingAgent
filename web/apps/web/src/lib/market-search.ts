@@ -127,7 +127,9 @@ async function buildSearchIndex(): Promise<IndexedStockSearchResult[]> {
 
 async function fetchMarketRows(url: string): Promise<RawMarketRow[]> {
   try {
-    const response = await fetch(url, { cache: 'force-cache' })
+    // force-cache keeps the first download even after a hard reload, so a newer
+    // universe file never reaches the search box.
+    const response = await fetch(url, { cache: 'no-cache' })
     if (!response.ok) return []
     const rows: unknown = await response.json()
     return Array.isArray(rows) ? rows : []

@@ -12,9 +12,11 @@ from core.layer2_strength import (
     Layer2SymbolState,
     RpsContext,
     _benchmark_regime_gate_passed,
+    _diagnose_ambush,
     _diagnose_momentum,
-    _layer2_channels,
-    accum_track_ok,
+    _diagnose_sos,
+    _sos_channel_ok,
+    ambush_channel_ok,
     build_benchmark_context,
     build_rps_context,
     calc_relative_strength,
@@ -22,7 +24,6 @@ from core.layer2_strength import (
     close_return_pct,
     diagnose_layer2_symbol_failure,
     evaluate_layer2_symbol,
-    markup_track_ok,
     rps_filter_flags,
     trend_continuation_channel_ok,
 )
@@ -322,133 +323,6 @@ def test_momentum_diagnosis_reports_fast_rps_and_slope() -> None:
     assert any("RPS斜率不足" in reason for reason in reasons)
 
 
-def test_channel_labels_supports_two_track_tags() -> None:
-    hits = {"markup_track": True, "accum_track": True}
-    assert channel_labels(hits) == ["趋势主升轨", "底部蓄势轨"]
-
-
-def test_markup_track_ok_passes_bullish_alignment_and_rejects_overbought() -> None:
-    cfg = SimpleNamespace(markup_track_bias_200_max=0.30)
-    df = pd.DataFrame({"close": [100.0] * 30, "volume": [1000.0] * 30})
-
-    # Case 1: Bullish alignment and price above MA50
-    state_ok = Layer2SymbolState(
-        close=pd.Series([100.0] * 30),
-        last_close=110.0,
-        last_ma_short=105.0,
-        last_ma_long=100.0,
-        bullish_alignment=True,
-        holding_ma20=True,
-    )
-    assert markup_track_ok(df, state_ok, cfg) is True
-
-    # Case 2: Overbought (bias_200 = (140 - 100) / 100 = 0.40 > 0.30)
-    state_overbought = Layer2SymbolState(
-        close=pd.Series([100.0] * 30),
-        last_close=140.0,
-        last_ma_short=120.0,
-        last_ma_long=100.0,
-        bullish_alignment=True,
-        holding_ma20=True,
-    )
-    assert markup_track_ok(df, state_overbought, cfg) is False
-
-
-def test_markup_track_ok_passes_breakout_with_volume() -> None:
-    cfg = SimpleNamespace(markup_track_bias_200_max=0.30)
-    # 20 bars of 100 volume, then breakout bar with 150 volume and 3% gain
-    volumes = [100.0] * 20 + [150.0]
-    closes = [10.0] * 20 + [10.3]
-    df = pd.DataFrame({"close": closes, "volume": volumes})
-
-    state_breakout = Layer2SymbolState(
-        close=pd.Series(closes),
-        last_close=10.3,
-        last_ma_short=10.1,
-        last_ma_long=10.5,  # not bullish alignment yet
-        bullish_alignment=False,
-        holding_ma20=False,
-    )
-    assert markup_track_ok(df, state_breakout, cfg) is True
-
-
-def test_accum_track_ok_passes_dry_volume_and_rejects_high_position() -> None:
-    cfg = SimpleNamespace(
-        dry_vol_ref_window=100,
-        dry_vol_lookback=5,
-        accum_track_price_from_low_max=0.35,
-        accum_track_vol_quantile=0.25,
-        accum_track_vol_dry_ratio=0.75,
-    )
-    # 100 bars: low was 10.0, recent close is 12.0 (<= 10 * 1.35)
-    # volumes: 95 bars of 1000, recent 5 bars of 200 (well below 25% quantile)
-    closes = [10.0] * 50 + [12.0] * 50
-    volumes = [1000.0] * 95 + [200.0] * 5
-    df = pd.DataFrame({"close": closes, "volume": volumes})
-
-    state_low = Layer2SymbolState(
-        close=pd.Series(closes),
-        last_close=12.0,
-        last_ma_short=11.5,
-        last_ma_long=11.0,
-        bullish_alignment=True,
-        holding_ma20=True,
-    )
-    assert accum_track_ok(df, state_low, cfg) is True
-
-    # High position: recent close is 15.0 (> 10 * 1.35 = 13.5)
-    state_high = Layer2SymbolState(
-        close=pd.Series([10.0] * 50 + [15.0] * 50),
-        last_close=15.0,
-        last_ma_short=14.0,
-        last_ma_long=12.0,
-        bullish_alignment=True,
-        holding_ma20=True,
-    )
-    assert accum_track_ok(df, state_high, cfg) is False
-
-
-def test_layer2_two_track_mode_integration() -> None:
-    cfg = SimpleNamespace(
-        enable_two_track_mode=True,
-        markup_track_bias_200_max=0.30,
-        dry_vol_ref_window=100,
-        dry_vol_lookback=5,
-        accum_track_price_from_low_max=0.35,
-        accum_track_vol_quantile=0.25,
-        accum_track_vol_dry_ratio=0.75,
-    )
-    closes = [10.0] * 50 + [12.0] * 50
-    volumes = [1000.0] * 95 + [200.0] * 5
-    df = pd.DataFrame({"close": closes, "volume": volumes})
-    state = Layer2SymbolState(
-        close=pd.Series(closes),
-        last_close=12.0,
-        last_ma_short=11.5,
-        last_ma_long=11.0,
-        bullish_alignment=True,
-        holding_ma20=True,
-    )
-    rps_state = Layer2RpsState(None, None, True, True, True, 0.0)
-    bench_ctx = SimpleNamespace(sorted_df=None)
-    rps_ctx = SimpleNamespace(active=False)
-
-    channels = _layer2_channels(
-        df,
-        state,
-        cfg,
-        bench_ctx,
-        rps_ctx,
-        rps_state,
-        momentum_rs_ok=True,
-        ambush_rs_ok=True,
-        detect_sos=lambda d, c: None,
-    )
-    assert set(channels.keys()) == {"markup_track", "accum_track"}
-    assert channels["markup_track"] is True
-    assert channels["accum_track"] is True
-
-
 def test_benchmark_regime_gate_passed_evaluates_ma50() -> None:
     cfg_off = SimpleNamespace(enable_market_regime_gate=False)
     bench_down = pd.DataFrame({"close": [100.0] * 50 + [80.0]})
@@ -473,7 +347,6 @@ def test_benchmark_regime_gate_passed_evaluates_ma50() -> None:
 
 def test_evaluate_layer2_symbol_blocks_when_regime_gate_fails() -> None:
     cfg = FunnelConfig(
-        enable_two_track_mode=True,
         enable_market_regime_gate=True,
         market_regime_gate_ma=50,
     )
@@ -505,3 +378,101 @@ def test_evaluate_layer2_symbol_blocks_when_regime_gate_fails() -> None:
         detect_sos=lambda d, c: None,
     )
     assert "大盘处于MA50空头生命线下方(市场门控拦截)" in diag
+
+
+def test_diagnose_layer2_symbol_failure_ignores_disabled_channels() -> None:
+    cfg = FunnelConfig(
+        enable_rs_divergence_channel=False,
+        enable_breakout_accel_channel=False,
+    )
+    closes = [10.0] * 100
+    df = pd.DataFrame({"close": closes, "volume": [1000.0] * 100})
+    bench_ctx = BenchmarkContext(sorted_df=None, latest_date=None, dropping=False, regime_gate_passed=True)
+    rps_ctx = RpsContext(fast={}, slow={}, active=False)
+    rps_state = Layer2RpsState(None, None, False, False, True, 0.0)
+
+    diag = diagnose_layer2_symbol_failure(
+        "600000",
+        df,
+        cfg,
+        bench_ctx=bench_ctx,
+        rps_ctx=rps_ctx,
+        rps_state=rps_state,
+        momentum_rs_ok=False,
+        ambush_rs_ok=False,
+        detect_sos=lambda d, c: None,
+    )
+    assert "暗中护盘" not in diag
+    assert "加速突破" not in diag
+
+
+def test_diagnose_sos_reports_disabled_when_attribute_missing() -> None:
+    cfg_no_sos = SimpleNamespace()
+    df = pd.DataFrame({"close": [10.0] * 10, "volume": [1000.0] * 10})
+    rps_ctx = RpsContext(fast={}, slow={}, active=False)
+    gap, reasons = _diagnose_sos(cfg_no_sos, df, rps_ctx, rps_slow=None, detect_sos=lambda d, c: None)
+    assert gap == 999.0
+    assert "通道未启用" in reasons
+
+
+def test_sos_channel_and_diagnose_consistency() -> None:
+    """验证生产通道判定与诊断函数严格一致：生产判定 True ⇔ 诊断缺口 0.0。"""
+    cfg = FunnelConfig()
+    df = pd.DataFrame({"close": [10.0] * 30, "volume": [1000.0] * 30})
+    rps_ctx = RpsContext(fast={}, slow={}, active=True)
+    sos_passed = _sos_channel_ok(df, cfg, rps_active=True, rps_slow=80.0, detect_sos=lambda d, c: 10.0)
+    assert sos_passed is True
+    gap, reasons = _diagnose_sos(cfg, df, rps_ctx, rps_slow=80.0, detect_sos=lambda d, c: 10.0)
+    assert gap == 0.0 and reasons == []
+
+    sos_rejected = _sos_channel_ok(df, cfg, rps_active=True, rps_slow=80.0, detect_sos=lambda d, c: None)
+    assert sos_rejected is False
+    gap, reasons = _diagnose_sos(cfg, df, rps_ctx, rps_slow=80.0, detect_sos=lambda d, c: None)
+    assert gap > 0.0 and "未形成放量突破阻力的SOS结构" in reasons
+
+
+def _ambush_rps_state(cfg: FunnelConfig, *, active: bool, fast: float | None, slow: float | None) -> Layer2RpsState:
+    momentum_ok, ambush_ok = rps_filter_flags(
+        cfg, active=active, rps_fast=fast, rps_slow=slow, slope_ok=True, slope_value=0.0
+    )
+    return Layer2RpsState(fast=fast, slow=slow, momentum_ok=momentum_ok, ambush_ok=ambush_ok)
+
+
+def test_ambush_channel_and_diagnose_consistency() -> None:
+    """潜伏通道：生产 ambush_channel_ok ⇔ 诊断缺口 0.0，RPS 判定必须复用生产 ambush_ok 而非只看 slow。"""
+    cfg = FunnelConfig()
+    close = pd.Series([10.5] * 11 + [10.0] * 20)  # 20 日跌 4.8%，贴近 MA200：形态本身满足潜伏
+
+    def production(rps_state: Layer2RpsState) -> bool:
+        return ambush_channel_ok(
+            cfg, close=close, last_close=10.0, last_ma_long=10.0, rs_ok=True, rps_ok=rps_state.ambush_ok
+        )
+
+    def diagnose(rps_state: Layer2RpsState) -> tuple[float, list[str]]:
+        return _diagnose_ambush(cfg, 10.0, 10.0, close, True, rps_state)
+
+    weak_fast_strong_slow = _ambush_rps_state(cfg, active=True, fast=30.0, slow=80.0)
+    assert production(weak_fast_strong_slow) is True
+    assert diagnose(weak_fast_strong_slow) == (0.0, [])
+
+    # 2026-09-17 生产 trace 里 688265 的真实读数：slow 达标但 fast 早已不"弱"，生产拒绝而旧诊断报缺口 0.0
+    hot_fast = _ambush_rps_state(cfg, active=True, fast=88.0, slow=76.0)
+    assert production(hot_fast) is False
+    gap, reasons = diagnose(hot_fast)
+    assert gap > 0.0
+    assert any(reason.startswith("RPS(fast)过高") for reason in reasons)
+    assert not any(reason.startswith("RPS(slow)不足") for reason in reasons)
+
+    low_slow = _ambush_rps_state(cfg, active=True, fast=30.0, slow=50.0)
+    assert production(low_slow) is False
+    gap, reasons = diagnose(low_slow)
+    assert gap > 0.0 and any(reason.startswith("RPS(slow)不足") for reason in reasons)
+
+    missing = _ambush_rps_state(cfg, active=True, fast=None, slow=76.0)
+    assert production(missing) is False
+    assert diagnose(missing) == (0.5, ["RPS数据缺失"])
+
+    # RPS 过滤未激活时生产放行，诊断不得再拿 slow=None 当 0 报"RPS(slow)不足"
+    inactive = _ambush_rps_state(cfg, active=False, fast=None, slow=None)
+    assert production(inactive) is True
+    assert diagnose(inactive) == (0.0, [])
