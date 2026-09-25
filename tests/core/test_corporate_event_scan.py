@@ -80,9 +80,12 @@ CASES = json.loads((Path(__file__).resolve().parents[1] / "fixtures/corporate_ev
 
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case["title"])
 def test_shared_classification_cases(case):
-    [hit] = scan_corporate_events([{key: case[key] for key in ("title", "content") if key in case}])
-    for key in ("code", "event_status", "halt_status", "reason"):
-        assert getattr(hit, key) == case[key]
+    item = {key: case[key] for key in ("title", "content", "published_at") if key in case}
+    item.update(code=case.get("source_code", ""), related_codes=case.get("source_related_codes", []))
+    [hit] = scan_corporate_events([item])
+    for key in ("code", "event_status", "halt_status", "reason", "subject_status", "related_codes", "effective_date"):
+        if key in case:
+            assert hit.as_dict()[key] == case[key]
 
 
 @pytest.mark.parametrize("code", ["20260921001", "16008251", "id600825", "6008259", "123456", "600825abc"])
@@ -124,3 +127,24 @@ def test_date_only_cutoff_is_day_end_and_invalid_cutoff_is_rejected():
     with pytest.raises(ValueError):
         filter_recent_hits(hits, as_of="bad date")
     assert event_time("2026-02-30 08:00") is None
+
+
+def test_report_does_not_claim_announced_resumption_is_tradeable():
+    hits = scan_corporate_events(
+        [
+            {
+                "title": "测试公司002860：终止重大资产重组，明日起复牌",
+                "published_at": "2026-09-21 19:20:00",
+            }
+        ]
+    )
+    report = render_corporate_event_report(hits, as_of="2026-09-21 19:40")
+    assert "2026-09-22" in report
+    assert "不代表当前已复牌或可交易" in report
+
+
+def test_symbol_report_exposes_ambiguous_related_codes():
+    hits = scan_corporate_events([{"title": "甲公司（600001）与乙公司（600002）重大资产重组事项对比"}])
+    report = render_corporate_event_report(hits, as_of="2026-09-21")
+    assert "主体未确认" in report
+    assert "600001, 600002" in report

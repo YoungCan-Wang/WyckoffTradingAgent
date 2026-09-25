@@ -10,6 +10,7 @@ from urllib.request import Request, urlopen
 
 from core.corporate_event_scan import normalize_stock_code
 from core.corporate_event_time import SHANGHAI
+from integrations.stock_news_events import NewsBatch
 
 CLS_TELEGRAPH_URL = "https://www.cls.cn/nodeapi/updateTelegraphList"
 _TIMEOUT_SECONDS = 8
@@ -24,6 +25,26 @@ def fetch_cls_telegraphs(*, timeout: int = _TIMEOUT_SECONDS) -> list[dict[str, A
     if any(not isinstance(item, dict) for item in rows):
         raise ValueError("Invalid CLS telegraph row")
     return [_normalize_cls(item) for item in rows]
+
+
+def fetch_cls_telegraph_batch(*, timeout: int = _TIMEOUT_SECONDS) -> NewsBatch:
+    payload = _request_cls(timeout)
+    data = payload.get("data") if isinstance(payload, dict) else None
+    rows = data.get("roll_data") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        raise ValueError("Invalid CLS telegraph payload")
+    result = NewsBatch(pages_succeeded=1, coverage_status="possibly_truncated" if rows else "unknown")
+    for item in rows:
+        try:
+            if not isinstance(item, dict):
+                raise ValueError("Invalid CLS row")
+            normalized = _normalize_cls(item)
+            if not normalized["title"]:
+                raise ValueError("Empty CLS headline")
+            result.items.append(normalized)
+        except (ValueError, TypeError, OverflowError):
+            result.rejected_items += 1
+    return result
 
 
 def _request_cls(timeout: int) -> dict[str, Any]:
@@ -46,14 +67,20 @@ def _normalize_cls(item: dict[str, Any]) -> dict[str, Any]:
         "content": content,
         "code": _stock_code(first),
         "name": str(first.get("name") or first.get("secu_name") or "").strip(),
+        "related_codes": sorted({_stock_code(stock) for stock in _stock_rows(item) if isinstance(stock, dict)} - {""}),
         "source": "财联社",
         "published_at": _cls_time(item.get("ctime") or item.get("time")),
         "url": str(item.get("shareurl") or item.get("url") or ""),
     }
 
 
-def _first_stock(item: dict[str, Any]) -> dict[str, Any]:
+def _stock_rows(item: dict[str, Any]) -> list:
     rows = item.get("stock_list") or item.get("stocks") or []
+    return rows if isinstance(rows, list) else []
+
+
+def _first_stock(item: dict[str, Any]) -> dict[str, Any]:
+    rows = _stock_rows(item)
     return rows[0] if isinstance(rows, list) and len(rows) == 1 and isinstance(rows[0], dict) else {}
 
 

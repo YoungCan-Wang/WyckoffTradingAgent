@@ -1016,7 +1016,7 @@ wyckoff-mcp                      # 启动 MCP Server（供 Claude Code 等调用
 ## 目录结构
 
 ```
-mcp_server.py    MCP Server 入口（FastMCP，18 个工具）
+mcp_server.py    MCP Server 组合入口（20 个公开工具，SDK 协议层与业务桥分离）
 agents/          CLI / MCP 复用的业务工具函数
 cli/             CLI 入口、TUI、AgentRuntime、Provider、Dashboard、Memory
   providers/     LLM Provider 实现（Gemini / Claude / OpenAI / Fallback）
@@ -1048,3 +1048,8 @@ CLI/MCP 与 Web 均使用 48 小时精确截止窗口和上海时区，采集东
 扫描脚本在来源降级时返回非零退出码，并发送明确标注数据源异常的报告。详见 [扫描契约](CORPORATE_EVENT_SCAN.md)。
 MCP 的业务 backend/handlers 位于 `agents/public_mcp_*`，由顶层 `mcp_server.py` 注入；
 `integrations/public_mcp/` 只保留协议、契约与参数/权限边界，不向上导入业务实现。
+
+公司事件批次采用独立的有界采集结果：页失败不丢掉前页，坏记录计数隔离，请求健康不等于覆盖完整。
+Python/TypeScript 共享分类 fixture，保留 related_codes、主体冲突和复牌预告 effective_date；
+这些字段仅进入观察输出，不进入漏斗/OMS。业务桥位于 agents 后不再需要 integrations 层导入方向豁免，
+并保留写调用同步执行与 Runtime 锁的完整回归。

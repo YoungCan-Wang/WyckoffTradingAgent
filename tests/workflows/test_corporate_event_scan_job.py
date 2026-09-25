@@ -111,3 +111,25 @@ def test_job_exit_code_reflects_sources_not_just_webhook(monkeypatch, mode, expe
     )
     monkeypatch.setattr(job, "run_corporate_event_scan", lambda **_: result)
     assert job.main() == expected
+
+
+def test_page_failure_and_retained_items_reach_report_and_json(monkeypatch, tmp_path):
+    from integrations import stock_news_events
+
+    def page(_query, number):
+        if number == 2:
+            raise TimeoutError("private URL")
+        return {"result": {"cmsArticleWebOld": [{"title": XINGSHUAIER_TELEGRAPH, "date": "2026-09-21 19:20:00"}] * 20}}
+
+    monkeypatch.setattr(stock_news_events, "_request_news_page", page)
+    result = run_corporate_event_scan(
+        as_of="2026-09-21 19:40",
+        fetch_cls=lambda: [],
+        output=str(tmp_path / "scan.md"),
+        json_output=str(tmp_path / "scan.json"),
+    )
+    assert result.source_status == "partial" and len(result.hits) == 1
+    assert "失败页 2，保留 20 条" in result.report
+    payload = json.loads(result.json_path.read_text())
+    assert payload["sources"][0]["failed_pages"] == [{"page": 2, "error": "TimeoutError"}]
+    assert payload["hits"][0]["related_codes"] == ["002860"]

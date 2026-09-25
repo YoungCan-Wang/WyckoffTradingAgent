@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, time
+import re
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -28,3 +29,19 @@ def observation_cutoff(raw: str) -> datetime:
     if value is None:
         raise ValueError("as_of must be an ISO date or datetime; naive values use Asia/Shanghai")
     return value
+
+
+def resume_effective_date(text: str, published_at: str) -> str:
+    """Resolve explicit calendar dates only; never guess the next trading session."""
+    explicit = re.search(r"(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})日?[^，；。]{0,24}复牌", text)
+    if explicit:
+        try:
+            return date(*(int(part) for part in explicit.groups())).isoformat()
+        except ValueError:
+            return ""
+    relative = re.search(r"(明日|明天|后日|后天|次日)[^，；。]{0,20}复牌", text)
+    published = event_time(published_at)
+    if relative and published:
+        days = 2 if relative.group(1) in {"后日", "后天"} else 1
+        return (published.date() + timedelta(days=days)).isoformat()
+    return ""

@@ -24,8 +24,10 @@
     "title": "测试公司002860：终止筹划重大资产重组，明日起复牌",
     "code": "002860",
     "event_status": "terminated",
-    "halt_status": "resumed",
-    "reason": "terminated"
+    "halt_status": "resume_announced",
+    "reason": "terminated",
+    "published_at": "2026-09-21T19:00:00+08:00",
+    "effective_date": "2026-09-22"
   },
   {
     "title": "测试公司（600825）：重大资产重组进展，股票复牌",
@@ -69,5 +71,108 @@
     "event_status": "announced",
     "halt_status": "announced",
     "reason": "halt_and_restructure"
+  },
+  {
+    "title": "测试公司002860：筹划购买某公司100%股权，本次交易无需停牌",
+    "code": "002860",
+    "event_status": "announced",
+    "halt_status": "not_halted",
+    "reason": "restructure",
+    "subject_status": "single_candidate",
+    "related_codes": [
+      "002860"
+    ]
+  },
+  {
+    "title": "甲公司（600001）与乙公司（600002）重大资产重组事项对比",
+    "code": "",
+    "event_status": "unknown",
+    "halt_status": "unknown",
+    "reason": "unknown",
+    "subject_status": "ambiguous",
+    "related_codes": [
+      "600001",
+      "600002"
+    ]
+  },
+  {
+    "title": "测试公司002860：筹划重大资产重组",
+    "source_code": "600825",
+    "code": "",
+    "event_status": "announced",
+    "halt_status": "unknown",
+    "reason": "restructure",
+    "subject_status": "conflict",
+    "related_codes": [
+      "002860",
+      "600825"
+    ]
+  },
+  {
+    "title": "重组事项市场观察",
+    "content": "并购重组",
+    "source_related_codes": [
+      "002860",
+      "600825"
+    ],
+    "code": "",
+    "event_status": "unknown",
+    "halt_status": "unknown",
+    "reason": "unknown",
+    "subject_status": "ambiguous",
+    "related_codes": [
+      "002860",
+      "600825"
+    ]
+  },
+  {
+    "title": "测试公司002860：重大资产重组进展，股票将于2026年9月28日起复牌",
+    "code": "002860",
+    "event_status": "resumption_announced",
+    "halt_status": "resume_announced",
+    "reason": "resumption_announced",
+    "effective_date": "2026-09-28"
+  },
+  {
+    "title": "测试公司002860：重大资产重组进展，明日起复牌",
+    "published_at": "2026-09-21T20:30:00Z",
+    "code": "002860",
+    "event_status": "resumption_announced",
+    "halt_status": "resume_announced",
+    "reason": "resumption_announced",
+    "effective_date": "2026-09-23"
+  },
+  {
+    "title": "测试公司002860：重大资产重组进展，下一交易日起复牌",
+    "published_at": "2026-09-25 19:00:00",
+    "code": "002860",
+    "event_status": "resumption_announced",
+    "halt_status": "resume_announced",
+    "reason": "resumption_announced",
+    "effective_date": ""
+  },
+  {
+    "title": "测试公司002860：重大资产重组进展，将于2026年2月30日复牌",
+    "code": "002860",
+    "event_status": "resumption_announced",
+    "halt_status": "resume_announced",
+    "reason": "resumption_announced",
+    "effective_date": ""
+  },
+  {
+    "title": "测试公司002860：重大资产重组进展，明日起复牌",
+    "code": "002860",
+    "event_status": "resumption_announced",
+    "halt_status": "resume_announced",
+    "reason": "resumption_announced",
+    "effective_date": ""
+  },
+  {
+    "title": "测试公司002860：重大资产重组进展，已于2026年9月21日复牌",
+    "code": "002860",
+    "event_status": "resumed",
+    "halt_status": "resumed",
+    "reason": "resumed",
+    "effective_date": ""
   }
 ]

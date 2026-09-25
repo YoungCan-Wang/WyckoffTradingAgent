@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass
 from datetime import timedelta
 from typing import Any
 
-from core.corporate_event_time import event_time, observation_cutoff
+from core.corporate_event_time import event_time, observation_cutoff, resume_effective_date
 
 XINGSHUAIER_TELEGRAPH = "星帅尔002860：筹划购买PCB刀具设备公司湘鹰新材料等100%股权，股票停牌"
 XINHUA_MEDIA_TELEGRAPH = "新华传媒600825：筹划重大资产重组，股票停牌"
@@ -26,6 +26,9 @@ _DENIED = re.compile(
 _TERMINATED = re.compile(r"(?:终止|取消|不再推进)[^，；。]{0,16}(?:重组|并购|购买|收购|交易)")
 _NOT_HALTED = re.compile(r"(?:不|无需|不会|未|不涉及)(?:申请)?停牌")
 _NOT_RESUMED = re.compile(r"(?:未|不|暂不|尚未)复牌")
+_PLANNED_RESUME = re.compile(
+    r"(?:将|拟|计划|预计|申请|安排|定于|自|于|明日|明天|后日|后天|次日|下一交易日|下个交易日)[^，；。]{0,32}复牌"
+)
 SOURCE_NOTE = "来源为东财关键词检索与财联社最新电报，不是全量公告核对；未命中不等于无事件。"
 
 
@@ -40,9 +43,12 @@ class CorporateEventHit:
     event_status: str = "unknown"
     halt_status: str = "unknown"
     url: str = ""
+    related_codes: tuple[str, ...] = ()
+    subject_status: str = "unknown"
+    effective_date: str = ""
 
-    def as_dict(self) -> dict[str, str]:
-        return asdict(self)
+    def as_dict(self) -> dict[str, Any]:
+        return {**asdict(self), "related_codes": list(self.related_codes)}
 
 
 def is_material_restructure_or_halt(title: str, content: str = "") -> bool:
@@ -55,11 +61,16 @@ def is_material_restructure_or_halt(title: str, content: str = "") -> bool:
 def corporate_event_status(title: str, content: str = "") -> tuple[str, str]:
     # The headline expresses the current update; the body may quote an earlier
     # halt/restructure that has since been denied or cancelled.
-    text = title if is_material_restructure_or_halt(title) else f"{title} {content}"
+    text = _status_text(title, content)
     resumed = "复牌" in text and not _NOT_RESUMED.search(text)
+    resume_announced = (
+        resumed and bool(_PLANNED_RESUME.search(text)) and not bool(re.search(r"已(?:于[^，；。]{0,20})?复牌", text))
+    )
     halt = (
         "not_halted"
         if _NOT_HALTED.search(text)
+        else "resume_announced"
+        if resume_announced
         else "resumed"
         if resumed
         else "announced"
@@ -71,11 +82,8 @@ def corporate_event_status(title: str, content: str = "") -> tuple[str, str]:
     if _TERMINATED.search(text):
         return "terminated", halt
     if resumed:
-        return "resumed", halt
-    if (
-        any(word in text for word in ("筹划", "预案", "拟购买", "拟收购", "审议通过", "股票停牌"))
-        and halt != "not_halted"
-    ):
+        return "resumption_announced" if resume_announced else "resumed", halt
+    if any(word in text for word in ("筹划", "预案", "拟购买", "拟收购", "审议通过", "股票停牌")):
         return "announced", halt
     return "unknown", halt
 
@@ -96,17 +104,47 @@ def normalize_stock_code(raw: Any) -> str:
     return match.group(1) if match else ""
 
 
+def _status_text(title: str, content: str) -> str:
+    current = is_material_restructure_or_halt(title) or _DENIED.search(title) or _TERMINATED.search(title)
+    return title if current or "复牌" in title else f"{title} {content}"
+
+
+def _mentioned_codes(text: str) -> set[str]:
+    return {
+        match.group("code")
+        for match in _LOOSE_CODE.finditer(text)
+        if not re.search(r"(?:编号|金额|订单|日期)[：: ]*$", text[: match.start()])
+    }
+
+
 def parse_telegraph_symbol(title: str) -> tuple[str, str]:
     text = title.strip()
-    match = _TELEGRAPH.match(text) or _PAREN_CODE.search(text)
-    if match:
-        return match.group("code"), match.group("name")
-    # Multiple codes and numeric identifiers must not be attributed to the first
-    # apparent six digits. Unknown is preferable to inventing a traded symbol.
-    matches = list(_LOOSE_CODE.finditer(text))
-    if len(matches) != 1 or re.search(r"(?:编号|金额|订单|日期)[：: ]*$", text[: matches[0].start()]):
+    codes = _mentioned_codes(text)
+    if len(codes) != 1:
         return "", ""
-    return matches[0].group("code"), ""
+    code = next(iter(codes))
+    match = _TELEGRAPH.match(text) or _PAREN_CODE.search(text)
+    return code, match.group("name") if match and match.group("code") == code else ""
+
+
+def _event_subject(item: dict[str, Any], title: str, content: str) -> tuple[str, str, tuple[str, ...], str]:
+    declared = normalize_stock_code(item.get("code"))
+    mentioned = _mentioned_codes(title) | _mentioned_codes(content)
+    raw_related = item.get("related_codes") or []
+    related = (
+        {normalize_stock_code(value) for value in raw_related} if isinstance(raw_related, (list, tuple)) else set()
+    )
+    codes = tuple(sorted((mentioned | related | {declared}) - {""}))
+    if declared and mentioned and declared not in mentioned:
+        return "", "", codes, "conflict"
+    if len(codes) != 1:
+        return "", "", codes, "ambiguous" if codes else "unknown"
+    code = codes[0]
+    parsed_code, name = parse_telegraph_symbol(title)
+    if not parsed_code:
+        _, name = parse_telegraph_symbol(content)
+    source_name = str(item.get("name") or "").strip() if declared == code else ""
+    return code, source_name or name, codes, "single_candidate"
 
 
 def filter_recent_hits(hits: list[CorporateEventHit], *, as_of: str, lookback_days: int = 2) -> list[CorporateEventHit]:
@@ -143,6 +181,7 @@ def render_corporate_event_report(
     source_status: str = "ok",
     failed_sources: tuple[str, ...] = (),
     undated_count: int = 0,
+    source_details: list[dict[str, Any]] | None = None,
 ) -> str:
     lines = [
         f"公司大事 / 停牌扫描 {as_of}（Asia/Shanghai）",
@@ -156,6 +195,14 @@ def render_corporate_event_report(
             else "部分消息源不可用，以下仅为已获取的观察结果。"
         )
         lines.append("不可用来源：" + "、".join(failed_sources))
+    for source in source_details or []:
+        failed = [str(page["page"]) for page in source.get("failed_pages", [])]
+        if failed or source.get("rejected_items", 0):
+            lines.append(
+                f"来源 {source['source']}：失败页 {','.join(failed) or '无'}，保留 {source['item_count']} 条，隔离 {source.get('rejected_items', 0)} 条无效记录。"
+            )
+        if source.get("coverage_status") == "possibly_truncated":
+            lines.append(f"来源 {source['source']} 为有界批次，可能截断；不代表48小时覆盖完整。")
     if undated_count:
         lines.append(f"另有 {undated_count} 条发布时间缺失或无效，未计入近期结果，需核实时间。")
     if not hits and source_status != "unavailable":
@@ -163,6 +210,10 @@ def render_corporate_event_report(
     for hit in hits:
         label = f"{hit.code} {hit.name}".strip() or "未解析代码"
         lines.append(f"- {label} | {hit.reason} / {hit.halt_status} | {hit.source} {hit.published_at} | {hit.title}")
+        if hit.subject_status in {"ambiguous", "conflict"}:
+            lines.append(f"  主体未确认（{hit.subject_status}），相关代码：{', '.join(hit.related_codes)}")
+        if hit.halt_status == "resume_announced":
+            lines.append(f"  复牌安排：{hit.effective_date or '生效日期待核实'}；不代表当前已复牌或可交易。")
         if hit.url.startswith(("https://", "http://")):
             lines.append(f"  原文：{hit.url}")
     return "\n".join(lines)
@@ -173,13 +224,11 @@ def _hit_from_item(item: dict[str, Any]) -> CorporateEventHit | None:
     content = str(item.get("content") or "")
     if not title or not is_material_restructure_or_halt(title, content):
         return None
-    code, name = parse_telegraph_symbol(title)
-    if not code:
-        code, name = parse_telegraph_symbol(content)
+    code, name, related, subject_status = _event_subject(item, title, content)
     status, halt = corporate_event_status(title, content)
     return CorporateEventHit(
-        code=normalize_stock_code(item.get("code")) or code,
-        name=str(item.get("name") or "").strip() or name,
+        code=code,
+        name=name,
         title=title,
         reason=classify_corporate_event_reason(title, content),
         source=str(item.get("source") or "media"),
@@ -187,4 +236,11 @@ def _hit_from_item(item: dict[str, Any]) -> CorporateEventHit | None:
         event_status=status,
         halt_status=halt,
         url=str(item.get("url") or ""),
+        related_codes=related,
+        subject_status=subject_status,
+        effective_date=resume_effective_date(
+            _status_text(title, content), str(item.get("published_at") or item.get("date") or "")
+        )
+        if halt == "resume_announced"
+        else "",
     )

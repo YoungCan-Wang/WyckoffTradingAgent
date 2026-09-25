@@ -95,7 +95,7 @@ The Electron desktop workspace brings Agent chat, portfolio, schedules, tracking
 | Context Compaction | Remaining-window budget auto-compresses long conversations, smart tool result summarization preserves key data |
 | Tool Confirmation | `exec_command`, `write_file`, `update_portfolio` require user approval before execution |
 | General Agent Capabilities | Execute commands, read/write files, fetch web pages — send a CSV path and it will analyze it |
-| MCP Server | 10 tools exposed via MCP protocol — plug into Claude Code / Cursor / any MCP client |
+| MCP Server | 20 tools exposed via MCP protocol — plug into Claude Code / Cursor / any MCP client |
 | Multi-Channel Notifications | Feishu / WeCom / DingTalk / Telegram |
 
 ## Data Sources
@@ -289,7 +289,7 @@ Install `.[mcp]`, add a disabled-by-default server with `wyckoff mcp-add`, test 
 
 ## MCP Server
 
-Expose Wyckoff analysis capabilities via the [MCP protocol](https://modelcontextprotocol.io/), enabling Claude Code / Cursor / any MCP client to call 10 tools directly.
+Expose Wyckoff analysis capabilities via the [MCP protocol](https://modelcontextprotocol.io/), enabling Claude Code / Cursor / any MCP client to call 20 tools directly.
 
 ```bash
 # Install MCP dependency
@@ -352,9 +352,15 @@ If this project helps, a GitHub Star is appreciated. If it helps you make money,
 
 ## Public MCP server
 
-See [PUBLIC_MCP.md](PUBLIC_MCP.md) for installation, the 19-tool contract, lazy discovery, default-deny writes and stdio compatibility. This is separate from the external MCP client. Base package dependencies are not reduced by this refactor.
+See [PUBLIC_MCP.md](PUBLIC_MCP.md) for installation, the 20-tool contract, lazy discovery, default-deny writes and stdio compatibility. This is separate from the external MCP client. Base package dependencies are not reduced by this refactor.
 
 Corporate-event observations use the same bounded East Money keyword searches and latest CLS batch in
 Python and Web. `source_status` is `ok`, `partial`, or `unavailable`; a source failure never means no
 corporate events. Undated results are excluded from recent hits. Shanghai-local cutoffs include time of day.
 See [the corporate-event contract](CORPORATE_EVENT_SCAN.md) for coverage limits and job exit codes.
+
+Corporate-event requests retain successful pages when later pages fail, quarantine invalid rows,
+and distinguish request health from bounded/unknown coverage. Related symbols are not automatically
+chosen as the event issuer. Resumption announcements carry an optional Shanghai `effective_date`,
+not a guarantee that the security currently trades. No trading writes or cross-run notification ledger
+are added. See the corporate-event contract for field definitions and live-acceptance limits.

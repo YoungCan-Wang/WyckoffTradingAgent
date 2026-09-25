@@ -98,10 +98,12 @@ directly to file descriptor 1 is not covered by Python's redirection.
 ## Long-running work and compatibility
 
 Business calls are serialized per process to avoid overlapping local state writes.
-The existing production executor remains in charge of execution deadlines; research
-scans/backtests use a 600-second budget. A client timeout or cancellation is **not**
-a guarantee that synchronous domain computation or a write stopped. No automatic
-retry, detached write, or pretend MCP Tasks implementation is introduced.
+Mutating calls (`update_portfolio`, `record_trade_fill`, and non-list/detail
+`research_hypothesis` actions) run on the calling thread without ToolSurface's
+abandoning timeout worker, so the Runtime lock is not released while a write still
+runs. Research scans/backtests keep a 600-second budget. A client timeout or
+cancellation is **not** a guarantee that a non-mutating domain call stopped. No
+automatic retry or pretend MCP Tasks implementation is introduced.
 
 Protocol-version negotiation is handled by the installed MCP SDK. This PR does not
 claim full support for every feature of the newest specification, Tasks, remote
@@ -128,3 +130,10 @@ returns `BACKEND_NOT_CONFIGURED`; discovery remains side-effect-free. Public lau
 `scan_corporate_events` is read-only, accepts an integer limit of 1–50, and returns an MCP tool
 error when all sources fail. Partial coverage is returned with explicit source warnings, never as a clean scan.
 See [the observation contract](CORPORATE_EVENT_SCAN.md).
+
+Per-source `request_status`, `failed_pages`, `rejected_items`, and `coverage_status` retain partial
+pages without claiming exhaustive coverage. `related_codes` and `subject_status` expose ambiguous
+or conflicting issuer evidence; `effective_date` describes a resumption announcement, not current
+tradability. Source diagnostics also remain visible in the human report. The moved
+`agents/public_mcp_backend.py` preserves synchronous mutating calls; a caller abandoning its wait
+does not release the Runtime lock while the write is still running.

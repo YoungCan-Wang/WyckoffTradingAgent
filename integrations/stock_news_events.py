@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
@@ -13,6 +14,47 @@ EASTMONEY_NEWS_URL = "https://search-api-web.eastmoney.com/search/jsonp"
 _PAGE_SIZE = 20
 _MAX_PAGES = 4
 _TIMEOUT_SECONDS = 12
+
+
+@dataclass
+class NewsBatch:
+    items: list[dict[str, Any]] = field(default_factory=list)
+    pages_succeeded: int = 0
+    failed_pages: list[dict[str, Any]] = field(default_factory=list)
+    rejected_items: int = 0
+    coverage_status: str = "unknown"
+
+    @property
+    def request_status(self) -> str:
+        if not self.pages_succeeded:
+            return "unavailable"
+        return "partial" if self.failed_pages or self.rejected_items else "ok"
+
+
+def fetch_eastmoney_news_batch(keyword: str, *, pages: int = 2) -> NewsBatch:
+    """Observation collector; legacy list callers retain their strict/error contract."""
+    result = NewsBatch()
+    page_limit = min(max(int(pages), 1), _MAX_PAGES)
+    for page in range(1, page_limit + 1):
+        try:
+            payload = _request_news_page(str(keyword).strip(), page)
+            batch = payload.get("result", {}).get("cmsArticleWebOld") if isinstance(payload, dict) else None
+            if not isinstance(batch, list):
+                raise ValueError("Invalid East Money news payload")
+        except Exception as exc:
+            result.failed_pages.append({"page": page, "error": type(exc).__name__})
+            continue
+        result.pages_succeeded += 1
+        for item in batch:
+            if not isinstance(item, dict) or not isinstance(item.get("title"), str) or not item["title"].strip():
+                result.rejected_items += 1
+                continue
+            result.items.append(_normalize_article(item))
+        if len(batch) < _PAGE_SIZE:
+            break
+        if page == page_limit:
+            result.coverage_status = "possibly_truncated"
+    return result
 
 
 def load_news_chart_events(

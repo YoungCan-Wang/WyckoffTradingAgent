@@ -44,6 +44,7 @@ class DomainBackend:
         self._surface = ToolSurface()
 
     def __call__(self, spec: ToolSpec, arguments: dict[str, Any]) -> Any:
+        from integrations.public_mcp.runtime import needs_write_permission
         from tools.tool_surface import ToolAccessContext, from_handler
         from tools.write_guard import check_write_allowed
 
@@ -59,8 +60,12 @@ class DomainBackend:
             self._surface.register(definition)
         if "tool_context" in inspect.signature(handler).parameters:
             arguments["tool_context"] = self._context
+        # ToolSurface timeouts abandon the worker (shutdown wait=False). That would
+        # release Runtime's serialization lock while a portfolio/research write still
+        # runs, so mutating calls must stay on the calling thread.
+        timeout = None if needs_write_permission(spec, arguments) else spec.timeout
         access = ToolAccessContext(
-            timeout_seconds=spec.timeout,
+            timeout_seconds=timeout,
             session_id=self._context.state.get("user_id", ""),
         )
         result = self._surface.execute_tool(spec.name, arguments, access)

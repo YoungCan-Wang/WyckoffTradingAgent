@@ -10,6 +10,7 @@ export interface RawNewsItem {
   url?: string
   code?: string
   name?: string
+  related_codes?: string[]
 }
 
 export interface NewsChartEvent {
@@ -164,6 +165,44 @@ export async function fetchEastMoneyNews(
     if (batch.length < PAGE_SIZE) break
   }
   return rows
+}
+
+export interface NewsBatch {
+  items: RawNewsItem[]
+  pages_succeeded: number
+  failed_pages: Array<{ page: number; error: string }>
+  rejected_items: number
+  coverage_status: 'unknown' | 'possibly_truncated'
+}
+
+export function newsBatchStatus(batch: NewsBatch): 'ok' | 'partial' | 'unavailable' {
+  return !batch.pages_succeeded ? 'unavailable' : batch.failed_pages.length || batch.rejected_items ? 'partial' : 'ok'
+}
+
+export async function fetchEastMoneyNewsBatch(keyword: string, fetcher: typeof fetch = fetch, pages = 2): Promise<NewsBatch> {
+  const result: NewsBatch = { items: [], pages_succeeded: 0, failed_pages: [], rejected_items: 0, coverage_status: 'unknown' }
+  const pageLimit = Math.min(Math.max(Math.trunc(pages), 1), MAX_PAGES)
+  for (let page = 1; page <= pageLimit; page += 1) {
+    let batch: unknown[]
+    try {
+      const payload = await requestNewsPage(keyword.trim(), page, fetcher)
+      const rows = payload?.result?.cmsArticleWebOld
+      if (!Array.isArray(rows)) throw new Error('Invalid East Money news payload')
+      batch = rows
+    } catch (error) {
+      result.failed_pages.push({ page, error: error instanceof Error ? error.name : 'Error' })
+      continue
+    }
+    result.pages_succeeded += 1
+    for (const item of batch) {
+      if (!isRecord(item) || typeof item.title !== 'string' || !item.title.trim()) {
+        result.rejected_items += 1
+      } else result.items.push(normalizeArticle(item))
+    }
+    if (batch.length < PAGE_SIZE) break
+    if (page === pageLimit) result.coverage_status = 'possibly_truncated'
+  }
+  return result
 }
 
 export async function handleNewsEventsRequest(request: Request, fetcher: typeof fetch = fetch): Promise<Response> {

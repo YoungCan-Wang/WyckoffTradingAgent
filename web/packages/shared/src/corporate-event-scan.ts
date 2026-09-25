@@ -1,4 +1,4 @@
-import { fetchEastMoneyNews, type RawNewsItem } from './news-chart-events'
+import { fetchEastMoneyNewsBatch, newsBatchStatus, type NewsBatch, type RawNewsItem } from './news-chart-events'
 
 export const XINGSHUAIER_TELEGRAPH = '星帅尔002860：筹划购买PCB刀具设备公司湘鹰新材料等100%股权，股票停牌'
 export const XINHUA_MEDIA_TELEGRAPH = '新华传媒600825：筹划重大资产重组，股票停牌'
@@ -14,6 +14,7 @@ const DENIED = /(?:未|没有|不存在|不)(?:正在)?(?:筹划|涉及|进行)[
 const TERMINATED = /(?:终止|取消|不再推进)[^，；。]{0,16}(?:重组|并购|购买|收购|交易)/
 const NOT_HALTED = /(?:不|无需|不会|未|不涉及)(?:申请)?停牌/
 const NOT_RESUMED = /(?:未|不|暂不|尚未)复牌/
+const PLANNED_RESUME = /(?:将|拟|计划|预计|申请|安排|定于|自|于|明日|明天|后日|后天|次日|下一交易日|下个交易日)[^，；。]{0,32}复牌/
 
 export interface CorporateEventHit {
   code: string
@@ -25,6 +26,9 @@ export interface CorporateEventHit {
   event_status: string
   halt_status: string
   url: string
+  related_codes: string[]
+  subject_status: string
+  effective_date: string
 }
 
 export interface CorporateSourceResult {
@@ -34,6 +38,11 @@ export interface CorporateSourceResult {
   error: string
   oldest_at: string
   newest_at: string
+  request_status: 'ok' | 'partial' | 'unavailable'
+  failed_pages: Array<{ page: number; error: string }>
+  rejected_items: number
+  pages_succeeded: number
+  coverage_status: 'unknown' | 'possibly_truncated'
 }
 
 export interface CorporateEventCollection {
@@ -49,13 +58,14 @@ export function isMaterialRestructureOrHalt(title: string, content = ''): boolea
 }
 
 export function corporateEventStatus(title: string, content = ''): { event_status: string; halt_status: string } {
-  const text = isMaterialRestructureOrHalt(title) ? title : `${title} ${content}`
+  const text = statusText(title, content)
   const resumed = text.includes('复牌') && !NOT_RESUMED.test(text)
-  const halt_status = NOT_HALTED.test(text) ? 'not_halted' : resumed ? 'resumed' : text.includes('停牌') ? 'announced' : 'unknown'
+  const resumeAnnounced = resumed && PLANNED_RESUME.test(text) && !/已(?:于[^，；。]{0,20})?复牌/.test(text)
+  const halt_status = NOT_HALTED.test(text) ? 'not_halted' : resumeAnnounced ? 'resume_announced' : resumed ? 'resumed' : text.includes('停牌') ? 'announced' : 'unknown'
   if (DENIED.test(text)) return { event_status: 'denied', halt_status }
   if (TERMINATED.test(text)) return { event_status: 'terminated', halt_status }
-  if (resumed) return { event_status: 'resumed', halt_status }
-  const announced = ['筹划', '预案', '拟购买', '拟收购', '审议通过', '股票停牌'].some((word) => text.includes(word)) && halt_status !== 'not_halted'
+  if (resumed) return { event_status: resumeAnnounced ? 'resumption_announced' : 'resumed', halt_status }
+  const announced = ['筹划', '预案', '拟购买', '拟收购', '审议通过', '股票停牌'].some((word) => text.includes(word))
   return { event_status: announced ? 'announced' : 'unknown', halt_status }
 }
 
@@ -72,14 +82,50 @@ export function normalizeCorporateStockCode(raw: unknown): string {
   return /^(?:sh|sz|bj)?([034689]\d{5})(?:\.(?:sh|sz|bj))?$/i.exec(String(raw || '').trim())?.[1] || ''
 }
 
+function statusText(title: string, content: string): string {
+  return isMaterialRestructureOrHalt(title) || DENIED.test(title) || TERMINATED.test(title) || title.includes('复牌') ? title : `${title} ${content}`
+}
+
+function mentionedCodes(text: string): string[] {
+  return [...new Set([...text.matchAll(LOOSE_CODE)]
+    .filter((match) => !/(?:编号|金额|订单|日期)[：: ]*$/.test(text.slice(0, match.index)))
+    .map((match) => match.groups?.code || '').filter(Boolean))].sort()
+}
+
 export function parseTelegraphSymbol(title: string): { code: string; name: string } {
   const text = title.trim()
+  const codes = mentionedCodes(text)
+  if (codes.length !== 1) return { code: '', name: '' }
+  const code = codes[0]!
   const match = TELEGRAPH.exec(text) || PAREN_CODE.exec(text)
-  if (match) return { code: match.groups?.code || '', name: match.groups?.name || '' }
-  const matches = [...text.matchAll(LOOSE_CODE)]
-  const only = matches.length === 1 ? matches[0] : undefined
-  if (!only || /(?:编号|金额|订单|日期)[：: ]*$/.test(text.slice(0, only.index))) return { code: '', name: '' }
-  return { code: only.groups?.code || '', name: '' }
+  return { code, name: match?.groups?.code === code ? match.groups?.name || '' : '' }
+}
+
+function eventSubject(item: RawNewsItem): Pick<CorporateEventHit, 'code' | 'name' | 'related_codes' | 'subject_status'> {
+  const declared = normalizeCorporateStockCode(item.code)
+  const mentioned = [...new Set([...mentionedCodes(item.title), ...mentionedCodes(item.content || '')])]
+  const related = Array.isArray(item.related_codes) ? item.related_codes.map(normalizeCorporateStockCode) : []
+  const codes = [...new Set([...mentioned, ...related, declared].filter(Boolean))].sort()
+  if (declared && mentioned.length && !mentioned.includes(declared)) return { code: '', name: '', related_codes: codes, subject_status: 'conflict' }
+  if (codes.length !== 1) return { code: '', name: '', related_codes: codes, subject_status: codes.length ? 'ambiguous' : 'unknown' }
+  const code = codes[0]!
+  const parsed = parseTelegraphSymbol(item.title)
+  const symbol = parsed.code ? parsed : parseTelegraphSymbol(item.content || '')
+  const sourceName = declared === code ? (item.name || '').trim() : ''
+  return { code, name: sourceName || symbol.name, related_codes: codes, subject_status: 'single_candidate' }
+}
+
+export function resumeEffectiveDate(text: string, publishedAt: string): string {
+  const explicit = /(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})日?[^，；。]{0,24}复牌/.exec(text)
+  if (explicit) {
+    const day = `${explicit[1]}-${explicit[2]!.padStart(2, '0')}-${explicit[3]!.padStart(2, '0')}`
+    return corporateEventTime(day) === null ? '' : day
+  }
+  const relative = /(明日|明天|后日|后天|次日)[^，；。]{0,20}复牌/.exec(text)
+  const published = corporateEventTime(publishedAt)
+  if (!relative || published === null) return ''
+  const days = ['后日', '后天'].includes(relative[1]!) ? 2 : 1
+  return corporateShanghaiTime(published + days * 86_400_000).slice(0, 10)
 }
 
 export function corporateEventTime(raw: string): number | null {
@@ -121,43 +167,51 @@ export function scanCorporateEvents(items: RawNewsItem[]): CorporateEventHit[] {
 }
 
 export function renderCorporateEventReport(
-  hits: CorporateEventHit[], asOf: string, sourceStatus = 'ok', failedSources: string[] = [], undatedCount = 0,
+  hits: CorporateEventHit[], asOf: string, sourceStatus = 'ok', failedSources: string[] = [], undatedCount = 0, sourceDetails: CorporateSourceResult[] = [],
 ): string {
   const lines = [`公司大事 / 停牌扫描 ${asOf}（Asia/Shanghai）`, '已公告与媒体电报观察，不是实盘，也不是漏斗买许可。', CORPORATE_SOURCE_NOTE]
   if (sourceStatus !== 'ok') {
     lines.push(sourceStatus === 'unavailable' ? '全部消息源不可用，无法判断是否有事件。' : '部分消息源不可用，以下仅为已获取的观察结果。', `不可用来源：${failedSources.join('、')}`)
   }
+  for (const source of sourceDetails) {
+    if (source.failed_pages.length || source.rejected_items) lines.push(`来源 ${source.source}：失败页 ${source.failed_pages.map((page) => page.page).join(',') || '无'}，保留 ${source.item_count} 条，隔离 ${source.rejected_items} 条无效记录。`)
+    if (source.coverage_status === 'possibly_truncated') lines.push(`来源 ${source.source} 为有界批次，可能截断；不代表48小时覆盖完整。`)
+  }
   if (undatedCount) lines.push(`另有 ${undatedCount} 条发布时间缺失或无效，未计入近期结果，需核实时间。`)
   if (!hits.length && sourceStatus !== 'unavailable') lines.push('本次检索窗口未命中；不代表没有停牌或重组。')
   for (const hit of hits) {
     lines.push(`- ${`${hit.code} ${hit.name}`.trim() || '未解析代码'} | ${hit.reason} / ${hit.halt_status} | ${hit.source} ${hit.published_at} | ${hit.title}`)
+    if (['ambiguous', 'conflict'].includes(hit.subject_status)) lines.push(`  主体未确认（${hit.subject_status}），相关代码：${hit.related_codes.join(', ')}`)
+    if (hit.halt_status === 'resume_announced') lines.push(`  复牌安排：${hit.effective_date || '生效日期待核实'}；不代表当前已复牌或可交易。`)
     if (/^https?:\/\//.test(hit.url)) lines.push(`  原文：${hit.url}`)
   }
   return lines.join('\n')
 }
 
 export async function collectCorporateEventItems(fetcher: typeof fetch = fetch): Promise<CorporateEventCollection> {
-  const jobs: Array<[string, () => Promise<RawNewsItem[]>]> = SEARCH_KEYWORDS.map((keyword) => [
-    `eastmoney:${keyword}`, () => fetchEastMoneyNews(keyword, fetcher, 2, true),
+  const jobs: Array<[string, () => Promise<NewsBatch>]> = SEARCH_KEYWORDS.map((keyword) => [
+    `eastmoney:${keyword}`, () => fetchEastMoneyNewsBatch(keyword, fetcher, 2),
   ])
-  jobs.push(['cls', () => fetchCorporateClsTelegraphs(fetcher)])
+  jobs.push(['cls', () => fetchCorporateClsBatch(fetcher)])
   const batches = await Promise.all(jobs.map(async ([source, fetchItems]) => {
     try {
-      const items = await fetchItems()
+      const batch = await fetchItems()
+      const items = batch.items
+      const request_status = newsBatchStatus(batch)
       const stamps = items.map((item) => corporateEventTime(item.published_at || item.date || '')).filter((stamp): stamp is number => stamp !== null).sort((a, b) => a - b)
       const oldest = stamps.at(0)
       const newest = stamps.at(-1)
-      return { items, source: { source, ok: true, item_count: items.length, error: '', oldest_at: oldest === undefined ? '' : corporateShanghaiTime(oldest), newest_at: newest === undefined ? '' : corporateShanghaiTime(newest) } }
+      return { items, source: { source, ok: request_status === 'ok', request_status, failed_pages: batch.failed_pages, rejected_items: batch.rejected_items, pages_succeeded: batch.pages_succeeded, coverage_status: batch.coverage_status, item_count: items.length, error: '', oldest_at: oldest === undefined ? '' : corporateShanghaiTime(oldest), newest_at: newest === undefined ? '' : corporateShanghaiTime(newest) } }
     } catch (error) {
-      return { items: [], source: { source, ok: false, item_count: 0, error: error instanceof Error ? error.name : 'Error', oldest_at: '', newest_at: '' } }
+      return { items: [], source: { source, ok: false, request_status: 'unavailable' as const, failed_pages: [], rejected_items: 0, pages_succeeded: 0, coverage_status: 'unknown' as const, item_count: 0, error: error instanceof Error ? error.name : 'Error', oldest_at: '', newest_at: '' } }
     }
   }))
   const sources = batches.map((batch) => batch.source)
-  const successes = sources.filter((source) => source.ok).length
-  return { items: batches.flatMap((batch) => batch.items), sources, status: !successes ? 'unavailable' : successes === sources.length ? 'ok' : 'partial' }
+  const status = sources.every((source) => source.request_status === 'unavailable') ? 'unavailable' : sources.every((source) => source.ok) ? 'ok' : 'partial'
+  return { items: batches.flatMap((batch) => batch.items), sources, status }
 }
 
-export async function fetchCorporateClsTelegraphs(fetcher: typeof fetch): Promise<RawNewsItem[]> {
+async function requestCorporateClsRows(fetcher: typeof fetch): Promise<unknown[]> {
   const params = new URLSearchParams({ app: 'CailianpressWeb', os: 'web', sv: '8.4.6' })
   const response = await fetcher(`https://www.cls.cn/nodeapi/updateTelegraphList?${params}`, {
     headers: { 'User-Agent': 'Mozilla/5.0', Referer: 'https://www.cls.cn/telegraph' }, signal: AbortSignal.timeout(8_000),
@@ -166,8 +220,27 @@ export async function fetchCorporateClsTelegraphs(fetcher: typeof fetch): Promis
   const payload: unknown = await response.json()
   const data = isRecord(payload) ? payload.data : null
   if (!isRecord(data) || !Array.isArray(data.roll_data)) throw new Error('Invalid CLS telegraph payload')
-  if (data.roll_data.some((item: unknown) => !isRecord(item))) throw new Error('Invalid CLS telegraph row')
-  return data.roll_data.filter(isRecord).map(normalizeCls)
+  return data.roll_data
+}
+
+export async function fetchCorporateClsTelegraphs(fetcher: typeof fetch): Promise<RawNewsItem[]> {
+  const rows = await requestCorporateClsRows(fetcher)
+  if (rows.some((item) => !isRecord(item))) throw new Error('Invalid CLS telegraph row')
+  return rows.filter(isRecord).map(normalizeCls)
+}
+
+async function fetchCorporateClsBatch(fetcher: typeof fetch): Promise<NewsBatch> {
+  const rows = await requestCorporateClsRows(fetcher)
+  const batch: NewsBatch = { items: [], pages_succeeded: 1, failed_pages: [], rejected_items: 0, coverage_status: rows.length ? 'possibly_truncated' : 'unknown' }
+  for (const row of rows) {
+    try {
+      if (!isRecord(row)) throw new Error('Invalid CLS row')
+      const item = normalizeCls(row)
+      if (!item.title) throw new Error('Empty CLS headline')
+      batch.items.push(item)
+    } catch { batch.rejected_items += 1 }
+  }
+  return batch
 }
 
 function normalizeCls(item: Record<string, unknown>): RawNewsItem {
@@ -181,6 +254,7 @@ function normalizeCls(item: Record<string, unknown>): RawNewsItem {
     ? corporateShanghaiTime(milliseconds) : String(rawTime || '')
   return { title: String(item.title || item.brief || '').trim() || content.slice(0, 80), content,
     code: normalizeCorporateStockCode(first.StockID || first.code), name: String(first.name || first.secu_name || ''),
+    related_codes: Array.isArray(stocks) ? [...new Set(stocks.filter(isRecord).map((stock) => normalizeCorporateStockCode(stock.StockID || stock.code)).filter(Boolean))].sort() : [],
     source: '财联社', published_at: timestamp, url: String(item.shareurl || item.url || '') }
 }
 
@@ -188,11 +262,12 @@ function hitFromItem(item: RawNewsItem): CorporateEventHit | null {
   const title = item.title.trim()
   const content = item.content || ''
   if (!title || !isMaterialRestructureOrHalt(title, content)) return null
-  const parsed = parseTelegraphSymbol(title)
-  const symbol = parsed.code ? parsed : parseTelegraphSymbol(content)
-  return { code: normalizeCorporateStockCode(item.code) || symbol.code, name: (item.name || '').trim() || symbol.name,
-    title, reason: classifyCorporateEventReason(title, content), ...corporateEventStatus(title, content),
-    source: item.source || 'media', published_at: item.published_at || item.date || '', url: item.url || '' }
+  const status = corporateEventStatus(title, content)
+  const published = item.published_at || item.date || ''
+  return { ...eventSubject(item), title, reason: classifyCorporateEventReason(title, content), ...status,
+    source: item.source || 'media', published_at: published, url: item.url || '',
+    effective_date: status.halt_status === 'resume_announced' ? resumeEffectiveDate(statusText(title, content), published) : '' }
+
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

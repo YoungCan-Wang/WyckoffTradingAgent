@@ -8,7 +8,7 @@ import {
 
 const AS_OF = '2026-09-21T19:40:00+08:00'
 const cases = JSON.parse(casesJson) as Array<{
-  title: string; content?: string; code: string; event_status: string; halt_status: string; reason: string
+  title: string; content?: string; published_at?: string; source_code?: string; source_related_codes?: string[]; code: string; event_status: string; halt_status: string; reason: string; subject_status?: string; related_codes?: string[]; effective_date?: string
 }>
 
 function depsWith(fetchImpl: typeof globalThis.fetch): ToolDeps {
@@ -25,8 +25,9 @@ function emptyCls(): Response {
 
 describe('corporate event scan', () => {
   it.each(cases)('shares Python classification semantics: $title', (example) => {
-    const [hit] = scanCorporateEvents([{ title: example.title, content: example.content }])
-    expect(hit).toMatchObject({ code: example.code, event_status: example.event_status, halt_status: example.halt_status, reason: example.reason })
+    const [hit] = scanCorporateEvents([{ title: example.title, content: example.content, published_at: example.published_at, code: example.source_code, related_codes: example.source_related_codes }])
+    const { title: _title, content: _content, published_at: _published, source_code: _code, source_related_codes: _related, ...expected } = example
+    expect(hit).toMatchObject(expected)
   })
 
   it('keeps the positive examples and ignores ordinary price noise', () => {
@@ -119,5 +120,64 @@ describe('corporate event scan', () => {
       const result = await execScanCorporateEvents(depsWith(async () => { throw new Error('must not fetch') }), limit, AS_OF)
       expect(result).toContain('limit 必须')
     }
+  })
+})
+
+describe('bounded partial source collection', () => {
+  it('retains first-page news when every second page fails', async () => {
+    const fetcher: typeof fetch = async (url) => {
+      if (String(url).includes('cls.cn')) return emptyCls()
+      const params = JSON.parse(new URL(String(url)).searchParams.get('param') || '{}')
+      if (params.param.cmsArticleWebOld.pageIndex === 2) throw new Error('private URL token')
+      return eastMoneyResponse(Array.from({ length: 20 }, () => ({ title: XINGSHUAIER_TELEGRAPH, date: '2026-09-21 19:20:00' })))
+    }
+    const result = await collectCorporateEventItems(fetcher)
+    expect(result.status).toBe('partial')
+    expect(result.items).toHaveLength(80)
+    expect(result.sources[0]?.failed_pages).toEqual([{ page: 2, error: 'Error' }])
+    expect(JSON.stringify(result)).not.toContain('private URL token')
+    const text = await execScanCorporateEvents(depsWith(fetcher), 20, AS_OF)
+    expect(text).toContain('失败页 2，保留 20 条')
+    expect(text).toContain('002860')
+  })
+
+  it('does not call all partially recovered sources unavailable', async () => {
+    const fetcher: typeof fetch = async (url) => {
+      if (String(url).includes('cls.cn')) return Response.json({ data: { roll_data: [null, { content: XINGSHUAIER_TELEGRAPH }] } })
+      return new Response(`jQuery3510(${JSON.stringify({ result: { cmsArticleWebOld: [null, { title: XINHUA_MEDIA_TELEGRAPH }] } })})`)
+    }
+    const result = await collectCorporateEventItems(fetcher)
+    expect(result.status).toBe('partial')
+    expect(result.sources.every((source) => !source.ok)).toBe(true)
+    expect(result.items).toHaveLength(5)
+    expect(result.sources.every((source) => source.rejected_items === 1)).toBe(true)
+  })
+
+  it('marks a full final page as possibly truncated even when requests succeed', async () => {
+    let calls = 0
+    const result = await collectCorporateEventItems(async (url) => {
+      if (String(url).includes('cls.cn')) return emptyCls()
+      calls += 1
+      return eastMoneyResponse(Array.from({ length: 20 }, () => ({ title: XINGSHUAIER_TELEGRAPH })))
+    })
+    expect(calls).toBe(8)
+    expect(result.status).toBe('ok')
+    expect(result.sources.slice(0, 4).every((source) => source.coverage_status === 'possibly_truncated')).toBe(true)
+  })
+
+  it('keeps multiple upstream stock associations without choosing the first', async () => {
+    const collection = await collectCorporateEventItems(async (url) => String(url).includes('cls.cn')
+      ? Response.json({ data: { roll_data: [{ content: '重大资产重组市场观察', stock_list: [{ code: '000001' }, { code: '600825' }] }] } })
+      : eastMoneyResponse([]))
+    const [hit] = scanCorporateEvents(collection.items)
+    expect(hit).toMatchObject({ code: '', subject_status: 'ambiguous', related_codes: ['000001', '600825'] })
+  })
+
+  it('renders scheduled resumption without claiming current trading status', async () => {
+    const text = await execScanCorporateEvents(depsWith(async (url) => String(url).includes('cls.cn') ? emptyCls() : eastMoneyResponse([
+      { title: '测试公司002860：终止重大资产重组，明日起复牌', date: '2026-09-21 19:20:00' },
+    ])), 20, AS_OF)
+    expect(text).toContain('2026-09-22')
+    expect(text).toContain('不代表当前已复牌或可交易')
   })
 })

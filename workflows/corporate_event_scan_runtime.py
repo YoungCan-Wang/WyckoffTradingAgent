@@ -84,6 +84,7 @@ def run_corporate_event_scan(
         source_status=collection.status,
         failed_sources=tuple(source.source for source in collection.sources if not source.ok),
         undated_count=len(undated),
+        source_details=[source.as_dict() for source in collection.sources],
     )
     result = CorporateEventScanResult(
         as_of_text, hits, report, Path(output), Path(json_output), collection.sources, collection.status, undated

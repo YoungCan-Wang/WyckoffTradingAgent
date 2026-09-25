@@ -19,6 +19,7 @@ RUNTIME_LAYERS = ("agents", "cli", "core", "integrations", "tools", "workflows")
 RUNTIME_IMPORT_ROOTS = ("cli", "core", "integrations", "tools", "workflows")
 CHANNEL_SENDERS = {"send_to_telegram", "send_wecom_notification", "send_dingtalk_notification"}
 PRIVATE_MODULE_ALLOWLIST = {"cli.workflows._shared", "integrations._llm_types"}
+PUBLIC_MCP_BRIDGE = ROOT / "integrations" / "public_mcp"
 
 
 def _python_files(*locations: Path) -> list[Path]:
@@ -178,6 +179,13 @@ def test_boundary_scanners_cover_aliases_and_private_modules(tmp_path: Path):
 @pytest.mark.parametrize(("layer", "forbidden"), LAYER_IMPORT_RULES)
 def test_package_imports_follow_layer_direction(layer: str, forbidden: set[str]):
     assert _scan_import_boundaries(_python_files(ROOT / layer), forbidden) == []
+
+
+def test_public_mcp_bridge_only_reaches_upper_layers_lazily():
+    """integrations/public_mcp may call tools/agents/workflows, but only inside callables."""
+    forbidden = dict(LAYER_IMPORT_RULES)["integrations"]
+    paths = _python_files(PUBLIC_MCP_BRIDGE)
+    assert _scan_import_boundaries(paths, forbidden, top_level_only=True) == []
 
 
 def test_public_mcp_entrypoint_does_not_depend_on_cli():

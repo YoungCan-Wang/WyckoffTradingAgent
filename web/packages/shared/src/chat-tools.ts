@@ -762,7 +762,7 @@ export async function execScanCorporateEvents(deps: ToolDeps, limit = 20, asOf =
   const classified = scanCorporateEvents(collection.items)
   const undatedCount = classified.filter((hit) => corporateEventTime(hit.published_at) === null).length
   const hits = filterRecentCorporateHits(classified, asOf).slice(0, limit)
-  return renderCorporateEventReport(hits, asOf, collection.status, collection.sources.filter((source) => !source.ok).map((source) => source.source), undatedCount)
+  return renderCorporateEventReport(hits, asOf, collection.status, collection.sources.filter((source) => !source.ok).map((source) => source.source), undatedCount, collection.sources)
 }
 
 function formatNewsHeadlineLine(row: StockNewsHeadline): string {

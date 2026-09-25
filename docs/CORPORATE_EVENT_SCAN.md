@@ -7,10 +7,17 @@ CLI、MCP、Web 同名工具都请求东方财富四个关键词：重大资产�
 也不保证补齐调度间已滚出最新电报列表的记录。两次 cron 是独立检索，不是接续消费的可靠队列。
 东财请求每页12秒超时，财联社8秒超时；各来源独立失败。源码之外的网络可用性必须单独验收。
 
-`source_status` 为 `ok`（所有请求成功）、`partial`（部分失败）或 `unavailable`（全部失败）。
+`source_status` 为 `ok`（所有请求成功且无隔离坏记录）、`partial`（分页/来源失败或隔离坏记录）或 `unavailable`（没有成功取得任何合法响应批次）。
 `source_ok` 仅在 `ok` 时为真；它不承诺市场覆盖完整。JSON 返回每个来源的成功状态、条数、
 已见最早/最晚发布时间和脱敏错误类别。额外注入的回归样例不把失效的数据源变成健康来源。
 合法空数组是零条数据；HTTP/网络失败、无效 JSON 或响应结构不能当成正常零条。
+
+每个来源还返回 `request_status`、`pages_succeeded`、`failed_pages`（页号与脱敏错误类别）、
+`rejected_items` 和 `coverage_status`。第一页成功、第二页失败仍保留第一页；某条无效记录
+不会丢掉同一批次的其它合法记录。所有来源都部分成功时仍为 `partial`，不能误报全不可用。
+`coverage_status=possibly_truncated` 表示东财末页满额或财联社非空最新批次的有限覆盖；其它情况为
+`unknown`，没有“全市场完整”状态。东财保持 `sort=default`，不假设时间有序，也不依据旧消息提前
+宣称48小时已经抓完。新批次接口只供公司事件观察，原有个股新闻列表接口的异常语义保持不变。
 
 全部失败时报告明确说明无法判断，MCP 返回 `isError`；部分失败仍保留已获得的观察结果并展示告警。
 正常零命中也只能说明本次检索未命中，不等于没有停牌或重组。
@@ -25,13 +32,21 @@ CLI/MCP JSON 中有 `as_of`、`timezone`、`lookback_hours`；Web 文本保留�
 
 ## 事件与代码
 
-`event_status` 区分 `announced`、`denied`、`terminated`、`resumed`、`unknown`。
-`halt_status` 区分 `announced`、`not_halted`、`resumed`、`unknown`。分类首先考虑当前标题，
+`event_status` 区分 `announced`、`denied`、`terminated`、`resumption_announced`、`resumed`、`unknown`。
+`halt_status` 区分 `announced`、`not_halted`、`resume_announced`、`resumed`、`unknown`。
+事件与停牌独立：已宣布收购但无需停牌，仍是 `announced + not_halted`。分类首先考虑当前标题，
 避免正文引用的历史停牌覆盖当前否认/终止更新。规则不能替代原文核证；模糊消息标记未知。
 正文含重组关键词不等于存在当前重组，更不等于可执行买单。
 
+“明日起复牌/将于某日复牌”为 `halt_status=resume_announced`，不是已复牌。`effective_date`
+仅保存明确的上海日历日期（YYYY-MM-DD）；相对明日/后日依据来源发布时间转换到上海日期计算。
+“下一交易日”不猜节假日日历，缺失发布时间或非法日期留空并提示核实。即使日期已过去，也不自动
+把计划改成已复牌；`resumed` 本身也只是新闻陈述，不是交易所当前可交易状态。
+
 代码必须满足独立六位及支持的代码格式，不从长公告编号截出六位。单条新闻有多个未消歧代码，
-或财联社关联多只股票时，不直接拿第一只当事件主体。此处格式校验不是上市证券主表认证。
+或财联社关联多只股票时，不直接拿第一只当事件主体。`related_codes` 保留合法格式的相关代码，
+`subject_status` 为 `single_candidate / ambiguous / conflict / unknown`；来源代码与正文代码冲突时
+主代码留空。单候选也只是文本/来源候选，不是上市证券主表认证；多个代码的条目不自动派生买入标的。
 原文 URL 随命中保留，完整标题及时间参与去重，避免把相同前缀的不同更新吞掉。
 Python/TypeScript 共用 `tests/fixtures/corporate_event_cases.json` 的回归样例。
 
@@ -45,3 +60,11 @@ Python/TypeScript 共用 `tests/fixtures/corporate_event_cases.json` 的回归�
 
 运行入口为 `python scripts/corporate_event_scan_job.py`。CLI/MCP/Web 工具不写产物，
 `limit` 为1–50的整数，默认20。它限制返回条数，不扩大上游覆盖。
+
+## 验收与非目标
+
+离线回归继续禁止网络；真实来源验收在隔离作业中执行，不向 pytest 注入生产凭证。
+真实验收需留存截止时点、来源/页级状态、有界消息时间范围、报告和通知API结果；一次运行不证明连续覆盖。
+飞书API成功仅表示服务端接受，不冒充收件人已阅读或端到端必达。测试通知必须标注“验收测试/非交易信号”。
+MCP 业务桥迁移后保留写操作同步执行与串行锁，并用实际阻塞的并发写回归，而非仅检查 timeout 字段。
+本次不引入跨运行去重、first_seen_at 存储、增量通知或交易评分；仍可能重复通知48小时窗口内的同一消息。

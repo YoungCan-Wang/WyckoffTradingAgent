@@ -117,3 +117,77 @@ def test_partial_source_failure_is_not_hidden_or_secret_leaking():
 def test_cls_multiple_stocks_are_not_blindly_attributed_to_first():
     row = _normalize_cls({"content": "重组市场观察", "stock_list": [{"code": "000001"}, {"code": "600825"}]})
     assert row["code"] == ""
+
+
+def test_eastmoney_second_page_failure_preserves_first_page(monkeypatch):
+    def page(_query, number):
+        if number == 2:
+            raise TimeoutError("private token=do-not-publish")
+        return {"result": {"cmsArticleWebOld": [{"title": XINGSHUAIER_TELEGRAPH, "date": "2026-09-21 19:20:00"}] * 20}}
+
+    monkeypatch.setattr(stock_news_events, "_request_news_page", page)
+    batch = stock_news_events.fetch_eastmoney_news_batch("股票停牌")
+    assert batch.request_status == "partial"
+    assert len(batch.items) == 20
+    assert batch.failed_pages == [{"page": 2, "error": "TimeoutError"}]
+    result = collect_corporate_event_items(fetch_cls=lambda: [])
+    assert result.status == "partial" and len(result.items) == 80
+    assert all(source.request_status == "partial" for source in result.sources[:4])
+    assert "private token" not in repr(result)
+    # Strict legacy callers still get the original error rather than a silent list.
+    with pytest.raises(TimeoutError):
+        stock_news_events.fetch_eastmoney_news("股票停牌", pages=2, strict=True)
+
+
+def test_all_sources_partial_are_not_reported_unavailable(monkeypatch):
+    from integrations.stock_news_events import NewsBatch
+
+    batch = NewsBatch(
+        items=[{"title": XINGSHUAIER_TELEGRAPH}], pages_succeeded=1, failed_pages=[{"page": 2, "error": "TimeoutError"}]
+    )
+    result = collect_corporate_event_items(fetch_news=lambda *a, **k: batch, fetch_cls=lambda: batch)
+    assert not any(source.ok for source in result.sources)
+    assert result.status == "partial" and len(result.items) == 5
+
+
+def test_invalid_articles_do_not_erase_valid_page_rows(monkeypatch):
+    monkeypatch.setattr(
+        stock_news_events,
+        "_request_news_page",
+        lambda *_: {"result": {"cmsArticleWebOld": [None, {}, {"title": XINGSHUAIER_TELEGRAPH}]}},
+    )
+    batch = stock_news_events.fetch_eastmoney_news_batch("股票停牌")
+    assert batch.request_status == "partial" and len(batch.items) == 1
+    assert batch.rejected_items == 2
+
+
+def test_page_cap_does_not_claim_complete_coverage(monkeypatch):
+    calls = []
+
+    def page(_query, number):
+        calls.append(number)
+        return {"result": {"cmsArticleWebOld": [{"title": XINGSHUAIER_TELEGRAPH}] * 20}}
+
+    monkeypatch.setattr(stock_news_events, "_request_news_page", page)
+    batch = stock_news_events.fetch_eastmoney_news_batch("股票停牌", pages=2)
+    assert calls == [1, 2]
+    assert batch.request_status == "ok" and batch.coverage_status == "possibly_truncated"
+
+
+def test_cls_valid_rows_survive_bad_row_and_preserve_multiple_codes(monkeypatch):
+    monkeypatch.setattr(
+        cls_telegraph,
+        "_request_cls",
+        lambda *_: {
+            "data": {
+                "roll_data": [
+                    None,
+                    {"content": "重大资产重组观察", "stock_list": [{"code": "000001"}, {"code": "600825"}]},
+                ]
+            }
+        },
+    )
+    batch = cls_telegraph.fetch_cls_telegraph_batch()
+    assert batch.request_status == "partial" and batch.rejected_items == 1
+    assert batch.items[0]["code"] == ""
+    assert batch.items[0]["related_codes"] == ["000001", "600825"]

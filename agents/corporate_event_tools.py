@@ -37,6 +37,7 @@ def scan_corporate_events(limit: int = 20, tool_context: ToolContext | None = No
         source_status=result.source_status,
         failed_sources=tuple(source.source for source in result.sources if not source.ok),
         undated_count=len(result.undated_hits),
+        source_details=[source.as_dict() for source in result.sources],
     )
     if result.source_status == "unavailable":
         payload["error"] = "全部消息源不可用；无法判断是否有事件。"
