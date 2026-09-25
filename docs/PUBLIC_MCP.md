@@ -98,10 +98,12 @@ directly to file descriptor 1 is not covered by Python's redirection.
 ## Long-running work and compatibility
 
 Business calls are serialized per process to avoid overlapping local state writes.
-The existing production executor remains in charge of execution deadlines; research
-scans/backtests use a 600-second budget. A client timeout or cancellation is **not**
-a guarantee that synchronous domain computation or a write stopped. No automatic
-retry, detached write, or pretend MCP Tasks implementation is introduced.
+Mutating calls (`update_portfolio`, `record_trade_fill`, and non-list/detail
+`research_hypothesis` actions) run on the calling thread without ToolSurface's
+abandoning timeout worker, so the Runtime lock is not released while a write still
+runs. Research scans/backtests keep a 600-second budget. A client timeout or
+cancellation is **not** a guarantee that a non-mutating domain call stopped. No
+automatic retry or pretend MCP Tasks implementation is introduced.
 
 Protocol-version negotiation is handled by the installed MCP SDK. This PR does not
 claim full support for every feature of the newest specification, Tasks, remote
