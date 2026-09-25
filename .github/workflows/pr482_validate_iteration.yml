@@ -1,0 +1,165 @@
+name: PR 482 iteration validation
+on:
+  push:
+    branches: [automation/pr482-iteration-20260925]
+    paths: [.github/workflows/pr482_validate_iteration.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: pr482-iteration-validation-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    outputs:
+      candidate_sha: ${{ steps.publish.outputs.candidate_sha }}
+    env:
+      EXPECTED_MAIN: 1238d3d923a81345a3bd7c7fa487a176827bd0b8
+      EXPECTED_PR: 50b175ff044e22e7a886ed92ff78d61e48b8be1f
+      EVIDENCE: ${{ runner.temp }}/pr482-validation
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Reconstruct verified integration tree
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE"
+          cat .automation/pr482-edits.part1 .automation/pr482-edits.part2 .automation/pr482-edits.part3 > "$RUNNER_TEMP/pr482-edits.b64"
+          test "$(git rev-parse origin/main)" = "$EXPECTED_MAIN"
+          test "$(git rev-parse origin/cursor/corp-halt-scan-a967)" = "$EXPECTED_PR"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout --detach "$EXPECTED_PR"
+          git merge --no-commit --no-ff "$EXPECTED_MAIN" > "$EVIDENCE/merge.log" 2>&1 || true
+          test "$(git diff --name-only --diff-filter=U)" = 'tests/test_public_mcp_routing.py'
+          git show "$EXPECTED_MAIN:tests/test_public_mcp_routing.py" | sed 's/from integrations.public_mcp.backend import DomainBackend/from agents.public_mcp_backend import DomainBackend/; s/from integrations.public_mcp import backend as module/from agents import public_mcp_backend as module/' > tests/test_public_mcp_routing.py
+          git add tests/test_public_mcp_routing.py
+          test "$(git write-tree)" = '10b422aac4c40dced098595facd5554aec1ec9aa'
+          python - <<'PY'
+          import base64, hashlib, json, lzma, os
+          from pathlib import Path
+          packed = base64.b64decode((Path(os.environ['RUNNER_TEMP']) / 'pr482-edits.b64').read_text(), validate=True)
+          assert hashlib.sha256(packed).hexdigest() == '6bfe957b525420b2605e8452a5b13fccf79b90e28af8d77334716b551b1fe28f'
+          edits = json.loads(lzma.decompress(packed))
+          for name, edit in edits.items():
+              path = Path(name)
+              assert not path.is_absolute() and '..' not in path.parts and path.is_file()
+              assert hashlib.sha256(path.read_bytes()).hexdigest() == edit['base'], name
+              lines = path.read_text().splitlines(keepends=True)
+              for start, end, text in reversed(edit['changes']):
+                  lines[start:end] = [text]
+              path.write_text(''.join(lines))
+          print('Applied hash-checked edits:', len(edits))
+          PY
+          git add -u
+          test "$(git write-tree)" = '0c9aa765c205dab3791b28dd881207604e8b970b'
+      - name: Install validation dependencies
+        run: python -m pip install -e '.[dev,mcp]'
+      - name: Format and run focused regression gates
+        run: |
+          set -euo pipefail
+          git diff --cached --name-only --diff-filter=ACMR | grep '\.py$' > "$RUNNER_TEMP/pr482-python-files"
+          xargs -d '\n' ruff check --fix < "$RUNNER_TEMP/pr482-python-files"
+          xargs -d '\n' ruff format < "$RUNNER_TEMP/pr482-python-files"
+          ruff check . 2>&1 | tee "$EVIDENCE/lint.log"
+          ruff format --check . 2>&1 | tee "$EVIDENCE/format.log"
+          python scripts/quality_gate.py --ci 2>&1 | tee "$EVIDENCE/quality.log"
+          python scripts/check_workflow_hygiene.py
+          python scripts/check_dependency_hygiene.py
+          python -m pytest tests/test_public_mcp_routing.py tests/test_architecture_boundaries.py tests/core/test_corporate_event_scan.py tests/core/test_news_chart_events.py tests/integrations/test_corporate_event_sources.py tests/agents/test_corporate_event_tools.py tests/workflows/test_corporate_event_scan_job.py tests/core/test_holding_diagnostic.py tests/core/test_shadow_ledger.py tests/integrations/test_supabase_shadow_persist.py -q 2>&1 | tee "$EVIDENCE/focused-tests.log"
+          git diff --check
+      - name: Publish candidate without moving PR or main
+        id: publish
+        run: |
+          set -euo pipefail
+          git add -u
+          git commit -m 'fix: harden corporate observations and retain MCP write serialization'
+          SHA="$(git rev-parse HEAD)"
+          git push origin HEAD:refs/heads/automation/pr482-validated-20260925
+          printf 'candidate_sha=%s\n' "$SHA" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$SHA" > "$EVIDENCE/candidate_sha.txt"
+          git diff "$EXPECTED_MAIN" --stat > "$EVIDENCE/final-diff-stat.txt"
+          git diff "$EXPECTED_PR" > "$EVIDENCE/iteration.patch"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: pr482-iteration-validation
+          path: ${{ runner.temp }}/pr482-validation
+          retention-days: 14
+          if-no-files-found: error
+  real-source-acceptance:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      EVIDENCE: ${{ runner.temp }}/pr482-live-acceptance
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.candidate_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: Install observation dependencies
+        run: python -m pip install requests pandas python-dotenv
+      - name: Observe actual providers and send one labeled acceptance notice
+        env:
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          WYCKOFF_WRITE_CONTEXT: server_job
+        run: |
+          mkdir -p "$EVIDENCE"
+          python - <<'PY'
+          import contextlib, io, json, os, time
+          from datetime import datetime, timezone
+          from pathlib import Path
+          from workflows.corporate_event_scan_runtime import run_corporate_event_scan, notify_corporate_event_scan
+          from utils import feishu
+          out = Path(os.environ['EVIDENCE'])
+          started = time.monotonic()
+          result = run_corporate_event_scan(output=str(out/'scan.md'), json_output=str(out/'scan.json'))
+          receipt = {'checked_at_utc': datetime.now(timezone.utc).isoformat(), 'source_status': result.source_status,
+                     'hits': len(result.hits), 'undated_hits': len(result.undated_hits),
+                     'elapsed_seconds': round(time.monotonic()-started, 2), 'notification_attempted': False,
+                     'notification_api_accepted': False, 'human_receipt_verified': False,
+                     'note': 'One bounded request batch is not continuous coverage or an investment signal.'}
+          original = feishu._post_card
+          acknowledgements = []
+          def acceptance_card(webhook, title, chunk):
+              summary = f'PR #482 验收测试，非交易信号。\n截止：{result.as_of}\n来源：{result.source_status}\n近期观察：{len(result.hits)}；未知时间：{len(result.undated_hits)}\n本条只验证通知链路，不代表新闻覆盖完整或可交易。'
+              ok, reason = original(webhook, 'PR482 验收测试（非交易信号）', summary)
+              acknowledgements.append(reason)
+              if not ok or reason != 'ok':
+                  raise RuntimeError('Notification was not positively acknowledged; no retry in acceptance')
+              return ok, reason
+          feishu._post_card = acceptance_card
+          # Keep this single test notice to one card; suppress provider exception text that could contain a webhook.
+          os.environ['FEISHU_LARK_MAX_LEN'] = '1000000'
+          with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+              notice = notify_corporate_event_scan(result)
+          receipt['notification_attempted'] = notice.attempted
+          receipt['notification_api_accepted'] = notice.ok and acknowledgements == ['ok']
+          receipt['notification_reason'] = 'accepted' if receipt['notification_api_accepted'] else 'not_configured' if not notice.attempted else 'failed_or_unconfirmed'
+          (out/'acceptance.json').write_text(json.dumps(receipt, ensure_ascii=False, indent=2))
+          print(json.dumps(receipt, ensure_ascii=False))
+          if not result.source_ok:
+              raise SystemExit(2)
+          if not receipt['notification_api_accepted']:
+              raise SystemExit(1)
+          PY
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: pr482-real-source-acceptance
+          path: ${{ runner.temp }}/pr482-live-acceptance
+          retention-days: 14
+          if-no-files-found: error
