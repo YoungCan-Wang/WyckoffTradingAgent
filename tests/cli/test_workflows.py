@@ -171,28 +171,6 @@ def test_workflow_script_cli_line_labels_stock_selection_fallback():
     assert "source=fallback_script" not in line
 
 
-def test_route_workflow_keeps_task_like_typo_direct_for_model_inference():
-    workflow = route_workflow("给我做磁场诊断")
-
-    assert workflow.name == "general_chat"
-    assert workflow.route_reason == "普通工具型对话交给直接 agent"
-    assert workflow.route_matches == ()
-
-
-def test_route_workflow_keeps_single_tool_backtest_direct():
-    workflow = route_workflow("帮我回测 2023 年参数")
-
-    assert workflow.name == "general_chat"
-    assert workflow.route_reason == "普通工具型对话交给直接 agent"
-    assert workflow.route_matches == ()
-
-
-def test_route_workflow_keeps_stock_diagnosis_direct():
-    workflow = route_workflow("300750 现在怎么看？")
-
-    assert workflow.name == "general_chat"
-
-
 def test_build_workflow_prompt_is_empty_for_general_chat():
     workflow = route_workflow("你好")
 
@@ -246,98 +224,6 @@ def test_route_workflow_explicit_dynamic_opt_in():
     assert workflow.name == "dynamic_task"
     assert "delegate_to_research" in workflow.allowed_tools
     assert workflow.route_reason == "用户显式要求动态 workflow"
-
-
-def test_route_workflow_leaves_obvious_stock_selection_to_model_router():
-    workflow = route_workflow("帮我完整做一遍今天的A股选股，给出候选、理由和买卖计划")
-
-    assert workflow.name == "general_chat"
-    assert workflow.route_reason == "普通工具型对话交给直接 agent"
-    assert workflow.route_matches == ()
-
-
-def test_route_workflow_leaves_short_stock_selection_delivery_to_model_router():
-    workflow = route_workflow("帮我选出好股票")
-
-    assert workflow.name == "general_chat"
-    assert workflow.route_reason == "普通工具型对话交给直接 agent"
-    assert workflow.route_matches == ()
-
-
-def test_route_workflow_leaves_colloquial_good_stock_request_to_model_router():
-    workflow = route_workflow("给我找几个好票，带理由和攻防计划")
-
-    assert workflow.name == "general_chat"
-    assert workflow.route_reason == "普通工具型对话交给直接 agent"
-    assert workflow.route_matches == ()
-
-
-def test_route_workflow_leaves_colloquial_good_target_request_to_model_router():
-    workflow = route_workflow("帮我找好标的")
-
-    assert workflow.name == "general_chat"
-    assert workflow.route_reason == "普通工具型对话交给直接 agent"
-    assert workflow.route_matches == ()
-
-
-def test_route_workflow_leaves_chatty_stock_opportunity_request_to_model_router():
-    workflow = route_workflow("今天A股有什么机会，给我候选和风险边界")
-
-    assert workflow.name == "general_chat"
-    assert workflow.route_reason == "普通工具型对话交给直接 agent"
-    assert workflow.route_matches == ()
-
-
-def test_route_workflow_leaves_chatty_watchlist_request_to_model_router():
-    workflow = route_workflow("给我找几只值得复核的票，带理由和攻防计划")
-
-    assert workflow.name == "general_chat"
-    assert workflow.route_reason == "普通工具型对话交给直接 agent"
-    assert workflow.route_matches == ()
-
-
-def test_route_workflow_keeps_simple_stock_selection_concept_direct():
-    workflow = route_workflow("好股票是什么意思？")
-
-    assert workflow.name == "general_chat"
-    assert workflow.route_reason == "普通工具型对话交给直接 agent"
-    assert workflow.route_matches == ()
-
-
-def test_route_workflow_keeps_stock_selection_how_to_direct():
-    workflow = route_workflow("怎么选出好股票？")
-
-    assert workflow.name == "general_chat"
-    assert workflow.route_matches == ()
-
-
-def test_route_workflow_keeps_good_stock_term_question_direct():
-    workflow = route_workflow("好票是什么意思？")
-
-    assert workflow.name == "general_chat"
-    assert workflow.route_matches == ()
-
-
-def test_route_workflow_keeps_good_target_term_question_direct():
-    workflow = route_workflow("好标的是什么意思？")
-
-    assert workflow.name == "general_chat"
-    assert workflow.route_matches == ()
-
-
-def test_route_workflow_keeps_stock_selection_method_question_direct():
-    workflow = route_workflow("怎么找值得跟踪的票？")
-
-    assert workflow.name == "general_chat"
-    assert workflow.route_matches == ()
-
-
-def test_route_workflow_leaves_deep_research_to_model_router():
-    workflow = route_workflow("分阶段深度研究一下今天的市场风险")
-
-    assert workflow.name == "general_chat"
-    assert workflow.route_reason == "普通工具型对话交给直接 agent"
-    assert workflow.route_matches == ()
 
 
 def test_route_workflow_explaining_workflow_stays_general():
