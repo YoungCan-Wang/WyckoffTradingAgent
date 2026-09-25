@@ -20,7 +20,7 @@ jobs:
     env:
       EXPECTED_MAIN: 1238d3d923a81345a3bd7c7fa487a176827bd0b8
       EXPECTED_PR: 50b175ff044e22e7a886ed92ff78d61e48b8be1f
-      EVIDENCE: ${{ runner.temp }}/pr482-validation
+      EVIDENCE: /tmp/pr482-validation
     steps:
       - uses: actions/checkout@v7
         with:
@@ -93,7 +93,7 @@ jobs:
         if: always()
         with:
           name: pr482-iteration-validation
-          path: ${{ runner.temp }}/pr482-validation
+          path: /tmp/pr482-validation
           retention-days: 14
           if-no-files-found: error
   real-source-acceptance:
@@ -101,7 +101,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      EVIDENCE: ${{ runner.temp }}/pr482-live-acceptance
+      EVIDENCE: /tmp/pr482-live-acceptance
     steps:
       - uses: actions/checkout@v7
         with:
@@ -142,7 +142,6 @@ jobs:
                   raise RuntimeError('Notification was not positively acknowledged; no retry in acceptance')
               return ok, reason
           feishu._post_card = acceptance_card
-          # Keep this single test notice to one card; suppress provider exception text that could contain a webhook.
           os.environ['FEISHU_LARK_MAX_LEN'] = '1000000'
           with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
               notice = notify_corporate_event_scan(result)
@@ -160,6 +159,6 @@ jobs:
         if: always()
         with:
           name: pr482-real-source-acceptance
-          path: ${{ runner.temp }}/pr482-live-acceptance
+          path: /tmp/pr482-live-acceptance
           retention-days: 14
           if-no-files-found: error
