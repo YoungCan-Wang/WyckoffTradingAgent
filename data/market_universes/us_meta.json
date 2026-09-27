@@ -882,6 +882,15 @@
     "active": true
   },
   {
+    "symbol": "ADRX.US",
+    "code": "ADRX",
+    "name": "ADARx Pharmaceuticals, Inc.",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
     "symbol": "ADSE.US",
     "code": "ADSE",
     "name": "ADS-TEC Energy Public Limited Company",
@@ -7632,15 +7641,6 @@
     "active": true
   },
   {
-    "symbol": "BRR.US",
-    "code": "BRR",
-    "name": "ProCap Financial, Inc.",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
     "symbol": "BRSL.US",
     "code": "BRSL",
     "name": "Brightstar Lottery",
@@ -14310,15 +14310,6 @@
     "active": true
   },
   {
-    "symbol": "DOMO.US",
-    "code": "DOMO",
-    "name": "Domo, Inc. Class B",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
     "symbol": "DOO.US",
     "code": "DOO",
     "name": "BRP Inc.",
@@ -16677,6 +16668,15 @@
     "active": true
   },
   {
+    "symbol": "ESYN.US",
+    "code": "ESYN",
+    "name": "EnerSyn Global Inc.",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
     "symbol": "ETB.US",
     "code": "ETB",
     "name": "Eaton Vance Tax-Managed Buy-Write Income Fund Eaton Vance Tax-Managed Buy-Write Income Fund Common Shares of Beneficial Interest",
@@ -18174,6 +18174,15 @@
     "symbol": "FIZZ.US",
     "code": "FIZZ",
     "name": "National Beverage Corp.",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
+    "symbol": "FJDI.US",
+    "code": "FJDI",
+    "name": "ARC Group Securities Acquisition I Class A",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -23391,6 +23400,15 @@
     "active": true
   },
   {
+    "symbol": "HUCK.US",
+    "code": "HUCK",
+    "name": "Huckleberry.ai, Inc.",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
     "symbol": "HUDI.US",
     "code": "HUDI",
     "name": "华迪国际",
@@ -23490,24 +23508,6 @@
     "active": true
   },
   {
-    "symbol": "HVII.US",
-    "code": "HVII",
-    "name": "Hennessy Capital Investment Corp. VII Class A",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
-    "symbol": "HVIIU.US",
-    "code": "HVIIU",
-    "name": "Hennessy Capital Investment Corp. VII",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
     "symbol": "HVMC.US",
     "code": "HVMC",
     "name": "Highview Merger Corp. Class A",
@@ -23547,15 +23547,6 @@
     "symbol": "HWC.US",
     "code": "HWC",
     "name": "汉考克惠特尼",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
-    "symbol": "HWH.US",
-    "code": "HWH",
-    "name": "HWH International Inc.",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -33516,15 +33507,6 @@
     "active": true
   },
   {
-    "symbol": "NHIC.US",
-    "code": "NHIC",
-    "name": "NewHold Investment Corporation III Class A",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
     "symbol": "NHIV.US",
     "code": "NHIV",
     "name": "NewHold Investment Corp IV Class A",
@@ -34938,6 +34920,15 @@
     "active": true
   },
   {
+    "symbol": "NWCL.US",
+    "code": "NWCL",
+    "name": "newcleo plc",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
     "symbol": "NWE.US",
     "code": "NWE",
     "name": "NorthWestern Energy Group, Inc.",
@@ -35994,6 +35985,15 @@
     "symbol": "ONEG.US",
     "code": "ONEG",
     "name": "一建筑",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
+    "symbol": "ONEN.US",
+    "code": "ONEN",
+    "name": "ONE Nuclear Energy Inc.",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -38403,15 +38403,6 @@
     "active": true
   },
   {
-    "symbol": "PLTS.US",
-    "code": "PLTS",
-    "name": "Platinum Analytics Cayman Limited Class A",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
     "symbol": "PLUG.US",
     "code": "PLUG",
     "name": "普拉格能源",
@@ -38622,6 +38613,15 @@
     "symbol": "PN.US",
     "code": "PN",
     "name": "斯凯蒙太阳能",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
+    "symbol": "PNAQ.US",
+    "code": "PNAQ",
+    "name": "Pinnacle Acquisition Corp. Class A",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -46197,6 +46197,15 @@
     "active": true
   },
   {
+    "symbol": "SVIA.US",
+    "code": "SVIA",
+    "name": "Silvia, Inc.",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
     "symbol": "SVIV.US",
     "code": "SVIV",
     "name": "Spring Valley Acquisition Corp. IV Class A",
@@ -46749,15 +46758,6 @@
     "symbol": "TBN.US",
     "code": "TBN",
     "name": "Tamboran Resources Corporation",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
-    "symbol": "TBPH.US",
-    "code": "TBPH",
-    "name": "Theravance Biopharma Inc",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -48233,7 +48233,7 @@
   {
     "symbol": "TREO.US",
     "code": "TREO",
-    "name": "Tactical Resources Corp.",
+    "name": "Tactical Resources Corporation",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
