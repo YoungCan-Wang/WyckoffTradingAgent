@@ -34,12 +34,10 @@ name: Review Shadow Backtest
 #
 # 只读 artifact 与行情，不写任何表，故不设 WYCKOFF_WRITE_CONTEXT。
 on:
-  schedule:
-    # UTC 周六 05:40 = 北京时间周六 13:40，与 factor_ic_eval(05:10) 及其它周六评估任务
-    # 错开，避免同时抢 Tushare / TickFlow 配额。错开只为分摊配额,不构成先后
-    # （见 AGENTS.md 评审规则 7）：本任务读的是 wyckoff_funnel 的 90 天历史 artifact，
-    # 不读同批 eval 的产物，所以顺序无关紧要。
-    - cron: "40 5 * * 6"
+  # 三条影子车道（near_l2 / rotation_setup / pre_breakout）经数月检验均呈现持续负超额（胜率均低于 42%），
+  # 生产漏斗已确认不提拔这些车道，历史使命已达成。注释掉 cron 定时调度以节省 CI 资源与存储，保留 workflow_dispatch 备查。
+  # schedule:
+  #   - cron: "40 5 * * 6"
   workflow_dispatch:
     inputs:
       max_artifacts:
