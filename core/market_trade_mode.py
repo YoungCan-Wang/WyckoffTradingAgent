@@ -316,16 +316,17 @@ def _hard_defense_trade_mode(regime_norm: str) -> MarketTradeMode | None:
         )
     if regime_norm not in NO_NEW_BUY_REGIMES:
         return None
+    reason = (
+        "CRASH 统计呈恐慌底特征（后向偏涨），但左尾风险未经量化验证前禁止新开；已有持仓未破止损切勿恐慌割肉"
+        if regime_norm == "CRASH"
+        else f"{regime_norm} 属硬防守档：左尾风险未经检验，默认不新开（可按 STEP4_BUY_PROBE_REGIMES 降为小仓）"
+    )
     return MarketTradeMode(
         regime=regime_norm,
         mode="observe_only",
         label="禁止新仓",
         action="禁止新仓：仅影子观察，不送AI、不写推荐、不生成新买入",
-        # 注意别写回「回测全周期弱势／新开仓胜率不足」：那句已被实测冲掉——67 天面板上
-        # 禁新仓日的全市场胜率反而比允许日高 3~7 点，且换窗口符号整列翻转、环移 p
-        # 全不显著（见 _probe_downgraded_regimes）。这一档现在的依据是「左尾未量过」
-        # 的防守性保留，而不是已证明的弱势。
-        reason=f"{regime_norm} 属硬防守档：左尾风险未经检验，默认不新开（可按 STEP4_BUY_PROBE_REGIMES 降为小仓）",
+        reason=reason,
         allow_ai_review=False,
         allow_recommendation_write=False,
         allow_full_l4=False,

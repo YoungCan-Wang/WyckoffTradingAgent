@@ -176,7 +176,7 @@ class TestAllocateAiCandidates:
         assert scores["000001"] > 0
         assert scores["000002"] > 0
 
-    def test_sos_outranks_evr_after_downweight_iteration(self):
+    def test_trigger_points_flattened_treats_single_triggers_equally(self):
         result = FunnelResult(
             layer1_symbols=["000001", "000002"],
             layer2_symbols=["000001", "000002"],
@@ -204,7 +204,7 @@ class TestAllocateAiCandidates:
             },
         )
 
-        assert scores["000001"] > scores["000002"]
+        assert scores["000001"] == scores["000002"]
 
     def test_regime_scoped_weight_changes_ai_candidate_scores(self):
         result = FunnelResult(
@@ -654,13 +654,13 @@ def test_spring_weight_no_longer_outranks_other_single_signals():
         )
 
     spring_only = score(spring=hit)
-    assert spring_only == 12.0
+    assert spring_only == 25.0
 
-    # spring 不再高于其他单信号（此前 45.0 时高于全部）
-    assert spring_only <= score(trend_pb=hit)
-    assert spring_only <= score(lps=hit)
-    assert spring_only <= score(compression=hit)
-    assert spring_only <= score(sos=hit)
+    # 拍平后各单触发信号权重完全一致（25.0）
+    assert spring_only == score(trend_pb=hit)
+    assert spring_only == score(lps=hit)
+    assert spring_only == score(compression=hit)
+    assert spring_only == score(sos=hit)
 
-    # 共振不受影响：spring 仍能与其他形态叠加进入候选
+    # 叠加进入候选：多形态叠加打分仍然递增
     assert score(sos=hit, other=hit, spring=hit) > score(sos=hit, other=hit)

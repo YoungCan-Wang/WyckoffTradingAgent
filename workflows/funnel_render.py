@@ -183,6 +183,8 @@ def _execution_decision_line(regime: str, selected_count: int, data_quality: dic
         return "数据质量降级；候选仅供 shadow 观察，禁止正式推荐、写入执行清单或新开仓。"
     mode = resolve_market_trade_mode(regime)
     if not mode.allow_ai_review:
+        if regime == "CRASH":
+            return "禁止新仓（CRASH 呈恐慌底特征，后市偏涨但左尾未量过）；严禁追新，不从本报告选择买入标的；已有持仓未触止损切莫恐慌割肉。"
         return "禁止新仓；候选仅影子观察，优先处理持仓风控；不从本报告选择买入标的。"
     if mode.mode == "overheat_shadow" or (
         not mode.allow_recommendation_write and mode.mode not in {"repair_review", "confirmation_only"}
@@ -243,7 +245,10 @@ def _tomorrow_action_line(ctx: Any, selected_count: int) -> str:
     if _data_quality_observe_only(getattr(ctx, "metrics", None)):
         action = "禁止正式推荐和新仓；修复数据覆盖后重新运行漏斗，不使用本次候选下单。"
     elif not mode.allow_ai_review:
-        action = "禁止新仓；不用旧报告下单，只处理持仓风控，观察主线修复是否延续。"
+        if getattr(ctx, "regime", None) == "CRASH":
+            action = "禁止新仓；CRASH 呈恐慌底特征，严禁追新但已有持仓未触止损切莫盲目割肉，静待修复。"
+        else:
+            action = "禁止新仓；不用旧报告下单，只处理持仓风控，观察主线修复是否延续。"
     elif mode.mode == "overheat_shadow":
         action = "禁止新仓；AI/shadow 可对照，不写推荐、不执行新买，只处理持仓风控。"
     elif not mode.allow_recommendation_write:
