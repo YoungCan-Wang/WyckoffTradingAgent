@@ -49,18 +49,19 @@ class _FakeQuery:
                 "filters": list(self.filters),
             }
         )
-        return SimpleNamespace(
-            data=[] if self.action == "select" else self.client.response_data(self.action, self.payload)
-        )
+        return SimpleNamespace(data=self.client.response_data(self.action, self.payload))
 
 
 class _FakeUserClient:
-    def __init__(self, *, update_rows: list | None = None):
+    def __init__(self, *, update_rows: list | None = None, select_rows: list | None = None):
         self.calls: list[dict] = []
         self.table_name = ""
         self.update_rows = update_rows
+        self.select_rows = [] if select_rows is None else select_rows
 
     def response_data(self, action: str, payload):
+        if action == "select":
+            return list(self.select_rows)
         if action == "update":
             return [] if self.update_rows is not None else [payload]
         return [payload]
@@ -92,7 +93,9 @@ def test_portfolio_writes_accept_explicit_user_client(monkeypatch):
     assert ok is True
 
     actions = [call["action"] for call in client.calls]
-    assert actions == ["update", "delete", "select", "upsert", "update"]
+    # ensure 用 insert 而不是 upsert：带 free_cash=0 的 upsert 会在并发
+    # set_cash 之后把真实现金覆盖成 0。
+    assert actions == ["update", "delete", "select", "insert", "update"]
 
 
 def test_portfolio_admin_fallback_rejects_cli_context(monkeypatch):
@@ -396,3 +399,50 @@ def test_record_fill_existing_without_buy_dt_preserves_date(monkeypatch):
     assert position_writes
     assert all(call["action"] == "update" for call in position_writes)
     assert "buy_dt" not in position_writes[0]["payload"]
+
+
+def test_ensure_portfolio_exists_inserts_not_upserts_when_missing():
+    """新建组合行必须 insert，不能 upsert free_cash=0。
+
+    竞态：ensure 的 select 看到空行之后、落库之前，并发 set_cash 已建好行并
+    写入真实现金。若这里 upsert ``{"free_cash": 0}``，merge-duplicates 会把
+    现金覆盖成 0。insert + unique 冲突忽略与本地 INSERT OR IGNORE 同语义。
+    """
+    from integrations.supabase_portfolio import _ensure_portfolio_exists
+
+    client = _FakeUserClient()
+    _ensure_portfolio_exists("USER_LIVE:u1", client)
+
+    assert [call["action"] for call in client.calls] == ["select", "insert"]
+    assert client.calls[1]["payload"] == {
+        "portfolio_id": "USER_LIVE:u1",
+        "free_cash": 0,
+        "name": "我的持仓",
+    }
+    assert "upsert" not in [call["action"] for call in client.calls]
+
+
+def test_ensure_portfolio_exists_skips_write_when_row_present():
+    from integrations.supabase_portfolio import _ensure_portfolio_exists
+
+    client = _FakeUserClient(select_rows=[{"portfolio_id": "USER_LIVE:u1"}])
+    _ensure_portfolio_exists("USER_LIVE:u1", client)
+
+    assert [call["action"] for call in client.calls] == ["select"]
+    assert "insert" not in [call["action"] for call in client.calls]
+    assert "upsert" not in [call["action"] for call in client.calls]
+
+
+def test_ensure_portfolio_exists_ignores_concurrent_unique_violation():
+    from integrations.supabase_portfolio import _ensure_portfolio_exists
+
+    class _ConflictClient(_FakeUserClient):
+        def response_data(self, action: str, payload):
+            if action == "insert":
+                raise RuntimeError("duplicate key value violates unique constraint 23505")
+            return super().response_data(action, payload)
+
+    client = _ConflictClient()
+    _ensure_portfolio_exists("USER_LIVE:u1", client)  # must not raise
+
+    assert [call["action"] for call in client.calls] == ["select", "insert"]

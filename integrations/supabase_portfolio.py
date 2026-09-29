@@ -334,13 +334,27 @@ def update_position_stops(portfolio_id: str, updates: list[dict[str, Any]]) -> b
 
 
 def _ensure_portfolio_exists(portfolio_id: str, client: Client) -> None:
-    """确保 portfolios 行存在，不存在则创建。"""
+    """确保 portfolios 行存在，不存在则创建。
+
+    必须用 insert，不能用带 ``free_cash=0`` 的 upsert。
+
+    ``select`` 为空到真正落库之间不是原子的：另一个并发写入（常见是
+    ``set_cash``）可能已经建好行并写入真实现金。若这里再 upsert
+    ``free_cash=0``，PostgREST 默认 merge-duplicates 会把已写入的现金覆盖成 0。
+    本地 SQLite 路径用的是 ``INSERT OR IGNORE``，云端必须同等保守——冲突时
+    什么都不改，而不是把现金清零。
+    """
     resp = client.table(TABLE_PORTFOLIOS).select("portfolio_id").eq("portfolio_id", portfolio_id).limit(1).execute()
-    if not resp.data:
-        client.table(TABLE_PORTFOLIOS).upsert(
+    if resp.data:
+        return
+    try:
+        client.table(TABLE_PORTFOLIOS).insert(
             {"portfolio_id": portfolio_id, "free_cash": 0, "name": "我的持仓"},
-            on_conflict="portfolio_id",
         ).execute()
+    except Exception as exc:
+        if _is_unique_violation(exc):
+            return
+        raise
 
 
 def _resolve_write_client(client: Client | None, operation: str) -> Client:
