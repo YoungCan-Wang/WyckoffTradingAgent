@@ -387,7 +387,7 @@ flowchart LR
 | **本地软限流** | 未配置 Redis 或 Redis 临时故障时，单个 Worker 实例内的保护计数。实例回收或扩容后不保证全局一致，响应头通过 `local` / `local-fallback` 明确标识。 |
 | **Workers Logs** | Cloudflare Worker 免费日志：未捕获异常和 `console.error` 进控制台，约保留 3 天。不写 Supabase。 |
 | **Web Analytics** | Cloudflare 免费网站统计：匿名 PV/UV 和页面访问。可在 Pages 项目里打开，或用公开构建变量 `VITE_CF_WEB_ANALYTICS_TOKEN` 注入 beacon。不做按钮点击率。 |
-| **星球会员（Planet Member）** | 已在 `planet_members` 表绑定且未过期的登录账号。会员可使用形态跟踪、策略归因、云端持仓、隔离研究计算、手机遥控和影子纸面账详账等共享云端能力；会员身份不会自动写入用户的私人模型或数据源 Key。 |
+| **星球会员（Planet Member）** | 已在 `planet_members` 表绑定且未过期的登录账号。会员可使用形态跟踪、策略归因、云端持仓、隔离研究计算、手机遥控和影子纸面账详账等共享云端能力；会员身份不会自动写入用户的私人模型或数据源 Key。云端持仓的 INSERT/UPDATE/DELETE 在 RLS 层也要求有效会员（见 `print_portfolio_rls_membership_ddl.py`），不能只靠 `/api/portfolio` 门控。 |
 | **Clarity（星球会员）** | Microsoft Clarity 点击热力图/录屏。只对有效星球会员加载，默认项目 `y6albpfin1`，可用 `VITE_CLARITY_PROJECT_ID` 覆盖。事件进 Clarity，不写业务库。 |
 | **新闻打点 / News chart overlay** | 单股分析页和 `analyze_stock` 诊断上的读盘叠加层：用规则过滤东方财富个股新闻，把业绩/监管/股东/交易事件对齐到交易日并标在 K 线上。不进漏斗、不改候选、不构成买卖依据。 |
 | **斐波那契画线** | 公开 Web 页 `/fib`，侧栏在「投研终端」，不要求登录或星球会员。K 线和水平线画在同一套前复权日 K 上（lightweight-charts）。免费 TradingView 组件不能官方画线，也读不到价格像素，所以不用它当底图再叠一层。区间默认约 120 个交易日，也可改当月、6 个月、1 年、3 年。价位按该窗口最低到最高向上量（与 `channel_geometry` 的黄金分割房间同一方向）：38.2% 到 100% 是赚钱空间，78.6%–100% 是供给区，161.8% 是扩展目标。只是读盘参考，不进漏斗、不产生买卖指令。 |
