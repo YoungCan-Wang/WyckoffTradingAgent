@@ -127,6 +127,31 @@ commit;
 3. 验证跟踪、归因、云端持仓、沙箱、手机遥控五条鉴权路径；
 4. 确认 PostgREST 中不存在 `whitelist` 表或视图，旧 `/guide` 返回 SPA 的未匹配路由结果而不会跳转。
 
+## 持仓写策略：API 门控不够，必须叠 RLS 会员谓词
+
+`/api/portfolio` 与 chat 调仓工具的星球会员检查只能挡住走 Worker 的请求。Web 前端仍持有
+Supabase anon key 与用户 JWT，非会员可直接对 `portfolios` / `portfolio_positions` 发
+PostgREST 写入。原先 RLS 只校验「`portfolio_id` 归属 `auth.uid()`」，**关不上这条旁路**。
+
+在 `planet_members` 表已上线后，于 SQL Editor 执行：
+
+```bash
+python scripts/print_portfolio_rls_membership_ddl.py
+```
+
+把输出整段贴进 Editor 执行。效果：
+
+- SELECT：仍仅本人可读（过期会员可看历史云端仓，但不能改）；
+- INSERT/UPDATE/DELETE：本人 **且** `planet_members` 有效（`expires_on` 为空或
+  `>= Asia/Shanghai` 当日）；
+- `service_role` / `WYCKOFF_WRITE_CONTEXT=server_job` 路径仍绕过 RLS，不受影响。
+
+验证：
+
+1. 非会员 JWT：`insert` / `update` / `delete` 被 RLS 拒绝；
+2. 有效会员 JWT：只能改自己的 `USER_LIVE:<uid>`；
+3. `/api/portfolio` PUT 对会员仍成功。
+
 如果数据库迁移后必须回滚，应用和数据库要在同一个维护窗口一起退回：
 
 ```sql

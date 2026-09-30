@@ -964,9 +964,13 @@ API 响应同时返回 `total_equity`、`valuation_updated_at`；刷新失败时
 确保 Web 日期控件和诊断链路只消费一种日期格式。新多头 `add` 必须带合法 `buy_dt`（YYYYMMDD 或 YYYY-MM-DD），
 未给或格式非法时报错，须询问用户，禁止默认今天；`update` 只更新已有持仓，空账本或目标不存在时不得新建，
 改股数/成本时不得覆盖已有建仓日。
-`portfolios` 与 `portfolio_positions` 已启用 RLS，SELECT/INSERT/UPDATE/DELETE 均要求
-`split_part(portfolio_id, ':', 2) = auth.uid()::text`；UPDATE 同时使用 `USING` 与 `WITH CHECK`。
-因此用户只能读取和修改自己的持仓。星球会员可在页面编辑现金和持仓，选择“保存到云端”或
+`portfolios` 与 `portfolio_positions` 已启用 RLS。SELECT 仍只要求
+`split_part(portfolio_id, ':', 2) = auth.uid()::text`（本人可读）。
+INSERT/UPDATE/DELETE 额外要求有效 `planet_members` 行（`expires_on` 为空或
+`>= Asia/Shanghai` 当日），与 `/api/portfolio` 的星球会员门控一致，避免浏览器
+anon key + JWT 直连 PostgREST 绕过 API。UPDATE 同时使用 `USING` 与 `WITH CHECK`。
+DDL：`python scripts/print_portfolio_rls_membership_ddl.py`。
+因此非会员不能把持仓写入云端；星球会员可在页面编辑现金和持仓，选择“保存到云端”或
 “保存并诊断”；普通用户只使用浏览器内临时录入，不写 Supabase。
 写入边界：GitHub Actions / server job 必须设置 `WYCKOFF_WRITE_CONTEXT=server_job` 才能写共享信号、推荐、策略表。CLI 默认只能读取云端表；除持仓增删改和现金更新外，其它 CLI 结果只写本地 SQLite。
 
