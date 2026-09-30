@@ -376,7 +376,7 @@ flowchart LR
 | **output tok/s** | 输出生成速率：`output_tokens / generation_seconds`。`generation_seconds` 只累计模型生成窗口（首个 text/thinking delta → 该段 stream/step 结束），多步 tool 循环**不含**工具执行时间。Web 用量横幅末尾标为 `Xs gen`（模型窗口）；CLI footer 末尾 `elapsed` 仍是整轮墙钟。 |
 | **cache hit rate** | 提示缓存命中率：`cache_read_tokens / input_tokens`。仅当 provider/网关实际回报了 cache 字段时展示（含 0%）。Anthropic 原始 `input_tokens` 不含 cache，CLI 先归一化为 `input + cache_read + cache_write`。DeepSeek 优先用 `prompt_cache_hit_tokens`。与沙箱 CPU/网络 `usage` 无关。 |
 | **stream_chunk_timeout_seconds** | CLI 模型流式空闲超时（秒，默认 120，范围 10–600）：相邻 chunk 间隔（含 TTFT）超限则中断。写入 `~/.wyckoff/wyckoff.json`，控制面板可改。 |
-| **tool_timeout_seconds** | CLI 单工具执行超时（秒，默认 60，范围 5–300）。写入 `wyckoff.json`，控制面板可改。与模型空闲超时独立。 |
+| **tool_timeout_seconds** | CLI 单工具执行超时（秒，默认 60，范围 5–300）。写入 `wyckoff.json`，控制面板可改。与模型空闲超时独立。写工具与 `research_hypothesis` 变更 action 禁用该超时，避免 ToolSurface 放弃式取消后双写。 |
 
 ## 15. Web 运行边界
 

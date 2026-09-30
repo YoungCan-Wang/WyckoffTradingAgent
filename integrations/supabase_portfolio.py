@@ -509,17 +509,52 @@ def delete_position(
     *,
     refresh_equity: bool = True,
 ) -> tuple[bool, str]:
-    """删除单个持仓。"""
-    from core.portfolio_symbol import normalize_portfolio_code
+    """删除单个持仓。
 
-    code = normalize_portfolio_code(code) or str(code or "").strip().upper()
+    必须按库内真实 ``code`` 主键删，并在 0 行时失败。``record_fill`` 清仓会先
+    按规范化码命中持仓，再调这里；若只按规范码 ``eq`` 且不看返回行数，遇到历史
+    未补零/大小写不一致的港美代码会「删空成功」后仍给现金入账，仓位却还在。
+    """
+    targets = _position_delete_targets(code)
+    if not targets:
+        return False, f"无效的股票代码: {code}"
     try:
         client = _resolve_write_client(client, "delete portfolio position")
-        client.table(TABLE_PORTFOLIO_POSITIONS).delete().eq("portfolio_id", portfolio_id).eq("code", code).execute()
-        return True, _mutation_message(f"{code} 已删除", portfolio_id, client, refresh_equity)
+        deleted = _delete_position_rows(client, portfolio_id, targets)
+        if not deleted:
+            return False, POSITION_MISSING_ERROR
+        return True, _mutation_message(f"{deleted} 已删除", portfolio_id, client, refresh_equity)
     except Exception as e:
         logger.warning("[supabase_portfolio] delete_position failed: %s", e)
         return False, str(e)
+
+
+def _position_delete_targets(code: str) -> list[str]:
+    from core.portfolio_symbol import normalize_portfolio_code
+
+    raw = str(code or "").strip()
+    canonical = normalize_portfolio_code(raw) or raw.upper()
+    targets: list[str] = []
+    for candidate in (raw, canonical, raw.upper()):
+        text = str(candidate or "").strip()
+        if text and text not in targets:
+            targets.append(text)
+    return targets
+
+
+def _delete_position_rows(client: Client, portfolio_id: str, targets: list[str]) -> str:
+    deleted = ""
+    for target in targets:
+        response = (
+            client.table(TABLE_PORTFOLIO_POSITIONS)
+            .delete()
+            .eq("portfolio_id", portfolio_id)
+            .eq("code", target)
+            .execute()
+        )
+        if getattr(response, "data", None):
+            deleted = target
+    return deleted
 
 
 def _persist_filled_holding(
@@ -620,7 +655,9 @@ def record_fill(portfolio_id: str, fill: Fill, client: Client | None = None) -> 
         return FillWriteResult(False, str(exc))
 
     if result.holding is None:
-        ok, msg = delete_position(portfolio_id, fill.code, client=client, refresh_equity=False)
+        # 用库内原码删：find 已按 normalize 命中，delete 若只 eq 规范码会漏删旧键。
+        db_code = str((row or {}).get("code") or fill.code)
+        ok, msg = delete_position(portfolio_id, db_code, client=client, refresh_equity=False)
     else:
         ok, msg = _persist_filled_holding(portfolio_id, row, result.holding, client)
     if not ok:
