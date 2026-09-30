@@ -13,19 +13,28 @@ from integrations import supabase_shadow as ss
 
 
 class _FakeTable:
-    def __init__(self, name: str, log: list[tuple[str, str, Any]]):
+    def __init__(self, name: str, log: list[tuple[str, str, Any]], *, existing: list[dict] | None = None):
         self.name = name
         self.log = log
+        self.existing = list(existing or [])
+        self._pending_delete_code: str | None = None
 
     def upsert(self, rows, on_conflict: str = ""):
         self.log.append((self.name, "upsert", rows))
         return self
 
-    def delete(self):
-        self.log.append((self.name, "delete", None))
+    def select(self, *_a, **_k):
+        self.log.append((self.name, "select", list(self.existing)))
         return self
 
-    def eq(self, *_a, **_k):
+    def delete(self):
+        self.log.append((self.name, "delete", None))
+        self._pending_delete_code = None
+        return self
+
+    def eq(self, column: str, value, **_k):
+        if column == "code":
+            self._pending_delete_code = str(value)
         return self
 
     def insert(self, rows):
@@ -33,7 +42,10 @@ class _FakeTable:
         return self
 
     def execute(self):
-        return type("R", (), {"data": []})()
+        if self._pending_delete_code is not None:
+            self.existing = [row for row in self.existing if str(row.get("code")) != self._pending_delete_code]
+            self._pending_delete_code = None
+        return type("R", (), {"data": list(self.existing)})()
 
 
 @pytest.fixture
@@ -78,7 +90,13 @@ def test_insert_events_uses_action_not_status(persist_log):
 
 def test_persist_upserts_plans_before_account_and_positions(persist_log):
     """计划状态是成交幂等闸，必须先于 cash/positions 落库。"""
-    book = ShadowBook(cash=50_000.0)
+    from core.constants import TABLE_SHADOW_POSITIONS
+    from core.shadow_ledger import ShadowPosition
+
+    book = ShadowBook(
+        cash=50_000.0,
+        positions={"000001": ShadowPosition(code="000001", shares=100, sellable_shares=100, avg_cost=10.0)},
+    )
     fill = _filled("buy", "000001", 100)
     nav = {"cash": 50_000.0, "market_value": 0.0, "equity": 50_000.0, "pnl_total": 0.0, "pnl_day": 0.0}
 
@@ -94,7 +112,38 @@ def test_persist_upserts_plans_before_account_and_positions(persist_log):
     names_ops = [(n, o) for n, o, _ in persist_log]
     plan_upsert = names_ops.index((TABLE_SHADOW_TRADE_PLANS, "upsert"))
     account_upsert = names_ops.index((TABLE_SHADOW_ACCOUNT, "upsert"))
-    assert plan_upsert < account_upsert
+    position_upsert = names_ops.index((TABLE_SHADOW_POSITIONS, "upsert"))
+    assert plan_upsert < account_upsert < position_upsert
+    assert (TABLE_SHADOW_POSITIONS, "insert") not in names_ops
+
+
+def test_replace_positions_upserts_before_deleting_stale(monkeypatch):
+    """upsert 失败时不得先删光；多余代码在 upsert 成功后再删。"""
+    from core.constants import TABLE_SHADOW_POSITIONS
+    from core.shadow_ledger import ShadowPosition
+
+    log: list[tuple[str, str, Any]] = []
+    tables = {
+        TABLE_SHADOW_POSITIONS: _FakeTable(
+            TABLE_SHADOW_POSITIONS,
+            log,
+            existing=[{"code": "000001"}, {"code": "600519"}],
+        )
+    }
+    monkeypatch.setattr(ss, "_table", lambda name: tables[name])
+    book = ShadowBook(
+        cash=1.0,
+        positions={"000001": ShadowPosition(code="000001", shares=100, sellable_shares=100, avg_cost=10.0)},
+    )
+
+    ss._replace_positions("USER_SHADOW:test", book)
+
+    names_ops = [(n, o) for n, o, _ in log]
+    assert names_ops[0] == (TABLE_SHADOW_POSITIONS, "upsert")
+    assert names_ops[1] == (TABLE_SHADOW_POSITIONS, "select")
+    assert (TABLE_SHADOW_POSITIONS, "delete") in names_ops
+    assert names_ops.index((TABLE_SHADOW_POSITIONS, "upsert")) < names_ops.index((TABLE_SHADOW_POSITIONS, "delete"))
+    assert [row["code"] for row in tables[TABLE_SHADOW_POSITIONS].existing] == ["000001"]
 
 
 def test_money_or_default_keeps_zero_cash() -> None:
