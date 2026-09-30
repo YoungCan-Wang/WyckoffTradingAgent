@@ -911,6 +911,22 @@ def is_concurrency_safe(name: str) -> bool:
     return bool(spec and spec.concurrency_safe)
 
 
+def _tool_surface_timeout_seconds(name: str, args: dict[str, Any], default_timeout: float) -> float | None:
+    """Disable abandoning timeouts for mutating ToolSurface calls.
+
+    ``ToolSurface`` cancels timed-out workers with ``shutdown(wait=False)``. If a
+    portfolio/research write keeps running after the caller sees ``timeout``, a
+    retry can double-apply positions or cash.
+    """
+    from tools.write_guard import is_write_tool
+
+    if is_write_tool(name):
+        return None
+    if name == "research_hypothesis" and args.get("action") not in ("list", "detail"):
+        return None
+    return default_timeout
+
+
 ASK_USER_TIMEOUT_SENTINEL = "__ask_user_question_timeout__"
 
 
@@ -1303,8 +1319,11 @@ class ToolRegistry:
         from cli.auth import get_tool_timeout_seconds
         from tools.tool_surface import ToolAccessContext
 
+        # ToolSurface 超时会 shutdown(wait=False) 丢弃工作线程。写工具若在后台
+        # 继续落库而调用方已报 timeout，容易触发二次审批重试 → 双写持仓/现金。
+        # 与 public MCP DomainBackend 对齐：mutating 调用禁用放弃式超时。
         ctx = ToolAccessContext(
-            timeout_seconds=get_tool_timeout_seconds(),
+            timeout_seconds=_tool_surface_timeout_seconds(name, call_args, get_tool_timeout_seconds()),
             session_id=self._tool_context.state.get("session_id"),
         )
         res = self._tool_surface.execute_tool(name, call_args, ctx)
