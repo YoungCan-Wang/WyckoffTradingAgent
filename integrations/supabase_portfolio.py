@@ -291,7 +291,10 @@ def _apply_position_stop_updates(
     已在 trade_orders）。
     """
     state = load_portfolio_state(portfolio_id, client=client)
-    positions = list((state or {}).get("positions") or [])
+    if state is None:
+        # A failed read is not evidence that these are unfilled new-entry orders.
+        raise RuntimeError(f"无法读取组合，止损未写入: portfolio={portfolio_id}")
+    positions = list(state.get("positions") or [])
     written = 0
     for item in updates:
         code = str(item.get("code") or "").strip()
