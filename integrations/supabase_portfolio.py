@@ -271,6 +271,50 @@ def check_daily_run_exists(
         return False
 
 
+def _stop_update_want_code(code: object) -> str:
+    from core.portfolio_symbol import normalize_portfolio_code
+
+    raw = str(code or "").strip()
+    return normalize_portfolio_code(raw) or raw.upper()
+
+
+def _apply_position_stop_updates(
+    portfolio_id: str,
+    updates: list[dict[str, Any]],
+    client: Client,
+) -> int:
+    """按库内真实 code 写止损；命中持仓却 0 行则抛错。
+
+    Step4 / set_stop_loss 侧传入的是规范化码（``00700.HK``），库里可能仍是历史
+    ``700.HK`` / 大小写变体。只 ``eq`` 规范码时 PostgREST 0 行仍算成功，ATR 上移
+    止损失落库，次日强制 EXIT 继续用旧 stop。新开仓工单尚无持仓行时跳过（止损
+    已在 trade_orders）。
+    """
+    state = load_portfolio_state(portfolio_id, client=client)
+    positions = list((state or {}).get("positions") or [])
+    written = 0
+    for item in updates:
+        code = str(item.get("code") or "").strip()
+        if not code or "stop_loss" not in item:
+            continue
+        want = _stop_update_want_code(code)
+        row = _find_position_for_fill(positions, want)
+        if row is None:
+            continue
+        db_code = str(row.get("code") or "").strip()
+        response = (
+            client.table(TABLE_PORTFOLIO_POSITIONS)
+            .update({"stop_loss": item.get("stop_loss")})
+            .eq("portfolio_id", portfolio_id)
+            .eq("code", db_code)
+            .execute()
+        )
+        if not getattr(response, "data", None):
+            raise RuntimeError(f"止损更新未命中持仓行: portfolio={portfolio_id} code={db_code}")
+        written += 1
+    return written
+
+
 def set_position_stops(
     portfolio_id: str,
     updates: list[dict[str, Any]],
@@ -285,48 +329,20 @@ def set_position_stops(
         return True, 0
     try:
         write_client = _resolve_write_client(client, "set portfolio stop losses")
-        written = 0
-        for item in updates:
-            code = str(item.get("code") or "").strip()
-            if not code or "stop_loss" not in item:
-                continue
-            (
-                write_client.table(TABLE_PORTFOLIO_POSITIONS)
-                .update({"stop_loss": item.get("stop_loss")})
-                .eq("portfolio_id", portfolio_id)
-                .eq("code", code)
-                .execute()
-            )
-            written += 1
-        return True, written
+        return True, _apply_position_stop_updates(portfolio_id, updates, write_client)
     except Exception as e:
         logger.warning("[supabase_portfolio] set_position_stops failed: %s", e)
         return False, 0
 
 
 def update_position_stops(portfolio_id: str, updates: list[dict[str, Any]]) -> bool:
-    """
-    批量更新持仓止损价。
-    updates: [{"code": "000001", "stop_loss": 12.34}, ...]
-    """
+    """批量更新持仓止损价。updates: [{"code": "...", "stop_loss": 12.34}, ...]"""
     if not is_supabase_configured() or not updates:
         return False
     require_server_write_context("update portfolio stop losses")
     try:
         client = _get_supabase_admin_client()
-        # Supabase 不支持批量 update 不同值，需逐个 update
-        # 若量大可考虑其它方式，目前持仓数不多，循环即可
-        for item in updates:
-            code = item.get("code")
-            if not code or "stop_loss" not in item:
-                continue
-            (
-                client.table(TABLE_PORTFOLIO_POSITIONS)
-                .update({"stop_loss": item.get("stop_loss")})
-                .eq("portfolio_id", portfolio_id)
-                .eq("code", code)
-                .execute()
-            )
+        _apply_position_stop_updates(portfolio_id, updates, client)
         return True
     except Exception as e:
         logger.warning("[supabase_portfolio] update_position_stops failed: %s", e)
