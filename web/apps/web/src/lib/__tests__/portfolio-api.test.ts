@@ -1,9 +1,17 @@
 import { describe, expect, it, vi } from 'vitest'
-import { requestPortfolio } from '../portfolio-api'
+import { canPersistCloudPortfolio, requestPortfolio } from '../portfolio-api'
 
 function response(body: unknown, init?: ResponseInit): Response {
   return new Response(typeof body === 'string' ? body : JSON.stringify(body), init)
 }
+
+describe('canPersistCloudPortfolio', () => {
+  it('blocks cloud PUT until GET has returned a portfolio', () => {
+    expect(canPersistCloudPortfolio(undefined)).toBe(false)
+    expect(canPersistCloudPortfolio({ free_cash: 0, total_equity: null, positions: [] })).toBe(true)
+    expect(canPersistCloudPortfolio({ free_cash: 12_000, total_equity: null, positions: [] })).toBe(true)
+  })
+})
 
 describe('requestPortfolio', () => {
   it('returns a validated portfolio', async () => {
