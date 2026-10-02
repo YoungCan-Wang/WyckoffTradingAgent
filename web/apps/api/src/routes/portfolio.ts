@@ -133,30 +133,50 @@ export async function savePortfolio(
     .eq('portfolio_id', portfolioId)
   if (readError) return readError.message
 
-  const existingCodes = new Set((existing || []).map((item) => String(item.code).toUpperCase()))
-  const wanted = new Set(portfolio.positions.map((item) => item.code.toUpperCase()))
-  const removed = (existing || [])
-    .map((item) => String(item.code))
-    .filter((code) => !wanted.has(code.toUpperCase()))
+  // Match by normalized code so legacy HK `700.HK` updates in place to `00700.HK`.
+  // Exact-string matching would delete+insert and silently drop stop_loss (not in PUT body).
+  const existingByNormalized = mapExistingCodesByNormalized(existing || [])
+  const claimedDbCodes = new Set<string>()
 
   // Fail closed before any mutation: a missing buy_dt on add must not delete other lots first.
   for (const position of portfolio.positions) {
-    const code = position.code.toUpperCase()
-    if (existingCodes.has(code)) continue
+    if (existingByNormalized.has(position.code)) continue
     const buyDt = String(position.buy_dt || '').trim()
     if (!buyDt) return MISSING_BUY_DT_ERROR
     if (!isValidBuyDt(buyDt)) return 'buy_dt 必须是合法日期 YYYYMMDD 或 YYYY-MM-DD'
   }
 
   for (const position of portfolio.positions) {
-    const code = position.code.toUpperCase()
-    const mode = existingCodes.has(code) ? 'update' : 'add'
-    const error = await savePosition(supabase, portfolioId, { ...position, code }, mode)
+    const dbCode = existingByNormalized.get(position.code)
+    if (dbCode) {
+      claimedDbCodes.add(dbCode)
+      const error = await savePosition(supabase, portfolioId, position, 'update', dbCode)
+      if (error) return error
+      continue
+    }
+    const error = await savePosition(supabase, portfolioId, position, 'add')
     if (error) return error
   }
+  const removed = (existing || [])
+    .map((item) => String(item.code))
+    .filter((code) => !claimedDbCodes.has(code))
   const deleteError = await deleteRemovedPositions(supabase, portfolioId, removed)
   if (deleteError) return deleteError
   return (await saveFreeCash(supabase, portfolioId, portfolio.free_cash)) || ''
+}
+
+/** First DB code wins when several legacy spellings normalize to the same symbol. */
+export function mapExistingCodesByNormalized(
+  rows: Array<{ code?: unknown }>,
+): Map<string, string> {
+  const map = new Map<string, string>()
+  for (const row of rows) {
+    const dbCode = String(row.code || '')
+    if (!dbCode) continue
+    const key = normalizePortfolioCode(dbCode) || dbCode.toUpperCase()
+    if (!map.has(key)) map.set(key, dbCode)
+  }
+  return map
 }
 
 async function saveFreeCash(
@@ -188,6 +208,7 @@ export async function savePosition(
   portfolioId: string,
   position: z.infer<typeof POSITION_SCHEMA>,
   mode: 'add' | 'update',
+  matchCode = position.code,
 ): Promise<string> {
   const record = positionWriteRecord(portfolioId, position)
   if (mode === 'update') {
@@ -195,7 +216,7 @@ export async function savePosition(
       .from('portfolio_positions')
       .update(record)
       .eq('portfolio_id', portfolioId)
-      .eq('code', position.code)
+      .eq('code', matchCode)
       .select('code')
     if (updated.error) return updated.error.message
     if ((updated.data || []).length > 0) return ''
