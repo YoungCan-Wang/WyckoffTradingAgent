@@ -963,7 +963,10 @@ API 响应同时返回 `total_equity`、`valuation_updated_at`；刷新失败时
 历史持仓允许 `buy_dt` 使用 `YYYYMMDD` 或空字符串；API 输出统一归一化为 `YYYY-MM-DD` 或 `null`，
 确保 Web 日期控件和诊断链路只消费一种日期格式。新多头 `add` 必须带合法 `buy_dt`（YYYYMMDD 或 YYYY-MM-DD），
 未给或格式非法时报错，须询问用户，禁止默认今天；`update` 只更新已有持仓，空账本或目标不存在时不得新建，
-改股数/成本时不得覆盖已有建仓日。
+改股数/成本时不得覆盖已有建仓日。`PUT /api/portfolio` 按规范化代码匹配已有行（港股 `700.HK` 对齐
+`00700.HK`），就地 UPDATE（可顺带写成规范码）；禁止因字符串不等而 delete+insert，否则会丢掉 PUT 体
+未携带的 `stop_loss`。云端 `insert_position` / `update_position` / chat `execute_portfolio_update` 同样按
+规范化别名匹配：等价历史码视为已存在，禁止再插一行导致净值双计。
 `portfolios` 与 `portfolio_positions` 已启用 RLS，SELECT/INSERT/UPDATE/DELETE 均要求
 `split_part(portfolio_id, ':', 2) = auth.uid()::text`；UPDATE 同时使用 `USING` 与 `WITH CHECK`。
 因此用户只能读取和修改自己的持仓。星球会员可在页面编辑现金和持仓，选择“保存到云端”或

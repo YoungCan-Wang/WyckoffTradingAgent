@@ -1151,11 +1151,15 @@ export async function execExecutePortfolioUpdate(
   }
 
   if (action === 'delete') {
+    const existingRows = await listPortfolioPositionRows(deps, portfolioId)
+    if (existingRows === null) return '删除失败: 无法读取持仓'
+    const matched = findPortfolioPositionRow(existingRows, normalized)
+    const dbCode = matched ? String(matched.code || normalized) : normalized
     const { error } = await deps.supabase
       .from('portfolio_positions')
       .delete()
       .eq('portfolio_id', portfolioId)
-      .eq('code', normalized)
+      .eq('code', dbCode)
     if (error) return `删除失败: ${error.message}`
     const valuation = await refreshPortfolioTotalEquity(deps, userId)
     return `✅ 已删除 ${normalized} ${name || ''}；${valuation.message}`
@@ -1229,22 +1233,50 @@ async function savePortfolioPosition(
   action: 'add' | 'update',
   record: Record<string, unknown>,
 ): Promise<string | null> {
+  const existingRows = await listPortfolioPositionRows(deps, portfolioId)
+  if (existingRows === null) return '无法读取持仓，请稍后重试'
+  const matched = findPortfolioPositionRow(existingRows, code)
   if (action === 'add') {
+    if (matched) return '持仓已存在，无法 add；请改用 update'
     const { error } = await deps.supabase.from('portfolio_positions').insert(record)
     if (error?.message && /duplicate|unique/i.test(error.message)) {
       return '持仓已存在，无法 add；请改用 update'
     }
     return error?.message || null
   }
+  if (!matched) return '持仓不存在，无法 update；请改用 add 并提供建仓日 buy_dt'
+  const dbCode = String(matched.code || code)
   const { data, error } = await deps.supabase
     .from('portfolio_positions')
     .update(record)
     .eq('portfolio_id', portfolioId)
-    .eq('code', code)
+    .eq('code', dbCode)
     .select('id')
   if (error) return error.message
   if (Array.isArray(data) && data.length > 0) return null
   return '持仓不存在，无法 update；请改用 add 并提供建仓日 buy_dt'
+}
+
+async function listPortfolioPositionRows(
+  deps: ToolDeps,
+  portfolioId: string,
+): Promise<Array<{ code?: unknown }> | null> {
+  const { data, error } = await deps.supabase
+    .from('portfolio_positions')
+    .select('code')
+    .eq('portfolio_id', portfolioId)
+  if (error) return null
+  return Array.isArray(data) ? data : []
+}
+
+export function findPortfolioPositionRow(
+  rows: Array<{ code?: unknown }>,
+  code: string,
+): { code?: unknown } | undefined {
+  return rows.find((row) => {
+    const raw = String(row.code || '').trim()
+    return (normalizePortfolioCode(raw) || raw.toUpperCase()) === code
+  })
 }
 
 export interface ScreenStockItem {

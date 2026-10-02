@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   MISSING_BUY_DT_ERROR,
+  mapExistingCodesByNormalized,
   normalizeBuyDate,
   parsePortfolioInput,
   positionWriteRecord,
@@ -98,6 +99,17 @@ describe('portfolio API input', () => {
   })
 })
 
+describe('mapExistingCodesByNormalized', () => {
+  it('maps legacy HK spellings to the first matching DB code', () => {
+    expect(mapExistingCodesByNormalized([{ code: '700.HK' }, { code: 'aapl.us' }])).toEqual(
+      new Map([
+        ['00700.HK', '700.HK'],
+        ['AAPL.US', 'aapl.us'],
+      ]),
+    )
+  })
+})
+
 describe('positionWriteRecord', () => {
   it('omits buy_dt on size/cost edits when the caller did not send a date', () => {
     const record = positionWriteRecord('USER_LIVE:u', {
@@ -179,6 +191,7 @@ describe('savePosition', () => {
 function mockSavePortfolioClient(existingCodes: string[]) {
   const deleted: string[] = []
   const inserted: unknown[] = []
+  const updated: Array<{ matchCode: string; record: unknown }> = []
   const cashUpdates: unknown[] = []
 
   const supabase = {
@@ -192,10 +205,13 @@ function mockSavePortfolioClient(existingCodes: string[]) {
             inserted.push(row)
             return { error: null }
           },
-          update: () => ({
+          update: (record: unknown) => ({
             eq: () => ({
-              eq: () => ({
-                select: async () => ({ data: [{ code: 'x' }], error: null }),
+              eq: (_field: string, matchCode: string) => ({
+                select: async () => {
+                  updated.push({ matchCode, record })
+                  return { data: [{ code: matchCode }], error: null }
+                },
               }),
             }),
           }),
@@ -223,7 +239,7 @@ function mockSavePortfolioClient(existingCodes: string[]) {
     },
   }
 
-  return { supabase: supabase as never, deleted, inserted, cashUpdates }
+  return { supabase: supabase as never, deleted, inserted, updated, cashUpdates }
 }
 
 describe('savePortfolio', () => {
@@ -238,5 +254,32 @@ describe('savePortfolio', () => {
     expect(deleted).toEqual([])
     expect(inserted).toEqual([])
     expect(cashUpdates).toEqual([])
+  })
+
+  it('updates legacy HK codes in place so stop_loss is not wiped by delete+insert', async () => {
+    const { supabase, deleted, inserted, updated, cashUpdates } = mockSavePortfolioClient(['700.HK'])
+    const error = await savePortfolio(supabase, 'u', {
+      free_cash: 8_000,
+      positions: [{ code: '00700.HK', name: '腾讯', shares: 100, cost_price: 320, buy_dt: '2026-01-15' }],
+    })
+
+    expect(error).toBe('')
+    expect(inserted).toEqual([])
+    expect(deleted).toEqual([])
+    expect(updated).toEqual([
+      {
+        matchCode: '700.HK',
+        record: {
+          portfolio_id: 'USER_LIVE:u',
+          code: '00700.HK',
+          name: '腾讯',
+          shares: 100,
+          cost_price: 320,
+          buy_dt: '2026-01-15',
+        },
+      },
+    ])
+    expect(updated[0]?.record).not.toHaveProperty('stop_loss')
+    expect(cashUpdates).toEqual([{ free_cash: 8_000 }])
   })
 })
