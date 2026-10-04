@@ -97,7 +97,7 @@ def _global_recommendation_payload(
         "current_price": current_price,
         "change_pct": 0.0 if change is None else change,
         "funnel_score": _extract_score(candidate),
-        "is_ai_recommended": False,
+        # Owned by mark_ai_recommendations; omit so same-day re-upserts keep prior flags.
         "updated_at": datetime.now(UTC).isoformat(),
     }
 

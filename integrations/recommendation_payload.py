@@ -220,6 +220,11 @@ def mark_ai_recommendations(
     将某个推荐日的记录标记为是否 AI 推荐（可操作池）。
     ai_codes 传入 6 位代码字符串列表。
 
+    调用方必须只在 Step3 起跳板解析权威成功后调用（含空列表）。空列表会先全量
+    置 false——这表示「模型当日未放行」。Step3 失败或解析失败时不要调用本函数，
+    否则会清掉同日先前成功写入的 is_ai_recommended，导致 step4_from_supabase
+    读到空 AI 池。
+
     step3_verdicts 是 code6 -> invalidated/building/springboard 的完整三分类。
     只标记放行码（is_ai_recommended）无法评估 LLM——被否决的候选不留痕迹，
     事后就无法回答"拦对了吗"。把判定一并写入后，跟踪表里每个候选都带 LLM 结论，
