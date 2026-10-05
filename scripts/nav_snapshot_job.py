@@ -30,7 +30,11 @@ from utils.trading_clock import CN_TZ
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="每日净值快照")
-    parser.add_argument("--portfolio-id", default="", help="组合 ID，默认取 MY_PORTFOLIO_ID 或 USER_LIVE")
+    parser.add_argument(
+        "--portfolio-id",
+        default="",
+        help="组合 ID；默认 MY_PORTFOLIO_ID / PORTFOLIO_ID / USER_LIVE:<SUPABASE_USER_ID>",
+    )
     parser.add_argument("--date", default="", help="交易日 YYYY-MM-DD，默认今天（北京时间）")
     parser.add_argument("--apply", action="store_true", help="真正写库；缺省仅打印")
     parser.add_argument("--check", nargs=2, metavar=("START", "END"), help="报告区间内缺失净值的交易日")
@@ -38,10 +42,20 @@ def parse_args() -> argparse.Namespace:
 
 
 def _default_portfolio_id() -> str:
+    """解析独立净值作业的目标组合。
+
+    生产 ``nav_snapshot.yml`` 只注入 ``SUPABASE_USER_ID``（与 Step4 / 持仓诊断一致），
+    不设 ``MY_PORTFOLIO_ID``。若这里回落到裸 ``USER_LIVE``，会把空壳遗留账本的 0 净值
+    写进 ``daily_nav``，而真正的 ``USER_LIVE:<uuid>`` 在 Step4 失败时仍缺当日快照——
+    正是本作业要补的洞。
+    """
     for key in ("MY_PORTFOLIO_ID", "PORTFOLIO_ID"):
         value = os.getenv(key, "").strip()
         if value:
             return value
+    user_id = os.getenv("SUPABASE_USER_ID", "").strip()
+    if user_id:
+        return f"USER_LIVE:{user_id}"
     return "USER_LIVE"
 
 
