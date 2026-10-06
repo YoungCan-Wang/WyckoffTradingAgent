@@ -873,7 +873,7 @@ Web 读盘室在用户选择官方 `deepseek-v4-flash` 或 `deepseek-v4-pro` 时
 
 ### ToolSurface 执行边界
 
-CLI、MCP 通过 `tools/tool_surface.py` 统一做参数校验、stock scope、结果截断、脱敏审计和超时处理。CLI 普通同步工具默认 30 秒；`ask_user_question` 与 `delegate_to_research` / `delegate_to_analysis` / `delegate_to_trading` 属于交互或长委派工具，不套用 ToolSurface 外层超时，由各自的用户等待或子 Agent deadline 管理。MCP 普通工具默认 60 秒，screen/backtest 为 250 秒。
+CLI、MCP 通过 `tools/tool_surface.py` 统一做参数校验、stock scope、结果截断、脱敏审计和超时处理。CLI 普通同步工具默认受 `tool_timeout_seconds`（默认 60 秒）约束；`ask_user_question` 与 `delegate_to_research` / `delegate_to_analysis` / `delegate_to_trading` 属于交互或长委派工具，不套用 ToolSurface 外层超时，由各自的用户等待或子 Agent deadline 管理。持仓/成交/止损等写工具以及 `research_hypothesis` 的变更 action 禁用放弃式超时（与 public MCP 一致）：超时工作线程若 `shutdown(wait=False)` 会在调用方已报失败后继续落库，重试易双写。MCP 普通工具默认 60 秒，screen/backtest 为 250 秒。
 
 ### 分析数据质量与历史 meta
 
