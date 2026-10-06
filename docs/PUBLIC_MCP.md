@@ -64,7 +64,11 @@ require a separate implementation and security review; they are not advertised h
 Token refresh must not rewrite `~/.wyckoff/session.json` when that file is missing
 (desktop logout) or belongs to a different `user_id` (desktop account switch). A
 long-lived MCP process may keep its first-call principal in memory until restart,
-but it must not clobber the desktop/CLI login on disk.
+but it must not clobber the desktop/CLI login on disk. Desktop/CLI
+`restore_session` follows the same compare-and-swap rule（中文：比较并交换 /
+写前核对身份）before saving refreshed tokens or clearing an invalid session,
+because IPC workers can overlap `account` restore with `auth_logout` /
+`auth_login`.
 
 `update_portfolio` and `record_trade_fill` are denied by default, before the domain
 backend is loaded. This version also guards the mutating actions of
