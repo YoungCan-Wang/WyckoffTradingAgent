@@ -34,6 +34,11 @@ export type Portfolio = z.infer<typeof portfolioSchema>
 
 export const EMPTY_PORTFOLIO: Portfolio = { free_cash: 0, total_equity: null, positions: [] }
 
+/** Cloud PUT is a full replace. Never enable save until GET has returned real data. */
+export function canPersistCloudPortfolio(loaded: Portfolio | undefined): boolean {
+  return loaded != null
+}
+
 export async function requestPortfolio(
   method: 'GET' | 'PUT',
   accessToken: string,

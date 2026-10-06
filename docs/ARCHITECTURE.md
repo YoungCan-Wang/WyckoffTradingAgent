@@ -812,7 +812,7 @@ MCP server 走 ToolSurface，没有确认弹窗也没有待批队列。`tools/wr
 | **Desktop** (`desktop.yml`) | desktop 相关 push/PR / 手动触发 / `desktop-v*` tag | push/PR 只跑三平台 Electron 测试；手动触发才构建 1 天候选包；tag 与 package version 一致时以 Windows 未签名 / macOS 临时签名的零付费方式校验并发布 GitHub Release |
 | **大型 Artifact 清理** (`artifact_cleanup.yml`) | 每天 03:30 / 手动 | 删除超过 24 小时且至少 50 MB 的 Actions artifacts；桌面工作流自身保留期固定为 1 天 |
 | **盘前风控** (`premarket_risk.yml`) | 周一-周五 08:20 | Codex Automation 调用 `workflow_dispatch`；A50 + VIX 预警，Actions 可手动补跑。另有 UTC 02:20 的 `schedule` 兜底，带 `--backstop` 幂等短路，仅在当日盘前态缺失时补跑 |
-| **账户净值快照** (`nav_snapshot.yml`) | 周一-周五 16:05 | `nav_snapshot_job.py` 写 `daily_nav`：真实现金、持仓市值、账本与逐只当日盈亏（vs 昨收；昨收缺失才 vs 今开成本）。不改股数/现金/止损，不发买卖信号。实盘日预警是随后 Step4 的 Telegram 工单，会回读这张快照 |
+| **账户净值快照** (`nav_snapshot.yml`) | 周一-周五 16:05 | `nav_snapshot_job.py` 写 `daily_nav`（目标 `USER_LIVE:<SUPABASE_USER_ID>`，与 Step4 一致）：真实现金、持仓市值、账本与逐只当日盈亏（vs 昨收；昨收缺失才 vs 今开成本）。不改股数/现金/止损，不发买卖信号。实盘日预警是随后 Step4 的 Telegram 工单，会回读这张快照 |
 | **港股漏斗筛选** (`wyckoff_funnel_hk.yml`) | 周一-周五 16:35 | `market_funnel_job.py --market hk` |
 | **A 股漏斗筛选 + AI 研报 + 决策** (`wyckoff_funnel.yml`) | 周日-周四 17:17 | `daily_job.py` Step2→3→4；周日正常为周一实盘准备候选，若次日非 A 股交易日才跳过，日频写入 `theme_radar_snapshot` |
 | **板块连续性报告** (`sector_continuity.yml`) | 周一-周五 16:10 | 刷新概念热度历史，辅助主线引擎判断延续性 |
@@ -873,7 +873,7 @@ Web 读盘室在用户选择官方 `deepseek-v4-flash` 或 `deepseek-v4-pro` 时
 
 ### ToolSurface 执行边界
 
-CLI、MCP 通过 `tools/tool_surface.py` 统一做参数校验、stock scope、结果截断、脱敏审计和超时处理。CLI 普通同步工具默认 30 秒；`ask_user_question` 与 `delegate_to_research` / `delegate_to_analysis` / `delegate_to_trading` 属于交互或长委派工具，不套用 ToolSurface 外层超时，由各自的用户等待或子 Agent deadline 管理。MCP 普通工具默认 60 秒，screen/backtest 为 250 秒。
+CLI、MCP 通过 `tools/tool_surface.py` 统一做参数校验、stock scope、结果截断、脱敏审计和超时处理。CLI 普通同步工具默认受 `tool_timeout_seconds`（默认 60 秒）约束；`ask_user_question` 与 `delegate_to_research` / `delegate_to_analysis` / `delegate_to_trading` 属于交互或长委派工具，不套用 ToolSurface 外层超时，由各自的用户等待或子 Agent deadline 管理。持仓/成交/止损等写工具以及 `research_hypothesis` 的变更 action 禁用放弃式超时（与 public MCP 一致）：超时工作线程若 `shutdown(wait=False)` 会在调用方已报失败后继续落库，重试易双写。MCP 普通工具默认 60 秒，screen/backtest 为 250 秒。
 
 ### 分析数据质量与历史 meta
 
@@ -931,7 +931,10 @@ Web 个股、持仓和股票对抗分析保存历史时写入 `meta`：输入快
   `PORTFOLIO_HKD_CNY_RATE` / `PORTFOLIO_USD_CNY_RATE` 覆盖 ECB 参考值。
 - 持仓写入后若现金写入失败，结果会显式标记 `position_committed`，Agent 不得因 JWT 文本重放整笔成交；
   操作者必须先核对并修正现金，再决定是否重新回填。当前两次写入不具备数据库事务性。
-- Step4 先写本轮 `trade_orders`，再更新止损与真实净值，全部成功后才作废同日旧工单。后续持久化失败只按
+- Step4 先写本轮 `trade_orders`，再更新止损与真实净值。完整 LLM 流程全部成功后才作废同日旧工单；仅止损降级流程只追加保护工单，不作废旧建议。
+  旧买入建议可能与新保护性 `EXIT` 同时留档，此处不做券商交易或跨轮建议自动裁决。
+  止损按规范化码匹配后用库内原始码更新；读取失败、组合不存在、已匹配持仓更新零行均视为失败。
+  成功读取后的空持仓/缺失新开仓持仓行可跳过，止损仍保存在工单中。后续持久化失败只按
   本次 `run_id` 作废新工单，并按写入前快照恢复已改动的持仓止损；回滚失败必须显式报错。Telegram 推送失败则保留新工单作为幂等事实源，
   禁止重跑 LLM/OMS，避免超时已送达时产生重复或冲突指令。当前跨表写入仍不具备数据库事务性。
 - LLM 若对同一代码输出多条决策，解析阶段按 `EXIT > TRIM > HOLD > PROBE > ATTACK` 折叠为一条；
@@ -967,10 +970,15 @@ API 响应同时返回 `total_equity`、`valuation_updated_at`；刷新失败时
 `00700.HK`），就地 UPDATE（可顺带写成规范码）；禁止因字符串不等而 delete+insert，否则会丢掉 PUT 体
 未携带的 `stop_loss`。云端 `insert_position` / `update_position` / chat `execute_portfolio_update` 同样按
 规范化别名匹配：等价历史码视为已存在，禁止再插一行导致净值双计。
-`portfolios` 与 `portfolio_positions` 已启用 RLS，SELECT/INSERT/UPDATE/DELETE 均要求
-`split_part(portfolio_id, ':', 2) = auth.uid()::text`；UPDATE 同时使用 `USING` 与 `WITH CHECK`。
-因此用户只能读取和修改自己的持仓。星球会员可在页面编辑现金和持仓，选择“保存到云端”或
-“保存并诊断”；普通用户只使用浏览器内临时录入，不写 Supabase。
+`portfolios` 与 `portfolio_positions` 已启用 RLS。SELECT 仍只要求
+`split_part(portfolio_id, ':', 2) = auth.uid()::text`（本人可读）。
+INSERT/UPDATE/DELETE 额外要求有效 `planet_members` 行（`expires_on` 为空或
+`>= Asia/Shanghai` 当日），与 `/api/portfolio` 的星球会员门控一致，避免浏览器
+anon key + JWT 直连 PostgREST 绕过 API。UPDATE 同时使用 `USING` 与 `WITH CHECK`。
+DDL：`python scripts/print_portfolio_rls_membership_ddl.py`。
+因此非会员不能把持仓写入云端；星球会员可在页面编辑现金和持仓，选择“保存到云端”或
+“保存并诊断”；读盘室 Agent 的云端调仓工具同样要求有效星球会员（非会员不注册该工具，执行时再校验一次）。
+普通用户只使用浏览器内临时录入，不写 Supabase。
 写入边界：GitHub Actions / server job 必须设置 `WYCKOFF_WRITE_CONTEXT=server_job` 才能写共享信号、推荐、策略表。CLI 默认只能读取云端表；除持仓增删改和现金更新外，其它 CLI 结果只写本地 SQLite。
 
 `scripts/db_maintenance.py` 每周运行一次，负责清理过期数据：形态复盘按表内最新 30 个入选日期保留，订单/信号/净值等短周期表保留 10-30 日区间，`external_seed_observations` 默认保留 180 日，避免数据库行数无限增长。

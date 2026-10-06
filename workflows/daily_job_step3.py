@@ -60,8 +60,14 @@ def run_step3_stage(
     step3_ok, step3_err, report_text = _call_step3_report(run_step3, symbols_info, benchmark_context, cfg)
     springboard_codes, springboard_updates = ([], {})
     verdicts: dict[str, str] = {}
+    ai_mark_authoritative = False
     if step3_ok and report_text:
-        springboard_codes, springboard_updates = parse_step3_springboards(report_text, symbols_info, cfg.logs_path)
+        parsed = parse_step3_springboards(report_text, symbols_info, cfg.logs_path)
+        if parsed is None:
+            log_line("Step3 批量研报: 起跳板解析失败，跳过 AI 标记以保留库内既有 is_ai_recommended", cfg.logs_path)
+        else:
+            springboard_codes, springboard_updates = parsed
+            ai_mark_authoritative = True
         verdicts = extract_step3_verdicts(
             report_text,
             [str(item.get("code", "")).strip() for item in symbols_info or []],
@@ -78,7 +84,14 @@ def run_step3_stage(
     preview_codes = ", ".join(springboard_codes[:8]) if springboard_codes else "无"
     log_line(f"Step3 批量研报: 起跳板代码={len(springboard_codes)} ({preview_codes})", cfg.logs_path)
     log_line(f"Step3 LLM 判定: {dict(Counter(verdicts.values())) or '无'}", cfg.logs_path)
-    return Step3StageResult(report_text, springboard_codes, springboard_updates, summary_item, verdicts)
+    return Step3StageResult(
+        report_text,
+        springboard_codes,
+        springboard_updates,
+        summary_item,
+        verdicts,
+        ai_mark_authoritative=ai_mark_authoritative,
+    )
 
 
 def mark_step3_outputs(
@@ -87,6 +100,12 @@ def mark_step3_outputs(
     step3: Step3StageResult,
     cfg: DailyJobConfig,
 ) -> None:
+    if not step3.ai_mark_authoritative:
+        log_line(
+            "推荐记录AI标记: skipped（Step3 失败或起跳板未权威解析，保留库内 is_ai_recommended）",
+            cfg.logs_path,
+        )
+        return
     daily_persistence.mark_step3_recommendations(
         recommend_trade_date_int,
         step3.springboard_codes,
@@ -160,7 +179,12 @@ def filter_confirmed_step3_codes(codes: list[str], symbols_info: list[dict]) -> 
 
 def parse_step3_springboards(
     report_text: str, symbols_info: list[dict], logs_path: str | None
-) -> tuple[list[str], dict]:
+) -> tuple[list[str], dict] | None:
+    """Return (codes, updates), or None when extraction failed.
+
+    None means the caller must not rewrite is_ai_recommended — treating parse
+    failure as an empty pool would wipe a prior successful same-day mark.
+    """
     from tools.report_parser import extract_operation_pool_codes, extract_operation_pool_springboards
 
     allowed_codes = [str(item.get("code", "")).strip() for item in symbols_info if isinstance(item, dict)]
@@ -179,7 +203,7 @@ def parse_step3_springboards(
         return codes, updates
     except Exception as e:
         log_line(f"Step3 批量研报: 起跳板解析失败，已降级为空。err={e}", logs_path)
-        return [], {}
+        return None
 
 
 def _call_step3_report(run_step3, symbols_info: list[dict], benchmark_context: dict, cfg: DailyJobConfig):

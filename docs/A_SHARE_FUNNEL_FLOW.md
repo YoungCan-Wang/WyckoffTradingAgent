@@ -95,7 +95,7 @@ flowchart TD
     S26["Step2.6: prepare_recommendation_payload<br/>→ recommendation_tracking<br/>事件价=该入选日收盘"] --> S27
     S27["Step2.7: score_springboard_abc<br/>起跳板评分"] --> S275["Step2.75: dynamic shadow<br/>health 校准 + 晋级清单"] --> S3
 
-    S3["Step3: run_step3()<br/>批量 AI 研报"] --> MARK["mark_ai_recommendations<br/>标记起跳板"]
+    S3["Step3: run_step3()<br/>批量 AI 研报"] --> MARK["mark_ai_recommendations<br/>仅权威解析后标记起跳板"]
     MARK --> OBS["写 signal_observations<br/>L4 观察样本"]
 
     S3 --> S4CHK{"Step4 启用?<br/>SUPABASE_USER_ID + TG"}
@@ -122,7 +122,7 @@ flowchart TD
 | Step2.6 | `integrations/recommendation_payload.py` | `recommendation_tracking` 写库；`initial_price` 为该行入选日收盘（事件价） |
 | Step3 | `workflows/step3_batch_report.py` | `tools/report_builder.py` |
 | Step4 | `workflows/step4_rebalancer.py` | `core/holding_diagnostic.py` / `core/wyckoff_engine.py`；工单回读 16:05 `daily_nav` 当日盈亏 |
-| 净值快照 | `scripts/nav_snapshot_job.py` | `workflows/nav_snapshot.py`；16:05 写总额与当日盈亏，不改持仓 |
+| 净值快照 | `scripts/nav_snapshot_job.py` | `workflows/nav_snapshot.py`；16:05 写总额与当日盈亏，不改持仓。目标组合与 Step4 相同：优先 `MY_PORTFOLIO_ID`/`PORTFOLIO_ID`，否则 `USER_LIVE:<SUPABASE_USER_ID>`（裸 `USER_LIVE` 仅本地兜底） |
 | 影子账本 | `workflows/shadow_ledger_job.py` | `core/shadow_ledger.py`；只写 `shadow_*`，失败不阻断漏斗 |
 
 **影子账本启用步骤**（默认关，`SHADOW_LEDGER_ENABLED=0`）：
@@ -348,6 +348,8 @@ flowchart LR
     OUT --> MARK["mark_ai_recommendations<br/>recommendation_tracking"]
 ```
 
+`is_ai_recommended` 只由 `mark_ai_recommendations` 在 Step3 **权威**解析后写入：Step2 的 `recommendation_tracking` upsert **不带**该字段，避免同日重跑把已标记的起跳板静默打回 `false`；Step3 失败或起跳板解析失败时跳过标记，保留库内既有值。空起跳板且解析成功时仍会全量清 `false`（表示模型当日未放行）。`step4_from_supabase` 读的就是该字段。
+
 **LLM 配置**（workflow 默认）：
 
 - Step3：`STEP3_LLM_PROVIDER=efficiency`，fallback `gemini`
@@ -380,6 +382,8 @@ flowchart TD
     IDEM -->|否| LLM["LLM 决策<br/>EXIT > TRIM > HOLD > PROBE/ATTACK"]
 
     LLM --> RISK{"风控门控"}
+    LLM -->|模型失败| FALLBACK["仅止损降级<br/>HOLD / 强制 EXIT"]
+    FALLBACK --> OMS
 RISK -->|UNKNOWN / NEUTRAL / RISK_ON / PANIC_REPAIR / RISK_OFF / CRASH / BLACK_SWAN| BLOCK_BUY["冻结新开仓 + 不写正式推荐<br/>STEP4_BUY_BLOCK_REGIMES"]
 RISK -->|PANIC_REPAIR_CONFIRMED| REPAIR_PROBE["最多1只小额 PROBE<br/>禁止 ATTACK"]
     RISK -->|CAUTION| CAUTION_PROBE["最多1只小额 PROBE<br/>禁止 ATTACK"]
@@ -389,14 +393,15 @@ RISK -->|PANIC_REPAIR_CONFIRMED| REPAIR_PROBE["最多1只小额 PROBE<br/>禁止
     REPAIR_PROBE --> OMS
     CAUTION_PROBE --> OMS
     OMS --> DB["trade_orders 写库"]
-    DB --> AUX["仅更新 HOLD / 剩余 TRIM 的有效止损<br/>保存真实净值"]
-    AUX --> OLD["作废同日旧工单"]
+    DB --> AUX["更新可写持仓止损<br/>保存真实净值"]
+    AUX -->|完整 LLM 流程| OLD["作废同日旧工单"]
     OLD --> TG["推送工单（含执行纪律）"]
+    AUX -->|仅止损降级| TG
     DB -->|后续持久化失败| RB["作废本轮 run_id<br/>并恢复止损快照<br/>保留旧工单"]
     TG -->|推送失败| KEEP["保留本轮工单<br/>禁止重跑 OMS"]
 ```
 
-Step4 以 `trade_orders` 作为幂等事实源。Telegram 超时具有“可能已送达”的歧义，因此推送失败会让任务显式失败，但不会作废订单或重跑 LLM/OMS；否则可能重复发送或生成相互冲突的工单。只有订单已写入、后续数据库持久化失败时才精确作废本次 `run_id`，并按写入前快照恢复已改动的持仓止损；回滚自身失败会升级为独立错误。同日旧工单在本轮持久化全部成功后才作废。LLM 若对同一代码输出多条决策，解析阶段按 `EXIT > TRIM > HOLD > PROBE > ATTACK` 折叠为一条；OMS 卖单通过后同步扣减内存持仓，避免重复 EXIT/TRIM 超卖。持仓结构退出只看建仓后的价格路径，`buy_dt` 缺失时 fail-closed 不发结构退出；新仓保护期内（以及建仓日缺失时），当轮模型给出的、同时高于成本和现价的倒挂止损会被拒绝，但已持久化的跟踪止损继续作为权威防线，未成交 `EXIT` 不再反写并污染持仓止损。新多头 `add` 必须带合法 `buy_dt`（YYYYMMDD 或 YYYY-MM-DD），未给或非法时报错，须询问用户真实建仓日，禁止默认今天；`update` 只更新已有持仓，不得在空账本新建。
+Step4 以 `trade_orders` 作为幂等事实源。Telegram 超时具有“可能已送达”的歧义，因此推送失败会让任务显式失败，但不会作废订单或重跑 LLM/OMS；否则可能重复发送或生成相互冲突的工单。只有订单已写入、后续数据库持久化失败时才精确作废本次 `run_id`，并按写入前快照恢复已改动的持仓止损；回滚自身失败会升级为独立错误。完整 LLM 流程的同日旧工单在本轮持久化全部成功后才作废；仅止损降级流程只追加保护工单，不作废旧建议，旧买入建议可与新 `EXIT` 同时留档，需结合运行时间与降级标记复核。止损写入先按规范化码匹配，再用库内原始码更新；读取失败、组合不存在或已匹配持仓更新零行均须报错，只有成功读到组合后缺失的新开仓持仓行可跳过。LLM 若对同一代码输出多条决策，解析阶段按 `EXIT > TRIM > HOLD > PROBE > ATTACK` 折叠为一条；OMS 卖单通过后同步扣减内存持仓，避免重复 EXIT/TRIM 超卖。持仓结构退出只看建仓后的价格路径，`buy_dt` 缺失时 fail-closed 不发结构退出；新仓保护期内（以及建仓日缺失时），当轮模型给出的、同时高于成本和现价的倒挂止损会被拒绝，但已持久化的跟踪止损继续作为权威防线，未成交 `EXIT` 不再反写并污染持仓止损。新多头 `add` 必须带合法 `buy_dt`（YYYYMMDD 或 YYYY-MM-DD），未给或非法时报错，须询问用户真实建仓日，禁止默认今天；`update` 只更新已有持仓，不得在空账本新建。
 
 ### 回放与确认安全边界
 

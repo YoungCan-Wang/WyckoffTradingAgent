@@ -232,7 +232,21 @@ def _persist_tool_session(tool_context: ToolContext | None) -> None:
     try:
         from integrations.local_auth import load_session, save_session
 
-        data = load_session() or {}
+        # Public MCP freezes ToolContext on first domain call. Desktop/CLI can
+        # logout or switch accounts afterward; never rewrite session.json from a
+        # stale in-memory principal (that resurrects logout or clobbers Bob→Alice).
+        data = load_session()
+        if data is None:
+            return
+        disk_user = str(data.get("user_id") or "")
+        ctx_user = str(state.get("user_id") or "")
+        if disk_user and ctx_user and disk_user != ctx_user:
+            logger.warning(
+                "refusing to persist tool session: disk user %s != context user %s",
+                disk_user,
+                ctx_user,
+            )
+            return
         for key in ("user_id", "email", "access_token", "refresh_token"):
             value = state.get(key)
             if value:

@@ -21,8 +21,31 @@ def test_signature_includes_hk_and_us_codes() -> None:
     assert sig_cn != sig_mixed
 
 
-def _position_write_client(captured: dict, *, update_rows: list):
+def _position_write_client(captured: dict, *, update_rows: list, select_rows: list | None = None):
+    listed = [] if select_rows is None else select_rows
+
+    class _Read:
+        def eq(self, *_args, **_kwargs):
+            return self
+
+        def limit(self, *_args, **_kwargs):
+            return self
+
+        def order(self, *_args, **_kwargs):
+            return self
+
+        def execute(self):
+            return SimpleNamespace(data=list(listed))
+
     class FakeTable:
+        def __init__(self, name: str):
+            self.name = name
+
+        def select(self, *_args, **_kwargs):
+            if self.name != "portfolio_positions":
+                return _EmptyRead()
+            return _Read()
+
         def update(self, row):
             captured["row"] = row
             captured["writes"] = captured.get("writes", []) + ["update"]
@@ -46,10 +69,14 @@ def _position_write_client(captured: dict, *, update_rows: list):
 
             return Result()
 
+    class _EmptyRead(_Read):
+        def execute(self):
+            return SimpleNamespace(data=[])
+
     class FakeClient:
         def table(self, name):
             captured["table"] = name
-            return FakeTable()
+            return FakeTable(name)
 
     return FakeClient()
 
@@ -69,7 +96,8 @@ def test_upsert_position_accepts_hk_code(monkeypatch) -> None:
     )
     assert ok is True
     assert captured["row"]["code"] == "06881.HK"
-    assert captured["writes"] == ["update", "insert"]
+    # 空账本先读再判定不存在，不再发一次 0 行 update。
+    assert captured["writes"] == ["insert"]
     assert "06881.HK" in msg
 
 
@@ -77,7 +105,11 @@ def test_upsert_position_omits_empty_buy_dt(monkeypatch) -> None:
     captured: dict = {}
     monkeypatch.setattr(
         "integrations.supabase_portfolio._resolve_write_client",
-        lambda client, operation: _position_write_client(captured, update_rows=[{"code": "000001"}]),
+        lambda client, operation: _position_write_client(
+            captured,
+            update_rows=[{"code": "000001"}],
+            select_rows=[{"code": "000001", "shares": 100}],
+        ),
     )
     monkeypatch.setattr("integrations.supabase_portfolio._ensure_portfolio_exists", lambda *a, **k: None)
 

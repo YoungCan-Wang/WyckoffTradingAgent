@@ -113,6 +113,7 @@ def test_stop_loss_only_fallback_persists_orders_and_stops(monkeypatch):
     assert len(persist_calls) == 1
     assert persist_calls[0]["tickets"] is tickets
     assert persist_calls[0]["model_label"] == "degraded:empty_content"
+    assert persist_calls[0]["supersede_previous"] is False
     assert "仅执行止损保护" in persist_calls[0]["rendered_market_view"]
 
 

@@ -78,6 +78,8 @@ def _run_stop_loss_only_fallback(
     保护工单必须走与正常路径相同的 ``save_step4_orders_and_nav``：只发 Telegram
     时 ATR 上移止损不会写入 ``portfolio_positions``，强制 EXIT 也不会进入
     ``trade_orders``，次日高水位止损丢失、未执行离场审计也会漏掉本轮。
+    但降级路径禁止 ``supersede_previous``：否则同日已落库的 BUY/ATTACK 会被
+    ``cancel_trade_orders(exclude_run_id=...)`` 清掉，LLM 重跑失败变成静默毁单。
     """
     positions = list(getattr(getattr(context, "portfolio", None), "positions", None) or [])
     if not positions:
@@ -116,6 +118,8 @@ def _run_stop_loss_only_fallback(
         stale_exits=[],
         report_progress=report_progress,
         model_label=f"degraded:{status}",
+        # 保护工单不能作废同日已批准的 BUY/ATTACK：LLM 重跑失败时降级只补止损/EXIT。
+        supersede_previous=False,
     )
     # 仍报失败，避免掩盖 LLM 故障；保护工单是否落库看 persist_status。
     if not ok:
@@ -391,6 +395,7 @@ def _send_and_persist_step4_results(
     stale_exits: list[StaleExit],
     report_progress,
     model_label: str | None = None,
+    supersede_previous: bool = True,
 ) -> tuple[bool, str]:
     result_record = prepare_step4_result_record(
         tickets=tickets,
@@ -414,6 +419,7 @@ def _send_and_persist_step4_results(
         rendered_market_view=rendered_market_view,
         tickets=tickets,
         ticket_rows=result_record.ticket_rows,
+        supersede_previous=supersede_previous,
     )
     if not persistence.ok:
         if persistence.orders_written and not rollback_step4_run(
