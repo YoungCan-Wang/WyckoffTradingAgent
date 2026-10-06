@@ -4,7 +4,6 @@ import {
   SCREEN_RESULT_OUTPUT_SCHEMA,
   STRATEGY_DECISION_OUTPUT_SCHEMA,
   execAnalyzeStock,
-  execExecutePortfolioUpdate,
   execGenerateAiReport,
   execIntradayAnalysis,
   execMarketHistory,
@@ -44,7 +43,9 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import type { Env } from '../app'
 import { authMiddleware, type AuthContext } from '../middleware/auth'
+import { isActivePlanetMember } from '../middleware/planet-membership'
 import { chatRateLimitMiddleware } from '../middleware/rate-limit'
+import { buildCloudPortfolioTools } from './chat-portfolio-tools'
 import {
   CHAT_CONTINUATION_PROMPT,
   CHAT_MAX_AUTO_CONTINUATIONS,
@@ -85,6 +86,10 @@ export function createChatRoutes(sandboxToolsBuilder: SandboxToolsBuilder = asyn
     if (configs.length === 0) return c.json({ error: '请先在设置页配置 LLM API Key' }, 400)
     const runId = crypto.randomUUID()
     const sandboxTools = await sandboxToolsBuilder(c.env, auth.userId, auth.accessToken, c.get('requestId'))
+    // Cloud portfolio sync is planet-member-only (/api/portfolio already 403s). Hide
+    // chat write tools for non-members so the model never proposes a cloud sync
+    // that /portfolio correctly refuses.
+    const cloudPortfolioEnabled = await isActivePlanetMember(supabase, auth.userId)
 
     const stream = createUIMessageStream({
       execute: ({ writer }) => runChatWithResilience({
@@ -100,6 +105,7 @@ export function createChatRoutes(sandboxToolsBuilder: SandboxToolsBuilder = asyn
         runId,
         sequence: 0,
         sandboxTools,
+        cloudPortfolioEnabled,
         watchlist: sanitizeWatchlist(body?.watchlist),
         marketWatchCache: body?.marketWatch,
       }),
@@ -306,14 +312,14 @@ function parseCustomProviders(raw: unknown): Record<string, Record<string, strin
 }
 
 function buildTools(
-  args: Pick<ChatResilienceArgs, 'deps' | 'userId' | 'sandboxTools'>,
+  args: Pick<ChatResilienceArgs, 'deps' | 'userId' | 'sandboxTools' | 'cloudPortfolioEnabled'>,
   config: LLMToolConfig,
   model: unknown,
   providerTools: ToolSet = {},
 ): ToolSet {
   return {
     ...buildReadTools(args.deps, args.userId, model),
-    ...buildPortfolioTools(args.deps, args.userId),
+    ...buildCloudPortfolioTools(args.deps, args.userId, { enabled: args.cloudPortfolioEnabled }),
     ...buildAnalysisTools(args.deps, args.userId, config, model),
     ...args.sandboxTools,
     ...providerTools,
@@ -333,6 +339,7 @@ interface ChatResilienceArgs {
   runId: string
   sequence: number
   sandboxTools: ToolSet
+  cloudPortfolioEnabled: boolean
   watchlist: WatchlistRequestItem[]
   marketWatchCache: unknown
 }
@@ -689,13 +696,6 @@ function buildReadTools(deps: ToolDeps, userId: string, model: unknown) {
   }
 }
 
-function buildPortfolioTools(deps: ToolDeps, userId: string) {
-  return {
-    plan_portfolio_update: tool({ description: '生成调仓方案（不执行）。', inputSchema: PORTFOLIO_UPDATE_SCHEMA.extend({ reason: z.string().nullable() }), execute: formatPortfolioPlan }),
-    execute_portfolio_update: tool({ description: '执行调仓。此工具必须经过用户审批。新增必须带合法建仓日 buy_dt（YYYYMMDD 或 YYYY-MM-DD），改股数/成本不要传 buy_dt；update 目标不存在时报错，不会新建。', inputSchema: PORTFOLIO_UPDATE_SCHEMA, needsApproval: true, execute: ({ action, code, name, shares, cost_price, stop_loss, buy_dt }) => execExecutePortfolioUpdate(deps, userId, action, code, name, shares, cost_price, stop_loss, buy_dt) }),
-  }
-}
-
 function buildAnalysisTools(deps: ToolDeps, userId: string, config: LLMToolConfig, model: unknown) {
   return {
     analyze_stock: tool({ description: '对单只股票做威科夫深度诊断。', inputSchema: z.object({ code: z.string(), name: z.string().nullable() }), outputSchema: ANALYZE_STOCK_OUTPUT_SCHEMA, execute: ({ code, name }) => execAnalyzeStock(deps, userId, config, model, code, name) }),
@@ -704,31 +704,6 @@ function buildAnalysisTools(deps: ToolDeps, userId: string, config: LLMToolConfi
     generate_strategy_decision: tool({ description: '基于当前持仓和市场状态给出操作建议。', inputSchema: z.object({}), outputSchema: STRATEGY_DECISION_OUTPUT_SCHEMA, execute: () => execStrategyDecision(deps, userId, model) }),
     intraday_analysis: tool({ description: '盘中多周期分析。', inputSchema: z.object({ code: z.string() }), execute: ({ code }) => execIntradayAnalysis(deps, userId, code) }),
   }
-}
-
-const PORTFOLIO_UPDATE_SCHEMA = z.object({
-  action: z.enum(['add', 'update', 'delete']),
-  code: z.string().describe('A股6位 / 港股00700.HK / 美股AAPL.US'),
-  name: z.string().nullable(),
-  shares: z.number().nullable(),
-  cost_price: z.number().nullable(),
-  stop_loss: z.number().nullable(),
-  buy_dt: z.string().nullable().describe('建仓日 YYYYMMDD 或 YYYY-MM-DD；新增必填且须为真实日期，改股数/成本时不要传。update 目标不存在时报错，不会新建'),
-})
-
-function formatPortfolioPlan(params: z.infer<typeof PORTFOLIO_UPDATE_SCHEMA> & { reason: string | null }) {
-  const actionLabel = { add: '新增', update: '修改', delete: '删除' }[params.action]
-  return [
-    `📋 **调仓方案**`,
-    `- 操作：${actionLabel}`,
-    `- 标的：${params.code} ${params.name || ''}`,
-    params.shares ? `- 股数：${params.shares}` : '',
-    params.cost_price ? `- 价格：¥${params.cost_price}` : '',
-    params.stop_loss ? `- 止损：¥${params.stop_loss}` : '',
-    params.reason ? `- 理由：${params.reason}` : '',
-    '',
-    '⚠️ 请确认是否执行此操作？',
-  ].filter(Boolean).join('\n')
 }
 
 function normalizeTargetUrl(raw: string): URL | null {

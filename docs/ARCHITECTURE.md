@@ -967,7 +967,8 @@ API 响应同时返回 `total_equity`、`valuation_updated_at`；刷新失败时
 `portfolios` 与 `portfolio_positions` 已启用 RLS，SELECT/INSERT/UPDATE/DELETE 均要求
 `split_part(portfolio_id, ':', 2) = auth.uid()::text`；UPDATE 同时使用 `USING` 与 `WITH CHECK`。
 因此用户只能读取和修改自己的持仓。星球会员可在页面编辑现金和持仓，选择“保存到云端”或
-“保存并诊断”；普通用户只使用浏览器内临时录入，不写 Supabase。
+“保存并诊断”；读盘室 Agent 的云端调仓工具同样要求有效星球会员（非会员不注册该工具，执行时再校验一次）。
+普通用户只使用浏览器内临时录入，不写 Supabase。
 写入边界：GitHub Actions / server job 必须设置 `WYCKOFF_WRITE_CONTEXT=server_job` 才能写共享信号、推荐、策略表。CLI 默认只能读取云端表；除持仓增删改和现金更新外，其它 CLI 结果只写本地 SQLite。
 
 `scripts/db_maintenance.py` 每周运行一次，负责清理过期数据：形态复盘按表内最新 30 个入选日期保留，订单/信号/净值等短周期表保留 10-30 日区间，`external_seed_observations` 默认保留 180 日，避免数据库行数无限增长。
