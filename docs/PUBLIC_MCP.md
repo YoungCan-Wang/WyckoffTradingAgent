@@ -61,6 +61,11 @@ The process is not an OAuth server and must not be exposed as a shared multi-use
 HTTP endpoint. Streamable HTTP, request-scoped authentication and quota enforcement
 require a separate implementation and security review; they are not advertised here.
 
+Token refresh must not rewrite `~/.wyckoff/session.json` when that file is missing
+(desktop logout) or belongs to a different `user_id` (desktop account switch). A
+long-lived MCP process may keep its first-call principal in memory until restart,
+but it must not clobber the desktop/CLI login on disk.
+
 `update_portfolio` and `record_trade_fill` are denied by default, before the domain
 backend is loaded. This version also guards the mutating actions of
 `research_hypothesis`; only `list` and `detail` bypass the write opt-in. `evaluate`
