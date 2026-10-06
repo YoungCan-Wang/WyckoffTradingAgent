@@ -33,10 +33,12 @@ function createMockChain(resolvedData: unknown = null, error: unknown = null) {
   return chain
 }
 
-function createPortfolioWriteDeps(updateRows: unknown[]) {
+function createPortfolioWriteDeps(updateRows: unknown[], existingRows: Array<{ code: string }> = [{ code: '600519' }]) {
+  const selectChain = createMockChain(existingRows)
   const updateChain = createMockChain(updateRows)
   const insertChain = createMockChain(null)
   const mockFrom = vi.fn()
+    .mockReturnValueOnce(selectChain)
     .mockReturnValueOnce(updateChain)
     .mockReturnValueOnce(insertChain)
   const deps = {
@@ -44,7 +46,7 @@ function createPortfolioWriteDeps(updateRows: unknown[]) {
     fetch: vi.fn(),
     generateText: vi.fn(),
   } as unknown as ToolDeps
-  return { deps, updateChain, insertChain }
+  return { deps, selectChain, updateChain, insertChain }
 }
 
 function createMockDeps(tableData: Record<string, unknown> = {}): ToolDeps {
@@ -554,6 +556,34 @@ describe('execExecutePortfolioUpdate', () => {
     expect(insertChain.insert).not.toHaveBeenCalled()
   })
 
+  it('updates legacy HK codes in place instead of inserting a normalize-equivalent duplicate', async () => {
+    const { deps, updateChain, insertChain } = createPortfolioWriteDeps([{ id: 'pos-1' }], [{ code: '700.HK' }])
+
+    const result = await execExecutePortfolioUpdate(deps, 'user1', 'update', '00700.HK', '腾讯', 200, 320, null)
+
+    expect(result).toContain('已更新')
+    expect(updateChain.eq).toHaveBeenCalledWith('code', '700.HK')
+    expect(updateChain.update).toHaveBeenCalledWith(expect.objectContaining({ code: '00700.HK', shares: 200 }))
+    expect(insertChain.insert).not.toHaveBeenCalled()
+  })
+
+  it('rejects add when a normalize-equivalent legacy lot already exists', async () => {
+    const selectChain = createMockChain([{ code: '700.HK' }])
+    const insertChain = createMockChain(null)
+    const deps = {
+      supabase: {
+        from: vi.fn().mockReturnValueOnce(selectChain).mockReturnValueOnce(insertChain),
+      } as unknown as ToolDeps['supabase'],
+      fetch: vi.fn(),
+      generateText: vi.fn(),
+    } as unknown as ToolDeps
+
+    const result = await execExecutePortfolioUpdate(deps, 'user1', 'add', '00700.HK', '腾讯', 100, 320, null, '2026-01-15')
+
+    expect(result).toContain('持仓已存在')
+    expect(insertChain.insert).not.toHaveBeenCalled()
+  })
+
   it('does not reset buy_dt or clear stop_loss when updating without a new stop', async () => {
     const { deps, updateChain } = createPortfolioWriteDeps([{ id: 'pos-1' }])
     const update = updateChain.update as ReturnType<typeof vi.fn>
@@ -575,8 +605,9 @@ describe('execExecutePortfolioUpdate', () => {
   })
 
   it('writes the provided buy_dt when adding a new position', async () => {
+    const selectChain = createMockChain([])
     const insertChain = createMockChain(null)
-    const mockFrom = vi.fn().mockReturnValue(insertChain)
+    const mockFrom = vi.fn().mockReturnValueOnce(selectChain).mockReturnValue(insertChain)
     const deps = {
       supabase: { from: mockFrom } as unknown as ToolDeps['supabase'],
       fetch: vi.fn(),
@@ -611,7 +642,7 @@ describe('execExecutePortfolioUpdate', () => {
   })
 
   it('does not insert when update matches no rows', async () => {
-    const { deps, insertChain } = createPortfolioWriteDeps([])
+    const { deps, insertChain } = createPortfolioWriteDeps([], [])
 
     const result = await execExecutePortfolioUpdate(deps, 'user1', 'update', '600519', '贵州茅台', 200, 1810, 1700)
 

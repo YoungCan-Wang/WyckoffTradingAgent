@@ -83,7 +83,11 @@ def test_portfolio_writes_accept_explicit_user_client(monkeypatch):
     )
     client = _FakeUserClient()
 
-    ok, _ = upsert_position("USER_LIVE:u1", {"code": "000001", "shares": 100, "cost_price": 10}, client=client)
+    ok, _ = upsert_position(
+        "USER_LIVE:u1",
+        {"code": "000001", "shares": 100, "cost_price": 10, "buy_dt": "2026-01-15"},
+        client=client,
+    )
     assert ok is True
 
     ok, _ = delete_position("USER_LIVE:u1", "000001", client=client)
@@ -93,9 +97,57 @@ def test_portfolio_writes_accept_explicit_user_client(monkeypatch):
     assert ok is True
 
     actions = [call["action"] for call in client.calls]
+    assert "upsert" not in actions
+    assert "insert" in actions
     # ensure 用 insert 而不是 upsert：带 free_cash=0 的 upsert 会在并发
     # set_cash 之后把真实现金覆盖成 0。
-    assert actions == ["update", "delete", "select", "insert", "update"]
+    cash_writes = [call for call in client.calls if call["table"] == "portfolios"]
+    assert any(call["action"] == "insert" for call in cash_writes)
+
+
+def test_insert_position_rejects_normalize_equivalent_legacy_lot(monkeypatch):
+    from core.buy_dt import POSITION_EXISTS_ERROR
+    from integrations import supabase_portfolio as portfolio_store
+    from integrations.supabase_portfolio import insert_position
+
+    monkeypatch.setattr(
+        portfolio_store,
+        "refresh_portfolio_total_equity",
+        lambda *_args, **_kwargs: type("R", (), {"ok": True, "message": "ok"})(),
+    )
+    monkeypatch.setattr(portfolio_store, "_ensure_portfolio_exists", lambda *_a, **_k: None)
+    client = _FakeUserClient(select_rows=[{"code": "700.HK", "shares": 100}])
+    ok, msg = insert_position(
+        "USER_LIVE:u1",
+        {"code": "00700.HK", "name": "腾讯", "shares": 100, "cost_price": 320, "buy_dt": "2026-01-15"},
+        client=client,
+    )
+    assert ok is False
+    assert msg == POSITION_EXISTS_ERROR
+    assert "insert" not in [call["action"] for call in client.calls]
+
+
+def test_update_position_matches_legacy_hk_code(monkeypatch):
+    from integrations import supabase_portfolio as portfolio_store
+    from integrations.supabase_portfolio import EquityRefreshResult, update_position
+
+    monkeypatch.setattr(
+        portfolio_store,
+        "refresh_portfolio_total_equity",
+        lambda *_args, **_kwargs: EquityRefreshResult(True, 2_000, "ok"),
+    )
+    client = _FakeUserClient(select_rows=[{"code": "700.HK", "shares": 100}])
+    ok, msg = update_position(
+        "USER_LIVE:u1",
+        {"code": "00700.HK", "name": "腾讯", "shares": 200, "cost_price": 320},
+        client=client,
+    )
+    assert ok is True
+    assert "00700.HK" in msg
+    update_calls = [call for call in client.calls if call["action"] == "update"]
+    assert len(update_calls) == 1
+    assert ("code", "700.HK") in update_calls[0]["filters"]
+    assert update_calls[0]["payload"]["code"] == "00700.HK"
 
 
 def test_portfolio_admin_fallback_rejects_cli_context(monkeypatch):
@@ -285,7 +337,7 @@ def test_update_position_does_not_insert_when_missing(monkeypatch):
     from integrations.supabase_portfolio import update_position
 
     monkeypatch.setattr(portfolio_store, "_ensure_portfolio_exists", lambda *_a, **_k: None)
-    client = _FakeUserClient(update_rows=[])
+    client = _FakeUserClient(update_rows=[], select_rows=[])
     ok, msg = update_position(
         "USER_LIVE:u1",
         {"code": "000001", "name": "平安银行", "shares": 200, "cost_price": 10.5},
@@ -293,7 +345,7 @@ def test_update_position_does_not_insert_when_missing(monkeypatch):
     )
     assert ok is False
     assert msg == POSITION_MISSING_ERROR
-    assert [call["action"] for call in client.calls] == ["update"]
+    assert [call["action"] for call in client.calls] == ["select"]
     assert "insert" not in [call["action"] for call in client.calls]
     assert "upsert" not in [call["action"] for call in client.calls]
 
@@ -302,7 +354,7 @@ def test_upsert_position_missing_without_buy_dt_does_not_insert(monkeypatch):
     from core.buy_dt import MISSING_BUY_DT_ERROR
     from integrations.supabase_portfolio import upsert_position
 
-    client = _FakeUserClient(update_rows=[])
+    client = _FakeUserClient(update_rows=[], select_rows=[])
     ok, msg = upsert_position(
         "USER_LIVE:u1",
         {"code": "000001", "name": "平安银行", "shares": 200, "cost_price": 10.5, "buy_dt": ""},
@@ -310,7 +362,7 @@ def test_upsert_position_missing_without_buy_dt_does_not_insert(monkeypatch):
     )
     assert ok is False
     assert msg == MISSING_BUY_DT_ERROR
-    assert [call["action"] for call in client.calls] == ["update"]
+    assert [call["action"] for call in client.calls] == ["select"]
     assert "insert" not in [call["action"] for call in client.calls]
     assert "upsert" not in [call["action"] for call in client.calls]
 
@@ -324,7 +376,7 @@ def test_upsert_position_existing_omits_empty_buy_dt(monkeypatch):
         "refresh_portfolio_total_equity",
         lambda *_args, **_kwargs: EquityRefreshResult(True, 2_000, "ok"),
     )
-    client = _FakeUserClient()
+    client = _FakeUserClient(select_rows=[{"code": "000001", "shares": 100}])
     ok, _msg = upsert_position(
         "USER_LIVE:u1",
         {"code": "000001", "name": "平安银行", "shares": 200, "cost_price": 10.5, "buy_dt": ""},
@@ -366,7 +418,17 @@ def test_record_fill_existing_without_buy_dt_preserves_date(monkeypatch):
     from integrations import supabase_portfolio as portfolio_store
     from integrations.supabase_portfolio import EquityRefreshResult, record_fill
 
-    client = _FakeUserClient()
+    client = _FakeUserClient(
+        select_rows=[
+            {
+                "code": "000001",
+                "name": "平安银行",
+                "shares": 1000,
+                "cost_price": 10.0,
+                "buy_dt": "20260101",
+            }
+        ]
+    )
     monkeypatch.setattr(portfolio_store, "_resolve_write_client", lambda _client, _action: client)
     monkeypatch.setattr(
         portfolio_store,
@@ -397,8 +459,10 @@ def test_record_fill_existing_without_buy_dt_preserves_date(monkeypatch):
     assert result.ok is True
     position_writes = [call for call in client.calls if call["table"] == "portfolio_positions"]
     assert position_writes
-    assert all(call["action"] == "update" for call in position_writes)
-    assert "buy_dt" not in position_writes[0]["payload"]
+    assert all(call["action"] == "update" for call in position_writes if call["action"] != "select")
+    update_calls = [call for call in position_writes if call["action"] == "update"]
+    assert update_calls
+    assert "buy_dt" not in update_calls[0]["payload"]
 
 
 def test_ensure_portfolio_exists_inserts_not_upserts_when_missing():

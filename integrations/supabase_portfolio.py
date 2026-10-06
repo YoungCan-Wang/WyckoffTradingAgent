@@ -495,6 +495,11 @@ def insert_position(
     try:
         client = _resolve_write_client(client, "insert portfolio position")
         _ensure_portfolio_exists(portfolio_id, client)
+        existing_rows = _list_position_rows(portfolio_id, client)
+        if existing_rows is None:
+            return False, f"无法读取持仓，拒绝新增: portfolio={portfolio_id}"
+        if _find_position_for_fill(existing_rows, code) is not None:
+            return False, POSITION_EXISTS_ERROR
         client.table(TABLE_PORTFOLIO_POSITIONS).insert(row).execute()
         return True, _mutation_message(f"{code} 已新增", portfolio_id, client, refresh_equity)
     except Exception as e:
@@ -520,11 +525,18 @@ def update_position(
         return False, error
     try:
         client = _resolve_write_client(client, "update portfolio position")
+        existing_rows = _list_position_rows(portfolio_id, client)
+        if existing_rows is None:
+            return False, f"无法读取持仓，拒绝更新: portfolio={portfolio_id}"
+        matched = _find_position_for_fill(existing_rows, code)
+        if matched is None:
+            return False, POSITION_MISSING_ERROR
+        db_code = str(matched.get("code") or "").strip()
         response = (
             client.table(TABLE_PORTFOLIO_POSITIONS)
             .update(row)
             .eq("portfolio_id", portfolio_id)
-            .eq("code", code)
+            .eq("code", db_code)
             .execute()
         )
         if not getattr(response, "data", None):
@@ -560,6 +572,21 @@ def delete_position(
     except Exception as e:
         logger.warning("[supabase_portfolio] delete_position failed: %s", e)
         return False, str(e)
+
+
+def _list_position_rows(portfolio_id: str, client: Client) -> list[dict[str, Any]] | None:
+    """Read position rows for alias matching. None = read failed (fail closed)."""
+    try:
+        response = (
+            client.table(TABLE_PORTFOLIO_POSITIONS)
+            .select("code,name,shares,cost_price,buy_dt,stop_loss")
+            .eq("portfolio_id", portfolio_id)
+            .execute()
+        )
+        return list(response.data or [])
+    except Exception as exc:
+        logger.warning("[supabase_portfolio] list positions failed for %s: %s", portfolio_id, exc)
+        return None
 
 
 def _position_delete_targets(code: str) -> list[str]:
