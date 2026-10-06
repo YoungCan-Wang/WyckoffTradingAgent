@@ -244,7 +244,9 @@ def _recommendation_row(
         "change_pct": 0.0 if change is None else change,
         "recommend_count": new_cnt,
         "funnel_score": _extract_recommendation_score(item),
-        "is_ai_recommended": False,
+        # Step2 upsert must not touch is_ai_recommended: same-day re-runs would
+        # reset True→False before Step3 mark, and a failed/empty mark would leave
+        # the day's AI pool wiped for step4_from_supabase.
         "updated_at": datetime.now(UTC).isoformat(),
         **_extract_recommendation_attribution(item),
     }

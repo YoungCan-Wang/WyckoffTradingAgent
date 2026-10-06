@@ -33,6 +33,7 @@ jobs:
       WYCKOFF_WRITE_CONTEXT: "server_job"
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      # 与 Step4 相同：job 会映射成 USER_LIVE:<uuid>；勿回落到裸 USER_LIVE 空壳账本。
       SUPABASE_USER_ID: ${{ secrets.SUPABASE_USER_ID }}
       TICKFLOW_API_KEY: ${{ secrets.TICKFLOW_API_KEY }}
       TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}

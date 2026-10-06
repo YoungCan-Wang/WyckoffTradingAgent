@@ -74,6 +74,12 @@ def _run_stop_loss_only_fallback(
     这里对每个持仓生成 HOLD 决策，不含任何 LLM 主观判断：买入一律不做，卖出只可能
     来自 WyckoffOrderEngine 的结构止损兜底（_process_hold 在跌破止损线时把 HOLD 降级
     为强制 EXIT）。即"模型不可用时不主动开仓，但止损照旧执行"。
+
+    保护工单必须走与正常路径相同的 ``save_step4_orders_and_nav``：只发 Telegram
+    时 ATR 上移止损不会写入 ``portfolio_positions``，强制 EXIT 也不会进入
+    ``trade_orders``，次日高水位止损丢失、未执行离场审计也会漏掉本轮。
+    但降级路径禁止 ``supersede_previous``：否则同日已落库的 BUY/ATTACK 会被
+    ``cancel_trade_orders(exclude_run_id=...)`` 清掉，LLM 重跑失败变成静默毁单。
     """
     positions = list(getattr(getattr(context, "portfolio", None), "positions", None) or [])
     if not positions:
@@ -100,21 +106,25 @@ def _run_stop_loss_only_fallback(
         for pos in positions
     ]
     tickets, free_cash_after = execute_step4_decisions(context, decisions, options.order_config)
-    report = render_trade_ticket(
-        market_view=f"⚠️ 决策模型不可用（{status}），本工单仅执行止损保护，不含调仓建议",
-        total_equity=float(context.total_equity),
-        free_cash_before=context.portfolio.free_cash,
-        free_cash_after=free_cash_after,
+    forced = sum(1 for ticket in tickets if ticket.action == "EXIT")
+    logger.warning("降级工单已生成：持仓 %d 只，其中强制止损 %d 只", len(tickets), forced)
+    ok, persist_status = _send_and_persist_step4_results(
+        options=options,
+        context=context,
+        decisions=decisions,
         tickets=tickets,
-        atr_period=options.runtime_config.atr_period,
+        free_cash_after=free_cash_after,
+        rendered_market_view=(f"⚠️ 决策模型不可用（{status}），本工单仅执行止损保护，不含调仓建议"),
+        stale_exits=[],
+        report_progress=report_progress,
         model_label=f"degraded:{status}",
-        day_pnl=_load_ticket_day_pnl(options.portfolio_id, context.trade_date),
+        # 保护工单不能作废同日已批准的 BUY/ATTACK：LLM 重跑失败时降级只补止损/EXIT。
+        supersede_previous=False,
     )
-    _send_trade_ticket(report, options.tg_bot_token, options.tg_chat_id)
-    forced = [t for t in tickets if t.action == "EXIT"]
-    logger.warning("降级工单已发出：持仓 %d 只，其中强制止损 %d 只", len(tickets), len(forced))
-    # 仍报失败，避免掩盖 LLM 故障；但工单与止损已执行。
-    return (False, f"{status}_degraded")
+    # 仍报失败，避免掩盖 LLM 故障；保护工单是否落库看 persist_status。
+    if not ok:
+        return False, f"{status}_degraded_{persist_status}"
+    return False, f"{status}_degraded"
 
 
 def _step4_model_label(options) -> str:
@@ -384,6 +394,8 @@ def _send_and_persist_step4_results(
     rendered_market_view: str,
     stale_exits: list[StaleExit],
     report_progress,
+    model_label: str | None = None,
+    supersede_previous: bool = True,
 ) -> tuple[bool, str]:
     result_record = prepare_step4_result_record(
         tickets=tickets,
@@ -397,7 +409,7 @@ def _send_and_persist_step4_results(
         tickets=tickets,
         atr_period=options.runtime_config.atr_period,
         stale_exits=stale_exits,
-        model_label=_step4_model_label(options),
+        model_label=model_label if model_label is not None else _step4_model_label(options),
         day_pnl=_load_ticket_day_pnl(options.portfolio_id, context.trade_date),
     )
     persistence = save_step4_orders_and_nav(
@@ -407,6 +419,7 @@ def _send_and_persist_step4_results(
         rendered_market_view=rendered_market_view,
         tickets=tickets,
         ticket_rows=result_record.ticket_rows,
+        supersede_previous=supersede_previous,
     )
     if not persistence.ok:
         if persistence.orders_written and not rollback_step4_run(

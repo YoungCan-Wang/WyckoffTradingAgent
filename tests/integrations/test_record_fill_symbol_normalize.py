@@ -101,6 +101,69 @@ def test_record_fill_sell_matches_us_bare_ticker(monkeypatch):
     assert captured["cash"] == pytest.approx(1_000.0 + gross_cny, rel=0.001)
 
 
+def test_record_fill_full_sell_deletes_legacy_unpadded_hk_code(monkeypatch):
+    """清仓必须按库内原码删：只 eq 00700.HK 会漏掉历史 700.HK，现金入账后仓还在。"""
+    fill = Fill(code="700.HK", side="sell", shares=100, price=300.0, trade_date="20260808", name="")
+    state = {
+        "free_cash": 1_000.0,
+        "positions": [{"code": "700.HK", "name": "腾讯", "shares": 100, "cost": 280.0, "buy_dt": "20260101"}],
+    }
+    captured: dict = {"deleted": [], "cash": None}
+
+    def fake_delete(portfolio_id, code, client=None, **_kwargs):
+        captured["deleted"].append(code)
+        if code == "700.HK":
+            state["positions"] = []
+            return True, "ok"
+        return False, sp.POSITION_MISSING_ERROR
+
+    def fake_cash(portfolio_id, free_cash, client=None, **_kwargs):
+        captured["cash"] = float(free_cash)
+        return True, "ok"
+
+    monkeypatch.setattr(sp, "_resolve_write_client", lambda client, _action: client or object())
+    monkeypatch.setattr(sp, "load_portfolio_state", lambda _pid, client=None: state)
+    monkeypatch.setattr(sp, "_fill_fx_to_cny", lambda _code: 0.92)
+    monkeypatch.setattr(sp, "delete_position", fake_delete)
+    monkeypatch.setattr(sp, "update_free_cash", fake_cash)
+    monkeypatch.setattr(
+        sp,
+        "refresh_portfolio_total_equity",
+        lambda *_args, **_kwargs: sp.EquityRefreshResult(True, 1, "ok"),
+    )
+
+    result = sp.record_fill("USER_LIVE:u1", fill, client=object())
+
+    assert result.ok is True
+    assert captured["deleted"] == ["700.HK"]
+    assert state["positions"] == []
+    assert captured["cash"] is not None and captured["cash"] > 1_000.0
+
+
+def test_delete_position_fails_when_no_row_matches(monkeypatch):
+    class _Resp:
+        data: list = []
+
+    class _Query:
+        def delete(self):
+            return self
+
+        def eq(self, *_a, **_k):
+            return self
+
+        def execute(self):
+            return _Resp()
+
+    class _Client:
+        def table(self, _name):
+            return _Query()
+
+    monkeypatch.setattr(sp, "_resolve_write_client", lambda client, _action: client or _Client())
+    ok, msg = sp.delete_position("USER_LIVE:u1", "00700.HK", client=_Client(), refresh_equity=False)
+    assert ok is False
+    assert msg == sp.POSITION_MISSING_ERROR
+
+
 def test_record_fill_rejects_foreign_when_fx_missing(monkeypatch):
     fill = Fill(code="AAPL.US", side="buy", shares=1, price=200.0, trade_date="20260815", name="")
     called = {"cash": False}

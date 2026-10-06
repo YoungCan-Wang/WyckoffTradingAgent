@@ -271,6 +271,53 @@ def check_daily_run_exists(
         return False
 
 
+def _stop_update_want_code(code: object) -> str:
+    from core.portfolio_symbol import normalize_portfolio_code
+
+    raw = str(code or "").strip()
+    return normalize_portfolio_code(raw) or raw.upper()
+
+
+def _apply_position_stop_updates(
+    portfolio_id: str,
+    updates: list[dict[str, Any]],
+    client: Client,
+) -> int:
+    """按库内真实 code 写止损；命中持仓却 0 行则抛错。
+
+    Step4 / set_stop_loss 侧传入的是规范化码（``00700.HK``），库里可能仍是历史
+    ``700.HK`` / 大小写变体。只 ``eq`` 规范码时 PostgREST 0 行仍算成功，ATR 上移
+    止损失落库，次日强制 EXIT 继续用旧 stop。新开仓工单尚无持仓行时跳过（止损
+    已在 trade_orders）。
+    """
+    state = load_portfolio_state(portfolio_id, client=client)
+    if state is None:
+        # A failed read is not evidence that these are unfilled new-entry orders.
+        raise RuntimeError(f"无法读取组合，止损未写入: portfolio={portfolio_id}")
+    positions = list(state.get("positions") or [])
+    written = 0
+    for item in updates:
+        code = str(item.get("code") or "").strip()
+        if not code or "stop_loss" not in item:
+            continue
+        want = _stop_update_want_code(code)
+        row = _find_position_for_fill(positions, want)
+        if row is None:
+            continue
+        db_code = str(row.get("code") or "").strip()
+        response = (
+            client.table(TABLE_PORTFOLIO_POSITIONS)
+            .update({"stop_loss": item.get("stop_loss")})
+            .eq("portfolio_id", portfolio_id)
+            .eq("code", db_code)
+            .execute()
+        )
+        if not getattr(response, "data", None):
+            raise RuntimeError(f"止损更新未命中持仓行: portfolio={portfolio_id} code={db_code}")
+        written += 1
+    return written
+
+
 def set_position_stops(
     portfolio_id: str,
     updates: list[dict[str, Any]],
@@ -285,48 +332,20 @@ def set_position_stops(
         return True, 0
     try:
         write_client = _resolve_write_client(client, "set portfolio stop losses")
-        written = 0
-        for item in updates:
-            code = str(item.get("code") or "").strip()
-            if not code or "stop_loss" not in item:
-                continue
-            (
-                write_client.table(TABLE_PORTFOLIO_POSITIONS)
-                .update({"stop_loss": item.get("stop_loss")})
-                .eq("portfolio_id", portfolio_id)
-                .eq("code", code)
-                .execute()
-            )
-            written += 1
-        return True, written
+        return True, _apply_position_stop_updates(portfolio_id, updates, write_client)
     except Exception as e:
         logger.warning("[supabase_portfolio] set_position_stops failed: %s", e)
         return False, 0
 
 
 def update_position_stops(portfolio_id: str, updates: list[dict[str, Any]]) -> bool:
-    """
-    批量更新持仓止损价。
-    updates: [{"code": "000001", "stop_loss": 12.34}, ...]
-    """
+    """批量更新持仓止损价。updates: [{"code": "...", "stop_loss": 12.34}, ...]"""
     if not is_supabase_configured() or not updates:
         return False
     require_server_write_context("update portfolio stop losses")
     try:
         client = _get_supabase_admin_client()
-        # Supabase 不支持批量 update 不同值，需逐个 update
-        # 若量大可考虑其它方式，目前持仓数不多，循环即可
-        for item in updates:
-            code = item.get("code")
-            if not code or "stop_loss" not in item:
-                continue
-            (
-                client.table(TABLE_PORTFOLIO_POSITIONS)
-                .update({"stop_loss": item.get("stop_loss")})
-                .eq("portfolio_id", portfolio_id)
-                .eq("code", code)
-                .execute()
-            )
+        _apply_position_stop_updates(portfolio_id, updates, client)
         return True
     except Exception as e:
         logger.warning("[supabase_portfolio] update_position_stops failed: %s", e)
@@ -334,13 +353,27 @@ def update_position_stops(portfolio_id: str, updates: list[dict[str, Any]]) -> b
 
 
 def _ensure_portfolio_exists(portfolio_id: str, client: Client) -> None:
-    """确保 portfolios 行存在，不存在则创建。"""
+    """确保 portfolios 行存在，不存在则创建。
+
+    必须用 insert，不能用带 ``free_cash=0`` 的 upsert。
+
+    ``select`` 为空到真正落库之间不是原子的：另一个并发写入（常见是
+    ``set_cash``）可能已经建好行并写入真实现金。若这里再 upsert
+    ``free_cash=0``，PostgREST 默认 merge-duplicates 会把已写入的现金覆盖成 0。
+    本地 SQLite 路径用的是 ``INSERT OR IGNORE``，云端必须同等保守——冲突时
+    什么都不改，而不是把现金清零。
+    """
     resp = client.table(TABLE_PORTFOLIOS).select("portfolio_id").eq("portfolio_id", portfolio_id).limit(1).execute()
-    if not resp.data:
-        client.table(TABLE_PORTFOLIOS).upsert(
+    if resp.data:
+        return
+    try:
+        client.table(TABLE_PORTFOLIOS).insert(
             {"portfolio_id": portfolio_id, "free_cash": 0, "name": "我的持仓"},
-            on_conflict="portfolio_id",
         ).execute()
+    except Exception as exc:
+        if _is_unique_violation(exc):
+            return
+        raise
 
 
 def _resolve_write_client(client: Client | None, operation: str) -> Client:
@@ -509,17 +542,52 @@ def delete_position(
     *,
     refresh_equity: bool = True,
 ) -> tuple[bool, str]:
-    """删除单个持仓。"""
-    from core.portfolio_symbol import normalize_portfolio_code
+    """删除单个持仓。
 
-    code = normalize_portfolio_code(code) or str(code or "").strip().upper()
+    必须按库内真实 ``code`` 主键删，并在 0 行时失败。``record_fill`` 清仓会先
+    按规范化码命中持仓，再调这里；若只按规范码 ``eq`` 且不看返回行数，遇到历史
+    未补零/大小写不一致的港美代码会「删空成功」后仍给现金入账，仓位却还在。
+    """
+    targets = _position_delete_targets(code)
+    if not targets:
+        return False, f"无效的股票代码: {code}"
     try:
         client = _resolve_write_client(client, "delete portfolio position")
-        client.table(TABLE_PORTFOLIO_POSITIONS).delete().eq("portfolio_id", portfolio_id).eq("code", code).execute()
-        return True, _mutation_message(f"{code} 已删除", portfolio_id, client, refresh_equity)
+        deleted = _delete_position_rows(client, portfolio_id, targets)
+        if not deleted:
+            return False, POSITION_MISSING_ERROR
+        return True, _mutation_message(f"{deleted} 已删除", portfolio_id, client, refresh_equity)
     except Exception as e:
         logger.warning("[supabase_portfolio] delete_position failed: %s", e)
         return False, str(e)
+
+
+def _position_delete_targets(code: str) -> list[str]:
+    from core.portfolio_symbol import normalize_portfolio_code
+
+    raw = str(code or "").strip()
+    canonical = normalize_portfolio_code(raw) or raw.upper()
+    targets: list[str] = []
+    for candidate in (raw, canonical, raw.upper()):
+        text = str(candidate or "").strip()
+        if text and text not in targets:
+            targets.append(text)
+    return targets
+
+
+def _delete_position_rows(client: Client, portfolio_id: str, targets: list[str]) -> str:
+    deleted = ""
+    for target in targets:
+        response = (
+            client.table(TABLE_PORTFOLIO_POSITIONS)
+            .delete()
+            .eq("portfolio_id", portfolio_id)
+            .eq("code", target)
+            .execute()
+        )
+        if getattr(response, "data", None):
+            deleted = target
+    return deleted
 
 
 def _persist_filled_holding(
@@ -620,7 +688,9 @@ def record_fill(portfolio_id: str, fill: Fill, client: Client | None = None) -> 
         return FillWriteResult(False, str(exc))
 
     if result.holding is None:
-        ok, msg = delete_position(portfolio_id, fill.code, client=client, refresh_equity=False)
+        # 用库内原码删：find 已按 normalize 命中，delete 若只 eq 规范码会漏删旧键。
+        db_code = str((row or {}).get("code") or fill.code)
+        ok, msg = delete_position(portfolio_id, db_code, client=client, refresh_equity=False)
     else:
         ok, msg = _persist_filled_holding(portfolio_id, row, result.holding, client)
     if not ok:

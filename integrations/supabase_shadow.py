@@ -133,10 +133,20 @@ def _upsert_account(account_id: str, as_of: date, book: ShadowBook, nav: dict[st
 
 
 def _replace_positions(account_id: str, book: ShadowBook) -> None:
-    _table(TABLE_SHADOW_POSITIONS).delete().eq("account_id", account_id).execute()
+    """先 upsert 再删多余行，避免 delete-then-insert 中段失败把仓位抹成空。
+
+    ``persist_shadow_session`` 会先把计划标成 filled。若此处先删光再 insert 失败，
+    仓位已空且成交不会重放，纸面账本永久丢仓。
+    """
     rows = [_position_row(account_id, pos) for pos in book.positions.values() if pos.shares > 0]
+    keep = {str(row["code"]) for row in rows}
     if rows:
-        _table(TABLE_SHADOW_POSITIONS).insert(rows).execute()
+        _table(TABLE_SHADOW_POSITIONS).upsert(rows, on_conflict="account_id,code").execute()
+    existing = _table(TABLE_SHADOW_POSITIONS).select("code").eq("account_id", account_id).execute().data or []
+    drop = [str(row.get("code") or "") for row in existing if str(row.get("code") or "") not in keep]
+    for code in drop:
+        if code:
+            _table(TABLE_SHADOW_POSITIONS).delete().eq("account_id", account_id).eq("code", code).execute()
 
 
 def _upsert_plans(account_id: str, plans: list[ShadowPlan]) -> None:

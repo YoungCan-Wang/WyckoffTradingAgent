@@ -254,6 +254,8 @@ watch_score = 0.25 × q20 + 0.20 × q5 + 0.05 × q3
 | **ATR 止损放宽** | ATR Stop Relaxation | 持仓诊断中，根据波动率在上限内降低固定止损线，避免正常洗盘误杀；它只放宽、不收紧，也不取消硬止损 |
 | **可卖股数** | Sellable Shares | A 股 T+1 下当日实际能卖出的股数。持仓无分笔明细，买入日期等于当前交易日时整个仓位记为 0，EXIT/TRIM 与强制止损离场都会被拒并顺延到下一交易日。港股 / 美股为 T+0，同日买入仍可卖，不得套用 A 股冻结 |
 | **持仓代码** | Portfolio Symbol | 持仓账本 `portfolio_positions.code`：A 股 6 位数字、港股 `NNNNN.HK`、美股 `TICKER.US`（TickFlow 标准）。CLI/Web 写入前规范化；漏斗 OMS 买入空间仍以 A 股为主 |
+| **仅止损降级工单** | Stop-only Fallback | LLM 不可用时追加 `HOLD / EXIT` 保护建议，不作废同日旧建议；旧买入建议可与新 `EXIT` 同时留档，不代表自动执行或跨轮冲突已解决。完整 LLM 流程全部持久化成功后仍替代同日旧建议。 |
+| **止损持久化失败** | Stop Persistence Failure | 读取组合失败、组合不存在或已匹配持仓更新零行均报失败；成功读取后不存在的新开仓持仓行可跳过。按规范化代码匹配、库内原始代码更新。Step4 作废本轮工单并恢复止损，回滚失败单独上报。 |
 | **OMS 整手** | OMS Lot Size | Step4 下单取整单位：A 股 100 股，港美 1 股。港美持仓进入 OMS 后不得再套用 A 股 100 股门槛，否则小仓位止损强制 EXIT 与止损落库会失效 |
 | **OMS 人民币口径** | OMS CNY Cash Path | Step4 的 `total_equity` / `free_cash` / 工单 `amount` 按人民币计；港美报价与止损间距先乘汇率再定仓与回笼，避免把美元/港元裸加进人民币预算 |
 | **成交回填汇率** | Trade Fill FX | `record_trade_fill` / `portfolio fill` 对港美成交按报价币→CNY 汇率改 `free_cash`，成本价仍记本币；缺汇率 fail-closed，禁止把外币名义金额写入人民币现金 |
@@ -376,7 +378,7 @@ flowchart LR
 | **output tok/s** | 输出生成速率：`output_tokens / generation_seconds`。`generation_seconds` 只累计模型生成窗口（首个 text/thinking delta → 该段 stream/step 结束），多步 tool 循环**不含**工具执行时间。Web 用量横幅末尾标为 `Xs gen`（模型窗口）；CLI footer 末尾 `elapsed` 仍是整轮墙钟。 |
 | **cache hit rate** | 提示缓存命中率：`cache_read_tokens / input_tokens`。仅当 provider/网关实际回报了 cache 字段时展示（含 0%）。Anthropic 原始 `input_tokens` 不含 cache，CLI 先归一化为 `input + cache_read + cache_write`。DeepSeek 优先用 `prompt_cache_hit_tokens`。与沙箱 CPU/网络 `usage` 无关。 |
 | **stream_chunk_timeout_seconds** | CLI 模型流式空闲超时（秒，默认 120，范围 10–600）：相邻 chunk 间隔（含 TTFT）超限则中断。写入 `~/.wyckoff/wyckoff.json`，控制面板可改。 |
-| **tool_timeout_seconds** | CLI 单工具执行超时（秒，默认 60，范围 5–300）。写入 `wyckoff.json`，控制面板可改。与模型空闲超时独立。 |
+| **tool_timeout_seconds** | CLI 单工具执行超时（秒，默认 60，范围 5–300）。写入 `wyckoff.json`，控制面板可改。与模型空闲超时独立。写工具与 `research_hypothesis` 变更 action 禁用该超时，避免 ToolSurface 放弃式取消后双写。 |
 
 ## 15. Web 运行边界
 

@@ -29,6 +29,9 @@ class Step3StageResult:
     # code6 -> invalidated / building / springboard。纯观测字段，用于事后评估
     # LLM 是否真有区分度；不参与任何交易决策。
     verdicts: dict[str, str] = field(default_factory=dict)
+    # True only when Step3 succeeded and springboard extraction succeeded (empty
+    # list still counts). False means do not rewrite is_ai_recommended.
+    ai_mark_authoritative: bool = False
 
     @property
     def blocking_failure(self) -> bool:
