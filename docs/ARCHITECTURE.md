@@ -812,7 +812,7 @@ MCP server 走 ToolSurface，没有确认弹窗也没有待批队列。`tools/wr
 | **Desktop** (`desktop.yml`) | desktop 相关 push/PR / 手动触发 / `desktop-v*` tag | push/PR 只跑三平台 Electron 测试；手动触发才构建 1 天候选包；tag 与 package version 一致时以 Windows 未签名 / macOS 临时签名的零付费方式校验并发布 GitHub Release |
 | **大型 Artifact 清理** (`artifact_cleanup.yml`) | 每天 03:30 / 手动 | 删除超过 24 小时且至少 50 MB 的 Actions artifacts；桌面工作流自身保留期固定为 1 天 |
 | **盘前风控** (`premarket_risk.yml`) | 周一-周五 08:20 | Codex Automation 调用 `workflow_dispatch`；A50 + VIX 预警，Actions 可手动补跑。另有 UTC 02:20 的 `schedule` 兜底，带 `--backstop` 幂等短路，仅在当日盘前态缺失时补跑 |
-| **账户净值快照** (`nav_snapshot.yml`) | 周一-周五 16:05 | `nav_snapshot_job.py` 写 `daily_nav`：真实现金、持仓市值、账本与逐只当日盈亏（vs 昨收；昨收缺失才 vs 今开成本）。不改股数/现金/止损，不发买卖信号。实盘日预警是随后 Step4 的 Telegram 工单，会回读这张快照 |
+| **账户净值快照** (`nav_snapshot.yml`) | 周一-周五 16:05 | `nav_snapshot_job.py` 写 `daily_nav`（目标 `USER_LIVE:<SUPABASE_USER_ID>`，与 Step4 一致）：真实现金、持仓市值、账本与逐只当日盈亏（vs 昨收；昨收缺失才 vs 今开成本）。不改股数/现金/止损，不发买卖信号。实盘日预警是随后 Step4 的 Telegram 工单，会回读这张快照 |
 | **港股漏斗筛选** (`wyckoff_funnel_hk.yml`) | 周一-周五 16:35 | `market_funnel_job.py --market hk` |
 | **A 股漏斗筛选 + AI 研报 + 决策** (`wyckoff_funnel.yml`) | 周日-周四 17:17 | `daily_job.py` Step2→3→4；周日正常为周一实盘准备候选，若次日非 A 股交易日才跳过，日频写入 `theme_radar_snapshot` |
 | **板块连续性报告** (`sector_continuity.yml`) | 周一-周五 16:10 | 刷新概念热度历史，辅助主线引擎判断延续性 |

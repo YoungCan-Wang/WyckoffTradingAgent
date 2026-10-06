@@ -122,7 +122,7 @@ flowchart TD
 | Step2.6 | `integrations/recommendation_payload.py` | `recommendation_tracking` 写库；`initial_price` 为该行入选日收盘（事件价） |
 | Step3 | `workflows/step3_batch_report.py` | `tools/report_builder.py` |
 | Step4 | `workflows/step4_rebalancer.py` | `core/holding_diagnostic.py` / `core/wyckoff_engine.py`；工单回读 16:05 `daily_nav` 当日盈亏 |
-| 净值快照 | `scripts/nav_snapshot_job.py` | `workflows/nav_snapshot.py`；16:05 写总额与当日盈亏，不改持仓 |
+| 净值快照 | `scripts/nav_snapshot_job.py` | `workflows/nav_snapshot.py`；16:05 写总额与当日盈亏，不改持仓。目标组合与 Step4 相同：优先 `MY_PORTFOLIO_ID`/`PORTFOLIO_ID`，否则 `USER_LIVE:<SUPABASE_USER_ID>`（裸 `USER_LIVE` 仅本地兜底） |
 | 影子账本 | `workflows/shadow_ledger_job.py` | `core/shadow_ledger.py`；只写 `shadow_*`，失败不阻断漏斗 |
 
 **影子账本启用步骤**（默认关，`SHADOW_LEDGER_ENABLED=0`）：
