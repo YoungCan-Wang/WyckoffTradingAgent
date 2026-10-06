@@ -1258,6 +1258,41 @@ def test_step4_save_orders_and_nav_uses_persistence_boundaries(monkeypatch):
     }
 
 
+def test_degraded_persist_does_not_cancel_previous_same_day_orders(monkeypatch):
+    """LLM 降级落库止损/EXIT 时不得作废同日已批准的 BUY 工单。"""
+    calls: dict[str, object] = {}
+    monkeypatch.setattr(
+        step4_results,
+        "save_ai_trade_orders",
+        lambda **kwargs: calls.setdefault("orders", kwargs) is not None,
+    )
+    monkeypatch.setattr(
+        step4_results,
+        "cancel_trade_orders",
+        lambda **kwargs: calls.setdefault("cancel", kwargs) or 1,
+    )
+    monkeypatch.setattr(step4_results, "upsert_daily_nav", lambda **_kwargs: True)
+    monkeypatch.setattr(step4_results, "update_position_stops", lambda *_a, **_k: True)
+
+    result = step4_results.save_step4_orders_and_nav(
+        options=SimpleNamespace(portfolio_id="P1", model="degraded:llm_failed"),
+        context=SimpleNamespace(
+            trade_date="2026-05-15",
+            total_equity=120000.0,
+            portfolio=_persist_portfolio(stop_loss=8.1),
+        ),
+        run_id="run-degraded",
+        rendered_market_view="仅止损保护",
+        tickets=[_ticket()],
+        ticket_rows=[{"code": "000001", "action": "HOLD"}],
+        supersede_previous=False,
+    )
+
+    assert result == step4_results.Step4PersistenceResult(True, orders_written=True)
+    assert "orders" in calls
+    assert "cancel" not in calls
+
+
 def test_step4_order_write_failure_does_not_mutate_stops_or_nav(monkeypatch):
     mutated: list[str] = []
     monkeypatch.setattr(step4_results, "save_ai_trade_orders", lambda **_kwargs: False)

@@ -50,7 +50,15 @@ def save_step4_orders_and_nav(
     rendered_market_view: str,
     tickets: list[ExecutionTicket],
     ticket_rows: list[dict],
+    supersede_previous: bool = True,
 ) -> Step4PersistenceResult:
+    """Persist OMS tickets, stops, and NAV.
+
+    ``supersede_previous`` must stay True for a full LLM OMS run so same-day
+    older tickets are cancelled. Degraded stop-only fallback must pass False:
+    that path only emits HOLD/EXIT protection tickets and must not CANCEL the
+    day's already-approved BUY/ATTACK orders when LLM fails on a re-run.
+    """
     if not _save_step4_trade_orders(options, context, run_id, rendered_market_view, ticket_rows):
         logger.error("AI 订单记录写入失败 | portfolio_id=%s", options.portfolio_id)
         return Step4PersistenceResult(False)
@@ -59,6 +67,8 @@ def save_step4_orders_and_nav(
     nav_ok = _save_step4_nav_snapshot(options, context)
     if not (stops_ok and nav_ok):
         return Step4PersistenceResult(False, orders_written=True, stop_rollback=stop_rollback)
+    if not supersede_previous:
+        return Step4PersistenceResult(True, orders_written=True)
     try:
         _cancel_previous_trade_orders(options, context, run_id)
     except Exception:

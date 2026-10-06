@@ -17,7 +17,7 @@ import { fetchKlineViaTickFlow, getUserDataKeys } from '@/lib/kline'
 import { formatSignedPercent } from '@/lib/format'
 import { usePlanetMembership } from '@/lib/planet-membership-gate'
 import { avg } from '@/lib/math'
-import { EMPTY_PORTFOLIO, requestPortfolio, type Portfolio, type Position } from '@/lib/portfolio-api'
+import { EMPTY_PORTFOLIO, canPersistCloudPortfolio, requestPortfolio, type Portfolio, type Position } from '@/lib/portfolio-api'
 import { saveAnalysisHistory } from '@/lib/local-history'
 import { sourceLabel, VALUE_RULESET_VERSION, valueTraceMeta, type ValueScore, type ValueTone } from '@wyckoff/shared'
 import { buildValueDigest, buildValueScore, formatValuePercent, metricToneClass, numberTone, reverseNumberTone, signalClass, sortByValueRisk, valueDataQualityText, valueDataQualityTitle, valueScoreClass, valueUnavailableText, type ValueView } from '@/lib/value-analysis'
@@ -87,11 +87,14 @@ function PortfolioPageContent() {
   usePortfolioHistory(user?.id, fullDiag.result, source, fullDiag.model)
 
   useEffect(() => {
-    if (portfolioData.isPlanetMember && portfolioData.portfolio) setDatabaseDraft(portfolioData.portfolio)
-  }, [portfolioData.isPlanetMember, portfolioData.portfolio])
+    // Only seed from a successful GET. `portfolio.data || EMPTY_PORTFOLIO` must not
+    // reach the draft: a failed load would look empty, and PUT replaces the whole book.
+    if (portfolioData.isPlanetMember && portfolioData.loaded) setDatabaseDraft(portfolioData.loaded)
+  }, [portfolioData.isPlanetMember, portfolioData.loaded])
 
   if (portfolioData.isLoading) return <WyckoffLoading />
 
+  const cloudWritable = canPersistCloudPortfolio(portfolioData.loaded)
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-5 p-6">
       <PageHeader />
@@ -103,11 +106,18 @@ function PortfolioPageContent() {
           fullLoading={fullDiag.loading}
           progress={fullDiag.progress}
           onChange={(draft) => { portfolioData.resetSave(); setDatabaseDraft(draft) }}
-          onDiagnosis={() => { void portfolioData.save(databaseDraft).then((saved) => fullDiag.run(saved)).catch(() => undefined) }}
-          onSave={() => { void portfolioData.save(databaseDraft).catch(() => undefined) }}
+          onDiagnosis={() => {
+            if (!cloudWritable) return
+            void portfolioData.save(databaseDraft).then((saved) => fullDiag.run(saved)).catch(() => undefined)
+          }}
+          onSave={() => {
+            if (!cloudWritable) return
+            void portfolioData.save(databaseDraft).catch(() => undefined)
+          }}
           saving={portfolioData.isSaving}
           saveError={portfolioData.saveError}
           saveSuccess={portfolioData.saveSuccess}
+          writeEnabled={cloudWritable}
           databaseMode
         />
       ) : (
@@ -133,6 +143,7 @@ function usePortfolioData(userId: string | undefined) {
   return {
     isPlanetMember,
     isLoading: membership.isLoading || (isPlanetMember && portfolio.isLoading),
+    loaded: portfolio.data,
     portfolio: portfolio.data || EMPTY_PORTFOLIO,
     loadError: portfolio.error instanceof Error ? portfolio.error.message : '',
     save: (draft: Portfolio) => saveMutation.mutateAsync(draft),
@@ -355,17 +366,19 @@ function PageHeader() {
 }
 
 function ManualInput({
-  portfolio, fullLoading, progress, onChange, onDiagnosis, onSave, saving = false, saveError = '', saveSuccess = false, databaseMode = false,
+  portfolio, fullLoading, progress, onChange, onDiagnosis, onSave, saving = false, saveError = '', saveSuccess = false, writeEnabled = true, databaseMode = false,
 }: {
   portfolio: Portfolio; fullLoading: boolean; progress: DiagProgress | null
   onChange: (p: Portfolio) => void; onDiagnosis: () => void
-  onSave?: () => void; saving?: boolean; saveError?: string; saveSuccess?: boolean; databaseMode?: boolean
+  onSave?: () => void; saving?: boolean; saveError?: string; saveSuccess?: boolean
+  writeEnabled?: boolean; databaseMode?: boolean
 }) {
   const { t } = usePreferences()
   const addPosition = () => onChange({ ...portfolio, positions: [...portfolio.positions, { code: '', name: null, shares: 0, cost_price: 0, buy_dt: null }] })
   const removePosition = (i: number) => onChange({ ...portfolio, positions: portfolio.positions.filter((_, idx) => idx !== i) })
   const updatePosition = (i: number, patch: Partial<Position>) => onChange({ ...portfolio, positions: portfolio.positions.map((p, idx) => idx === i ? { ...p, ...patch } : p) })
   const canDiagnose = portfolio.positions.length > 0 && portfolio.positions.every(isValidManualPosition)
+  const canWrite = writeEnabled && canDiagnose
 
   return (
     <section className="rounded-lg border border-border">
@@ -373,7 +386,7 @@ function ManualInput({
         <div className="flex flex-wrap items-end gap-4">
           <div className="space-y-1">
             <label className="text-sm font-medium">{t('portfolio.freeCash')}</label>
-            <input type="number" min={0} value={portfolio.free_cash || ''} onChange={(e) => onChange({ ...portfolio, free_cash: Number(e.target.value) || 0 })} className="block w-40 rounded-md border border-border bg-background px-3 py-1.5 text-sm outline-none" placeholder="0" />
+            <input type="number" min={0} value={portfolio.free_cash || ''} onChange={(e) => onChange({ ...portfolio, free_cash: Number(e.target.value) || 0 })} className="block w-40 rounded-md border border-border bg-background px-3 py-1.5 text-sm outline-none" placeholder="0" disabled={databaseMode && !writeEnabled} />
           </div>
           {databaseMode && portfolio.total_equity != null && (
             <div className="pb-1 text-sm">
@@ -384,12 +397,12 @@ function ManualInput({
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {databaseMode && onSave && (
-            <button type="button" disabled={saving || fullLoading || !canDiagnose} onClick={onSave} className="inline-flex items-center gap-2 rounded-lg border border-border bg-background px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50">
+            <button type="button" disabled={saving || fullLoading || !canWrite} onClick={onSave} className="inline-flex items-center gap-2 rounded-lg border border-border bg-background px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50">
               {saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
               {saving ? t('portfolio.saving') : t('portfolio.save')}
             </button>
           )}
-          <button type="button" disabled={fullLoading || saving || !canDiagnose} onClick={onDiagnosis} className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50">
+          <button type="button" disabled={fullLoading || saving || (databaseMode ? !canWrite : !canDiagnose)} onClick={onDiagnosis} className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50">
             {fullLoading || saving ? <Loader2 size={16} className="animate-spin" /> : <LayoutDashboard size={16} />}
             {fullLoading ? t('portfolio.fullLoading') : databaseMode ? t('portfolio.saveAndDiagnose') : t('portfolio.fullDiagnosis')}
           </button>
@@ -401,27 +414,27 @@ function ManualInput({
       {progress && <DiagProgressBar progress={progress} />}
       <div className="divide-y divide-border">
         {portfolio.positions.map((pos, i) => (
-          <ManualPositionRow key={i} position={pos} onChange={(patch) => updatePosition(i, patch)} onRemove={() => removePosition(i)} />
+          <ManualPositionRow key={i} position={pos} onChange={(patch) => updatePosition(i, patch)} onRemove={() => removePosition(i)} disabled={databaseMode && !writeEnabled} />
         ))}
       </div>
-      <button type="button" onClick={addPosition} className="flex w-full items-center justify-center gap-2 border-t border-border py-3 text-sm text-muted-foreground hover:bg-muted/30">
+      <button type="button" disabled={databaseMode && !writeEnabled} onClick={addPosition} className="flex w-full items-center justify-center gap-2 border-t border-border py-3 text-sm text-muted-foreground hover:bg-muted/30 disabled:opacity-50">
         <Plus size={14} /> {t('portfolio.addPosition')}
       </button>
     </section>
   )
 }
 
-function ManualPositionRow({ position, onChange, onRemove }: { position: Position; onChange: (patch: Partial<Position>) => void; onRemove: () => void }) {
+function ManualPositionRow({ position, onChange, onRemove, disabled = false }: { position: Position; onChange: (patch: Partial<Position>) => void; onRemove: () => void; disabled?: boolean }) {
   const { t } = usePreferences()
   const cls = 'rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none'
   return (
     <div className="flex flex-wrap items-center gap-3 px-4 py-3">
-      <input value={String(position.code)} onChange={(e) => onChange({ code: e.target.value })} placeholder={t('portfolio.code')} className={`${cls} w-36`} title={t('portfolio.invalidCode')} />
-      <input value={position.name || ''} onChange={(e) => onChange({ name: e.target.value || null })} placeholder={t('portfolio.name')} className={`${cls} w-24`} />
-      <input type="number" min={0} value={position.shares || ''} onChange={(e) => onChange({ shares: Number(e.target.value) || 0 })} placeholder={t('portfolio.shares')} className={`${cls} w-20`} />
-      <input type="number" min={0} step={0.01} value={position.cost_price || ''} onChange={(e) => onChange({ cost_price: Number(e.target.value) || 0 })} placeholder={t('portfolio.costPrice')} className={`${cls} w-24`} />
-      <input type="date" value={position.buy_dt || ''} onChange={(e) => onChange({ buy_dt: e.target.value || null })} className={`${cls} w-36`} aria-label={t('portfolio.buyDate')} />
-      <button type="button" onClick={onRemove} className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"><Trash2 size={14} /></button>
+      <input value={String(position.code)} onChange={(e) => onChange({ code: e.target.value })} placeholder={t('portfolio.code')} className={`${cls} w-36`} title={t('portfolio.invalidCode')} disabled={disabled} />
+      <input value={position.name || ''} onChange={(e) => onChange({ name: e.target.value || null })} placeholder={t('portfolio.name')} className={`${cls} w-24`} disabled={disabled} />
+      <input type="number" min={0} value={position.shares || ''} onChange={(e) => onChange({ shares: Number(e.target.value) || 0 })} placeholder={t('portfolio.shares')} className={`${cls} w-20`} disabled={disabled} />
+      <input type="number" min={0} step={0.01} value={position.cost_price || ''} onChange={(e) => onChange({ cost_price: Number(e.target.value) || 0 })} placeholder={t('portfolio.costPrice')} className={`${cls} w-24`} disabled={disabled} />
+      <input type="date" value={position.buy_dt || ''} onChange={(e) => onChange({ buy_dt: e.target.value || null })} className={`${cls} w-36`} aria-label={t('portfolio.buyDate')} disabled={disabled} />
+      <button type="button" onClick={onRemove} disabled={disabled} className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"><Trash2 size={14} /></button>
     </div>
   )
 }
