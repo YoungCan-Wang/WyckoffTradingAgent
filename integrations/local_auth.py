@@ -30,12 +30,7 @@ def save_session(data: dict[str, Any]) -> None:
 
 
 def load_session() -> dict[str, Any] | None:
-    if not SESSION_FILE.exists():
-        return None
-    try:
-        return json.loads(SESSION_FILE.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
+    return _read_session_file()
 
 
 def login(email: str, password: str) -> dict[str, Any]:
@@ -74,24 +69,32 @@ def restore_session() -> dict[str, Any] | None:
     data = load_session()
     if not data or not data.get("access_token") or not data.get("refresh_token"):
         return auto_relogin()
+    # Capture identity before the network round-trip. Desktop IPC overlaps
+    # account→restore_session with auth_logout / auth_login on other workers;
+    # saving or clearing after logout/switch would resurrect Alice or wipe Bob.
+    expected_user_id = str(data.get("user_id") or "")
     try:
         client = _create_client()
         client.auth.set_session(data["access_token"], data["refresh_token"])
         user_resp = client.auth.get_user()
         if not user_resp or not user_resp.user:
-            clear_session()
-            return auto_relogin()
+            if _clear_session_if_same_user(expected_user_id):
+                return auto_relogin()
+            return load_session()
         session = client.auth.get_session()
         if session:
             data["access_token"] = session.access_token
             data["refresh_token"] = session.refresh_token
-            save_session(data)
+            if not _save_session_if_same_user(expected_user_id, data):
+                logger.warning("refusing to persist restored session: disk identity changed during refresh")
+                return load_session()
         return data
     except Exception as exc:
         logger.debug("session restore failed", exc_info=True)
         if _invalid_session_error(exc):
-            clear_session()
-            return auto_relogin()
+            if _clear_session_if_same_user(expected_user_id):
+                return auto_relogin()
+            return load_session()
         return data
 
 
@@ -125,6 +128,45 @@ def clear_session() -> None:
             SESSION_FILE.unlink(missing_ok=True)
         except OSError:
             logger.warning("failed to clear session file", exc_info=True)
+
+
+def _read_session_file() -> dict[str, Any] | None:
+    if not SESSION_FILE.exists():
+        return None
+    try:
+        return json.loads(SESSION_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _same_session_user(current: dict[str, Any] | None, expected_user_id: str) -> bool:
+    if current is None:
+        return False
+    return str(current.get("user_id") or "") == str(expected_user_id or "")
+
+
+def _save_session_if_same_user(expected_user_id: str, data: dict[str, Any]) -> bool:
+    """Persist refreshed tokens only when disk still matches the restored user."""
+    with _write_lock(SESSION_FILE, _SESSION_THREAD_LOCK):
+        current = _read_session_file()
+        if not _same_session_user(current, expected_user_id):
+            return False
+        _atomic_write_json(SESSION_FILE, data)
+        return True
+
+
+def _clear_session_if_same_user(expected_user_id: str) -> bool:
+    """Delete session.json only when it still belongs to the restored user."""
+    with _write_lock(SESSION_FILE, _SESSION_THREAD_LOCK):
+        current = _read_session_file()
+        if not _same_session_user(current, expected_user_id):
+            return False
+        try:
+            SESSION_FILE.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("failed to clear session file", exc_info=True)
+            return False
+        return True
 
 
 def load_model_configs() -> list[dict[str, Any]]:
