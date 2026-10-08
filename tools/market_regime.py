@@ -33,6 +33,10 @@ _PV_SYSTEM_PROMPT = (
 )
 
 _PV_FORBIDDEN_ACTIONS = ("做空", "卖空", "融券", "空头开仓", "反手空")
+# 3.8 Flash 的思考和正文共用输出上限。200 会被客户端抬到 1024，默认 medium 思考
+# 会把额度用完。low 是仍被接受的最低档（minimal 会 400，思考也不能关掉）。
+_PV_OUTLOOK_MAX_OUTPUT_TOKENS = 2048
+_PV_OUTLOOK_MAX_CHARS = 400
 
 
 @dataclass(frozen=True)
@@ -178,7 +182,8 @@ def _generate_pv_outlook(
             user_message=user_msg,
             base_url=base_url or None,
             timeout=30,
-            max_output_tokens=200,
+            max_output_tokens=_PV_OUTLOOK_MAX_OUTPUT_TOKENS,
+            thinking_level="low",
         ).strip()
         return _sanitize_pv_outlook(raw, fallback)
     except Exception:
@@ -186,12 +191,24 @@ def _generate_pv_outlook(
 
 
 def _sanitize_pv_outlook(raw: str, fallback: str) -> str:
-    text = str(raw or "").strip()
+    text = " ".join(str(raw or "").split())
     if len(text) < 5 or any(action in text for action in _PV_FORBIDDEN_ACTIONS):
         return fallback
-    if len(text) > 120:
+    text = _clip_pv_outlook(text, _PV_OUTLOOK_MAX_CHARS)
+    if len(text) < 5:
         return fallback
     return text if text.startswith("次日推演") else f"次日推演：{text}"
+
+
+def _clip_pv_outlook(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    window = text[:limit]
+    for sep in ("。", "；", "！", "？"):
+        cut = window.rfind(sep)
+        if cut >= 40:
+            return window[: cut + 1]
+    return window.rstrip()
 
 
 def calc_market_breadth(

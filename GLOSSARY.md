@@ -261,6 +261,7 @@ watch_score = 0.25 × q20 + 0.20 × q5 + 0.05 × q3
 | **成交回填汇率** | Trade Fill FX | `record_trade_fill` / `portfolio fill` 对港美成交按报价币→CNY 汇率改 `free_cash`，成本价仍记本币；缺汇率 fail-closed，禁止把外币名义金额写入人民币现金 |
 | **LLM 决策注释** | LLM Decision Note | `llmdoc/` 中经过版本控制、按工作流/股票代码/有效期选择的咨询性上下文；只能提醒模型复核遗漏风险，不得覆盖实时数据、硬止损、市场闸门、候选准入或 OMS |
 | **Step3 研报模型** | Step3 LLM | 漏斗研报主通道默认 Efficiency（低成本兼容通道），失败再试 Gemini（谷歌大模型）；可用 `STEP3_LLM_PROVIDER` / `STEP3_LLM_FALLBACK_PROVIDERS` 覆盖。研报分类不是买入许可 |
+| **漏斗 Gemini 模型** | Funnel Gemini Model | 代码默认与示例环境变量是 `gemini-3.8-flash`。GitHub Actions 实际调用的模型以 secret `GEMINI_MODEL` 为准，secret 未更新时仍是旧模型。请求不带 temperature / top_p / top_k。大盘次日推演把思考档设为 low，避免思考 token 占满输出上限后被静态话术替换 |
 
 ---
 

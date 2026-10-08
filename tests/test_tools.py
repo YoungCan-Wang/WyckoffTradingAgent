@@ -2019,6 +2019,62 @@ class TestMarketRegime:
 
         assert _sanitize_pv_outlook(raw, "fallback").startswith("次日推演：若放量")
 
+    def test_pv_outlook_keeps_normal_reply_longer_than_120_chars(self):
+        from tools.market_regime import _sanitize_pv_outlook
+
+        raw = "若放量站稳MA50则小额试探，若失守近低则回避。" * 6
+        fallback = "次日推演：静态兜底"
+
+        assert len(raw) > 120
+        kept = _sanitize_pv_outlook(raw, fallback)
+
+        assert kept != fallback
+        assert kept.startswith("次日推演：若放量站稳MA50")
+
+    def test_pv_outlook_clips_essay_instead_of_static_fallback(self):
+        from tools.market_regime import _PV_OUTLOOK_MAX_CHARS, _sanitize_pv_outlook
+
+        raw = "观察量能与MA50得失后再决定是否试探。" * 30
+        kept = _sanitize_pv_outlook(raw, "fallback")
+
+        assert len(raw) > _PV_OUTLOOK_MAX_CHARS
+        assert kept != "fallback"
+        assert kept.startswith("次日推演：")
+        assert kept.endswith("。")
+        assert len(kept) <= _PV_OUTLOOK_MAX_CHARS + len("次日推演：")
+
+    def test_pv_outlook_requests_low_thinking_and_output_room(self, monkeypatch):
+        captured: dict = {}
+
+        def fake_call_llm(**kwargs):
+            captured.update(kwargs)
+            return "次日推演：缩量止跌前只观察，站稳MA50后再试探。"
+
+        monkeypatch.setattr(
+            "integrations.llm_client.get_provider_credentials",
+            lambda _provider: ("key", "gemini-3.8-flash", ""),
+        )
+        monkeypatch.setattr("integrations.llm_client.call_llm", fake_call_llm)
+        from tools.market_regime import _generate_pv_outlook
+
+        text = _generate_pv_outlook(
+            regime="NEUTRAL",
+            close=10.0,
+            ma50=10.0,
+            ma200=9.0,
+            price_zone="中性",
+            vol_ratio_text="1.0",
+            volume_state="平量",
+            recent3_cum=0.2,
+            provider="gemini",
+        )
+
+        assert text.startswith("次日推演：缩量止跌")
+        assert captured["model"] == "gemini-3.8-flash"
+        assert captured["max_output_tokens"] == 2048
+        assert captured["thinking_level"] == "low"
+        assert "temperature" not in captured
+
     def test_calc_market_breadth_includes_daily_cross_section(self):
         from tools.market_regime import calc_market_breadth
 

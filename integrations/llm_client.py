@@ -193,6 +193,7 @@ def _call_native_llm(
     timeout: int,
     max_output_tokens: int | None,
     allow_truncated_text: bool,
+    thinking_level: str | None = None,
 ) -> str:
     if provider == "gemini":
         return _call_gemini(
@@ -205,6 +206,7 @@ def _call_native_llm(
             max_output_tokens=max_output_tokens,
             allow_truncated_text=allow_truncated_text,
             base_url=(base_url or "").strip(),
+            thinking_level=thinking_level,
         )
     if provider in OPENAI_COMPATIBLE_BASE_URLS:
         base = normalize_openai_compatible_base_url(base_url or OPENAI_COMPATIBLE_BASE_URLS.get(provider, "") or "")
@@ -236,13 +238,14 @@ def call_llm(
     timeout: int = 120,
     max_output_tokens: int | None = None,
     allow_truncated_text: bool = False,
+    thinking_level: str | None = None,
 ) -> str:
     """
     调用大模型，返回回复文本。
 
     Args:
         provider: 供应商名称。
-        model: 模型名，如 gemini-3.1-flash-lite-preview。
+        model: 模型名，如 gemini-3.8-flash。
         api_key: 对应供应商的 API Key。
         system_prompt: 系统提示词（Alpha 投委会等）。
         user_message: 用户消息（拼装好的 OHLCV 等）。
@@ -259,18 +262,21 @@ def call_llm(
         RuntimeError: 调用失败或返回为空。
     """
     _validate_llm_request(provider, api_key)
-    routed = _call_litellm_if_enabled(
-        provider,
-        model,
-        api_key,
-        system_prompt,
-        user_message,
-        images=images,
-        base_url=base_url,
-        timeout=timeout,
-        max_output_tokens=max_output_tokens,
-        allow_truncated_text=allow_truncated_text,
-    )
+    # 指定思考档时必须走原生 Gemini，LiteLLM 不会带上 thinking_level。
+    routed = None
+    if not thinking_level:
+        routed = _call_litellm_if_enabled(
+            provider,
+            model,
+            api_key,
+            system_prompt,
+            user_message,
+            images=images,
+            base_url=base_url,
+            timeout=timeout,
+            max_output_tokens=max_output_tokens,
+            allow_truncated_text=allow_truncated_text,
+        )
     if routed is not None:
         return routed
     return _call_native_llm(
@@ -284,6 +290,7 @@ def call_llm(
         timeout=timeout,
         max_output_tokens=max_output_tokens,
         allow_truncated_text=allow_truncated_text,
+        thinking_level=thinking_level,
     )
 
 
@@ -474,15 +481,39 @@ def _gemini_http_options(timeout: int, base_url: str) -> dict:
     return opts
 
 
-def _gemini_config(types, system_prompt: str, max_output_tokens: int | None):
+# Gemini 3 的思考 token 与可见正文共用 max_output_tokens。截断后原样重试没有用，
+# 只把预算放大一次。3.8 Flash 拒绝 minimal，也不能关闭思考。
+_GEMINI_THINKING_LEVELS = {"low", "medium", "high"}
+
+
+class _GeminiOutputTruncated(RuntimeError):
+    pass
+
+
+def _gemini_output_budget(max_output_tokens: int | None) -> int:
     resolved = int(max_output_tokens) if max_output_tokens is not None else GEMINI_MAX_OUTPUT_TOKENS_DEFAULT
-    return types.GenerateContentConfig(
-        system_instruction=system_prompt,
-        temperature=0.4,
-        top_p=0.95,
-        top_k=40,
-        max_output_tokens=max(1024, resolved),
-    )
+    return min(GEMINI_MAX_OUTPUT_TOKENS_DEFAULT, max(1024, resolved))
+
+
+def _expanded_gemini_budget(budget: int) -> int:
+    return min(budget * OPENAI_COMPATIBLE_BUDGET_RETRY_FACTOR, GEMINI_MAX_OUTPUT_TOKENS_DEFAULT)
+
+
+def _accepted_gemini_thinking_level(model: str, thinking_level: str | None) -> str | None:
+    level = str(thinking_level or "").strip().lower()
+    if level not in _GEMINI_THINKING_LEVELS or not str(model or "").lower().startswith("gemini-3"):
+        return None
+    return level
+
+
+def _gemini_config(types, system_prompt: str, max_output_tokens: int, thinking_level: str | None):
+    kwargs: dict = {
+        "system_instruction": system_prompt,
+        "max_output_tokens": max_output_tokens,
+    }
+    if thinking_level:
+        kwargs["thinking_config"] = types.ThinkingConfig(thinking_level=thinking_level)
+    return types.GenerateContentConfig(**kwargs)
 
 
 def _gemini_contents(user_message: str, images: list | None) -> list:
@@ -502,6 +533,8 @@ def _gemini_text(response) -> str:
         if not content:
             continue
         for part in getattr(content, "parts", []) or []:
+            if getattr(part, "thought", False):
+                continue
             part_text = getattr(part, "text", None)
             if part_text:
                 parts.append(part_text)
@@ -537,18 +570,43 @@ def _log_gemini_usage(model: str, finish_reason: str, response, max_output_token
     )
 
 
-def _handle_gemini_truncation(text: str, finish_reason: str, allow_truncated_text: bool) -> str | None:
-    if finish_reason.strip().upper() not in _GEMINI_TRUNCATION_REASONS:
-        return None
-    if allow_truncated_text and text.strip():
-        if _env_enabled("LLM_LOG_USAGE", True):
-            logger.warning("gemini truncation tolerated: using returned text because allow_truncated_text=1")
-        return text
-    raise RuntimeError(f"Gemini 输出被截断(finish_reason={finish_reason or 'unknown'})，请缩短输入或提升输出上限后重试")
+def _gemini_truncated(finish_reason: str) -> bool:
+    return finish_reason.strip().upper() in _GEMINI_TRUNCATION_REASONS
+
+
+def _gemini_generate_once(client, model: str, contents: list, config, allow_truncated_text: bool) -> str:
+    response = client.models.generate_content(model=model, contents=contents, config=config)
+    if response is None:
+        raise RuntimeError("Gemini 返回空响应")
+    text = _gemini_text(response)
+    finish_reason = _gemini_finish_reason(response)
+    _log_gemini_usage(model, finish_reason, response, config.max_output_tokens)
+    if _gemini_truncated(finish_reason):
+        if allow_truncated_text and text.strip():
+            if _env_enabled("LLM_LOG_USAGE", True):
+                logger.warning("gemini truncation tolerated: using returned text because allow_truncated_text=1")
+            return text
+        raise _GeminiOutputTruncated(finish_reason or "unknown")
+    if not text:
+        raise RuntimeError("Gemini 返回内容为空")
+    return text
 
 
 def _gemini_retry_sleep(attempt: int) -> float:
     return min(GEMINI_RETRY_DELAY * (2 ** (attempt - 1)), 30.0)
+
+
+def _sleep_gemini_retry(attempt: int, exc: Exception) -> None:
+    sleep_s = _gemini_retry_sleep(attempt)
+    if _env_enabled("LLM_LOG_RETRY_ERRORS", True):
+        logger.warning(
+            "gemini attempt %s/%s failed: %s; retry in %.1fs",
+            attempt,
+            GEMINI_MAX_RETRIES,
+            exc,
+            sleep_s,
+        )
+    time.sleep(sleep_s)
 
 
 def _call_gemini(
@@ -561,47 +619,34 @@ def _call_gemini(
     max_output_tokens: int | None,
     allow_truncated_text: bool,
     base_url: str = "",
+    thinking_level: str | None = None,
 ) -> str:
     from google import genai
     from google.genai import types
 
     client = genai.Client(api_key=api_key, http_options=_gemini_http_options(timeout, base_url))
-    config = _gemini_config(types, system_prompt, max_output_tokens)
     contents = _gemini_contents(user_message, images)
+    budget = _gemini_output_budget(max_output_tokens)
+    level = _accepted_gemini_thinking_level(model, thinking_level)
+    expanded = False
     last_err: Exception | None = None
-    for attempt in range(1, GEMINI_MAX_RETRIES + 1):
+    attempt = 1
+    while attempt <= GEMINI_MAX_RETRIES:
+        config = _gemini_config(types, system_prompt, budget, level)
         try:
-            response = client.models.generate_content(
-                model=model,
-                contents=contents,
-                config=config,
-            )
-            if response is None:
-                raise RuntimeError("Gemini 返回空响应")
-
-            text = _gemini_text(response)
-            if not text:
-                raise RuntimeError("Gemini 返回内容为空")
-
-            finish_reason = _gemini_finish_reason(response)
-            _log_gemini_usage(model, finish_reason, response, config.max_output_tokens)
-            truncated = _handle_gemini_truncation(text, finish_reason, allow_truncated_text)
-            if truncated is not None:
-                return truncated
-            return text
-        except Exception as e:
-            last_err = e
+            return _gemini_generate_once(client, model, contents, config, allow_truncated_text)
+        except _GeminiOutputTruncated as exc:
+            last_err = exc
+            next_budget = _expanded_gemini_budget(budget)
+            if expanded or next_budget <= budget:
+                break
+            logger.warning("gemini output truncated at max_output_tokens=%s; retry once at %s", budget, next_budget)
+            budget = next_budget
+            expanded = True
+        except Exception as exc:
+            last_err = exc
             if attempt >= GEMINI_MAX_RETRIES:
                 break
-            sleep_s = _gemini_retry_sleep(attempt)
-            if _env_enabled("LLM_LOG_RETRY_ERRORS", True):
-                logger.warning(
-                    "gemini attempt %s/%s failed: %s; retry in %.1fs",
-                    attempt,
-                    GEMINI_MAX_RETRIES,
-                    e,
-                    sleep_s,
-                )
-            time.sleep(sleep_s)
-
+            _sleep_gemini_retry(attempt, exc)
+            attempt += 1
     raise RuntimeError(f"Gemini 调用失败: {last_err}")

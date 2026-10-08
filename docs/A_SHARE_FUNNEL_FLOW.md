@@ -353,6 +353,7 @@ flowchart LR
 **LLM 配置**（workflow 默认）：
 
 - Step3：`STEP3_LLM_PROVIDER=efficiency`，fallback `gemini`
+- Gemini 代码默认与 `.env.example` 是 `gemini-3.8-flash`。定时任务的 `GEMINI_MODEL` 只来自同名 secret，secret 仍是旧模型时 Action 不会改用代码默认值。`generateContent` 不传 `temperature` / `top_p` / `top_k`。大盘次日推演使用 `thinking_level=low`（3.8 拒绝 `minimal`，也不能关闭思考），输出上限留给思考和短正文共用；可见回复长于 120 字时保留可用段落，不再整段换成静态兜底。
 - 输入不是原始 K 线，而是压缩后的结构特征
 - Step3 总输入默认最多 5 只：跨日 `VALIDATED` 候选优先保留最多 3 席，其余席位按漏斗顺序从当日 `selected_for_ai` 填充；当日不足时，未使用的保留席不会浪费。市场修复模式不再从另一条“起跳板补位”路径私自换名单
 - 合规版市场观察简报默认发送；只有显式设置 `STEP3_SEND_COMPLIANCE_BRIEF=0` 才关闭
