@@ -28,6 +28,8 @@ TickFlow 全市场快照使用 GET `/v1/quotes` 的 `universes` 标的池参数�
 
 换手拼接按行情截止日读取流通股本，保持有效原生值，按来源的手/股单位折算；未知单位保留缺失。覆盖率只计算最新日期行有效值，95%门槛不变。报告同时显示主线来源数量、信号状态和重叠拦截原因，不把发现或数据修复当作BUY。详见 [数据质量合同](docs/A_SHARE_FUNNEL_FLOW.md#数据质量与诊断口径)。
 
+手动 Backtest Grid 的 `run_strategy_compare=true + strategy_compare_set=knockout` 独立回放 `live` 与四个 `KO_*` 单通道研究组，不跑默认退出网格。历史换手按日期键取 Tushare 原生值并通过CSV完整传递；旧快照、缺字段或任一评估日覆盖低于95%会拒绝研究。默认 `legacy` 模式与生产通道不变，操作合同见 [手册](docs/OPERATOR_PLAYBOOK.md#手动单通道研究)。
+
 ---
 
 ## 云端运行成本透明

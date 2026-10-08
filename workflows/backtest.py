@@ -25,6 +25,7 @@ from core.theme_activity import build_theme_member_index
 from tools.mainline_config import load_mainline_engine_config
 from tools.market_liquidity import calc_amount_distribution_health, calc_market_money_flow
 from tools.market_regime import analyze_benchmark_and_tune_cfg
+from utils.env import env_flag
 from workflows.ai_candidate_allocation_config import ai_candidate_allocation_config_from_env
 from workflows.backtest_data import (
     BacktestUniverse,
@@ -67,11 +68,13 @@ from workflows.backtest_defaults import (
 )
 from workflows.backtest_intraday import tickflow_entry_price_fetcher_from_env
 from workflows.backtest_strategy_variants import (
+    LIVE_KNOCKOUT_SWITCHES,
     normalize_strategy_variant,
     strategy_variant_entry_policy,
     strategy_variant_overrides,
     strategy_variants_share_signal_ledger,
 )
+from workflows.backtest_turnover import validate_snapshot_turnover
 from workflows.candidate_policy_config import candidate_policy_config_from_env
 from workflows.dynamic_policy_config import dynamic_policy_config_from_env
 from workflows.funnel_config_overrides import funnel_cfg_overrides_from_env
@@ -318,6 +321,12 @@ def _load_prepared_data(
         max_workers=request.max_workers,
         progress=progress,
     )
+    if normalize_strategy_variant(request.strategy_variant) in LIVE_KNOCKOUT_SWITCHES or env_flag(
+        "BACKTEST_REQUIRE_PIT_TURNOVER"
+    ):
+        validate_snapshot_turnover(
+            history.all_df_map, load_snapshot_pit_meta(config.snapshot_dir), request.start_dt, request.end_dt
+        )
     metadata = load_backtest_metadata(
         request.use_current_meta,
         config.snapshot_dir,

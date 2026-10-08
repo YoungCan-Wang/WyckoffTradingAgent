@@ -58,10 +58,16 @@ on:
         required: false
         default: ""
       run_strategy_compare:
-        description: "复跑已完成的 A/M/P 仓位消融（默认关闭，仅用于手动复现历史证据）"
+        description: "手动策略研究对比（默认关闭）"
         required: false
         type: boolean
         default: false
+      strategy_compare_set:
+        description: "legacy=复现A/M/P；knockout=live基准及四个单通道独立回放"
+        required: false
+        type: choice
+        options: [legacy, knockout]
+        default: legacy
 
 concurrency:
   group: backtest-grid-${{ github.ref }}
@@ -122,6 +128,8 @@ jobs:
       TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
       TZ: Asia/Shanghai
       BACKTEST_SNAPSHOT_WORKERS: "6"
+      BACKTEST_FETCH_PIT_TURNOVER: ${{ inputs.run_strategy_compare && inputs.strategy_compare_set == 'knockout' && '1' || '0' }}
+      TUSHARE_RATE_LIMIT: ${{ inputs.run_strategy_compare && inputs.strategy_compare_set == 'knockout' && '200' || '400' }}
     steps:
       - name: Resolve period dates
         id: period
@@ -223,6 +231,7 @@ jobs:
   # ────────────────────────────────────────────────
   grid:
     name: Grid ${{ matrix.period_key }} shared signals
+    if: ${{ !(inputs.run_strategy_compare && inputs.strategy_compare_set == 'knockout') }}
     runs-on: ubuntu-latest
     needs: fetch
     strategy:
@@ -455,6 +464,7 @@ jobs:
     env:
       # 同上:整条回测链都不接归因报告,理由见文件头 FUNNEL_DYNAMIC_POLICY 那段注释。
       FUNNEL_DYNAMIC_POLICY: "off"
+      BACKTEST_REQUIRE_PIT_TURNOVER: ${{ inputs.strategy_compare_set == 'knockout' && '1' || '0' }}
     strategy:
       fail-fast: false
       max-parallel: 6
@@ -462,7 +472,7 @@ jobs:
         period_key: [recent_2m, recent_6m, bull_2020, bear_2022, sideways_2023, volatile_2024, bull_2025]
         # amp  = A,M,P 共享一次信号台账（三者只改入场仓位权重，故可复用）
         # calib = 仅变体 I（calibrate_confirmed_score），必须独立算台账
-        variant_set: [amp, calib]
+        variant_set: ${{ inputs.strategy_compare_set == 'knockout' && fromJSON('["live","KO_AMBUSH","KO_ACCUM","KO_DRY_VOL","KO_TREND_CONT"]') || fromJSON('["amp","calib"]') }}
     steps:
       - name: Resolve period dates
         id: period
@@ -547,9 +557,13 @@ jobs:
           if [ "$VARIANT_SET" = "calib" ]; then
             echo "STRATEGY_VARIANT_ARGS=--strategy-variant I" >> "$GITHUB_ENV"
             echo "STRATEGY_RUN_SUBDIR=backtest-strategy-${BT_PERIOD_KEY}-I" >> "$GITHUB_ENV"
-          else
+          elif [ "$VARIANT_SET" = "amp" ]; then
             echo "STRATEGY_VARIANT_ARGS=--strategy-variants A,M,P --strategy-prefix backtest-strategy-${BT_PERIOD_KEY}" >> "$GITHUB_ENV"
             echo "STRATEGY_RUN_SUBDIR=" >> "$GITHUB_ENV"
+          else
+            case "$VARIANT_SET" in live|KO_AMBUSH|KO_ACCUM|KO_DRY_VOL|KO_TREND_CONT) ;; *) exit 1 ;; esac
+            echo "STRATEGY_VARIANT_ARGS=--strategy-variant ${VARIANT_SET}" >> "$GITHUB_ENV"
+            echo "STRATEGY_RUN_SUBDIR=backtest-strategy-${BT_PERIOD_KEY}-${VARIANT_SET}" >> "$GITHUB_ENV"
           fi
 
       # --strategy-variants（复数）会复用一次信号台账，因此只能放"仅改入场仓位
@@ -682,6 +696,7 @@ jobs:
           python-version: "3.11"
 
       - name: Download all artifacts
+        if: ${{ !(inputs.run_strategy_compare && inputs.strategy_compare_set == 'knockout') }}
         uses: actions/download-artifact@v8
         with:
           path: artifacts/
@@ -698,6 +713,7 @@ jobs:
         run: python -m pip install requests python-dotenv pandas
 
       - name: Update market backtest report
+        if: ${{ !(inputs.run_strategy_compare && inputs.strategy_compare_set == 'knockout') }}
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           HYPOTHESIS_ID: ${{ inputs.hypothesis_id || '' }}
@@ -718,10 +734,14 @@ jobs:
         if: ${{ inputs.run_strategy_compare }}
         env:
           INPUT_PERIOD: ${{ inputs.period || 'recent_6m' }}
+          COMPARE_SET: ${{ inputs.strategy_compare_set || 'legacy' }}
         run: |
           EXTRA_ARGS=()
           if [ "$INPUT_PERIOD" = "all_defined" ]; then
             EXTRA_ARGS+=(--require-complete)
+          fi
+          if [ "$COMPARE_SET" = "knockout" ]; then
+            EXTRA_ARGS+=(--reference-variant live --required-variants live,KO_AMBUSH,KO_ACCUM,KO_DRY_VOL,KO_TREND_CONT --required-periods recent_6m,bull_2020,bear_2022,sideways_2023,volatile_2024,bull_2025)
           fi
           python3 scripts/build_backtest_strategy_comparison.py \
             --artifacts-dir artifacts \
@@ -747,6 +767,7 @@ jobs:
           if-no-files-found: error
 
       - name: Aggregate and notify
+        if: ${{ !(inputs.run_strategy_compare && inputs.strategy_compare_set == 'knockout') }}
         shell: bash
         env:
           BT_TOP_N: "1"

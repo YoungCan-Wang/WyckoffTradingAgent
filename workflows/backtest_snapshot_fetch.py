@@ -18,6 +18,7 @@ from integrations.index_data_source import fetch_index_akshare, fetch_index_hist
 from integrations.market_metadata import fetch_concept_heat, fetch_concept_map, fetch_market_cap_map, fetch_sector_map
 from integrations.ths_hot_concept import fetch_ths_hot_events, merge_concept_heat, ths_hot_events_to_concept_heat
 from utils.env import env_bool, env_flag
+from workflows.backtest_turnover import attach_snapshot_pit_turnover
 
 
 @dataclass(frozen=True)
@@ -209,7 +210,7 @@ def _frame_from_tickflow_batch(
             "成交量": out["volume"].values,
             "成交额": out["amount"].values,
             "涨跌幅": pct.values,
-            "换手率": 0.0,
+            "换手率": out["turnover"].values if "turnover" in out else float("nan"),
             "振幅": amp.values,
         }
     )
@@ -473,6 +474,8 @@ def run_snapshot_fetch(args) -> int:
         "end": date_range.end,
         **{f"pit_{k}" if k != "pit_universe" else k: v for k, v in _PIT_STATE.items()},
     }
+    if env_flag("BACKTEST_FETCH_PIT_TURNOVER"):
+        meta["turnover_pit"] = attach_snapshot_pit_turnover(all_frames)
     out_dir = Path(args.output_dir)
     bench_main = _fetch_benchmark(date_range.prefetch_start, date_range.end)
     bench_small = _fetch_smallcap_benchmark(date_range.prefetch_start, date_range.end)

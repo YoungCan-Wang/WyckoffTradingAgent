@@ -43,3 +43,20 @@ def test_live_variant_preserves_production_configuration() -> None:
     assert normalize_strategy_variant("live") == "live"
     assert strategy_variant_overrides("live") == {}
     assert strategy_variant_entry_policy("live").blocked_confirmed_signals == ()
+
+
+def test_knockouts_only_change_one_live_switch():
+    from dataclasses import asdict, replace
+
+    from core.wyckoff_engine import FunnelConfig
+    from workflows.backtest_strategy_variants import LIVE_KNOCKOUT_SWITCHES
+
+    base = FunnelConfig()
+    for variant, field in LIVE_KNOCKOUT_SWITCHES.items():
+        assert getattr(base, field) is True
+        overrides = strategy_variant_overrides(variant)
+        assert overrides == {field: False}
+        changed = asdict(replace(base, **overrides))
+        assert [key for key, value in asdict(base).items() if changed[key] != value] == [field]
+        assert strategy_variant_entry_policy(variant) == strategy_variant_entry_policy("live")
+        assert not strategy_variants_share_signal_ledger(["live", variant])

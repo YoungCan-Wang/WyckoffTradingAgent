@@ -22,9 +22,19 @@ VARIANT_LABELS = {
     "P": "A股实证：M + NEUTRAL Spring 缩仓至 25%",
     "Q": "A股实证：候选入口层真剪枝（live + 剔除 6 个弱动量通道）",
     "R": "A股实证：关闭 Layer 3 行业共振（全量 L2 直通 L4）",
+    "KO_AMBUSH": "live 单通道消融：关闭潜伏",
+    "KO_ACCUM": "live 单通道消融：关闭吸筹",
+    "KO_DRY_VOL": "live 单通道消融：关闭地量蓄势",
+    "KO_TREND_CONT": "live 单通道消融：关闭趋势延续",
 }
 
 DEFAULT_COMPARISON_VARIANTS = ("A", "M", "P")
+LIVE_KNOCKOUT_SWITCHES = {
+    "KO_AMBUSH": "enable_ambush_channel",
+    "KO_ACCUM": "enable_accumulation_channel",
+    "KO_DRY_VOL": "enable_dry_vol_channel",
+    "KO_TREND_CONT": "enable_trend_cont_channel",
+}
 
 _ALL_SWITCHES = {
     "dist_upthrust_enabled": False,
@@ -120,6 +130,8 @@ def strategy_variant_overrides(raw: str) -> dict[str, object]:
     variant = normalize_strategy_variant(raw)
     if variant == "live":
         return {}
+    if variant in LIVE_KNOCKOUT_SWITCHES:
+        return {LIVE_KNOCKOUT_SWITCHES[variant]: False}
     return {**_ALL_SWITCHES, **_VARIANT_SWITCHES[variant]}
 
 
