@@ -603,7 +603,7 @@ CREATE TABLE chat_log (
 | 文件 / 数据库 | 用途 |
 |-------------|------|
 | `wyckoff.json` | 模型配置（provider / api_key / model / base_url）；可选超时：`stream_chunk_timeout_seconds`（默认 120，模型空闲/首 token）、`tool_timeout_seconds`（默认 60，单工具墙钟）。控制面板 Overview、TUI `/config set`、`wyckoff config` 均可改。1Route 的 `base_url` 必须带 `/v1`；只写根域名会打到官网 HTML（HTTP 200、无用量）。运行时会自动补 `/v1`。 |
-| `session.json` | Supabase 登录态（access_token / refresh_token）。`restore_session` 续期写盘 / 失效清盘前会核对磁盘 `user_id`：登出后不得复活会话，换号后不得用旧账号 token 覆盖新会话（与 MCP `_persist_tool_session` 同契约）。 |
+| `session.json` | Supabase 登录态（access_token / refresh_token）。`restore_session` 续期写盘 / 失效清盘前会核对磁盘 `user_id`：登出后不得复活会话，换号后不得用旧账号 token 覆盖新会话。MCP `_persist_tool_session` 经 `merge_session_tokens_if_same_user` 在会话锁内 CAS；`auto_relogin` 在网络登录后复核 config 凭据，避免与 `auth_logout` / 换号竞态复活或覆盖。 |
 | `agent.log` | Agent 文件日志 |
 | `wyckoff.db` | SQLite 数据库（下方详述） |
 

@@ -229,31 +229,29 @@ def _persist_tool_session(tool_context: ToolContext | None) -> None:
     if tool_context is None:
         return
     state = tool_context.state
-    if not state.get("access_token") or not state.get("refresh_token"):
+    access_token = str(state.get("access_token") or "")
+    refresh_token = str(state.get("refresh_token") or "")
+    ctx_user = str(state.get("user_id") or "")
+    if not access_token or not refresh_token or not ctx_user:
         return
     try:
-        from integrations.local_auth import load_session, save_session
+        from integrations.local_auth import merge_session_tokens_if_same_user
 
         # Public MCP freezes ToolContext on first domain call. Desktop/CLI can
         # logout or switch accounts afterward; never rewrite session.json from a
         # stale in-memory principal (that resurrects logout or clobbers Bob→Alice).
-        data = load_session()
-        if data is None:
-            return
-        disk_user = str(data.get("user_id") or "")
-        ctx_user = str(state.get("user_id") or "")
-        if disk_user and ctx_user and disk_user != ctx_user:
+        # Compare-and-swap under the session lock — a check-then-save outside the
+        # lock still races with auth_logout / auth_login on other IPC workers.
+        if not merge_session_tokens_if_same_user(
+            ctx_user,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            email=str(state.get("email") or ""),
+        ):
             logger.warning(
-                "refusing to persist tool session: disk user %s != context user %s",
-                disk_user,
+                "refusing to persist tool session: disk missing or user_id != %s",
                 ctx_user,
             )
-            return
-        for key in ("user_id", "email", "access_token", "refresh_token"):
-            value = state.get(key)
-            if value:
-                data[key] = value
-        save_session(data)
     except Exception:
         logger.debug("failed to persist refreshed Supabase session", exc_info=True)
 
