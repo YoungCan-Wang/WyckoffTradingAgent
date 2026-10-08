@@ -278,7 +278,6 @@ class FunnelConfig:
 
     # Layer 4 - Effort vs Result
     enable_evr_trigger: bool = True
-    evr_lookback: int = 3
     evr_vol_ratio: float = 1.8  # 从1.5微调至1.8，略微提高异动门槛
     evr_min_turnover: float = 1.5
     evr_vol_window: int = 20
@@ -322,7 +321,6 @@ class FunnelConfig:
     enable_markup_detection: bool = True
     markup_ma_crossover_confirm_days: int = 5  # MA50 穿过 MA200 后，需要连续 N 日在上方
     markup_ma_angle_min: float = 2.0  # MA50 的角度（% per 5 days），用于确认上升趋势强度
-    markup_rs_positive_min: float = 0.5  # RS_short 需要保持正值且持续增强
 
     # Leader Radar：独立主升观察池。只标注龙头跟踪，不改写 L4 买点。
     enable_leader_radar: bool = True

@@ -43,10 +43,25 @@ def build_research_discovery(trace: dict[str, Any], metrics: dict[str, Any]) -> 
         "counts": {"total": len(candidates), **dict(Counter(row["research_status"] for row in candidates))},
         "signal_counts": dict(Counter(row["signal_state"] for row in candidates)),
         "execution_counts": dict(Counter(row["execution_permission"] for row in candidates)),
+        "by_source": summarize_discovery_sources(candidates),
+        "blocker_counts": dict(Counter(reason for row in candidates for reason in set(row["blocking_reasons"]))),
         "new_buy_allowed": False,
         "direct_buy_allowed": False,
         "candidates": candidates,
     }
+
+
+def summarize_discovery_sources(candidates: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    sources = sorted({source for row in candidates for source in row["discovery_sources"]})
+    result = {}
+    for source in sources:
+        rows = {row["code"]: row for row in candidates if source in row["discovery_sources"]}
+        result[source] = {
+            "total": len(rows),
+            "signal_counts": dict(Counter(row["signal_state"] for row in rows.values())),
+            "execution_counts": dict(Counter(row["execution_permission"] for row in rows.values())),
+        }
+    return result
 
 
 def _research_row(row: dict[str, Any], regime: str, quality: dict[str, Any]) -> dict[str, Any]:

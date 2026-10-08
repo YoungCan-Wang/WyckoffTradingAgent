@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
@@ -13,6 +14,7 @@ from core.concept_filters import is_user_facing_etf
 from core.execution_playbook import funnel_playbook_lines
 from core.funnel_sections import score_star
 from core.market_trade_mode import resolve_market_trade_mode
+from core.research_discovery import summarize_discovery_sources
 from core.signal_confirmation import compute_support_level, score_springboard_abc
 from core.strategy_policy_display import format_policy_meta_text, format_policy_weight_text
 from core.theme_radar import summarize_theme_radar, summarize_theme_rotation
@@ -313,6 +315,11 @@ def _data_quality_report_lines(metrics: dict) -> list[str]:
         f"**逐层淘汰**: {'；'.join(rejection_parts) or '无'}",
         f"**概念连续性**: 历史{history_days}日/{history_state} | 最新{latest_history} | "
         f"连续主题{len(metrics.get('theme_lines') or [])}条",
+        "**换手口径**: 最新日期行的有限非负值；来源 "
+        + str(quality.get("turnover_source_counts") or "未记录")
+        + "；缺失 "
+        + str(quality.get("turnover_missing_reasons") or "无")
+        + "；float_share_snapshot为目标日股本估算，不是逐日历史股本。",
     ]
 
 
@@ -828,10 +835,12 @@ def _research_discovery_lines(ctx: Any) -> list[str]:
     lines = [
         "",
         "**【研究发现与执行分层】**",
+        f"行情截止 {inventory.get('trade_date') or '未记录'}（不是报告生成日）；本层未评估跨日confirmed和账户OMS。",
         f"研究发现{counts['total']}只；买点候选{signals.get('candidate_detected', 0)}只；"
         f"待确认{signals.get('awaiting_confirmation', 0)}只；执行拦截{counts.get('execution_blocked', 0)}只。",
         "研究发现不等于当日新信号、跨日confirmed或BUY；完整名单在Agent结构化研究发现中，AI额度与OMS禁买不变。",
     ]
+    lines.extend(_research_source_lines(inventory))
     focused = sorted(
         rows, key=lambda row: (not any("mainline" in s or "leader" in s for s in row["discovery_sources"]), row["code"])
     )
@@ -840,6 +849,28 @@ def _research_discovery_lines(ctx: Any) -> list[str]:
         lines.append(f"  {row['code']} {row['name']} {row['theme']} | {row['signal_state']} | {reason}")
     if len(rows) > 8:
         lines.append(f"  展示8/{len(rows)}只（来源分组后按代码展示，非收益排名）；完整名单未截断。")
+    return lines
+
+
+def _research_source_lines(inventory: dict) -> list[str]:
+    rows = inventory["candidates"]
+    sources = inventory.get("by_source") or summarize_discovery_sources(rows)
+    labels = {"mainline_candidates": "主线发现", "leader_radar_rows": "趋势雷达", "candidate_entries": "候选入口"}
+    lines = []
+    for source, label in labels.items():
+        if stats := sources.get(source):
+            signals = stats["signal_counts"]
+            lines.append(
+                f"**{label}**: {stats['total']}只 / 买点候选{signals.get('candidate_detected', 0)} / "
+                f"待确认{signals.get('awaiting_confirmation', 0)} / 拦截{stats['execution_counts'].get('blocked', 0)}"
+            )
+    blockers = inventory.get("blocker_counts") or dict(
+        Counter(reason for row in rows for reason in set(row["blocking_reasons"]))
+    )
+    if blockers:
+        reasons = sorted(blockers.items(), key=lambda item: (-item[1], item[0]))[:3]
+        lines.append("**主要拦截**: " + "；".join(f"{reason}（{count}只）" for reason, count in reasons))
+    lines.append("同一股票可属多个来源或有多个拦截原因，以上不能相加；候选数不是胜率或可买数量。")
     return lines
 
 
@@ -880,4 +911,5 @@ def _build_modern_card_lines(ctx: Any, selection: FunnelAiSelection) -> list[str
             "完整 L4、主线池与逐层淘汰明细保留在结构化运行数据中；推送仅展开入表形态。",
         ]
     )
+    lines.extend(_data_quality_report_lines(ctx.metrics))
     return lines

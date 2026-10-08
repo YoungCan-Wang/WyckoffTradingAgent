@@ -24,6 +24,10 @@ TickFlow 全市场快照使用 GET `/v1/quotes` 的 `universes` 标的池参数�
 
 > Risk disclosure: WyckoffAgent is for educational, research, and informational use. It does not provide investment advice, does not account for every personal financial circumstance, and does not guarantee future performance.
 
+主线与外部观察池共用配置档加载器，参数优先级不变；`FunnelConfig` 已移除无消费者的 `evr_lookback` / `markup_rs_positive_min`。这是配置维护精简，不是收益改善或策略合并，详见 [配置说明](config/profiles/README.md)。
+
+换手拼接按行情截止日读取流通股本，保持有效原生值，按来源的手/股单位折算；未知单位保留缺失。覆盖率只计算最新日期行有效值，95%门槛不变。报告同时显示主线来源数量、信号状态和重叠拦截原因，不把发现或数据修复当作BUY。详见 [数据质量合同](docs/A_SHARE_FUNNEL_FLOW.md#数据质量与诊断口径)。
+
 ---
 
 ## 云端运行成本透明

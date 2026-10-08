@@ -7,7 +7,7 @@ import logging
 import os
 import re
 import time
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -92,11 +92,16 @@ def fetch_market_cap_map() -> dict[str, float]:
     return mapping
 
 
-def fetch_float_share_map() -> dict[str, float]:
+def fetch_float_share_map(*, as_of_date: date | None = None) -> dict[str, float]:
     """全市场流通股本映射（单位：股）。
 
-    行情源的日线不返回换手率，漏斗用 成交量 / 流通股本 自行折算。
+    指定日期时不读取无日期缓存，避免历史回放使用当前股本。
     """
+    if as_of_date is not None:
+        pro = _tushare_pro()
+        if pro is None:
+            return {}
+        return _daily_basic_map(pro, as_of_date, "float_share", _WAN_SHARES_TO_SHARES)
     cached = read_json_cache(FLOAT_SHARE_CACHE, CACHE_TTL)
     if isinstance(cached, dict):
         return {k: float(v) for k, v in cached.items()}
@@ -271,15 +276,29 @@ def debug_metadata_fail(source: str, err: Exception) -> None:
 
 
 def _recent_daily_basic_map(pro, field: str, scale: float) -> dict[str, float]:
-    for offset in range(5):
-        trade_date = (date.today() - timedelta(days=1 + offset)).strftime("%Y%m%d")
-        try:
-            df = pro.daily_basic(trade_date=trade_date, fields=f"ts_code,{field}")
-        except Exception as exc:
-            debug_metadata_fail(f"tushare_daily_basic[{trade_date}]", exc)
-            continue
-        if df is not None and not df.empty:
-            return _daily_basic_field_map(df, field, scale)
+    from integrations.fetch_a_share_csv import cached_trade_dates
+
+    try:
+        days = [day for day in cached_trade_dates() if day < date.today()]
+    except Exception as exc:
+        logger.warning("市场元数据交易日历不可用，拒绝猜测日期: %s", exc)
+        return {}
+    for trade_date in sorted(days, reverse=True)[:5]:
+        mapping = _daily_basic_map(pro, trade_date, field, scale)
+        if mapping:
+            return mapping
+    return {}
+
+
+def _daily_basic_map(pro, trade_date: date, field: str, scale: float) -> dict[str, float]:
+    day = trade_date.strftime("%Y%m%d")
+    try:
+        df = pro.daily_basic(trade_date=day, fields=f"ts_code,{field}")
+    except Exception as exc:
+        logger.warning("市场元数据查询失败: date=%s field=%s type=%s", day, field, type(exc).__name__)
+        return {}
+    if df is not None and not df.empty:
+        return _daily_basic_field_map(df, field, scale)
     return {}
 
 

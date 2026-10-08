@@ -6,7 +6,9 @@ from workflows import funnel_data
 
 
 def _frame(volume: list[float]) -> pd.DataFrame:
-    return pd.DataFrame({"close": [10.0] * len(volume), "volume": volume, "turnover": [pd.NA] * len(volume)})
+    frame = pd.DataFrame({"close": [10.0] * len(volume), "volume": volume, "turnover": [pd.NA] * len(volume)})
+    frame.attrs["volume_unit"] = "shares"
+    return frame
 
 
 def test_attach_turnover_derives_pct_from_float_share(monkeypatch) -> None:

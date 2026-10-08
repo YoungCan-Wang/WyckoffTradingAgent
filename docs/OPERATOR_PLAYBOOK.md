@@ -81,6 +81,16 @@ Trend/Accum 配额只用于 dynamic shadow 对照；RISK_ON 市场闸门仍禁�
 
 注意区分默认配置与线上新仓：当前两个生产 workflow 的 `STEP4_BUY_HARD_STOP_PCT=5.0`，不是代码默认的 12%；已有持仓继承已持久化止损，不能拿研究标签重置。此次研究池修复不修改止损或市场闸门。
 
+### 配置维护
+
+主线与外部观察池共用 `utils/config_profile.py`，路径优先级为 `WYCKOFF_CONFIG_PATH`、`WYCKOFF_CONFIG_PROFILE`、默认 `a_share_prod`；字段环境变量继续优先于配置档。无消费者的 `evr_lookback` / `markup_rs_positive_min` 已移除，不再作为 Python 构造参数使用；旧环境键忽略。EVR 开关由 `FUNNEL_EVR_POLICY` 管理，不用被覆盖解析器忽略的 `FUNNEL_CFG_ENABLE_EVR_TRIGGER`。有效数值、确认、配额和 OMS 不变；删除无效字段不能用作提高收益的证据。
+
+### 数据与主线诊断
+
+先核对行情截止日，再看质量状态、换手有效来源与缺失分类。生产换手使用目标日股本，拒绝无日期缓存或未来日期替代；非指定日期的元数据回退使用最近5个交易日，不是5个自然日。原生换手优先，缺值才按已知手/股口径估算；`volume_unit_unknown`、`float_share_missing`、`latest_turnover_invalid`仍需修复取数，不可降低95%覆盖要求。
+
+报告中的主线发现/买点候选/待确认/拦截使用同一来源分母，来源或原因之间可以重叠。总AI预选、Step3输入、跨日确认和账户OMS是不同阶段，不用最终送审数量推断全市场召回率；本层未评估confirmed或BUY。修复数据后应重新运行并验证实际生产产物；不能仅凭离线或两股检查把质量标记手工改为ready。
+
 ### 收益怎么读
 
 跟踪表主表涨跌相对该次入选日收盘；「首次至今」只在组头/摘要里按股票计算，重复入选不能重复归功。逐次事件评估使用信号后的首根可用日线开盘并检查推荐发布时间，H 日净收益扣生产费用；缺价、不可进入和未成熟事件保留分母。它仍不是实盘成交或组合 alpha，详见 [验收口径](A_SHARE_RESEARCH_EXECUTION_ACCEPTANCE.md)。

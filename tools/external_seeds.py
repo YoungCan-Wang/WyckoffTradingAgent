@@ -3,20 +3,19 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from integrations.fetch_a_share_csv import normalize_symbols
-from utils.env import parse_bool
-from utils.package_resources import PROJECT_ROOT, runtime_resource
+from utils.config_profile import bool_value as _bool_value
+from utils.config_profile import env_value as _env_value
+from utils.config_profile import int_value as _int_value
+from utils.config_profile import load_profile_section
+from utils.package_resources import PROJECT_ROOT
 
 ROOT = PROJECT_ROOT
-DEFAULT_PROFILE = runtime_resource("config/profiles/a_share_prod.yml")
 
 
 @dataclass(frozen=True)
@@ -29,42 +28,6 @@ class ExternalSeedConfig:
     allow_l2_bypass_review: bool = True
     watch_ttl_days: int = 10
     retention_days: int = 180
-
-
-def _int_value(raw: Any, default: int, *, minimum: int = 0) -> int:
-    try:
-        return max(int(float(raw)), minimum)
-    except (TypeError, ValueError):
-        return default
-
-
-def _bool_value(raw: Any, default: bool) -> bool:
-    if raw is None:
-        return default
-    if isinstance(raw, bool):
-        return raw
-    return parse_bool(str(raw))
-
-
-def _profile_path() -> Path:
-    raw_path = os.getenv("WYCKOFF_CONFIG_PATH", "").strip()
-    if raw_path:
-        return Path(raw_path).expanduser()
-    profile = os.getenv("WYCKOFF_CONFIG_PROFILE", "a_share_prod").strip() or "a_share_prod"
-    if "/" in profile or profile.endswith((".yml", ".yaml")):
-        return Path(profile).expanduser()
-    return runtime_resource(f"config/profiles/{profile}.yml")
-
-
-def _load_profile_section() -> dict[str, Any]:
-    path = _profile_path()
-    if not path.exists() and path == DEFAULT_PROFILE:
-        return {}
-    if not path.exists():
-        return {}
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    section = data.get("external_seeds") if isinstance(data, dict) else {}
-    return section if isinstance(section, dict) else {}
 
 
 def _split_symbols(raw: Any) -> list[str]:
@@ -99,14 +62,6 @@ def _json_symbols(data: Any) -> list[str]:
     return _split_symbols(data)
 
 
-def _env_value(*names: str) -> str | None:
-    for name in names:
-        raw = os.getenv(name)
-        if raw is not None and str(raw).strip():
-            return str(raw).strip()
-    return None
-
-
 def _configured_symbols(section: dict[str, Any]) -> tuple[list[str], bool]:
     env_symbols = _env_value("FUNNEL_EXTERNAL_SEED_SYMBOLS", "FUNNEL_EXTRA_SYMBOLS")
     symbols = _split_symbols(section.get("symbols"))
@@ -117,7 +72,7 @@ def _configured_symbols(section: dict[str, Any]) -> tuple[list[str], bool]:
 
 
 def load_external_seed_config() -> ExternalSeedConfig:
-    section = _load_profile_section()
+    section = load_profile_section("external_seeds")
     symbols, env_symbols_present = _configured_symbols(section)
     max_symbols = _int_value(_env_value("FUNNEL_EXTERNAL_SEED_MAX") or section.get("max_symbols"), 30, minimum=1)
     enabled_raw = _env_value("FUNNEL_EXTERNAL_SEEDS_ENABLED")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections import Counter
 from datetime import date
 
@@ -73,6 +74,22 @@ def build_funnel_data_quality(
         },
         "ohlcv_source_counts": source_counts,
         "ohlcv_source_ratios": {source: _ratio(count, counts["ohlcv"]) for source, count in source_counts.items()},
+        "turnover_source_counts": dict(
+            Counter(
+                str(df_map[symbol].attrs.get("turnover_source") or "native_or_unknown")
+                for symbol in expected_symbols
+                if has_latest_turnover(df_map.get(symbol))
+            )
+        ),
+        "turnover_missing_reasons": dict(
+            Counter(
+                str(df_map[symbol].attrs.get("turnover_missing_reason") or "latest_turnover_invalid")
+                if _has_frame(df_map.get(symbol))
+                else "no_ohlcv"
+                for symbol in expected_symbols
+                if not has_latest_turnover(df_map.get(symbol))
+            )
+        ),
     }
 
 
@@ -85,7 +102,7 @@ def _coverage_counts(universe, expected, df_map, market_cap_map, financial_map, 
         "raw_ohlcv": sum(1 for symbol in universe if _has_frame(df_map.get(symbol))),
         "market_cap": sum(1 for symbol in universe if _positive_number(market_cap_map.get(symbol))),
         "financial": sum(1 for symbol in universe if bool(financial_map.get(symbol))),
-        "turnover": sum(1 for symbol in expected if _has_numeric_column(df_map.get(symbol), "turnover")),
+        "turnover": sum(1 for symbol in expected if has_latest_turnover(df_map.get(symbol))),
         "sector": sum(1 for symbol in universe if sector_map and str(sector_map.get(symbol) or "").strip()),
         "concept": sum(1 for symbol in universe if concept_map and concept_map.get(symbol)),
     }
@@ -196,8 +213,18 @@ def _has_frame(frame: pd.DataFrame | None) -> bool:
     return frame is not None and not frame.empty
 
 
-def _has_numeric_column(frame: pd.DataFrame | None, column: str) -> bool:
-    return _has_frame(frame) and column in frame.columns and pd.to_numeric(frame[column], errors="coerce").notna().any()
+def has_latest_turnover(frame: pd.DataFrame | None) -> bool:
+    if not _has_frame(frame) or "turnover" not in frame.columns:
+        return False
+    if "date" in frame.columns:
+        dates = pd.to_datetime(frame["date"], errors="coerce")
+        if not dates.notna().any():
+            return False
+        latest = frame.loc[dates == dates.max(), "turnover"].iloc[-1]
+    else:
+        latest = frame["turnover"].iloc[-1]
+    value = pd.to_numeric(latest, errors="coerce")
+    return bool(pd.notna(value) and math.isfinite(float(value)) and float(value) >= 0)
 
 
 def _latest_frame_date(frame: pd.DataFrame | None) -> date | None:
