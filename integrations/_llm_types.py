@@ -31,11 +31,10 @@ OPENAI_COMPATIBLE_BASE_URLS = {
     "volcengine": "https://ark.cn-beijing.volces.com/api/v3",
 }
 
-DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite-preview"
+DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
 GEMINI_MODELS = (
     DEFAULT_GEMINI_MODEL,
     "gemini-2.5-flash-lite",
-    "gemini-3-pro-preview",
     "gemini-3-flash-preview",
 )
 

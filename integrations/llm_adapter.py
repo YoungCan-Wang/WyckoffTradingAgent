@@ -129,18 +129,21 @@ def call_llm_via_litellm(
     max_tokens = max_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS
     _ = allow_truncated_text
     _log_litellm_call(provider, model, litellm_model, resolved_base_url, max_tokens)
+    request = {
+        "model": litellm_model,
+        "messages": _litellm_messages(system_prompt, user_message),
+        "api_key": api_key,
+        "base_url": resolved_base_url,
+        "max_tokens": max_tokens,
+        "timeout": timeout,
+    }
+    # Gemini 3.6+ 拒绝 temperature / top_p / top_k；其他供应商仍使用采样参数。
+    if provider != "gemini":
+        request["temperature"] = temperature
+        request["top_p"] = top_p
 
     try:
-        response = litellm.completion(
-            model=litellm_model,
-            messages=_litellm_messages(system_prompt, user_message),
-            api_key=api_key,
-            base_url=resolved_base_url,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            timeout=timeout,
-        )
+        response = litellm.completion(**request)
     except Exception as e:
         raise RuntimeError(f"LiteLLM call failed ({litellm_model}): {e}") from e
 

@@ -102,7 +102,9 @@ def resolve_llm_config(tool_context: ToolContext | None) -> tuple[str, str, str,
         local = _try_local_llm_config()
         if local:
             return local
-    model = get_credential(tool_context, "gemini_model", "GEMINI_MODEL") or "gemini-2.0-flash"
+    from integrations._llm_types import DEFAULT_GEMINI_MODEL
+
+    model = get_credential(tool_context, "gemini_model", "GEMINI_MODEL") or DEFAULT_GEMINI_MODEL
     base_url = get_credential(tool_context, "gemini_base_url", "")
     return "gemini", api_key, model, base_url
 
