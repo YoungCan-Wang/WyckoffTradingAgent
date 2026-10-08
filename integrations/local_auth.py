@@ -22,6 +22,10 @@ CONFIG_FILE = SESSION_DIR / "wyckoff.json"
 _OLD_CONFIG_FILE = SESSION_DIR / "config.json"
 _CONFIG_THREAD_LOCK = threading.RLock()
 _SESSION_THREAD_LOCK = threading.RLock()
+# Serializes login / logout / auto_relogin credential+session coupling so a
+# concurrent auto_relogin cannot observe "session gone, password still present"
+# and resurrect a logout, or overwrite a mid-flight account switch.
+_AUTH_IDENTITY_LOCK = threading.RLock()
 
 
 def save_session(data: dict[str, Any]) -> None:
@@ -34,35 +38,30 @@ def load_session() -> dict[str, Any] | None:
 
 
 def login(email: str, password: str) -> dict[str, Any]:
-    client = _create_client()
-    resp = client.auth.sign_in_with_password({"email": email, "password": password})
-    data = {
-        "user_id": resp.user.id,
-        "email": resp.user.email,
-        "access_token": resp.session.access_token,
-        "refresh_token": resp.session.refresh_token,
-    }
-    save_session(data)
-    save_config_key("email", email)
-    save_config_key("password", password)
-    # 单独记一份**不参与自动登录**的邮箱：退出登录会清掉 email/password
-    # （否则会被静默登回去），但下次登录页仍该预填邮箱 —— 那是便利，不是凭据。
-    # 拆成两个键才能让「清凭据」和「记住是谁」互不干扰。
-    save_config_key("last_email", email)
+    data = _sign_in_with_password(email, password)
+    with _AUTH_IDENTITY_LOCK:
+        save_session(data)
+        save_config_key("email", email)
+        save_config_key("password", password)
+        # 单独记一份**不参与自动登录**的邮箱：退出登录会清掉 email/password
+        # （否则会被静默登回去），但下次登录页仍该预填邮箱 —— 那是便利，不是凭据。
+        # 拆成两个键才能让「清凭据」和「记住是谁」互不干扰。
+        save_config_key("last_email", email)
     return data
 
 
 def auto_relogin() -> dict[str, Any] | None:
-    cfg = load_config()
-    email = str(cfg.get("email", "") or "").strip()
-    password = str(cfg.get("password", "") or "").strip()
+    with _AUTH_IDENTITY_LOCK:
+        email, password = _stored_login_credentials()
     if not email or not password:
         return None
     try:
-        return login(email, password)
+        data = _sign_in_with_password(email, password)
     except Exception:
         logger.debug("auto re-login failed", exc_info=True)
         return None
+    with _AUTH_IDENTITY_LOCK:
+        return _persist_auto_relogin_if_unchanged(email, password, data)
 
 
 def restore_session() -> dict[str, Any] | None:
@@ -110,16 +109,21 @@ def logout() -> None:
 
     注意 `auto_relogin` 仍然保留：它是 token 过期时的续期路径，不是登录态的
     来源。清掉凭据只让它拿不到东西，不会改变续期逻辑本身。
+
+    必须先清凭据再清 session：IPC 多 worker 下 `account`→`restore_session` /
+    工具 `auto_relogin` 会与 `auth_logout` 并发；若 session 先空而密码还在，
+    就会在「已退出」窗口里被静默登回去。
     """
-    clear_session()
-    # 只清这两个 —— `last_email` 刻意保留，它不能用来登录，只用于下次预填邮箱。
-    # 清 email 和 password 两个而不只是 password：留一个能自动登录的孤立 email
-    # 会让「退出」名不副实。
-    for key in ("email", "password"):
-        try:
-            save_config_key(key, "")
-        except OSError:
-            logger.warning("failed to clear stored credential: %s", key, exc_info=True)
+    with _AUTH_IDENTITY_LOCK:
+        # 只清这两个 —— `last_email` 刻意保留，它不能用来登录，只用于下次预填邮箱。
+        # 清 email 和 password 两个而不只是 password：留一个能自动登录的孤立 email
+        # 会让「退出」名不副实。
+        for key in ("email", "password"):
+            try:
+                save_config_key(key, "")
+            except OSError:
+                logger.warning("failed to clear stored credential: %s", key, exc_info=True)
+        clear_session()
 
 
 def clear_session() -> None:
@@ -128,6 +132,35 @@ def clear_session() -> None:
             SESSION_FILE.unlink(missing_ok=True)
         except OSError:
             logger.warning("failed to clear session file", exc_info=True)
+
+
+def merge_session_tokens_if_same_user(
+    expected_user_id: str,
+    *,
+    access_token: str,
+    refresh_token: str,
+    email: str = "",
+) -> bool:
+    """Update tokens on disk only when session still belongs to expected_user_id.
+
+    Read-check-write runs under the session lock so MCP/tool refresh cannot
+    clobber a concurrent desktop logout or account switch (#507 TOCTOU).
+    """
+    if not str(expected_user_id or "").strip():
+        return False
+    if not access_token or not refresh_token:
+        return False
+    with _write_lock(SESSION_FILE, _SESSION_THREAD_LOCK):
+        current = _read_session_file()
+        if not _same_session_user(current, expected_user_id):
+            return False
+        assert current is not None
+        current["access_token"] = access_token
+        current["refresh_token"] = refresh_token
+        if email:
+            current["email"] = email
+        _atomic_write_json(SESSION_FILE, current)
+        return True
 
 
 def _read_session_file() -> dict[str, Any] | None:
@@ -139,10 +172,50 @@ def _read_session_file() -> dict[str, Any] | None:
         return None
 
 
+def _stored_login_credentials() -> tuple[str, str]:
+    cfg = load_config()
+    email = str(cfg.get("email", "") or "").strip()
+    password = str(cfg.get("password", "") or "").strip()
+    return email, password
+
+
+def _sign_in_with_password(email: str, password: str) -> dict[str, Any]:
+    client = _create_client()
+    resp = client.auth.sign_in_with_password({"email": email, "password": password})
+    return {
+        "user_id": resp.user.id,
+        "email": resp.user.email,
+        "access_token": resp.session.access_token,
+        "refresh_token": resp.session.refresh_token,
+    }
+
+
+def _persist_auto_relogin_if_unchanged(email: str, password: str, data: dict[str, Any]) -> dict[str, Any] | None:
+    """Save auto-relogin only when logout/switch did not change credentials mid-flight."""
+    current_email, current_password = _stored_login_credentials()
+    if current_email != email or current_password != password:
+        logger.warning("refusing to persist auto-relogin: credentials changed during sign-in")
+        return None
+    disk = _read_session_file()
+    new_user = str(data.get("user_id") or "")
+    if disk is not None and not _same_session_user(disk, new_user):
+        logger.warning(
+            "refusing to persist auto-relogin: disk user %s != signed-in user %s",
+            disk.get("user_id"),
+            new_user,
+        )
+        return None
+    save_session(data)
+    return data
+
+
 def _same_session_user(current: dict[str, Any] | None, expected_user_id: str) -> bool:
     if current is None:
         return False
-    return str(current.get("user_id") or "") == str(expected_user_id or "")
+    expected = str(expected_user_id or "")
+    if not expected:
+        return False
+    return str(current.get("user_id") or "") == expected
 
 
 def _save_session_if_same_user(expected_user_id: str, data: dict[str, Any]) -> bool:

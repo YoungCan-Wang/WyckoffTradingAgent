@@ -1166,8 +1166,15 @@ export async function execExecutePortfolioUpdate(
   }
 
   if (action === 'add' || action === 'update') {
-    if (!name || !shares || !cost_price) {
-      return '执行失败：缺少 name、shares、cost_price 参数'
+    if (!name) return '执行失败：缺少 name、shares、cost_price 参数'
+    if (shares == null || !Number.isInteger(shares) || shares <= 0) {
+      return '执行失败：shares 必须是正整数'
+    }
+    if (cost_price == null || !Number.isFinite(cost_price) || cost_price <= 0) {
+      return '执行失败：cost_price 必须大于 0'
+    }
+    if (stop_loss != null && !(Number.isFinite(stop_loss) && stop_loss > 0)) {
+      return '执行失败：stop_loss 必须大于 0（省略或传 null 以保留已有止损）'
     }
     const buyDate = (buy_dt || '').trim()
     if (action === 'add') {
@@ -1181,7 +1188,8 @@ export async function execExecutePortfolioUpdate(
     const currency = normalized.endsWith('.HK') ? 'HK$' : normalized.endsWith('.US') ? '$' : '¥'
     if (error) return `执行失败: ${error}`
     const valuation = await refreshPortfolioTotalEquity(deps, userId)
-    return `✅ 已${action === 'add' ? '新增' : '更新'} ${normalized} ${name} ${shares}股 @${currency}${cost_price}${stop_loss ? ` 止损${currency}${stop_loss}` : ''}；${valuation.message}`
+    const stopNote = typeof stop_loss === 'number' && stop_loss > 0 ? ` 止损${currency}${stop_loss}` : ''
+    return `✅ 已${action === 'add' ? '新增' : '更新'} ${normalized} ${name} ${shares}股 @${currency}${cost_price}${stopNote}；${valuation.message}`
   }
 
   return '未知操作'
@@ -1198,8 +1206,8 @@ export function buildPortfolioWriteRecord(
   buy_dt = '',
 ): Record<string, unknown> {
   // update 默认不写 buy_dt：Step4 sellable_shares 用它做 A 股 T+1，写成「今天」会把可卖仓冻住。
-  // stop_loss 仅在显式给到有限数字时写入；工具 schema 是 nullable，LLM 省略时传来 null，
-  // 若仍写入会把已有止损清掉，Step4 止损强平/继承都会失效。
+  // stop_loss 仅在显式给到 >0 时写入。schema 是 nullable，LLM 省略时传来 null；
+  // 模型也常把「未设」写成 0 —— 若仍写入，Step4 对 <=0 止损直接短路，等同静默清止损。
   const record: Record<string, unknown> = {
     portfolio_id: portfolioId,
     code,
@@ -1208,7 +1216,9 @@ export function buildPortfolioWriteRecord(
     cost_price,
   }
   if (buy_dt) record.buy_dt = buy_dt
-  if (typeof stop_loss === 'number' && Number.isFinite(stop_loss)) record.stop_loss = stop_loss
+  if (typeof stop_loss === 'number' && Number.isFinite(stop_loss) && stop_loss > 0) {
+    record.stop_loss = stop_loss
+  }
   return record
 }
 

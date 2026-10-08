@@ -10,9 +10,10 @@ const PORTFOLIO_UPDATE_SCHEMA = z.object({
   action: z.enum(['add', 'update', 'delete']),
   code: z.string().describe('A股6位 / 港股00700.HK / 美股AAPL.US'),
   name: z.string().nullable(),
-  shares: z.number().nullable(),
-  cost_price: z.number().nullable(),
-  stop_loss: z.number().nullable(),
+  shares: z.number().int().positive().nullable(),
+  cost_price: z.number().positive().finite().nullable(),
+  // null/omit = keep existing stop on update; 0 is rejected in execute (same as CLI set_stop_loss).
+  stop_loss: z.number().positive().finite().nullable(),
   buy_dt: z.string().nullable().describe('建仓日 YYYYMMDD 或 YYYY-MM-DD；新增必填且须为真实日期，改股数/成本时不要传。update 目标不存在时报错，不会新建'),
 })
 
@@ -62,9 +63,9 @@ function formatPortfolioPlan(params: z.infer<typeof PORTFOLIO_UPDATE_SCHEMA> & {
     `📋 **调仓方案**`,
     `- 操作：${actionLabel}`,
     `- 标的：${params.code} ${params.name || ''}`,
-    params.shares ? `- 股数：${params.shares}` : '',
-    params.cost_price ? `- 价格：¥${params.cost_price}` : '',
-    params.stop_loss ? `- 止损：¥${params.stop_loss}` : '',
+    params.shares != null && params.shares > 0 ? `- 股数：${params.shares}` : '',
+    params.cost_price != null && params.cost_price > 0 ? `- 价格：¥${params.cost_price}` : '',
+    params.stop_loss != null && params.stop_loss > 0 ? `- 止损：¥${params.stop_loss}` : '',
     params.reason ? `- 理由：${params.reason}` : '',
     '',
     '⚠️ 请确认是否执行此操作？',

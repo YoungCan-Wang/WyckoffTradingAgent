@@ -62,13 +62,17 @@ HTTP endpoint. Streamable HTTP, request-scoped authentication and quota enforcem
 require a separate implementation and security review; they are not advertised here.
 
 Token refresh must not rewrite `~/.wyckoff/session.json` when that file is missing
-(desktop logout) or belongs to a different `user_id` (desktop account switch). A
-long-lived MCP process may keep its first-call principal in memory until restart,
+(desktop logout) or belongs to a different `user_id` (desktop account switch). The
+disk check and write run under the session lock (`merge_session_tokens_if_same_user`);
+a check-then-`save_session` outside that lock still races with desktop logout/switch.
+A long-lived MCP process may keep its first-call principal in memory until restart,
 but it must not clobber the desktop/CLI login on disk. Desktop/CLI
 `restore_session` follows the same compare-and-swap rule（中文：比较并交换 /
 写前核对身份）before saving refreshed tokens or clearing an invalid session,
 because IPC workers can overlap `account` restore with `auth_logout` /
-`auth_login`.
+`auth_login`. `auto_relogin` also re-checks stored email/password after the
+network sign-in and refuses to persist when logout cleared credentials or another
+account logged in mid-flight.
 
 `update_portfolio` and `record_trade_fill` are denied by default, before the domain
 backend is loaded. This version also guards the mutating actions of

@@ -598,6 +598,25 @@ describe('execExecutePortfolioUpdate', () => {
     expect(payload).not.toHaveProperty('stop_loss')
   })
 
+  it('does not write stop_loss=0 on update (LLM stand-in for omit must not wipe stops)', async () => {
+    const { deps, updateChain } = createPortfolioWriteDeps([{ id: 'pos-1' }])
+
+    const result = await execExecutePortfolioUpdate(deps, 'user1', 'update', '600519', '贵州茅台', 200, 1810, 0)
+
+    expect(result).toContain('stop_loss 必须大于 0')
+    expect(updateChain.update).not.toHaveBeenCalled()
+  })
+
+  it('rejects non-positive shares before any write', async () => {
+    const { deps, updateChain, insertChain } = createPortfolioWriteDeps([{ id: 'pos-1' }])
+
+    const result = await execExecutePortfolioUpdate(deps, 'user1', 'update', '600519', '贵州茅台', -100, 1810, null)
+
+    expect(result).toContain('shares 必须是正整数')
+    expect(updateChain.update).not.toHaveBeenCalled()
+    expect(insertChain.insert).not.toHaveBeenCalled()
+  })
+
   it('rejects add without buy_dt so the agent must ask for 建仓日', async () => {
     const deps = createMockDeps({})
     const result = await execExecutePortfolioUpdate(deps, 'user1', 'add', '600519', '贵州茅台', 100, 1800, 1700)
@@ -655,6 +674,11 @@ describe('buildPortfolioWriteRecord', () => {
   it('keeps update payloads free of buy_dt and null stop_loss', () => {
     const record = buildPortfolioWriteRecord('USER_LIVE:u', '600519', 'update', '贵州茅台', 200, 1810, null)
     expect(record).not.toHaveProperty('buy_dt')
+    expect(record).not.toHaveProperty('stop_loss')
+  })
+
+  it('omits non-positive stop_loss so a confused 0 cannot clear an existing stop', () => {
+    const record = buildPortfolioWriteRecord('USER_LIVE:u', '600519', 'update', '贵州茅台', 200, 1810, 0)
     expect(record).not.toHaveProperty('stop_loss')
   })
 
