@@ -63,6 +63,12 @@ def write_backtest_artifacts(
         }
         coverage_path.write_text(json.dumps(coverage, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         extra_paths.append(coverage_path)
+    if "runtime_contract" in summary:
+        contract_path = out_dir / f"runtime_contract_{stamp}.json"
+        contract_path.write_text(
+            json.dumps(summary["runtime_contract"], ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        extra_paths.append(contract_path)
     return BacktestArtifactResult(summary_md, summary_path, trades_path, tuple(extra_paths))
 
 

@@ -72,3 +72,40 @@ def test_manual_workflow_keeps_legacy_default_and_isolates_knockouts():
     assert workflow["permissions"] == {"contents": "read"}
     assert "BACKTEST_REQUIRE_PIT_TURNOVER" in workflow["jobs"]["strategy_compare"]["env"]
     assert "knockout" in workflow["jobs"]["grid"]["if"]
+
+
+def test_grid_and_strategy_jobs_share_all_policy_environment():
+    from pathlib import Path
+
+    workflow = yaml.load(
+        (Path(__file__).resolve().parents[2] / ".github/workflows/backtest_grid.yml").read_text(),
+        Loader=yaml.BaseLoader,
+    )
+    global_env = workflow["env"]
+    effective = [{**global_env, **workflow["jobs"][job].get("env", {})} for job in ["grid", "strategy_compare"]]
+    keys = {key for env in effective for key in env if key.startswith(("STEP4_", "FUNNEL_"))}
+    assert {key: effective[0].get(key) for key in keys} == {key: effective[1].get(key) for key in keys}
+
+
+def test_strategy_job_effective_market_gate_matches_production(monkeypatch):
+    import re
+    from pathlib import Path
+
+    from core.backtest_config import _live_buy_block_regimes
+
+    workflow = yaml.load(
+        (Path(__file__).resolve().parents[2] / ".github/workflows/backtest_grid.yml").read_text(),
+        Loader=yaml.BaseLoader,
+    )
+    effective = {**workflow["env"], **workflow["jobs"]["strategy_compare"].get("env", {})}
+    for name in ["STEP4_BUY_BLOCK_REGIMES", "STEP4_BUY_ALLOW_REGIMES", "STEP4_BUY_PROBE_REGIMES"]:
+        monkeypatch.delenv(name, raising=False)
+        value = effective.get(name)
+        if value is not None:
+            fallback = re.search(r"\|\| '([^']*)'", value)
+            monkeypatch.setenv(name, fallback[1] if fallback else value)
+    blocked = _live_buy_block_regimes()
+    assert "NEUTRAL" in blocked
+    assert "RISK_ON" in blocked
+    assert "RISK_OFF" in blocked
+    assert "BEAR_REBOUND" not in blocked

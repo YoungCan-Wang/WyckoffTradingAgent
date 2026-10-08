@@ -30,6 +30,8 @@ TickFlow 全市场快照使用 GET `/v1/quotes` 的 `universes` 标的池参数�
 
 手动 Backtest Grid 的 `run_strategy_compare=true + strategy_compare_set=knockout` 独立回放 `live` 与四个 `KO_*` 单通道研究组，不跑默认退出网格。历史换手按日期键取 Tushare 原生值并通过CSV完整传递；旧快照、缺字段或任一评估日覆盖低于95%会拒绝研究。默认 `legacy` 模式与生产通道不变，操作合同见 [手册](docs/OPERATOR_PLAYBOOK.md#手动单通道研究)。
 
+grid与strategy_compare从工作流共享层继承相同的策略环境，不再只给主网格注入禁买和候选配额。产物 `runtime_contract_*.json` 保存实际生效配置及SHA256；`live`名字和CI成功不能代替环境合同验收。研究固定15日/-8%/18%退出不等于线上工单5%地板，结果不作为完整实盘执行模拟。
+
 ---
 
 ## 云端运行成本透明
