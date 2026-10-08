@@ -27,6 +27,7 @@
     "electron": "43.5.0",
     "electron-builder": "^26.15.3",
     "playwright": "1.62.1",
+    "sprintf-js": "file:vendor/sprintf-js",
     "typescript": "^5.9.3",
     "vite": "^6.4.3"
   },
@@ -78,5 +79,8 @@
     "qrcode": "1.5.4",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
+  },
+  "overrides": {
+    "sprintf-js": "$sprintf-js"
   }
 }

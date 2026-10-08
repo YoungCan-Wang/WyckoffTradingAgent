@@ -1,0 +1,8 @@
+{
+  "name": "sprintf-js",
+  "version": "1.1.4",
+  "private": true,
+  "description": "Local sprintf-js with numeric precision clamped to the ECMAScript limit.",
+  "main": "sprintf.js",
+  "license": "BSD-3-Clause"
+}
