@@ -508,7 +508,14 @@ def _run_step4_decision_flow(
     report_progress,
 ) -> tuple[bool, str]:
     ok, status, decision_result = call_step4_decision_model(options, context, report_progress)
-    if not ok or decision_result is None:
+    if not ok:
+        return _run_stop_loss_only_fallback(options, context, report_progress, status)
+    if decision_result is None:
+        positions = list(getattr(getattr(context, "portfolio", None), "positions", None) or [])
+        if not positions:
+            logger.info("Step4: 无持仓且模型无调仓决策，正常跳过 | status=%s", status)
+            report_progress("持仓决策", "无持仓且无开仓建议", 1.0)
+            return True, status
         return _run_stop_loss_only_fallback(options, context, report_progress, status)
     rendered_market_view = rendered_step4_market_view(context.system_market_view, decision_result.market_view)
     decisions = complete_step4_decisions(

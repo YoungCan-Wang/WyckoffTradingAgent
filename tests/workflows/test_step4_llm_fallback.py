@@ -144,3 +144,56 @@ def test_stop_loss_only_fallback_surfaces_persist_failure(monkeypatch):
 
     assert ok is False
     assert status == "all_providers_failed_degraded_persistence_failed"
+
+
+def test_run_step4_decision_flow_skips_benignly_on_empty_positions_when_no_decisions(monkeypatch):
+    """无持仓且模型无调仓决策时，应作为正常跳过（ok=True），不能进入止损降级报失败。"""
+    monkeypatch.setattr(
+        step4,
+        "call_step4_decision_model",
+        lambda *_a, **_k: (True, "skipped_no_decisions", None),
+    )
+    options = SimpleNamespace()
+    context = SimpleNamespace(
+        portfolio=SimpleNamespace(positions=[]),
+    )
+    progress: list[tuple[str, str, float]] = []
+
+    ok, status = step4._run_step4_decision_flow(
+        options=options,
+        context=context,
+        report_progress=lambda t, d, r: progress.append((t, d, r)),
+    )
+
+    assert ok is True
+    assert status == "skipped_no_decisions"
+    assert progress == [("持仓决策", "无持仓且无开仓建议", 1.0)]
+
+
+def test_run_step4_decision_flow_falls_back_to_stop_loss_when_no_decisions_with_positions(monkeypatch):
+    """有持仓但模型未给出动作时，必须落入止损降级保护。"""
+    monkeypatch.setattr(
+        step4,
+        "call_step4_decision_model",
+        lambda *_a, **_k: (True, "skipped_no_decisions", None),
+    )
+    fallback_called = []
+    monkeypatch.setattr(
+        step4,
+        "_run_stop_loss_only_fallback",
+        lambda _opts, _ctx, _prog, status: fallback_called.append(status) or (False, f"{status}_degraded"),
+    )
+    options = SimpleNamespace()
+    context = SimpleNamespace(
+        portfolio=SimpleNamespace(positions=[SimpleNamespace(code="000001")]),
+    )
+
+    ok, status = step4._run_step4_decision_flow(
+        options=options,
+        context=context,
+        report_progress=lambda *_a, **_k: None,
+    )
+
+    assert ok is False
+    assert status == "skipped_no_decisions_degraded"
+    assert fallback_called == ["skipped_no_decisions"]
