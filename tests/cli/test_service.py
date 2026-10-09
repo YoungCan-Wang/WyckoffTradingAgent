@@ -237,3 +237,55 @@ def test_echo_provider_is_opt_in_and_its_delay_is_capped(monkeypatch):
     provider, error = default_provider_factory({"provider_name": "echo", "delay_ms": 999_999})
     assert error is None
     assert provider.delay_s == 1.0
+
+
+def _post_ui(port: int, messages: list[dict[str, Any]]) -> http.client.HTTPResponse:
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    headers = {"Authorization": f"Bearer {TOKEN}", "X-Wyckoff-User": "u1", "Content-Type": "application/json"}
+    body = {"id": "chat-1", "trigger": "submit-message", "messages": messages, "llm": {"provider_name": "echo"}}
+    conn.request("POST", "/v1/ui-turns", json.dumps(body), headers)
+    return conn.getresponse()
+
+
+def _chunks(resp: http.client.HTTPResponse) -> list[Any]:
+    frames = [line.removeprefix("data: ") for line in resp.read().decode().split("\n\n") if line]
+    return [frame if frame == "[DONE]" else json.loads(frame) for frame in frames]
+
+
+def _user(text: str) -> dict[str, Any]:
+    return {"id": "u", "role": "user", "parts": [{"type": "text", "text": text}]}
+
+
+def test_ui_turn_speaks_the_ai_sdk_stream_protocol(serve):
+    _, port, _ = serve(EchoProvider())
+    resp = _post_ui(port, [_user("威科夫")])
+
+    assert resp.status == 200
+    assert resp.getheader("x-vercel-ai-ui-message-stream") == "v1"
+    chunks = _chunks(resp)
+    assert chunks[-1] == "[DONE]"
+    assert [c["type"] for c in chunks[:-1]][:2] == ["start", "start-step"]
+    assert "".join(c["delta"] for c in chunks[:-1] if c["type"] == "text-delta") == "威科夫"
+    assert chunks[-2] == {"type": "finish", "finishReason": "stop"}
+
+
+def test_ui_turn_is_stateless_and_takes_history_from_the_request(serve):
+    recorder = _Recorder()
+    _, port, state = serve(recorder)
+    history = [
+        _user("第一问"),
+        {"id": "a", "role": "assistant", "parts": [{"type": "text", "text": "第一答"}]},
+        _user("第二问"),
+    ]
+
+    _chunks(_post_ui(port, history))
+
+    assert [m["content"] for m in recorder.seen[0]] == ["第一问", "第一答", "第二问"]
+    assert state.history("default") == []
+
+
+def test_ui_turn_rejects_a_conversation_that_does_not_end_with_a_user_message(serve):
+    _, port, _ = serve(EchoProvider())
+    assistant = {"id": "a", "role": "assistant", "parts": [{"type": "text", "text": "hi"}]}
+
+    assert _post_ui(port, [assistant]).status == 400

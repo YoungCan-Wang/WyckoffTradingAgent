@@ -393,8 +393,16 @@ OpenAI provider 兼容 Qwen / Kimi / LongCat / Minimax 等 OpenAI API 格式端�
 - 会话历史只在进程内存里（最多 8 个会话），容器休眠即丢失；持久化到 Supabase 是后续工作。
 - `WYCKOFF_SERVICE_ECHO=1` 才允许 `provider_name=echo`，用于不带密钥的冒烟测试。
 
-协议（内部，浏览器不直连）：`GET /healthz`；`POST /v1/turns`，请求体 `{text, session_id?, llm: {provider_name, api_key, model?, base_url?}}`，响应是 `text/event-stream`，每个 `RuntimeEvent` 一帧 `data: {json}`。
-尚未做：`base_url` 白名单（目前只靠网关校验）、UIMessage 流翻译、云端工具审计。
+协议（内部，浏览器不直连）：
+
+- `GET /healthz`
+- `POST /v1/turns`：`{text, session_id?, llm: {provider_name, api_key, model?, base_url?}}`，每个 `RuntimeEvent` 一帧 SSE，会话历史在进程内存。
+- `POST /v1/ui-turns`：`{messages: UIMessage[], llm}`，响应是 ai-sdk UI message stream v1（带 `x-vercel-ai-ui-message-stream: v1`，以 `data: [DONE]` 收尾），`useChat` / `DefaultChatTransport` 可直接消费，网关只需原样转发字节。
+  无状态：历史取自 `messages` 里的文本片段，容器休眠丢内存也不影响；工具片段不带入。工具一律标 `dynamic`，避免撞上前端为 TS 工具写的专用渲染器（输出形状不同）；工具结果里的 NaN / Infinity 换成 `null`，否则前端 `JSON.parse` 直接失败。
+
+契约：`tests/golden/agent_ui_stream.sse` 由 `tests/cli/test_service_ui_stream.py` 生成并比对，`web/apps/web/src/lib/__tests__/agent-ui-stream.test.ts` 用真实的 ai SDK 客户端解析同一份文件。SDK 对不合 schema 的分块是**静默丢弃**而不是报错（服务端字段名写错，用户看到的是一条空回复），所以两边的断言都不能省。
+
+尚未做：前端按会员身份切换到这条路径、生产 Worker 的网关路由（鉴权、会员判定、从 Supabase 读会员自带的 key）、`base_url` 白名单（目前只靠网关校验）、会话历史持久化、云端工具审计。
 
 ### TUI 视觉层次
 

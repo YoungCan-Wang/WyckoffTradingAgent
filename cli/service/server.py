@@ -5,12 +5,16 @@
 
 内部协议（不直接暴露给浏览器）：
   GET  /healthz
-  POST /v1/turns  {"text", "session_id"?, "llm": {provider_name, api_key, model?, base_url?}}
+  POST /v1/turns     {"text", "session_id"?, "llm": {provider_name, api_key, model?, base_url?}}
+                     每个 RuntimeEvent 一帧 SSE；会话历史存在进程内存里
+  POST /v1/ui-turns  {"messages": UIMessage[], "llm": {...}}
+                     ai-sdk UI message stream v1，供 useChat 直接消费；无状态，历史取自 messages
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hmac
 import json
 import logging
@@ -24,6 +28,7 @@ from typing import Any
 
 from cli.runtime import AgentRuntime
 from cli.service.echo_provider import EchoProvider
+from cli.service.ui_stream import MAX_TEXT_CHARS, UI_STREAM_HEADERS, history_from_ui_messages, ui_frames
 from cli.tools import ToolRegistry
 from core.prompts import CHAT_AGENT_SYSTEM_PROMPT
 
@@ -35,7 +40,6 @@ TOOLS_ENV = "WYCKOFF_SERVICE_TOOLS"
 TURN_SECONDS_ENV = "WYCKOFF_SERVICE_TURN_SECONDS"
 USER_HEADER = "X-Wyckoff-User"
 MAX_BODY_BYTES = 256 * 1024
-MAX_TEXT_CHARS = 20_000
 MAX_SESSIONS = 8
 MAX_ECHO_DELAY_MS = 1000
 DEFAULT_MAX_TURN_SECONDS = 600.0
@@ -119,6 +123,15 @@ def iter_turn_events(
             history.append({"role": "assistant", "content": event["text"]})
 
 
+def event_frames(events: Generator[dict[str, Any], None, None]) -> Generator[bytes, None, None]:
+    with contextlib.closing(events):
+        for event in events:
+            yield b"data: " + json.dumps(event, ensure_ascii=False, default=str).encode() + b"\n\n"
+
+
+_WIRES = {"/v1/turns": "events", "/v1/ui-turns": "ui"}
+
+
 class _Handler(BaseHTTPRequestHandler):
     # 分块传输要求 HTTP/1.1；SSE 靠它边生成边下发。
     protocol_version = "HTTP/1.1"
@@ -134,7 +147,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": "not found"})
 
     def do_POST(self) -> None:
-        if self.path != "/v1/turns":
+        wire = _WIRES.get(self.path)
+        if wire is None:
             self._json(404, {"error": "not found"})
             return
         rejection = self._admit()
@@ -145,7 +159,7 @@ class _Handler(BaseHTTPRequestHandler):
         if body is None:
             self._json(400, {"error": "invalid json body"})
             return
-        self._run_turn(body)
+        self._run_turn(body, wire)
 
     def _admit(self) -> tuple[int, dict[str, str]] | None:
         supplied = self.headers.get("Authorization", "").removeprefix("Bearer ")
@@ -168,11 +182,20 @@ class _Handler(BaseHTTPRequestHandler):
             return None
         return body if isinstance(body, dict) else None
 
-    def _run_turn(self, body: dict[str, Any]) -> None:
+    def _parse_turn(self, body: dict[str, Any], wire: str) -> tuple[str, list[dict[str, Any]]] | None:
+        if wire == "ui":
+            return history_from_ui_messages(body.get("messages"))
         text = body.get("text")
         if not isinstance(text, str) or not 0 < len(text) <= MAX_TEXT_CHARS:
-            self._json(400, {"error": "text must be a non-empty string"})
+            return None
+        return text, self.state.history(str(body.get("session_id") or "default"))
+
+    def _run_turn(self, body: dict[str, Any], wire: str) -> None:
+        parsed = self._parse_turn(body, wire)
+        if parsed is None:
+            self._json(400, {"error": "invalid turn request"})
             return
+        text, history = parsed
         llm = body.get("llm") if isinstance(body.get("llm"), dict) else {}
         try:
             provider, error = self.state.provider_factory(llm)
@@ -187,26 +210,30 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(429, {"error": "a turn is already running"})
             return
         try:
-            history = self.state.history(str(body.get("session_id") or "default"))
-            self._stream(iter_turn_events(self.state, provider, history, text))
+            events = iter_turn_events(self.state, provider, history, text)
+            if wire == "ui":
+                self._stream(ui_frames(events), UI_STREAM_HEADERS)
+            else:
+                self._stream(event_frames(events))
         finally:
             self.state.turn_gate.release()
 
-    def _stream(self, events: Generator[dict[str, Any], None, None]) -> None:
+    def _stream(self, frames: Generator[bytes, None, None], headers: dict[str, str] | None = None) -> None:
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Transfer-Encoding", "chunked")
         self.send_header("X-Accel-Buffering", "no")
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         try:
-            for event in events:
-                frame = "data: " + json.dumps(event, ensure_ascii=False, default=str) + "\n\n"
+            for frame in frames:
                 try:
-                    self._write_chunk(frame.encode())
+                    self._write_chunk(frame)
                 except OSError:
                     # 客户端走了就别再烧模型：关闭生成器，runtime 随之收尾。
-                    events.close()
+                    frames.close()
                     self.close_connection = True
                     return
         except Exception:
