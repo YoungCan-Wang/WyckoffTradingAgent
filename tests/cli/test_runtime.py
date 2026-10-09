@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import threading
+import time
+
 import pytest
 
 from cli.loop_guard import resolve_turn_expectation
-from cli.runtime import AgentRuntime, partition_tool_calls
+from cli.runtime import AgentCancelled, AgentRuntime, _iter_with_timeout, partition_tool_calls
 from cli.screen_intent import (
     stock_screen_candidate_request_hint,
     stock_screen_style_target_hint,
@@ -1032,3 +1035,43 @@ def test_runtime_blocks_tool_outside_workflow_scope():
 
     assert tools.calls == []
     assert any(e["type"] == "tool_error" and "workflow" in e["error"] for e in events)
+
+
+def _endless_stream(closed: threading.Event):
+    try:
+        while True:
+            yield {"type": "text_delta", "text": "x"}
+            time.sleep(0.005)
+    finally:
+        closed.set()
+
+
+def test_iter_with_timeout_closes_model_stream_when_consumer_leaves():
+    closed = threading.Event()
+    chunks = _iter_with_timeout(_endless_stream(closed), timeout=5)
+    next(chunks)
+    chunks.close()
+
+    assert closed.wait(5), "消费者离开后 producer 必须收掉模型流，否则会一直读到生成结束"
+
+
+def test_iter_with_timeout_closes_model_stream_on_cancel():
+    closed = threading.Event()
+    cancel = threading.Event()
+
+    def slow_stream():
+        try:
+            yield {"type": "text_delta", "text": "x"}
+            while True:
+                time.sleep(0.7)  # 比 0.5s 的 cancel 轮询间隔慢，保证取消在两个分片之间被发现
+                yield {"type": "text_delta", "text": "y"}
+        finally:
+            closed.set()
+
+    chunks = _iter_with_timeout(slow_stream(), timeout=5, cancel_check=cancel.is_set)
+    next(chunks)
+    cancel.set()
+    with pytest.raises(AgentCancelled):
+        next(chunks)
+
+    assert closed.wait(5)

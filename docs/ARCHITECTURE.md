@@ -380,6 +380,21 @@ OpenAI provider 兼容 Qwen / Kimi / LongCat / Minimax 等 OpenAI API 格式端�
 安装、参数默认值、权限、响应格式、长任务与验证契约的唯一维护位置是
 [PUBLIC_MCP.md](PUBLIC_MCP.md)。作为客户端接入第三方 MCP 的实现不在本次重构范围。
 
+### 会员车道 Agent Runtime 服务（实验，未部署）
+
+`cli/service/server.py` 把 `AgentRuntime` 包成常驻 HTTP/SSE 服务，镜像见 `packaging/agent-service/Dockerfile`。
+设计前提：非会员继续走 Worker 上的 `/api/chat`（功能冻结），会员车道走这个服务，LLM key 由会员自带。
+
+- **一个进程只服务一个用户**。首个请求的 `X-Wyckoff-User` 把实例钉死，其他用户得到 409；容器按用户路由由网关保证，这里只做兜底。
+- **必须带网关令牌**：环境变量 `AGENT_SERVICE_TOKEN` 未设置时进程拒绝启动，请求必须带 `Authorization: Bearer`。
+- **默认零工具**：`WYCKOFF_SERVICE_TOOLS` 用逗号列出放行的工具名，过滤发生在 `CloudToolRegistry` 一层。云端放行任何工具之前，要先确认它不依赖本机文件和 `local_db`。
+- **同一时刻只跑一轮**，第二个请求得到 429；客户端断开会关闭事件流并让 runtime 收掉模型流，不再继续生成。
+- 会话历史只在进程内存里（最多 8 个会话），容器休眠即丢失；持久化到 Supabase 是后续工作。
+- `WYCKOFF_SERVICE_ECHO=1` 才允许 `provider_name=echo`，用于不带密钥的冒烟测试。
+
+协议（内部，浏览器不直连）：`GET /healthz`；`POST /v1/turns`，请求体 `{text, session_id?, llm: {provider_name, api_key, model?, base_url?}}`，响应是 `text/event-stream`，每个 `RuntimeEvent` 一帧 `data: {json}`。
+尚未做：`base_url` 白名单（目前只靠网关校验）、UIMessage 流翻译、云端工具审计。
+
 ### TUI 视觉层次
 
 ```
