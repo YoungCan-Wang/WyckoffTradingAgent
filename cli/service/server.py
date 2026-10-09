@@ -1,7 +1,10 @@
 """会员车道的 Agent Runtime 常驻服务。
 
-一个进程只服务一个用户（容器按用户路由）。网关负责登录态、会员判定和配额，
-这里只做三件事：校验网关令牌、把用户钉死在进程上、把 RuntimeEvent 以 SSE 流出。
+两种部署形态，网关负责登录态、会员判定和配额，这里只校验网关令牌并把 RuntimeEvent 以 SSE 流出：
+- 独占（默认）：一个进程只服务一个用户（容器按用户路由），首个用户把实例钉死，其余 409。
+- 共用（WYCKOFF_SERVICE_SHARED=1）：多个用户共用一个进程。每用户同时只跑一轮、全局并发有上限；
+  每个请求有自己的工具注册表和请求级凭据，每轮在全新的 contextvars 上下文里跑；
+  已知不能共用的工具（命令、文件、浏览器、本机数据库）启动时直接拒绝。
 
 内部协议（不直接暴露给浏览器）：
   GET  /healthz
@@ -15,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import contextvars
 import hmac
 import json
 import logging
@@ -38,11 +42,39 @@ TOKEN_ENV = "AGENT_SERVICE_TOKEN"
 ECHO_ENV = "WYCKOFF_SERVICE_ECHO"
 TOOLS_ENV = "WYCKOFF_SERVICE_TOOLS"
 TURN_SECONDS_ENV = "WYCKOFF_SERVICE_TURN_SECONDS"
+SHARED_ENV = "WYCKOFF_SERVICE_SHARED"
+MAX_TURNS_ENV = "WYCKOFF_SERVICE_MAX_TURNS"
 USER_HEADER = "X-Wyckoff-User"
 MAX_BODY_BYTES = 256 * 1024
 MAX_SESSIONS = 8
 MAX_ECHO_DELAY_MS = 1000
 DEFAULT_MAX_TURN_SECONDS = 600.0
+DEFAULT_MAX_CONCURRENT_TURNS = 4
+MAX_CREDENTIALS = 20
+MAX_CREDENTIAL_CHARS = 4096
+
+# 共用进程里绝不能启用的工具（见 docs/CLOUD_TOOL_AUDIT.md）：能跑命令 / 读写任意文件 / 开浏览器，
+# 或读写服务器本机的 SQLite 与家目录。其余工具要逐个确认后才能放行，这里只拦已知的。
+SHARED_FORBIDDEN_TOOLS = frozenset(
+    {
+        "exec_command",
+        "read_file",
+        "write_file",
+        "browser_research",
+        "app_browser",
+        "annotate_chart",
+        "execute_skill",
+        "render_dashboard",
+        "save_report",
+        "portfolio",
+        "update_portfolio",
+        "set_stop_loss",
+        "record_trade_fill",
+        "query_history",
+        "research_hypothesis",
+        "diagnose_backend",
+    }
+)
 
 ProviderFactory = Callable[[dict[str, Any]], tuple[Any, str | None]]
 
@@ -54,9 +86,11 @@ class CloudToolRegistry(ToolRegistry):
     空白名单会把全部工具 schema 展示给模型。这里在注册表一层过滤，展示与存在性校验同源。
     """
 
-    def __init__(self, cloud_tools: frozenset[str]) -> None:
+    def __init__(self, cloud_tools: frozenset[str], state: dict[str, Any] | None = None) -> None:
         self._cloud_tools = cloud_tools
         super().__init__()
+        if state:
+            self.state.update(state)
 
     def schemas(self, allowed_tools: set[str] | tuple[str, ...] | None = None) -> list[dict[str, Any]]:
         return [schema for schema in super().schemas(allowed_tools) if schema["name"] in self._cloud_tools]
@@ -76,6 +110,39 @@ def default_provider_factory(llm: dict[str, Any]) -> tuple[Any, str | None]:
     return create_provider(name, str(llm["api_key"]), str(llm.get("model") or ""), str(llm.get("base_url") or ""))
 
 
+def validate_shared_tools(names: frozenset[str]) -> None:
+    forbidden = sorted(names & SHARED_FORBIDDEN_TOOLS)
+    if forbidden:
+        raise ValueError(f"these tools cannot run in a shared process: {', '.join(forbidden)}")
+
+
+def parse_credentials(value: Any) -> dict[str, str] | None:
+    """网关按请求注入的凭据：{字符串: 字符串}，数量和长度有上限；缺省视为没有凭据。"""
+    if value is None:
+        return {}
+    if not isinstance(value, dict) or len(value) > MAX_CREDENTIALS:
+        return None
+    if not all(isinstance(k, str) and isinstance(v, str) and len(v) <= MAX_CREDENTIAL_CHARS for k, v in value.items()):
+        return None
+    return dict(value)
+
+
+def in_fresh_context(events: Generator[dict[str, Any], None, None]) -> Generator[dict[str, Any], None, None]:
+    """每轮在一个全新的 contextvars 上下文里推进事件流。
+
+    ContextVar 的写入（比如 tushare 的运行期 token）只留在本轮的上下文里。处理线程在保持连接上
+    会接着处理下一个请求，不隔离的话上一个用户的 token 会漏给下一个。
+    """
+    context = contextvars.Context()
+    with contextlib.closing(events):
+        while True:
+            try:
+                event = context.run(next, events)
+            except StopIteration:
+                return
+            yield event
+
+
 class ServiceState:
     def __init__(
         self,
@@ -83,27 +150,61 @@ class ServiceState:
         tools: Any,
         provider_factory: ProviderFactory = default_provider_factory,
         max_turn_seconds: float = DEFAULT_MAX_TURN_SECONDS,
+        *,
+        shared: bool = False,
+        max_concurrent_turns: int | None = None,
+        tools_factory: Callable[[str, dict[str, str]], Any] | None = None,
     ) -> None:
         self.token = token
         self.tools = tools
         self.provider_factory = provider_factory
         self.max_turn_seconds = max_turn_seconds
-        self.turn_gate = threading.Lock()
-        self._bind_lock = threading.Lock()
+        self.shared = shared
+        self.max_concurrent_turns = max_concurrent_turns or (DEFAULT_MAX_CONCURRENT_TURNS if shared else 1)
+        self.tools_factory = tools_factory
+        self._lock = threading.Lock()
         self._bound_user: str | None = None
-        self._sessions: dict[str, list[dict[str, Any]]] = {}
+        self._active: set[str] = set()
+        self._sessions: dict[tuple[str, str], list[dict[str, Any]]] = {}
+
+    @property
+    def active_turns(self) -> int:
+        with self._lock:
+            return len(self._active)
 
     def bind_user(self, user: str) -> bool:
-        """进程第一次见到的用户就是它的主人；网关路由出错时别的用户进不来。"""
-        with self._bind_lock:
+        """独占模式：进程第一次见到的用户就是它的主人，网关路由出错时别的用户进不来。共用模式不绑定。"""
+        if self.shared:
+            return True
+        with self._lock:
             if self._bound_user is None:
                 self._bound_user = user
             return self._bound_user == user
 
-    def history(self, session_id: str) -> list[dict[str, Any]]:
-        if session_id not in self._sessions and len(self._sessions) >= MAX_SESSIONS:
-            self._sessions.pop(next(iter(self._sessions)))
-        return self._sessions.setdefault(session_id, [])
+    def begin_turn(self, user: str) -> str | None:
+        """占一个名额；拿不到就返回原因。每个用户同时只跑一轮，全局并发有上限。"""
+        with self._lock:
+            if user in self._active:
+                return "a turn is already running"
+            if len(self._active) >= self.max_concurrent_turns:
+                return "service is at capacity"
+            self._active.add(user)
+        return None
+
+    def end_turn(self, user: str) -> None:
+        with self._lock:
+            self._active.discard(user)
+
+    def history(self, user: str, session_id: str) -> list[dict[str, Any]]:
+        key = (user, session_id)
+        with self._lock:
+            if key not in self._sessions and len(self._sessions) >= MAX_SESSIONS:
+                self._sessions.pop(next(iter(self._sessions)))
+            return self._sessions.setdefault(key, [])
+
+    def tools_for(self, user: str, credentials: dict[str, str]) -> Any:
+        """共用模式下每个请求一个注册表，凭据只活在这个请求里；独占模式沿用启动时建好的那个。"""
+        return self.tools_factory(user, credentials) if self.tools_factory else self.tools
 
 
 def iter_turn_events(
@@ -111,12 +212,13 @@ def iter_turn_events(
     provider: Any,
     history: list[dict[str, Any]],
     text: str,
+    tools: Any,
 ) -> Generator[dict[str, Any], None, None]:
     history.append({"role": "user", "content": text})
     # 断开信号不一定能穿过网关与容器之间的代理链，所以每轮自带时限作后备。
     # 检查点是流的空档、轮次边界和工具批次，不会打断一段连续输出。
     deadline = time.monotonic() + state.max_turn_seconds
-    runtime = AgentRuntime(provider, state.tools, cancel_check=lambda: time.monotonic() >= deadline)
+    runtime = AgentRuntime(provider, tools, cancel_check=lambda: time.monotonic() >= deadline)
     for event in runtime.run_stream(history, CHAT_AGENT_SYSTEM_PROMPT):
         yield event
         if event.get("type") == "done" and event.get("text"):
@@ -136,6 +238,7 @@ class _Handler(BaseHTTPRequestHandler):
     # 分块传输要求 HTTP/1.1；SSE 靠它边生成边下发。
     protocol_version = "HTTP/1.1"
     state: ServiceState
+    _user: str = ""
 
     def log_message(self, format: str, *args: Any) -> None:
         logger.debug("%s %s", self.address_string(), format % args)
@@ -170,6 +273,7 @@ class _Handler(BaseHTTPRequestHandler):
             return 400, {"error": f"missing {USER_HEADER}"}
         if not self.state.bind_user(user):
             return 409, {"error": "this instance belongs to another user"}
+        self._user = user
         return None
 
     def _read_body(self) -> dict[str, Any] | None:
@@ -188,14 +292,36 @@ class _Handler(BaseHTTPRequestHandler):
         text = body.get("text")
         if not isinstance(text, str) or not 0 < len(text) <= MAX_TEXT_CHARS:
             return None
-        return text, self.state.history(str(body.get("session_id") or "default"))
+        return text, self.state.history(self._user, str(body.get("session_id") or "default"))
 
     def _run_turn(self, body: dict[str, Any], wire: str) -> None:
         parsed = self._parse_turn(body, wire)
-        if parsed is None:
+        credentials = parse_credentials(body.get("credentials"))
+        if parsed is None or credentials is None:
             self._json(400, {"error": "invalid turn request"})
             return
         text, history = parsed
+        provider = self._provider(body)
+        if provider is None:
+            return
+        busy = self.state.begin_turn(self._user)
+        if busy is not None:
+            self._json(429, {"error": busy})
+            return
+        try:
+            tools = self.state.tools_for(self._user, credentials)
+            events = in_fresh_context(iter_turn_events(self.state, provider, history, text, tools))
+            if wire == "ui":
+                self._stream(ui_frames(events), UI_STREAM_HEADERS)
+            else:
+                self._stream(event_frames(events))
+        except Exception:
+            logger.exception("turn setup failed")
+            self._json(500, {"error": "turn setup failed"})
+        finally:
+            self.state.end_turn(self._user)
+
+    def _provider(self, body: dict[str, Any]) -> Any:
         llm = body.get("llm") if isinstance(body.get("llm"), dict) else {}
         try:
             provider, error = self.state.provider_factory(llm)
@@ -205,18 +331,7 @@ class _Handler(BaseHTTPRequestHandler):
             provider, error = None, "provider init failed"
         if provider is None:
             self._json(400, {"error": error or "provider unavailable"})
-            return
-        if not self.state.turn_gate.acquire(blocking=False):
-            self._json(429, {"error": "a turn is already running"})
-            return
-        try:
-            events = iter_turn_events(self.state, provider, history, text)
-            if wire == "ui":
-                self._stream(ui_frames(events), UI_STREAM_HEADERS)
-            else:
-                self._stream(event_frames(events))
-        finally:
-            self.state.turn_gate.release()
+        return provider
 
     def _stream(self, frames: Generator[bytes, None, None], headers: dict[str, str] | None = None) -> None:
         self.send_response(200)
@@ -270,6 +385,22 @@ def _tool_names() -> frozenset[str]:
     return frozenset(name.strip() for name in os.getenv(TOOLS_ENV, "").split(",") if name.strip())
 
 
+def build_state(token: str) -> ServiceState:
+    names = _tool_names()
+    seconds = float(os.getenv(TURN_SECONDS_ENV) or DEFAULT_MAX_TURN_SECONDS)
+    if os.getenv(SHARED_ENV) != "1":
+        return ServiceState(token, CloudToolRegistry(names), max_turn_seconds=seconds)
+    validate_shared_tools(names)
+    return ServiceState(
+        token,
+        None,
+        max_turn_seconds=seconds,
+        shared=True,
+        max_concurrent_turns=int(os.getenv(MAX_TURNS_ENV) or DEFAULT_MAX_CONCURRENT_TURNS),
+        tools_factory=lambda user, credentials: CloudToolRegistry(names, {"user_id": user, "credentials": credentials}),
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Wyckoff agent runtime service")
     parser.add_argument("--host", default="127.0.0.1")
@@ -279,12 +410,16 @@ def main(argv: list[str] | None = None) -> None:
     if not token:
         raise SystemExit(f"{TOKEN_ENV} must be set")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
-    turn_seconds = float(os.getenv(TURN_SECONDS_ENV) or DEFAULT_MAX_TURN_SECONDS)
-    state = ServiceState(token, CloudToolRegistry(_tool_names()), max_turn_seconds=turn_seconds)
+    try:
+        state = build_state(token)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     server = make_server(args.host, args.port, state)
     # 容器里 python 是 PID 1，没有处理器的 SIGTERM 会被忽略，docker stop 要干等到 SIGKILL。
     signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=server.shutdown, daemon=True).start())
-    logger.info("agent service listening on %s:%s", args.host, args.port)
+    logger.info(
+        "agent service listening on %s:%s (%s)", args.host, args.port, "shared" if state.shared else "single-user"
+    )
     server.serve_forever()
 
 

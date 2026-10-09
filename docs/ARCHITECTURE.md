@@ -385,7 +385,11 @@ OpenAI provider 兼容 Qwen / Kimi / LongCat / Minimax 等 OpenAI API 格式端�
 `cli/service/server.py` 把 `AgentRuntime` 包成常驻 HTTP/SSE 服务，镜像见 `packaging/agent-service/Dockerfile`。
 设计前提：非会员继续走 Worker 上的 `/api/chat`（功能冻结），会员车道走这个服务，LLM key 由会员自带。
 
-- **一个进程只服务一个用户**。首个请求的 `X-Wyckoff-User` 把实例钉死，其他用户得到 409；容器按用户路由由网关保证，这里只做兜底。
+- **两种部署形态。**
+  - **独占（默认）**：一个进程只服务一个用户，首个请求的 `X-Wyckoff-User` 把实例钉死，其他用户得到 409。适合按用户路由到各自容器。
+  - **共用（`WYCKOFF_SERVICE_SHARED=1`）**：多个用户共用一个进程，不绑定用户。每个用户同时只跑一轮、全局并发有上限（`WYCKOFF_SERVICE_MAX_TURNS`，默认 4），超了回 429；会话历史按 `(用户, session_id)` 隔离；**每个请求建自己的工具注册表**，网关按请求注入的 `credentials`（`{字符串: 字符串}`，最多 20 项、每项 ≤4096 字符）只活在这个请求里；每轮在全新的 `contextvars` 上下文里跑，ContextVar 的写入不会漏到同一线程的下一个请求。
+  - 共用模式启动时会拒绝已知不能共用的工具（`SHARED_FORBIDDEN_TOOLS`：命令、任意文件读写、浏览器、本机数据库与家目录），配置了就直接退出。这只是拦已知的；放行任何其他工具前仍要按 [CLOUD_TOOL_AUDIT.md](CLOUD_TOOL_AUDIT.md) 逐个确认。
+  - 凭据读取需要 `ToolContext` 的请求级凭据模式（`state["credentials"]`），否则工具会回落到 admin 客户端或本机配置。
 - **必须带网关令牌**：环境变量 `AGENT_SERVICE_TOKEN` 未设置时进程拒绝启动，请求必须带 `Authorization: Bearer`。
 - **默认零工具**：`WYCKOFF_SERVICE_TOOLS` 用逗号列出放行的工具名，过滤发生在 `CloudToolRegistry` 一层。云端放行任何工具之前，要先确认它不依赖本机文件和 `local_db`。
 - **同一时刻只跑一轮**，第二个请求得到 429；客户端断开会关闭事件流并让 runtime 收掉模型流，不再继续生成。
