@@ -35,6 +35,7 @@ export interface ChatConfig {
   configured: boolean
   model: string | null
   error?: string
+  agentLane?: boolean
 }
 
 export interface QueuedMessage {

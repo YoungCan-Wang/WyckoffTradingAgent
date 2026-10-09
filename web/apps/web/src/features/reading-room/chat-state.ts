@@ -350,25 +350,14 @@ export function useChatConfig(
   useEffect(() => {
     if (!token) return
     let cancelled = false
-    fetchChatConfig(token, t)
-      .then((next) => { if (!cancelled) setConfig(next) })
+    Promise.all([fetchChatConfig(token, t), fetchAgentLane(token)])
+      .then(([next, agentLane]) => { if (!cancelled) setConfig({ ...next, agentLane }) })
       .catch(() => {
         if (!cancelled) setConfig({ configured: false, model: null, error: t('chat.configUnreachable') })
       })
     return () => { cancelled = true }
   }, [t, token])
   return config
-}
-
-export function useAgentLane(token: string | undefined): boolean {
-  const [enabled, setEnabled] = useState(false)
-  useEffect(() => {
-    if (!token) return
-    let cancelled = false
-    void fetchAgentLane(token).then((next) => { if (!cancelled) setEnabled(next) })
-    return () => { cancelled = true }
-  }, [token])
-  return enabled
 }
 
 export function hasPendingToolApproval(messages: UIMessage[]): boolean {
