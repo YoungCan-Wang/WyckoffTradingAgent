@@ -111,7 +111,7 @@ def mark_step3_outputs(
         step3.springboard_codes,
         step3.springboard_updates,
         cfg.logs_path,
-        dry_run=cfg.preview_only,
+        dry_run=cfg.suppress_shared_side_effects(),
         log_fn=log_line,
         step3_verdicts=step3.verdicts,
     )
@@ -135,7 +135,7 @@ def persist_ic_shadow_pool(step2: Step2StageResult, cfg: DailyJobConfig) -> None
     rows = ((step2.details or {}).get("metrics") or {}).get("ic_shadow") or []
     if not rows:
         return
-    if cfg.preview_only:
+    if cfg.suppress_shared_side_effects():
         log_line(f"  影子池 dry-run：{len(rows)} 行未写入")
         return
     try:
@@ -160,7 +160,7 @@ def persist_step3_signal_observations(
             step3.springboard_codes,
             cfg.logs_path,
             trade_date=latest_trade_date_str(),
-            dry_run=cfg.preview_only,
+            dry_run=cfg.suppress_shared_side_effects(),
             log_fn=log_line,
         )
     return True
