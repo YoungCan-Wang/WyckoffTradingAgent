@@ -397,6 +397,20 @@ OpenAI provider 兼容 Qwen / Kimi / LongCat / Minimax 等 OpenAI API 格式端�
 - 会话历史只在进程内存里（最多 8 个会话），容器休眠即丢失；持久化到 Supabase 是后续工作。
 - `WYCKOFF_SERVICE_ECHO=1` 才允许 `provider_name=echo`，用于不带密钥的冒烟测试。
 
+**部署示例：Cloud Run（免费额度内）。** 共用模式 + 缩到零 + 小规格，小规模白名单可以不花钱，但需要绑定结算账号（无硬性封顶，靠最大实例数和预算告警兜底）：
+
+```bash
+gcloud run deploy wyckoff-agent --image <镜像> --region asia-northeast1 --allow-unauthenticated \
+  --cpu 1 --memory 1Gi --concurrency 2 --max-instances 1 --min-instances 0 --timeout 600 \
+  --set-env-vars "AGENT_SERVICE_TOKEN=<随机令牌>,WYCKOFF_SERVICE_SHARED=1,WYCKOFF_SERVICE_MAX_TURNS=2"
+```
+
+- 区域选 Tier 1 的东京：免费额度按 Tier 1 折算；东京出口实测可达 DeepSeek / OpenAI / Anthropic / Gemini（假 key 返回 401 / 400，而不是地区限制）。不要放香港或大陆。
+- 对公网开放是因为 Worker 无法带 Google 身份，只能靠共享令牌；没有令牌一律 401。
+- Cloud Run 保留 `/healthz`（前端直接回 404），外部探活不要用它。
+- 预算告警只通知不停服；创建预算要带 `--billing-project`。
+- 镜像必须是 linux/amd64。
+
 协议（内部，浏览器不直连）：
 
 - `GET /healthz`
