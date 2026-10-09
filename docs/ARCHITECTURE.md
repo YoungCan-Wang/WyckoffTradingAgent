@@ -98,8 +98,24 @@ Worker 负责鉴权、输入校验、队列控制面和 HMAC 签名。Vercel Nod
 | `AGENT_RUN_MIN_INTERVAL_MS` | `10000` | 同一用户两次沙箱任务提交的最小间隔 |
 | `AGENT_RUN_QUEUE` | Cloudflare Queue binding | `wyckoff-agent-runs` 的生产者绑定；不是密钥，声明在 `wrangler.toml` |
 | `AGENT_RUN_NOTIFIER` | Durable Object binding | 按用户命名的 `AgentRunNotifier` 推送通道；SQLite-backed 类（免费套餐唯一可用形态），迁移声明在 `wrangler.toml` |
+| `AGENT_SERVICE_URL` | 未设置 | 会员 Agent 车道的上游服务地址（`cli/service`）；只接受 https，本机开发才放行 `http://127.0.0.1` / `localhost`。未设置时车道整体关闭 |
+| `AGENT_SERVICE_TOKEN` | Worker secret | 网关与上游服务之间的共享令牌，必须通过 Worker secret 注入；与 `AGENT_SERVICE_URL` 缺一不可 |
+| `AGENT_LANE_USERS` | 未设置 | 允许进入车道的用户 ID，逗号分隔；`*` 表示所有有效会员，只给开发环境用。未设置时没有人在车道里 |
+| `AGENT_LANE_DAILY_LIMIT_PER_USER` | `60` | 每个用户每天允许的车道对话数，与免费车道的额度分开计 |
+| `AGENT_LANE_MIN_INTERVAL_MS` | `2500` | 同一用户两次车道对话的最小间隔 |
 | `SANDBOX_BRIDGE_URL` | 未设置 | Vercel Node bridge 的 HTTPS `/api/sandbox-run` 地址；可作为普通 Worker 变量 |
 | `SANDBOX_BRIDGE_SECRET` | Worker secret | 与 Vercel 项目环境变量同值的 HMAC 密钥；不进 git、不回传浏览器或沙箱 |
+
+### 会员 Agent 车道网关（`/api/agent`）
+
+非会员继续走 `/api/chat`；会员车道把对话转给 `AgentRuntime` 服务（见 `cli/service`），原样回传它的 ai-sdk UI 消息流，前端只需换一个路径。默认**关闭**，三道闸门同时满足才对某个用户打开：`AGENT_SERVICE_URL` + `AGENT_SERVICE_TOKEN` 已配置、用户在 `AGENT_LANE_USERS` 里、且是有效星球会员。
+
+- `GET /api/agent/config` → `{enabled}`：前端据此决定走哪条车道；任何一道闸门不过，或请求失败，都回落到 `/api/chat`。
+- `POST /api/agent/chat`：鉴权 → 闸门 → 车道限流（先过闸门再计数，没资格的请求不消耗额度）→ 读取会员自带的模型配置（与免费车道同一份 `user_settings`）→ 转给服务。上游不可达或异常一律回 502 且不透传上游内容；上游忙回 429。只透传流协议需要的响应头。
+- 模型配置映射：`anthropic` / anthropic 协议 → `claude`，`gemini` → `gemini`，`deepseek` → `deepseek`，其余（`openai`、`1route`、自定义 OpenAI 兼容端点）→ `openai` 并带 `base_url`。
+- 浏览器端的 `watchlist` / `marketWatch` 不会转给服务。车道默认零工具，所以会员在车道里**暂时没有**免费车道里那 12 个行情 / 持仓工具；在云端工具审计完成前，车道只应给明确开启的账号使用。
+- 目前上游只有「按 URL 直连」一种实现，而服务是一个进程只服务一个用户，所以只适合单用户 / 开发验证。多用户需要按用户路由到各自的容器（Cloudflare Containers 的 Durable Object 路由），用同一个 `AgentUpstream` 接口接入。
+
 
 `X-RateLimit-Backend` 明确返回 `redis`、`local` 或 `local-fallback`，便于区分共享额度、未配置 Redis 和 Redis 故障降级。Redis 只承载可过期的协调状态与短期 Agent Run 结果，不承载持仓、订单、交易信号或审计真相；这些数据仍由 Supabase/RLS 管理。
 

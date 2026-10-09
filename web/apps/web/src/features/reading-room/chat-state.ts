@@ -184,6 +184,7 @@ export function useReadingRoomChat(
   onRunEvent?: (event: ChatRunEvent) => void,
   onRunFinish?: () => void,
   onRunError?: () => void,
+  agentLane = false,
 ) {
   const watchlistRef = useRef(watchlist)
   const marketWatchRef = useRef(marketWatch)
@@ -194,7 +195,7 @@ export function useReadingRoomChat(
     usagePartsRef.current = []
     setLlmUsage(null)
   }, [setLlmUsage])
-  const transport = useMemo(() => buildChatTransport(token, watchlistRef, marketWatchRef), [token])
+  const transport = useMemo(() => buildChatTransport(token, watchlistRef, marketWatchRef, agentLane), [token, agentLane])
   const chat = useChat({
     transport,
     experimental_throttle: 120,
@@ -359,6 +360,17 @@ export function useChatConfig(
   return config
 }
 
+export function useAgentLane(token: string | undefined): boolean {
+  const [enabled, setEnabled] = useState(false)
+  useEffect(() => {
+    if (!token) return
+    let cancelled = false
+    void fetchAgentLane(token).then((next) => { if (!cancelled) setEnabled(next) })
+    return () => { cancelled = true }
+  }, [token])
+  return enabled
+}
+
 export function hasPendingToolApproval(messages: UIMessage[]): boolean {
   for (const message of messages) {
     for (const part of message.parts ?? []) {
@@ -456,16 +468,35 @@ function normalizeClientError(error: unknown, t: (key: TranslationKey) => string
   return error instanceof Error ? error.message : t('chat.requestFailed')
 }
 
+// 会员 Agent 车道与免费车道说同一种 UI 消息流协议，前端只需要换一个路径。
+export function chatApiPath(agentLane: boolean): '/api/agent/chat' | '/api/chat' {
+  return agentLane ? '/api/agent/chat' : '/api/chat'
+}
+
 function buildChatTransport(
   token: string | undefined,
   watchlistRef: RefObject<Pick<WatchItem, 'code' | 'name'>[]>,
   marketWatchRef: RefObject<MarketWatchSnapshot | null>,
+  agentLane: boolean,
 ) {
   return new DefaultChatTransport({
-    api: apiUrl('/api/chat'),
+    api: apiUrl(chatApiPath(agentLane)),
     headers: (): Record<string, string> => token ? { Authorization: `Bearer ${token}` } : {},
     body: () => ({ watchlist: watchlistRef.current, marketWatch: marketWatchRef.current }),
   })
+}
+
+// 服务端是唯一的判定方（服务是否配置、账号是否在白名单、是否有效会员）。
+// 任何失败都回落到免费车道，不让一次探测失败挡住聊天。
+export async function fetchAgentLane(token: string): Promise<boolean> {
+  try {
+    const response = await fetch(apiUrl('/api/agent/config'), { headers: { Authorization: `Bearer ${token}` } })
+    if (!response.ok) return false
+    const body = await response.json() as { enabled?: unknown }
+    return body.enabled === true
+  } catch {
+    return false
+  }
 }
 
 async function fetchChatConfig(

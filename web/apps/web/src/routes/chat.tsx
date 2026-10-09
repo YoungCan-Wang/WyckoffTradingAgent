@@ -6,6 +6,7 @@ import {
   CONVERSATION_SIDEBAR_STORAGE_KEY,
   useAutoScroll,
   useAgentRunInterpretation,
+  useAgentLane,
   useChatConfig,
   useMessageQueue,
   useAgentRunPolling,
@@ -78,10 +79,11 @@ export function ChatPage() {
   const scrollRef = useRef<HTMLDivElement>(null)
   const token = session?.access_token
   const config = useChatConfig(token, t)
+  const agentLane = useAgentLane(token)
   const { activeConversationRef, runCheckpoint, setRunCheckpoint, onRunEvent, onRunFinish, onRunError, onRunInterrupted } = useRunLedger()
   const watchlist = useReadingRoomWatchlist(user?.id)
   const { marketWatch, requestItems, updateMarketWatch } = useMarketWatch(user?.id, watchlist.items)
-  const chat = useReadingRoomChat(token, setLocalError, t, setModelStatus, setLlmUsage, requestItems, marketWatch, updateMarketWatch, onRunEvent, onRunFinish, onRunError)
+  const chat = useReadingRoomChat(token, setLocalError, t, setModelStatus, setLlmUsage, requestItems, marketWatch, updateMarketWatch, onRunEvent, onRunFinish, onRunError, agentLane)
   const { clearLlmUsage } = chat
   const loading = chat.status === 'submitted' || chat.status === 'streaming'
   const changeActiveTab = useCallback((tab: ReadingRoomTab) => { setActiveTab(tab); writeActiveTab(tab) }, [])
@@ -139,6 +141,7 @@ export function ChatPage() {
     <div className="flex h-full min-h-0 flex-col overflow-hidden" data-reading-room-streaming={loading ? 'true' : 'false'}>
       <ChatHeader
         config={config}
+        agentLane={agentLane}
         hasUser={Boolean(user)}
         activeTab={activeTab}
         messageCount={chat.messages.length}

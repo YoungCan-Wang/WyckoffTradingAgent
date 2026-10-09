@@ -224,7 +224,7 @@ function createToolFetch(): typeof globalThis.fetch {
   }
 }
 
-type ChatModelConfig = LLMToolConfig & {
+export type ChatModelConfig = LLMToolConfig & {
   protocol?: 'openai' | 'anthropic'
   provider: string
   reasoning_level?: DeepSeekReasoningLevel
@@ -234,7 +234,7 @@ async function loadLLMConfig(supabase: ToolDeps['supabase'], userId: string): Pr
   return (await loadLLMConfigs(supabase, userId))[0] || null
 }
 
-async function loadLLMConfigs(supabase: ToolDeps['supabase'], userId: string): Promise<ChatModelConfig[]> {
+export async function loadLLMConfigs(supabase: ToolDeps['supabase'], userId: string): Promise<ChatModelConfig[]> {
   const { data } = await supabase
     .from('user_settings')
     .select('chat_provider, gemini_api_key, gemini_model, gemini_base_url, openai_api_key, openai_model, openai_base_url, deepseek_api_key, deepseek_model, deepseek_base_url, anthropic_api_key, anthropic_model, anthropic_base_url, custom_providers')
