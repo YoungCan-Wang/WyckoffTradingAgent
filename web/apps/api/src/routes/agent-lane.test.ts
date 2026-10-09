@@ -160,6 +160,28 @@ describe('POST /chat upstream failures', () => {
     expect((await post(routes, { messages: MESSAGES })).status).toBe(429)
   })
 
+  it('logs why the service said no, without user ids, content or keys', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { routes } = build({ resolveUpstream: () => async () => new Response('internal detail sk-secret', { status: 409 }) })
+
+    await post(routes, { messages: MESSAGES })
+
+    const line = String(warn.mock.calls[0]?.[0])
+    expect(JSON.parse(line)).toMatchObject({ event: 'agent_lane.upstream_rejected', status: 409 })
+    for (const forbidden of ['sk-secret', 'user-1', '威科夫量价', 'internal detail']) expect(line).not.toContain(forbidden)
+  })
+
+  it('logs an unreachable service by error name only', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { routes } = build({ resolveUpstream: () => async () => { throw new TypeError('connect ECONNREFUSED sk-secret') } })
+
+    await post(routes, { messages: MESSAGES })
+
+    const line = String(warn.mock.calls[0]?.[0])
+    expect(JSON.parse(line)).toMatchObject({ event: 'agent_lane.upstream_unreachable', error: 'TypeError' })
+    expect(line).not.toContain('sk-secret')
+  })
+
   it.each([400, 401, 409, 500])('maps a %i from the service to 502 and does not leak its body', async (status) => {
     const { routes } = build({ resolveUpstream: () => async () => new Response('internal detail sk-secret', { status }) })
     const response = await post(routes, { messages: MESSAGES })

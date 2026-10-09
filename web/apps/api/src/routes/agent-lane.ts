@@ -26,6 +26,11 @@ export type AgentLaneDeps = {
 
 const MAX_MESSAGES_CHARS = 60_000
 
+// 只记事件、请求 ID 和状态码：不记用户 ID、对话内容、模型配置，与沙箱日志的约定一致。
+function logLane(requestId: unknown, event: string, detail: Record<string, unknown>): void {
+  console.warn(JSON.stringify({ event, timestamp: new Date().toISOString(), requestId, ...detail }))
+}
+
 const defaultDeps: AgentLaneDeps = {
   isMember: isActivePlanetMember,
   loadConfigs: (supabase, userId) => loadLLMConfigs(supabase, userId),
@@ -78,10 +83,12 @@ export function createAgentLaneRoutes(overrides: Partial<AgentLaneDeps> = {}) {
     let upstream: Response
     try {
       upstream = await c.get('upstream')(auth.userId, payload, c.req.raw.signal)
-    } catch {
+    } catch (error) {
+      logLane(c.get('requestId'), 'agent_lane.upstream_unreachable', { error: error instanceof Error ? error.name : 'unknown' })
       return c.json({ error: 'Agent service is unavailable' }, 502)
     }
     if (!upstream.ok) {
+      logLane(c.get('requestId'), 'agent_lane.upstream_rejected', { status: upstream.status })
       await upstream.body?.cancel()
       return upstream.status === 429
         ? c.json({ error: 'Agent service is busy, please retry shortly' }, 429)
