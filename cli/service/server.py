@@ -17,6 +17,7 @@ import logging
 import os
 import signal
 import threading
+import time
 from collections.abc import Callable, Generator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -31,11 +32,13 @@ logger = logging.getLogger(__name__)
 TOKEN_ENV = "AGENT_SERVICE_TOKEN"
 ECHO_ENV = "WYCKOFF_SERVICE_ECHO"
 TOOLS_ENV = "WYCKOFF_SERVICE_TOOLS"
+TURN_SECONDS_ENV = "WYCKOFF_SERVICE_TURN_SECONDS"
 USER_HEADER = "X-Wyckoff-User"
 MAX_BODY_BYTES = 256 * 1024
 MAX_TEXT_CHARS = 20_000
 MAX_SESSIONS = 8
 MAX_ECHO_DELAY_MS = 1000
+DEFAULT_MAX_TURN_SECONDS = 600.0
 
 ProviderFactory = Callable[[dict[str, Any]], tuple[Any, str | None]]
 
@@ -70,10 +73,17 @@ def default_provider_factory(llm: dict[str, Any]) -> tuple[Any, str | None]:
 
 
 class ServiceState:
-    def __init__(self, token: str, tools: Any, provider_factory: ProviderFactory = default_provider_factory) -> None:
+    def __init__(
+        self,
+        token: str,
+        tools: Any,
+        provider_factory: ProviderFactory = default_provider_factory,
+        max_turn_seconds: float = DEFAULT_MAX_TURN_SECONDS,
+    ) -> None:
         self.token = token
         self.tools = tools
         self.provider_factory = provider_factory
+        self.max_turn_seconds = max_turn_seconds
         self.turn_gate = threading.Lock()
         self._bind_lock = threading.Lock()
         self._bound_user: str | None = None
@@ -99,7 +109,10 @@ def iter_turn_events(
     text: str,
 ) -> Generator[dict[str, Any], None, None]:
     history.append({"role": "user", "content": text})
-    runtime = AgentRuntime(provider, state.tools)
+    # 断开信号不一定能穿过网关与容器之间的代理链，所以每轮自带时限作后备。
+    # 检查点是流的空档、轮次边界和工具批次，不会打断一段连续输出。
+    deadline = time.monotonic() + state.max_turn_seconds
+    runtime = AgentRuntime(provider, state.tools, cancel_check=lambda: time.monotonic() >= deadline)
     for event in runtime.run_stream(history, CHAT_AGENT_SYSTEM_PROMPT):
         yield event
         if event.get("type") == "done" and event.get("text"):
@@ -239,7 +252,9 @@ def main(argv: list[str] | None = None) -> None:
     if not token:
         raise SystemExit(f"{TOKEN_ENV} must be set")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
-    server = make_server(args.host, args.port, ServiceState(token, CloudToolRegistry(_tool_names())))
+    turn_seconds = float(os.getenv(TURN_SECONDS_ENV) or DEFAULT_MAX_TURN_SECONDS)
+    state = ServiceState(token, CloudToolRegistry(_tool_names()), max_turn_seconds=turn_seconds)
+    server = make_server(args.host, args.port, state)
     # 容器里 python 是 PID 1，没有处理器的 SIGTERM 会被忽略，docker stop 要干等到 SIGKILL。
     signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=server.shutdown, daemon=True).start())
     logger.info("agent service listening on %s:%s", args.host, args.port)

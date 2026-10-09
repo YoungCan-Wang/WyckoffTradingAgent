@@ -389,6 +389,7 @@ OpenAI provider 兼容 Qwen / Kimi / LongCat / Minimax 等 OpenAI API 格式端�
 - **必须带网关令牌**：环境变量 `AGENT_SERVICE_TOKEN` 未设置时进程拒绝启动，请求必须带 `Authorization: Bearer`。
 - **默认零工具**：`WYCKOFF_SERVICE_TOOLS` 用逗号列出放行的工具名，过滤发生在 `CloudToolRegistry` 一层。云端放行任何工具之前，要先确认它不依赖本机文件和 `local_db`。
 - **同一时刻只跑一轮**，第二个请求得到 429；客户端断开会关闭事件流并让 runtime 收掉模型流，不再继续生成。
+- **每轮自带时限**（`WYCKOFF_SERVICE_TURN_SECONDS`，默认 600 秒）。本地 `wrangler dev` 实测，客户端断开**不会**穿过 Worker→DO→容器这条链，容器会把整轮跑完，所以不能只靠断开信号。时限的检查点是模型流的空档、轮次边界和工具批次，不会打断一段连续输出，是粗粒度的后备。
 - 会话历史只在进程内存里（最多 8 个会话），容器休眠即丢失；持久化到 Supabase 是后续工作。
 - `WYCKOFF_SERVICE_ECHO=1` 才允许 `provider_name=echo`，用于不带密钥的冒烟测试。
 

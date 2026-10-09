@@ -89,8 +89,8 @@ def _no_network(monkeypatch):
 def serve():
     servers = []
 
-    def _start(provider: LLMProvider) -> tuple[str, int, ServiceState]:
-        state = ServiceState(TOKEN, StubToolRegistry(), provider_factory=lambda llm: (provider, None))
+    def _start(provider: LLMProvider, **state_kwargs: Any) -> tuple[str, int, ServiceState]:
+        state = ServiceState(TOKEN, StubToolRegistry(), provider_factory=lambda llm: (provider, None), **state_kwargs)
         server = make_server("127.0.0.1", 0, state)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         servers.append(server)
@@ -188,6 +188,15 @@ def test_second_concurrent_turn_gets_429(serve):
     gated.release.set()
     thread.join(5)
     assert first["events"][-1]["type"] == "done"
+
+
+def test_turn_deadline_cancels_a_stalled_turn_and_frees_the_gate(serve):
+    gated = _GatedProvider()
+    _, port, state = serve(gated, max_turn_seconds=0.6)
+    events = _events(_post(port, {"text": "a"}))
+    gated.release.set()
+    assert events[-1]["type"] == "turn_cancelled"
+    assert not state.turn_gate.locked()
 
 
 def test_history_carries_across_turns_of_one_session(serve):
