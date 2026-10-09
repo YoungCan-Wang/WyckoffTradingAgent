@@ -289,3 +289,29 @@ def test_ui_turn_rejects_a_conversation_that_does_not_end_with_a_user_message(se
     assistant = {"id": "a", "role": "assistant", "parts": [{"type": "text", "text": "hi"}]}
 
     assert _post_ui(port, [assistant]).status == 400
+
+
+class _FailingProvider(LLMProvider):
+    @property
+    def name(self) -> str:
+        return "failing"
+
+    def chat(self, messages, tools, system_prompt=""):
+        raise NotImplementedError
+
+    def chat_stream(self, messages, tools, system_prompt="") -> Generator[dict[str, Any], None, None]:
+        raise RuntimeError("Error code: 401 - Authentication Fails, your api key is invalid")
+        yield {}  # pragma: no cover - 让它成为生成器
+
+
+def test_ui_turn_surfaces_the_real_provider_failure_to_the_user(serve):
+    """用真实 runtime 触发失败，而不是手造事件：turn_failed 把原因放在 message 里，读错字段只会剩一句「agent error」。"""
+    _, port, state = serve(_FailingProvider())
+
+    chunks = _chunks(_post_ui(port, [_user("你好")]))
+
+    error = next(c for c in chunks if isinstance(c, dict) and c["type"] == "error")
+    assert "401" in error["errorText"] and "api key is invalid" in error["errorText"]
+    assert [c["type"] for c in chunks[-3:-1]] == ["finish-step", "finish"]
+    assert chunks[-1] == "[DONE]"
+    assert not state.turn_gate.locked()

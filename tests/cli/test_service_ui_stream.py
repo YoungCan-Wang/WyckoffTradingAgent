@@ -121,7 +121,11 @@ def test_failed_turn_ends_with_error_and_ignores_later_events():
     chunks = _translate(
         [
             {"type": "text_delta", "text": "半截"},
-            {"type": "turn_failed", "error": "模型响应超时"},
+            {
+                "type": "turn_failed",
+                "message": "模型响应超时",
+                "failure": {"kind": "timeout", "message": "模型响应超时"},
+            },
             {"type": "text_delta", "text": "不该出现"},
             {"type": "done", "text": "不该出现"},
         ]

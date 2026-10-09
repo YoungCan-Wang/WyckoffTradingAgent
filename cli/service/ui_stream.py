@@ -157,7 +157,10 @@ class UiStreamTranslator:
         return [*chunks, *self._finish("stop")]
 
     def _on_failed(self, event: dict[str, Any]) -> list[Chunk]:
-        return self.fail(str(event.get("error") or "agent error"))
+        # runtime 的 turn_failed 把原因放在 message（以及 failure.message），不是 error。
+        failure = event.get("failure")
+        detail = event.get("message") or (failure.get("message") if isinstance(failure, dict) else None)
+        return self.fail(str(detail or "agent error"))
 
     def _on_cancelled(self, event: dict[str, Any]) -> list[Chunk]:
         self.finished = True
