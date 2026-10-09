@@ -15,7 +15,8 @@ from workflows.step4_pipeline import TZ, latest_trade_date_str
 def run_step2_block(
     run_step2, cfg: DailyJobConfig, summary: list[dict]
 ) -> tuple[Step2StageResult, bool, int | None, list[dict]]:
-    step2 = run_step2_stage(run_step2, cfg.webhook, cfg.preview_only, cfg.logs_path)
+    suppress = cfg.suppress_shared_side_effects()
+    step2 = run_step2_stage(run_step2, cfg.webhook, suppress, cfg.logs_path)
     summary.append(step2.summary_item)
     has_blocking_failure = step2.blocking_failure
     recommend_date, recommendation_payload, persistence_ok = persist_step2_outputs(step2, cfg)
@@ -23,7 +24,7 @@ def run_step2_block(
     return step2, has_blocking_failure, recommend_date, recommendation_payload
 
 
-def run_step2_stage(run_step2, webhook: str, preview_only: bool, logs_path: str | None) -> Step2StageResult:
+def run_step2_stage(run_step2, webhook: str, suppress_side_effects: bool, logs_path: str | None) -> Step2StageResult:
     t0 = datetime.now(TZ)
     step2_ok = False
     step2_err = None
@@ -31,7 +32,7 @@ def run_step2_stage(run_step2, webhook: str, preview_only: bool, logs_path: str 
     benchmark_context: dict = {}
     step2_details: dict = {}
     try:
-        step2_ok, symbols_info, benchmark_context, step2_details = _run_step2(run_step2, webhook, preview_only)
+        step2_ok, symbols_info, benchmark_context, step2_details = _run_step2(run_step2, webhook, suppress_side_effects)
         step2_err = None if step2_ok else "飞书发送失败"
     except Exception as e:
         step2_err = str(e)
@@ -59,26 +60,27 @@ def run_step2_stage(run_step2, webhook: str, preview_only: bool, logs_path: str 
 
 def persist_step2_outputs(step2: Step2StageResult, cfg: DailyJobConfig) -> tuple[int | None, list[dict], bool]:
     trade_mode = resolve_market_trade_mode((step2.benchmark_context or {}).get("regime"))
+    dry_run = cfg.suppress_shared_side_effects()
     persistence_ok = True
     if not step2.blocking_failure and step2.benchmark_context:
         persistence_ok = daily_persistence.persist_benchmark_context(
             step2.benchmark_context,
             cfg.logs_path,
-            dry_run=cfg.preview_only,
+            dry_run=dry_run,
             trade_date=latest_trade_date_str(),
             log_fn=log_line,
         )
     if step2.ok and step2.details:
         persist_step2_observations(step2, cfg)
         run_signal_confirmation(
-            step2.symbols_info, step2.details, step2.benchmark_context, cfg.logs_path, dry_run=cfg.preview_only
+            step2.symbols_info, step2.details, step2.benchmark_context, cfg.logs_path, dry_run=dry_run
         )
         _prepare_step3_review_input(step2, trade_mode, cfg)
     if step2.ok and (step2.symbols_info or step2.details):
         recommend_date, payload, recommendation_ok = daily_persistence.persist_recommendations(
             step2.symbols_info,
             cfg.logs_path,
-            dry_run=cfg.preview_only,
+            dry_run=dry_run,
             trade_date=latest_trade_date_str(),
             log_fn=log_line,
             step2_details=step2.details,
@@ -142,16 +144,17 @@ def _prepare_dynamic_shadow_review(step2: Step2StageResult, cfg: DailyJobConfig)
 
 
 def persist_step2_observations(step2: Step2StageResult, cfg: DailyJobConfig) -> None:
+    dry_run = cfg.suppress_shared_side_effects()
     daily_persistence.persist_theme_radar(
         step2.details,
         cfg.logs_path,
-        dry_run=cfg.preview_only,
+        dry_run=dry_run,
         log_fn=log_line,
     )
     signal_observations.persist_external_seed_observations(
         step2.details,
         cfg.logs_path,
-        dry_run=cfg.preview_only,
+        dry_run=dry_run,
         log_fn=log_line,
     )
 
@@ -186,7 +189,7 @@ def run_signal_confirmation(
                 dry_run=dry_run,
             )
             merge_confirmed_signals(symbols_info, step2_details, confirmed_extra)
-            suffix = "（preview dry-run，不写库）" if dry_run else ""
+            suffix = "（隔离 dry-run，不写库）" if dry_run else ""
             log_line(f"Step2.5 信号确认{suffix}: confirmed={len(confirmed_extra)}", logs_path)
     except Exception as e:
         log_line(f"Step2.5 信号确认失败（已降级）: {e}", logs_path)
@@ -237,6 +240,10 @@ def run_springboard_scoring(symbols_info: list[dict], step2_details: dict) -> in
     return scored
 
 
-def _run_step2(run_step2, webhook: str, preview_only: bool):
+def _run_step2(run_step2, webhook: str, suppress_side_effects: bool):
     """执行 Step2。ETF 增强已于 2026-08-24 从 A 股漏斗移除，故不再注入 etf_* 上下文。"""
-    return run_step2("" if preview_only else webhook, notify=not preview_only, return_details=True)
+    return run_step2(
+        "" if suppress_side_effects else webhook,
+        notify=not suppress_side_effects,
+        return_details=True,
+    )
