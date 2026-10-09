@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 from dataclasses import dataclass
 from datetime import date
@@ -48,7 +49,7 @@ from utils.progress import report_progress as _report_progress
 from utils.trading_clock import resolve_end_calendar_day
 from workflows.fetch_runtime_config import fetch_runtime_config_from_env
 from workflows.funnel_config_overrides import apply_funnel_cfg_overrides
-from workflows.funnel_data_quality import assert_funnel_data_freshness
+from workflows.funnel_data_quality import assert_funnel_data_freshness, has_latest_turnover
 from workflows.funnel_settings import (
     BATCH_SIZE,
     BATCH_SLEEP,
@@ -204,31 +205,64 @@ def _fetch_funnel_ohlcv(
     if env_bool("FUNNEL_REQUIRE_COMPLETE_REPLAY_DATA", False) and int(fetch_stats.get("failed_batches", 0) or 0):
         raise RuntimeError(f"回放行情存在失败批次: {fetch_stats['failed_batches']}")
     _report_progress("日线拉取", _fetch_progress_summary(fetch_stats, all_df_map), 0.75)
-    fetch_stats["turnover_coverage"] = _attach_turnover(all_df_map)
+    fetch_stats["turnover_coverage"] = _attach_turnover(all_df_map, as_of_date=window.end_trade_date)
     return all_df_map, fetch_stats
 
 
-def _attach_turnover(all_df_map: dict[str, pd.DataFrame]) -> float:
-    """用流通股本把成交量折算成换手率(%)，返回覆盖率。
-
-    TickFlow/Tushare/Baostock 的日线都不带换手率，缺了这一列时下游的换手率门槛
-    会因为 NaN 而恒真、静默失效，所以在数据装配阶段一次性补齐。
-    """
+def _attach_turnover(all_df_map: dict[str, pd.DataFrame], *, as_of_date: date | None = None) -> float:
+    """仅补无效值；股本快照折算不等于逐日历史换手率。"""
     try:
-        float_share_map = fetch_float_share_map()
+        float_share_map = fetch_float_share_map(as_of_date=as_of_date) if as_of_date else fetch_float_share_map()
     except Exception as exc:
-        logger.warning("流通股本映射加载失败，换手率门槛将失效: %s", exc)
+        logger.warning("流通股本加载失败，保留缺失并由数据质量闸门降级: %s", type(exc).__name__)
         float_share_map = {}
     covered = 0
     for symbol, df in all_df_map.items():
-        float_share = float_share_map.get(symbol, 0.0)
-        if df is None or df.empty or "volume" not in df.columns or float_share <= 0:
+        if df is None or df.empty:
             continue
-        df["turnover"] = pd.to_numeric(df["volume"], errors="coerce") / float_share * 100.0
-        covered += 1
+        native = pd.to_numeric(df.get("turnover", pd.Series(index=df.index, dtype=float)), errors="coerce")
+        native = native.where(native.ge(0) & native.map(lambda value: pd.notna(value) and math.isfinite(value)))
+        values = native.copy()
+        float_share = pd.to_numeric(float_share_map.get(symbol), errors="coerce")
+        if "volume" in df.columns and pd.notna(float_share) and math.isfinite(float(float_share)) and float_share > 0:
+            derived = _turnover_volume_shares(df) / float_share * 100.0
+            derived = derived.where(derived.ge(0) & derived.map(lambda value: pd.notna(value) and math.isfinite(value)))
+            values = values.fillna(derived)
+        df["turnover"] = values
+        used_snapshot = bool((native.isna() & values.notna()).any())
+        source = "native+float_share_snapshot" if native.notna().any() else "float_share_snapshot"
+        df.attrs["turnover_source"] = source if used_snapshot else "native" if native.notna().any() else "missing"
+        if used_snapshot:
+            df.attrs["turnover_share_asof"] = as_of_date.isoformat() if as_of_date else "unknown"
+        valid = has_latest_turnover(df)
+        reason = (
+            "float_share_missing"
+            if pd.isna(float_share) or not math.isfinite(float(float_share)) or float_share <= 0
+            else "latest_turnover_invalid"
+        )
+        if df.attrs.get("turnover_volume_unit") == "unknown":
+            reason = "volume_unit_unknown"
+        df.attrs["turnover_missing_reason"] = "" if valid else reason
+        covered += int(valid)
     coverage = covered / len(all_df_map) if all_df_map else 0.0
-    print(f"[funnel] 换手率折算覆盖: {covered}/{len(all_df_map)} ({coverage:.1%})")
+    print(f"[funnel] 最新行有效换手覆盖: {covered}/{len(all_df_map)} ({coverage:.1%})")
     return coverage
+
+
+def _turnover_volume_shares(df: pd.DataFrame) -> pd.Series:
+    source = str(df.attrs.get("upstream_source") or df.attrs.get("source") or "")
+    source_units = {
+        "tickflow": "lots",
+        "tickflow_batch": "lots",
+        "akshare": "lots",
+        "efinance": "lots",
+        "tushare": "shares",
+        "baostock": "shares",
+    }
+    unit = str(df.attrs.get("volume_unit") or source_units.get(source) or "unknown")
+    factor = {"lots": 100.0, "shares": 1.0}.get(unit, float("nan"))
+    df.attrs["turnover_volume_unit"] = unit
+    return pd.to_numeric(df["volume"], errors="coerce") * factor
 
 
 def _fetch_progress_summary(fetch_stats: dict, all_df_map: dict[str, pd.DataFrame]) -> str:

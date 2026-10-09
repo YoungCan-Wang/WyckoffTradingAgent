@@ -22,7 +22,13 @@ def test_fetch_market_cap_map_normalizes_cached_values(tmp_path, monkeypatch) ->
 
 
 def test_fetch_float_share_map_converts_wan_shares_to_shares(tmp_path, monkeypatch) -> None:
+    from datetime import date, timedelta
+
     import pandas as pd
+
+    from integrations import fetch_a_share_csv
+
+    monkeypatch.setattr(fetch_a_share_csv, "cached_trade_dates", lambda: (date.today() - timedelta(days=1),))
 
     class _FakePro:
         def daily_basic(self, trade_date: str, fields: str):  # noqa: ARG002

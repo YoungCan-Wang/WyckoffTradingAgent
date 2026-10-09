@@ -10,6 +10,10 @@
 - 日漏斗 = 候选与环境；跨日 `VALIDATED`（库内兼容值 `confirmed`）+ OMS 唯一允许买入区间 = 今天能不能买
 - 只买：环境允许 × 主线优先 × `VALIDATED` × 次日开盘价位于 OMS 区间
 
+配置维护与策略消融分开：无消费者的 `evr_lookback` / `markup_rs_positive_min` 已移除，主线和外部观察池共用 `utils/config_profile.py`。有效阈值、主线数量上限、确认与市场闸门不变；参数减少不构成盈利或反过拟合验证，详见 [配置说明](config/profiles/README.md)。
+
+数据质量先于策略消融：换手率按目标行情日股本与正确成交量单位计算，保留原生有效值；来源或最新行缺失继续观察，不降低95%覆盖要求。纠正数据错误可能改变含换手条件的候选，不能宣称与旧错误结果逐笔一致或自动提升收益。主线按来源显示发现、买点候选、待确认与拦截；本层不评估跨日confirmed或OMS。
+
 覆盖模块：
 - Step2 漏斗选股：`workflows/wyckoff_funnel.py` + `core/wyckoff_engine.py` + `core/mainline_engine.py`
 - Step3 AI 研报：`workflows/step3_batch_report.py`（三阵营审判）

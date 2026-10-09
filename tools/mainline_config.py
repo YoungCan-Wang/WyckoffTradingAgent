@@ -2,24 +2,19 @@
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
 from typing import Any
-
-import yaml
 
 from core.mainline_engine import MainlineEngineConfig
 from core.theme_radar import normalize_theme_name
 from integrations.fetch_a_share_csv import normalize_symbols
-from utils.env import parse_bool
-from utils.package_resources import PROJECT_ROOT, runtime_resource
-
-ROOT = PROJECT_ROOT
-DEFAULT_PROFILE = runtime_resource("config/profiles/a_share_prod.yml")
+from utils.config_profile import bool_value as _bool_value
+from utils.config_profile import env_value as _env_value
+from utils.config_profile import int_value as _int_value
+from utils.config_profile import load_profile_section
 
 
 def load_mainline_engine_config() -> MainlineEngineConfig:
-    section = _load_section()
+    section = load_profile_section("mainline_engine")
     return MainlineEngineConfig(
         enabled=_bool_value(_env_value("FUNNEL_MAINLINE_ENGINE_ENABLED") or section.get("enabled"), True),
         max_ai_candidates=_int_value(
@@ -46,27 +41,6 @@ def load_mainline_engine_config() -> MainlineEngineConfig:
     )
 
 
-def _profile_path() -> Path:
-    raw_path = os.getenv("WYCKOFF_CONFIG_PATH", "").strip()
-    if raw_path:
-        return Path(raw_path).expanduser()
-    profile = os.getenv("WYCKOFF_CONFIG_PROFILE", "a_share_prod").strip() or "a_share_prod"
-    if "/" in profile or profile.endswith((".yml", ".yaml")):
-        return Path(profile).expanduser()
-    return runtime_resource(f"config/profiles/{profile}.yml")
-
-
-def _load_section() -> dict[str, Any]:
-    path = _profile_path()
-    if not path.exists() and path == DEFAULT_PROFILE:
-        return {}
-    if not path.exists():
-        return {}
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    section = data.get("mainline_engine") if isinstance(data, dict) else {}
-    return section if isinstance(section, dict) else {}
-
-
 def _themes(raw: Any) -> tuple[str, ...]:
     items = raw if isinstance(raw, list | tuple) else []
     out = [normalize_theme_name(str(item)) for item in items]
@@ -85,26 +59,6 @@ def _core_basket(raw: Any) -> tuple[tuple[str, str, str], ...]:
             if codes and theme:
                 rows.append((codes[0], name, theme))
     return tuple(rows)
-
-
-def _env_value(name: str) -> str | None:
-    raw = os.getenv(name)
-    return str(raw).strip() if raw is not None and str(raw).strip() else None
-
-
-def _bool_value(raw: Any, default: bool) -> bool:
-    if raw is None:
-        return default
-    if isinstance(raw, bool):
-        return raw
-    return parse_bool(str(raw))
-
-
-def _int_value(raw: Any, default: int, *, minimum: int = 0) -> int:
-    try:
-        return max(int(float(raw)), minimum)
-    except (TypeError, ValueError):
-        return default
 
 
 def _float_value(raw: Any, default: float, *, minimum: float = 0.0) -> float:
