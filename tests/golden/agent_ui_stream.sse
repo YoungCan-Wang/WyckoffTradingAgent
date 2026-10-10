@@ -1,0 +1,36 @@
+data: {"type": "start", "messageId": "msg-golden"}
+
+data: {"type": "start-step"}
+
+data: {"type": "text-start", "id": "text-1"}
+
+data: {"type": "text-delta", "id": "text-1", "delta": "我先看一下大盘。"}
+
+data: {"type": "text-end", "id": "text-1"}
+
+data: {"type": "tool-input-available", "toolCallId": "call_1", "toolName": "get_market_overview", "input": {}, "dynamic": true, "title": "大盘概览"}
+
+data: {"type": "tool-output-available", "toolCallId": "call_1", "output": {"regime": "NEUTRAL", "score": 0.5, "turnover_ratio": null, "series": [1.0, null]}, "dynamic": true}
+
+data: {"type": "tool-input-available", "toolCallId": "call_2", "toolName": "run_backtest", "input": {"days": 30}, "dynamic": true}
+
+data: {"type": "tool-output-error", "toolCallId": "call_2", "errorText": "数据不足", "dynamic": true}
+
+data: {"type": "finish-step"}
+
+data: {"type": "start-step"}
+
+data: {"type": "text-start", "id": "text-2"}
+
+data: {"type": "text-delta", "id": "text-2", "delta": "结论："}
+
+data: {"type": "text-delta", "id": "text-2", "delta": "震荡偏弱。"}
+
+data: {"type": "text-end", "id": "text-2"}
+
+data: {"type": "finish-step"}
+
+data: {"type": "finish", "finishReason": "stop"}
+
+data: [DONE]
+
