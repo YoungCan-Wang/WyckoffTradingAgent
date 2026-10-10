@@ -196,7 +196,7 @@ def test_turn_deadline_cancels_a_stalled_turn_and_frees_the_gate(serve):
     events = _events(_post(port, {"text": "a"}))
     gated.release.set()
     assert events[-1]["type"] == "turn_cancelled"
-    assert state.active_turns == 0
+    assert _wait_for(lambda: state.active_turns == 0)
 
 
 def test_history_carries_across_turns_of_one_session(serve):
@@ -219,7 +219,7 @@ def test_client_disconnect_closes_the_turn_and_frees_the_gate(serve):
     deadline = time.monotonic() + 5
     while state.active_turns and time.monotonic() < deadline:
         time.sleep(0.02)
-    assert state.active_turns == 0
+    assert _wait_for(lambda: state.active_turns == 0)
 
 
 def test_cloud_registry_exposes_only_listed_tools(tmp_path, monkeypatch):
@@ -314,7 +314,7 @@ def test_ui_turn_surfaces_the_real_provider_failure_to_the_user(serve):
     assert "401" in error["errorText"] and "api key is invalid" in error["errorText"]
     assert [c["type"] for c in chunks[-3:-1]] == ["finish-step", "finish"]
     assert chunks[-1] == "[DONE]"
-    assert state.active_turns == 0
+    assert _wait_for(lambda: state.active_turns == 0)
 
 
 # ---- 共用模式 ----------------------------------------------------------------
@@ -355,7 +355,7 @@ def test_shared_mode_serves_different_users_at_the_same_time(serve):
     b.join(5)
 
     assert (box_a["result"], box_b["result"]) == (200, 200)
-    assert state.active_turns == 0
+    assert _wait_for(lambda: state.active_turns == 0)
 
 
 def test_shared_mode_still_allows_one_turn_per_user(serve):
