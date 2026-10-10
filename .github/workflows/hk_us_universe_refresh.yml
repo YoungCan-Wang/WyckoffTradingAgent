@@ -1,10 +1,12 @@
 name: Refresh HK US Universe
 
-# 每周日 UTC 13:30（北京时间 21:30）。放在周日是为了避开交易日的港美漏斗，
-# 不是为了排在其他周日任务之后。有差异才开 PR，不直接推 main。
+# 周日 21:30 北京时间（cron `30 13 * * 0`，UTC 13:30）是有意避开工作日的港股/美股漏斗，
+# 不是为了排在其他周日任务之后。定时和默认手动触发都在 main 上跑：
+# 刷新脚本成功且 data/market_universes/ 有差异时直接提交并推送 main；
+# 名单过短时脚本拒绝覆盖（非 0 退出），本工作流不提交、不开分支、不开 PR。没有差异则干净退出。
 on:
   schedule:
-    - cron: "30 13 * * 0"
+    - cron: "30 13 * * 0" # 周日 21:30 北京时间，有意避开工作日港股/美股漏斗
   workflow_dispatch:
 
 permissions:
@@ -20,7 +22,6 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: write
-      pull-requests: write
     env:
       PYTHONUNBUFFERED: "1"
       TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
@@ -42,9 +43,7 @@ jobs:
       - name: Refresh HK and US universes
         run: python scripts/refresh_hk_us_universe.py
 
-      - name: Open pull request when listings changed
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Commit universe files to main
         run: |
           set -euo pipefail
           git add data/market_universes/hk.txt data/market_universes/us.txt \
@@ -54,22 +53,12 @@ jobs:
             echo "No universe changes"
             exit 0
           fi
-          branch="chore/hk-us-universe-${GITHUB_RUN_ID}"
+          branch="$(git rev-parse --abbrev-ref HEAD)"
+          if [ "$branch" != "main" ]; then
+            echo "Skip commit: universe refresh only pushes from main (current: ${branch})"
+            exit 0
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$branch"
           git commit -m "chore: refresh HK and US symbol universes"
-          git push -u origin "$branch"
-          gh pr create --base main --head "$branch" \
-            --title "chore: refresh HK and US symbol universes" \
-            --body "$(cat <<'EOF'
-          ## 变更摘要
-
-          按 Tushare 港股上市名单和 Nasdaq Trader 美股正股目录刷新 `data/market_universes`。
-
-          ## 验证
-
-          `scripts/refresh_hk_us_universe.py` 在名单过短时会拒绝覆盖。请看 diff 里新增和删除的代码是否符合预期后再合并。
-
-          EOF
-          )"
+          git push origin HEAD:main
