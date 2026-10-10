@@ -35,6 +35,7 @@ from typing import Any
 
 from cli.runtime import AgentRuntime
 from cli.service.echo_provider import EchoProvider
+from cli.service.tool_cache import ToolResultCache
 from cli.service.ui_stream import MAX_TEXT_CHARS, UI_STREAM_HEADERS, history_from_ui_messages, tool_output, ui_frames
 from cli.tools import ToolRegistry
 from core.prompts import CHAT_AGENT_SYSTEM_PROMPT
@@ -161,6 +162,7 @@ class ServiceState:
         tools_factory: Callable[[str, dict[str, str]], Any] | None = None,
         tool_names: frozenset[str] = frozenset(),
         max_concurrent_tool_calls: int = DEFAULT_MAX_CONCURRENT_TOOL_CALLS,
+        tool_cache: ToolResultCache | None = None,
     ) -> None:
         self.token = token
         self.tools = tools
@@ -170,6 +172,7 @@ class ServiceState:
         self.max_concurrent_turns = max_concurrent_turns or (DEFAULT_MAX_CONCURRENT_TURNS if shared else 1)
         self.tools_factory = tools_factory
         self.tool_names = tool_names
+        self.tool_cache = tool_cache if tool_cache is not None else ToolResultCache()
         self._tool_slots = threading.BoundedSemaphore(max_concurrent_tool_calls)
         self._lock = threading.Lock()
         self._bound_user: str | None = None
@@ -248,6 +251,10 @@ def event_frames(events: Generator[dict[str, Any], None, None]) -> Generator[byt
 
 
 _WIRES = {"/v1/turns": "events", "/v1/ui-turns": "ui"}
+
+
+class _AtCapacity(Exception):
+    """工具调用并发已满。"""
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -350,19 +357,26 @@ class _Handler(BaseHTTPRequestHandler):
         if name not in self.state.tool_names:
             self._json(404, {"error": "unknown tool"})
             return
-        if not self.state.begin_tool_call():
-            self._json(429, {"error": "service is at capacity"})
-            return
+
+        # 名额只在真正要算的时候才占：缓存命中和等待同一个结果的请求不占。
+        def compute() -> Any:
+            if not self.state.begin_tool_call():
+                raise _AtCapacity
+            try:
+                registry = self.state.tools_for(self._user, credentials)
+                # 在全新的 contextvars 上下文里执行：运行期 token 之类的写入不会漏给下一个请求。
+                return contextvars.Context().run(registry.execute, name, args)
+            finally:
+                self.state.end_tool_call()
+
         try:
-            registry = self.state.tools_for(self._user, credentials)
-            # 在全新的 contextvars 上下文里执行：运行期 token 之类的写入不会漏给下一个请求。
-            result = contextvars.Context().run(registry.execute, name, args)
-            self._json(200, {"result": tool_output(result)})
+            result, cached = self.state.tool_cache.get_or_compute(name, args, compute)
+            self._json(200, {"result": tool_output(result), "cached": cached})
+        except _AtCapacity:
+            self._json(429, {"error": "service is at capacity"})
         except Exception:
             logger.exception("tool call failed")
             self._json(500, {"error": "tool call failed"})
-        finally:
-            self.state.end_tool_call()
 
     def _provider(self, body: dict[str, Any]) -> Any:
         llm = body.get("llm") if isinstance(body.get("llm"), dict) else {}
