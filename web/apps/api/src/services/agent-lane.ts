@@ -49,10 +49,14 @@ export function agentServiceConfig(env: Env): AgentServiceConfig | null {
   return { baseUrl: url.origin, token }
 }
 
-// 白名单默认为空：没配置就谁都不在车道里。`*` 表示所有有效会员，只给开发环境用。
-export function isAgentLaneUser(env: Env, userId: string): boolean {
-  const entries = (env.AGENT_LANE_USERS || '').split(',').map((item) => item.trim()).filter(Boolean)
+// 白名单默认为空：没配置就谁都不在里面。`*` 表示所有有效会员，只给开发和全量放开时用。
+export function isListedUser(list: string | undefined, userId: string): boolean {
+  const entries = (list || '').split(',').map((item) => item.trim()).filter(Boolean)
   return entries.includes('*') || entries.includes(userId)
+}
+
+export function isAgentLaneUser(env: Env, userId: string): boolean {
+  return isListedUser(env.AGENT_LANE_USERS, userId)
 }
 
 export function urlUpstream(config: AgentServiceConfig): AgentUpstream {

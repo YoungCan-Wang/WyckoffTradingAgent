@@ -12,6 +12,8 @@
                      每个 RuntimeEvent 一帧 SSE；会话历史存在进程内存里
   POST /v1/ui-turns  {"messages": UIMessage[], "llm": {...}}
                      ai-sdk UI message stream v1，供 useChat 直接消费；无状态，历史取自 messages
+  POST /v1/tools/<name>  {"args": {...}, "credentials": {...}}  ->  {"result": ...}
+                     只执行 WYCKOFF_SERVICE_TOOLS 白名单里的工具；循环留在调用方，这里只当工具后端
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import signal
 import threading
 import time
@@ -32,7 +35,7 @@ from typing import Any
 
 from cli.runtime import AgentRuntime
 from cli.service.echo_provider import EchoProvider
-from cli.service.ui_stream import MAX_TEXT_CHARS, UI_STREAM_HEADERS, history_from_ui_messages, ui_frames
+from cli.service.ui_stream import MAX_TEXT_CHARS, UI_STREAM_HEADERS, history_from_ui_messages, tool_output, ui_frames
 from cli.tools import ToolRegistry
 from core.prompts import CHAT_AGENT_SYSTEM_PROMPT
 
@@ -50,6 +53,8 @@ MAX_SESSIONS = 8
 MAX_ECHO_DELAY_MS = 1000
 DEFAULT_MAX_TURN_SECONDS = 600.0
 DEFAULT_MAX_CONCURRENT_TURNS = 4
+DEFAULT_MAX_CONCURRENT_TOOL_CALLS = 6
+_TOOL_PATH = re.compile(r"^/v1/tools/([a-z][a-z0-9_]{0,63})$")
 MAX_CREDENTIALS = 20
 MAX_CREDENTIAL_CHARS = 4096
 
@@ -154,6 +159,8 @@ class ServiceState:
         shared: bool = False,
         max_concurrent_turns: int | None = None,
         tools_factory: Callable[[str, dict[str, str]], Any] | None = None,
+        tool_names: frozenset[str] = frozenset(),
+        max_concurrent_tool_calls: int = DEFAULT_MAX_CONCURRENT_TOOL_CALLS,
     ) -> None:
         self.token = token
         self.tools = tools
@@ -162,6 +169,8 @@ class ServiceState:
         self.shared = shared
         self.max_concurrent_turns = max_concurrent_turns or (DEFAULT_MAX_CONCURRENT_TURNS if shared else 1)
         self.tools_factory = tools_factory
+        self.tool_names = tool_names
+        self._tool_slots = threading.BoundedSemaphore(max_concurrent_tool_calls)
         self._lock = threading.Lock()
         self._bound_user: str | None = None
         self._active: set[str] = set()
@@ -201,6 +210,13 @@ class ServiceState:
             if key not in self._sessions and len(self._sessions) >= MAX_SESSIONS:
                 self._sessions.pop(next(iter(self._sessions)))
             return self._sessions.setdefault(key, [])
+
+    def begin_tool_call(self) -> bool:
+        """工具调用很短，不占「每用户一轮」的名额，只受全局并发上限约束。"""
+        return self._tool_slots.acquire(blocking=False)
+
+    def end_tool_call(self) -> None:
+        self._tool_slots.release()
 
     def tools_for(self, user: str, credentials: dict[str, str]) -> Any:
         """共用模式下每个请求一个注册表，凭据只活在这个请求里；独占模式沿用启动时建好的那个。"""
@@ -250,8 +266,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": "not found"})
 
     def do_POST(self) -> None:
+        tool = _TOOL_PATH.match(self.path)
         wire = _WIRES.get(self.path)
-        if wire is None:
+        if wire is None and tool is None:
             self._json(404, {"error": "not found"})
             return
         rejection = self._admit()
@@ -262,7 +279,10 @@ class _Handler(BaseHTTPRequestHandler):
         if body is None:
             self._json(400, {"error": "invalid json body"})
             return
-        self._run_turn(body, wire)
+        if tool is not None:
+            self._run_tool(tool.group(1), body)
+        else:
+            self._run_turn(body, wire)
 
     def _admit(self) -> tuple[int, dict[str, str]] | None:
         supplied = self.headers.get("Authorization", "").removeprefix("Bearer ")
@@ -321,6 +341,29 @@ class _Handler(BaseHTTPRequestHandler):
         finally:
             self.state.end_turn(self._user)
 
+    def _run_tool(self, name: str, body: dict[str, Any]) -> None:
+        args = body.get("args", {})
+        credentials = parse_credentials(body.get("credentials"))
+        if not isinstance(args, dict) or credentials is None:
+            self._json(400, {"error": "invalid tool request"})
+            return
+        if name not in self.state.tool_names:
+            self._json(404, {"error": "unknown tool"})
+            return
+        if not self.state.begin_tool_call():
+            self._json(429, {"error": "service is at capacity"})
+            return
+        try:
+            registry = self.state.tools_for(self._user, credentials)
+            # 在全新的 contextvars 上下文里执行：运行期 token 之类的写入不会漏给下一个请求。
+            result = contextvars.Context().run(registry.execute, name, args)
+            self._json(200, {"result": tool_output(result)})
+        except Exception:
+            logger.exception("tool call failed")
+            self._json(500, {"error": "tool call failed"})
+        finally:
+            self.state.end_tool_call()
+
     def _provider(self, body: dict[str, Any]) -> Any:
         llm = body.get("llm") if isinstance(body.get("llm"), dict) else {}
         try:
@@ -363,7 +406,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
     def _json(self, status: int, payload: dict[str, Any]) -> None:
-        data = json.dumps(payload).encode()
+        data = json.dumps(payload, ensure_ascii=False, allow_nan=False, default=str).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
@@ -389,13 +432,14 @@ def build_state(token: str) -> ServiceState:
     names = _tool_names()
     seconds = float(os.getenv(TURN_SECONDS_ENV) or DEFAULT_MAX_TURN_SECONDS)
     if os.getenv(SHARED_ENV) != "1":
-        return ServiceState(token, CloudToolRegistry(names), max_turn_seconds=seconds)
+        return ServiceState(token, CloudToolRegistry(names), max_turn_seconds=seconds, tool_names=names)
     validate_shared_tools(names)
     return ServiceState(
         token,
         None,
         max_turn_seconds=seconds,
         shared=True,
+        tool_names=names,
         max_concurrent_turns=int(os.getenv(MAX_TURNS_ENV) or DEFAULT_MAX_CONCURRENT_TURNS),
         tools_factory=lambda user, credentials: CloudToolRegistry(names, {"user_id": user, "credentials": credentials}),
     )

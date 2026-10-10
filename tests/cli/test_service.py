@@ -500,3 +500,124 @@ def test_the_real_registry_carries_the_request_state_and_never_shares_it(tmp_pat
     assert alice.tool_context.state["user_id"] == "alice"
     assert bob.tool_context.state["credentials"] == {}
     assert alice.tool_context is not bob.tool_context
+
+
+# ---- 工具后端 ---------------------------------------------------------------
+
+
+def _post_tool(port: int, name: str, body: dict[str, Any], *, user: str = "u1", token: str = TOKEN):
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    headers = {"Authorization": f"Bearer {token}", "X-Wyckoff-User": user, "Content-Type": "application/json"}
+    conn.request("POST", f"/v1/tools/{name}", json.dumps(body), headers)
+    response = conn.getresponse()
+    return response.status, json.loads(response.read() or b"{}")
+
+
+def _tool_server(serve, results=None, **state_kwargs):
+    registry = StubToolRegistry(tool_results=results or {})
+    kwargs = {"shared": True, "tools_factory": lambda user, creds: registry, **state_kwargs}
+    kwargs.setdefault("tool_names", frozenset(results or {}))
+    _, port, state = serve(EchoProvider(), **kwargs)
+    return port, state, registry
+
+
+def test_tool_endpoint_runs_an_allowlisted_tool_and_returns_its_result(serve):
+    port, _, registry = _tool_server(serve, {"market_regime": {"regime": "NEUTRAL", "score": 0.4}})
+
+    status, body = _post_tool(port, "market_regime", {"args": {"x": 1}})
+
+    assert (status, body) == (200, {"result": {"regime": "NEUTRAL", "score": 0.4}})
+    assert registry.calls == [{"name": "market_regime", "args": {"x": 1}}]
+
+
+def test_tool_endpoint_refuses_names_outside_the_allowlist(serve):
+    port, _, registry = _tool_server(serve, {"market_regime": {"ok": True}})
+
+    status, _ = _post_tool(port, "exec_command", {"args": {"command": "id"}})
+
+    assert status == 404
+    assert registry.calls == []
+
+
+def test_tool_endpoint_needs_the_gateway_token_and_a_user(serve):
+    port, _, _ = _tool_server(serve, {"market_regime": {"ok": True}})
+
+    assert _post_tool(port, "market_regime", {}, token="wrong")[0] == 401
+    assert _post_tool(port, "market_regime", {}, user=" ")[0] == 400
+
+
+@pytest.mark.parametrize("body", [{"args": "x"}, {"args": ["a"]}, {"credentials": "tok"}, {"credentials": {"k": 1}}])
+def test_tool_endpoint_rejects_malformed_requests(serve, body):
+    port, _, _ = _tool_server(serve, {"market_regime": {"ok": True}})
+
+    assert _post_tool(port, "market_regime", body)[0] == 400
+
+
+def test_each_tool_call_builds_tools_with_that_requests_credentials(serve):
+    built: list[tuple[str, dict[str, str]]] = []
+
+    def factory(user, creds):
+        built.append((user, creds))
+        return StubToolRegistry(tool_results={"intraday_rescue_check": {"ok": True}})
+
+    _, port, _ = serve(
+        EchoProvider(), shared=True, tools_factory=factory, tool_names=frozenset({"intraday_rescue_check"})
+    )
+
+    _post_tool(port, "intraday_rescue_check", {"credentials": {"tickflow_api_key": "alice-key"}}, user="alice")
+    _post_tool(port, "intraday_rescue_check", {"credentials": {"tickflow_api_key": "bob-key"}}, user="bob")
+
+    assert built == [("alice", {"tickflow_api_key": "alice-key"}), ("bob", {"tickflow_api_key": "bob-key"})]
+
+
+def test_tool_results_are_strict_json(serve):
+    port, _, _ = _tool_server(serve, {"market_regime": {"ratio": float("nan"), "rows": [1.0, float("inf")]}})
+
+    status, body = _post_tool(port, "market_regime", {})
+
+    assert status == 200
+    assert body == {"result": {"ratio": None, "rows": [1.0, None]}}
+
+
+def test_a_failing_tool_is_a_500_and_frees_its_slot(serve):
+    def boom(name, args):
+        raise RuntimeError("boom")
+
+    port, state, _ = _tool_server(serve, {"market_regime": boom}, max_concurrent_tool_calls=1)
+
+    assert _post_tool(port, "market_regime", {})[0] == 500
+    assert _post_tool(port, "market_regime", {})[0] == 500  # 名额释放了，第二次不是 429
+
+
+def test_tool_calls_have_a_global_concurrency_cap(serve):
+    started, release = threading.Event(), threading.Event()
+
+    def slow(name, args):
+        started.set()
+        release.wait(5)
+        return {"ok": True}
+
+    port, _, _ = _tool_server(serve, {"market_regime": slow}, max_concurrent_tool_calls=1)
+    first, box = _run_in_thread(lambda: _post_tool(port, "market_regime", {}, user="alice")[0])
+    assert started.wait(5)
+
+    status, _ = _post_tool(port, "market_regime", {}, user="bob")
+
+    assert status == 429
+    release.set()
+    first.join(5)
+    assert box["result"] == 200
+
+
+def test_a_tool_call_does_not_take_the_users_chat_turn_slot(serve):
+    gated = _GatedProvider()
+    registry = StubToolRegistry(tool_results={"market_regime": {"ok": True}})
+    _, port, _ = serve(gated, shared=True, tools_factory=lambda u, c: registry, tool_names=frozenset({"market_regime"}))
+    turn, _box = _run_in_thread(lambda: _drain(port, {"text": "hi"}, "alice"))
+    assert gated.entered.wait(5)
+
+    status, _ = _post_tool(port, "market_regime", {}, user="alice")
+
+    assert status == 200
+    gated.release.set()
+    turn.join(5)
