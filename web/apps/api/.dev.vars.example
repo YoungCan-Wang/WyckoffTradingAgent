@@ -10,3 +10,9 @@ SANDBOX_BRIDGE_SECRET=replace-with-a-random-bridge-secret
 VERCEL_TEAM_ID=team_xxx
 VERCEL_PROJECT_ID=prj_xxx
 VERCEL_TOKEN=replace-with-vercel-access-token
+
+# Member agent lane (off unless both are set and the user is listed). Local only: http is allowed on loopback.
+AGENT_SERVICE_URL=http://127.0.0.1:18080
+AGENT_SERVICE_TOKEN=replace-with-a-random-shared-token
+# Comma-separated user ids; * = every active planet member (development only).
+AGENT_LANE_USERS=

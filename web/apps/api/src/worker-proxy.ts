@@ -5,6 +5,7 @@ export const WORKER_PROXY_PREFIXES = [
   '/api/settings',
   '/api/portfolio',
   '/api/shadow-ledger',
+  '/api/agent',
   '/api/agent-runs',
   '/api/remote',
   '/api/health',

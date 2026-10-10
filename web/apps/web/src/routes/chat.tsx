@@ -81,7 +81,7 @@ export function ChatPage() {
   const { activeConversationRef, runCheckpoint, setRunCheckpoint, onRunEvent, onRunFinish, onRunError, onRunInterrupted } = useRunLedger()
   const watchlist = useReadingRoomWatchlist(user?.id)
   const { marketWatch, requestItems, updateMarketWatch } = useMarketWatch(user?.id, watchlist.items)
-  const chat = useReadingRoomChat(token, setLocalError, t, setModelStatus, setLlmUsage, requestItems, marketWatch, updateMarketWatch, onRunEvent, onRunFinish, onRunError)
+  const chat = useReadingRoomChat(token, setLocalError, t, setModelStatus, setLlmUsage, requestItems, marketWatch, updateMarketWatch, onRunEvent, onRunFinish, onRunError, config.agentLane)
   const { clearLlmUsage } = chat
   const loading = chat.status === 'submitted' || chat.status === 'streaming'
   const changeActiveTab = useCallback((tab: ReadingRoomTab) => { setActiveTab(tab); writeActiveTab(tab) }, [])

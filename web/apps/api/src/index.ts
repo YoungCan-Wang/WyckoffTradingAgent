@@ -1,3 +1,4 @@
+import { agentLaneRoutes } from './routes/agent-lane'
 import { agentRunRoutes } from './routes/agent-runs'
 import { createApiApp } from './app'
 import { portfolioRoutes } from './routes/portfolio'
@@ -16,6 +17,7 @@ export { RemoteRelay } from './durable/remote-relay'
 
 export const app = createApiApp(missingWorkerRuntimeSecrets)
 app.route('/api/chat', workerChatRoutes)
+app.route('/api/agent', agentLaneRoutes)
 app.route('/api/agent-runs', agentRunRoutes)
 app.route('/api/portfolio', portfolioRoutes)
 app.route('/api/settings', settingsRoutes)

@@ -31,6 +31,11 @@ export type Env = {
   REMOTE_RELAY?: DurableObjectNamespace
   SANDBOX_BRIDGE_URL?: string
   SANDBOX_BRIDGE_SECRET?: string
+  AGENT_SERVICE_URL?: string
+  AGENT_SERVICE_TOKEN?: string
+  AGENT_LANE_USERS?: string
+  AGENT_LANE_DAILY_LIMIT_PER_USER?: string
+  AGENT_LANE_MIN_INTERVAL_MS?: string
 }
 
 export type RuntimeReadinessCheck = (env: Env) => string[]

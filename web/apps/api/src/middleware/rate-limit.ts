@@ -44,6 +44,14 @@ export const AGENT_RUN_RATE_LIMIT_POLICY: RateLimitPolicy = {
   dailyMessage: '今日沙箱任务额度已用完，请明天再试。',
 }
 
+export const AGENT_LANE_RATE_LIMIT_POLICY: RateLimitPolicy = {
+  prefix: 'agent-lane',
+  dailyLimit: (env) => positiveInt(env.AGENT_LANE_DAILY_LIMIT_PER_USER, 60),
+  minIntervalMs: (env) => positiveInt(env.AGENT_LANE_MIN_INTERVAL_MS, 2500),
+  intervalMessage: '请求太频繁，请稍后再试。',
+  dailyMessage: '今日 Agent 服务额度已用完，请明天再试。',
+}
+
 type DistributedLimiter = {
   check: (userId: string) => Promise<Omit<RateLimitResult, 'mode'>>
 }
@@ -74,6 +82,7 @@ export function createRateLimitMiddleware(policy: RateLimitPolicy, options: Rate
 }
 
 export const chatRateLimitMiddleware = createRateLimitMiddleware(CHAT_RATE_LIMIT_POLICY)
+export const agentLaneRateLimitMiddleware = createRateLimitMiddleware(AGENT_LANE_RATE_LIMIT_POLICY)
 
 // Sandbox creation quota is enforced at the enqueue boundary (not as HTTP middleware)
 // so chat-tool and REST submissions consume one shared budget. A missing Redis

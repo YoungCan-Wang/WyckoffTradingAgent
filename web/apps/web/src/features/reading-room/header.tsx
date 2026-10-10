@@ -23,6 +23,7 @@ export function ChatHeader({
       <div className="flex min-w-0 items-center gap-3">
         <h1 className="text-lg font-semibold">{t('chat.title')}</h1>
         {config.model && <span className="rounded-full bg-indigo-50 px-2.5 py-0.5 text-[11px] text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-200">{config.model}</span>}
+        {config.agentLane && <span title="会员 Agent 服务模式" className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-200">Agent</span>}
         {!config.configured && hasUser && <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] text-amber-700 dark:bg-amber-500/10 dark:text-amber-200">{config.error ? t('chat.configErrorBadge') : t('chat.noApiKey')}</span>}
       </div>
       <ReadingRoomTabs activeTab={activeTab} messageCount={messageCount} watchCount={watchCount} onChange={onTabChange} />
