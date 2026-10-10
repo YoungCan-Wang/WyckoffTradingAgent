@@ -63,6 +63,9 @@
 | **A股实证消融 A/M/P** | 已完成的 confirmed-only 实验：A 基线，M=弱水温信号缩仓，P=M + 将 NEUTRAL Spring 仓位由 50% 再降至 25%。三组只改变入场权重，手动复跑时每个窗口共享一次信号台账、分别重放现金组合；默认 Backtest Grid 已关闭该任务，仅 `run_strategy_compare=true` 时复现。Q/N/O 与后续 Q/R/S/T 门控均未晋级生产 |
 | **边际成交 (Marginal Trades)** | 策略消融报表按 `signal_date + code` 把某组与其参照组的信号级成交配成三集：共同、仅参照（被本组踢掉）、仅本组（本组新放进来），分别给出笔数、均收、胜率。现金收益差只说明结果，边际成交说明「换进来的票是否比换掉的好」；两轨制 J（#476）即由此被否决：新增 171 笔均收 −2.07%，踢掉 227 笔均收 −1.17% |
 | **方案 A 前瞻影子跟踪** | Forward Shadow Mode（#470/#471）：日常漏斗并行计算中证全指（`000985`）MA20 + 1% 缓冲 hurdle 的 `ALLOW`/`BLOCK` 裁决，打标入库并写入研报 `market_regime_shadow`。生产总门控保持关闭（`enable_market_regime_gate=False`，零阻断、零干扰），以无偏前瞻样本检验大盘择时有效性。 |
+| **live 单通道研究 KO_*** | `KO_AMBUSH`、`KO_ACCUM`、`KO_DRY_VOL`、`KO_TREND_CONT` 各只关闭一个可控L2通道，其余覆盖与回测入口live一致。独立信号台账，以明确的KO命名空间避免与旧字母门控实验混用；不自动晋级生产。 |
+| **历史原生换手合同** | `date_keyed_native_pct_v1`：快照保存历史日期键原生百分比换手、`turnover_source`与`metadata.turnover_pit`。严格消融拒绝旧快照或每日覆盖不足95%，不填假零、不用当前股本还原过去。修复该字段不等于股票池、财务和行业等全部历史PIT完整。 |
+| **实际回放运行合同** | `runtime_contract_*.json` / `backtest_runtime_v1`：记录最终FunnelConfig、候选策略、AI配额、实际禁买集合、入场/退出和现金费用及SHA256；不读取全部env、不记录凭据。grid/strategy_compare共享策略env仍须核对实际值；同名live不等于完整OMS或真实账户模拟。 |
 | **候选车道真剪枝 (变体 Q)** | Candidate Lane Pruning（#467/#472）：通过 `FunnelConfig.blocked_candidate_entry_types` 实现车道级入口拦截与通道降级回退，使被拦候选彻底不进入统一质量池竞争；消融变体 Q 显式锁定其它开关，用于离线隔离度量特定车道的纯净贡献；生产默认为空元组 `()`。 |
 | **Layer 3 剥离消融 (变体 R)** | Layer 3 Bypass Ablation：通过 `FunnelConfig.enable_layer3=False` 完全跳过行业共振过滤，所有 L2 候选全量直通 L4，用于在多周期回测中验证关闭行业共振对整体收益与回撤的真实影响；生产默认开启（`True`）。 |
 | **confirmed 分数校准** | 不再把不同 Wyckoff 触发器的原始分数直接横比；研究组 I 用信号族历史先验与封顶后的形态强度合成可比分数，避免极高原始分主导 Top1 |

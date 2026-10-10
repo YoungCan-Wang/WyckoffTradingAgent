@@ -285,6 +285,8 @@ ABC 门槛松紧不是问题所在：met=2 与 met=3 的差异在 1/3/5/10 日�
 - 研究池兼容增加 `by_source`（每来源按代码去重的总数、信号及执行计数）与 `blocker_counts`（每只股票每个原因最多一次）。卡片按来源分列并显示主要原因、行情截止日；同一股票的多个来源或原因不能相加，本层没有confirmed、OMS或真实成交的晋级判断。
 - 换手率装配保留有效原生值，仅填缺值。生产按 `window.end_trade_date` 查当日流通股本，不读取无日期旧缓存；缺数据保留缺失。未指定日期的元数据读取按最近5个交易日回退，日历不可用不猜自然日。TickFlow/AkShare/efinance的A股量为手、折算股数先乘100；Tushare适配器已乘100、Baostock为股，不重复换算。显式`volume_unit=shares/lots`优先于来源约定，未知单位不估算；原始volume列不改写。
 - `float_share_snapshot`及`native+float_share_snapshot`明确标记目标日股本估算，`turnover_share_asof`记录日期；并非逐日历史流通股本，不能称全历史PIT已修复。换手覆盖只认最新日期行有限非负值（0有效，NaN/无穷/负数无效），保持95%门槛。`turnover_source_counts`与`turnover_missing_reasons`解释有效来源及缺失分类；现代及旧版卡片均展示质量摘要。数据纠正可以改变换手条件的候选，不等于样本外收益改善。
+- 手动KO研究另用 `date_keyed_native_pct_v1`：缺失换手为NaN不填假零，CSV装载保留字段与来源；按历史日期键取原生百分比值，不用当前股本。四个KO变体及显式严格live基准逐评估日核查95%覆盖，旧快照/缺列/不合格日期失败。该合同仅覆盖历史换手，不消除股票池、静态元数据或其它前视偏差。
+- 回测grid与strategy_compare统一继承workflow策略env，避免job级漏注入造成同名live不同禁买与配额。`runtime_contract_*.json`保存实际生效漏斗、候选、配额、禁买、入场/退出/费用和SHA256；验收需核对参数与各KO单一变化，不以数据质量或CI通过替代。固定研究退出不等于线上5%地板或完整OMS。
 - 有效主线买点条目不再提前 Top3，最终 AI 总额、单行业和主题晋级上限仍按原设置执行。主线补充分数使用 `mainline_score × 100`，不降低同票原有更高分。
 - 当日有效主题雷达优先；历史雷达仅作为 `persisted_fallback`，未来/非法日期/超 TTL（默认 14 天）均拒绝，生产与 core 回放共享该边界。事件、财务、概念映射的历史时点完整性仍须单独验证。
 - `scripts/diagnose_funnel_recall.py --trace <review_trace.json.gz> --date YYYYMMDD` 直接读 as-run 冻结决策，不重新拉行情。`run_previous_funnel` 则是当前配置的历史回放，不等于当时生产结果；它使用同步 `WYCKOFF_SHARED_READ_ONLY` scope 拒绝共享表写入，保留服务端读取并在异常后恢复环境。相同进程中并发 server job 可能保守拒写，诊断应使用独立进程。

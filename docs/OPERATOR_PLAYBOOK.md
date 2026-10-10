@@ -91,6 +91,18 @@ Trend/Accum 配额只用于 dynamic shadow 对照；RISK_ON 市场闸门仍禁�
 
 报告中的主线发现/买点候选/待确认/拦截使用同一来源分母，来源或原因之间可以重叠。总AI预选、Step3输入、跨日确认和账户OMS是不同阶段，不用最终送审数量推断全市场召回率；本层未评估confirmed或BUY。修复数据后应重新运行并验证实际生产产物；不能仅凭离线或两股检查把质量标记手工改为ready。
 
+### 手动单通道研究
+
+Backtest Grid 默认 `run_strategy_compare=false`；启用比较后，`strategy_compare_set=legacy` 保留 A/M/P/I 复现，`knockout` 只运行 `live`、`KO_AMBUSH`、`KO_ACCUM`、`KO_DRY_VOL`、`KO_TREND_CONT`，跳过默认退出网格与其交易手册/通知。每组每窗口独立台账并复用该窗口同一数据artifact，生产通道和定时任务不变。
+
+研究快照显式设置 `BACKTEST_FETCH_PIT_TURNOVER=1`，按实际行情日的 `daily_basic(trade_date)` 取历史原生百分比换手，保留有效原生值。CSV读回不丢 `turnover` / `turnover_source`；元数据记录 `turnover_pit.contract=date_keyed_native_pct_v1`。严格研究用 `BACKTEST_REQUIRE_PIT_TURNOVER=1` 对live基准同样校验；四个KO变体无论该环境键是否设置都强制验证。旧快照、缺列、无评估行情或任一评估日有效率低于95%直接失败；不拿今天股本、假零或完整率的总体平均值替代。
+
+`all_defined` 为六窗口、五组，共30个活动研究任务（四项消融24格加live六格）。比较以 `--reference-variant live --required-variants live,KO_AMBUSH,KO_ACCUM,KO_DRY_VOL,KO_TREND_CONT` 明确完整度，输出逐窗口 `marginal_by_period`。`ready` 只表示矩阵齐全，不是上线许可：仍需扣费现金、回撤和至少4/6窗口边际成交方向一致；两个以上单项入围后须合并重跑。股票池、市值/行业静态映射、复权和样本外局限仍独立披露，短窗或少数股票烟雾测试不能作删除通道的证据。
+
+回放策略环境统一在workflow级声明，grid与strategy_compare继承相同的禁买/豁免/试探、候选配额和风险字段；不把某job的env当作其它job的父配置。`runtime_contract_*.json`记录实际生效FunnelConfig、候选策略、AI配额、禁买集合、入场/退出和现金费用及SHA256。验收先查NEUTRAL/RISK_ON禁止与BEAR_REBOUND豁免是否符合目标生产配置，再查各KO只有一项字段不同；发现错配保留证据、作废研究、停止无效分片，不用局部收益决策。合同不含全部环境变量或凭据。
+
+研究退出固定15日/-8%/18%，不是线上工单的5%地板，也不复刻完整OMS。共享入场配置只修正无意分叉；完整生产执行收益仍须另做同步退出与仓位限制的验证，不能把此研究现金曲线称作你的实盘预期。
+
 ### 收益怎么读
 
 跟踪表主表涨跌相对该次入选日收盘；「首次至今」只在组头/摘要里按股票计算，重复入选不能重复归功。逐次事件评估使用信号后的首根可用日线开盘并检查推荐发布时间，H 日净收益扣生产费用；缺价、不可进入和未成熟事件保留分母。它仍不是实盘成交或组合 alpha，详见 [验收口径](A_SHARE_RESEARCH_EXECUTION_ACCEPTANCE.md)。

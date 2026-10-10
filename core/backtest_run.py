@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, replace
 from datetime import date, datetime
@@ -200,7 +202,34 @@ def _build_run_summary(
     summary.update(_execution_summary(config, replay, trades_df))
     summary.update(_cash_summary(config))
     summary.update(_wbt_summary(config))
+    summary["runtime_contract"] = _runtime_contract(config)
     return summary
+
+
+def _runtime_contract(config: BacktestRunConfig) -> dict:
+    payload = {
+        "schema": "backtest_runtime_v1",
+        "strategy_variant": config.strategy_variant,
+        "funnel": asdict(_base_funnel_config(config)),
+        "candidate_policy": asdict(config.replay.candidate_policy),
+        "ai_allocation": asdict(config.replay.ai_allocation),
+        "a_share_entry_research": asdict(config.replay.a_share_entry_research),
+        "buy_block_regimes": sorted(config.replay.buy_block_regimes),
+        "execution_regime_gate": config.replay.execution_regime_gate,
+        "pending_mode": config.replay.pending_mode,
+        "entry_price_mode": config.replay.entry_price_mode,
+        "selection_mode": config.replay.selection_mode,
+        "hold_days": config.replay.hold_days,
+        "top_n": config.replay.top_n,
+        "exit": asdict(config.replay.exit),
+        "cash": [asdict(cash) for cash in config.performance.cash_config_by_style],
+        "buy_friction_pct": config.replay.buy_friction_pct,
+        "sell_friction_pct": config.replay.sell_friction_pct,
+    }
+    encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+    payload = json.loads(encoded)
+    payload["sha256"] = hashlib.sha256(encoded.encode()).hexdigest()
+    return payload
 
 
 def _base_summary(
