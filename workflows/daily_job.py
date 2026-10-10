@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from typing import Any
 
 from workflows.daily_job_common import log_line
 from workflows.daily_job_lifecycle import load_daily_job_steps, log_daily_summary, log_job_start
+from workflows.daily_job_runtime import DailyJobConfig, resolve_daily_job_config
 from workflows.daily_job_runtime import daily_job_preflight_exit_code as _daily_job_preflight_exit_code
-from workflows.daily_job_runtime import resolve_daily_job_config
 from workflows.daily_job_step2 import run_step2_block
 from workflows.daily_job_step3 import persist_step3_signal_observations, run_step3_block
 from workflows.daily_job_step4 import run_step4_stage
@@ -19,6 +20,16 @@ def run_daily_job(args: Any) -> int:
     if preflight_exit is not None:
         return preflight_exit
 
+    write_guard = nullcontext()
+    if cfg.historical_replay:
+        from integrations.supabase_base import read_only_write_context
+
+        write_guard = read_only_write_context()
+    with write_guard:
+        return _run_daily_job_body(cfg)
+
+
+def _run_daily_job_body(cfg: DailyJobConfig) -> int:
     run_step2, run_step3 = load_daily_job_steps()
     summary: list[dict] = []
     log_job_start(cfg)

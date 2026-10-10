@@ -409,7 +409,7 @@ Step4 以 `trade_orders` 作为幂等事实源。Telegram 超时具有“可能�
 
 ### 回放与确认安全边界
 
-- 显式设置 `END_CALENDAR_DAY` 即进入历史回放模式。Step2/Step3 可以按目标日重放，但任务会在读取实盘持仓、订单或 Step4 Supabase 状态前跳过 Step4，历史结果不会改写当前 OMS；影子账本同步跳过，避免回放写 paper 成交。
+- 显式设置 `END_CALENDAR_DAY` 即进入历史回放模式。Step2/Step3 可按目标日重放计算与研报，但共享表写库（`recommendation_tracking` / `signal_pending` / AI 标记 / 主题雷达等）、IM 通知、Step4 OMS 与影子账本一律隔离；进程内还叠加 `read_only_write_context`，避免漏网写。补历史推荐请走 `recommendation_backfill` 的显式 `--apply`，不要用漏斗 workflow_dispatch 回放当写库入口。
 
 ### 影子账本（paper）
 
