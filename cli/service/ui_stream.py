@@ -37,7 +37,8 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
-def _tool_output(result: Any) -> Any:
+def tool_output(result: Any) -> Any:
+    """工具结果落到 JSON 之前的统一处理：NaN 换 null，过大的结果换成带预览的标记。"""
     safe = _json_safe(result)
     rendered = json.dumps(safe, ensure_ascii=False, default=str)
     if len(rendered) <= MAX_TOOL_OUTPUT_CHARS:
@@ -134,7 +135,7 @@ class UiStreamTranslator:
             {
                 "type": "tool-output-available",
                 "toolCallId": str(event.get("tool_call_id")),
-                "output": _tool_output(event.get("result")),
+                "output": tool_output(event.get("result")),
                 "dynamic": True,
             }
         ]

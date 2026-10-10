@@ -34,6 +34,7 @@ export type Env = {
   AGENT_SERVICE_URL?: string
   AGENT_SERVICE_TOKEN?: string
   AGENT_LANE_USERS?: string
+  AGENT_TOOLS_USERS?: string
   AGENT_LANE_DAILY_LIMIT_PER_USER?: string
   AGENT_LANE_MIN_INTERVAL_MS?: string
 }

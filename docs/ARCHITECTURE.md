@@ -101,10 +101,22 @@ Worker 负责鉴权、输入校验、队列控制面和 HMAC 签名。Vercel Nod
 | `AGENT_SERVICE_URL` | 未设置 | 会员 Agent 车道的上游服务地址（`cli/service`）；只接受 https，本机开发才放行 `http://127.0.0.1` / `localhost`。未设置时车道整体关闭 |
 | `AGENT_SERVICE_TOKEN` | Worker secret | 网关与上游服务之间的共享令牌，必须通过 Worker secret 注入；与 `AGENT_SERVICE_URL` 缺一不可 |
 | `AGENT_LANE_USERS` | 未设置 | 允许进入车道的用户 ID，逗号分隔；`*` 表示所有有效会员，只给开发环境用。未设置时没有人在车道里 |
+| `AGENT_TOOLS_USERS` | 未设置 | 允许在读盘室里额外获得「Python 服务提供的工具」的用户 ID，逗号分隔；`*` 表示所有有效会员。与 `AGENT_LANE_USERS` 相互独立，需要 `AGENT_SERVICE_URL` / `AGENT_SERVICE_TOKEN` 已配置 |
 | `AGENT_LANE_DAILY_LIMIT_PER_USER` | `60` | 每个用户每天允许的车道对话数，与免费车道的额度分开计 |
 | `AGENT_LANE_MIN_INTERVAL_MS` | `2500` | 同一用户两次车道对话的最小间隔 |
 | `SANDBOX_BRIDGE_URL` | 未设置 | Vercel Node bridge 的 HTTPS `/api/sandbox-run` 地址；可作为普通 Worker 变量 |
 | `SANDBOX_BRIDGE_SECRET` | Worker secret | 与 Vercel 项目环境变量同值的 HMAC 密钥；不进 git、不回传浏览器或沙箱 |
+
+### 读盘室里的 Python 服务工具（只对会员，只增不减）
+
+读盘室的循环仍在 Worker 里（工具、专用展示、审批流程都不变），会员额外获得由 `cli/service` 的 `POST /v1/tools/<name>` 提供的工具，所以**能力只会比原来多，不会少**。三道闸门同时满足才注册：服务已配置、用户在 `AGENT_TOOLS_USERS` 里、且是有效星球会员。
+
+- 目前三个，都是读盘室里没有的能力：`market_regime`（A 股市况判定与动态阈值）、`wyckoff_diagnose`（单股确定性结构诊断）、`intraday_rescue_check`（60 分钟救援评估，需要用户的 TickFlow Key）。
+- 只放「读盘室里没有」的能力。同名或重复的工具（`analyze_stock`、`screen_stocks` 等）不加：会员已经有它们和专用展示。
+- 凭据由网关按工具声明的键从会员自己的 `user_settings` 取出，随请求发给服务，服务不持有任何用户密钥，也不碰 Supabase。
+- 服务只执行 `WYCKOFF_SERVICE_TOOLS` 白名单里的工具，其余一律 404；共用模式启动时还会拒绝命令、任意文件读写、浏览器、本机数据库类工具。
+- 失败（服务不可用、繁忙）时工具返回一条错误结果让模型解释，不会让整轮对话失败；日志只记事件名、工具名和状态码。
+- 不放行的：`run_backtest`、`screen_stocks`（产品上不需要）；`evaluate_recommendation_events`（读库用的是 service-role 客户端）、`research_hypothesis`（写本机 SQLite）、`exec_command` / `read_file` / `write_file` / 浏览器类（需要沙箱）。
 
 ### 会员 Agent 车道网关（`/api/agent`）
 

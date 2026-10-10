@@ -19,6 +19,9 @@ const TOOL_LABEL_KEYS: Record<string, TranslationKey> = {
   intraday_analysis: 'tool.intraday_analysis',
   run_python_research: 'tool.run_python_research',
   web_search: 'tool.web_search',
+  market_regime: 'tool.market_regime',
+  wyckoff_diagnose: 'tool.wyckoff_diagnose',
+  intraday_rescue_check: 'tool.intraday_rescue_check',
 }
 
 const TOOL_TONES: Record<string, string> = {

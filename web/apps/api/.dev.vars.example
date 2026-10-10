@@ -16,3 +16,6 @@ AGENT_SERVICE_URL=http://127.0.0.1:18080
 AGENT_SERVICE_TOKEN=replace-with-a-random-shared-token
 # Comma-separated user ids; * = every active planet member (development only).
 AGENT_LANE_USERS=
+# Python-service tools for members in the reading room (off unless the service is configured and the user is listed).
+# Comma-separated user ids; * = every active planet member. Independent from AGENT_LANE_USERS.
+AGENT_TOOLS_USERS=
