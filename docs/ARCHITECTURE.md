@@ -115,6 +115,7 @@ Worker 负责鉴权、输入校验、队列控制面和 HMAC 签名。Vercel Nod
 - 只放「读盘室里没有」的能力。同名或重复的工具（`analyze_stock`、`screen_stocks` 等）不加：会员已经有它们和专用展示。
 - 凭据由网关按工具声明的键从会员自己的 `user_settings` 取出，随请求发给服务，服务不持有任何用户密钥，也不碰 Supabase。
 - 服务只执行 `WYCKOFF_SERVICE_TOOLS` 白名单里的工具，其余一律 404；共用模式启动时还会拒绝命令、任意文件读写、浏览器、本机数据库类工具。
+- **全市场结果短时缓存**：`market_regime` 和 `wyckoff_diagnose` 不依赖任何用户凭据、结果对所有人一样，服务里缓存 5 分钟，同一个请求同时到达时只算一次，其余等待并共享结果；出错的结果不缓存。命中和等待的请求不占并发名额。带用户 Key 的工具（`intraday_rescue_check`）永远不进缓存。
 - 失败（服务不可用、繁忙）时工具返回一条错误结果让模型解释，不会让整轮对话失败；日志只记事件名、工具名和状态码。
 - 不放行的：`run_backtest`、`screen_stocks`（产品上不需要）；`evaluate_recommendation_events`（读库用的是 service-role 客户端）、`research_hypothesis`（写本机 SQLite）、`exec_command` / `read_file` / `write_file` / 浏览器类（需要沙箱）。
 

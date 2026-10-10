@@ -15,6 +15,7 @@ import pytest
 from cli.providers.base import LLMProvider
 from cli.service.echo_provider import EchoProvider
 from cli.service.server import CloudToolRegistry, ServiceState, default_provider_factory, make_server
+from cli.service.tool_cache import ToolResultCache
 from tests.helpers.agent_loop_harness import StubToolRegistry
 
 TOKEN = "gateway-secret"
@@ -526,7 +527,7 @@ def test_tool_endpoint_runs_an_allowlisted_tool_and_returns_its_result(serve):
 
     status, body = _post_tool(port, "market_regime", {"args": {"x": 1}})
 
-    assert (status, body) == (200, {"result": {"regime": "NEUTRAL", "score": 0.4}})
+    assert (status, body) == (200, {"result": {"regime": "NEUTRAL", "score": 0.4}, "cached": False})
     assert registry.calls == [{"name": "market_regime", "args": {"x": 1}}]
 
 
@@ -576,7 +577,7 @@ def test_tool_results_are_strict_json(serve):
     status, body = _post_tool(port, "market_regime", {})
 
     assert status == 200
-    assert body == {"result": {"ratio": None, "rows": [1.0, None]}}
+    assert body == {"result": {"ratio": None, "rows": [1.0, None]}, "cached": False}
 
 
 def test_a_failing_tool_is_a_500_and_frees_its_slot(serve):
@@ -597,7 +598,10 @@ def test_tool_calls_have_a_global_concurrency_cap(serve):
         release.wait(5)
         return {"ok": True}
 
-    port, _, _ = _tool_server(serve, {"market_regime": slow}, max_concurrent_tool_calls=1)
+    # 关掉缓存：这个用例要的是「两个不同的人同时算」，不是「等同一个结果」。
+    port, _, _ = _tool_server(
+        serve, {"market_regime": slow}, max_concurrent_tool_calls=1, tool_cache=ToolResultCache({})
+    )
     first, box = _run_in_thread(lambda: _post_tool(port, "market_regime", {}, user="alice")[0])
     assert started.wait(5)
 
@@ -621,3 +625,71 @@ def test_a_tool_call_does_not_take_the_users_chat_turn_slot(serve):
     assert status == 200
     gated.release.set()
     turn.join(5)
+
+
+def test_a_market_wide_tool_is_computed_once_and_shared_between_users(serve):
+    port, _, registry = _tool_server(serve, {"market_regime": {"regime": "RISK_OFF"}})
+
+    first = _post_tool(port, "market_regime", {"args": {}}, user="alice")
+    second = _post_tool(port, "market_regime", {"args": {}}, user="bob")
+
+    assert first == (200, {"result": {"regime": "RISK_OFF"}, "cached": False})
+    assert second == (200, {"result": {"regime": "RISK_OFF"}, "cached": True})
+    assert len(registry.calls) == 1
+
+
+def test_a_tool_that_uses_the_users_own_key_is_never_shared(serve):
+    port, _, registry = _tool_server(serve, {"intraday_rescue_check": {"ok": True}})
+
+    _post_tool(port, "intraday_rescue_check", {"args": {"code": "600519"}}, user="alice")
+    _post_tool(port, "intraday_rescue_check", {"args": {"code": "600519"}}, user="bob")
+
+    assert len(registry.calls) == 2
+
+
+def test_cache_hits_do_not_take_a_tool_slot(serve):
+    started, release = threading.Event(), threading.Event()
+
+    def slow(name, args):
+        if args.get("code") == "slow":
+            started.set()
+            release.wait(5)
+        return {"code": args.get("code")}
+
+    port, _, _ = _tool_server(serve, {"wyckoff_diagnose": slow}, max_concurrent_tool_calls=1)
+    assert _post_tool(port, "wyckoff_diagnose", {"args": {"code": "600519"}})[0] == 200  # 先写进缓存
+    first, box = _run_in_thread(lambda: _post_tool(port, "wyckoff_diagnose", {"args": {"code": "slow"}})[0])
+    assert started.wait(5)
+
+    cached = _post_tool(port, "wyckoff_diagnose", {"args": {"code": "600519"}}, user="bob")
+    other = _post_tool(port, "wyckoff_diagnose", {"args": {"code": "000001"}}, user="carol")
+
+    assert cached[0] == 200 and cached[1]["cached"] is True
+    assert other[0] == 429  # 名额被那个慢的占着，新的计算才会被挡
+    release.set()
+    first.join(5)
+    assert box["result"] == 200
+
+
+def test_identical_concurrent_requests_share_one_computation(serve):
+    started, release = threading.Event(), threading.Event()
+    calls: list[str] = []
+
+    def slow(name, args):
+        calls.append(name)
+        started.set()
+        release.wait(5)
+        return {"regime": "RISK_OFF"}
+
+    port, _, _ = _tool_server(serve, {"market_regime": slow})
+    first, box_a = _run_in_thread(lambda: _post_tool(port, "market_regime", {}, user="alice"))
+    assert started.wait(5)
+    second, box_b = _run_in_thread(lambda: _post_tool(port, "market_regime", {}, user="bob"))
+    time.sleep(0.2)
+    release.set()
+    first.join(5)
+    second.join(5)
+
+    assert len(calls) == 1
+    assert box_a["result"][0] == box_b["result"][0] == 200
+    assert {box_a["result"][1]["cached"], box_b["result"][1]["cached"]} == {False, True}
