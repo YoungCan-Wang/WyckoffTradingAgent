@@ -68,6 +68,7 @@ from workflows.backtest_defaults import (
 )
 from workflows.backtest_intraday import tickflow_entry_price_fetcher_from_env
 from workflows.backtest_strategy_variants import (
+    LIVE_COMBO_KNOCKOUT_SWITCHES,
     LIVE_KNOCKOUT_SWITCHES,
     normalize_strategy_variant,
     strategy_variant_entry_policy,
@@ -321,8 +322,10 @@ def _load_prepared_data(
         max_workers=request.max_workers,
         progress=progress,
     )
-    if normalize_strategy_variant(request.strategy_variant) in LIVE_KNOCKOUT_SWITCHES or env_flag(
-        "BACKTEST_REQUIRE_PIT_TURNOVER"
+    if (
+        normalize_strategy_variant(request.strategy_variant) in LIVE_KNOCKOUT_SWITCHES
+        or normalize_strategy_variant(request.strategy_variant) in LIVE_COMBO_KNOCKOUT_SWITCHES
+        or env_flag("BACKTEST_REQUIRE_PIT_TURNOVER")
     ):
         validate_snapshot_turnover(
             history.all_df_map, load_snapshot_pit_meta(config.snapshot_dir), request.start_dt, request.end_dt

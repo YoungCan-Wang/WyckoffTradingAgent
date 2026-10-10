@@ -31,7 +31,9 @@ def test_live_comparison_uses_correct_reference_and_marks_missing_cells():
     assert "bull_2025" in report["evaluations"]["KO_AMBUSH"]["marginal_by_period"]
 
 
-@pytest.mark.parametrize("variant", ["live", "KO_AMBUSH", "KO_ACCUM", "KO_DRY_VOL", "KO_TREND_CONT", "Q", "R"])
+@pytest.mark.parametrize(
+    "variant", ["live", "KO_AMBUSH", "KO_ACCUM", "KO_DRY_VOL", "KO_TREND_CONT", "KO_ACCUM_TREND_CONT", "Q", "R"]
+)
 def test_report_directory_recognizes_registered_variants(variant):
     assert _DIR_PATTERN.fullmatch(f"backtest-strategy-bull_2025-{variant}")
 

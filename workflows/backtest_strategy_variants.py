@@ -26,6 +26,7 @@ VARIANT_LABELS = {
     "KO_ACCUM": "live 单通道消融：关闭吸筹",
     "KO_DRY_VOL": "live 单通道消融：关闭地量蓄势",
     "KO_TREND_CONT": "live 单通道消融：关闭趋势延续",
+    "KO_ACCUM_TREND_CONT": "live 组合消融：关闭吸筹与趋势延续",
 }
 
 DEFAULT_COMPARISON_VARIANTS = ("A", "M", "P")
@@ -34,6 +35,9 @@ LIVE_KNOCKOUT_SWITCHES = {
     "KO_ACCUM": "enable_accumulation_channel",
     "KO_DRY_VOL": "enable_dry_vol_channel",
     "KO_TREND_CONT": "enable_trend_cont_channel",
+}
+LIVE_COMBO_KNOCKOUT_SWITCHES = {
+    "KO_ACCUM_TREND_CONT": ("enable_accumulation_channel", "enable_trend_cont_channel"),
 }
 
 _ALL_SWITCHES = {
@@ -132,6 +136,8 @@ def strategy_variant_overrides(raw: str) -> dict[str, object]:
         return {}
     if variant in LIVE_KNOCKOUT_SWITCHES:
         return {LIVE_KNOCKOUT_SWITCHES[variant]: False}
+    if variant in LIVE_COMBO_KNOCKOUT_SWITCHES:
+        return {switch: False for switch in LIVE_COMBO_KNOCKOUT_SWITCHES[variant]}
     return {**_ALL_SWITCHES, **_VARIANT_SWITCHES[variant]}
 
 
