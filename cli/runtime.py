@@ -91,14 +91,23 @@ def _iter_with_timeout(stream, timeout: float, cancel_check: Callable[[], bool] 
     _SENTINEL = None
     _EXCEPTION = object()
     q: queue.Queue = queue.Queue()
+    stop = threading.Event()
 
     def _producer():
         try:
             for chunk in stream:
+                if stop.is_set():
+                    return
                 q.put(chunk)
             q.put(_SENTINEL)
         except BaseException as exc:
             q.put((_EXCEPTION, exc))
+        finally:
+            # 生成器正在本线程执行，别的线程 close() 只会抛 ValueError；
+            # 取消后必须由 producer 自己在下一个分片处收尾，否则模型流会一直读到结束。
+            if stop.is_set() and hasattr(stream, "close"):
+                with contextlib.suppress(Exception):
+                    stream.close()
 
     t = threading.Thread(target=_producer, daemon=True)
     t.start()
@@ -125,9 +134,7 @@ def _iter_with_timeout(stream, timeout: float, cancel_check: Callable[[], bool] 
                 raise item[1]
             yield item
     except BaseException:
-        if hasattr(stream, "close"):
-            with contextlib.suppress(Exception):
-                stream.close()
+        stop.set()
         raise
 
 

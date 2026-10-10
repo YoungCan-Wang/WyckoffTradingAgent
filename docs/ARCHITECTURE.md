@@ -396,6 +396,48 @@ OpenAI provider 兼容 Qwen / Kimi / LongCat / Minimax 等 OpenAI API 格式端�
 安装、参数默认值、权限、响应格式、长任务与验证契约的唯一维护位置是
 [PUBLIC_MCP.md](PUBLIC_MCP.md)。作为客户端接入第三方 MCP 的实现不在本次重构范围。
 
+### 会员车道 Agent Runtime 服务（实验，未部署）
+
+`cli/service/server.py` 把 `AgentRuntime` 包成常驻 HTTP/SSE 服务，镜像见 `packaging/agent-service/Dockerfile`。
+设计前提：非会员继续走 Worker 上的 `/api/chat`（功能冻结），会员车道走这个服务，LLM key 由会员自带。
+
+- **两种部署形态。**
+  - **独占（默认）**：一个进程只服务一个用户，首个请求的 `X-Wyckoff-User` 把实例钉死，其他用户得到 409。适合按用户路由到各自容器。
+  - **共用（`WYCKOFF_SERVICE_SHARED=1`）**：多个用户共用一个进程，不绑定用户。每个用户同时只跑一轮、全局并发有上限（`WYCKOFF_SERVICE_MAX_TURNS`，默认 4），超了回 429；会话历史按 `(用户, session_id)` 隔离；**每个请求建自己的工具注册表**，网关按请求注入的 `credentials`（`{字符串: 字符串}`，最多 20 项、每项 ≤4096 字符）只活在这个请求里；每轮在全新的 `contextvars` 上下文里跑，ContextVar 的写入不会漏到同一线程的下一个请求。
+  - 共用模式启动时会拒绝已知不能共用的工具（`SHARED_FORBIDDEN_TOOLS`：命令、任意文件读写、浏览器、本机数据库与家目录），配置了就直接退出。这只是拦已知的；放行任何其他工具前仍要按 [CLOUD_TOOL_AUDIT.md](CLOUD_TOOL_AUDIT.md) 逐个确认。
+  - 凭据读取需要 `ToolContext` 的请求级凭据模式（`state["credentials"]`），否则工具会回落到 admin 客户端或本机配置。
+- **必须带网关令牌**：环境变量 `AGENT_SERVICE_TOKEN` 未设置时进程拒绝启动，请求必须带 `Authorization: Bearer`。
+- **默认零工具**：`WYCKOFF_SERVICE_TOOLS` 用逗号列出放行的工具名，过滤发生在 `CloudToolRegistry` 一层。云端放行任何工具之前，要先确认它不依赖本机文件和 `local_db`。
+- **同一时刻只跑一轮**，第二个请求得到 429；客户端断开会关闭事件流并让 runtime 收掉模型流，不再继续生成。
+- **每轮自带时限**（`WYCKOFF_SERVICE_TURN_SECONDS`，默认 600 秒）。本地 `wrangler dev` 实测，客户端断开**不会**穿过 Worker→DO→容器这条链，容器会把整轮跑完，所以不能只靠断开信号。时限的检查点是模型流的空档、轮次边界和工具批次，不会打断一段连续输出，是粗粒度的后备。
+- 会话历史只在进程内存里（最多 8 个会话），容器休眠即丢失；持久化到 Supabase 是后续工作。
+- `WYCKOFF_SERVICE_ECHO=1` 才允许 `provider_name=echo`，用于不带密钥的冒烟测试。
+
+**部署示例：Cloud Run（免费额度内）。** 共用模式 + 缩到零 + 小规格，小规模白名单可以不花钱，但需要绑定结算账号（无硬性封顶，靠最大实例数和预算告警兜底）：
+
+```bash
+gcloud run deploy wyckoff-agent --image <镜像> --region asia-northeast1 --allow-unauthenticated \
+  --cpu 1 --memory 1Gi --concurrency 2 --max-instances 1 --min-instances 0 --timeout 600 \
+  --set-env-vars "AGENT_SERVICE_TOKEN=<随机令牌>,WYCKOFF_SERVICE_SHARED=1,WYCKOFF_SERVICE_MAX_TURNS=2"
+```
+
+- 区域选 Tier 1 的东京：免费额度按 Tier 1 折算；东京出口实测可达 DeepSeek / OpenAI / Anthropic / Gemini（假 key 返回 401 / 400，而不是地区限制）。不要放香港或大陆。
+- 对公网开放是因为 Worker 无法带 Google 身份，只能靠共享令牌；没有令牌一律 401。
+- Cloud Run 保留 `/healthz`（前端直接回 404），外部探活不要用它。
+- 预算告警只通知不停服；创建预算要带 `--billing-project`。
+- 镜像必须是 linux/amd64。
+
+协议（内部，浏览器不直连）：
+
+- `GET /healthz`
+- `POST /v1/turns`：`{text, session_id?, llm: {provider_name, api_key, model?, base_url?}}`，每个 `RuntimeEvent` 一帧 SSE，会话历史在进程内存。
+- `POST /v1/ui-turns`：`{messages: UIMessage[], llm}`，响应是 ai-sdk UI message stream v1（带 `x-vercel-ai-ui-message-stream: v1`，以 `data: [DONE]` 收尾），`useChat` / `DefaultChatTransport` 可直接消费，网关只需原样转发字节。
+  无状态：历史取自 `messages` 里的文本片段，容器休眠丢内存也不影响；工具片段不带入。工具一律标 `dynamic`，避免撞上前端为 TS 工具写的专用渲染器（输出形状不同）；工具结果里的 NaN / Infinity 换成 `null`，否则前端 `JSON.parse` 直接失败。
+
+契约：`tests/golden/agent_ui_stream.sse` 由 `tests/cli/test_service_ui_stream.py` 生成并比对，`web/apps/web/src/lib/__tests__/agent-ui-stream.test.ts` 用真实的 ai SDK 客户端解析同一份文件。SDK 对不合 schema 的分块是**静默丢弃**而不是报错（服务端字段名写错，用户看到的是一条空回复），所以两边的断言都不能省。
+
+尚未做：前端按会员身份切换到这条路径、生产 Worker 的网关路由（鉴权、会员判定、从 Supabase 读会员自带的 key）、`base_url` 白名单（目前只靠网关校验）、会话历史持久化、云端工具审计。
+
 ### TUI 视觉层次
 
 ```
@@ -838,7 +880,7 @@ MCP server 走 ToolSurface，没有确认弹窗也没有待批队列。`tools/wr
 | **信号反馈闭环** (`signal_feedback.yml`) | 周一-周五 23:30 | 只结算缺失/`pending` outcomes，同股共享一次 K 线；刷新 health / registry，周五续跑策略反思 Shadow |
 | **美股漏斗筛选 + 推荐表现** (`wyckoff_funnel_us.yml`) | 周二-周六 05:35 | `market_funnel_job.py --market us` 后续跑 `us_recommendation_performance_job.py` |
 | **数据库维护** (`db_maintenance.yml`) | 每周六 06:20 | 清理过期行情、订单、信号、市场信号等滑动窗口数据 |
-| **港美股票池刷新** (`hk_us_universe_refresh.yml`) | 每周日 21:30 | 拉取 Tushare 港股上市名单和 Nasdaq Trader 美股正股目录，有差异则开 PR。周日是为了避开交易日漏斗，不表示它排在其他任务之后 |
+| **港美股票池刷新** (`hk_us_universe_refresh.yml`) | 每周日 21:30 | 拉取 Tushare 港股上市名单和 Nasdaq Trader 美股正股目录。脚本成功且名单有差异时直接提交 `main`；名单过短拒绝覆盖或无差异则跳过，不开分支、不开 PR。周日 21:30（cron `30 13 * * 0`）是为了避开工作日港美漏斗，不表示它排在其他任务之后 |
 | **回测网格** (`backtest_grid.yml`) | 手动触发 | 多周期 × 多交易风格回放，同时输出参数邻域稳定性与按时间前推的 walk-forward 样本外验证 |
 | **策略消融** (`backtest_grid.yml: strategy_compare`) | 手动显式开启 | A/M/P 五窗口结论已稳定为不晋级，默认网格不再重复消耗五个全市场任务；仅在 `run_strategy_compare=true` 时复现历史证据。手动复跑仍按窗口共用一次信号台账、分别重放权重与现金组合；候选/触发规则不同的策略禁止共享，故 matrix 分两片：`amp`（A/M/P 共享台账）、`calib`（I 独算）。Q/N/O、Q/R/S/T 形态门控与 Layer 2 两轨制 J（#476，六窗口三胜三负、边际成交更差，代码已删）均已否决，不改变生产漏斗 |
 | **触发阈值标定** (`backtest_trigger_calibration.yml`) | 手动触发 | 按周期 × 取值扇出，每个 job 完整重跑一次全市场漏斗；扫触发阈值时按目标触发器单信号均收做跨周期 walk-forward 选值，扫 `top_n` 时按全样本均收对比选择层增益；填 `grid_cells` 则改走共享台账的退出网格，在 `top_n=0` 原始池上取退出基准 |

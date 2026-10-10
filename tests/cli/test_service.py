@@ -1,0 +1,502 @@
+"""Agent runtime 服务宿主：鉴权、用户绑定、SSE 流、单轮并发与断开回收。"""
+
+from __future__ import annotations
+
+import http.client
+import json
+import socket
+import threading
+import time
+from collections.abc import Generator
+from typing import Any
+
+import pytest
+
+from cli.providers.base import LLMProvider
+from cli.service.echo_provider import EchoProvider
+from cli.service.server import CloudToolRegistry, ServiceState, default_provider_factory, make_server
+from tests.helpers.agent_loop_harness import StubToolRegistry
+
+TOKEN = "gateway-secret"
+
+
+class _GatedProvider(LLMProvider):
+    """先吐一个分片再卡在门上，用来把一轮钉在「进行中」。"""
+
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    @property
+    def name(self) -> str:
+        return "gated"
+
+    def chat(self, messages, tools, system_prompt=""):
+        raise NotImplementedError
+
+    def chat_stream(self, messages, tools, system_prompt="") -> Generator[dict[str, Any], None, None]:
+        yield {"type": "text_delta", "text": "hi"}
+        self.entered.set()
+        self.release.wait(5)
+        yield {"type": "finish", "reason": "stop"}
+
+
+class _EndlessProvider(LLMProvider):
+    """一直吐分片，直到被关闭；finally 记录是否真的被收尾。"""
+
+    def __init__(self) -> None:
+        self.closed = threading.Event()
+
+    @property
+    def name(self) -> str:
+        return "endless"
+
+    def chat(self, messages, tools, system_prompt=""):
+        raise NotImplementedError
+
+    def chat_stream(self, messages, tools, system_prompt="") -> Generator[dict[str, Any], None, None]:
+        try:
+            while True:
+                yield {"type": "text_delta", "text": "x" * 512}
+                time.sleep(0.005)
+        finally:
+            self.closed.set()
+
+
+class _Recorder(EchoProvider):
+    def __init__(self) -> None:
+        self.seen: list[list[dict[str, Any]]] = []
+
+    def chat_stream(self, messages, tools, system_prompt=""):
+        self.seen.append([dict(m) for m in messages])
+        yield from super().chat_stream(messages, tools, system_prompt)
+
+
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch):
+    """覆盖 conftest 的同名守卫：分块 SSE 必须走真套接字验证，所以只放行回环，其余外联照旧禁止。"""
+    real_connect = socket.socket.connect
+
+    def _loopback_only(sock, address):
+        if address[0] != "127.0.0.1":
+            raise RuntimeError("Tests must not make real network calls")
+        return real_connect(sock, address)
+
+    monkeypatch.setattr(socket.socket, "connect", _loopback_only)
+
+
+@pytest.fixture
+def serve():
+    servers = []
+
+    def _start(provider: LLMProvider, **state_kwargs: Any) -> tuple[str, int, ServiceState]:
+        state = ServiceState(TOKEN, StubToolRegistry(), provider_factory=lambda llm: (provider, None), **state_kwargs)
+        server = make_server("127.0.0.1", 0, state)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        servers.append(server)
+        return "127.0.0.1", server.server_address[1], state
+
+    yield _start
+    for server in servers:
+        server.shutdown()
+        server.server_close()
+
+
+def _open(
+    port: int, body: dict[str, Any], *, user: str = "u1", token: str = TOKEN
+) -> tuple[http.client.HTTPConnection, http.client.HTTPResponse]:
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    headers = {"Authorization": f"Bearer {token}", "X-Wyckoff-User": user, "Content-Type": "application/json"}
+    conn.request("POST", "/v1/turns", json.dumps(body), headers)
+    return conn, conn.getresponse()
+
+
+def _post(port: int, body: dict[str, Any], *, user: str = "u1", token: str = TOKEN) -> http.client.HTTPResponse:
+    return _open(port, body, user=user, token=token)[1]
+
+
+def _events(resp: http.client.HTTPResponse) -> list[dict[str, Any]]:
+    frames = [line for line in resp.read().decode().split("\n\n") if line.startswith("data: ")]
+    return [json.loads(frame[len("data: ") :]) for frame in frames]
+
+
+def test_healthz_needs_no_auth(serve):
+    _, port, _ = serve(EchoProvider())
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    conn.request("GET", "/healthz")
+    resp = conn.getresponse()
+    assert resp.status == 200
+    assert json.loads(resp.read()) == {"ok": True}
+
+
+@pytest.mark.parametrize("token", ["", "wrong"])
+def test_turn_rejects_missing_or_wrong_token(serve, token):
+    _, port, _ = serve(EchoProvider())
+    assert _post(port, {"text": "hi"}, token=token).status == 401
+
+
+def test_turn_streams_runtime_events_and_ends_with_done(serve):
+    _, port, _ = serve(EchoProvider())
+    resp = _post(port, {"text": "你好，威科夫"})
+    assert resp.status == 200
+    assert resp.getheader("Content-Type", "").startswith("text/event-stream")
+    events = _events(resp)
+    assert events[-1]["type"] == "done"
+    assert events[-1]["text"] == "你好，威科夫"
+    assert any(event["type"] == "text_delta" for event in events)
+
+
+def test_instance_is_bound_to_the_first_user(serve):
+    _, port, _ = serve(EchoProvider())
+    assert _post(port, {"text": "hi"}, user="alice").status == 200
+    assert _post(port, {"text": "hi"}, user="mallory").status == 409
+
+
+def test_missing_user_header_is_rejected(serve):
+    _, port, _ = serve(EchoProvider())
+    assert _post(port, {"text": "hi"}, user=" ").status == 400
+
+
+@pytest.mark.parametrize("body", [{}, {"text": ""}, {"text": 7}])
+def test_invalid_text_is_rejected(serve, body):
+    _, port, _ = serve(EchoProvider())
+    assert _post(port, body).status == 400
+
+
+def test_provider_error_is_a_400_without_leaking_the_key():
+    state = ServiceState(TOKEN, StubToolRegistry(), provider_factory=lambda llm: (None, "boom"))
+    server = make_server("127.0.0.1", 0, state)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        resp = _post(server.server_address[1], {"text": "hi", "llm": {"api_key": "sk-secret"}})
+        payload = resp.read().decode()
+        assert resp.status == 400
+        assert "sk-secret" not in payload
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_second_concurrent_turn_gets_429(serve):
+    gated = _GatedProvider()
+    _, port, _ = serve(gated)
+    first: dict[str, Any] = {}
+    thread = threading.Thread(target=lambda: first.update(events=_events(_post(port, {"text": "a"}))))
+    thread.start()
+    assert gated.entered.wait(5)
+    assert _post(port, {"text": "b"}).status == 429
+    gated.release.set()
+    thread.join(5)
+    assert first["events"][-1]["type"] == "done"
+
+
+def test_turn_deadline_cancels_a_stalled_turn_and_frees_the_gate(serve):
+    gated = _GatedProvider()
+    _, port, state = serve(gated, max_turn_seconds=0.6)
+    events = _events(_post(port, {"text": "a"}))
+    gated.release.set()
+    assert events[-1]["type"] == "turn_cancelled"
+    assert state.active_turns == 0
+
+
+def test_history_carries_across_turns_of_one_session(serve):
+    recorder = _Recorder()
+    _, port, _ = serve(recorder)
+    _events(_post(port, {"text": "first", "session_id": "s1"}))
+    _events(_post(port, {"text": "second", "session_id": "s1"}))
+    _events(_post(port, {"text": "other", "session_id": "s2"}))
+    assert [m["content"] for m in recorder.seen[1] if m["role"] == "user"] == ["first", "second"]
+    assert [m["content"] for m in recorder.seen[2] if m["role"] == "user"] == ["other"]
+
+
+def test_client_disconnect_closes_the_turn_and_frees_the_gate(serve):
+    endless = _EndlessProvider()
+    _, port, state = serve(endless)
+    conn, resp = _open(port, {"text": "go"})
+    resp.fp.readline()
+    conn.close()
+    assert endless.closed.wait(5), "断开后模型流应被关闭"
+    deadline = time.monotonic() + 5
+    while state.active_turns and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert state.active_turns == 0
+
+
+def test_cloud_registry_exposes_only_listed_tools(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert CloudToolRegistry(frozenset()).schemas() == []
+    only = CloudToolRegistry(frozenset({"get_market_overview"}))
+    assert [schema["name"] for schema in only.schemas()] == ["get_market_overview"]
+
+
+def test_echo_provider_is_opt_in_and_its_delay_is_capped(monkeypatch):
+    monkeypatch.delenv("WYCKOFF_SERVICE_ECHO", raising=False)
+    assert default_provider_factory({"provider_name": "echo"})[0] is None
+
+    monkeypatch.setenv("WYCKOFF_SERVICE_ECHO", "1")
+    provider, error = default_provider_factory({"provider_name": "echo", "delay_ms": 999_999})
+    assert error is None
+    assert provider.delay_s == 1.0
+
+
+def _post_ui(port: int, messages: list[dict[str, Any]]) -> http.client.HTTPResponse:
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    headers = {"Authorization": f"Bearer {TOKEN}", "X-Wyckoff-User": "u1", "Content-Type": "application/json"}
+    body = {"id": "chat-1", "trigger": "submit-message", "messages": messages, "llm": {"provider_name": "echo"}}
+    conn.request("POST", "/v1/ui-turns", json.dumps(body), headers)
+    return conn.getresponse()
+
+
+def _chunks(resp: http.client.HTTPResponse) -> list[Any]:
+    frames = [line.removeprefix("data: ") for line in resp.read().decode().split("\n\n") if line]
+    return [frame if frame == "[DONE]" else json.loads(frame) for frame in frames]
+
+
+def _user(text: str) -> dict[str, Any]:
+    return {"id": "u", "role": "user", "parts": [{"type": "text", "text": text}]}
+
+
+def test_ui_turn_speaks_the_ai_sdk_stream_protocol(serve):
+    _, port, _ = serve(EchoProvider())
+    resp = _post_ui(port, [_user("威科夫")])
+
+    assert resp.status == 200
+    assert resp.getheader("x-vercel-ai-ui-message-stream") == "v1"
+    chunks = _chunks(resp)
+    assert chunks[-1] == "[DONE]"
+    assert [c["type"] for c in chunks[:-1]][:2] == ["start", "start-step"]
+    assert "".join(c["delta"] for c in chunks[:-1] if c["type"] == "text-delta") == "威科夫"
+    assert chunks[-2] == {"type": "finish", "finishReason": "stop"}
+
+
+def test_ui_turn_is_stateless_and_takes_history_from_the_request(serve):
+    recorder = _Recorder()
+    _, port, state = serve(recorder)
+    history = [
+        _user("第一问"),
+        {"id": "a", "role": "assistant", "parts": [{"type": "text", "text": "第一答"}]},
+        _user("第二问"),
+    ]
+
+    _chunks(_post_ui(port, history))
+
+    assert [m["content"] for m in recorder.seen[0]] == ["第一问", "第一答", "第二问"]
+    assert state.history("u1", "default") == []
+
+
+def test_ui_turn_rejects_a_conversation_that_does_not_end_with_a_user_message(serve):
+    _, port, _ = serve(EchoProvider())
+    assistant = {"id": "a", "role": "assistant", "parts": [{"type": "text", "text": "hi"}]}
+
+    assert _post_ui(port, [assistant]).status == 400
+
+
+class _FailingProvider(LLMProvider):
+    @property
+    def name(self) -> str:
+        return "failing"
+
+    def chat(self, messages, tools, system_prompt=""):
+        raise NotImplementedError
+
+    def chat_stream(self, messages, tools, system_prompt="") -> Generator[dict[str, Any], None, None]:
+        raise RuntimeError("Error code: 401 - Authentication Fails, your api key is invalid")
+        yield {}  # pragma: no cover - 让它成为生成器
+
+
+def test_ui_turn_surfaces_the_real_provider_failure_to_the_user(serve):
+    """用真实 runtime 触发失败，而不是手造事件：turn_failed 把原因放在 message 里，读错字段只会剩一句「agent error」。"""
+    _, port, state = serve(_FailingProvider())
+
+    chunks = _chunks(_post_ui(port, [_user("你好")]))
+
+    error = next(c for c in chunks if isinstance(c, dict) and c["type"] == "error")
+    assert "401" in error["errorText"] and "api key is invalid" in error["errorText"]
+    assert [c["type"] for c in chunks[-3:-1]] == ["finish-step", "finish"]
+    assert chunks[-1] == "[DONE]"
+    assert state.active_turns == 0
+
+
+# ---- 共用模式 ----------------------------------------------------------------
+
+
+def _wait_for(predicate, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while not predicate() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    return predicate()
+
+
+def _drain(port: int, body: dict[str, Any], user: str) -> int:
+    """读完整个流再返回状态码：连接一断，服务端会（正确地）判定客户端走了并结束这一轮。"""
+    response = _post(port, body, user=user)
+    status = response.status
+    response.read()
+    return status
+
+
+def _run_in_thread(target):
+    box: dict[str, Any] = {}
+    thread = threading.Thread(target=lambda: box.update(result=target()))
+    thread.start()
+    return thread, box
+
+
+def test_shared_mode_serves_different_users_at_the_same_time(serve):
+    gated = _GatedProvider()
+    _, port, state = serve(gated, shared=True)
+    a, box_a = _run_in_thread(lambda: _drain(port, {"text": "a"}, "alice"))
+    assert gated.entered.wait(5)
+    b, box_b = _run_in_thread(lambda: _drain(port, {"text": "b"}, "bob"))
+
+    assert _wait_for(lambda: state.active_turns == 2)
+    gated.release.set()
+    a.join(5)
+    b.join(5)
+
+    assert (box_a["result"], box_b["result"]) == (200, 200)
+    assert state.active_turns == 0
+
+
+def test_shared_mode_still_allows_one_turn_per_user(serve):
+    gated = _GatedProvider()
+    _, port, _ = serve(gated, shared=True)
+    first, _box = _run_in_thread(lambda: _drain(port, {"text": "a"}, "alice"))
+    assert gated.entered.wait(5)
+
+    assert _post(port, {"text": "again"}, user="alice").status == 429
+
+    gated.release.set()
+    first.join(5)
+
+
+def test_shared_mode_has_a_global_concurrency_cap(serve):
+    gated = _GatedProvider()
+    _, port, _ = serve(gated, shared=True, max_concurrent_turns=1)
+    first, _box = _run_in_thread(lambda: _drain(port, {"text": "a"}, "alice"))
+    assert gated.entered.wait(5)
+
+    response = _post(port, {"text": "b"}, user="bob")
+
+    assert response.status == 429
+    assert "capacity" in response.read().decode()
+    gated.release.set()
+    first.join(5)
+
+
+def test_single_user_mode_is_unchanged_other_users_are_still_rejected(serve):
+    _, port, _ = serve(EchoProvider())
+    assert _post(port, {"text": "hi"}, user="alice").status == 200
+    assert _post(port, {"text": "hi"}, user="bob").status == 409
+
+
+def test_shared_mode_keeps_sessions_apart_per_user(serve):
+    recorder = _Recorder()
+    _, port, _ = serve(recorder, shared=True)
+
+    _events(_post(port, {"text": "alice-secret", "session_id": "s"}, user="alice"))
+    _events(_post(port, {"text": "bob-hello", "session_id": "s"}, user="bob"))
+
+    assert [m["content"] for m in recorder.seen[1] if m["role"] == "user"] == ["bob-hello"]
+
+
+def test_each_request_gets_its_own_tools_with_only_its_own_credentials(serve):
+    built: list[tuple[str, dict[str, str]]] = []
+
+    def factory(user: str, credentials: dict[str, str]):
+        built.append((user, credentials))
+        return StubToolRegistry()
+
+    _, port, _ = serve(EchoProvider(), shared=True, tools_factory=factory)
+
+    _events(_post(port, {"text": "a", "credentials": {"tushare_token": "alice-token"}}, user="alice"))
+    _events(_post(port, {"text": "b", "credentials": {"tushare_token": "bob-token"}}, user="bob"))
+    _events(_post(port, {"text": "c"}, user="carol"))
+
+    assert built == [
+        ("alice", {"tushare_token": "alice-token"}),
+        ("bob", {"tushare_token": "bob-token"}),
+        ("carol", {}),
+    ]
+
+
+def test_credentials_are_never_echoed_back_to_the_client(serve):
+    _, port, _ = serve(EchoProvider(), shared=True, tools_factory=lambda user, creds: StubToolRegistry())
+
+    stream = _post(port, {"text": "hi", "credentials": {"tushare_token": "super-secret-token"}}, user="alice").read()
+
+    assert b"super-secret-token" not in stream
+
+
+@pytest.mark.parametrize(
+    "credentials",
+    ["token", ["a"], {"k": 1}, {"k": None}, {f"k{i}": "v" for i in range(21)}, {"k": "x" * 4097}],
+)
+def test_malformed_credentials_are_rejected(serve, credentials):
+    _, port, _ = serve(EchoProvider(), shared=True)
+
+    assert _post(port, {"text": "hi", "credentials": credentials}, user="alice").status == 400
+
+
+def test_context_variables_written_during_a_turn_do_not_leak_into_the_next_one():
+    import contextvars
+
+    from cli.service.server import in_fresh_context
+
+    token = contextvars.ContextVar("token", default="")
+    seen: list[str] = []
+
+    def turn(value: str):
+        token.set(value)
+        yield {"step": 1}
+        seen.append(token.get())  # 同一轮的后续步骤仍然看得到自己写的值
+        yield {"step": 2}
+
+    list(in_fresh_context(turn("alice")))
+
+    assert seen == ["alice"]
+    assert token.get() == ""
+    list(in_fresh_context(turn("bob")))
+    assert seen == ["alice", "bob"]
+
+
+def test_shared_mode_refuses_tools_that_cannot_run_in_a_shared_process():
+    from cli.service.server import validate_shared_tools
+
+    validate_shared_tools(frozenset({"get_market_overview", "search_stock_by_name"}))
+    with pytest.raises(ValueError, match="exec_command"):
+        validate_shared_tools(frozenset({"get_market_overview", "exec_command"}))
+
+
+def test_the_forbidden_list_only_names_tools_that_exist():
+    """名单写错一个字，等于那个工具没被拦住。"""
+    from cli.service.server import SHARED_FORBIDDEN_TOOLS
+    from cli.tools import TOOL_SCHEMAS
+
+    assert SHARED_FORBIDDEN_TOOLS <= {schema["name"] for schema in TOOL_SCHEMAS}
+
+
+def test_shared_state_is_built_from_the_environment(monkeypatch):
+    from cli.service.server import build_state
+
+    monkeypatch.setenv("WYCKOFF_SERVICE_SHARED", "1")
+    monkeypatch.setenv("WYCKOFF_SERVICE_MAX_TURNS", "7")
+    monkeypatch.setenv("WYCKOFF_SERVICE_TOOLS", "exec_command")
+    with pytest.raises(ValueError, match="exec_command"):
+        build_state("t")
+
+    monkeypatch.setenv("WYCKOFF_SERVICE_TOOLS", "")
+    state = build_state("t")
+    assert state.shared and state.max_concurrent_turns == 7 and state.tools is None
+
+
+def test_the_real_registry_carries_the_request_state_and_never_shares_it(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    alice = CloudToolRegistry(frozenset(), {"user_id": "alice", "credentials": {"tushare_token": "a"}})
+    bob = CloudToolRegistry(frozenset(), {"user_id": "bob", "credentials": {}})
+
+    alice.state["credentials"]["extra"] = "x"
+
+    assert alice.tool_context.state["user_id"] == "alice"
+    assert bob.tool_context.state["credentials"] == {}
+    assert alice.tool_context is not bob.tool_context

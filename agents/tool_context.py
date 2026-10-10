@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 LOCAL_USER_ID = "local"
 CRED_CACHE_TTL = 300
+CREDENTIALS_STATE_KEY = "credentials"
 
 _cred_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _cred_cache_lock = threading.Lock()
@@ -64,11 +65,23 @@ def get_user_id(tool_context: ToolContext | None = None) -> str:
     return LOCAL_USER_ID
 
 
+def has_request_credentials(tool_context: ToolContext | None) -> bool:
+    """请求级凭据模式：调用方（网关）按请求把本次要用的凭据放进了 state["credentials"]。
+
+    空字典也算：「这次请求没有任何凭据」和「没有上下文」是两回事，前者不能回落到别处去找。
+    """
+    return bool(tool_context) and isinstance(tool_context.state.get(CREDENTIALS_STATE_KEY), dict)
+
+
 def has_cloud(tool_context: ToolContext | None) -> bool:
-    return bool(tool_context and tool_context.state.get("access_token", ""))
+    return bool(tool_context and (tool_context.state.get("access_token", "") or has_request_credentials(tool_context)))
 
 
 def get_credential(tool_context: ToolContext | None, key: str, env_fallback: str = "") -> str:
+    if has_request_credentials(tool_context):
+        # 共用进程里凭据只能来自本次请求：不碰 admin 客户端、本机配置和环境变量，
+        # 否则任何一处把 user_id 传错，就会读到别人的密钥。
+        return str(tool_context.state[CREDENTIALS_STATE_KEY].get(key, "") or "").strip()
     user_id = get_user_id(tool_context)
     if user_id:
         value = str(load_user_credentials(user_id).get(key, "") or "").strip()
@@ -92,7 +105,12 @@ def resolve_llm_config(tool_context: ToolContext | None) -> tuple[str, str, str,
 
     云端登录用户优先用云端 user_settings，但云端没配 key 时必须回落本地
     wyckoff.json —— 否则本地配好的模型对登录用户等于不存在。
+    请求级凭据模式下只读 llm_* 四个键，缺了就是缺了。
     """
+    if has_request_credentials(tool_context):
+        creds = tool_context.state[CREDENTIALS_STATE_KEY]
+        provider = str(creds.get("llm_provider") or "gemini")
+        return provider, *(str(creds.get(f"llm_{field}") or "") for field in ("api_key", "model", "base_url"))
     if not has_cloud(tool_context):
         local = _try_local_llm_config()
         if local:
