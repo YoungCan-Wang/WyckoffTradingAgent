@@ -174,6 +174,7 @@ def test_fallback_appends_protection_without_replacing_stored_same_day_recommend
     }
     assert len(appended) == 2
     assert all(row["run_id"] == "new-run" for row in appended)
+    assert all(row["model"] == "degraded:llm_failed" for row in appended)
     assert all(row["portfolio_id"] == "P1" and row["trade_date"] == context.trade_date for row in appended)
     active_same_symbol = [
         row

@@ -36,10 +36,13 @@ def prepare_step4_result_record(
     *,
     tickets: list[ExecutionTicket],
     state_signature: str,
+    bind_state_signature: bool = True,
 ) -> Step4ResultRecord:
     ticket_rows = build_step4_ticket_rows(tickets)
     log_step4_reject_audit(tickets)
-    return Step4ResultRecord(_build_step4_run_id(state_signature), ticket_rows)
+    # 降级保护工单不能绑 state_signature：否则同日补跑会被幂等检查当成「已完整跑过」。
+    sig = state_signature if bind_state_signature else ""
+    return Step4ResultRecord(_build_step4_run_id(sig), ticket_rows)
 
 
 def save_step4_orders_and_nav(

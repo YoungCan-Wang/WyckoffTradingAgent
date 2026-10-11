@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
+from dataclasses import replace
 from datetime import date
 
 from core.execution_audit import StaleExit, find_unexecuted_exits, stop_breached_codes, unsellable_dates
@@ -80,6 +81,8 @@ def _run_stop_loss_only_fallback(
     ``trade_orders``，次日高水位止损丢失、未执行离场审计也会漏掉本轮。
     但降级路径禁止 ``supersede_previous``：否则同日已落库的 BUY/ATTACK 会被
     ``cancel_trade_orders(exclude_run_id=...)`` 清掉，LLM 重跑失败变成静默毁单。
+    落库时 model 标 ``degraded:*``、run_id 不绑持仓签名，这样 ``check_daily_run_exists``
+    不会把保护工单当成完整 OMS，修好模型后的同日补跑才能真正再决策。
     """
     positions = list(getattr(getattr(context, "portfolio", None), "positions", None) or [])
     if not positions:
@@ -397,9 +400,13 @@ def _send_and_persist_step4_results(
     model_label: str | None = None,
     supersede_previous: bool = True,
 ) -> tuple[bool, str]:
+    # 降级路径：model 写成 degraded:* 且 run_id 不绑持仓签名，避免保护工单堵住同日 LLM 补跑。
+    degraded = bool(model_label) and str(model_label).startswith("degraded:")
+    persist_options = replace(options, model=str(model_label)) if degraded else options
     result_record = prepare_step4_result_record(
         tickets=tickets,
         state_signature=context.state_signature,
+        bind_state_signature=not degraded,
     )
     report = render_trade_ticket(
         market_view=rendered_market_view,
@@ -413,7 +420,7 @@ def _send_and_persist_step4_results(
         day_pnl=_load_ticket_day_pnl(options.portfolio_id, context.trade_date),
     )
     persistence = save_step4_orders_and_nav(
-        options=options,
+        options=persist_options,
         context=context,
         run_id=result_record.run_id,
         rendered_market_view=rendered_market_view,
