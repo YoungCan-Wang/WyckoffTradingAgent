@@ -10,6 +10,7 @@ import { streamLLMResponseWithFallback } from '@/lib/llm-stream'
 import { clearStreamFlush, scheduleStreamFlush } from '@/lib/stream-render'
 import { MarkdownContent } from '@/components/markdown'
 import { UpgradeNotice } from '@/components/upgrade-notice'
+import { PlanetMembershipHint } from '@/components/planet-membership-cta'
 import { AIDisclaimer } from '@/components/ai-disclaimer'
 import { TICKFLOW_PURCHASE, fetchValueSnapshotWithFetch, isSupportedPortfolioCode, isValidBuyDt, normalizeCode, normalizePortfolioCode } from '@wyckoff/shared'
 import type { KlineRow, ValueSnapshot } from '@wyckoff/shared'
@@ -121,7 +122,10 @@ function PortfolioPageContent() {
           databaseMode
         />
       ) : (
-        <ManualInput portfolio={manualPortfolio} fullLoading={fullDiag.loading} progress={fullDiag.progress} onChange={setManualPortfolio} onDiagnosis={() => fullDiag.run(manualPortfolio)} />
+        <>
+          <PlanetMembershipHint messageKey="portfolio.memberHint" />
+          <ManualInput portfolio={manualPortfolio} fullLoading={fullDiag.loading} progress={fullDiag.progress} onChange={setManualPortfolio} onDiagnosis={() => fullDiag.run(manualPortfolio)} />
+        </>
       )}
       {fullDiag.result && <FullDiagnosisPanel result={fullDiag.result} report={fullDiag.streamingReport || fullDiag.result.report} streaming={fullDiag.loading && fullDiag.progress?.step === 'llm'} />}
     </div>

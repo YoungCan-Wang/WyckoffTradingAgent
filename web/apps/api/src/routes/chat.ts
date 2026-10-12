@@ -95,7 +95,7 @@ export function createChatRoutes(sandboxToolsBuilder: SandboxToolsBuilder = asyn
       execute: ({ writer }) => runChatWithResilience({
         writer,
         configs,
-        deps: createToolDeps(supabase),
+        deps: createToolDeps(supabase, cloudPortfolioEnabled),
         userId: auth.userId,
         accessToken: auth.accessToken,
         messages,
@@ -189,8 +189,8 @@ function getEnvValue(env: Env, key: 'SUPABASE_URL' | 'SUPABASE_ANON_KEY'): strin
   return value
 }
 
-function createToolDeps(supabase: ToolDeps['supabase']): ToolDeps {
-  return { supabase, fetch: createToolFetch(), generateText }
+function createToolDeps(supabase: ToolDeps['supabase'], isPlanetMember: boolean): ToolDeps {
+  return { supabase, fetch: createToolFetch(), generateText, isPlanetMember }
 }
 
 function createProviderFetch(reasoningLevel?: DeepSeekReasoningLevel): typeof globalThis.fetch {

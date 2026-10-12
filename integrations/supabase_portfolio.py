@@ -31,6 +31,7 @@ from core.constants import (
     TABLE_USER_SETTINGS,
 )
 from core.trade_fill import Fill, Holding, apply_fill
+from integrations.planet_membership import PLANET_MEMBERSHIP_URL, is_active_planet_member
 from integrations.supabase_base import create_admin_client as _get_supabase_admin_client
 from integrations.supabase_base import is_admin_configured as is_supabase_configured
 from integrations.supabase_base import require_server_write_context
@@ -40,6 +41,10 @@ logger = logging.getLogger(__name__)
 # Partial commit after position write. Must not embed upstream auth/JWT text — callers
 # that auth-retry on keyword match would otherwise re-apply the same fill.
 PARTIAL_FILL_WRITE_MSG = "持仓已更新但现金写入失败，请手动核对可用现金，勿重复回填同一笔成交"
+# 同样不得含 invalid/expired/token 等词：with_auth_retry 按关键字判重登，命中会把同一笔回填再写一遍。
+MEMBERSHIP_WRITE_DENIED_MSG = (
+    f"云端持仓保存是星球会员能力（账号未开通或已到期），本次没有写入。了解并加入：{PLANET_MEMBERSHIP_URL}"
+)
 
 
 @dataclass(frozen=True)
@@ -464,6 +469,16 @@ def _is_unique_violation(exc: BaseException) -> bool:
     return "duplicate" in text or "23505" in text or "unique constraint" in text
 
 
+def _failure_text(exc: BaseException) -> str:
+    return MEMBERSHIP_WRITE_DENIED_MSG if "row-level security" in str(exc).lower() else str(exc)
+
+
+def _write_denied(portfolio_id: str, client: Client) -> bool:
+    """update/delete 被 RLS 拒绝时不报错，只是命中 0 行，和「行不存在」同形，只能靠会员状态区分。"""
+    owner = portfolio_id.split(":", 1)[1] if ":" in portfolio_id else ""
+    return is_active_planet_member(client, owner) is False
+
+
 def upsert_position(
     portfolio_id: str,
     position: dict[str, Any],
@@ -506,7 +521,7 @@ def insert_position(
         logger.warning("[supabase_portfolio] insert_position failed: %s", e)
         if _is_unique_violation(e):
             return False, POSITION_EXISTS_ERROR
-        return False, str(e)
+        return False, _failure_text(e)
 
 
 def update_position(
@@ -540,11 +555,11 @@ def update_position(
             .execute()
         )
         if not getattr(response, "data", None):
-            return False, POSITION_MISSING_ERROR
+            return False, MEMBERSHIP_WRITE_DENIED_MSG if _write_denied(portfolio_id, client) else POSITION_MISSING_ERROR
         return True, _mutation_message(f"{code} 已更新", portfolio_id, client, refresh_equity)
     except Exception as e:
         logger.warning("[supabase_portfolio] update_position failed: %s", e)
-        return False, str(e)
+        return False, _failure_text(e)
 
 
 def delete_position(
@@ -567,11 +582,11 @@ def delete_position(
         client = _resolve_write_client(client, "delete portfolio position")
         deleted = _delete_position_rows(client, portfolio_id, targets)
         if not deleted:
-            return False, POSITION_MISSING_ERROR
+            return False, MEMBERSHIP_WRITE_DENIED_MSG if _write_denied(portfolio_id, client) else POSITION_MISSING_ERROR
         return True, _mutation_message(f"{deleted} 已删除", portfolio_id, client, refresh_equity)
     except Exception as e:
         logger.warning("[supabase_portfolio] delete_position failed: %s", e)
-        return False, str(e)
+        return False, _failure_text(e)
 
 
 def _list_position_rows(portfolio_id: str, client: Client) -> list[dict[str, Any]] | None:
@@ -746,12 +761,17 @@ def update_free_cash(
     try:
         client = _resolve_write_client(client, "update portfolio cash")
         _ensure_portfolio_exists(portfolio_id, client)
-        client.table(TABLE_PORTFOLIOS).update({"free_cash": free_cash}).eq("portfolio_id", portfolio_id).execute()
+        response = (
+            client.table(TABLE_PORTFOLIOS).update({"free_cash": free_cash}).eq("portfolio_id", portfolio_id).execute()
+        )
+        # 只认明确的 0 行：RLS 拒绝时 PostgREST 返回 []，而不是报错，旧写法会回报「已更新」。
+        if getattr(response, "data", None) == [] and _write_denied(portfolio_id, client):
+            return False, MEMBERSHIP_WRITE_DENIED_MSG
         message = f"可用资金已更新为 {free_cash:,.2f}"
         return True, _mutation_message(message, portfolio_id, client, refresh_equity)
     except Exception as e:
         logger.warning("[supabase_portfolio] update_free_cash failed: %s", e)
-        return False, str(e)
+        return False, _failure_text(e)
 
 
 def save_ai_trade_orders(

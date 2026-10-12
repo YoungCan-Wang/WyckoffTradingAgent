@@ -3,16 +3,25 @@ from __future__ import annotations
 import json
 import logging
 
-from agents.tool_context import ToolContext, get_user_client
+from agents.tool_context import ToolContext, get_user_client, get_user_id
 from core.pattern_review.records import pattern_review_tool_records
 from core.strategy_policy_display import (
     format_policy_signal_label,
     policy_execution_display,
     policy_governor_display,
 )
+from integrations.planet_membership import is_active_planet_member, membership_required_message
 from utils.json_text import parse_json_object as _json_map
 
 logger = logging.getLogger(__name__)
+
+
+def _gated_empty_message(tool_context: ToolContext | None, feature: str, default: str) -> str:
+    """RLS 对非会员返回空行，和「真的没有数据」同形；只有查到「不是有效会员」才换成会员提示。"""
+    client = get_user_client(tool_context)
+    if client is not None and is_active_planet_member(client, get_user_id(tool_context)) is False:
+        return membership_required_message(feature)
+    return default
 
 
 def query_history(
@@ -59,7 +68,10 @@ def _query_recommendation(limit: int, tool_context: ToolContext | None = None, m
         if not records:
             records = _load_remote_recommendations(limit, tool_context, market=normalized)
         if not records:
-            return {"message": "暂无复盘记录", "records": [], "market": normalized}
+            default = "暂无复盘记录"
+            # A 股表对所有登录用户可读，空就是没有；港美股表是会员专属，空可能是权限。
+            message = default if normalized == "cn" else _gated_empty_message(tool_context, "港美股复盘跟踪", default)
+            return {"message": message, "records": [], "market": normalized}
         simplified = pattern_review_tool_records(records)
         return {"total": len(simplified), "records": simplified, "market": normalized}
     except Exception as e:
@@ -207,7 +219,8 @@ def _query_attribution(
             else _load_attribution_rows(want, tool_context)
         )
         if not rows:
-            return {"message": "暂无策略归因报告", "records": []}
+            message = _gated_empty_message(tool_context, "策略归因报告", "暂无策略归因报告")
+            return {"message": message, "records": []}
         records = [_attribution_record(row) for row in rows]
         return {
             "total": len(records),

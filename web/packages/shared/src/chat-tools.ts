@@ -41,6 +41,7 @@ import {
 } from './news-chart-events'
 import { WYCKOFF_CHART_PLAN_SCHEMA, validateChartPlan } from './wyckoff-chart-plan'
 import { marketWatchSymbol, normalizeMarketWatchCode, readFreshMarketWatchSnapshot, type MarketWatchQuote, type MarketWatchSnapshot } from './market-watch'
+import { PLANET_MEMBERSHIP_URL } from './planet-membership'
 import { refreshPortfolioTotalEquity } from './portfolio-valuation'
 
 export interface KlineRow {
@@ -56,6 +57,8 @@ export interface ToolDeps {
   supabase: SupabaseClient
   fetch: typeof globalThis.fetch
   generateText: typeof GenerateTextFn
+  /** 明确知道当前账号不是有效星球会员时为 false；未知（如浏览器侧）保持 undefined。 */
+  isPlanetMember?: boolean
 }
 
 export interface LLMToolConfig {
@@ -866,6 +869,10 @@ export async function execQueryAttribution(deps: ToolDeps, limit: number): Promi
     .limit(Math.max(Math.trunc(limit) || 1, 1))
 
   if (!data || data.length === 0) {
+    // RLS 对非会员返回空行，和「还没有报告」同形：已知不是会员就不能让模型说成暂无数据。
+    if (deps.isPlanetMember === false) {
+      return `策略归因报告仅对有效星球会员开放（账号未开通或已到期），这不是暂无数据。了解并加入：${PLANET_MEMBERSHIP_URL}`
+    }
     return '暂无策略归因报告；Web 只读取远端 strategy_attribution_reports，本地 --no-write 报告请用 CLI/MCP 的 query_history(source="attribution") 查看。'
   }
   const latestDate = String(data[0]!.report_date || '')

@@ -13,6 +13,7 @@ export {
 export type { Provider } from './constants'
 export {
   PLANET_MEMBERSHIP_TIME_ZONE,
+  PLANET_MEMBERSHIP_URL,
   isPlanetMembershipActive,
   planetMembershipToday,
 } from './planet-membership'
