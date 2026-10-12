@@ -993,7 +993,7 @@ Supabase 默认把 `public` 表的全部权限授予 `anon` 与 `authenticated`�
 | 访问类 | 谓词 | 表 |
 | --- | --- | --- |
 | 本人行 | `auth.uid()` 匹配 | `user_settings`、`portfolios` / `portfolio_positions`（写另加会员谓词，见 [PLANET_MEMBERSHIP.md](PLANET_MEMBERSHIP.md)）、`daily_nav`、`trade_orders`、`user_activity_events` |
-| 星球会员 | `exists (select 1 from planet_members …)` | `strategy_attribution_reports`、`strategy_policy_candidates`、`strategy_reflections`、`external_seed_observations`、`recommendation_tracking`（A 股，含 `_hk` / `_us`）、`signal_pending` |
+| 星球会员 | `exists (...)`，且带到期日判断（`expires_on` 为空或不早于上海时区当天） | `strategy_attribution_reports`、`strategy_policy_candidates`、`strategy_reflections`、`external_seed_observations`、`recommendation_tracking`（A 股，含 `_hk` / `_us`）、`signal_pending` |
 | 登录即读 | `to authenticated using (true)` | `market_signal_daily`、`signal_*` 五张表 |
 
 「登录即读」不构成会员边界，会员能力的数据边界只认「星球会员」一类。A 股的 `recommendation_tracking`
@@ -1032,6 +1032,85 @@ commit;
 读盘室的 `query_recommendations` / `screen_stocks` 对确认非会员的空结果回报「仅对有效星球会员开放」，
 不再被说成暂无数据；读盘室额度对所有人一致，没有会员额度。
 
+`strategy_attribution_reports`、`strategy_policy_candidates`、`strategy_reflections`、`external_seed_observations`、
+`recommendation_tracking_hk`、`recommendation_tracking_us` 这 6 条旧策略只判断 `planet_members` 里有没有这个
+用户，不看 `expires_on`：过期会员仍然读得到。对齐成与 A 股推荐/信号同样的有效会员谓词：
+
+```sql
+begin;
+
+drop policy if exists "strategy attribution whitelist read" on public.strategy_attribution_reports;
+create policy "strategy attribution whitelist read"
+  on public.strategy_attribution_reports
+  for select
+  to authenticated
+  using (exists (
+    select 1 from public.planet_members pm
+    where pm.user_id = (select auth.uid())::text
+      and (pm.expires_on is null or pm.expires_on >= (timezone('Asia/Shanghai', now()))::date)
+  ));
+
+drop policy if exists strategy_policy_candidates_whitelist_select on public.strategy_policy_candidates;
+create policy strategy_policy_candidates_whitelist_select
+  on public.strategy_policy_candidates
+  for select
+  to authenticated
+  using (exists (
+    select 1 from public.planet_members pm
+    where pm.user_id = (select auth.uid())::text
+      and (pm.expires_on is null or pm.expires_on >= (timezone('Asia/Shanghai', now()))::date)
+  ));
+
+drop policy if exists strategy_reflections_whitelist_select on public.strategy_reflections;
+create policy strategy_reflections_whitelist_select
+  on public.strategy_reflections
+  for select
+  to authenticated
+  using (exists (
+    select 1 from public.planet_members pm
+    where pm.user_id = (select auth.uid())::text
+      and (pm.expires_on is null or pm.expires_on >= (timezone('Asia/Shanghai', now()))::date)
+  ));
+
+drop policy if exists external_seed_observations_whitelist_select on public.external_seed_observations;
+create policy external_seed_observations_whitelist_select
+  on public.external_seed_observations
+  for select
+  to authenticated
+  using (exists (
+    select 1 from public.planet_members pm
+    where pm.user_id = (select auth.uid())::text
+      and (pm.expires_on is null or pm.expires_on >= (timezone('Asia/Shanghai', now()))::date)
+  ));
+
+drop policy if exists recommendation_tracking_hk_select_whitelist on public.recommendation_tracking_hk;
+create policy recommendation_tracking_hk_select_whitelist
+  on public.recommendation_tracking_hk
+  for select
+  to authenticated
+  using (exists (
+    select 1 from public.planet_members pm
+    where pm.user_id = (select auth.uid())::text
+      and (pm.expires_on is null or pm.expires_on >= (timezone('Asia/Shanghai', now()))::date)
+  ));
+
+drop policy if exists recommendation_tracking_us_select_whitelist on public.recommendation_tracking_us;
+create policy recommendation_tracking_us_select_whitelist
+  on public.recommendation_tracking_us
+  for select
+  to authenticated
+  using (exists (
+    select 1 from public.planet_members pm
+    where pm.user_id = (select auth.uid())::text
+      and (pm.expires_on is null or pm.expires_on >= (timezone('Asia/Shanghai', now()))::date)
+  ));
+
+commit;
+```
+
+应用侧已经按带到期日的口径判断（Worker `isActivePlanetMember`、CLI/MCP `is_active_planet_member`、前端
+`isPlanetMembershipActive`），这条迁移只是让数据库和应用对齐，不需要跟着改代码。
+
 `signal_health_daily` / `signal_observations` / `signal_outcomes` / `signal_policy_shadow_runs` /
 `signal_registry` 的读策略历史上带 `anon`，即不登录也能读。读取方只有服务端任务（admin 客户端）和已登录的
 Worker 工具，用受控迁移收回（`strategy_attribution_report.py --no-write` 未登录时会回退到匿名读取，
@@ -1047,7 +1126,7 @@ alter policy signal_registry_read on public.signal_registry to authenticated;
 commit;
 ```
 
-审计（SQL Editor，只读）。一条语句返回 8 行 `ok`，全部为 `true` 才算通过；`detail` 列出违规的表或策略。
+审计（SQL Editor，只读）。一条语句返回 9 行 `ok`，全部为 `true` 才算通过；`detail` 列出违规的表或策略。
 第 7 行的视图若是扩展自带的（如 PostGIS）可忽略：
 
 ```sql
@@ -1107,6 +1186,17 @@ bypass_views as (
   from pg_class c join pg_namespace s on s.oid = c.relnamespace
   where s.nspname = 'public' and c.relkind in ('v', 'm')
     and not coalesce(c.reloptions @> array['security_invoker=true'], false)
+),
+stale_member_tables as (
+  select tablename || '.' || policyname as name
+  from pol
+  where tablename in (
+    'strategy_attribution_reports', 'strategy_policy_candidates', 'strategy_reflections',
+    'external_seed_observations', 'recommendation_tracking_hk', 'recommendation_tracking_us'
+  )
+    and cmd = 'SELECT'
+    and 'service_role' <> all (roles)
+    and coalesce(qual, '') !~ 'expires_on'
 )
 select item, ok, detail
 from (
@@ -1145,6 +1235,10 @@ from (
             and cmd = 'SELECT' and 'service_role' <> all (roles)) >= 2
          and not exists (select 1 from open_member_tables),
          coalesce((select string_agg(name, ', ' order by name) from open_member_tables), '')
+  union all
+  select 9, '星球会员类表的读策略都看到期日（不止判断行是否存在）',
+         not exists (select 1 from stale_member_tables),
+         coalesce((select string_agg(name, ', ' order by name) from stale_member_tables), '')
 ) checks
 order by n;
 ```
