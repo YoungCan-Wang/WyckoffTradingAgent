@@ -993,11 +993,44 @@ Supabase 默认把 `public` 表的全部权限授予 `anon` 与 `authenticated`�
 | 访问类 | 谓词 | 表 |
 | --- | --- | --- |
 | 本人行 | `auth.uid()` 匹配 | `user_settings`、`portfolios` / `portfolio_positions`（写另加会员谓词，见 [PLANET_MEMBERSHIP.md](PLANET_MEMBERSHIP.md)）、`daily_nav`、`trade_orders`、`user_activity_events` |
-| 星球会员 | `exists (select 1 from planet_members …)` | `strategy_attribution_reports`、`strategy_policy_candidates`、`strategy_reflections`、`external_seed_observations`、`recommendation_tracking_hk` / `_us` |
-| 登录即读 | `to authenticated using (true)` | `market_signal_daily`、`recommendation_tracking`（A 股）、`signal_pending`、`signal_*` 五张表 |
+| 星球会员 | `exists (select 1 from planet_members …)` | `strategy_attribution_reports`、`strategy_policy_candidates`、`strategy_reflections`、`external_seed_observations`、`recommendation_tracking`（A 股，含 `_hk` / `_us`）、`signal_pending` |
+| 登录即读 | `to authenticated using (true)` | `market_signal_daily`、`signal_*` 五张表 |
 
-「登录即读」不构成会员边界，会员能力的数据边界只认「星球会员」一类。`recommendation_tracking`（A 股）
-因为单股分析页要给所有登录用户查名称而属于这一类；要收紧，须先把名称查询拆到不含推荐内容的小表或 RPC。
+「登录即读」不构成会员边界，会员能力的数据边界只认「星球会员」一类。A 股的 `recommendation_tracking`
+与 `signal_pending` 是会员的形态跟踪与信号内容，策略用有效会员谓词（`expires_on` 为空或不早于上海时区当天）：
+
+```sql
+begin;
+
+drop policy if exists recommendation_tracking_read_all_auth on public.recommendation_tracking;
+create policy recommendation_tracking_select_member
+  on public.recommendation_tracking
+  for select
+  to authenticated
+  using (exists (
+    select 1 from public.planet_members pm
+    where pm.user_id = (select auth.uid())::text
+      and (pm.expires_on is null or pm.expires_on >= (timezone('Asia/Shanghai', now()))::date)
+  ));
+
+drop policy if exists signal_pending_read on public.signal_pending;
+create policy signal_pending_select_member
+  on public.signal_pending
+  for select
+  to authenticated
+  using (exists (
+    select 1 from public.planet_members pm
+    where pm.user_id = (select auth.uid())::text
+      and (pm.expires_on is null or pm.expires_on >= (timezone('Asia/Shanghai', now()))::date)
+  ));
+
+commit;
+```
+
+收紧前把「按名字找股票」从这两张表上拆开：单股分析页的名称取自前端发布的公开股票名单；读盘室
+`search_stock` 在原来两张表之外再查同一份公开 A 股名单（`stock_list_cache.json`），非会员照常能搜到。
+读盘室的 `query_recommendations` / `screen_stocks` 对确认非会员的空结果回报「仅对有效星球会员开放」，
+不再被说成暂无数据；读盘室额度对所有人一致，没有会员额度。
 
 `signal_health_daily` / `signal_observations` / `signal_outcomes` / `signal_policy_shadow_runs` /
 `signal_registry` 的读策略历史上带 `anon`，即不登录也能读。读取方只有服务端任务（admin 客户端）和已登录的
@@ -1014,7 +1047,7 @@ alter policy signal_registry_read on public.signal_registry to authenticated;
 commit;
 ```
 
-审计（SQL Editor，只读）。一条语句返回 7 行 `ok`，全部为 `true` 才算通过；`detail` 列出违规的表或策略。
+审计（SQL Editor，只读）。一条语句返回 8 行 `ok`，全部为 `true` 才算通过；`detail` 列出违规的表或策略。
 第 7 行的视图若是扩展自带的（如 PostGIS）可忽略：
 
 ```sql
@@ -1061,6 +1094,14 @@ anon_definer_fns as (
   from pg_proc p join pg_namespace s on s.oid = p.pronamespace
   where s.nspname = 'public' and p.prosecdef and has_function_privilege('anon', p.oid, 'execute')
 ),
+open_member_tables as (
+  select tablename || '.' || policyname as name
+  from pol
+  where tablename in ('recommendation_tracking', 'signal_pending')
+    and cmd in ('SELECT', 'ALL')
+    and 'service_role' <> all (roles)
+    and coalesce(qual, '') !~ 'planet_members'
+),
 bypass_views as (
   select c.relname as name
   from pg_class c join pg_namespace s on s.oid = c.relnamespace
@@ -1098,6 +1139,12 @@ from (
   select 7, 'public 下没有会绕过 RLS 的视图（扩展自带的可忽略）',
          not exists (select 1 from bypass_views),
          coalesce((select string_agg(name, ', ' order by name) from bypass_views), '')
+  union all
+  select 8, 'A 股推荐与信号表只对有效会员可读（recommendation_tracking / signal_pending）',
+         (select count(*) from pol where tablename in ('recommendation_tracking', 'signal_pending')
+            and cmd = 'SELECT' and 'service_role' <> all (roles)) >= 2
+         and not exists (select 1 from open_member_tables),
+         coalesce((select string_agg(name, ', ' order by name) from open_member_tables), '')
 ) checks
 order by n;
 ```

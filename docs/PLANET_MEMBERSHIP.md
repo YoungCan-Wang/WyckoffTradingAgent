@@ -27,8 +27,8 @@
 
 | 位置 | 行为 |
 | --- | --- |
-| 读盘室 `query_attribution` | RLS 对非会员返回空行，和「还没有报告」同形；`ToolDeps.isPlanetMember === false` 时回报「仅对有效星球会员开放，这不是暂无数据」，未知则保持原提示 |
-| CLI / 桌面 / MCP `query_history`（归因、港美股跟踪） | 同上，用用户自己的客户端查 `planet_members` 判定 |
+| 读盘室 `query_attribution` / `query_recommendations` / `screen_stocks` | RLS 对非会员返回空行，和「还没有记录」同形；`ToolDeps.isPlanetMember === false` 时回报「仅对有效星球会员开放，这不是暂无数据」（`screen_stocks` 放进 `notice`），未知则保持原提示。`search_stock` 另查公开 A 股名单，不依赖会员表 |
+| CLI / 桌面 / MCP `query_history`（归因、A 股与港美股跟踪、信号） | 同上，用用户自己的客户端查 `planet_members` 判定 |
 | `/attribution` 锁屏页 | 复用 `/tracking` 的二维码入口卡（`components/planet-membership-cta.tsx`） |
 | `/portfolio` 非会员手动录入页 | 一行提示：云端保存、多端同步是会员能力 |
 | 云端持仓写入被 RLS 拒绝 | `MEMBERSHIP_WRITE_DENIED_MSG`。update / delete 被拒时命中 0 行且不报错，靠会员状态与「行不存在」区分；`update_free_cash` 命中 0 行不再回报「已更新」 |

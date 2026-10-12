@@ -1,10 +1,11 @@
-import { describe, it, expect, vi } from 'vitest'
+import { beforeEach, describe, it, expect, vi } from 'vitest'
 import type { ToolDeps, KlineRow } from '@wyckoff/shared'
 import {
   buildValueAgentDigest,
   buildKlineDigest,
   buildPortfolioWriteRecord,
   execSearchStock,
+  resetStockUniverseCacheForTest,
   execViewPortfolio,
   execMarketOverview,
   execQueryRecommendations,
@@ -164,6 +165,54 @@ describe('execSearchStock', () => {
     expect(result).toContain('600519')
     expect(result).toContain('贵州茅台')
   })
+
+  describe('public stock universe (members-only recommendation table)', () => {
+    const universe = [
+      { code: '600519', name: '贵州茅台' },
+      { code: '000001', name: '平安银行' },
+    ]
+
+    function withUniverse(deps: ToolDeps, rows: unknown = universe): ToolDeps {
+      const fetchMock = vi.fn().mockImplementation(async (input: unknown) => {
+        const url = typeof input === 'string' ? input : String((input as { url?: string }).url)
+        if (url.includes('stock_list_cache.json')) return { ok: true, json: async () => rows } as Response
+        return { ok: false, json: async () => ({}) } as Response
+      })
+      return { ...deps, fetch: fetchMock as unknown as ToolDeps['fetch'] }
+    }
+
+    beforeEach(() => resetStockUniverseCacheForTest())
+
+    it('still resolves a name when the recommendation table returns nothing for a non-member', async () => {
+      const deps = withUniverse({ ...createMockDeps({ recommendation_tracking: [], portfolio_positions: [] }), isPlanetMember: false })
+      const result = await execSearchStock(deps, 'user1', '茅台')
+      expect(result).toContain('600519')
+      expect(result).toContain('贵州茅台')
+    })
+
+    it('resolves by code from the universe', async () => {
+      const deps = withUniverse(createMockDeps({ recommendation_tracking: [], portfolio_positions: [] }))
+      const result = await execSearchStock(deps, 'user1', '000001')
+      expect(result).toContain('平安银行')
+    })
+
+    it('degrades to not-found when the universe cannot be fetched', async () => {
+      const deps = createMockDeps({ recommendation_tracking: [], portfolio_positions: [] })
+      expect(await execSearchStock(deps, 'user1', '茅台')).toContain('未找到匹配')
+    })
+
+    it('ignores malformed universe rows', async () => {
+      const deps = withUniverse(createMockDeps({ recommendation_tracking: [], portfolio_positions: [] }), [
+        { code: 600519, name: '数字代码' },
+        { name: '缺代码' },
+        null,
+        { code: '600519', name: '贵州茅台' },
+      ])
+      const result = await execSearchStock(deps, 'user1', '茅台')
+      expect(result).toContain('贵州茅台')
+      expect(result).not.toContain('数字代码')
+    })
+  })
 })
 
 describe('execViewPortfolio', () => {
@@ -257,6 +306,21 @@ describe('execQueryRecommendations', () => {
     const deps = createMockDeps({ recommendation_tracking: [] })
     const result = await execQueryRecommendations(deps, 10)
     expect(result).toBe('暂无形态复盘记录')
+  })
+
+  it('tells a known non-member the table is members-only, not empty', async () => {
+    const deps = { ...createMockDeps({ recommendation_tracking: [], signal_pending: [] }), isPlanetMember: false }
+    const result = await execQueryRecommendations(deps, 10)
+    expect(result).toContain('仅对有效星球会员开放')
+    expect(result).toContain('这不是暂无数据')
+    expect(result).not.toBe('暂无形态复盘记录')
+  })
+
+  it('keeps the no-data message for members and when membership is unknown', async () => {
+    for (const isPlanetMember of [true, undefined]) {
+      const deps = { ...createMockDeps({ recommendation_tracking: [], signal_pending: [] }), isPlanetMember }
+      expect(await execQueryRecommendations(deps, 10)).toBe('暂无形态复盘记录')
+    }
   })
 
   it('formats recommendation entries', async () => {
@@ -711,6 +775,15 @@ describe('execScreenStocks', () => {
     const result = await execScreenStocks(deps)
     expect(result.stocks).toEqual([])
     expect(result.meta.ai_count).toBe(0)
+    expect(result.notice).toBeUndefined()
+  })
+
+  it('explains an empty result as members-only for a known non-member', async () => {
+    const deps = { ...createMockDeps({ recommendation_tracking: [] }), isPlanetMember: false }
+    const result = await execScreenStocks(deps)
+    expect(result.stocks).toEqual([])
+    expect(result.notice).toContain('仅对有效星球会员开放')
+    expect(SCREEN_RESULT_OUTPUT_SCHEMA.parse(result).notice).toBe(result.notice)
   })
 
   it('keeps optional strategy policy evidence in the output schema', () => {
