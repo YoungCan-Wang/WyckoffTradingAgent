@@ -979,6 +979,129 @@ Web 个股、持仓和股票对抗分析保存历史时写入 `meta`：输入快
 
 数据隔离：Web JWT → RLS，CLI access_token → RLS，脚本 service_role_key → 绕过 RLS。
 
+### 数据库访问面（RLS）
+
+Supabase 默认把 `public` 表的全部权限授予 `anon` 与 `authenticated`，anon key 又随前端 bundle 公开，
+所以 **RLS 是唯一的门**：表没开 RLS，持有 anon key 的任何人（不必登录）都能对它读、写、删。
+
+- 建表 DDL 必须在同一份语句里 `enable row level security`；没有策略即仅 `service_role` 可访问。
+  `tests/core/test_ddl_enables_rls.py` 扫描 `core/`、`integrations/`、`scripts/` 的建表语句并拦截漏写。
+- 只由服务端任务写入的共享表（`factor_ic_daily`、`review_capture_daily`、`review_shadow_lane_daily`、
+  `shadow_*`、`concept_heat_history`、`theme_radar_snapshot` 等）不建任何策略，任务走 admin 客户端。
+- 浏览器与 Worker 用用户 JWT 读的表，策略只能落在下面三类之一：
+
+| 访问类 | 谓词 | 表 |
+| --- | --- | --- |
+| 本人行 | `auth.uid()` 匹配 | `user_settings`、`portfolios` / `portfolio_positions`（写另加会员谓词，见 [PLANET_MEMBERSHIP.md](PLANET_MEMBERSHIP.md)）、`daily_nav`、`trade_orders`、`user_activity_events` |
+| 星球会员 | `exists (select 1 from planet_members …)` | `strategy_attribution_reports`、`strategy_policy_candidates`、`strategy_reflections`、`external_seed_observations`、`recommendation_tracking_hk` / `_us` |
+| 登录即读 | `to authenticated using (true)` | `market_signal_daily`、`recommendation_tracking`（A 股）、`signal_pending`、`signal_*` 五张表 |
+
+「登录即读」不构成会员边界，会员能力的数据边界只认「星球会员」一类。`recommendation_tracking`（A 股）
+因为单股分析页要给所有登录用户查名称而属于这一类；要收紧，须先把名称查询拆到不含推荐内容的小表或 RPC。
+
+`signal_health_daily` / `signal_observations` / `signal_outcomes` / `signal_policy_shadow_runs` /
+`signal_registry` 的读策略历史上带 `anon`，即不登录也能读。读取方只有服务端任务（admin 客户端）和已登录的
+Worker 工具，用受控迁移收回（`strategy_attribution_report.py --no-write` 未登录时会回退到匿名读取，
+迁移后读到空，先登录再试跑）：
+
+```sql
+begin;
+alter policy signal_health_daily_read on public.signal_health_daily to authenticated;
+alter policy signal_observations_read on public.signal_observations to authenticated;
+alter policy signal_outcomes_read on public.signal_outcomes to authenticated;
+alter policy signal_policy_shadow_runs_read on public.signal_policy_shadow_runs to authenticated;
+alter policy signal_registry_read on public.signal_registry to authenticated;
+commit;
+```
+
+审计（SQL Editor，只读）。一条语句返回 7 行 `ok`，全部为 `true` 才算通过；`detail` 列出违规的表或策略。
+第 7 行的视图若是扩展自带的（如 PostGIS）可忽略：
+
+```sql
+with pol as (
+  select * from pg_policies where schemaname = 'public'
+),
+no_rls as (
+  select c.relname
+  from pg_class c join pg_namespace s on s.oid = c.relnamespace
+  where s.nspname = 'public' and c.relkind = 'r' and not c.relrowsecurity
+),
+weak_portfolio as (
+  select tablename || '.' || policyname as name
+  from pol
+  where tablename in ('portfolios', 'portfolio_positions')
+    and cmd in ('INSERT', 'UPDATE', 'DELETE', 'ALL')
+    and (coalesce(qual, '') || coalesce(with_check, '')) !~ 'planet_members'
+),
+open_to_anon as (
+  select tablename || '.' || policyname as name
+  from pol
+  where roles && array['anon', 'public']::name[]
+    and (coalesce(qual, '') || coalesce(with_check, '')) !~ 'auth\.uid'
+),
+loose_settings as (
+  select policyname as name
+  from pol
+  where tablename = 'user_settings'
+    and (coalesce(qual, '') || coalesce(with_check, '')) !~ 'auth\.uid'
+),
+member_writes as (
+  select 'policy ' || policyname as name
+  from pol
+  where tablename = 'planet_members' and cmd <> 'SELECT'
+  union all
+  select 'grant ' || grantee || ' ' || privilege_type
+  from information_schema.role_table_grants
+  where table_schema = 'public' and table_name = 'planet_members'
+    and grantee in ('anon', 'authenticated')
+    and privilege_type in ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE')
+),
+anon_definer_fns as (
+  select p.proname as name
+  from pg_proc p join pg_namespace s on s.oid = p.pronamespace
+  where s.nspname = 'public' and p.prosecdef and has_function_privilege('anon', p.oid, 'execute')
+),
+bypass_views as (
+  select c.relname as name
+  from pg_class c join pg_namespace s on s.oid = c.relnamespace
+  where s.nspname = 'public' and c.relkind in ('v', 'm')
+    and not coalesce(c.reloptions @> array['security_invoker=true'], false)
+)
+select item, ok, detail
+from (
+  select 1 as n, 'P0 public 里每张表都开了 RLS' as item,
+         not exists (select 1 from no_rls) as ok,
+         coalesce((select string_agg(name, ', ' order by name) from (select relname as name from no_rls) t), '') as detail
+  union all
+  select 2, 'P1 持仓写策略共 6 条，且都带 planet_members 条件',
+         (select count(*) from pol where tablename in ('portfolios', 'portfolio_positions')
+            and cmd in ('INSERT', 'UPDATE', 'DELETE')) = 6
+         and not exists (select 1 from weak_portfolio),
+         coalesce((select string_agg(name, ', ' order by name) from weak_portfolio), '')
+  union all
+  select 3, 'P2 没有不看身份的策略对 anon 开放（含 public 角色）',
+         not exists (select 1 from open_to_anon),
+         coalesce((select string_agg(name, ', ' order by name) from open_to_anon), '')
+  union all
+  select 4, 'user_settings 每条策略都绑定 auth.uid()',
+         exists (select 1 from pol where tablename = 'user_settings') and not exists (select 1 from loose_settings),
+         coalesce((select string_agg(name, ', ' order by name) from loose_settings), '')
+  union all
+  select 5, 'planet_members 客户端只能读（无写策略、无写授权）',
+         not exists (select 1 from member_writes),
+         coalesce((select string_agg(name, ', ' order by name) from member_writes), '')
+  union all
+  select 6, 'anon 不能执行 public 下的 security definer 函数',
+         not exists (select 1 from anon_definer_fns),
+         coalesce((select string_agg(name, ', ' order by name) from anon_definer_fns), '')
+  union all
+  select 7, 'public 下没有会绕过 RLS 的视图（扩展自带的可忽略）',
+         not exists (select 1 from bypass_views),
+         coalesce((select string_agg(name, ', ' order by name) from bypass_views), '')
+) checks
+order by n;
+```
+
 ### 成交回填与执行审计
 
 持仓账本 `portfolio_positions` 由人工维护：OMS 只产出建议单，任何代码路径都不会因为发过 EXIT

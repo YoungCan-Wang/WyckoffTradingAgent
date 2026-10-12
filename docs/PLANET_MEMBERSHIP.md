@@ -151,6 +151,8 @@ python scripts/print_portfolio_rls_membership_ddl.py
 1. 非会员 JWT：`insert` / `update` / `delete` 被 RLS 拒绝；
 2. 有效会员 JWT：只能改自己的 `USER_LIVE:<uid>`；
 3. `/api/portfolio` PUT 对会员仍成功。
+4. 在 `pg_policies` 里确认 `portfolios` / `portfolio_positions` 的写策略名带 `_member` 且条件含
+   `planet_members`。仓库不维护迁移历史，文档写了不等于线上执行过，这一步不能省。
 
 如果数据库迁移后必须回滚，应用和数据库要在同一个维护窗口一起退回：
 
