@@ -18,6 +18,26 @@
 
 会员身份只表示共享能力的访问权，不自动给账号写入私人模型 Key、TickFlow Key 或通知地址。单股分析只按用户自己的 TickFlow/Tushare 配置判断行情是否就绪；页面会把“会员有效”和“模型/数据源已配置”作为两件事分别展示。会员服务不是投资顾问服务，也不承诺收益。
 
+## 会员墙上的提示
+
+只在用户确实撞到会员墙的位置给入口，且只在**确认不是有效会员**时出现；查询失败、未登录保持原有提示，
+不替用户下结论。落点统一为 `/membership#capability-boundary`（Python 侧
+`integrations/planet_membership.PLANET_MEMBERSHIP_URL`，Worker 侧 `@wyckoff/shared` 的
+`PLANET_MEMBERSHIP_URL`）。
+
+| 位置 | 行为 |
+| --- | --- |
+| 读盘室 `query_attribution` | RLS 对非会员返回空行，和「还没有报告」同形；`ToolDeps.isPlanetMember === false` 时回报「仅对有效星球会员开放，这不是暂无数据」，未知则保持原提示 |
+| CLI / 桌面 / MCP `query_history`（归因、港美股跟踪） | 同上，用用户自己的客户端查 `planet_members` 判定 |
+| `/attribution` 锁屏页 | 复用 `/tracking` 的二维码入口卡（`components/planet-membership-cta.tsx`） |
+| `/portfolio` 非会员手动录入页 | 一行提示：云端保存、多端同步是会员能力 |
+| 云端持仓写入被 RLS 拒绝 | `MEMBERSHIP_WRITE_DENIED_MSG`。update / delete 被拒时命中 0 行且不报错，靠会员状态与「行不存在」区分；`update_free_cash` 命中 0 行不再回报「已更新」 |
+| 桌面远程遥控 403 | 报错带入口 |
+
+写入拒绝文案不得含 `invalid` / `expired` / `token` 等词：`with_auth_retry` 按关键字判断重登，命中会把同一笔写入再执行一遍。
+
+不放入口的位置：读盘室额度用尽（会员与非会员额度相同）、TickFlow 与模型的限流提示（会员权益不含数据源与模型）。
+
 ## 数据契约
 
 `public.planet_members` 是会员身份的唯一事实表：

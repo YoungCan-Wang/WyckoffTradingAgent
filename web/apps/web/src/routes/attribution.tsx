@@ -15,6 +15,7 @@ import {
 import { supabase } from '@/lib/supabase'
 import { usePlanetMembership, planetMembershipGateView } from '@/lib/planet-membership-gate'
 import { WyckoffLoading } from '@/components/loading'
+import { PlanetMembershipAccessCard } from '@/components/planet-membership-cta'
 import { financialValueClass } from '@/lib/financial-colors'
 import { useAuthStore } from '@/stores/auth'
 
@@ -813,10 +814,16 @@ function MetricCard({ label, value }: { label: string; value: string }) {
 
 function LockedView() {
   return (
-    <div className="h-full p-6">
-      <div className="rounded-lg border border-border bg-card p-6">
-        <h1 className="text-xl font-semibold">策略归因报告</h1>
-        <p className="mt-2 text-sm text-muted-foreground">该视图仅对星球会员开放。</p>
+    <div className="h-full overflow-auto p-6">
+      <div className="mx-auto grid max-w-5xl gap-6 lg:grid-cols-[1.35fr_0.65fr]">
+        <div className="rounded-lg border border-border bg-card p-6">
+          <h1 className="text-xl font-semibold">策略归因报告</h1>
+          <p className="mt-2 text-sm text-muted-foreground">该视图仅对星球会员开放。</p>
+          <p className="mt-2 text-sm text-muted-foreground">
+            固定周期结果、形态表现、分数分桶和 shadow 差异的聚合视图，随每日策略归因任务更新。
+          </p>
+        </div>
+        <PlanetMembershipAccessCard />
       </div>
     </div>
   )

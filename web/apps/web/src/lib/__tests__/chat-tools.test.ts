@@ -306,6 +306,22 @@ describe('execQueryAttribution', () => {
     expect(result).toContain('query_history(source="attribution")')
   })
 
+  it('tells a known non-member the wall is membership, not missing data', async () => {
+    const deps = { ...createMockDeps({ strategy_attribution_reports: [] }), isPlanetMember: false }
+    const result = await execQueryAttribution(deps, 1)
+    expect(result).toContain('仅对有效星球会员开放')
+    expect(result).toContain('这不是暂无数据')
+    expect(result).toContain('https://wyckoff-analysis.pages.dev/membership')
+    expect(result).not.toContain('暂无策略归因报告')
+  })
+
+  it('keeps the no-data message for members and when membership is unknown', async () => {
+    for (const isPlanetMember of [true, undefined]) {
+      const deps = { ...createMockDeps({ strategy_attribution_reports: [] }), isPlanetMember }
+      expect(await execQueryAttribution(deps, 1)).toContain('暂无策略归因报告')
+    }
+  })
+
   it('formats execution state, latest shadow, and scoped actions', async () => {
     const deps = createMockDeps({
       strategy_attribution_reports: [

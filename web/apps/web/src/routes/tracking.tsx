@@ -1,6 +1,6 @@
 import { useCallback, useState, useMemo, useRef, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ArrowRight, CheckCircle2, ExternalLink, ShieldCheck } from 'lucide-react'
+import { CheckCircle2, ShieldCheck } from 'lucide-react'
 import { createChart, HistogramSeries, type Time } from 'lightweight-charts'
 import { supabase } from '@/lib/supabase'
 import { watchChartResize } from '@/lib/chart-resize'
@@ -17,6 +17,7 @@ import {
   normalizeCode,
 } from '@wyckoff/shared'
 import { WyckoffLoading } from '@/components/loading'
+import { PlanetMembershipAccessCard } from '@/components/planet-membership-cta'
 import { usePreferences, type TranslationKey } from '@/lib/preferences'
 import { financialValueClass } from '@/lib/financial-colors'
 import { formatSignedPercent, isFiniteNumber } from '@/lib/format'
@@ -400,7 +401,7 @@ function TrackingLockedView() {
               {t('tracking.locked.costNote')}
             </p>
           </section>
-          <TrackingLockedAccessCard />
+          <PlanetMembershipAccessCard />
         </div>
       </div>
     </div>
@@ -414,30 +415,6 @@ function TrackingLockedBenefit({ title, desc }: { title: string; desc: string })
       <div className="text-sm font-semibold text-foreground">{title}</div>
       <p className="mt-2 text-sm leading-6 text-muted-foreground">{desc}</p>
     </div>
-  )
-}
-
-function TrackingLockedAccessCard() {
-  const { t } = usePreferences()
-  return (
-    <aside className="rounded-lg border border-border bg-card p-5 shadow-sm">
-      <div className="text-base font-semibold text-foreground">{t('tracking.locked.ctaTitle')}</div>
-      <p className="mt-2 text-sm leading-6 text-muted-foreground">{t('tracking.locked.ctaDesc')}</p>
-      <div className="mt-4 rounded-lg border border-border bg-white p-3">
-        <img src="/zsxq_qr.jpg" alt={t('tracking.locked.qrAlt')} className="h-auto w-full rounded-md object-contain" />
-      </div>
-      <div className="mt-4 grid gap-2">
-        <a href="/membership#capability-boundary" className="inline-flex items-center justify-center gap-2 rounded-lg bg-sky-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-sky-700">
-          {t('tracking.locked.join')}
-          <ArrowRight className="h-4 w-4" />
-        </a>
-        <a href="https://github.com/YoungCan-Wang/WyckoffTradingAgent/blob/main/docs/COST_MODEL.md" target="_blank" rel="noreferrer" className="inline-flex items-center justify-center gap-2 rounded-lg border border-border px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-muted">
-          {t('tracking.locked.costLink')}
-          <ExternalLink className="h-4 w-4" />
-        </a>
-      </div>
-      <p className="mt-4 text-xs leading-5 text-muted-foreground">{t('tracking.locked.memberHint')}</p>
-    </aside>
   )
 }
 

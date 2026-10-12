@@ -1460,7 +1460,12 @@ def _remote_http(path: str, method: str = "GET", payload: dict[str, Any] | None 
     except Exception as exc:
         raise MethodError("relay_unreachable", f"连不上云端中转：{exc}") from exc
     if resp.status_code == 403:
-        raise MethodError("planet_membership_required", "这个账号还没开通星球会员，暂时不能使用远程遥控。")
+        from integrations.planet_membership import PLANET_MEMBERSHIP_URL
+
+        raise MethodError(
+            "planet_membership_required",
+            f"这个账号还没开通星球会员或会员已到期，暂时不能使用远程遥控。了解并加入：{PLANET_MEMBERSHIP_URL}",
+        )
     if resp.status_code >= 400:
         raise MethodError("relay_error", f"云端中转返回 {resp.status_code}")
     try:

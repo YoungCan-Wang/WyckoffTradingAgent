@@ -1,5 +1,8 @@
 export const PLANET_MEMBERSHIP_TIME_ZONE = 'Asia/Shanghai'
 
+// 工具返回给模型的文案里没有路由，只能给绝对地址；与 integrations/planet_membership.py 同一落点。
+export const PLANET_MEMBERSHIP_URL = 'https://wyckoff-analysis.pages.dev/membership#capability-boundary'
+
 export function planetMembershipToday(now = new Date()): string {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: PLANET_MEMBERSHIP_TIME_ZONE,
