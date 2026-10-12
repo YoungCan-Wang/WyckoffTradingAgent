@@ -90,6 +90,9 @@ class CloudToolRegistry(ToolRegistry):
 
     不走 AgentRuntime(allowed_tools=...)：ToolRegistry.schemas 把空集合当成「不限制」，
     空白名单会把全部工具 schema 展示给模型。这里在注册表一层过滤，展示与存在性校验同源。
+
+    has_tool / prepare / execute 必须同一白名单：Runtime 优先走 has_tool，只过滤 schemas
+    时模型幻觉出的 read_file / exec_command 仍会被当成「已知工具」并执行。
     """
 
     def __init__(self, cloud_tools: frozenset[str], state: dict[str, Any] | None = None) -> None:
@@ -100,6 +103,21 @@ class CloudToolRegistry(ToolRegistry):
 
     def schemas(self, allowed_tools: set[str] | tuple[str, ...] | None = None) -> list[dict[str, Any]]:
         return [schema for schema in super().schemas(allowed_tools) if schema["name"] in self._cloud_tools]
+
+    def has_tool(self, name: str) -> bool:
+        return name in self._cloud_tools and super().has_tool(name)
+
+    def prepare(self, name: str, args: dict[str, Any]) -> Any:
+        if name not in self._cloud_tools:
+            from cli.prepare_tool_call import reject
+
+            return reject("tool_not_found", f"未知工具: {name}", args=args)
+        return super().prepare(name, args)
+
+    def execute(self, name: str, args: dict[str, Any], messages: list[dict[str, Any]] | None = None) -> Any:
+        if name not in self._cloud_tools:
+            return {"error": f"未知工具: {name}"}
+        return super().execute(name, args, messages=messages)
 
 
 def default_provider_factory(llm: dict[str, Any]) -> tuple[Any, str | None]:

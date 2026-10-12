@@ -230,6 +230,21 @@ def test_cloud_registry_exposes_only_listed_tools(tmp_path, monkeypatch):
     assert [schema["name"] for schema in only.schemas()] == ["get_market_overview"]
 
 
+def test_cloud_registry_refuses_tools_outside_the_allowlist(tmp_path, monkeypatch):
+    """schemas 过滤不够：Runtime 用 has_tool，未覆盖时 read_file/exec_command 仍可执行。"""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    registry = CloudToolRegistry(frozenset({"market_regime"}))
+
+    assert registry.has_tool("market_regime") is True
+    assert registry.has_tool("read_file") is False
+    assert registry.has_tool("exec_command") is False
+
+    prepared = registry.prepare("read_file", {"path": "/etc/passwd"})
+    assert prepared.action == "reject" and prepared.code == "tool_not_found"
+    assert registry.execute("read_file", {"path": "/etc/passwd"}) == {"error": "未知工具: read_file"}
+    assert registry.execute("exec_command", {"command": "id"}) == {"error": "未知工具: exec_command"}
+
+
 def test_echo_provider_is_opt_in_and_its_delay_is_capped(monkeypatch):
     monkeypatch.delenv("WYCKOFF_SERVICE_ECHO", raising=False)
     assert default_provider_factory({"provider_name": "echo"})[0] is None
