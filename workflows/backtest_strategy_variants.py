@@ -22,6 +22,7 @@ VARIANT_LABELS = {
     "P": "A股实证：M + NEUTRAL Spring 缩仓至 25%",
     "Q": "A股实证：候选入口层真剪枝（live + 剔除 6 个弱动量通道）",
     "R": "A股实证：关闭 Layer 3 行业共振（全量 L2 直通 L4）",
+    "S": "A股实证：首板点火 + 次回踩确认主升 (LPS/起跳板增强)",
 }
 
 DEFAULT_COMPARISON_VARIANTS = ("A", "M", "P")
@@ -78,6 +79,12 @@ _VARIANT_SWITCHES = {
         "lps_creek_confirmation_enabled": True,
         "enable_layer3": False,
     },
+    "S": {
+        "dist_upthrust_enabled": True,
+        "lps_creek_confirmation_enabled": True,
+        "lps_use_fib_zone": True,
+        "lps_creek_dynamic_relax": True,
+    },
 }
 
 _WEAK_REGIME_WEIGHTS = (
@@ -98,6 +105,17 @@ _LOWER_NEUTRAL_SPRING_WEIGHTS = (
     ("PANIC_REPAIR_INTRADAY", "sos", 0.25),
 )
 
+_FIRST_BOARD_PULLBACK_WEIGHTS = (
+    ("NEUTRAL", "lps", 1.5),
+    ("NEUTRAL", "trend_pullback", 1.2),
+    ("NEUTRAL", "spring", 0.25),
+    ("NEUTRAL", "sos", 0.5),
+    ("PANIC_REPAIR_CONFIRMED", "spring", 0.25),
+    ("PANIC_REPAIR_CONFIRMED", "sos", 0.25),
+    ("PANIC_REPAIR_INTRADAY", "spring", 0.25),
+    ("PANIC_REPAIR_INTRADAY", "sos", 0.25),
+)
+
 _ENTRY_POLICIES = {
     "F": AShareEntryResearchPolicy(blocked_confirmed_signals=("evr",)),
     "G": AShareEntryResearchPolicy(blocked_confirmed_signals=("evr", "sos")),
@@ -105,6 +123,10 @@ _ENTRY_POLICIES = {
     "I": AShareEntryResearchPolicy(calibrate_confirmed_score=True),
     "M": AShareEntryResearchPolicy(entry_weight_multipliers=_WEAK_REGIME_WEIGHTS),
     "P": AShareEntryResearchPolicy(entry_weight_multipliers=_LOWER_NEUTRAL_SPRING_WEIGHTS),
+    "S": AShareEntryResearchPolicy(
+        blocked_confirmed_signals=("evr",),
+        entry_weight_multipliers=_FIRST_BOARD_PULLBACK_WEIGHTS,
+    ),
 }
 
 
