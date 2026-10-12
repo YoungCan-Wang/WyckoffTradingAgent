@@ -68,9 +68,8 @@ def _query_recommendation(limit: int, tool_context: ToolContext | None = None, m
         if not records:
             records = _load_remote_recommendations(limit, tool_context, market=normalized)
         if not records:
-            default = "暂无复盘记录"
-            # A 股表对所有登录用户可读，空就是没有；港美股表是会员专属，空可能是权限。
-            message = default if normalized == "cn" else _gated_empty_message(tool_context, "港美股复盘跟踪", default)
+            feature = "A 股复盘跟踪" if normalized == "cn" else "港美股复盘跟踪"
+            message = _gated_empty_message(tool_context, feature, "暂无复盘记录")
             return {"message": message, "records": [], "market": normalized}
         simplified = pattern_review_tool_records(records)
         return {"total": len(simplified), "records": simplified, "market": normalized}
@@ -119,7 +118,8 @@ def _query_signal(status: str, limit: int, tool_context: ToolContext | None = No
         rows = _load_signal_rows(status, limit, tool_context)
         if not rows:
             label = {"pending": "待确认", "confirmed": "已确认", "expired": "已过期"}.get(status, "")
-            return {"message": f"暂无{label}信号记录", "records": []}
+            message = _gated_empty_message(tool_context, "信号记录", f"暂无{label}信号记录")
+            return {"message": message, "records": []}
         records = [_signal_record(row) for row in rows]
         return {"total": len(records), "status_counts": _status_counts(records), "records": records}
     except Exception as e:

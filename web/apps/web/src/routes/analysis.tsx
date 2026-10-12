@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { useNavigate, useSearchParams } from 'react-router'
 import { Loader2, Play } from 'lucide-react'
-import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/auth'
 import { loadLLMConfig, loadLLMConfigCandidates } from '@/lib/chat-agent'
 import { streamLLMResponseWithFallback, type LLMStreamStatus } from '@/lib/llm-stream'
@@ -14,7 +13,7 @@ import { StockSearchBox, matchesSelectedQuery, useStockSearch, type StockSearchC
 import { usePreferences } from '@/lib/preferences'
 import { AIDisclaimer } from '@/components/ai-disclaimer'
 import { detectWyckoffAnnotations } from '@/lib/wyckoff-detect'
-import { TICKFLOW_PURCHASE, buildStockAnalysisContextPack, fetchValueSnapshotWithFetch, formatAnalysisContextPack, isCnSymbol, isSupportedKlineCode } from '@wyckoff/shared'
+import { TICKFLOW_PURCHASE, buildStockAnalysisContextPack, fetchValueSnapshotWithFetch, formatAnalysisContextPack, isSupportedKlineCode } from '@wyckoff/shared'
 import type { AnalysisContextPack, KlineDataQuality, KlineRow, ValueSnapshot } from '@wyckoff/shared'
 import { fetchKlineWithQuality, getUserDataKeys } from '@/lib/kline'
 import { avg } from '@/lib/math'
@@ -178,13 +177,12 @@ function useAnalysisRunner(search: StockSearchController, setHasModelConfig: Dis
       setHasModelConfig(Boolean(config?.api_key && config?.model))
       if (!config?.api_key || !config.model) throw new Error(t('analysis.missingPrefix', { items: t('analysis.modelRequirement') }))
       setStep('kline')
-      const [stockInfoResult, klineData, valueSnapshot] = await Promise.all([
-        fetchStockName(resolved.code),
+      const [klineData, valueSnapshot] = await Promise.all([
         fetchKlineWithQuality(resolved.code, dataKeys, userId),
         fetchValueSnapshotWithFetch(globalThis.fetch, resolved.code, dataKeys).catch((): ValueSnapshot => ({ symbol: resolved.code, source: 'none', metrics: null, reason: 'not-found' })),
       ])
       if (klineData.data.length === 0) throw new Error(t('analysis.noKlineData'))
-      const name = resolved.stock?.name || stockInfoResult.data?.name || resolved.code
+      const name = resolved.stock?.name || resolved.code
       const contextPack = buildStockAnalysisContextPack({ symbol: resolved.code, name, kline: klineData.data, dataQuality: klineData.quality, valueSnapshot })
       setEarlyKline({ data: klineData.data, symbol: resolved.code, name, dataQuality: klineData.quality, valueSnapshot, contextPack })
       setStep('llm'); streamBuf.current = ''
@@ -533,12 +531,6 @@ async function resolveAnalysisCode(rawInput: string, selected: StockSearchResult
   const stock = matchesSelectedQuery(raw, selected, 'analysis') ? selected : await resolveStockQuery(raw)
   const code = stock?.analysisCode || (/^\d+$/.test(raw) ? raw : raw.toUpperCase())
   return isSupportedKlineCode(code) ? { code, stock } : null
-}
-
-async function fetchStockName(code: string): Promise<{ data: { name?: string } | null }> {
-  if (!isCnSymbol(code)) return { data: null }
-  const { data } = await supabase.from('recommendation_tracking').select('name').eq('code', parseInt(code, 10)).limit(1).single()
-  return { data }
 }
 
 function buildKlinePayload(data: KlineRow[], quality: KlineDataQuality, contextPack?: AnalysisContextPack): string {

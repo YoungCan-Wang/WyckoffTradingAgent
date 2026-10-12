@@ -534,6 +534,46 @@ export async function fetchQuotes(
   } catch { return {} }
 }
 
+function membershipRequiredText(feature: string): string {
+  return `${feature}仅对有效星球会员开放（账号未开通或已到期），这不是暂无数据。了解并加入：${PLANET_MEMBERSHIP_URL}`
+}
+
+// 公开的 A 股名单（随前端一起发布），不是推荐内容：recommendation_tracking 收紧到会员后，非会员按名字搜股靠它。
+const STOCK_UNIVERSE_URL = 'https://wyckoff-analysis.pages.dev/market-data/stock_list_cache.json'
+const STOCK_UNIVERSE_TTL_MS = 6 * 60 * 60 * 1000
+type StockNameRow = { code: string; name: string }
+let stockUniverse: { at: number; rows: StockNameRow[] } | null = null
+
+export function resetStockUniverseCacheForTest(): void {
+  stockUniverse = null
+}
+
+async function loadStockUniverse(deps: ToolDeps): Promise<StockNameRow[]> {
+  if (stockUniverse && Date.now() - stockUniverse.at < STOCK_UNIVERSE_TTL_MS) return stockUniverse.rows
+  try {
+    const response = await deps.fetch(STOCK_UNIVERSE_URL)
+    if (!response.ok) return stockUniverse?.rows ?? []
+    const body: unknown = await response.json()
+    if (!Array.isArray(body)) return stockUniverse?.rows ?? []
+    const rows = body.flatMap((item): StockNameRow[] => {
+      const row = item as Record<string, unknown>
+      return typeof row?.code === 'string' && typeof row.name === 'string' ? [{ code: row.code, name: row.name }] : []
+    })
+    stockUniverse = { at: Date.now(), rows }
+    return rows
+  } catch {
+    return stockUniverse?.rows ?? []
+  }
+}
+
+async function searchStockUniverse(deps: ToolDeps, q: string, portfolioCode: string): Promise<StockNameRow[]> {
+  if (!q) return []
+  const rows = await loadStockUniverse(deps)
+  if (portfolioCode) return rows.filter((r) => normalizePortfolioCode(r.code) === portfolioCode).slice(0, 5)
+  const needle = q.toLowerCase()
+  return rows.filter((r) => r.name.toLowerCase().includes(needle)).slice(0, 10)
+}
+
 export async function execSearchStock(deps: ToolDeps, userId: string, query: string): Promise<string> {
   const q = query.trim()
   const portfolioCode = normalizePortfolioCode(q)
@@ -550,6 +590,7 @@ export async function execSearchStock(deps: ToolDeps, userId: string, query: str
       }
     }
   }
+  allRows.push(...(await searchStockUniverse(deps, q, portfolioCode)))
 
   if (allRows.length === 0) return `未找到匹配"${query}"的股票`
 
@@ -779,6 +820,8 @@ export async function execQueryRecommendations(deps: ToolDeps, limit: number): P
   const data = dedupeTrackingRows(recommendations.concat(signals))
     .sort((a, b) => reviewDateNumber(b.recommend_date) - reviewDateNumber(a.recommend_date))
     .slice(0, Math.max(limit, 0))
+  // A 股推荐与信号表的 RLS 只放行有效会员，非会员读到空行，和「还没有记录」同形。
+  if (data.length === 0 && deps.isPlanetMember === false) return membershipRequiredText('A 股复盘跟踪与信号')
   return formatPatternReviewDigest(data)
 }
 
@@ -871,7 +914,7 @@ export async function execQueryAttribution(deps: ToolDeps, limit: number): Promi
   if (!data || data.length === 0) {
     // RLS 对非会员返回空行，和「还没有报告」同形：已知不是会员就不能让模型说成暂无数据。
     if (deps.isPlanetMember === false) {
-      return `策略归因报告仅对有效星球会员开放（账号未开通或已到期），这不是暂无数据。了解并加入：${PLANET_MEMBERSHIP_URL}`
+      return membershipRequiredText('策略归因报告')
     }
     return '暂无策略归因报告；Web 只读取远端 strategy_attribution_reports，本地 --no-write 报告请用 CLI/MCP 的 query_history(source="attribution") 查看。'
   }
@@ -1311,6 +1354,8 @@ export interface ScreenResult {
   stocks: ScreenStockItem[]
   meta: { ai_count: number }
   strategy_policy?: ScreenStrategyPolicy | null
+  /** 读不到的原因（如会员专属）；只在结果为空且原因明确时出现。 */
+  notice?: string
 }
 
 export const SCREEN_RESULT_OUTPUT_SCHEMA = z.object({
@@ -1326,6 +1371,7 @@ export const SCREEN_RESULT_OUTPUT_SCHEMA = z.object({
   })),
   meta: z.object({ ai_count: z.number() }),
   strategy_policy: STRATEGY_POLICY_OUTPUT_SCHEMA.nullable().optional(),
+  notice: z.string().optional(),
 })
 
 export async function execScreenStocks(deps: ToolDeps): Promise<ScreenResult> {
@@ -1336,7 +1382,10 @@ export async function execScreenStocks(deps: ToolDeps): Promise<ScreenResult> {
     .order('recommend_date', { ascending: false })
     .limit(30)
 
-  if (!data || data.length === 0) return { date: '', stocks: [], meta: { ai_count: 0 } }
+  if (!data || data.length === 0) {
+    const notice = deps.isPlanetMember === false ? membershipRequiredText('漏斗选股结果') : undefined
+    return { date: '', stocks: [], meta: { ai_count: 0 }, ...(notice ? { notice } : {}) }
+  }
 
   const latestDate = data[0]!.recommend_date
   const latest = data.filter(r => r.recommend_date === latestDate)

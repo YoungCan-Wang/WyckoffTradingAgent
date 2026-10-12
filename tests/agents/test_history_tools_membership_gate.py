@@ -71,11 +71,33 @@ def test_unknown_membership_keeps_the_original_message(empty_remote, monkeypatch
     assert history_tools._query_attribution(5, _ctx())["message"] == "暂无策略归因报告"
 
 
-def test_hk_us_tracking_is_gated_but_cn_is_not(empty_remote, monkeypatch) -> None:
+@pytest.mark.parametrize("market", ["cn", "hk", "us"])
+def test_every_market_tracking_is_member_only(empty_remote, monkeypatch, market) -> None:
     _as_user(monkeypatch, _MemberClient(rows=[]))
 
-    hk = history_tools._query_recommendation(5, _ctx(), market="hk")
-    cn = history_tools._query_recommendation(5, _ctx(), market="cn")
+    result = history_tools._query_recommendation(5, _ctx(), market=market)
 
-    assert PLANET_MEMBERSHIP_URL in hk["message"]
-    assert cn["message"] == "暂无复盘记录"
+    assert PLANET_MEMBERSHIP_URL in result["message"]
+    assert result["records"] == []
+
+
+def test_member_with_no_tracking_rows_still_sees_no_data(empty_remote, monkeypatch) -> None:
+    _as_user(monkeypatch, _MemberClient(rows=[{"expires_on": None}]))
+
+    assert history_tools._query_recommendation(5, _ctx(), market="cn")["message"] == "暂无复盘记录"
+
+
+def test_signal_empty_for_a_non_member_says_membership(monkeypatch) -> None:
+    monkeypatch.setattr(history_tools, "_load_signal_rows", lambda *a, **k: [])
+    _as_user(monkeypatch, _MemberClient(rows=[]))
+
+    result = history_tools._query_signal("pending", 5, _ctx())
+
+    assert PLANET_MEMBERSHIP_URL in result["message"]
+
+
+def test_signal_empty_for_a_member_keeps_the_status_label(monkeypatch) -> None:
+    monkeypatch.setattr(history_tools, "_load_signal_rows", lambda *a, **k: [])
+    _as_user(monkeypatch, _MemberClient(rows=[{"expires_on": None}]))
+
+    assert history_tools._query_signal("pending", 5, _ctx())["message"] == "暂无待确认信号记录"
