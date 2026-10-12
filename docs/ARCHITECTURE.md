@@ -979,6 +979,52 @@ Web 个股、持仓和股票对抗分析保存历史时写入 `meta`：输入快
 
 数据隔离：Web JWT → RLS，CLI access_token → RLS，脚本 service_role_key → 绕过 RLS。
 
+### 数据库访问面（RLS）
+
+Supabase 默认把 `public` 表的全部权限授予 `anon` 与 `authenticated`，anon key 又随前端 bundle 公开，
+所以 **RLS 是唯一的门**：表没开 RLS，持有 anon key 的任何人（不必登录）都能对它读、写、删。
+
+- 建表 DDL 必须在同一份语句里 `enable row level security`；没有策略即仅 `service_role` 可访问。
+  `tests/core/test_ddl_enables_rls.py` 扫描 `core/`、`integrations/`、`scripts/` 的建表语句并拦截漏写。
+- 只由服务端任务写入的共享表（`factor_ic_daily`、`review_capture_daily`、`review_shadow_lane_daily`、
+  `shadow_*`、`concept_heat_history`、`theme_radar_snapshot` 等）不建任何策略，任务走 admin 客户端。
+- 浏览器与 Worker 用用户 JWT 读的表，策略只能落在下面三类之一：
+
+| 访问类 | 谓词 | 表 |
+| --- | --- | --- |
+| 本人行 | `auth.uid()` 匹配 | `user_settings`、`portfolios` / `portfolio_positions`（写另加会员谓词，见 [PLANET_MEMBERSHIP.md](PLANET_MEMBERSHIP.md)）、`daily_nav`、`trade_orders`、`user_activity_events` |
+| 星球会员 | `exists (select 1 from planet_members …)` | `strategy_attribution_reports`、`strategy_policy_candidates`、`strategy_reflections`、`external_seed_observations`、`recommendation_tracking_hk` / `_us` |
+| 登录即读 | `to authenticated using (true)` | `market_signal_daily`、`recommendation_tracking`（A 股）、`signal_pending`、`signal_*` 五张表 |
+
+「登录即读」不构成会员边界，会员能力的数据边界只认「星球会员」一类。`recommendation_tracking`（A 股）
+因为单股分析页要给所有登录用户查名称而属于这一类；要收紧，须先把名称查询拆到不含推荐内容的小表或 RPC。
+
+`signal_health_daily` / `signal_observations` / `signal_outcomes` / `signal_policy_shadow_runs` /
+`signal_registry` 的读策略历史上带 `anon`，即不登录也能读。读取方只有服务端任务（admin 客户端）和已登录的
+Worker 工具，用受控迁移收回（`strategy_attribution_report.py --no-write` 未登录时会回退到匿名读取，
+迁移后读到空，先登录再试跑）：
+
+```sql
+begin;
+alter policy signal_health_daily_read on public.signal_health_daily to authenticated;
+alter policy signal_observations_read on public.signal_observations to authenticated;
+alter policy signal_outcomes_read on public.signal_outcomes to authenticated;
+alter policy signal_policy_shadow_runs_read on public.signal_policy_shadow_runs to authenticated;
+alter policy signal_registry_read on public.signal_registry to authenticated;
+commit;
+```
+
+审计（SQL Editor，只读）。「没开 RLS 的表」应为空；`pg_policies` 里不应再有 `anon`，`qual = true` 的策略
+只能是上表「登录即读」那几张，持仓写策略的名字必须带 `_member`：
+
+```sql
+select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace
+where n.nspname = 'public' and c.relkind = 'r' and not c.relrowsecurity;
+
+select tablename, policyname, roles, cmd, qual, with_check
+from pg_policies where schemaname = 'public' order by 1, 2;
+```
+
 ### 成交回填与执行审计
 
 持仓账本 `portfolio_positions` 由人工维护：OMS 只产出建议单，任何代码路径都不会因为发过 EXIT
