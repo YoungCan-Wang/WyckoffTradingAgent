@@ -25,6 +25,9 @@ def test_mark_step3_outputs_skips_when_not_authoritative(monkeypatch):
         logs_path = None
         preview_only = False
 
+        def suppress_shared_side_effects(self) -> bool:
+            return self.preview_only
+
     monkeypatch.setattr(
         "workflows.daily_job_persistence.mark_step3_recommendations",
         lambda *args, **kwargs: calls.append(("mark", args, kwargs)),
@@ -46,6 +49,9 @@ def test_mark_step3_outputs_runs_when_authoritative_empty_pool(monkeypatch):
     class _Cfg:
         logs_path = None
         preview_only = False
+
+        def suppress_shared_side_effects(self) -> bool:
+            return self.preview_only
 
     monkeypatch.setattr(
         "workflows.daily_job_persistence.mark_step3_recommendations",

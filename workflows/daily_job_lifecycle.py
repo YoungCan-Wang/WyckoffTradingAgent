@@ -19,6 +19,11 @@ def log_job_start(cfg: DailyJobConfig) -> None:
     log_line("开始定时任务", cfg.logs_path)
     if cfg.preview_only:
         log_line("预演模式: 仅生成 Step3 LLM input，跳过 Step2 通知和所有写库动作", cfg.logs_path)
+    elif cfg.historical_replay:
+        log_line(
+            "历史回放: END_CALENDAR_DAY 已设置，跳过 Step2/3 共享表写库与通知，并隔离 Step4/影子账本",
+            cfg.logs_path,
+        )
 
 
 def log_daily_summary(summary: list[dict], logs_path: str | None) -> None:

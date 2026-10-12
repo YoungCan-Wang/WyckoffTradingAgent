@@ -36,6 +36,10 @@ class DailyJobConfig:
     preview_only: bool
     logs_path: str
 
+    def suppress_shared_side_effects(self) -> bool:
+        """Preview and END_CALENDAR_DAY replay must not notify or mutate shared tables."""
+        return self.preview_only or self.historical_replay
+
 
 def env_flag(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in TRUE_TEXTS
