@@ -241,6 +241,14 @@ def list_step4_targets(target_user_id: str | None = None) -> list[dict[str, Any]
         return []
 
 
+def _is_full_oms_idempotency_row(row: dict[str, Any]) -> bool:
+    """完整 OMS 跑次才参与幂等；降级保护工单（model=degraded:*）不能挡住同日补跑。"""
+    if not _is_active_trade_order_status(row.get("status")):
+        return False
+    model = str(row.get("model") or "").strip().lower()
+    return not model.startswith("degraded:")
+
+
 def check_daily_run_exists(
     portfolio_id: str,
     trade_date: str,
@@ -256,7 +264,7 @@ def check_daily_run_exists(
         client = _get_supabase_admin_client()
         resp = (
             client.table(TABLE_TRADE_ORDERS)
-            .select("run_id,status,created_at")
+            .select("run_id,status,created_at,model")
             .eq("portfolio_id", portfolio_id)
             .eq("trade_date", trade_date)
             .order("created_at", desc=True)
@@ -264,7 +272,7 @@ def check_daily_run_exists(
             .execute()
         )
         rows = resp.data or []
-        active_rows = [row for row in rows if _is_active_trade_order_status(row.get("status"))]
+        active_rows = [row for row in rows if _is_full_oms_idempotency_row(row)]
         if not active_rows:
             return False
         expected_sig = str(state_signature or "").strip().lower()
