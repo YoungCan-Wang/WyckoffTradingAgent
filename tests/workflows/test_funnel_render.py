@@ -116,10 +116,11 @@ def test_execution_decision_and_tomorrow_action_warn_on_blocked_neutral(monkeypa
     decision = _execution_decision_line("NEUTRAL", 3)
     action = _tomorrow_action_line(SimpleNamespace(regime="NEUTRAL", metrics={}), 3)
 
-    assert "NEUTRAL 震荡阴跌期" in decision
-    assert "缩减弱势仓位" in decision
-    assert "NEUTRAL 震荡阴跌期" in action
-    assert "收紧移动止损" in action
+    for line in (decision, action):
+        assert "正式推荐绝对收益为负" in line
+        assert "严守既有止损" in line
+        # 持仓口径没量过主动减仓，话术不能替用户下卖出指令。
+        assert "缩减" not in line
 
 
 def test_confirmation_label_names_abc_as_springboard_structure(monkeypatch) -> None:

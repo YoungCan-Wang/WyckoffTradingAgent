@@ -335,10 +335,18 @@ def _hard_defense_trade_mode(regime_norm: str) -> MarketTradeMode | None:
     )
 
 
+# NEUTRAL 禁买期话术，funnel_render 两处复用，只在这里改。依据是上面
+# _explicitly_allowed_regimes 记的 formal_l4 绝对收益（H=5 -2.43%，16 只真实推荐全部
+# 两位数 MAE），不是 regime_forward_eval 的指数口径：后者量的是 000001 而非持仓。
+# 持仓侧只说「守止损、不加仓」：主动减仓/收紧止损在持仓口径上还没量过。
+NEUTRAL_BLOCKED_BASIS = "NEUTRAL 震荡期正式推荐绝对收益为负"
+NEUTRAL_BLOCKED_GUIDANCE = "严禁追新；已有持仓严守既有止损、不加仓"
+
+
 def _execution_blocked_trade_mode(regime_norm: str) -> MarketTradeMode:
     """运维通过 STEP4_BUY_BLOCK_REGIMES 拦截的水温：保留 AI/shadow 对照，关闭正式推荐。"""
     reason = (
-        "NEUTRAL 震荡阴跌期后向胜率偏低（在下单闸门禁买名单内）；禁止正式推荐与新开，已有持仓优先逢高缩减弱势仓位、收紧移动止损"
+        f"{NEUTRAL_BLOCKED_BASIS}（在下单闸门禁买名单内）；禁止正式推荐与新开，{NEUTRAL_BLOCKED_GUIDANCE}"
         if regime_norm == "NEUTRAL"
         else f"{regime_norm} 在下单闸门禁买名单内，正式推荐随之关闭以免与实际持仓不符"
     )

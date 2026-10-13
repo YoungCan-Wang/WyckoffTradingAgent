@@ -1062,12 +1062,15 @@ P90 港股 8.39%、美股 **13.18%**——**该收紧的是美股，方向与直
 ### 远端评估产物向实盘与漏斗消融的转化闭环（2026-10-12，Issue #542）
 
 基于 2026-10-10 至 10-12 最新一轮远端评估产物（详见 Issue #542），完成以下实盘话术与调度分层治理：
-1. **NEUTRAL 禁买期实盘风控话术对齐**：`regime_forward_eval`（101 日）实证 `NEUTRAL` 震荡期后向 5 日超额显著为负（`−1.08pct`，`p=0.0085`，胜率仅 `7.7%`），是实盘最易磨损本金的阶段。当 `NEUTRAL` 命中 `STEP4_BUY_BLOCK_REGIMES` 进入 `execution_blocked` 时，在 `core/market_trade_mode.py` 与 `workflows/funnel_render.py` 中明确输出“NEUTRAL 震荡阴跌期后向胜率偏低；严禁手痒追新，已有持仓优先逢高缩减弱势仓位、收紧移动止损”，与 `CRASH` 恐慌底不盲目割肉形成对称的实盘指引。
+1. **NEUTRAL 禁买期实盘风控话术对齐**：当 `NEUTRAL` 命中 `STEP4_BUY_BLOCK_REGIMES` 进入 `execution_blocked` 时，`core/market_trade_mode.py` 与 `workflows/funnel_render.py` 输出“NEUTRAL 震荡期正式推荐绝对收益为负；严禁追新，已有持仓严守既有止损、不加仓”，话术常量 `NEUTRAL_BLOCKED_BASIS` / `NEUTRAL_BLOCKED_GUIDANCE` 只在 `market_trade_mode.py` 定义一处。
+   - **依据取持仓口径，不取指数口径**：`formal_l4` 8 个 NEUTRAL 日 H=5 绝对 `−2.43%`、16 只真实推荐 H=20 绝对 `−3.98%` 且全部两位数 MAE（见 `_explicitly_allowed_regimes` 文档串）。`regime_forward_eval`（101 日）给出的 `−1.08pct`、`p=0.0085`、`1/13` 量的是**上证指数** T+5（`7.7%` 是指数收涨天数占比，不是胜率），13 个 NEUTRAL 日成簇出现、T+5 窗口重叠而随机抽日对照不保簇，p 偏乐观，只作方向旁证。
+   - **持仓侧不写主动减仓/收紧止损**：两者在持仓口径上都没量过，话术不替用户下卖出指令；要加须先量「NEUTRAL 期间持有 vs 减仓」的持仓级对照。
 2. **评估工作流快慢变量分层调度**：
    - `trigger_weight_eval.yml`：因路径 B（`_trigger_score` 拍平）与负超额触发器关停（#458/#460/#498）均已落地，归档每周六 2.5 小时全市场 6 检测器重放 cron，保留 `workflow_dispatch` 备查；
    - `ranker_weight_eval.yml`（每月 4 日）、`momentum_regime_eval.yml`（每月 8 日）、`factor_ic_eval.yml`（每月 10 日）：250~530 日跨周期慢变量统一由周频降为月频夜间（UTC 14:10，避开工作日白天 A 股生产取数窗口）；
    - 周六定时仅保留快变量三件套：`regime_forward_eval.yml`（水温前瞻）、`exit_attribution.yml`（近 60 日 5% 硬止损离场工单归因）、`gate_alpha_eval.yml`（L3 生产 trace 同动量置换检验）。
-3. **待推进 `backtest_grid.yml` 生产级消融候选**：`gate_alpha_eval`（L3 被拒票 T+5 跑赢留下票 `+1.70%`）与 `signal_feedback`（60 日弱入口降权）已分别指向策略变体 `R`（关闭 L3 行业共振）与变体 `Q`（剪枝 6 条弱动量入口车道），后续在 #539 基线上通过 `backtest_grid.yml` 跨周期边际成交验证后决断。
+3. **待推进 `backtest_grid.yml` 生产级消融候选**：`gate_alpha_eval`（L3 被拒票 T+5 跑赢留下票 `+1.70%`）指向策略变体 `R`（关闭 L3 行业共振），在 #539 基线上通过 `backtest_grid.yml` 跨周期边际成交验证后决断。
+   - **变体 `Q`（剪枝 6 条动量入口车道）已被 #467 否决，不再排回测**：旧 Q 的差异全部来自 `_ALL_SWITCHES` 翻转的两个开关；与 live 开关对齐、在候选入口层剪枝的 Q2 在 2024 全年与 live 逐笔一致（982 vs 982，差 `0.0000pp`）——`merge_candidate_entries` 按 code 留最优入口，2024 年被剪车道从不是成交票的唯一或最优入口。剩下的问题在立项依据本身：−3.79pp 生产归因始于 2026-05-25，而 05-25..06-30 `candidate_lane` 只写 Lane 通道名、正式 L4 恒为 0，「6 车道占负期望 81%」可能部分是命名边界造成的。先审计该归因口径，再决定是否还有可剪的东西。
 
 ### 三处 eval 断链的根因（均已修）
 
