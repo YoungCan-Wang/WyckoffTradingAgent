@@ -58,10 +58,16 @@ on:
         required: false
         default: ""
       run_strategy_compare:
-        description: "复跑已完成的 A/M/P 仓位消融（默认关闭，仅用于手动复现历史证据）"
+        description: "手动策略研究对比（默认关闭）"
         required: false
         type: boolean
         default: false
+      strategy_compare_set:
+        description: "legacy=复现A/M/P；knockout=live基准及四个单通道独立回放；combo=入围双通道组合消融"
+        required: false
+        type: choice
+        options: [legacy, knockout, combo]
+        default: legacy
 
 concurrency:
   group: backtest-grid-${{ github.ref }}
@@ -101,6 +107,44 @@ env:
   FUNNEL_DYNAMIC_POLICY: "off"
   FUNNEL_DYNAMIC_POLICY_HORIZON: "5"
   STRATEGY_ATTRIBUTION_MAX_AGE_DAYS: "7"
+  FUNNEL_AI_SELECTION_MODE: "tradeable_l4"
+  FUNNEL_AI_TOTAL_CAP: "8"
+  FUNNEL_AI_MAX_PER_SECTOR: "2"
+  FUNNEL_AI_RISK_ON_TREND: "5"
+  FUNNEL_AI_RISK_ON_ACCUM: "1"
+  FUNNEL_LOSS_GUARD_RISK_ON_PRE5_RET: "35.0"
+  # 与生产对齐：BEAR_REBOUND 放开（超额 +4.08pct），PANIC_REPAIR 拆出并保持 0（-4.09pct）。
+  FUNNEL_AI_BEAR_REBOUND_TREND: "5"
+  FUNNEL_AI_BEAR_REBOUND_ACCUM: "1"
+  FUNNEL_AI_PANIC_REPAIR_TREND: "0"
+  FUNNEL_AI_PANIC_REPAIR_ACCUM: "0"
+  FUNNEL_AI_RISK_OFF_TREND: "0"
+  FUNNEL_AI_RISK_OFF_ACCUM: "0"
+  FUNNEL_AI_NEUTRAL_TREND: "5"
+  FUNNEL_AI_NEUTRAL_ACCUM: "1"
+
+  # 与实盘漏斗对齐的判定类配置。回测 live 闸门现直接读 STEP4_BUY_BLOCK_REGIMES /
+  # STEP4_BUY_ALLOW_REGIMES（见 core/backtest_config._live_buy_block_regimes），
+  # 此前用硬编码集合，方向与实盘恰好相反：回测禁 BEAR_REBOUND/RISK_ON 而放行 NEUTRAL，
+  # 实盘正相反，导致两者成交的交易日几乎不重叠。
+  # 允许用 repository variable 覆盖，便于运维调参而不必改代码。
+  STEP4_BUY_BLOCK_REGIMES: ${{ vars.STEP4_BUY_BLOCK_REGIMES || 'UNKNOWN,NEUTRAL,PANIC_REPAIR,RISK_OFF,CRASH,BLACK_SWAN' }}
+  # fallback 必须与生产两个 workflow 保持一致（当前 BEAR_REBOUND）。
+  # PR #305 把 RISK_ON 移出豁免时漏改此处，导致 run 32537955220 的回测仍放行 RISK_ON
+  # 并产生 6 笔成交（胜率 16.7%、均收 -5.03%），与实盘口径不符。
+  STEP4_BUY_ALLOW_REGIMES: ${{ vars.STEP4_BUY_ALLOW_REGIMES || 'BEAR_REBOUND' }}
+  # 降档档在回测里必须同样可买且同样限 1 只，否则量的不是即将上线的闸门：
+  # 能不能买由 _live_buy_block_regimes 决定，买多少由 _limit_probe_only_selection 决定。
+  STEP4_BUY_PROBE_REGIMES: ${{ vars.STEP4_BUY_PROBE_REGIMES || '' }}
+  STEP4_BLOCK_BUY_SIGNAL_TYPES: ${{ vars.STEP4_BLOCK_BUY_SIGNAL_TYPES || '' }}
+  # 与 workflow 级同为 off,理由见文件头 FUNNEL_DYNAMIC_POLICY 那段注释。
+  # env 按 key 合并(step > job > workflow),删掉这一行会继承上面的 off,不会回退到
+  # vars/secrets;写在这里是为了在 job 内直接看见档位,别在两处写成不同的值。
+  FUNNEL_DEFENSIVE_FORCE_QUOTA: "1"
+  FUNNEL_MAX_STRUCTURE_STOP_PCT: "12.0"
+  FUNNEL_THEME_RADAR_PROMOTE_CAP: "2"
+  FUNNEL_L2_BYPASS_AI_ENABLED: "0"
+  FUNNEL_STRATEGIC_L2_BYPASS_AI_CAP: "2"
 
 jobs:
   # ────────────────────────────────────────────────
@@ -122,6 +166,8 @@ jobs:
       TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
       TZ: Asia/Shanghai
       BACKTEST_SNAPSHOT_WORKERS: "6"
+      BACKTEST_FETCH_PIT_TURNOVER: ${{ inputs.run_strategy_compare && (inputs.strategy_compare_set == 'knockout' || inputs.strategy_compare_set == 'combo') && '1' || '0' }}
+      TUSHARE_RATE_LIMIT: ${{ inputs.run_strategy_compare && (inputs.strategy_compare_set == 'knockout' || inputs.strategy_compare_set == 'combo') && '200' || '400' }}
     steps:
       - name: Resolve period dates
         id: period
@@ -223,6 +269,7 @@ jobs:
   # ────────────────────────────────────────────────
   grid:
     name: Grid ${{ matrix.period_key }} shared signals
+    if: ${{ !(inputs.run_strategy_compare && (inputs.strategy_compare_set == 'knockout' || inputs.strategy_compare_set == 'combo')) }}
     runs-on: ubuntu-latest
     needs: fetch
     strategy:
@@ -262,46 +309,6 @@ jobs:
       TZ: Asia/Shanghai
       TICKFLOW_API_KEY: ${{ secrets.TICKFLOW_API_KEY }}
       TICKFLOW_BASE_URL: ${{ secrets.TICKFLOW_BASE_URL }}
-      FUNNEL_AI_SELECTION_MODE: "tradeable_l4"
-      FUNNEL_AI_TOTAL_CAP: "8"
-      FUNNEL_AI_MAX_PER_SECTOR: "2"
-      FUNNEL_AI_RISK_ON_TREND: "5"
-      FUNNEL_AI_RISK_ON_ACCUM: "1"
-      FUNNEL_LOSS_GUARD_RISK_ON_PRE5_RET: "35.0"
-      # 与生产对齐：BEAR_REBOUND 放开（超额 +4.08pct），PANIC_REPAIR 拆出并保持 0（-4.09pct）。
-      FUNNEL_AI_BEAR_REBOUND_TREND: "5"
-      FUNNEL_AI_BEAR_REBOUND_ACCUM: "1"
-      FUNNEL_AI_PANIC_REPAIR_TREND: "0"
-      FUNNEL_AI_PANIC_REPAIR_ACCUM: "0"
-      FUNNEL_AI_RISK_OFF_TREND: "0"
-      FUNNEL_AI_RISK_OFF_ACCUM: "0"
-      FUNNEL_AI_NEUTRAL_TREND: "5"
-      FUNNEL_AI_NEUTRAL_ACCUM: "1"
-
-      # 与实盘漏斗对齐的判定类配置。回测 live 闸门现直接读 STEP4_BUY_BLOCK_REGIMES /
-      # STEP4_BUY_ALLOW_REGIMES（见 core/backtest_config._live_buy_block_regimes），
-      # 此前用硬编码集合，方向与实盘恰好相反：回测禁 BEAR_REBOUND/RISK_ON 而放行 NEUTRAL，
-      # 实盘正相反，导致两者成交的交易日几乎不重叠。
-      # 允许用 repository variable 覆盖，便于运维调参而不必改代码。
-      STEP4_BUY_BLOCK_REGIMES: ${{ vars.STEP4_BUY_BLOCK_REGIMES || 'UNKNOWN,NEUTRAL,PANIC_REPAIR,RISK_OFF,CRASH,BLACK_SWAN' }}
-      # fallback 必须与生产两个 workflow 保持一致（当前 BEAR_REBOUND）。
-      # PR #305 把 RISK_ON 移出豁免时漏改此处，导致 run 32537955220 的回测仍放行 RISK_ON
-      # 并产生 6 笔成交（胜率 16.7%、均收 -5.03%），与实盘口径不符。
-      STEP4_BUY_ALLOW_REGIMES: ${{ vars.STEP4_BUY_ALLOW_REGIMES || 'BEAR_REBOUND' }}
-      # 降档档在回测里必须同样可买且同样限 1 只，否则量的不是即将上线的闸门：
-      # 能不能买由 _live_buy_block_regimes 决定，买多少由 _limit_probe_only_selection 决定。
-      STEP4_BUY_PROBE_REGIMES: ${{ vars.STEP4_BUY_PROBE_REGIMES || '' }}
-      STEP4_BLOCK_BUY_SIGNAL_TYPES: ${{ vars.STEP4_BLOCK_BUY_SIGNAL_TYPES || '' }}
-      # 与 workflow 级同为 off,理由见文件头 FUNNEL_DYNAMIC_POLICY 那段注释。
-      # env 按 key 合并(step > job > workflow),删掉这一行会继承上面的 off,不会回退到
-      # vars/secrets;写在这里是为了在 job 内直接看见档位,别在两处写成不同的值。
-      FUNNEL_DYNAMIC_POLICY: "off"
-      FUNNEL_DYNAMIC_POLICY_HORIZON: "5"
-      FUNNEL_DEFENSIVE_FORCE_QUOTA: "1"
-      FUNNEL_MAX_STRUCTURE_STOP_PCT: "12.0"
-      FUNNEL_THEME_RADAR_PROMOTE_CAP: "2"
-      FUNNEL_L2_BYPASS_AI_ENABLED: "0"
-      FUNNEL_STRATEGIC_L2_BYPASS_AI_CAP: "2"
 
     steps:
       - name: Resolve period dates
@@ -455,6 +462,7 @@ jobs:
     env:
       # 同上:整条回测链都不接归因报告,理由见文件头 FUNNEL_DYNAMIC_POLICY 那段注释。
       FUNNEL_DYNAMIC_POLICY: "off"
+      BACKTEST_REQUIRE_PIT_TURNOVER: ${{ (inputs.strategy_compare_set == 'knockout' || inputs.strategy_compare_set == 'combo') && '1' || '0' }}
     strategy:
       fail-fast: false
       max-parallel: 6
@@ -462,7 +470,7 @@ jobs:
         period_key: [recent_2m, recent_6m, bull_2020, bear_2022, sideways_2023, volatile_2024, bull_2025]
         # amp  = A,M,P 共享一次信号台账（三者只改入场仓位权重，故可复用）
         # calib = 仅变体 I（calibrate_confirmed_score），必须独立算台账
-        variant_set: [amp, calib]
+        variant_set: ${{ inputs.strategy_compare_set == 'knockout' && fromJSON('["live","KO_AMBUSH","KO_ACCUM","KO_DRY_VOL","KO_TREND_CONT"]') || inputs.strategy_compare_set == 'combo' && fromJSON('["live","KO_ACCUM","KO_TREND_CONT","KO_ACCUM_TREND_CONT"]') || fromJSON('["amp","calib"]') }}
     steps:
       - name: Resolve period dates
         id: period
@@ -547,9 +555,13 @@ jobs:
           if [ "$VARIANT_SET" = "calib" ]; then
             echo "STRATEGY_VARIANT_ARGS=--strategy-variant I" >> "$GITHUB_ENV"
             echo "STRATEGY_RUN_SUBDIR=backtest-strategy-${BT_PERIOD_KEY}-I" >> "$GITHUB_ENV"
-          else
+          elif [ "$VARIANT_SET" = "amp" ]; then
             echo "STRATEGY_VARIANT_ARGS=--strategy-variants A,M,P --strategy-prefix backtest-strategy-${BT_PERIOD_KEY}" >> "$GITHUB_ENV"
             echo "STRATEGY_RUN_SUBDIR=" >> "$GITHUB_ENV"
+          else
+            case "$VARIANT_SET" in live|KO_AMBUSH|KO_ACCUM|KO_DRY_VOL|KO_TREND_CONT|KO_ACCUM_TREND_CONT) ;; *) exit 1 ;; esac
+            echo "STRATEGY_VARIANT_ARGS=--strategy-variant ${VARIANT_SET}" >> "$GITHUB_ENV"
+            echo "STRATEGY_RUN_SUBDIR=backtest-strategy-${BT_PERIOD_KEY}-${VARIANT_SET}" >> "$GITHUB_ENV"
           fi
 
       # --strategy-variants（复数）会复用一次信号台账，因此只能放"仅改入场仓位
@@ -682,6 +694,7 @@ jobs:
           python-version: "3.11"
 
       - name: Download all artifacts
+        if: ${{ !(inputs.run_strategy_compare && (inputs.strategy_compare_set == 'knockout' || inputs.strategy_compare_set == 'combo')) }}
         uses: actions/download-artifact@v8
         with:
           path: artifacts/
@@ -698,6 +711,7 @@ jobs:
         run: python -m pip install requests python-dotenv pandas
 
       - name: Update market backtest report
+        if: ${{ !(inputs.run_strategy_compare && (inputs.strategy_compare_set == 'knockout' || inputs.strategy_compare_set == 'combo')) }}
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           HYPOTHESIS_ID: ${{ inputs.hypothesis_id || '' }}
@@ -718,10 +732,16 @@ jobs:
         if: ${{ inputs.run_strategy_compare }}
         env:
           INPUT_PERIOD: ${{ inputs.period || 'recent_6m' }}
+          COMPARE_SET: ${{ inputs.strategy_compare_set || 'legacy' }}
         run: |
           EXTRA_ARGS=()
           if [ "$INPUT_PERIOD" = "all_defined" ]; then
             EXTRA_ARGS+=(--require-complete)
+          fi
+          if [ "$COMPARE_SET" = "knockout" ]; then
+            EXTRA_ARGS+=(--reference-variant live --required-variants live,KO_AMBUSH,KO_ACCUM,KO_DRY_VOL,KO_TREND_CONT --required-periods recent_6m,bull_2020,bear_2022,sideways_2023,volatile_2024,bull_2025)
+          elif [ "$COMPARE_SET" = "combo" ]; then
+            EXTRA_ARGS+=(--reference-variant live --required-variants live,KO_ACCUM,KO_TREND_CONT,KO_ACCUM_TREND_CONT --required-periods recent_6m,bull_2020,bear_2022,sideways_2023,volatile_2024,bull_2025)
           fi
           python3 scripts/build_backtest_strategy_comparison.py \
             --artifacts-dir artifacts \
@@ -747,6 +767,7 @@ jobs:
           if-no-files-found: error
 
       - name: Aggregate and notify
+        if: ${{ !(inputs.run_strategy_compare && (inputs.strategy_compare_set == 'knockout' || inputs.strategy_compare_set == 'combo')) }}
         shell: bash
         env:
           BT_TOP_N: "1"

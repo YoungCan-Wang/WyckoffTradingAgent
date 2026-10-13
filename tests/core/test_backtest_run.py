@@ -126,3 +126,32 @@ def test_execute_backtest_run_builds_summary_from_prepared_data(monkeypatch) -> 
     assert calls["base_cfg"].trading_days == 320
     assert calls["base_cfg"].min_avg_amount_wan == 12345.0
     assert calls["performance_config"].cash_portfolio is True
+    assert summary["runtime_contract"]["funnel"]["min_avg_amount_wan"] == 12345.0
+
+
+def test_runtime_contract_records_effective_policy_and_stable_digest(monkeypatch):
+    import hashlib
+    import json
+    from dataclasses import replace
+
+    from core.backtest_run import _runtime_contract
+    from workflows.backtest_strategy_variants import strategy_variant_overrides
+
+    monkeypatch.setenv("STEP4_BUY_BLOCK_REGIMES", "NEUTRAL,RISK_OFF")
+    monkeypatch.setenv("STEP4_BUY_ALLOW_REGIMES", "BEAR_REBOUND")
+    monkeypatch.setenv("PRIVATE_FAKE_API_KEY", "must-not-leak")
+    config = _run_config()
+    contract = _runtime_contract(config)
+    assert "NEUTRAL" in contract["buy_block_regimes"]
+    assert "BEAR_REBOUND" not in contract["buy_block_regimes"]
+    digest = contract.pop("sha256")
+    encoded = json.dumps(contract, sort_keys=True, ensure_ascii=False, default=str)
+    assert digest == hashlib.sha256(encoded.encode()).hexdigest()
+    assert "must-not-leak" not in encoded
+    assert contract["cash"][0]["initial_cash"] == 100_000
+    assert contract["exit"]["stop_loss_pct"] == -7.0
+    overrides = {**config.funnel_config_overrides, **strategy_variant_overrides("KO_AMBUSH")}
+    knockout = _runtime_contract(replace(config, strategy_variant="KO_AMBUSH", funnel_config_overrides=overrides))
+    changed = {key for key in contract["funnel"] if contract["funnel"][key] != knockout["funnel"][key]}
+    assert changed == {"enable_ambush_channel"}
+    assert knockout["buy_block_regimes"] == contract["buy_block_regimes"]

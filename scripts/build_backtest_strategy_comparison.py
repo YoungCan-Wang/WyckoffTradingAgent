@@ -9,10 +9,12 @@ from pathlib import Path
 import _bootstrap  # noqa: F401
 
 from workflows.backtest_strategy_comparison import (
+    DEFAULT_COMPARISON_PERIODS,
     build_strategy_comparison,
     load_strategy_comparison_rows,
     render_strategy_comparison,
 )
+from workflows.backtest_strategy_variants import DEFAULT_COMPARISON_VARIANTS, VARIANT_LABELS, normalize_strategy_variant
 
 
 def main() -> int:
@@ -21,10 +23,21 @@ def main() -> int:
     parser.add_argument("--markdown-output", type=Path, required=True)
     parser.add_argument("--json-output", type=Path, required=True)
     parser.add_argument("--require-complete", action="store_true")
+    parser.add_argument("--reference-variant", choices=list(VARIANT_LABELS), default="A")
+    parser.add_argument("--required-variants", default=",".join(DEFAULT_COMPARISON_VARIANTS))
+    parser.add_argument("--required-periods", default=",".join(DEFAULT_COMPARISON_PERIODS))
     args = parser.parse_args()
     ignored_dirs: list[str] = []
     rows = load_strategy_comparison_rows(args.artifacts_dir, ignored_dirs)
-    report = build_strategy_comparison(rows, ignored_dirs)
+    report = build_strategy_comparison(
+        rows,
+        ignored_dirs,
+        reference_variant=args.reference_variant,
+        required_variants=tuple(
+            normalize_strategy_variant(token.strip()) for token in args.required_variants.split(",")
+        ),
+        required_periods=tuple(token.strip() for token in args.required_periods.split(",")),
+    )
     for directory in ignored_dirs:
         print(f"[strategy-comparison] 忽略无法归组的产物目录: {directory}")
     args.markdown_output.write_text(render_strategy_comparison(report), encoding="utf-8")
