@@ -25,11 +25,12 @@ name: Pattern Forward Evaluation
 # 只要有一份不过期的近期结论就够,不依赖攒跨周期序列,因此不受 artifact 90 天上限影响。
 on:
   schedule:
-    # UTC 每月 6 日 14:10 = 北京时间当日 22:10。改成按月后不再固定落在周六,必须避开
-    # A 股生产任务的取数窗口:实测 schedule 派发晚 3~4.5 小时(见 AGENTS.md 评审规则 7),
-    # 22:10 派发实际起跑约在次日凌晨 01:10-02:40,盘前风险、午间研究、漏斗都不在跑,
-    # Tushare 配额独占。取 6 日而非 1/3 日,与已停用那两个月频 eval 的原时段也不重叠。
-    - cron: "10 14 6 * *"
+    # 月频统一放在 UTC 22:10 = 北京时间次日 06:10。派发晚 3~4.5 小时（AGENTS.md 评审规则 7），
+    # 实际起跑落在北京 06:10~10:40；这段没有任何读 Tushare 的定时任务（最近的是 16:05 的
+    # nav_snapshot），延迟为零也照样空闲。不放北京夜里：工作日 recommendation_tracking_reprice
+    # （UTC 15:00）与 signal_feedback（UTC 15:30）延迟后落在北京 02:00~04:00，正好压在旧时段上。
+    # 五个月频 eval 按 4/6/8/10/12 日错开，只为分摊配额，不构成先后。
+    - cron: "10 22 6 * *"
   workflow_dispatch:
     inputs:
       start:
