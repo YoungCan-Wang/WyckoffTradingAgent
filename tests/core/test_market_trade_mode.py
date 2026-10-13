@@ -94,6 +94,7 @@ def test_write_gate_follows_oms_block_list(monkeypatch) -> None:
     neutral = resolve_market_trade_mode("NEUTRAL")
     assert neutral.mode == "execution_blocked"
     assert neutral.allow_recommendation_write is False
+    assert "严守既有止损" in neutral.reason
     # 仍要能攒对照样本，否则禁买期就没有数据支撑下一次决策。
     assert neutral.allow_ai_review is True
     assert neutral.allow_full_l4 is False

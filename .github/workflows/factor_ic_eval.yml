@@ -15,14 +15,17 @@ name: Factor IC Evaluation
 #   vol_ratio         T+10  IC -0.0262  IR -0.32   各段 -0.059 -0.016 -0.004
 #   dry_vol_q250      T+10  IC -0.0405  IR -0.31   各段 -0.055 -0.019 -0.049
 #
-# 每周重跑的意义：IC 单期值不构成证据，关键是 ic_ir 与**方向何时开始变化**。
+# 定期重跑的意义：IC 单期值不构成证据，关键是 ic_ir 与**方向何时开始变化**。
 # 结果落 factor_ic_daily（TTL 365 天，由 db_maintenance 清理）以便跨期对比。
 on:
   schedule:
-    # UTC 周六 05:10 = 北京时间周六 13:10，与 pattern_forward_eval(04:10) 及其它周六
-    # 评估任务错开，避免同时抢 Tushare 配额。错开只为分摊配额,不构成先后
-    # （见 AGENTS.md 评审规则 7）。
-    - cron: "10 5 * * 6"
+    # 498 日截面 IC 每周只新增 ~5 日，ic_ir 与方向在一周内不会变；改月频，落库 factor_ic_daily 照旧。
+    # 月频统一放在 UTC 22:10 = 北京时间次日 06:10。派发晚 3~4.5 小时（AGENTS.md 评审规则 7），
+    # 实际起跑落在北京 06:10~10:40；这段没有任何读 Tushare 的定时任务（最近的是 16:05 的
+    # nav_snapshot），延迟为零也照样空闲。不放北京夜里：工作日 recommendation_tracking_reprice
+    # （UTC 15:00）与 signal_feedback（UTC 15:30）延迟后落在北京 02:00~04:00，正好压在旧时段上。
+    # 五个月频 eval 按 4/6/8/10/12 日错开，只为分摊配额，不构成先后。
+    - cron: "10 22 10 * *"
   workflow_dispatch:
     inputs:
       horizons:
