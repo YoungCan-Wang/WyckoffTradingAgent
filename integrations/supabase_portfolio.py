@@ -45,6 +45,8 @@ PARTIAL_FILL_WRITE_MSG = "持仓已更新但现金写入失败，请手动核对
 MEMBERSHIP_WRITE_DENIED_MSG = (
     f"云端持仓保存是星球会员能力（账号未开通或已到期），本次没有写入。了解并加入：{PLANET_MEMBERSHIP_URL}"
 )
+# update_free_cash 命中 0 行且无法确认是会员墙时用；不得含 auth 重登关键字。
+CASH_WRITE_MISSING_ERROR = "现金未写入（组合不存在或未命中任何行），请核对后重试"
 
 
 @dataclass(frozen=True)
@@ -772,9 +774,11 @@ def update_free_cash(
         response = (
             client.table(TABLE_PORTFOLIOS).update({"free_cash": free_cash}).eq("portfolio_id", portfolio_id).execute()
         )
-        # 只认明确的 0 行：RLS 拒绝时 PostgREST 返回 []，而不是报错，旧写法会回报「已更新」。
-        if getattr(response, "data", None) == [] and _write_denied(portfolio_id, client):
-            return False, MEMBERSHIP_WRITE_DENIED_MSG
+        # RLS 拒绝时 PostgREST 返回空 data 且不报错；会员查询失败时也不能当成已写入。
+        if not getattr(response, "data", None):
+            return False, (
+                MEMBERSHIP_WRITE_DENIED_MSG if _write_denied(portfolio_id, client) else CASH_WRITE_MISSING_ERROR
+            )
         message = f"可用资金已更新为 {free_cash:,.2f}"
         return True, _mutation_message(message, portfolio_id, client, refresh_equity)
     except Exception as e:

@@ -31,7 +31,7 @@
 | CLI / 桌面 / MCP `query_history`（归因、A 股与港美股跟踪、信号） | 同上，用用户自己的客户端查 `planet_members` 判定 |
 | `/attribution` 锁屏页 | 复用 `/tracking` 的二维码入口卡（`components/planet-membership-cta.tsx`） |
 | `/portfolio` 非会员手动录入页 | 一行提示：云端保存、多端同步是会员能力 |
-| 云端持仓写入被 RLS 拒绝 | `MEMBERSHIP_WRITE_DENIED_MSG`。update / delete 被拒时命中 0 行且不报错，靠会员状态与「行不存在」区分；`update_free_cash` 命中 0 行不再回报「已更新」 |
+| 云端持仓写入被 RLS 拒绝 | `MEMBERSHIP_WRITE_DENIED_MSG`。update / delete / `update_free_cash` 被拒时命中 0 行且不报错；已确认非会员报会员文案，否则报 missing（现金为 `CASH_WRITE_MISSING_ERROR`），不得回报成功 |
 | 桌面远程遥控 403 | 报错带入口 |
 
 写入拒绝文案不得含 `invalid` / `expired` / `token` 等词：`with_auth_retry` 按关键字判断重登，命中会把同一笔写入再执行一遍。
