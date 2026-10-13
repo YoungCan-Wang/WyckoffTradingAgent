@@ -335,6 +335,22 @@ def _hard_defense_trade_mode(regime_norm: str) -> MarketTradeMode | None:
     )
 
 
+def _execution_blocked_trade_mode(regime_norm: str) -> MarketTradeMode:
+    """运维通过 STEP4_BUY_BLOCK_REGIMES 拦截的水温：保留 AI/shadow 对照，关闭正式推荐。"""
+    reason = (
+        "NEUTRAL 震荡阴跌期后向胜率偏低（在下单闸门禁买名单内）；禁止正式推荐与新开，已有持仓优先逢高缩减弱势仓位、收紧移动止损"
+        if regime_norm == "NEUTRAL"
+        else f"{regime_norm} 在下单闸门禁买名单内，正式推荐随之关闭以免与实际持仓不符"
+    )
+    return _shadow_only_trade_mode(
+        regime_norm,
+        mode="execution_blocked",
+        label="禁止新仓",
+        action="禁止新仓：可送AI/shadow 对照，不写正式推荐、不执行新买入",
+        reason=reason,
+    )
+
+
 def resolve_market_trade_mode(regime: str | None) -> MarketTradeMode:
     regime_norm = normalize_regime(regime)
     allowed = _explicitly_allowed_regimes()
@@ -365,16 +381,7 @@ def resolve_market_trade_mode(regime: str | None) -> MarketTradeMode:
             reason="情绪扰动期只开放小额试探，候选必须经过确认支撑",
         )
     if regime_norm in oms_buy_block_regimes():
-        # 运维把这一档加进了 STEP4_BUY_BLOCK_REGIMES：买不到就别写成正式推荐。
-        # 保留 AI/shadow 以便继续攒对照样本（shadow ledger 跟 allow_ai_review，
-        # 不跟着 allow_recommendation_write 一起停）。
-        return _shadow_only_trade_mode(
-            regime_norm,
-            mode="execution_blocked",
-            label="禁止新仓",
-            action="禁止新仓：可送AI/shadow 对照，不写正式推荐、不执行新买入",
-            reason=f"{regime_norm} 在下单闸门禁买名单内，正式推荐随之关闭以免与实际持仓不符",
-        )
+        return _execution_blocked_trade_mode(regime_norm)
     return MarketTradeMode(
         regime=regime_norm,
         mode="mainline_active",

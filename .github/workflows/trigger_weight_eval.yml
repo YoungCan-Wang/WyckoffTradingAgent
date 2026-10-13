@@ -32,10 +32,11 @@ name: Trigger Eval
 #   3) top10 与 top20 的不对称 —— 负号只在集中持仓档成立，宽档不显著，别外推。
 # 触发面板要逐票逐日重放六个检测器（约 90 分钟）且需 210 个 bar 预热，故与行情一起缓存。
 on:
-  schedule:
-    # UTC 周六 03:35 = 北京时间周六 11:35，与 ranker-weight（02:55）错开取数配额。
-    # 错开只为分摊配额,不构成先后 —— 上面头部记的就是踩过这一脚的经过。
-    - cron: "35 3 * * 6"
+  # 路径 B（_trigger_score 六档硬编码分值）走前检验已稳定过线（H=10 top10 +0.363% t=+3.65）并于 PR #498
+  # 拍平为 TRIGGER_SCORE_POINTS = 25.0；同时生产已于 PR #458/#460 关闭 sos/lps/compression 负超额触发器。
+  # 全市场 6 检测器逐日重放耗时约 2.5 小时，历史使命已达成；注释掉周频 cron 以节省 CI 与 Tushare 配额，保留手动触发备查。
+  # schedule:
+  #   - cron: "35 3 * * 6"
   workflow_dispatch:
     inputs:
       horizon:

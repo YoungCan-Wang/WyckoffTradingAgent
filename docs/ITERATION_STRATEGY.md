@@ -1059,6 +1059,16 @@ P90 港股 8.39%、美股 **13.18%**——**该收紧的是美股，方向与直
 2. **CRASH 状态下操作话术对齐**：在大盘总闸触发 `CRASH` 时，明确标注“CRASH 呈恐慌底特征，后市偏涨但左尾未量过；严禁追新，不从本报告选择买入标的；已有持仓未触止损切莫恐慌割肉”，防止在恐慌底部盲目杀跌。
 3. **影子车道定时任务归档**：三条影子车道（`near_l2` / `pre_breakout` / `rotation_setup`）经近 3 个月穿透检验均确认负超额，生产漏斗已确认不提拔这些车道。注释掉 `.github/workflows/review_shadow_backtest.yml` 的 cron 调度以节省 CI 资源与存储，保留 `workflow_dispatch` 备查。
 
+### 远端评估产物向实盘与漏斗消融的转化闭环（2026-10-12，Issue #542）
+
+基于 2026-10-10 至 10-12 最新一轮远端评估产物（详见 Issue #542），完成以下实盘话术与调度分层治理：
+1. **NEUTRAL 禁买期实盘风控话术对齐**：`regime_forward_eval`（101 日）实证 `NEUTRAL` 震荡期后向 5 日超额显著为负（`−1.08pct`，`p=0.0085`，胜率仅 `7.7%`），是实盘最易磨损本金的阶段。当 `NEUTRAL` 命中 `STEP4_BUY_BLOCK_REGIMES` 进入 `execution_blocked` 时，在 `core/market_trade_mode.py` 与 `workflows/funnel_render.py` 中明确输出“NEUTRAL 震荡阴跌期后向胜率偏低；严禁手痒追新，已有持仓优先逢高缩减弱势仓位、收紧移动止损”，与 `CRASH` 恐慌底不盲目割肉形成对称的实盘指引。
+2. **评估工作流快慢变量分层调度**：
+   - `trigger_weight_eval.yml`：因路径 B（`_trigger_score` 拍平）与负超额触发器关停（#458/#460/#498）均已落地，归档每周六 2.5 小时全市场 6 检测器重放 cron，保留 `workflow_dispatch` 备查；
+   - `ranker_weight_eval.yml`（每月 4 日）、`momentum_regime_eval.yml`（每月 8 日）、`factor_ic_eval.yml`（每月 10 日）：250~530 日跨周期慢变量统一由周频降为月频夜间（UTC 14:10，避开工作日白天 A 股生产取数窗口）；
+   - 周六定时仅保留快变量三件套：`regime_forward_eval.yml`（水温前瞻）、`exit_attribution.yml`（近 60 日 5% 硬止损离场工单归因）、`gate_alpha_eval.yml`（L3 生产 trace 同动量置换检验）。
+3. **待推进 `backtest_grid.yml` 生产级消融候选**：`gate_alpha_eval`（L3 被拒票 T+5 跑赢留下票 `+1.70%`）与 `signal_feedback`（60 日弱入口降权）已分别指向策略变体 `R`（关闭 L3 行业共振）与变体 `Q`（剪枝 6 条弱动量入口车道），后续在 #539 基线上通过 `backtest_grid.yml` 跨周期边际成交验证后决断。
+
 ### 三处 eval 断链的根因（均已修）
 
 结论链上的三个量具当周全部失效，且都不是统计口径问题：

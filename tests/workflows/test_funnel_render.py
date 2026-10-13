@@ -109,6 +109,19 @@ def test_execution_decision_line_separates_review_from_execution() -> None:
     assert "OMS 核准" in line
 
 
+def test_execution_decision_and_tomorrow_action_warn_on_blocked_neutral(monkeypatch) -> None:
+    from workflows.funnel_render import _execution_decision_line, _tomorrow_action_line
+
+    monkeypatch.setenv("STEP4_BUY_BLOCK_REGIMES", "UNKNOWN,NEUTRAL,PANIC_REPAIR,RISK_OFF,CRASH,BLACK_SWAN")
+    decision = _execution_decision_line("NEUTRAL", 3)
+    action = _tomorrow_action_line(SimpleNamespace(regime="NEUTRAL", metrics={}), 3)
+
+    assert "NEUTRAL 震荡阴跌期" in decision
+    assert "缩减弱势仓位" in decision
+    assert "NEUTRAL 震荡阴跌期" in action
+    assert "收紧移动止损" in action
+
+
 def test_confirmation_label_names_abc_as_springboard_structure(monkeypatch) -> None:
     from workflows import funnel_render
 
