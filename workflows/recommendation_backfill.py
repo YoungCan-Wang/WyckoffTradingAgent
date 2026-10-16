@@ -169,7 +169,10 @@ def _run_step3_if_needed(
     )
     if not ok:
         raise RuntimeError(f"{trade_day.isoformat()} Step3 failed: {reason}")
-    return parse_step3_springboards(report_text, write_symbols, None)
+    parsed = parse_step3_springboards(report_text, write_symbols, None)
+    if parsed is None:
+        raise RuntimeError(f"{trade_day.isoformat()} Step3 springboard parse not authoritative")
+    return parsed
 
 
 def _build_payloads(target_dates: tuple[date, ...], day_results: list[dict[str, Any]]) -> dict[int, list[dict]]:
