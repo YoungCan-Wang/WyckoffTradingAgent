@@ -16,7 +16,7 @@ from cli.providers.base import LLMProvider
 from cli.service.echo_provider import EchoProvider
 from cli.service.server import CloudToolRegistry, ServiceState, default_provider_factory, make_server
 from cli.service.tool_cache import ToolResultCache
-from tests.helpers.agent_loop_harness import StubToolRegistry
+from tests.helpers.agent_loop_harness import ScriptedProvider, StubToolRegistry
 
 TOKEN = "gateway-secret"
 
@@ -255,10 +255,14 @@ def test_echo_provider_is_opt_in_and_its_delay_is_capped(monkeypatch):
     assert provider.delay_s == 1.0
 
 
-def _post_ui(port: int, messages: list[dict[str, Any]]) -> http.client.HTTPResponse:
+def _post_ui(
+    port: int, messages: list[dict[str, Any]], *, credentials: dict[str, str] | None = None
+) -> http.client.HTTPResponse:
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
     headers = {"Authorization": f"Bearer {TOKEN}", "X-Wyckoff-User": "u1", "Content-Type": "application/json"}
-    body = {"id": "chat-1", "trigger": "submit-message", "messages": messages, "llm": {"provider_name": "echo"}}
+    body: dict[str, Any] = {"id": "chat-1", "trigger": "submit-message", "messages": messages, "llm": {"provider_name": "echo"}}
+    if credentials is not None:
+        body["credentials"] = credentials
     conn.request("POST", "/v1/ui-turns", json.dumps(body), headers)
     return conn.getresponse()
 
@@ -331,6 +335,42 @@ def test_ui_turn_surfaces_the_real_provider_failure_to_the_user(serve):
     assert [c["type"] for c in chunks[-3:-1]] == ["finish-step", "finish"]
     assert chunks[-1] == "[DONE]"
     assert _wait_for(lambda: state.active_turns == 0)
+
+
+def test_ui_turn_actually_invokes_a_tool_end_to_end(serve):
+    """此前只分别测过：UiStreamTranslator 的成帧、/v1/turns 的凭据按请求隔离。两条拼在一起、
+    经由真实 AgentRuntime 工具循环、从 /v1/ui-turns 原样吐出来，从没有一个测试验证过。"""
+    provider = ScriptedProvider(
+        rounds=[
+            [
+                {"type": "tool_calls", "tool_calls": [{"id": "tc1", "name": "get_market_overview", "args": {}}], "text": ""},
+                {"type": "usage", "input_tokens": 10, "output_tokens": 3},
+            ],
+            [{"type": "text_delta", "text": "大盘平稳"}, {"type": "usage", "input_tokens": 15, "output_tokens": 8}],
+        ]
+    )
+    built: list[tuple[str, dict[str, str]]] = []
+
+    def factory(user: str, credentials: dict[str, str]):
+        built.append((user, credentials))
+        return StubToolRegistry(tool_results={"get_market_overview": {"index": "sh000001", "pct_chg": 1.23}})
+
+    _, port, _ = serve(provider, shared=True, tools_factory=factory)
+
+    resp = _post_ui(port, [_user("大盘怎么样")], credentials={"tushare_token": "secret-tu"})
+    raw = resp.read()
+    chunks = [line.removeprefix("data: ") for line in raw.decode().split("\n\n") if line]
+    chunks = [c if c == "[DONE]" else json.loads(c) for c in chunks]
+
+    tool_input = next(c for c in chunks if isinstance(c, dict) and c["type"] == "tool-input-available")
+    assert tool_input["toolName"] == "get_market_overview" and tool_input["dynamic"] is True
+    tool_output = next(c for c in chunks if isinstance(c, dict) and c["type"] == "tool-output-available")
+    assert tool_output["output"] == {"index": "sh000001", "pct_chg": 1.23} and tool_output["dynamic"] is True
+    assert tool_output["toolCallId"] == tool_input["toolCallId"]
+    assert "".join(c["delta"] for c in chunks if isinstance(c, dict) and c["type"] == "text-delta") == "大盘平稳"
+
+    assert built == [("u1", {"tushare_token": "secret-tu"})]
+    assert b"secret-tu" not in raw
 
 
 # ---- 共用模式 ----------------------------------------------------------------
