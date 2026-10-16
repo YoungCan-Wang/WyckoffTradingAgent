@@ -461,18 +461,26 @@ def _tool_names() -> frozenset[str]:
 
 
 def build_state(token: str) -> ServiceState:
+    """两种模式都走同一条注册表构造路径,只在并发与白名单校验上分叉。
+
+    独占模式此前建一个没有 user_id/credentials 的注册表在启动时用到底,结果 get_credential
+    回落到 admin client 时查的是 user_id="local"——不是 _admit() 真正绑定的那个用户,这条
+    回落路径对任何真实部署都查不到数据,纯粹是死路。统一成 tools_factory 后,独占模式的
+    工具调用也会拿到 _admit() 绑定的真实 user 与请求体里的 credentials,管线和共用模式完全
+    一致,容器也就不再需要摸到 admin client 才能跑起来。
+    """
     names = _tool_names()
     seconds = float(os.getenv(TURN_SECONDS_ENV) or DEFAULT_MAX_TURN_SECONDS)
-    if os.getenv(SHARED_ENV) != "1":
-        return ServiceState(token, CloudToolRegistry(names), max_turn_seconds=seconds, tool_names=names)
-    validate_shared_tools(names)
+    shared = os.getenv(SHARED_ENV) == "1"
+    if shared:
+        validate_shared_tools(names)
     return ServiceState(
         token,
         None,
         max_turn_seconds=seconds,
-        shared=True,
+        shared=shared,
         tool_names=names,
-        max_concurrent_turns=int(os.getenv(MAX_TURNS_ENV) or DEFAULT_MAX_CONCURRENT_TURNS),
+        max_concurrent_turns=int(os.getenv(MAX_TURNS_ENV) or DEFAULT_MAX_CONCURRENT_TURNS) if shared else None,
         tools_factory=lambda user, credentials: CloudToolRegistry(names, {"user_id": user, "credentials": credentials}),
     )
 

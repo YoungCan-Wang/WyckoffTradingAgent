@@ -506,6 +506,24 @@ def test_shared_state_is_built_from_the_environment(monkeypatch):
     assert state.shared and state.max_concurrent_turns == 7 and state.tools is None
 
 
+def test_exclusive_mode_tool_registry_sees_the_calling_user_not_local(monkeypatch):
+    """修复前：独占模式启动时建一次没有 user_id 的注册表，get_credential 回落到 user_id="local"——
+    和 _admit() 真正绑定的用户对不上，这条回落路径对任何真实部署都查不到数据，纯粹是死路。"""
+    from cli.service.server import build_state
+
+    monkeypatch.delenv("WYCKOFF_SERVICE_SHARED", raising=False)
+    monkeypatch.setenv("WYCKOFF_SERVICE_TOOLS", "")
+    state = build_state("t")
+
+    assert not state.shared
+    assert state.max_concurrent_turns == 1
+    assert state.tools is None  # 不再在启动时建一次性、没有身份的注册表
+
+    registry = state.tools_for("alice", {"tushare_token": "alice-token"})
+    assert registry.tool_context.state["user_id"] == "alice"
+    assert registry.tool_context.state["credentials"] == {"tushare_token": "alice-token"}
+
+
 def test_the_real_registry_carries_the_request_state_and_never_shares_it(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     alice = CloudToolRegistry(frozenset(), {"user_id": "alice", "credentials": {"tushare_token": "a"}})

@@ -1,5 +1,11 @@
 # 云端工具审计
 
+> **现状（2026-10-16）**：下方「关键发现 2/3」提出的请求级凭据注入已经实现并上线（`agents/tool_context.py`
+> 的请求模式 + `cli/service/server.py` 的 `tools_factory`），独占/共用两种部署模式现在都走同一条构造路径，
+> 容器不再需要持有 `SUPABASE_SERVICE_ROLE_KEY` 才能跑起来；细节见 [ARCHITECTURE.md](ARCHITECTURE.md) 的
+> 「会员车道 Agent Runtime 服务」。本文档其余部分（逐工具 sandbox-only/needs-fix/review/candidate 判定）仍是
+> 放行新工具时的参考依据，按工具查，不是按「待办」读。
+
 目的：判断 `ToolRegistry` 里的 34 个 agent 工具哪些能放进**共用的云端进程**（会员 Agent 车道，见
 [ARCHITECTURE.md](ARCHITECTURE.md) 的「会员车道 Agent Runtime 服务」）。这些工具按本机桌面设计：
 本机文件、本机 SQLite、环境变量里的密钥、本机 Chrome、直接跑命令。
