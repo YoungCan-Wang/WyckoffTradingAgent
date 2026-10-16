@@ -3,13 +3,16 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
-pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="install.sh needs bash")
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("bash") is None, reason="install.sh is POSIX-only"
+)
 
 _PYTHON_STUB = """#!/bin/sh
 case "$1" in
