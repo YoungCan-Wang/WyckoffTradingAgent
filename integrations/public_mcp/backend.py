@@ -36,9 +36,11 @@ def build_context():
 
 class DomainBackend:
     def __init__(self) -> None:
+        from integrations.local_auth import seed_data_source_env
         from integrations.local_db import init_db
         from tools.tool_surface import ToolSurface
 
+        seed_data_source_env()
         init_db()
         self._context = build_context()
         self._surface = ToolSurface()
