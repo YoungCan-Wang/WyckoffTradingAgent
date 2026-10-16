@@ -260,7 +260,12 @@ def _post_ui(
 ) -> http.client.HTTPResponse:
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
     headers = {"Authorization": f"Bearer {TOKEN}", "X-Wyckoff-User": "u1", "Content-Type": "application/json"}
-    body: dict[str, Any] = {"id": "chat-1", "trigger": "submit-message", "messages": messages, "llm": {"provider_name": "echo"}}
+    body: dict[str, Any] = {
+        "id": "chat-1",
+        "trigger": "submit-message",
+        "messages": messages,
+        "llm": {"provider_name": "echo"},
+    }
     if credentials is not None:
         body["credentials"] = credentials
     conn.request("POST", "/v1/ui-turns", json.dumps(body), headers)
@@ -343,7 +348,11 @@ def test_ui_turn_actually_invokes_a_tool_end_to_end(serve):
     provider = ScriptedProvider(
         rounds=[
             [
-                {"type": "tool_calls", "tool_calls": [{"id": "tc1", "name": "get_market_overview", "args": {}}], "text": ""},
+                {
+                    "type": "tool_calls",
+                    "tool_calls": [{"id": "tc1", "name": "get_market_overview", "args": {}}],
+                    "text": "",
+                },
                 {"type": "usage", "input_tokens": 10, "output_tokens": 3},
             ],
             [{"type": "text_delta", "text": "大盘平稳"}, {"type": "usage", "input_tokens": 15, "output_tokens": 8}],
