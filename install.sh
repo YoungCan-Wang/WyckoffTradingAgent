@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Wyckoff Trading Agent — 一键安装脚本
-# curl -fsSL https://raw.githubusercontent.com/YoungCan-Wang/Wyckoff-Analysis/main/install.sh | bash
+# curl -fsSL https://raw.githubusercontent.com/YoungCan-Wang/WyckoffTradingAgent/main/install.sh | bash
 
 PACKAGE="youngcan-wyckoff-analysis"
 INSTALL_DIR="$HOME/.wyckoff/venv"
@@ -26,7 +26,10 @@ find_python() {
             major=$(echo "$ver" | cut -d. -f1)
             minor=$(echo "$ver" | cut -d. -f2)
             if [ "$major" -ge 3 ] && [ "$minor" -ge 11 ]; then
-                echo "$cmd"
+                # 必须给绝对路径：uv 会把 "python3.11" 这类名字优先解析成 uv 托管解释器（即使 PATH
+                # 上有同版本系统 Python），托管版本被清理后 venv 就成了 bad interpreter
+
+                command -v "$cmd"
                 return 0
             fi
         fi
@@ -60,6 +63,12 @@ info "使用 uv: $(uv --version)"
 # ---------------------------------------------------------------------------
 # 3. 创建 venv 并安装
 # ---------------------------------------------------------------------------
+if [ -d "$INSTALL_DIR" ] && ! "$INSTALL_DIR/bin/python" -c "import sys" &>/dev/null; then
+    BROKEN_DIR="$INSTALL_DIR.broken-$(date +%Y%m%d%H%M%S)"
+    warn "已有 venv 的解释器不可用，移到 $BROKEN_DIR 后重建（配置与数据库不在 venv 内）"
+    mv "$INSTALL_DIR" "$BROKEN_DIR"
+fi
+
 if [ -d "$INSTALL_DIR" ]; then
     info "更新已有安装..."
 else
