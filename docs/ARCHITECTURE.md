@@ -127,7 +127,7 @@ Worker 负责鉴权、输入校验、队列控制面和 HMAC 签名。Vercel Nod
 - `POST /api/agent/chat`：鉴权 → 闸门 → 车道限流（先过闸门再计数，没资格的请求不消耗额度）→ 读取会员自带的模型配置（与免费车道同一份 `user_settings`）→ 转给服务。上游不可达或异常一律回 502 且不透传上游内容；上游忙回 429。只透传流协议需要的响应头。
 - 模型配置映射：`anthropic` / anthropic 协议 → `claude`，`gemini` → `gemini`，`deepseek` → `deepseek`，其余（`openai`、`1route`、自定义 OpenAI 兼容端点）→ `openai` 并带 `base_url`。
 - 浏览器端的 `watchlist` / `marketWatch` 不会转给服务。车道默认零工具，所以会员在车道里**暂时没有**免费车道里那 12 个行情 / 持仓工具；在云端工具审计完成前，车道只应给明确开启的账号使用。
-- 目前上游只有「按 URL 直连」一种实现，而服务是一个进程只服务一个用户，所以只适合单用户 / 开发验证。多用户需要按用户路由到各自的容器（Cloudflare Containers 的 Durable Object 路由），用同一个 `AgentUpstream` 接口接入。
+- 上游是共用的那台 Cloud Run 实例（`WYCKOFF_SERVICE_SHARED=1`，已核实，与 [会员车道 Agent Runtime 服务](#会员车道-agent-runtime-服务已上线为工具后端整个对话循环尚未搬过来) 的工具后端共用同一个部署）——`build_state()` 对独占/共用两种模式走的是同一条 `tools_factory` 构造路径，多用户在这台实例上没有代码层面的障碍。真正要按用户路由到各自容器（Durable Object 路由）是更大规模之后才需要考虑的扩容手段，不是现在能不能多用户的前提。
 
 
 `X-RateLimit-Backend` 明确返回 `redis`、`local` 或 `local-fallback`，便于区分共享额度、未配置 Redis 和 Redis 故障降级。Redis 只承载可过期的协调状态与短期 Agent Run 结果，不承载持仓、订单、交易信号或审计真相；这些数据仍由 Supabase/RLS 管理。

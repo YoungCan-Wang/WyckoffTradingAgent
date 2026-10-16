@@ -3,6 +3,7 @@ import {
   agentServiceConfig,
   isAgentLaneUser,
   streamResponse,
+  toServiceCredentialsLlm,
   toServiceLlm,
   urlUpstream,
   type LaneModelConfig,
@@ -24,6 +25,18 @@ describe('toServiceLlm', () => {
 
   it.each(cases)('%s', (_name, config, expected) => {
     expect(toServiceLlm(config)).toEqual({ ...base, ...expected })
+  })
+})
+
+describe('toServiceCredentialsLlm', () => {
+  it('remaps the turn-level llm fields into the credentials.llm_* keys resolve_llm_config reads', () => {
+    const llm = { provider_name: 'claude', api_key: 'sk-ant', model: 'claude-5-5', base_url: '' }
+    expect(toServiceCredentialsLlm(llm)).toEqual({
+      llm_provider: 'claude',
+      llm_api_key: 'sk-ant',
+      llm_model: 'claude-5-5',
+      llm_base_url: '',
+    })
   })
 })
 

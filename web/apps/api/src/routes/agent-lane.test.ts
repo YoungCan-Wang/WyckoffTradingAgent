@@ -35,10 +35,18 @@ function build(overrides: Partial<AgentLaneDeps> = {}) {
   const deps: Partial<AgentLaneDeps> = {
     isMember: async () => true,
     loadConfigs: async () => [CONFIG],
+    loadCredentials: async () => ({}),
     resolveUpstream: () => upstream,
     ...overrides,
   }
   return { routes: createAgentLaneRoutes(deps), upstream }
+}
+
+const LLM_CREDENTIALS = {
+  llm_provider: 'deepseek',
+  llm_api_key: 'sk-secret',
+  llm_model: 'deepseek-v4-flash',
+  llm_base_url: 'https://api.deepseek.com/v1',
 }
 
 function post(routes: ReturnType<typeof createAgentLaneRoutes>, body: unknown, env: Record<string, string> = ENV) {
@@ -136,6 +144,7 @@ describe('POST /chat forwarding', () => {
       id: 'chat-1',
       messages: MESSAGES,
       llm: { provider_name: 'deepseek', api_key: 'sk-secret', model: 'deepseek-v4-flash', base_url: 'https://api.deepseek.com/v1' },
+      credentials: LLM_CREDENTIALS,
     })
   })
 
@@ -143,7 +152,30 @@ describe('POST /chat forwarding', () => {
     const { routes, upstream } = build()
     await post(routes, { id: 'chat-1', messages: MESSAGES, watchlist: [{ code: '600519' }], marketWatch: { quotes: [] } })
     const payload = JSON.parse((upstream.mock.calls[0] as unknown as [string, string])[1]) as Record<string, unknown>
-    expect(Object.keys(payload).sort()).toEqual(['id', 'llm', 'messages'])
+    expect(Object.keys(payload).sort()).toEqual(['credentials', 'id', 'llm', 'messages'])
+  })
+
+  it('merges the data-tool credentials with the always-sent llm_* ones', async () => {
+    const { routes, upstream } = build({ loadCredentials: async () => ({ tushare_token: 'tu-1', tickflow_api_key: 'tk-1' }) })
+    await post(routes, { messages: MESSAGES })
+    const payload = JSON.parse((upstream.mock.calls[0] as unknown as [string, string])[1]) as Record<string, unknown>
+    expect(payload.credentials).toEqual({ ...LLM_CREDENTIALS, tushare_token: 'tu-1', tickflow_api_key: 'tk-1' })
+  })
+
+  it('omits a data credential the member has not configured instead of sending a blank', async () => {
+    const { routes, upstream } = build({ loadCredentials: async () => ({ tushare_token: 'tu-1' }) })
+    await post(routes, { messages: MESSAGES })
+    const payload = JSON.parse((upstream.mock.calls[0] as unknown as [string, string])[1]) as Record<string, unknown>
+    expect(payload.credentials).not.toHaveProperty('tickflow_api_key')
+  })
+
+  it('never echoes a secret back to the client even when the upstream fails', async () => {
+    const { routes } = build({
+      loadCredentials: async () => ({ tushare_token: 'tu-secret' }),
+      resolveUpstream: () => async () => new Response('internal detail', { status: 500 }),
+    })
+    const response = await post(routes, { messages: MESSAGES })
+    expect(await response.text()).not.toContain('tu-secret')
   })
 })
 

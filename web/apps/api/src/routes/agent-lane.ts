@@ -8,9 +8,11 @@ import {
   isAgentLaneUser,
   resolveUpstream,
   streamResponse,
+  toServiceCredentialsLlm,
   toServiceLlm,
   type AgentUpstream,
   type LaneModelConfig,
+  type ServiceCredentials,
 } from '../services/agent-lane'
 import { loadLLMConfigs, createUserSupabase } from './chat'
 
@@ -21,7 +23,21 @@ type Supabase = ReturnType<typeof createUserSupabase>
 export type AgentLaneDeps = {
   isMember: (supabase: Supabase, userId: string) => Promise<boolean>
   loadConfigs: (supabase: Supabase, userId: string) => Promise<LaneModelConfig[]>
+  loadCredentials: (supabase: Supabase, userId: string) => Promise<ServiceCredentials>
   resolveUpstream: (env: Env) => AgentUpstream | null
+}
+
+// 数据类凭据：和 agent-service-tools.ts 的 loadCredentials 读同一张表、同样取 trim 后的非空值，
+// 两条车道各自维护一份是因为取用方式不同（这里是整轮都带上，那边是按工具声明按需取）。
+async function loadServiceCredentials(supabase: Supabase, userId: string): Promise<ServiceCredentials> {
+  const { data } = await supabase.from('user_settings').select('tickflow_api_key, tushare_token').eq('user_id', userId).single()
+  const row = (data || {}) as Record<string, unknown>
+  const credentials: ServiceCredentials = {}
+  const tushareToken = String(row.tushare_token || '').trim()
+  const tickflowKey = String(row.tickflow_api_key || '').trim()
+  if (tushareToken) credentials.tushare_token = tushareToken
+  if (tickflowKey) credentials.tickflow_api_key = tickflowKey
+  return credentials
 }
 
 const MAX_MESSAGES_CHARS = 60_000
@@ -34,6 +50,7 @@ function logLane(requestId: unknown, event: string, detail: Record<string, unkno
 const defaultDeps: AgentLaneDeps = {
   isMember: isActivePlanetMember,
   loadConfigs: (supabase, userId) => loadLLMConfigs(supabase, userId),
+  loadCredentials: loadServiceCredentials,
   resolveUpstream,
 }
 
@@ -76,10 +93,13 @@ export function createAgentLaneRoutes(overrides: Partial<AgentLaneDeps> = {}) {
     if (JSON.stringify(messages).length > MAX_MESSAGES_CHARS) {
       return c.json({ error: '本轮上下文过长，请开启新对话或缩短问题。' }, 413)
     }
-    const config = (await deps.loadConfigs(createUserSupabase(c.env, auth.accessToken), auth.userId))[0]
+    const supabase = createUserSupabase(c.env, auth.accessToken)
+    const config = (await deps.loadConfigs(supabase, auth.userId))[0]
     if (!config) return c.json({ error: '请先在设置页配置 LLM API Key' }, 400)
+    const llm = toServiceLlm(config)
+    const credentials = { ...(await deps.loadCredentials(supabase, auth.userId)), ...toServiceCredentialsLlm(llm) }
 
-    const payload = JSON.stringify({ id: body?.id, messages, llm: toServiceLlm(config) })
+    const payload = JSON.stringify({ id: body?.id, messages, llm, credentials })
     let upstream: Response
     try {
       upstream = await c.get('upstream')(auth.userId, payload, c.req.raw.signal)

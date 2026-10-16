@@ -17,6 +17,8 @@ export type AgentServiceConfig = { baseUrl: string; token: string }
 
 export type AgentUpstream = (userId: string, body: string, signal: AbortSignal) => Promise<Response>
 
+export type ServiceCredentials = Record<string, string>
+
 const SERVICE_ORIGIN_ALLOWED_HTTP_HOSTS = new Set(['127.0.0.1', 'localhost'])
 const OFFICIAL_ANTHROPIC_ORIGIN = 'https://api.anthropic.com'
 
@@ -31,6 +33,13 @@ export function toServiceLlm(config: LaneModelConfig): ServiceLlm {
   }
   if (config.provider === 'deepseek') return { ...base, provider_name: 'deepseek', base_url: config.base_url }
   return { ...base, provider_name: 'openai', base_url: config.base_url }
+}
+
+// generate_ai_report / generate_strategy_decision 这类工具走的是 Python 侧 ToolContext.resolve_llm_config，
+// 读的是 credentials 里这四个键——和 turn 级别的 llm 字段是两套独立的查找路径，工具内部要用模型必须这四个也传。
+// 现在放行的工具都不需要它，这里提前算好只是不想将来漏传；Python 侧没声明要这些键的工具不会去读。
+export function toServiceCredentialsLlm(llm: ServiceLlm): ServiceCredentials {
+  return { llm_provider: llm.provider_name, llm_api_key: llm.api_key, llm_model: llm.model, llm_base_url: llm.base_url }
 }
 
 // 服务地址只接受 https；本机开发才放行 http 回环。令牌是网关与服务之间的共享密钥，缺一不可。
