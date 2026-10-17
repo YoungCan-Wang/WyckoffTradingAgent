@@ -31,6 +31,37 @@ export {
 } from './deepseek'
 export type { DeepSeekReasoningLevel } from './deepseek'
 export {
+  DEEPSEEK_WEB_FETCH_MAX_CHARS,
+  DEEPSEEK_WEB_FETCH_PATH,
+  DEEPSEEK_WEB_FETCH_TIMEOUT_MS,
+  DEEPSEEK_WEB_FETCH_URL_MAX_CHARS,
+  DEEPSEEK_WEB_PRICE_PER_THOUSAND_CNY,
+  DEEPSEEK_WEB_QUERY_MAX_CHARS,
+  DEEPSEEK_WEB_SEARCH_PATH,
+  DEEPSEEK_WEB_SEARCH_TIMEOUT_MS,
+  deepseekWebFetch,
+  deepseekWebSearch,
+} from './deepseek-web'
+export type {
+  DeepSeekFetchResult,
+  DeepSeekFetchSuccess,
+  DeepSeekSearchHit,
+  DeepSeekSearchResult,
+  DeepSeekSearchSuccess,
+  DeepSeekWebClientOptions,
+  DeepSeekWebFailure,
+} from './deepseek-web'
+export {
+  buildDeepSeekWebTools,
+  DEEPSEEK_STANDALONE_FETCH_ENABLED,
+  DEEPSEEK_STANDALONE_WEB_GUIDANCE,
+  DEEPSEEK_WEB_SEARCH_DEFAULT_COUNT,
+  DEEPSEEK_WEB_SEARCH_TOOL_MAX_COUNT,
+  officialDeepSeekWebCredential,
+  standaloneDeepSeekWebEnabled,
+} from './deepseek-web-tools'
+export type { DeepSeekWebCredential, DeepSeekWebCredentialConfig } from './deepseek-web-tools'
+export {
   normalizeGeminiChunk,
   normalizeGeminiSseLine,
   normalizeGeminiStream,
