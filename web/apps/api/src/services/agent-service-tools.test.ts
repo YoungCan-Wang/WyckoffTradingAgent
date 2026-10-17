@@ -50,6 +50,7 @@ describe('buildAgentServiceTools gates', () => {
       'search_stock', 'view_portfolio', 'market_overview', 'market_history', 'stock_news', 'query_recommendations',
       'query_attribution', 'analyze_stock', 'screen_stocks', 'generate_ai_report', 'generate_strategy_decision',
       'intraday_analysis', 'plan_portfolio_update', 'execute_portfolio_update', 'run_python_research', 'web_search',
+      'deepseek_web_search', 'deepseek_web_fetch',
     ]
     expect(Object.keys(tools).filter((name) => readingRoom.includes(name))).toEqual([])
   })

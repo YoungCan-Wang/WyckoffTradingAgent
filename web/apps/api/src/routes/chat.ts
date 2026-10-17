@@ -55,6 +55,7 @@ import {
   continuationLimitMessage,
   decideAgentLoop,
 } from '../services/chat-agent-loop'
+import { readingRoomDeepSeekWeb } from '../services/chat-deepseek-web'
 import { patchDeepSeekApiBody, resolveChatLanguageModel } from '../services/chat-language-model'
 import { appendMarketWatchModelMessage, buildStableChatSystemPrompt } from '../services/chat-prompt-prefix'
 import { getToolApprovalSecret } from '../services/runtime-readiness'
@@ -503,12 +504,25 @@ function writeLlmUsage(
   writer.write({ type: 'data-llm-usage', data: metrics, transient: true } as never)
 }
 
-function buildChatSystemPrompt(transport: 'chat' | 'responses'): string {
+function buildChatSystemPrompt(transport: 'chat' | 'responses', standaloneGuidance = ''): string {
   // 观察篮行情不得拼进 system：价/fetchedAt 一变会打爆整段 prompt cache。
-  return buildStableChatSystemPrompt({
-    rolePrompt: WYCKOFF_CHAT_SYSTEM_PROMPT,
-    webSearchGuidance: transport === 'responses' ? WEB_SEARCH_GUIDANCE : '',
+  const responsesGuidance = transport === 'responses' ? WEB_SEARCH_GUIDANCE : ''
+  const webSearchGuidance = [responsesGuidance, standaloneGuidance].filter(Boolean).join('\n\n')
+  return buildStableChatSystemPrompt({ rolePrompt: WYCKOFF_CHAT_SYSTEM_PROMPT, webSearchGuidance })
+}
+
+function prepareReadingRoomAttempt(args: ChatResilienceArgs, config: ChatModelConfig) {
+  const resolved = resolveChatLanguageModel(config, createProviderFetch(config.reasoning_level))
+  const web = readingRoomDeepSeekWeb({
+    configs: args.configs,
+    providerToolNames: Object.keys(resolved.providerTools),
+    fetchImpl: args.deps.fetch,
   })
+  return {
+    resolved,
+    tools: { ...buildTools(args, config, resolved.nestedModel, resolved.providerTools), ...web.tools },
+    system: buildChatSystemPrompt(resolved.transport, web.guidance),
+  }
 }
 
 /** 当轮消息：历史前缀 + 挂在末尾的时间和行情。 */
@@ -541,15 +555,12 @@ async function runChatAttempt(args: ChatResilienceArgs, config: ChatModelConfig,
   let succeeded = false
   let outputStarted = false
   try {
-    const resolved = resolveChatLanguageModel(config, createProviderFetch(config.reasoning_level))
-    const tools = buildTools(args, config, resolved.nestedModel, resolved.providerTools)
+    const { resolved, tools, system } = prepareReadingRoomAttempt(args, config)
     let modelMessages = await buildTurnModelMessages(args, resolved, tools, sessionClockContext, marketWatchContext)
     let continuationCount = 0
     let totalSteps = 0
     let segmentIndex = 0
     let finalFinishReason = 'stop'
-
-    const system = buildChatSystemPrompt(resolved.transport)
 
     while (true) {
       const remainingSteps = CHAT_MAX_TOTAL_STEPS - totalSteps
