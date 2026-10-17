@@ -414,11 +414,26 @@ OpenAI provider 兼容 Qwen / Kimi / LongCat / Minimax 等 OpenAI API 格式端�
 `cli/service/server.py` 把 `AgentRuntime` 包成常驻 HTTP/SSE 服务，镜像见 `packaging/agent-service/Dockerfile`。
 设计前提：非会员继续走 Worker 上的 `/api/chat`（功能冻结），会员车道走这个服务，LLM key 由会员自带。
 
-**现状（2026-10-16）**：对话循环本身仍在 Worker（TS），这个服务只当会员的**远程工具后端**——Worker 按三道闸门
-（服务已配置、`AGENT_TOOLS_USERS` 白名单、有效会员）给会员额外接 3 个 Python 工具（`market_regime`、
-`wyckoff_diagnose`、`intraday_rescue_check`），已部署在 Cloud Run（东京，免费额度内，见下方部署示例），不是
-实验/未部署状态。把整个对话循环换成这个服务（而不只是当工具后端）仍未开始，卡点是会员能力对等——TS 车道有
-按输出结构定制的前端渲染，Python 工具输出结构不同，直接切换会让展示退化。
+**现状（2026-10-17）**：对话循环已经开始切：非会员和尚未放行的会员继续走 Worker 上的 `/api/chat`（TS，功能
+冻结）。`AGENT_TOOLS_USERS=*` 的工具后端车道继续给全体会员额外接 3 个 Python 工具（`market_regime`、
+`wyckoff_diagnose`、`intraday_rescue_check`）。另外，`/v1/ui-turns` 整个对话循环车道（`agent-lane.ts`）现在
+对 `AGENT_LANE_USERS` 里的账号生效——目前只放了开发者自己一个账号，验证用，不是全量；这个账号打开读盘室会
+直接用 `AgentRuntime` 跑整轮对话，云端工具白名单（`WYCKOFF_SERVICE_TOOLS`）已经从 3 个扩到 7 个：加了
+`get_market_overview`、`get_market_history`、`search_stock_by_name`、`analyze_stock`（后两个前端已有专用卡片，
+不用等前端改代码）。
+
+**这一轮放行时发现两个之前审计没覆盖到的坑**：
+- `screen_stocks` 在 `cli/tools.py` 标了 `background=True`，但 `cli/service/server.py` 从未接
+  `set_background_manager`，所以共用服务里它会掉进同步执行路径，吃 `tool_timeout_seconds` 默认的 60 秒——
+  全市场扫描基本不可能在这个时限内跑完，会稳定超时。所以这次**没有**把它加进 `WYCKOFF_SERVICE_TOOLS`；
+  真正放行前要么给这条服务接后台任务管理器，要么确认它能在 60 秒内完成。其余 `background=True` 工具
+  （`generate_ai_report`、`generate_strategy_decision`、`evaluate_recommendation_events`、`run_backtest`）
+  放行前也要先过一遍这同一个坑。
+- `search_stock_by_name` 冷启动、且请求没带 `tushare_token` 时，会经 `get_all_stocks()` 落到
+  `_fetch_stocks_akshare()` 这条路——Cloud Run 容器没有本机磁盘缓存，每次冷启动都会走到这里，而这条网络调用
+  在东京出口上会直接挂到 60 秒超时（不是快速失败）。已放行账号目前都配了 `tushare_token`，正常路径不会碰到
+  这条慢路；但往后扩大 `AGENT_LANE_USERS` 名单前，要先确认新账号都配了 `tushare_token`，或者给这条 akshare
+  兜底调用加一个短超时。
 
 - **两种部署形态，两者现在走同一条工具注册表构造路径**（`build_state` 的 `tools_factory`），只在并发与
   白名单校验上分叉：

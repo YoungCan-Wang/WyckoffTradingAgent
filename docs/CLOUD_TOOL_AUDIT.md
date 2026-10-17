@@ -56,9 +56,19 @@
 3. 建议的方向：由网关（它本来就能用用户令牌读 `user_settings`）把数据 key 和模型 key **按请求注入**，
    `get_credential` 先读请求级凭据，容器不碰 Supabase。这会改 `agents/tool_context.py`，桌面端、命令行、MCP
    都会受影响，需要单独的 PR 并先补测试。
-4. `search_stock_by_name` 只读一个市值缓存 JSON 文件和一个调试开关，内容不含用户数据，倾向放行。
+4. `search_stock_by_name` 只读一个市值缓存 JSON 文件和一个调试开关，内容不含用户数据，倾向放行。**2026-10-17
+   在 Cloud Run 实测补充**：这是指本机已有缓存的情况；容器冷启动没有磁盘缓存，`get_all_stocks()` 会落到
+   `_fetch_stocks_akshare()`，这条网络调用在没有 `tushare_token`（跳过 tushare 分支）时会直接挂到
+   `tool_timeout_seconds` 默认的 60 秒超时，不是快速失败。安全性结论不变（不涉及用户数据），但放行前要确认
+   调用方都配了 `tushare_token`，否则每次冷启动都会有一次 60 秒的卡顿。
 5. `market_regime` 内部会用环境变量里的模型凭据再发起一次模型调用；共用容器里没有这些环境变量，需要确认它在缺凭据
    时是优雅跳过而不是报错。
+6. **2026-10-17 新增**：`background=True` 的工具（`screen_stocks`、`generate_ai_report`、
+   `generate_strategy_decision`、`evaluate_recommendation_events`、`run_backtest`）在 `cli/tools.py` 里设计为
+   提交后台任务、立即返回。`cli/service/server.py` 从未调用 `set_background_manager`，所以这类工具在共用服务
+   里会退化成同步执行，吃 `tool_timeout_seconds` 默认 60 秒——全市场扫描等重任务基本不可能在这个时限内完成，
+   会稳定超时。放行这组工具前，要先给服务接后台任务管理器（或确认实际耗时在 60 秒内），不能只看本文档其余部分
+   的凭据/文件判定。
 
 ## 未验证
 
