@@ -257,6 +257,14 @@ def iter_turn_events(
     deadline = time.monotonic() + state.max_turn_seconds
     runtime = AgentRuntime(provider, tools, cancel_check=lambda: time.monotonic() >= deadline)
     for event in runtime.run_stream(history, CHAT_AGENT_SYSTEM_PROMPT):
+        if event.get("type") in ("tool_result", "tool_error"):
+            # 只记工具名、状态、耗时：不记参数、结果、用户 ID，和 Worker 侧的记录口径一致。
+            logger.info(
+                "tool call: name=%s status=%s elapsed_ms=%s",
+                event.get("name"),
+                event.get("status"),
+                event.get("elapsed_ms"),
+            )
         yield event
         if event.get("type") == "done" and event.get("text"):
             history.append({"role": "assistant", "content": event["text"]})
