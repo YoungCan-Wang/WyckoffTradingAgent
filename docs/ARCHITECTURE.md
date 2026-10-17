@@ -462,6 +462,17 @@ gcloud run deploy wyckoff-agent --image <镜像> --region asia-northeast1 --allo
 - 预算告警只通知不停服；创建预算要带 `--billing-project`。
 - 镜像必须是 linux/amd64。
 
+**现状（2026-10-17 起）**：上面这条命令只在**首次建服务**或要改并发/规格/环境变量这些服务级配置时手动跑。日常的"代码
+改了、要让 Cloud Run 跑上新版本"已经接进 `.github/workflows/agent_service_deploy.yml`：CI 成功后若本次提交的
+改动命中 `scripts/release_scope.py agent_service` 判定的路径（`agents/`、`cli/`、`core/`、`integrations/`、
+`tools/`、`utils/`、`workflows/`、`llmdoc/`、`config/`、`data/`、`packaging/agent-service/`、`pyproject.toml`、
+`uv.lock`），就会自动 build amd64 镜像、推到 Artifact Registry、`gcloud run deploy --image` 换版——**只换镜像，
+不带 `--set-env-vars`**，现网的 `AGENT_SERVICE_TOKEN`/`WYCKOFF_SERVICE_TOOLS` 等配置不会被这条流水线碰。鉴权走
+Workload Identity Federation（仓库是 public，不在 GitHub 存任何 GCP 长期密钥），`gcp-production` 这个 GitHub
+Environment 下的 `GCP_WORKLOAD_IDENTITY_PROVIDER`/`GCP_SERVICE_ACCOUNT` 两个 repo variable 是非密文的资源名，
+不是密钥本身。这块本来是手动的——2026-10-17 实测发现线上镜像落后 main 二十多个提交（#550~#554 这几轮改动
+都只碰了 Worker/测试/文档，没人记得再手动部署一次 Cloud Run），纯手动流程迟早会漏，所以补了这条流水线。
+
 协议（内部，浏览器不直连）：
 
 - `GET /healthz`
