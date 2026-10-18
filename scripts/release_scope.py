@@ -57,9 +57,17 @@ AGENT_SERVICE_FILES = {
 }
 
 
+def _normalize(path: str) -> str:
+    # str.lstrip("./") strips a *character set*, not a prefix: on ".github/..." it eats the
+    # leading dot too (-> "github/..."), which silently breaks exact-match entries like
+    # ".github/workflows/worker_deploy.yml". Strip only a literal "./" prefix instead.
+    stripped = path.strip()
+    return stripped[2:] if stripped.startswith("./") else stripped
+
+
 def affects_scope(scope: str, paths: Iterable[str]) -> bool:
     """Return whether at least one normalized repository path affects a scope."""
-    clean = {path.strip().lstrip("./") for path in paths if path.strip()}
+    clean = {_normalize(path) for path in paths if path.strip()}
     if scope == "pypi":
         return any(path in PYPI_FILES or path.startswith(PYPI_PREFIXES) for path in clean)
     if scope == "worker":
