@@ -33,6 +33,28 @@ WORKER_FILES = {
     "web/pnpm-lock.yaml",
     "web/pnpm-workspace.yaml",
 }
+# cli/service 这个 Agent Runtime HTTP 服务打进 Cloud Run 镜像（见 packaging/agent-service/
+# Dockerfile 的 COPY 清单）：比 PyPI 范围更宽（整个 config/、data/ 都带，而非只要 profiles/
+# market_universes 子目录），还依赖 uv.lock（PyPI 发布不看锁文件，容器要用它精确复现依赖）。
+AGENT_SERVICE_PREFIXES = (
+    "agents/",
+    "cli/",
+    "core/",
+    "integrations/",
+    "tools/",
+    "utils/",
+    "workflows/",
+    "llmdoc/",
+    "config/",
+    "data/",
+    "packaging/agent-service/",
+)
+AGENT_SERVICE_FILES = {
+    "pyproject.toml",
+    "uv.lock",
+    ".python-version",
+    ".github/workflows/agent_service_deploy.yml",
+}
 
 
 def affects_scope(scope: str, paths: Iterable[str]) -> bool:
@@ -42,12 +64,14 @@ def affects_scope(scope: str, paths: Iterable[str]) -> bool:
         return any(path in PYPI_FILES or path.startswith(PYPI_PREFIXES) for path in clean)
     if scope == "worker":
         return any(path in WORKER_FILES or path.startswith(WORKER_PREFIXES) for path in clean)
+    if scope == "agent_service":
+        return any(path in AGENT_SERVICE_FILES or path.startswith(AGENT_SERVICE_PREFIXES) for path in clean)
     raise ValueError(f"unknown release scope: {scope}")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("scope", choices=("pypi", "worker"))
+    parser.add_argument("scope", choices=("pypi", "worker", "agent_service"))
     parser.add_argument("paths_file")
     args = parser.parse_args()
     with open(args.paths_file, encoding="utf-8") as handle:
