@@ -40,3 +40,11 @@ def test_agent_service_scope_ignores_non_container_changes():
     assert not affects_scope("agent_service", ["desktop/src/main.js"])
     assert not affects_scope("agent_service", ["docs/ARCHITECTURE.md"])
     assert not affects_scope("agent_service", ["tests/core/test_analyzer.py"])
+
+
+def test_dotted_paths_keep_their_leading_dot():
+    # Regression: lstrip("./") strips a character set, not a prefix, so it used to eat the
+    # leading "." off dotfile directories and silently break these exact-match entries.
+    assert affects_scope("agent_service", [".github/workflows/agent_service_deploy.yml"])
+    assert affects_scope("worker", [".github/workflows/worker_deploy.yml"])
+    assert affects_scope("agent_service", ["./.python-version"])
