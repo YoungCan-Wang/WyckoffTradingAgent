@@ -73,6 +73,7 @@ A long-lived MCP process may keep its first-call principal in memory until resta
 but it must not clobber the desktop/CLI login on disk. Desktop/CLI
 `restore_session` follows the same compare-and-swap rule（中文：比较并交换 /
 写前核对身份）before saving refreshed tokens or clearing an invalid session,
+and before returning a pre-flight principal on transient network errors,
 because IPC workers can overlap `account` restore with `auth_logout` /
 `auth_login`. `auto_relogin` also re-checks stored email/password after the
 network sign-in and refuses to persist when logout cleared credentials or another
