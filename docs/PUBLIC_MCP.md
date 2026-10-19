@@ -70,7 +70,9 @@ Token refresh must not rewrite `~/.wyckoff/session.json` when that file is missi
 disk check and write run under the session lock (`merge_session_tokens_if_same_user`);
 a check-then-`save_session` outside that lock still races with desktop logout/switch.
 A long-lived MCP process may keep its first-call principal in memory until restart,
-but it must not clobber the desktop/CLI login on disk. Desktop/CLI
+but it must not clobber the desktop/CLI login on disk, and token-expiry
+`auto_relogin` must not rewrite that in-memory principal to a different
+`user_id` after a desktop account switch. Desktop/CLI
 `restore_session` follows the same compare-and-swap rule（中文：比较并交换 /
 写前核对身份）before saving refreshed tokens or clearing an invalid session,
 because IPC workers can overlap `account` restore with `auth_logout` /

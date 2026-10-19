@@ -280,6 +280,19 @@ def _relogin_and_create_client(tool_context: ToolContext | None):
     data = auto_relogin()
     if not data or tool_context is None:
         return None, "", ""
+    expected = str(tool_context.state.get("user_id") or "").strip()
+    new_user = str(data.get("user_id") or "").strip()
+    # Public MCP freezes the first-call principal in memory until restart.
+    # Desktop may have switched accounts afterward; adopting disk auto_relogin
+    # would silently turn Alice's MCP/agent session into Bob (portfolio writes
+    # and membership-gated reads). Disk CAS (#518) only protects session.json.
+    if expected and expected != new_user:
+        logger.warning(
+            "refusing auto_relogin principal swap: context user_id=%s signed-in=%s",
+            expected,
+            new_user or "<empty>",
+        )
+        return None, "", ""
     tool_context.state["user_id"] = data.get("user_id", tool_context.state.get("user_id", ""))
     tool_context.state["email"] = data.get("email", tool_context.state.get("email", ""))
     tool_context.state["access_token"] = data["access_token"]
