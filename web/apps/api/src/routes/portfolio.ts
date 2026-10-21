@@ -197,8 +197,17 @@ async function deleteRemovedPositions(
   codes: string[],
 ): Promise<string> {
   for (const code of codes) {
-    const result = await supabase.from('portfolio_positions').delete().eq('portfolio_id', portfolioId).eq('code', code)
+    // RLS 拒绝 DELETE 时常返回 [] 不报错；不看命中行会把「应删未删」当成全量保存成功。
+    const result = await supabase
+      .from('portfolio_positions')
+      .delete()
+      .eq('portfolio_id', portfolioId)
+      .eq('code', code)
+      .select('code')
     if (result.error) return result.error.message
+    if (!Array.isArray(result.data) || result.data.length === 0) {
+      return `删除持仓未命中: ${code}`
+    }
   }
   return ''
 }
