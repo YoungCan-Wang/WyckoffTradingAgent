@@ -20,16 +20,25 @@ def test_check_daily_run_exists_ignores_degraded_protection_orders(monkeypatch):
     ]
 
     class Query:
+        def __init__(self):
+            self.not_ = self
+
         def select(self, *_a, **_k):
             return self
 
         def eq(self, *_a, **_k):
             return self
 
+        def in_(self, *_a, **_k):
+            return self
+
         def order(self, *_a, **_k):
             return self
 
         def limit(self, *_a, **_k):
+            return self
+
+        def range(self, *_a, **_k):
             return self
 
         def execute(self):
@@ -52,16 +61,25 @@ def test_check_daily_run_exists_still_blocks_on_full_oms_with_matching_signature
     ]
 
     class Query:
+        def __init__(self):
+            self.not_ = self
+
         def select(self, *_a, **_k):
             return self
 
         def eq(self, *_a, **_k):
             return self
 
+        def in_(self, *_a, **_k):
+            return self
+
         def order(self, *_a, **_k):
             return self
 
         def limit(self, *_a, **_k):
+            return self
+
+        def range(self, *_a, **_k):
             return self
 
         def execute(self):
