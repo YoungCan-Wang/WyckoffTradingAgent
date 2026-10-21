@@ -1088,6 +1088,31 @@ def test_previous_funnel_scope_blocks_persistence_and_restores_environment(monke
     assert all(os.environ.get(key) == original for key in ("END_CALENDAR_DAY", "DAILY_JOB_ARTIFACTS_DIR"))
 
 
+def test_persist_shadow_lanes_disabled_by_default(monkeypatch):
+    """默认不写 review_shadow_lane_daily 表，只有显式 FUNNEL_PERSIST_SHADOW_LANES=1 开启。"""
+    monkeypatch.setenv("WYCKOFF_WRITE_CONTEXT", "server_job")
+    monkeypatch.delenv("FUNNEL_PERSIST_SHADOW_LANES", raising=False)
+
+    calls = []
+    monkeypatch.setattr(
+        "integrations.supabase_review_shadow_lane.save_review_shadow_lane_rows",
+        lambda rows: calls.append(rows),
+    )
+
+    from workflows import wyckoff_funnel
+
+    wyckoff_funnel._persist_shadow_lanes({"trade_date": "2026-09-01", "symbols": {}})
+    assert len(calls) == 0
+
+    monkeypatch.setenv("FUNNEL_PERSIST_SHADOW_LANES", "1")
+    monkeypatch.setattr(
+        "integrations.supabase_review_shadow_lane.build_lane_rows",
+        lambda _payload: [{"lane": "test"}],
+    )
+    wyckoff_funnel._persist_shadow_lanes({"trade_date": "2026-09-01", "symbols": {}})
+    assert len(calls) == 1
+
+
 def test_review_trace_declares_exactly_the_row_fields_it_writes() -> None:
     """头里的 row_fields 必须等于每行都真写了的那些键，声明不许骗人。
 

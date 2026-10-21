@@ -7,6 +7,7 @@ from workflows.db_maintenance import (
     RECOMMENDATION_KEEP_DATES,
     cleanup_recommendation_table,
     cleanup_recommendation_tracking,
+    cleanup_table,
 )
 
 
@@ -132,6 +133,17 @@ class TestCleanupRules:
         actual = {rule[0]: rule[2] for rule in CLEANUP_RULES}
         assert actual["signal_policy_shadow_runs"] >= 30
 
+    def test_tightened_retention_defaults(self):
+        """缩短留存窗口以降低存储成本，同时保证读窗覆盖。"""
+        actual = {rule[0]: rule[2] for rule in CLEANUP_RULES}
+        assert actual["review_shadow_lane_daily"] == 14
+        assert actual["theme_radar_snapshot"] == 14
+        assert actual["signal_policy_shadow_runs"] == 30
+        assert actual["market_signal_daily"] == 60
+        assert actual["external_seed_observations"] == 30
+        assert actual["concept_heat_history"] == 30
+        assert actual["signal_health_daily"] == 30
+
 
 def test_cleanup_recommendation_tracking_keeps_latest_distinct_dates():
     dates = [20260505, 20260503, 20260430, 20260425, 20260420]
@@ -185,3 +197,57 @@ def test_cleanup_recommendation_table_uses_requested_table():
     assert count is None
     assert [row["recommend_date"] for row in client.tables["recommendation_tracking_us"]] == [20260505, 20260504]
     assert client.rows == [{"recommend_date": 20260505, "code": 1}]
+
+
+def test_cleanup_table_retries_transient_failure_and_succeeds():
+    attempts = 0
+
+    class _FlakyTable:
+        def delete(self):
+            return self
+
+        def lt(self, _col, _val):
+            return self
+
+        def execute(self):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise ConnectionResetError("Remote disconnected")
+            return _Response(data=[])
+
+    class _FlakyClient:
+        def table(self, _name):
+            return _FlakyTable()
+
+    status, count = cleanup_table(_FlakyClient(), "daily_nav", "trade_date", 15, "iso_date", retry_delay=0.0)
+    assert status == "ok"
+    assert count is None
+    assert attempts == 2
+
+
+def test_cleanup_table_returns_error_when_retries_exhausted():
+    attempts = 0
+
+    class _BrokenTable:
+        def delete(self):
+            return self
+
+        def lt(self, _col, _val):
+            return self
+
+        def execute(self):
+            nonlocal attempts
+            attempts += 1
+            raise ConnectionResetError("Database unavailable")
+
+    class _BrokenClient:
+        def table(self, _name):
+            return _BrokenTable()
+
+    status, count = cleanup_table(
+        _BrokenClient(), "daily_nav", "trade_date", 15, "iso_date", max_retries=2, retry_delay=0.0
+    )
+    assert status.startswith("error: Database unavailable")
+    assert count is None
+    assert attempts == 3
