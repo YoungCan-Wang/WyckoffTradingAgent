@@ -25,7 +25,19 @@ from integrations.market_universe import load_hk_symbols, load_us_symbols
 logger = logging.getLogger(__name__)
 
 ProgressReporter = Callable[[str, str, float], None]
-_HIST_CANDIDATE_COLS = ["symbol", "date", "open", "high", "low", "close", "volume", "amount", "pct_chg"]
+_HIST_CANDIDATE_COLS = [
+    "symbol",
+    "date",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "amount",
+    "pct_chg",
+    "turnover",
+    "turnover_source",
+]
 
 
 @dataclass(frozen=True)
@@ -137,7 +149,7 @@ def process_hist_chunk(chunk: pd.DataFrame, symbols_filter: set[str] | None, out
     chunk = chunk.copy()
     chunk["date"] = pd.to_datetime(chunk["date"], errors="coerce").dt.date
     chunk = chunk.dropna(subset=["symbol", "date"])
-    for col in ["open", "high", "low", "close", "volume", "amount", "pct_chg"]:
+    for col in ["open", "high", "low", "close", "volume", "amount", "pct_chg", "turnover"]:
         if col in chunk.columns:
             chunk[col] = pd.to_numeric(chunk[col], errors="coerce")
     for sym, group in chunk.groupby("symbol", sort=False):

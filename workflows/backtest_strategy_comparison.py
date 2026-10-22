@@ -20,7 +20,7 @@ MAX_CASH_DRAWDOWN_PCT = 20.0
 _DIR_PATTERN = re.compile(
     r"backtest-strategy-"
     r"(?P<period>recent_2m|recent_6m|bull_2020|bear_2022|sideways_2023|volatile_2024|bull_2025|custom)-"
-    r"(?P<variant>[A-P])"
+    r"(?P<variant>live|KO_[A-Z_]+|[A-Z])"
     r"(?:-\d+)?$"
 )
 
@@ -98,17 +98,21 @@ def load_strategy_comparison_rows(
 def build_strategy_comparison(
     rows: list[StrategyComparisonRow],
     ignored_dirs: list[str] | None = None,
+    *,
+    reference_variant: str = "A",
+    required_variants: tuple[str, ...] = DEFAULT_COMPARISON_VARIANTS,
+    required_periods: tuple[str, ...] = DEFAULT_COMPARISON_PERIODS,
 ) -> dict[str, Any]:
     by_variant = _by_variant(rows)
     available = {(row.period, row.variant) for row in rows}
-    required = {(period, variant) for period in DEFAULT_COMPARISON_PERIODS for variant in DEFAULT_COMPARISON_VARIANTS}
+    required = {(period, variant) for period in required_periods for variant in required_variants}
     evaluations = {}
     for variant, values in by_variant.items():
-        reference = {"M": "A", "P": "M"}.get(variant, "A")
+        reference = {"M": "A", "P": "M"}.get(variant, "A") if reference_variant == "A" else reference_variant
         evaluations[variant] = _evaluate_variant(variant, values, by_variant.get(reference, []), reference)
     return {
         "status": "ready" if required.issubset(available) else "incomplete",
-        "baseline": "A",
+        "baseline": reference_variant,
         "missing_cells": [f"{period}/{variant}" for period, variant in sorted(required - available)],
         "ignored_dirs": sorted(ignored_dirs or []),
         "cost_basis": _cost_basis(rows),
@@ -116,18 +120,20 @@ def build_strategy_comparison(
         "rows": [_row_payload(row) for row in sorted(rows, key=lambda row: (row.period, row.variant))],
         "evaluations": evaluations,
         "walk_forward": _walk_forward(rows),
-        "loss_attribution": _loss_attribution(rows),
-        "scope": "默认矩阵评估 M 相对 A 的弱水温缩仓，以及 P 相对 M 的 NEUTRAL Spring 再缩仓。",
+        "loss_attribution": _loss_attribution(rows, required_variants, required_periods),
+        "scope": "默认矩阵评估 M 相对 A 的弱水温缩仓，以及 P 相对 M 的 NEUTRAL Spring 再缩仓。"
+        if reference_variant == "A"
+        else f"以{reference_variant}为参照的独立单通道回放；仅供研究，不修改生产通道。",
         "decision_rule": "全部周期现金收益为正、绝对回撤不超过20%，且真实改变交易、胜出过半、平均增量为正、回撤恶化不超过2个百分点。",
     }
 
 
 def render_strategy_comparison(report: dict[str, Any]) -> str:
     lines = [
-        "# 策略 A/M/P A股实证对比",
+        "# 策略 A/M/P A股实证对比" if report.get("baseline", "A") == "A" else "# live 单通道消融对比",
         "",
-        "固定同一数据快照、确认口径和组合。A/M/P 共用固定退出。",
-        "M 验证弱水温信号缩仓；P 在 M 上验证 NEUTRAL Spring 再缩仓；全部为研究策略。",
+        "固定同一数据快照、确认口径和组合；改变候选集的组别独立回放，不共用信号台账。",
+        str(report.get("scope") or "全部为研究策略。"),
         "",
         "| 周期 | 组别 | 现金收益 | 现金回撤 | 成交 | 胜率 | 平均单笔 | 夏普 |",
         "|---|---|---:|---:|---:|---:|---:|---:|",
@@ -153,7 +159,7 @@ def render_strategy_comparison(report: dict[str, Any]) -> str:
             "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
         ]
     )
-    for variant in sorted(key for key in (report.get("evaluations") or {}) if key != "A"):
+    for variant in sorted(key for key in (report.get("evaluations") or {}) if key != report.get("baseline", "A")):
         item = (report.get("evaluations") or {}).get(variant, {})
         lines.append(
             f"| {variant} | {item.get('reference_variant', 'A')} | {item.get('common_periods', 0)} | "
@@ -182,8 +188,8 @@ def _evaluate_variant(
     baseline_rows: list[StrategyComparisonRow],
     reference_variant: str,
 ) -> dict[str, Any]:
-    if variant == "A":
-        return {"status": "baseline", "reference_variant": "A", "common_periods": len(rows), "wins": 0}
+    if variant == reference_variant:
+        return {"status": "baseline", "reference_variant": reference_variant, "common_periods": len(rows), "wins": 0}
     baseline = {row.period: row for row in baseline_rows if row.cash_return is not None}
     pairs = [(baseline[row.period], row) for row in rows if row.period in baseline and row.cash_return is not None]
     deltas = [float(row.cash_return) - float(base.cash_return) for base, row in pairs]
@@ -220,6 +226,7 @@ def _evaluate_variant(
         "mean_return_delta": mean(deltas) if deltas else None,
         "max_drawdown_worsening": max(drawdown_worsening, default=None),
         "marginal": _marginal_trades(rows, baseline_rows),
+        "marginal_by_period": {row.period: _marginal_trades([row], [base]) for base, row in pairs},
     }
 
 
@@ -266,7 +273,7 @@ def _marginal_lines(evaluations: dict[str, Any]) -> list[str]:
         "| 组别 | 参照 | 共同 | 仅参照 n / 均收 / 胜率 | 仅本组 n / 均收 / 胜率 |",
         "|---|---|---:|---:|---:|",
     ]
-    for variant in sorted(key for key in evaluations if key != "A"):
+    for variant in sorted(key for key in evaluations if evaluations[key].get("status") != "baseline"):
         item = evaluations.get(variant, {})
         marginal = item.get("marginal") or {}
         lines.append(
@@ -337,10 +344,12 @@ def _walk_forward_lines(result: dict[str, Any]) -> list[str]:
     return lines
 
 
-def _loss_attribution(rows: list[StrategyComparisonRow]) -> dict[str, Any]:
+def _loss_attribution(
+    rows: list[StrategyComparisonRow], variants=DEFAULT_COMPARISON_VARIANTS, periods=DEFAULT_COMPARISON_PERIODS
+) -> dict[str, Any]:
     result = {}
-    for variant in DEFAULT_COMPARISON_VARIANTS:
-        selected = [row for row in rows if row.variant == variant and row.period in DEFAULT_COMPARISON_PERIODS]
+    for variant in variants:
+        selected = [row for row in rows if row.variant == variant and row.period in periods]
         trades = [trade for row in selected for trade in row.executed_trades]
         result[variant] = {
             "source": "executed_cash_trades",

@@ -23,6 +23,7 @@ def test_write_backtest_artifacts_persists_private_frames(tmp_path) -> None:
             "_wbt_pairs_df": pd.DataFrame([{"pair": "p1"}]),
             "selection_coverage": [{"signal_date": "2026-01-02", "mainline_entry_codes": ["000001"]}],
             "mainline_selection_evaluated": False,
+            "runtime_contract": {"schema": "backtest_runtime_v1", "buy_block_regimes": ["NEUTRAL"]},
         }
     )
 
@@ -44,6 +45,9 @@ def test_write_backtest_artifacts_persists_private_frames(tmp_path) -> None:
     coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
     assert coverage["selection_coverage"][0]["mainline_entry_codes"] == ["000001"]
     assert coverage["mainline_selection_evaluated"] is False
+    contract_path = tmp_path / f"runtime_contract_{stamp}.json"
+    assert contract_path in result.extra_paths
+    assert json.loads(contract_path.read_text())["buy_block_regimes"] == ["NEUTRAL"]
 
 
 def test_write_suite_summary_renders_rows_and_escapes_errors(tmp_path) -> None:
