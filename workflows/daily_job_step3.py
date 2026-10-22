@@ -64,7 +64,10 @@ def run_step3_stage(
     if step3_ok and report_text:
         parsed = parse_step3_springboards(report_text, symbols_info, cfg.logs_path)
         if parsed is None:
-            log_line("Step3 批量研报: 起跳板解析失败，跳过 AI 标记以保留库内既有 is_ai_recommended", cfg.logs_path)
+            log_line(
+                "Step3 批量研报: 起跳板未权威解析，跳过 AI 标记以保留库内既有 is_ai_recommended",
+                cfg.logs_path,
+            )
         else:
             springboard_codes, springboard_updates = parsed
             ai_mark_authoritative = True
@@ -191,6 +194,7 @@ def parse_step3_springboards(
     try:
         codes = extract_operation_pool_codes(report=report_text, allowed_codes=allowed_codes)
         updates = extract_operation_pool_springboards(report=report_text, allowed_codes=allowed_codes)
+        extracted = list(codes)
         codes, blocked_unconfirmed = filter_confirmed_step3_codes(codes, symbols_info)
         confirmed_set = set(codes)
         updates = {code: fields for code, fields in updates.items() if code in confirmed_set}
@@ -200,6 +204,16 @@ def parse_step3_springboards(
                 f"{len(blocked_unconfirmed)}只 ({', '.join(blocked_unconfirmed[:8])})",
                 logs_path,
             )
+        # Same-day re-runs often lose signal_status=confirmed on names already
+        # confirmed earlier (pending row left active statuses). The model can still
+        # list them on the springboard; the filter then empties the pool. Treating
+        # that as authoritative [] would wipe-all is_ai_recommended for the day.
+        if extracted and not codes and blocked_unconfirmed:
+            log_line(
+                "Step3 批量研报: 起跳板全部被未确认拦截，跳过 AI 标记以保留库内 is_ai_recommended",
+                logs_path,
+            )
+            return None
         return codes, updates
     except Exception as e:
         log_line(f"Step3 批量研报: 起跳板解析失败，已降级为空。err={e}", logs_path)

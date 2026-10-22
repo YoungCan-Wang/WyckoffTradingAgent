@@ -82,3 +82,57 @@ def test_parse_step3_springboards_returns_none_on_failure(monkeypatch):
 
     monkeypatch.setattr("tools.report_parser.extract_operation_pool_codes", _boom)
     assert parse_step3_springboards("report", [{"code": "600519"}], None) is None
+
+
+def test_parse_step3_springboards_returns_none_when_all_extracted_codes_unconfirmed(monkeypatch):
+    """Same-day re-run: springboard codes extracted but none still confirmed.
+
+    Pending rows already left active statuses after the morning confirm, so
+    afternoon Step3 inputs often lack signal_status=confirmed. filter_confirmed
+    then drops every extracted code. That must not become authoritative [] and
+    wipe the morning is_ai_recommended pool.
+    """
+    monkeypatch.setattr(
+        "tools.report_parser.extract_operation_pool_codes",
+        lambda **_kwargs: ["600519", "000001"],
+    )
+    monkeypatch.setattr(
+        "tools.report_parser.extract_operation_pool_springboards",
+        lambda **_kwargs: {"600519": {"springboard_combo": "A+B"}},
+    )
+    symbols = [
+        {"code": "600519", "tag": "SOS", "selection_source": "step2_selected_for_ai"},
+        {"code": "000001", "tag": "LPS", "selection_source": "step2_selected_for_ai"},
+    ]
+    assert parse_step3_springboards("report", symbols, None) is None
+
+
+def test_parse_step3_springboards_empty_section_stays_authoritative_empty(monkeypatch):
+    """Model truly emitted no springboard codes → authoritative empty pool."""
+    monkeypatch.setattr("tools.report_parser.extract_operation_pool_codes", lambda **_kwargs: [])
+    monkeypatch.setattr("tools.report_parser.extract_operation_pool_springboards", lambda **_kwargs: {})
+    assert parse_step3_springboards("report", [{"code": "600519", "signal_status": "confirmed"}], None) == (
+        [],
+        {},
+    )
+
+
+def test_parse_step3_springboards_keeps_confirmed_subset(monkeypatch):
+    monkeypatch.setattr(
+        "tools.report_parser.extract_operation_pool_codes",
+        lambda **_kwargs: ["600519", "000001"],
+    )
+    monkeypatch.setattr(
+        "tools.report_parser.extract_operation_pool_springboards",
+        lambda **_kwargs: {
+            "600519": {"springboard_combo": "A+B"},
+            "000001": {"springboard_combo": "A+C"},
+        },
+    )
+    symbols = [
+        {"code": "600519", "signal_status": "confirmed"},
+        {"code": "000001", "tag": "SOS", "selection_source": "step2_selected_for_ai"},
+    ]
+    codes, updates = parse_step3_springboards("report", symbols, None)
+    assert codes == ["600519"]
+    assert set(updates) == {"600519"}
