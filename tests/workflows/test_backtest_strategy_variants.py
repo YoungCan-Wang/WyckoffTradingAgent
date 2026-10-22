@@ -34,9 +34,13 @@ def test_strategy_variants_isolate_each_research_switch() -> None:
     assert strategy_variant_overrides("R")["enable_layer3"] is False
     assert strategy_variant_overrides("R")["dist_upthrust_enabled"] is True
     assert strategy_variant_overrides("R")["lps_creek_confirmation_enabled"] is True
+    assert strategy_variant_overrides("S")["lps_use_fib_zone"] is True
+    assert strategy_variant_entry_policy("S").blocked_confirmed_signals == ("evr",)
+    assert strategy_variant_entry_policy("S").entry_weight_multipliers[0] == ("NEUTRAL", "lps", 1.5)
     assert strategy_variants_share_signal_ledger(["A", "M", "P"]) is True
     assert strategy_variants_share_signal_ledger(["A", "F"]) is False
     assert strategy_variants_share_signal_ledger(["A", "I"]) is False
+    assert strategy_variants_share_signal_ledger(["A", "S"]) is False
 
 
 def test_live_variant_preserves_production_configuration() -> None:
