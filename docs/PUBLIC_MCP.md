@@ -76,7 +76,10 @@ but it must not clobber the desktop/CLI login on disk. Desktop/CLI
 because IPC workers can overlap `account` restore with `auth_logout` /
 `auth_login`. `auto_relogin` also re-checks stored email/password after the
 network sign-in and refuses to persist when logout cleared credentials or another
-account logged in mid-flight.
+account logged in mid-flight. Explicit `login()` claims a `login_attempt_id` in
+`wyckoff.json` before sign-in and refuses to persist when logout (or a newer
+login) cleared/replaced that marker mid-flight — otherwise a slow IPC
+`auth_login` worker can rewrite `session.json` after the user already logged out.
 
 `update_portfolio` and `record_trade_fill` are denied by default, before the domain
 backend is loaded. This version also guards the mutating actions of
