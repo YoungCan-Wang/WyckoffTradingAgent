@@ -258,6 +258,20 @@ B 组衡量 Upthrust 当日对新候选的 veto 价值；所有组的持仓退�
 `backtest-strategy-<period>-<variant>/` 命名的产物目录列为已忽略。
 回测还会跳过不参与候选选择和成交计算的 Leader Radar 展示行；线上漏斗仍正常生成该诊断。
 
+### 闸门基线（随网格固定运行）
+
+生产闸门 `STEP4_BUY_BLOCK_REGIMES` ∪ `EXECUTE_BLOCK_NEW_BUY_REGIMES` 再减去 `STEP4_BUY_ALLOW_REGIMES`
+（BEAR_REBOUND）的净效果是 RISK_ON / NEUTRAL 一律禁买，所以参数格里从来没有牛市主升段的成交样本。
+`gate_baseline` 对每个活动周期各跑 `--execution-regime-gate live` 与 `off` 两片（退出固定 15 日 / -8% / +18%，
+等额四仓），`off` 组回答「确认信号本身在被拦掉的水温里赚不赚钱」。闸门在信号台账阶段生效，两片各自独立算
+台账，不复用参数格台账，也不受 dispatch 的 `execution_regime_gate` 输入影响。
+
+`gate_baseline_report.md/json` 的协议事先固定，不随结果调整：每笔 `ret_pct`（已含买卖各 0.5% 摩擦）减去同
+持有窗口的上证与创业板指涨跌得到两列超额（回测 `trades_*.csv` 为此新增 `bench_main_ret_pct` /
+`bench_smallcap_ret_pct`）；均收与超额都给 bootstrap 95% CI；去掉收益最高 1/3/5 笔后的均收暴露右尾依赖；
+live/off 按 `signal_date+code` 配对，闸门拦掉的「仅 off」成交按水温单列。只有两个基准的 CI 都不含 0 且同号
+才记正/负超额，六周期里不显著或负超额 ≥ 4 即判该组无跨周期超额。该报告是研究对照，不改变生产闸门。
+
 `tradeable_l4` 不再按 Trend/Accum 固定配额截断候选：形态通过统一损失护栏后进入质量池，最终按质量排序，最多送审 8 只且同一行业最多 2 只。CAUTION 下未确认 launchpad 只观察；
 其它可交易水温最多保留一个 launchpad 席位，并先给 Spring/LPS/SOS、主线和其它非 launchpad 候选留出位置。
 

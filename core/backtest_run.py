@@ -17,6 +17,7 @@ from core.backtest_replay import (
     replay_backtest,
     replay_signal_ledger,
 )
+from core.backtest_trade_benchmark import attach_benchmark_returns
 from core.hk_boards import apply_hk_funnel_cfg
 from core.theme_activity import build_theme_member_index
 from core.wyckoff_engine import FunnelConfig
@@ -91,7 +92,9 @@ def execute_backtest_run(
             name_map=data.name_map,
             config=replay_config,
         )
-    trades_df = pd.DataFrame([record.__dict__ for record in replay.records])
+    trades_df = attach_benchmark_returns(
+        pd.DataFrame([record.__dict__ for record in replay.records]), data.bench_df, data.smallcap_bench_df
+    )
     summary = _build_run_summary(context, data, config, replay, trades_df)
     summary = enrich_backtest_summary(
         summary,
