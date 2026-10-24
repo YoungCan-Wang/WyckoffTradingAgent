@@ -82,3 +82,57 @@ def test_parse_step3_springboards_returns_none_on_failure(monkeypatch):
 
     monkeypatch.setattr("tools.report_parser.extract_operation_pool_codes", _boom)
     assert parse_step3_springboards("report", [{"code": "600519"}], None) is None
+
+
+def test_parse_step3_springboards_empty_input_is_not_authoritative(monkeypatch):
+    """Hard-defense / allow_ai_review=False sends zero symbols into Step3.
+
+    The empty status report still says 处于起跳板/- 无, and extract short-circuits
+    to [] when allowed_codes is empty. That must not become authoritative [] and
+    wipe same-day is_ai_recommended from a morning success.
+    """
+    calls: list[object] = []
+
+    def _extract(**_kwargs):
+        calls.append("extract")
+        return []
+
+    monkeypatch.setattr("tools.report_parser.extract_operation_pool_codes", _extract)
+    monkeypatch.setattr("tools.report_parser.extract_operation_pool_springboards", lambda **_kwargs: {})
+    empty_report = (
+        "# 🏛️ Alpha 投委会机密电报：威科夫盘面审判\n\n"
+        "> ⚪ **本轮未执行三阵营模型审判**：上游实际送入 Step3 的候选为 0。\n\n"
+        "## 🏹 处于起跳板\n"
+        "- 无（未执行模型审判，不表示任何风险结论）"
+    )
+    assert parse_step3_springboards(empty_report, [], None) is None
+    assert parse_step3_springboards(empty_report, [{"code": ""}], None) is None
+    assert calls == []
+
+
+def test_run_step3_stage_empty_input_does_not_authoritative_mark():
+    from workflows.daily_job_step3 import run_step3_stage
+
+    class _Cfg:
+        logs_path = None
+        webhook = ""
+        api_key = "k"
+        model = "m"
+        provider = "p"
+        llm_base_url = ""
+        wecom_webhook = ""
+        dingtalk_webhook = ""
+
+    def fake_run_step3(symbols_info, *_args, **_kwargs):
+        assert symbols_info == []
+        return True, "ok", "# 空研报\n## 🏹 处于起跳板\n- 无"
+
+    result = run_step3_stage(
+        symbols_info=[],
+        benchmark_context={"regime": "CRASH"},
+        run_step3=fake_run_step3,
+        cfg=_Cfg(),
+    )
+    assert result.summary_item["ok"] is True
+    assert result.ai_mark_authoritative is False
+    assert result.springboard_codes == []

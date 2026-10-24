@@ -187,7 +187,19 @@ def parse_step3_springboards(
     """
     from tools.report_parser import extract_operation_pool_codes, extract_operation_pool_springboards
 
-    allowed_codes = [str(item.get("code", "")).strip() for item in symbols_info if isinstance(item, dict)]
+    allowed_codes = [
+        code for item in symbols_info if isinstance(item, dict) for code in [str(item.get("code", "")).strip()] if code
+    ]
+    # No Step3 input (e.g. observe_only / allow_ai_review=False → empty
+    # step3_symbols_info) still produces an ok empty report that says the model
+    # was not run. extract_operation_pool_codes([]) short-circuits to [] and
+    # used to look like an authoritative empty pool, wiping same-day AI marks.
+    if not allowed_codes:
+        log_line(
+            "Step3 批量研报: 无输入候选，跳过 AI 标记以保留库内 is_ai_recommended",
+            logs_path,
+        )
+        return None
     try:
         codes = extract_operation_pool_codes(report=report_text, allowed_codes=allowed_codes)
         updates = extract_operation_pool_springboards(report=report_text, allowed_codes=allowed_codes)
