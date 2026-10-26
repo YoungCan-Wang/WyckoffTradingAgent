@@ -344,9 +344,39 @@ def test_rs_strategy_cools_down_reentry_for_hold_days() -> None:
     result = _result()._replace(triggers={"RS2": [("strong", 10.0), ("mid", 5.0)]})
     ctx = replay_mod._DayContext(5, date(2026, 1, 6), date(2026, 1, 7), {}, {}, FunnelConfig(), result, "NEUTRAL")
 
-    assert replay_mod._select_rs_codes(ctx, config, {"strong": 3}).codes == ["mid"]
-    assert replay_mod._select_rs_codes(ctx, config, {"strong": 2}).codes == ["strong"]
-    assert replay_mod._select_rs_codes(ctx, config, {"strong": 3, "mid": 4}) is None
+    assert replay_mod._select_control_codes(ctx, config, {"strong": 3}).codes == ["mid"]
+    assert replay_mod._select_control_codes(ctx, config, {"strong": 2}).codes == ["strong"]
+    assert replay_mod._select_control_codes(ctx, config, {"strong": 3, "mid": 4}) is None
+
+
+def test_random_strategy_trades_seeded_pick_through_same_path(monkeypatch) -> None:
+    monkeypatch.setattr("core.backtest_replay.calc_market_breadth", lambda _df_map: {})
+    monkeypatch.setattr(
+        "core.backtest_replay.analyze_benchmark_and_tune_cfg", lambda *_args, **_kwargs: {"regime": "NEUTRAL"}
+    )
+    monkeypatch.setattr("core.backtest_replay.run_funnel", lambda **_kwargs: pytest.fail("random 对照不得跑漏斗"))
+    cfg = FunnelConfig(trading_days=3)
+    cfg.ma_long = 2
+    cfg.amount_avg_window = 2
+    kwargs = dict(
+        all_df_map={"strong": _rs_hist([10, 10, 13, 13, 13]), "weak": _rs_hist([10, 10, 10.5, 10.5, 10.5])},
+        bench_df=_hist(),
+        trade_dates=[date(2026, 1, day) for day in range(1, 6)],
+        name_map={},
+        market_cap_map={},
+        sector_map={},
+        base_cfg=cfg,
+    )
+    first = replay_backtest(**kwargs, config=replace(_config(), selection_strategy="random", control_seed=3))
+    again = replay_backtest(**kwargs, config=replace(_config(), selection_strategy="random", control_seed=3))
+
+    assert first.signal_days == 2
+    assert [(record.code, record.trigger, record.track) for record in first.records] == [
+        (record.code, "RANDOM", "random") for record in again.records
+    ]
+    assert first.records and first.records[0].code in {"strong", "weak"}
+    assert [day["selected_after_gate"] for day in first.selection_coverage] == [["weak"], ["strong"]]
+    assert first.selection_coverage[-1]["layer1_symbols"] == 2
 
 
 def test_rs_strategy_obeys_live_execution_gate(monkeypatch) -> None:

@@ -81,6 +81,7 @@ class BacktestRunInput:
     signal_weight_mode: str = ""
     selection_strategy: str = "wyckoff"
     rs_window: int = 60
+    control_seed: int = 0
 
 
 @dataclass(frozen=True)
@@ -207,10 +208,10 @@ def _validate_modes(
 
 def _validate_selection_strategy(params: BacktestRunInput) -> None:
     strategy = str(params.selection_strategy or "wyckoff").strip().lower()
-    if strategy not in {"wyckoff", "rs"}:
-        raise ValueError("selection_strategy 必须是 wyckoff / rs")
-    if strategy == "rs" and int(params.top_n) < 1:
-        raise ValueError("selection_strategy=rs 时 top_n 必须 >= 1（RS 基线按排序取前 N，不能不截断）")
+    if strategy not in {"wyckoff", "rs", "random"}:
+        raise ValueError("selection_strategy 必须是 wyckoff / rs / random")
+    if strategy != "wyckoff" and int(params.top_n) < 1:
+        raise ValueError(f"selection_strategy={strategy} 时 top_n 必须 >= 1（对照组按排序取前 N，不能不截断）")
     if int(params.rs_window) < 5:
         raise ValueError("rs_window 必须 >= 5")
 
@@ -340,6 +341,7 @@ def _replay_config(
         a_share_entry_research=params.a_share_entry_research,
         selection_strategy=str(params.selection_strategy or "wyckoff").strip().lower(),
         rs_window=int(params.rs_window),
+        control_seed=int(params.control_seed),
     )
 
 

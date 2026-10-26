@@ -268,6 +268,7 @@ def request_from_args(args, start_dt, end_dt, hold_days: int) -> BacktestWorkflo
         portfolio_styles=args.portfolio_styles,
         selection_strategy=getattr(args, "selection_strategy", "wyckoff"),
         rs_window=int(getattr(args, "rs_window", 60)),
+        control_seed=int(getattr(args, "control_seed", 0)),
     )
 
 

@@ -10,14 +10,19 @@ from workflows.backtest_gate_baseline import (
     render_gate_baseline,
 )
 
-_LIVE_TRADES = [("2025-03-03", "000001", "CAUTION", -3.0, 1.0, 2.0)]
+_LIVE_TRADES = [("2025-03-03", "000001", "CAUTION", -3.0, 1.0, 2.0, "stop_loss")]
 _OFF_TRADES = [
-    ("2025-03-03", "000001", "CAUTION", -3.0, 1.0, 2.0),
-    ("2025-03-04", "000002", "RISK_ON", 8.0, 1.0, 1.5),
-    ("2025-03-05", "000003", "RISK_ON", 6.0, 0.5, 1.0),
-    ("2025-03-06", "000004", "NEUTRAL", -1.0, 0.0, 0.5),
+    ("2025-03-03", "000001", "CAUTION", -3.0, 1.0, 2.0, "stop_loss"),
+    ("2025-03-04", "000002", "RISK_ON", 8.0, 1.0, 1.5, "take_profit"),
+    ("2025-03-05", "000003", "RISK_ON", 6.0, 0.5, 1.0, "time_exit"),
+    ("2025-03-06", "000004", "NEUTRAL", -1.0, 0.0, 0.5, "time_exit"),
 ]
-_RS_TRADES = [(f"2025-03-{day:02d}", f"60{day:04d}", "RISK_ON", 12.0 + day * 0.1, 1.0, 1.5) for day in range(1, 31)]
+_RS_TRADES = [
+    (f"2025-03-{day:02d}", f"60{day:04d}", "RISK_ON", 12.0 + day * 0.1, 1.0, 1.5, "take_profit") for day in range(1, 31)
+]
+_RANDOM_TRADES = [
+    (f"2025-03-{day:02d}", f"30{day:04d}", "NEUTRAL", -4.0 - day * 0.1, 1.0, 1.5, "stop_loss") for day in range(1, 31)
+]
 
 
 def _write_cell(
@@ -47,7 +52,7 @@ def _write_cell(
         ),
         encoding="utf-8",
     )
-    lines = ["signal_date,code,regime,ret_pct,bench_main_ret_pct,bench_smallcap_ret_pct"]
+    lines = ["signal_date,code,regime,ret_pct,bench_main_ret_pct,bench_smallcap_ret_pct,exit_reason"]
     lines.extend(",".join(str(value) for value in trade) for trade in trades)
     (target / "trades_fixture.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -58,11 +63,13 @@ def test_gate_baseline_pairs_live_and_off_and_splits_marginal_trades_by_regime(t
         _write_cell(tmp_path, period, "off", _OFF_TRADES, strategy="wyckoff")
         _write_cell(tmp_path, period, "live", _RS_TRADES, strategy="rs")
         _write_cell(tmp_path, period, "off", _RS_TRADES, strategy="rs")
+        _write_cell(tmp_path, period, "live", _RANDOM_TRADES, strategy="random")
+        _write_cell(tmp_path, period, "off", _RANDOM_TRADES, strategy="random")
 
     rows = load_gate_baseline_rows(tmp_path)
     report = build_gate_baseline(rows)
 
-    assert len(rows) == 24
+    assert len(rows) == 36
     assert report["status"] == "ready"
     off_cell = next(
         cell
@@ -75,6 +82,7 @@ def test_gate_baseline_pairs_live_and_off_and_splits_marginal_trades_by_regime(t
     assert off_cell["excess_smallcap"]["beat_rate"] == 50.0
     assert off_cell["tail"]["drop_1"] == 2.0 / 3.0
     assert off_cell["cash_return"] == 27.09
+    assert off_cell["exit_reasons"] == {"stop_loss": 25.0, "take_profit": 25.0, "time_exit": 50.0}
     marginal = report["marginal"]["wyckoff"]["bull_2025"]
     assert marginal["common"]["trades"] == 1
     assert marginal["live_only"]["trades"] == 0
@@ -88,13 +96,15 @@ def test_gate_baseline_pairs_live_and_off_and_splits_marginal_trades_by_regime(t
     assert report["verdict"]["wyckoff"]["live"]["periods"] == len(BASELINE_PERIODS)
     assert report["verdict"]["rs"]["off"]["status"] == "review"
     contrast = report["strategy_contrast"]["off"]
-    assert contrast["status"] == "wyckoff_below_rs"
+    assert contrast["status"] == {"rs": "wyckoff_below_rs", "random": "wyckoff_above_random"}
     assert contrast["pooled"]["rs"]["signal"] == "positive"
+    assert contrast["pooled"]["random"]["signal"] == "negative"
     assert contrast["rows"][0]["wyckoff"]["trades"] == 4
     markdown = render_gate_baseline(report)
     assert "wyckoff 仅 off 边际成交按水温" in markdown
     assert "| RISK_ON | 12 |" in markdown
-    assert "### 闸门 off → wyckoff_below_rs" in markdown
+    assert "### 闸门 off → vs rs: wyckoff_below_rs；vs random: wyckoff_above_random" in markdown
+    assert "| 25% / 25% / 50% |" in markdown
 
 
 def test_gate_baseline_reports_missing_cells_and_ignored_dirs(tmp_path: Path) -> None:
@@ -110,10 +120,10 @@ def test_gate_baseline_reports_missing_cells_and_ignored_dirs(tmp_path: Path) ->
     assert "wyckoff/bull_2025/live" in report["missing_cells"]
     assert "rs/bull_2020/off" in report["missing_cells"]
     assert report["ignored_dirs"] == ["backtest-grid-bull_2025-h15-sl8-tp18-tr0"]
-    assert report["marginal"] == {"wyckoff": {}, "rs": {}}
+    assert report["marginal"] == {"wyckoff": {}, "rs": {}, "random": {}}
     assert report["verdict"]["wyckoff"]["off"]["status"] == "review"
     assert report["verdict"]["rs"]["off"]["status"] == "insufficient"
-    assert report["strategy_contrast"]["off"]["status"] == "insufficient"
+    assert report["strategy_contrast"]["off"]["status"] == {"rs": "insufficient", "random": "insufficient"}
     assert "证据不完整" in render_gate_baseline(report)
 
 
@@ -129,11 +139,11 @@ def test_contrast_status_requires_both_benchmarks_to_separate_in_the_same_direct
     def pooled(wyckoff_main, wyckoff_small, rs_main, rs_small):
         return {
             "wyckoff": {"off": {"excess_main": {"ci95": wyckoff_main}, "excess_smallcap": {"ci95": wyckoff_small}}},
-            "rs": {"off": {"excess_main": {"ci95": rs_main}, "excess_smallcap": {"ci95": rs_small}}},
+            "random": {"off": {"excess_main": {"ci95": rs_main}, "excess_smallcap": {"ci95": rs_small}}},
         }
 
-    assert _contrast_status(pooled((-2, -1), (-2, -1), (0, 1), (0, 1)), "off") == "wyckoff_below_rs"
-    assert _contrast_status(pooled((1, 2), (1, 2), (-1, 0), (-1, 0)), "off") == "wyckoff_above_rs"
-    assert _contrast_status(pooled((-2, -1), (1, 2), (0, 1), (-1, 0)), "off") == "indistinguishable"
-    assert _contrast_status(pooled((-2, 0.5), (-2, 0.5), (0, 1), (0, 1)), "off") == "indistinguishable"
-    assert _contrast_status(pooled(None, (-2, -1), (0, 1), (0, 1)), "off") == "insufficient"
+    assert _contrast_status(pooled((-2, -1), (-2, -1), (0, 1), (0, 1)), "off", "random") == "wyckoff_below_random"
+    assert _contrast_status(pooled((1, 2), (1, 2), (-1, 0), (-1, 0)), "off", "random") == "wyckoff_above_random"
+    assert _contrast_status(pooled((-2, -1), (1, 2), (0, 1), (-1, 0)), "off", "random") == "indistinguishable"
+    assert _contrast_status(pooled((-2, 0.5), (-2, 0.5), (0, 1), (0, 1)), "off", "random") == "indistinguishable"
+    assert _contrast_status(pooled(None, (-2, -1), (0, 1), (0, 1)), "off", "random") == "insufficient"

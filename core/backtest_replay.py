@@ -22,6 +22,12 @@ from core.a_share_entry_research import (
     research_max_hold_days,
 )
 from core.ai_candidate_allocation import AiCandidateAllocationConfig
+from core.backtest_control_selection import (
+    CONTROL_STRATEGIES,
+    control_trigger_name,
+    rank_random,
+    rank_relative_strength,
+)
 from core.backtest_execution import (
     ExitSimulationConfig,
     IntradayPriceFetcher,
@@ -33,7 +39,6 @@ from core.backtest_execution import (
     market_of_board,
     resolve_trade_exit,
 )
-from core.backtest_rs_selection import RS_TRACK, rank_relative_strength, rs_trigger_name
 from core.backtest_selection import combine_trigger_scores, select_ai_input_codes
 from core.candidate_metadata import candidate_signal_triggers, merge_trigger_maps
 from core.candidate_policy import (
@@ -126,9 +131,11 @@ class BacktestReplayConfig:
     # 由调用方注入实盘的 STEP4_BUY_BLOCK_REGIMES 以保证回测与实盘闸门一致。
     buy_block_regimes: frozenset[str] = frozenset()
     a_share_entry_research: AShareEntryResearchPolicy = field(default_factory=AShareEntryResearchPolicy)
-    # ``rs`` 跳过漏斗，按相对强度排序取 top_n，其余（水温、闸门、入场、退出、摩擦）与 wyckoff 完全相同。
+    # ``rs`` / ``random`` 是对照组：跳过漏斗，按相对强度 / 固定种子随机取 top_n，
+    # 其余（水温、闸门、入场、退出、摩擦）与 wyckoff 完全相同。
     selection_strategy: str = "wyckoff"
     rs_window: int = 60
+    control_seed: int = 0
 
 
 @dataclass(frozen=True)
@@ -281,7 +288,7 @@ def build_signal_ledger(
 ) -> BacktestSignalLedger:
     days: list[_SignalDay] = []
     pending_pool = PendingPool() if config.pending_mode != "off" else None
-    rs_cooldown: dict[str, int] = {}
+    control_cooldown: dict[str, int] = {}
     limit = max_idx if max_idx is not None else len(trade_dates) - 2
     started_at = monotonic()
     selected_total = 0
@@ -301,10 +308,10 @@ def build_signal_ledger(
         )
         if ctx is None:
             continue
-        selected, confirmed_count = _select_ranked_codes(ctx, pending_pool, sector_map, config, rs_cooldown)
+        selected, confirmed_count = _select_ranked_codes(ctx, pending_pool, sector_map, config, control_cooldown)
         blocked_day, blocked_count = _apply_execution_gates(ctx, selected, config)
-        if config.selection_strategy == "rs" and blocked_day.selected is not None:
-            rs_cooldown.update(dict.fromkeys(blocked_day.selected.codes, idx))
+        if config.selection_strategy in CONTROL_STRATEGIES and blocked_day.selected is not None:
+            control_cooldown.update(dict.fromkeys(blocked_day.selected.codes, idx))
         coverage = _selection_coverage(ctx, selected, blocked_day.selected, config)
         selected = blocked_day.selected
         days.append(
@@ -508,8 +515,8 @@ def _build_day_context(
         **_liquidity_context(day_df_map, breadth, day_cfg, config),
     )
     result = (
-        _rs_funnel_result(day_df_map, bench_slice, signal_date, day_cfg, config)
-        if config.selection_strategy == "rs"
+        _control_funnel_result(day_df_map, bench_slice, signal_date, day_cfg, config)
+        if config.selection_strategy in CONTROL_STRATEGIES
         else _run_day_funnel(day_df_map, bench_slice, name_map, market_cap_map, sector_map, day_cfg, config)
     )
     regime = bench_context.get("regime", "NEUTRAL") if bench_context else "NEUTRAL"
@@ -552,22 +559,26 @@ def _run_day_funnel(
     )
 
 
-def _rs_funnel_result(
+def _control_funnel_result(
     day_df_map: dict[str, pd.DataFrame],
     bench_slice: pd.DataFrame,
     signal_date: date,
     day_cfg: FunnelConfig,
     config: BacktestReplayConfig,
 ) -> FunnelResult:
-    """RS 基线不跑漏斗；把排序结果装进 triggers 里，让台账、覆盖统计与成交记录走同一条路。"""
-    ranked = rank_relative_strength(day_df_map, bench_slice, signal_date, day_cfg, window=config.rs_window)
+    """对照组不跑漏斗；把排序结果装进 triggers 里，让台账、覆盖统计与成交记录走同一条路。"""
+    ranked = (
+        rank_random(day_df_map, signal_date, day_cfg, seed=config.control_seed)
+        if config.selection_strategy == "random"
+        else rank_relative_strength(day_df_map, bench_slice, signal_date, day_cfg, window=config.rs_window)
+    )
     codes = [code for code, _ in ranked]
     return FunnelResult(
         layer1_symbols=codes,
         layer2_symbols=codes,
         layer3_symbols=codes,
         top_sectors=[],
-        triggers={rs_trigger_name(config.rs_window): ranked},
+        triggers={control_trigger_name(config.selection_strategy, config.rs_window): ranked},
         stage_map={},
         markup_symbols=[],
         exit_signals={},
@@ -704,10 +715,10 @@ def _select_ranked_codes(
     pending_pool: PendingPool | None,
     sector_map: dict[str, str],
     config: BacktestReplayConfig,
-    rs_cooldown: dict[str, int] | None = None,
+    control_cooldown: dict[str, int] | None = None,
 ) -> tuple[_RankedSelection | None, int]:
-    if config.selection_strategy == "rs":
-        return _select_rs_codes(ctx, config, rs_cooldown or {}), 0
+    if config.selection_strategy in CONTROL_STRATEGIES:
+        return _select_control_codes(ctx, config, control_cooldown or {}), 0
     selected_codes, score_map, track_map = select_ai_input_codes(
         result=ctx.result,
         day_df_map=ctx.day_df_map,
@@ -747,15 +758,16 @@ def _select_ranked_codes(
     )
 
 
-def _select_rs_codes(
+def _select_control_codes(
     ctx: _DayContext, config: BacktestReplayConfig, cooldown: dict[str, int]
 ) -> _RankedSelection | None:
-    """Top ``top_n`` by RS, skipping codes entered within the last ``hold_days``.
+    """Top ``top_n`` of the control ranking, skipping codes entered within the last ``hold_days``.
 
     漏斗的确认池不会连日重复同一只票（六周期 off 组 660 笔里 21 日内重复仅 23 笔），而 60 日
     相对强度是黏的，不加冷却会让同一只票连续入选、把一笔仓位记成多笔高度相关的成交。
+    随机组沿用同一冷却，保证三组的"同一只票多久能再买"口径一致。
     """
-    trigger = rs_trigger_name(config.rs_window)
+    trigger = control_trigger_name(config.selection_strategy, config.rs_window)
     ranked = [
         (code, score)
         for code, score in ctx.result.triggers.get(trigger) or []
@@ -768,7 +780,7 @@ def _select_rs_codes(
     return _RankedSelection(
         codes,
         score_map,
-        dict.fromkeys(codes, RS_TRACK),
+        dict.fromkeys(codes, config.selection_strategy),
         {code: (score, trigger) for code, score in score_map.items()},
         frozenset(),
         dict.fromkeys(codes, trigger),

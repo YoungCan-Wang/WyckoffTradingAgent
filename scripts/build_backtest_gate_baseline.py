@@ -26,7 +26,8 @@ def main() -> int:
         for gate, verdict in gates.items():
             print(f"[gate-baseline] {strategy}/{gate}: {verdict}")
     for gate, contrast in report["strategy_contrast"].items():
-        print(f"[gate-baseline] rs 对照 {gate}: {contrast['status']}")
+        for control, status in contrast["status"].items():
+            print(f"[gate-baseline] {gate} wyckoff vs {control}: {status}")
     args.markdown_output.write_text(render_gate_baseline(report), encoding="utf-8")
     args.json_output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return int(args.require_complete and report["status"] != "ready")

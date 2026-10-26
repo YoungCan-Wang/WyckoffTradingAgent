@@ -276,8 +276,16 @@ live/off 按 `signal_date+code` 配对，闸门拦掉的「仅 off」成交按�
 在同一份快照上按 60 日涨幅减去上证同期涨幅排序，经生产 L1 的流动性与价格地板后取 `top_n`，同一代码在
 `hold_days` 内不重复入选（漏斗确认池本就极少连日重复同一只票）；水温判定、闸门、入场、退出、摩擦与 wyckoff
 片逐字相同。它不是生产逻辑的代理，只回答「漏斗选股是否优于一个不含任何威科夫判断的朴素排序」：报告
-`RS 对照` 一节并列两者的分周期超额，并按合并超额 CI 是否分离给出 `wyckoff_below_rs` / `wyckoff_above_rs` /
-`indistinguishable`，两基准方向一致才算分离。CLI 上 `rs` 要求 `--top-n ≥ 1`。产物目录为
+`对照组` 一节并列各策略的分周期超额，并按合并超额 CI 是否分离逐个对照给出 `wyckoff_below_<control>` /
+`wyckoff_above_<control>` / `indistinguishable`，两基准方向一致才算分离。
+
+第三片 `--selection-strategy random`（随机对照，random control）用固定种子（`--control-seed`，默认 0，按
+种子+日期派生，可复现）在同一流动性地板内随机取 `top_n`，冷却与执行路径同 rs 片。它量的是执行路径本身——
+T+1 开盘入场、-8%/+18% 不对称止损止盈、到期强制离场、摩擦——在该周期对任意选股的损耗（#576 的 rs 对照
+已显示 BEAR_REBOUND 放行并不能让朴素排序取得非负超额）。判读规则事先登记：wyckoff 与 random 的合并超额 CI
+重叠即视为选股层贡献为零、负超额来自执行结构；wyckoff 显著高于 random 才算漏斗有被执行吃掉的选股贡献；
+显著低于 random 则漏斗在主动挑差股。单元表新增 `止损/止盈/到期` 列（`exit_reason` 分布），用来判断负超额
+是止损触发率还是到期离场拖的。CLI 上 `rs` / `random` 都要求 `--top-n ≥ 1`。产物目录为
 `backtest-gate-<period>-<gate>-<strategy>/`，旧的无 strategy 后缀目录按 wyckoff 读取。
 
 `tradeable_l4` 不再按 Trend/Accum 固定配额截断候选：形态通过统一损失护栏后进入质量池，最终按质量排序，最多送审 8 只且同一行业最多 2 只。CAUTION 下未确认 launchpad 只观察；

@@ -4,9 +4,10 @@ Production only opens new positions in the regimes STEP4 allows, so grid cells n
 what the signals earn in the regimes it blocks. This report pairs the two gates per period
 and applies one fixed protocol: per-trade excess over both snapshot benchmarks (net of the
 backtest friction already inside ``ret_pct``), bootstrap CI, right-tail dependence, and the
-marginal trades the gate removes, split by regime. The ``rs`` strategy runs the same cells
-with a naive relative-strength selector so the funnel is judged against a known-cheap
-alternative rather than against zero (#567).
+marginal trades the gate removes, split by regime. The ``rs`` and ``random`` strategies run
+the same cells with naive selectors so the funnel is judged against known-cheap alternatives
+rather than against zero; ``random`` in particular measures the drag of the execution path
+itself (#567, #576).
 """
 
 from __future__ import annotations
@@ -32,21 +33,25 @@ from workflows.backtest_report_stats import (
 )
 
 GATES = ("live", "off")
-STRATEGIES = ("wyckoff", "rs")
+STRATEGIES = ("wyckoff", "rs", "random")
+CONTROLS = ("rs", "random")
+EXIT_REASONS = ("stop_loss", "take_profit", "time_exit")
 BASELINE_PERIODS = ("bull_2020", "bear_2022", "sideways_2023", "volatile_2024", "bull_2025", "recent_6m")
 TAIL_DROPS = (1, 3, 5)
 DECISION_RULE = (
     "每个单元的判定只看扣费后超额的 95% bootstrap CI：对上证与创业板指两个基准都不含 0 且同号才记为"
     "「正超额」/「负超额」，否则记「不显著」。任一策略×闸门组在六个周期里不显著或负超额的周期 ≥ 4，"
     "即判该组无跨周期超额；闸门放行组新增的成交（仅 off）必须按水温单独看，不能只看现金收益差。"
-    "RS 对照只回答「同一执行路径下，漏斗选股是否优于朴素相对强度」：wyckoff 的合并超额 CI 上沿低于 rs 的"
-    "CI 下沿才算劣于对照，反之才算优于对照，区间重叠记为不可区分。"
+    "对照组只回答「同一执行路径下，漏斗选股是否优于一个不含威科夫判断的选法」：wyckoff 的合并超额 CI 上沿"
+    "低于对照的 CI 下沿才算劣于对照，反之才算优于对照，区间重叠记为不可区分；两个基准方向一致才算分离。"
+    "random 组的超额就是执行路径本身（T+1 开盘入场、止损/止盈不对称、强制离场、摩擦）的损耗，"
+    "wyckoff 与 random 不可区分即漏斗选股贡献为零。"
 )
 _DIR_PATTERN = re.compile(
     r"backtest-gate-"
     r"(?P<period>recent_2m|recent_6m|bull_2020|bear_2022|sideways_2023|volatile_2024|bull_2025|custom)-"
     r"(?P<gate>live|off)"
-    r"(?:-(?P<strategy>wyckoff|rs))?"
+    r"(?:-(?P<strategy>wyckoff|rs|random))?"
     r"(?:-\d+)?$"
 )
 
@@ -58,6 +63,7 @@ class GateTrade:
     ret_pct: float | None
     excess_main_pct: float | None
     excess_smallcap_pct: float | None
+    exit_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -118,6 +124,7 @@ def _trade(row: dict[str, str]) -> GateTrade:
         ret_pct=ret,
         excess_main_pct=ret - main if ret is not None and main is not None else None,
         excess_smallcap_pct=ret - smallcap if ret is not None and smallcap is not None else None,
+        exit_reason=str(row.get("exit_reason") or ""),
     )
 
 
@@ -206,8 +213,17 @@ def _protocol(trades: list[GateTrade]) -> dict[str, Any]:
         "excess_main": _excess(main),
         "excess_smallcap": _excess(smallcap),
         "tail": {f"drop_{drop}": mean(ordered[drop:]) if len(ordered) > drop else None for drop in TAIL_DROPS},
+        "exit_reasons": _exit_reason_share(trades),
         "signal": _signal(main, smallcap),
     }
+
+
+def _exit_reason_share(trades: list[GateTrade]) -> dict[str, float | None]:
+    """Share of trades closed by each exit rule; the execution path's cost shows up here first."""
+    if not trades:
+        return dict.fromkeys(EXIT_REASONS, None)
+    counts = {reason: sum(trade.exit_reason == reason for trade in trades) for reason in EXIT_REASONS}
+    return {reason: count / len(trades) * 100.0 for reason, count in counts.items()}
 
 
 def _excess(values: list[float]) -> dict[str, Any]:
@@ -288,7 +304,11 @@ def _contrast(cells: list[dict[str, Any]], pooled: dict[str, dict[str, Any]], ga
         for period in periods
     ]
     pooled_cells = {strategy: _contrast_cell(pooled[strategy][gate]) for strategy in STRATEGIES}
-    return {"rows": rows, "pooled": pooled_cells, "status": _contrast_status(pooled, gate)}
+    return {
+        "rows": rows,
+        "pooled": pooled_cells,
+        "status": {control: _contrast_status(pooled, gate, control) for control in CONTROLS},
+    }
 
 
 def _contrast_cell(cell: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -302,18 +322,18 @@ def _contrast_cell(cell: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
-def _contrast_status(pooled: dict[str, dict[str, Any]], gate: str) -> str:
-    """Compare the two strategies' pooled excess CIs on both benchmarks; overlap is a tie."""
+def _contrast_status(pooled: dict[str, dict[str, Any]], gate: str, control: str) -> str:
+    """Compare wyckoff's pooled excess CI with one control's on both benchmarks; overlap is a tie."""
     outcomes = set()
     for benchmark in ("excess_main", "excess_smallcap"):
         wyckoff_ci = pooled["wyckoff"][gate][benchmark]["ci95"]
-        rs_ci = pooled["rs"][gate][benchmark]["ci95"]
-        if wyckoff_ci is None or rs_ci is None:
+        control_ci = pooled[control][gate][benchmark]["ci95"]
+        if wyckoff_ci is None or control_ci is None:
             return "insufficient"
-        if wyckoff_ci[1] < rs_ci[0]:
-            outcomes.add("wyckoff_below_rs")
-        elif wyckoff_ci[0] > rs_ci[1]:
-            outcomes.add("wyckoff_above_rs")
+        if wyckoff_ci[1] < control_ci[0]:
+            outcomes.add(f"wyckoff_below_{control}")
+        elif wyckoff_ci[0] > control_ci[1]:
+            outcomes.add(f"wyckoff_above_{control}")
         else:
             outcomes.add("indistinguishable")
     return outcomes.pop() if len(outcomes) == 1 else "indistinguishable"
@@ -321,11 +341,12 @@ def _contrast_status(pooled: dict[str, dict[str, Any]], gate: str) -> str:
 
 def render_gate_baseline(report: dict[str, Any]) -> str:
     lines = [
-        "# 执行闸门基线：live vs off × wyckoff vs rs",
+        "# 执行闸门基线：live vs off × wyckoff vs rs vs random",
         "",
         "同一快照、同一退出（15 日 / -8% / +18%）、同一现金组合、同一水温闸门，只改 `--execution-regime-gate` 与"
         " `--selection-strategy`。`off` 组回答「信号本身在被闸门拦掉的水温里赚不赚钱」；`rs` 组是朴素相对强度对照"
-        "（跳过漏斗、按 60 日超额涨幅取 top_n），回答「漏斗选股是否优于一个不含任何威科夫判断的排序」。",
+        "（跳过漏斗、按 60 日超额涨幅取 top_n）；`random` 组是固定种子随机对照，它的超额就是执行路径本身的损耗，"
+        "漏斗选股必须显著高于它才算有贡献。",
         "",
         f"- 判定规则：{report.get('decision_rule', '')}",
         "- 成本口径：`ret_pct` 已含买卖各 0.5% 摩擦；超额 = `ret_pct` − 同持有窗口的基准涨跌（上证 / 创业板指）。",
@@ -362,8 +383,8 @@ def _cell_lines(cells: list[dict[str, Any]], pooled: dict[str, dict[str, Any]]) 
         "",
         "## 分周期协议表",
         "",
-        "| 策略 | 周期 | 闸门 | 成交 | 均收 | 均收 95% CI | 胜率 | 超额·上证 | 超额·创业板 | 去前1/3/5 均收 | 现金收益 | 现金回撤 | 判定 |",
-        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+        "| 策略 | 周期 | 闸门 | 成交 | 均收 | 均收 95% CI | 胜率 | 超额·上证 | 超额·创业板 | 去前1/3/5 均收 | 止损/止盈/到期 | 现金收益 | 现金回撤 | 判定 |",
+        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     lines.extend(_protocol_line(cell["strategy"], cell["period"], cell["gate"], cell) for cell in cells)
     lines.extend(
@@ -380,9 +401,14 @@ def _protocol_line(strategy: str, period: str, gate: str, item: dict[str, Any]) 
         f"| {strategy} | {period} | {gate} | {item.get('trades', 0)} | {fmt(item.get('avg_return'), '%')} | "
         f"{_ci(item.get('ci95'))} | {fmt(item.get('win_rate'), '%')} | {_excess_cell(item.get('excess_main'))} | "
         f"{_excess_cell(item.get('excess_smallcap'))} | "
-        f"{' / '.join(fmt(tail.get(f'drop_{drop}'), '%') for drop in TAIL_DROPS)} | "
+        f"{' / '.join(fmt(tail.get(f'drop_{drop}'), '%') for drop in TAIL_DROPS)} | {_exit_cell(item)} | "
         f"{fmt(item.get('cash_return'), '%')} | {fmt(item.get('cash_drawdown'), '%')} | {item.get('signal', '-')} |"
     )
+
+
+def _exit_cell(item: dict[str, Any]) -> str:
+    share = item.get("exit_reasons") or {}
+    return " / ".join("-" if share.get(reason) is None else f"{share[reason]:.0f}%" for reason in EXIT_REASONS)
 
 
 def _excess_cell(excess: dict[str, Any] | None) -> str:
@@ -407,22 +433,24 @@ def _verdict_lines(verdict: dict[str, dict[str, Any]]) -> list[str]:
 
 
 def _contrast_lines(contrast: dict[str, dict[str, Any]]) -> list[str]:
-    lines = ["", "## RS 对照（同闸门、同周期）", ""]
+    lines = ["", "## 对照组（同闸门、同周期；每格 n / 超额·上证 / 超额·创业板 / 判定）", ""]
     for gate, item in contrast.items():
+        status = item.get("status") or {}
         lines.extend(
             [
-                f"### 闸门 {gate} → {item.get('status', 'insufficient')}",
+                f"### 闸门 {gate} → "
+                + "；".join(f"vs {control}: {status.get(control, 'insufficient')}" for control in CONTROLS),
                 "",
-                "| 周期 | wyckoff n / 超额·上证 / 超额·创业板 / 判定 | rs n / 超额·上证 / 超额·创业板 / 判定 |",
-                "|---|---:|---:|",
+                "| 周期 | " + " | ".join(STRATEGIES) + " |",
+                "|---|" + "---:|" * len(STRATEGIES),
             ]
         )
         lines.extend(
-            f"| {row['period']} | {_contrast_text(row.get('wyckoff'))} | {_contrast_text(row.get('rs'))} |"
+            f"| {row['period']} | " + " | ".join(_contrast_text(row.get(strategy)) for strategy in STRATEGIES) + " |"
             for row in item.get("rows", [])
         )
         pooled = item.get("pooled") or {}
-        lines.append(f"| 合并 | {_contrast_text(pooled.get('wyckoff'))} | {_contrast_text(pooled.get('rs'))} |")
+        lines.append("| 合并 | " + " | ".join(_contrast_text(pooled.get(strategy)) for strategy in STRATEGIES) + " |")
         lines.append("")
     return lines
 
