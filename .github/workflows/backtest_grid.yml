@@ -642,7 +642,7 @@ jobs:
       STEP4_BLOCK_BUY_SIGNAL_TYPES: ${{ vars.STEP4_BLOCK_BUY_SIGNAL_TYPES || '' }}
     strategy:
       fail-fast: false
-      # 24 个活跃分片里 rs 片不跑漏斗、分钟级完成；并行度按 wyckoff 片数（12）定即可。
+      # 24 个活跃分片里 rs 片不跑漏斗（约 15 分钟，耗时在逐日水温/广度），并行度按 wyckoff 片数（12）定即可。
       max-parallel: 12
       matrix:
         period_key: [recent_2m, recent_6m, bull_2020, bear_2022, sideways_2023, volatile_2024, bull_2025]
