@@ -1288,7 +1288,8 @@ order by n;
   `PORTFOLIO_*_CNY_RATE` / ECB 参考汇率后改现金，缺汇率则拒绝写入。
   `integrations.supabase_portfolio.record_fill` 负责落库，先读后写，需串行调用。
   已有持仓走 update（空 `buy_dt` 不覆盖原建仓日）；新仓走 insert，必须有合法 `YYYYMMDD` / `YYYY-MM-DD`，
-  禁止插入无日期多头。
+  禁止插入无日期多头。买入建仓且持仓尚无止损时，从近 5 日同标的 APPROVED PROBE/ATTACK
+  `trade_orders.stop_loss` 写入持仓（Step4 新开仓时尚无持仓行，只能把止损留在工单）。
 - 入口：CLI `wyckoff portfolio fill`、MCP/Agent 工具 `record_trade_fill`。
   `portfolio add` 只插入新仓且必须带合法建仓日，不要拿它记成交。
 - 任一持仓新增、覆盖、删除、现金修改或完整成交回填成功后，写入边界都会重新读取整个组合，
@@ -1304,7 +1305,7 @@ order by n;
   降级工单的 `model` 为 `degraded:*`，`run_id` 不绑持仓签名，幂等检查不把它当成完整 OMS，修好模型后的同日补跑仍可再决策。
   旧买入建议可能与新保护性 `EXIT` 同时留档，此处不做券商交易或跨轮建议自动裁决。
   止损按规范化码匹配后用库内原始码更新；读取失败、组合不存在、已匹配持仓更新零行均视为失败。
-  成功读取后的空持仓/缺失新开仓持仓行可跳过，止损仍保存在工单中。后续持久化失败只按
+  成功读取后的空持仓/缺失新开仓持仓行可跳过，止损仍保存在工单中；`record_fill` 买入建仓（或持仓止损仍为空）时从近 5 日 APPROVED PROBE/ATTACK 工单写入 `portfolio_positions.stop_loss`，避免新仓永远无保护止损。后续持久化失败只按
   本次 `run_id` 作废新工单，并按写入前快照恢复已改动的持仓止损；回滚失败必须显式报错。Telegram 推送失败则保留新工单作为幂等事实源，
   禁止重跑 LLM/OMS，避免超时已送达时产生重复或冲突指令。当前跨表写入仍不具备数据库事务性。
 - LLM 若对同一代码输出多条决策，解析阶段按 `EXIT > TRIM > HOLD > PROBE > ATTACK` 折叠为一条；

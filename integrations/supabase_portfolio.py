@@ -30,7 +30,7 @@ from core.constants import (
     TABLE_TRADE_ORDERS,
     TABLE_USER_SETTINGS,
 )
-from core.trade_fill import Fill, Holding, apply_fill
+from core.trade_fill import BUY, Fill, Holding, apply_fill
 from integrations.planet_membership import PLANET_MEMBERSHIP_URL, is_active_planet_member
 from integrations.supabase_base import create_admin_client as _get_supabase_admin_client
 from integrations.supabase_base import is_admin_configured as is_supabase_configured
@@ -300,8 +300,8 @@ def _apply_position_stop_updates(
 
     Step4 / set_stop_loss 侧传入的是规范化码（``00700.HK``），库里可能仍是历史
     ``700.HK`` / 大小写变体。只 ``eq`` 规范码时 PostgREST 0 行仍算成功，ATR 上移
-    止损失落库，次日强制 EXIT 继续用旧 stop。新开仓工单尚无持仓行时跳过（止损
-    已在 trade_orders）。
+    止损失落库，次日强制 EXIT 继续用旧 stop。新开仓工单尚无持仓行时跳过——止损
+    留在 ``trade_orders``，由 ``record_fill`` 建仓时从 APPROVED PROBE/ATTACK 工单写入。
     """
     state = load_portfolio_state(portfolio_id, client=client)
     if state is None:
@@ -457,6 +457,14 @@ def _base_position_row(portfolio_id: str, position: dict[str, Any]) -> tuple[str
         "shares": int(position.get("shares", 0) or 0),
         "cost_price": float(position.get("cost_price", 0) or 0),
     }
+    # Optional: record_fill seeds entry stops from the APPROVED PROBE/ATTACK ticket.
+    # Omit the key entirely when absent so update_position does not clear an existing stop.
+    if "stop_loss" in position:
+        raw_stop = position.get("stop_loss")
+        if raw_stop is not None:
+            stop = float(raw_stop)
+            if stop > 0:
+                row["stop_loss"] = stop
     return code, row
 
 
@@ -645,16 +653,99 @@ def _persist_filled_holding(
     existing: dict[str, Any] | None,
     holding: Holding,
     client: Client,
+    *,
+    stop_loss: float | None = None,
 ) -> tuple[bool, str]:
-    payload = {
+    payload: dict[str, Any] = {
         "code": holding.code,
         "name": holding.name,
         "shares": holding.shares,
         "cost_price": holding.cost_price,
         "buy_dt": holding.buy_dt,
     }
+    # Step4 cannot write stops for brand-new entries (no position row yet); the stop
+    # lives on trade_orders until fill. Seed only when the holding still has none —
+    # never lower a stop the user or a later HOLD already raised.
+    if stop_loss is not None and stop_loss > 0 and _position_stop_missing(existing):
+        payload["stop_loss"] = float(stop_loss)
     writer = insert_position if existing is None else update_position
     return writer(portfolio_id, payload, client=client, refresh_equity=False)
+
+
+def _position_stop_missing(existing: dict[str, Any] | None) -> bool:
+    if existing is None:
+        return True
+    raw = existing.get("stop_loss")
+    if raw is None:
+        return True
+    try:
+        return float(raw) <= 0
+    except (TypeError, ValueError):
+        return True
+
+
+def _as_iso_trade_date(raw: str) -> str | None:
+    from core.buy_dt import parse_buy_dt
+
+    parsed = parse_buy_dt(str(raw or "").strip())
+    return parsed.strftime("%Y-%m-%d") if parsed else None
+
+
+def _approved_entry_stop_loss(
+    client: Client,
+    portfolio_id: str,
+    code: str,
+    trade_date: str,
+) -> float | None:
+    """Read the protective stop from a recent APPROVED PROBE/ATTACK ticket.
+
+    Fill may land the morning after Step4 (ticket ``trade_date`` = T, fill date = T+1),
+    so exact-date match is preferred but same-code tickets within a 5-day window count.
+    """
+    from core.portfolio_symbol import normalize_portfolio_code
+
+    fill_iso = _as_iso_trade_date(trade_date)
+    if not fill_iso:
+        return None
+    want = normalize_portfolio_code(code) or str(code).strip().upper()
+    try:
+        rows = (
+            client.table(TABLE_TRADE_ORDERS)
+            .select("code,action,status,stop_loss,trade_date,created_at")
+            .eq("portfolio_id", portfolio_id)
+            .eq("status", "APPROVED")
+            .in_("action", ["PROBE", "ATTACK"])
+            .order("trade_date", desc=True)
+            .limit(100)
+            .execute()
+            .data
+            or []
+        )
+    except Exception as exc:
+        logger.warning("[supabase_portfolio] entry stop lookup failed: %s", exc)
+        return None
+    fill_day = datetime.strptime(fill_iso, "%Y-%m-%d").date()
+    exact: float | None = None
+    recent: float | None = None
+    for row in rows:
+        raw_code = str(row.get("code") or "").strip()
+        if (normalize_portfolio_code(raw_code) or raw_code.upper()) != want:
+            continue
+        try:
+            stop = float(row["stop_loss"]) if row.get("stop_loss") is not None else None
+        except (TypeError, ValueError):
+            stop = None
+        if stop is None or stop <= 0:
+            continue
+        ticket_iso = _as_iso_trade_date(str(row.get("trade_date") or ""))
+        if ticket_iso == fill_iso:
+            exact = stop
+            break
+        if ticket_iso and recent is None:
+            ticket_day = datetime.strptime(ticket_iso, "%Y-%m-%d").date()
+            if abs((fill_day - ticket_day).days) <= 5:
+                recent = stop
+    return exact if exact is not None else recent
 
 
 def _canonicalize_fill(fill: Fill) -> Fill | None:
@@ -742,7 +833,10 @@ def record_fill(portfolio_id: str, fill: Fill, client: Client | None = None) -> 
         db_code = str((row or {}).get("code") or fill.code)
         ok, msg = delete_position(portfolio_id, db_code, client=client, refresh_equity=False)
     else:
-        ok, msg = _persist_filled_holding(portfolio_id, row, result.holding, client)
+        entry_stop = None
+        if fill.side == BUY and _position_stop_missing(row):
+            entry_stop = _approved_entry_stop_loss(client, portfolio_id, fill.code, fill.trade_date)
+        ok, msg = _persist_filled_holding(portfolio_id, row, result.holding, client, stop_loss=entry_stop)
     if not ok:
         return FillWriteResult(False, f"持仓写入失败：{msg}")
     ok, msg = update_free_cash(portfolio_id, result.cash, client=client, refresh_equity=False)
