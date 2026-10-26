@@ -33,6 +33,7 @@ from core.backtest_execution import (
     market_of_board,
     resolve_trade_exit,
 )
+from core.backtest_rs_selection import RS_TRACK, rank_relative_strength, rs_trigger_name
 from core.backtest_selection import combine_trigger_scores, select_ai_input_codes
 from core.candidate_metadata import candidate_signal_triggers, merge_trigger_maps
 from core.candidate_policy import (
@@ -125,6 +126,9 @@ class BacktestReplayConfig:
     # 由调用方注入实盘的 STEP4_BUY_BLOCK_REGIMES 以保证回测与实盘闸门一致。
     buy_block_regimes: frozenset[str] = frozenset()
     a_share_entry_research: AShareEntryResearchPolicy = field(default_factory=AShareEntryResearchPolicy)
+    # ``rs`` 跳过漏斗，按相对强度排序取 top_n，其余（水温、闸门、入场、退出、摩擦）与 wyckoff 完全相同。
+    selection_strategy: str = "wyckoff"
+    rs_window: int = 60
 
 
 @dataclass(frozen=True)
@@ -277,6 +281,7 @@ def build_signal_ledger(
 ) -> BacktestSignalLedger:
     days: list[_SignalDay] = []
     pending_pool = PendingPool() if config.pending_mode != "off" else None
+    rs_cooldown: dict[str, int] = {}
     limit = max_idx if max_idx is not None else len(trade_dates) - 2
     started_at = monotonic()
     selected_total = 0
@@ -296,8 +301,10 @@ def build_signal_ledger(
         )
         if ctx is None:
             continue
-        selected, confirmed_count = _select_ranked_codes(ctx, pending_pool, sector_map, config)
+        selected, confirmed_count = _select_ranked_codes(ctx, pending_pool, sector_map, config, rs_cooldown)
         blocked_day, blocked_count = _apply_execution_gates(ctx, selected, config)
+        if config.selection_strategy == "rs" and blocked_day.selected is not None:
+            rs_cooldown.update(dict.fromkeys(blocked_day.selected.codes, idx))
         coverage = _selection_coverage(ctx, selected, blocked_day.selected, config)
         selected = blocked_day.selected
         days.append(
@@ -500,7 +507,35 @@ def _build_day_context(
         smallcap_slice,
         **_liquidity_context(day_df_map, breadth, day_cfg, config),
     )
-    result = run_funnel(
+    result = (
+        _rs_funnel_result(day_df_map, bench_slice, signal_date, day_cfg, config)
+        if config.selection_strategy == "rs"
+        else _run_day_funnel(day_df_map, bench_slice, name_map, market_cap_map, sector_map, day_cfg, config)
+    )
+    regime = bench_context.get("regime", "NEUTRAL") if bench_context else "NEUTRAL"
+    return _DayContext(
+        idx,
+        signal_date,
+        trade_dates[idx + 1],
+        day_df_map,
+        name_map,
+        day_cfg,
+        result,
+        str(regime),
+        breadth,
+    )
+
+
+def _run_day_funnel(
+    day_df_map: dict[str, pd.DataFrame],
+    bench_slice: pd.DataFrame,
+    name_map: dict[str, str],
+    market_cap_map: dict[str, float],
+    sector_map: dict[str, str],
+    day_cfg: FunnelConfig,
+    config: BacktestReplayConfig,
+) -> FunnelResult:
+    return run_funnel(
         all_symbols=list(day_df_map.keys()),
         df_map=day_df_map,
         bench_df=bench_slice,
@@ -515,17 +550,30 @@ def _build_day_context(
         theme_member_index=config.theme_member_index,
         mainline_config=config.mainline_config,
     )
-    regime = bench_context.get("regime", "NEUTRAL") if bench_context else "NEUTRAL"
-    return _DayContext(
-        idx,
-        signal_date,
-        trade_dates[idx + 1],
-        day_df_map,
-        name_map,
-        day_cfg,
-        result,
-        str(regime),
-        breadth,
+
+
+def _rs_funnel_result(
+    day_df_map: dict[str, pd.DataFrame],
+    bench_slice: pd.DataFrame,
+    signal_date: date,
+    day_cfg: FunnelConfig,
+    config: BacktestReplayConfig,
+) -> FunnelResult:
+    """RS 基线不跑漏斗；把排序结果装进 triggers 里，让台账、覆盖统计与成交记录走同一条路。"""
+    ranked = rank_relative_strength(day_df_map, bench_slice, signal_date, day_cfg, window=config.rs_window)
+    codes = [code for code, _ in ranked]
+    return FunnelResult(
+        layer1_symbols=codes,
+        layer2_symbols=codes,
+        layer3_symbols=codes,
+        top_sectors=[],
+        triggers={rs_trigger_name(config.rs_window): ranked},
+        stage_map={},
+        markup_symbols=[],
+        exit_signals={},
+        channel_map={},
+        leader_radar_symbols=[],
+        leader_radar_rows=[],
     )
 
 
@@ -656,7 +704,10 @@ def _select_ranked_codes(
     pending_pool: PendingPool | None,
     sector_map: dict[str, str],
     config: BacktestReplayConfig,
+    rs_cooldown: dict[str, int] | None = None,
 ) -> tuple[_RankedSelection | None, int]:
+    if config.selection_strategy == "rs":
+        return _select_rs_codes(ctx, config, rs_cooldown or {}), 0
     selected_codes, score_map, track_map = select_ai_input_codes(
         result=ctx.result,
         day_df_map=ctx.day_df_map,
@@ -693,6 +744,35 @@ def _select_ranked_codes(
             watch_score_map,
         ),
         len(confirmed.codes),
+    )
+
+
+def _select_rs_codes(
+    ctx: _DayContext, config: BacktestReplayConfig, cooldown: dict[str, int]
+) -> _RankedSelection | None:
+    """Top ``top_n`` by RS, skipping codes entered within the last ``hold_days``.
+
+    漏斗的确认池不会连日重复同一只票（六周期 off 组 660 笔里 21 日内重复仅 23 笔），而 60 日
+    相对强度是黏的，不加冷却会让同一只票连续入选、把一笔仓位记成多笔高度相关的成交。
+    """
+    trigger = rs_trigger_name(config.rs_window)
+    ranked = [
+        (code, score)
+        for code, score in ctx.result.triggers.get(trigger) or []
+        if ctx.idx - cooldown.get(code, -config.hold_days) >= config.hold_days
+    ][: config.top_n]
+    if not ranked:
+        return None
+    codes = [code for code, _ in ranked]
+    score_map = {code: float(score) for code, score in ranked}
+    return _RankedSelection(
+        codes,
+        score_map,
+        dict.fromkeys(codes, RS_TRACK),
+        {code: (score, trigger) for code, score in score_map.items()},
+        frozenset(),
+        dict.fromkeys(codes, trigger),
+        {},
     )
 
 

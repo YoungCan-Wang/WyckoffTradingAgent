@@ -134,6 +134,8 @@ class BacktestWorkflowRequest:
     portfolio_styles: str | list[str] = DEFAULT_CASH_PORTFOLIO_STYLES
     # 触发阈值矩阵用的 FunnelConfig 覆盖；用元组而非 dict 以保持请求可哈希、可比较。
     funnel_overrides: tuple[tuple[str, float], ...] = ()
+    selection_strategy: str = "wyckoff"
+    rs_window: int = 60
 
 
 def run_backtest_request(
@@ -259,6 +261,8 @@ def _build_run_config(request: BacktestWorkflowRequest) -> BacktestRunConfig:
             signal_weight_map=signal_weight_map,
             signal_weight_meta=signal_weight_meta,
             signal_weight_mode=signal_weight_mode,
+            selection_strategy=request.selection_strategy,
+            rs_window=request.rs_window,
         )
     )
 

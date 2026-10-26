@@ -222,6 +222,14 @@ def _add_signal_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--wbt-fee-rate", type=float, default=DEFAULT_WBT_FEE_RATE, help="wbt 合成 NAV 评估的费率")
     parser.add_argument("--wbt-n-jobs", type=int, default=DEFAULT_WBT_N_JOBS, help="wbt Rust 后端并行线程数")
     parser.add_argument("--abc-filter", action="store_true", default=False, help="启用 ABC 起跳板过滤")
+    parser.add_argument(
+        "--selection-strategy",
+        choices=["wyckoff", "rs"],
+        default="wyckoff",
+        help="选股源: wyckoff=生产漏斗（默认）；rs=相对强度基线，跳过漏斗按 N 日超额涨幅取 top_n，"
+        "其余（水温闸门、入场、退出、摩擦）与 wyckoff 完全一致，仅作对照",
+    )
+    parser.add_argument("--rs-window", type=int, default=60, help="rs 基线的相对强度回看交易日数 (default: 60)")
 
 
 def _add_entry_args(parser: argparse.ArgumentParser) -> None:

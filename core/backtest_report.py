@@ -52,6 +52,7 @@ def _overview_lines(summary: dict) -> list[str]:
         _top_n_line(summary),
         f"- AI 候选模式: {summary.get('ai_selection_mode')}",
         f"- 策略消融组: {summary.get('strategy_variant', 'live')}",
+        _selection_strategy_line(summary),
         _signal_weight_line(summary),
         f"- 股票池: {summary.get('board')} (sample={summary.get('sample_size')})",
         f"- 评估交易日: {summary.get('eval_days')}",
@@ -134,6 +135,13 @@ def _regime_filter_line(summary: dict) -> str:
     if summary.get("regime_filter_note") == "deprecated_live_aligned_noop":
         return "- 大盘水温仓控: 关闭（旧回测开关已废弃，跟随实盘漏斗候选口径）"
     return f"- 大盘水温仓控: {'开启' if summary.get('regime_filter') else '关闭'}"
+
+
+def _selection_strategy_line(summary: dict) -> str:
+    strategy = str(summary.get("selection_strategy") or "wyckoff")
+    if strategy == "rs":
+        return f"- 选股源: rs（相对强度基线，回看 {summary.get('rs_window')} 日；不代表生产漏斗，仅作对照）"
+    return "- 选股源: wyckoff（生产漏斗）"
 
 
 def _execution_regime_gate_line(summary: dict) -> str:

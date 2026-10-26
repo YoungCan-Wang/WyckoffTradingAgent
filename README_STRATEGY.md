@@ -272,6 +272,14 @@ B 组衡量 Upthrust 当日对新候选的 veto 价值；所有组的持仓退�
 live/off 按 `signal_date+code` 配对，闸门拦掉的「仅 off」成交按水温单列。只有两个基准的 CI 都不含 0 且同号
 才记正/负超额，六周期里不显著或负超额 ≥ 4 即判该组无跨周期超额。该报告是研究对照，不改变生产闸门。
 
+同一 job 还对每个周期×闸门加跑一片 `--selection-strategy rs` 对照（相对强度，relative strength）：跳过漏斗，
+在同一份快照上按 60 日涨幅减去上证同期涨幅排序，经生产 L1 的流动性与价格地板后取 `top_n`，同一代码在
+`hold_days` 内不重复入选（漏斗确认池本就极少连日重复同一只票）；水温判定、闸门、入场、退出、摩擦与 wyckoff
+片逐字相同。它不是生产逻辑的代理，只回答「漏斗选股是否优于一个不含任何威科夫判断的朴素排序」：报告
+`RS 对照` 一节并列两者的分周期超额，并按合并超额 CI 是否分离给出 `wyckoff_below_rs` / `wyckoff_above_rs` /
+`indistinguishable`，两基准方向一致才算分离。CLI 上 `rs` 要求 `--top-n ≥ 1`。产物目录为
+`backtest-gate-<period>-<gate>-<strategy>/`，旧的无 strategy 后缀目录按 wyckoff 读取。
+
 `tradeable_l4` 不再按 Trend/Accum 固定配额截断候选：形态通过统一损失护栏后进入质量池，最终按质量排序，最多送审 8 只且同一行业最多 2 只。CAUTION 下未确认 launchpad 只观察；
 其它可交易水温最多保留一个 launchpad 席位，并先给 Spring/LPS/SOS、主线和其它非 launchpad 候选留出位置。
 
