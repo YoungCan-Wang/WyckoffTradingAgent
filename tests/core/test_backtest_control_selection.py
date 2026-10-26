@@ -5,7 +5,7 @@ from datetime import date, timedelta
 import pandas as pd
 import pytest
 
-from core.backtest_rs_selection import rank_relative_strength
+from core.backtest_control_selection import control_trigger_name, eligible_history, rank_random, rank_relative_strength
 from core.wyckoff_engine import FunnelConfig
 
 _START = date(2026, 1, 1)
@@ -57,3 +57,26 @@ def test_returns_empty_without_benchmark_window() -> None:
     signal_date = _START + timedelta(days=4)
     day_df_map = {"ok": _hist([10, 10, 10, 10, 11])}
     assert rank_relative_strength(day_df_map, _hist([100, 101]), signal_date, _cfg(), window=2) == []
+
+
+def test_random_control_is_seeded_per_day_and_respects_eligibility() -> None:
+    signal_date = _START + timedelta(days=4)
+    day_df_map = {
+        "a": _hist([10, 10, 10, 10, 11]),
+        "b": _hist([10, 10, 10, 10, 9]),
+        "c": _hist([10, 10, 10, 10, 12]),
+        "illiquid": _hist([10, 10, 10, 10, 20], amount=1e6),
+    }
+    first = rank_random(day_df_map, signal_date, _cfg(), seed=7)
+    again = rank_random(day_df_map, signal_date, _cfg(), seed=7)
+    other_seed = rank_random(day_df_map, signal_date, _cfg(), seed=8)
+    other_day = rank_random(day_df_map, signal_date - timedelta(days=1), _cfg(), seed=7)
+
+    assert first == again
+    assert {code for code, _ in first} == {"a", "b", "c"}
+    assert [score for _, score in first] == sorted((score for _, score in first), reverse=True)
+    assert [code for code, _ in other_seed] != [code for code, _ in first] or other_seed != first
+    assert other_day == []
+    assert set(eligible_history(day_df_map, signal_date, _cfg())) == {"a", "b", "c"}
+    assert control_trigger_name("random", 60) == "RANDOM"
+    assert control_trigger_name("rs", 20) == "RS20"

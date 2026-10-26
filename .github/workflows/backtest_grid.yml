@@ -627,8 +627,10 @@ jobs:
   # BEAR_REBOUND / CAUTION。off 组用同一份快照、同一退出、同一现金组合回答"确认信号
   # 本身在被拦掉的水温里赚不赚钱"（#567）。两片各自独立算台账（闸门在台账阶段生效），
   # 不复用 grid 的台账；不受 dispatch 的 execution_regime_gate 输入影响，永远成对出现。
-  # rs 片跳过漏斗、按 60 日相对强度取 top_n，其余参数与 wyckoff 片逐字相同，回答"漏斗选股
-  # 是否优于一个不含威科夫判断的朴素排序"；它不是生产逻辑的代理，只是对照组。
+  # rs / random 片跳过漏斗，分别按 60 日相对强度 / 固定种子随机取 top_n，其余参数与 wyckoff 片
+  # 逐字相同。rs 回答"漏斗是否优于朴素排序"，random 量的是执行路径本身（T+1 开盘入场、止损/
+  # 止盈不对称、强制离场、摩擦）的损耗——漏斗必须显著高于它才算有选股贡献（#576）。
+  # 两者都不是生产逻辑的代理，只是对照组。
   gate_baseline:
     name: Gate ${{ matrix.period_key }} / ${{ matrix.gate }} / ${{ matrix.strategy }}
     runs-on: ubuntu-latest
@@ -642,12 +644,12 @@ jobs:
       STEP4_BLOCK_BUY_SIGNAL_TYPES: ${{ vars.STEP4_BLOCK_BUY_SIGNAL_TYPES || '' }}
     strategy:
       fail-fast: false
-      # 24 个活跃分片里 rs 片不跑漏斗（约 15 分钟，耗时在逐日水温/广度），并行度按 wyckoff 片数（12）定即可。
+      # 36 个活跃分片里 rs / random 片不跑漏斗（约 15 分钟，耗时在逐日水温/广度），并行度按 wyckoff 片数（12）定即可。
       max-parallel: 12
       matrix:
         period_key: [recent_2m, recent_6m, bull_2020, bear_2022, sideways_2023, volatile_2024, bull_2025]
         gate: [live, off]
-        strategy: [wyckoff, rs]
+        strategy: [wyckoff, rs, random]
     steps:
       - name: Resolve period dates
         id: period

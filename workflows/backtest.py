@@ -136,6 +136,7 @@ class BacktestWorkflowRequest:
     funnel_overrides: tuple[tuple[str, float], ...] = ()
     selection_strategy: str = "wyckoff"
     rs_window: int = 60
+    control_seed: int = 0
 
 
 def run_backtest_request(
@@ -263,6 +264,7 @@ def _build_run_config(request: BacktestWorkflowRequest) -> BacktestRunConfig:
             signal_weight_mode=signal_weight_mode,
             selection_strategy=request.selection_strategy,
             rs_window=request.rs_window,
+            control_seed=request.control_seed,
         )
     )
 
