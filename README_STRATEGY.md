@@ -288,6 +288,15 @@ T+1 开盘入场、-8%/+18% 不对称止损止盈、到期强制离场、摩擦�
 是止损触发率还是到期离场拖的。CLI 上 `rs` / `random` 都要求 `--top-n ≥ 1`。产物目录为
 `backtest-gate-<period>-<gate>-<strategy>/`，旧的无 strategy 后缀目录按 wyckoff 读取。
 
+同一 notify 阶段还产出 `regime_timing_report.md/json`（水温纯择时基线）：不选股，只按每日水温决定持有还是
+空仓指数。水温取分片 `selection_coverage_*.json` 里生产路径逐日算出的同一份序列，指数行情取分片随产物带出的
+`benchmark_main.csv` / `benchmark_smallcap.csv`。T 日收盘判定、T+1 开盘切换、每次切换扣 ETF 佣金万一加滑点，
+所有变体与持有基准都从空仓起步、在同一组交易日上算。四个变体：`buy_hold`、`avoid_hard_defense`（离场
+RISK_OFF / CRASH / BLACK_SWAN / UNKNOWN）、`risk_on_only`、`production_gate`（生产 STEP4_BUY_BLOCK / ALLOW 实际
+放行的水温，报告列出集合）。判定对两个基准分别算且都要满足：六基线周期里扣费后收益高于持有 ≥ 4 个且合并
+「在场日 − 离场日」次日均收 CI 下沿 > 0 记 `timing_value`；只在回撤上 ≥ 4 个周期更小且 CI 上沿 ≥ 0 记
+`drawdown_only`；其余 `no_timing_value`。单周期现金收益不构成结论——防守型变体在熊市周期必然领先（#583）。
+
 `tradeable_l4` 不再按 Trend/Accum 固定配额截断候选：形态通过统一损失护栏后进入质量池，最终按质量排序，最多送审 8 只且同一行业最多 2 只。CAUTION 下未确认 launchpad 只观察；
 其它可交易水温最多保留一个 launchpad 席位，并先给 Spring/LPS/SOS、主线和其它非 launchpad 候选留出位置。
 
