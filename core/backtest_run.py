@@ -220,6 +220,8 @@ def _base_summary(
         "top_n": config.replay.top_n,
         "ai_selection_mode": config.replay.selection_mode,
         "strategy_variant": config.strategy_variant,
+        "selection_strategy": config.replay.selection_strategy,
+        "rs_window": config.replay.rs_window if config.replay.selection_strategy == "rs" else None,
         "a_share_entry_research": asdict(config.replay.a_share_entry_research),
         "ai_top_n_cap": None if config.replay.top_n <= 0 else config.replay.top_n,
         "board": context.board,

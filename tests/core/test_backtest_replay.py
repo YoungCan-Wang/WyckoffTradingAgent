@@ -294,6 +294,69 @@ def test_replay_backtest_live_execution_gate_blocks_risk_on(monkeypatch) -> None
     assert replay.regime_blocked_candidates == 2
 
 
+def _rs_hist(closes: list[float]) -> pd.DataFrame:
+    frame = _hist().copy()
+    frame["close"] = closes
+    frame["amount"] = [1e9] * len(closes)
+    return frame
+
+
+def _rs_replay(monkeypatch, *, regime: str, gate: str):
+    monkeypatch.setattr("core.backtest_replay.calc_market_breadth", lambda _df_map: {})
+    monkeypatch.setattr(
+        "core.backtest_replay.analyze_benchmark_and_tune_cfg", lambda *_args, **_kwargs: {"regime": regime}
+    )
+
+    def forbidden_funnel(**_kwargs):
+        raise AssertionError("rs 基线不得跑漏斗")
+
+    monkeypatch.setattr("core.backtest_replay.run_funnel", forbidden_funnel)
+    cfg = FunnelConfig(trading_days=3)
+    cfg.ma_long = 2
+    cfg.amount_avg_window = 2
+    return replay_backtest(
+        all_df_map={"strong": _rs_hist([10, 10, 13, 13, 13]), "weak": _rs_hist([10, 10, 10.5, 10.5, 10.5])},
+        bench_df=_hist(),
+        trade_dates=[date(2026, 1, day) for day in range(1, 6)],
+        name_map={"strong": "强", "weak": "弱"},
+        market_cap_map={},
+        sector_map={},
+        base_cfg=cfg,
+        config=replace(_config(), selection_strategy="rs", rs_window=2, execution_regime_gate=gate),
+    )
+
+
+def test_rs_strategy_skips_funnel_and_trades_top_relative_strength(monkeypatch) -> None:
+    replay = _rs_replay(monkeypatch, regime="NEUTRAL", gate="off")
+
+    assert replay.pending_confirmed_total == 0
+    assert replay.eval_days == 2
+    assert [(record.code, record.trigger, record.track) for record in replay.records] == [("strong", "RS2", "rs")]
+    assert replay.records[0].signal_confirmed is False
+    assert replay.records[0].score == pytest.approx(30.0 - 19.6, abs=0.01)
+    assert replay.records[0].watch_score is None
+    assert replay.selection_coverage[-1]["layer3_symbols"] == 2
+    assert replay.selection_coverage[-1]["selected_after_gate"] == ["strong"]
+
+
+def test_rs_strategy_cools_down_reentry_for_hold_days() -> None:
+    config = replace(_config(), selection_strategy="rs", rs_window=2, hold_days=3)
+    result = _result()._replace(triggers={"RS2": [("strong", 10.0), ("mid", 5.0)]})
+    ctx = replay_mod._DayContext(5, date(2026, 1, 6), date(2026, 1, 7), {}, {}, FunnelConfig(), result, "NEUTRAL")
+
+    assert replay_mod._select_rs_codes(ctx, config, {"strong": 3}).codes == ["mid"]
+    assert replay_mod._select_rs_codes(ctx, config, {"strong": 2}).codes == ["strong"]
+    assert replay_mod._select_rs_codes(ctx, config, {"strong": 3, "mid": 4}) is None
+
+
+def test_rs_strategy_obeys_live_execution_gate(monkeypatch) -> None:
+    replay = _rs_replay(monkeypatch, regime="RISK_ON", gate="live")
+
+    assert replay.records == []
+    assert replay.regime_blocked_signal_days == 1
+    assert replay.regime_blocked_candidates == 1
+
+
 def test_replay_backtest_neutral_only_gate_blocks_caution(monkeypatch) -> None:
     assert replay_mod._execution_regime_allows("NEUTRAL", "neutral_only") is True
     assert replay_mod._execution_regime_allows("CAUTION", "neutral_only") is False
