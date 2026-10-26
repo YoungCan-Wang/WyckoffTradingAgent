@@ -930,7 +930,7 @@ MCP server 走 ToolSurface，没有确认弹窗也没有待批队列。`tools/wr
 | **回测网格** (`backtest_grid.yml`) | 手动触发 | 多周期 × 多交易风格回放，同时输出参数邻域稳定性与按时间前推的 walk-forward 样本外验证 |
 | **策略消融** (`backtest_grid.yml: strategy_compare`) | 手动显式开启 | A/M/P 五窗口结论已稳定为不晋级，默认网格不再重复消耗五个全市场任务；仅在 `run_strategy_compare=true` 时复现历史证据。手动复跑仍按窗口共用一次信号台账、分别重放权重与现金组合；候选/触发规则不同的策略禁止共享，故 matrix 分两片：`amp`（A/M/P 共享台账）、`calib`（I 独算）。Q/N/O、Q/R/S/T 形态门控与 Layer 2 两轨制 J（#476，六窗口三胜三负、边际成交更差，代码已删）均已否决，不改变生产漏斗 |
 | **闸门基线** (`backtest_grid.yml: gate_baseline`) | 随网格固定运行 | 每个活动周期跑 `--execution-regime-gate live` 与 `off` 两片（退出固定 15 日 / -8% / +18%，slot_equal_4），两片各自算台账。生产闸门净效果是 RISK_ON / NEUTRAL 禁买，参数格永远没有牛市主升段的成交；off 组回答确认信号本身在被拦水温里的净超额（#567）。`gate_baseline_report.md/json` 按固定协议配对 live/off：对上证与创业板指两列逐笔超额、bootstrap 95% CI、去前 1/3/5 笔均收、`signal_date+code` 配对的边际成交按水温拆分；研究对照，不改变生产闸门 |
-| **触发阈值标定** (`backtest_trigger_calibration.yml`) | 手动触发 | 按周期 × 取值扇出，每个 job 完整重跑一次全市场漏斗；扫触发阈值时按目标触发器单信号均收做跨周期 walk-forward 选值，扫 `top_n` 时按全样本均收对比选择层增益；填 `grid_cells` 则改走共享台账的退出网格，在 `top_n=0` 原始池上取退出基准 |
+| **触发阈值标定** (`backtest_trigger_calibration.yml`) | 手动触发 | 按周期 × 取值扇出，每个 job 完整重跑一次全市场漏斗；扫触发阈值时按目标触发器单信号均收做跨周期 walk-forward 选值，扫 `top_n` 时按全样本均收对比选择层增益；填 `grid_cells` 则改走共享台账的退出网格，在 `top_n=0` 原始池上取退出基准。周期含 `bull_2025`；calibrate job 注入与 Backtest Grid 相同的 `STEP4_BUY_*` 闸门 env 与 BEAR_REBOUND 配额，`live` 闸门与生产同向 |
 
 回测回放在每个历史区间开始时一次性预计算各股票在所有交易日的历史终点位置，日循环直接按整数位置切片；
 切片同时携带已按日期排序的内部标记，避免下游指标反复扫描日期单调性。该优化只替换数据访问方式，不改变
