@@ -773,6 +773,11 @@ jobs:
             --allow-static-meta \
             --output-dir "$RUN_DIR" \
             | tee "$RUN_DIR/run.log"
+          # 水温纯择时基线（build_backtest_regime_timing.py）在 notify 里只拿得到分片产物，
+          # 指数行情随分片一起带出去（两个小 CSV），避免 notify 再下载整份快照。
+          for bench in benchmark_main benchmark_smallcap; do
+            [ -f "snapshot_data/${bench}.csv" ] && cp "snapshot_data/${bench}.csv" "$RUN_DIR/${bench}.csv"
+          done
 
       - name: Upload gate baseline artifact
         if: always() && steps.period.outputs.active == 'true'
@@ -910,6 +915,14 @@ jobs:
             --markdown-output gate_baseline_report.md \
             --json-output gate_baseline_report.json
 
+      # 不选股、只按水温持有/空仓指数：回答「水温这个部件本身有没有择时价值」（#583）。
+      - name: Build regime timing report
+        run: |
+          python3 scripts/build_backtest_regime_timing.py \
+            --artifacts-dir gate_artifacts \
+            --markdown-output regime_timing_report.md \
+            --json-output regime_timing_report.json
+
       - name: Upload market backtest report
         if: always()
         uses: actions/upload-artifact@v7
@@ -926,6 +939,8 @@ jobs:
             strategy_ablation_report.json
             gate_baseline_report.md
             gate_baseline_report.json
+            regime_timing_report.md
+            regime_timing_report.json
           retention-days: 30
           if-no-files-found: error
 

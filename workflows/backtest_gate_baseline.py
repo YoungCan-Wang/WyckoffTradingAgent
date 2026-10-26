@@ -47,7 +47,7 @@ DECISION_RULE = (
     "random 组的超额就是执行路径本身（T+1 开盘入场、止损/止盈不对称、强制离场、摩擦）的损耗，"
     "wyckoff 与 random 不可区分即漏斗选股贡献为零。"
 )
-_DIR_PATTERN = re.compile(
+GATE_DIR_PATTERN = re.compile(
     r"backtest-gate-"
     r"(?P<period>recent_2m|recent_6m|bull_2020|bear_2022|sideways_2023|volatile_2024|bull_2025|custom)-"
     r"(?P<gate>live|off)"
@@ -83,7 +83,7 @@ def load_gate_baseline_rows(artifacts_dir: Path, ignored_dirs: list[str] | None 
     rows: list[GateBaselineRow] = []
     paths = sorted(Path(path) for path in glob.glob(str(artifacts_dir / "**" / "summary_*.md"), recursive=True))
     for path in paths:
-        match = _DIR_PATTERN.search(path.parent.name)
+        match = GATE_DIR_PATTERN.search(path.parent.name)
         if not match:
             if ignored_dirs is not None:
                 ignored_dirs.append(str(path.parent.relative_to(artifacts_dir)))
