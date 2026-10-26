@@ -32,16 +32,10 @@ name: Trigger Eval
 #   3) top10 与 top20 的不对称 —— 负号只在集中持仓档成立，宽档不显著，别外推。
 # 触发面板要逐票逐日重放六个检测器（约 90 分钟）且需 210 个 bar 预热，故与行情一起缓存。
 on:
-  schedule:
-    # 路径 B（六档硬编码分值）已于 PR #498 拍平为 TRIGGER_SCORE_POINTS = 25.0，那半边的问题答完了；
-    # 但路径 A（watch_score 里 trigger_q 0.30）上面记的是「方向指向下调，档位待更多样本」，
-    # 停掉定时就再也攒不到样本。故不归档，只由周频（每次约 2.5 小时）降为月频。
-    # 月频统一放在 UTC 22:10 = 北京时间次日 06:10。派发晚 3~4.5 小时（AGENTS.md 评审规则 7），
-    # 实际起跑落在北京 06:10~10:40；这段没有任何读 Tushare 的定时任务（最近的是 16:05 的
-    # nav_snapshot），延迟为零也照样空闲。不放北京夜里：工作日 recommendation_tracking_reprice
-    # （UTC 15:00）与 signal_feedback（UTC 15:30）延迟后落在北京 02:00~04:00，正好压在旧时段上。
-    # 五个月频 eval 按 4/6/8/10/12 日错开，只为分摊配额，不构成先后。
-    - cron: "10 22 12 * *"
+  # #567 六周期全量审计（run 40169421503）已证实 watch_score 排序分无跨周期分辨力，
+  # 停止排序分与触发权重参数研究；停用定时调度以节省 CI 与取数配额，保留 workflow_dispatch 备查。
+  # schedule:
+  #   - cron: "10 22 12 * *"
   workflow_dispatch:
     inputs:
       horizon:

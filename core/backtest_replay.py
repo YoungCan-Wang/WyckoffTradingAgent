@@ -35,6 +35,7 @@ from core.backtest_execution import (
 )
 from core.backtest_rs_selection import RS_TRACK, rank_relative_strength, rs_trigger_name
 from core.backtest_selection import combine_trigger_scores, select_ai_input_codes
+from core.candidate_metadata import candidate_signal_triggers, merge_trigger_maps
 from core.candidate_policy import (
     CandidatePolicyConfig,
     candidate_score_value,
@@ -707,12 +708,6 @@ def _select_ranked_codes(
 ) -> tuple[_RankedSelection | None, int]:
     if config.selection_strategy == "rs":
         return _select_rs_codes(ctx, config, rs_cooldown or {}), 0
-    confirmed = _confirmed_signals(ctx, pending_pool, sector_map, config.a_share_entry_research)
-    if config.enforce_confirmed_loss_guard:
-        guarded_codes, guard_dropped = _guarded_confirmed_codes(confirmed, ctx, config)
-        if guard_dropped:
-            logger.debug("confirmed 护栏拦截 %d 只: %s", len(guard_dropped), guard_dropped)
-        confirmed = replace(confirmed, codes=guarded_codes)
     selected_codes, score_map, track_map = select_ai_input_codes(
         result=ctx.result,
         day_df_map=ctx.day_df_map,
@@ -724,6 +719,14 @@ def _select_ranked_codes(
         ai_allocation=config.ai_allocation,
         signal_weight_map=config.signal_weight_map,
     )
+    confirmed = _confirmed_signals(
+        ctx, pending_pool, sector_map, config.a_share_entry_research, selected_codes=frozenset(selected_codes)
+    )
+    if config.enforce_confirmed_loss_guard:
+        guarded_codes, guard_dropped = _guarded_confirmed_codes(confirmed, ctx, config)
+        if guard_dropped:
+            logger.debug("confirmed 护栏拦截 %d 只: %s", len(guard_dropped), guard_dropped)
+        confirmed = replace(confirmed, codes=guarded_codes)
     ranked_codes = _merge_codes(selected_codes, confirmed.codes, config.pending_mode, config.pending_merge_order)
     _merge_confirmed_metadata(score_map, track_map, confirmed)
     ranked_codes = _apply_selection_guards(ranked_codes, ctx, config)
@@ -799,13 +802,23 @@ def _confirmed_signals(
     pending_pool: PendingPool | None,
     sector_map: dict[str, str],
     policy: AShareEntryResearchPolicy | None = None,
+    *,
+    selected_codes: frozenset[str] | None = None,
 ) -> _ConfirmedSignals:
     if pending_pool is None:
         return _ConfirmedSignals([], {}, {}, {})
     research = policy or AShareEntryResearchPolicy()
     signal_date_str = ctx.signal_date.isoformat()
+    # 与实盘 Step2.5 对齐：待确认池同时吃 L4 触发与候选车道触发，且车道触发只取
+    # AI 已选中（selected_for_ai）的候选，与实盘 _selected_candidate_entries 一致。
+    # 只喂 L4 时 lps/sos/main_force_entry 等车道信号永不入池，回放确认池构成与实盘
+    # 系统性分叉（bull_2025 回放全年 lps/sos 确认为 0，实盘同期却有成交）。
+    lane_entries = ctx.result.candidate_entries
+    if selected_codes is not None:
+        lane_entries = [item for item in lane_entries or [] if str(item.get("code", "")).strip() in selected_codes]
+    merged_triggers = merge_trigger_maps(ctx.result.triggers, candidate_signal_triggers(lane_entries))
     pending_pool.write(
-        signal_date_str, ctx.result.triggers, ctx.day_df_map, ctx.regime, ctx.name_map, sector_map, ctx.day_cfg
+        signal_date_str, merged_triggers, ctx.day_df_map, ctx.regime, ctx.name_map, sector_map, ctx.day_cfg
     )
     confirmed_items = pending_pool.tick(ctx.day_df_map, signal_date_str)
     if not market_context_allows_entry(research, regime=ctx.regime, breadth=ctx.breadth):

@@ -160,6 +160,7 @@ def test_weekly_reflection_gate_reads_trigger_cron_not_wall_clock():
     assert 'cron: "30 15 * * 5"' in workflow
     assert "TRIGGER_CRON: ${{ github.event.schedule }}" in workflow
     assert '[ "${TRIGGER_CRON}" = "30 15 * * 5" ]' in workflow
+    assert workflow.count("if: steps.reflection_policy.outputs.run == 'true'") == 3
 
 
 def test_review_shadow_backtest_collects_traces_from_failed_funnel_runs_too():
