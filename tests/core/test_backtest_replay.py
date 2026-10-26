@@ -348,6 +348,40 @@ def test_confirmed_signals_dedupes_code_and_keeps_best_score() -> None:
     assert confirmed.trigger_map == {"000001": "spring"}
 
 
+def test_confirmed_signals_writes_candidate_lane_triggers_to_pool() -> None:
+    captured: dict = {}
+
+    class Pending:
+        def write(self, _date, triggers, *_args, **_kwargs):
+            captured.update(triggers)
+
+        def tick(self, *_args, **_kwargs):
+            return []
+
+    result = _result()._replace(
+        candidate_entries=[
+            {"code": "000002", "entry_type": "lps", "score": 12.0},
+            {"code": "000003", "signal_key": "main_force_entry", "score": 9.0},
+        ]
+    )
+    ctx = replay_mod._DayContext(
+        idx=0,
+        signal_date=date(2026, 1, 1),
+        entry_target_date=date(2026, 1, 2),
+        day_df_map={"000001": _hist()},
+        name_map={"000001": "平安银行"},
+        day_cfg=FunnelConfig(trading_days=3),
+        result=result,
+        regime="NEUTRAL",
+    )
+
+    replay_mod._confirmed_signals(ctx, Pending(), {})
+
+    # L4 的 sos 与车道来的 lps / main_force_entry 必须同时入池（与实盘 Step2.5 一致）。
+    assert set(captured) >= {"sos", "lps", "main_force_entry"}
+    assert captured["lps"] == [("000002", 12.0)]
+
+
 def test_confirmed_signals_rank_codes_by_best_score() -> None:
     class Pending:
         def write(self, *_args, **_kwargs):
@@ -969,11 +1003,19 @@ def test_mainline_ai_cap_collapses_wider_research_pool_to_same_entries(regime, w
     old_pool = _pending_mainline_compatibility_case(regime, 3, weighted)
     full_pool = _pending_mainline_compatibility_case(regime, 6, weighted)
     assert [day["research_count"] for day in full_pool["days"]] == [3, 3, 3]
-    assert [day["confirmed_count"] for day in full_pool["days"]] == [0, 5, 0]
+    # 6 = 5 个 L4 确认 + 1 个车道（mainline）确认：待确认池与实盘 Step2.5 对齐后
+    # 同时吃车道触发，两种池宽下都一样多，故下游仍逐笔一致。
+    assert [day["confirmed_count"] for day in full_pool["days"]] == [0, 6, 0]
     assert full_pool["days"][1]["scores"] == old_pool["days"][1]["scores"]
     assert [day["selected"] for day in old_pool["days"]] == [day["selected"] for day in full_pool["days"]]
     for field in ("trades", "fills", "final_cash", "skipped_full"):
         assert full_pool[field] == old_pool[field]
-    assert all(row["code"] != "000006" for row in full_pool["trades"])
+    # 000006 靠车道（mainline）确认入池：与实盘 Step2.5 对齐后它能确认并成交，
+    # 旧口径只喂 L4 时它永远进不了池。RISK_OFF 下闸门仍拦，照旧不成交。
+    if regime == "RISK_ON":
+        assert any(row["code"] == "000006" for row in full_pool["trades"])
+    else:
+        assert all(row["code"] != "000006" for row in full_pool["trades"])
     assert len(full_pool["fills"]) == (4 if regime == "RISK_ON" else 0)
-    assert full_pool["skipped_full"] == (1 if regime == "RISK_ON" else 0)
+    # 车道确认多放行一笔（000006），现金账户满仓跳过随之 1 → 2。
+    assert full_pool["skipped_full"] == (2 if regime == "RISK_ON" else 0)
