@@ -797,6 +797,12 @@ jobs:
     if: always()
     env:
       FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+      # regime_timing 的 production_gate 变体在这里解析 oms_buy_block_regimes()，必须与 gate_baseline
+      # job 读到同一份 BLOCK/ALLOW；run 40340681002 漏了这两行，产物里的 production_gate 实际是代码
+      # 默认集（CAUTION/NEUTRAL/PANIC_REPAIR_CONFIRMED），不是生产闸门。
+      STEP4_BUY_BLOCK_REGIMES: ${{ vars.STEP4_BUY_BLOCK_REGIMES || 'UNKNOWN,NEUTRAL,PANIC_REPAIR,RISK_OFF,CRASH,BLACK_SWAN' }}
+      STEP4_BUY_ALLOW_REGIMES: ${{ vars.STEP4_BUY_ALLOW_REGIMES || 'BEAR_REBOUND' }}
+      STEP4_BUY_PROBE_REGIMES: ${{ vars.STEP4_BUY_PROBE_REGIMES || '' }}
     steps:
       - name: Resolve period dates
         env:
