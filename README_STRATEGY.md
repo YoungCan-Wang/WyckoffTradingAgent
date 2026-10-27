@@ -311,6 +311,15 @@ RISK_OFF / CRASH / BLACK_SWAN / UNKNOWN）、`risk_on_only`、`production_gate`�
 用与水温变体完全相同的成本与判定规则，报告按水温与情绪状态分别给出「状态 → 次日指数收益」条件表。
 它检验的是游资「赚钱效应 / 亏钱效应」这一类口径能否作为指数择时信号，与选股无关。
 
+`exit_baseline` 阶段把执行结构当被试（#597）：7 周期 × `wyckoff` / `random`、闸门固定 off，每片用
+`--grid-cells` 在同一份信号台账上重放六个退出单元——持有期 15 / 30 / 60 日 × {−8% / +18% stop_first, 只到期}
+（台账冷却 = 最小持有期 15 日，与 grid 阶段同一机制），产物 `backtest-exit-<period>-<strategy>/backtest-exit-h<hold>-sl<stop>-tp<take>-tr0/`。
+notify 产出 `exit_baseline_report.md/json`：每个策略 × 单元合并六基线周期的逐笔超额 CI、`exit_reason` 分布，以及
+组合层超额（周期现金收益 − 同期指数收益，逐笔超额看不到换手）。判定：random 在哪个单元 CI 含 0 或为正（执行税
+归零）；哪个单元 wyckoff 对 random 分离（与闸门基线同一规则）；只有分离且 wyckoff 自身 CI 下沿 > 0 的单元才记
+`positive_structure_found`，否则按 `separation_without_positive_excess` / `execution_tax_removable_no_selection_signal` /
+`execution_tax_persists` 归类。
+
 `tradeable_l4` 不再按 Trend/Accum 固定配额截断候选：形态通过统一损失护栏后进入质量池，最终按质量排序，最多送审 8 只且同一行业最多 2 只。CAUTION 下未确认 launchpad 只观察；
 其它可交易水温最多保留一个 launchpad 席位，并先给 Spring/LPS/SOS、主线和其它非 launchpad 候选留出位置。
 

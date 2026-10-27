@@ -4,10 +4,10 @@ from workflows.backtest_gate_baseline import (
     BASELINE_PERIODS,
     GateTrade,
     _contrast_status,
-    _protocol,
     build_gate_baseline,
     load_gate_baseline_rows,
     render_gate_baseline,
+    trade_protocol,
 )
 
 _LIVE_TRADES = [("2025-03-03", "000001", "CAUTION", -3.0, 1.0, 2.0, "stop_loss")]
@@ -142,10 +142,10 @@ def test_gate_baseline_reports_missing_cells_and_ignored_dirs(tmp_path: Path) ->
 
 def test_gate_baseline_signal_requires_both_benchmark_cis_to_exclude_zero() -> None:
     trades = [GateTrade(f"d:{idx}", "RISK_ON", 5.0 + idx * 0.1, 4.0 + idx * 0.1, -0.1) for idx in range(30)]
-    assert _protocol(trades)["signal"] == "inconclusive"
+    assert trade_protocol(trades)["signal"] == "inconclusive"
     trades = [GateTrade(f"d:{idx}", "RISK_ON", 5.0 + idx * 0.1, 4.0 + idx * 0.1, 3.0 + idx * 0.1) for idx in range(30)]
-    assert _protocol(trades)["signal"] == "positive"
-    assert _protocol([])["signal"] == "inconclusive"
+    assert trade_protocol(trades)["signal"] == "positive"
+    assert trade_protocol([])["signal"] == "inconclusive"
 
 
 def test_contrast_status_requires_both_benchmarks_to_separate_in_the_same_direction() -> None:
