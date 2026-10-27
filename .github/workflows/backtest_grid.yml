@@ -630,7 +630,8 @@ jobs:
   # rs / random 片跳过漏斗，分别按 60 日相对强度 / 固定种子随机取 top_n，其余参数与 wyckoff 片
   # 逐字相同。rs 回答"漏斗是否优于朴素排序"，random 量的是执行路径本身（T+1 开盘入场、止损/
   # 止盈不对称、强制离场、摩擦）的损耗——漏斗必须显著高于它才算有选股贡献（#576）。
-  # 两者都不是生产逻辑的代理，只是对照组。
+  # reversal 片是 rs 同一排序取最弱的 top_n（短期反转对照，#590）。
+  # 以上都不是生产逻辑的代理，只是对照组。
   gate_baseline:
     name: Gate ${{ matrix.period_key }} / ${{ matrix.gate }} / ${{ matrix.strategy }}
     runs-on: ubuntu-latest
@@ -644,12 +645,12 @@ jobs:
       STEP4_BLOCK_BUY_SIGNAL_TYPES: ${{ vars.STEP4_BLOCK_BUY_SIGNAL_TYPES || '' }}
     strategy:
       fail-fast: false
-      # 36 个活跃分片里 rs / random 片不跑漏斗（约 15 分钟，耗时在逐日水温/广度），并行度按 wyckoff 片数（12）定即可。
+      # 48 个活跃分片里 rs / random / reversal 片不跑漏斗（约 15 分钟，耗时在逐日水温/广度），并行度按 wyckoff 片数（12）定即可。
       max-parallel: 12
       matrix:
         period_key: [recent_2m, recent_6m, bull_2020, bear_2022, sideways_2023, volatile_2024, bull_2025]
         gate: [live, off]
-        strategy: [wyckoff, rs, random]
+        strategy: [wyckoff, rs, random, reversal]
     steps:
       - name: Resolve period dates
         id: period

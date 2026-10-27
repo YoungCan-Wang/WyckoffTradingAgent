@@ -224,9 +224,10 @@ def _add_signal_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--abc-filter", action="store_true", default=False, help="启用 ABC 起跳板过滤")
     parser.add_argument(
         "--selection-strategy",
-        choices=["wyckoff", "rs", "random"],
+        choices=["wyckoff", "rs", "random", "reversal"],
         default="wyckoff",
         help="选股源: wyckoff=生产漏斗（默认）；rs=相对强度对照，按 N 日超额涨幅取 top_n；"
+        "reversal=同一排序取最弱的 top_n（短期反转对照）；"
         "random=固定种子随机对照，量执行路径本身的损耗；对照组跳过漏斗，其余（水温闸门、入场、退出、摩擦）"
         "与 wyckoff 完全一致",
     )

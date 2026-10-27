@@ -570,7 +570,14 @@ def _control_funnel_result(
     ranked = (
         rank_random(day_df_map, signal_date, day_cfg, seed=config.control_seed)
         if config.selection_strategy == "random"
-        else rank_relative_strength(day_df_map, bench_slice, signal_date, day_cfg, window=config.rs_window)
+        else rank_relative_strength(
+            day_df_map,
+            bench_slice,
+            signal_date,
+            day_cfg,
+            window=config.rs_window,
+            weakest=config.selection_strategy == "reversal",
+        )
     )
     codes = [code for code, _ in ranked]
     return FunnelResult(
