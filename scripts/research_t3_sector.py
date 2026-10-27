@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import _bootstrap  # noqa: F401
 import pandas as pd
 
 from core.trade_friction import round_trip_cost_pct
