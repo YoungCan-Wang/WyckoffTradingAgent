@@ -141,6 +141,8 @@ def _selection_strategy_line(summary: dict) -> str:
     strategy = str(summary.get("selection_strategy") or "wyckoff")
     if strategy == "rs":
         return f"- 选股源: rs（相对强度基线，回看 {summary.get('rs_window')} 日；不代表生产漏斗，仅作对照）"
+    if strategy == "reversal":
+        return f"- 选股源: reversal（短期反转对照，回看 {summary.get('rs_window')} 日取最弱；不代表生产漏斗）"
     if strategy == "random":
         return (
             f"- 选股源: random（固定种子 {summary.get('control_seed')} 随机对照；量执行路径本身的损耗，不代表生产漏斗）"

@@ -285,8 +285,14 @@ T+1 开盘入场、-8%/+18% 不对称止损止盈、到期强制离场、摩擦�
 已显示 BEAR_REBOUND 放行并不能让朴素排序取得非负超额）。判读规则事先登记：wyckoff 与 random 的合并超额 CI
 重叠即视为选股层贡献为零、负超额来自执行结构；wyckoff 显著高于 random 才算漏斗有被执行吃掉的选股贡献；
 显著低于 random 则漏斗在主动挑差股。单元表新增 `止损/止盈/到期` 列（`exit_reason` 分布），用来判断负超额
-是止损触发率还是到期离场拖的。CLI 上 `rs` / `random` 都要求 `--top-n ≥ 1`。产物目录为
+是止损触发率还是到期离场拖的。CLI 上 `rs` / `random` / `reversal` 都要求 `--top-n ≥ 1`。产物目录为
 `backtest-gate-<period>-<gate>-<strategy>/`，旧的无 strategy 后缀目录按 wyckoff 读取。
+
+第四片 `--selection-strategy reversal`（短期反转对照）是 rs 同一排序取最弱的 `top_n`：#579 里 rs 显著低于
+random（−2.24% 对 −1.04%），而短期反转是 A 股文献里最稳的截面效应，所以同一排序的另一端是最便宜的下一个
+检验。判读两步都要过才算有扣费后的截面信号：先对 random 分离（`wyckoff_below_reversal` 之外还要看
+reversal 自身对 random 的合并超额 CI），再看 reversal 合并超额 CI 下沿是否 > 0；只过第一步说明换手与止损
+结构把它吃掉了，那时才轮到持有期 / 退出结构实验（#590）。
 
 同一 notify 阶段还产出 `regime_timing_report.md/json`（水温纯择时基线）：不选股，只按每日水温决定持有还是
 空仓指数。水温取分片 `selection_coverage_*.json` 里生产路径逐日算出的同一份序列，指数行情取分片随产物带出的

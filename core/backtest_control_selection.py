@@ -6,6 +6,9 @@ so the funnel's confirmed signals can be judged against known-cheap alternatives
 same regime gate, exits, friction and benchmark-excess protocol (#567, #576):
 
 - ``rs``: 60-day return minus the benchmark's, descending.
+- ``reversal``: the same score ascending (the mirror of ``rs``). Short-horizon reversal is
+  the best-documented A-share cross-sectional effect, and ``rs`` landed below ``random``
+  on #579, so the weakest side of the same ranking is the cheapest next thing to test.
 - ``random``: a uniform draw from the eligible universe. Its excess is the drag of the
   execution path itself (T+1 open entry, asymmetric stop/target, forced exit, friction),
   which is what any selection source must beat before it can be called alpha.
@@ -20,12 +23,14 @@ import pandas as pd
 
 from core.wyckoff_engine import FunnelConfig, dollar_volume_series
 
-CONTROL_STRATEGIES = ("rs", "random")
+CONTROL_STRATEGIES = ("rs", "random", "reversal")
 RANDOM_TRIGGER = "RANDOM"
 
 
 def control_trigger_name(strategy: str, window: int) -> str:
-    return RANDOM_TRIGGER if strategy == "random" else f"RS{int(window)}"
+    if strategy == "random":
+        return RANDOM_TRIGGER
+    return f"REV{int(window)}" if strategy == "reversal" else f"RS{int(window)}"
 
 
 def rank_relative_strength(
@@ -35,9 +40,11 @@ def rank_relative_strength(
     cfg: FunnelConfig,
     *,
     window: int,
+    weakest: bool = False,
 ) -> list[tuple[str, float]]:
     """Every eligible code by ``window``-day return minus the benchmark's, descending.
 
+    ``weakest`` flips the order so the laggards come first (the ``reversal`` control).
     Truncation to ``top_n`` happens in the replay after the re-entry cooldown is applied.
     """
     bench_ret = _window_return_pct(bench_slice, window)
@@ -48,7 +55,7 @@ def rank_relative_strength(
         stock_ret = _window_return_pct(df, window)
         if stock_ret is not None:
             scored.append((code, stock_ret - bench_ret))
-    scored.sort(key=lambda item: (-item[1], item[0]))
+    scored.sort(key=lambda item: (item[1] if weakest else -item[1], item[0]))
     return scored
 
 

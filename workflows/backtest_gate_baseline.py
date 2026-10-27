@@ -33,8 +33,8 @@ from workflows.backtest_report_stats import (
 )
 
 GATES = ("live", "off")
-STRATEGIES = ("wyckoff", "rs", "random")
-CONTROLS = ("rs", "random")
+STRATEGIES = ("wyckoff", "rs", "random", "reversal")
+CONTROLS = ("rs", "random", "reversal")
 EXIT_REASONS = ("stop_loss", "take_profit", "time_exit")
 BASELINE_PERIODS = ("bull_2020", "bear_2022", "sideways_2023", "volatile_2024", "bull_2025", "recent_6m")
 TAIL_DROPS = (1, 3, 5)
@@ -46,12 +46,14 @@ DECISION_RULE = (
     "低于对照的 CI 下沿才算劣于对照，反之才算优于对照，区间重叠记为不可区分；两个基准方向一致才算分离。"
     "random 组的超额就是执行路径本身（T+1 开盘入场、止损/止盈不对称、强制离场、摩擦）的损耗，"
     "wyckoff 与 random 不可区分即漏斗选股贡献为零。"
+    "reversal 是 rs 同一排序取最弱的一侧：它本身要先对 random 分离、再看合并超额 CI 下沿是否 > 0，"
+    "两步都过才算有扣费后的截面信号；只过第一步只说明换手与止损结构把它吃掉了。"
 )
 GATE_DIR_PATTERN = re.compile(
     r"backtest-gate-"
     r"(?P<period>recent_2m|recent_6m|bull_2020|bear_2022|sideways_2023|volatile_2024|bull_2025|custom)-"
     r"(?P<gate>live|off)"
-    r"(?:-(?P<strategy>wyckoff|rs|random))?"
+    r"(?:-(?P<strategy>wyckoff|rs|random|reversal))?"
     r"(?:-\d+)?$"
 )
 

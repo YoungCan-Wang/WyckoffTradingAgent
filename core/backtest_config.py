@@ -208,8 +208,8 @@ def _validate_modes(
 
 def _validate_selection_strategy(params: BacktestRunInput) -> None:
     strategy = str(params.selection_strategy or "wyckoff").strip().lower()
-    if strategy not in {"wyckoff", "rs", "random"}:
-        raise ValueError("selection_strategy 必须是 wyckoff / rs / random")
+    if strategy not in {"wyckoff", "rs", "random", "reversal"}:
+        raise ValueError("selection_strategy 必须是 wyckoff / rs / random / reversal")
     if strategy != "wyckoff" and int(params.top_n) < 1:
         raise ValueError(f"selection_strategy={strategy} 时 top_n 必须 >= 1（对照组按排序取前 N，不能不截断）")
     if int(params.rs_window) < 5:

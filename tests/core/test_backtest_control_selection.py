@@ -39,6 +39,15 @@ def test_ranks_by_excess_return_over_benchmark_descending() -> None:
     assert ranked[0][1] == pytest.approx(30.0 - 10.0)
 
 
+def test_reversal_is_the_same_ranking_weakest_first() -> None:
+    signal_date = _START + timedelta(days=4)
+    bench = _hist([100, 100, 100, 100, 110])
+    day_df_map = {"weak": _hist([10, 10, 10, 10, 10.5]), "strong": _hist([10, 10, 10, 10, 13])}
+    ranked = rank_relative_strength(day_df_map, bench, signal_date, _cfg(), window=2, weakest=True)
+    assert [code for code, _ in ranked] == ["weak", "strong"]
+    assert control_trigger_name("reversal", 60) == "REV60"
+
+
 def test_drops_stale_short_illiquid_and_cheap_symbols() -> None:
     signal_date = _START + timedelta(days=4)
     bench = _hist([100, 100, 100, 100, 100])
