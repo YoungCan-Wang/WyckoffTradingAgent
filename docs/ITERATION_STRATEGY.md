@@ -137,6 +137,13 @@ run [40253152631](https://github.com/YoungCan-Wang/WyckoffTradingAgent/actions/r
 作为择时层保留、下一步在它之上测低换手因子选股；只有 `drawdown_only` 则水温是风控不是收益来源，只作仓位
 上限；全部 `no_timing_value` 则水温退休，闸门改为纯风险限额，系统不再声称有择时能力。
 
+#583 的结果是全部变体无 `timing_value`，生产放行集只 `drawdown_only` 且回撤改善与 22% 的在场比例无法区分。
+下一个被测的择时口径来自游资而非 Wyckoff：全市场净涨停数（涨停 − 跌停）的 250 日分位作为情绪周期状态
+（`ice` / `ebb` / `warm` / `climax`），同一份 `regime_timing_report` 里加 `sentiment_follow` /
+`sentiment_not_ice` / `sentiment_ice_contrarian` 三个变体，判定规则与水温变体完全相同。任一变体 `timing_value`
+则情绪状态取代水温成为择时层候选；否则「赚钱效应 / 亏钱效应」在指数层面也没有次日信息，择时这条线整体
+退休，转向持有期与退出结构。
+
 run #88 的五窗口结果中，M 相对 A 五窗全胜但只有 1 个窗口自身盈利；P 相对 M 为 4/5 胜、3/5 自身盈利，
 仍在 2023 震荡和 2024 剧烈波动窗口分别亏损 12.71% 与 10.81%，因此只能保持 `review`。按 P 的实际现金
 成交归因后，跨五窗口最大的环境亏损来自 NEUTRAL（178 笔、总盈亏约 −1.31 万）；信号侧亏损集中在

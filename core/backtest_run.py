@@ -19,6 +19,7 @@ from core.backtest_replay import (
 )
 from core.backtest_trade_benchmark import attach_benchmark_returns
 from core.hk_boards import apply_hk_funnel_cfg
+from core.market_sentiment import build_market_sentiment
 from core.theme_activity import build_theme_member_index
 from core.wyckoff_engine import FunnelConfig
 
@@ -96,6 +97,7 @@ def execute_backtest_run(
         pd.DataFrame([record.__dict__ for record in replay.records]), data.bench_df, data.smallcap_bench_df
     )
     summary = _build_run_summary(context, data, config, replay, trades_df)
+    summary["_market_sentiment_df"] = build_market_sentiment(data.all_df_map, data.name_map)
     summary = enrich_backtest_summary(
         summary,
         trades_df=trades_df,
