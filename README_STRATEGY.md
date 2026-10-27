@@ -297,6 +297,14 @@ RISK_OFF / CRASH / BLACK_SWAN / UNKNOWN）、`risk_on_only`、`production_gate`�
 「在场日 − 离场日」次日均收 CI 下沿 > 0 记 `timing_value`；只在回撤上 ≥ 4 个周期更小且 CI 上沿 ≥ 0 记
 `drawdown_only`；其余 `no_timing_value`。单周期现金收益不构成结论——防守型变体在熊市周期必然领先（#583）。
 
+同一报告还带三个情绪周期变体。每次回测都把全市场逐日的涨停 / 跌停 / 触板 / 炸板 / 最高连板数写成
+`market_sentiment_<stamp>.csv`（`core/market_sentiment.py`，用生产 `limit_pct` 与触板容差按前复权收盘价对前收判
+定，创业板 2020-08-24 前按 10%）。择时评估只用净涨停数（涨停 − 跌停）在过去 250 个交易日里的分位：
+< 20% 为 `ice`、< 50% `ebb`、< 80% `warm`、其余 `climax`，不足 120 个观测日不打标签。变体 `sentiment_follow`
+（只在 warm / climax 在场）、`sentiment_not_ice`（只避开 ice）、`sentiment_ice_contrarian`（只在 ice 在场）
+用与水温变体完全相同的成本与判定规则，报告按水温与情绪状态分别给出「状态 → 次日指数收益」条件表。
+它检验的是游资「赚钱效应 / 亏钱效应」这一类口径能否作为指数择时信号，与选股无关。
+
 `tradeable_l4` 不再按 Trend/Accum 固定配额截断候选：形态通过统一损失护栏后进入质量池，最终按质量排序，最多送审 8 只且同一行业最多 2 只。CAUTION 下未确认 launchpad 只观察；
 其它可交易水温最多保留一个 launchpad 席位，并先给 Spring/LPS/SOS、主线和其它非 launchpad 候选留出位置。
 
