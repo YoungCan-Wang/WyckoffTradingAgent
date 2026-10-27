@@ -5,7 +5,13 @@ from datetime import date, timedelta
 import pandas as pd
 import pytest
 
-from core.backtest_control_selection import control_trigger_name, eligible_history, rank_random, rank_relative_strength
+from core.backtest_control_selection import (
+    control_trigger_name,
+    eligible_history,
+    rank_random,
+    rank_relative_strength,
+    rank_sector_strength,
+)
 from core.wyckoff_engine import FunnelConfig
 
 _START = date(2026, 1, 1)
@@ -89,3 +95,21 @@ def test_random_control_is_seeded_per_day_and_respects_eligibility() -> None:
     assert set(eligible_history(day_df_map, signal_date, _cfg())) == {"a", "b", "c"}
     assert control_trigger_name("random", 60) == "RANDOM"
     assert control_trigger_name("rs", 20) == "RS20"
+
+
+def test_sector_strength_ranks_sectors_by_median_and_shuffles_inside() -> None:
+    signal_date = _START + timedelta(days=4)
+    bench = _hist([100, 100, 100, 100, 100])
+    day_df_map = {f"hot{i}": _hist([10, 10, 10, 10, 11 + i * 0.1]) for i in range(5)}
+    day_df_map |= {f"cold{i}": _hist([10, 10, 10, 10, 9.5]) for i in range(5)}
+    day_df_map |= {"lonely": _hist([10, 10, 10, 10, 20])}
+    sector_map = {code: code.rstrip("0123456789") for code in day_df_map}
+    ranked = rank_sector_strength(day_df_map, bench, signal_date, _cfg(), sector_map, window=2, seed=0)
+    codes = [code for code, _ in ranked]
+    # 板块不足 5 只的 lonely 不参与；hot 板块整体排在 cold 前，板块内分数相同（中位数）、顺序由种子决定。
+    assert "lonely" not in codes
+    assert all(code.startswith("hot") for code in codes[:5]) and all(code.startswith("cold") for code in codes[5:])
+    assert [score for _, score in ranked[:5]] == [pytest.approx(12.0)] * 5
+    assert codes[:5] != sorted(codes[:5])
+    assert ranked == rank_sector_strength(day_df_map, bench, signal_date, _cfg(), sector_map, window=2, seed=0)
+    assert control_trigger_name("sector_rs", 60) == "SECTOR60"
