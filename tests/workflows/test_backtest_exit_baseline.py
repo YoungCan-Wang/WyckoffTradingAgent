@@ -92,10 +92,13 @@ def test_exit_baseline_reads_shards_and_finds_positive_structure(tmp_path: Path)
 def test_exit_baseline_marks_missing_cells_and_persistent_tax(tmp_path: Path) -> None:
     _write_shard(tmp_path, "bull_2020", "wyckoff", {"h15_sl8_tp18": _trades(-2.0, "stop_loss")}, cash=1.0)
     _write_shard(tmp_path, "bull_2020", "random", {"h15_sl8_tp18": _trades(-2.0, "stop_loss")}, cash=1.0)
+    _write_shard(tmp_path, "bull_2020", "quality", {"h15_sl8_tp18": _trades(-2.0, "stop_loss")}, cash=1.0)
     report = build_exit_baseline(load_exit_baseline_rows(tmp_path))
     assert report["status"] == "incomplete"
     assert "wyckoff/bear_2022/h15_sl8_tp18" in report["missing_cells"]
-    assert "sector_rs/bull_2020/h15_sl8_tp18" in report["missing_cells"]
-    assert report["separation"]["h15_sl8_tp18"] == {"wyckoff": "indistinguishable", "sector_rs": "insufficient"}
+    assert "quality/bear_2022/h15_sl8_tp18" in report["missing_cells"]
+    # 对照组按矩阵里实际出现的算：没跑 sector_rs 不算缺格。
+    assert not any(cell.startswith("sector_rs/") for cell in report["missing_cells"])
+    assert report["separation"]["h15_sl8_tp18"] == {"wyckoff": "indistinguishable", "quality": "indistinguishable"}
     assert report["separation"]["h30_none"]["wyckoff"] == "insufficient"
     assert report["verdict"]["status"] == "execution_tax_persists"

@@ -808,11 +808,12 @@ jobs:
     strategy:
       fail-fast: false
       # 21 片：每片一次漏斗（或对照排序）、六个退出单元共用台账，耗时与 gate_baseline 的 off 片相当。
-      # sector_rs 是板块动量对照（板块中位数超额前 3、板块内随机，#599）。
+      # 对照组按轮次换：sector_rs（板块动量，#599 已结论）保留在 CLI；quality 是 PIT 财务三项
+      # 百分位质量因子（#601），读快照里的 financial_history.json。报表按矩阵里实际出现的对照组判完整性。
       max-parallel: 7
       matrix:
         period_key: [recent_2m, recent_6m, bull_2020, bear_2022, sideways_2023, volatile_2024, bull_2025]
-        strategy: [wyckoff, random, sector_rs]
+        strategy: [wyckoff, random, quality]
     steps:
       - name: Resolve period dates
         id: period

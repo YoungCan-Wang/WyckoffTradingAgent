@@ -12,6 +12,9 @@ same regime gate, exits, friction and benchmark-excess protocol (#567, #576):
 - ``sector_rs``: stocks from the three sectors whose median ``rs`` score is highest, ordered
   by sector score and then by a seeded draw inside the sector, so sector momentum is tested
   without re-importing stock momentum (#599).
+- ``quality``: mean cross-sectional percentile of ROE (high), debt-to-asset ratio (low) and
+  operating-cash-to-revenue (high) from the newest financial record announced before the
+  signal date (#601). The one selection source here that does not read prices at all.
 - ``random``: a uniform draw from the eligible universe. Its excess is the drag of the
   execution path itself (T+1 open entry, asymmetric stop/target, forced exit, friction),
   which is what any selection source must beat before it can be called alpha.
@@ -26,17 +29,25 @@ from statistics import median
 
 import pandas as pd
 
+from core.asof_cut import latest_known_record
 from core.wyckoff_engine import FunnelConfig, dollar_volume_series
 
-CONTROL_STRATEGIES = ("rs", "random", "reversal", "sector_rs")
+CONTROL_STRATEGIES = ("rs", "random", "reversal", "sector_rs", "quality")
 RANDOM_TRIGGER = "RANDOM"
 SECTOR_TOP_K = 3
 SECTOR_MIN_SYMBOLS = 5
+QUALITY_TRIGGER = "QUALITY"
 _TRIGGER_PREFIX = {"rs": "RS", "reversal": "REV", "sector_rs": "SECTOR"}
+_QUALITY_FIELDS = (("roe", "roe_diluted"), ("debt_to_asset_ratio",), ("operating_cash_to_revenue",))
+_QUALITY_HIGH_IS_GOOD = (True, False, True)
 
 
 def control_trigger_name(strategy: str, window: int) -> str:
-    return RANDOM_TRIGGER if strategy == "random" else f"{_TRIGGER_PREFIX[strategy]}{int(window)}"
+    if strategy == "random":
+        return RANDOM_TRIGGER
+    if strategy == "quality":
+        return QUALITY_TRIGGER
+    return f"{_TRIGGER_PREFIX[strategy]}{int(window)}"
 
 
 def rank_relative_strength(
@@ -101,6 +112,54 @@ def rank_sector_strength(
         rng.shuffle(codes)
         ranked.extend((code, sector_score) for code in codes)
     return ranked
+
+
+def rank_quality(
+    day_df_map: dict[str, pd.DataFrame],
+    signal_date: date,
+    cfg: FunnelConfig,
+    financial_history: dict[str, list[dict]],
+) -> list[tuple[str, float]]:
+    """Eligible codes by mean percentile of the three quality fields, descending.
+
+    Only codes whose point-in-time record carries all three fields take part, so a missing
+    cash-flow line cannot be read as a good one. Percentiles are the strict-less share within
+    the day's participating universe.
+    """
+    rows: list[tuple[str, tuple[float, ...]]] = []
+    for code in eligible_history(day_df_map, signal_date, cfg):
+        record = latest_known_record(financial_history.get(code) or [], signal_date)
+        values = _quality_values(record) if record else None
+        if values is not None:
+            rows.append((code, values))
+    if not rows:
+        return []
+    columns = list(zip(*(values for _, values in rows), strict=True))
+    scored = []
+    for code, values in rows:
+        pct = [
+            _percentile(column, value, high_is_good)
+            for column, value, high_is_good in zip(columns, values, _QUALITY_HIGH_IS_GOOD, strict=True)
+        ]
+        scored.append((code, sum(pct) / len(pct)))
+    scored.sort(key=lambda item: (-item[1], item[0]))
+    return scored
+
+
+def _quality_values(record: dict) -> tuple[float, ...] | None:
+    out = []
+    for keys in _QUALITY_FIELDS:
+        value = next((record.get(key) for key in keys if record.get(key) is not None), None)
+        try:
+            out.append(float(value))
+        except (TypeError, ValueError):
+            return None
+    return tuple(out)
+
+
+def _percentile(column: tuple[float, ...], value: float, high_is_good: bool) -> float:
+    better_than = sum(item < value for item in column) if high_is_good else sum(item > value for item in column)
+    return better_than / len(column)
 
 
 def rank_random(

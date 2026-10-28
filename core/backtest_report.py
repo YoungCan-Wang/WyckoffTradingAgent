@@ -141,6 +141,11 @@ def _selection_strategy_line(summary: dict) -> str:
     strategy = str(summary.get("selection_strategy") or "wyckoff")
     if strategy == "rs":
         return f"- 选股源: rs（相对强度基线，回看 {summary.get('rs_window')} 日；不代表生产漏斗，仅作对照）"
+    if strategy == "quality":
+        return (
+            f"- 选股源: quality（PIT 质量因子对照：ROE / 负债率 / 经营现金流比三项截面百分位均值，公告日次日起可用；"
+            f"财务历史覆盖 {summary.get('financial_history_loaded')} 只；不代表生产漏斗）"
+        )
     if strategy == "sector_rs":
         return (
             f"- 选股源: sector_rs（板块动量对照，回看 {summary.get('rs_window')} 日板块中位数超额前 3，板块内按种子 "

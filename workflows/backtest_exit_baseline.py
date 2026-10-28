@@ -29,8 +29,7 @@ from workflows.backtest_gate_baseline import (
 )
 from workflows.backtest_report_stats import cash_int_metric, cash_metric, date_range, fmt
 
-STRATEGIES = ("wyckoff", "random", "sector_rs")
-CANDIDATES = tuple(strategy for strategy in STRATEGIES if strategy != "random")
+STRATEGIES = ("wyckoff", "random", "sector_rs", "quality")
 HOLDS = (15, 30, 60)
 EXITS = (("sl8_tp18", "-8% / +18%"), ("none", "只到期"))
 CELLS = tuple(f"h{hold}_{exit_key}" for hold in HOLDS for exit_key, _ in EXITS)
@@ -39,14 +38,14 @@ DECISION_RULE = (
     "每个单元是同一份信号台账在不同持有期 × 退出规则下的重放（台账冷却 = 最小持有期 15 日，与 grid 阶段同一机制），"
     "闸门固定 off。逐笔超额看不到换手，所以每个单元同时给组合层超额：周期现金总收益 − 同期指数收益。"
     "判定三件事：random 的合并逐笔超额在哪个单元 CI 含 0 或为正（执行税归零）；哪个单元哪个选股源（wyckoff / "
-    "sector_rs）的合并超额 CI 下沿高于 random 的上沿且两基准同向（选股分离）；同持有期下 none 与 sl8_tp18 的 random "
+    "sector_rs / quality）的合并超额 CI 下沿高于 random 的上沿且两基准同向（选股分离）；同持有期下 none 与 sl8_tp18 的 random "
     "差是止损的税，同退出下 h60 与 h15 的组合层差是换手的税。只有同时满足分离且选股源自身 CI 下沿 > 0 的单元才算"
     "扣费后为正的配置。"
 )
 SHARD_DIR_PATTERN = re.compile(
     r"backtest-exit-"
     r"(?P<period>recent_2m|recent_6m|bull_2020|bear_2022|sideways_2023|volatile_2024|bull_2025|custom)-"
-    r"(?P<strategy>wyckoff|random|sector_rs)"
+    r"(?P<strategy>wyckoff|random|sector_rs|quality)"
     r"(?:-\d+)?$"
 )
 CELL_DIR_PATTERN = re.compile(r"backtest-exit-h(?P<hold>\d+)-sl(?P<stop>[\d.]+)-tp(?P<take>[\d.]+)-tr[\d.]+$")
@@ -128,15 +127,21 @@ def _iso_date(raw: str) -> str:
 
 def build_exit_baseline(rows: list[ExitCellRow]) -> dict[str, Any]:
     scoped = [row for row in rows if row.period in BASELINE_PERIODS]
-    required = {(s, p, c) for s in STRATEGIES for p in BASELINE_PERIODS for c in CELLS}
+    # 对照组按 run 的矩阵来，缺整组不算缺格；wyckoff 与 random 是固定基线。
+    present = {"wyckoff", "random"} | {row.strategy for row in scoped}
+    required = {(s, p, c) for s in STRATEGIES if s in present for p in BASELINE_PERIODS for c in CELLS}
     missing = sorted(required - {(row.strategy, row.period, row.cell) for row in scoped})
+    strategies = [strategy for strategy in STRATEGIES if strategy in present]
     pooled = {
         strategy: {
             cell: _cell_summary([r for r in scoped if r.strategy == strategy and r.cell == cell]) for cell in CELLS
         }
-        for strategy in STRATEGIES
+        for strategy in strategies
     }
-    separation = {cell: {strategy: _separation(pooled, strategy, cell) for strategy in CANDIDATES} for cell in CELLS}
+    separation = {
+        cell: {strategy: _separation(pooled, strategy, cell) for strategy in strategies if strategy != "random"}
+        for cell in CELLS
+    }
     return {
         "status": "ready" if not missing else "incomplete",
         "missing_cells": [f"{s}/{p}/{c}" for s, p, c in missing],
@@ -209,7 +214,7 @@ def _verdict(pooled: dict[str, dict[str, Any]], separation: dict[str, dict[str, 
         cell for cell in CELLS if pooled["random"][cell]["signal"] != "negative" and pooled["random"][cell]["trades"]
     ]
     above = [
-        (strategy, cell) for cell in CELLS for strategy in CANDIDATES if separation[cell][strategy] == "above_random"
+        (strategy, cell) for cell in CELLS for strategy, status in separation[cell].items() if status == "above_random"
     ]
     positive = [f"{strategy}/{cell}" for strategy, cell in above if pooled[strategy][cell]["signal"] == "positive"]
     if positive:
@@ -225,7 +230,7 @@ def _verdict(pooled: dict[str, dict[str, Any]], separation: dict[str, dict[str, 
 
 def render_exit_baseline(report: dict[str, Any]) -> str:
     lines = [
-        "# 执行结构基线：持有期 × 止损有无（wyckoff / sector_rs 对 random，闸门 off）",
+        "# 执行结构基线：持有期 × 止损有无（wyckoff 与对照组对 random，闸门 off）",
         "",
         f"- 状态: {report['status']}",
         f"- 判定: `{report['verdict']['status']}`；扣费后为正的单元: {report['verdict']['positive_cells'] or '无'}；"
@@ -247,8 +252,8 @@ def _pooled_lines(pooled: dict[str, dict[str, Any]], separation: dict[str, str])
         "|---|---|---:|---|---|---|---|---|---|",
     ]
     for cell in CELLS:
-        for strategy in STRATEGIES:
-            item = pooled[strategy][cell]
+        for strategy, cells in pooled.items():
+            item = cells[cell]
             lines.append(
                 f"| {cell} | {strategy} | {item['trades']} | {_excess_cell(item['excess_main'])} | "
                 f"{_excess_cell(item['excess_smallcap'])} | {_exit_cell(item)} | "

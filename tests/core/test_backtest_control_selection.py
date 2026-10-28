@@ -8,6 +8,7 @@ import pytest
 from core.backtest_control_selection import (
     control_trigger_name,
     eligible_history,
+    rank_quality,
     rank_random,
     rank_relative_strength,
     rank_sector_strength,
@@ -113,3 +114,34 @@ def test_sector_strength_ranks_sectors_by_median_and_shuffles_inside() -> None:
     assert codes[:5] != sorted(codes[:5])
     assert ranked == rank_sector_strength(day_df_map, bench, signal_date, _cfg(), sector_map, window=2, seed=0)
     assert control_trigger_name("sector_rs", 60) == "SECTOR60"
+
+
+def test_quality_uses_only_records_announced_before_signal_date_and_requires_all_fields() -> None:
+    signal_date = _START + timedelta(days=4)
+    day_df_map = {code: _hist([10, 10, 10, 10, 10]) for code in ("000001", "000002", "000003", "000004")}
+    stale = (signal_date - timedelta(days=500)).isoformat()
+    fresh = (signal_date - timedelta(days=30)).isoformat()
+    history = {
+        # 高 ROE、低负债、高现金转化：三项都该排第一。
+        "000001": [
+            {"announce_date": fresh, "roe": 20.0, "debt_to_asset_ratio": 20.0, "operating_cash_to_revenue": 1.2}
+        ],
+        # 最新一条是信号日当天公告的，不可用；退回更早那条（差）。
+        "000002": [
+            {"announce_date": fresh, "roe": 5.0, "debt_to_asset_ratio": 80.0, "operating_cash_to_revenue": 0.1},
+            {
+                "announce_date": signal_date.isoformat(),
+                "roe": 99.0,
+                "debt_to_asset_ratio": 1.0,
+                "operating_cash_to_revenue": 9.0,
+            },
+        ],
+        # 只有超过 400 日的旧记录：不参与。
+        "000003": [{"announce_date": stale, "roe": 50.0, "debt_to_asset_ratio": 5.0, "operating_cash_to_revenue": 3.0}],
+        # 缺现金流项：不参与。
+        "000004": [{"announce_date": fresh, "roe_diluted": 30.0, "debt_to_asset_ratio": 10.0}],
+    }
+    ranked = rank_quality(day_df_map, signal_date, _cfg(), history)
+    assert [code for code, _ in ranked] == ["000001", "000002"]
+    assert ranked[0][1] == pytest.approx(0.5) and ranked[1][1] == pytest.approx(0.0)
+    assert control_trigger_name("quality", 60) == "QUALITY"
