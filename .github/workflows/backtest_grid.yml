@@ -807,11 +807,12 @@ jobs:
       STEP4_BLOCK_BUY_SIGNAL_TYPES: ${{ vars.STEP4_BLOCK_BUY_SIGNAL_TYPES || '' }}
     strategy:
       fail-fast: false
-      # 14 片：每片一次漏斗（或随机排序）、六个退出单元共用台账，耗时与 gate_baseline 的 off 片相当。
+      # 21 片：每片一次漏斗（或对照排序）、六个退出单元共用台账，耗时与 gate_baseline 的 off 片相当。
+      # sector_rs 是板块动量对照（板块中位数超额前 3、板块内随机，#599）。
       max-parallel: 7
       matrix:
         period_key: [recent_2m, recent_6m, bull_2020, bear_2022, sideways_2023, volatile_2024, bull_2025]
-        strategy: [wyckoff, random]
+        strategy: [wyckoff, random, sector_rs]
     steps:
       - name: Resolve period dates
         id: period

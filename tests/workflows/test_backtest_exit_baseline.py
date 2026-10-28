@@ -67,15 +67,16 @@ def test_exit_baseline_reads_shards_and_finds_positive_structure(tmp_path: Path)
             cash=20.0,
         )
         _write_shard(tmp_path, period, "random", {cell: _trades(-2.0, "stop_loss") for cell in CELLS}, cash=5.0)
+        _write_shard(tmp_path, period, "sector_rs", {cell: _trades(-9.0, "time_exit") for cell in CELLS}, cash=0.0)
     rows = load_exit_baseline_rows(tmp_path)
-    assert len(rows) == 2 * len(CELLS) * len(BASELINE_PERIODS)
+    assert len(rows) == 3 * len(CELLS) * len(BASELINE_PERIODS)
     report = build_exit_baseline(rows)
     assert report["status"] == "ready"
     assert report["missing_cells"] == []
-    assert report["separation"]["h60_none"] == "wyckoff_above_random"
-    assert report["separation"]["h15_sl8_tp18"] == "indistinguishable"
+    assert report["separation"]["h60_none"] == {"wyckoff": "above_random", "sector_rs": "below_random"}
+    assert report["separation"]["h15_sl8_tp18"]["wyckoff"] == "indistinguishable"
     assert report["verdict"]["status"] == "positive_structure_found"
-    assert report["verdict"]["positive_cells"] == ["h60_none"]
+    assert report["verdict"]["positive_cells"] == ["wyckoff/h60_none"]
     pooled = report["pooled"]["wyckoff"]["h15_sl8_tp18"]
     assert pooled["trades"] == 30 * len(BASELINE_PERIODS)
     # 现金 +20% 对上证 +10% / 创业板 +50%：组合层超额 +10pp / −30pp，六个周期各自为正 / 为负。
@@ -84,7 +85,7 @@ def test_exit_baseline_reads_shards_and_finds_positive_structure(tmp_path: Path)
     assert main["avg"] == pytest.approx(10.0)
     assert pooled["portfolio_excess"]["smallcap"]["positive"] == 0
     markdown = render_exit_baseline(report)
-    assert "| h60_none | wyckoff |" in markdown and "wyckoff_above_random" in markdown
+    assert "| h60_none | wyckoff |" in markdown and "above_random" in markdown
     assert "+10.00pp (6/6)" in markdown
 
 
@@ -94,6 +95,7 @@ def test_exit_baseline_marks_missing_cells_and_persistent_tax(tmp_path: Path) ->
     report = build_exit_baseline(load_exit_baseline_rows(tmp_path))
     assert report["status"] == "incomplete"
     assert "wyckoff/bear_2022/h15_sl8_tp18" in report["missing_cells"]
-    assert report["separation"]["h15_sl8_tp18"] == "indistinguishable"
-    assert report["separation"]["h30_none"] == "insufficient"
+    assert "sector_rs/bull_2020/h15_sl8_tp18" in report["missing_cells"]
+    assert report["separation"]["h15_sl8_tp18"] == {"wyckoff": "indistinguishable", "sector_rs": "insufficient"}
+    assert report["separation"]["h30_none"]["wyckoff"] == "insufficient"
     assert report["verdict"]["status"] == "execution_tax_persists"

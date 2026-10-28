@@ -320,6 +320,12 @@ notify 产出 `exit_baseline_report.md/json`：每个策略 × 单元合并六�
 `positive_structure_found`，否则按 `separation_without_positive_excess` / `execution_tax_removable_no_selection_signal` /
 `execution_tax_persists` 归类。
 
+`exit_baseline` 第三组 `--selection-strategy sector_rs`（板块动量对照，#599）：每只合格票算 60 日超额（与 rs 同分数），
+板块分数取板块内合格票分数的中位数（合格票 < 5 只的板块不参与），取前 3 板块、板块内按固定种子随机排序后取 `top_n`，
+板块内随机是为了不把个股动量重新带进来。报告里每个选股源（wyckoff / sector_rs）对 random 单独给 `above_random` /
+`below_random` / `indistinguishable`；两步判定与 reversal 相同（先对 random 分离，再看自身 CI 下沿 > 0），且预期信号
+应出现在 h30 / h60 单元而不是 h15。
+
 `tradeable_l4` 不再按 Trend/Accum 固定配额截断候选：形态通过统一损失护栏后进入质量池，最终按质量排序，最多送审 8 只且同一行业最多 2 只。CAUTION 下未确认 launchpad 只观察；
 其它可交易水温最多保留一个 launchpad 席位，并先给 Spring/LPS/SOS、主线和其它非 launchpad 候选留出位置。
 

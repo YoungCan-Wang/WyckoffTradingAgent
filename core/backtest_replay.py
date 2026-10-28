@@ -27,6 +27,7 @@ from core.backtest_control_selection import (
     control_trigger_name,
     rank_random,
     rank_relative_strength,
+    rank_sector_strength,
 )
 from core.backtest_execution import (
     ExitSimulationConfig,
@@ -515,7 +516,7 @@ def _build_day_context(
         **_liquidity_context(day_df_map, breadth, day_cfg, config),
     )
     result = (
-        _control_funnel_result(day_df_map, bench_slice, signal_date, day_cfg, config)
+        _control_funnel_result(day_df_map, bench_slice, signal_date, day_cfg, sector_map, config)
         if config.selection_strategy in CONTROL_STRATEGIES
         else _run_day_funnel(day_df_map, bench_slice, name_map, market_cap_map, sector_map, day_cfg, config)
     )
@@ -564,13 +565,18 @@ def _control_funnel_result(
     bench_slice: pd.DataFrame,
     signal_date: date,
     day_cfg: FunnelConfig,
+    sector_map: dict[str, str],
     config: BacktestReplayConfig,
 ) -> FunnelResult:
     """对照组不跑漏斗；把排序结果装进 triggers 里，让台账、覆盖统计与成交记录走同一条路。"""
-    ranked = (
-        rank_random(day_df_map, signal_date, day_cfg, seed=config.control_seed)
-        if config.selection_strategy == "random"
-        else rank_relative_strength(
+    if config.selection_strategy == "random":
+        ranked = rank_random(day_df_map, signal_date, day_cfg, seed=config.control_seed)
+    elif config.selection_strategy == "sector_rs":
+        ranked = rank_sector_strength(
+            day_df_map, bench_slice, signal_date, day_cfg, sector_map, window=config.rs_window, seed=config.control_seed
+        )
+    else:
+        ranked = rank_relative_strength(
             day_df_map,
             bench_slice,
             signal_date,
@@ -578,7 +584,6 @@ def _control_funnel_result(
             window=config.rs_window,
             weakest=config.selection_strategy == "reversal",
         )
-    )
     codes = [code for code, _ in ranked]
     return FunnelResult(
         layer1_symbols=codes,
