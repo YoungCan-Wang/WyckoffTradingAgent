@@ -25,6 +25,7 @@ from core.ai_candidate_allocation import AiCandidateAllocationConfig
 from core.backtest_control_selection import (
     CONTROL_STRATEGIES,
     control_trigger_name,
+    rank_quality,
     rank_random,
     rank_relative_strength,
     rank_sector_strength,
@@ -104,6 +105,8 @@ class BacktestReplayConfig:
     concept_heat: list[dict] = field(default_factory=list)
     theme_radar: dict = field(default_factory=dict)
     financial_map: dict[str, dict] = field(default_factory=dict)
+    # 逐季 PIT 财务记录，只给 quality 对照用。
+    financial_history: dict[str, list[dict]] = field(default_factory=dict)
     theme_member_index: dict[str, list[str]] = field(default_factory=dict)
     mainline_config: MainlineEngineConfig | None = None
     signal_weight_map: dict[str, float] = field(default_factory=dict)
@@ -571,6 +574,8 @@ def _control_funnel_result(
     """对照组不跑漏斗；把排序结果装进 triggers 里，让台账、覆盖统计与成交记录走同一条路。"""
     if config.selection_strategy == "random":
         ranked = rank_random(day_df_map, signal_date, day_cfg, seed=config.control_seed)
+    elif config.selection_strategy == "quality":
+        ranked = rank_quality(day_df_map, signal_date, day_cfg, config.financial_history)
     elif config.selection_strategy == "sector_rs":
         ranked = rank_sector_strength(
             day_df_map, bench_slice, signal_date, day_cfg, sector_map, window=config.rs_window, seed=config.control_seed

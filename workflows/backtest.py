@@ -339,6 +339,7 @@ def _load_prepared_data(
         concept_map=metadata.concept_map,
         concept_heat=metadata.concept_heat,
         financial_map=metadata.financial_map,
+        financial_history=metadata.financial_history,
         failures=history.failures,
         theme_member_index=build_theme_member_index(metadata.concept_map, metadata.sector_map),
         snapshot_rows_total=history.snapshot_rows_total,
