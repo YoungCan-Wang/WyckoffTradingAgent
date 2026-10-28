@@ -24,7 +24,9 @@ from core.a_share_entry_research import (
 from core.ai_candidate_allocation import AiCandidateAllocationConfig
 from core.backtest_control_selection import (
     CONTROL_STRATEGIES,
+    LIMIT_STRATEGIES,
     control_trigger_name,
+    rank_limit_up,
     rank_quality,
     rank_random,
     rank_relative_strength,
@@ -519,7 +521,7 @@ def _build_day_context(
         **_liquidity_context(day_df_map, breadth, day_cfg, config),
     )
     result = (
-        _control_funnel_result(day_df_map, bench_slice, signal_date, day_cfg, sector_map, config)
+        _control_funnel_result(day_df_map, bench_slice, signal_date, day_cfg, name_map, sector_map, config)
         if config.selection_strategy in CONTROL_STRATEGIES
         else _run_day_funnel(day_df_map, bench_slice, name_map, market_cap_map, sector_map, day_cfg, config)
     )
@@ -568,12 +570,22 @@ def _control_funnel_result(
     bench_slice: pd.DataFrame,
     signal_date: date,
     day_cfg: FunnelConfig,
+    name_map: dict[str, str],
     sector_map: dict[str, str],
     config: BacktestReplayConfig,
 ) -> FunnelResult:
     """对照组不跑漏斗；把排序结果装进 triggers 里，让台账、覆盖统计与成交记录走同一条路。"""
     if config.selection_strategy == "random":
         ranked = rank_random(day_df_map, signal_date, day_cfg, seed=config.control_seed)
+    elif config.selection_strategy in LIMIT_STRATEGIES:
+        ranked = rank_limit_up(
+            day_df_map,
+            signal_date,
+            day_cfg,
+            name_map,
+            leader=config.selection_strategy == "limit_leader",
+            seed=config.control_seed,
+        )
     elif config.selection_strategy == "quality":
         ranked = rank_quality(day_df_map, signal_date, day_cfg, config.financial_history)
     elif config.selection_strategy == "sector_rs":

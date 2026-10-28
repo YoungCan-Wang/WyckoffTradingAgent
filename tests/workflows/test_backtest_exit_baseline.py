@@ -4,6 +4,7 @@ import pytest
 
 from workflows.backtest_exit_baseline import (
     CELLS,
+    LEADER_SPEC,
     build_exit_baseline,
     load_exit_baseline_rows,
     render_exit_baseline,
@@ -26,8 +27,16 @@ def _trades(base: float, reason: str) -> list[tuple]:
     ]
 
 
-def _write_shard(root: Path, period: str, strategy: str, trades_by_cell: dict[str, list[tuple]], cash: float) -> None:
-    shard = root / f"backtest-exit-{period}-{strategy}-7" / f"backtest-exit-{period}-{strategy}"
+def _write_shard(
+    root: Path,
+    period: str,
+    strategy: str,
+    trades_by_cell: dict[str, list[tuple]],
+    cash: float,
+    *,
+    prefix: str = "backtest-exit",
+) -> None:
+    shard = root / f"{prefix}-{period}-{strategy}-7" / f"{prefix}-{period}-{strategy}"
     shard.mkdir(parents=True)
     for key, (day, close) in {
         "main": (("20250102", 100.0), ("20251231", 110.0)),
@@ -37,7 +46,7 @@ def _write_shard(root: Path, period: str, strategy: str, trades_by_cell: dict[st
             "date,open,close\n" + "\n".join(f"{d},{c},{c}" for d, c in (day, close)) + "\n", encoding="utf-8"
         )
     for cell, trades in trades_by_cell.items():
-        target = shard / _CELL_DIRS[cell]
+        target = shard / _CELL_DIRS.get(cell, f"{prefix}-h{cell[1:].split('_')[0]}-sl0-tp0-tr0")
         target.mkdir()
         (target / "summary_x.md").write_text(
             "\n".join(
@@ -102,3 +111,23 @@ def test_exit_baseline_marks_missing_cells_and_persistent_tax(tmp_path: Path) ->
     assert report["separation"]["h15_sl8_tp18"] == {"wyckoff": "indistinguishable", "quality": "indistinguishable"}
     assert report["separation"]["h30_none"]["wyckoff"] == "insufficient"
     assert report["verdict"]["status"] == "execution_tax_persists"
+
+
+def test_leader_spec_judges_leader_against_limit_random(tmp_path: Path) -> None:
+    for period in BASELINE_PERIODS:
+        kwargs = {"cash": 1.0, "prefix": LEADER_SPEC.prefix}
+        _write_shard(tmp_path, period, "random", {c: _trades(-1.0, "time_exit") for c in LEADER_SPEC.cells}, **kwargs)
+        _write_shard(
+            tmp_path, period, "limit_random", {c: _trades(4.0, "time_exit") for c in LEADER_SPEC.cells}, **kwargs
+        )
+        _write_shard(
+            tmp_path, period, "limit_leader", {c: _trades(4.05, "time_exit") for c in LEADER_SPEC.cells}, **kwargs
+        )
+    rows = load_exit_baseline_rows(tmp_path, LEADER_SPEC)
+    assert len(rows) == 3 * len(LEADER_SPEC.cells) * len(BASELINE_PERIODS)
+    report = build_exit_baseline(rows, LEADER_SPEC)
+    assert report["status"] == "ready" and report["title"].startswith("涨停次日接力基线")
+    # limit_random 对 random 分离；limit_leader 的参照臂是 limit_random，与之不可区分。
+    assert report["separation"]["h1_none"] == {"limit_random": "above_random", "limit_leader": "indistinguishable"}
+    assert report["verdict"]["positive_cells"] == [f"limit_random/{cell}" for cell in LEADER_SPEC.cells]
+    assert "| h5_none | limit_leader |" in render_exit_baseline(report)

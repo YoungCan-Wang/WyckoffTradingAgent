@@ -15,6 +15,10 @@ same regime gate, exits, friction and benchmark-excess protocol (#567, #576):
 - ``quality``: mean cross-sectional percentile of ROE (high), debt-to-asset ratio (low) and
   operating-cash-to-revenue (high) from the newest financial record announced before the
   signal date (#601). The one selection source here that does not read prices at all.
+- ``limit_random`` / ``limit_leader``: only stocks that closed at the limit-up price on the
+  signal day (production ``classify_limit_move``), drawn at random or ranked by consecutive
+  limit-up days then turnover. Together they split "the limit-up itself" from "the leader
+  ranking inside it" at 1–5 day holds (#603).
 - ``random``: a uniform draw from the eligible universe. Its excess is the drag of the
   execution path itself (T+1 open entry, asymmetric stop/target, forced exit, friction),
   which is what any selection source must beat before it can be called alpha.
@@ -30,24 +34,28 @@ from statistics import median
 import pandas as pd
 
 from core.asof_cut import latest_known_record
+from core.limit_move import classify_limit_move
 from core.wyckoff_engine import FunnelConfig, dollar_volume_series
 
-CONTROL_STRATEGIES = ("rs", "random", "reversal", "sector_rs", "quality")
+CONTROL_STRATEGIES = ("rs", "random", "reversal", "sector_rs", "quality", "limit_random", "limit_leader")
+LIMIT_STRATEGIES = ("limit_random", "limit_leader")
+MAX_LIMIT_STREAK = 20
 RANDOM_TRIGGER = "RANDOM"
 SECTOR_TOP_K = 3
 SECTOR_MIN_SYMBOLS = 5
-QUALITY_TRIGGER = "QUALITY"
+_FIXED_TRIGGER = {
+    "random": RANDOM_TRIGGER,
+    "quality": "QUALITY",
+    "limit_random": "LIMIT_RANDOM",
+    "limit_leader": "LIMIT_LEADER",
+}
 _TRIGGER_PREFIX = {"rs": "RS", "reversal": "REV", "sector_rs": "SECTOR"}
 _QUALITY_FIELDS = (("roe", "roe_diluted"), ("debt_to_asset_ratio",), ("operating_cash_to_revenue",))
 _QUALITY_HIGH_IS_GOOD = (True, False, True)
 
 
 def control_trigger_name(strategy: str, window: int) -> str:
-    if strategy == "random":
-        return RANDOM_TRIGGER
-    if strategy == "quality":
-        return QUALITY_TRIGGER
-    return f"{_TRIGGER_PREFIX[strategy]}{int(window)}"
+    return _FIXED_TRIGGER.get(strategy) or f"{_TRIGGER_PREFIX[strategy]}{int(window)}"
 
 
 def rank_relative_strength(
@@ -160,6 +168,58 @@ def _quality_values(record: dict) -> tuple[float, ...] | None:
 def _percentile(column: tuple[float, ...], value: float, high_is_good: bool) -> float:
     better_than = sum(item < value for item in column) if high_is_good else sum(item > value for item in column)
     return better_than / len(column)
+
+
+def rank_limit_up(
+    day_df_map: dict[str, pd.DataFrame],
+    signal_date: date,
+    cfg: FunnelConfig,
+    name_map: dict[str, str],
+    *,
+    leader: bool,
+    seed: int,
+) -> list[tuple[str, float]]:
+    """Eligible codes that closed limit-up on ``signal_date``.
+
+    ``leader`` orders by consecutive limit-up days, then by the day's turnover; otherwise the
+    order is a seeded draw so the two arms share the exact same candidate set each day.
+    The score carried into the ledger is the streak length either way.
+    """
+    rows: list[tuple[str, int, float]] = []
+    for code, df in eligible_history(day_df_map, signal_date, cfg).items():
+        streak = limit_up_streak(df, code, name_map.get(code, ""))
+        if streak:
+            rows.append((code, streak, float(dollar_volume_series(df).iloc[-1])))
+    if leader:
+        rows.sort(key=lambda item: (-item[1], -item[2], item[0]))
+    else:
+        rows.sort(key=lambda item: item[0])
+        random.Random(f"{seed}:{signal_date.isoformat()}").shuffle(rows)
+    return [(code, float(streak)) for code, streak, _ in rows]
+
+
+def limit_up_streak(df: pd.DataFrame, code: str, name: str) -> int:
+    """Consecutive sessions ending at the last bar whose close sat at the limit-up price (capped at 20)."""
+    tail = df.tail(MAX_LIMIT_STREAK + 1)
+    closes = pd.to_numeric(tail["close"], errors="coerce").to_numpy()
+    opens = pd.to_numeric(tail["open"], errors="coerce").to_numpy() if "open" in tail.columns else closes
+    highs = pd.to_numeric(tail["high"], errors="coerce").to_numpy() if "high" in tail.columns else closes
+    lows = pd.to_numeric(tail["low"], errors="coerce").to_numpy() if "low" in tail.columns else closes
+    streak = 0
+    for i in range(len(closes) - 1, 0, -1):
+        state = classify_limit_move(
+            code=code,
+            name=name,
+            prev_close=float(closes[i - 1]),
+            open_=float(opens[i]),
+            high=float(highs[i]),
+            low=float(lows[i]),
+            close=float(closes[i]),
+        )
+        if state is None or not state.closed_limit_up:
+            break
+        streak += 1
+    return streak
 
 
 def rank_random(

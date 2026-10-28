@@ -229,7 +229,7 @@ def _base_summary(
         if config.replay.selection_strategy in {"rs", "reversal", "sector_rs"}
         else None,
         "control_seed": config.replay.control_seed
-        if config.replay.selection_strategy in {"random", "sector_rs"}
+        if config.replay.selection_strategy in {"random", "sector_rs", "limit_random"}
         else None,
         "a_share_entry_research": asdict(config.replay.a_share_entry_research),
         "ai_top_n_cap": None if config.replay.top_n <= 0 else config.replay.top_n,
