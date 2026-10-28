@@ -333,6 +333,14 @@ notify 产出 `exit_baseline_report.md/json`：每个策略 × 单元合并六�
 营收高，各取当日参与票里的截面百分位，均值降序取 `top_n`。银行等没有现金流比口径的票天然不参与。无阈值寻优，
 视界预期在季度，判定只看 h60 单元。
 
+`leader_baseline`（涨停次日接力基线，#603）是日线能严格表达的「龙头跟随」子集：7 周期 × `random` / `limit_random` /
+`limit_leader`，闸门 off，`--grid-cells` 1 / 2 / 3 / 5 日只到期（`--grid-prefix backtest-leader`，台账冷却 = 1 日）。
+候选 = 信号日收盘封涨停的合格票（生产 `core/limit_move.classify_limit_move`，含 ST / 创业板 / 科创板幅度与容差——
+20% 板的容差为 3%，收在 +17% 以上即计为封板）；`limit_random` 按种子随机、`limit_leader` 按连板数（回溯上限 20 日）、
+成交额排序，两臂每天候选集相同。T+1 开盘入场沿用一字开板买不到就顺延到 5 日内第一个能买的开盘的既有规则。
+报告由同一构建器按 `--spec leader` 产出 `leader_baseline_report.md/json`：`limit_random` 对 `random` 分离答「涨停本身
+有没有次日信息」，`limit_leader` 对 `limit_random` 分离答「排序有没有增量」；盘中排板的成交假设日线复现不了，不做。
+
 `tradeable_l4` 不再按 Trend/Accum 固定配额截断候选：形态通过统一损失护栏后进入质量池，最终按质量排序，最多送审 8 只且同一行业最多 2 只。CAUTION 下未确认 launchpad 只观察；
 其它可交易水温最多保留一个 launchpad 席位，并先给 Spring/LPS/SOS、主线和其它非 launchpad 候选留出位置。
 

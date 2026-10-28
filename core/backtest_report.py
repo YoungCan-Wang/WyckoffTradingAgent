@@ -141,6 +141,9 @@ def _selection_strategy_line(summary: dict) -> str:
     strategy = str(summary.get("selection_strategy") or "wyckoff")
     if strategy == "rs":
         return f"- 选股源: rs（相对强度基线，回看 {summary.get('rs_window')} 日；不代表生产漏斗，仅作对照）"
+    if strategy in {"limit_random", "limit_leader"}:
+        order = "按连板数、成交额排序" if strategy == "limit_leader" else f"按种子 {summary.get('control_seed')} 随机"
+        return f"- 选股源: {strategy}（涨停次日接力对照：当日收盘封涨停的合格票{order}取 top_n，T+1 开盘入场；不代表生产漏斗）"
     if strategy == "quality":
         return (
             f"- 选股源: quality（PIT 质量因子对照：ROE / 负债率 / 经营现金流比三项截面百分位均值，公告日次日起可用；"

@@ -8,6 +8,8 @@ import pytest
 from core.backtest_control_selection import (
     control_trigger_name,
     eligible_history,
+    limit_up_streak,
+    rank_limit_up,
     rank_quality,
     rank_random,
     rank_relative_strength,
@@ -145,3 +147,31 @@ def test_quality_uses_only_records_announced_before_signal_date_and_requires_all
     assert [code for code, _ in ranked] == ["000001", "000002"]
     assert ranked[0][1] == pytest.approx(0.5) and ranked[1][1] == pytest.approx(0.0)
     assert control_trigger_name("quality", 60) == "QUALITY"
+
+
+def _board(closes: list[float], *, amount: float = 1e9) -> pd.DataFrame:
+    """OHLC 日线：收盘即当日高点、开盘略低于收盘，便于把涨停日写成 close = prev * 1.10。"""
+    df = _hist(closes, amount=amount)
+    df["high"] = df["close"]
+    df["open"] = [c * 0.99 for c in closes]
+    df["low"] = df["open"]
+    return df
+
+
+def test_limit_up_arms_share_candidates_and_leader_orders_by_streak_then_turnover() -> None:
+    signal_date = _START + timedelta(days=4)
+    two_board = _board([10.0, 10.0, 10.0, 11.0, 12.1], amount=1e9)
+    one_board_big = _board([10.0, 10.0, 10.0, 10.0, 11.0], amount=5e9)
+    one_board_small = _board([10.0, 10.0, 10.0, 10.0, 11.0], amount=2e9)
+    broke = _board([10.0, 10.0, 10.0, 10.0, 10.8])
+    day_df_map = {"600001": two_board, "600002": one_board_small, "600003": one_board_big, "600004": broke}
+    names = dict.fromkeys(day_df_map, "普通股")
+    assert limit_up_streak(two_board, "600001", "普通股") == 2
+    assert limit_up_streak(broke, "600004", "普通股") == 0
+    leader = rank_limit_up(day_df_map, signal_date, _cfg(), names, leader=True, seed=0)
+    assert leader == [("600001", 2.0), ("600003", 1.0), ("600002", 1.0)]
+    drawn = rank_limit_up(day_df_map, signal_date, _cfg(), names, leader=False, seed=0)
+    assert sorted(drawn) == sorted(leader)
+    assert drawn == rank_limit_up(day_df_map, signal_date, _cfg(), names, leader=False, seed=0)
+    assert control_trigger_name("limit_leader", 60) == "LIMIT_LEADER"
+    assert control_trigger_name("limit_random", 60) == "LIMIT_RANDOM"
