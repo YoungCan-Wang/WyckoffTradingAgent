@@ -224,11 +224,12 @@ def _add_signal_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--abc-filter", action="store_true", default=False, help="启用 ABC 起跳板过滤")
     parser.add_argument(
         "--selection-strategy",
-        choices=["wyckoff", "rs", "random", "reversal", "sector_rs", "quality"],
+        choices=["wyckoff", "rs", "random", "reversal", "sector_rs", "quality", "limit_random", "limit_leader"],
         default="wyckoff",
         help="选股源: wyckoff=生产漏斗（默认）；rs=相对强度对照，按 N 日超额涨幅取 top_n；"
         "reversal=同一排序取最弱的 top_n（短期反转对照）；sector_rs=板块中位数超额前 3 的板块内随机取 top_n（板块动量对照）；"
         "quality=PIT 财务三项（ROE / 负债率 / 经营现金流比）截面百分位均值取 top_n（质量因子对照，需快照含 financial_history.json）；"
+        "limit_random / limit_leader=当日收盘封涨停的合格票里按种子随机 / 按连板数、成交额排序取 top_n（涨停次日接力对照）；"
         "random=固定种子随机对照，量执行路径本身的损耗；对照组跳过漏斗，其余（水温闸门、入场、退出、摩擦）"
         "与 wyckoff 完全一致",
     )
