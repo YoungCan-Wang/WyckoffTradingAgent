@@ -356,7 +356,7 @@ def build_snap(
     }
 
     if signal_type in ("spring", "compression"):
-        window = 60 if cfg is None else getattr(cfg, "spring_support_window", 60)
+        window = 20 if cfg is None else getattr(cfg, "spring_support_window", 20)
         zone = df_s.iloc[-(window + 2) : -2] if len(df_s) > window + 2 else df_s.iloc[:-2]
         snap["snap_support"] = float(zone["close"].min()) if len(zone) > 0 else float(last["low"])
     elif signal_type == "sos":

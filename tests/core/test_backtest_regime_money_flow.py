@@ -24,6 +24,8 @@ regime, [], []），所以空 panic_reasons 不能读成「价格判据没触发
 
 from __future__ import annotations
 
+from functools import partial
+
 import pandas as pd
 
 from core.backtest_execution import ExitSimulationConfig
@@ -35,6 +37,8 @@ from core.backtest_replay import (
 )
 from core.wyckoff_engine import FunnelConfig
 from tools.market_regime import analyze_benchmark_and_tune_cfg
+
+_OFFLINE_REGIME_ANALYZER = partial(analyze_benchmark_and_tune_cfg, include_pv_outlook=False)
 
 # 2026-07-17 的真实形态：主板 -3.046%、小盘 -7.145%，两条价格判据都过
 # （阈值 -1.3% / -2.5%），而广度 delta -8 够不到断崖阈值 -20。
@@ -133,7 +137,7 @@ class TestCrashSurvivesWithMoneyFlow:
             _index_frame(CRASH_MAIN_PCT),
             FunnelConfig(),
             BREADTH_NO_CLIFF,
-            _config(market_regime_analyzer=analyze_benchmark_and_tune_cfg),
+            _config(market_regime_analyzer=_OFFLINE_REGIME_ANALYZER),
             _index_frame(CRASH_SMALL_PCT),
             money_flow=MONEY_FLOW_RETREAT,
             amount_distribution=AMOUNT_DISTRIBUTION_THIN,
@@ -150,7 +154,7 @@ class TestCrashSurvivesWithMoneyFlow:
             _index_frame(CRASH_MAIN_PCT),
             FunnelConfig(),
             BREADTH_NO_CLIFF,
-            _config(market_regime_analyzer=analyze_benchmark_and_tune_cfg),
+            _config(market_regime_analyzer=_OFFLINE_REGIME_ANALYZER),
             _index_frame(CRASH_SMALL_PCT),
         )
 
@@ -162,7 +166,7 @@ class TestCrashSurvivesWithMoneyFlow:
             _index_frame(CRASH_MAIN_PCT),
             FunnelConfig(),
             BREADTH_NO_CLIFF,
-            _config(market_regime_analyzer=analyze_benchmark_and_tune_cfg),
+            _config(market_regime_analyzer=_OFFLINE_REGIME_ANALYZER),
             _index_frame(CRASH_SMALL_PCT),
             money_flow=MONEY_FLOW_RETREAT,
             amount_distribution=AMOUNT_DISTRIBUTION_THIN,
@@ -178,7 +182,7 @@ class TestCrashSurvivesWithMoneyFlow:
             _index_frame(CRASH_MAIN_PCT),
             FunnelConfig(),
             BREADTH_NO_CLIFF,
-            _config(market_regime_analyzer=analyze_benchmark_and_tune_cfg),
+            _config(market_regime_analyzer=_OFFLINE_REGIME_ANALYZER),
             _index_frame(CRASH_SMALL_PCT),
         )
 
@@ -194,7 +198,7 @@ class TestCrashSurvivesWithMoneyFlow:
             _index_frame(CRASH_MAIN_PCT),
             FunnelConfig(),
             BREADTH_CLIFF,
-            _config(market_regime_analyzer=analyze_benchmark_and_tune_cfg),
+            _config(market_regime_analyzer=_OFFLINE_REGIME_ANALYZER),
             _index_frame(CRASH_SMALL_PCT),
         )
 

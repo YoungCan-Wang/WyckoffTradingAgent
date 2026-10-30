@@ -1072,9 +1072,10 @@ def test_lps_creek_confirmation_requires_prior_breakout_and_hold() -> None:
     highs = [12.0 - index * 0.02 + (0.3 if index % 10 == 5 else 0.0) for index in range(total)]
     closes = [value - 0.45 for value in highs]
     anchor_end = cfg.lps_creek_lookback
+    breakout_close = round(12.30 - anchor_end * 0.02 + 0.25, 2)
     for index in range(anchor_end, total):
-        closes[index] = 11.35
-        highs[index] = 11.55
+        closes[index] = breakout_close
+        highs[index] = round(breakout_close + 0.20, 2)
     frame = pd.DataFrame(
         {
             "date": dates,
@@ -1452,3 +1453,13 @@ class TestMarketRegimeGateConfig:
         assert cfg.market_regime_gate_ma == 20
         assert cfg.market_regime_gate_buffer_pct == 0.01
         assert cfg.market_regime_benchmark_code == "000985"
+
+
+# ─── Layer 4 20日紧凑箱体默认窗口测试（Issue #606 跨牛熊双周期消融）──────────────
+class TestLayer4CompactBoxWindowDefaults:
+    def test_l4_box_windows_default_to_20_days(self):
+        cfg = FunnelConfig()
+        assert cfg.spring_support_window == 20
+        assert cfg.lps_vol_ref_window == 20
+        assert cfg.lps_creek_lookback == 20
+        assert cfg.sos_breakout_window == 20

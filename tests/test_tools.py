@@ -2450,6 +2450,26 @@ class TestMarketRegime:
         assert result["regime"] == "CRASH"
         assert any("money_flow_retreat" in item for item in result["panic_reasons"])
 
+    def test_include_pv_outlook_false_skips_llm_call(self, monkeypatch):
+        import tools.market_regime as market_regime
+        from core.wyckoff_engine import FunnelConfig
+
+        def _forbid_llm(**_kwargs):
+            raise AssertionError("_generate_pv_outlook should not be called when include_pv_outlook=False")
+
+        monkeypatch.setattr(market_regime, "_generate_pv_outlook", _forbid_llm)
+        result = market_regime.analyze_benchmark_and_tune_cfg(
+            _benchmark_with_last_drop(-1.5),
+            None,
+            FunnelConfig(),
+            breadth={"ratio_pct": 60.0, "delta_pct": -2.0, "sample_size": 100},
+            money_flow={"trend": "retreat", "score": -25.0},
+            include_pv_outlook=False,
+        )
+
+        assert result["regime"] == "CRASH"
+        assert result["market_pv_outlook"] == market_regime._PV_OUTLOOK_FALLBACK["CRASH"]
+
 
 # ── tools/data_fetcher ──
 

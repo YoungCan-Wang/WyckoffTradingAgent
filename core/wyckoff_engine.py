@@ -238,7 +238,7 @@ class FunnelConfig:
     theme_line_top_n: int = 20  # 每日取 Top N 概念计入热度历史
 
     # Layer 4 - Spring
-    spring_support_window: int = 60
+    spring_support_window: int = 20
     spring_vol_ratio: float = 1.3
     spring_tr_max_range_pct: float = 30.0
     spring_tr_max_drift_pct: float = 12.0
@@ -253,10 +253,10 @@ class FunnelConfig:
     lps_ma: int = 20
     lps_ma_tolerance: float = 0.02
     lps_vol_dry_ratio: float = 0.65
-    lps_vol_ref_window: int = 60
+    lps_vol_ref_window: int = 20
     lps_ma_rising_window: int = 5
     lps_creek_confirmation_enabled: bool = True
-    lps_creek_lookback: int = 60
+    lps_creek_lookback: int = 20
     lps_creek_breakout_lookback: int = 15
     lps_creek_swing_window: int = 3
     lps_creek_breakout_pct: float = 0.5
@@ -311,7 +311,7 @@ class FunnelConfig:
     sos_pct_min: float = 6.0  # 提高门槛过滤弱突破（原 4.5 追高触发止损率极高）
     sos_vol_ratio: float = 3.0  # 要求更暴力抢筹（原 2.5 噪音太多，修改为 3.0）
     sos_vol_window: int = 20  # 计算点火爆量时的参考窗口
-    sos_breakout_window: int = 60  # 把突破箱体延长到 60天 (约3个月)，拒绝 10日小打小闹
+    sos_breakout_window: int = 20  # 20日紧凑突破箱体（约1个月），适配A股短周期结构切换（Issue #606）
     sos_breakout_tolerance: float = 0.01  # 改为 0.01：突破容差 1%（从 2% 改为 1%）
     sos_bypass_rps_slow_min: float = 30.0  # L2 点火破局旁路的最低 RPS120 门槛
     # SOS 动态极值爆量

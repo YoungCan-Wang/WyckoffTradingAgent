@@ -270,7 +270,11 @@ def _build_run_config(request: BacktestWorkflowRequest) -> BacktestRunConfig:
 
 
 def _market_regime_analyzer_from_env():
-    return partial(analyze_benchmark_and_tune_cfg, regime_config=market_regime_config_from_env())
+    return partial(
+        analyze_benchmark_and_tune_cfg,
+        regime_config=market_regime_config_from_env(),
+        include_pv_outlook=False,
+    )
 
 
 def _market_money_flow_calculator_from_env():

@@ -119,7 +119,7 @@ def replay_events(
 def _warmup_bars(cfg: Any) -> int:
     """所有检测器里最长的回看窗口 —— 在此之前没有一个能成立。"""
     windows = [
-        getattr(cfg, "spring_support_window", 60) + 2,
+        getattr(cfg, "spring_support_window", 20) + 2,
         getattr(cfg, "lps_vol_ref_window", 20) + getattr(cfg, "lps_lookback", 5),
         getattr(cfg, "sos_vol_window", 20) + 2,
         getattr(cfg, "evr_vol_window", 20) + 2,

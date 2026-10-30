@@ -324,7 +324,7 @@ def _spring_trigger_score(series: _StructureSeries, bar: _LastBar, tr: TradingRa
 
 def _lps_trigger_score(series: _StructureSeries, bar: _LastBar, tr: TradingRange, cfg: FunnelConfig) -> float | None:
     lookback = max(int(getattr(cfg, "lps_lookback", 3)), 1)
-    dry_ratio = _recent_ref_volume_ratio(series.volume, lookback, max(int(getattr(cfg, "lps_vol_ref_window", 60)), 10))
+    dry_ratio = _recent_ref_volume_ratio(series.volume, lookback, max(int(getattr(cfg, "lps_vol_ref_window", 20)), 10))
     recent_lows = series.low.tail(lookback)
     near_support = float(recent_lows.min()) <= tr.support + bar.width * 0.35
     holds_support = bar.last_close > tr.support

@@ -314,7 +314,7 @@ ABC 门槛松紧不是问题所在：met=2 与 met=3 的差异在 1/3/5/10 日�
 | Compression | 压缩蓄势 | 通用 |
 | Trend Pullback | 趋势回踩 | Trend / Mainline |
 
-生产 LPS 只识别“先越过 Creek、后缩量回踩守住 Creek/MA20”的序列，量能比较使用近期与前 60 日的中位数，默认阈值 65%。没有 Creek 前序的普通均线回踩归入 Trend Pullback。观察与待确认记录按 `(code, signal_type)` 绑定候选元数据，禁止把趋势回踩车道误写到 LPS 行。
+生产 LPS 只识别“先越过 Creek、后缩量回踩守住 Creek/MA20”的序列，量能比较使用近期与前 20 日的中位数，默认阈值 65%。没有 Creek 前序的普通均线回踩归入 Trend Pullback。观察与待确认记录按 `(code, signal_type)` 绑定候选元数据，禁止把趋势回踩车道误写到 LPS 行。
 
 `core/wyckoff_structure.py` 会在同一批 L3 股票上额外识别动态交易区间，并对 Spring、LPS、SOS、EVR
 生成 `structure_shadow` 对照。该结果只记录区间覆盖率、正式/结构共同命中和各自独有命中，固定为
