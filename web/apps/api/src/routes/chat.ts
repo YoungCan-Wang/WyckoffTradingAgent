@@ -46,6 +46,7 @@ import { authMiddleware, type AuthContext } from '../middleware/auth'
 import { isActivePlanetMember } from '../middleware/planet-membership'
 import { chatRateLimitMiddleware } from '../middleware/rate-limit'
 import { buildCloudPortfolioTools } from './chat-portfolio-tools'
+import { recordModelUsage } from '../services/usage-telemetry'
 import {
   CHAT_CONTINUATION_PROMPT,
   CHAT_MAX_AUTO_CONTINUATIONS,
@@ -538,6 +539,7 @@ async function buildTurnModelMessages(
 async function runChatAttempt(args: ChatResilienceArgs, config: ChatModelConfig, marketWatchContext: string, sessionClockContext: string): Promise<void> {
   writeRunEvent(args, { type: 'model_started', label: `开始使用 ${config.model}` })
   writeStageProgress(args.writer, { stage: 'model', state: 'started', message: '正在分析', model: config.model })
+  const startedAt = Date.now()
   let succeeded = false
   let outputStarted = false
   try {
@@ -613,6 +615,13 @@ async function runChatAttempt(args: ChatResilienceArgs, config: ChatModelConfig,
   } finally {
     writeStageProgress(args.writer, { stage: 'model', state: 'completed', success: succeeded, model: config.model })
     writeRunEvent(args, { type: succeeded ? 'model_completed' : 'model_failed', label: succeeded ? '模型分析完成' : '模型分析失败' })
+    recordModelUsage(args.env, {
+      lane: 'chat',
+      provider: config.provider,
+      model: config.model,
+      success: succeeded,
+      durationMs: Date.now() - startedAt,
+    })
   }
 }
 

@@ -157,10 +157,11 @@ def run_once(
     if not action:
         return HeadlessResult(ok=False, error="empty action")
 
-    from cli.bootstrap import build_provider_state, init_local_services, load_config_env
+    from cli.bootstrap import build_provider_state, init_local_services
+    from integrations.local_auth import seed_data_source_env
 
     init_local_services()
-    load_config_env()
+    seed_data_source_env()
 
     state = build_provider_state()
     provider = state.get("provider")

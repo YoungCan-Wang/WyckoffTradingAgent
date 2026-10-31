@@ -1,0 +1,133 @@
+name: Agent service deploy
+
+on:
+  workflow_run:
+    workflows: [CI]
+    branches: [main]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-service-deploy-production
+  cancel-in-progress: false
+
+jobs:
+  changes:
+    name: Detect agent service changes
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    outputs:
+      deploy: ${{ steps.scope.outputs.deploy }}
+      sha: ${{ steps.ref.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || 'main' }}
+          fetch-depth: 2
+      - name: Resolve deployment commit
+        id: ref
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Collect merged paths
+        if: github.event_name != 'workflow_dispatch'
+        shell: bash
+        run: git diff --name-only HEAD^ HEAD > "$RUNNER_TEMP/changed-paths.txt"
+      - name: Force manual deployment
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: echo packaging/agent-service/Dockerfile > "$RUNNER_TEMP/changed-paths.txt"
+      - name: Decide deployment scope
+        id: scope
+        shell: bash
+        run: |
+          cat "$RUNNER_TEMP/changed-paths.txt"
+          deploy="$(python scripts/release_scope.py agent_service "$RUNNER_TEMP/changed-paths.txt")"
+          echo "deploy=$deploy" >> "$GITHUB_OUTPUT"
+          if [[ "$deploy" != "true" ]]; then
+            echo "No agent-service container input changed; deployment is skipped."
+          fi
+
+  deploy:
+    name: Deploy Cloud Run agent service
+    needs: changes
+    if: needs.changes.outputs.deploy == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: gcp-production
+    permissions:
+      contents: read
+      id-token: write # Workload Identity Federation：不存长期密钥
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID || 'wyckoff-agent-7b661a' }}
+      GCP_REGION: ${{ vars.GCP_REGION || 'asia-northeast1' }}
+      AR_REPO: ${{ vars.GCP_ARTIFACT_REPO || 'wyckoff' }}
+      SERVICE: wyckoff-agent
+      DEPLOY_SHA: ${{ needs.changes.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.changes.outputs.sha }}
+      - name: Check deployment credentials
+        shell: bash
+        run: |
+          if [[ -z "${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}" || -z "${{ vars.GCP_SERVICE_ACCOUNT }}" ]]; then
+            echo "GCP_WORKLOAD_IDENTITY_PROVIDER / GCP_SERVICE_ACCOUNT not configured for gcp-production." >&2
+            exit 1
+          fi
+      - id: auth
+        name: Authenticate to Google Cloud (Workload Identity Federation)
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v3
+      - name: Configure Docker for Artifact Registry
+        shell: bash
+        run: gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
+      - uses: docker/setup-buildx-action@v3
+      - name: Build and push image
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packaging/agent-service/Dockerfile
+          platforms: linux/amd64
+          push: true
+          # provenance/sbom 默认开着会把推上去的变成一个包 attestation 的 manifest index，
+          # 它的 digest 跟 Cloud Run 实际解析运行的那张单平台 manifest 的 digest 不是一个值
+          # （实测验证过：两者确实不同）。关掉让 digest 输出可以直接拿来校验部署结果。
+          provenance: false
+          sbom: false
+          tags: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.AR_REPO }}/agent-service:${{ env.DEPLOY_SHA }}
+      - name: Deploy exact main commit
+        shell: bash
+        run: |
+          # 只换镜像，不带任何 --set-env-vars / --update-env-vars：
+          # 现网的 AGENT_SERVICE_TOKEN、WYCKOFF_SERVICE_TOOLS 等配置原样保留在上一版本里。
+          gcloud run deploy "$SERVICE" \
+            --project "$GCP_PROJECT_ID" \
+            --region "$GCP_REGION" \
+            --image "${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${AR_REPO}/agent-service:${DEPLOY_SHA}" \
+            --quiet
+      - name: Verify deployed revision is serving
+        shell: bash
+        env:
+          PUSHED_DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          # Cloud Run 固化成 image@sha256:... digest 引用，不保留我们传的 tag 字符串，
+          # 所以要拿 build-push 实际推上去的 digest 来比，不能再按 tag 子串匹配。
+          revision="$(gcloud run services describe "$SERVICE" \
+            --project "$GCP_PROJECT_ID" --region "$GCP_REGION" \
+            --format='value(status.latestReadyRevisionName)')"
+          image="$(gcloud run revisions describe "$revision" \
+            --project "$GCP_PROJECT_ID" --region "$GCP_REGION" \
+            --format='value(spec.containers[0].image)')"
+          echo "latest ready revision: $revision ($image)"
+          echo "pushed digest: $PUSHED_DIGEST"
+          [[ "$image" == *"$PUSHED_DIGEST"* ]]

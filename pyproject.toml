@@ -24,6 +24,8 @@ dependencies = [
     "certifi",
     "python-dotenv>=1.0.0",
     "supabase>=2.0.0,<3.0",
+    # httpx 建客户端时会为 ALL_PROXY=socks5://… 挂 SOCKS transport，缺 socksio 直接抛 ImportError
+    "httpx[socks]>=0.27,<1.0",
     "matplotlib>=3.8.0",
     "pillow>=10.0.0",
     "rich>=13.0.0",

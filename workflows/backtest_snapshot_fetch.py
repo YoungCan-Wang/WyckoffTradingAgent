@@ -6,7 +6,7 @@ import random
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -14,6 +14,7 @@ import pandas as pd
 from core.wyckoff_engine import normalize_hist_from_fetch
 from integrations.data_source import fetch_stock_hist
 from integrations.fetch_a_share_csv import get_stocks_by_board, normalize_symbols
+from integrations.fundamental_history import fetch_financial_history
 from integrations.index_data_source import fetch_index_akshare, fetch_index_hist
 from integrations.market_metadata import fetch_concept_heat, fetch_concept_map, fetch_market_cap_map, fetch_sector_map
 from integrations.ths_hot_concept import fetch_ths_hot_events, merge_concept_heat, ths_hot_events_to_concept_heat
@@ -363,7 +364,16 @@ def _write_json(path: Path, payload: object) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
-def _write_optional_maps(out_dir: Path) -> None:
+def _write_optional_maps(out_dir: Path, symbols: list[str], since: str) -> None:
+    api_key = os.getenv("TICKFLOW_API_KEY", "").strip()
+    if api_key and since:
+        try:
+            history = fetch_financial_history(api_key, symbols, since=date.fromisoformat(since))
+            _write_json(out_dir / "financial_history.json", history)
+            print(f"[snapshot] financial_history.json: {len(history)} symbols")
+        except Exception as exc:
+            print(f"[snapshot] financial_history 拉取失败（不阻塞）: {exc}")
+
     try:
         sector_map = fetch_sector_map()
         _write_json(out_dir / "sector_map.json", sector_map)
@@ -432,7 +442,9 @@ def _write_snapshot_outputs(
     names = _name_map(raw_pool)
     _write_json(out_dir / "name_map.json", names)
     print(f"[snapshot] name_map.json: {len(names)} entries")
-    _write_optional_maps(out_dir)
+    _write_optional_maps(
+        out_dir, [str(item.get("code", "")) for item in raw_pool if isinstance(item, dict)], str(meta["start"])
+    )
     _write_json(out_dir / "metadata.json", meta)
 
 
