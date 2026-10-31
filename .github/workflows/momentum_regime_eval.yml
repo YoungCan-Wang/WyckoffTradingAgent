@@ -18,14 +18,10 @@ name: Momentum Regime Eval
 # 长样本上闸门是负贡献，与 core/momentum_regime_eval.py 第五条（动量只能做顶部负筛）同向。
 # 定期重跑的意义：持续确认闸门方向，并在它转为持续为负时能被看见——这恰恰要求样本够长。
 on:
-  schedule:
-    # 537 日长窗口每周只新增 ~5 日，周跑读数几乎不动；改月频。代价是闸门转负最多晚约 3 周被看见。
-    # 月频统一放在 UTC 22:10 = 北京时间次日 06:10。派发晚 3~4.5 小时（AGENTS.md 评审规则 7），
-    # 实际起跑落在北京 06:10~10:40；这段没有任何读 Tushare 的定时任务（最近的是 16:05 的
-    # nav_snapshot），延迟为零也照样空闲。不放北京夜里：工作日 recommendation_tracking_reprice
-    # （UTC 15:00）与 signal_feedback（UTC 15:30）延迟后落在北京 02:00~04:00，正好压在旧时段上。
-    # 五个月频 eval 按 4/6/8/10/12 日错开，只为分摊配额，不构成先后。
-    - cron: "10 22 8 * *"
+  # 513 日长样本已确认 RPS 阈值门为负贡献、4 种动态切换走前全部失效，且 #567 已停止 L2 通道阈值调参；
+  # 停用月频定时调度，保留 workflow_dispatch 备查。
+  # schedule:
+  #   - cron: "10 22 8 * *"
   workflow_dispatch:
     inputs:
       horizon:

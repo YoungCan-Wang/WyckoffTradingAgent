@@ -52,6 +52,7 @@ def _overview_lines(summary: dict) -> list[str]:
         _top_n_line(summary),
         f"- AI 候选模式: {summary.get('ai_selection_mode')}",
         f"- 策略消融组: {summary.get('strategy_variant', 'live')}",
+        _selection_strategy_line(summary),
         _signal_weight_line(summary),
         f"- 股票池: {summary.get('board')} (sample={summary.get('sample_size')})",
         f"- 评估交易日: {summary.get('eval_days')}",
@@ -134,6 +135,32 @@ def _regime_filter_line(summary: dict) -> str:
     if summary.get("regime_filter_note") == "deprecated_live_aligned_noop":
         return "- 大盘水温仓控: 关闭（旧回测开关已废弃，跟随实盘漏斗候选口径）"
     return f"- 大盘水温仓控: {'开启' if summary.get('regime_filter') else '关闭'}"
+
+
+def _selection_strategy_line(summary: dict) -> str:
+    strategy = str(summary.get("selection_strategy") or "wyckoff")
+    if strategy == "rs":
+        return f"- 选股源: rs（相对强度基线，回看 {summary.get('rs_window')} 日；不代表生产漏斗，仅作对照）"
+    if strategy in {"limit_random", "limit_leader"}:
+        order = "按连板数、成交额排序" if strategy == "limit_leader" else f"按种子 {summary.get('control_seed')} 随机"
+        return f"- 选股源: {strategy}（涨停次日接力对照：当日收盘封涨停的合格票{order}取 top_n，T+1 开盘入场；不代表生产漏斗）"
+    if strategy == "quality":
+        return (
+            f"- 选股源: quality（PIT 质量因子对照：ROE / 负债率 / 经营现金流比三项截面百分位均值，公告日次日起可用；"
+            f"财务历史覆盖 {summary.get('financial_history_loaded')} 只；不代表生产漏斗）"
+        )
+    if strategy == "sector_rs":
+        return (
+            f"- 选股源: sector_rs（板块动量对照，回看 {summary.get('rs_window')} 日板块中位数超额前 3，板块内按种子 "
+            f"{summary.get('control_seed')} 随机；不代表生产漏斗）"
+        )
+    if strategy == "reversal":
+        return f"- 选股源: reversal（短期反转对照，回看 {summary.get('rs_window')} 日取最弱；不代表生产漏斗）"
+    if strategy == "random":
+        return (
+            f"- 选股源: random（固定种子 {summary.get('control_seed')} 随机对照；量执行路径本身的损耗，不代表生产漏斗）"
+        )
+    return "- 选股源: wyckoff（生产漏斗）"
 
 
 def _execution_regime_gate_line(summary: dict) -> str:

@@ -54,6 +54,9 @@ def write_backtest_artifacts(
         ),
         *_write_optional_frame(out_dir / f"wbt_dailys_{stamp}.csv", summary.pop("_wbt_dailys_df", None), "wbt dailys"),
         *_write_optional_frame(out_dir / f"wbt_pairs_{stamp}.csv", summary.pop("_wbt_pairs_df", None), "wbt pairs"),
+        *_write_optional_frame(
+            out_dir / f"market_sentiment_{stamp}.csv", summary.pop("_market_sentiment_df", None), "market sentiment"
+        ),
     ]
     if "selection_coverage" in summary:
         coverage_path = out_dir / f"selection_coverage_{stamp}.json"
