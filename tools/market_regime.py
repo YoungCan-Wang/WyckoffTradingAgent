@@ -145,6 +145,10 @@ def _build_pv_user_message(
     return "\n".join(parts)
 
 
+def _fallback_pv_outlook(regime: str) -> str:
+    return _PV_OUTLOOK_FALLBACK.get(regime, "次日推演：结构信息不足，先观察量能与MA50得失再定方向。")
+
+
 def _generate_pv_outlook(
     *,
     regime: str,
@@ -157,7 +161,7 @@ def _generate_pv_outlook(
     recent3_cum: float | None,
     provider: str,
 ) -> str:
-    fallback = _PV_OUTLOOK_FALLBACK.get(regime, "次日推演：结构信息不足，先观察量能与MA50得失再定方向。")
+    fallback = _fallback_pv_outlook(regime)
     try:
         from integrations.llm_client import call_llm, get_provider_credentials
 
@@ -896,19 +900,25 @@ def _market_pv_context(
     money_flow_context: dict,
     cfg: FunnelConfig,
     regime_config: MarketRegimeConfig,
+    *,
+    include_pv_outlook: bool = True,
 ) -> dict:
     price_zone = _price_zone(main)
     ratio_text = f"{main.vol_ratio_5_20:.2f}x" if main.vol_ratio_5_20 is not None else "未知"
-    outlook = _generate_pv_outlook(
-        regime=regime,
-        close=main.close,
-        ma50=main.ma50,
-        ma200=main.ma200,
-        price_zone=price_zone,
-        vol_ratio_text=ratio_text,
-        volume_state=main.volume_state,
-        recent3_cum=main.recent3_cum,
-        provider=regime_config.pv_llm_provider,
+    outlook = (
+        _generate_pv_outlook(
+            regime=regime,
+            close=main.close,
+            ma50=main.ma50,
+            ma200=main.ma200,
+            price_zone=price_zone,
+            vol_ratio_text=ratio_text,
+            volume_state=main.volume_state,
+            recent3_cum=main.recent3_cum,
+            provider=regime_config.pv_llm_provider,
+        )
+        if include_pv_outlook
+        else _fallback_pv_outlook(regime)
     )
     return {
         "market_pv_summary": f"沪深300近5日均量/20日均量={ratio_text}（{main.volume_state}），当前位于{price_zone}。",
@@ -940,6 +950,7 @@ def _benchmark_result_context(
     repair_reasons: list[str],
     bear_rebound_reasons: list[str],
     regime_config: MarketRegimeConfig,
+    include_pv_outlook: bool = True,
 ) -> dict:
     repair_stage = (
         "candidate" if regime == "PANIC_REPAIR" else "confirmed" if regime == "PANIC_REPAIR_CONFIRMED" else ""
@@ -977,7 +988,16 @@ def _benchmark_result_context(
         "amount_distribution": amount_distribution_context,
         "holiday_grace_dynamic": holiday_grace_dynamic,
     }
-    result.update(_market_pv_context(main, regime, money_flow_context, cfg, regime_config))
+    result.update(
+        _market_pv_context(
+            main,
+            regime,
+            money_flow_context,
+            cfg,
+            regime_config,
+            include_pv_outlook=include_pv_outlook,
+        )
+    )
     return result
 
 
@@ -989,6 +1009,8 @@ def analyze_benchmark_and_tune_cfg(
     money_flow: dict | None = None,
     amount_distribution: dict | None = None,
     regime_config: MarketRegimeConfig | None = None,
+    *,
+    include_pv_outlook: bool = True,
 ) -> dict:
     """输出市场结构与短期水温，并在弱市收紧漏斗。"""
     runtime = (regime_config or DEFAULT_MARKET_REGIME_CONFIG).normalized()
@@ -1043,6 +1065,7 @@ def analyze_benchmark_and_tune_cfg(
             repair_reasons=repair_reasons,
             bear_rebound_reasons=bear_rebound_reasons,
             regime_config=runtime,
+            include_pv_outlook=include_pv_outlook,
         )
     )
     return context
