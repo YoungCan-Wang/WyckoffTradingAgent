@@ -185,10 +185,12 @@ def _rule_eligible_step4_candidate(item: dict) -> bool:
     if _is_false_like(item.get("new_buy_allowed")) or _is_false_like(item.get("label_ready")):
         return False
     blocked_signals = _blocked_buy_signal_types()
-    if blocked_signals:
-        signal = normalized_signal_type(item.get("signal_type") or item.get("trigger"))
-        if signal in blocked_signals:
-            return False
+    signal = normalized_signal_type(item.get("signal_type") or item.get("trigger"))
+    if blocked_signals and signal in blocked_signals:
+        return False
+    regime = str(item.get("regime") or "").strip().upper()
+    if regime in {"BEAR_REBOUND", "CAUTION"} and signal == "trend_breakout":
+        return False
     readiness = str(item.get("trade_readiness") or "").strip().lower()
     if readiness in _RULE_BLOCKED_READINESS:
         return False

@@ -2367,6 +2367,35 @@ class TestMarketRegime:
         assert result["structural_regime"] == "BULL"
         assert result["bear_rebound_triggered"] is False
 
+    def test_2d_state_machine_routes_repair_and_blocks_ma50_breakdown_transition(self):
+        from tools.market_regime import MainBenchmarkMetrics, _apply_bear_rebound_regime
+
+        # Zone 4/5: transition breakdown below MA50 downgrades lagging RISK_ON to NEUTRAL
+        breakdown = MainBenchmarkMetrics(close=98.0, ma50=100.0, ma200=95.0, ma50_slope_5d=-0.2)
+        assert _apply_bear_rebound_regime("RISK_ON", breakdown) == ("NEUTRAL", [])
+
+        # Zone 2: right-side MA50 reclaim with rising MA50 slope promotes NEUTRAL to BEAR_REBOUND
+        repair = MainBenchmarkMetrics(close=96.0, ma50=95.0, ma200=100.0, ma50_slope_5d=0.3)
+        regime, reasons = _apply_bear_rebound_regime("NEUTRAL", repair)
+        assert regime == "BEAR_REBOUND"
+        assert "right_side_ma50_repair" in reasons
+
+        # Zone 1: bull pullback (recent3_cum < 0) routes NEUTRAL to CAUTION probe mode
+        pullback = MainBenchmarkMetrics(close=105.0, ma50=100.0, ma200=95.0, ma50_slope_5d=0.4, recent3_cum=-1.2)
+        assert _apply_bear_rebound_regime("NEUTRAL", pullback) == ("CAUTION", [])
+
+    def test_confirm_trend_candidate_rejects_high_volume_bearish_bar(self):
+        from core.signal_confirmation import _confirm_trend_candidate
+
+        snap = {"snap_support": 9.8, "snap_ma20": 10.0, "snap_close": 10.2, "snap_volume": 1000.0, "snap_low": 9.9}
+        bearish_heavy = {"open": 10.5, "close": 10.1, "low": 10.0, "volume": 1500.0, "ma20": 10.0}
+        status, _ = _confirm_trend_candidate(snap, bearish_heavy, days_elapsed=1)
+        assert status == "pending"
+
+        bullish_hold = {"open": 10.0, "close": 10.1, "low": 10.0, "volume": 1500.0, "ma20": 10.0}
+        status_ok, _ = _confirm_trend_candidate(snap, bullish_hold, days_elapsed=1)
+        assert status_ok == "confirmed"
+
     def test_structural_bear_remains_risk_off_during_short_rebound(self, monkeypatch):
         import tools.market_regime as market_regime
         from core.wyckoff_engine import FunnelConfig

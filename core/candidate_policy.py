@@ -23,6 +23,7 @@ TREND_CANDIDATE_TRIGGERS = {
     "wyckoff_structure",
 }
 DEFENSIVE_REGIMES = {
+    "CAUTION",
     "RISK_OFF",
     "BEAR_REBOUND",
     "PANIC_REPAIR",

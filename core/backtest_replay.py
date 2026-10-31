@@ -857,7 +857,8 @@ def _confirmed_signals(
     lane_entries = ctx.result.candidate_entries
     if selected_codes is not None:
         lane_entries = [item for item in lane_entries or [] if str(item.get("code", "")).strip() in selected_codes]
-    merged_triggers = merge_trigger_maps(ctx.result.triggers, candidate_signal_triggers(lane_entries))
+    # 候选车道触发在前：同 (code, signal_key) 同时命中时保留 52~100 校准分，避免被 L4 原始量比/比值分覆盖。
+    merged_triggers = merge_trigger_maps(candidate_signal_triggers(lane_entries), ctx.result.triggers)
     pending_pool.write(
         signal_date_str, merged_triggers, ctx.day_df_map, ctx.regime, ctx.name_map, sector_map, ctx.day_cfg
     )

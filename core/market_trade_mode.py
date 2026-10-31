@@ -381,6 +381,8 @@ def resolve_market_trade_mode(regime: str | None) -> MarketTradeMode:
             action="仅研究修复候选；不写正式推荐、不生成新仓订单",
             reason=f"{regime_norm} 只适合验证修复强度，禁止自动开仓",
         )
+    if regime_norm in oms_buy_block_regimes():
+        return _execution_blocked_trade_mode(regime_norm)
     if regime_norm in REPAIR_PROBE_REGIMES:
         return _confirmed_repair_trade_mode(regime_norm)
     if regime_norm in CAUTION_ONLY_REGIMES:
@@ -388,8 +390,6 @@ def resolve_market_trade_mode(regime: str | None) -> MarketTradeMode:
             regime_norm,
             reason="情绪扰动期只开放小额试探，候选必须经过确认支撑",
         )
-    if regime_norm in oms_buy_block_regimes():
-        return _execution_blocked_trade_mode(regime_norm)
     return MarketTradeMode(
         regime=regime_norm,
         mode="mainline_active",

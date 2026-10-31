@@ -587,6 +587,8 @@ def _apply_breadth_regime(
         breadth_delta is None or float(breadth_delta) >= regime_config.breadth_risk_on_min_delta
     ):
         regime = "RISK_ON"
+    elif regime == "RISK_ON":
+        regime = "NEUTRAL"
     if breadth_delta is not None and float(breadth_delta) <= regime_config.breadth_cliff_drop_pct:
         regime = "RISK_OFF"
     return regime
@@ -754,7 +756,36 @@ def _bull_structure(metrics: MainBenchmarkMetrics) -> bool:
     )
 
 
+def _right_side_ma50_repair(metrics: MainBenchmarkMetrics) -> bool:
+    return (
+        metrics.close is not None
+        and metrics.ma50 is not None
+        and metrics.ma200 is not None
+        and metrics.ma50_slope_5d is not None
+        and metrics.ma50 <= metrics.close <= metrics.ma200
+        and metrics.ma50_slope_5d > 0
+    )
+
+
+def _transition_below_ma50(metrics: MainBenchmarkMetrics) -> bool:
+    return (
+        _structural_regime(metrics) == "TRANSITION"
+        and metrics.close is not None
+        and metrics.ma50 is not None
+        and metrics.close < metrics.ma50
+    )
+
+
 def _apply_bear_rebound_regime(regime: str, metrics: MainBenchmarkMetrics) -> tuple[str, list[str]]:
+    if _transition_below_ma50(metrics) and regime == "RISK_ON":
+        return "NEUTRAL", []
+    if _bull_structure(metrics) and (
+        regime == "PANIC_REPAIR"
+        or (regime == "NEUTRAL" and metrics.recent3_cum is not None and metrics.recent3_cum < 0.0)
+    ):
+        return "CAUTION", []
+    if regime == "NEUTRAL" and _right_side_ma50_repair(metrics):
+        return "BEAR_REBOUND", ["close_below_ma200", "ma50_below_ma200", "right_side_ma50_repair"]
     if regime != "RISK_ON" or _bull_structure(metrics):
         return regime, []
     reasons: list[str] = []
@@ -807,6 +838,15 @@ def _tune_cfg_for_regime(
         cfg.rs_min_short = max(cfg.rs_min_short, 1.0)
         cfg.rps_fast_min = max(cfg.rps_fast_min, 80.0)
         cfg.rps_slow_min = max(cfg.rps_slow_min, 75.0)
+        if "trend_breakout" not in cfg.blocked_candidate_entry_types:
+            cfg.blocked_candidate_entry_types = (*cfg.blocked_candidate_entry_types, "trend_breakout")
+    elif regime == "CAUTION":
+        cfg.rs_min_long = max(cfg.rs_min_long, 1.5)
+        cfg.rs_min_short = max(cfg.rs_min_short, 0.5)
+        cfg.rps_fast_min = max(cfg.rps_fast_min, 78.0)
+        cfg.rps_slow_min = max(cfg.rps_slow_min, 70.0)
+        if "trend_breakout" not in cfg.blocked_candidate_entry_types:
+            cfg.blocked_candidate_entry_types = (*cfg.blocked_candidate_entry_types, "trend_breakout")
     elif regime == "RISK_ON":
         cfg.rs_min_long = max(cfg.rs_min_long, 0.0)
         cfg.rs_min_short = max(cfg.rs_min_short, 0.0)

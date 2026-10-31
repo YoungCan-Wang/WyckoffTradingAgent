@@ -110,7 +110,7 @@ Step4 执行会分别校验大盘水温与盘前风险：任一来源属于硬�
 ### 前置：大盘水温总闸
 
 通过指数均线关系和市场广度判定水温，动态调节漏斗参数：
-- **结构周期**：先用指数相对 MA50/MA200 与 MA50 斜率区分 BULL / TRANSITION / BEAR；结构熊市即使近 3 日反弹也保持 RISK_OFF，只有全市场广度真正转强时降为 BEAR_REBOUND 观察
+- **结构周期**：先用指数相对 MA50/MA200 与 MA50 斜率区分 BULL / TRANSITION / BEAR；结构熊市即使近 3 日反弹也保持 RISK_OFF，只有全市场广度真正转强或指数右侧站回 MA50 且 MA50 斜率转正时才进入 BEAR_REBOUND，而跌破 MA50 的过渡破位区不触发假 BEAR_REBOUND；多头结构（`close > ma50 > ma200` 且 `ma50_slope_5d > 0`）下的 3 日回踩与首日修复路由至 `CAUTION` 小仓试探，且 `BEAR_REBOUND` / `CAUTION` 动态屏蔽 `trend_breakout` 高位突破追涨车道，只放行回踩、主力进场与结构买点
 - **NEUTRAL**：代码默认支持主线研究；当前生产 `STEP4_BUY_BLOCK_REGIMES` 包含此档，实际禁止正式推荐与新开仓。不能把默认模式当成线上许可
 - **RISK_ON**：过热不追新，禁止新开仓（只管理旧仓）
 - **CRASH**：崩盘日默认禁止新开仓，只影子观察，不生成新买入。抗跌观察车道 (crash_resilience_watch) 已于大样本回测证明系统性负期望（T+5 均收 -1.76%，胜率 31%），信号本身及其驱动的 `CRASH_LEFT_PROBE` 左侧试探仓位权限已下线

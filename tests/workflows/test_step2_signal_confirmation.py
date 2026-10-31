@@ -70,3 +70,14 @@ def test_build_pending_signal_rows_writes_candidate_metadata():
     assert rows[0]["entry_type"] == "主线回踩MA20"
     assert rows[0]["mainline_score"] == 0.82
     assert rows[0]["snap_support"] > 0
+
+
+def test_confirmation_trigger_map_prefers_calibrated_candidate_entry_score():
+    from workflows.step2_signal_confirmation import _confirmation_trigger_map
+
+    merged = _confirmation_trigger_map(
+        triggers={"spring": [("000001", 0.82)]},
+        candidate_entries=[{"code": "000001", "signal_key": "spring", "score": 78.5}],
+    )
+
+    assert merged["spring"] == [("000001", 78.5)]
