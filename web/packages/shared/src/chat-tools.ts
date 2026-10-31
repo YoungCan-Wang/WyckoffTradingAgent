@@ -1213,7 +1213,7 @@ export async function execExecutePortfolioUpdate(
       .delete()
       .eq('portfolio_id', portfolioId)
       .eq('code', dbCode)
-      .select('id')
+      .select('code')
     if (error) return `删除失败: ${error.message}`
     if (!Array.isArray(data) || data.length === 0) {
       return `删除失败: 持仓未删除（可能已不存在或无权写入）`

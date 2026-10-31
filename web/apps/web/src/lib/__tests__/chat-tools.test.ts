@@ -620,7 +620,7 @@ describe('execExecutePortfolioUpdate', () => {
     expect(result).toContain('已删除')
     expect(result).toContain('600519')
     expect(deleteChain.delete).toHaveBeenCalled()
-    expect(deleteChain.select).toHaveBeenCalledWith('id')
+    expect(deleteChain.select).toHaveBeenCalledWith('code')
   })
 
   it('rejects delete when the lot is missing', async () => {
