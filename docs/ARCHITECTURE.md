@@ -270,7 +270,7 @@ Agent 采用 ReAct 范式：每一轮 LLM 先推理（Reason），再决定是�
 | 通道 | 当前工具 |
 |------|----------|
 | CLI / TUI（26） | 原有诊断、筛选、研报、组合、历史、后台、Skill 与委派工具，加 `evaluate_recommendation_events`、`research_hypothesis`、`reassess_profile`、`diagnose_backend`、`browser_research`（本机 Chrome CDP） |
-| Web（13+） | `search_stock`、`view_portfolio`、`market_overview`、`market_history`、`query_recommendations`、`query_attribution`、`plan_portfolio_update`、`execute_portfolio_update`、`analyze_stock`、`screen_stocks`、`generate_ai_report`、`generate_strategy_decision`、`intraday_analysis`；官方 DeepSeek V4 Flash/Pro 另挂服务端 `web_search`（Responses API，非本机 CDP）。已保存官方 `https://api.deepseek.com` Key、且当前轮没有 Responses `web_search` 时，另挂 `deepseek_web_search` / `deepseek_web_fetch`（独立 Search/Fetch API） |
+| Web（13+） | `search_stock`、`view_portfolio`、`market_overview`、`market_history`、`query_recommendations`、`query_attribution`、`plan_portfolio_update`、`execute_portfolio_update`、`analyze_stock`、`screen_stocks`、`generate_ai_report`、`generate_strategy_decision`、`intraday_analysis`；官方 DeepSeek V4 Flash/Pro 另挂服务端 `web_search`（Responses API，非本机 CDP）。星球会员已保存官方 `https://api.deepseek.com` Key、且当前轮没有 Responses `web_search` 时，另挂 `deepseek_web_search` / `deepseek_web_fetch`（独立 Search/Fetch API） |
 | MCP（18） | 原有行情、漏斗、诊断、组合、研报与决策工具，加 `research_hypothesis`、`reassess_profile`、`diagnose_backend` |
 
 CLI 中 `screen_stocks`、`generate_ai_report`、`generate_strategy_decision`、`run_backtest` 会提交到 `BackgroundTaskManager`（daemon Thread），不阻塞对话。Web 的 `screen_stocks` 读取最新漏斗结果，不在浏览器会话里启动本地后台漏斗。MCP 只返回单次工具调用结果。
@@ -976,7 +976,7 @@ CDP 未就绪时，TUI 会弹窗请用户授权，同意后自动拉起**独立�
 
 Web 读盘室在用户选择官方 `deepseek-v4-flash` 或 `deepseek-v4-pro` 时走 Responses API（`https://api.deepseek.com/responses`），注入服务端 `web_search`，并显式使用 `high` 思考强度和 32K 输出预算；行情、持仓、形态复盘仍走本地工具。Responses API 是无状态接口，搜索结果仅当轮有效；切到 Chat Completions 模型或跨供应商 fallback 前会把历史中的 provider-executed `web_search` 部件折叠成短文本，避免悬空 `tool_calls`。嵌套研报/诊断 Chat 调用关闭思考，避免小任务产生无法续传的推理状态。
 
-独立 Search / Fetch 是另一条 HTTP API，不是 Responses 里的 `web_search`。端点为 `POST https://api.deepseek.com/v1/tools/search` 与 `POST https://api.deepseek.com/v1/tools/fetch`，Bearer 鉴权与对话 Key 相同。Search 返回结构化结果（工具默认 5 条、最多 10 条，不请求网页正文）；Fetch 把单个 http(s) URL 转成 Markdown。各约 5 元/千次成功请求，空结果、失败和超时不计费，账号级各 5 QPS。读盘室只在用户设置里有官方 origin 的 DeepSeek Key、且当前这一轮没有挂上 Responses `web_search` 时注册 `deepseek_web_search` 与 `deepseek_web_fetch`，因此非 DeepSeek Responses 的模型也能搜；火山等代理地址不会启用。Fetch 默认打开，但提示词要求只抓一条必要 URL。
+独立 Search / Fetch 是另一条 HTTP API，不是 Responses 里的 `web_search`。端点为 `POST https://api.deepseek.com/v1/tools/search` 与 `POST https://api.deepseek.com/v1/tools/fetch`，Bearer 鉴权与对话 Key 相同。Search 返回结构化结果（工具默认 5 条、最多 10 条，不请求网页正文）；Fetch 把单个 http(s) URL 转成 Markdown。各约 5 元/千次成功请求，空结果、失败和超时不计费，账号级各 5 QPS。读盘室只对有效星球会员，且在用户设置里有官方 origin 的 DeepSeek Key、当前这一轮没有挂上 Responses `web_search` 时注册 `deepseek_web_search` 与 `deepseek_web_fetch`，因此非 DeepSeek Responses 的模型也能搜；火山等代理地址不会启用，免费用户不开放。Fetch 只放行本次请求里 Search 返回的 URL，其它地址在本地直接拒绝且不请求上游，防止被注入的网页让模型把持仓拼进 URL 带出去；提示词同时写明网页内容是数据而非指令。对话取消时，进行中的 Search/Fetch 一并中止。
 
 个股分析、持仓诊断和股票对抗等网页专项报告继续走 Chat Completions，但只对官方 DeepSeek V4 启用完整输出策略：默认 `low` 思考，输出预算按 12K → 24K → 32K 有界增加，并解析正文、`reasoning_content` 和 `finish_reason`。无工具请求中的历史推理会被官方忽略，因此纯推理截断时重试原问题；已有正文时只回传正文并续写。三段仍未结束才明确失败；其他供应商保留原有的截断正文返回语义。后台结构化任务也只对官方 V4 使用最小 4K、一次有界扩容和严格完整输出；代理及其他 OpenAI-compatible 供应商保持原契约。
 

@@ -18,6 +18,7 @@ describe('readingRoomDeepSeekWeb', () => {
 
     const web = readingRoomDeepSeekWeb({
       configs: [OFFICIAL],
+      memberEnabled: true,
       providerToolNames: Object.keys(resolved.providerTools),
       fetchImpl: vi.fn() as unknown as typeof fetch,
     })
@@ -30,6 +31,7 @@ describe('readingRoomDeepSeekWeb', () => {
         { provider: 'openai', api_key: 'sk-openai', base_url: 'https://api.openai.com/v1' },
         OFFICIAL,
       ],
+      memberEnabled: true,
       providerToolNames: [],
       fetchImpl: vi.fn() as unknown as typeof fetch,
     })
@@ -43,16 +45,29 @@ describe('readingRoomDeepSeekWeb', () => {
   it('does not enable the tools for a proxy DeepSeek base URL or a blank key', () => {
     const proxy = readingRoomDeepSeekWeb({
       configs: [{ provider: 'deepseek', api_key: 'sk-proxy', base_url: 'https://ark.cn-beijing.volces.com/api/v3' }],
+      memberEnabled: true,
       providerToolNames: [],
       fetchImpl: vi.fn() as unknown as typeof fetch,
     })
     const blank = readingRoomDeepSeekWeb({
       configs: [{ provider: 'deepseek', api_key: '   ', base_url: 'https://api.deepseek.com/v1' }],
+      memberEnabled: true,
       providerToolNames: [],
       fetchImpl: vi.fn() as unknown as typeof fetch,
     })
 
     expect(proxy.tools).toEqual({})
     expect(blank.tools).toEqual({})
+  })
+
+  it('keeps the tools away from non-members even with an official key', () => {
+    const web = readingRoomDeepSeekWeb({
+      configs: [OFFICIAL],
+      memberEnabled: false,
+      providerToolNames: [],
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+    })
+
+    expect(web).toEqual({ tools: {}, guidance: '' })
   })
 })

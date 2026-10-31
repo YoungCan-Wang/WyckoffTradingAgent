@@ -512,10 +512,12 @@ function buildChatSystemPrompt(transport: 'chat' | 'responses', standaloneGuidan
   return buildStableChatSystemPrompt({ rolePrompt: WYCKOFF_CHAT_SYSTEM_PROMPT, webSearchGuidance })
 }
 
-function prepareReadingRoomAttempt(args: ChatResilienceArgs, config: ChatModelConfig) {
+export function prepareReadingRoomAttempt(args: ChatResilienceArgs, config: ChatModelConfig) {
   const resolved = resolveChatLanguageModel(config, createProviderFetch(config.reasoning_level))
   const web = readingRoomDeepSeekWeb({
     configs: args.configs,
+    // 免费车道冻结，工具只给会员。这里的值就是 isActivePlanetMember 的结果。
+    memberEnabled: args.cloudPortfolioEnabled,
     providerToolNames: Object.keys(resolved.providerTools),
     fetchImpl: args.deps.fetch,
   })
