@@ -5,9 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from contextlib import redirect_stdout
 from datetime import date
-from io import StringIO
 
 import pandas as pd
 
@@ -95,33 +93,21 @@ def fetch_index_akshare(code: str, start: str, end: str) -> pd.DataFrame:
 
 
 def fetch_index_baostock(code: str, start: str, end: str) -> pd.DataFrame:
-    import baostock as bs
+    # Must share data_source_baostock's process-wide session+lock. A local
+    # login/logout replaces baostock's global default_socket and can splice
+    # foreign rows into a concurrent stock hist rs.next() loop.
+    from integrations.data_source_baostock import query_history_k_data
 
-    # baostock 登录/登出都是裸 print，每次调用都触发；重定向只盖这两行调用，不影响异常传播。
-    with redirect_stdout(StringIO()):
-        login = bs.login()
-    if login.error_code != "0":
-        raise RuntimeError(f"baostock index login: {login.error_msg}")
-    try:
-        rs = bs.query_history_k_data_plus(
-            _index_to_baostock_code(code),
-            "date,open,high,low,close,volume,pctChg",
-            start_date=_dash_date(start),
-            end_date=_dash_date(end),
-            frequency="d",
-            adjustflag="3",
-        )
-        if rs.error_code != "0":
-            raise RuntimeError(f"baostock index: {rs.error_msg}")
-        rows = []
-        while rs.next():
-            rows.append(rs.get_row_data())
-    finally:
-        with redirect_stdout(StringIO()):
-            bs.logout()
+    rows, fields = query_history_k_data(
+        _index_to_baostock_code(code),
+        _dash_date(start),
+        _dash_date(end),
+        fields="date,open,high,low,close,volume,pctChg",
+        adjustflag="3",
+    )
     if not rows:
         raise RuntimeError("baostock index empty")
-    frame = pd.DataFrame(rows, columns=rs.fields).rename(columns={"pctChg": "pct_chg"})
+    frame = pd.DataFrame(rows, columns=fields).rename(columns={"pctChg": "pct_chg"})
     for column in ("open", "high", "low", "close", "volume", "pct_chg"):
         frame[column] = pd.to_numeric(frame[column], errors="coerce")
     return (
