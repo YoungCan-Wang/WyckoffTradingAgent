@@ -115,3 +115,6 @@ def test_step3_stage_still_sends_empty_report_when_no_symbols() -> None:
     assert result.report_text == "# 空研报"
     assert result.summary_item["ok"] is True
     assert result.summary_item["output"] == "0 symbols"
+    # Empty Step3 input must not look like an authoritative empty AI pool.
+    assert result.ai_mark_authoritative is False
+    assert result.springboard_codes == []

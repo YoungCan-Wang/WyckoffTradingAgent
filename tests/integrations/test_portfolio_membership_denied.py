@@ -130,8 +130,30 @@ def test_cash_update_no_longer_claims_success_when_rls_denied_it() -> None:
     assert (ok, message) == (False, sp.MEMBERSHIP_WRITE_DENIED_MSG)
 
 
+def test_cash_update_zero_rows_with_membership_lookup_failure_does_not_claim_success() -> None:
+    """planet_members 查失败时 _write_denied 为假，旧写法仍回报「已更新」。"""
+    client = _client({("portfolios", "update"): [], ("planet_members", "select"): RuntimeError("down")})
+
+    ok, message = sp.update_free_cash(PORTFOLIO_ID, 5000.0, client=client, refresh_equity=False)
+
+    assert (ok, message) == (False, sp.CASH_WRITE_MISSING_ERROR)
+
+
+def test_cash_update_none_data_does_not_claim_success() -> None:
+    client = _client({("portfolios", "update"): None, ("planet_members", "select"): [{"expires_on": None}]})
+
+    ok, message = sp.update_free_cash(PORTFOLIO_ID, 5000.0, client=client, refresh_equity=False)
+
+    assert (ok, message) == (False, sp.CASH_WRITE_MISSING_ERROR)
+
+
 def test_cash_update_for_a_member_still_succeeds() -> None:
-    client = _client({("portfolios", "update"): [{"free_cash": 5000.0}]})
+    client = _client(
+        {
+            ("portfolios", "update"): [{"free_cash": 5000.0}],
+            ("planet_members", "select"): [{"expires_on": None}],
+        }
+    )
 
     ok, message = sp.update_free_cash(PORTFOLIO_ID, 5000.0, client=client, refresh_equity=False)
 

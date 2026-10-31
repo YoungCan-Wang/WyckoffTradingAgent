@@ -153,7 +153,12 @@ _STOP_PERSIST_ACTIONS = frozenset({"HOLD", "TRIM", "PROBE", "ATTACK"})
 
 
 def _should_persist_stop(ticket: ExecutionTicket) -> bool:
-    """未成交卖单不改持仓；倒挂参考价也不能成为下一轮保护止损。"""
+    """未成交卖单不改持仓；相对 price_hint 倒挂的止损不能成为下一轮保护。
+
+    Buy tickets must stash the mark in ``price_hint`` (not the entry-zone mid):
+    OMS may raise the stop via ATR/hard-stop above a pullback mid while still
+    keeping ``stop < current``, and that tighter stop must land on holdings.
+    """
     stop = ticket.effective_stop_loss
     price = ticket.price_hint
     # 买入建仓时 is_holding 为 False（首次买入 held_shares=0），不能作为落库前提，

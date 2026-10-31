@@ -707,7 +707,7 @@ CREATE TABLE chat_log (
 | 文件 / 数据库 | 用途 |
 |-------------|------|
 | `wyckoff.json` | 模型配置（provider / api_key / model / base_url）；可选超时：`stream_chunk_timeout_seconds`（默认 120，模型空闲/首 token）、`tool_timeout_seconds`（默认 60，单工具墙钟）。控制面板 Overview、TUI `/config set`、`wyckoff config` 均可改。1Route 的 `base_url` 必须带 `/v1`；只写根域名会打到官网 HTML（HTTP 200、无用量）。运行时会自动补 `/v1`。 |
-| `session.json` | Supabase 登录态（access_token / refresh_token）。`restore_session` 续期写盘 / 失效清盘前会核对磁盘 `user_id`：登出后不得复活会话，换号后不得用旧账号 token 覆盖新会话。MCP `_persist_tool_session` 经 `merge_session_tokens_if_same_user` 在会话锁内 CAS；`auto_relogin` 在网络登录后复核 config 凭据，避免与 `auth_logout` / 换号竞态复活或覆盖。桌面 `auth_login` 后的 `pull_cloud_config` 落盘前同样核对磁盘仍是同一 `user_id`，慢拉取与登出/换号重叠时不落盘。这只挡住竞态：登出不清已拉到 `wyckoff.json` 的云端密钥，下一个账号仍会继承。 |
+| `session.json` | Supabase 登录态（access_token / refresh_token）。`restore_session` 续期写盘 / 失效清盘前会核对磁盘 `user_id`：登出后不得复活会话，换号后不得用旧账号 token 覆盖新会话。瞬态网络错误（超时 / 断连等非 invalid）也不得把起飞前主体直接返回给调用方，须再读磁盘身份。MCP `_persist_tool_session` 经 `merge_session_tokens_if_same_user` 在会话锁内 CAS；`auto_relogin` 在网络登录后复核 config 凭据；显式 `login()` 用 `wyckoff.json` 的 `login_attempt_id` 标记本次尝试，登出或更新的登录会作废进行中的写盘，避免与 `auth_logout` / 并行 `auth_login` 竞态复活或覆盖。桌面 `auth_login` 后的 `pull_cloud_config` 落盘前同样核对磁盘仍是同一 `user_id`，慢拉取与登出/换号重叠时不落盘。这只挡住竞态：登出不清已拉到 `wyckoff.json` 的云端密钥，下一个账号仍会继承。 |
 | `agent.log` | Agent 文件日志 |
 | `wyckoff.db` | SQLite 数据库（下方详述） |
 
@@ -1290,7 +1290,9 @@ order by n;
   `PORTFOLIO_*_CNY_RATE` / ECB 参考汇率后改现金，缺汇率则拒绝写入。
   `integrations.supabase_portfolio.record_fill` 负责落库，先读后写，需串行调用。
   已有持仓走 update（空 `buy_dt` 不覆盖原建仓日）；新仓走 insert，必须有合法 `YYYYMMDD` / `YYYY-MM-DD`，
-  禁止插入无日期多头。
+  禁止插入无日期多头。买入建仓且持仓尚无止损时，从近 5 日同标的 APPROVED PROBE/ATTACK
+  `trade_orders.stop_loss` 写入持仓（Step4 新开仓时尚无持仓行，只能把止损留在工单）；
+  工单晚于成交日或止损不低于成交价时不写，否则下一轮 Step4 会强制 EXIT 新仓。
 - 入口：CLI `wyckoff portfolio fill`、MCP/Agent 工具 `record_trade_fill`。
   `portfolio add` 只插入新仓且必须带合法建仓日，不要拿它记成交。
 - 任一持仓新增、覆盖、删除、现金修改或完整成交回填成功后，写入边界都会重新读取整个组合，
@@ -1306,7 +1308,7 @@ order by n;
   降级工单的 `model` 为 `degraded:*`，`run_id` 不绑持仓签名，幂等检查不把它当成完整 OMS，修好模型后的同日补跑仍可再决策。
   旧买入建议可能与新保护性 `EXIT` 同时留档，此处不做券商交易或跨轮建议自动裁决。
   止损按规范化码匹配后用库内原始码更新；读取失败、组合不存在、已匹配持仓更新零行均视为失败。
-  成功读取后的空持仓/缺失新开仓持仓行可跳过，止损仍保存在工单中。后续持久化失败只按
+  成功读取后的空持仓/缺失新开仓持仓行可跳过，止损仍保存在工单中；`record_fill` 买入建仓（或持仓止损仍为空）时从近 5 日 APPROVED PROBE/ATTACK 工单写入 `portfolio_positions.stop_loss`，避免新仓永远无保护止损。后续持久化失败只按
   本次 `run_id` 作废新工单，并按写入前快照恢复已改动的持仓止损；回滚失败必须显式报错。Telegram 推送失败则保留新工单作为幂等事实源，
   禁止重跑 LLM/OMS，避免超时已送达时产生重复或冲突指令。当前跨表写入仍不具备数据库事务性。
 - LLM 若对同一代码输出多条决策，解析阶段按 `EXIT > TRIM > HOLD > PROBE > ATTACK` 折叠为一条；
