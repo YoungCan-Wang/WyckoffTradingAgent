@@ -274,9 +274,23 @@ def _persist_tool_session(tool_context: ToolContext | None) -> None:
         logger.debug("failed to persist refreshed Supabase session", exc_info=True)
 
 
+def _disk_session_is_another_principal(tool_context: ToolContext | None) -> bool:
+    from integrations.local_auth import load_session
+
+    expected = str((tool_context.state if tool_context else {}).get("user_id") or "").strip()
+    disk_user = str((load_session() or {}).get("user_id") or "").strip()
+    return bool(expected and disk_user) and expected != disk_user
+
+
 def _relogin_and_create_client(tool_context: ToolContext | None):
     from integrations.local_auth import auto_relogin
 
+    # Stored credentials follow the disk session, so a frozen context can only get
+    # refused below. Skip the sign-in: this path runs on every client lookup until
+    # the process restarts, and each attempt is a password login against Supabase.
+    if _disk_session_is_another_principal(tool_context):
+        logger.warning("skipping auto_relogin: disk session belongs to another account")
+        return None, "", ""
     data = auto_relogin()
     if not data or tool_context is None:
         return None, "", ""

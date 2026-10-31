@@ -1,8 +1,68 @@
 from __future__ import annotations
 
+import pytest
+
 from agents import tool_context
 
 
+@pytest.fixture
+def no_disk_session(monkeypatch):
+    monkeypatch.setattr("integrations.local_auth.load_session", lambda: None)
+
+
+def _alice_context() -> tool_context.ToolContext:
+    return tool_context.ToolContext({"user_id": "alice", "access_token": "at", "refresh_token": "rt"})
+
+
+def _count_sign_ins(monkeypatch) -> list[str]:
+    calls: list[str] = []
+
+    def auto_relogin():
+        calls.append("sign-in")
+
+    monkeypatch.setattr("integrations.local_auth.auto_relogin", auto_relogin)
+    return calls
+
+
+def test_frozen_context_does_not_sign_in_while_disk_is_another_account(monkeypatch):
+    calls = _count_sign_ins(monkeypatch)
+    monkeypatch.setattr("integrations.local_auth.load_session", lambda: {"user_id": "bob"})
+    ctx = _alice_context()
+
+    results = [tool_context._relogin_and_create_client(ctx) for _ in range(5)]
+
+    assert calls == []
+    assert results == [(None, "", "")] * 5
+
+
+def test_expired_token_of_same_disk_user_still_signs_in(monkeypatch):
+    calls = _count_sign_ins(monkeypatch)
+    monkeypatch.setattr("integrations.local_auth.load_session", lambda: {"user_id": "alice"})
+
+    tool_context._relogin_and_create_client(_alice_context())
+
+    assert calls == ["sign-in"]
+
+
+@pytest.mark.usefixtures("no_disk_session")
+def test_missing_disk_session_still_signs_in(monkeypatch):
+    calls = _count_sign_ins(monkeypatch)
+
+    tool_context._relogin_and_create_client(_alice_context())
+
+    assert calls == ["sign-in"]
+
+
+def test_context_without_principal_still_signs_in(monkeypatch):
+    calls = _count_sign_ins(monkeypatch)
+    monkeypatch.setattr("integrations.local_auth.load_session", lambda: {"user_id": "bob"})
+
+    tool_context._relogin_and_create_client(None)
+
+    assert calls == ["sign-in"]
+
+
+@pytest.mark.usefixtures("no_disk_session")
 def test_relogin_refuses_to_swap_frozen_principal(monkeypatch):
     """Desktop switched to Bob; Alice's frozen MCP context must not become Bob."""
 
@@ -42,6 +102,7 @@ def test_relogin_refuses_to_swap_frozen_principal(monkeypatch):
     assert persist_calls == []
 
 
+@pytest.mark.usefixtures("no_disk_session")
 def test_relogin_keeps_same_user_token_refresh(monkeypatch):
     class Client:
         pass

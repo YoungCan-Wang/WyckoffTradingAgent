@@ -18,6 +18,11 @@
 反过来（云端优先）在多设备场景下更"一致"，但那需要一个真正的同步语义（时间戳、
 冲突解决），不是登录时拉一把能做到的。所以这里只做**补空缺**：
 第一次登录的新机器会拿到全部配置，已经配过的机器不受影响。
+
+## 拉下来的值归拉取时的账号
+
+只补空缺意味着残留的值不会被下一个账号盖掉，所以补上的值都带来源记录写入，
+登出或换号时由 `local_auth` 移除。用户之后改过的值指纹对不上，会留下来。
 """
 
 from __future__ import annotations
@@ -82,9 +87,13 @@ def _session_still_belongs_to(user_id: str) -> bool:
     return bool(disk) and str(disk.get("user_id") or "") == expected
 
 
+def _cloud_model_id(provider: str, model: str) -> str:
+    return f"cloud:{provider}:{model}"
+
+
 def _merge_data_sources(row: dict[str, Any], *, expected_user_id: str) -> list[str]:
     """把行情数据源的 key 补进本地 config（本地已有则跳过）。"""
-    from integrations.local_auth import load_config, save_config_key
+    from integrations.local_auth import load_config, save_cloud_data_source
 
     local = load_config()
     filled: list[str] = []
@@ -97,7 +106,7 @@ def _merge_data_sources(row: dict[str, Any], *, expected_user_id: str) -> list[s
         if not _session_still_belongs_to(expected_user_id):
             logger.warning("refusing data-source merge: disk identity changed during pull")
             break
-        save_config_key(local_key, value)
+        save_cloud_data_source(expected_user_id, local_key, value)
         filled.append(local_key)
     return filled
 
@@ -108,7 +117,7 @@ def _merge_models(row: dict[str, Any], *, expected_user_id: str) -> list[str]:
     以 (provider, model) 判重而不是只看 provider：同一家可能配了不同模型，
     只看 provider 会把用户在本地新加的第二个模型当成重复而跳过。
     """
-    from integrations.local_auth import load_model_configs, save_model_entry
+    from integrations.local_auth import load_model_configs, save_cloud_model_entry
 
     existing = load_model_configs()
     have = {(str(c.get("provider_name") or ""), str(c.get("model") or "")) for c in existing}
@@ -128,14 +137,14 @@ def _merge_models(row: dict[str, Any], *, expected_user_id: str) -> list[str]:
             # id 用 provider+model 而不是只用 provider：save_model_config 的默认
             # 规则是拿 provider_name 当 id，那样同一家配两个模型会互相覆盖。
             # 带上 model 名之后，重复登录也是幂等的（同一条目原地更新）。
-            "id": f"cloud:{provider}:{model}",
+            "id": _cloud_model_id(provider, model),
             "provider_name": provider,
             "model": model,
             "api_key": api_key,
             "base_url": str(row.get(f"{prefix}_base_url") or "").strip(),
         }
         try:
-            save_model_entry(entry)
+            save_cloud_model_entry(expected_user_id, entry)
         except Exception:
             logger.warning("failed to save cloud model entry: %s", provider, exc_info=True)
             continue
@@ -162,6 +171,19 @@ def _apply_default(row: dict[str, Any]) -> None:
         logger.warning("failed to set default model from cloud config", exc_info=True)
 
 
+def _adopt_existing_values(row: dict[str, Any], user_id: str) -> None:
+    from integrations.local_auth import adopt_cloud_values
+
+    data_sources = {local: str(row.get(column) or "").strip() for column, local in _DATA_SOURCE_KEYS.items()}
+    model_keys = {
+        _cloud_model_id(provider, str(row.get(f"{prefix}_model") or "").strip()): str(
+            row.get(f"{prefix}_api_key") or ""
+        ).strip()
+        for provider, prefix in _PROVIDERS.items()
+    }
+    adopt_cloud_values(user_id, data_sources, model_keys)
+
+
 def pull_cloud_config(user_id: str, access_token: str) -> dict[str, Any]:
     """登录后拉一次云端配置，返回实际补上了什么。
 
@@ -179,8 +201,11 @@ def pull_cloud_config(user_id: str, access_token: str) -> dict[str, Any]:
         logger.warning("refusing cloud config merge: disk identity changed during pull")
         return {"models": [], "data_sources": [], "available": False}
 
-    return {
+    pulled = {
         "models": _merge_models(row, expected_user_id=user_id),
         "data_sources": _merge_data_sources(row, expected_user_id=user_id),
         "available": True,
     }
+    if _session_still_belongs_to(user_id):
+        _adopt_existing_values(row, user_id)
+    return pulled

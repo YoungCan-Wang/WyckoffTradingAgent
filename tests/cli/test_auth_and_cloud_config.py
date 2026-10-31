@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -318,3 +319,157 @@ class TestAuthMethodsAreExposed:
 
         events = list(auth_login({"email": "a@b.c", "password": "secret-pw"}))
         assert "secret-pw" not in json.dumps(events)
+
+
+BOB_ROW = {
+    "chat_provider": "openai",
+    "openai_api_key": "BOB-O-KEY",
+    "openai_model": "gpt-4o",
+    "tickflow_api_key": "BOB-TF-KEY",
+    "tushare_token": "BOB-TS-TOKEN",
+}
+
+
+def _switch_session(user_id: str) -> None:
+    la.save_session({"user_id": user_id, "email": f"{user_id}@b.c", "access_token": "tok", "refresh_token": "r"})
+
+
+class TestCloudConfigDoesNotOutliveAccount:
+    """云端拉来的密钥属于拉取时的账号：登出或换号要带走，本机手填的值要留下。"""
+
+    def test_next_account_does_not_inherit_keys(self, signed_in, cloud):
+        from agents.tool_context import _local_default_llm_config
+
+        cc.pull_cloud_config("u1", "tok")
+        assert _local_default_llm_config()[1] == "G-KEY"
+
+        la.logout()
+        _switch_session("u2")
+
+        config = la.load_config()
+        assert not config.get("tickflow_api_key")
+        assert not config.get("tushare_token")
+        assert la.load_model_configs() == []
+        assert _local_default_llm_config() is None
+
+    def test_next_account_pull_fills_its_own_keys(self, signed_in, cloud, monkeypatch):
+        cc.pull_cloud_config("u1", "tok")
+        la.logout()
+        _switch_session("u2")
+
+        monkeypatch.setattr(cc, "_fetch_settings", lambda *_a: dict(BOB_ROW))
+        pulled = cc.pull_cloud_config("u2", "tok")
+
+        assert sorted(pulled["data_sources"]) == ["tickflow_api_key", "tushare_token"]
+        assert la.load_config()["tickflow_api_key"] == "BOB-TF-KEY"
+        assert [c["api_key"] for c in la.load_model_configs()] == ["BOB-O-KEY"]
+
+    def test_manual_values_survive_logout(self, signed_in, cloud):
+        la.save_config_key("tickflow_api_key", "MY-TF-KEY")
+        la.save_model_entry({"id": "mine", "provider_name": "openai", "model": "local", "api_key": "MY-KEY"})
+
+        cc.pull_cloud_config("u1", "tok")
+        la.logout()
+
+        config = la.load_config()
+        assert config["tickflow_api_key"] == "MY-TF-KEY"
+        assert not config.get("tushare_token")
+        assert [c["id"] for c in la.load_model_configs()] == ["mine"]
+        assert la.load_default_model_id() == "mine"
+
+    def test_values_edited_after_pull_survive_logout(self, signed_in, cloud):
+        cc.pull_cloud_config("u1", "tok")
+        la.save_config_key("tickflow_api_key", "EDITED-TF")
+        edited = next(c for c in la.load_model_configs() if c["provider_name"] == "openai")
+        la.save_model_entry({**edited, "api_key": "EDITED-KEY"})
+
+        la.logout()
+
+        assert la.load_config()["tickflow_api_key"] == "EDITED-TF"
+        assert [c["api_key"] for c in la.load_model_configs()] == ["EDITED-KEY"]
+
+    def test_default_and_fallback_do_not_dangle(self, signed_in, cloud):
+        la.save_model_entry({"id": "mine", "provider_name": "openai", "model": "local", "api_key": "MY-KEY"})
+        cc.pull_cloud_config("u1", "tok")
+        cloud_id = next(c["id"] for c in la.load_model_configs() if c["id"].startswith("cloud:"))
+        la.set_default_model(cloud_id)
+        la.set_fallback_model(cloud_id)
+
+        la.logout()
+
+        assert la.load_default_model_id() == "mine"
+        assert la.load_config().get("default") == "mine"
+        assert la.load_fallback_model_id() == ""
+
+    def test_logout_drops_seeded_env_but_not_foreign_env(self, signed_in, cloud, monkeypatch):
+        monkeypatch.delenv("TICKFLOW_API_KEY", raising=False)
+        monkeypatch.setenv("TUSHARE_TOKEN", "FROM-SHELL")
+        cc.pull_cloud_config("u1", "tok")
+        la.seed_data_source_env()
+        assert os.environ["TICKFLOW_API_KEY"] == "TF-KEY"
+
+        la.logout()
+
+        assert "TICKFLOW_API_KEY" not in os.environ
+        assert os.environ["TUSHARE_TOKEN"] == "FROM-SHELL"
+
+    def test_login_as_another_account_purges_without_logout(self, signed_in, cloud, monkeypatch):
+        cc.pull_cloud_config("u1", "tok")
+        monkeypatch.setattr(
+            la,
+            "_sign_in_with_password",
+            lambda *_a: {"user_id": "u2", "email": "b@b.c", "access_token": "t", "refresh_token": "r"},
+        )
+
+        la.login("b@b.c", "pw")
+
+        assert not la.load_config().get("tickflow_api_key")
+        assert la.load_model_configs() == []
+
+    def test_login_as_same_account_keeps_keys(self, signed_in, cloud, monkeypatch):
+        cc.pull_cloud_config("u1", "tok")
+        monkeypatch.setattr(
+            la,
+            "_sign_in_with_password",
+            lambda *_a: {"user_id": "u1", "email": "a@b.c", "access_token": "t", "refresh_token": "r"},
+        )
+
+        la.login("a@b.c", "pw")
+
+        assert la.load_config()["tickflow_api_key"] == "TF-KEY"
+        assert len(la.load_model_configs()) == 3
+
+    def test_pull_write_that_outlives_logout_is_purged_at_next_login(self, signed_in, monkeypatch):
+        """#596 只把窗口缩小：核对身份后、落盘前登出仍会写入，下个账号登录时要清掉。"""
+        la.logout()
+        la.save_cloud_data_source("u1", "tickflow_api_key", "LATE-TF")
+        monkeypatch.setattr(
+            la,
+            "_sign_in_with_password",
+            lambda *_a: {"user_id": "u2", "email": "b@b.c", "access_token": "t", "refresh_token": "r"},
+        )
+
+        la.login("b@b.c", "pw")
+
+        assert not la.load_config().get("tickflow_api_key")
+
+    def test_keys_pulled_before_upgrade_are_adopted_by_owner(self, signed_in, cloud):
+        """升级前拉的值没有来源记录：下次拉取值相同才认领，不同的不动。"""
+        la.save_config_key("tickflow_api_key", "TF-KEY")
+        la.save_config_key("tushare_token", "TYPED-BY-HAND")
+        la.save_model_entry(
+            {
+                "id": "cloud:gemini:gemini-2.5-pro",
+                "provider_name": "gemini",
+                "model": "gemini-2.5-pro",
+                "api_key": "G-KEY",
+            }
+        )
+
+        cc.pull_cloud_config("u1", "tok")
+        la.logout()
+
+        config = la.load_config()
+        assert not config.get("tickflow_api_key")
+        assert config["tushare_token"] == "TYPED-BY-HAND"
+        assert la.load_model_configs() == []
