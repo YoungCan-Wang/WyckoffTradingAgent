@@ -3,6 +3,85 @@ from __future__ import annotations
 from agents import tool_context
 
 
+def test_relogin_refuses_to_swap_frozen_principal(monkeypatch):
+    """Desktop switched to Bob; Alice's frozen MCP context must not become Bob."""
+
+    class Client:
+        pass
+
+    monkeypatch.setattr(
+        "integrations.local_auth.auto_relogin",
+        lambda: {
+            "user_id": "bob",
+            "email": "bob@example.test",
+            "access_token": "bob-at",
+            "refresh_token": "bob-rt",
+        },
+    )
+    monkeypatch.setattr("integrations.supabase_base.create_user_client", lambda *_a, **_k: Client())
+    monkeypatch.setattr("integrations.supabase_base.get_session_tokens", lambda _c: ("", ""))
+    persist_calls: list[object] = []
+    monkeypatch.setattr(tool_context, "_persist_tool_session", lambda ctx: persist_calls.append(ctx))
+
+    ctx = tool_context.ToolContext(
+        {
+            "user_id": "alice",
+            "email": "alice@example.test",
+            "access_token": "alice-expired-at",
+            "refresh_token": "alice-expired-rt",
+        }
+    )
+
+    client, access, refresh = tool_context._relogin_and_create_client(ctx)
+
+    assert client is None
+    assert access == ""
+    assert refresh == ""
+    assert ctx.state["user_id"] == "alice"
+    assert ctx.state["access_token"] == "alice-expired-at"
+    assert persist_calls == []
+
+
+def test_relogin_keeps_same_user_token_refresh(monkeypatch):
+    class Client:
+        pass
+
+    monkeypatch.setattr(
+        "integrations.local_auth.auto_relogin",
+        lambda: {
+            "user_id": "alice",
+            "email": "alice@example.test",
+            "access_token": "alice-new-at",
+            "refresh_token": "alice-new-rt",
+        },
+    )
+    monkeypatch.setattr("integrations.supabase_base.create_user_client", lambda *_a, **_k: Client())
+    monkeypatch.setattr(
+        "integrations.supabase_base.get_session_tokens",
+        lambda _c: ("alice-refreshed-at", "alice-refreshed-rt"),
+    )
+    persist_calls: list[object] = []
+    monkeypatch.setattr(tool_context, "_persist_tool_session", lambda ctx: persist_calls.append(ctx))
+
+    ctx = tool_context.ToolContext(
+        {
+            "user_id": "alice",
+            "email": "alice@example.test",
+            "access_token": "alice-old-at",
+            "refresh_token": "alice-old-rt",
+        }
+    )
+
+    client, access, refresh = tool_context._relogin_and_create_client(ctx)
+
+    assert client is not None
+    assert access == "alice-refreshed-at"
+    assert refresh == "alice-refreshed-rt"
+    assert ctx.state["user_id"] == "alice"
+    assert ctx.state["access_token"] == "alice-refreshed-at"
+    assert len(persist_calls) == 1
+
+
 def test_persist_refuses_to_clobber_switched_account(tmp_path, monkeypatch):
     session_file = tmp_path / "session.json"
     monkeypatch.setattr("integrations.local_auth.SESSION_FILE", session_file)

@@ -70,13 +70,24 @@ Token refresh must not rewrite `~/.wyckoff/session.json` when that file is missi
 disk check and write run under the session lock (`merge_session_tokens_if_same_user`);
 a check-then-`save_session` outside that lock still races with desktop logout/switch.
 A long-lived MCP process may keep its first-call principal in memory until restart,
-but it must not clobber the desktop/CLI login on disk. Desktop/CLI
+but it must not clobber the desktop/CLI login on disk, and token-expiry
+`auto_relogin` must not rewrite that in-memory principal to a different
+`user_id` after a desktop account switch. Desktop/CLI
 `restore_session` follows the same compare-and-swap rule（中文：比较并交换 /
 写前核对身份）before saving refreshed tokens or clearing an invalid session,
+and before returning a pre-flight principal on transient network errors,
 because IPC workers can overlap `account` restore with `auth_logout` /
 `auth_login`. `auto_relogin` also re-checks stored email/password after the
 network sign-in and refuses to persist when logout cleared credentials or another
-account logged in mid-flight.
+account logged in mid-flight. Explicit `login()` claims a `login_attempt_id` in
+`wyckoff.json` before sign-in and refuses to persist when logout (or a newer
+login) cleared/replaced that marker mid-flight — otherwise a slow IPC
+`auth_login` worker can rewrite `session.json` after the user already logged out.
+Desktop `pull_cloud_config` (post-`auth_login`)
+re-checks `session.json` before merging cloud `user_settings` into
+`wyckoff.json`, so a pull that outlives logout/switch does not write. This does
+not remove keys already pulled: logout leaves cloud-sourced keys in `wyckoff.json`,
+and the next account inherits them.
 
 `update_portfolio` and `record_trade_fill` are denied by default, before the domain
 backend is loaded. This version also guards the mutating actions of

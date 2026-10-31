@@ -30,7 +30,7 @@ from core.constants import (
     TABLE_TRADE_ORDERS,
     TABLE_USER_SETTINGS,
 )
-from core.trade_fill import Fill, Holding, apply_fill
+from core.trade_fill import BUY, Fill, Holding, apply_fill
 from integrations.planet_membership import PLANET_MEMBERSHIP_URL, is_active_planet_member
 from integrations.supabase_base import create_admin_client as _get_supabase_admin_client
 from integrations.supabase_base import is_admin_configured as is_supabase_configured
@@ -45,6 +45,8 @@ PARTIAL_FILL_WRITE_MSG = "持仓已更新但现金写入失败，请手动核对
 MEMBERSHIP_WRITE_DENIED_MSG = (
     f"云端持仓保存是星球会员能力（账号未开通或已到期），本次没有写入。了解并加入：{PLANET_MEMBERSHIP_URL}"
 )
+# update_free_cash 命中 0 行且无法确认是会员墙时用；不得含 auth 重登关键字。
+CASH_WRITE_MISSING_ERROR = "现金未写入（组合不存在或未命中任何行），请核对后重试"
 
 
 @dataclass(frozen=True)
@@ -249,6 +251,12 @@ def _is_full_oms_idempotency_row(row: dict[str, Any]) -> bool:
     return not model.startswith("degraded:")
 
 
+# PostgREST pages; hard single-shot limits previously dropped active EXIT/BUY rows
+# after same-day degraded floods or repeated supersedes left hundreds of CANCELLED.
+_TRADE_ORDER_PAGE = 500
+_CANCEL_ID_CHUNK = 100
+
+
 def check_daily_run_exists(
     portfolio_id: str,
     trade_date: str,
@@ -262,23 +270,22 @@ def check_daily_run_exists(
         return False
     try:
         client = _get_supabase_admin_client()
-        resp = (
-            client.table(TABLE_TRADE_ORDERS)
-            .select("run_id,status,created_at,model")
-            .eq("portfolio_id", portfolio_id)
-            .eq("trade_date", trade_date)
-            .order("created_at", desc=True)
-            .limit(200)
-            .execute()
-        )
-        rows = resp.data or []
-        active_rows = [row for row in rows if _is_full_oms_idempotency_row(row)]
-        if not active_rows:
-            return False
         expected_sig = str(state_signature or "").strip().lower()
-        if not expected_sig:
-            return True
-        return any(extract_state_signature_from_run_id(row.get("run_id")) == expected_sig for row in active_rows)
+        for row in _iter_trade_order_pages(
+            client,
+            select="run_id,status,created_at,model",
+            portfolio_id=portfolio_id,
+            trade_date=trade_date,
+            exclude_cancelled=True,
+            order_by=("created_at", True),
+        ):
+            if not _is_full_oms_idempotency_row(row):
+                continue
+            if not expected_sig:
+                return True
+            if extract_state_signature_from_run_id(row.get("run_id")) == expected_sig:
+                return True
+        return False
     except Exception as e:
         logger.warning("[supabase_portfolio] check_daily_run_exists failed: %s", e)
         return False
@@ -300,8 +307,8 @@ def _apply_position_stop_updates(
 
     Step4 / set_stop_loss 侧传入的是规范化码（``00700.HK``），库里可能仍是历史
     ``700.HK`` / 大小写变体。只 ``eq`` 规范码时 PostgREST 0 行仍算成功，ATR 上移
-    止损失落库，次日强制 EXIT 继续用旧 stop。新开仓工单尚无持仓行时跳过（止损
-    已在 trade_orders）。
+    止损失落库，次日强制 EXIT 继续用旧 stop。新开仓工单尚无持仓行时跳过——止损
+    留在 ``trade_orders``，由 ``record_fill`` 建仓时从 APPROVED PROBE/ATTACK 工单写入。
     """
     state = load_portfolio_state(portfolio_id, client=client)
     if state is None:
@@ -457,6 +464,14 @@ def _base_position_row(portfolio_id: str, position: dict[str, Any]) -> tuple[str
         "shares": int(position.get("shares", 0) or 0),
         "cost_price": float(position.get("cost_price", 0) or 0),
     }
+    # Optional: record_fill seeds entry stops from the APPROVED PROBE/ATTACK ticket.
+    # Omit the key entirely when absent so update_position does not clear an existing stop.
+    if "stop_loss" in position:
+        raw_stop = position.get("stop_loss")
+        if raw_stop is not None:
+            stop = float(raw_stop)
+            if stop > 0:
+                row["stop_loss"] = stop
     return code, row
 
 
@@ -645,16 +660,110 @@ def _persist_filled_holding(
     existing: dict[str, Any] | None,
     holding: Holding,
     client: Client,
+    *,
+    stop_loss: float | None = None,
 ) -> tuple[bool, str]:
-    payload = {
+    payload: dict[str, Any] = {
         "code": holding.code,
         "name": holding.name,
         "shares": holding.shares,
         "cost_price": holding.cost_price,
         "buy_dt": holding.buy_dt,
     }
+    # Step4 cannot write stops for brand-new entries (no position row yet); the stop
+    # lives on trade_orders until fill. Seed only when the holding still has none —
+    # never lower a stop the user or a later HOLD already raised.
+    if stop_loss is not None and stop_loss > 0 and _position_stop_missing(existing):
+        payload["stop_loss"] = float(stop_loss)
     writer = insert_position if existing is None else update_position
     return writer(portfolio_id, payload, client=client, refresh_equity=False)
+
+
+def _position_stop_missing(existing: dict[str, Any] | None) -> bool:
+    if existing is None:
+        return True
+    raw = existing.get("stop_loss")
+    if raw is None:
+        return True
+    try:
+        return float(raw) <= 0
+    except (TypeError, ValueError):
+        return True
+
+
+def _as_iso_trade_date(raw: str) -> str | None:
+    from core.buy_dt import parse_buy_dt
+
+    parsed = parse_buy_dt(str(raw or "").strip())
+    return parsed.strftime("%Y-%m-%d") if parsed else None
+
+
+def _approved_entry_stop_loss(
+    client: Client,
+    portfolio_id: str,
+    code: str,
+    trade_date: str,
+) -> float | None:
+    """Read the protective stop from a recent APPROVED PROBE/ATTACK ticket.
+
+    Fill may land the morning after Step4 (ticket ``trade_date`` = T, fill date = T+1),
+    so exact-date match is preferred but same-code tickets within a 5-day window count.
+    """
+    from core.portfolio_symbol import normalize_portfolio_code
+
+    fill_iso = _as_iso_trade_date(trade_date)
+    if not fill_iso:
+        return None
+    want = normalize_portfolio_code(code) or str(code).strip().upper()
+    try:
+        rows = (
+            client.table(TABLE_TRADE_ORDERS)
+            .select("code,action,status,stop_loss,trade_date,created_at")
+            .eq("portfolio_id", portfolio_id)
+            .eq("status", "APPROVED")
+            .in_("action", ["PROBE", "ATTACK"])
+            .order("trade_date", desc=True)
+            .limit(100)
+            .execute()
+            .data
+            or []
+        )
+    except Exception as exc:
+        logger.warning("[supabase_portfolio] entry stop lookup failed: %s", exc)
+        return None
+    fill_day = datetime.strptime(fill_iso, "%Y-%m-%d").date()
+    exact: float | None = None
+    recent: float | None = None
+    for row in rows:
+        raw_code = str(row.get("code") or "").strip()
+        if (normalize_portfolio_code(raw_code) or raw_code.upper()) != want:
+            continue
+        try:
+            stop = float(row["stop_loss"]) if row.get("stop_loss") is not None else None
+        except (TypeError, ValueError):
+            stop = None
+        if stop is None or stop <= 0:
+            continue
+        ticket_iso = _as_iso_trade_date(str(row.get("trade_date") or ""))
+        if ticket_iso == fill_iso:
+            exact = stop
+            break
+        if ticket_iso and recent is None:
+            ticket_day = datetime.strptime(ticket_iso, "%Y-%m-%d").date()
+            if 0 <= (fill_day - ticket_day).days <= 5:
+                recent = stop
+    return exact if exact is not None else recent
+
+
+def _seedable_entry_stop(client: Client, portfolio_id: str, fill: Fill) -> float | None:
+    stop = _approved_entry_stop_loss(client, portfolio_id, fill.code, fill.trade_date)
+    if stop is None or stop < fill.price:
+        return stop
+    # 写进持仓的止损绕过新仓保护期，不低于成交价时下一轮 Step4 会直接强制 EXIT。
+    logger.warning(
+        "[supabase_portfolio] entry stop %s >= fill price %s for %s, not seeded", stop, fill.price, fill.code
+    )
+    return None
 
 
 def _canonicalize_fill(fill: Fill) -> Fill | None:
@@ -742,7 +851,10 @@ def record_fill(portfolio_id: str, fill: Fill, client: Client | None = None) -> 
         db_code = str((row or {}).get("code") or fill.code)
         ok, msg = delete_position(portfolio_id, db_code, client=client, refresh_equity=False)
     else:
-        ok, msg = _persist_filled_holding(portfolio_id, row, result.holding, client)
+        entry_stop = None
+        if fill.side == BUY and _position_stop_missing(row):
+            entry_stop = _seedable_entry_stop(client, portfolio_id, fill)
+        ok, msg = _persist_filled_holding(portfolio_id, row, result.holding, client, stop_loss=entry_stop)
     if not ok:
         return FillWriteResult(False, f"持仓写入失败：{msg}")
     ok, msg = update_free_cash(portfolio_id, result.cash, client=client, refresh_equity=False)
@@ -772,9 +884,11 @@ def update_free_cash(
         response = (
             client.table(TABLE_PORTFOLIOS).update({"free_cash": free_cash}).eq("portfolio_id", portfolio_id).execute()
         )
-        # 只认明确的 0 行：RLS 拒绝时 PostgREST 返回 []，而不是报错，旧写法会回报「已更新」。
-        if getattr(response, "data", None) == [] and _write_denied(portfolio_id, client):
-            return False, MEMBERSHIP_WRITE_DENIED_MSG
+        # RLS 拒绝时 PostgREST 返回空 data 且不报错；会员查询失败时也不能当成已写入。
+        if not getattr(response, "data", None):
+            return False, (
+                MEMBERSHIP_WRITE_DENIED_MSG if _write_denied(portfolio_id, client) else CASH_WRITE_MISSING_ERROR
+            )
         message = f"可用资金已更新为 {free_cash:,.2f}"
         return True, _mutation_message(message, portfolio_id, client, refresh_equity)
     except Exception as e:
@@ -830,6 +944,50 @@ def save_ai_trade_orders(
         return False
 
 
+def _iter_trade_order_pages(
+    client: Client,
+    *,
+    select: str,
+    portfolio_id: str,
+    trade_date: str | None = None,
+    only_run_id: str | None = None,
+    exclude_run_id: str | None = None,
+    actions: tuple[str, ...] | None = None,
+    exclude_cancelled: bool = False,
+    order_by: tuple[str, bool] = ("created_at", True),
+    page_size: int = _TRADE_ORDER_PAGE,
+):
+    """Yield trade_orders rows with pagination; never silently drop a page."""
+    offset = 0
+    order_col, descending = order_by
+    while True:
+        query = client.table(TABLE_TRADE_ORDERS).select(select).eq("portfolio_id", portfolio_id)
+        if trade_date:
+            query = query.eq("trade_date", trade_date)
+        if only_run_id:
+            query = query.eq("run_id", only_run_id)
+        elif exclude_run_id:
+            query = query.neq("run_id", exclude_run_id)
+        if actions:
+            query = query.in_("action", list(actions))
+        if exclude_cancelled:
+            # Skip already-cancelled history so supersede scans stay on live tickets.
+            query = query.not_.in_("status", ["CANCELLED", "CANCELED"])
+        # 同日大量工单时单靠 order_col 有并列，跨页会漏行或重复，id 兜底保证顺序稳定。
+        query = query.order(order_col, desc=descending).order("id").range(offset, offset + page_size - 1)
+        batch = list(query.execute().data or [])
+        yield from batch
+        if len(batch) < page_size:
+            return
+        offset += page_size
+
+
+def _cancel_trade_order_ids(client: Client, active_ids: list[Any]) -> None:
+    for start in range(0, len(active_ids), _CANCEL_ID_CHUNK):
+        chunk = active_ids[start : start + _CANCEL_ID_CHUNK]
+        client.table(TABLE_TRADE_ORDERS).update({"status": "CANCELLED"}).in_("id", chunk).execute()
+
+
 def cancel_trade_orders(
     *,
     portfolio_id: str,
@@ -843,21 +1001,21 @@ def cancel_trade_orders(
     require_server_write_context("cancel trade_orders")
     try:
         client = _get_supabase_admin_client()
-        query = (
-            client.table(TABLE_TRADE_ORDERS)
-            .select("id,status,run_id")
-            .eq("portfolio_id", portfolio_id)
-            .eq("trade_date", trade_date)
-            .limit(500)
-        )
-        if only_run_id:
-            query = query.eq("run_id", only_run_id)
-        elif exclude_run_id:
-            query = query.neq("run_id", exclude_run_id)
-        rows = query.execute().data or []
-        active_ids = [row["id"] for row in rows if _is_active_trade_order_status(row.get("status"))]
+        active_ids = [
+            row["id"]
+            for row in _iter_trade_order_pages(
+                client,
+                select="id,status,run_id",
+                portfolio_id=portfolio_id,
+                trade_date=trade_date,
+                only_run_id=only_run_id,
+                exclude_run_id=exclude_run_id,
+                exclude_cancelled=True,
+            )
+            if row.get("id") is not None and _is_active_trade_order_status(row.get("status"))
+        ]
         if active_ids:
-            client.table(TABLE_TRADE_ORDERS).update({"status": "CANCELLED"}).in_("id", active_ids).execute()
+            _cancel_trade_order_ids(client, active_ids)
         return len(active_ids)
     except Exception as e:
         logger.warning("[supabase_portfolio] cancel_trade_orders failed: %s", e)
@@ -866,21 +1024,44 @@ def cancel_trade_orders(
         return 0
 
 
-def load_recent_trade_orders(portfolio_id: str, *, limit: int = 200) -> list[dict]:
-    """近期工单，用于识别反复发出却没被执行的离场建议。"""
+def load_recent_trade_orders(
+    portfolio_id: str,
+    *,
+    limit: int = 200,
+    min_run_dates: int = 15,
+) -> list[dict]:
+    """近期工单，用于识别反复发出却没被执行的离场建议。
+
+    按 trade_date 分页直至覆盖足够多个 OMS 运行日。同日 HOLD/NO_TRADE/降级工单
+    若只取固定 limit 行，会把跨日 EXIT 历史挤出窗口，未执行止损审计与 ATTACK
+    冻结会静默失效。
+    """
     if not is_supabase_configured():
         return []
     try:
         client = _get_supabase_admin_client()
-        resp = (
-            client.table(TABLE_TRADE_ORDERS)
-            .select("code,name,action,status,trade_date")
-            .eq("portfolio_id", portfolio_id)
-            .order("trade_date", desc=True)
-            .limit(limit)
-            .execute()
-        )
-        return list(resp.data or [])
+        rows: list[dict] = []
+        run_dates: set[str] = set()
+        floor = max(int(limit), 1)
+        date_goal = max(int(min_run_dates), 1)
+        # Same-day floods can be huge; keep a hard ceiling so a pathological table
+        # cannot unbounded-load the Step4 process.
+        hard_cap = max(floor * 25, date_goal * _TRADE_ORDER_PAGE, 2000)
+        for row in _iter_trade_order_pages(
+            client,
+            select="code,name,action,status,trade_date",
+            portfolio_id=portfolio_id,
+            order_by=("trade_date", True),
+        ):
+            rows.append(row)
+            day = str(row.get("trade_date") or "").strip()[:10]
+            if day:
+                run_dates.add(day)
+            if len(run_dates) >= date_goal and len(rows) >= floor:
+                break
+            if len(rows) >= hard_cap:
+                break
+        return rows
     except Exception as e:
         logger.warning("[supabase_portfolio] load_recent_trade_orders failed: %s", e)
         return []

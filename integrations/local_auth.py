@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import secrets
 import tempfile
 import threading
 from collections.abc import Callable, Iterator
@@ -20,6 +21,10 @@ SESSION_DIR = Path.home() / ".wyckoff"
 SESSION_FILE = SESSION_DIR / "session.json"
 CONFIG_FILE = SESSION_DIR / "wyckoff.json"
 _OLD_CONFIG_FILE = SESSION_DIR / "config.json"
+# Disk marker so an in-flight login() can detect logout / a newer login that
+# started while sign-in was on the network (IPC has 4 workers; CLI+desktop share
+# ~/.wyckoff). Cleared by logout and by a successful login persist.
+_LOGIN_ATTEMPT_ID_KEY = "login_attempt_id"
 _CONFIG_THREAD_LOCK = threading.RLock()
 _SESSION_THREAD_LOCK = threading.RLock()
 # Serializes login / logout / auto_relogin credential+session coupling so a
@@ -38,8 +43,18 @@ def load_session() -> dict[str, Any] | None:
 
 
 def login(email: str, password: str) -> dict[str, Any]:
+    # Claim this attempt on disk before the network round-trip. logout() and a
+    # newer login() replace login_attempt_id; persisting after that would
+    # resurrect a logout or clobber the account that won the race (#518 left
+    # auto_relogin CAS'd but login() still wrote unconditionally).
+    with _AUTH_IDENTITY_LOCK:
+        attempt_id = secrets.token_hex(16)
+        save_config_key(_LOGIN_ATTEMPT_ID_KEY, attempt_id)
     data = _sign_in_with_password(email, password)
     with _AUTH_IDENTITY_LOCK:
+        if not _login_attempt_still_current(attempt_id):
+            logger.warning("refusing to persist login: logout or newer login during sign-in")
+            raise RuntimeError("登录未完成：期间发生了退出或另一次登录")
         save_session(data)
         save_config_key("email", email)
         save_config_key("password", password)
@@ -47,6 +62,7 @@ def login(email: str, password: str) -> dict[str, Any]:
         # （否则会被静默登回去），但下次登录页仍该预填邮箱 —— 那是便利，不是凭据。
         # 拆成两个键才能让「清凭据」和「记住是谁」互不干扰。
         save_config_key("last_email", email)
+        save_config_key(_LOGIN_ATTEMPT_ID_KEY, "")
     return data
 
 
@@ -87,14 +103,16 @@ def restore_session() -> dict[str, Any] | None:
             if not _save_session_if_same_user(expected_user_id, data):
                 logger.warning("refusing to persist restored session: disk identity changed during refresh")
                 return load_session()
-        return data
+        return _restored_session_if_disk_unchanged(expected_user_id, data)
     except Exception as exc:
         logger.debug("session restore failed", exc_info=True)
         if _invalid_session_error(exc):
             if _clear_session_if_same_user(expected_user_id):
                 return auto_relogin()
             return load_session()
-        return data
+        # Transient network errors still must not return the pre-flight principal
+        # after logout/switch — #512 only CAS'd disk writes, not this return.
+        return _restored_session_if_disk_unchanged(expected_user_id, data)
 
 
 def logout() -> None:
@@ -115,10 +133,12 @@ def logout() -> None:
     就会在「已退出」窗口里被静默登回去。
     """
     with _AUTH_IDENTITY_LOCK:
-        # 只清这两个 —— `last_email` 刻意保留，它不能用来登录，只用于下次预填邮箱。
+        # 只清登录凭据 —— `last_email` 刻意保留，它不能用来登录，只用于下次预填邮箱。
         # 清 email 和 password 两个而不只是 password：留一个能自动登录的孤立 email
         # 会让「退出」名不副实。
-        for key in ("email", "password"):
+        # Also invalidate in-flight login(): otherwise a slow auth_login worker
+        # finishes after logout and writes session.json back.
+        for key in ("email", "password", _LOGIN_ATTEMPT_ID_KEY):
             try:
                 save_config_key(key, "")
             except OSError:
@@ -209,6 +229,14 @@ def _persist_auto_relogin_if_unchanged(email: str, password: str, data: dict[str
     return data
 
 
+def _login_attempt_still_current(attempt_id: str) -> bool:
+    """True when this login() claim still owns the disk marker."""
+    expected = str(attempt_id or "").strip()
+    if not expected:
+        return False
+    return str(load_config().get(_LOGIN_ATTEMPT_ID_KEY) or "").strip() == expected
+
+
 def _same_session_user(current: dict[str, Any] | None, expected_user_id: str) -> bool:
     if current is None:
         return False
@@ -216,6 +244,15 @@ def _same_session_user(current: dict[str, Any] | None, expected_user_id: str) ->
     if not expected:
         return False
     return str(current.get("user_id") or "") == expected
+
+
+def _restored_session_if_disk_unchanged(expected_user_id: str, data: dict[str, Any]) -> dict[str, Any] | None:
+    """Return in-memory restore result only when disk still matches expected user."""
+    disk = load_session()
+    if not _same_session_user(disk, expected_user_id):
+        logger.warning("refusing to return restored session: disk identity changed during refresh")
+        return disk
+    return data
 
 
 def _save_session_if_same_user(expected_user_id: str, data: dict[str, Any]) -> bool:

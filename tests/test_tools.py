@@ -8,6 +8,7 @@ from datetime import date, timedelta
 from types import ModuleType, SimpleNamespace
 
 import pandas as pd
+import pytest
 
 
 def _money_flow_df(prev_close: float, latest_close: float, latest_amount: float) -> pd.DataFrame:
@@ -2449,6 +2450,86 @@ class TestMarketRegime:
 
         assert result["regime"] == "CRASH"
         assert any("money_flow_retreat" in item for item in result["panic_reasons"])
+
+    def test_include_pv_outlook_false_skips_llm_call(self, monkeypatch):
+        import tools.market_regime as market_regime
+        from core.wyckoff_engine import FunnelConfig
+
+        def _forbid_llm(**_kwargs):
+            raise AssertionError("_generate_pv_outlook should not be called when include_pv_outlook=False")
+
+        monkeypatch.setattr(market_regime, "_generate_pv_outlook", _forbid_llm)
+        result = market_regime.analyze_benchmark_and_tune_cfg(
+            _benchmark_with_last_drop(-1.5),
+            None,
+            FunnelConfig(),
+            breadth={"ratio_pct": 60.0, "delta_pct": -2.0, "sample_size": 100},
+            money_flow={"trend": "retreat", "score": -25.0},
+            include_pv_outlook=False,
+        )
+
+        assert result["regime"] == "CRASH"
+        assert result["market_pv_outlook"] == market_regime._PV_OUTLOOK_FALLBACK["CRASH"]
+
+    @staticmethod
+    def _stub_llm(monkeypatch) -> list[dict]:
+        import integrations.llm_client as llm_client
+
+        calls: list[dict] = []
+
+        def _fake_call_llm(**kwargs):
+            calls.append(kwargs)
+            return "次日推演：测试"
+
+        monkeypatch.setattr(llm_client, "get_provider_credentials", lambda _provider: ("test-key", "test-model", ""))
+        monkeypatch.setattr(llm_client, "call_llm", _fake_call_llm)
+        return calls
+
+    def test_production_default_still_calls_llm(self, monkeypatch):
+        import tools.market_regime as market_regime
+        from core.wyckoff_engine import FunnelConfig
+
+        calls = self._stub_llm(monkeypatch)
+        result = market_regime.analyze_benchmark_and_tune_cfg(_benchmark_with_last_drop(0.5), None, FunnelConfig())
+
+        assert len(calls) == 1
+        assert result["market_pv_outlook"] == "次日推演：测试"
+
+    def test_backtest_env_analyzer_never_reaches_llm(self, monkeypatch):
+        from core.wyckoff_engine import FunnelConfig
+        from workflows.backtest import _market_regime_analyzer_from_env
+
+        calls = self._stub_llm(monkeypatch)
+        result = _market_regime_analyzer_from_env()(_benchmark_with_last_drop(0.5), None, FunnelConfig())
+
+        assert calls == []
+        assert result["market_pv_outlook"].startswith("次日推演")
+
+    @pytest.mark.parametrize("last_pct", [-1.5, 0.5])
+    def test_skipping_outlook_leaves_regime_and_tuning_unchanged(self, monkeypatch, last_pct):
+        from dataclasses import asdict
+
+        import tools.market_regime as market_regime
+        from core.wyckoff_engine import FunnelConfig
+
+        monkeypatch.setattr(market_regime, "_generate_pv_outlook", lambda **_kwargs: "次日推演：测试")
+        online_cfg, offline_cfg = FunnelConfig(), FunnelConfig()
+        kwargs = {
+            "breadth": {"ratio_pct": 60.0, "delta_pct": -2.0, "sample_size": 100},
+            "money_flow": {"trend": "retreat", "score": -25.0},
+        }
+        online = market_regime.analyze_benchmark_and_tune_cfg(
+            _benchmark_with_last_drop(last_pct), None, online_cfg, **kwargs
+        )
+        offline = market_regime.analyze_benchmark_and_tune_cfg(
+            _benchmark_with_last_drop(last_pct), None, offline_cfg, include_pv_outlook=False, **kwargs
+        )
+
+        assert online.pop("market_pv_outlook") != offline.pop("market_pv_outlook")
+        # 影子策略从推演文本切词，文本不同它就不同；回放不读这个字段，只有实盘 AI 段读。
+        assert online.pop("market_pv_policy_shadow")["source"] == offline.pop("market_pv_policy_shadow")["source"]
+        assert online == offline
+        assert asdict(online_cfg) == asdict(offline_cfg)
 
 
 # ── tools/data_fetcher ──

@@ -71,7 +71,18 @@ def _fetch_settings(user_id: str, access_token: str) -> dict[str, Any] | None:
     return rows[0] if rows else None
 
 
-def _merge_data_sources(row: dict[str, Any]) -> list[str]:
+def _session_still_belongs_to(user_id: str) -> bool:
+    """Merge only while disk session is still this user (IPC logout/switch race)."""
+    from integrations.local_auth import load_session
+
+    expected = str(user_id or "").strip()
+    if not expected:
+        return False
+    disk = load_session()
+    return bool(disk) and str(disk.get("user_id") or "") == expected
+
+
+def _merge_data_sources(row: dict[str, Any], *, expected_user_id: str) -> list[str]:
     """把行情数据源的 key 补进本地 config（本地已有则跳过）。"""
     from integrations.local_auth import load_config, save_config_key
 
@@ -83,12 +94,15 @@ def _merge_data_sources(row: dict[str, Any]) -> list[str]:
             continue
         if str(local.get(local_key) or "").strip():
             continue  # 本地已配，不覆盖
+        if not _session_still_belongs_to(expected_user_id):
+            logger.warning("refusing data-source merge: disk identity changed during pull")
+            break
         save_config_key(local_key, value)
         filled.append(local_key)
     return filled
 
 
-def _merge_models(row: dict[str, Any]) -> list[str]:
+def _merge_models(row: dict[str, Any], *, expected_user_id: str) -> list[str]:
     """把云端配好的模型补进本地 models 列表。
 
     以 (provider, model) 判重而不是只看 provider：同一家可能配了不同模型，
@@ -107,6 +121,9 @@ def _merge_models(row: dict[str, Any]) -> list[str]:
             continue
         if (provider, model) in have:
             continue
+        if not _session_still_belongs_to(expected_user_id):
+            logger.warning("refusing model merge: disk identity changed during pull")
+            break
         entry = {
             # id 用 provider+model 而不是只用 provider：save_model_config 的默认
             # 规则是拿 provider_name 当 id，那样同一家配两个模型会互相覆盖。
@@ -126,12 +143,12 @@ def _merge_models(row: dict[str, Any]) -> list[str]:
 
     # 本地原来一个模型都没有时，把云端的默认 provider 设成默认 ——
     # 否则界面仍显示「未配置模型」，用户得自己再去点一次默认。
-    if added and not existing:
-        _apply_default(row, added)
+    if added and not existing and _session_still_belongs_to(expected_user_id):
+        _apply_default(row)
     return added
 
 
-def _apply_default(row: dict[str, Any], added: list[str]) -> None:
+def _apply_default(row: dict[str, Any]) -> None:
     from integrations.local_auth import load_model_configs, set_default_model
 
     preferred = str(row.get("chat_provider") or "").strip()
@@ -150,13 +167,20 @@ def pull_cloud_config(user_id: str, access_token: str) -> dict[str, Any]:
 
     返回值给前端用来提示「已同步 N 项云端配置」。空结果不是错误 ——
     可能云端没配过，也可能本地已经都有了。
+
+    网络拉完后、落盘前必须核对 ``session.json`` 仍是同一 ``user_id``：桌面 IPC
+    多 worker 下，慢拉取可与 ``auth_logout`` / 换号重叠；本地优先合并只补空缺，
+    迟到的 Alice 密钥一旦写入，Bob 的后续拉取不会盖掉。
     """
     row = _fetch_settings(user_id, access_token)
     if not row:
         return {"models": [], "data_sources": [], "available": False}
+    if not _session_still_belongs_to(user_id):
+        logger.warning("refusing cloud config merge: disk identity changed during pull")
+        return {"models": [], "data_sources": [], "available": False}
 
     return {
-        "models": _merge_models(row),
-        "data_sources": _merge_data_sources(row),
+        "models": _merge_models(row, expected_user_id=user_id),
+        "data_sources": _merge_data_sources(row, expected_user_id=user_id),
         "available": True,
     }

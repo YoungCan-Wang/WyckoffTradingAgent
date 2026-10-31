@@ -603,6 +603,7 @@ class WyckoffOrderEngine:
         max_loss: float,
     ) -> ExecutionTicket:
         audit = ctx.audit_parts + [
+            f"entry_mid={price_for_calc:.4f}",
             f"risk_per_share={risk_per_share:.4f}",
             f"expected_exit_price={expected_exit_price:.4f}",
             f"base_slippage={base_slippage:.4f}",
@@ -612,13 +613,16 @@ class WyckoffOrderEngine:
             f"shares_by_cash={max_shares_by_cash:.2f}",
             "buy_with_slippage",
         ]
+        # price_hint is mark-like (same ceiling _validate_buy_stop used). Entry-zone mid
+        # stays on entry_zone_*; putting it in price_hint made pullback add-ons drop a
+        # raised stop that was still valid vs current (ATR/hard-stop above the mid).
         return ExecutionTicket(
             code=ctx.dec.code,
             name=ctx.name,
             action=ctx.action,
             status="APPROVED",
             shares=actual_shares,
-            price_hint=price_for_calc if price_for_calc > 0 else fill_price,
+            price_hint=ctx.current_price if ctx.current_price > 0 else fill_price,
             amount=amount,
             stop_loss=ctx.effective_stop_loss,
             max_loss=max_loss,

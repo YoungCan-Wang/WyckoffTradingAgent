@@ -1204,13 +1204,20 @@ export async function execExecutePortfolioUpdate(
     const existingRows = await listPortfolioPositionRows(deps, portfolioId)
     if (existingRows === null) return '删除失败: 无法读取持仓'
     const matched = findPortfolioPositionRow(existingRows, normalized)
-    const dbCode = matched ? String(matched.code || normalized) : normalized
-    const { error } = await deps.supabase
+    // 必须先命中再删：否则错码/已不存在也会回报成功，仓还在。
+    // DELETE 还要 .select 看命中行——RLS 拒绝时 PostgREST 常返回 [] 不报错（与 update 同形）。
+    if (!matched) return `删除失败: 持仓不存在 ${normalized}`
+    const dbCode = String(matched.code || normalized)
+    const { data, error } = await deps.supabase
       .from('portfolio_positions')
       .delete()
       .eq('portfolio_id', portfolioId)
       .eq('code', dbCode)
+      .select('code')
     if (error) return `删除失败: ${error.message}`
+    if (!Array.isArray(data) || data.length === 0) {
+      return `删除失败: 持仓未删除（可能已不存在或无权写入）`
+    }
     const valuation = await refreshPortfolioTotalEquity(deps, userId)
     return `✅ 已删除 ${normalized} ${name || ''}；${valuation.message}`
   }

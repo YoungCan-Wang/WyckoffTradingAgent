@@ -54,6 +54,13 @@ def cloud(monkeypatch):
     monkeypatch.setattr(cc, "_fetch_settings", lambda *_a: dict(CLOUD_ROW))
 
 
+@pytest.fixture
+def signed_in(store):
+    """pull_cloud_config 只在磁盘仍是同一 user_id 时落盘；测试需先有匹配会话。"""
+    la.save_session({"user_id": "u1", "email": "a@b.c", "access_token": "tok", "refresh_token": "r"})
+    return store
+
+
 class TestLogoutClearsCredentials:
     """logout 必须真的退出登录。"""
 
@@ -112,30 +119,30 @@ class TestLogoutClearsCredentials:
 
 
 class TestCloudConfigPull:
-    def test_blank_machine_gets_everything(self, store, cloud):
+    def test_blank_machine_gets_everything(self, signed_in, cloud):
         out = cc.pull_cloud_config("u1", "tok")
         assert out["available"] is True
         assert sorted(out["models"]) == ["claude/claude-4", "gemini/gemini-2.5-pro", "openai/gpt-4o"]
         assert sorted(out["data_sources"]) == ["tickflow_api_key", "tushare_token"]
 
-    def test_provider_without_key_or_model_is_skipped(self, store, cloud):
+    def test_provider_without_key_or_model_is_skipped(self, signed_in, cloud):
         """云端只配了一半（有 key 没 model）不该产出半个条目。"""
         assert not any(m.startswith("deepseek/") for m in cc.pull_cloud_config("u1", "tok")["models"])
 
-    def test_default_model_follows_cloud_chat_provider(self, store, cloud):
+    def test_default_model_follows_cloud_chat_provider(self, signed_in, cloud):
         """否则界面仍显示「未配置模型」，用户得自己再点一次默认。"""
         cc.pull_cloud_config("u1", "tok")
         config = json.loads(la.CONFIG_FILE.read_text(encoding="utf-8"))
         assert config["default"] == "cloud:gemini:gemini-2.5-pro"
 
-    def test_second_login_is_idempotent(self, store, cloud):
+    def test_second_login_is_idempotent(self, signed_in, cloud):
         """重复登录不该把同一批模型再加一遍。"""
         cc.pull_cloud_config("u1", "tok")
         again = cc.pull_cloud_config("u1", "tok")
         assert again["models"] == []
         assert len(la.load_model_configs()) == 3
 
-    def test_local_value_wins(self, store, cloud):
+    def test_local_value_wins(self, signed_in, cloud):
         """云端不覆盖本地 —— 否则「我明明改了，重启又变回去」，而且无声。"""
         la.save_config_key("tickflow_api_key", "LOCAL-TF")
         out = cc.pull_cloud_config("u1", "tok")
@@ -143,7 +150,7 @@ class TestCloudConfigPull:
         assert config["tickflow_api_key"] == "LOCAL-TF"
         assert "tickflow_api_key" not in out["data_sources"]
 
-    def test_local_model_is_not_replaced(self, store, cloud):
+    def test_local_model_is_not_replaced(self, signed_in, cloud):
         """本地已有同 provider+model 时跳过；不同 model 仍要补上。"""
         la.save_model_entry({"id": "local-1", "provider_name": "gemini", "model": "gemini-2.5-pro", "api_key": "LOCAL"})
         cc.pull_cloud_config("u1", "tok")
@@ -151,7 +158,7 @@ class TestCloudConfigPull:
         assert len(entries) == 1, "同 provider+model 被加了两遍"
         assert entries[0]["api_key"] == "LOCAL", "本地的 key 被云端覆盖了"
 
-    def test_merge_is_a_union_not_a_replace(self, store, cloud):
+    def test_merge_is_a_union_not_a_replace(self, signed_in, cloud):
         """本地模型一个都不能丢。
 
         用真实数据验过：本地 13 个 + 云端 4 个 = 17 个。这里用一个缩小版守住
@@ -170,7 +177,7 @@ class TestCloudConfigPull:
         assert before <= after, f"本地模型丢了: {before - after}"
         assert len(after) == len(before) + 3, "云端的三个（deepseek 半配置除外）该都进来"
 
-    def test_same_model_under_different_provider_is_kept(self, store, cloud):
+    def test_same_model_under_different_provider_is_kept(self, signed_in, cloud):
         """同一个模型名跑在不同 provider 下是两条：端点和 key 都不一样。
 
         真实例子（来自实际配置）：`openai/deepseek-v4-flash` 走 OpenAI 兼容端点，
@@ -186,7 +193,7 @@ class TestCloudConfigPull:
         assert len(rows) == 2, "同名不同 provider 被误当成重复"
         assert {c["provider_name"] for c in rows} == {"openai", "gemini"}
 
-    def test_local_default_is_not_hijacked(self, store, cloud):
+    def test_local_default_is_not_hijacked(self, signed_in, cloud):
         """本地已有模型时不改默认 —— 那是用户自己选的。
 
         只有本地一个模型都没有时才用云端的 chat_provider 设默认，
@@ -198,13 +205,13 @@ class TestCloudConfigPull:
         config = json.loads(la.CONFIG_FILE.read_text(encoding="utf-8"))
         assert config["default"] == "mine", "云端抢走了用户选的默认模型"
 
-    def test_missing_row_is_not_an_error(self, store, monkeypatch):
+    def test_missing_row_is_not_an_error(self, signed_in, monkeypatch):
         """云端没配过不是错误，只是没东西可拉。"""
         monkeypatch.setattr(cc, "_fetch_settings", lambda *_a: None)
         out = cc.pull_cloud_config("u1", "tok")
         assert out == {"models": [], "data_sources": [], "available": False}
 
-    def test_fetch_failure_does_not_raise(self, store, monkeypatch):
+    def test_fetch_failure_does_not_raise(self, signed_in, monkeypatch):
         """拉配置失败不能让登录失败 —— 用户已经通过认证了。"""
 
         def boom(*_a, **_k):
@@ -212,6 +219,43 @@ class TestCloudConfigPull:
 
         monkeypatch.setattr("integrations.supabase_base.create_user_client", boom)
         assert cc.pull_cloud_config("u1", "tok")["available"] is False
+
+    def test_refuse_merge_after_logout_during_fetch(self, signed_in, monkeypatch):
+        """拉取途中登出：不得把上一账号的云端密钥写进本机。"""
+
+        def fetch_then_logout(user_id: str, _token: str):
+            assert user_id == "u1"
+            la.logout()
+            return dict(CLOUD_ROW)
+
+        monkeypatch.setattr(cc, "_fetch_settings", fetch_then_logout)
+        out = cc.pull_cloud_config("u1", "tok")
+        assert out == {"models": [], "data_sources": [], "available": False}
+        config = json.loads(la.CONFIG_FILE.read_text(encoding="utf-8")) if la.CONFIG_FILE.exists() else {}
+        assert not config.get("tickflow_api_key")
+        assert not la.load_model_configs()
+
+    def test_refuse_merge_after_account_switch_during_fetch(self, signed_in, monkeypatch):
+        """拉取途中换号：Alice 的密钥不得落到已是 Bob 的机器上（本地优先后更难清）。"""
+
+        def fetch_then_switch(user_id: str, _token: str):
+            assert user_id == "u1"
+            la.save_session(
+                {
+                    "user_id": "u2",
+                    "email": "bob@b.c",
+                    "access_token": "bob-tok",
+                    "refresh_token": "bob-r",
+                }
+            )
+            return dict(CLOUD_ROW)
+
+        monkeypatch.setattr(cc, "_fetch_settings", fetch_then_switch)
+        out = cc.pull_cloud_config("u1", "tok")
+        assert out == {"models": [], "data_sources": [], "available": False}
+        config = json.loads(la.CONFIG_FILE.read_text(encoding="utf-8")) if la.CONFIG_FILE.exists() else {}
+        assert not config.get("tickflow_api_key")
+        assert not any(str(c.get("api_key") or "").startswith(("G-", "O-", "A-")) for c in la.load_model_configs())
 
 
 class TestAccountRestoresSession:

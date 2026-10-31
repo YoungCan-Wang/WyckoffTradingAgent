@@ -1682,3 +1682,57 @@ class TestStopLossPersistence:
             self._ticket("PROBE", is_holding=False, status="NO_TRADE"),
         )
         assert not any(_should_persist_stop(ticket) for ticket in tickets)
+
+    def test_pullback_add_on_raised_stop_persists_against_mark(self, monkeypatch) -> None:
+        """回调区中点低于 ATR/硬止损上移后的 stop 时，仍须按现价天花板落库。"""
+        captured: list[tuple[str, list[dict]]] = []
+        monkeypatch.setattr(
+            step4_results,
+            "update_position_stops",
+            lambda portfolio_id, updates: captured.append((portfolio_id, updates)) or True,
+        )
+        engine = WyckoffOrderEngine(
+            total_equity=100000,
+            free_cash=50000,
+            position_map={
+                "000001": PositionItem(
+                    code="000001",
+                    name="平安银行",
+                    cost=8.5,
+                    buy_dt="2026-05-01",
+                    shares=1000,
+                    stop_loss=8.0,
+                )
+            },
+            latest_price_map={"000001": 10.0},
+            atr_map={"000001": 0.25},
+            market_regime="NEUTRAL",
+            trade_date="2026-05-15",
+        )
+        decision = DecisionItem(
+            code="000001",
+            name="平安银行",
+            action="PROBE",
+            entry_zone_min=8.8,
+            entry_zone_max=9.3,
+            stop_loss=8.5,
+            trim_ratio=None,
+            tape_condition="",
+            invalidate_condition="",
+            is_add_on=True,
+            reason="回调加仓",
+            confidence=0.8,
+        )
+
+        tickets, _cash = engine.process([decision])
+        ticket = tickets[0]
+        ok = step4_results.update_step4_position_stops("P1", tickets)
+
+        assert ticket.status == "APPROVED"
+        assert ticket.price_hint == 10.0
+        assert ticket.entry_zone_min == 8.8 and ticket.entry_zone_max == 9.3
+        assert ticket.effective_stop_loss is not None
+        assert ticket.effective_stop_loss > 9.05
+        assert ticket.effective_stop_loss < ticket.price_hint
+        assert ok is True
+        assert captured == [("P1", [{"code": "000001", "stop_loss": ticket.effective_stop_loss}])]

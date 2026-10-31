@@ -462,6 +462,17 @@ gcloud run deploy wyckoff-agent --image <镜像> --region asia-northeast1 --allo
 - 预算告警只通知不停服；创建预算要带 `--billing-project`。
 - 镜像必须是 linux/amd64。
 
+**现状（2026-10-17 起）**：上面这条命令只在**首次建服务**或要改并发/规格/环境变量这些服务级配置时手动跑。日常的"代码
+改了、要让 Cloud Run 跑上新版本"已经接进 `.github/workflows/agent_service_deploy.yml`：CI 成功后若本次提交的
+改动命中 `scripts/release_scope.py agent_service` 判定的路径（`agents/`、`cli/`、`core/`、`integrations/`、
+`tools/`、`utils/`、`workflows/`、`llmdoc/`、`config/`、`data/`、`packaging/agent-service/`、`pyproject.toml`、
+`uv.lock`），就会自动 build amd64 镜像、推到 Artifact Registry、`gcloud run deploy --image` 换版——**只换镜像，
+不带 `--set-env-vars`**，现网的 `AGENT_SERVICE_TOKEN`/`WYCKOFF_SERVICE_TOOLS` 等配置不会被这条流水线碰。鉴权走
+Workload Identity Federation（仓库是 public，不在 GitHub 存任何 GCP 长期密钥），`gcp-production` 这个 GitHub
+Environment 下的 `GCP_WORKLOAD_IDENTITY_PROVIDER`/`GCP_SERVICE_ACCOUNT` 两个 repo variable 是非密文的资源名，
+不是密钥本身。这块本来是手动的——2026-10-17 实测发现线上镜像落后 main 二十多个提交（#550~#554 这几轮改动
+都只碰了 Worker/测试/文档，没人记得再手动部署一次 Cloud Run），纯手动流程迟早会漏，所以补了这条流水线。
+
 协议（内部，浏览器不直连）：
 
 - `GET /healthz`
@@ -696,7 +707,7 @@ CREATE TABLE chat_log (
 | 文件 / 数据库 | 用途 |
 |-------------|------|
 | `wyckoff.json` | 模型配置（provider / api_key / model / base_url）；可选超时：`stream_chunk_timeout_seconds`（默认 120，模型空闲/首 token）、`tool_timeout_seconds`（默认 60，单工具墙钟）。控制面板 Overview、TUI `/config set`、`wyckoff config` 均可改。1Route 的 `base_url` 必须带 `/v1`；只写根域名会打到官网 HTML（HTTP 200、无用量）。运行时会自动补 `/v1`。 |
-| `session.json` | Supabase 登录态（access_token / refresh_token）。`restore_session` 续期写盘 / 失效清盘前会核对磁盘 `user_id`：登出后不得复活会话，换号后不得用旧账号 token 覆盖新会话。MCP `_persist_tool_session` 经 `merge_session_tokens_if_same_user` 在会话锁内 CAS；`auto_relogin` 在网络登录后复核 config 凭据，避免与 `auth_logout` / 换号竞态复活或覆盖。 |
+| `session.json` | Supabase 登录态（access_token / refresh_token）。`restore_session` 续期写盘 / 失效清盘前会核对磁盘 `user_id`：登出后不得复活会话，换号后不得用旧账号 token 覆盖新会话。瞬态网络错误（超时 / 断连等非 invalid）也不得把起飞前主体直接返回给调用方，须再读磁盘身份。MCP `_persist_tool_session` 经 `merge_session_tokens_if_same_user` 在会话锁内 CAS；`auto_relogin` 在网络登录后复核 config 凭据；显式 `login()` 用 `wyckoff.json` 的 `login_attempt_id` 标记本次尝试，登出或更新的登录会作废进行中的写盘，避免与 `auth_logout` / 并行 `auth_login` 竞态复活或覆盖。桌面 `auth_login` 后的 `pull_cloud_config` 落盘前同样核对磁盘仍是同一 `user_id`，慢拉取与登出/换号重叠时不落盘。这只挡住竞态：登出不清已拉到 `wyckoff.json` 的云端密钥，下一个账号仍会继承。 |
 | `agent.log` | Agent 文件日志 |
 | `wyckoff.db` | SQLite 数据库（下方详述） |
 
@@ -909,16 +920,19 @@ MCP server 走 ToolSurface，没有确认弹窗也没有待批队列。`tools/wr
 | **港股漏斗筛选** (`wyckoff_funnel_hk.yml`) | 周一-周五 16:35 | `market_funnel_job.py --market hk` |
 | **A 股漏斗筛选 + AI 研报 + 决策** (`wyckoff_funnel.yml`) | 周日-周四 17:17 | `daily_job.py` Step2→3→4；周日正常为周一实盘准备候选，若次日非 A 股交易日才跳过，日频写入 `theme_radar_snapshot` |
 | **板块连续性报告** (`sector_continuity.yml`) | 周一-周五 16:10 | 刷新概念热度历史，辅助主线引擎判断延续性 |
-| **强势股复盘** (`review_list_replay.yml`) | 周一-周五 19:25 | 用 Tushare 双日截面发现当日涨幅 > 7% 且前日 < 3% 的完整样本；下载前一交易日生产漏斗的压缩 as-run trace，同时列出逐层状态、跟踪/AI状态、次日开盘及盘中可交易口径，并输出结构化 JSON/Markdown artifact。三条影子召回车道只观察、不写推荐；历史验证严格以每日 trace 为 as-of 候选证据。快照缺失默认不重跑，手动触发可显式允许全市场 fallback |
-| **主线雷达周报** (`theme_radar.yml`) | 周五 21:10 | `theme_radar_job.py --with-news`，周频新闻增强复盘 |
+| **强势股复盘** (`review_list_replay.yml`) | 手动触发（原周一-周五 19:25） | 用 Tushare 双日截面发现当日涨幅 > 7% 且前日 < 3% 的完整样本；下载前一交易日生产漏斗的压缩 as-run trace，同时列出逐层状态、跟踪/AI状态、次日开盘及盘中可交易口径，并输出结构化 JSON/Markdown artifact。三条影子召回车道只观察、不写推荐；历史验证严格以每日 trace 为 as-of 候选证据。快照缺失默认不重跑，手动触发可显式允许全市场 fallback |
+| **主线雷达周报** (`theme_radar.yml`) | 手动触发（原周五 21:10） | `theme_radar_job.py --with-news`，周频新闻增强复盘 |
 | **形态复盘重定价** (`recommendation_tracking_reprice.yml`) | 周一-周五 23:00 | 同步 A 股、港股收盘价并计算收益；美股由美股漏斗收盘后续步处理 |
-| **信号反馈闭环** (`signal_feedback.yml`) | 周一-周五 23:30 | 只结算缺失/`pending` outcomes，同股共享一次 K 线；刷新 health / registry，周五续跑策略反思 Shadow |
+| **信号反馈闭环** (`signal_feedback.yml`) | 周一-周五 23:30 | 只结算缺失/`pending` outcomes，同股共享一次 K 线；刷新 health / registry，周五（及手动触发）续跑策略归因报告与策略反思 Shadow |
 | **美股漏斗筛选 + 推荐表现** (`wyckoff_funnel_us.yml`) | 周二-周六 05:35 | `market_funnel_job.py --market us` 后续跑 `us_recommendation_performance_job.py` |
 | **数据库维护** (`db_maintenance.yml`) | 每周六 06:20 | 清理过期行情、订单、信号、市场信号等滑动窗口数据 |
 | **港美股票池刷新** (`hk_us_universe_refresh.yml`) | 每周日 21:30 | 拉取 Tushare 港股上市名单和 Nasdaq Trader 美股正股目录。脚本成功且名单有差异时直接提交 `main`；名单过短拒绝覆盖或无差异则跳过，不开分支、不开 PR。周日 21:30（cron `30 13 * * 0`）是为了避开工作日港美漏斗，不表示它排在其他任务之后 |
 | **回测网格** (`backtest_grid.yml`) | 手动触发 | 多周期 × 多交易风格回放，同时输出参数邻域稳定性与按时间前推的 walk-forward 样本外验证 |
 | **策略消融** (`backtest_grid.yml: strategy_compare`) | 手动显式开启 | A/M/P 五窗口结论已稳定为不晋级，默认网格不再重复消耗五个全市场任务；仅在 `run_strategy_compare=true` 时复现历史证据。手动复跑仍按窗口共用一次信号台账、分别重放权重与现金组合；候选/触发规则不同的策略禁止共享，故 matrix 分两片：`amp`（A/M/P 共享台账）、`calib`（I 独算）。Q/N/O、Q/R/S/T 形态门控与 Layer 2 两轨制 J（#476，六窗口三胜三负、边际成交更差，代码已删）均已否决，不改变生产漏斗 |
-| **触发阈值标定** (`backtest_trigger_calibration.yml`) | 手动触发 | 按周期 × 取值扇出，每个 job 完整重跑一次全市场漏斗；扫触发阈值时按目标触发器单信号均收做跨周期 walk-forward 选值，扫 `top_n` 时按全样本均收对比选择层增益；填 `grid_cells` 则改走共享台账的退出网格，在 `top_n=0` 原始池上取退出基准 |
+| **闸门基线** (`backtest_grid.yml: gate_baseline`) | 随网格固定运行 | 每个活动周期跑 `--execution-regime-gate live` 与 `off` 两片（退出固定 15 日 / -8% / +18%，slot_equal_4），两片各自算台账。生产闸门净效果是 RISK_ON / NEUTRAL 禁买，参数格永远没有牛市主升段的成交；off 组回答确认信号本身在被拦水温里的净超额（#567）。`gate_baseline_report.md/json` 按固定协议配对 live/off：对上证与创业板指两列逐笔超额、bootstrap 95% CI、去前 1/3/5 笔均收、`signal_date+code` 配对的边际成交按水温拆分；每个周期×闸门另跑 `--selection-strategy rs`（60 日相对强度）、`random`（固定种子随机、量执行路径本身的损耗）与 `reversal`（rs 同一排序取最弱，短期反转对照，#590）三片对照，同样的流动性地板、冷却与执行路径，报告 `对照组` 按合并超额 CI 是否分离逐个判 `wyckoff_below_<control>` / `wyckoff_above_<control>` / `indistinguishable`，单元表附 `exit_reason` 分布；产物目录 `backtest-gate-<period>-<gate>-<strategy>/`。notify 同时用分片的水温序列与随产物带出的指数 CSV 产出 `regime_timing_report.md/json`：不选股、只按水温持有/空仓指数（`buy_hold` / `avoid_hard_defense` / `risk_on_only` / `production_gate`），判 `timing_value` / `drawdown_only` / `no_timing_value`（#583）；每次回测另写 `market_sentiment_<stamp>.csv`（全市场逐日涨停 / 跌停 / 炸板 / 连板计数，`core/market_sentiment.py`），notify 据此算净涨停数 250 日分位状态 `ice` / `ebb` / `warm` / `climax`，加 `sentiment_follow` / `sentiment_not_ice` / `sentiment_ice_contrarian` 三个情绪周期变体与「状态 → 次日指数收益」条件表。研究对照，不改变生产闸门 |
+| **执行结构基线** (`backtest_grid.yml: exit_baseline`) | 随网格固定运行 | 7 周期 × `wyckoff` / `random` / 一组轮换对照（`sector_rs` 板块动量 #599 已结论；当前 `quality` PIT 财务三项百分位 #601，读快照 `financial_history.json`）、闸门 off，每片 `--grid-cells` 在同一份信号台账上重放 15 / 30 / 60 日 × {−8% / +18%, 只到期} 六个单元（`--grid-prefix backtest-exit`，台账冷却 = 15 日），分片带出指数 CSV。notify 用 `scripts/build_backtest_exit_baseline.py` 产出 `exit_baseline_report.md/json`：每单元合并逐笔超额 CI、`exit_reason`、组合层超额（现金收益 − 同期指数收益），每个选股源对 random 的分离状态与整体判定 `positive_structure_found` / `separation_without_positive_excess` / `execution_tax_removable_no_selection_signal` / `execution_tax_persists`（#597）。研究对照 |
+| **涨停次日接力基线** (`backtest_grid.yml: leader_baseline`) | 随网格固定运行 | 7 周期 × `random` / `limit_random` / `limit_leader`、闸门 off，`--grid-cells` 1 / 2 / 3 / 5 日只到期（`--grid-prefix backtest-leader`，台账冷却 = 1 日）。候选 = 信号日收盘封涨停的合格票（生产 `classify_limit_move`），`limit_leader` 按连板数、成交额排序。notify 用 `scripts/build_backtest_exit_baseline.py --spec leader` 产出 `leader_baseline_report.md/json`：`limit_random` 对 `random`、`limit_leader` 对 `limit_random` 的分离状态（#603）。研究对照 |
+| **触发阈值标定** (`backtest_trigger_calibration.yml`) | 手动触发 | 按周期 × 取值扇出，每个 job 完整重跑一次全市场漏斗；扫触发阈值时按目标触发器单信号均收做跨周期 walk-forward 选值，扫 `top_n` 时按全样本均收对比选择层增益；填 `grid_cells` 则改走共享台账的退出网格，在 `top_n=0` 原始池上取退出基准。周期含 `bull_2025`；calibrate job 注入与 Backtest Grid 相同的 `STEP4_BUY_*` 闸门 env 与 BEAR_REBOUND 配额，`live` 闸门与生产同向 |
 
 回测回放在每个历史区间开始时一次性预计算各股票在所有交易日的历史终点位置，日循环直接按整数位置切片；
 切片同时携带已按日期排序的内部标记，避免下游指标反复扫描日期单调性。该优化只替换数据访问方式，不改变
@@ -1278,7 +1292,9 @@ order by n;
   `PORTFOLIO_*_CNY_RATE` / ECB 参考汇率后改现金，缺汇率则拒绝写入。
   `integrations.supabase_portfolio.record_fill` 负责落库，先读后写，需串行调用。
   已有持仓走 update（空 `buy_dt` 不覆盖原建仓日）；新仓走 insert，必须有合法 `YYYYMMDD` / `YYYY-MM-DD`，
-  禁止插入无日期多头。
+  禁止插入无日期多头。买入建仓且持仓尚无止损时，从近 5 日同标的 APPROVED PROBE/ATTACK
+  `trade_orders.stop_loss` 写入持仓（Step4 新开仓时尚无持仓行，只能把止损留在工单）；
+  工单晚于成交日或止损不低于成交价时不写，否则下一轮 Step4 会强制 EXIT 新仓。
 - 入口：CLI `wyckoff portfolio fill`、MCP/Agent 工具 `record_trade_fill`。
   `portfolio add` 只插入新仓且必须带合法建仓日，不要拿它记成交。
 - 任一持仓新增、覆盖、删除、现金修改或完整成交回填成功后，写入边界都会重新读取整个组合，
@@ -1294,7 +1310,7 @@ order by n;
   降级工单的 `model` 为 `degraded:*`，`run_id` 不绑持仓签名，幂等检查不把它当成完整 OMS，修好模型后的同日补跑仍可再决策。
   旧买入建议可能与新保护性 `EXIT` 同时留档，此处不做券商交易或跨轮建议自动裁决。
   止损按规范化码匹配后用库内原始码更新；读取失败、组合不存在、已匹配持仓更新零行均视为失败。
-  成功读取后的空持仓/缺失新开仓持仓行可跳过，止损仍保存在工单中。后续持久化失败只按
+  成功读取后的空持仓/缺失新开仓持仓行可跳过，止损仍保存在工单中；`record_fill` 买入建仓（或持仓止损仍为空）时从近 5 日 APPROVED PROBE/ATTACK 工单写入 `portfolio_positions.stop_loss`，避免新仓永远无保护止损。后续持久化失败只按
   本次 `run_id` 作废新工单，并按写入前快照恢复已改动的持仓止损；回滚失败必须显式报错。Telegram 推送失败则保留新工单作为幂等事实源，
   禁止重跑 LLM/OMS，避免超时已送达时产生重复或冲突指令。当前跨表写入仍不具备数据库事务性。
 - LLM 若对同一代码输出多条决策，解析阶段按 `EXIT > TRIM > HOLD > PROBE > ATTACK` 折叠为一条；
@@ -1330,6 +1346,8 @@ API 响应同时返回 `total_equity`、`valuation_updated_at`；刷新失败时
 `00700.HK`），就地 UPDATE（可顺带写成规范码）；禁止因字符串不等而 delete+insert，否则会丢掉 PUT 体
 未携带的 `stop_loss`。云端 `insert_position` / `update_position` / chat `execute_portfolio_update` 同样按
 规范化别名匹配：等价历史码视为已存在，禁止再插一行导致净值双计。
+chat `delete` 与 `PUT /api/portfolio` 清仓删除都必须 `.select` 校验命中行：PostgREST 在 RLS
+拒绝或行已不存在时经常返回 `[]` 而不报错；只看 `error` 会假成功，仓还在。
 `portfolios` 与 `portfolio_positions` 已启用 RLS。SELECT 仍只要求
 `split_part(portfolio_id, ':', 2) = auth.uid()::text`（本人可读）。
 INSERT/UPDATE/DELETE 额外要求有效 `planet_members` 行（`expires_on` 为空或

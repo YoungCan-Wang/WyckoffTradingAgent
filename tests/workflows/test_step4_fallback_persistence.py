@@ -29,8 +29,22 @@ class _RecommendationQuery:
         self.operation = "select"
         self.payload = None
         self.row_limit = None
+        self.row_range = None
+        self.negate_next = False
 
     def select(self, _columns):
+        return self
+
+    @property
+    def not_(self):
+        self.negate_next = True
+        return self
+
+    def order(self, *_args, **_kwargs):
+        return self
+
+    def range(self, start, end):
+        self.row_range = (start, end + 1)
         return self
 
     def eq(self, key, value):
@@ -42,7 +56,8 @@ class _RecommendationQuery:
         return self
 
     def in_(self, key, values):
-        self.filters.append(lambda row: row.get(key) in values)
+        negate, self.negate_next = self.negate_next, False
+        self.filters.append(lambda row: (row.get(key) in values) != negate)
         return self
 
     def limit(self, count):
@@ -64,6 +79,8 @@ class _RecommendationQuery:
             return SimpleNamespace(data=inserted)
         matched = [row for row in self.rows if all(predicate(row) for predicate in self.filters)]
         matched = matched[: self.row_limit]
+        if self.row_range:
+            matched = matched[self.row_range[0] : self.row_range[1]]
         if self.operation == "update":
             for row in matched:
                 row.update(self.payload)
