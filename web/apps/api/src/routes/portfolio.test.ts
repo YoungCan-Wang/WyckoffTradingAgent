@@ -188,11 +188,15 @@ describe('savePosition', () => {
   })
 })
 
-function mockSavePortfolioClient(existingCodes: string[]) {
+function mockSavePortfolioClient(
+  existingCodes: string[],
+  options: { deleteRows?: Array<{ code: string }> | null } = {},
+) {
   const deleted: string[] = []
   const inserted: unknown[] = []
   const updated: Array<{ matchCode: string; record: unknown }> = []
   const cashUpdates: unknown[] = []
+  const deleteRows = options.deleteRows
 
   const supabase = {
     from(table: string) {
@@ -217,10 +221,13 @@ function mockSavePortfolioClient(existingCodes: string[]) {
           }),
           delete: () => ({
             eq: () => ({
-              eq: async (_field: string, code: string) => {
-                deleted.push(code)
-                return { error: null }
-              },
+              eq: (_field: string, code: string) => ({
+                select: async () => {
+                  deleted.push(code)
+                  const data = deleteRows === undefined ? [{ code }] : deleteRows
+                  return { data, error: null }
+                },
+              }),
             }),
           }),
         }
@@ -281,5 +288,17 @@ describe('savePortfolio', () => {
     ])
     expect(updated[0]?.record).not.toHaveProperty('stop_loss')
     expect(cashUpdates).toEqual([{ free_cash: 8_000 }])
+  })
+
+  it('fails closed when a removed lot delete hits zero rows without an error', async () => {
+    const { supabase, deleted, cashUpdates } = mockSavePortfolioClient(['600519'], { deleteRows: [] })
+    const error = await savePortfolio(supabase, 'u', {
+      free_cash: 8_000,
+      positions: [],
+    })
+
+    expect(error).toContain('删除持仓未命中')
+    expect(deleted).toEqual(['600519'])
+    expect(cashUpdates).toEqual([])
   })
 })

@@ -604,11 +604,64 @@ describe('execQueryAttribution', () => {
 })
 
 describe('execExecutePortfolioUpdate', () => {
-  it('handles delete action', async () => {
-    const deps = createMockDeps({ portfolio_positions: null })
+  it('deletes an existing position only after a matching row is returned', async () => {
+    const selectChain = createMockChain([{ code: '600519' }])
+    const deleteChain = createMockChain([{ id: 'pos-1' }])
+    const deps = {
+      supabase: {
+        from: vi.fn().mockReturnValueOnce(selectChain).mockReturnValueOnce(deleteChain),
+      } as unknown as ToolDeps['supabase'],
+      fetch: vi.fn(),
+      generateText: vi.fn(),
+    } as unknown as ToolDeps
+
     const result = await execExecutePortfolioUpdate(deps, 'user1', 'delete', '600519', '贵州茅台', null, null, null)
+
     expect(result).toContain('已删除')
     expect(result).toContain('600519')
+    expect(deleteChain.delete).toHaveBeenCalled()
+    expect(deleteChain.select).toHaveBeenCalledWith('code')
+  })
+
+  it('rejects delete when the lot is missing', async () => {
+    const deps = createMockDeps({ portfolio_positions: [] })
+    const result = await execExecutePortfolioUpdate(deps, 'user1', 'delete', '600519', '贵州茅台', null, null, null)
+    expect(result).toContain('删除失败')
+    expect(result).toContain('持仓不存在')
+  })
+
+  it('rejects delete when PostgREST returns zero rows without an error', async () => {
+    const selectChain = createMockChain([{ code: '600519' }])
+    const deleteChain = createMockChain([])
+    const deps = {
+      supabase: {
+        from: vi.fn().mockReturnValueOnce(selectChain).mockReturnValueOnce(deleteChain),
+      } as unknown as ToolDeps['supabase'],
+      fetch: vi.fn(),
+      generateText: vi.fn(),
+    } as unknown as ToolDeps
+
+    const result = await execExecutePortfolioUpdate(deps, 'user1', 'delete', '600519', '贵州茅台', null, null, null)
+
+    expect(result).toContain('删除失败')
+    expect(result).toContain('持仓未删除')
+  })
+
+  it('deletes legacy HK codes using the database spelling', async () => {
+    const selectChain = createMockChain([{ code: '700.HK' }])
+    const deleteChain = createMockChain([{ id: 'pos-hk' }])
+    const deps = {
+      supabase: {
+        from: vi.fn().mockReturnValueOnce(selectChain).mockReturnValueOnce(deleteChain),
+      } as unknown as ToolDeps['supabase'],
+      fetch: vi.fn(),
+      generateText: vi.fn(),
+    } as unknown as ToolDeps
+
+    const result = await execExecutePortfolioUpdate(deps, 'user1', 'delete', '00700.HK', '腾讯', null, null, null)
+
+    expect(result).toContain('已删除')
+    expect(deleteChain.eq).toHaveBeenCalledWith('code', '700.HK')
   })
 
   it('rejects add without required fields', async () => {

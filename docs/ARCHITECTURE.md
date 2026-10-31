@@ -1344,6 +1344,8 @@ API 响应同时返回 `total_equity`、`valuation_updated_at`；刷新失败时
 `00700.HK`），就地 UPDATE（可顺带写成规范码）；禁止因字符串不等而 delete+insert，否则会丢掉 PUT 体
 未携带的 `stop_loss`。云端 `insert_position` / `update_position` / chat `execute_portfolio_update` 同样按
 规范化别名匹配：等价历史码视为已存在，禁止再插一行导致净值双计。
+chat `delete` 与 `PUT /api/portfolio` 清仓删除都必须 `.select` 校验命中行：PostgREST 在 RLS
+拒绝或行已不存在时经常返回 `[]` 而不报错；只看 `error` 会假成功，仓还在。
 `portfolios` 与 `portfolio_positions` 已启用 RLS。SELECT 仍只要求
 `split_part(portfolio_id, ':', 2) = auth.uid()::text`（本人可读）。
 INSERT/UPDATE/DELETE 额外要求有效 `planet_members` 行（`expires_on` 为空或
