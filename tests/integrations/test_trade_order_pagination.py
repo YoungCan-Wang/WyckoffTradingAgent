@@ -16,6 +16,7 @@ class _PagedTable:
         self._mode = "select"
         self._range: tuple[int, int] | None = None
         self.not_ = self
+        self.order_columns: list[str] = []
 
     def select(self, *_a, **_k):
         self._mode = "select"
@@ -36,7 +37,8 @@ class _PagedTable:
             self.cancelled_ids.extend(list(values))
         return self
 
-    def order(self, *_a, **_k):
+    def order(self, column: str, *_a, **_k):
+        self.order_columns.append(column)
         return self
 
     def range(self, start: int, end: int):
@@ -126,3 +128,20 @@ def test_load_recent_trade_orders_keeps_prior_day_exits_after_same_day_flood(mon
 
     assert any(r.get("code") == "600519" and r.get("action") == "EXIT" for r in rows)
     assert {str(r.get("trade_date"))[:10] for r in rows} >= {"2026-10-14", "2026-10-13"}
+
+
+def test_trade_order_pages_break_ties_on_id():
+    """trade_date 不唯一，无 id 兜底时跨页顺序不稳定，同日洪峰正是这个场景。"""
+    table = _PagedTable([[{"id": 1, "trade_date": "2026-10-14"}]])
+
+    rows = list(
+        portfolio._iter_trade_order_pages(
+            SimpleNamespace(table=lambda _n: table),
+            select="*",
+            portfolio_id="P1",
+            order_by=("trade_date", True),
+        )
+    )
+
+    assert rows == [{"id": 1, "trade_date": "2026-10-14"}]
+    assert table.order_columns == ["trade_date", "id"]

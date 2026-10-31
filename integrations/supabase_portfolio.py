@@ -864,7 +864,8 @@ def _iter_trade_order_pages(
         if exclude_cancelled:
             # Skip already-cancelled history so supersede scans stay on live tickets.
             query = query.not_.in_("status", ["CANCELLED", "CANCELED"])
-        query = query.order(order_col, desc=descending).range(offset, offset + page_size - 1)
+        # 同日大量工单时单靠 order_col 有并列，跨页会漏行或重复，id 兜底保证顺序稳定。
+        query = query.order(order_col, desc=descending).order("id").range(offset, offset + page_size - 1)
         batch = list(query.execute().data or [])
         yield from batch
         if len(batch) < page_size:
