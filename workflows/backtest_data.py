@@ -6,7 +6,7 @@ import json
 import logging
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 
@@ -54,6 +54,8 @@ class BacktestMetadata:
     concept_heat: list[dict]
     financial_map: dict[str, dict]
     source: str
+    # 逐季 PIT 财务记录（含 announce_date），只给 quality 对照用；漏斗仍只看 financial_map。
+    financial_history: dict[str, list[dict]] = field(default_factory=dict)
 
 
 def normalize_backtest_board(board: str) -> str:
@@ -229,6 +231,11 @@ def load_snapshot_concept_heat(snapshot_dir: Path | None) -> list[dict] | None:
     return [item for item in data if isinstance(item, dict)] if data else None
 
 
+def load_snapshot_financial_history(snapshot_dir: Path | None) -> dict[str, list[dict]]:
+    data = _load_json_map(snapshot_dir, "financial_history.json")
+    return {str(k): v for k, v in data.items() if isinstance(v, list)} if data else {}
+
+
 def load_snapshot_financial_map(snapshot_dir: Path | None) -> dict[str, dict] | None:
     data = _load_json_map(snapshot_dir, "financial_map.json")
     return {str(k): v for k, v in data.items() if isinstance(v, dict)} if data else None
@@ -298,6 +305,7 @@ def _snapshot_metadata(snapshot_dir: Path | None) -> BacktestMetadata | None:
         concept_heat=snap_concept_heat or [],
         financial_map=snap_financial_map or {},
         source="snapshot",
+        financial_history=load_snapshot_financial_history(snapshot_dir),
     )
     logger.info(
         "元数据从快照加载: sector=%d, cap=%d, concept=%d, heat=%d, financial=%d",

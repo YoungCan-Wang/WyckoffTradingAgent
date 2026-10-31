@@ -102,13 +102,13 @@ def load_gate_baseline_rows(artifacts_dir: Path, ignored_dirs: list[str] | None 
                 cash_return=cash_metric(content, "总收益"),
                 cash_drawdown=cash_metric(content, "现金最大回撤"),
                 cash_trades=cash_int_metric(content, "成交笔数"),
-                trades=_load_trades(path.parent),
+                trades=load_cell_trades(path.parent),
             )
         )
     return rows
 
 
-def _load_trades(directory: Path) -> tuple[GateTrade, ...]:
+def load_cell_trades(directory: Path) -> tuple[GateTrade, ...]:
     paths = sorted(directory.glob("trades_*.csv"))
     if not paths:
         return ()
@@ -138,7 +138,8 @@ def build_gate_baseline(rows: list[GateBaselineRow], ignored_dirs: list[str] | N
         for row in sorted(rows, key=lambda row: (STRATEGIES.index(row.strategy), period_rank(row.period), row.gate))
     ]
     pooled = {
-        strategy: {gate: _protocol(_gate_trades(rows, strategy, gate)) for gate in GATES} for strategy in STRATEGIES
+        strategy: {gate: trade_protocol(_gate_trades(rows, strategy, gate)) for gate in GATES}
+        for strategy in STRATEGIES
     }
     marginal, off_only = _marginal_by_strategy(rows, by_cell)
     return {
@@ -199,12 +200,12 @@ def _cell_payload(row: GateBaselineRow) -> dict[str, Any]:
         "cash_return": row.cash_return,
         "cash_drawdown": row.cash_drawdown,
         "cash_trades": row.cash_trades,
-        **_protocol(list(row.trades)),
+        **trade_protocol(list(row.trades)),
         "by_regime": _by_regime(list(row.trades)),
     }
 
 
-def _protocol(trades: list[GateTrade]) -> dict[str, Any]:
+def trade_protocol(trades: list[GateTrade]) -> dict[str, Any]:
     returns = [trade.ret_pct for trade in trades if trade.ret_pct is not None]
     main = [trade.excess_main_pct for trade in trades if trade.excess_main_pct is not None]
     smallcap = [trade.excess_smallcap_pct for trade in trades if trade.excess_smallcap_pct is not None]

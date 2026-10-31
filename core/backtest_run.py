@@ -46,6 +46,7 @@ class BacktestPreparedData:
     concept_heat: list[dict]
     financial_map: dict[str, dict]
     failures: list[str]
+    financial_history: dict[str, list[dict]] = field(default_factory=dict)
     theme_member_index: dict[str, list[str]] | None = None
     snapshot_rows_total: int = 0
     snapshot_used: bool = False
@@ -166,6 +167,7 @@ def _replay_config_with_metadata(config: BacktestRunConfig, data: BacktestPrepar
         concept_map=data.concept_map,
         concept_heat=data.concept_heat,
         financial_map=data.financial_map,
+        financial_history=data.financial_history,
         theme_member_index=data.theme_member_index
         if data.theme_member_index is not None
         else build_theme_member_index(data.concept_map, data.sector_map),
@@ -223,8 +225,12 @@ def _base_summary(
         "ai_selection_mode": config.replay.selection_mode,
         "strategy_variant": config.strategy_variant,
         "selection_strategy": config.replay.selection_strategy,
-        "rs_window": config.replay.rs_window if config.replay.selection_strategy in {"rs", "reversal"} else None,
-        "control_seed": config.replay.control_seed if config.replay.selection_strategy == "random" else None,
+        "rs_window": config.replay.rs_window
+        if config.replay.selection_strategy in {"rs", "reversal", "sector_rs"}
+        else None,
+        "control_seed": config.replay.control_seed
+        if config.replay.selection_strategy in {"random", "sector_rs", "limit_random"}
+        else None,
         "a_share_entry_research": asdict(config.replay.a_share_entry_research),
         "ai_top_n_cap": None if config.replay.top_n <= 0 else config.replay.top_n,
         "board": context.board,
@@ -237,6 +243,7 @@ def _base_summary(
         "concept_map_loaded": len(data.concept_map),
         "concept_heat_loaded": len(data.concept_heat),
         "financial_map_loaded": len(data.financial_map),
+        "financial_history_loaded": len(data.financial_history),
         "metadata_source": data.metadata_source,
         "pit_universe": bool(data.pit_meta.get("pit_universe")),
         "pit_as_of": data.pit_meta.get("pit_as_of"),
