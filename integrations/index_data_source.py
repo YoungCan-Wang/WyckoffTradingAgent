@@ -5,7 +5,9 @@ from __future__ import annotations
 import logging
 import os
 import time
+from contextlib import redirect_stdout
 from datetime import date
+from io import StringIO
 
 import pandas as pd
 
@@ -95,7 +97,9 @@ def fetch_index_akshare(code: str, start: str, end: str) -> pd.DataFrame:
 def fetch_index_baostock(code: str, start: str, end: str) -> pd.DataFrame:
     import baostock as bs
 
-    login = bs.login()
+    # baostock 登录/登出都是裸 print，每次调用都触发；重定向只盖这两行调用，不影响异常传播。
+    with redirect_stdout(StringIO()):
+        login = bs.login()
     if login.error_code != "0":
         raise RuntimeError(f"baostock index login: {login.error_msg}")
     try:
@@ -113,7 +117,8 @@ def fetch_index_baostock(code: str, start: str, end: str) -> pd.DataFrame:
         while rs.next():
             rows.append(rs.get_row_data())
     finally:
-        bs.logout()
+        with redirect_stdout(StringIO()):
+            bs.logout()
     if not rows:
         raise RuntimeError("baostock index empty")
     frame = pd.DataFrame(rows, columns=rs.fields).rename(columns={"pctChg": "pct_chg"})

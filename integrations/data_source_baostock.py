@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import atexit
+import io
 import logging
 import os
 import socket
 import threading
 import time
-from contextlib import suppress
+from contextlib import redirect_stdout, suppress
 
 import pandas as pd
 
@@ -120,7 +121,8 @@ def _logout_on_exit() -> None:
         bs = _MODULE
         if not _LOGGED or bs is None:
             return
-        with suppress(BaseException):
+        # baostock 用裸 print 报 "logout success!"，绕过 logging 级别；重定向只盖这一行调用。
+        with suppress(BaseException), redirect_stdout(io.StringIO()):
             bs.logout()
         _LOGGED = False
 
@@ -132,7 +134,9 @@ def _ensure_login():
     _MODULE = bs
     if _LOGGED:
         return bs
-    login = bs.login()
+    # 同上，baostock 登录成功也是裸 print，这里吞掉。
+    with redirect_stdout(io.StringIO()):
+        login = bs.login()
     if login.error_code != "0":
         raise RuntimeError(f"baostock login: {login.error_msg}")
     _LOGGED = True

@@ -1,9 +1,9 @@
 name: Theme Radar Weekly
 
 on:
-  schedule:
-    # 北京时间周五 21:10（UTC 13:10），周频增强版主线复盘，避开主日任务与整点高峰。
-    - cron: '10 13 * * 5'
+  # A 股主漏斗（周日-周四）已日频更新 theme_radar_snapshot，停用周五晚独立重拉全市场 K 线的定时周报，保留 workflow_dispatch 手动触发。
+  # schedule:
+  #   - cron: '10 13 * * 5'
   workflow_dispatch:
     inputs:
       with_news:

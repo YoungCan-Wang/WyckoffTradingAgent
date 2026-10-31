@@ -768,13 +768,14 @@ def _write_review_trace(inputs: FunnelMetricsInputs, triggers: dict, metrics: di
 def _persist_shadow_lanes(payload: dict) -> None:
     """把影子车道观测落库。
 
-    artifact 的 retention 只有 30 天,而漏斗层级无法事后回放(回测引擎不重跑
-    L1~L4),过期即永久丢失。所以落库不跟 DAILY_JOB_ARTIFACTS_DIR 绑定:本地
-    没有 artifacts 目录也该写,只要处在 server_job 写入上下文里。
+    默认关闭 (FUNNEL_PERSIST_SHADOW_LANES=1 显式开启)。影子车道已于 PR #498 结论定性，
+    每日写入 1,000+ 行无读端，关闭以降低数据库存储成本并杜绝无用写。
     """
     from integrations.supabase_base import is_server_write_context
 
     if not is_server_write_context():
+        return
+    if os.getenv("FUNNEL_PERSIST_SHADOW_LANES", "").strip() != "1":
         return
     from integrations.supabase_review_shadow_lane import build_lane_rows, save_review_shadow_lane_rows
 

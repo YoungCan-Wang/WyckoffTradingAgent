@@ -20,7 +20,7 @@
 
 React Web、CLI、MCP 与 GitHub Actions 共同组成当前产品形态；日线行情通过 TickFlow 实时拉取（无 Supabase 行情缓存），Supabase 仅用于用户配置、持仓、形态复盘、市场信号、信号反馈与任务结果。
 
-TickFlow 全市场快照使用 GET `/v1/quotes` 的 `universes` 标的池参数，先整池获取再本地筛选；历史日K默认每批200只，美股通道在 workflow 层单独压到100只。午间独立研究的取数与失败边界见 [批量行情协议](docs/OPERATOR_PLAYBOOK.md#独立午间研究的批量行情协议)。
+TickFlow 全市场快照使用 GET `/v1/quotes` 的 `universes` 标的池参数，先整池获取再本地筛选；历史日K默认每批200只，美股通道在 workflow 层单独压到100只。午间及 14:55 独立研究的取数与失败边界见 [批量行情协议](docs/OPERATOR_PLAYBOOK.md#独立午间研究的批量行情协议) 和 [14:55 首屏快照](docs/OPERATOR_PLAYBOOK.md#1455-独立深跌研究的首屏快照)。
 
 > Risk disclosure: WyckoffAgent is for educational, research, and informational use. It does not provide investment advice, does not account for every personal financial circumstance, and does not guarantee future performance.
 

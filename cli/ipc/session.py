@@ -178,12 +178,13 @@ class DesktopSession:
     # -- 初始化 ---------------------------------------------------------------
 
     def start(self) -> None:
-        from cli.bootstrap import build_provider_state, init_local_services, load_config_env
+        from cli.bootstrap import build_provider_state, init_local_services
         from cli.tools import ToolRegistry
+        from integrations.local_auth import seed_data_source_env
 
         init_local_services()
         try:
-            load_config_env()
+            seed_data_source_env()
         except Exception:
             logger.debug("config env load failed", exc_info=True)
 
