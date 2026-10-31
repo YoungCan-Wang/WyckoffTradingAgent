@@ -134,6 +134,9 @@ class BacktestWorkflowRequest:
     portfolio_styles: str | list[str] = DEFAULT_CASH_PORTFOLIO_STYLES
     # 触发阈值矩阵用的 FunnelConfig 覆盖；用元组而非 dict 以保持请求可哈希、可比较。
     funnel_overrides: tuple[tuple[str, float], ...] = ()
+    selection_strategy: str = "wyckoff"
+    rs_window: int = 60
+    control_seed: int = 0
 
 
 def run_backtest_request(
@@ -259,12 +262,19 @@ def _build_run_config(request: BacktestWorkflowRequest) -> BacktestRunConfig:
             signal_weight_map=signal_weight_map,
             signal_weight_meta=signal_weight_meta,
             signal_weight_mode=signal_weight_mode,
+            selection_strategy=request.selection_strategy,
+            rs_window=request.rs_window,
+            control_seed=request.control_seed,
         )
     )
 
 
 def _market_regime_analyzer_from_env():
-    return partial(analyze_benchmark_and_tune_cfg, regime_config=market_regime_config_from_env())
+    return partial(
+        analyze_benchmark_and_tune_cfg,
+        regime_config=market_regime_config_from_env(),
+        include_pv_outlook=False,
+    )
 
 
 def _market_money_flow_calculator_from_env():
@@ -333,6 +343,7 @@ def _load_prepared_data(
         concept_map=metadata.concept_map,
         concept_heat=metadata.concept_heat,
         financial_map=metadata.financial_map,
+        financial_history=metadata.financial_history,
         failures=history.failures,
         theme_member_index=build_theme_member_index(metadata.concept_map, metadata.sector_map),
         snapshot_rows_total=history.snapshot_rows_total,

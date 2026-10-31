@@ -127,7 +127,7 @@ Worker 负责鉴权、输入校验、队列控制面和 HMAC 签名。Vercel Nod
 - `POST /api/agent/chat`：鉴权 → 闸门 → 车道限流（先过闸门再计数，没资格的请求不消耗额度）→ 读取会员自带的模型配置（与免费车道同一份 `user_settings`）→ 转给服务。上游不可达或异常一律回 502 且不透传上游内容；上游忙回 429。只透传流协议需要的响应头。
 - 模型配置映射：`anthropic` / anthropic 协议 → `claude`，`gemini` → `gemini`，`deepseek` → `deepseek`，其余（`openai`、`1route`、自定义 OpenAI 兼容端点）→ `openai` 并带 `base_url`。
 - 浏览器端的 `watchlist` / `marketWatch` 不会转给服务。车道默认零工具，所以会员在车道里**暂时没有**免费车道里那 12 个行情 / 持仓工具；在云端工具审计完成前，车道只应给明确开启的账号使用。
-- 目前上游只有「按 URL 直连」一种实现，而服务是一个进程只服务一个用户，所以只适合单用户 / 开发验证。多用户需要按用户路由到各自的容器（Cloudflare Containers 的 Durable Object 路由），用同一个 `AgentUpstream` 接口接入。
+- 上游是共用的那台 Cloud Run 实例（`WYCKOFF_SERVICE_SHARED=1`，已核实，与 [会员车道 Agent Runtime 服务](#会员车道-agent-runtime-服务已上线为工具后端整个对话循环尚未搬过来) 的工具后端共用同一个部署）——`build_state()` 对独占/共用两种模式走的是同一条 `tools_factory` 构造路径，多用户在这台实例上没有代码层面的障碍。真正要按用户路由到各自容器（Durable Object 路由）是更大规模之后才需要考虑的扩容手段，不是现在能不能多用户的前提。
 
 
 `X-RateLimit-Backend` 明确返回 `redis`、`local` 或 `local-fallback`，便于区分共享额度、未配置 Redis 和 Redis 故障降级。Redis 只承载可过期的协调状态与短期 Agent Run 结果，不承载持仓、订单、交易信号或审计真相；这些数据仍由 Supabase/RLS 管理。
@@ -409,16 +409,38 @@ OpenAI provider 兼容 Qwen / Kimi / LongCat / Minimax 等 OpenAI API 格式端�
 安装、参数默认值、权限、响应格式、长任务与验证契约的唯一维护位置是
 [PUBLIC_MCP.md](PUBLIC_MCP.md)。作为客户端接入第三方 MCP 的实现不在本次重构范围。
 
-### 会员车道 Agent Runtime 服务（实验，未部署）
+### 会员车道 Agent Runtime 服务（已上线为工具后端，整个对话循环尚未搬过来）
 
 `cli/service/server.py` 把 `AgentRuntime` 包成常驻 HTTP/SSE 服务，镜像见 `packaging/agent-service/Dockerfile`。
 设计前提：非会员继续走 Worker 上的 `/api/chat`（功能冻结），会员车道走这个服务，LLM key 由会员自带。
 
-- **两种部署形态。**
-  - **独占（默认）**：一个进程只服务一个用户，首个请求的 `X-Wyckoff-User` 把实例钉死，其他用户得到 409。适合按用户路由到各自容器。
-  - **共用（`WYCKOFF_SERVICE_SHARED=1`）**：多个用户共用一个进程，不绑定用户。每个用户同时只跑一轮、全局并发有上限（`WYCKOFF_SERVICE_MAX_TURNS`，默认 4），超了回 429；会话历史按 `(用户, session_id)` 隔离；**每个请求建自己的工具注册表**，网关按请求注入的 `credentials`（`{字符串: 字符串}`，最多 20 项、每项 ≤4096 字符）只活在这个请求里；每轮在全新的 `contextvars` 上下文里跑，ContextVar 的写入不会漏到同一线程的下一个请求。
+**现状（2026-10-17）**：对话循环已经开始切：非会员和尚未放行的会员继续走 Worker 上的 `/api/chat`（TS，功能
+冻结）。`AGENT_TOOLS_USERS=*` 的工具后端车道继续给全体会员额外接 3 个 Python 工具（`market_regime`、
+`wyckoff_diagnose`、`intraday_rescue_check`）。另外，`/v1/ui-turns` 整个对话循环车道（`agent-lane.ts`）现在
+对 `AGENT_LANE_USERS` 里的账号生效——目前只放了开发者自己一个账号，验证用，不是全量；这个账号打开读盘室会
+直接用 `AgentRuntime` 跑整轮对话，云端工具白名单（`WYCKOFF_SERVICE_TOOLS`）已经从 3 个扩到 7 个：加了
+`get_market_overview`、`get_market_history`、`search_stock_by_name`、`analyze_stock`（后两个前端已有专用卡片，
+不用等前端改代码）。
+
+**这一轮放行时发现两个之前审计没覆盖到的坑**：
+- `screen_stocks` 在 `cli/tools.py` 标了 `background=True`，但 `cli/service/server.py` 从未接
+  `set_background_manager`，所以共用服务里它会掉进同步执行路径，吃 `tool_timeout_seconds` 默认的 60 秒——
+  全市场扫描基本不可能在这个时限内跑完，会稳定超时。所以这次**没有**把它加进 `WYCKOFF_SERVICE_TOOLS`；
+  真正放行前要么给这条服务接后台任务管理器，要么确认它能在 60 秒内完成。其余 `background=True` 工具
+  （`generate_ai_report`、`generate_strategy_decision`、`evaluate_recommendation_events`、`run_backtest`）
+  放行前也要先过一遍这同一个坑。
+- `search_stock_by_name` 冷启动、且请求没带 `tushare_token` 时，会经 `get_all_stocks()` 落到
+  `_fetch_stocks_akshare()` 这条路——Cloud Run 容器没有本机磁盘缓存，每次冷启动都会走到这里，而这条网络调用
+  在东京出口上会直接挂到 60 秒超时（不是快速失败）。已放行账号目前都配了 `tushare_token`，正常路径不会碰到
+  这条慢路；但往后扩大 `AGENT_LANE_USERS` 名单前，要先确认新账号都配了 `tushare_token`，或者给这条 akshare
+  兜底调用加一个短超时。
+
+- **两种部署形态，两者现在走同一条工具注册表构造路径**（`build_state` 的 `tools_factory`），只在并发与
+  白名单校验上分叉：
+  - **独占（默认）**：一个进程只服务一个用户，首个请求的 `X-Wyckoff-User` 把实例钉死，其他用户得到 409。适合按用户路由到各自容器。工具调用拿到的是 `_admit()` 真正绑定的那个用户 id 与请求体里的 `credentials`——这条路径此前曾回落到硬编码的 `user_id="local"`（查不到任何真实部署的数据，是条死路），已修复。
+  - **共用（`WYCKOFF_SERVICE_SHARED=1`，Cloud Run 当前用的模式）**：多个用户共用一个进程，不绑定用户。每个用户同时只跑一轮、全局并发有上限（`WYCKOFF_SERVICE_MAX_TURNS`，默认 4），超了回 429；会话历史按 `(用户, session_id)` 隔离；每轮在全新的 `contextvars` 上下文里跑，ContextVar 的写入不会漏到同一线程的下一个请求。
   - 共用模式启动时会拒绝已知不能共用的工具（`SHARED_FORBIDDEN_TOOLS`：命令、任意文件读写、浏览器、本机数据库与家目录），配置了就直接退出。这只是拦已知的；放行任何其他工具前仍要按 [CLOUD_TOOL_AUDIT.md](CLOUD_TOOL_AUDIT.md) 逐个确认。
-  - 凭据读取需要 `ToolContext` 的请求级凭据模式（`state["credentials"]`），否则工具会回落到 admin 客户端或本机配置。
+  - 两种模式下**每个请求都建自己的工具注册表**：网关按请求注入的 `credentials`（`{字符串: 字符串}`，最多 20 项、每项 ≤4096 字符）只活在这个请求里，`ToolContext` 走请求级凭据模式（`state["credentials"]`），容器本身不需要持有 `SUPABASE_SERVICE_ROLE_KEY` 就能跑起来——这是本服务（`cli/service/server.py`）范围内的保证；CLI/桌面端等不经过这个 HTTP 服务的调用方仍然走原有的 admin 客户端路径，未受影响。
 - **必须带网关令牌**：环境变量 `AGENT_SERVICE_TOKEN` 未设置时进程拒绝启动，请求必须带 `Authorization: Bearer`。
 - **默认零工具**：`WYCKOFF_SERVICE_TOOLS` 用逗号列出放行的工具名，过滤发生在 `CloudToolRegistry` 一层。云端放行任何工具之前，要先确认它不依赖本机文件和 `local_db`。
 - **同一时刻只跑一轮**，第二个请求得到 429；客户端断开会关闭事件流并让 runtime 收掉模型流，不再继续生成。
@@ -439,6 +461,17 @@ gcloud run deploy wyckoff-agent --image <镜像> --region asia-northeast1 --allo
 - Cloud Run 保留 `/healthz`（前端直接回 404），外部探活不要用它。
 - 预算告警只通知不停服；创建预算要带 `--billing-project`。
 - 镜像必须是 linux/amd64。
+
+**现状（2026-10-17 起）**：上面这条命令只在**首次建服务**或要改并发/规格/环境变量这些服务级配置时手动跑。日常的"代码
+改了、要让 Cloud Run 跑上新版本"已经接进 `.github/workflows/agent_service_deploy.yml`：CI 成功后若本次提交的
+改动命中 `scripts/release_scope.py agent_service` 判定的路径（`agents/`、`cli/`、`core/`、`integrations/`、
+`tools/`、`utils/`、`workflows/`、`llmdoc/`、`config/`、`data/`、`packaging/agent-service/`、`pyproject.toml`、
+`uv.lock`），就会自动 build amd64 镜像、推到 Artifact Registry、`gcloud run deploy --image` 换版——**只换镜像，
+不带 `--set-env-vars`**，现网的 `AGENT_SERVICE_TOKEN`/`WYCKOFF_SERVICE_TOOLS` 等配置不会被这条流水线碰。鉴权走
+Workload Identity Federation（仓库是 public，不在 GitHub 存任何 GCP 长期密钥），`gcp-production` 这个 GitHub
+Environment 下的 `GCP_WORKLOAD_IDENTITY_PROVIDER`/`GCP_SERVICE_ACCOUNT` 两个 repo variable 是非密文的资源名，
+不是密钥本身。这块本来是手动的——2026-10-17 实测发现线上镜像落后 main 二十多个提交（#550~#554 这几轮改动
+都只碰了 Worker/测试/文档，没人记得再手动部署一次 Cloud Run），纯手动流程迟早会漏，所以补了这条流水线。
 
 协议（内部，浏览器不直连）：
 
@@ -887,16 +920,19 @@ MCP server 走 ToolSurface，没有确认弹窗也没有待批队列。`tools/wr
 | **港股漏斗筛选** (`wyckoff_funnel_hk.yml`) | 周一-周五 16:35 | `market_funnel_job.py --market hk` |
 | **A 股漏斗筛选 + AI 研报 + 决策** (`wyckoff_funnel.yml`) | 周日-周四 17:17 | `daily_job.py` Step2→3→4；周日正常为周一实盘准备候选，若次日非 A 股交易日才跳过，日频写入 `theme_radar_snapshot` |
 | **板块连续性报告** (`sector_continuity.yml`) | 周一-周五 16:10 | 刷新概念热度历史，辅助主线引擎判断延续性 |
-| **强势股复盘** (`review_list_replay.yml`) | 周一-周五 19:25 | 用 Tushare 双日截面发现当日涨幅 > 7% 且前日 < 3% 的完整样本；下载前一交易日生产漏斗的压缩 as-run trace，同时列出逐层状态、跟踪/AI状态、次日开盘及盘中可交易口径，并输出结构化 JSON/Markdown artifact。三条影子召回车道只观察、不写推荐；历史验证严格以每日 trace 为 as-of 候选证据。快照缺失默认不重跑，手动触发可显式允许全市场 fallback |
-| **主线雷达周报** (`theme_radar.yml`) | 周五 21:10 | `theme_radar_job.py --with-news`，周频新闻增强复盘 |
+| **强势股复盘** (`review_list_replay.yml`) | 手动触发（原周一-周五 19:25） | 用 Tushare 双日截面发现当日涨幅 > 7% 且前日 < 3% 的完整样本；下载前一交易日生产漏斗的压缩 as-run trace，同时列出逐层状态、跟踪/AI状态、次日开盘及盘中可交易口径，并输出结构化 JSON/Markdown artifact。三条影子召回车道只观察、不写推荐；历史验证严格以每日 trace 为 as-of 候选证据。快照缺失默认不重跑，手动触发可显式允许全市场 fallback |
+| **主线雷达周报** (`theme_radar.yml`) | 手动触发（原周五 21:10） | `theme_radar_job.py --with-news`，周频新闻增强复盘 |
 | **形态复盘重定价** (`recommendation_tracking_reprice.yml`) | 周一-周五 23:00 | 同步 A 股、港股收盘价并计算收益；美股由美股漏斗收盘后续步处理 |
-| **信号反馈闭环** (`signal_feedback.yml`) | 周一-周五 23:30 | 只结算缺失/`pending` outcomes，同股共享一次 K 线；刷新 health / registry，周五续跑策略反思 Shadow |
+| **信号反馈闭环** (`signal_feedback.yml`) | 周一-周五 23:30 | 只结算缺失/`pending` outcomes，同股共享一次 K 线；刷新 health / registry，周五（及手动触发）续跑策略归因报告与策略反思 Shadow |
 | **美股漏斗筛选 + 推荐表现** (`wyckoff_funnel_us.yml`) | 周二-周六 05:35 | `market_funnel_job.py --market us` 后续跑 `us_recommendation_performance_job.py` |
 | **数据库维护** (`db_maintenance.yml`) | 每周六 06:20 | 清理过期行情、订单、信号、市场信号等滑动窗口数据 |
 | **港美股票池刷新** (`hk_us_universe_refresh.yml`) | 每周日 21:30 | 拉取 Tushare 港股上市名单和 Nasdaq Trader 美股正股目录。脚本成功且名单有差异时直接提交 `main`；名单过短拒绝覆盖或无差异则跳过，不开分支、不开 PR。周日 21:30（cron `30 13 * * 0`）是为了避开工作日港美漏斗，不表示它排在其他任务之后 |
 | **回测网格** (`backtest_grid.yml`) | 手动触发 | 多周期 × 多交易风格回放，同时输出参数邻域稳定性与按时间前推的 walk-forward 样本外验证 |
 | **策略消融** (`backtest_grid.yml: strategy_compare`) | 手动显式开启 | A/M/P 五窗口结论已稳定为不晋级，默认网格不再重复消耗五个全市场任务；仅在 `run_strategy_compare=true` 时复现历史证据。手动复跑仍按窗口共用一次信号台账、分别重放权重与现金组合；候选/触发规则不同的策略禁止共享，故 matrix 分两片：`amp`（A/M/P 共享台账）、`calib`（I 独算）。Q/N/O、Q/R/S/T 形态门控与 Layer 2 两轨制 J（#476，六窗口三胜三负、边际成交更差，代码已删）均已否决，不改变生产漏斗 |
-| **触发阈值标定** (`backtest_trigger_calibration.yml`) | 手动触发 | 按周期 × 取值扇出，每个 job 完整重跑一次全市场漏斗；扫触发阈值时按目标触发器单信号均收做跨周期 walk-forward 选值，扫 `top_n` 时按全样本均收对比选择层增益；填 `grid_cells` 则改走共享台账的退出网格，在 `top_n=0` 原始池上取退出基准 |
+| **闸门基线** (`backtest_grid.yml: gate_baseline`) | 随网格固定运行 | 每个活动周期跑 `--execution-regime-gate live` 与 `off` 两片（退出固定 15 日 / -8% / +18%，slot_equal_4），两片各自算台账。生产闸门净效果是 RISK_ON / NEUTRAL 禁买，参数格永远没有牛市主升段的成交；off 组回答确认信号本身在被拦水温里的净超额（#567）。`gate_baseline_report.md/json` 按固定协议配对 live/off：对上证与创业板指两列逐笔超额、bootstrap 95% CI、去前 1/3/5 笔均收、`signal_date+code` 配对的边际成交按水温拆分；每个周期×闸门另跑 `--selection-strategy rs`（60 日相对强度）、`random`（固定种子随机、量执行路径本身的损耗）与 `reversal`（rs 同一排序取最弱，短期反转对照，#590）三片对照，同样的流动性地板、冷却与执行路径，报告 `对照组` 按合并超额 CI 是否分离逐个判 `wyckoff_below_<control>` / `wyckoff_above_<control>` / `indistinguishable`，单元表附 `exit_reason` 分布；产物目录 `backtest-gate-<period>-<gate>-<strategy>/`。notify 同时用分片的水温序列与随产物带出的指数 CSV 产出 `regime_timing_report.md/json`：不选股、只按水温持有/空仓指数（`buy_hold` / `avoid_hard_defense` / `risk_on_only` / `production_gate`），判 `timing_value` / `drawdown_only` / `no_timing_value`（#583）；每次回测另写 `market_sentiment_<stamp>.csv`（全市场逐日涨停 / 跌停 / 炸板 / 连板计数，`core/market_sentiment.py`），notify 据此算净涨停数 250 日分位状态 `ice` / `ebb` / `warm` / `climax`，加 `sentiment_follow` / `sentiment_not_ice` / `sentiment_ice_contrarian` 三个情绪周期变体与「状态 → 次日指数收益」条件表。研究对照，不改变生产闸门 |
+| **执行结构基线** (`backtest_grid.yml: exit_baseline`) | 随网格固定运行 | 7 周期 × `wyckoff` / `random` / 一组轮换对照（`sector_rs` 板块动量 #599 已结论；当前 `quality` PIT 财务三项百分位 #601，读快照 `financial_history.json`）、闸门 off，每片 `--grid-cells` 在同一份信号台账上重放 15 / 30 / 60 日 × {−8% / +18%, 只到期} 六个单元（`--grid-prefix backtest-exit`，台账冷却 = 15 日），分片带出指数 CSV。notify 用 `scripts/build_backtest_exit_baseline.py` 产出 `exit_baseline_report.md/json`：每单元合并逐笔超额 CI、`exit_reason`、组合层超额（现金收益 − 同期指数收益），每个选股源对 random 的分离状态与整体判定 `positive_structure_found` / `separation_without_positive_excess` / `execution_tax_removable_no_selection_signal` / `execution_tax_persists`（#597）。研究对照 |
+| **涨停次日接力基线** (`backtest_grid.yml: leader_baseline`) | 随网格固定运行 | 7 周期 × `random` / `limit_random` / `limit_leader`、闸门 off，`--grid-cells` 1 / 2 / 3 / 5 日只到期（`--grid-prefix backtest-leader`，台账冷却 = 1 日）。候选 = 信号日收盘封涨停的合格票（生产 `classify_limit_move`），`limit_leader` 按连板数、成交额排序。notify 用 `scripts/build_backtest_exit_baseline.py --spec leader` 产出 `leader_baseline_report.md/json`：`limit_random` 对 `random`、`limit_leader` 对 `limit_random` 的分离状态（#603）。研究对照 |
+| **触发阈值标定** (`backtest_trigger_calibration.yml`) | 手动触发 | 按周期 × 取值扇出，每个 job 完整重跑一次全市场漏斗；扫触发阈值时按目标触发器单信号均收做跨周期 walk-forward 选值，扫 `top_n` 时按全样本均收对比选择层增益；填 `grid_cells` 则改走共享台账的退出网格，在 `top_n=0` 原始池上取退出基准。周期含 `bull_2025`；calibrate job 注入与 Backtest Grid 相同的 `STEP4_BUY_*` 闸门 env 与 BEAR_REBOUND 配额，`live` 闸门与生产同向 |
 
 回测回放在每个历史区间开始时一次性预计算各股票在所有交易日的历史终点位置，日循环直接按整数位置切片；
 切片同时携带已按日期排序的内部标记，避免下游指标反复扫描日期单调性。该优化只替换数据访问方式，不改变

@@ -255,8 +255,27 @@ def iter_turn_events(
     # 断开信号不一定能穿过网关与容器之间的代理链，所以每轮自带时限作后备。
     # 检查点是流的空档、轮次边界和工具批次，不会打断一段连续输出。
     deadline = time.monotonic() + state.max_turn_seconds
+    started_at = time.monotonic()
     runtime = AgentRuntime(provider, tools, cancel_check=lambda: time.monotonic() >= deadline)
     for event in runtime.run_stream(history, CHAT_AGENT_SYSTEM_PROMPT):
+        event_type = event.get("type")
+        if event_type in ("tool_result", "tool_error"):
+            # 只记工具名、状态、耗时：不记参数、结果、用户 ID，和 Worker 侧的记录口径一致。
+            logger.info(
+                "tool call: name=%s status=%s elapsed_ms=%s",
+                event.get("name"),
+                event.get("status"),
+                event.get("elapsed_ms"),
+            )
+        elif event_type in ("done", "turn_failed"):
+            # provider.name 是 "Gemini (gemini-2.5-flash)" 这种固定格式，provider/model 都在里面；
+            # 同样不记用户 ID、对话内容。
+            logger.info(
+                "model usage: provider=%s status=%s elapsed_ms=%d",
+                getattr(provider, "name", "unknown"),
+                "success" if event_type == "done" else "error",
+                int((time.monotonic() - started_at) * 1000),
+            )
         yield event
         if event.get("type") == "done" and event.get("text"):
             history.append({"role": "assistant", "content": event["text"]})
@@ -461,18 +480,26 @@ def _tool_names() -> frozenset[str]:
 
 
 def build_state(token: str) -> ServiceState:
+    """两种模式都走同一条注册表构造路径,只在并发与白名单校验上分叉。
+
+    独占模式此前建一个没有 user_id/credentials 的注册表在启动时用到底,结果 get_credential
+    回落到 admin client 时查的是 user_id="local"——不是 _admit() 真正绑定的那个用户,这条
+    回落路径对任何真实部署都查不到数据,纯粹是死路。统一成 tools_factory 后,独占模式的
+    工具调用也会拿到 _admit() 绑定的真实 user 与请求体里的 credentials,管线和共用模式完全
+    一致,容器也就不再需要摸到 admin client 才能跑起来。
+    """
     names = _tool_names()
     seconds = float(os.getenv(TURN_SECONDS_ENV) or DEFAULT_MAX_TURN_SECONDS)
-    if os.getenv(SHARED_ENV) != "1":
-        return ServiceState(token, CloudToolRegistry(names), max_turn_seconds=seconds, tool_names=names)
-    validate_shared_tools(names)
+    shared = os.getenv(SHARED_ENV) == "1"
+    if shared:
+        validate_shared_tools(names)
     return ServiceState(
         token,
         None,
         max_turn_seconds=seconds,
-        shared=True,
+        shared=shared,
         tool_names=names,
-        max_concurrent_turns=int(os.getenv(MAX_TURNS_ENV) or DEFAULT_MAX_CONCURRENT_TURNS),
+        max_concurrent_turns=int(os.getenv(MAX_TURNS_ENV) or DEFAULT_MAX_CONCURRENT_TURNS) if shared else None,
         tools_factory=lambda user, credentials: CloudToolRegistry(names, {"user_id": user, "credentials": credentials}),
     )
 

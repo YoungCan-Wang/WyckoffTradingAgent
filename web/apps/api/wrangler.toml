@@ -11,6 +11,11 @@ head_sampling_rate = 1
 [observability.logs]
 invocation_logs = true
 
+# 只记 provider/model/成功与否/耗时，不记用户 ID 或对话内容——和 Workers Logs 的既有口径一致。
+[[analytics_engine_datasets]]
+binding = "LLM_USAGE_ANALYTICS"
+dataset = "wyckoff_llm_usage"
+
 [vars]
 ENVIRONMENT = "production"
 CHAT_DAILY_LIMIT_PER_USER = "80"

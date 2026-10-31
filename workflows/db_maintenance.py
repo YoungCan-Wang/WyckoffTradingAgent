@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -50,9 +51,9 @@ def _int_env(name: str, default: int, *, minimum: int = 1) -> int:
 CLEANUP_RULES: list[tuple[str, str, int, str]] = [
     (TABLE_TRADE_ORDERS, "trade_date", 15, "iso_date"),
     (TABLE_SIGNAL_PENDING, "signal_date", _int_env("DB_SIGNAL_PENDING_RETENTION_DAYS", 30), "iso_date"),
-    (TABLE_MARKET_SIGNAL_DAILY, "trade_date", _int_env("DB_MARKET_SIGNAL_RETENTION_DAYS", 180), "iso_date"),
+    (TABLE_MARKET_SIGNAL_DAILY, "trade_date", _int_env("DB_MARKET_SIGNAL_RETENTION_DAYS", 60), "iso_date"),
     (TABLE_DAILY_NAV, "trade_date", 15, "iso_date"),
-    (TABLE_EXTERNAL_SEED_OBSERVATIONS, "trade_date", _int_env("FUNNEL_EXTERNAL_SEED_RETENTION_DAYS", 180), "iso_date"),
+    (TABLE_EXTERNAL_SEED_OBSERVATIONS, "trade_date", _int_env("FUNNEL_EXTERNAL_SEED_RETENTION_DAYS", 30), "iso_date"),
     # 因子 IC 每周一行/因子，量很小；留 365 天以便观察方向是否跨年稳定——
     # 该表的价值恰在长期趋势，删太早就失去意义。
     (TABLE_FACTOR_IC_DAILY, "eval_date", _int_env("DB_FACTOR_IC_RETENTION_DAYS", 365), "iso_date"),
@@ -81,35 +82,31 @@ CLEANUP_RULES: list[tuple[str, str, int, str]] = [
     # 信号健康度：**派生表**，由 signal_outcomes 经 signal_feedback_job.py 每日整体重写
     # (replace_signal_health 按 market+as_of_date upsert 后删孤行)。生产只读最新一份——
     # load_signal_health_snapshot 按 as_of_date 倒序取样再 _latest_rows 去重，历史份数不参与决策。
-    # 读历史的只有 scripts/evaluate_capital_context_alpha.py 这个一次性 eval，不在任何 workflow 里。
-    # 删了也能从 outcomes 重算，所以这张表不需要长期留存。
-    (TABLE_SIGNAL_HEALTH_DAILY, "as_of_date", _int_env("DB_SIGNAL_HEALTH_RETENTION_DAYS", 90), "iso_date"),
-    # 影子车道：1171 行/交易日，全库行增长最快(≈164MB/年)。全仓没有任何 select——
-    # integrations/supabase_review_shadow_lane.py 只有 upsert，score_direction 判定读的是
-    # artifact 里的 review_trace_*.json.gz 而非这张表。留 180 天不是因为有程序依赖，而是因为
-    # artifact 只活 90 天：这张表是那批证据唯一能活过 90 天的副本，供事后用 SQL 查车道行为。
-    # 180 天 = artifact 窗口的两倍，够回看上一季度，又把它封在 ~82MB。
+    # 历史份数不参与决策，降为 30 天足以满足近窗排查与监控。
+    (TABLE_SIGNAL_HEALTH_DAILY, "as_of_date", _int_env("DB_SIGNAL_HEALTH_RETENTION_DAYS", 30), "iso_date"),
+    # 影子车道：全仓无读端，上游已默认停止写入；保留 14 天足以供短期核对，快速释放存量空间。
     (
         TABLE_REVIEW_SHADOW_LANE_DAILY,
         "trade_date",
-        _int_env("DB_REVIEW_SHADOW_LANE_RETENTION_DAYS", 180),
+        _int_env("DB_REVIEW_SHADOW_LANE_RETENTION_DAYS", 14),
         "iso_date",
     ),
     # 动态策略影子：单行 50KB。读取口径写死 30 天(load_policy_shadow_runs 的 days=30)，
-    # 留 90 天是读窗的三倍，留足手动排查余量。
+    # 留 30 天与读窗一致。
     (
         TABLE_SIGNAL_POLICY_SHADOW_RUNS,
         "trade_date",
-        _int_env("DB_SHADOW_RUNS_RETENTION_DAYS", 90),
+        _int_env("DB_SHADOW_RUNS_RETENTION_DAYS", 30),
         "iso_date",
     ),
     # 题材雷达：单行 26KB，只有 load_latest_theme_radar_snapshot 一个读取口，取最新一份。
-    (TABLE_THEME_RADAR_SNAPSHOT, "trade_date", _int_env("DB_THEME_RADAR_RETENTION_DAYS", 180), "iso_date"),
-    # 概念热度：179B/行、31 行/日，本身不大；给规则只为不让它无界增长。
+    # 缩短至 14 天。
+    (TABLE_THEME_RADAR_SNAPSHOT, "trade_date", _int_env("DB_THEME_RADAR_RETENTION_DAYS", 14), "iso_date"),
+    # 概念热度：179B/行、31 行/日，缩短至 30 天。
     (
         TABLE_CONCEPT_HEAT_HISTORY,
         "trade_date",
-        _int_env("DB_CONCEPT_HEAT_RETENTION_DAYS", 180),
+        _int_env("DB_CONCEPT_HEAT_RETENTION_DAYS", 30),
         "iso_date",
     ),
     # ↓ 下面两张现在一行都删不掉(最早数据 2026-05-25，不满 365 天)，是**增长封顶**不是清理。
@@ -157,16 +154,23 @@ def cleanup_table(
     cutoff_kind: str,
     *,
     dry_run: bool = False,
+    max_retries: int = 2,
+    retry_delay: float = 1.0,
 ) -> tuple[str, int | None]:
     cutoff = _cutoff_value(ttl_days, cutoff_kind)
-    try:
-        if dry_run:
-            resp = client.table(table).select("*", count="exact").lt(date_col, cutoff).limit(0).execute()
-            return "dry_run", resp.count or 0
-        client.table(table).delete().lt(date_col, cutoff).execute()
-        return "ok", None
-    except Exception as e:
-        return f"error: {e}", None
+    for attempt in range(max_retries + 1):
+        try:
+            if dry_run:
+                resp = client.table(table).select("*", count="exact").lt(date_col, cutoff).limit(0).execute()
+                return "dry_run", resp.count or 0
+            client.table(table).delete().lt(date_col, cutoff).execute()
+            return "ok", None
+        except Exception as e:
+            if attempt < max_retries:
+                if retry_delay > 0:
+                    time.sleep(retry_delay * (attempt + 1))
+                continue
+            return f"error: {e}", None
 
 
 def cleanup_recommendation_table(
@@ -176,23 +180,30 @@ def cleanup_recommendation_table(
     keep_dates: int = RECOMMENDATION_KEEP_DATES,
     page_size: int = RECOMMENDATION_DATE_PAGE_SIZE,
     dry_run: bool = False,
+    max_retries: int = 2,
+    retry_delay: float = 1.0,
 ) -> tuple[str, int | None]:
     keep_dates = max(int(keep_dates), 1)
     page_size = max(int(page_size), 1)
-    dates = _latest_recommend_dates(client, table, keep_dates, page_size)
-    if len(dates) < keep_dates:
-        count = 0 if dry_run else None
-        return f"keep_all, keep_dates={keep_dates}, distinct_dates={len(dates)}", count
+    for attempt in range(max_retries + 1):
+        try:
+            dates = _latest_recommend_dates(client, table, keep_dates, page_size)
+            if len(dates) < keep_dates:
+                count = 0 if dry_run else None
+                return f"keep_all, keep_dates={keep_dates}, distinct_dates={len(dates)}", count
 
-    cutoff = dates[keep_dates - 1]
-    try:
-        if dry_run:
-            resp = client.table(table).select("*", count="exact").lt("recommend_date", cutoff).limit(0).execute()
-            return f"dry_run, keep_dates={keep_dates}, cutoff={cutoff}", resp.count or 0
-        client.table(table).delete().lt("recommend_date", cutoff).execute()
-        return f"ok, keep_dates={keep_dates}, cutoff={cutoff}", None
-    except Exception as e:
-        return f"error: {e}", None
+            cutoff = dates[keep_dates - 1]
+            if dry_run:
+                resp = client.table(table).select("*", count="exact").lt("recommend_date", cutoff).limit(0).execute()
+                return f"dry_run, keep_dates={keep_dates}, cutoff={cutoff}", resp.count or 0
+            client.table(table).delete().lt("recommend_date", cutoff).execute()
+            return f"ok, keep_dates={keep_dates}, cutoff={cutoff}", None
+        except Exception as e:
+            if attempt < max_retries:
+                if retry_delay > 0:
+                    time.sleep(retry_delay * (attempt + 1))
+                continue
+            return f"error: {e}", None
 
 
 def cleanup_recommendation_tracking(
@@ -201,6 +212,8 @@ def cleanup_recommendation_tracking(
     keep_dates: int = RECOMMENDATION_KEEP_DATES,
     page_size: int = RECOMMENDATION_DATE_PAGE_SIZE,
     dry_run: bool = False,
+    max_retries: int = 2,
+    retry_delay: float = 1.0,
 ) -> tuple[str, int | None]:
     return cleanup_recommendation_table(
         client,
@@ -208,6 +221,8 @@ def cleanup_recommendation_tracking(
         keep_dates=keep_dates,
         page_size=page_size,
         dry_run=dry_run,
+        max_retries=max_retries,
+        retry_delay=retry_delay,
     )
 
 
