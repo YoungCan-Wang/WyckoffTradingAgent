@@ -205,3 +205,61 @@ def test_record_fill_does_not_overwrite_existing_tighter_stop(monkeypatch):
     updates = [call for call in client.calls if call["table"] == "portfolio_positions" and call["action"] == "update"]
     assert updates
     assert "stop_loss" not in updates[0]["payload"]
+
+
+def _entry_ticket(stop_loss: float, trade_date: str) -> dict:
+    return {
+        "code": "600000",
+        "action": "PROBE",
+        "status": "APPROVED",
+        "stop_loss": stop_loss,
+        "trade_date": trade_date,
+        "created_at": f"{trade_date}T15:00:00+00:00",
+    }
+
+
+def test_approved_entry_stop_ignores_ticket_dated_after_fill():
+    client = _FakeClient(trade_orders=[_entry_ticket(9.4, "2026-05-16")])
+
+    assert _approved_entry_stop_loss(client, "USER_LIVE:u1", "600000", "2026-05-15") is None
+
+
+def _record_new_buy(monkeypatch, client: _FakeClient, price: float) -> list[dict]:
+    monkeypatch.setattr(portfolio_store, "_resolve_write_client", lambda _client, _action: client)
+    monkeypatch.setattr(
+        portfolio_store,
+        "load_portfolio_state",
+        lambda *_a, **_k: {"free_cash": 50_000.0, "positions": []},
+    )
+    monkeypatch.setattr(portfolio_store, "_ensure_portfolio_exists", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        portfolio_store,
+        "refresh_portfolio_total_equity",
+        lambda *_a, **_k: EquityRefreshResult(True, 1, "ok"),
+    )
+    result = record_fill(
+        "USER_LIVE:u1",
+        Fill("600000", "buy", 100, price, "2026-05-15", name="浦发银行"),
+        client=client,
+    )
+    assert result.ok is True
+    return [call for call in client.calls if call["table"] == "portfolio_positions" and call["action"] == "insert"]
+
+
+def test_record_fill_skips_stop_above_fill_price(monkeypatch):
+    """票面止损 9.5、成交 9.05：写进持仓后下一轮 Step4 会把新仓强制 EXIT。"""
+    client = _FakeClient(trade_orders=[_entry_ticket(9.5, "2026-05-15")])
+
+    inserts = _record_new_buy(monkeypatch, client, 9.05)
+
+    assert inserts
+    assert "stop_loss" not in inserts[0]["payload"]
+
+
+def test_record_fill_skips_stop_equal_to_fill_price(monkeypatch):
+    client = _FakeClient(trade_orders=[_entry_ticket(9.05, "2026-05-15")])
+
+    inserts = _record_new_buy(monkeypatch, client, 9.05)
+
+    assert inserts
+    assert "stop_loss" not in inserts[0]["payload"]

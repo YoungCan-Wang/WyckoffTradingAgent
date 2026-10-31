@@ -1291,7 +1291,8 @@ order by n;
   `integrations.supabase_portfolio.record_fill` 负责落库，先读后写，需串行调用。
   已有持仓走 update（空 `buy_dt` 不覆盖原建仓日）；新仓走 insert，必须有合法 `YYYYMMDD` / `YYYY-MM-DD`，
   禁止插入无日期多头。买入建仓且持仓尚无止损时，从近 5 日同标的 APPROVED PROBE/ATTACK
-  `trade_orders.stop_loss` 写入持仓（Step4 新开仓时尚无持仓行，只能把止损留在工单）。
+  `trade_orders.stop_loss` 写入持仓（Step4 新开仓时尚无持仓行，只能把止损留在工单）；
+  工单晚于成交日或止损不低于成交价时不写，否则下一轮 Step4 会强制 EXIT 新仓。
 - 入口：CLI `wyckoff portfolio fill`、MCP/Agent 工具 `record_trade_fill`。
   `portfolio add` 只插入新仓且必须带合法建仓日，不要拿它记成交。
 - 任一持仓新增、覆盖、删除、现金修改或完整成交回填成功后，写入边界都会重新读取整个组合，

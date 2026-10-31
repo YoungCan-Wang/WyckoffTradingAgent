@@ -743,9 +743,20 @@ def _approved_entry_stop_loss(
             break
         if ticket_iso and recent is None:
             ticket_day = datetime.strptime(ticket_iso, "%Y-%m-%d").date()
-            if abs((fill_day - ticket_day).days) <= 5:
+            if 0 <= (fill_day - ticket_day).days <= 5:
                 recent = stop
     return exact if exact is not None else recent
+
+
+def _seedable_entry_stop(client: Client, portfolio_id: str, fill: Fill) -> float | None:
+    stop = _approved_entry_stop_loss(client, portfolio_id, fill.code, fill.trade_date)
+    if stop is None or stop < fill.price:
+        return stop
+    # 写进持仓的止损绕过新仓保护期，不低于成交价时下一轮 Step4 会直接强制 EXIT。
+    logger.warning(
+        "[supabase_portfolio] entry stop %s >= fill price %s for %s, not seeded", stop, fill.price, fill.code
+    )
+    return None
 
 
 def _canonicalize_fill(fill: Fill) -> Fill | None:
@@ -835,7 +846,7 @@ def record_fill(portfolio_id: str, fill: Fill, client: Client | None = None) -> 
     else:
         entry_stop = None
         if fill.side == BUY and _position_stop_missing(row):
-            entry_stop = _approved_entry_stop_loss(client, portfolio_id, fill.code, fill.trade_date)
+            entry_stop = _seedable_entry_stop(client, portfolio_id, fill)
         ok, msg = _persist_filled_holding(portfolio_id, row, result.holding, client, stop_loss=entry_stop)
     if not ok:
         return FillWriteResult(False, f"持仓写入失败：{msg}")
