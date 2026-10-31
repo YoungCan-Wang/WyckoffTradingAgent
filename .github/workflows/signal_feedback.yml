@@ -76,6 +76,7 @@ jobs:
           fi
 
       - name: Download latest backtest confirmation
+        if: steps.reflection_policy.outputs.run == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -136,6 +137,7 @@ jobs:
           PY
 
       - name: Build strategy attribution report
+        if: steps.reflection_policy.outputs.run == 'true'
         run: |
           args=(--market cn --days 60 --horizons 1,3,5,10,20)
           if [ -s backtest_confirmation.json ]; then

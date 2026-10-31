@@ -10,6 +10,7 @@ case "$PERIOD_KEY" in
   bear_2022) START=2021-12-13; END=2022-10-31 ;;
   sideways_2023) START=2023-01-03; END=2023-12-29 ;;
   volatile_2024) START=2024-01-02; END=2024-12-31 ;;
+  bull_2025) START=2025-01-02; END=2025-12-31 ;;
   recent_2m)
     END=$(date -d '-1 day' +%Y-%m-%d)
     START=$(date -d '-2 months -1 day' +%Y-%m-%d) ;;

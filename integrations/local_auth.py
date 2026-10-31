@@ -348,6 +348,22 @@ def load_config() -> dict[str, Any]:
         return {}
 
 
+_DATA_SOURCE_ENV_KEYS = (("tushare_token", "TUSHARE_TOKEN"), ("tickflow_api_key", "TICKFLOW_API_KEY"))
+
+
+def seed_data_source_env() -> None:
+    """把本机配置的数据源凭据写进进程环境，已有的环境变量优先。
+
+    登录用户在 ``get_credential`` 里只查云端凭据、不回退本机配置（防多用户串号），
+    本机单用户进程（CLI、无界面执行、公开 MCP）靠这一步让 ``wyckoff config`` 的值生效。
+    """
+    cfg = load_config()
+    for key, env_key in _DATA_SOURCE_ENV_KEYS:
+        value = str(cfg.get(key, "") or "").strip()
+        if value:
+            os.environ.setdefault(env_key, value)
+
+
 def save_config_key(key: str, value: Any) -> None:
     if key in TIMEOUT_CONFIG_SPECS:
         value = coerce_timeout_config_value(key, value)
