@@ -4,10 +4,10 @@ from workflows.backtest_gate_baseline import (
     BASELINE_PERIODS,
     GateTrade,
     _contrast_status,
-    _protocol,
     build_gate_baseline,
     load_gate_baseline_rows,
     render_gate_baseline,
+    trade_protocol,
 )
 
 _LIVE_TRADES = [("2025-03-03", "000001", "CAUTION", -3.0, 1.0, 2.0, "stop_loss")]
@@ -65,11 +65,13 @@ def test_gate_baseline_pairs_live_and_off_and_splits_marginal_trades_by_regime(t
         _write_cell(tmp_path, period, "off", _RS_TRADES, strategy="rs")
         _write_cell(tmp_path, period, "live", _RANDOM_TRADES, strategy="random")
         _write_cell(tmp_path, period, "off", _RANDOM_TRADES, strategy="random")
+        _write_cell(tmp_path, period, "live", _RS_TRADES, strategy="reversal")
+        _write_cell(tmp_path, period, "off", _RS_TRADES, strategy="reversal")
 
     rows = load_gate_baseline_rows(tmp_path)
     report = build_gate_baseline(rows)
 
-    assert len(rows) == 36
+    assert len(rows) == 48
     assert report["status"] == "ready"
     off_cell = next(
         cell
@@ -96,14 +98,21 @@ def test_gate_baseline_pairs_live_and_off_and_splits_marginal_trades_by_regime(t
     assert report["verdict"]["wyckoff"]["live"]["periods"] == len(BASELINE_PERIODS)
     assert report["verdict"]["rs"]["off"]["status"] == "review"
     contrast = report["strategy_contrast"]["off"]
-    assert contrast["status"] == {"rs": "wyckoff_below_rs", "random": "wyckoff_above_random"}
+    assert contrast["status"] == {
+        "rs": "wyckoff_below_rs",
+        "random": "wyckoff_above_random",
+        "reversal": "wyckoff_below_reversal",
+    }
     assert contrast["pooled"]["rs"]["signal"] == "positive"
     assert contrast["pooled"]["random"]["signal"] == "negative"
     assert contrast["rows"][0]["wyckoff"]["trades"] == 4
     markdown = render_gate_baseline(report)
     assert "wyckoff 仅 off 边际成交按水温" in markdown
     assert "| RISK_ON | 12 |" in markdown
-    assert "### 闸门 off → vs rs: wyckoff_below_rs；vs random: wyckoff_above_random" in markdown
+    assert (
+        "### 闸门 off → vs rs: wyckoff_below_rs；vs random: wyckoff_above_random；vs reversal: wyckoff_below_reversal"
+        in markdown
+    )
     assert "| 25% / 25% / 50% |" in markdown
 
 
@@ -120,19 +129,23 @@ def test_gate_baseline_reports_missing_cells_and_ignored_dirs(tmp_path: Path) ->
     assert "wyckoff/bull_2025/live" in report["missing_cells"]
     assert "rs/bull_2020/off" in report["missing_cells"]
     assert report["ignored_dirs"] == ["backtest-grid-bull_2025-h15-sl8-tp18-tr0"]
-    assert report["marginal"] == {"wyckoff": {}, "rs": {}, "random": {}}
+    assert report["marginal"] == {"wyckoff": {}, "rs": {}, "random": {}, "reversal": {}}
     assert report["verdict"]["wyckoff"]["off"]["status"] == "review"
     assert report["verdict"]["rs"]["off"]["status"] == "insufficient"
-    assert report["strategy_contrast"]["off"]["status"] == {"rs": "insufficient", "random": "insufficient"}
+    assert report["strategy_contrast"]["off"]["status"] == {
+        "rs": "insufficient",
+        "random": "insufficient",
+        "reversal": "insufficient",
+    }
     assert "证据不完整" in render_gate_baseline(report)
 
 
 def test_gate_baseline_signal_requires_both_benchmark_cis_to_exclude_zero() -> None:
     trades = [GateTrade(f"d:{idx}", "RISK_ON", 5.0 + idx * 0.1, 4.0 + idx * 0.1, -0.1) for idx in range(30)]
-    assert _protocol(trades)["signal"] == "inconclusive"
+    assert trade_protocol(trades)["signal"] == "inconclusive"
     trades = [GateTrade(f"d:{idx}", "RISK_ON", 5.0 + idx * 0.1, 4.0 + idx * 0.1, 3.0 + idx * 0.1) for idx in range(30)]
-    assert _protocol(trades)["signal"] == "positive"
-    assert _protocol([])["signal"] == "inconclusive"
+    assert trade_protocol(trades)["signal"] == "positive"
+    assert trade_protocol([])["signal"] == "inconclusive"
 
 
 def test_contrast_status_requires_both_benchmarks_to_separate_in_the_same_direction() -> None:

@@ -6,6 +6,19 @@ so the funnel's confirmed signals can be judged against known-cheap alternatives
 same regime gate, exits, friction and benchmark-excess protocol (#567, #576):
 
 - ``rs``: 60-day return minus the benchmark's, descending.
+- ``reversal``: the same score ascending (the mirror of ``rs``). Short-horizon reversal is
+  the best-documented A-share cross-sectional effect, and ``rs`` landed below ``random``
+  on #579, so the weakest side of the same ranking is the cheapest next thing to test.
+- ``sector_rs``: stocks from the three sectors whose median ``rs`` score is highest, ordered
+  by sector score and then by a seeded draw inside the sector, so sector momentum is tested
+  without re-importing stock momentum (#599).
+- ``quality``: mean cross-sectional percentile of ROE (high), debt-to-asset ratio (low) and
+  operating-cash-to-revenue (high) from the newest financial record announced before the
+  signal date (#601). The one selection source here that does not read prices at all.
+- ``limit_random`` / ``limit_leader``: only stocks that closed at the limit-up price on the
+  signal day (production ``classify_limit_move``), drawn at random or ranked by consecutive
+  limit-up days then turnover. Together they split "the limit-up itself" from "the leader
+  ranking inside it" at 1–5 day holds (#603).
 - ``random``: a uniform draw from the eligible universe. Its excess is the drag of the
   execution path itself (T+1 open entry, asymmetric stop/target, forced exit, friction),
   which is what any selection source must beat before it can be called alpha.
@@ -14,18 +27,35 @@ same regime gate, exits, friction and benchmark-excess protocol (#567, #576):
 from __future__ import annotations
 
 import random
+from collections import defaultdict
 from datetime import date
+from statistics import median
 
 import pandas as pd
 
+from core.asof_cut import latest_known_record
+from core.limit_move import classify_limit_move
 from core.wyckoff_engine import FunnelConfig, dollar_volume_series
 
-CONTROL_STRATEGIES = ("rs", "random")
+CONTROL_STRATEGIES = ("rs", "random", "reversal", "sector_rs", "quality", "limit_random", "limit_leader")
+LIMIT_STRATEGIES = ("limit_random", "limit_leader")
+MAX_LIMIT_STREAK = 20
 RANDOM_TRIGGER = "RANDOM"
+SECTOR_TOP_K = 3
+SECTOR_MIN_SYMBOLS = 5
+_FIXED_TRIGGER = {
+    "random": RANDOM_TRIGGER,
+    "quality": "QUALITY",
+    "limit_random": "LIMIT_RANDOM",
+    "limit_leader": "LIMIT_LEADER",
+}
+_TRIGGER_PREFIX = {"rs": "RS", "reversal": "REV", "sector_rs": "SECTOR"}
+_QUALITY_FIELDS = (("roe", "roe_diluted"), ("debt_to_asset_ratio",), ("operating_cash_to_revenue",))
+_QUALITY_HIGH_IS_GOOD = (True, False, True)
 
 
 def control_trigger_name(strategy: str, window: int) -> str:
-    return RANDOM_TRIGGER if strategy == "random" else f"RS{int(window)}"
+    return _FIXED_TRIGGER.get(strategy) or f"{_TRIGGER_PREFIX[strategy]}{int(window)}"
 
 
 def rank_relative_strength(
@@ -35,9 +65,11 @@ def rank_relative_strength(
     cfg: FunnelConfig,
     *,
     window: int,
+    weakest: bool = False,
 ) -> list[tuple[str, float]]:
     """Every eligible code by ``window``-day return minus the benchmark's, descending.
 
+    ``weakest`` flips the order so the laggards come first (the ``reversal`` control).
     Truncation to ``top_n`` happens in the replay after the re-entry cooldown is applied.
     """
     bench_ret = _window_return_pct(bench_slice, window)
@@ -48,8 +80,146 @@ def rank_relative_strength(
         stock_ret = _window_return_pct(df, window)
         if stock_ret is not None:
             scored.append((code, stock_ret - bench_ret))
+    scored.sort(key=lambda item: (item[1] if weakest else -item[1], item[0]))
+    return scored
+
+
+def rank_sector_strength(
+    day_df_map: dict[str, pd.DataFrame],
+    bench_slice: pd.DataFrame,
+    signal_date: date,
+    cfg: FunnelConfig,
+    sector_map: dict[str, str],
+    *,
+    window: int,
+    seed: int,
+) -> list[tuple[str, float]]:
+    """Eligible codes from the ``SECTOR_TOP_K`` sectors with the highest median excess return.
+
+    The score is the sector's median so a sector is not carried by one runaway stock; sectors
+    with fewer than ``SECTOR_MIN_SYMBOLS`` eligible names are skipped. Within a sector the order
+    is a seeded draw keyed on the day, mirroring ``rank_random``.
+    """
+    by_sector: dict[str, list[tuple[str, float]]] = defaultdict(list)
+    for code, score in rank_relative_strength(day_df_map, bench_slice, signal_date, cfg, window=window):
+        sector = sector_map.get(code)
+        if sector:
+            by_sector[sector].append((code, score))
+    sector_scores = sorted(
+        (
+            (median(score for _, score in items), sector)
+            for sector, items in by_sector.items()
+            if len(items) >= SECTOR_MIN_SYMBOLS
+        ),
+        key=lambda item: (-item[0], item[1]),
+    )[:SECTOR_TOP_K]
+    rng = random.Random(f"{seed}:{signal_date.isoformat()}")
+    ranked: list[tuple[str, float]] = []
+    for sector_score, sector in sector_scores:
+        codes = sorted(code for code, _ in by_sector[sector])
+        rng.shuffle(codes)
+        ranked.extend((code, sector_score) for code in codes)
+    return ranked
+
+
+def rank_quality(
+    day_df_map: dict[str, pd.DataFrame],
+    signal_date: date,
+    cfg: FunnelConfig,
+    financial_history: dict[str, list[dict]],
+) -> list[tuple[str, float]]:
+    """Eligible codes by mean percentile of the three quality fields, descending.
+
+    Only codes whose point-in-time record carries all three fields take part, so a missing
+    cash-flow line cannot be read as a good one. Percentiles are the strict-less share within
+    the day's participating universe.
+    """
+    rows: list[tuple[str, tuple[float, ...]]] = []
+    for code in eligible_history(day_df_map, signal_date, cfg):
+        record = latest_known_record(financial_history.get(code) or [], signal_date)
+        values = _quality_values(record) if record else None
+        if values is not None:
+            rows.append((code, values))
+    if not rows:
+        return []
+    columns = list(zip(*(values for _, values in rows), strict=True))
+    scored = []
+    for code, values in rows:
+        pct = [
+            _percentile(column, value, high_is_good)
+            for column, value, high_is_good in zip(columns, values, _QUALITY_HIGH_IS_GOOD, strict=True)
+        ]
+        scored.append((code, sum(pct) / len(pct)))
     scored.sort(key=lambda item: (-item[1], item[0]))
     return scored
+
+
+def _quality_values(record: dict) -> tuple[float, ...] | None:
+    out = []
+    for keys in _QUALITY_FIELDS:
+        value = next((record.get(key) for key in keys if record.get(key) is not None), None)
+        try:
+            out.append(float(value))
+        except (TypeError, ValueError):
+            return None
+    return tuple(out)
+
+
+def _percentile(column: tuple[float, ...], value: float, high_is_good: bool) -> float:
+    better_than = sum(item < value for item in column) if high_is_good else sum(item > value for item in column)
+    return better_than / len(column)
+
+
+def rank_limit_up(
+    day_df_map: dict[str, pd.DataFrame],
+    signal_date: date,
+    cfg: FunnelConfig,
+    name_map: dict[str, str],
+    *,
+    leader: bool,
+    seed: int,
+) -> list[tuple[str, float]]:
+    """Eligible codes that closed limit-up on ``signal_date``.
+
+    ``leader`` orders by consecutive limit-up days, then by the day's turnover; otherwise the
+    order is a seeded draw so the two arms share the exact same candidate set each day.
+    The score carried into the ledger is the streak length either way.
+    """
+    rows: list[tuple[str, int, float]] = []
+    for code, df in eligible_history(day_df_map, signal_date, cfg).items():
+        streak = limit_up_streak(df, code, name_map.get(code, ""))
+        if streak:
+            rows.append((code, streak, float(dollar_volume_series(df).iloc[-1])))
+    if leader:
+        rows.sort(key=lambda item: (-item[1], -item[2], item[0]))
+    else:
+        rows.sort(key=lambda item: item[0])
+        random.Random(f"{seed}:{signal_date.isoformat()}").shuffle(rows)
+    return [(code, float(streak)) for code, streak, _ in rows]
+
+
+def limit_up_streak(df: pd.DataFrame, code: str, name: str) -> int:
+    """Consecutive sessions ending at the last bar whose close sat at the limit-up price (capped at 20)."""
+    tail = df.tail(MAX_LIMIT_STREAK + 1)
+    closes = pd.to_numeric(tail["close"], errors="coerce").to_numpy()
+    opens = pd.to_numeric(tail["open"], errors="coerce").to_numpy() if "open" in tail.columns else closes
+    highs = pd.to_numeric(tail["high"], errors="coerce").to_numpy() if "high" in tail.columns else closes
+    lows = pd.to_numeric(tail["low"], errors="coerce").to_numpy() if "low" in tail.columns else closes
+    streak = 0
+    for i in range(len(closes) - 1, 0, -1):
+        state = classify_limit_move(
+            code=code,
+            name=name,
+            prev_close=float(closes[i - 1]),
+            open_=float(opens[i]),
+            high=float(highs[i]),
+            low=float(lows[i]),
+            close=float(closes[i]),
+        )
+        if state is None or not state.closed_limit_up:
+            break
+        streak += 1
+    return streak
 
 
 def rank_random(

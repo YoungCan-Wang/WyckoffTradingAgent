@@ -33,8 +33,8 @@ from workflows.backtest_report_stats import (
 )
 
 GATES = ("live", "off")
-STRATEGIES = ("wyckoff", "rs", "random")
-CONTROLS = ("rs", "random")
+STRATEGIES = ("wyckoff", "rs", "random", "reversal")
+CONTROLS = ("rs", "random", "reversal")
 EXIT_REASONS = ("stop_loss", "take_profit", "time_exit")
 BASELINE_PERIODS = ("bull_2020", "bear_2022", "sideways_2023", "volatile_2024", "bull_2025", "recent_6m")
 TAIL_DROPS = (1, 3, 5)
@@ -46,12 +46,14 @@ DECISION_RULE = (
     "低于对照的 CI 下沿才算劣于对照，反之才算优于对照，区间重叠记为不可区分；两个基准方向一致才算分离。"
     "random 组的超额就是执行路径本身（T+1 开盘入场、止损/止盈不对称、强制离场、摩擦）的损耗，"
     "wyckoff 与 random 不可区分即漏斗选股贡献为零。"
+    "reversal 是 rs 同一排序取最弱的一侧：它本身要先对 random 分离、再看合并超额 CI 下沿是否 > 0，"
+    "两步都过才算有扣费后的截面信号；只过第一步只说明换手与止损结构把它吃掉了。"
 )
-_DIR_PATTERN = re.compile(
+GATE_DIR_PATTERN = re.compile(
     r"backtest-gate-"
     r"(?P<period>recent_2m|recent_6m|bull_2020|bear_2022|sideways_2023|volatile_2024|bull_2025|custom)-"
     r"(?P<gate>live|off)"
-    r"(?:-(?P<strategy>wyckoff|rs|random))?"
+    r"(?:-(?P<strategy>wyckoff|rs|random|reversal))?"
     r"(?:-\d+)?$"
 )
 
@@ -83,7 +85,7 @@ def load_gate_baseline_rows(artifacts_dir: Path, ignored_dirs: list[str] | None 
     rows: list[GateBaselineRow] = []
     paths = sorted(Path(path) for path in glob.glob(str(artifacts_dir / "**" / "summary_*.md"), recursive=True))
     for path in paths:
-        match = _DIR_PATTERN.search(path.parent.name)
+        match = GATE_DIR_PATTERN.search(path.parent.name)
         if not match:
             if ignored_dirs is not None:
                 ignored_dirs.append(str(path.parent.relative_to(artifacts_dir)))
@@ -100,13 +102,13 @@ def load_gate_baseline_rows(artifacts_dir: Path, ignored_dirs: list[str] | None 
                 cash_return=cash_metric(content, "总收益"),
                 cash_drawdown=cash_metric(content, "现金最大回撤"),
                 cash_trades=cash_int_metric(content, "成交笔数"),
-                trades=_load_trades(path.parent),
+                trades=load_cell_trades(path.parent),
             )
         )
     return rows
 
 
-def _load_trades(directory: Path) -> tuple[GateTrade, ...]:
+def load_cell_trades(directory: Path) -> tuple[GateTrade, ...]:
     paths = sorted(directory.glob("trades_*.csv"))
     if not paths:
         return ()
@@ -136,7 +138,8 @@ def build_gate_baseline(rows: list[GateBaselineRow], ignored_dirs: list[str] | N
         for row in sorted(rows, key=lambda row: (STRATEGIES.index(row.strategy), period_rank(row.period), row.gate))
     ]
     pooled = {
-        strategy: {gate: _protocol(_gate_trades(rows, strategy, gate)) for gate in GATES} for strategy in STRATEGIES
+        strategy: {gate: trade_protocol(_gate_trades(rows, strategy, gate)) for gate in GATES}
+        for strategy in STRATEGIES
     }
     marginal, off_only = _marginal_by_strategy(rows, by_cell)
     return {
@@ -197,12 +200,12 @@ def _cell_payload(row: GateBaselineRow) -> dict[str, Any]:
         "cash_return": row.cash_return,
         "cash_drawdown": row.cash_drawdown,
         "cash_trades": row.cash_trades,
-        **_protocol(list(row.trades)),
+        **trade_protocol(list(row.trades)),
         "by_regime": _by_regime(list(row.trades)),
     }
 
 
-def _protocol(trades: list[GateTrade]) -> dict[str, Any]:
+def trade_protocol(trades: list[GateTrade]) -> dict[str, Any]:
     returns = [trade.ret_pct for trade in trades if trade.ret_pct is not None]
     main = [trade.excess_main_pct for trade in trades if trade.excess_main_pct is not None]
     smallcap = [trade.excess_smallcap_pct for trade in trades if trade.excess_smallcap_pct is not None]

@@ -270,7 +270,11 @@ def _build_run_config(request: BacktestWorkflowRequest) -> BacktestRunConfig:
 
 
 def _market_regime_analyzer_from_env():
-    return partial(analyze_benchmark_and_tune_cfg, regime_config=market_regime_config_from_env())
+    return partial(
+        analyze_benchmark_and_tune_cfg,
+        regime_config=market_regime_config_from_env(),
+        include_pv_outlook=False,
+    )
 
 
 def _market_money_flow_calculator_from_env():
@@ -339,6 +343,7 @@ def _load_prepared_data(
         concept_map=metadata.concept_map,
         concept_heat=metadata.concept_heat,
         financial_map=metadata.financial_map,
+        financial_history=metadata.financial_history,
         failures=history.failures,
         theme_member_index=build_theme_member_index(metadata.concept_map, metadata.sector_map),
         snapshot_rows_total=history.snapshot_rows_total,
