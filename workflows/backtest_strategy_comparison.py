@@ -13,6 +13,15 @@ from statistics import mean
 from typing import Any
 
 from core.trade_friction import round_trip_cost_pct
+from workflows.backtest_report_stats import (
+    cash_int_metric,
+    cash_metric,
+    date_range,
+    fmt,
+    metric,
+    optional_float,
+    return_stats,
+)
 from workflows.backtest_strategy_variants import DEFAULT_COMPARISON_VARIANTS, VARIANT_LABELS
 
 DEFAULT_COMPARISON_PERIODS = ("bull_2020", "bear_2022", "sideways_2023", "volatile_2024", "recent_6m")
@@ -72,24 +81,24 @@ def load_strategy_comparison_rows(
                 ignored_dirs.append(str(path.parent.relative_to(artifacts_dir)))
             continue
         content = path.read_text(encoding="utf-8")
-        start, end = _date_range(content)
+        start, end = date_range(content)
         rows.append(
             StrategyComparisonRow(
                 period=match.group("period"),
                 variant=match.group("variant"),
                 start=start,
                 end=end,
-                cash_return=_cash_metric(content, "总收益"),
-                cash_drawdown=_cash_metric(content, "现金最大回撤"),
-                cash_trades=_cash_int_metric(content, "成交笔数"),
-                win_rate=_cash_metric(content, "胜率"),
+                cash_return=cash_metric(content, "总收益"),
+                cash_drawdown=cash_metric(content, "现金最大回撤"),
+                cash_trades=cash_int_metric(content, "成交笔数"),
+                win_rate=cash_metric(content, "胜率"),
                 avg_return=_cash_trade_average(path.parent),
-                sharpe=_metric(content, r"夏普比(?:\s*\(Sharpe Ratio\))?"),
+                sharpe=metric(content, r"夏普比(?:\s*\(Sharpe Ratio\))?"),
                 trade_keys=_trade_keys(path.parent),
                 executed_trades=_executed_trades(path.parent),
                 signal_trades=_signal_trades(path.parent),
-                buy_friction_pct=_metric(content, "买入摩擦成本"),
-                sell_friction_pct=_metric(content, "卖出摩擦成本"),
+                buy_friction_pct=metric(content, "买入摩擦成本"),
+                sell_friction_pct=metric(content, "卖出摩擦成本"),
             )
         )
     return rows
@@ -159,8 +168,8 @@ def render_strategy_comparison(report: dict[str, Any]) -> str:
             f"| {variant} | {item.get('reference_variant', 'A')} | {item.get('common_periods', 0)} | "
             f"{item.get('positive_periods', 0)} | {item.get('exposure_periods', 0)} | "
             f"{item.get('changed_trades', 0)} | {item.get('wins', 0)} | "
-            f"{_fmt(item.get('mean_return_delta'), '%')} | {_fmt(item.get('max_abs_drawdown'), '%')} | "
-            f"{_fmt(item.get('max_drawdown_worsening'), 'pp')} | "
+            f"{fmt(item.get('mean_return_delta'), '%')} | {fmt(item.get('max_abs_drawdown'), '%')} | "
+            f"{fmt(item.get('max_drawdown_worsening'), 'pp')} | "
             f"{item.get('status', 'missing')} |"
         )
     lines.extend(_marginal_lines(report.get("evaluations") or {}))
@@ -243,16 +252,7 @@ def _marginal_trades(
         groups["common"].extend(variant[key] for key in common)
         groups["reference_only"].extend(value for key, value in base.items() if key not in common)
         groups["variant_only"].extend(value for key, value in variant.items() if key not in common)
-    return {name: _return_stats(values) for name, values in groups.items()}
-
-
-def _return_stats(values: list[float | None]) -> dict[str, Any]:
-    returns = [value for value in values if value is not None]
-    return {
-        "trades": len(values),
-        "avg_return": mean(returns) if returns else None,
-        "win_rate": sum(value > 0 for value in returns) / len(returns) * 100.0 if returns else None,
-    }
+    return {name: return_stats(values) for name, values in groups.items()}
 
 
 def _marginal_lines(evaluations: dict[str, Any]) -> list[str]:
@@ -279,7 +279,7 @@ def _marginal_lines(evaluations: dict[str, Any]) -> list[str]:
 
 def _stats_cell(stats: dict[str, Any] | None) -> str:
     stats = stats or {}
-    return f"{stats.get('trades', 0)} / {_fmt(stats.get('avg_return'), '%')} / {_fmt(stats.get('win_rate'), '%')}"
+    return f"{stats.get('trades', 0)} / {fmt(stats.get('avg_return'), '%')} / {fmt(stats.get('win_rate'), '%')}"
 
 
 def _cost_basis(rows: list[StrategyComparisonRow]) -> dict[str, Any]:
@@ -331,7 +331,7 @@ def _walk_forward_lines(result: dict[str, Any]) -> list[str]:
     for row in result.get("windows", []):
         lines.append(
             f"- {row['train_period']} 选出 {row['selected_variant']}，在 {row['test_period']} 的现金收益为 "
-            f"{_fmt(row.get('test_return'), '%')}。"
+            f"{fmt(row.get('test_return'), '%')}。"
         )
     lines.append(f"- 判定：{result.get('status', 'review')}。")
     return lines
@@ -400,16 +400,16 @@ def _loss_attribution_lines(result: dict[str, Any]) -> list[str]:
 def _attribution_line(label: str, row: dict[str, Any]) -> str:
     return (
         f"| {label} | {row.get('group', 'unknown')} | {row.get('trades', 0)} | "
-        f"{_fmt(row.get('win_rate'), '%')} | {_fmt(row.get('avg_return'), '%')} | "
-        f"{_fmt(row.get('pnl'))} | {_fmt(row.get('pnl_on_cost_pct'), '%')} |"
+        f"{fmt(row.get('win_rate'), '%')} | {fmt(row.get('avg_return'), '%')} | "
+        f"{fmt(row.get('pnl'))} | {fmt(row.get('pnl_on_cost_pct'), '%')} |"
     )
 
 
 def _row_line(row: dict[str, Any]) -> str:
     return (
-        f"| {row['period']} | {row['variant']} | {_fmt(row.get('cash_return'), '%')} | "
-        f"{_fmt(row.get('cash_drawdown'), '%')} | {row.get('cash_trades') or 0} | "
-        f"{_fmt(row.get('win_rate'), '%')} | {_fmt(row.get('avg_return'), '%')} | {_fmt(row.get('sharpe'))} |"
+        f"| {row['period']} | {row['variant']} | {fmt(row.get('cash_return'), '%')} | "
+        f"{fmt(row.get('cash_drawdown'), '%')} | {row.get('cash_trades') or 0} | "
+        f"{fmt(row.get('win_rate'), '%')} | {fmt(row.get('avg_return'), '%')} | {fmt(row.get('sharpe'))} |"
     )
 
 
@@ -471,7 +471,7 @@ def _signal_trades(directory: Path) -> tuple[tuple[str, float | None], ...]:
         return ()
     with paths[0].open(encoding="utf-8-sig", newline="") as handle:
         return tuple(
-            (f"{row.get('signal_date', '')}:{row.get('code', '')}", _optional_float(row.get("ret_pct")))
+            (f"{row.get('signal_date', '')}:{row.get('code', '')}", optional_float(row.get("ret_pct")))
             for row in csv.DictReader(handle)
         )
 
@@ -491,9 +491,9 @@ def _executed_trade(row: dict[str, str], regimes: dict[tuple[str, ...], str]) ->
         trigger=str(row.get("trigger") or "unknown"),
         regime=str(row.get("regime") or regimes.get(key) or "unknown"),
         exit_reason=str(row.get("exit_reason") or "unknown"),
-        ret_pct=_optional_float(row.get("ret_pct")),
-        pnl=_optional_float(row.get("pnl")),
-        cost_total=_optional_float(row.get("cost_total")),
+        ret_pct=optional_float(row.get("ret_pct")),
+        pnl=optional_float(row.get("pnl")),
+        cost_total=optional_float(row.get("cost_total")),
     )
 
 
@@ -510,51 +510,5 @@ def _trade_regime_lookup(directory: Path) -> dict[tuple[str, ...], str]:
         }
 
 
-def _optional_float(raw: object) -> float | None:
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        return None
-    return value if math.isfinite(value) else None
-
-
 def _trade_delta(base: StrategyComparisonRow, candidate: StrategyComparisonRow) -> int:
     return len(set(base.trade_keys).symmetric_difference(candidate.trade_keys))
-
-
-def _line_value(content: str, label: str) -> str | None:
-    pattern = re.compile(rf"^\s*-\s*{label}\s*:\s*(.+?)\s*$")
-    return next((match.group(1) for line in content.splitlines() if (match := pattern.match(line))), None)
-
-
-def _metric(content: str, label: str) -> float | None:
-    raw = _line_value(content, label)
-    match = re.search(r"[-+]?\d+(?:\.\d+)?", raw or "")
-    return float(match.group(0)) if match else None
-
-
-def _cash_section(content: str) -> str:
-    marker = "## 真实现金账户模拟"
-    if marker not in content:
-        return content
-    section = content.split(marker, 1)[1]
-    return section.split("\n## ", 1)[0]
-
-
-def _cash_metric(content: str, label: str) -> float | None:
-    return _metric(_cash_section(content), label)
-
-
-def _cash_int_metric(content: str, label: str) -> int | None:
-    value = _cash_metric(content, label)
-    return int(value) if value is not None else None
-
-
-def _date_range(content: str) -> tuple[str, str]:
-    raw = _line_value(content, "区间") or ""
-    parts = [part.strip() for part in raw.split("~", 1)]
-    return (parts[0], parts[1]) if len(parts) == 2 else ("", "")
-
-
-def _fmt(value: object, suffix: str = "") -> str:
-    return "-" if value is None else f"{float(value):+.2f}{suffix}"

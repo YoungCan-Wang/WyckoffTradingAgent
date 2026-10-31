@@ -9,14 +9,10 @@ name: Ranker Weight Eval
 # （0.20~2.00 段是平的）。所以要盯的是「去掉它会不会某段行情里不再变差」，
 # 一旦配对差在新行情段转不显著，就该重新审这个权重。
 on:
-  schedule:
-    # 392 日长窗口每周只新增 ~5 日（约 1%），周跑的读数几乎是同一份样本；改月频（每月 +~21 日）。
-    # 月频统一放在 UTC 22:10 = 北京时间次日 06:10。派发晚 3~4.5 小时（AGENTS.md 评审规则 7），
-    # 实际起跑落在北京 06:10~10:40；这段没有任何读 Tushare 的定时任务（最近的是 16:05 的
-    # nav_snapshot），延迟为零也照样空闲。不放北京夜里：工作日 recommendation_tracking_reprice
-    # （UTC 15:00）与 signal_feedback（UTC 15:30）延迟后落在北京 02:00~04:00，正好压在旧时段上。
-    # 五个月频 eval 按 4/6/8/10/12 日错开，只为分摊配额，不构成先后。
-    - cron: "10 22 4 * *"
+  # #567 六周期全量审计（run 40169421503）已证实 watch_score 排序层无跨周期分辨力，
+  # 停止排序权重参数研究；停用定时调度，保留 workflow_dispatch 备查。
+  # schedule:
+  #   - cron: "10 22 4 * *"
   workflow_dispatch:
     inputs:
       horizon:

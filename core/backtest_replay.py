@@ -22,6 +22,16 @@ from core.a_share_entry_research import (
     research_max_hold_days,
 )
 from core.ai_candidate_allocation import AiCandidateAllocationConfig
+from core.backtest_control_selection import (
+    CONTROL_STRATEGIES,
+    LIMIT_STRATEGIES,
+    control_trigger_name,
+    rank_limit_up,
+    rank_quality,
+    rank_random,
+    rank_relative_strength,
+    rank_sector_strength,
+)
 from core.backtest_execution import (
     ExitSimulationConfig,
     IntradayPriceFetcher,
@@ -34,6 +44,7 @@ from core.backtest_execution import (
     resolve_trade_exit,
 )
 from core.backtest_selection import combine_trigger_scores, select_ai_input_codes
+from core.candidate_metadata import candidate_signal_triggers, merge_trigger_maps
 from core.candidate_policy import (
     CandidatePolicyConfig,
     candidate_score_value,
@@ -96,6 +107,8 @@ class BacktestReplayConfig:
     concept_heat: list[dict] = field(default_factory=list)
     theme_radar: dict = field(default_factory=dict)
     financial_map: dict[str, dict] = field(default_factory=dict)
+    # 逐季 PIT 财务记录，只给 quality 对照用。
+    financial_history: dict[str, list[dict]] = field(default_factory=dict)
     theme_member_index: dict[str, list[str]] = field(default_factory=dict)
     mainline_config: MainlineEngineConfig | None = None
     signal_weight_map: dict[str, float] = field(default_factory=dict)
@@ -124,6 +137,11 @@ class BacktestReplayConfig:
     # 由调用方注入实盘的 STEP4_BUY_BLOCK_REGIMES 以保证回测与实盘闸门一致。
     buy_block_regimes: frozenset[str] = frozenset()
     a_share_entry_research: AShareEntryResearchPolicy = field(default_factory=AShareEntryResearchPolicy)
+    # ``rs`` / ``random`` 是对照组：跳过漏斗，按相对强度 / 固定种子随机取 top_n，
+    # 其余（水温、闸门、入场、退出、摩擦）与 wyckoff 完全相同。
+    selection_strategy: str = "wyckoff"
+    rs_window: int = 60
+    control_seed: int = 0
 
 
 @dataclass(frozen=True)
@@ -276,6 +294,7 @@ def build_signal_ledger(
 ) -> BacktestSignalLedger:
     days: list[_SignalDay] = []
     pending_pool = PendingPool() if config.pending_mode != "off" else None
+    control_cooldown: dict[str, int] = {}
     limit = max_idx if max_idx is not None else len(trade_dates) - 2
     started_at = monotonic()
     selected_total = 0
@@ -295,8 +314,10 @@ def build_signal_ledger(
         )
         if ctx is None:
             continue
-        selected, confirmed_count = _select_ranked_codes(ctx, pending_pool, sector_map, config)
+        selected, confirmed_count = _select_ranked_codes(ctx, pending_pool, sector_map, config, control_cooldown)
         blocked_day, blocked_count = _apply_execution_gates(ctx, selected, config)
+        if config.selection_strategy in CONTROL_STRATEGIES and blocked_day.selected is not None:
+            control_cooldown.update(dict.fromkeys(blocked_day.selected.codes, idx))
         coverage = _selection_coverage(ctx, selected, blocked_day.selected, config)
         selected = blocked_day.selected
         days.append(
@@ -499,7 +520,35 @@ def _build_day_context(
         smallcap_slice,
         **_liquidity_context(day_df_map, breadth, day_cfg, config),
     )
-    result = run_funnel(
+    result = (
+        _control_funnel_result(day_df_map, bench_slice, signal_date, day_cfg, name_map, sector_map, config)
+        if config.selection_strategy in CONTROL_STRATEGIES
+        else _run_day_funnel(day_df_map, bench_slice, name_map, market_cap_map, sector_map, day_cfg, config)
+    )
+    regime = bench_context.get("regime", "NEUTRAL") if bench_context else "NEUTRAL"
+    return _DayContext(
+        idx,
+        signal_date,
+        trade_dates[idx + 1],
+        day_df_map,
+        name_map,
+        day_cfg,
+        result,
+        str(regime),
+        breadth,
+    )
+
+
+def _run_day_funnel(
+    day_df_map: dict[str, pd.DataFrame],
+    bench_slice: pd.DataFrame,
+    name_map: dict[str, str],
+    market_cap_map: dict[str, float],
+    sector_map: dict[str, str],
+    day_cfg: FunnelConfig,
+    config: BacktestReplayConfig,
+) -> FunnelResult:
+    return run_funnel(
         all_symbols=list(day_df_map.keys()),
         df_map=day_df_map,
         bench_df=bench_slice,
@@ -514,17 +563,57 @@ def _build_day_context(
         theme_member_index=config.theme_member_index,
         mainline_config=config.mainline_config,
     )
-    regime = bench_context.get("regime", "NEUTRAL") if bench_context else "NEUTRAL"
-    return _DayContext(
-        idx,
-        signal_date,
-        trade_dates[idx + 1],
-        day_df_map,
-        name_map,
-        day_cfg,
-        result,
-        str(regime),
-        breadth,
+
+
+def _control_funnel_result(
+    day_df_map: dict[str, pd.DataFrame],
+    bench_slice: pd.DataFrame,
+    signal_date: date,
+    day_cfg: FunnelConfig,
+    name_map: dict[str, str],
+    sector_map: dict[str, str],
+    config: BacktestReplayConfig,
+) -> FunnelResult:
+    """对照组不跑漏斗；把排序结果装进 triggers 里，让台账、覆盖统计与成交记录走同一条路。"""
+    if config.selection_strategy == "random":
+        ranked = rank_random(day_df_map, signal_date, day_cfg, seed=config.control_seed)
+    elif config.selection_strategy in LIMIT_STRATEGIES:
+        ranked = rank_limit_up(
+            day_df_map,
+            signal_date,
+            day_cfg,
+            name_map,
+            leader=config.selection_strategy == "limit_leader",
+            seed=config.control_seed,
+        )
+    elif config.selection_strategy == "quality":
+        ranked = rank_quality(day_df_map, signal_date, day_cfg, config.financial_history)
+    elif config.selection_strategy == "sector_rs":
+        ranked = rank_sector_strength(
+            day_df_map, bench_slice, signal_date, day_cfg, sector_map, window=config.rs_window, seed=config.control_seed
+        )
+    else:
+        ranked = rank_relative_strength(
+            day_df_map,
+            bench_slice,
+            signal_date,
+            day_cfg,
+            window=config.rs_window,
+            weakest=config.selection_strategy == "reversal",
+        )
+    codes = [code for code, _ in ranked]
+    return FunnelResult(
+        layer1_symbols=codes,
+        layer2_symbols=codes,
+        layer3_symbols=codes,
+        top_sectors=[],
+        triggers={control_trigger_name(config.selection_strategy, config.rs_window): ranked},
+        stage_map={},
+        markup_symbols=[],
+        exit_signals={},
+        channel_map={},
+        leader_radar_symbols=[],
+        leader_radar_rows=[],
     )
 
 
@@ -655,13 +744,10 @@ def _select_ranked_codes(
     pending_pool: PendingPool | None,
     sector_map: dict[str, str],
     config: BacktestReplayConfig,
+    control_cooldown: dict[str, int] | None = None,
 ) -> tuple[_RankedSelection | None, int]:
-    confirmed = _confirmed_signals(ctx, pending_pool, sector_map, config.a_share_entry_research)
-    if config.enforce_confirmed_loss_guard:
-        guarded_codes, guard_dropped = _guarded_confirmed_codes(confirmed, ctx, config)
-        if guard_dropped:
-            logger.debug("confirmed 护栏拦截 %d 只: %s", len(guard_dropped), guard_dropped)
-        confirmed = replace(confirmed, codes=guarded_codes)
+    if config.selection_strategy in CONTROL_STRATEGIES:
+        return _select_control_codes(ctx, config, control_cooldown or {}), 0
     selected_codes, score_map, track_map = select_ai_input_codes(
         result=ctx.result,
         day_df_map=ctx.day_df_map,
@@ -673,6 +759,14 @@ def _select_ranked_codes(
         ai_allocation=config.ai_allocation,
         signal_weight_map=config.signal_weight_map,
     )
+    confirmed = _confirmed_signals(
+        ctx, pending_pool, sector_map, config.a_share_entry_research, selected_codes=frozenset(selected_codes)
+    )
+    if config.enforce_confirmed_loss_guard:
+        guarded_codes, guard_dropped = _guarded_confirmed_codes(confirmed, ctx, config)
+        if guard_dropped:
+            logger.debug("confirmed 护栏拦截 %d 只: %s", len(guard_dropped), guard_dropped)
+        confirmed = replace(confirmed, codes=guarded_codes)
     ranked_codes = _merge_codes(selected_codes, confirmed.codes, config.pending_mode, config.pending_merge_order)
     _merge_confirmed_metadata(score_map, track_map, confirmed)
     ranked_codes = _apply_selection_guards(ranked_codes, ctx, config)
@@ -690,6 +784,36 @@ def _select_ranked_codes(
             watch_score_map,
         ),
         len(confirmed.codes),
+    )
+
+
+def _select_control_codes(
+    ctx: _DayContext, config: BacktestReplayConfig, cooldown: dict[str, int]
+) -> _RankedSelection | None:
+    """Top ``top_n`` of the control ranking, skipping codes entered within the last ``hold_days``.
+
+    漏斗的确认池不会连日重复同一只票（六周期 off 组 660 笔里 21 日内重复仅 23 笔），而 60 日
+    相对强度是黏的，不加冷却会让同一只票连续入选、把一笔仓位记成多笔高度相关的成交。
+    随机组沿用同一冷却，保证三组的"同一只票多久能再买"口径一致。
+    """
+    trigger = control_trigger_name(config.selection_strategy, config.rs_window)
+    ranked = [
+        (code, score)
+        for code, score in ctx.result.triggers.get(trigger) or []
+        if ctx.idx - cooldown.get(code, -config.hold_days) >= config.hold_days
+    ][: config.top_n]
+    if not ranked:
+        return None
+    codes = [code for code, _ in ranked]
+    score_map = {code: float(score) for code, score in ranked}
+    return _RankedSelection(
+        codes,
+        score_map,
+        dict.fromkeys(codes, config.selection_strategy),
+        {code: (score, trigger) for code, score in score_map.items()},
+        frozenset(),
+        dict.fromkeys(codes, trigger),
+        {},
     )
 
 
@@ -719,13 +843,23 @@ def _confirmed_signals(
     pending_pool: PendingPool | None,
     sector_map: dict[str, str],
     policy: AShareEntryResearchPolicy | None = None,
+    *,
+    selected_codes: frozenset[str] | None = None,
 ) -> _ConfirmedSignals:
     if pending_pool is None:
         return _ConfirmedSignals([], {}, {}, {})
     research = policy or AShareEntryResearchPolicy()
     signal_date_str = ctx.signal_date.isoformat()
+    # 与实盘 Step2.5 对齐：待确认池同时吃 L4 触发与候选车道触发，且车道触发只取
+    # AI 已选中（selected_for_ai）的候选，与实盘 _selected_candidate_entries 一致。
+    # 只喂 L4 时 lps/sos/main_force_entry 等车道信号永不入池，回放确认池构成与实盘
+    # 系统性分叉（bull_2025 回放全年 lps/sos 确认为 0，实盘同期却有成交）。
+    lane_entries = ctx.result.candidate_entries
+    if selected_codes is not None:
+        lane_entries = [item for item in lane_entries or [] if str(item.get("code", "")).strip() in selected_codes]
+    merged_triggers = merge_trigger_maps(ctx.result.triggers, candidate_signal_triggers(lane_entries))
     pending_pool.write(
-        signal_date_str, ctx.result.triggers, ctx.day_df_map, ctx.regime, ctx.name_map, sector_map, ctx.day_cfg
+        signal_date_str, merged_triggers, ctx.day_df_map, ctx.regime, ctx.name_map, sector_map, ctx.day_cfg
     )
     confirmed_items = pending_pool.tick(ctx.day_df_map, signal_date_str)
     if not market_context_allows_entry(research, regime=ctx.regime, breadth=ctx.breadth):

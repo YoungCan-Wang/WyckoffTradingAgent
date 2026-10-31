@@ -255,15 +255,26 @@ def iter_turn_events(
     # 断开信号不一定能穿过网关与容器之间的代理链，所以每轮自带时限作后备。
     # 检查点是流的空档、轮次边界和工具批次，不会打断一段连续输出。
     deadline = time.monotonic() + state.max_turn_seconds
+    started_at = time.monotonic()
     runtime = AgentRuntime(provider, tools, cancel_check=lambda: time.monotonic() >= deadline)
     for event in runtime.run_stream(history, CHAT_AGENT_SYSTEM_PROMPT):
-        if event.get("type") in ("tool_result", "tool_error"):
+        event_type = event.get("type")
+        if event_type in ("tool_result", "tool_error"):
             # 只记工具名、状态、耗时：不记参数、结果、用户 ID，和 Worker 侧的记录口径一致。
             logger.info(
                 "tool call: name=%s status=%s elapsed_ms=%s",
                 event.get("name"),
                 event.get("status"),
                 event.get("elapsed_ms"),
+            )
+        elif event_type in ("done", "turn_failed"):
+            # provider.name 是 "Gemini (gemini-2.5-flash)" 这种固定格式，provider/model 都在里面；
+            # 同样不记用户 ID、对话内容。
+            logger.info(
+                "model usage: provider=%s status=%s elapsed_ms=%d",
+                getattr(provider, "name", "unknown"),
+                "success" if event_type == "done" else "error",
+                int((time.monotonic() - started_at) * 1000),
             )
         yield event
         if event.get("type") == "done" and event.get("text"):

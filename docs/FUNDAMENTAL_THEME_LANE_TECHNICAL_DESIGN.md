@@ -269,13 +269,15 @@ integrations.tickflow_client.normalize_cn_symbol(raw)  # 六位主键 -> 供应�
 
 ### 6.1 财务历史
 
-新增 `integrations/fundamental_history.py`，封装 TickFlow `get_financial_metrics(latest=False)`：
+`integrations/fundamental_history.py` 已落地第一版（#601），封装 TickFlow `get_financial_metrics(latest=False)`：
 
-1. 请求前将六位代码转换为供应商代码。
-2. 响应后立即规范回六位代码。
-3. 对每个代码按 `announce_date, period_end` 排序和去重。
-4. 暴露 `latest_known_financial(records, as_of_date)`，只返回信号日前已公告记录。
-5. 记录 requested/received/usable/stale/missing_announce_date 数量。
+1. 请求用客户端的供应商代码规范化，响应按 `code6` 归回六位代码。
+2. 只保留 `since − 400 日` 之后、带 `announce_date` 的记录与质量相关字段（`HISTORY_FIELDS`），按
+   `announce_date, period_end` 排序；全市场全量历史约 130 MB，裁剪后快照可承受。
+3. `core.asof_cut.latest_known_record(records, as_of)` 只返回 `announce_date < as_of` 且不早于 400 日的最新一条。
+4. 回测快照 fetch 阶段写 `financial_history.json`，`BacktestMetadata.financial_history` →
+   `BacktestReplayConfig.financial_history`，当前只有 `quality` 对照消费；漏斗仍只读 `financial_map`。
+5. 尚未做：requested/received/usable/stale 计数、去重、公告日完整率校验。
 
 如果 TickFlow 历史记录的 `announce_date` 完整率不足 95%，增加 Tushare `fina_indicator` 作为公告日校准源；不能静默
 用 `period_end` 兜底。
