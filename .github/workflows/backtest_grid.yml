@@ -619,7 +619,7 @@ jobs:
           if-no-files-found: error
 
   # ────────────────────────────────────────────────
-  # Phase 2c: 执行闸门基线 —— 同一确认信号，live 闸门 vs off
+  # Phase 2c: 执行闸门基线 —— live 闸门 vs off × wyckoff vs rs 对照
   # ────────────────────────────────────────────────
   # 生产闸门（STEP4_BUY_BLOCK_REGIMES ∪ EXECUTE_BLOCK_NEW_BUY_REGIMES − ALLOW）的净效果
   # 是 RISK_ON / NEUTRAL 一律禁买，所以参数格里永远没有牛市主升段的成交样本：
@@ -627,8 +627,13 @@ jobs:
   # BEAR_REBOUND / CAUTION。off 组用同一份快照、同一退出、同一现金组合回答"确认信号
   # 本身在被拦掉的水温里赚不赚钱"（#567）。两片各自独立算台账（闸门在台账阶段生效），
   # 不复用 grid 的台账；不受 dispatch 的 execution_regime_gate 输入影响，永远成对出现。
+  # rs / random 片跳过漏斗，分别按 60 日相对强度 / 固定种子随机取 top_n，其余参数与 wyckoff 片
+  # 逐字相同。rs 回答"漏斗是否优于朴素排序"，random 量的是执行路径本身（T+1 开盘入场、止损/
+  # 止盈不对称、强制离场、摩擦）的损耗——漏斗必须显著高于它才算有选股贡献（#576）。
+  # reversal 片是 rs 同一排序取最弱的 top_n（短期反转对照，#590）。
+  # 以上都不是生产逻辑的代理，只是对照组。
   gate_baseline:
-    name: Gate ${{ matrix.period_key }} / ${{ matrix.gate }}
+    name: Gate ${{ matrix.period_key }} / ${{ matrix.gate }} / ${{ matrix.strategy }}
     runs-on: ubuntu-latest
     needs: fetch
     env:
@@ -640,10 +645,12 @@ jobs:
       STEP4_BLOCK_BUY_SIGNAL_TYPES: ${{ vars.STEP4_BLOCK_BUY_SIGNAL_TYPES || '' }}
     strategy:
       fail-fast: false
-      max-parallel: 6
+      # 48 个活跃分片里 rs / random / reversal 片不跑漏斗（约 15 分钟，耗时在逐日水温/广度），并行度按 wyckoff 片数（12）定即可。
+      max-parallel: 12
       matrix:
         period_key: [recent_2m, recent_6m, bull_2020, bear_2022, sideways_2023, volatile_2024, bull_2025]
         gate: [live, off]
+        strategy: [wyckoff, rs, random, reversal]
     steps:
       - name: Resolve period dates
         id: period
@@ -721,16 +728,17 @@ jobs:
           path: snapshot_data/
 
       # 退出与组合参数与 strategy_compare 的 live 单元完全一致（15 日 / -8 / +18 /
-      # slot_equal_4），汇总脚本按 backtest-gate-<period>-<gate>/ 目录名配对 live 与 off。
+      # slot_equal_4），汇总脚本按 backtest-gate-<period>-<gate>-<strategy>/ 目录名配对。
       - name: Run gate baseline cell
         if: steps.period.outputs.active == 'true'
         shell: bash
         env:
           GATE: ${{ matrix.gate }}
+          STRATEGY: ${{ matrix.strategy }}
         run: |
           set -euo pipefail
           OUT_DIR="analysis/backtest_gate_actions"
-          RUN_DIR="${OUT_DIR}/backtest-gate-${BT_PERIOD_KEY}-${GATE}"
+          RUN_DIR="${OUT_DIR}/backtest-gate-${BT_PERIOD_KEY}-${GATE}-${STRATEGY}"
           echo "OUT_DIR=${OUT_DIR}" >> "$GITHUB_ENV"
           mkdir -p "$RUN_DIR"
           python -u -m scripts.backtest_runner \
@@ -757,6 +765,7 @@ jobs:
             --sltp-priority stop_first \
             --pending-mode "$BT_PENDING_MODE" \
             --execution-regime-gate "$GATE" \
+            --selection-strategy "$STRATEGY" \
             --pending-merge-order confirmed_first \
             --trailing-stop 0 \
             --metrics-engine auto \
@@ -765,25 +774,360 @@ jobs:
             --allow-static-meta \
             --output-dir "$RUN_DIR" \
             | tee "$RUN_DIR/run.log"
+          # 水温纯择时基线（build_backtest_regime_timing.py）在 notify 里只拿得到分片产物，
+          # 指数行情随分片一起带出去（两个小 CSV），避免 notify 再下载整份快照。
+          for bench in benchmark_main benchmark_smallcap; do
+            [ -f "snapshot_data/${bench}.csv" ] && cp "snapshot_data/${bench}.csv" "$RUN_DIR/${bench}.csv"
+          done
 
       - name: Upload gate baseline artifact
         if: always() && steps.period.outputs.active == 'true'
         uses: actions/upload-artifact@v7
         with:
-          name: backtest-gate-${{ steps.period.outputs.period_key }}-${{ matrix.gate }}-${{ github.run_number }}
+          name: backtest-gate-${{ steps.period.outputs.period_key }}-${{ matrix.gate }}-${{ matrix.strategy }}-${{ github.run_number }}
           path: ${{ env.OUT_DIR }}/**
           retention-days: 30
           if-no-files-found: error
+
+  # ────────────────────────────────────────────────
+  # Phase 2d: 执行结构基线（#597）
+  # ────────────────────────────────────────────────
+  # 把执行结构当被试：持有期 15/30/60 × 有无不对称止损止盈，wyckoff 与 random 同跑、闸门 off。
+  # 回答的是"执行税随结构降到多少"与"哪个结构下漏斗对 random 分离"，不是参数寻优。
+  exit_baseline:
+    name: Exit ${{ matrix.period_key }} / ${{ matrix.strategy }}
+    runs-on: ubuntu-latest
+    needs: fetch
+    env:
+      FUNNEL_DYNAMIC_POLICY: "off"
+      # 与 gate_baseline 同源；闸门为 off，这组 env 只保证漏斗配置一致。
+      STEP4_BUY_BLOCK_REGIMES: ${{ vars.STEP4_BUY_BLOCK_REGIMES || 'UNKNOWN,NEUTRAL,PANIC_REPAIR,RISK_OFF,CRASH,BLACK_SWAN' }}
+      STEP4_BUY_ALLOW_REGIMES: ${{ vars.STEP4_BUY_ALLOW_REGIMES || 'BEAR_REBOUND' }}
+      STEP4_BUY_PROBE_REGIMES: ${{ vars.STEP4_BUY_PROBE_REGIMES || '' }}
+      STEP4_BLOCK_BUY_SIGNAL_TYPES: ${{ vars.STEP4_BLOCK_BUY_SIGNAL_TYPES || '' }}
+    strategy:
+      fail-fast: false
+      # 21 片：每片一次漏斗（或对照排序）、六个退出单元共用台账，耗时与 gate_baseline 的 off 片相当。
+      # 对照组按轮次换：sector_rs（板块动量，#599 已结论）保留在 CLI；quality 是 PIT 财务三项
+      # 百分位质量因子（#601），读快照里的 financial_history.json。报表按矩阵里实际出现的对照组判完整性。
+      max-parallel: 7
+      matrix:
+        period_key: [recent_2m, recent_6m, bull_2020, bear_2022, sideways_2023, volatile_2024, bull_2025]
+        strategy: [wyckoff, random, quality]
+    steps:
+      - name: Resolve period dates
+        id: period
+        env:
+          INPUT_PERIOD: ${{ inputs.period || 'recent_6m' }}
+          MATRIX_PERIOD: ${{ matrix.period_key }}
+        run: |
+          ACTIVE="false"
+          if { [ "$INPUT_PERIOD" = "all_defined" ] && [ "$MATRIX_PERIOD" != "recent_2m" ]; } || [ "$INPUT_PERIOD" = "$MATRIX_PERIOD" ]; then
+            ACTIVE="true"
+          elif [ "$INPUT_PERIOD" = "custom" ] && [ "$MATRIX_PERIOD" = "recent_6m" ]; then
+            ACTIVE="true"
+          fi
+          echo "active=${ACTIVE}" >> "$GITHUB_OUTPUT"
+          if [ "$ACTIVE" != "true" ]; then
+            exit 0
+          fi
+          PERIOD="$MATRIX_PERIOD"
+          if [ "$INPUT_PERIOD" = "custom" ]; then
+            PERIOD="custom"
+          fi
+          echo "BT_PERIOD_KEY=${PERIOD}" >> "$GITHUB_ENV"
+          echo "period_key=${PERIOD}" >> "$GITHUB_OUTPUT"
+          if [ "$PERIOD" = "recent_2m" ]; then
+            echo "BT_END=$(TZ=Asia/Shanghai date -d '-1 day' +%Y-%m-%d)" >> "$GITHUB_ENV"
+            echo "BT_START=$(TZ=Asia/Shanghai date -d '-2 months -1 day' +%Y-%m-%d)" >> "$GITHUB_ENV"
+          elif [ "$PERIOD" = "bull_2020" ]; then
+            echo "BT_START=2020-07-01" >> "$GITHUB_ENV"
+            echo "BT_END=2021-02-18" >> "$GITHUB_ENV"
+          elif [ "$PERIOD" = "bear_2022" ]; then
+            echo "BT_START=2021-12-13" >> "$GITHUB_ENV"
+            echo "BT_END=2022-10-31" >> "$GITHUB_ENV"
+          elif [ "$PERIOD" = "sideways_2023" ]; then
+            echo "BT_START=2023-01-03" >> "$GITHUB_ENV"
+            echo "BT_END=2023-12-29" >> "$GITHUB_ENV"
+          elif [ "$PERIOD" = "volatile_2024" ]; then
+            echo "BT_START=2024-01-02" >> "$GITHUB_ENV"
+            echo "BT_END=2024-12-31" >> "$GITHUB_ENV"
+          elif [ "$PERIOD" = "bull_2025" ]; then
+            echo "BT_START=2025-01-02" >> "$GITHUB_ENV"
+            echo "BT_END=2025-12-31" >> "$GITHUB_ENV"
+          elif [ "$PERIOD" = "custom" ]; then
+            if [ -z "$BT_END" ]; then
+              echo "BT_END=$(TZ=Asia/Shanghai date -d '-1 day' +%Y-%m-%d)" >> "$GITHUB_ENV"
+            fi
+            if [ -z "$BT_START" ]; then
+              echo "BT_START=$(TZ=Asia/Shanghai date -d '-6 months -1 day' +%Y-%m-%d)" >> "$GITHUB_ENV"
+            fi
+          else
+            echo "BT_END=$(TZ=Asia/Shanghai date -d '-1 day' +%Y-%m-%d)" >> "$GITHUB_ENV"
+            echo "BT_START=$(TZ=Asia/Shanghai date -d '-6 months -1 day' +%Y-%m-%d)" >> "$GITHUB_ENV"
+          fi
+
+      - uses: actions/checkout@v7
+        if: steps.period.outputs.active == 'true'
+
+      - name: Set up Python
+        if: steps.period.outputs.active == 'true'
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        if: steps.period.outputs.active == 'true'
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[wbt]"
+
+      - name: Download snapshot
+        if: steps.period.outputs.active == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          name: backtest-snapshot-${{ steps.period.outputs.period_key }}
+          path: snapshot_data/
+
+      # 闸门固定 off、其余参数与 gate_baseline 片逐字相同；六个退出单元（15/30/60 日 × 有无 -8/+18
+      # 止损止盈）在同一份信号台账上重放（台账冷却 = 最小持有期 15 日，grid 阶段同一机制）。
+      # 汇总脚本按 backtest-exit-<period>-<strategy>/backtest-exit-h<hold>-sl<stop>-tp<take>-tr0/ 读取（#597）。
+      - name: Run exit baseline shard
+        if: steps.period.outputs.active == 'true'
+        shell: bash
+        env:
+          STRATEGY: ${{ matrix.strategy }}
+        run: |
+          set -euo pipefail
+          OUT_DIR="analysis/backtest_exit_actions"
+          RUN_DIR="${OUT_DIR}/backtest-exit-${BT_PERIOD_KEY}-${STRATEGY}"
+          echo "OUT_DIR=${OUT_DIR}" >> "$GITHUB_ENV"
+          mkdir -p "$RUN_DIR"
+          python -u -m scripts.backtest_runner \
+            --start "$BT_START" \
+            --end "$BT_END" \
+            --hold-days 15 \
+            --top-n "$BT_TOP_N" \
+            --board "$BT_BOARD" \
+            --sample-size "$BT_SAMPLE_SIZE" \
+            --trading-days "$BT_TRADING_DAYS" \
+            --abc-filter \
+            --entry-price-mode "$BT_ENTRY_PRICE_MODE" \
+            --cash-portfolio \
+            --initial-cash "$BT_INITIAL_CASH" \
+            --max-positions "$BT_MAX_POSITIONS" \
+            --portfolio-styles slot_equal_4 \
+            --commission-rate "$BT_COMMISSION_RATE" \
+            --min-commission "$BT_MIN_COMMISSION" \
+            --stamp-duty-rate "$BT_STAMP_DUTY_RATE" \
+            --transfer-fee-rate "$BT_TRANSFER_FEE_RATE" \
+            --exit-mode sltp \
+            --stop-loss -8 \
+            --take-profit 18 \
+            --sltp-priority stop_first \
+            --pending-mode "$BT_PENDING_MODE" \
+            --execution-regime-gate off \
+            --selection-strategy "$STRATEGY" \
+            --pending-merge-order confirmed_first \
+            --trailing-stop 0 \
+            --grid-cells "15:-8:18:0,15:0:0:0,30:-8:18:0,30:0:0:0,60:-8:18:0,60:0:0:0" \
+            --grid-prefix backtest-exit \
+            --metrics-engine auto \
+            --wbt-n-jobs 2 \
+            --snapshot-dir snapshot_data \
+            --allow-static-meta \
+            --output-dir "$RUN_DIR" \
+            | tee "$RUN_DIR/run.log"
+          # 组合层超额要用同期指数收益，指数行情随分片一起带出去。
+          for bench in benchmark_main benchmark_smallcap; do
+            [ -f "snapshot_data/${bench}.csv" ] && cp "snapshot_data/${bench}.csv" "$RUN_DIR/${bench}.csv"
+          done
+
+      - name: Upload exit baseline artifact
+        if: always() && steps.period.outputs.active == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: backtest-exit-${{ steps.period.outputs.period_key }}-${{ matrix.strategy }}-${{ github.run_number }}
+          path: ${{ env.OUT_DIR }}/**
+          retention-days: 30
+          if-no-files-found: error
+
+
+  leader_baseline:
+    name: Leader ${{ matrix.period_key }} / ${{ matrix.strategy }}
+    runs-on: ubuntu-latest
+    needs: fetch
+    env:
+      FUNNEL_DYNAMIC_POLICY: "off"
+      # 与 gate_baseline 同源；闸门为 off，这组 env 只保证漏斗配置一致。
+      STEP4_BUY_BLOCK_REGIMES: ${{ vars.STEP4_BUY_BLOCK_REGIMES || 'UNKNOWN,NEUTRAL,PANIC_REPAIR,RISK_OFF,CRASH,BLACK_SWAN' }}
+      STEP4_BUY_ALLOW_REGIMES: ${{ vars.STEP4_BUY_ALLOW_REGIMES || 'BEAR_REBOUND' }}
+      STEP4_BUY_PROBE_REGIMES: ${{ vars.STEP4_BUY_PROBE_REGIMES || '' }}
+      STEP4_BLOCK_BUY_SIGNAL_TYPES: ${{ vars.STEP4_BLOCK_BUY_SIGNAL_TYPES || '' }}
+    strategy:
+      fail-fast: false
+      # 21 片：涨停次日接力对照（#603）。三臂都不跑漏斗，每片约 15 分钟；四个只到期单元（1/2/3/5 日）共用台账，
+      # 台账冷却 = 1 日。limit_random 对 random 答「涨停本身有没有次日信息」，limit_leader 对 limit_random 答
+      # 「连板数 / 成交额排序有没有增量」。
+      max-parallel: 7
+      matrix:
+        period_key: [recent_2m, recent_6m, bull_2020, bear_2022, sideways_2023, volatile_2024, bull_2025]
+        strategy: [random, limit_random, limit_leader]
+    steps:
+      - name: Resolve period dates
+        id: period
+        env:
+          INPUT_PERIOD: ${{ inputs.period || 'recent_6m' }}
+          MATRIX_PERIOD: ${{ matrix.period_key }}
+        run: |
+          ACTIVE="false"
+          if { [ "$INPUT_PERIOD" = "all_defined" ] && [ "$MATRIX_PERIOD" != "recent_2m" ]; } || [ "$INPUT_PERIOD" = "$MATRIX_PERIOD" ]; then
+            ACTIVE="true"
+          elif [ "$INPUT_PERIOD" = "custom" ] && [ "$MATRIX_PERIOD" = "recent_6m" ]; then
+            ACTIVE="true"
+          fi
+          echo "active=${ACTIVE}" >> "$GITHUB_OUTPUT"
+          if [ "$ACTIVE" != "true" ]; then
+            exit 0
+          fi
+          PERIOD="$MATRIX_PERIOD"
+          if [ "$INPUT_PERIOD" = "custom" ]; then
+            PERIOD="custom"
+          fi
+          echo "BT_PERIOD_KEY=${PERIOD}" >> "$GITHUB_ENV"
+          echo "period_key=${PERIOD}" >> "$GITHUB_OUTPUT"
+          if [ "$PERIOD" = "recent_2m" ]; then
+            echo "BT_END=$(TZ=Asia/Shanghai date -d '-1 day' +%Y-%m-%d)" >> "$GITHUB_ENV"
+            echo "BT_START=$(TZ=Asia/Shanghai date -d '-2 months -1 day' +%Y-%m-%d)" >> "$GITHUB_ENV"
+          elif [ "$PERIOD" = "bull_2020" ]; then
+            echo "BT_START=2020-07-01" >> "$GITHUB_ENV"
+            echo "BT_END=2021-02-18" >> "$GITHUB_ENV"
+          elif [ "$PERIOD" = "bear_2022" ]; then
+            echo "BT_START=2021-12-13" >> "$GITHUB_ENV"
+            echo "BT_END=2022-10-31" >> "$GITHUB_ENV"
+          elif [ "$PERIOD" = "sideways_2023" ]; then
+            echo "BT_START=2023-01-03" >> "$GITHUB_ENV"
+            echo "BT_END=2023-12-29" >> "$GITHUB_ENV"
+          elif [ "$PERIOD" = "volatile_2024" ]; then
+            echo "BT_START=2024-01-02" >> "$GITHUB_ENV"
+            echo "BT_END=2024-12-31" >> "$GITHUB_ENV"
+          elif [ "$PERIOD" = "bull_2025" ]; then
+            echo "BT_START=2025-01-02" >> "$GITHUB_ENV"
+            echo "BT_END=2025-12-31" >> "$GITHUB_ENV"
+          elif [ "$PERIOD" = "custom" ]; then
+            if [ -z "$BT_END" ]; then
+              echo "BT_END=$(TZ=Asia/Shanghai date -d '-1 day' +%Y-%m-%d)" >> "$GITHUB_ENV"
+            fi
+            if [ -z "$BT_START" ]; then
+              echo "BT_START=$(TZ=Asia/Shanghai date -d '-6 months -1 day' +%Y-%m-%d)" >> "$GITHUB_ENV"
+            fi
+          else
+            echo "BT_END=$(TZ=Asia/Shanghai date -d '-1 day' +%Y-%m-%d)" >> "$GITHUB_ENV"
+            echo "BT_START=$(TZ=Asia/Shanghai date -d '-6 months -1 day' +%Y-%m-%d)" >> "$GITHUB_ENV"
+          fi
+
+      - uses: actions/checkout@v7
+        if: steps.period.outputs.active == 'true'
+
+      - name: Set up Python
+        if: steps.period.outputs.active == 'true'
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        if: steps.period.outputs.active == 'true'
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[wbt]"
+
+      - name: Download snapshot
+        if: steps.period.outputs.active == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          name: backtest-snapshot-${{ steps.period.outputs.period_key }}
+          path: snapshot_data/
+
+      # 闸门固定 off、摩擦与 gate_baseline 片相同；T+1 开盘入场沿用一字开板买不到就顺延的既有规则。
+      # 汇总脚本按 backtest-leader-<period>-<strategy>/backtest-leader-h<hold>-sl0-tp0-tr0/ 读取（#603）。
+      - name: Run leader baseline shard
+        if: steps.period.outputs.active == 'true'
+        shell: bash
+        env:
+          STRATEGY: ${{ matrix.strategy }}
+        run: |
+          set -euo pipefail
+          OUT_DIR="analysis/backtest_leader_actions"
+          RUN_DIR="${OUT_DIR}/backtest-leader-${BT_PERIOD_KEY}-${STRATEGY}"
+          echo "OUT_DIR=${OUT_DIR}" >> "$GITHUB_ENV"
+          mkdir -p "$RUN_DIR"
+          python -u -m scripts.backtest_runner \
+            --start "$BT_START" \
+            --end "$BT_END" \
+            --hold-days 1 \
+            --top-n "$BT_TOP_N" \
+            --board "$BT_BOARD" \
+            --sample-size "$BT_SAMPLE_SIZE" \
+            --trading-days "$BT_TRADING_DAYS" \
+            --abc-filter \
+            --entry-price-mode "$BT_ENTRY_PRICE_MODE" \
+            --cash-portfolio \
+            --initial-cash "$BT_INITIAL_CASH" \
+            --max-positions "$BT_MAX_POSITIONS" \
+            --portfolio-styles slot_equal_4 \
+            --commission-rate "$BT_COMMISSION_RATE" \
+            --min-commission "$BT_MIN_COMMISSION" \
+            --stamp-duty-rate "$BT_STAMP_DUTY_RATE" \
+            --transfer-fee-rate "$BT_TRANSFER_FEE_RATE" \
+            --exit-mode sltp \
+            --stop-loss -8 \
+            --take-profit 18 \
+            --sltp-priority stop_first \
+            --pending-mode "$BT_PENDING_MODE" \
+            --execution-regime-gate off \
+            --selection-strategy "$STRATEGY" \
+            --pending-merge-order confirmed_first \
+            --trailing-stop 0 \
+            --grid-cells "1:0:0:0,2:0:0:0,3:0:0:0,5:0:0:0" \
+            --grid-prefix backtest-leader \
+            --metrics-engine auto \
+            --wbt-n-jobs 2 \
+            --snapshot-dir snapshot_data \
+            --allow-static-meta \
+            --output-dir "$RUN_DIR" \
+            | tee "$RUN_DIR/run.log"
+          # 组合层超额要用同期指数收益，指数行情随分片一起带出去。
+          for bench in benchmark_main benchmark_smallcap; do
+            [ -f "snapshot_data/${bench}.csv" ] && cp "snapshot_data/${bench}.csv" "$RUN_DIR/${bench}.csv"
+          done
+
+      - name: Upload leader baseline artifact
+        if: always() && steps.period.outputs.active == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: backtest-leader-${{ steps.period.outputs.period_key }}-${{ matrix.strategy }}-${{ github.run_number }}
+          path: ${{ env.OUT_DIR }}/**
+          retention-days: 30
+          if-no-files-found: error
+
 
   # ────────────────────────────────────────────────
   # Phase 3: 汇总 + 飞书通知
   # ────────────────────────────────────────────────
   notify:
     runs-on: ubuntu-latest
-    needs: [grid, strategy_compare, gate_baseline]
+    needs: [grid, strategy_compare, gate_baseline, exit_baseline, leader_baseline]
     if: always()
     env:
       FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+      # regime_timing 的 production_gate 变体在这里解析 oms_buy_block_regimes()，必须与 gate_baseline
+      # job 读到同一份 BLOCK/ALLOW；run 40340681002 漏了这两行，产物里的 production_gate 实际是代码
+      # 默认集（CAUTION/NEUTRAL/PANIC_REPAIR_CONFIRMED），不是生产闸门。
+      STEP4_BUY_BLOCK_REGIMES: ${{ vars.STEP4_BUY_BLOCK_REGIMES || 'UNKNOWN,NEUTRAL,PANIC_REPAIR,RISK_OFF,CRASH,BLACK_SWAN' }}
+      STEP4_BUY_ALLOW_REGIMES: ${{ vars.STEP4_BUY_ALLOW_REGIMES || 'BEAR_REBOUND' }}
+      STEP4_BUY_PROBE_REGIMES: ${{ vars.STEP4_BUY_PROBE_REGIMES || '' }}
     steps:
       - name: Resolve period dates
         env:
@@ -859,6 +1203,18 @@ jobs:
           path: gate_artifacts/
           pattern: backtest-gate-*
 
+      - name: Download exit baseline artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: exit_artifacts/
+          pattern: backtest-exit-*
+
+      - name: Download leader baseline artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: leader_artifacts/
+          pattern: backtest-leader-*
+
       - name: Install dependencies
         run: python -m pip install requests python-dotenv pandas
 
@@ -902,6 +1258,31 @@ jobs:
             --markdown-output gate_baseline_report.md \
             --json-output gate_baseline_report.json
 
+      # 不选股、只按水温持有/空仓指数：回答「水温这个部件本身有没有择时价值」（#583）。
+      - name: Build regime timing report
+        run: |
+          python3 scripts/build_backtest_regime_timing.py \
+            --artifacts-dir gate_artifacts \
+            --markdown-output regime_timing_report.md \
+            --json-output regime_timing_report.json
+
+      # 执行结构基线：持有期 × 止损有无，wyckoff 对 random（#597）。
+      - name: Build exit baseline report
+        run: |
+          python3 scripts/build_backtest_exit_baseline.py \
+            --artifacts-dir exit_artifacts \
+            --markdown-output exit_baseline_report.md \
+            --json-output exit_baseline_report.json
+
+      # 涨停次日接力基线：limit_random 对 random、limit_leader 对 limit_random（#603）。
+      - name: Build leader baseline report
+        run: |
+          python3 scripts/build_backtest_exit_baseline.py \
+            --spec leader \
+            --artifacts-dir leader_artifacts \
+            --markdown-output leader_baseline_report.md \
+            --json-output leader_baseline_report.json
+
       - name: Upload market backtest report
         if: always()
         uses: actions/upload-artifact@v7
@@ -918,6 +1299,12 @@ jobs:
             strategy_ablation_report.json
             gate_baseline_report.md
             gate_baseline_report.json
+            regime_timing_report.md
+            regime_timing_report.json
+            exit_baseline_report.md
+            exit_baseline_report.json
+            leader_baseline_report.md
+            leader_baseline_report.json
           retention-days: 30
           if-no-files-found: error
 

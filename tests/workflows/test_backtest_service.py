@@ -81,6 +81,7 @@ def test_run_backtest_workflow_builds_context_without_network(monkeypatch) -> No
     assert captured["config"].performance.cash_portfolio is True
     analyzer = captured["config"].replay.market_regime_analyzer
     assert analyzer.keywords["regime_config"].smallcap_bench_code == "399905"
+    assert analyzer.keywords["include_pv_outlook"] is False
     # 资金流/成交额分布必须注入,否则 analyzer 拿空行情字典兜底,
     # CRASH 拿不到确认判据而降级成 RISK_OFF——见 tests/core/test_backtest_regime_money_flow.py
     money_flow = captured["config"].replay.market_money_flow_calculator

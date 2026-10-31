@@ -272,6 +272,75 @@ B 组衡量 Upthrust 当日对新候选的 veto 价值；所有组的持仓退�
 live/off 按 `signal_date+code` 配对，闸门拦掉的「仅 off」成交按水温单列。只有两个基准的 CI 都不含 0 且同号
 才记正/负超额，六周期里不显著或负超额 ≥ 4 即判该组无跨周期超额。该报告是研究对照，不改变生产闸门。
 
+同一 job 还对每个周期×闸门加跑一片 `--selection-strategy rs` 对照（相对强度，relative strength）：跳过漏斗，
+在同一份快照上按 60 日涨幅减去上证同期涨幅排序，经生产 L1 的流动性与价格地板后取 `top_n`，同一代码在
+`hold_days` 内不重复入选（漏斗确认池本就极少连日重复同一只票）；水温判定、闸门、入场、退出、摩擦与 wyckoff
+片逐字相同。它不是生产逻辑的代理，只回答「漏斗选股是否优于一个不含任何威科夫判断的朴素排序」：报告
+`对照组` 一节并列各策略的分周期超额，并按合并超额 CI 是否分离逐个对照给出 `wyckoff_below_<control>` /
+`wyckoff_above_<control>` / `indistinguishable`，两基准方向一致才算分离。
+
+第三片 `--selection-strategy random`（随机对照，random control）用固定种子（`--control-seed`，默认 0，按
+种子+日期派生，可复现）在同一流动性地板内随机取 `top_n`，冷却与执行路径同 rs 片。它量的是执行路径本身——
+T+1 开盘入场、-8%/+18% 不对称止损止盈、到期强制离场、摩擦——在该周期对任意选股的损耗（#576 的 rs 对照
+已显示 BEAR_REBOUND 放行并不能让朴素排序取得非负超额）。判读规则事先登记：wyckoff 与 random 的合并超额 CI
+重叠即视为选股层贡献为零、负超额来自执行结构；wyckoff 显著高于 random 才算漏斗有被执行吃掉的选股贡献；
+显著低于 random 则漏斗在主动挑差股。单元表新增 `止损/止盈/到期` 列（`exit_reason` 分布），用来判断负超额
+是止损触发率还是到期离场拖的。CLI 上 `rs` / `random` / `reversal` 都要求 `--top-n ≥ 1`。产物目录为
+`backtest-gate-<period>-<gate>-<strategy>/`，旧的无 strategy 后缀目录按 wyckoff 读取。
+
+第四片 `--selection-strategy reversal`（短期反转对照）是 rs 同一排序取最弱的 `top_n`：#579 里 rs 显著低于
+random（−2.24% 对 −1.04%），而短期反转是 A 股文献里最稳的截面效应，所以同一排序的另一端是最便宜的下一个
+检验。判读两步都要过才算有扣费后的截面信号：先对 random 分离（`wyckoff_below_reversal` 之外还要看
+reversal 自身对 random 的合并超额 CI），再看 reversal 合并超额 CI 下沿是否 > 0；只过第一步说明换手与止损
+结构把它吃掉了，那时才轮到持有期 / 退出结构实验（#590）。
+
+同一 notify 阶段还产出 `regime_timing_report.md/json`（水温纯择时基线）：不选股，只按每日水温决定持有还是
+空仓指数。水温取分片 `selection_coverage_*.json` 里生产路径逐日算出的同一份序列，指数行情取分片随产物带出的
+`benchmark_main.csv` / `benchmark_smallcap.csv`。T 日收盘判定、T+1 开盘切换、每次切换扣 ETF 佣金万一加滑点，
+所有变体与持有基准都从空仓起步、在同一组交易日上算。四个变体：`buy_hold`、`avoid_hard_defense`（离场
+RISK_OFF / CRASH / BLACK_SWAN / UNKNOWN）、`risk_on_only`、`production_gate`（生产 STEP4_BUY_BLOCK / ALLOW 实际
+放行的水温，报告列出集合）。判定对两个基准分别算且都要满足：六基线周期里扣费后收益高于持有 ≥ 4 个且合并
+「在场日 − 离场日」次日均收 CI 下沿 > 0 记 `timing_value`；只在回撤上 ≥ 4 个周期更小且 CI 上沿 ≥ 0 记
+`drawdown_only`；其余 `no_timing_value`。单周期现金收益不构成结论——防守型变体在熊市周期必然领先（#583）。
+
+同一报告还带三个情绪周期变体。每次回测都把全市场逐日的涨停 / 跌停 / 触板 / 炸板 / 最高连板数写成
+`market_sentiment_<stamp>.csv`（`core/market_sentiment.py`，用生产 `limit_pct` 与触板容差按前复权收盘价对前收判
+定，创业板 2020-08-24 前按 10%）。择时评估只用净涨停数（涨停 − 跌停）在过去 250 个交易日里的分位：
+< 20% 为 `ice`、< 50% `ebb`、< 80% `warm`、其余 `climax`，不足 120 个观测日不打标签。变体 `sentiment_follow`
+（只在 warm / climax 在场）、`sentiment_not_ice`（只避开 ice）、`sentiment_ice_contrarian`（只在 ice 在场）
+用与水温变体完全相同的成本与判定规则，报告按水温与情绪状态分别给出「状态 → 次日指数收益」条件表。
+它检验的是游资「赚钱效应 / 亏钱效应」这一类口径能否作为指数择时信号，与选股无关。
+
+`exit_baseline` 阶段把执行结构当被试（#597）：7 周期 × `wyckoff` / `random`、闸门固定 off，每片用
+`--grid-cells` 在同一份信号台账上重放六个退出单元——持有期 15 / 30 / 60 日 × {−8% / +18% stop_first, 只到期}
+（台账冷却 = 最小持有期 15 日，与 grid 阶段同一机制），产物 `backtest-exit-<period>-<strategy>/backtest-exit-h<hold>-sl<stop>-tp<take>-tr0/`。
+notify 产出 `exit_baseline_report.md/json`：每个策略 × 单元合并六基线周期的逐笔超额 CI、`exit_reason` 分布，以及
+组合层超额（周期现金收益 − 同期指数收益，逐笔超额看不到换手）。判定：random 在哪个单元 CI 含 0 或为正（执行税
+归零）；哪个单元 wyckoff 对 random 分离（与闸门基线同一规则）；只有分离且 wyckoff 自身 CI 下沿 > 0 的单元才记
+`positive_structure_found`，否则按 `separation_without_positive_excess` / `execution_tax_removable_no_selection_signal` /
+`execution_tax_persists` 归类。
+
+`exit_baseline` 第三组 `--selection-strategy sector_rs`（板块动量对照，#599）：每只合格票算 60 日超额（与 rs 同分数），
+板块分数取板块内合格票分数的中位数（合格票 < 5 只的板块不参与），取前 3 板块、板块内按固定种子随机排序后取 `top_n`，
+板块内随机是为了不把个股动量重新带进来。报告里每个选股源对 random 单独给 `above_random` /
+`below_random` / `indistinguishable`；两步判定与 reversal 相同（先对 random 分离，再看自身 CI 下沿 > 0），且预期信号
+应出现在 h30 / h60 单元而不是 h15。对照组按轮次换，报告按 run 矩阵里实际出现的对照判完整性。
+
+`--selection-strategy quality`（PIT 质量因子对照，#601）是第一个完全不读价格的选股源：快照 fetch 阶段用 TickFlow
+`get_financial_metrics(latest=False)` 写 `financial_history.json`（每只票逐季记录，带 `announce_date`，只保留回测起点前
+400 日以后的记录与质量相关字段）。信号日 T 只用 `announce_date < T` 且不早于 T − 400 日的最新一条——公告当日不可用、
+次日起可用，不用 `period_end` 兜底。三项都有值才参与：ROE（`roe`，缺则 `roe_diluted`）高、资产负债率低、经营现金流 /
+营收高，各取当日参与票里的截面百分位，均值降序取 `top_n`。银行等没有现金流比口径的票天然不参与。无阈值寻优，
+视界预期在季度，判定只看 h60 单元。
+
+`leader_baseline`（涨停次日接力基线，#603）是日线能严格表达的「龙头跟随」子集：7 周期 × `random` / `limit_random` /
+`limit_leader`，闸门 off，`--grid-cells` 1 / 2 / 3 / 5 日只到期（`--grid-prefix backtest-leader`，台账冷却 = 1 日）。
+候选 = 信号日收盘封涨停的合格票（生产 `core/limit_move.classify_limit_move`，含 ST / 创业板 / 科创板幅度与容差——
+20% 板的容差为 3%，收在 +17% 以上即计为封板）；`limit_random` 按种子随机、`limit_leader` 按连板数（回溯上限 20 日）、
+成交额排序，两臂每天候选集相同。T+1 开盘入场沿用一字开板买不到就顺延到 5 日内第一个能买的开盘的既有规则。
+报告由同一构建器按 `--spec leader` 产出 `leader_baseline_report.md/json`：`limit_random` 对 `random` 分离答「涨停本身
+有没有次日信息」，`limit_leader` 对 `limit_random` 分离答「排序有没有增量」；盘中排板的成交假设日线复现不了，不做。
+
 `tradeable_l4` 不再按 Trend/Accum 固定配额截断候选：形态通过统一损失护栏后进入质量池，最终按质量排序，最多送审 8 只且同一行业最多 2 只。CAUTION 下未确认 launchpad 只观察；
 其它可交易水温最多保留一个 launchpad 席位，并先给 Spring/LPS/SOS、主线和其它非 launchpad 候选留出位置。
 
