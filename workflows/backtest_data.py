@@ -21,11 +21,13 @@ from integrations.fetch_a_share_csv import get_stocks_by_board, normalize_symbol
 from integrations.index_data_source import fetch_index_hist
 from integrations.market_metadata import fetch_concept_heat, fetch_concept_map, fetch_market_cap_map, fetch_sector_map
 from integrations.market_universe import load_hk_symbols, load_us_symbols
+from workflows.backtest_turnover import TURNOVER_CONTRACT
 
 logger = logging.getLogger(__name__)
 
 ProgressReporter = Callable[[str, str, float], None]
 _HIST_CANDIDATE_COLS = ["symbol", "date", "open", "high", "low", "close", "volume", "amount", "pct_chg"]
+_TURNOVER_COLS = ["turnover", "turnover_source"]
 
 
 @dataclass(frozen=True)
@@ -139,13 +141,24 @@ def process_hist_chunk(chunk: pd.DataFrame, symbols_filter: set[str] | None, out
     chunk = chunk.copy()
     chunk["date"] = pd.to_datetime(chunk["date"], errors="coerce").dt.date
     chunk = chunk.dropna(subset=["symbol", "date"])
-    for col in ["open", "high", "low", "close", "volume", "amount", "pct_chg"]:
+    for col in ["open", "high", "low", "close", "volume", "amount", "pct_chg", "turnover"]:
         if col in chunk.columns:
             chunk[col] = pd.to_numeric(chunk[col], errors="coerce")
     for sym, group in chunk.groupby("symbol", sort=False):
         part = group.drop(columns=["symbol"]).reset_index(drop=True)
         out[sym] = pd.concat([out[sym], part], ignore_index=True) if sym in out else part
     return len(chunk)
+
+
+def _hist_columns(snapshot_dir: Path) -> list[str]:
+    """只有带日期键换手合同的快照才读 turnover。
+
+    无合同的快照里 TickFlow 批量行没有换手、单票回退行有真实换手，读进来只有后者
+    受 EVR 换手下限约束，同一次回放里两种口径混用。没合同就整列不读，保持默认基线。
+    """
+    if (load_snapshot_pit_meta(snapshot_dir).get("turnover_pit") or {}).get("contract") == TURNOVER_CONTRACT:
+        return _HIST_CANDIDATE_COLS + _TURNOVER_COLS
+    return _HIST_CANDIDATE_COLS
 
 
 def load_snapshot_hist_map(
@@ -155,7 +168,7 @@ def load_snapshot_hist_map(
     if not full_path.exists():
         raise FileNotFoundError(f"snapshot missing file: {full_path}")
     header = pd.read_csv(full_path, compression="gzip", nrows=0).columns
-    keep_cols = [col for col in _HIST_CANDIDATE_COLS if col in header]
+    keep_cols = [col for col in _hist_columns(snapshot_dir) if col in header]
     if "symbol" not in keep_cols:
         raise RuntimeError(f"snapshot file missing symbol column: {full_path}")
 
