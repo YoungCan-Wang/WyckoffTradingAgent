@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -25,6 +26,10 @@ _OLD_CONFIG_FILE = SESSION_DIR / "config.json"
 # started while sign-in was on the network (IPC has 4 workers; CLI+desktop share
 # ~/.wyckoff). Cleared by logout and by a successful login persist.
 _LOGIN_ATTEMPT_ID_KEY = "login_attempt_id"
+# Provenance of values pulled from cloud user_settings: owner user_id plus a
+# fingerprint per value. Logout / account switch removes only values that still
+# match, so hand-entered or later-edited keys stay put.
+_CLOUD_SYNCED_KEY = "cloud_synced"
 _CONFIG_THREAD_LOCK = threading.RLock()
 _SESSION_THREAD_LOCK = threading.RLock()
 # Serializes login / logout / auto_relogin credential+session coupling so a
@@ -55,6 +60,7 @@ def login(email: str, password: str) -> dict[str, Any]:
         if not _login_attempt_still_current(attempt_id):
             logger.warning("refusing to persist login: logout or newer login during sign-in")
             raise RuntimeError("登录未完成：期间发生了退出或另一次登录")
+        clear_cloud_synced_config(keep_user_id=str(data.get("user_id") or ""))
         save_session(data)
         save_config_key("email", email)
         save_config_key("password", password)
@@ -128,6 +134,9 @@ def logout() -> None:
     注意 `auto_relogin` 仍然保留：它是 token 过期时的续期路径，不是登录态的
     来源。清掉凭据只让它拿不到东西，不会改变续期逻辑本身。
 
+    云端拉来的密钥也属于这个账号，一并带走：配置是本地优先、只补空缺，留下来的话
+    下一个账号既会用到它，自己的云端配置也补不进来。
+
     必须先清凭据再清 session：IPC 多 worker 下 `account`→`restore_session` /
     工具 `auto_relogin` 会与 `auth_logout` 并发；若 session 先空而密码还在，
     就会在「已退出」窗口里被静默登回去。
@@ -143,6 +152,10 @@ def logout() -> None:
                 save_config_key(key, "")
             except OSError:
                 logger.warning("failed to clear stored credential: %s", key, exc_info=True)
+        try:
+            clear_cloud_synced_config()
+        except OSError:
+            logger.warning("failed to clear cloud-synced config", exc_info=True)
         clear_session()
 
 
@@ -293,20 +306,21 @@ def load_default_model_id() -> str | None:
     return models[0]["id"] if models else None
 
 
-def save_model_entry(entry: dict[str, Any]) -> None:
-    def update(data: dict[str, Any]) -> None:
-        models = data.get("models", [])
-        for index, model in enumerate(models):
-            if model["id"] == entry["id"]:
-                models[index] = entry
-                break
-        else:
-            models.append(entry)
-        data["models"] = models
-        if not data.get("default") or not any(model["id"] == data["default"] for model in models):
-            data["default"] = models[0]["id"]
+def _upsert_model(data: dict[str, Any], entry: dict[str, Any]) -> None:
+    models = data.get("models", [])
+    for index, model in enumerate(models):
+        if model["id"] == entry["id"]:
+            models[index] = entry
+            break
+    else:
+        models.append(entry)
+    data["models"] = models
+    if not data.get("default") or not any(model["id"] == data["default"] for model in models):
+        data["default"] = models[0]["id"]
 
-    _update_config(update)
+
+def save_model_entry(entry: dict[str, Any]) -> None:
+    _update_config(lambda data: _upsert_model(data, entry))
 
 
 def remove_model_entry(model_id: str) -> bool:
@@ -399,6 +413,89 @@ def seed_data_source_env() -> None:
         value = str(cfg.get(key, "") or "").strip()
         if value:
             os.environ.setdefault(env_key, value)
+
+
+def _fingerprint(secret: Any) -> str:
+    return hashlib.sha256(str(secret).encode("utf-8")).hexdigest()
+
+
+def _drop_seeded_env(key: str, value: Any) -> None:
+    env_key = dict(_DATA_SOURCE_ENV_KEYS).get(key)
+    if env_key and os.environ.get(env_key) == value:
+        del os.environ[env_key]
+
+
+def _purge_cloud_synced(data: dict[str, Any], *, keep_user_id: str = "") -> None:
+    record = data.get(_CLOUD_SYNCED_KEY)
+    if not isinstance(record, dict) or (keep_user_id and record.get("user_id") == keep_user_id):
+        return
+    del data[_CLOUD_SYNCED_KEY]
+    for key, fingerprint in (record.get("data_sources") or {}).items():
+        value = data.get(key)
+        if value and _fingerprint(value) == fingerprint:
+            del data[key]
+            _drop_seeded_env(key, value)
+    if "models" not in data:
+        return
+    synced = record.get("models") or {}
+    data["models"] = [m for m in data["models"] if synced.get(m["id"]) != _fingerprint(m.get("api_key", ""))]
+    ids = {model["id"] for model in data["models"]}
+    if data.get("default") not in ids:
+        data["default"] = data["models"][0]["id"] if data["models"] else ""
+    if data.get("fallback") not in ids:
+        data["fallback"] = ""
+
+
+def _cloud_synced_record(data: dict[str, Any], user_id: str) -> dict[str, Any]:
+    # A record left by another account means a pull outlived its logout.
+    _purge_cloud_synced(data, keep_user_id=user_id)
+    return data.setdefault(_CLOUD_SYNCED_KEY, {"user_id": user_id, "data_sources": {}, "models": {}})
+
+
+def save_cloud_data_source(user_id: str, key: str, value: str) -> None:
+    def update(data: dict[str, Any]) -> None:
+        record = _cloud_synced_record(data, user_id)
+        data[key] = value
+        record["data_sources"][key] = _fingerprint(value)
+
+    _update_config(update)
+
+
+def save_cloud_model_entry(user_id: str, entry: dict[str, Any]) -> None:
+    def update(data: dict[str, Any]) -> None:
+        record = _cloud_synced_record(data, user_id)
+        _upsert_model(data, entry)
+        record["models"][entry["id"]] = _fingerprint(entry.get("api_key", ""))
+
+    _update_config(update)
+
+
+def adopt_cloud_values(user_id: str, data_sources: dict[str, str], model_keys: dict[str, str]) -> None:
+    """认领升级前拉取、没有来源记录的值：只有与该账号云端值相同才算它的。"""
+
+    def update(data: dict[str, Any]) -> None:
+        record = _cloud_synced_record(data, user_id)
+        for key, value in data_sources.items():
+            if value and data.get(key) == value:
+                record["data_sources"][key] = _fingerprint(value)
+        for model in data.get("models", []):
+            api_key = model_keys.get(model["id"])
+            if api_key and model.get("api_key") == api_key:
+                record["models"][model["id"]] = _fingerprint(api_key)
+
+    _update_config(update)
+
+
+def clear_cloud_synced_config(*, keep_user_id: str = "") -> None:
+    """移除云端拉来且未被改动的值；``keep_user_id`` 名下的记录保留。"""
+
+    def update(data: dict[str, Any]) -> bool:
+        if _CLOUD_SYNCED_KEY not in data:
+            return False
+        _purge_cloud_synced(data, keep_user_id=keep_user_id)
+        return True
+
+    _update_config(update)
 
 
 def save_config_key(key: str, value: Any) -> None:

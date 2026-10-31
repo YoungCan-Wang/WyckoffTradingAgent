@@ -55,7 +55,7 @@ def _get_config() -> dict:
             ak = str(mc.get("api_key", "") or "")
             mc["api_key"] = (ak[:4] + "****" + ak[-4:]) if len(ak) > 8 else ("****" if ak else "")
             safe_models.append(mc)
-        for k in ("models", "default", "fallback", "light"):
+        for k in ("models", "default", "fallback", "light", "cloud_synced"):
             safe.pop(k, None)
         return {"config": safe, "models": safe_models, "default_model": default_id, "fallback_model": fallback_id}
     except Exception as e:
