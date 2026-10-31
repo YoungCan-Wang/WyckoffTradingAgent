@@ -22,16 +22,6 @@ def init_local_services() -> None:
         logger.warning("local db init or sync failed", exc_info=True)
 
 
-def load_config_env() -> None:
-    from cli.auth import load_config
-
-    cfg = load_config()
-    for key, env_key in [("tushare_token", "TUSHARE_TOKEN"), ("tickflow_api_key", "TICKFLOW_API_KEY")]:
-        value = str(cfg.get(key, "") or "").strip()
-        if value:
-            os.environ.setdefault(env_key, value)
-
-
 def seed_model_env(configs: list[dict[str, Any]]) -> None:
     env_map = {"gemini": "GEMINI_API_KEY", "claude": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
     for cfg in configs:

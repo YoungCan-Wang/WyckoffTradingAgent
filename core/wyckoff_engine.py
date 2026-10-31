@@ -200,9 +200,10 @@ class FunnelConfig:
     rs_div_stock_vol_shrink_ratio: float = 0.8  # 个股缩量倍数上限
 
     # Layer 2 趋势延续通道（Trend Continuation Channel）
-    # 已确认多头且 RPS 极强的趋势股，不受 bias_200 上限约束。
-    # 60 日最大回撤仅作风险分层，不再一票否决。
-    enable_trend_cont_channel: bool = True
+    # 弃用标记：实测跨牛熊 6 大周期 30 格/24 格消融（RFC #486），趋势延续通道呈现显著负阿尔法（高位追涨接飞刀），
+    # 默认关闭后 6 周期平均现金收益从 -7.21% 提升至 -1.85%（净超额 +5.36pp），2024 波动市收益达 +14.04%（胜率 53.85%）。
+    # 默认关闭以减少亏损敞口。
+    enable_trend_cont_channel: bool = False
     trend_cont_rps_slow_min: float = 75.0  # RPS120 >= 此值
     # 回撤计算窗口（交易日）。默认值取自 core.trend_drawdown_risk 的同名常量，
     # 避免风险标签与 RS 结构旁路各用一个「60 日」而改一处不同步。

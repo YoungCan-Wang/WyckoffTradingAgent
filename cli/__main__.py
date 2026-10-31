@@ -58,7 +58,7 @@ _logging.basicConfig(level=_logging.CRITICAL)
 # ---------------------------------------------------------------------------
 
 
-from cli.bootstrap import build_provider_state, init_local_services, load_config_env
+from cli.bootstrap import build_provider_state, init_local_services
 from cli.provider_factory import create_provider, provider_config_kwargs  # noqa: F401
 
 
@@ -1822,12 +1822,13 @@ def _cmd_tui(_args=None):
 
     from cli.tools import ToolRegistry
     from core.prompts import CHAT_AGENT_SYSTEM_PROMPT
+    from integrations.local_auth import seed_data_source_env
 
     tools = ToolRegistry()
     session_expired = _restore_tui_session(tools)
     init_local_services()
     try:
-        load_config_env()
+        seed_data_source_env()
     except Exception:
         logger.debug("config env vars load failed", exc_info=True)
     state = build_provider_state()

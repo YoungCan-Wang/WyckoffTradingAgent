@@ -13,7 +13,7 @@ from core.candidate_tracks import candidate_entry_key
 from core.concept_filters import is_user_facing_etf
 from core.execution_playbook import funnel_playbook_lines
 from core.funnel_sections import score_star
-from core.market_trade_mode import resolve_market_trade_mode
+from core.market_trade_mode import NEUTRAL_BLOCKED_BASIS, NEUTRAL_BLOCKED_GUIDANCE, resolve_market_trade_mode
 from core.research_discovery import summarize_discovery_sources
 from core.signal_confirmation import compute_support_level, score_springboard_abc
 from core.strategy_policy_display import format_policy_meta_text, format_policy_weight_text
@@ -194,6 +194,8 @@ def _execution_decision_line(regime: str, selected_count: int, data_quality: dic
         if mode.mode == "overheat_shadow":
             return "禁止新仓；可送AI/shadow对照，不写正式推荐、不执行新买入；优先处理持仓风控。"
     if not mode.allow_recommendation_write:
+        if mode.mode == "execution_blocked" and mode.regime == "NEUTRAL":
+            return f"禁止新仓（{NEUTRAL_BLOCKED_BASIS}）；可送AI/shadow对照，{NEUTRAL_BLOCKED_GUIDANCE}。"
         return "禁止新仓；候选仅用于研究，不写正式推荐、不生成买单。"
     if mode.mode == "repair_probe":
         return "修复成立；仅开放一只小额 PROBE 候选，禁止 ATTACK、追价和自动扩仓。"
@@ -254,7 +256,10 @@ def _tomorrow_action_line(ctx: Any, selected_count: int) -> str:
     elif mode.mode == "overheat_shadow":
         action = "禁止新仓；AI/shadow 可对照，不写推荐、不执行新买，只处理持仓风控。"
     elif not mode.allow_recommendation_write:
-        action = "禁止新仓；仅复核修复强度，等待市场闸门重新开放。"
+        if mode.mode == "execution_blocked" and mode.regime == "NEUTRAL":
+            action = f"禁止新仓；{NEUTRAL_BLOCKED_BASIS}，{NEUTRAL_BLOCKED_GUIDANCE}。"
+        else:
+            action = "禁止新仓；仅复核修复强度，等待市场闸门重新开放。"
     elif selected_count > 0:
         action = "候选待审；通过跨日确认和 Step3 后，confirmed 的候选按次日开盘价附近买入，OMS 复核后执行。"
     else:

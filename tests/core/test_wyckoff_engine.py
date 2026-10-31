@@ -1405,6 +1405,17 @@ class TestBreakoutAccelChannelConfig:
         assert cfg.enable_breakout_accel_channel is True
 
 
+# ─── TrendCont 默认关闭与向后兼容 (RFC #486) ──────────────────────────────────
+class TestTrendContChannelConfig:
+    def test_trend_cont_channel_defaults_to_false(self):
+        cfg = FunnelConfig()
+        assert cfg.enable_trend_cont_channel is False
+
+    def test_trend_cont_channel_can_be_explicitly_enabled(self):
+        cfg = FunnelConfig(enable_trend_cont_channel=True)
+        assert cfg.enable_trend_cont_channel is True
+
+
 # ─── Layer 4 核心形态开关与门禁测试（Issue #457 & #459 实证驱动瘦身）────────────────────
 class TestLayer4TriggerSwitches:
     def test_compression_sos_and_lps_default_to_false(self):

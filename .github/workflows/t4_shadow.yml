@@ -1,0 +1,60 @@
+name: T4 Shadow Daily
+
+# T4 影子盘每日记账（Issue #594）：无状态复算，起始日固定，任意一天重跑结果一致。
+# 只记账不下单；日报以评论形式留在影子 Issue，artifact 留结构化 JSON 以备对账。
+on:
+  schedule:
+    # UTC 07:40 周一至周五 = 北京时间 15:40，A 股收盘后。
+    - cron: "40 7 * * 1-5"
+  workflow_dispatch:
+
+concurrency:
+  group: t4-shadow-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  shadow:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    env:
+      PYTHONUNBUFFERED: "1"
+      TICKFLOW_API_KEY: ${{ secrets.TICKFLOW_API_KEY }}
+      TZ: Asia/Shanghai
+      SHADOW_ISSUE: "594"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Run shadow ledger
+        run: |
+          mkdir -p logs
+          python scripts/t4_shadow_daily.py --out logs/t4_shadow.json --markdown logs/t4_shadow.md 2>&1 | tee logs/t4_shadow.log
+
+      - name: Comment shadow report to issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue comment "$SHADOW_ISSUE" --body-file logs/t4_shadow.md
+
+      - name: Upload shadow artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: t4-shadow-${{ github.run_number }}
+          path: logs/
+          retention-days: 30
