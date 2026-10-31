@@ -111,6 +111,14 @@ Trend/Accum 配额只用于 dynamic shadow 对照；RISK_ON 市场闸门仍禁�
 
 报告中的主线发现/买点候选/待确认/拦截使用同一来源分母，来源或原因之间可以重叠。总AI预选、Step3输入、跨日确认和账户OMS是不同阶段，不用最终送审数量推断全市场召回率；本层未评估confirmed或BUY。修复数据后应重新运行并验证实际生产产物；不能仅凭离线或两股检查把质量标记手工改为ready。
 
+### 回放换手与策略环境
+
+Backtest Grid 的 `pit_turnover` 默认关闭。关闭时快照不带换手合同，回放不读 `turnover`，EVR 的 1.5% 换手下限不生效，结果与历史基线同口径。开启后 `BACKTEST_FETCH_PIT_TURNOVER=1` 按实际行情日调用 `daily_basic(trade_date)` 取原生百分比换手，缺失保留 NaN，不填 0，也不用当前股本倒推；元数据写入 `turnover_pit.contract=date_keyed_native_pct_v1`。`BACKTEST_REQUIRE_PIT_TURNOVER=1` 逐评估日校验有效率，旧快照、缺列、无评估行情或任一日低于 95% 都直接失败。
+
+开启后的回放口径与历史基线不同，不能和未开启的结果直接相减；要改默认值，先用同一窗口各跑一次，再按 Strategy Evidence Rules 比较。这项合同只覆盖历史换手，股票池、静态元数据等其它前视偏差另算。
+
+漏斗与 `STEP4_*` 策略配置统一放在 workflow 级，grid、strategy_compare、三个 baseline 和 notify 读同一份，不再按 job 各写一套。
+
 ### 收益怎么读
 
 跟踪表主表涨跌相对该次入选日收盘；「首次至今」只在组头/摘要里按股票计算，重复入选不能重复归功。逐次事件评估使用信号后的首根可用日线开盘并检查推荐发布时间，H 日净收益扣生产费用；缺价、不可进入和未成熟事件保留分母。它仍不是实盘成交或组合 alpha，详见 [验收口径](A_SHARE_RESEARCH_EXECUTION_ACCEPTANCE.md)。

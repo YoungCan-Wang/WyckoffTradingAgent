@@ -62,6 +62,11 @@ on:
         required: false
         type: boolean
         default: false
+      pit_turnover:
+        description: "快照按日期键取 Tushare 原生换手并严格校验（默认关闭；开启后 EVR 换手下限才在回放里生效）"
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: backtest-grid-${{ github.ref }}
@@ -101,6 +106,47 @@ env:
   FUNNEL_DYNAMIC_POLICY: "off"
   FUNNEL_DYNAMIC_POLICY_HORIZON: "5"
   STRATEGY_ATTRIBUTION_MAX_AGE_DAYS: "7"
+  # 由 pit_turnover 输入控制。关闭时快照不带换手合同,回放保持原口径:丢弃 turnover 列,
+  # EVR 换手下限不生效。理由见 workflows/backtest_data.py 的 load_snapshot_hist_map。
+  BACKTEST_REQUIRE_PIT_TURNOVER: ${{ inputs.pit_turnover && '1' || '0' }}
+  # 策略配置放在 workflow 级:grid、strategy_compare、三个 baseline 和 notify 读同一份。
+  # 此前只有 grid 有全套,strategy_compare 一条都没有,落到代码默认集后 NEUTRAL 放行、
+  # BEAR_REBOUND 禁买,方向与实盘相反;notify 的 production_gate 也曾漏过(run 40340681002)。
+  FUNNEL_AI_SELECTION_MODE: "tradeable_l4"
+  FUNNEL_AI_TOTAL_CAP: "8"
+  FUNNEL_AI_MAX_PER_SECTOR: "2"
+  FUNNEL_AI_RISK_ON_TREND: "5"
+  FUNNEL_AI_RISK_ON_ACCUM: "1"
+  FUNNEL_LOSS_GUARD_RISK_ON_PRE5_RET: "35.0"
+  # 与生产对齐：BEAR_REBOUND 放开（超额 +4.08pct），PANIC_REPAIR 拆出并保持 0（-4.09pct）。
+  FUNNEL_AI_BEAR_REBOUND_TREND: "5"
+  FUNNEL_AI_BEAR_REBOUND_ACCUM: "1"
+  FUNNEL_AI_PANIC_REPAIR_TREND: "0"
+  FUNNEL_AI_PANIC_REPAIR_ACCUM: "0"
+  FUNNEL_AI_RISK_OFF_TREND: "0"
+  FUNNEL_AI_RISK_OFF_ACCUM: "0"
+  FUNNEL_AI_NEUTRAL_TREND: "5"
+  FUNNEL_AI_NEUTRAL_ACCUM: "1"
+
+  # 与实盘漏斗对齐的判定类配置。回测 live 闸门现直接读 STEP4_BUY_BLOCK_REGIMES /
+  # STEP4_BUY_ALLOW_REGIMES（见 core/backtest_config._live_buy_block_regimes），
+  # 此前用硬编码集合，方向与实盘恰好相反：回测禁 BEAR_REBOUND/RISK_ON 而放行 NEUTRAL，
+  # 实盘正相反，导致两者成交的交易日几乎不重叠。
+  # 允许用 repository variable 覆盖，便于运维调参而不必改代码。
+  STEP4_BUY_BLOCK_REGIMES: ${{ vars.STEP4_BUY_BLOCK_REGIMES || 'UNKNOWN,NEUTRAL,PANIC_REPAIR,RISK_OFF,CRASH,BLACK_SWAN' }}
+  # fallback 必须与生产两个 workflow 保持一致（当前 BEAR_REBOUND）。
+  # PR #305 把 RISK_ON 移出豁免时漏改此处，导致 run 32537955220 的回测仍放行 RISK_ON
+  # 并产生 6 笔成交（胜率 16.7%、均收 -5.03%），与实盘口径不符。
+  STEP4_BUY_ALLOW_REGIMES: ${{ vars.STEP4_BUY_ALLOW_REGIMES || 'BEAR_REBOUND' }}
+  # 降档档在回测里必须同样可买且同样限 1 只，否则量的不是即将上线的闸门：
+  # 能不能买由 _live_buy_block_regimes 决定，买多少由 _limit_probe_only_selection 决定。
+  STEP4_BUY_PROBE_REGIMES: ${{ vars.STEP4_BUY_PROBE_REGIMES || '' }}
+  STEP4_BLOCK_BUY_SIGNAL_TYPES: ${{ vars.STEP4_BLOCK_BUY_SIGNAL_TYPES || '' }}
+  FUNNEL_DEFENSIVE_FORCE_QUOTA: "1"
+  FUNNEL_MAX_STRUCTURE_STOP_PCT: "12.0"
+  FUNNEL_THEME_RADAR_PROMOTE_CAP: "2"
+  FUNNEL_L2_BYPASS_AI_ENABLED: "0"
+  FUNNEL_STRATEGIC_L2_BYPASS_AI_CAP: "2"
 
 jobs:
   # ────────────────────────────────────────────────
@@ -122,6 +168,8 @@ jobs:
       TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
       TZ: Asia/Shanghai
       BACKTEST_SNAPSHOT_WORKERS: "6"
+      BACKTEST_FETCH_PIT_TURNOVER: ${{ inputs.pit_turnover && '1' || '0' }}
+      TUSHARE_RATE_LIMIT: ${{ inputs.pit_turnover && '200' || '400' }}
     steps:
       - name: Resolve period dates
         id: period
@@ -262,46 +310,6 @@ jobs:
       TZ: Asia/Shanghai
       TICKFLOW_API_KEY: ${{ secrets.TICKFLOW_API_KEY }}
       TICKFLOW_BASE_URL: ${{ secrets.TICKFLOW_BASE_URL }}
-      FUNNEL_AI_SELECTION_MODE: "tradeable_l4"
-      FUNNEL_AI_TOTAL_CAP: "8"
-      FUNNEL_AI_MAX_PER_SECTOR: "2"
-      FUNNEL_AI_RISK_ON_TREND: "5"
-      FUNNEL_AI_RISK_ON_ACCUM: "1"
-      FUNNEL_LOSS_GUARD_RISK_ON_PRE5_RET: "35.0"
-      # 与生产对齐：BEAR_REBOUND 放开（超额 +4.08pct），PANIC_REPAIR 拆出并保持 0（-4.09pct）。
-      FUNNEL_AI_BEAR_REBOUND_TREND: "5"
-      FUNNEL_AI_BEAR_REBOUND_ACCUM: "1"
-      FUNNEL_AI_PANIC_REPAIR_TREND: "0"
-      FUNNEL_AI_PANIC_REPAIR_ACCUM: "0"
-      FUNNEL_AI_RISK_OFF_TREND: "0"
-      FUNNEL_AI_RISK_OFF_ACCUM: "0"
-      FUNNEL_AI_NEUTRAL_TREND: "5"
-      FUNNEL_AI_NEUTRAL_ACCUM: "1"
-
-      # 与实盘漏斗对齐的判定类配置。回测 live 闸门现直接读 STEP4_BUY_BLOCK_REGIMES /
-      # STEP4_BUY_ALLOW_REGIMES（见 core/backtest_config._live_buy_block_regimes），
-      # 此前用硬编码集合，方向与实盘恰好相反：回测禁 BEAR_REBOUND/RISK_ON 而放行 NEUTRAL，
-      # 实盘正相反，导致两者成交的交易日几乎不重叠。
-      # 允许用 repository variable 覆盖，便于运维调参而不必改代码。
-      STEP4_BUY_BLOCK_REGIMES: ${{ vars.STEP4_BUY_BLOCK_REGIMES || 'UNKNOWN,NEUTRAL,PANIC_REPAIR,RISK_OFF,CRASH,BLACK_SWAN' }}
-      # fallback 必须与生产两个 workflow 保持一致（当前 BEAR_REBOUND）。
-      # PR #305 把 RISK_ON 移出豁免时漏改此处，导致 run 32537955220 的回测仍放行 RISK_ON
-      # 并产生 6 笔成交（胜率 16.7%、均收 -5.03%），与实盘口径不符。
-      STEP4_BUY_ALLOW_REGIMES: ${{ vars.STEP4_BUY_ALLOW_REGIMES || 'BEAR_REBOUND' }}
-      # 降档档在回测里必须同样可买且同样限 1 只，否则量的不是即将上线的闸门：
-      # 能不能买由 _live_buy_block_regimes 决定，买多少由 _limit_probe_only_selection 决定。
-      STEP4_BUY_PROBE_REGIMES: ${{ vars.STEP4_BUY_PROBE_REGIMES || '' }}
-      STEP4_BLOCK_BUY_SIGNAL_TYPES: ${{ vars.STEP4_BLOCK_BUY_SIGNAL_TYPES || '' }}
-      # 与 workflow 级同为 off,理由见文件头 FUNNEL_DYNAMIC_POLICY 那段注释。
-      # env 按 key 合并(step > job > workflow),删掉这一行会继承上面的 off,不会回退到
-      # vars/secrets;写在这里是为了在 job 内直接看见档位,别在两处写成不同的值。
-      FUNNEL_DYNAMIC_POLICY: "off"
-      FUNNEL_DYNAMIC_POLICY_HORIZON: "5"
-      FUNNEL_DEFENSIVE_FORCE_QUOTA: "1"
-      FUNNEL_MAX_STRUCTURE_STOP_PCT: "12.0"
-      FUNNEL_THEME_RADAR_PROMOTE_CAP: "2"
-      FUNNEL_L2_BYPASS_AI_ENABLED: "0"
-      FUNNEL_STRATEGIC_L2_BYPASS_AI_CAP: "2"
 
     steps:
       - name: Resolve period dates
@@ -638,11 +646,6 @@ jobs:
     needs: fetch
     env:
       FUNNEL_DYNAMIC_POLICY: "off"
-      # 与 grid job 同源：live 片必须读到和实盘一致的禁买集合，否则量的不是生产闸门。
-      STEP4_BUY_BLOCK_REGIMES: ${{ vars.STEP4_BUY_BLOCK_REGIMES || 'UNKNOWN,NEUTRAL,PANIC_REPAIR,RISK_OFF,CRASH,BLACK_SWAN' }}
-      STEP4_BUY_ALLOW_REGIMES: ${{ vars.STEP4_BUY_ALLOW_REGIMES || 'BEAR_REBOUND' }}
-      STEP4_BUY_PROBE_REGIMES: ${{ vars.STEP4_BUY_PROBE_REGIMES || '' }}
-      STEP4_BLOCK_BUY_SIGNAL_TYPES: ${{ vars.STEP4_BLOCK_BUY_SIGNAL_TYPES || '' }}
     strategy:
       fail-fast: false
       # 48 个活跃分片里 rs / random / reversal 片不跑漏斗（约 15 分钟，耗时在逐日水温/广度），并行度按 wyckoff 片数（12）定即可。
@@ -801,10 +804,6 @@ jobs:
     env:
       FUNNEL_DYNAMIC_POLICY: "off"
       # 与 gate_baseline 同源；闸门为 off，这组 env 只保证漏斗配置一致。
-      STEP4_BUY_BLOCK_REGIMES: ${{ vars.STEP4_BUY_BLOCK_REGIMES || 'UNKNOWN,NEUTRAL,PANIC_REPAIR,RISK_OFF,CRASH,BLACK_SWAN' }}
-      STEP4_BUY_ALLOW_REGIMES: ${{ vars.STEP4_BUY_ALLOW_REGIMES || 'BEAR_REBOUND' }}
-      STEP4_BUY_PROBE_REGIMES: ${{ vars.STEP4_BUY_PROBE_REGIMES || '' }}
-      STEP4_BLOCK_BUY_SIGNAL_TYPES: ${{ vars.STEP4_BLOCK_BUY_SIGNAL_TYPES || '' }}
     strategy:
       fail-fast: false
       # 21 片：每片一次漏斗（或对照排序）、六个退出单元共用台账，耗时与 gate_baseline 的 off 片相当。
@@ -961,10 +960,6 @@ jobs:
     env:
       FUNNEL_DYNAMIC_POLICY: "off"
       # 与 gate_baseline 同源；闸门为 off，这组 env 只保证漏斗配置一致。
-      STEP4_BUY_BLOCK_REGIMES: ${{ vars.STEP4_BUY_BLOCK_REGIMES || 'UNKNOWN,NEUTRAL,PANIC_REPAIR,RISK_OFF,CRASH,BLACK_SWAN' }}
-      STEP4_BUY_ALLOW_REGIMES: ${{ vars.STEP4_BUY_ALLOW_REGIMES || 'BEAR_REBOUND' }}
-      STEP4_BUY_PROBE_REGIMES: ${{ vars.STEP4_BUY_PROBE_REGIMES || '' }}
-      STEP4_BLOCK_BUY_SIGNAL_TYPES: ${{ vars.STEP4_BLOCK_BUY_SIGNAL_TYPES || '' }}
     strategy:
       fail-fast: false
       # 21 片：涨停次日接力对照（#603）。三臂都不跑漏斗，每片约 15 分钟；四个只到期单元（1/2/3/5 日）共用台账，
@@ -1122,12 +1117,6 @@ jobs:
     if: always()
     env:
       FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
-      # regime_timing 的 production_gate 变体在这里解析 oms_buy_block_regimes()，必须与 gate_baseline
-      # job 读到同一份 BLOCK/ALLOW；run 40340681002 漏了这两行，产物里的 production_gate 实际是代码
-      # 默认集（CAUTION/NEUTRAL/PANIC_REPAIR_CONFIRMED），不是生产闸门。
-      STEP4_BUY_BLOCK_REGIMES: ${{ vars.STEP4_BUY_BLOCK_REGIMES || 'UNKNOWN,NEUTRAL,PANIC_REPAIR,RISK_OFF,CRASH,BLACK_SWAN' }}
-      STEP4_BUY_ALLOW_REGIMES: ${{ vars.STEP4_BUY_ALLOW_REGIMES || 'BEAR_REBOUND' }}
-      STEP4_BUY_PROBE_REGIMES: ${{ vars.STEP4_BUY_PROBE_REGIMES || '' }}
     steps:
       - name: Resolve period dates
         env:
