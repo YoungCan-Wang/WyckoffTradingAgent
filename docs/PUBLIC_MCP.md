@@ -78,8 +78,9 @@ because IPC workers can overlap `account` restore with `auth_logout` /
 network sign-in and refuses to persist when logout cleared credentials or another
 account logged in mid-flight. Desktop `pull_cloud_config` (post-`auth_login`)
 re-checks `session.json` before merging cloud `user_settings` into
-`wyckoff.json`, for the same logout/switch race: local-first fill-empty must not
-install the previous account's API keys onto the next principal.
+`wyckoff.json`, so a pull that outlives logout/switch does not write. This does
+not remove keys already pulled: logout leaves cloud-sourced keys in `wyckoff.json`,
+and the next account inherits them.
 
 `update_portfolio` and `record_trade_fill` are denied by default, before the domain
 backend is loaded. This version also guards the mutating actions of
