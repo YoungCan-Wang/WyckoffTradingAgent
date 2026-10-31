@@ -20,7 +20,10 @@ logger = logging.getLogger(__name__)
 BAOSTOCK_MAX_SECONDS = float(os.getenv("BAOSTOCK_MAX_SECONDS", "6.0"))
 _SOCKET_TIMEOUT = float(os.getenv("BAOSTOCK_SOCKET_TIMEOUT", "3.0"))
 _CIRCUIT_THRESHOLD = int(os.getenv("BAOSTOCK_CIRCUIT_THRESHOLD", "10"))
+# 10002001/05/06/07：socket、发送失败、发送超时、接收失败。
+_SESSION_LOST_CODES = frozenset({"10002001", "10002005", "10002006", "10002007"})
 _LOGGED = False
+_SESSION_PID: int | None = None
 _EXIT_HOOKED = False
 _MODULE = None
 _LOCK = threading.RLock()
@@ -96,6 +99,7 @@ def _query_history_rows(
     fields: str,
     adjustflag: str,
 ) -> tuple[list[list[str]], list[str]]:
+    global _LOGGED
     old_sock_timeout = socket.getdefaulttimeout()
     if _SOCKET_TIMEOUT > 0:
         socket.setdefaulttimeout(_SOCKET_TIMEOUT)
@@ -110,6 +114,9 @@ def _query_history_rows(
             adjustflag=adjustflag,
         )
         if rs.error_code != "0":
+            # 会话长驻后断线不会自愈：不复位的话之后每次都复用这条死 socket。
+            if rs.error_code in _SESSION_LOST_CODES:
+                _LOGGED = False
             raise RuntimeError(f"baostock: {rs.error_msg}")
         rows: list[list[str]] = []
         while rs.next():
@@ -157,11 +164,12 @@ def _logout_on_exit() -> None:
 
 
 def _ensure_login():
-    global _LOGGED, _EXIT_HOOKED, _MODULE
+    global _LOGGED, _SESSION_PID, _EXIT_HOOKED, _MODULE
     import baostock as bs
 
     _MODULE = bs
-    if _LOGGED:
+    # fork 出的子进程继承 _LOGGED，但父子不能共用同一条 socket。
+    if _LOGGED and _SESSION_PID == os.getpid():
         return bs
     # 同上，baostock 登录成功也是裸 print，这里吞掉。
     with redirect_stdout(io.StringIO()):
@@ -169,6 +177,7 @@ def _ensure_login():
     if login.error_code != "0":
         raise RuntimeError(f"baostock login: {login.error_msg}")
     _LOGGED = True
+    _SESSION_PID = os.getpid()
     if not _EXIT_HOOKED:
         atexit.register(_logout_on_exit)
         _EXIT_HOOKED = True

@@ -6,6 +6,7 @@ import time
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
 import integrations.data_source_baostock as provider
 from integrations import index_data_source
@@ -31,6 +32,7 @@ class _FakeResult:
 
 def _reset_provider_state(monkeypatch) -> None:
     monkeypatch.setattr(provider, "_LOGGED", False)
+    monkeypatch.setattr(provider, "_SESSION_PID", None)
     monkeypatch.setattr(provider, "_EXIT_HOOKED", False)
     monkeypatch.setattr(provider, "_MODULE", None)
     monkeypatch.setattr(provider, "_CONSEC_FAILS", 0)
@@ -176,3 +178,60 @@ def test_index_and_stock_baostock_serialize_on_shared_lock(monkeypatch) -> None:
     assert errors == []
     assert order == ["stock-start", "index-start"]
     assert "logout" not in order
+
+
+def _counting_module(logins: list[str], query) -> SimpleNamespace:
+    def login():
+        logins.append("login")
+        return SimpleNamespace(error_code="0", error_msg="")
+
+    return SimpleNamespace(login=login, logout=lambda: None, query_history_k_data_plus=query)
+
+
+def test_dropped_socket_relogs_in_on_next_query(monkeypatch) -> None:
+    _reset_provider_state(monkeypatch)
+    logins: list[str] = []
+    results = [SimpleNamespace(error_code="10002007", error_msg="recv failed"), _FakeResult()]
+    fake_module = _counting_module(logins, lambda *_args, **_kwargs: results.pop(0))
+    monkeypatch.setitem(sys.modules, "baostock", fake_module)
+    monkeypatch.setattr(provider.atexit, "register", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(RuntimeError, match="recv failed"):
+        provider.fetch_stock_baostock("600519", "20260601", "20260602")
+    out = provider.fetch_stock_baostock("600519", "20260601", "20260602")
+
+    assert logins == ["login", "login"]
+    assert float(out.iloc[0]["收盘"]) == 10.2
+
+
+def test_query_error_on_live_session_keeps_session(monkeypatch) -> None:
+    _reset_provider_state(monkeypatch)
+    logins: list[str] = []
+    results = [SimpleNamespace(error_code="10004020", error_msg="bad code"), _FakeResult()]
+    fake_module = _counting_module(logins, lambda *_args, **_kwargs: results.pop(0))
+    monkeypatch.setitem(sys.modules, "baostock", fake_module)
+    monkeypatch.setattr(provider.atexit, "register", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(RuntimeError, match="bad code"):
+        provider.fetch_stock_baostock("600519", "20260601", "20260602")
+    provider.fetch_stock_baostock("600519", "20260601", "20260602")
+
+    assert logins == ["login"]
+
+
+def test_forked_child_opens_its_own_session(monkeypatch) -> None:
+    _reset_provider_state(monkeypatch)
+    logins: list[str] = []
+    fake_module = _counting_module(logins, lambda *_args, **_kwargs: _FakeResult())
+    monkeypatch.setitem(sys.modules, "baostock", fake_module)
+    monkeypatch.setattr(provider.atexit, "register", lambda *_args, **_kwargs: None)
+
+    provider.fetch_stock_baostock("600519", "20260601", "20260602")
+    provider.fetch_stock_baostock("600519", "20260601", "20260602")
+    assert logins == ["login"]
+
+    parent_pid = provider.os.getpid()
+    monkeypatch.setattr(provider.os, "getpid", lambda: parent_pid + 1)
+    provider.fetch_stock_baostock("600519", "20260601", "20260602")
+
+    assert logins == ["login", "login"]
