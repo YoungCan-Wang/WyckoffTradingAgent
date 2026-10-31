@@ -103,14 +103,16 @@ def restore_session() -> dict[str, Any] | None:
             if not _save_session_if_same_user(expected_user_id, data):
                 logger.warning("refusing to persist restored session: disk identity changed during refresh")
                 return load_session()
-        return data
+        return _restored_session_if_disk_unchanged(expected_user_id, data)
     except Exception as exc:
         logger.debug("session restore failed", exc_info=True)
         if _invalid_session_error(exc):
             if _clear_session_if_same_user(expected_user_id):
                 return auto_relogin()
             return load_session()
-        return data
+        # Transient network errors still must not return the pre-flight principal
+        # after logout/switch — #512 only CAS'd disk writes, not this return.
+        return _restored_session_if_disk_unchanged(expected_user_id, data)
 
 
 def logout() -> None:
@@ -242,6 +244,15 @@ def _same_session_user(current: dict[str, Any] | None, expected_user_id: str) ->
     if not expected:
         return False
     return str(current.get("user_id") or "") == expected
+
+
+def _restored_session_if_disk_unchanged(expected_user_id: str, data: dict[str, Any]) -> dict[str, Any] | None:
+    """Return in-memory restore result only when disk still matches expected user."""
+    disk = load_session()
+    if not _same_session_user(disk, expected_user_id):
+        logger.warning("refusing to return restored session: disk identity changed during refresh")
+        return disk
+    return data
 
 
 def _save_session_if_same_user(expected_user_id: str, data: dict[str, Any]) -> bool:

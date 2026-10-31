@@ -20,7 +20,10 @@ logger = logging.getLogger(__name__)
 BAOSTOCK_MAX_SECONDS = float(os.getenv("BAOSTOCK_MAX_SECONDS", "6.0"))
 _SOCKET_TIMEOUT = float(os.getenv("BAOSTOCK_SOCKET_TIMEOUT", "3.0"))
 _CIRCUIT_THRESHOLD = int(os.getenv("BAOSTOCK_CIRCUIT_THRESHOLD", "10"))
+# 10002001/05/06/07：socket、发送失败、发送超时、接收失败。
+_SESSION_LOST_CODES = frozenset({"10002001", "10002005", "10002006", "10002007"})
 _LOGGED = False
+_SESSION_PID: int | None = None
 _EXIT_HOOKED = False
 _MODULE = None
 _LOCK = threading.RLock()
@@ -56,17 +59,47 @@ def fetch_stock_baostock(symbol: str, start: str, end: str) -> pd.DataFrame:
     bs_code = f"sh.{symbol}" if symbol.startswith(SH_PREFIXES) else f"sz.{symbol}"
     start_dash = f"{start[:4]}-{start[4:6]}-{start[6:]}"
     end_dash = f"{end[:4]}-{end[4:6]}-{end[6:]}"
-    started = time.monotonic()
-    with _LOCK:
-        rows, fields = _query_history_rows(bs_code, start_dash, end_dash, started)
+    rows, fields = query_history_k_data(
+        bs_code,
+        start_dash,
+        end_dash,
+        fields="date,open,high,low,close,volume,amount,pctChg",
+        adjustflag="2",
+    )
     if not rows:
         raise RuntimeError("baostock empty")
     return _baostock_frame(rows, fields)
 
 
-def _query_history_rows(
-    bs_code: str, start_dash: str, end_dash: str, started: float
+def query_history_k_data(
+    bs_code: str,
+    start_dash: str,
+    end_dash: str,
+    *,
+    fields: str,
+    adjustflag: str,
 ) -> tuple[list[list[str]], list[str]]:
+    """Process-wide baostock session: one global socket, serialized under ``_LOCK``.
+
+    Index and stock callers must share this entrypoint. A second login/logout on
+    another thread replaces ``baostock.common.context.default_socket`` and can
+    splice foreign rows into an in-flight ``rs.next()`` loop.
+    """
+    started = time.monotonic()
+    with _LOCK:
+        return _query_history_rows(bs_code, start_dash, end_dash, started, fields=fields, adjustflag=adjustflag)
+
+
+def _query_history_rows(
+    bs_code: str,
+    start_dash: str,
+    end_dash: str,
+    started: float,
+    *,
+    fields: str,
+    adjustflag: str,
+) -> tuple[list[list[str]], list[str]]:
+    global _LOGGED
     old_sock_timeout = socket.getdefaulttimeout()
     if _SOCKET_TIMEOUT > 0:
         socket.setdefaulttimeout(_SOCKET_TIMEOUT)
@@ -74,13 +107,16 @@ def _query_history_rows(
         bs = _ensure_login()
         rs = bs.query_history_k_data_plus(
             bs_code,
-            "date,open,high,low,close,volume,amount,pctChg",
+            fields,
             start_date=start_dash,
             end_date=end_dash,
             frequency="d",
-            adjustflag="2",
+            adjustflag=adjustflag,
         )
         if rs.error_code != "0":
+            # 会话长驻后断线不会自愈：不复位的话之后每次都复用这条死 socket。
+            if rs.error_code in _SESSION_LOST_CODES:
+                _LOGGED = False
             raise RuntimeError(f"baostock: {rs.error_msg}")
         rows: list[list[str]] = []
         while rs.next():
@@ -128,11 +164,12 @@ def _logout_on_exit() -> None:
 
 
 def _ensure_login():
-    global _LOGGED, _EXIT_HOOKED, _MODULE
+    global _LOGGED, _SESSION_PID, _EXIT_HOOKED, _MODULE
     import baostock as bs
 
     _MODULE = bs
-    if _LOGGED:
+    # fork 出的子进程继承 _LOGGED，但父子不能共用同一条 socket。
+    if _LOGGED and _SESSION_PID == os.getpid():
         return bs
     # 同上，baostock 登录成功也是裸 print，这里吞掉。
     with redirect_stdout(io.StringIO()):
@@ -140,6 +177,7 @@ def _ensure_login():
     if login.error_code != "0":
         raise RuntimeError(f"baostock login: {login.error_msg}")
     _LOGGED = True
+    _SESSION_PID = os.getpid()
     if not _EXIT_HOOKED:
         atexit.register(_logout_on_exit)
         _EXIT_HOOKED = True

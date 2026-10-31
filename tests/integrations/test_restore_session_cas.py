@@ -157,3 +157,88 @@ def test_restore_invalid_token_does_not_clear_switched_account(tmp_path, monkeyp
     assert disk["access_token"] == "bob-at"
     assert result is not None
     assert result["user_id"] == "bob"
+
+
+def test_restore_timeout_does_not_return_preflight_after_logout(tmp_path, monkeypatch):
+    _point_session(tmp_path, monkeypatch)
+    local_auth.save_session(
+        {
+            "user_id": "alice",
+            "email": "alice@example.test",
+            "access_token": "alice-at",
+            "refresh_token": "alice-rt",
+        }
+    )
+
+    def fake_create():
+        local_auth.clear_session()
+        return _FakeClient(_FakeAuth(error=TimeoutError("network timed out during get_user")))
+
+    monkeypatch.setattr(local_auth, "_create_client", fake_create)
+    monkeypatch.setattr(local_auth, "auto_relogin", lambda: {"user_id": "should-not-run"})
+
+    result = local_auth.restore_session()
+
+    assert result is None
+    assert local_auth.load_session() is None
+
+
+def test_restore_connection_error_returns_switched_disk_session(tmp_path, monkeypatch):
+    _point_session(tmp_path, monkeypatch)
+    local_auth.save_session(
+        {
+            "user_id": "alice",
+            "email": "alice@example.test",
+            "access_token": "alice-at",
+            "refresh_token": "alice-rt",
+        }
+    )
+
+    def fake_create():
+        local_auth.save_session(
+            {
+                "user_id": "bob",
+                "email": "bob@example.test",
+                "access_token": "bob-at",
+                "refresh_token": "bob-rt",
+            }
+        )
+        return _FakeClient(_FakeAuth(error=ConnectionError("connection reset by peer")))
+
+    monkeypatch.setattr(local_auth, "_create_client", fake_create)
+    monkeypatch.setattr(local_auth, "auto_relogin", lambda: {"user_id": "should-not-run"})
+
+    result = local_auth.restore_session()
+
+    disk = local_auth.load_session()
+    assert disk is not None
+    assert disk["user_id"] == "bob"
+    assert result is not None
+    assert result["user_id"] == "bob"
+    assert result["access_token"] == "bob-at"
+
+
+def test_restore_timeout_keeps_same_user_when_disk_unchanged(tmp_path, monkeypatch):
+    _point_session(tmp_path, monkeypatch)
+    local_auth.save_session(
+        {
+            "user_id": "alice",
+            "email": "alice@example.test",
+            "access_token": "alice-at",
+            "refresh_token": "alice-rt",
+        }
+    )
+    monkeypatch.setattr(
+        local_auth,
+        "_create_client",
+        lambda: _FakeClient(_FakeAuth(error=TimeoutError("network timed out"))),
+    )
+
+    result = local_auth.restore_session()
+
+    assert result is not None
+    assert result["user_id"] == "alice"
+    assert result["access_token"] == "alice-at"
+    disk = local_auth.load_session()
+    assert disk is not None
+    assert disk["user_id"] == "alice"
