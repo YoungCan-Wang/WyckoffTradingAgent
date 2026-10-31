@@ -204,6 +204,7 @@ def parse_step3_springboards(
     try:
         codes = extract_operation_pool_codes(report=report_text, allowed_codes=allowed_codes)
         updates = extract_operation_pool_springboards(report=report_text, allowed_codes=allowed_codes)
+        extracted = list(codes)
         codes, blocked_unconfirmed = filter_confirmed_step3_codes(codes, symbols_info)
         confirmed_set = set(codes)
         updates = {code: fields for code, fields in updates.items() if code in confirmed_set}
@@ -213,6 +214,17 @@ def parse_step3_springboards(
                 f"{len(blocked_unconfirmed)}只 ({', '.join(blocked_unconfirmed[:8])})",
                 logs_path,
             )
+        # Same-day re-run: morning-confirmed names often re-enter Step3 via
+        # selected_for_ai without signal_status=confirmed. Model still lists them;
+        # confirm-filter drops every code. That must not look like an authoritative
+        # empty pool (would wipe morning is_ai_recommended). True empty extraction
+        # (model listed none) stays authoritative [].
+        if extracted and not codes and blocked_unconfirmed:
+            log_line(
+                "Step3 批量研报: 起跳板均被未确认拦截，跳过 AI 标记以保留库内 is_ai_recommended",
+                logs_path,
+            )
+            return None
         return codes, updates
     except Exception as e:
         log_line(f"Step3 批量研报: 起跳板解析失败，已降级为空。err={e}", logs_path)
