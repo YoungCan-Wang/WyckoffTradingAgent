@@ -72,3 +72,17 @@ def test_financial_map_fail_closed_without_date():
     }
     cut = cut_financial_map(raw, date(2026, 8, 4))
     assert list(cut) == ["000001"]
+
+
+def test_latest_known_record_is_strictly_before_as_of_and_within_staleness_window() -> None:
+    from core.asof_cut import latest_known_record
+
+    records = [
+        {"announce_date": "2024-04-26", "roe": 1.0},
+        {"announce_date": "2024-08-30", "roe": 2.0},
+        {"announce_date": "2024-10-30", "roe": 3.0},
+    ]
+    assert latest_known_record(records, date(2024, 10, 30))["roe"] == 2.0
+    assert latest_known_record(records, date(2024, 10, 31))["roe"] == 3.0
+    assert latest_known_record(records, date(2024, 4, 26)) is None
+    assert latest_known_record(records, date(2026, 1, 1)) is None
