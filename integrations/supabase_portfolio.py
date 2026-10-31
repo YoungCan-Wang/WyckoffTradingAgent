@@ -251,6 +251,12 @@ def _is_full_oms_idempotency_row(row: dict[str, Any]) -> bool:
     return not model.startswith("degraded:")
 
 
+# PostgREST pages; hard single-shot limits previously dropped active EXIT/BUY rows
+# after same-day degraded floods or repeated supersedes left hundreds of CANCELLED.
+_TRADE_ORDER_PAGE = 500
+_CANCEL_ID_CHUNK = 100
+
+
 def check_daily_run_exists(
     portfolio_id: str,
     trade_date: str,
@@ -264,23 +270,22 @@ def check_daily_run_exists(
         return False
     try:
         client = _get_supabase_admin_client()
-        resp = (
-            client.table(TABLE_TRADE_ORDERS)
-            .select("run_id,status,created_at,model")
-            .eq("portfolio_id", portfolio_id)
-            .eq("trade_date", trade_date)
-            .order("created_at", desc=True)
-            .limit(200)
-            .execute()
-        )
-        rows = resp.data or []
-        active_rows = [row for row in rows if _is_full_oms_idempotency_row(row)]
-        if not active_rows:
-            return False
         expected_sig = str(state_signature or "").strip().lower()
-        if not expected_sig:
-            return True
-        return any(extract_state_signature_from_run_id(row.get("run_id")) == expected_sig for row in active_rows)
+        for row in _iter_trade_order_pages(
+            client,
+            select="run_id,status,created_at,model",
+            portfolio_id=portfolio_id,
+            trade_date=trade_date,
+            exclude_cancelled=True,
+            order_by=("created_at", True),
+        ):
+            if not _is_full_oms_idempotency_row(row):
+                continue
+            if not expected_sig:
+                return True
+            if extract_state_signature_from_run_id(row.get("run_id")) == expected_sig:
+                return True
+        return False
     except Exception as e:
         logger.warning("[supabase_portfolio] check_daily_run_exists failed: %s", e)
         return False
@@ -834,6 +839,50 @@ def save_ai_trade_orders(
         return False
 
 
+def _iter_trade_order_pages(
+    client: Client,
+    *,
+    select: str,
+    portfolio_id: str,
+    trade_date: str | None = None,
+    only_run_id: str | None = None,
+    exclude_run_id: str | None = None,
+    actions: tuple[str, ...] | None = None,
+    exclude_cancelled: bool = False,
+    order_by: tuple[str, bool] = ("created_at", True),
+    page_size: int = _TRADE_ORDER_PAGE,
+):
+    """Yield trade_orders rows with pagination; never silently drop a page."""
+    offset = 0
+    order_col, descending = order_by
+    while True:
+        query = client.table(TABLE_TRADE_ORDERS).select(select).eq("portfolio_id", portfolio_id)
+        if trade_date:
+            query = query.eq("trade_date", trade_date)
+        if only_run_id:
+            query = query.eq("run_id", only_run_id)
+        elif exclude_run_id:
+            query = query.neq("run_id", exclude_run_id)
+        if actions:
+            query = query.in_("action", list(actions))
+        if exclude_cancelled:
+            # Skip already-cancelled history so supersede scans stay on live tickets.
+            query = query.not_.in_("status", ["CANCELLED", "CANCELED"])
+        # 同日大量工单时单靠 order_col 有并列，跨页会漏行或重复，id 兜底保证顺序稳定。
+        query = query.order(order_col, desc=descending).order("id").range(offset, offset + page_size - 1)
+        batch = list(query.execute().data or [])
+        yield from batch
+        if len(batch) < page_size:
+            return
+        offset += page_size
+
+
+def _cancel_trade_order_ids(client: Client, active_ids: list[Any]) -> None:
+    for start in range(0, len(active_ids), _CANCEL_ID_CHUNK):
+        chunk = active_ids[start : start + _CANCEL_ID_CHUNK]
+        client.table(TABLE_TRADE_ORDERS).update({"status": "CANCELLED"}).in_("id", chunk).execute()
+
+
 def cancel_trade_orders(
     *,
     portfolio_id: str,
@@ -847,21 +896,21 @@ def cancel_trade_orders(
     require_server_write_context("cancel trade_orders")
     try:
         client = _get_supabase_admin_client()
-        query = (
-            client.table(TABLE_TRADE_ORDERS)
-            .select("id,status,run_id")
-            .eq("portfolio_id", portfolio_id)
-            .eq("trade_date", trade_date)
-            .limit(500)
-        )
-        if only_run_id:
-            query = query.eq("run_id", only_run_id)
-        elif exclude_run_id:
-            query = query.neq("run_id", exclude_run_id)
-        rows = query.execute().data or []
-        active_ids = [row["id"] for row in rows if _is_active_trade_order_status(row.get("status"))]
+        active_ids = [
+            row["id"]
+            for row in _iter_trade_order_pages(
+                client,
+                select="id,status,run_id",
+                portfolio_id=portfolio_id,
+                trade_date=trade_date,
+                only_run_id=only_run_id,
+                exclude_run_id=exclude_run_id,
+                exclude_cancelled=True,
+            )
+            if row.get("id") is not None and _is_active_trade_order_status(row.get("status"))
+        ]
         if active_ids:
-            client.table(TABLE_TRADE_ORDERS).update({"status": "CANCELLED"}).in_("id", active_ids).execute()
+            _cancel_trade_order_ids(client, active_ids)
         return len(active_ids)
     except Exception as e:
         logger.warning("[supabase_portfolio] cancel_trade_orders failed: %s", e)
@@ -870,21 +919,44 @@ def cancel_trade_orders(
         return 0
 
 
-def load_recent_trade_orders(portfolio_id: str, *, limit: int = 200) -> list[dict]:
-    """近期工单，用于识别反复发出却没被执行的离场建议。"""
+def load_recent_trade_orders(
+    portfolio_id: str,
+    *,
+    limit: int = 200,
+    min_run_dates: int = 15,
+) -> list[dict]:
+    """近期工单，用于识别反复发出却没被执行的离场建议。
+
+    按 trade_date 分页直至覆盖足够多个 OMS 运行日。同日 HOLD/NO_TRADE/降级工单
+    若只取固定 limit 行，会把跨日 EXIT 历史挤出窗口，未执行止损审计与 ATTACK
+    冻结会静默失效。
+    """
     if not is_supabase_configured():
         return []
     try:
         client = _get_supabase_admin_client()
-        resp = (
-            client.table(TABLE_TRADE_ORDERS)
-            .select("code,name,action,status,trade_date")
-            .eq("portfolio_id", portfolio_id)
-            .order("trade_date", desc=True)
-            .limit(limit)
-            .execute()
-        )
-        return list(resp.data or [])
+        rows: list[dict] = []
+        run_dates: set[str] = set()
+        floor = max(int(limit), 1)
+        date_goal = max(int(min_run_dates), 1)
+        # Same-day floods can be huge; keep a hard ceiling so a pathological table
+        # cannot unbounded-load the Step4 process.
+        hard_cap = max(floor * 25, date_goal * _TRADE_ORDER_PAGE, 2000)
+        for row in _iter_trade_order_pages(
+            client,
+            select="code,name,action,status,trade_date",
+            portfolio_id=portfolio_id,
+            order_by=("trade_date", True),
+        ):
+            rows.append(row)
+            day = str(row.get("trade_date") or "").strip()[:10]
+            if day:
+                run_dates.add(day)
+            if len(run_dates) >= date_goal and len(rows) >= floor:
+                break
+            if len(rows) >= hard_cap:
+                break
+        return rows
     except Exception as e:
         logger.warning("[supabase_portfolio] load_recent_trade_orders failed: %s", e)
         return []
