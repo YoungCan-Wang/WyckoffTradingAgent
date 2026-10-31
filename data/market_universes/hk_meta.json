@@ -2673,15 +2673,6 @@
     "active": true
   },
   {
-    "symbol": "00362.HK",
-    "code": "00362",
-    "name": "中国天化工",
-    "market": "hk",
-    "asset_type": "stock",
-    "currency": "HKD",
-    "active": true
-  },
-  {
     "symbol": "00363.HK",
     "code": "00363",
     "name": "上海实业控股",
@@ -4538,7 +4529,7 @@
   {
     "symbol": "00653.HK",
     "code": "00653",
-    "name": "卓悦控股(新)",
+    "name": "卓悦控股",
     "market": "hk",
     "asset_type": "stock",
     "currency": "HKD",
@@ -6248,7 +6239,7 @@
   {
     "symbol": "00910.HK",
     "code": "00910",
-    "name": "中国三迪",
+    "name": "中国三迪(新)",
     "market": "hk",
     "asset_type": "stock",
     "currency": "HKD",
@@ -8120,7 +8111,7 @@
   {
     "symbol": "01196.HK",
     "code": "01196",
-    "name": "伟禄科技股份-新",
+    "name": "伟禄科技股份",
     "market": "hk",
     "asset_type": "stock",
     "currency": "HKD",
@@ -10973,7 +10964,7 @@
   {
     "symbol": "01657.HK",
     "code": "01657",
-    "name": "桦欣控股",
+    "name": "桦欣控股(新)",
     "market": "hk",
     "asset_type": "stock",
     "currency": "HKD",
@@ -12321,15 +12312,6 @@
     "active": true
   },
   {
-    "symbol": "01849.HK",
-    "code": "01849",
-    "name": "秀商时代控股",
-    "market": "hk",
-    "asset_type": "stock",
-    "currency": "HKD",
-    "active": true
-  },
-  {
     "symbol": "01850.HK",
     "code": "01850",
     "name": "美好生活集团控股",
@@ -13097,7 +13079,7 @@
   {
     "symbol": "01956.HK",
     "code": "01956",
-    "name": "中科闻歌(五十)",
+    "name": "中科闻歌",
     "market": "hk",
     "asset_type": "stock",
     "currency": "HKD",
@@ -13871,7 +13853,7 @@
   {
     "symbol": "02113.HK",
     "code": "02113",
-    "name": "世纪集团国际-新",
+    "name": "世纪集团国际",
     "market": "hk",
     "asset_type": "stock",
     "currency": "HKD",
@@ -17624,7 +17606,7 @@
   {
     "symbol": "02728.HK",
     "code": "02728",
-    "name": "金泰能源控股-新",
+    "name": "金泰能源控股",
     "market": "hk",
     "asset_type": "stock",
     "currency": "HKD",
@@ -21375,15 +21357,6 @@
     "active": true
   },
   {
-    "symbol": "08047.HK",
-    "code": "08047",
-    "name": "中国海洋发展",
-    "market": "hk",
-    "asset_type": "stock",
-    "currency": "HKD",
-    "active": true
-  },
-  {
     "symbol": "08049.HK",
     "code": "08049",
     "name": "吉林长龙药业",
@@ -21440,7 +21413,7 @@
   {
     "symbol": "08059.HK",
     "code": "08059",
-    "name": "朝威控股",
+    "name": "朝威控股(新)",
     "market": "hk",
     "asset_type": "stock",
     "currency": "HKD",
@@ -21719,7 +21692,7 @@
   {
     "symbol": "08115.HK",
     "code": "08115",
-    "name": "清大东方(五百)",
+    "name": "清大东方",
     "market": "hk",
     "asset_type": "stock",
     "currency": "HKD",
@@ -22340,7 +22313,7 @@
   {
     "symbol": "08239.HK",
     "code": "08239",
-    "name": "首都金融控股",
+    "name": "首都金融控股-新",
     "market": "hk",
     "asset_type": "stock",
     "currency": "HKD",
@@ -24554,7 +24527,7 @@
   {
     "symbol": "09929.HK",
     "code": "09929",
-    "name": "澳达控股",
+    "name": "耀宝",
     "market": "hk",
     "asset_type": "stock",
     "currency": "HKD",

@@ -79,6 +79,9 @@ class BacktestRunInput:
     # 归因调权在本轮的档位（off/shadow/on）。空权重表有两种成因——按设计不接、
     # 或该接却读失败——单看 signal_weight_map 分不出来，报表就只能含糊说「未启用」。
     signal_weight_mode: str = ""
+    selection_strategy: str = "wyckoff"
+    rs_window: int = 60
+    control_seed: int = 0
 
 
 @dataclass(frozen=True)
@@ -156,6 +159,7 @@ def _validate_run_input(
     )
     if str(params.execution_regime_gate or "live").strip().lower() not in {"live", "off", "neutral_only"}:
         raise ValueError("execution_regime_gate 必须是 live / off / neutral_only")
+    _validate_selection_strategy(params)
     _validate_dates_and_trade_params(
         params.start_dt, params.end_dt, params.hold_days, params.exit_config, params.trailing_activate_pct
     )
@@ -200,6 +204,18 @@ def _validate_modes(
         raise ValueError("exit_mode 必须是 close_only、sltp 或 atr")
     if exit_config.sltp_priority not in {"stop_first", "take_first"}:
         raise ValueError("sltp_priority 必须是 stop_first 或 take_first")
+
+
+def _validate_selection_strategy(params: BacktestRunInput) -> None:
+    strategy = str(params.selection_strategy or "wyckoff").strip().lower()
+    if strategy not in {"wyckoff", "rs", "random", "reversal", "sector_rs", "quality", "limit_random", "limit_leader"}:
+        raise ValueError(
+            "selection_strategy 必须是 wyckoff / rs / random / reversal / sector_rs / quality / limit_random / limit_leader"
+        )
+    if strategy != "wyckoff" and int(params.top_n) < 1:
+        raise ValueError(f"selection_strategy={strategy} 时 top_n 必须 >= 1（对照组按排序取前 N，不能不截断）")
+    if int(params.rs_window) < 5:
+        raise ValueError("rs_window 必须 >= 5")
 
 
 def _live_buy_block_regimes() -> frozenset[str]:
@@ -325,6 +341,9 @@ def _replay_config(
         signal_weight_meta=dict(params.signal_weight_meta),
         signal_weight_mode=params.signal_weight_mode,
         a_share_entry_research=params.a_share_entry_research,
+        selection_strategy=str(params.selection_strategy or "wyckoff").strip().lower(),
+        rs_window=int(params.rs_window),
+        control_seed=int(params.control_seed),
     )
 
 
