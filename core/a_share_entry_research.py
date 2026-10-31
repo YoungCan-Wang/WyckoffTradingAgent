@@ -11,7 +11,10 @@ from core.candidate_policy import candidate_score_value
 @dataclass(frozen=True)
 class AShareEntryResearchPolicy:
     blocked_confirmed_signals: tuple[str, ...] = ()
-    blocked_confirmed_regime_signals: tuple[tuple[str, str], ...] = ()
+    blocked_confirmed_regime_signals: tuple[tuple[str, str], ...] = (
+        ("BEAR_REBOUND", "trend_breakout"),
+        ("CAUTION", "trend_breakout"),
+    )
     entry_weight_multipliers: tuple[tuple[str, str, float], ...] = ()
     max_hold_days_by_regime_signal: tuple[tuple[str, str, int], ...] = ()
     require_neutral_breadth_confirmation: bool = False

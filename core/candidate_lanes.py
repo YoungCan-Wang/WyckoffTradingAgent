@@ -195,9 +195,11 @@ def _lane_score(lane: str, metrics: dict[str, float], in_top_sector: bool, l2_pa
         "sector_strength": 66.0,
         "wyckoff_structure": 62.0,
     }[lane]
-    strength = 12.0 * _clamp(metrics["ret60"] / 45.0) + 8.0 * _clamp(metrics["close_pos20"])
-    distance = 6.0 * _clamp(1.0 - max(metrics["dist_ma20"] - 6.0, 0.0) / 12.0)
-    demand = 8.0 * _clamp(metrics.get("main_force_score", 0.0))
+    # 技术指标分上限设为 18（6+4+3+5），确保最高 base(74) + 技术分(18) + 上下文(5+3) = 100，
+    # 避免未加 L3/L2 上下文前就触顶 100.0 导致 54.9% 候选同分、退化为按股票代码字典序截断。
+    strength = 6.0 * _clamp(metrics["ret60"] / 45.0) + 4.0 * _clamp(metrics["close_pos20"])
+    distance = 3.0 * _clamp(1.0 - max(metrics["dist_ma20"] - 6.0, 0.0) / 12.0)
+    demand = 5.0 * _clamp(metrics.get("main_force_score", 0.0))
     context = (5.0 if in_top_sector else 0.0) + (3.0 if l2_passed else 0.0)
     return min(base + strength + distance + demand + context, 100.0)
 

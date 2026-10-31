@@ -155,3 +155,14 @@ def test_risk_on_structure_with_weak_breadth_becomes_caution() -> None:
     assert _apply_caution_regime("RISK_ON", 33.9, cfg) == "CAUTION"
     assert _apply_caution_regime("RISK_ON", 60.0, cfg) == "RISK_ON"
     assert _apply_caution_regime("RISK_OFF", 33.9, cfg) == "RISK_OFF"
+
+
+def test_write_gate_blocks_caution_and_repair_confirmed_when_in_oms_block_list(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "STEP4_BUY_BLOCK_REGIMES",
+        "UNKNOWN,NEUTRAL,CAUTION,PANIC_REPAIR,PANIC_REPAIR_CONFIRMED,RISK_OFF,CRASH,BLACK_SWAN",
+    )
+    monkeypatch.setenv("STEP4_BUY_ALLOW_REGIMES", "BEAR_REBOUND")
+
+    assert resolve_market_trade_mode("CAUTION").allow_recommendation_write is False
+    assert resolve_market_trade_mode("PANIC_REPAIR_CONFIRMED").allow_recommendation_write is False

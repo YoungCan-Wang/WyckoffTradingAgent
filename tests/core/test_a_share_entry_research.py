@@ -46,6 +46,15 @@ def test_confirmed_signal_policy_can_block_one_regime_signal_pair() -> None:
     assert confirmed_signal_allowed(policy, "sos", "NEUTRAL")
 
 
+def test_default_policy_blocks_trend_breakout_in_bear_rebound_and_caution() -> None:
+    policy = AShareEntryResearchPolicy()
+
+    assert not confirmed_signal_allowed(policy, "trend_breakout", "BEAR_REBOUND")
+    assert not confirmed_signal_allowed(policy, "trend_breakout", "CAUTION")
+    assert confirmed_signal_allowed(policy, "trend_lane_pullback", "BEAR_REBOUND")
+    assert confirmed_signal_allowed(policy, "main_force_entry", "BEAR_REBOUND")
+
+
 def test_research_max_hold_days_only_shortens_matching_regime_signal() -> None:
     policy = AShareEntryResearchPolicy(max_hold_days_by_regime_signal=(("CAUTION", "spring", 10),))
 

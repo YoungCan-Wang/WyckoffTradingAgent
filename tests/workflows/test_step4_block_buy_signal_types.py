@@ -99,3 +99,11 @@ class TestOtherGatesStillApply:
     def test_blocked_action_still_rejected(self, monkeypatch):
         monkeypatch.setenv(ENV_KEY, "evr")
         assert _rule_eligible_step4_candidate(_candidate(action_status="blocked_risk", signal_type="spring")) is False
+
+    def test_trend_breakout_blocked_in_bear_rebound_and_caution(self):
+        assert _rule_eligible_step4_candidate(_candidate(regime="BEAR_REBOUND", signal_type="trend_breakout")) is False
+        assert _rule_eligible_step4_candidate(_candidate(regime="CAUTION", signal_type="trend_breakout")) is False
+        assert (
+            _rule_eligible_step4_candidate(_candidate(regime="BEAR_REBOUND", signal_type="trend_lane_pullback")) is True
+        )
+        assert _rule_eligible_step4_candidate(_candidate(regime="CAUTION", signal_type="trend_lane_pullback")) is True
