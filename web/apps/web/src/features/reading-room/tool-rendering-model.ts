@@ -19,6 +19,8 @@ const TOOL_LABEL_KEYS: Record<string, TranslationKey> = {
   intraday_analysis: 'tool.intraday_analysis',
   run_python_research: 'tool.run_python_research',
   web_search: 'tool.web_search',
+  deepseek_web_search: 'tool.deepseek_web_search',
+  deepseek_web_fetch: 'tool.deepseek_web_fetch',
   market_regime: 'tool.market_regime',
   wyckoff_diagnose: 'tool.wyckoff_diagnose',
   intraday_rescue_check: 'tool.intraday_rescue_check',
@@ -34,6 +36,8 @@ const TOOL_TONES: Record<string, string> = {
   execute_portfolio_update: 'border-red-200 bg-red-50 text-red-800 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-100',
   run_python_research: 'border-indigo-200 bg-indigo-50 text-indigo-800 dark:border-indigo-500/30 dark:bg-indigo-500/10 dark:text-indigo-100',
   web_search: 'border-cyan-200 bg-cyan-50 text-cyan-800 dark:border-cyan-500/30 dark:bg-cyan-500/10 dark:text-cyan-100',
+  deepseek_web_search: 'border-cyan-200 bg-cyan-50 text-cyan-800 dark:border-cyan-500/30 dark:bg-cyan-500/10 dark:text-cyan-100',
+  deepseek_web_fetch: 'border-cyan-200 bg-cyan-50 text-cyan-800 dark:border-cyan-500/30 dark:bg-cyan-500/10 dark:text-cyan-100',
 }
 
 export const STRUCTURED_TOOL_NAMES = new Set(['screen_stocks', 'analyze_stock', 'generate_strategy_decision'])
@@ -184,6 +188,10 @@ export function toolProgressDescription(toolName: string, input: unknown, part?:
         part?.state === 'output-available' ? asRecord(part.output) : item,
         part?.state === 'output-available',
       )
+    case 'deepseek_web_search':
+      return `DeepSeek 网页搜索：${sanitizeText(item?.query) || '公开信息'}`
+    case 'deepseek_web_fetch':
+      return `DeepSeek 网页抓取：${sanitizeText(item?.url) || '单个链接'}`
     default:
       return '读取读盘室相关数据，并把结果交给模型综合判断。'
   }
@@ -197,7 +205,27 @@ export function toolResultDigest(toolName: string, output: unknown): string {
   if (toolName === 'market_history') return `指数历史读取完成：${recordCountDigest(output)}`
   if (toolName === 'run_python_research') return `沙箱计算完成：${sandboxResultDigest(output)}`
   if (toolName === 'web_search') return `联网搜索完成：${webSearchResultDigest(output)}`
+  if (toolName === 'deepseek_web_search') return `DeepSeek 搜索完成：${deepseekSearchDigest(output)}`
+  if (toolName === 'deepseek_web_fetch') return `DeepSeek 抓取完成：${deepseekFetchDigest(output)}`
   return summarizeToolOutput(output)
+}
+
+function deepseekSearchDigest(output: unknown): string {
+  const item = asRecord(output)
+  if (!item) return summarizeToolOutput(output)
+  if (typeof item.error === 'string') return item.error
+  const query = sanitizeText(item.query)
+  const count = Array.isArray(item.results) ? item.results.length : 0
+  if (item.empty === true) return query ? `${query} · 无结果` : '无结果'
+  return query ? `${query} · ${count} 条` : `${count} 条`
+}
+
+function deepseekFetchDigest(output: unknown): string {
+  const item = asRecord(output)
+  if (!item) return summarizeToolOutput(output)
+  if (typeof item.error === 'string') return item.error
+  const title = sanitizeText(item.title) || sanitizeText(item.url) || '页面'
+  return item.truncated === true ? `${title} · 已截断` : title
 }
 
 function webSearchProgressDescription(item: Record<string, unknown> | null, hasOutput: boolean): string {

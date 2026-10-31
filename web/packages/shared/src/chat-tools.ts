@@ -766,8 +766,8 @@ function buildMarketHistoryDigest(name: string, rows: KlineRow[]): string {
  * 拉个股近期消息,供 Step 1.5 核证结构判断。
  *
  * 为什么不用 web_search:那个是 provider 侧工具,只在 DeepSeek Responses 通道
- * 挂得上(见 chat-language-model 的 providerTools)。走 chat 通道时它整个不存在,
- * 核证一步就断了。这个走东财接口,两条通道都在。
+ * 挂得上。独立的 deepseek_web_search 也要官方 Key 且按次计费,不适合做每只股票的
+ * 结构核证。这个走东财接口,两条通道都在。
  *
  * 定位是核证,不是选股依据 —— 先有量价结构结论,再看消息能不能对上。所以输出
  * 里明写这一句,不让模型倒过来用。

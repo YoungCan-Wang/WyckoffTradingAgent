@@ -254,7 +254,7 @@ wyckoff mcp-list
 
 ## 功能亮点
 
-- **对话式 Agent** — 用自然语言触发诊断、筛选、研报；CLI、Web、MCP 各自按权限编排多工具
+- **对话式 Agent** — 用自然语言触发诊断、筛选、研报；CLI、Web、MCP 各自按权限编排多工具。读盘室里，官方 DeepSeek V4 仍走 Responses 服务端 `web_search`；星球会员已配置官方 DeepSeek Key、且当前模型不在这条 Responses 通道时，可另外调用独立 Search/Fetch（`deepseek_web_search` / `deepseek_web_fetch`，各约 5 元/千次成功请求）
 - **主线漏斗筛选** — A 股全市场约 5000 股动态发现概念主线、八通道强度、候选车道和买点确认；研究发现独立展示，生产 NEUTRAL / RISK_ON 禁新开，候选不等于买单
 - **日漏斗 × 次日开盘串联** — 漏斗定候选与环境，跨日 confirmed 后由 OMS 给出唯一允许买入区间，开盘价在区间内才执行；报告顶部固定「执行纪律」
 - **跨市场** — A 股 / 港股 / 美股漏斗独立 workflow
