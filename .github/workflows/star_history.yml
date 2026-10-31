@@ -8,9 +8,10 @@ name: Star History
 # 2026-09-14 曾降到月频，理由是 star 曲线是月级形状、周频刷新看不出差别且每周多一次
 # README 图表提交。图仍自托管：不能停 cron，否则会冻在最后一次运行那天且 README
 # 不会显示过期提示。
+# 2026-10-20 禁用定时 cron 触发以减少无谓 CI 运行，保留 workflow_dispatch 手动触发。
 on:
-  schedule:
-    - cron: "0 12 * * 0" # 每周日 UTC 12:00 ≈ 北京时间 20:00
+  # schedule:
+  #   - cron: "0 12 * * 0" # 每周日 UTC 12:00 ≈ 北京时间 20:00
   workflow_dispatch:
 
 # 顶层保持最小权限；写权限只下放给真正要提交图表的 job（check_workflow_hygiene 要求

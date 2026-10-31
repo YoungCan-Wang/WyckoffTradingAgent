@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import pandas as pd
@@ -10,6 +10,7 @@ import pandas as pd
 from core.wyckoff_engine import sort_by_date_if_needed
 
 _DATE_KEYS = ("date", "as_of_date", "announce_date", "filed_date", "pub_date", "trade_date")
+FINANCIAL_RECORD_MAX_AGE_DAYS = 400
 
 
 def parse_as_of(raw: date | datetime | str) -> date:
@@ -51,6 +52,23 @@ def cut_dated_records(
         if item_date <= target:
             kept.append(item)
     return kept
+
+
+def latest_known_record(records: list[dict[str, Any]], as_of: date) -> dict[str, Any] | None:
+    """Newest financial record announced strictly before ``as_of`` and within the staleness window.
+
+    Unlike ``cut_dated_records`` this is strict-less: the vendor gives an announce date without a
+    time, and most A-share reports land after the close, so the same-day record is not yet known
+    at the signal day's decision point.
+    """
+    floor = (as_of - timedelta(days=FINANCIAL_RECORD_MAX_AGE_DAYS)).isoformat()
+    cutoff = as_of.isoformat()
+    chosen = None
+    for item in records:
+        announced = str(item.get("announce_date") or "")[:10]
+        if floor <= announced < cutoff:
+            chosen = item
+    return chosen
 
 
 def cut_financial_map(

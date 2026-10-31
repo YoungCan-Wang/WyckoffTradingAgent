@@ -15,6 +15,7 @@ import {
   type ServiceCredentials,
 } from '../services/agent-lane'
 import { loadLLMConfigs, createUserSupabase } from './chat'
+import { recordModelUsage } from '../services/usage-telemetry'
 
 type LaneBindings = { Bindings: Env; Variables: { auth: AuthContext; upstream: AgentUpstream } }
 
@@ -100,13 +101,18 @@ export function createAgentLaneRoutes(overrides: Partial<AgentLaneDeps> = {}) {
     const credentials = { ...(await deps.loadCredentials(supabase, auth.userId)), ...toServiceCredentialsLlm(llm) }
 
     const payload = JSON.stringify({ id: body?.id, messages, llm, credentials })
+    const startedAt = Date.now()
     let upstream: Response
     try {
       upstream = await c.get('upstream')(auth.userId, payload, c.req.raw.signal)
     } catch (error) {
       logLane(c.get('requestId'), 'agent_lane.upstream_unreachable', { error: error instanceof Error ? error.name : 'unknown' })
+      recordModelUsage(c.env, { lane: 'agent_lane', provider: llm.provider_name, model: llm.model, success: false, durationMs: Date.now() - startedAt })
       return c.json({ error: 'Agent service is unavailable' }, 502)
     }
+    // success 这里只代表「转发成功、Cloud Run 接受了这轮」：真正的生成结果在 SSE 流里，
+    // Worker 直接把 body 转发给客户端，不会消费流，所以拿不到生成是否成功。
+    recordModelUsage(c.env, { lane: 'agent_lane', provider: llm.provider_name, model: llm.model, success: upstream.ok, durationMs: Date.now() - startedAt })
     if (!upstream.ok) {
       logLane(c.get('requestId'), 'agent_lane.upstream_rejected', { status: upstream.status })
       await upstream.body?.cancel()
