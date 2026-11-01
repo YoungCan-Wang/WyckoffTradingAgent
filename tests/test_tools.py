@@ -2367,6 +2367,41 @@ class TestMarketRegime:
         assert result["structural_regime"] == "BULL"
         assert result["bear_rebound_triggered"] is False
 
+    def test_regime_route_shadow_labels_without_changing_regime(self):
+        from tools.market_regime import MainBenchmarkMetrics, _regime_route_shadow
+
+        bull = MainBenchmarkMetrics(close=105.0, ma50=100.0, ma200=95.0, ma50_slope_5d=0.4, recent3_cum=-1.2)
+        repair = MainBenchmarkMetrics(close=96.0, ma50=95.0, ma200=100.0, ma50_slope_5d=0.3)
+        breakdown = MainBenchmarkMetrics(close=98.0, ma50=100.0, ma200=95.0, ma50_slope_5d=-0.2)
+        cases = [
+            (("NEUTRAL", "NEUTRAL", bull), ("CAUTION", "bull_pullback")),
+            (("PANIC_REPAIR", "PANIC_REPAIR", bull), ("CAUTION", "bull_panic_repair")),
+            (("NEUTRAL", "NEUTRAL", repair), ("BEAR_REBOUND", "right_side_ma50_repair")),
+            (("RISK_ON", "BEAR_REBOUND", breakdown), ("NEUTRAL", "transition_below_ma50")),
+            (("RISK_ON", "BEAR_REBOUND", repair), ("BEAR_REBOUND", "")),
+            (("RISK_OFF", "RISK_OFF", bull), ("RISK_OFF", "")),
+        ]
+        for args, (routed, rule) in cases:
+            assert _regime_route_shadow(*args) == {"mode": "shadow", "regime": routed, "rule": rule}
+
+    def test_regime_route_shadow_stays_out_of_production_regime(self, monkeypatch):
+        import tools.market_regime as market_regime
+        from core.wyckoff_engine import FunnelConfig
+
+        monkeypatch.setattr(market_regime, "_generate_pv_outlook", lambda **_kwargs: "次日推演：测试")
+        closes = [100.0 + i * 0.2 for i in range(220)]
+        closes[-3:] = [closes[-4] - 0.6, closes[-4] - 0.8, closes[-4] - 0.7]
+        result = market_regime.analyze_benchmark_and_tune_cfg(
+            _benchmark_df(closes),
+            None,
+            FunnelConfig(),
+            breadth={"ratio_pct": 50.0, "delta_pct": 2.0, "sample_size": 100},
+        )
+
+        assert result["regime"] == "NEUTRAL"
+        assert result["regime_route_shadow"]["regime"] == "CAUTION"
+        assert result["regime_route_shadow"]["rule"] == "bull_pullback"
+
     def test_confirm_trend_candidate_requires_dry_or_bullish_on_every_path(self):
         from core.signal_confirmation import _confirm_trend_candidate
 

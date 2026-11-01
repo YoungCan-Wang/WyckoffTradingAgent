@@ -749,6 +749,44 @@ def _bull_structure(metrics: MainBenchmarkMetrics) -> bool:
     )
 
 
+def _right_side_ma50_repair(metrics: MainBenchmarkMetrics) -> bool:
+    return (
+        metrics.close is not None
+        and metrics.ma50 is not None
+        and metrics.ma200 is not None
+        and metrics.ma50_slope_5d is not None
+        and metrics.ma50 <= metrics.close <= metrics.ma200
+        and metrics.ma50_slope_5d > 0
+    )
+
+
+def _transition_below_ma50(metrics: MainBenchmarkMetrics) -> bool:
+    return (
+        _structural_regime(metrics) == "TRANSITION"
+        and metrics.close is not None
+        and metrics.ma50 is not None
+        and metrics.close < metrics.ma50
+    )
+
+
+def _regime_route_shadow(route_input: str, regime: str, metrics: MainBenchmarkMetrics) -> dict:
+    """结构路由的影子标签：只记录这一天本会被路由到哪，不改水温。
+
+    这几条规则在六段回放里样本内有增益但未经样本外验证，转正前不得影响买入。
+    """
+    bull = _bull_structure(metrics)
+    routed, rule = regime, ""
+    if route_input == "RISK_ON" and _transition_below_ma50(metrics):
+        routed, rule = "NEUTRAL", "transition_below_ma50"
+    elif bull and route_input == "PANIC_REPAIR":
+        routed, rule = "CAUTION", "bull_panic_repair"
+    elif bull and route_input == "NEUTRAL" and metrics.recent3_cum is not None and metrics.recent3_cum < 0.0:
+        routed, rule = "CAUTION", "bull_pullback"
+    elif route_input == "NEUTRAL" and _right_side_ma50_repair(metrics):
+        routed, rule = "BEAR_REBOUND", "right_side_ma50_repair"
+    return {"mode": "shadow", "regime": routed, "rule": rule}
+
+
 def _apply_bear_rebound_regime(regime: str, metrics: MainBenchmarkMetrics) -> tuple[str, list[str]]:
     if regime != "RISK_ON" or _bull_structure(metrics):
         return regime, []
@@ -1034,7 +1072,9 @@ def analyze_benchmark_and_tune_cfg(
         runtime,
     )
     regime, _ = _apply_daily_breadth_regime(regime, daily_up_ratio, daily_median_pct, runtime)
+    route_input = regime
     regime, bear_rebound_reasons = _apply_bear_rebound_regime(regime, main)
+    context["regime_route_shadow"] = _regime_route_shadow(route_input, regime, main)
     _apply_evr_policy(cfg, regime, runtime)
     _tune_cfg_for_regime(cfg, regime, main.recent3_cum, runtime)
     holiday_grace_dynamic = _resolve_holiday_grace_from_bench(cfg, regime, money_flow_context, bench_df)
