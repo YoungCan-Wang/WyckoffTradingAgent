@@ -110,6 +110,49 @@ def test_parse_step3_springboards_empty_input_is_not_authoritative(monkeypatch):
     assert calls == []
 
 
+def test_parse_step3_springboards_no_model_status_with_input_is_not_authoritative(monkeypatch):
+    """RAG/quality can empty selected_codes while Step3 input stays non-empty.
+
+    send_empty_step3_report still returns ok with「未执行三阵营模型审判」and
+    处于起跳板/- 无. That must not wipe morning is_ai_recommended on re-run.
+    """
+    calls: list[object] = []
+
+    def _extract(**_kwargs):
+        calls.append("extract")
+        return []
+
+    monkeypatch.setattr("tools.report_parser.extract_operation_pool_codes", _extract)
+    monkeypatch.setattr("tools.report_parser.extract_operation_pool_springboards", lambda **_kwargs: {})
+    status_report = (
+        "# 🏛️ Alpha 投委会机密电报：威科夫盘面审判\n\n"
+        "> ⚪ **本轮未执行三阵营模型审判**：Step3 收到 3 只候选，RAG 防雷后无剩余候选，"
+        "未调用三阵营模型。\n\n"
+        "## 🏹 处于起跳板\n"
+        "- 无（未执行模型审判，不表示任何风险结论）"
+    )
+    symbols = [
+        {"code": "600519", "candidate_status": "confirmed"},
+        {"code": "000001", "candidate_status": "confirmed"},
+    ]
+    assert parse_step3_springboards(status_report, symbols, None) is None
+    assert calls == []
+
+
+def test_parse_step3_springboards_skip_llm_preview_is_not_authoritative(monkeypatch):
+    calls: list[object] = []
+
+    def _extract(**_kwargs):
+        calls.append("extract")
+        return []
+
+    monkeypatch.setattr("tools.report_parser.extract_operation_pool_codes", _extract)
+    monkeypatch.setattr("tools.report_parser.extract_operation_pool_springboards", lambda **_kwargs: {})
+    preview = "# 🧪 Step3 模型输入预演（未调用大模型）\n\n- 输入股票数: `2`\n- 模式: `STEP3_SKIP_LLM=1`\n"
+    assert parse_step3_springboards(preview, [{"code": "600519"}], None) is None
+    assert calls == []
+
+
 def test_run_step3_stage_empty_input_does_not_authoritative_mark():
     from workflows.daily_job_step3 import run_step3_stage
 
