@@ -13,7 +13,7 @@ from tools.market_regime import (
     MainBenchmarkMetrics,
     MarketRegimeConfig,
     SmallcapMetrics,
-    _apply_caution_regime,
+    _apply_breadth_regime,
     _repair_reasons,
 )
 
@@ -149,9 +149,12 @@ def test_defensive_continuous_rebound_without_panic_stays_out_of_repair() -> Non
     assert reasons == []
 
 
-def test_risk_on_structure_with_weak_breadth_becomes_caution() -> None:
+def test_risk_on_structure_needs_breadth_confirmation() -> None:
     cfg = MarketRegimeConfig().normalized()
 
-    assert _apply_caution_regime("RISK_ON", 33.9, cfg) == "CAUTION"
-    assert _apply_caution_regime("RISK_ON", 60.0, cfg) == "RISK_ON"
-    assert _apply_caution_regime("RISK_OFF", 33.9, cfg) == "RISK_OFF"
+    assert _apply_breadth_regime("RISK_ON", 33.9, 0.5, cfg) == "NEUTRAL"
+    assert _apply_breadth_regime("RISK_ON", 60.0, -0.5, cfg) == "NEUTRAL"
+    assert _apply_breadth_regime("RISK_ON", 60.0, 0.5, cfg) == "RISK_ON"
+    assert _apply_breadth_regime("RISK_ON", None, None, cfg) == "RISK_ON"
+    assert _apply_breadth_regime("RISK_OFF", 33.9, 0.5, cfg) == "RISK_OFF"
+    assert _apply_breadth_regime("NEUTRAL", 60.0, 0.5, cfg) == "RISK_ON"
