@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from core.a_share_entry_research import AShareEntryResearchPolicy, regime_blocked_signals
 from core.market_breadth import calc_market_breadth as calc_core_market_breadth
 from core.wyckoff_engine import FunnelConfig, skipped_weekdays
 from tools.market_liquidity import calc_amount_distribution_health, calc_market_money_flow
@@ -812,6 +813,8 @@ def _tune_cfg_for_regime(
         cfg.rs_min_short = max(cfg.rs_min_short, 0.0)
         cfg.rps_fast_min = min(cfg.rps_fast_min, 70.0)
         cfg.rps_slow_min = min(cfg.rps_slow_min, 60.0)
+    blocked = regime_blocked_signals(AShareEntryResearchPolicy(), regime)
+    cfg.blocked_candidate_entry_types = tuple(dict.fromkeys((*cfg.blocked_candidate_entry_types, *blocked)))
     _apply_trigger_threshold_profile(cfg, regime)
 
 

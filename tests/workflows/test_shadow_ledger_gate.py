@@ -64,3 +64,17 @@ def test_preview_still_skips_when_enabled(monkeypatch: pytest.MonkeyPatch) -> No
 
     assert "preview" in str(result)
     assert called == []
+
+
+def test_shadow_buy_candidates_use_the_execution_regime() -> None:
+    item = {
+        "code": "000001",
+        "name": "平安银行",
+        "signal_type": "trend_breakout",
+        "signal_status": "confirmed",
+        "status": "confirmed",
+        "selection_source": "signal_confirmed",
+    }
+
+    assert slj._buy_candidates([item], "", "NEUTRAL") == [item]
+    assert slj._buy_candidates([item], "", "BEAR_REBOUND") == []

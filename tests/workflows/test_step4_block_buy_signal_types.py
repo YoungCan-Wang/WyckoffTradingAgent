@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from workflows.step4_pipeline import _blocked_buy_signal_types, _rule_eligible_step4_candidate
+from core.signal_confirmation import _confirmed_symbol_info
+from workflows.step4_pipeline import _blocked_buy_signal_types, _rule_eligible_step4_candidate, step4_candidate_meta
 
 ENV_KEY = "STEP4_BLOCK_BUY_SIGNAL_TYPES"
 
@@ -99,3 +100,25 @@ class TestOtherGatesStillApply:
     def test_blocked_action_still_rejected(self, monkeypatch):
         monkeypatch.setenv(ENV_KEY, "evr")
         assert _rule_eligible_step4_candidate(_candidate(action_status="blocked_risk", signal_type="spring")) is False
+
+
+class TestRegimeSignalGate:
+    @pytest.mark.parametrize("regime", ["BEAR_REBOUND", "CAUTION", "caution"])
+    def test_trend_breakout_blocked_on_execution_regime(self, regime):
+        assert _rule_eligible_step4_candidate(_candidate(signal_type="trend_breakout"), regime) is False
+
+    def test_other_signals_and_regimes_pass(self):
+        assert _rule_eligible_step4_candidate(_candidate(signal_type="trend_lane_pullback"), "BEAR_REBOUND") is True
+        assert _rule_eligible_step4_candidate(_candidate(signal_type="trend_breakout"), "NEUTRAL") is True
+
+    def test_gate_ignores_regime_stamped_on_the_candidate(self):
+        stale = _candidate(signal_type="trend_breakout", regime="NEUTRAL")
+        assert _rule_eligible_step4_candidate(stale, "BEAR_REBOUND") is False
+
+    def test_production_confirmed_row_reaches_the_gate(self):
+        sig = {"signal_type": "trend_breakout", "signal_date": "2026-10-29", "signal_score": 80.0, "regime": "NEUTRAL"}
+        today = {"close": 10.0}
+        item = _confirmed_symbol_info(sig, "000001", today, "2026-10-30", "快速确认")
+
+        assert step4_candidate_meta([item], [], regime="NEUTRAL")[0] == [item]
+        assert step4_candidate_meta([item], [], regime="BEAR_REBOUND") == ([], 1)

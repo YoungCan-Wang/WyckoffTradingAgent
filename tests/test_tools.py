@@ -2367,6 +2367,32 @@ class TestMarketRegime:
         assert result["structural_regime"] == "BULL"
         assert result["bear_rebound_triggered"] is False
 
+    def test_confirm_trend_candidate_requires_dry_or_bullish_on_every_path(self):
+        from core.signal_confirmation import _confirm_trend_candidate
+
+        snap = {"snap_support": 9.8, "snap_ma20": 10.0, "snap_close": 10.2, "snap_volume": 1000.0, "snap_low": 9.9}
+        bullish_hold = {"open": 10.0, "close": 10.1, "low": 10.0, "volume": 1500.0, "ma20": 10.0}
+        assert _confirm_trend_candidate(snap, bullish_hold, days_elapsed=1)[0] == "confirmed"
+
+        below_ma20 = {"open": 10.8, "close": 10.2, "low": 10.0, "volume": 1500.0, "ma20": 11.0}
+        assert _confirm_trend_candidate(snap, below_ma20, days_elapsed=3)[0] == "pending"
+        above_ma20 = {"open": 10.5, "close": 10.1, "low": 10.0, "volume": 1500.0, "ma20": 10.0}
+        assert _confirm_trend_candidate(snap, above_ma20, days_elapsed=3)[0] == "pending"
+
+        dry_pullback = {**below_ma20, "volume": 900.0}
+        assert _confirm_trend_candidate(snap, dry_pullback, days_elapsed=3)[0] == "confirmed"
+
+    def test_tune_cfg_blocks_lane_with_the_same_pairs_as_confirmation(self):
+        from core.a_share_entry_research import AShareEntryResearchPolicy, confirmed_signal_allowed
+        from core.wyckoff_engine import FunnelConfig
+        from tools.market_regime import DEFAULT_MARKET_REGIME_CONFIG, _tune_cfg_for_regime
+
+        for regime in ("BEAR_REBOUND", "CAUTION", "NEUTRAL", "RISK_ON", "RISK_OFF"):
+            cfg = FunnelConfig()
+            _tune_cfg_for_regime(cfg, regime, None, DEFAULT_MARKET_REGIME_CONFIG)
+            confirmed = confirmed_signal_allowed(AShareEntryResearchPolicy(), "trend_breakout", regime)
+            assert ("trend_breakout" not in cfg.blocked_candidate_entry_types) is confirmed
+
     def test_structural_bear_remains_risk_off_during_short_rebound(self, monkeypatch):
         import tools.market_regime as market_regime
         from core.wyckoff_engine import FunnelConfig
