@@ -386,3 +386,43 @@ def test_atr_activation_preserves_buy_date_forwarding(monkeypatch):
         cfg = FunnelConfig(exit_use_atr_stop=active)
         diagnose_one_stock("600519", "test", cost=10.0, df=frame, cfg=cfg, buy_dt=buy_date)
     assert seen == [(buy_date, False), (buy_date, True)]
+
+
+def test_accum_track_bearish_ma_is_warning_not_danger_until_stop_breached():
+    from types import SimpleNamespace
+
+    from core.holding_diagnostic import _health_rating
+
+    ma = SimpleNamespace(pattern="空头排列")
+    accum_wyckoff = SimpleNamespace(
+        track="Accum",
+        exit_signal=None,
+        l2_channel="吸筹通道+地量蓄势",
+        l4_triggers=["EVR"],
+    )
+    unknown_wyckoff = SimpleNamespace(
+        track="Unknown",
+        exit_signal=None,
+        l2_channel="未入选",
+        l4_triggers=[],
+    )
+    risk = SimpleNamespace(
+        stop_status="安全",
+        stop_loss_atr_status="安全",
+        range_60d=20.0,
+        ret_10d=2.0,
+        vol_ratio=0.9,
+        take_profit_status="未启用",
+    )
+
+    accum_health, accum_reasons = _health_rating(ma, accum_wyckoff, risk, 2.11)
+    assert accum_health == "🟡警戒"
+    assert "均线空头排列" in accum_reasons
+
+    unknown_health, _ = _health_rating(ma, unknown_wyckoff, risk, -2.0)
+    assert unknown_health == "🔴危险"
+
+    risk.stop_status = "已穿止损"
+    breached_health, breached_reasons = _health_rating(ma, accum_wyckoff, risk, -8.5)
+    assert breached_health == "🔴危险"
+    assert "已穿止损线(-7%)" in breached_reasons

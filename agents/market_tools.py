@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from agents.tool_context import ToolContext, ensure_tushare_token, get_credential
 from utils.safe import safe_float
+from utils.trading_clock import cn_today
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +92,7 @@ def _fetch_tushare_overview(
         if pro is None:
             errors.append("tushare: token 未配置或 client 不可用")
             return None
-        end = datetime.strptime(requested, "%Y%m%d").date() if requested else date.today()
+        end = datetime.strptime(requested, "%Y%m%d").date() if requested else cn_today()
         end_date = end.strftime("%Y%m%d")
         start_date = (end - timedelta(days=10)).strftime("%Y%m%d")
         indices = _tushare_index_rows(pro, start_date, end_date)
@@ -295,7 +296,7 @@ def _fetch_market_history_fallback(
         ensure_tushare_token(tool_context)
         from integrations.index_data_source import fetch_index_hist
 
-        end = date.today()
+        end = cn_today()
         start = end - timedelta(days=int(days * 2.4) + 30)
         return fetch_index_hist(symbol, start, end), "tushare/akshare", errors
     except Exception as e:
