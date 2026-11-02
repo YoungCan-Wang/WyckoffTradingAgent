@@ -678,6 +678,7 @@ def _print_benchmark_gate(benchmark_context: dict) -> None:
         f"amount_distribution={benchmark_context.get('amount_distribution')}, "
         f"holiday_grace={benchmark_context.get('holiday_grace_dynamic')}, "
         f"pv_policy_shadow={benchmark_context.get('market_pv_policy_shadow')}, "
+        f"regime_route_shadow={benchmark_context.get('regime_route_shadow')}, "
         f"panic_triggered={benchmark_context.get('panic_triggered')}, "
         f"panic_reasons={benchmark_context.get('panic_reasons')}, "
         f"repair_triggered={benchmark_context.get('repair_triggered')}, "

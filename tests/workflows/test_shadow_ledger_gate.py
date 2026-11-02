@@ -76,5 +76,22 @@ def test_shadow_buy_candidates_use_the_execution_regime() -> None:
         "selection_source": "signal_confirmed",
     }
 
-    assert slj._buy_candidates([item], "", "NEUTRAL") == [item]
-    assert slj._buy_candidates([item], "", "BEAR_REBOUND") == []
+    assert [row["code"] for row in slj._buy_candidates([item], "", {"regime": "NEUTRAL"})] == ["000001"]
+    assert slj._buy_candidates([item], "", {"regime": "BEAR_REBOUND"}) == []
+
+
+def test_shadow_buy_candidates_carry_the_route_rule() -> None:
+    item = {
+        "code": "000001",
+        "name": "平安银行",
+        "signal_type": "trend_lane_pullback",
+        "signal_status": "confirmed",
+        "status": "confirmed",
+        "selection_source": "signal_confirmed",
+    }
+    context = {
+        "regime": "NEUTRAL",
+        "regime_route_shadow": {"mode": "shadow", "regime": "CAUTION", "rule": "bull_pullback"},
+    }
+
+    assert slj._buy_candidates([item], "", context)[0]["regime_route_rule"] == "bull_pullback"

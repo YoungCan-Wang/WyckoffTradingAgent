@@ -6,6 +6,7 @@ from core.shadow_ledger import (
     ShadowBook,
     ShadowPlan,
     ShadowPosition,
+    _plan_reason,
     event_key,
     plan_key,
     run_shadow_session,
@@ -291,3 +292,11 @@ def test_pending_no_open_buy_blocks_same_code_repropose() -> None:
     )
     assert len(day2.fills) == 1
     assert day2.book.positions["000001"].shares == 2400
+
+
+def test_plan_reason_appends_route_rule_only_when_labelled() -> None:
+    assert _plan_reason({"tag": "SPRING(跨日确认)", "regime_route_rule": "bull_pullback"}) == (
+        "SPRING(跨日确认)|route:bull_pullback"
+    )
+    assert _plan_reason({"tag": "SPRING(跨日确认)", "regime_route_rule": ""}) == "SPRING(跨日确认)"
+    assert _plan_reason({}) == "wyckoff_confirmed"
