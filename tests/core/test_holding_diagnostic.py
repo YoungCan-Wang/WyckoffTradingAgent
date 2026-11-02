@@ -419,6 +419,22 @@ def test_accum_track_bearish_ma_is_warning_not_danger_until_stop_breached():
     assert accum_health == "🟡警戒"
     assert "均线空头排列" in accum_reasons
 
+    # Accum + 空头排列 + 浮亏超过 5%（但尚未跌穿 -7% 止损）：仍为 🟡警戒
+    accum_loss_health, accum_loss_reasons = _health_rating(ma, accum_wyckoff, risk, -6.5)
+    assert accum_loss_health == "🟡警戒"
+    assert "均线空头排列" in accum_loss_reasons
+    assert "浮亏超过5%" in accum_loss_reasons
+
+    # Trend + 空头排列 与 Unknown + 空头排列：均为 🔴危险
+    trend_wyckoff = SimpleNamespace(
+        track="Trend",
+        exit_signal=None,
+        l2_channel="主升通道",
+        l4_triggers=[],
+    )
+    trend_health, _ = _health_rating(ma, trend_wyckoff, risk, -2.0)
+    assert trend_health == "🔴危险"
+
     unknown_health, _ = _health_rating(ma, unknown_wyckoff, risk, -2.0)
     assert unknown_health == "🔴危险"
 
