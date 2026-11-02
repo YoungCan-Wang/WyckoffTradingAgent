@@ -401,16 +401,16 @@ def _channel_geom_map(step2_details: dict) -> dict[str, dict[str, Any]]:
 def _merge_observation_trigger_maps(step2_details: dict) -> dict[str, list[tuple[str, float]]]:
     metrics = step2_details.get("metrics", {}) or {}
     return merge_trigger_maps(
-        step2_details.get("review_triggers") or step2_details.get("triggers") or {},
         _candidate_trigger_map(step2_details),
+        step2_details.get("review_triggers") or step2_details.get("triggers") or {},
         metrics.get("external_seed_l4_triggers") or {},
     )
 
 
 def _primary_observation_triggers(step2_details: dict) -> dict[str, list[tuple[str, float]]]:
     return merge_trigger_maps(
-        step2_details.get("review_triggers") or step2_details.get("triggers") or {},
         _candidate_trigger_map(step2_details),
+        step2_details.get("review_triggers") or step2_details.get("triggers") or {},
     )
 
 

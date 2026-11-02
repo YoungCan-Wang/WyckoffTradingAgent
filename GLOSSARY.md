@@ -265,6 +265,7 @@ watch_score = 0.25 × q20 + 0.20 × q5 + 0.05 × q3
 | **盈亏比** | Risk/Reward Ratio | 预期收益与预期风险的比值。如止损 -7% / 止盈 +18% 的盈亏比为 2.57:1 |
 | **熔断** | Circuit Breaker | 当市场进入 CRASH 或盘前检测到极端风险（RISK_OFF / BLACK_SWAN）时，OMS 直接冻结买入权限 |
 | **Springboard ABC** | 右侧信号三项确认 | 对 SOS / EVR 和趋势候选的成交量、价格与支撑确认。普通弱确认至少 2/3，纯 SOS 正式候选要求 3/3 |
+| **水温屏蔽买点** | Regime-Blocked Signal | `AShareEntryResearchPolicy.blocked_confirmed_regime_signals` 列出的（水温, 买点）组合。当前 `BEAR_REBOUND` / `CAUTION` 屏蔽 `trend_breakout`：车道层不产出，Step4、影子账本与回放按执行日水温拦截 |
 | **DETECTED / SURVIVED / VALIDATED / OMS_APPROVED** | 候选状态链 | 依次表示当日结构命中、跨日未失效、需求已经确认、OMS 最终核准。库内 `confirmed` 是 `VALIDATED` 的兼容值；前两层不可下单 |
 | **ATR 止损放宽** | ATR Stop Relaxation | 持仓诊断中，根据波动率在上限内降低固定止损线，避免正常洗盘误杀；它只放宽、不收紧，也不取消硬止损 |
 | **可卖股数** | Sellable Shares | A 股 T+1 下当日实际能卖出的股数。持仓无分笔明细，买入日期等于当前交易日时整个仓位记为 0，EXIT/TRIM 与强制止损离场都会被拒并顺延到下一交易日。港股 / 美股为 T+0，同日买入仍可卖，不得套用 A 股冻结 |

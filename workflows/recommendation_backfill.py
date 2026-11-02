@@ -300,7 +300,7 @@ def _pending_rows_for_day(result: dict[str, Any]) -> list[dict]:
     details = result.get("step2_details") or {}
     metrics = details.get("metrics", {}) or {}
     candidate_entries = _selected_candidate_entries(details)
-    triggers = merge_trigger_maps(details.get("triggers") or {}, candidate_signal_triggers(candidate_entries))
+    triggers = merge_trigger_maps(candidate_signal_triggers(candidate_entries), details.get("triggers") or {})
     return build_pending_signal_rows(
         signal_date=str(result.get("trade_date") or ""),
         triggers=triggers,

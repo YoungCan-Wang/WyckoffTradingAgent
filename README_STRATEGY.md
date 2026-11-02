@@ -353,6 +353,8 @@ L4 命中不等于可交易。`core/candidate_policy.py` 在送入 Step3 前统�
 - 单 EVR、单 LPS 和单 Trend Pullback 默认只观察。
 - 纯 SOS 除分数门槛外，Springboard ABC 必须 **3/3** 全部满足；其他右侧/趋势候选至少 **2/3**。数据不足时按保守值处理，不因“无法计算”放行。
 - RISK_ON / BEAR_REBOUND 中的短期过热、纯动量追涨，以及不同水温下的 20 日高位追涨会被拦截。
+- BEAR_REBOUND / CAUTION 当日屏蔽 `trend_breakout`：车道层不再产生该候选，已在待确认池的由 Step4 按执行日水温拦截；回测与影子账本读同一份 `AShareEntryResearchPolicy` 默认值。
+- 趋势候选的跨日确认要求缩量或收阳，放量阴线即使站上 MA20 也继续等待。
 - 主线、旁路与动态调权不能绕过这些最终损失护栏。L2 会记录八通道的原始命中数，用于区分“通道真的长期为 0”与“被其他通道先分类”，该诊断不改变候选结果。
 
 ---

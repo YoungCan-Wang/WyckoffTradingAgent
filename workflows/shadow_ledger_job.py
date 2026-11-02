@@ -84,7 +84,7 @@ def _run_shadow_session(
     return run_shadow_session(
         book,
         load_planned(SHADOW_ACCOUNT_ID),
-        _buy_candidates(symbols_info, step3_report_text),
+        _buy_candidates(symbols_info, step3_report_text, (benchmark_context or {}).get("regime")),
         step2_details.get("all_df_map") or {},
         as_of,
         # 跟 allow_ai_review 而非 allow_recommendation_write：影子账本是研究对照，
@@ -109,8 +109,8 @@ def _persist_session(session: ShadowSession) -> None:
     )
 
 
-def _buy_candidates(symbols_info: list[dict], step3_report_text: str) -> list[dict]:
-    selected, _blocked = step4_candidate_meta(symbols_info, [], step3_report_text)
+def _buy_candidates(symbols_info: list[dict], step3_report_text: str, regime: object) -> list[dict]:
+    selected, _blocked = step4_candidate_meta(symbols_info, [], step3_report_text, regime=regime)
     return [
         item for item in selected if not is_user_facing_etf(str(item.get("code") or ""), str(item.get("name") or ""))
     ]

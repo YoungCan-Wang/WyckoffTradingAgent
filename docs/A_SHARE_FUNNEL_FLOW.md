@@ -370,7 +370,7 @@ flowchart LR
 
 ## 五、Step4 OMS 持仓决断
 
-Step4 不再默认把“Step3 起跳板”当成唯一入口。生产默认 `STEP4_AI_CANDIDATE_POLICY=veto_only`：程序先收集全部跨日确认、市场与候选护栏均允许的新仓候选，再剔除 Step3 明确归入“逻辑破产”的代码。AI不能把未确认、只读、观察或市场阻断候选升级成买入；对外部新仓给出的 `ATTACK` 也会被降为 `PROBE`。
+Step4 不再默认把“Step3 起跳板”当成唯一入口。生产默认 `STEP4_AI_CANDIDATE_POLICY=veto_only`：程序先收集全部跨日确认、市场与候选护栏均允许的新仓候选，再剔除 Step3 明确归入“逻辑破产”的代码。AI不能把未确认、只读、观察或市场阻断候选升级成买入；对外部新仓给出的 `ATTACK` 也会被降为 `PROBE`。执行日水温为 `BEAR_REBOUND` / `CAUTION` 时，`trend_breakout` 确认候选不进入新仓名单；判定读 `AShareEntryResearchPolicy` 默认值与当日 `benchmark_context.regime`，与回放和影子账本同源。
 
 候选审计只保留两种模式：`veto_only` 应用 Step3 的明确否决，`shadow` 仅记录分类用于实验对照。两种模式都不绕过跨日价格确认和 OMS。
 

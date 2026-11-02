@@ -168,12 +168,14 @@ def _confirm_trend_candidate(snap: dict, today: dict, days_elapsed: int) -> tupl
         return "expired", f"跌破确认支撑 {support:.2f}"
     if snap_vol > 0 and today["volume"] > snap_vol * 1.8 and today["close"] < max(support, snap_close) * 0.985:
         return "expired", "放量跌破确认区，趋势候选失效"
-    # 0–1 日快速确认：守住信号低点 +（缩量或阳线），不必死等 MA20。
+    # 放量阴线不算确认：下面三条路径只看收盘站位，分不出它和缩量回踩。
+    dry = snap_vol <= 0 or today["volume"] <= snap_vol * 1.05
+    bullish = today["close"] >= today.get("open", today["close"])
+    if not (dry or bullish):
+        return "pending", "放量阴线，等待主线/趋势买点确认"
+    # 0–1 日快速确认：守住信号低点即可，不必死等 MA20。
     if days_elapsed <= 1 and snap_low > 0 and today["close"] >= snap_low and today["close"] >= snap_close * 0.985:
-        dry = snap_vol <= 0 or today["volume"] <= snap_vol * 1.05
-        bullish = today["close"] >= today.get("open", today["close"])
-        if dry or bullish:
-            return "confirmed", f"快速确认：守住信号区，收盘 {today['close']:.2f}"
+        return "confirmed", f"快速确认：守住信号区，收盘 {today['close']:.2f}"
     if ma20 > 0 and today["close"] >= ma20 * 0.995 and today["close"] >= snap_close * 0.985:
         return "confirmed", f"守住MA20/信号收盘，收盘 {today['close']:.2f}"
     if support > 0 and today["close"] >= support and today["close"] >= snap_close:

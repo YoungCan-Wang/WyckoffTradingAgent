@@ -4,6 +4,7 @@ from core.a_share_entry_research import (
     confirmed_signal_allowed,
     entry_weight_multiplier,
     market_context_allows_entry,
+    regime_blocked_signals,
     research_max_hold_days,
 )
 
@@ -44,6 +45,15 @@ def test_confirmed_signal_policy_can_block_one_regime_signal_pair() -> None:
     assert not confirmed_signal_allowed(policy, "spring", "neutral")
     assert confirmed_signal_allowed(policy, "spring", "CAUTION")
     assert confirmed_signal_allowed(policy, "sos", "NEUTRAL")
+
+
+def test_default_policy_blocks_trend_breakout_in_bear_rebound_and_caution() -> None:
+    policy = AShareEntryResearchPolicy()
+
+    assert not confirmed_signal_allowed(policy, "trend_breakout", "BEAR_REBOUND")
+    assert not confirmed_signal_allowed(policy, "trend_breakout", "CAUTION")
+    assert confirmed_signal_allowed(policy, "trend_lane_pullback", "BEAR_REBOUND")
+    assert confirmed_signal_allowed(policy, "main_force_entry", "BEAR_REBOUND")
 
 
 def test_research_max_hold_days_only_shortens_matching_regime_signal() -> None:
@@ -89,3 +99,10 @@ def test_spring_prior_reflects_measured_underperformance() -> None:
     assert CONFIRMED_SIGNAL_PRIOR["spring"] < CONFIRMED_SIGNAL_PRIOR["compression"]
     assert CONFIRMED_SIGNAL_PRIOR["spring"] < CONFIRMED_SIGNAL_PRIOR["trend_pullback"]
     assert CONFIRMED_SIGNAL_PRIOR["spring"] > CONFIRMED_SIGNAL_PRIOR["evr"]
+
+
+def test_regime_blocked_signals_reads_the_pairs_of_one_regime() -> None:
+    policy = AShareEntryResearchPolicy(blocked_confirmed_regime_signals=(("NEUTRAL", "Spring"), ("CAUTION", "evr")))
+
+    assert regime_blocked_signals(policy, " neutral ") == ("spring",)
+    assert regime_blocked_signals(policy, "RISK_ON") == ()

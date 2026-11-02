@@ -81,3 +81,19 @@ def test_merge_candidate_entries_treats_invalid_scores_as_zero() -> None:
     )
 
     assert [(item["code"], item["score"]) for item in merged] == [("000001", 80.0), ("000002", 0.0)]
+
+
+def test_lane_score_preserves_l3_and_l2_bonus_without_ceiling_clipping() -> None:
+    from core.candidate_lanes import _lane_score
+
+    metrics = {"ret60": 60.0, "close_pos20": 1.0, "dist_ma20": 3.0, "main_force_score": 1.0}
+    s_none = _lane_score("main_force_entry", metrics, in_top_sector=False, l2_passed=False)
+    s_l2 = _lane_score("main_force_entry", metrics, in_top_sector=False, l2_passed=True)
+    s_l3 = _lane_score("main_force_entry", metrics, in_top_sector=True, l2_passed=False)
+    s_both = _lane_score("main_force_entry", metrics, in_top_sector=True, l2_passed=True)
+
+    assert s_none == 92.0
+    assert s_l2 == 95.0
+    assert s_l3 == 97.0
+    assert s_both == 100.0
+    assert s_none < s_l2 < s_l3 < s_both
