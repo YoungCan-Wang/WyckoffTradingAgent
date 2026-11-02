@@ -122,3 +122,26 @@ class TestRegimeSignalGate:
 
         assert step4_candidate_meta([item], [], regime="NEUTRAL")[0] == [item]
         assert step4_candidate_meta([item], [], regime="BEAR_REBOUND") == ([], 1)
+
+    def test_supabase_shaped_row_uses_primary_signal_or_entry_type(self):
+        """step4_from_supabase 回读行没有 signal_type 时仍须命中水温屏蔽。"""
+        by_primary = _candidate(
+            candidate_status="跨日确认观察",
+            primary_signal="trend_breakout",
+            entry_type="mainline",
+        )
+        by_entry = _candidate(candidate_status="跨日确认观察", entry_type="trend_breakout")
+        assert _rule_eligible_step4_candidate(by_primary, "BEAR_REBOUND") is False
+        assert _rule_eligible_step4_candidate(by_entry, "CAUTION") is False
+        assert _rule_eligible_step4_candidate(by_primary, "NEUTRAL") is True
+
+    def test_empty_regime_falls_back_to_market_signal(self, monkeypatch):
+        """空 benchmark_context 不得对 regime×signal 闸门 fail-open。"""
+        monkeypatch.setattr("workflows.step4_pipeline.latest_trade_date_str", lambda: "2026-11-02")
+        monkeypatch.setattr(
+            "workflows.step4_pipeline.resolve_step4_gate_regime",
+            lambda _ctx, _date: "BEAR_REBOUND",
+        )
+        item = _candidate(code="000001", signal_type="trend_breakout", candidate_status="跨日确认观察")
+        assert step4_candidate_meta([item], [], regime="") == ([], 1)
+        assert step4_candidate_meta([item], [], regime=None) == ([], 1)
