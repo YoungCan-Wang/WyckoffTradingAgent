@@ -21,6 +21,7 @@ from agents.tool_context import (
     with_auth_retry,
 )
 from core.buy_dt import POSITION_EXISTS_ERROR, POSITION_MISSING_ERROR, buy_dt_error
+from utils.trading_clock import cn_today
 
 logger = logging.getLogger(__name__)
 
@@ -449,8 +450,8 @@ def _portfolio_diagnosis(portfolio_id: str, state: dict, tool_context: ToolConte
             "free_cash": state.get("free_cash", 0),
             "positions": [],
         }
-    start_date = date.today() - timedelta(days=500)
-    end_date = date.today()
+    end_date = cn_today()
+    start_date = end_date - timedelta(days=500)
     results, hints, success, failed = [], [], 0, 0
     for position in state["positions"]:
         diagnostic = _diagnose_position(position, start_date, end_date, hints)

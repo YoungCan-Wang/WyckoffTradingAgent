@@ -11,10 +11,15 @@ except Exception:
     DAY_SWITCH_HOUR = 16
 
 
+def cn_today(now: datetime | None = None) -> date:
+    """返回北京时间（Asia/Shanghai）当前自然日，避免非东八区宿主 date.today() 落后一天。"""
+    return (now.astimezone(CN_TZ) if now else datetime.now(CN_TZ)).date()
+
+
 def is_a_share_trading_day(d: date | None = None) -> bool:
     """判断给定日期是否为 A 股交易日（基于 akshare 交易日历）。"""
     if d is None:
-        d = datetime.now(CN_TZ).date()
+        d = cn_today()
     if d.weekday() >= 5:
         return False
     try:

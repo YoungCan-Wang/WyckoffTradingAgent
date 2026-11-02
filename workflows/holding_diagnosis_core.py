@@ -22,7 +22,7 @@ from core.wyckoff_engine import FunnelConfig, normalize_hist_from_fetch
 from integrations.fetch_a_share_csv import fetch_hist, resolve_trading_window
 from integrations.index_data_source import fetch_index_hist
 from integrations.supabase_portfolio import load_portfolio_state
-from utils.trading_clock import resolve_end_calendar_day
+from utils.trading_clock import cn_today, resolve_end_calendar_day
 
 HOLDING_ACTION_ADD = "ADD"
 HOLDING_ACTION_HOLD = "HOLD"
@@ -194,7 +194,7 @@ def _hold_trade_days(buy_dt: Any, daily_history: pd.DataFrame | None, *, as_of: 
     if pd.isna(buy_ts):
         return None
     buy_date = buy_ts.date()
-    end_date = as_of or date.today()
+    end_date = as_of or cn_today()
     dates = pd.to_datetime(daily_history["date"], errors="coerce").dropna().dt.date.tolist()
     dates = sorted({d for d in dates if d <= end_date})
     if not dates:

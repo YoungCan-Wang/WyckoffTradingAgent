@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-from datetime import date, timedelta
+from datetime import timedelta
 from typing import Any
 
 from agents.tool_context import ToolContext, get_credential
+from utils.trading_clock import cn_today
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +20,7 @@ def market_regime() -> dict:
         from integrations.data_source import fetch_index_hist
         from tools.market_regime import analyze_benchmark_and_tune_cfg
 
-        end = date.today()
+        end = cn_today()
         start = end - timedelta(days=400)
         bench_df = fetch_index_hist("000001", start, end)
         smallcap_df = fetch_index_hist("399006", start, end)
@@ -37,7 +38,7 @@ def wyckoff_diagnose(code: str) -> dict:
         from core.wyckoff_structure import detect_structure_triggers, identify_trading_range
         from integrations.stock_hist_repository import get_stock_hist, normalize_hist_df
 
-        end = date.today()
+        end = cn_today()
         start = end - timedelta(days=500)
         raw = get_stock_hist(code, start, end)
         if raw is None or raw.empty:
