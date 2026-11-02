@@ -588,16 +588,10 @@ def _apply_breadth_regime(
         breadth_delta is None or float(breadth_delta) >= regime_config.breadth_risk_on_min_delta
     ):
         regime = "RISK_ON"
+    elif regime == "RISK_ON":
+        regime = "NEUTRAL"
     if breadth_delta is not None and float(breadth_delta) <= regime_config.breadth_cliff_drop_pct:
         regime = "RISK_OFF"
-    return regime
-
-
-def _apply_caution_regime(regime: str, breadth_ratio: float | None, regime_config: MarketRegimeConfig) -> str:
-    if regime != "RISK_ON" or breadth_ratio is None:
-        return regime
-    if float(breadth_ratio) < regime_config.breadth_risk_on_threshold:
-        return "CAUTION"
     return regime
 
 
@@ -1026,7 +1020,6 @@ def analyze_benchmark_and_tune_cfg(
     breadth_ratio, breadth_prev, breadth_delta, breadth_sample = _breadth_values(breadth)
     daily_up_ratio, daily_median_pct, prev_daily_up_ratio, prev_daily_median_pct = _daily_breadth_values(breadth)
     regime = _apply_breadth_regime(_trend_regime(main), breadth_ratio, breadth_delta, runtime)
-    regime = _apply_caution_regime(regime, breadth_ratio, runtime)
     regime, panic_reasons, repair_reasons = _apply_panic_repair_regime(
         regime,
         main,
