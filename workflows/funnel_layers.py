@@ -323,6 +323,7 @@ def _build_theme_context(
         sector_map=ref_data.sector_map,
         df_map=all_df_map,
         name_map=ref_data.name_map,
+        ths_hot_events=getattr(ref_data, "ths_hot_events", None),
     )
     radar, source = _resolve_linked_theme_radar(current, trade_date)
     return current, radar, source
@@ -354,10 +355,20 @@ def _safe_build_theme_radar(
     sector_map: dict[str, str],
     df_map: dict[str, pd.DataFrame],
     name_map: dict[str, str],
+    ths_hot_events: dict[str, Any] | None = None,
 ) -> dict:
     if not FUNNEL_THEME_RADAR_ENABLED:
         return empty_theme_snapshot(trade_date)
     try:
+        from utils.env import env_bool
+
+        events = None
+        dynamic_policy = None
+        if env_bool("FUNNEL_POLICY_DISCOVERY_ENABLED", False):
+            from integrations.policy_discovery import build_funnel_policy_events, load_dynamic_policy_themes
+
+            dynamic_policy = load_dynamic_policy_themes(trade_date=trade_date)
+            events = build_funnel_policy_events(ths_hot_events, dynamic_policy)
         return build_theme_radar_snapshot(
             trade_date=trade_date,
             concept_heat=concept_heat,
@@ -365,7 +376,9 @@ def _safe_build_theme_radar(
             concept_map=concept_map,
             sector_map=sector_map,
             df_map=df_map,
+            events=events,
             name_map=name_map,
+            dynamic_policy=dynamic_policy,
         )
     except Exception as exc:
         logger.warning("theme radar build failed: %s", exc)

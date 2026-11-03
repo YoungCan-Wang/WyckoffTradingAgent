@@ -17,7 +17,7 @@ from core.market_trade_mode import NEUTRAL_BLOCKED_BASIS, NEUTRAL_BLOCKED_GUIDAN
 from core.research_discovery import summarize_discovery_sources
 from core.signal_confirmation import compute_support_level, score_springboard_abc
 from core.strategy_policy_display import format_policy_meta_text, format_policy_weight_text
-from core.theme_radar import summarize_theme_radar, summarize_theme_rotation
+from core.theme_radar import summarize_theme_clusters, summarize_theme_radar, summarize_theme_rotation
 from workflows.funnel_ai_selection import FunnelAiSelection
 from workflows.funnel_report_payload import (
     display_score,
@@ -387,6 +387,7 @@ def _top_summary_lines(ctx: Any, selected_count: int, money_line: str) -> list[s
         "**【🔥 主线与轮动】**",
         f"- **中长线主线**: {summarize_theme_radar(snapshot)} ({getattr(ctx, 'theme_radar_source', 'unknown')})",
         f"- **短周期轮动（Shadow）**: {summarize_theme_rotation(snapshot)}",
+        f"- **抱团共振（Shadow）**: {summarize_theme_clusters(snapshot)}",
         f"- **主线买点**: 可交易候选 {len(mainline_tradeable)} 只；观察池 {len(theme_candidate_map)} 只",
     ]
     rotation_gate = _rotation_gate_line(ctx, snapshot)
@@ -398,11 +399,8 @@ def _top_summary_lines(ctx: Any, selected_count: int, money_line: str) -> list[s
 
 
 def _rotation_gate_line(ctx: Any, snapshot: dict[str, Any]) -> str:
-    watch = [
-        item
-        for item in (snapshot.get("rotation_watch") or [])
-        if not is_user_facing_etf(name=str(item.get("theme") or ""))
-    ]
+    raw_watch = list(snapshot.get("rotation_watch") or []) + list(snapshot.get("cluster_watch") or [])
+    watch = [item for item in raw_watch if not is_user_facing_etf(name=str(item.get("theme") or ""))]
     if not watch:
         return ""
     mode = resolve_market_trade_mode(ctx.regime)

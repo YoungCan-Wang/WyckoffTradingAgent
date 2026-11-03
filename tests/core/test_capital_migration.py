@@ -96,3 +96,78 @@ def test_capital_migration_exposes_stock_level_theme_activity() -> None:
 
     assert report["activity"][0]["theme"] == "机器人"
     assert "上涨占比82%" in report["activity"][0]["evidence"]
+
+
+def test_capital_migration_surfaces_policy_cluster_resonance_when_heat_absent() -> None:
+    report = build_capital_migration_report(
+        trade_date="2026-11-03",
+        concept_heat=[],
+        concept_history={"2026-11-02": {"AI算力": {"pct": 4.5, "inflow": 800_000_000}}},
+        sector_rotation={},
+        theme_radar={
+            "cluster_watch": [
+                {
+                    "theme": "消费防御",
+                    "cluster_score": 0.68,
+                    "bull_alignment_ratio": 0.60,
+                    "sync_breakout_count": 4,
+                }
+            ]
+        },
+    )
+
+    assert report["clusters"][0]["theme"] == "消费防御"
+    assert "多头排列占60%，同频起跳4只" in report["clusters"][0]["evidence"]
+    assert ">" not in report["clusters"][0]["evidence"]
+    assert report["confidence"] == "high"
+    assert "从AI算力撤出，转向消费防御" in report["summary"]
+    assert any("抱团: 消费防御" in line for line in report["rotation"])
+
+
+def test_capital_migration_includes_policy_squeeze_rows_without_polluting_outflow() -> None:
+    report = build_capital_migration_report(
+        trade_date="2026-11-03",
+        concept_heat=[],
+        concept_history={},
+        sector_rotation={},
+        theme_radar={
+            "squeeze_watch": [
+                {
+                    "theme": "服务器算力",
+                    "penalty": 0.68,
+                    "title": "人工智能投资过度集中推高杠杆",
+                    "source": "金管总局",
+                }
+            ]
+        },
+    )
+
+    assert report["outflow"] == []
+    assert report["squeeze"][0]["theme"] == "服务器算力"
+    assert report["squeeze"][0]["source"] == "policy_squeeze"
+    assert "政策敲打/去杠杆：人工智能投资过度集中推高杠杆" in report["squeeze"][0]["evidence"]
+
+
+def test_capital_migration_bonus_map_ignores_clusters_and_squeeze() -> None:
+    from core.funnel_theme import capital_migration_bonus_map
+
+    candidate_map = {
+        "600001": {"theme": "芯片半导体"},
+        "600419": {"theme": "消费防御"},
+        "300001": {"theme": "服务器算力"},
+    }
+    base_migration = {
+        "inflow": [{"theme": "芯片半导体", "score": 0.80}],
+        "outflow": [],
+    }
+    shadow_migration = {
+        **base_migration,
+        "clusters": [{"theme": "消费防御", "score": 0.72}],
+        "squeeze": [{"theme": "服务器算力", "score": 0.68}],
+    }
+
+    base_bonus = capital_migration_bonus_map(candidate_map, base_migration, bonus_max=6.0, penalty_max=8.0)
+    shadow_bonus = capital_migration_bonus_map(candidate_map, shadow_migration, bonus_max=6.0, penalty_max=8.0)
+    assert shadow_bonus == base_bonus
+    assert "600419" not in shadow_bonus
+    assert "300001" not in shadow_bonus

@@ -561,3 +561,43 @@ def test_render_context_sanitizes_invalid_candidate_entry_scores(monkeypatch) ->
     )
 
     assert ctx.code_to_total_score == {"BAD": 0.0, "INF": 0.0, "NAN": 0.0, "GOOD": 8.0}
+
+
+def test_top_summary_cluster_watch_renders_clean_feishu_card_elements() -> None:
+    from utils.feishu_report_card import build_report_card_elements
+    from utils.feishu_text import annotate_financial_terms, normalize_lark_md
+    from workflows.funnel_render import _top_summary_lines
+
+    ctx = SimpleNamespace(
+        regime="RISK_OFF",
+        benchmark_context={},
+        metrics={
+            "theme_radar": {
+                "themes": [{"theme": "芯片半导体", "score": 0.72, "state": "confirmed"}],
+                "rotation_watch": [],
+                "cluster_watch": [
+                    {
+                        "theme": "消费防御",
+                        "cluster_score": 0.71,
+                        "bull_alignment_ratio": 0.67,
+                        "sync_breakout_count": 4,
+                    }
+                ],
+            }
+        },
+        theme_radar_source="live",
+        mainline_tradeable=[],
+        theme_candidate_map={},
+        unique_hit_count=5,
+    )
+
+    raw = "\n".join(_top_summary_lines(ctx, 0, "缩量防守"))
+    normalized = normalize_lark_md(annotate_financial_terms(raw))
+    elements = build_report_card_elements(normalized)
+    dumped = str(elements)
+
+    assert "抱团共振（Shadow）" in dumped
+    assert "消费防御 0.71（多头排列占67%，同频起跳4只）" in dumped
+    assert "&gt;" not in dumped
+    assert "&lt;" not in dumped
+    assert any(el.get("tag") == "note" for el in elements)

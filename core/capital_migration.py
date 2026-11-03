@@ -37,16 +37,20 @@ def build_capital_migration_report(
     inflow = _top_inflow_rows(current, radar_map, cfg)
     outflow = _top_outflow_rows(current, previous, sector_rotation or {}, cfg)
     activity = _theme_activity_rows(theme_activity or {}, inflow)
-    summary = _summary(inflow, outflow)
+    clusters = _cluster_rows(theme_radar or {}, inflow)
+    squeeze = _policy_squeeze_rows(theme_radar or {})
+    summary = _summary(inflow, outflow, clusters)
     return {
         "version": "capital_migration_v1",
         "trade_date": trade_date,
         "summary": summary,
-        "confidence": _confidence(inflow, outflow),
+        "confidence": _confidence(inflow, outflow, clusters),
         "inflow": inflow,
         "outflow": outflow,
         "activity": activity,
-        "rotation": _rotation_lines(inflow, outflow),
+        "clusters": clusters,
+        "squeeze": squeeze,
+        "rotation": _rotation_lines(inflow, outflow, clusters),
     }
 
 
@@ -145,6 +149,31 @@ def _activity_evidence(item: dict[str, Any]) -> str:
     )
 
 
+def _cluster_rows(theme_radar: dict[str, Any], inflow: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    inflow_themes = {str(row.get("theme") or "") for row in inflow}
+    rows = []
+    for item in theme_radar.get("cluster_watch") or []:
+        theme = _theme(item.get("theme"))
+        score = _num(item.get("cluster_score") or item.get("score"))
+        if not theme or theme in inflow_themes or score < 0.45:
+            continue
+        rows.append(
+            {
+                "theme": theme,
+                "score": round(score, 4),
+                "evidence": _cluster_evidence(item),
+                "source": "theme_cluster",
+            }
+        )
+    return sorted(rows, key=lambda item: (-float(item["score"]), item["theme"]))[:3]
+
+
+def _cluster_evidence(item: dict[str, Any]) -> str:
+    bull = _fmt_percent_ratio(item.get("bull_alignment_ratio"))
+    sync = int(_num(item.get("sync_breakout_count")))
+    return f"多头排列占{bull}，同频起跳{sync}只"
+
+
 def _history_outflows(current: dict[str, dict[str, Any]], previous: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     rows = []
     current_scores = {theme: _current_score(row, {}) for theme, row in current.items()}
@@ -195,6 +224,25 @@ def _sector_outflow_score(info: dict[str, Any], state: str) -> float:
     return 0.0
 
 
+def _policy_squeeze_rows(theme_radar: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = []
+    for item in theme_radar.get("squeeze_watch") or []:
+        theme = _theme(item.get("theme"))
+        penalty = _num(item.get("penalty"))
+        if not theme or penalty < 0.45:
+            continue
+        title = str(item.get("title") or "监管敲打/去杠杆信号").strip()[:48]
+        rows.append(
+            {
+                "theme": theme,
+                "score": round(_clamp(max(0.50, penalty)), 4),
+                "evidence": f"政策敲打/去杠杆：{title}",
+                "source": "policy_squeeze",
+            }
+        )
+    return rows
+
+
 def _dedupe_outflows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     merged: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -232,31 +280,52 @@ def _sector_evidence(info: dict[str, Any], state: str) -> str:
     )
 
 
-def _summary(inflow: list[dict[str, Any]], outflow: list[dict[str, Any]]) -> str:
-    if inflow and outflow:
-        return f"资金从{_names(outflow)}撤出，转向{_names(inflow)}"
+def _summary(
+    inflow: list[dict[str, Any]],
+    outflow: list[dict[str, Any]],
+    clusters: list[dict[str, Any]] | None = None,
+) -> str:
+    target = inflow or (clusters or [])
+    if target and outflow:
+        return f"资金从{_names(outflow)}撤出，转向{_names(target)}"
     if inflow:
         return f"资金集中在{_names(inflow)}，暂未识别明确撤出方向"
+    if clusters:
+        return f"政策/机构抱团共振集中在{_names(clusters)}"
     if outflow:
         return f"{_names(outflow)}出现资金撤退迹象，尚未形成明确承接方向"
     return "暂无明确资金迁徙信号"
 
 
-def _rotation_lines(inflow: list[dict[str, Any]], outflow: list[dict[str, Any]]) -> list[str]:
+def _rotation_lines(
+    inflow: list[dict[str, Any]],
+    outflow: list[dict[str, Any]],
+    clusters: list[dict[str, Any]] | None = None,
+) -> list[str]:
     lines = []
     if inflow:
         lines.append("流入: " + "； ".join(f"{x['theme']}({x['evidence']})" for x in inflow))
+    elif clusters:
+        lines.append("抱团: " + "； ".join(f"{x['theme']}({x['evidence']})" for x in clusters))
     if outflow:
         lines.append("流出: " + "； ".join(f"{x['theme']}({x['evidence']})" for x in outflow))
-    if inflow and outflow:
-        lines.append(f"迁徙: {_names(outflow)} -> {_names(inflow)}")
+    if inflow and clusters:
+        lines.append("抱团: " + "； ".join(f"{x['theme']}({x['evidence']})" for x in clusters))
+    target = inflow or (clusters or [])
+    if target and outflow:
+        lines.append(f"迁徙: {_names(outflow)} -> {_names(target)}")
     return lines
 
 
-def _confidence(inflow: list[dict[str, Any]], outflow: list[dict[str, Any]]) -> str:
-    if inflow and outflow and max(float(x["score"]) for x in inflow) >= 0.65:
+def _confidence(
+    inflow: list[dict[str, Any]],
+    outflow: list[dict[str, Any]],
+    clusters: list[dict[str, Any]] | None = None,
+) -> str:
+    target = inflow or (clusters or [])
+    if target and outflow and max(float(x["score"]) for x in target) >= 0.65:
         return "high"
-    if inflow or outflow:
+    if target or outflow:
         return "medium"
     return "low"
 

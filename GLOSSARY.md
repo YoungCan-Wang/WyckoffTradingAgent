@@ -133,7 +133,9 @@
 | **新仓止损配置** | 当前生产 `STEP4_BUY_HARD_STOP_PCT=5.0`；12% 是代码默认而非线上值。结构候选风险护栏与实际工单止损分层，已有持仓继承已持久化止损 |
 | **theme_score** | 概念热度、连续性和主题雷达强度得分 |
 | **rotation_watch** | 主题雷达的短周期 Shadow 观察：按 5/10/20 日相对动量、5 日上涨宽度和热度做横截面排序，只进入报告提示，不进入正式候选、推荐或 OMS |
-| **主题确认 vs 轮动提示** | `themes` 表示中长线持续性确认，可供主线引擎使用；`rotation_watch` 只表示短周期正在升温，两者不能互相替代 |
+| **cluster_watch** | 主题雷达的政策/机构抱团共振 Shadow 观察：结合主题内 200 日 `MA50 > MA200` 多头排列占比（`bull_alignment_ratio`）、当日放量起跳数与占比（`sync_breakout_count` / `sync_breakout_ratio`）识别同频建仓抱团，仅作为报告与 `capital_migration.clusters` 提示，不参与 `capital_migration_bonus_map` 改分 |
+| **squeeze_watch / policy_discovery** | 动态政策自迭代（`integrations/policy_discovery.py`，由 `FUNNEL_POLICY_DISCOVERY_ENABLED` 开关控制，默认关闭底层注入）：由 DeepSeek 解析实时政策快讯与热榜事件，热更新受白名单与词长校验的 `dynamic_aliases`、`boost_themes` 与 `squeeze_themes`；受敲打方向进入 `squeeze_watch` 与 `capital_migration.squeeze` 展示，不污染 `outflow` 候选扣分 |
+| **主题确认 vs 轮动提示** | `themes` 表示中长线持续性确认，可供主线引擎使用；`rotation_watch` 与 `cluster_watch` 分别表示短周期升温与同频抱团共振，两者不能替代中长线确认或直接打开市场总闸 |
 | **stock_role_score** | 股票在主题内的核心程度、相对强度和趋势位置得分 |
 | **quality_score** | 财务质量软评分，优先使用 TickFlow 可取到的 ROE、负债率、营收和利润趋势等字段 |
 | **timing_score** | 买点时机评分，检查 MA20/MA50、回踩不破、平台突破、缩量承接等 |

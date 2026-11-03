@@ -112,6 +112,10 @@ class ThemeScore:
     ret20: float
     advancing_ratio_5d: float
     evidence: list[str]
+    bull_alignment_ratio: float = 0.0
+    sync_breakout_count: int = 0
+    sync_breakout_ratio: float = 0.0
+    cluster_score: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -130,6 +134,17 @@ class StrategicCandidate:
     breakout_age_days: int
     state: str
     reasons: list[str]
+
+
+def merge_theme_aliases(dynamic_aliases: dict[str, Any] | None = None) -> dict[str, tuple[str, ...]]:
+    merged = {theme: tuple(keys) for theme, keys in THEME_ALIASES.items()}
+    for raw_theme, raw_keys in (dynamic_aliases or {}).items():
+        theme = str(raw_theme or "").strip()
+        if not theme or not is_actionable_theme_name(theme):
+            continue
+        extra = [str(k).strip() for k in (raw_keys or []) if str(k or "").strip()]
+        merged[theme] = tuple(dict.fromkeys([*merged.get(theme, ()), *extra]))
+    return merged
 
 
 def normalize_theme_name(raw: str, aliases: dict[str, tuple[str, ...]] | None = None) -> str:
@@ -202,13 +217,15 @@ def build_theme_radar_snapshot(
     events: list[dict[str, Any]] | None = None,
     name_map: dict[str, str] | None = None,
     config: ThemeRadarConfig | None = None,
+    dynamic_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     cfg = config or ThemeRadarConfig()
+    aliases = merge_theme_aliases((dynamic_policy or {}).get("dynamic_aliases")) if dynamic_policy else None
     features = _stock_features(df_map)
-    heat = _heat_by_theme(concept_heat)
-    history = _history_by_theme(concept_history or {})
-    event_map = _events_by_theme(events or [])
-    member_index = _theme_member_index(concept_map, sector_map)
+    heat = _heat_by_theme(concept_heat, aliases)
+    history = _history_by_theme(concept_history or {}, aliases)
+    event_map = _events_by_theme([*(events or []), *_policy_events(dynamic_policy)], aliases)
+    member_index = _theme_member_index(concept_map, sector_map, aliases)
     themes = _theme_universe(heat, history, event_map, member_index)
     markets = {theme: _theme_market_metrics(member_index.get(theme, []), features) for theme in themes}
     rotation_scores = _rotation_scores(markets, heat)
@@ -218,11 +235,15 @@ def build_theme_radar_snapshot(
     ]
     ranked = sorted(scores, key=lambda item: item.score, reverse=True)[: cfg.top_themes]
     rotation_watch = _rotation_watch(scores, cfg)
+    cluster_watch = _cluster_watch(scores, cfg)
+    squeeze_watch = _squeeze_watch(scores, event_map)
     candidates = _build_candidates(ranked, member_index, features, name_map or {}, cfg)
     return {
         "trade_date": trade_date,
         "themes": [asdict(item) for item in ranked if item.score >= cfg.min_theme_score],
         "rotation_watch": [asdict(item) for item in rotation_watch],
+        "cluster_watch": [asdict(item) for item in cluster_watch],
+        "squeeze_watch": squeeze_watch,
         "strategic_candidates": [asdict(item) for item in candidates],
     }
 
@@ -246,6 +267,22 @@ def summarize_theme_rotation(snapshot: dict[str, Any], limit: int = 3) -> str:
     return "；".join(
         f"{item['theme']} {item['rotation_score']:.2f}/{item['rotation_state']}"
         f"（5日{item['ret5']:+.1f}%，上涨占比{item['advancing_ratio_5d']:.0%}）"
+        for item in themes
+    )
+
+
+def summarize_theme_clusters(snapshot: dict[str, Any], limit: int = 3) -> str:
+    themes = [
+        item
+        for item in (snapshot.get("cluster_watch") or [])
+        if not is_user_facing_etf(name=str(item.get("theme") or ""))
+    ][:limit]
+    if not themes:
+        return "暂无显著政策抱团共振"
+    return "；".join(
+        f"{item['theme']} {float(item.get('cluster_score') or 0.0):.2f}"
+        f"（多头排列占{float(item.get('bull_alignment_ratio') or 0.0):.0%}，"
+        f"同频起跳{int(item.get('sync_breakout_count') or 0)}只）"
         for item in themes
     )
 
@@ -278,6 +315,8 @@ def _raw_stock_metrics(df: pd.DataFrame) -> dict[str, Any]:
         "above_ma60": _above_ma(close, 60),
         "above_ma120": _above_ma(close, 120),
         "above_ma200": _above_ma(close, 200),
+        "ma50_gt_ma200": _ma50_gt_ma200(close),
+        "sync_breakout": _sync_breakout(ordered, close),
         "drawdown120": _drawdown_pct(close, 120),
         "near_high_120d": _near_high(close, 120),
         "breakout_age_days": _days_since_high(close, 120),
@@ -315,10 +354,13 @@ def _stock_leader_score(row: dict[str, Any]) -> float:
     return _clamp(0.45 * rps_score + 0.25 * absolute_score + 0.15 * near_high + 0.15 * structure)
 
 
-def _heat_by_theme(concept_heat: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+def _heat_by_theme(
+    concept_heat: list[dict[str, Any]],
+    aliases: dict[str, tuple[str, ...]] | None = None,
+) -> dict[str, dict[str, Any]]:
     heat: dict[str, dict[str, Any]] = {}
     for rank, item in enumerate(concept_heat or [], start=1):
-        theme = normalize_theme_name(str(item.get("name", "")))
+        theme = normalize_theme_name(str(item.get("name", "")), aliases)
         if not theme or not is_actionable_theme_name(theme):
             continue
         bucket = heat.setdefault(theme, {"score": 0.0, "concepts": [], "pct": 0.0, "inflow": 0.0})
@@ -338,38 +380,68 @@ def _heat_item_score(item: dict[str, Any], rank: int) -> float:
     return 0.35 * pct_score + 0.40 * flow_score + 0.25 * rank_score
 
 
-def _history_by_theme(history: dict[str, dict]) -> dict[str, dict[str, Any]]:
+def _history_by_theme(
+    history: dict[str, dict],
+    aliases: dict[str, tuple[str, ...]] | None = None,
+) -> dict[str, dict[str, Any]]:
     dates = sorted(history.keys(), reverse=True)
     if not dates:
         return {}
-    latest = _themes_for_day(history.get(dates[0], {}))
+    latest = _themes_for_day(history.get(dates[0], {}), aliases)
     result: dict[str, dict[str, Any]] = {}
     for theme in latest:
-        streak = _theme_streak(theme, dates, history)
-        appearances = sum(1 for d in dates[:10] if theme in _themes_for_day(history.get(d, {})))
+        streak = _theme_streak(theme, dates, history, aliases)
+        appearances = sum(1 for d in dates[:10] if theme in _themes_for_day(history.get(d, {}), aliases))
         result[theme] = {"streak": streak, "score": _clamp(0.65 * streak / 5.0 + 0.35 * appearances / 10.0)}
     return result
 
 
-def _themes_for_day(day: dict[str, Any]) -> set[str]:
-    return {theme for name in day.keys() if (theme := normalize_theme_name(name)) and is_actionable_theme_name(theme)}
+def _themes_for_day(day: dict[str, Any], aliases: dict[str, tuple[str, ...]] | None = None) -> set[str]:
+    return {
+        theme
+        for name in day.keys()
+        if (theme := normalize_theme_name(name, aliases)) and is_actionable_theme_name(theme)
+    }
 
 
-def _theme_streak(theme: str, dates: list[str], history: dict[str, dict]) -> int:
+def _theme_streak(
+    theme: str,
+    dates: list[str],
+    history: dict[str, dict],
+    aliases: dict[str, tuple[str, ...]] | None = None,
+) -> int:
     streak = 0
     for trade_date in dates:
-        if theme not in _themes_for_day(history.get(trade_date, {})):
+        if theme not in _themes_for_day(history.get(trade_date, {}), aliases):
             break
         streak += 1
     return streak
 
 
-def _events_by_theme(events: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+def _policy_events(dynamic_policy: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not dynamic_policy:
+        return []
+    out: list[dict[str, Any]] = []
+    for item in dynamic_policy.get("boost_themes") or []:
+        theme = str(item.get("theme") or "").strip()
+        if theme:
+            out.append({**item, "themes": [theme], "sentiment": "boost"})
+    for item in dynamic_policy.get("squeeze_themes") or []:
+        theme = str(item.get("theme") or "").strip()
+        if theme:
+            out.append({**item, "themes": [theme], "sentiment": "squeeze"})
+    return out
+
+
+def _events_by_theme(
+    events: list[dict[str, Any]],
+    aliases: dict[str, tuple[str, ...]] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     for event in events:
-        themes = event.get("themes") or infer_event_themes(event)
+        themes = event.get("themes") or infer_event_themes(event, aliases)
         for theme in themes:
-            normalized = normalize_theme_name(str(theme))
+            normalized = normalize_theme_name(str(theme), aliases)
             if is_actionable_theme_name(normalized):
                 grouped.setdefault(normalized, []).append(event)
     return grouped
@@ -392,10 +464,13 @@ def _score_theme(
     market: dict[str, float],
     rotation_score: float,
 ) -> ThemeScore:
+    theme_events = events.get(theme, [])
     heat_score = float((heat.get(theme) or {}).get("score") or 0.0)
     persistence = float((history.get(theme) or {}).get("score") or 0.0)
-    catalyst = _catalyst_score(events.get(theme, []))
+    catalyst = _catalyst_score(theme_events)
+    squeeze = _squeeze_score(theme_events)
     crowding = _crowding_score(market, heat.get(theme) or {})
+    cluster_score = _clamp(_cluster_score(market, catalyst, persistence) - 0.25 * squeeze)
     score = _clamp(
         0.24 * market["structure_score"]
         + 0.22 * market["leader_score"]
@@ -424,7 +499,38 @@ def _score_theme(
         ret20=round(float(market["ret20"]), 4),
         advancing_ratio_5d=round(float(market["advancing_ratio_5d"]), 4),
         evidence=_theme_evidence(theme, heat, history, events),
+        bull_alignment_ratio=round(float(market.get("bull_alignment_ratio", 0.0)), 4),
+        sync_breakout_count=int(market.get("sync_breakout_count", 0.0)),
+        sync_breakout_ratio=round(float(market.get("sync_breakout_ratio", 0.0)), 4),
+        cluster_score=round(cluster_score, 4),
     )
+
+
+def _cluster_score(market: dict[str, float], catalyst: float, persistence: float) -> float:
+    bull_ratio = float(market.get("bull_alignment_ratio", 0.0))
+    sync_ratio = float(market.get("sync_breakout_ratio", 0.0))
+    sync_count = float(market.get("sync_breakout_count", 0.0))
+    sync_score = 0.65 * _clamp(sync_ratio / 0.20) + 0.35 * _clamp(sync_count / 5.0)
+    return _clamp(
+        0.35 * bull_ratio + 0.30 * sync_score + 0.20 * market["leader_score"] + 0.15 * max(catalyst, persistence)
+    )
+
+
+def _cluster_watch(scores: list[ThemeScore], cfg: ThemeRadarConfig) -> list[ThemeScore]:
+    eligible = [
+        item
+        for item in scores
+        if item.member_count >= cfg.min_rotation_members
+        and item.cluster_score >= 0.45
+        and item.bull_alignment_ratio >= 0.30
+        and item.sync_breakout_count >= 2
+        and item.sync_breakout_ratio >= 0.08
+    ]
+    return sorted(
+        eligible,
+        key=lambda item: (item.cluster_score, item.sync_breakout_ratio, item.bull_alignment_ratio),
+        reverse=True,
+    )[: cfg.max_rotation_themes]
 
 
 def _rotation_scores(markets: dict[str, dict[str, float]], heat: dict[str, dict[str, Any]]) -> dict[str, float]:
@@ -464,15 +570,19 @@ def _rotation_state(score: float) -> str:
     return "quiet"
 
 
-def _theme_member_index(concept_map: dict[str, list[str]], sector_map: dict[str, str]) -> dict[str, list[str]]:
+def _theme_member_index(
+    concept_map: dict[str, list[str]],
+    sector_map: dict[str, str],
+    aliases: dict[str, tuple[str, ...]] | None = None,
+) -> dict[str, list[str]]:
     index: dict[str, set[str]] = {}
     for code, concepts in concept_map.items():
         for concept in concepts or []:
-            theme = normalize_theme_name(concept)
+            theme = normalize_theme_name(concept, aliases)
             if theme and is_actionable_theme_name(theme):
                 index.setdefault(theme, set()).add(str(code))
     for code, sector in sector_map.items():
-        theme = normalize_theme_name(str(sector))
+        theme = normalize_theme_name(str(sector), aliases)
         if theme and is_actionable_theme_name(theme):
             index.setdefault(theme, set()).add(str(code))
     return {theme: sorted(members) for theme, members in index.items()}
@@ -491,6 +601,9 @@ def _theme_market_metrics(members: list[str], features: dict[str, dict[str, Any]
             "ret10": 0.0,
             "ret20": 0.0,
             "advancing_ratio_5d": 0.0,
+            "bull_alignment_ratio": 0.0,
+            "sync_breakout_count": 0.0,
+            "sync_breakout_ratio": 0.0,
         }
     structures = sorted((float(row["structure_score"]) for row in rows), reverse=True)[:20]
     leaders = sorted((float(row["leader_score"]) for row in rows), reverse=True)[:20]
@@ -498,6 +611,8 @@ def _theme_market_metrics(members: list[str], features: dict[str, dict[str, Any]
     ret5_values = [_as_float(row.get("ret5")) or 0.0 for row in rows]
     ret10_values = [_as_float(row.get("ret10")) or 0.0 for row in rows]
     ret20_values = [_as_float(row.get("ret20")) or 0.0 for row in rows]
+    bull_score = sum(float(row.get("ma50_gt_ma200", 0.0) or 0.0) for row in rows)
+    sync_count = sum(1 for row in rows if float(row.get("sync_breakout", 0.0) or 0.0) > 0)
     return {
         "member_count": float(len(rows)),
         "leader_count": float(sum(1 for row in rows if float(row.get("leader_score", 0.0) or 0.0) >= 0.70)),
@@ -508,6 +623,9 @@ def _theme_market_metrics(members: list[str], features: dict[str, dict[str, Any]
         "ret10": float(median(ret10_values)),
         "ret20": float(median(ret20_values)),
         "advancing_ratio_5d": float(sum(value > 0 for value in ret5_values) / len(ret5_values)),
+        "bull_alignment_ratio": float(bull_score / len(rows)),
+        "sync_breakout_count": float(sync_count),
+        "sync_breakout_ratio": float(sync_count / len(rows)),
     }
 
 
@@ -518,10 +636,51 @@ def _breadth_unit(row: dict[str, Any]) -> float:
 
 
 def _catalyst_score(events: list[dict[str, Any]]) -> float:
-    if not events:
+    positive = [
+        e for e in events if str(e.get("sentiment", "")).lower() != "squeeze" and not _as_float(e.get("penalty"))
+    ]
+    if not positive:
         return 0.0
-    sources = {str(e.get("source", "") or e.get("domain", "")).strip() for e in events}
-    return _clamp(0.55 * min(len(events), 6) / 6.0 + 0.45 * min(len(sources), 4) / 4.0)
+    sources = {str(e.get("source", "") or e.get("domain", "")).strip() for e in positive}
+    base = _clamp(0.55 * min(len(positive), 6) / 6.0 + 0.45 * min(len(sources), 4) / 4.0)
+    weighted = max((_clamp(_as_float(e.get("weight")) or 0.0) for e in positive), default=0.0)
+    return max(base, weighted)
+
+
+def _squeeze_score(events: list[dict[str, Any]]) -> float:
+    penalties = [
+        _clamp(_as_float(e.get("penalty")) or 0.55)
+        for e in events
+        if str(e.get("sentiment", "")).lower() == "squeeze" or (_as_float(e.get("penalty")) or 0.0) > 0
+    ]
+    return max(penalties, default=0.0)
+
+
+def _squeeze_watch(scores: list[ThemeScore], event_map: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    score_map = {item.theme: item for item in scores}
+    for theme, theme_events in event_map.items():
+        penalty = _squeeze_score(theme_events)
+        if penalty < 0.35:
+            continue
+        squeeze_events = [
+            e
+            for e in theme_events
+            if str(e.get("sentiment", "")).lower() == "squeeze" or (_as_float(e.get("penalty")) or 0.0) > 0
+        ]
+        top_event = squeeze_events[0] if squeeze_events else {}
+        item = score_map.get(theme)
+        rows.append(
+            {
+                "theme": theme,
+                "penalty": round(penalty, 4),
+                "score": round(float(item.score), 4) if item else 0.0,
+                "ret5": round(float(item.ret5), 4) if item else 0.0,
+                "title": str(top_event.get("title") or "").strip(),
+                "source": str(top_event.get("source") or "policy").strip(),
+            }
+        )
+    return sorted(rows, key=lambda r: (-float(r["penalty"]), str(r["theme"])))[:5]
 
 
 def _crowding_score(market: dict[str, float], heat: dict[str, Any]) -> float:
@@ -553,7 +712,13 @@ def _theme_evidence(
         evidence.append("heat:" + ",".join((heat[theme].get("concepts") or [])[:3]))
     if theme in history:
         evidence.append(f"streak:{int(history[theme].get('streak') or 0)}")
-    evidence.extend("event:" + str(e.get("title", ""))[:60] for e in events.get(theme, [])[:2])
+    for e in events.get(theme, [])[:2]:
+        prefix = (
+            "squeeze:"
+            if str(e.get("sentiment", "")).lower() == "squeeze" or (_as_float(e.get("penalty")) or 0.0) > 0
+            else "event:"
+        )
+        evidence.append(prefix + str(e.get("title", ""))[:60])
     return evidence[:5]
 
 
@@ -651,6 +816,27 @@ def _above_ma(close: pd.Series, window: int) -> float:
         return 0.0
     ma = close.rolling(window, min_periods=max(3, min(window, len(close)))).mean().iloc[-1]
     return 1.0 if pd.notna(ma) and float(close.iloc[-1]) >= float(ma) else 0.0
+
+
+def _ma50_gt_ma200(close: pd.Series) -> float:
+    if len(close) < 200:
+        return 0.0
+    return 1.0 if float(close.tail(50).mean()) > float(close.tail(200).mean()) else 0.0
+
+
+def _sync_breakout(ordered: pd.DataFrame, close: pd.Series) -> float:
+    if len(close) < 20 or _ret_pct(close, 1) < 1.8 or _above_ma(close, 20) <= 0.0:
+        return 0.0
+    if len(close) >= 200 and float(close.iloc[-1]) < float(close.tail(200).mean()) * 0.98:
+        return 0.0
+    vol_col = "volume" if "volume" in ordered.columns else ("vol" if "vol" in ordered.columns else "")
+    if not vol_col:
+        return 0.0
+    vol = pd.to_numeric(ordered[vol_col], errors="coerce").dropna()
+    if len(vol) < 20:
+        return 0.0
+    mean20 = float(vol.tail(20).mean())
+    return 1.0 if mean20 > 0 and float(vol.iloc[-1]) >= mean20 * 1.2 else 0.0
 
 
 def _near_high(close: pd.Series, lookback: int, tolerance_pct: float = 12.0) -> float:
