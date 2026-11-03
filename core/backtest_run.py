@@ -153,6 +153,7 @@ def _base_funnel_config(config: BacktestRunConfig) -> FunnelConfig:
     if config.replay.board == "us":
         _apply_us_cfg(base_cfg)
     elif config.replay.board == "hk":
+        _apply_non_cn_base_cfg(base_cfg)
         apply_hk_funnel_cfg(base_cfg)
     _apply_funnel_config_overrides(base_cfg, config.funnel_config_overrides)
     # Backtest selection never consumes display-only radar rows; skip their full-universe scan.
@@ -183,12 +184,21 @@ def _apply_funnel_config_overrides(cfg: FunnelConfig, overrides: dict[str, objec
         setattr(cfg, name, value)
 
 
+def _apply_non_cn_base_cfg(cfg: FunnelConfig) -> None:
+    cfg.require_cn_main_or_chinext = False
+    cfg.min_market_cap_yi = 0.0
+    cfg.min_avg_amount_wan = 0.0
+    cfg.enable_rs_filter = True
+    cfg.enable_rs_divergence_channel = True
+    cfg.require_bench_latest_alignment = False
+
+
 def _apply_us_cfg(cfg: FunnelConfig) -> None:
     # 与实盘 workflows/market_funnel_config.py::funnel_config_for_market("us") 保持一致，
-    # 否则回测评估的不是线上真实漏斗（此前误关闭了 RS 过滤，阈值也偏松）。
-    cfg.require_cn_main_or_chinext = False
-    cfg.require_bench_latest_alignment = False
-    # 恢复收敛前参数：SOS 8%/3.2x，不设低价股闸门（与 workflows/market_funnel_config.py 同步）
+    # 否则回测评估的不是线上真实漏斗（此前漏设了 l1_min_close_price/min_avg_amount_wan/
+    # min_market_cap_yi/enable_rs_divergence_channel，误沿用 A 股默认值）。
+    _apply_non_cn_base_cfg(cfg)
+    cfg.l1_min_close_price = 0.0
     cfg.sos_pct_min = 8.0
     cfg.sos_vol_ratio = 3.2
     cfg.spring_vol_ratio = 1.3
