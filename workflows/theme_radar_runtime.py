@@ -36,8 +36,10 @@ def run_theme_radar(*, with_news: bool = False, persist: bool = True) -> dict:
     events = _collect_events(with_news)
     _triggers, metrics = run_funnel_job(include_debug_context=True)
     debug = metrics.get("_debug", {}) or {}
+    trade_date = str(metrics.get("end_trade_date") or date.today().isoformat())
+    dynamic_policy = _resolve_dynamic_policy(with_news, trade_date, metrics)
     snapshot = build_theme_radar_snapshot(
-        trade_date=str(metrics.get("end_trade_date") or date.today().isoformat()),
+        trade_date=trade_date,
         concept_heat=metrics.get("concept_heat_full") or metrics.get("concept_heat", []) or [],
         concept_history=_load_concept_history(),
         concept_map=debug.get("concept_map", {}) or {},
@@ -45,6 +47,7 @@ def run_theme_radar(*, with_news: bool = False, persist: bool = True) -> dict:
         df_map=metrics.get("all_df_map", {}) or {},
         events=events,
         name_map=debug.get("name_map", {}) or {},
+        dynamic_policy=dynamic_policy,
     )
     if persist:
         result = persist_theme_radar_snapshot(snapshot)
@@ -91,6 +94,17 @@ def _collect_events(with_news: bool) -> list[dict]:
     from integrations.theme_news import collect_theme_events
 
     return collect_theme_events()
+
+
+def _resolve_dynamic_policy(with_news: bool, trade_date: str, metrics: dict) -> dict:
+    from integrations.policy_discovery import load_dynamic_policy_themes, refresh_dynamic_policy_themes
+
+    if not with_news:
+        return load_dynamic_policy_themes(trade_date=trade_date)
+    return refresh_dynamic_policy_themes(
+        trade_date=trade_date,
+        ths_hot_events=metrics.get("ths_hot_events"),
+    )
 
 
 def _load_concept_history() -> dict:

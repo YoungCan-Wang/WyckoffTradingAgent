@@ -50,7 +50,8 @@ def capital_migration_bonus_map(
 ) -> dict[str, float]:
     if not candidate_map or not migration:
         return {}
-    inflow_scores = _migration_theme_scores(migration.get("inflow"), bonus_max)
+    inflow_rows = [*(migration.get("inflow") or []), *(migration.get("clusters") or [])]
+    inflow_scores = _migration_theme_scores(inflow_rows, bonus_max)
     outflow_scores = _migration_theme_scores(migration.get("outflow"), penalty_max)
     adjustments: dict[str, float] = {}
     for code, item in candidate_map.items():

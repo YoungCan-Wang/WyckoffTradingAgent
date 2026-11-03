@@ -6,6 +6,7 @@ from core.theme_radar import (
     ThemeRadarConfig,
     build_theme_radar_snapshot,
     normalize_theme_name,
+    summarize_theme_clusters,
     summarize_theme_radar,
     summarize_theme_rotation,
 )
@@ -122,8 +123,33 @@ def test_theme_radar_filters_non_actionable_index_noise() -> None:
 
 def test_theme_radar_normalizes_defensive_value_aliases() -> None:
     assert normalize_theme_name("高股息央企红利") == "红利低波"
+    assert normalize_theme_name("互换便利SFISF回购增持") == "红利低波"
+    assert normalize_theme_name("水泥建材基建") == "价值蓝筹"
     assert normalize_theme_name("银行保险走强") == "大金融"
     assert normalize_theme_name("火电公用事业") == "公用事业"
+    assert normalize_theme_name("免税旅游品牌服饰") == "消费防御"
+    assert normalize_theme_name("摩托车家用电器出海") == "出海制造"
+
+
+def test_theme_radar_detects_policy_cluster_resonance() -> None:
+    codes = ["600398", "601888", "001328"]
+    snapshot = build_theme_radar_snapshot(
+        trade_date="2026-11-03",
+        concept_heat=[],
+        concept_history={},
+        concept_map={code: ["品牌服饰"] for code in codes},
+        sector_map={code: "纺织服饰" for code in codes},
+        df_map={code: _compound_frame(10.0, 0.022) for code in codes},
+        events=[{"title": "品牌服饰必选消费现金流抱团", "source": "test"}],
+        config=ThemeRadarConfig(min_theme_score=0.0, min_stock_score=0.0),
+    )
+
+    clusters = snapshot["cluster_watch"]
+    assert clusters[0]["theme"] == "消费防御"
+    assert clusters[0]["bull_alignment_ratio"] == 1.0
+    assert clusters[0]["sync_breakout_count"] == 3
+    assert "消费防御" in summarize_theme_clusters(snapshot)
+    assert "MA50>MA200占100%，同频起跳3只" in summarize_theme_clusters(snapshot)
 
 
 def test_theme_radar_normalizes_mainline_aliases() -> None:
@@ -209,3 +235,50 @@ def test_theme_radar_snapshot_round_trip_local_db(tmp_path, monkeypatch) -> None
         assert local_db.load_latest_theme_radar_snapshot()["trade_date"] == "2026-05-27"
     finally:
         local_db.reset_connection()
+
+
+def test_theme_radar_dynamic_policy_boost_and_squeeze() -> None:
+    div_codes = ["600001", "600002", "600003"]
+    ai_codes = ["300001", "300002", "300003"]
+    dynamic_policy = {
+        "dynamic_aliases": {"红利低波": ["SFISF互换便利", "10bp费率"]},
+        "boost_themes": [
+            {
+                "theme": "红利低波",
+                "weight": 0.90,
+                "title": "央行开展1000亿SFISF互换便利操作",
+                "source": "央行官网",
+            }
+        ],
+        "squeeze_themes": [
+            {
+                "theme": "AI算力",
+                "penalty": 0.70,
+                "title": "监管提示AI投资过度集中推高杠杆",
+                "source": "金管总局",
+            }
+        ],
+    }
+    snapshot = build_theme_radar_snapshot(
+        trade_date="2026-11-03",
+        concept_heat=[{"name": "SFISF互换便利", "pct": 2.4, "net_inflow": 350_000_000}],
+        concept_history={},
+        concept_map={
+            **{c: ["SFISF互换便利"] for c in div_codes},
+            **{c: ["算力租赁"] for c in ai_codes},
+        },
+        sector_map={},
+        df_map={
+            **{c: _trend_frame(10.0, 0.08) for c in div_codes},
+            **{c: _trend_frame(20.0, -0.02) for c in ai_codes},
+        },
+        dynamic_policy=dynamic_policy,
+        config=ThemeRadarConfig(min_theme_score=0.0, min_stock_score=0.0),
+    )
+
+    themes = {item["theme"]: item for item in snapshot["themes"]}
+    assert "红利低波" in themes
+    assert themes["红利低波"]["catalyst_score"] == 0.90
+    assert snapshot["squeeze_watch"][0]["theme"] == "AI算力"
+    assert snapshot["squeeze_watch"][0]["penalty"] == 0.70
+    assert any(ev.startswith("squeeze:") for ev in themes["AI算力"]["evidence"])

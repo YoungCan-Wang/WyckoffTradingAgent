@@ -38,6 +38,7 @@ data/float_share_cache.json
 data/concept_map_cache.json
 data/concept_heat_cache.json
 data/ths_hot_events_cache.json
+data/dynamic_policy_themes_cache.json
 data/concept_heat_history.json
 data/funnel_snapshots/*
 !data/funnel_snapshots/.gitkeep
