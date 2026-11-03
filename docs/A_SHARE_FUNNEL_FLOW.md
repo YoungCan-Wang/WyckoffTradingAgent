@@ -352,7 +352,7 @@ flowchart LR
     OUT --> MARK["mark_ai_recommendations<br/>recommendation_tracking"]
 ```
 
-`is_ai_recommended` 只由 `mark_ai_recommendations` 在 Step3 **权威**解析后写入：Step2 的 `recommendation_tracking` upsert **不带**该字段，避免同日重跑把已标记的起跳板静默打回 `false`；Step3 失败、起跳板解析失败、或 Step3 输入候选为空（如硬防守 `observe_only` / `allow_ai_review=False` 未送模）时跳过标记，保留库内既有值——空输入产生的「未执行模型审判」状态研报不得当成权威空池。模型在非空输入上真正未放行（抽出 0 只）且解析成功时仍会全量清 `false`。`step4_from_supabase` 读的就是该字段。
+`is_ai_recommended` 只由 `mark_ai_recommendations` 在 Step3 **权威**解析后写入：Step2 的 `recommendation_tracking` upsert **不带**该字段，避免同日重跑把已标记的起跳板静默打回 `false`；Step3 失败、起跳板解析失败、Step3 输入候选为空（如硬防守 `observe_only` / `allow_ai_review=False` 未送模）、或抽出非空但确认闸门后全部被未确认拦截时跳过标记，保留库内既有值——空输入或「全被未确认滤空」都不得当成权威空池。模型在非空输入上真正未放行（抽出 0 只）且解析成功时仍会全量清 `false`。`step4_from_supabase` 读的就是该字段。
 
 **LLM 配置**（workflow 默认）：
 

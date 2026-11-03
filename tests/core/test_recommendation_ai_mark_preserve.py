@@ -110,6 +110,28 @@ def test_parse_step3_springboards_empty_input_is_not_authoritative(monkeypatch):
     assert calls == []
 
 
+def test_parse_step3_springboards_confirm_filter_empty_is_not_authoritative():
+    """#548: extracted codes all blocked as unconfirmed must not wipe AI marks.
+
+    Same-day re-run often re-feeds morning springboards via selected_for_ai without
+    signal_status=confirmed. Model still lists them; confirm-filter drops all.
+    """
+    report = "# 审判\n## 🏹 处于起跳板\n- 600519 贵州茅台：确认起跳\n- 000001 平安银行：确认起跳\n"
+    symbols = [
+        {"code": "600519", "name": "贵州茅台", "signal_status": "pending", "selected_for_ai": True},
+        {"code": "000001", "name": "平安银行", "selected_for_ai": True},
+    ]
+    assert parse_step3_springboards(report, symbols, None) is None
+
+
+def test_parse_step3_springboards_true_empty_extraction_is_authoritative():
+    """Model listed none under 起跳板 → authoritative empty pool (clear false)."""
+    report = "# 审判\n## 🏹 处于起跳板\n- 无\n"
+    symbols = [{"code": "600519", "signal_status": "confirmed"}]
+    result = parse_step3_springboards(report, symbols, None)
+    assert result == ([], {})
+
+
 def test_run_step3_stage_empty_input_does_not_authoritative_mark():
     from workflows.daily_job_step3 import run_step3_stage
 

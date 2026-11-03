@@ -106,8 +106,8 @@ def _merge_data_sources(row: dict[str, Any], *, expected_user_id: str) -> list[s
         if not _session_still_belongs_to(expected_user_id):
             logger.warning("refusing data-source merge: disk identity changed during pull")
             break
-        save_cloud_data_source(expected_user_id, local_key, value)
-        filled.append(local_key)
+        if save_cloud_data_source(expected_user_id, local_key, value):
+            filled.append(local_key)
     return filled
 
 
@@ -144,7 +144,8 @@ def _merge_models(row: dict[str, Any], *, expected_user_id: str) -> list[str]:
             "base_url": str(row.get(f"{prefix}_base_url") or "").strip(),
         }
         try:
-            save_cloud_model_entry(expected_user_id, entry)
+            if not save_cloud_model_entry(expected_user_id, entry):
+                break
         except Exception:
             logger.warning("failed to save cloud model entry: %s", provider, exc_info=True)
             continue
