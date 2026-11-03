@@ -67,7 +67,7 @@ def _confirmation_trigger_map(
     triggers: dict[str, list[tuple[str, float]]],
     candidate_entries: list[dict[str, Any]] | None,
 ) -> dict[str, list[tuple[str, float]]]:
-    return merge_trigger_maps(triggers, candidate_signal_triggers(candidate_entries))
+    return merge_trigger_maps(candidate_signal_triggers(candidate_entries), triggers)
 
 
 def run_step2_5(

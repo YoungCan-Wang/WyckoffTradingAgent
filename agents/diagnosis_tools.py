@@ -15,6 +15,7 @@ from agents.stock_data_helpers import (
 from agents.tool_context import ToolContext, ensure_tushare_token, get_credential
 from utils.safe import drop_empty as _drop_empty
 from utils.safe import safe_float as _safe_float
+from utils.trading_clock import cn_today
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ def analyze_stock(
         if mode == "fundamental":
             return _fundamental_result(code, tool_context)
         ensure_tushare_token(tool_context)
-        end_date = date.today()
+        end_date = cn_today()
         if mode == "price":
             return _price_result(code, days, end_date)
         result = _diagnosis_result(code, cost, end_date, buy_dt)
@@ -60,7 +61,7 @@ def _fundamental_result(code: str, tool_context: ToolContext | None) -> dict:
     records = TickFlowClient(api_key=api_key).get_financial_metrics([code], latest=True)
     latest = next(iter(records.values()), []) if records else []
     metrics = latest[0] if latest else None
-    overlay = evaluate_fundamental_overlay(metrics, signal_date=date.today())
+    overlay = evaluate_fundamental_overlay(metrics, signal_date=cn_today())
     return {"code": code, "name": code_to_name(code), "data_status": "ok" if metrics else "no_data", **overlay}
 
 

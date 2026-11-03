@@ -7,12 +7,13 @@ import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from core.a_share_entry_research import normalized_signal_type
+from core.a_share_entry_research import AShareEntryResearchPolicy, confirmed_signal_allowed, normalized_signal_type
 from integrations.fetch_a_share_csv import resolve_trading_window
 from integrations.supabase_portfolio import load_portfolio_state
 from tools.report_parser import extract_invalidated_codes
 from utils.env import env_bool
 from utils.trading_clock import resolve_end_calendar_day
+from workflows.step4_market import resolve_step4_gate_regime
 from workflows.step4_rebalancer import run as run_step4
 
 TZ = ZoneInfo("Asia/Shanghai")
@@ -179,16 +180,38 @@ def _blocked_buy_signal_types() -> frozenset[str]:
     return frozenset(normalized_signal_type(item) for item in raw.split(",") if item.strip())
 
 
-def _rule_eligible_step4_candidate(item: dict) -> bool:
+def _candidate_signal_type(item: dict) -> str:
+    """规则准入用的信号键。
+
+    漏斗内存候选带 ``signal_type``；``step4_from_supabase`` 回读行只稳有
+    ``primary_signal`` / ``entry_type``。只认前者会让 regime×signal 闸门对空串
+    全部 fail-open。
+    """
+    signal_types = item.get("signal_types")
+    first_listed = ""
+    if isinstance(signal_types, (list, tuple)) and signal_types:
+        first_listed = signal_types[0]
+    return normalized_signal_type(
+        item.get("signal_type")
+        or item.get("trigger")
+        or item.get("primary_signal")
+        or first_listed
+        or item.get("entry_type")
+        or item.get("signal_key")
+    )
+
+
+def _rule_eligible_step4_candidate(item: dict, regime: object = "") -> bool:
     if not is_confirmed_step4_candidate(item):
         return False
     if _is_false_like(item.get("new_buy_allowed")) or _is_false_like(item.get("label_ready")):
         return False
-    blocked_signals = _blocked_buy_signal_types()
-    if blocked_signals:
-        signal = normalized_signal_type(item.get("signal_type") or item.get("trigger"))
-        if signal in blocked_signals:
-            return False
+    signal = _candidate_signal_type(item)
+    if signal in _blocked_buy_signal_types():
+        return False
+    # 必须用执行日水温：候选行没带 regime，pending 表里的又是信号日的，与回测按确认日判定不同口径。
+    if not confirmed_signal_allowed(AShareEntryResearchPolicy(), signal, regime):
+        return False
     readiness = str(item.get("trade_readiness") or "").strip().lower()
     if readiness in _RULE_BLOCKED_READINESS:
         return False
@@ -200,6 +223,8 @@ def _step4_candidate_meta(
     symbols_info: list,
     _step3_springboard_codes: list[str],
     step3_report_text: str = "",
+    *,
+    regime: object,
 ) -> tuple[list[dict], int]:
     items: list[dict] = []
     seen_codes: set[str] = set()
@@ -210,7 +235,7 @@ def _step4_candidate_meta(
         seen_codes.add(code)
         items.append(item)
     require_confirmed = env_bool("STEP4_REQUIRE_CONFIRMED_BUY_CANDIDATE", True)
-    eligible = [item for item in items if _rule_eligible_step4_candidate(item)] if require_confirmed else items
+    eligible = [item for item in items if _rule_eligible_step4_candidate(item, regime)] if require_confirmed else items
     policy = step4_ai_candidate_policy()
     selected = eligible
     if policy == "veto_only":
@@ -224,13 +249,17 @@ def step4_candidate_meta(
     symbols_info: list,
     step3_springboard_codes: list[str],
     step3_report_text: str = "",
+    *,
+    regime: object,
 ) -> tuple[list[dict], int]:
     """公开入口：给同层 runtime 复用 Step4 的规则准入（confirmed / VALIDATED）。
 
     影子账本要与实盘用同一套买许可，否则纸面成绩没有参考价值。跨模块 import 私有名会被
     tests/test_architecture_boundaries.py 拦下，因此在这里显式导出，而不是把逻辑复制一份。
+    空水温不得原样下传：会让 regime×signal 闸门对空串 fail-open，改与 OMS 同源回落。
     """
-    return _step4_candidate_meta(symbols_info, step3_springboard_codes, step3_report_text)
+    gate_regime = regime if str(regime or "").strip() else resolve_step4_gate_regime(None, latest_trade_date_str())
+    return _step4_candidate_meta(symbols_info, step3_springboard_codes, step3_report_text, regime=gate_regime)
 
 
 def run_step4_pipeline(
@@ -256,10 +285,12 @@ def run_step4_pipeline(
 
     user_id = str(step4_target.get("user_id", "") or "").strip()
     portfolio_id = str(step4_target.get("portfolio_id", "") or "").strip()
+    gate_regime = resolve_step4_gate_regime(benchmark_context, latest_trade_date_str())
     candidate_meta, blocked_by_rules = _step4_candidate_meta(
         symbols_info,
         step3_springboard_codes,
         step3_report_text,
+        regime=gate_regime,
     )
     blocked_msg = f"，规则拦截 {blocked_by_rules} 只" if blocked_by_rules else ""
     log_line(

@@ -160,14 +160,9 @@ def test_analyze_stock_fundamental_scores_latest_metrics(monkeypatch) -> None:
                 ]
             }
 
-    class FixedDate(date):
-        @classmethod
-        def today(cls):
-            return date(2025, 4, 30)
-
     monkeypatch.setattr(diagnosis_tools, "get_credential", lambda *_args, **_kwargs: "key")
     monkeypatch.setattr(diagnosis_tools, "code_to_name", lambda _code: "平安银行")
-    monkeypatch.setattr(diagnosis_tools, "date", FixedDate)
+    monkeypatch.setattr(diagnosis_tools, "cn_today", lambda: date(2025, 4, 30))
     monkeypatch.setattr("integrations.tickflow_client.TickFlowClient", FakeTickFlowClient)
 
     result = diagnosis_tools.analyze_stock("000001", mode="fundamental")
@@ -347,3 +342,24 @@ def test_attach_chart_news_events_is_overlay_only(monkeypatch) -> None:
     )
     assert payload["chart_news_note"] == "读盘叠加层，不改变漏斗候选"
     assert payload["chart_news_events"][0]["kind"] == "deal"
+
+
+def test_cn_today_resolves_beijing_date_across_timezones(monkeypatch) -> None:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from utils.trading_clock import cn_today
+
+    us_west_post_close = datetime(2026, 11, 1, 23, 30, tzinfo=ZoneInfo("America/Los_Angeles"))
+    assert cn_today(us_west_post_close) == date(2026, 11, 2)
+
+    seen_end_dates: list[date] = []
+    monkeypatch.setattr(diagnosis_tools, "ensure_tushare_token", lambda *_a, **_kw: None)
+    monkeypatch.setattr(diagnosis_tools, "cn_today", lambda: date(2026, 11, 2))
+    monkeypatch.setattr(
+        diagnosis_tools,
+        "_diagnosis_result",
+        lambda _code, _cost, end_date, _buy_dt="": seen_end_dates.append(end_date) or {"code": "002179"},
+    )
+    diagnosis_tools.analyze_stock("002179", mode="diagnose")
+    assert seen_end_dates == [date(2026, 11, 2)]

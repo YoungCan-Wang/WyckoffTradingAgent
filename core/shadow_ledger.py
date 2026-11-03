@@ -258,7 +258,7 @@ def _candidate_buy_plan(
         suggested_price=close,
         stop_price=stop,
         shares_hint=shares,
-        reason=str(item.get("tag") or item.get("recommend_reason") or "wyckoff_confirmed"),
+        reason=_plan_reason(item),
     )
 
 
@@ -286,6 +286,12 @@ def _stop_sell_plans(book: ShadowBook, as_of: date, account_id: str) -> list[Sha
             )
         )
     return plans
+
+
+def _plan_reason(item: dict[str, Any]) -> str:
+    reason = str(item.get("tag") or item.get("recommend_reason") or "wyckoff_confirmed")
+    route_rule = str(item.get("regime_route_rule") or "")
+    return f"{reason}|route:{route_rule}" if route_rule else reason
 
 
 def _fill_block_reason(book: ShadowBook, plan: ShadowPlan, bars: dict[str, pd.DataFrame], as_of: date) -> str:

@@ -4,6 +4,7 @@ import logging
 from datetime import date, timedelta
 
 from agents.tool_context import ToolContext, ensure_tushare_token
+from utils.trading_clock import cn_today
 
 logger = logging.getLogger(__name__)
 
@@ -63,11 +64,11 @@ def _resolve_backtest_params(
 
 
 def _parse_start_date(raw: str) -> date:
-    return date.fromisoformat(str(raw).strip()[:10]) if raw else date.today() - timedelta(days=180)
+    return date.fromisoformat(str(raw).strip()[:10]) if raw else cn_today() - timedelta(days=180)
 
 
 def _parse_end_date(raw: str) -> date:
-    return date.fromisoformat(str(raw).strip()[:10]) if raw else date.today() - timedelta(days=1)
+    return date.fromisoformat(str(raw).strip()[:10]) if raw else cn_today() - timedelta(days=1)
 
 
 def _portfolio_defaults() -> dict:

@@ -298,7 +298,7 @@ ABC 门槛松紧不是问题所在：met=2 与 met=3 的差异在 1/3/5/10 日�
 - 报告按“一眼结论 → 主线与轮动 → 候选 → 详细市场证据”排序，并把轮动发现与交易许可分行展示；视觉层级不参与策略计算。
 - L2 保留多标签；没有通道命中时返回空标签，不再兜底伪装成“点火破局”。概念聚合按股票稳定去重，同一股票不会对同一概念重复计数。
 - CLI/MCP 的 `get_market_overview` 支持 `trade_date` 历史截面；设置 `include_breadth=true` 后，同时返回该交易日全市上涨、下跌、平盘家数、涨跌占比和均值/中位数。指数涨跌与个股宽度必须使用同一交易日截面解释，不得用指数方向代替涨跌家数。
-- 大盘先独立输出结构周期 BULL / TRANSITION / BEAR，再叠加中期宽度（站上 MA20 的股票占比）和当日宽度（上涨家数占比及涨跌幅中位数）。结构 BEAR 不再要求近 3 日继续大跌才判 RISK_OFF；短反弹仍禁止普通新仓，全市场广度达到风险偏好阈值时只进入 `BEAR_REBOUND` 观察。恐慌修复按三日状态机处理：恐慌日为 `CRASH`；恐慌次日只有在指数反弹且上涨家数占比不低于 60%、涨跌幅中位数为正时才进入 `PANIC_REPAIR` 修复候选，此时只复核、禁止新仓；再下一交易日指数收益不低于 0%、上涨家数占比不低于 50%且涨跌幅中位数不为负，才进入 `PANIC_REPAIR_CONFIRMED`。
+- 大盘先独立输出结构周期 BULL / TRANSITION / BEAR，再叠加中期宽度（站上 MA20 的股票占比）和当日宽度（上涨家数占比及涨跌幅中位数）。趋势结构的 RISK_ON 未获中期宽度确认时回落 NEUTRAL；中期宽度确认后当日宽度转弱才进入 CAUTION。结构路由（多头回踩与多头恐慌修复转 `CAUTION`，右侧站回 MA50 转 `BEAR_REBOUND`，过渡区破 MA50 转 `NEUTRAL`）目前只输出影子标签 `regime_route_shadow`，写入日志和影子账本计划的 `route:<rule>`，不改变水温与买入。结构 BEAR 不再要求近 3 日继续大跌才判 RISK_OFF；短反弹仍禁止普通新仓，全市场广度达到风险偏好阈值时只进入 `BEAR_REBOUND` 观察。恐慌修复按三日状态机处理：恐慌日为 `CRASH`；恐慌次日只有在指数反弹且上涨家数占比不低于 60%、涨跌幅中位数为正时才进入 `PANIC_REPAIR` 修复候选，此时只复核、禁止新仓；再下一交易日指数收益不低于 0%、上涨家数占比不低于 50%且涨跌幅中位数不为负，才进入 `PANIC_REPAIR_CONFIRMED`。
 - 大盘门控前瞻影子跟踪（方案 A，#470/#471）：每日漏斗并行以中证全指（`000985`）评估 MA20 + 1% 缓冲 hurdle 的 ALLOW/BLOCK 裁决，写入研报与 `strategy_signals`（`market_regime_shadow`）；生产总门控保持 `enable_market_regime_gate=False`（零阻断、零干扰），以无偏前瞻样本检验大盘择时有效性。
 
 ### L4 触发信号
@@ -352,7 +352,7 @@ flowchart LR
     OUT --> MARK["mark_ai_recommendations<br/>recommendation_tracking"]
 ```
 
-`is_ai_recommended` 只由 `mark_ai_recommendations` 在 Step3 **权威**解析后写入：Step2 的 `recommendation_tracking` upsert **不带**该字段，避免同日重跑把已标记的起跳板静默打回 `false`；Step3 失败、起跳板解析失败、Step3 输入候选为空（如硬防守 `observe_only` / `allow_ai_review=False` 未送模）、或输入非空但未调用三阵营模型（RAG 全剔除 / 质量门槛无剩余 / `STEP3_SKIP_LLM` 预演）时跳过标记，保留库内既有值——「未执行模型审判」状态研报与输入预演不得当成权威空池。模型在非空输入上真正跑完审判且未放行（抽出 0 只）时仍会全量清 `false`。`step4_from_supabase` 读的就是该字段。
+`is_ai_recommended` 只由 `mark_ai_recommendations` 在 Step3 **权威**解析后写入：Step2 的 `recommendation_tracking` upsert **不带**该字段，避免同日重跑把已标记的起跳板静默打回 `false`；Step3 失败、起跳板解析失败、Step3 输入候选为空（如硬防守 `observe_only` / `allow_ai_review=False` 未送模）、输入非空但未调用三阵营模型（RAG 全剔除 / 质量门槛无剩余 / `STEP3_SKIP_LLM` 预演）、或抽出非空但确认闸门后全部被未确认拦截时跳过标记，保留库内既有值——「未执行模型审判」状态研报、输入预演与「全被未确认滤空」都不得当成权威空池。模型在非空输入上真正跑完审判且未放行（抽出 0 只）时仍会全量清 `false`。`step4_from_supabase` 读的就是该字段。
 
 **LLM 配置**（workflow 默认）：
 
@@ -370,7 +370,7 @@ flowchart LR
 
 ## 五、Step4 OMS 持仓决断
 
-Step4 不再默认把“Step3 起跳板”当成唯一入口。生产默认 `STEP4_AI_CANDIDATE_POLICY=veto_only`：程序先收集全部跨日确认、市场与候选护栏均允许的新仓候选，再剔除 Step3 明确归入“逻辑破产”的代码。AI不能把未确认、只读、观察或市场阻断候选升级成买入；对外部新仓给出的 `ATTACK` 也会被降为 `PROBE`。
+Step4 不再默认把“Step3 起跳板”当成唯一入口。生产默认 `STEP4_AI_CANDIDATE_POLICY=veto_only`：程序先收集全部跨日确认、市场与候选护栏均允许的新仓候选，再剔除 Step3 明确归入“逻辑破产”的代码。AI不能把未确认、只读、观察或市场阻断候选升级成买入；对外部新仓给出的 `ATTACK` 也会被降为 `PROBE`。执行日水温为 `BEAR_REBOUND` / `CAUTION` 时，`trend_breakout` 确认候选不进入新仓名单；判定读 `AShareEntryResearchPolicy` 默认值与执行日水温。漏斗主路径用当日 `benchmark_context.regime`；`step4_from_supabase` 等空上下文入口经 `resolve_step4_gate_regime` 回落到 `market_signal_daily.benchmark_regime`（与 OMS 护栏同源，缺数则 `UNKNOWN`），并把库内 `primary_signal` / `entry_type` 还原为 `signal_type`，避免空串对 regime×signal 闸门 fail-open。与回放和影子账本同策略定义。
 
 候选审计只保留两种模式：`veto_only` 应用 Step3 的明确否决，`shadow` 仅记录分类用于实验对照。两种模式都不绕过跨日价格确认和 OMS。
 

@@ -59,6 +59,22 @@ def _benchmark_regime_and_readiness(
     return regime, readiness
 
 
+def resolve_step4_gate_regime(benchmark_context: dict | None, trade_date: str) -> str:
+    """规则准入用的执行日水温，与 OMS ``build_market_guardrail`` 同源。
+
+    ``benchmark_context.regime`` 有值时直接用（漏斗主路径）。空上下文（如
+    ``step4_from_supabase``）回落到 ``market_signal_daily.benchmark_regime``；缺数或
+    过期则 ``UNKNOWN``。不得把缺失压成空串：空串会让
+    ``blocked_confirmed_regime_signals`` 全部匹配失败而 fail-open。
+    """
+    context_regime = (benchmark_context or {}).get("regime")
+    if str(context_regime or "").strip():
+        return normalize_benchmark_regime(context_regime)
+    row = load_market_signal_for_trade_date(trade_date) or {}
+    regime, _ = _benchmark_regime_and_readiness(row, benchmark_context, trade_date)
+    return regime
+
+
 def missing_market_inputs(
     raw_benchmark: object,
     raw_premarket: object,

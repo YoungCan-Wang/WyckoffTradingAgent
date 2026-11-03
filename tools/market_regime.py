@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from core.a_share_entry_research import AShareEntryResearchPolicy, regime_blocked_signals
 from core.market_breadth import calc_market_breadth as calc_core_market_breadth
 from core.wyckoff_engine import FunnelConfig, skipped_weekdays
 from tools.market_liquidity import calc_amount_distribution_health, calc_market_money_flow
@@ -587,16 +588,10 @@ def _apply_breadth_regime(
         breadth_delta is None or float(breadth_delta) >= regime_config.breadth_risk_on_min_delta
     ):
         regime = "RISK_ON"
+    elif regime == "RISK_ON":
+        regime = "NEUTRAL"
     if breadth_delta is not None and float(breadth_delta) <= regime_config.breadth_cliff_drop_pct:
         regime = "RISK_OFF"
-    return regime
-
-
-def _apply_caution_regime(regime: str, breadth_ratio: float | None, regime_config: MarketRegimeConfig) -> str:
-    if regime != "RISK_ON" or breadth_ratio is None:
-        return regime
-    if float(breadth_ratio) < regime_config.breadth_risk_on_threshold:
-        return "CAUTION"
     return regime
 
 
@@ -754,6 +749,44 @@ def _bull_structure(metrics: MainBenchmarkMetrics) -> bool:
     )
 
 
+def _right_side_ma50_repair(metrics: MainBenchmarkMetrics) -> bool:
+    return (
+        metrics.close is not None
+        and metrics.ma50 is not None
+        and metrics.ma200 is not None
+        and metrics.ma50_slope_5d is not None
+        and metrics.ma50 <= metrics.close <= metrics.ma200
+        and metrics.ma50_slope_5d > 0
+    )
+
+
+def _transition_below_ma50(metrics: MainBenchmarkMetrics) -> bool:
+    return (
+        _structural_regime(metrics) == "TRANSITION"
+        and metrics.close is not None
+        and metrics.ma50 is not None
+        and metrics.close < metrics.ma50
+    )
+
+
+def _regime_route_shadow(route_input: str, regime: str, metrics: MainBenchmarkMetrics) -> dict:
+    """结构路由的影子标签：只记录这一天本会被路由到哪，不改水温。
+
+    这几条规则在六段回放里样本内有增益但未经样本外验证，转正前不得影响买入。
+    """
+    bull = _bull_structure(metrics)
+    routed, rule = regime, ""
+    if route_input == "RISK_ON" and _transition_below_ma50(metrics):
+        routed, rule = "NEUTRAL", "transition_below_ma50"
+    elif bull and route_input == "PANIC_REPAIR":
+        routed, rule = "CAUTION", "bull_panic_repair"
+    elif bull and route_input == "NEUTRAL" and metrics.recent3_cum is not None and metrics.recent3_cum < 0.0:
+        routed, rule = "CAUTION", "bull_pullback"
+    elif route_input == "NEUTRAL" and _right_side_ma50_repair(metrics):
+        routed, rule = "BEAR_REBOUND", "right_side_ma50_repair"
+    return {"mode": "shadow", "regime": routed, "rule": rule}
+
+
 def _apply_bear_rebound_regime(regime: str, metrics: MainBenchmarkMetrics) -> tuple[str, list[str]]:
     if regime != "RISK_ON" or _bull_structure(metrics):
         return regime, []
@@ -812,6 +845,8 @@ def _tune_cfg_for_regime(
         cfg.rs_min_short = max(cfg.rs_min_short, 0.0)
         cfg.rps_fast_min = min(cfg.rps_fast_min, 70.0)
         cfg.rps_slow_min = min(cfg.rps_slow_min, 60.0)
+    blocked = regime_blocked_signals(AShareEntryResearchPolicy(), regime)
+    cfg.blocked_candidate_entry_types = tuple(dict.fromkeys((*cfg.blocked_candidate_entry_types, *blocked)))
     _apply_trigger_threshold_profile(cfg, regime)
 
 
@@ -1023,7 +1058,6 @@ def analyze_benchmark_and_tune_cfg(
     breadth_ratio, breadth_prev, breadth_delta, breadth_sample = _breadth_values(breadth)
     daily_up_ratio, daily_median_pct, prev_daily_up_ratio, prev_daily_median_pct = _daily_breadth_values(breadth)
     regime = _apply_breadth_regime(_trend_regime(main), breadth_ratio, breadth_delta, runtime)
-    regime = _apply_caution_regime(regime, breadth_ratio, runtime)
     regime, panic_reasons, repair_reasons = _apply_panic_repair_regime(
         regime,
         main,
@@ -1038,7 +1072,9 @@ def analyze_benchmark_and_tune_cfg(
         runtime,
     )
     regime, _ = _apply_daily_breadth_regime(regime, daily_up_ratio, daily_median_pct, runtime)
+    route_input = regime
     regime, bear_rebound_reasons = _apply_bear_rebound_regime(regime, main)
+    context["regime_route_shadow"] = _regime_route_shadow(route_input, regime, main)
     _apply_evr_policy(cfg, regime, runtime)
     _tune_cfg_for_regime(cfg, regime, main.recent3_cum, runtime)
     holiday_grace_dynamic = _resolve_holiday_grace_from_bench(cfg, regime, money_flow_context, bench_df)

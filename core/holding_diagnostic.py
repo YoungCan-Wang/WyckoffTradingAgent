@@ -513,11 +513,13 @@ def _health_rating(
         reasons.append(f"当日{describe_intraday_path(intraday_path)}，跌幅不必等同走弱")
 
     positive = _positive_reasons(ma, wyckoff, risk)
-    danger_count = sum(1 for r in reasons if any(k in r for k in ["已穿", "暴跌", "空头排列", "结构止损", "出货"]))
+    is_accum = getattr(wyckoff, "track", "") == "Accum"
+    danger_keys = ("已穿", "暴跌", "结构止损", "出货") if is_accum else ("已穿", "暴跌", "空头排列", "结构止损", "出货")
+    danger_count = sum(1 for r in reasons if any(k in r for k in danger_keys))
     warn_count = len(reasons) - danger_count
     if danger_count >= 1:
         return "🔴危险", reasons
-    if warn_count >= 2 or warn_count == 1 and not positive:
+    if warn_count >= 2 or (warn_count == 1 and (not positive or "均线空头排列" in reasons)):
         return "🟡警戒", reasons
     return "🟢健康", positive if positive and not reasons else reasons
 

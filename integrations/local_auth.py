@@ -60,8 +60,12 @@ def login(email: str, password: str) -> dict[str, Any]:
         if not _login_attempt_still_current(attempt_id):
             logger.warning("refusing to persist login: logout or newer login during sign-in")
             raise RuntimeError("登录未完成：期间发生了退出或另一次登录")
-        clear_cloud_synced_config(keep_user_id=str(data.get("user_id") or ""))
+        # Flip disk identity before purging the previous account's cloud keys so an
+        # in-flight pull that CAS-checks session.json already sees the new user
+        # (and save_cloud_* refuses). clear_cloud then sweeps anything that landed
+        # before the flip.
         save_session(data)
+        clear_cloud_synced_config(keep_user_id=str(data.get("user_id") or ""))
         save_config_key("email", email)
         save_config_key("password", password)
         # 单独记一份**不参与自动登录**的邮箱：退出登录会清掉 email/password
@@ -137,9 +141,10 @@ def logout() -> None:
     云端拉来的密钥也属于这个账号，一并带走：配置是本地优先、只补空缺，留下来的话
     下一个账号既会用到它，自己的云端配置也补不进来。
 
-    必须先清凭据再清 session：IPC 多 worker 下 `account`→`restore_session` /
-    工具 `auto_relogin` 会与 `auth_logout` 并发；若 session 先空而密码还在，
-    就会在「已退出」窗口里被静默登回去。
+    顺序：先清凭据（防 auto_relogin 复活），再清 session（让在途 pull 的磁盘
+    身份 CAS 失败），最后清云端密钥（扫掉更早写下的残留）。IPC 多 worker 下
+    `account`→`restore_session` / 工具 `auto_relogin` 会与 `auth_logout` 并发；
+    若 session 先空而密码还在，就会在「已退出」窗口里被静默登回去。
     """
     with _AUTH_IDENTITY_LOCK:
         # 只清登录凭据 —— `last_email` 刻意保留，它不能用来登录，只用于下次预填邮箱。
@@ -152,11 +157,11 @@ def logout() -> None:
                 save_config_key(key, "")
             except OSError:
                 logger.warning("failed to clear stored credential: %s", key, exc_info=True)
+        clear_session()
         try:
             clear_cloud_synced_config()
         except OSError:
             logger.warning("failed to clear cloud-synced config", exc_info=True)
-        clear_session()
 
 
 def clear_session() -> None:
@@ -452,28 +457,58 @@ def _cloud_synced_record(data: dict[str, Any], user_id: str) -> dict[str, Any]:
     return data.setdefault(_CLOUD_SYNCED_KEY, {"user_id": user_id, "data_sources": {}, "models": {}})
 
 
-def save_cloud_data_source(user_id: str, key: str, value: str) -> None:
-    def update(data: dict[str, Any]) -> None:
+def _disk_session_matches(user_id: str) -> bool:
+    """True when session.json still belongs to user_id (read under caller's locks)."""
+    return _same_session_user(_read_session_file(), user_id)
+
+
+def save_cloud_data_source(user_id: str, key: str, value: str) -> bool:
+    wrote = False
+
+    def update(data: dict[str, Any]) -> bool:
+        nonlocal wrote
+        # Config lock is held here; session is flipped/cleared by login/logout under
+        # _AUTH_IDENTITY_LOCK. Refuse if disk identity already moved — otherwise a
+        # pull that passed _session_still_belongs_to before the switch still writes
+        # Alice's TickFlow/Tushare into Bob's machine (#596/#610 residual).
+        if not _disk_session_matches(user_id):
+            logger.warning("refusing cloud data-source write: disk identity != %s", user_id)
+            return False
         record = _cloud_synced_record(data, user_id)
         data[key] = value
         record["data_sources"][key] = _fingerprint(value)
+        wrote = True
+        return True
 
     _update_config(update)
+    return wrote
 
 
-def save_cloud_model_entry(user_id: str, entry: dict[str, Any]) -> None:
-    def update(data: dict[str, Any]) -> None:
+def save_cloud_model_entry(user_id: str, entry: dict[str, Any]) -> bool:
+    wrote = False
+
+    def update(data: dict[str, Any]) -> bool:
+        nonlocal wrote
+        if not _disk_session_matches(user_id):
+            logger.warning("refusing cloud model write: disk identity != %s", user_id)
+            return False
         record = _cloud_synced_record(data, user_id)
         _upsert_model(data, entry)
         record["models"][entry["id"]] = _fingerprint(entry.get("api_key", ""))
+        wrote = True
+        return True
 
     _update_config(update)
+    return wrote
 
 
 def adopt_cloud_values(user_id: str, data_sources: dict[str, str], model_keys: dict[str, str]) -> None:
     """认领升级前拉取、没有来源记录的值：只有与该账号云端值相同才算它的。"""
 
-    def update(data: dict[str, Any]) -> None:
+    def update(data: dict[str, Any]) -> bool:
+        if not _disk_session_matches(user_id):
+            logger.warning("refusing cloud adopt: disk identity != %s", user_id)
+            return False
         record = _cloud_synced_record(data, user_id)
         for key, value in data_sources.items():
             if value and data.get(key) == value:
@@ -482,6 +517,7 @@ def adopt_cloud_values(user_id: str, data_sources: dict[str, str], model_keys: d
             api_key = model_keys.get(model["id"])
             if api_key and model.get("api_key") == api_key:
                 record["models"][model["id"]] = _fingerprint(api_key)
+        return True
 
     _update_config(update)
 

@@ -2367,6 +2367,67 @@ class TestMarketRegime:
         assert result["structural_regime"] == "BULL"
         assert result["bear_rebound_triggered"] is False
 
+    def test_regime_route_shadow_labels_without_changing_regime(self):
+        from tools.market_regime import MainBenchmarkMetrics, _regime_route_shadow
+
+        bull = MainBenchmarkMetrics(close=105.0, ma50=100.0, ma200=95.0, ma50_slope_5d=0.4, recent3_cum=-1.2)
+        repair = MainBenchmarkMetrics(close=96.0, ma50=95.0, ma200=100.0, ma50_slope_5d=0.3)
+        breakdown = MainBenchmarkMetrics(close=98.0, ma50=100.0, ma200=95.0, ma50_slope_5d=-0.2)
+        cases = [
+            (("NEUTRAL", "NEUTRAL", bull), ("CAUTION", "bull_pullback")),
+            (("PANIC_REPAIR", "PANIC_REPAIR", bull), ("CAUTION", "bull_panic_repair")),
+            (("NEUTRAL", "NEUTRAL", repair), ("BEAR_REBOUND", "right_side_ma50_repair")),
+            (("RISK_ON", "BEAR_REBOUND", breakdown), ("NEUTRAL", "transition_below_ma50")),
+            (("RISK_ON", "BEAR_REBOUND", repair), ("BEAR_REBOUND", "")),
+            (("RISK_OFF", "RISK_OFF", bull), ("RISK_OFF", "")),
+        ]
+        for args, (routed, rule) in cases:
+            assert _regime_route_shadow(*args) == {"mode": "shadow", "regime": routed, "rule": rule}
+
+    def test_regime_route_shadow_stays_out_of_production_regime(self, monkeypatch):
+        import tools.market_regime as market_regime
+        from core.wyckoff_engine import FunnelConfig
+
+        monkeypatch.setattr(market_regime, "_generate_pv_outlook", lambda **_kwargs: "次日推演：测试")
+        closes = [100.0 + i * 0.2 for i in range(220)]
+        closes[-3:] = [closes[-4] - 0.6, closes[-4] - 0.8, closes[-4] - 0.7]
+        result = market_regime.analyze_benchmark_and_tune_cfg(
+            _benchmark_df(closes),
+            None,
+            FunnelConfig(),
+            breadth={"ratio_pct": 50.0, "delta_pct": 2.0, "sample_size": 100},
+        )
+
+        assert result["regime"] == "NEUTRAL"
+        assert result["regime_route_shadow"]["regime"] == "CAUTION"
+        assert result["regime_route_shadow"]["rule"] == "bull_pullback"
+
+    def test_confirm_trend_candidate_requires_dry_or_bullish_on_every_path(self):
+        from core.signal_confirmation import _confirm_trend_candidate
+
+        snap = {"snap_support": 9.8, "snap_ma20": 10.0, "snap_close": 10.2, "snap_volume": 1000.0, "snap_low": 9.9}
+        bullish_hold = {"open": 10.0, "close": 10.1, "low": 10.0, "volume": 1500.0, "ma20": 10.0}
+        assert _confirm_trend_candidate(snap, bullish_hold, days_elapsed=1)[0] == "confirmed"
+
+        below_ma20 = {"open": 10.8, "close": 10.2, "low": 10.0, "volume": 1500.0, "ma20": 11.0}
+        assert _confirm_trend_candidate(snap, below_ma20, days_elapsed=3)[0] == "pending"
+        above_ma20 = {"open": 10.5, "close": 10.1, "low": 10.0, "volume": 1500.0, "ma20": 10.0}
+        assert _confirm_trend_candidate(snap, above_ma20, days_elapsed=3)[0] == "pending"
+
+        dry_pullback = {**below_ma20, "volume": 900.0}
+        assert _confirm_trend_candidate(snap, dry_pullback, days_elapsed=3)[0] == "confirmed"
+
+    def test_tune_cfg_blocks_lane_with_the_same_pairs_as_confirmation(self):
+        from core.a_share_entry_research import AShareEntryResearchPolicy, confirmed_signal_allowed
+        from core.wyckoff_engine import FunnelConfig
+        from tools.market_regime import DEFAULT_MARKET_REGIME_CONFIG, _tune_cfg_for_regime
+
+        for regime in ("BEAR_REBOUND", "CAUTION", "NEUTRAL", "RISK_ON", "RISK_OFF"):
+            cfg = FunnelConfig()
+            _tune_cfg_for_regime(cfg, regime, None, DEFAULT_MARKET_REGIME_CONFIG)
+            confirmed = confirmed_signal_allowed(AShareEntryResearchPolicy(), "trend_breakout", regime)
+            assert ("trend_breakout" not in cfg.blocked_candidate_entry_types) is confirmed
+
     def test_structural_bear_remains_risk_off_during_short_rebound(self, monkeypatch):
         import tools.market_regime as market_regime
         from core.wyckoff_engine import FunnelConfig

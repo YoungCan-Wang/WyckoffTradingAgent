@@ -87,7 +87,7 @@ def test_step4_candidate_meta_veto_only_uses_rules_and_ai_invalidations(monkeypa
     ]
     report = "## 💀 逻辑破产 (Invalidated)\n- 000002 放量失守\n\n## ⏳ 储备营地\n- 000001"
 
-    selected, blocked = _step4_candidate_meta(symbols_info, ["000004"], report)
+    selected, blocked = _step4_candidate_meta(symbols_info, ["000004"], report, regime="NEUTRAL")
 
     assert [item["code"] for item in selected] == ["000001"]
     assert blocked == 2
@@ -102,7 +102,7 @@ def test_step4_candidate_meta_invalid_policy_falls_back_to_shadow(monkeypatch):
     ]
     report = "## 💀 逻辑破产\n- 000002 放量失守"
 
-    selected, blocked = _step4_candidate_meta(symbols_info, [], report)
+    selected, blocked = _step4_candidate_meta(symbols_info, [], report, regime="NEUTRAL")
 
     assert [item["code"] for item in selected] == ["000001", "000002"]
     assert blocked == 0
@@ -122,7 +122,7 @@ def test_step4_candidate_meta_shadow_ignores_ai_classification(monkeypatch):
     ]
     report = "## 💀 逻辑破产\n- 000002 放量失守"
 
-    selected, blocked = _step4_candidate_meta(symbols_info, [], report)
+    selected, blocked = _step4_candidate_meta(symbols_info, [], report, regime="NEUTRAL")
 
     assert [item["code"] for item in selected] == ["000001", "000002"]
     assert blocked == 0
@@ -135,7 +135,7 @@ def test_step4_candidate_meta_deduplicates_codes(monkeypatch):
         {"code": "000001", "confirm_status": "confirmed", "priority_score": 90},
     ]
 
-    selected, blocked = _step4_candidate_meta(symbols_info, [], "")
+    selected, blocked = _step4_candidate_meta(symbols_info, [], "", regime="NEUTRAL")
 
     assert [item["code"] for item in selected] == ["000001"]
     assert blocked == 0

@@ -439,19 +439,45 @@ class TestCloudConfigDoesNotOutliveAccount:
         assert la.load_config()["tickflow_api_key"] == "TF-KEY"
         assert len(la.load_model_configs()) == 3
 
-    def test_pull_write_that_outlives_logout_is_purged_at_next_login(self, signed_in, monkeypatch):
-        """#596 只把窗口缩小：核对身份后、落盘前登出仍会写入，下个账号登录时要清掉。"""
+    def test_cloud_write_refuses_after_logout(self, signed_in):
+        """Disk-identity CAS inside save_cloud_*: logout clears session before purge."""
         la.logout()
         la.save_cloud_data_source("u1", "tickflow_api_key", "LATE-TF")
-        monkeypatch.setattr(
-            la,
-            "_sign_in_with_password",
-            lambda *_a: {"user_id": "u2", "email": "b@b.c", "access_token": "t", "refresh_token": "r"},
-        )
-
-        la.login("b@b.c", "pw")
-
         assert not la.load_config().get("tickflow_api_key")
+
+    def test_cloud_write_refuses_after_account_switch_mid_merge(self, signed_in, cloud, monkeypatch):
+        """IPC race: Alice merge stalls in save_cloud_*; Bob login must win."""
+        import threading
+
+        enter = threading.Event()
+        bob_done = threading.Event()
+        real_save = la.save_cloud_data_source
+
+        def racing_save(user_id, key, value):
+            enter.set()
+            assert bob_done.wait(timeout=2)
+            return real_save(user_id, key, value)
+
+        monkeypatch.setattr(la, "save_cloud_data_source", racing_save)
+
+        def bob_switch():
+            assert enter.wait(timeout=2)
+            # Match login()'s order: flip session first, then purge prior cloud keys.
+            la.save_session({"user_id": "u2", "email": "b@b.c", "access_token": "bt", "refresh_token": "br"})
+            la.clear_cloud_synced_config(keep_user_id="u2")
+            bob_done.set()
+
+        thread = threading.Thread(target=bob_switch)
+        thread.start()
+        cc.pull_cloud_config("u1", "tok")
+        thread.join(timeout=5)
+
+        cfg = la.load_config()
+        assert la.load_session()["user_id"] == "u2"
+        assert not cfg.get("tickflow_api_key"), f"Alice key leaked: {cfg.get('tickflow_api_key')}"
+        assert not any(
+            str(c.get("api_key") or "").startswith(("G-", "O-", "A-", "TF-")) for c in la.load_model_configs()
+        )
 
     def test_keys_pulled_before_upgrade_are_adopted_by_owner(self, signed_in, cloud):
         """升级前拉的值没有来源记录：下次拉取值相同才认领，不同的不动。"""

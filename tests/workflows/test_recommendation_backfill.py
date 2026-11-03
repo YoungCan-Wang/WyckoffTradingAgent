@@ -306,3 +306,22 @@ class _FakeQuery:
             key, values = next(iter(self.filters_in.items()))
             self.client.deletes.append({"key": key, "values": values, "filters": dict(self.filters_eq)})
         return SimpleNamespace(data=[])
+
+
+def test_pending_rows_keep_calibrated_candidate_score(monkeypatch) -> None:
+    captured: dict = {}
+    monkeypatch.setattr(
+        "workflows.step2_signal_confirmation.build_pending_signal_rows",
+        lambda **kwargs: captured.update(kwargs) or [],
+    )
+    monkeypatch.setattr(
+        workflow,
+        "_selected_candidate_entries",
+        lambda _details: [{"code": "000001", "signal_key": "spring", "score": 78.5}],
+    )
+
+    workflow._pending_rows_for_day(
+        {"trade_date": "2026-10-30", "step2_details": {"triggers": {"spring": [("000001", 0.82)]}}}
+    )
+
+    assert captured["triggers"]["spring"] == [("000001", 78.5)]
