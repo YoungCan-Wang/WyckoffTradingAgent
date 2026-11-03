@@ -5,14 +5,15 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
-from datetime import date
 from pathlib import Path
 
 from core.theme_radar import build_theme_radar_snapshot
 from integrations.market_metadata import CONCEPT_HEAT_HISTORY
 from integrations.supabase_concept_heat import load_concept_heat_history_from_supabase
 from integrations.theme_radar_storage import persist_theme_radar_snapshot
+from utils.env import env_bool
 from utils.feishu import send_feishu_notification
+from utils.trading_clock import cn_today
 from workflows.theme_radar_report import render_theme_radar_html, render_theme_radar_report
 from workflows.wyckoff_funnel import run_funnel_job
 
@@ -36,7 +37,7 @@ def run_theme_radar(*, with_news: bool = False, persist: bool = True) -> dict:
     events = _collect_events(with_news)
     _triggers, metrics = run_funnel_job(include_debug_context=True)
     debug = metrics.get("_debug", {}) or {}
-    trade_date = str(metrics.get("end_trade_date") or date.today().isoformat())
+    trade_date = str(metrics.get("end_trade_date") or cn_today().isoformat())
     dynamic_policy = _resolve_dynamic_policy(with_news, trade_date, metrics)
     snapshot = build_theme_radar_snapshot(
         trade_date=trade_date,
@@ -96,7 +97,9 @@ def _collect_events(with_news: bool) -> list[dict]:
     return collect_theme_events()
 
 
-def _resolve_dynamic_policy(with_news: bool, trade_date: str, metrics: dict) -> dict:
+def _resolve_dynamic_policy(with_news: bool, trade_date: str, metrics: dict) -> dict | None:
+    if not env_bool("FUNNEL_POLICY_DISCOVERY_ENABLED", False):
+        return None
     from integrations.policy_discovery import load_dynamic_policy_themes, refresh_dynamic_policy_themes
 
     if not with_news:

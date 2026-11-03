@@ -35,9 +35,10 @@ def build_capital_migration_report(
     previous = _previous_theme_rows(concept_history or {}, trade_date)
     radar_map = _theme_radar_map(theme_radar or {})
     inflow = _top_inflow_rows(current, radar_map, cfg)
-    outflow = _top_outflow_rows(current, previous, sector_rotation or {}, cfg, theme_radar or {})
+    outflow = _top_outflow_rows(current, previous, sector_rotation or {}, cfg)
     activity = _theme_activity_rows(theme_activity or {}, inflow)
     clusters = _cluster_rows(theme_radar or {}, inflow)
+    squeeze = _policy_squeeze_rows(theme_radar or {})
     summary = _summary(inflow, outflow, clusters)
     return {
         "version": "capital_migration_v1",
@@ -48,6 +49,7 @@ def build_capital_migration_report(
         "outflow": outflow,
         "activity": activity,
         "clusters": clusters,
+        "squeeze": squeeze,
         "rotation": _rotation_lines(inflow, outflow, clusters),
     }
 
@@ -114,13 +116,8 @@ def _top_outflow_rows(
     previous: dict[str, dict[str, Any]],
     sector_rotation: dict[str, Any],
     cfg: CapitalMigrationConfig,
-    theme_radar: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    rows = (
-        _history_outflows(current, previous)
-        + _sector_outflows(sector_rotation)
-        + _policy_squeeze_outflows(theme_radar or {})
-    )
+    rows = _history_outflows(current, previous) + _sector_outflows(sector_rotation)
     merged = _dedupe_outflows(rows)
     return sorted(merged, key=lambda item: (-float(item["score"]), item["theme"]))[: cfg.outflow_limit]
 
@@ -227,7 +224,7 @@ def _sector_outflow_score(info: dict[str, Any], state: str) -> float:
     return 0.0
 
 
-def _policy_squeeze_outflows(theme_radar: dict[str, Any]) -> list[dict[str, Any]]:
+def _policy_squeeze_rows(theme_radar: dict[str, Any]) -> list[dict[str, Any]]:
     rows = []
     for item in theme_radar.get("squeeze_watch") or []:
         theme = _theme(item.get("theme"))

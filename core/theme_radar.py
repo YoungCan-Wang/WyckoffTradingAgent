@@ -71,80 +71,12 @@ THEME_ALIASES: dict[str, tuple[str, ...]] = {
     ),
     "新能源": ("新能源", "储能", "光伏", "锂电", "固态电池", "风电", "电网设备"),
     "低空经济": ("低空经济", "无人机", "eVTOL", "飞行汽车", "通航"),
-    "红利低波": (
-        "红利",
-        "高股息",
-        "股息率",
-        "低波",
-        "低波红利",
-        "央企红利",
-        "互换便利",
-        "SFISF",
-        "回购增持",
-        "增持再贷款",
-        "高分红",
-        "高速公路",
-        "路桥",
-        "dividend",
-        "low volatility",
-    ),
-    "价值蓝筹": (
-        "价值",
-        "蓝筹",
-        "低估值",
-        "破净",
-        "中特估",
-        "稳增长",
-        "大盘价值",
-        "央国企",
-        "水泥",
-        "建材",
-        "建筑工程",
-        "基建",
-        "仓储物流",
-        "供应链",
-        "value",
-        "blue chip",
-    ),
+    "红利低波": ("红利", "高股息", "股息率", "低波", "低波红利", "央企红利", "dividend", "low volatility"),
+    "价值蓝筹": ("价值", "蓝筹", "低估值", "破净", "中特估", "稳增长", "大盘价值", "value", "blue chip"),
     "大金融": ("银行", "保险", "券商", "证券", "多元金融", "金融科技", "brokerage", "insurance", "bank"),
     "公用事业": ("电力", "火电", "水电", "核电", "公用事业", "燃气", "供水", "水务", "utility", "power"),
     "煤炭能源": ("煤炭", "煤化工", "动力煤", "焦煤", "油气", "石油", "天然气", "coal", "oil", "gas"),
-    "消费防御": (
-        "食品饮料",
-        "白酒",
-        "乳业",
-        "乳制品",
-        "调味品",
-        "中药",
-        "医药商业",
-        "连锁药房",
-        "纺织服饰",
-        "品牌服饰",
-        "服饰",
-        "免税",
-        "旅游",
-        "酒店餐饮",
-        "日用化工",
-        "生猪",
-        "农业综合",
-        "养殖",
-        "consumer staples",
-        "defensive",
-    ),
-    "出海制造": (
-        "出海",
-        "一带一路",
-        "跨境电商",
-        "摩托车",
-        "摩托自行车",
-        "家用电器",
-        "白电",
-        "黑电",
-        "家居用品",
-        "商品城",
-        "专用机械",
-        "工程机械",
-    ),
+    "消费防御": ("食品饮料", "白酒", "中药", "医药商业", "纺织服饰", "免税", "consumer staples", "defensive"),
 }
 
 
@@ -182,6 +114,7 @@ class ThemeScore:
     evidence: list[str]
     bull_alignment_ratio: float = 0.0
     sync_breakout_count: int = 0
+    sync_breakout_ratio: float = 0.0
     cluster_score: float = 0.0
 
 
@@ -383,7 +316,7 @@ def _raw_stock_metrics(df: pd.DataFrame) -> dict[str, Any]:
         "above_ma120": _above_ma(close, 120),
         "above_ma200": _above_ma(close, 200),
         "ma50_gt_ma200": _ma50_gt_ma200(close),
-        "sync_breakout": _sync_breakout(close),
+        "sync_breakout": _sync_breakout(ordered, close),
         "drawdown120": _drawdown_pct(close, 120),
         "near_high_120d": _near_high(close, 120),
         "breakout_age_days": _days_since_high(close, 120),
@@ -546,7 +479,6 @@ def _score_theme(
         + 0.10 * catalyst
         + 0.10 * heat_score
         - 0.08 * crowding
-        - 0.15 * squeeze
     )
     return ThemeScore(
         theme=theme,
@@ -569,13 +501,16 @@ def _score_theme(
         evidence=_theme_evidence(theme, heat, history, events),
         bull_alignment_ratio=round(float(market.get("bull_alignment_ratio", 0.0)), 4),
         sync_breakout_count=int(market.get("sync_breakout_count", 0.0)),
+        sync_breakout_ratio=round(float(market.get("sync_breakout_ratio", 0.0)), 4),
         cluster_score=round(cluster_score, 4),
     )
 
 
 def _cluster_score(market: dict[str, float], catalyst: float, persistence: float) -> float:
     bull_ratio = float(market.get("bull_alignment_ratio", 0.0))
-    sync_score = _clamp(float(market.get("sync_breakout_count", 0.0)) / 5.0)
+    sync_ratio = float(market.get("sync_breakout_ratio", 0.0))
+    sync_count = float(market.get("sync_breakout_count", 0.0))
+    sync_score = 0.65 * _clamp(sync_ratio / 0.20) + 0.35 * _clamp(sync_count / 5.0)
     return _clamp(
         0.35 * bull_ratio + 0.30 * sync_score + 0.20 * market["leader_score"] + 0.15 * max(catalyst, persistence)
     )
@@ -589,10 +524,11 @@ def _cluster_watch(scores: list[ThemeScore], cfg: ThemeRadarConfig) -> list[Them
         and item.cluster_score >= 0.45
         and item.bull_alignment_ratio >= 0.30
         and item.sync_breakout_count >= 2
+        and item.sync_breakout_ratio >= 0.08
     ]
     return sorted(
         eligible,
-        key=lambda item: (item.cluster_score, item.sync_breakout_count, item.bull_alignment_ratio),
+        key=lambda item: (item.cluster_score, item.sync_breakout_ratio, item.bull_alignment_ratio),
         reverse=True,
     )[: cfg.max_rotation_themes]
 
@@ -667,6 +603,7 @@ def _theme_market_metrics(members: list[str], features: dict[str, dict[str, Any]
             "advancing_ratio_5d": 0.0,
             "bull_alignment_ratio": 0.0,
             "sync_breakout_count": 0.0,
+            "sync_breakout_ratio": 0.0,
         }
     structures = sorted((float(row["structure_score"]) for row in rows), reverse=True)[:20]
     leaders = sorted((float(row["leader_score"]) for row in rows), reverse=True)[:20]
@@ -688,6 +625,7 @@ def _theme_market_metrics(members: list[str], features: dict[str, dict[str, Any]
         "advancing_ratio_5d": float(sum(value > 0 for value in ret5_values) / len(ret5_values)),
         "bull_alignment_ratio": float(bull_score / len(rows)),
         "sync_breakout_count": float(sync_count),
+        "sync_breakout_ratio": float(sync_count / len(rows)),
     }
 
 
@@ -881,21 +819,24 @@ def _above_ma(close: pd.Series, window: int) -> float:
 
 
 def _ma50_gt_ma200(close: pd.Series) -> float:
-    if len(close) < 50 or _above_ma(close, 20) <= 0.0:
+    if len(close) < 200:
         return 0.0
-    last = float(close.iloc[-1])
-    ma50 = float(close.tail(50).mean())
-    ma200 = float(close.tail(min(200, len(close))).mean())
-    if ma50 > ma200:
-        return 1.0
-    return 0.6 if last >= ma50 and last >= ma200 * 0.98 else 0.0
+    return 1.0 if float(close.tail(50).mean()) > float(close.tail(200).mean()) else 0.0
 
 
-def _sync_breakout(close: pd.Series) -> float:
+def _sync_breakout(ordered: pd.DataFrame, close: pd.Series) -> float:
     if len(close) < 20 or _ret_pct(close, 1) < 1.8 or _above_ma(close, 20) <= 0.0:
         return 0.0
-    ma200 = float(close.tail(min(200, len(close))).mean())
-    return 1.0 if float(close.iloc[-1]) >= ma200 * 0.98 else 0.0
+    if len(close) >= 200 and float(close.iloc[-1]) < float(close.tail(200).mean()) * 0.98:
+        return 0.0
+    vol_col = "volume" if "volume" in ordered.columns else ("vol" if "vol" in ordered.columns else "")
+    if not vol_col:
+        return 1.0
+    vol = pd.to_numeric(ordered[vol_col], errors="coerce").dropna()
+    if len(vol) < 20:
+        return 0.0
+    mean20 = float(vol.tail(20).mean())
+    return 1.0 if mean20 > 0 and float(vol.iloc[-1]) >= mean20 * 1.2 else 0.0
 
 
 def _near_high(close: pd.Series, lookback: int, tolerance_pct: float = 12.0) -> float:

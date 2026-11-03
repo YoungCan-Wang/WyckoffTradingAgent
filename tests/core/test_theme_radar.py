@@ -123,24 +123,28 @@ def test_theme_radar_filters_non_actionable_index_noise() -> None:
 
 def test_theme_radar_normalizes_defensive_value_aliases() -> None:
     assert normalize_theme_name("高股息央企红利") == "红利低波"
-    assert normalize_theme_name("互换便利SFISF回购增持") == "红利低波"
-    assert normalize_theme_name("水泥建材基建") == "价值蓝筹"
+    assert normalize_theme_name("中特估低估值蓝筹") == "价值蓝筹"
     assert normalize_theme_name("银行保险走强") == "大金融"
     assert normalize_theme_name("火电公用事业") == "公用事业"
-    assert normalize_theme_name("免税旅游品牌服饰") == "消费防御"
-    assert normalize_theme_name("摩托车家用电器出海") == "出海制造"
+    assert normalize_theme_name("动力煤天然气") == "煤炭能源"
+    assert normalize_theme_name("白酒食品饮料") == "消费防御"
 
 
 def test_theme_radar_detects_policy_cluster_resonance() -> None:
     codes = ["600398", "601888", "001328"]
+    frames = {}
+    for code in codes:
+        df = _compound_frame(10.0, 0.022)
+        df["volume"] = [1000.0] * (len(df) - 1) + [1500.0]
+        frames[code] = df
     snapshot = build_theme_radar_snapshot(
         trade_date="2026-11-03",
         concept_heat=[],
         concept_history={},
-        concept_map={code: ["品牌服饰"] for code in codes},
+        concept_map={code: ["免税"] for code in codes},
         sector_map={code: "纺织服饰" for code in codes},
-        df_map={code: _compound_frame(10.0, 0.022) for code in codes},
-        events=[{"title": "品牌服饰必选消费现金流抱团", "source": "test"}],
+        df_map=frames,
+        events=[{"title": "纺织服饰免税消费现金流抱团", "source": "test"}],
         config=ThemeRadarConfig(min_theme_score=0.0, min_stock_score=0.0),
     )
 
@@ -148,6 +152,7 @@ def test_theme_radar_detects_policy_cluster_resonance() -> None:
     assert clusters[0]["theme"] == "消费防御"
     assert clusters[0]["bull_alignment_ratio"] == 1.0
     assert clusters[0]["sync_breakout_count"] == 3
+    assert clusters[0]["sync_breakout_ratio"] == 1.0
     assert "消费防御" in summarize_theme_clusters(snapshot)
     assert "MA50>MA200占100%，同频起跳3只" in summarize_theme_clusters(snapshot)
 

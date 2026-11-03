@@ -123,7 +123,7 @@ def test_capital_migration_surfaces_policy_cluster_resonance_when_heat_absent() 
     assert any("抱团: 消费防御" in line for line in report["rotation"])
 
 
-def test_capital_migration_includes_policy_squeeze_outflows() -> None:
+def test_capital_migration_includes_policy_squeeze_rows_without_polluting_outflow() -> None:
     report = build_capital_migration_report(
         trade_date="2026-11-03",
         concept_heat=[],
@@ -132,7 +132,7 @@ def test_capital_migration_includes_policy_squeeze_outflows() -> None:
         theme_radar={
             "squeeze_watch": [
                 {
-                    "theme": "AI算力",
+                    "theme": "服务器算力",
                     "penalty": 0.68,
                     "title": "人工智能投资过度集中推高杠杆",
                     "source": "金管总局",
@@ -141,6 +141,7 @@ def test_capital_migration_includes_policy_squeeze_outflows() -> None:
         },
     )
 
-    assert report["outflow"][0]["theme"] == "AI算力"
-    assert report["outflow"][0]["source"] == "policy_squeeze"
-    assert "政策敲打/去杠杆：人工智能投资过度集中推高杠杆" in report["outflow"][0]["evidence"]
+    assert report["outflow"] == []
+    assert report["squeeze"][0]["theme"] == "服务器算力"
+    assert report["squeeze"][0]["source"] == "policy_squeeze"
+    assert "政策敲打/去杠杆：人工智能投资过度集中推高杠杆" in report["squeeze"][0]["evidence"]

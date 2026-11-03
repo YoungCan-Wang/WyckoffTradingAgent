@@ -15,11 +15,14 @@ from integrations.policy_discovery import (
 def test_refresh_and_load_dynamic_policy_themes_with_ttl(tmp_path: Path) -> None:
     cache_path = tmp_path / "dynamic_policy.json"
     discovered = {
-        "dynamic_aliases": {"红利低波": ["SFISF", "互换便利", "10bp招标"]},
+        "dynamic_aliases": {
+            "红利低波": ["SFISF互换便利", "10bp招标", "AI", "银行"],
+            "未知野生主题": ["野生概念词"],
+        },
         "boost_themes": [
             {
-                "theme": "SFISF",
-                "weight": 0.9,
+                "theme": "SFISF互换便利",
+                "weight": 0.95,
                 "title": "央行开展1000亿互换便利操作，中标费率10bp",
                 "source": "央行官网",
             }
@@ -32,7 +35,6 @@ def test_refresh_and_load_dynamic_policy_themes_with_ttl(tmp_path: Path) -> None
                 "source": "金管总局",
             }
         ],
-        "seed_symbols": ["600801.sh", "600419.SH"],
     }
 
     saved = refresh_dynamic_policy_themes(
@@ -41,11 +43,13 @@ def test_refresh_and_load_dynamic_policy_themes_with_ttl(tmp_path: Path) -> None
         path=cache_path,
     )
     assert saved["boost_themes"][0]["theme"] == "红利低波"
+    assert saved["boost_themes"][0]["weight"] == 0.85
     assert saved["squeeze_themes"][0]["theme"] == "服务器算力"
-    assert saved["seed_symbols"] == ["600801.SH", "600419.SH"]
+    assert "未知野生主题" not in saved["dynamic_aliases"]
+    assert saved["dynamic_aliases"]["红利低波"] == ["SFISF互换便利", "10bp招标"]
 
     loaded_fresh = load_dynamic_policy_themes(trade_date="2026-11-10", path=cache_path)
-    assert loaded_fresh["dynamic_aliases"]["红利低波"] == ["SFISF", "互换便利", "10bp招标"]
+    assert loaded_fresh["dynamic_aliases"]["红利低波"] == ["SFISF互换便利", "10bp招标"]
 
     loaded_expired = load_dynamic_policy_themes(trade_date="2026-11-25", path=cache_path)
     assert loaded_expired["boost_themes"] == []
@@ -88,8 +92,7 @@ def test_analyze_policy_headlines_with_deepseek_parses_fenced_json(monkeypatch) 
             "{\n"
             '  "dynamic_aliases": {"价值蓝筹": ["挤压传统行业融资空间"]},\n'
             '  "boost_themes": [{"theme": "价值蓝筹", "weight": 0.82, "title": "修复传统行业融资", "source": "金管总局"}],\n'
-            '  "squeeze_themes": [{"theme": "AI算力", "penalty": 0.68, "title": "警示AI高杠杆", "source": "金管总局"}],\n'
-            '  "seed_symbols": ["600801.SH"]\n'
+            '  "squeeze_themes": [{"theme": "服务器算力", "penalty": 0.68, "title": "警示AI高杠杆", "source": "金管总局"}]\n'
             "}\n"
             "```"
         ),
@@ -99,7 +102,7 @@ def test_analyze_policy_headlines_with_deepseek_parses_fenced_json(monkeypatch) 
         trade_date="2026-11-03",
     )
     assert result["boost_themes"][0]["theme"] == "价值蓝筹"
-    assert result["squeeze_themes"][0]["theme"] == "AI算力"
+    assert result["squeeze_themes"][0]["theme"] == "服务器算力"
 
 
 def test_build_funnel_policy_events_normalizes_ths_events_with_dynamic_aliases() -> None:
@@ -108,7 +111,7 @@ def test_build_funnel_policy_events_normalizes_ths_events_with_dynamic_aliases()
         {"dynamic_aliases": {"红利低波": ["SFISF互换便利"]}},
     )
     assert events[0]["themes"] == ["红利低波"]
-    assert events[0]["weight"] == 0.65
+    assert events[0]["weight"] == 0.55
 
 
 def test_policy_reversal_evicts_opposite_direction(tmp_path: Path) -> None:
@@ -116,8 +119,8 @@ def test_policy_reversal_evicts_opposite_direction(tmp_path: Path) -> None:
     refresh_dynamic_policy_themes(
         trade_date="2026-11-03",
         discovered_policy={
-            "boost_themes": [{"theme": "大金融", "weight": 0.90, "title": "互换便利落地", "source": "央行"}],
-            "squeeze_themes": [{"theme": "AI算力", "penalty": 0.75, "title": "警示AI高杠杆", "source": "金管总局"}],
+            "boost_themes": [{"theme": "大金融", "weight": 0.85, "title": "互换便利落地", "source": "央行"}],
+            "squeeze_themes": [{"theme": "服务器算力", "penalty": 0.70, "title": "警示AI高杠杆", "source": "金管总局"}],
         },
         path=cache_path,
     )
@@ -125,11 +128,11 @@ def test_policy_reversal_evicts_opposite_direction(tmp_path: Path) -> None:
     reversed_policy = refresh_dynamic_policy_themes(
         trade_date="2026-11-10",
         discovered_policy={
-            "boost_themes": [{"theme": "AI算力", "weight": 0.88, "title": "算力专项补贴出台", "source": "工信部"}],
+            "boost_themes": [{"theme": "服务器算力", "weight": 0.82, "title": "算力专项补贴出台", "source": "工信部"}],
             "squeeze_themes": [{"theme": "大金融", "penalty": 0.60, "title": "严查两融绕道配资", "source": "证监会"}],
         },
         path=cache_path,
     )
 
-    assert [r["theme"] for r in reversed_policy["boost_themes"]] == ["AI算力"]
+    assert [r["theme"] for r in reversed_policy["boost_themes"]] == ["服务器算力"]
     assert [r["theme"] for r in reversed_policy["squeeze_themes"]] == ["大金融"]

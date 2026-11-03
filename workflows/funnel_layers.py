@@ -360,10 +360,15 @@ def _safe_build_theme_radar(
     if not FUNNEL_THEME_RADAR_ENABLED:
         return empty_theme_snapshot(trade_date)
     try:
-        from integrations.policy_discovery import build_funnel_policy_events, load_dynamic_policy_themes
+        from utils.env import env_bool
 
-        dynamic_policy = load_dynamic_policy_themes(trade_date=trade_date)
-        events = build_funnel_policy_events(ths_hot_events, dynamic_policy)
+        events = None
+        dynamic_policy = None
+        if env_bool("FUNNEL_POLICY_DISCOVERY_ENABLED", False):
+            from integrations.policy_discovery import build_funnel_policy_events, load_dynamic_policy_themes
+
+            dynamic_policy = load_dynamic_policy_themes(trade_date=trade_date)
+            events = build_funnel_policy_events(ths_hot_events, dynamic_policy)
         return build_theme_radar_snapshot(
             trade_date=trade_date,
             concept_heat=concept_heat,
