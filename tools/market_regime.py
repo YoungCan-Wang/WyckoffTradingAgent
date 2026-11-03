@@ -803,8 +803,6 @@ def _apply_bear_rebound_regime(regime: str, metrics: MainBenchmarkMetrics) -> tu
 
 
 def _apply_evr_policy(cfg: FunnelConfig, regime: str, regime_config: MarketRegimeConfig) -> None:
-    if not cfg.enable_evr_trigger:
-        return
     evr_policy = regime_config.evr_policy
     if evr_policy in {"cold_only", "risk_off", "risk_off_crash"}:
         cfg.enable_evr_trigger = regime in {"RISK_OFF", "CRASH"}

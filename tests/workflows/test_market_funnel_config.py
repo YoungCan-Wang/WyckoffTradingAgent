@@ -4,10 +4,8 @@ from dataclasses import asdict
 from datetime import date
 
 from core.backtest_run import _base_funnel_config
-from core.wyckoff_engine import FunnelConfig
-from tools.market_regime import DEFAULT_MARKET_REGIME_CONFIG, _apply_evr_policy
+from core.market_funnel_config import funnel_config_for_market
 from workflows.backtest import BacktestWorkflowRequest, _build_run_config
-from workflows.market_funnel_config import funnel_config_for_market
 
 
 def test_funnel_config_for_market_has_no_etf_special_case() -> None:
@@ -37,10 +35,3 @@ def test_backtest_base_funnel_config_matches_market_funnel_config_for_us_and_hk(
         prod_cfg.pop("enable_leader_radar", None)
         bt_cfg.pop("enable_leader_radar", None)
         assert bt_cfg == prod_cfg
-
-
-def test_apply_evr_policy_preserves_disabled_evr_from_market_config() -> None:
-    cfg = FunnelConfig()
-    cfg.enable_evr_trigger = False
-    _apply_evr_policy(cfg, "NEUTRAL", DEFAULT_MARKET_REGIME_CONFIG)
-    assert cfg.enable_evr_trigger is False
