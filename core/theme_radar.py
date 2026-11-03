@@ -281,7 +281,7 @@ def summarize_theme_clusters(snapshot: dict[str, Any], limit: int = 3) -> str:
         return "暂无显著政策抱团共振"
     return "；".join(
         f"{item['theme']} {float(item.get('cluster_score') or 0.0):.2f}"
-        f"（MA50>MA200占{float(item.get('bull_alignment_ratio') or 0.0):.0%}，"
+        f"（多头排列占{float(item.get('bull_alignment_ratio') or 0.0):.0%}，"
         f"同频起跳{int(item.get('sync_breakout_count') or 0)}只）"
         for item in themes
     )

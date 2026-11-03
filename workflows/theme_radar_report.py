@@ -17,6 +17,7 @@ ROTATION_STATE_LABELS = {"surging": "加速", "rising": "升温", "quiet": "平�
 def render_theme_radar_report(snapshot: dict) -> str:
     themes = snapshot.get("themes", []) or []
     rotation = snapshot.get("rotation_watch", []) or []
+    clusters = snapshot.get("cluster_watch", []) or []
     grouped = _candidates_by_theme(snapshot.get("strategic_candidates", []) or [])
     lines = [
         "# Theme Radar",
@@ -33,6 +34,8 @@ def render_theme_radar_report(snapshot: dict) -> str:
         "",
     ]
     lines.extend(_rotation_table(rotation))
+    lines.extend(["", "## 🤝 抱团共振（Shadow）", ""])
+    lines.extend(_cluster_table(clusters))
     lines.extend(["", "## 🧭 中长线主线", ""])
     lines.extend(_theme_table(themes))
     lines.extend(["", "## 按主题展开", ""])
@@ -72,6 +75,22 @@ def _rotation_table(rotation: list[dict]) -> list[str]:
             f"| **{item.get('theme', '')}** | {state} | {_fmt_num(item.get('rotation_score'))} | "
             f"{_fmt_pct_1(item.get('ret5'))} | {_fmt_pct_1(item.get('ret20'))} | "
             f"{_fmt_ratio(item.get('advancing_ratio_5d'))} |"
+        )
+    return lines
+
+
+def _cluster_table(clusters: list[dict]) -> list[str]:
+    if not clusters:
+        return ["暂无满足多头排列与同日放量突破阈值的抱团共振。"]
+    lines = [
+        "| 主题 | 抱团分 | 多头排列占比 | 同频起跳 | 5日涨幅 |",
+        "|---|---:|---:|---:|---:|",
+    ]
+    for item in clusters:
+        lines.append(
+            f"| **{item.get('theme', '')}** | {_fmt_num(item.get('cluster_score'))} | "
+            f"{_fmt_ratio(item.get('bull_alignment_ratio'))} | {int(item.get('sync_breakout_count') or 0)}只 | "
+            f"{_fmt_pct_1(item.get('ret5'))} |"
         )
     return lines
 

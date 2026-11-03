@@ -171,7 +171,7 @@ def _cluster_rows(theme_radar: dict[str, Any], inflow: list[dict[str, Any]]) -> 
 def _cluster_evidence(item: dict[str, Any]) -> str:
     bull = _fmt_percent_ratio(item.get("bull_alignment_ratio"))
     sync = int(_num(item.get("sync_breakout_count")))
-    return f"MA50>MA200占{bull}，同频起跳{sync}只"
+    return f"多头排列占{bull}，同频起跳{sync}只"
 
 
 def _history_outflows(current: dict[str, dict[str, Any]], previous: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
@@ -305,10 +305,12 @@ def _rotation_lines(
     lines = []
     if inflow:
         lines.append("流入: " + "； ".join(f"{x['theme']}({x['evidence']})" for x in inflow))
-    if clusters:
+    elif clusters:
         lines.append("抱团: " + "； ".join(f"{x['theme']}({x['evidence']})" for x in clusters))
     if outflow:
         lines.append("流出: " + "； ".join(f"{x['theme']}({x['evidence']})" for x in outflow))
+    if inflow and clusters:
+        lines.append("抱团: " + "； ".join(f"{x['theme']}({x['evidence']})" for x in clusters))
     target = inflow or (clusters or [])
     if target and outflow:
         lines.append(f"迁徙: {_names(outflow)} -> {_names(target)}")

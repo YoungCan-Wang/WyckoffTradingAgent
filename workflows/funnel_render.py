@@ -399,11 +399,8 @@ def _top_summary_lines(ctx: Any, selected_count: int, money_line: str) -> list[s
 
 
 def _rotation_gate_line(ctx: Any, snapshot: dict[str, Any]) -> str:
-    watch = [
-        item
-        for item in (snapshot.get("rotation_watch") or [])
-        if not is_user_facing_etf(name=str(item.get("theme") or ""))
-    ]
+    raw_watch = list(snapshot.get("rotation_watch") or []) + list(snapshot.get("cluster_watch") or [])
+    watch = [item for item in raw_watch if not is_user_facing_etf(name=str(item.get("theme") or ""))]
     if not watch:
         return ""
     mode = resolve_market_trade_mode(ctx.regime)

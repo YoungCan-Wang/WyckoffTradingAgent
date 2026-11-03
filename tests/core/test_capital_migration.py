@@ -117,7 +117,8 @@ def test_capital_migration_surfaces_policy_cluster_resonance_when_heat_absent() 
     )
 
     assert report["clusters"][0]["theme"] == "消费防御"
-    assert "MA50>MA200占60%，同频起跳4只" in report["clusters"][0]["evidence"]
+    assert "多头排列占60%，同频起跳4只" in report["clusters"][0]["evidence"]
+    assert ">" not in report["clusters"][0]["evidence"]
     assert report["confidence"] == "high"
     assert "从AI算力撤出，转向消费防御" in report["summary"]
     assert any("抱团: 消费防御" in line for line in report["rotation"])

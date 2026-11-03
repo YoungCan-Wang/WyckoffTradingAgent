@@ -154,7 +154,8 @@ def test_theme_radar_detects_policy_cluster_resonance() -> None:
     assert clusters[0]["sync_breakout_count"] == 3
     assert clusters[0]["sync_breakout_ratio"] == 1.0
     assert "消费防御" in summarize_theme_clusters(snapshot)
-    assert "MA50>MA200占100%，同频起跳3只" in summarize_theme_clusters(snapshot)
+    assert "多头排列占100%，同频起跳3只" in summarize_theme_clusters(snapshot)
+    assert ">" not in summarize_theme_clusters(snapshot)
 
 
 def test_theme_radar_normalizes_mainline_aliases() -> None:
