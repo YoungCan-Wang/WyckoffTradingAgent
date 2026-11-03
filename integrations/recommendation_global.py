@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -38,11 +39,32 @@ def upsert_global_recommendations(
         payload = [_global_recommendation_payload(row, recommend_date, existing_quotes) for row in candidates]
         payload = [row for row in payload if row]
         if payload:
-            client.table(table).upsert(payload, on_conflict="code,recommend_date").execute()
+            _upsert_global_rows(client, table, payload)
         return True
     except Exception as exc:
         logger.warning("upsert_global(%s) failed: %s", market, exc)
         return False
+
+
+def _upsert_global_rows(client, table: str, payload: list[dict[str, Any]]) -> None:
+    compatible = payload
+    dropped: set[str] = set()
+    while True:
+        try:
+            client.table(table).upsert(compatible, on_conflict="code,recommend_date").execute()
+            return
+        except Exception as exc:
+            missing = _missing_optional_columns(exc) - dropped
+            if not missing:
+                raise
+            dropped.update(missing)
+            logger.warning("%s missing optional columns; retrying without %s", table, sorted(missing))
+            compatible = [{k: v for k, v in row.items() if k not in missing} for row in compatible]
+
+
+def _missing_optional_columns(exc: Exception) -> set[str]:
+    tokens = set(re.findall(r"[a-z0-9_]+", str(exc).lower()))
+    return {col for col in _GLOBAL_OPTIONAL_COLUMNS if col.lower() in tokens}
 
 
 def fetch_global_recommendation_tracking_records(
@@ -72,6 +94,28 @@ def resolve_global_table(market: str) -> str:
     return table
 
 
+_SPRINGBOARD_COLUMNS = (
+    "springboard_a",
+    "springboard_b",
+    "springboard_c",
+    "springboard_combo",
+    "springboard_grade",
+    "springboard_met_count",
+    "springboard_support",
+    "springboard_touch_count",
+    "springboard_evidence",
+    "springboard_scored",
+)
+_ENTRY_TIER_COLUMNS = (
+    "actionable",
+    "entry_quality_grade",
+    "entry_quality_score",
+    "bias_20",
+    "bias_200",
+)
+_GLOBAL_OPTIONAL_COLUMNS = (*_SPRINGBOARD_COLUMNS, *_ENTRY_TIER_COLUMNS)
+
+
 def _global_recommendation_payload(
     candidate: dict[str, Any],
     recommend_date: int,
@@ -88,7 +132,7 @@ def _global_recommendation_payload(
     if current_price <= 0:
         current_price = initial_price
     change = event_change_pct(initial_price, current_price)
-    return {
+    payload: dict[str, Any] = {
         "code": code,
         "name": str(candidate.get("name", "")).strip(),
         "recommend_reason": str(candidate.get("tag") or candidate.get("recommend_reason") or "").strip(),
@@ -100,6 +144,21 @@ def _global_recommendation_payload(
         # Owned by mark_ai_recommendations; omit so same-day re-upserts keep prior flags.
         "updated_at": datetime.now(UTC).isoformat(),
     }
+    if candidate.get("springboard_scored"):
+        for col in _SPRINGBOARD_COLUMNS:
+            if col in candidate:
+                payload[col] = candidate[col]
+    entry_tier = {
+        col: candidate[col]
+        for col in (*_ENTRY_TIER_COLUMNS, "support_level")
+        if col in candidate and candidate[col] is not None
+    }
+    for col in _ENTRY_TIER_COLUMNS:
+        if col in entry_tier:
+            payload[col] = entry_tier[col]
+    if entry_tier and "springboard_evidence" in payload and isinstance(payload["springboard_evidence"], dict):
+        payload["springboard_evidence"] = {**payload["springboard_evidence"], "entry_tier": entry_tier}
+    return payload
 
 
 def _event_quotes_by_code_date(rows: list[dict[str, Any]]) -> dict[tuple[str, int], tuple[float, float]]:

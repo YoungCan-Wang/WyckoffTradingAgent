@@ -27,6 +27,7 @@ def render_market_funnel_report(result: dict[str, Any]) -> str:
         f"# Wyckoff Funnel {result.get('label', result.get('market', ''))} 最终报告",
         *_overview_block(result, metrics),
         *_trigger_block(metrics),
+        *_actionable_block(candidates),
         *_candidate_block(candidates),
         *_trend_watch_block(metrics),
         *_risk_blocked_block(metrics),
@@ -78,6 +79,8 @@ def _overview_block(result: dict[str, Any], metrics: dict[str, Any]) -> list[str
         ("题材共振", metrics.get("layer3")),
         ("买点确认", metrics.get("total_hits")),
     ]
+    if "actionable_count" in metrics:
+        rows.append(("优先建仓", metrics.get("actionable_count")))
     return [
         "## 筛选概览",
         "| 环节 | 数量 |",
@@ -97,6 +100,34 @@ def _trigger_block(metrics: dict[str, Any]) -> list[str]:
         "| 触发 | 数量 |",
         "| --- | ---: |",
         *(rows or ["| 无触发 | 0 |"]),
+        "",
+    ]
+
+
+def _actionable_block(candidates: list[dict[str, Any]]) -> list[str]:
+    if not any("actionable" in item for item in candidates):
+        return []
+    visible = [
+        item
+        for item in candidates
+        if item.get("actionable")
+        and not is_user_facing_etf(str(item.get("symbol") or item.get("code") or ""), str(item.get("name") or ""))
+    ]
+    rows = [
+        "| "
+        f"{index} | {item.get('symbol', '-')} | {item.get('name', '-')} | "
+        f"{item.get('entry_quality_grade', '-')}({_fmt_float(item.get('entry_quality_score'), 1)}) | "
+        f"{item.get('springboard_combo', '-')} | {_fmt_float(item.get('score'))} | "
+        f"{_fmt_float(item.get('latest_close'), 3)} | {_fmt_float(item.get('support_level'), 3)} | "
+        f"{_fmt_float(item.get('bias_20'), 2)}% | {' / '.join(str(x) for x in item.get('triggers', [])) or '-'} |"
+        for index, item in enumerate(visible[:15], start=1)
+    ]
+    return [
+        "## ★ 优先建仓候选",
+        "满足「双均线多头(站稳MA20与MA200且MA20乖离≤10%) + 入场质量S/A/B + 右侧确认(Spring/回踩/SOS或起跳板B放量高收)」（注：只分级不删票的参考标签，样本外跟踪积累中，不作为自动建仓或仓位放大依据）。",
+        "| # | 代码 | 名称 | 入场质量 | 起跳板 | 分数 | 最新收盘 | 参考止损(支撑) | MA20乖离 | 触发 |",
+        "| ---: | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- |",
+        *(rows or ["| - | - | - | - | - | - | - | - | - | 本次无满足右侧建仓纪律标的，建议观望 |"]),
         "",
     ]
 

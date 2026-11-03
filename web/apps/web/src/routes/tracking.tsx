@@ -774,7 +774,7 @@ function SpringboardBadge({ row }: { row: Recommendation }) {
 }
 
 function CandidateLaneBadge({ row }: { row: Recommendation }) {
-  const lane = labelCandidateTerm(cleanText(row.candidate_lane || row.signal_key))
+  const lane = labelCandidateTerm(cleanText(row.candidate_lane || row.signal_key || row.recommend_reason))
   const entry = labelCandidateTerm(cleanText(row.entry_type || row.candidate_timing))
   const status = labelCandidateTerm(cleanText(row.candidate_status))
   if (!lane && !entry && !status) return <span className="text-muted-foreground">-</span>

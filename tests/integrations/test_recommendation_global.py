@@ -65,3 +65,84 @@ def test_global_upsert_uses_event_day_price(monkeypatch):
         assert mod.upsert_global_recommendations(20260803, [recommendation], market) is True
         payload = client.upserts[0][0][0]
         assert (payload["initial_price"], payload["current_price"], payload["change_pct"]) == expected
+
+
+def test_global_upsert_includes_springboard_fields_when_scored(monkeypatch):
+    monkeypatch.setenv("WYCKOFF_WRITE_CONTEXT", "server_job")
+    monkeypatch.setattr(mod, "is_admin_configured", lambda: True)
+    client = _Client([])
+    monkeypatch.setattr(mod, "create_admin_client", lambda: client)
+    rec = {
+        "code": "AAPL.US",
+        "name": "Apple",
+        "latest_close": 220.0,
+        "springboard_a": True,
+        "springboard_b": False,
+        "springboard_c": True,
+        "springboard_combo": "A+C",
+        "springboard_grade": "A+C",
+        "springboard_met_count": 2,
+        "springboard_support": 208.5,
+        "springboard_touch_count": 3,
+        "springboard_evidence": {"touches": 3},
+        "springboard_scored": True,
+        "actionable": True,
+        "entry_quality_grade": "A",
+        "entry_quality_score": 76.0,
+        "bias_20": 2.4,
+        "bias_200": 11.5,
+        "support_level": 208.5,
+    }
+    assert mod.upsert_global_recommendations(20260803, [rec], "us") is True
+    payload = client.upserts[0][0][0]
+    assert payload["springboard_combo"] == "A+C"
+    assert payload["springboard_support"] == 208.5
+    assert payload["springboard_scored"] is True
+    assert payload["actionable"] is True
+    assert payload["entry_quality_grade"] == "A"
+    assert payload["springboard_evidence"]["entry_tier"]["actionable"] is True
+
+
+def test_global_upsert_retries_without_missing_optional_columns(monkeypatch):
+    monkeypatch.setenv("WYCKOFF_WRITE_CONTEXT", "server_job")
+    monkeypatch.setattr(mod, "is_admin_configured", lambda: True)
+    client = _Client([])
+    attempts = 0
+    orig_table = client.table
+
+    def flaky_table(name: str):
+        tbl = orig_table(name)
+        orig_upsert = tbl.upsert
+
+        def wrapped_upsert(rows, on_conflict=""):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1 and any("bias_200" in r or "actionable" in r for r in rows):
+                raise RuntimeError("Could not find the 'actionable' and 'bias_200' columns in schema cache")
+            return orig_upsert(rows, on_conflict=on_conflict)
+
+        tbl.upsert = wrapped_upsert
+        return tbl
+
+    client.table = flaky_table
+    monkeypatch.setattr(mod, "create_admin_client", lambda: client)
+    rec = {
+        "code": "AAPL.US",
+        "name": "Apple",
+        "latest_close": 220.0,
+        "springboard_combo": "A+B",
+        "springboard_evidence": {},
+        "springboard_scored": True,
+        "actionable": True,
+        "entry_quality_grade": "S",
+        "bias_20": 2.1,
+        "bias_200": 14.5,
+    }
+    assert mod.upsert_global_recommendations(20260803, [rec], "us") is True
+    payload = client.upserts[0][0][0]
+    assert "actionable" not in payload
+    assert "bias_200" not in payload
+    # Exact token match: missing 'bias_200' must not strip 'bias_20'
+    assert payload["bias_20"] == 2.1
+    assert payload["springboard_combo"] == "A+B"
+    assert payload["springboard_evidence"]["entry_tier"]["actionable"] is True
