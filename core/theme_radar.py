@@ -76,7 +76,7 @@ THEME_ALIASES: dict[str, tuple[str, ...]] = {
     "大金融": ("银行", "保险", "券商", "证券", "多元金融", "金融科技", "brokerage", "insurance", "bank"),
     "公用事业": ("电力", "火电", "水电", "核电", "公用事业", "燃气", "供水", "水务", "utility", "power"),
     "煤炭能源": ("煤炭", "煤化工", "动力煤", "焦煤", "油气", "石油", "天然气", "coal", "oil", "gas"),
-    "消费防御": ("食品饮料", "白酒", "中药", "医药商业", "纺织服饰", "免税", "consumer staples", "defensive"),
+    "消费防御": ("食品饮料", "白酒", "乳业", "调味品", "中药", "医药商业", "consumer staples", "defensive"),
 }
 
 
@@ -831,7 +831,7 @@ def _sync_breakout(ordered: pd.DataFrame, close: pd.Series) -> float:
         return 0.0
     vol_col = "volume" if "volume" in ordered.columns else ("vol" if "vol" in ordered.columns else "")
     if not vol_col:
-        return 1.0
+        return 0.0
     vol = pd.to_numeric(ordered[vol_col], errors="coerce").dropna()
     if len(vol) < 20:
         return 0.0

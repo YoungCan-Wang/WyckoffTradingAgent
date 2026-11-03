@@ -136,3 +136,34 @@ def test_policy_reversal_evicts_opposite_direction(tmp_path: Path) -> None:
 
     assert [r["theme"] for r in reversed_policy["boost_themes"]] == ["服务器算力"]
     assert [r["theme"] for r in reversed_policy["squeeze_themes"]] == ["大金融"]
+
+
+def test_safe_build_theme_radar_does_not_load_policy_when_flag_disabled(monkeypatch) -> None:
+    from workflows import funnel_layers
+
+    monkeypatch.delenv("FUNNEL_POLICY_DISCOVERY_ENABLED", raising=False)
+    monkeypatch.setattr(funnel_layers, "FUNNEL_THEME_RADAR_ENABLED", True)
+    monkeypatch.setattr(funnel_layers, "_load_theme_radar_history", lambda: {})
+    monkeypatch.setattr(
+        "integrations.policy_discovery.load_dynamic_policy_themes",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("should not be called when flag is disabled")),
+    )
+    captured: dict = {}
+
+    def _fake_build(**kwargs):
+        captured.update(kwargs)
+        return {"trade_date": kwargs["trade_date"], "themes": []}
+
+    monkeypatch.setattr(funnel_layers, "build_theme_radar_snapshot", _fake_build)
+    funnel_layers._safe_build_theme_radar(
+        trade_date="2026-11-03",
+        concept_heat=[],
+        concept_map={},
+        sector_map={},
+        df_map={},
+        name_map={},
+        ths_hot_events={"events": [{"title": "热榜事件", "themes": ["红利低波"]}]},
+    )
+
+    assert captured["events"] is None
+    assert captured["dynamic_policy"] is None

@@ -145,3 +145,28 @@ def test_capital_migration_includes_policy_squeeze_rows_without_polluting_outflo
     assert report["squeeze"][0]["theme"] == "服务器算力"
     assert report["squeeze"][0]["source"] == "policy_squeeze"
     assert "政策敲打/去杠杆：人工智能投资过度集中推高杠杆" in report["squeeze"][0]["evidence"]
+
+
+def test_capital_migration_bonus_map_ignores_clusters_and_squeeze() -> None:
+    from core.funnel_theme import capital_migration_bonus_map
+
+    candidate_map = {
+        "600001": {"theme": "芯片半导体"},
+        "600419": {"theme": "消费防御"},
+        "300001": {"theme": "服务器算力"},
+    }
+    base_migration = {
+        "inflow": [{"theme": "芯片半导体", "score": 0.80}],
+        "outflow": [],
+    }
+    shadow_migration = {
+        **base_migration,
+        "clusters": [{"theme": "消费防御", "score": 0.72}],
+        "squeeze": [{"theme": "服务器算力", "score": 0.68}],
+    }
+
+    base_bonus = capital_migration_bonus_map(candidate_map, base_migration, bonus_max=6.0, penalty_max=8.0)
+    shadow_bonus = capital_migration_bonus_map(candidate_map, shadow_migration, bonus_max=6.0, penalty_max=8.0)
+    assert shadow_bonus == base_bonus
+    assert "600419" not in shadow_bonus
+    assert "300001" not in shadow_bonus

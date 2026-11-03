@@ -131,7 +131,7 @@ def test_theme_radar_normalizes_defensive_value_aliases() -> None:
 
 
 def test_theme_radar_detects_policy_cluster_resonance() -> None:
-    codes = ["600398", "601888", "001328"]
+    codes = ["600419", "600887", "002946"]
     frames = {}
     for code in codes:
         df = _compound_frame(10.0, 0.022)
@@ -141,10 +141,10 @@ def test_theme_radar_detects_policy_cluster_resonance() -> None:
         trade_date="2026-11-03",
         concept_heat=[],
         concept_history={},
-        concept_map={code: ["免税"] for code in codes},
-        sector_map={code: "纺织服饰" for code in codes},
+        concept_map={code: ["乳业"] for code in codes},
+        sector_map={code: "食品饮料" for code in codes},
         df_map=frames,
-        events=[{"title": "纺织服饰免税消费现金流抱团", "source": "test"}],
+        events=[{"title": "乳业食品饮料消费现金流抱团", "source": "test"}],
         config=ThemeRadarConfig(min_theme_score=0.0, min_stock_score=0.0),
     )
 
