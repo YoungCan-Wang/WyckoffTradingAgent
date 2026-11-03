@@ -182,9 +182,10 @@ def parse_step3_springboards(
 ) -> tuple[list[str], dict] | None:
     """Return (codes, updates), or None when the result is not authoritative.
 
-    None covers extraction failure and empty Step3 input. The caller must not
-    rewrite is_ai_recommended — treating either as an empty pool would wipe a
-    prior successful same-day mark.
+    None covers extraction failure, empty Step3 input, and status/preview reports
+    that never ran the three-camp model. The caller must not rewrite
+    is_ai_recommended — treating those as an empty pool would wipe a prior
+    successful same-day mark.
     """
     from tools.report_parser import extract_operation_pool_codes, extract_operation_pool_springboards
 
@@ -198,6 +199,16 @@ def parse_step3_springboards(
     if not allowed_codes:
         log_line(
             "Step3 批量研报: 无输入候选，跳过 AI 标记以保留库内 is_ai_recommended",
+            logs_path,
+        )
+        return None
+    # Non-empty input can still skip the model: RAG vetoes every survivor, quality
+    # gates leave no payload, or STEP3_SKIP_LLM preview. Those status/preview
+    # texts still contain「处于起跳板 / 无」, so extraction yields [] — must not
+    # be treated as an authoritative empty pool on a same-day re-run.
+    if _step3_report_skipped_model_trial(report_text):
+        log_line(
+            "Step3 批量研报: 未执行三阵营模型审判，跳过 AI 标记以保留库内 is_ai_recommended",
             logs_path,
         )
         return None
@@ -229,6 +240,13 @@ def parse_step3_springboards(
     except Exception as e:
         log_line(f"Step3 批量研报: 起跳板解析失败，已降级为空。err={e}", logs_path)
         return None
+
+
+def _step3_report_skipped_model_trial(report_text: str) -> bool:
+    text = str(report_text or "")
+    return (
+        "本轮未执行三阵营模型审判" in text or "STEP3_SKIP_LLM=1" in text or "Step3 模型输入预演（未调用大模型）" in text
+    )
 
 
 def _call_step3_report(run_step3, symbols_info: list[dict], benchmark_context: dict, cfg: DailyJobConfig):
