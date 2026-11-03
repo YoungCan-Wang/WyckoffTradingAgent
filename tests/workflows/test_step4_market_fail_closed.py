@@ -5,6 +5,7 @@ from workflows.step4_market import (
     missing_market_inputs,
     normalize_premarket_regime,
     resolve_effective_market_regime,
+    resolve_step4_gate_regime,
 )
 
 _READY = {"status": "ok", "reason": ""}
@@ -232,3 +233,33 @@ def test_worsening_premarket_never_increases_execution_permission() -> None:
             for premarket in ("NORMAL", "CAUTION", "RISK_OFF", "BLACK_SWAN")
         ]
         assert permissions == sorted(permissions, reverse=True), f"{benchmark}: {permissions}"
+
+
+def test_resolve_step4_gate_regime_prefers_benchmark_context() -> None:
+    assert resolve_step4_gate_regime({"regime": "BEAR_REBOUND"}, "2026-11-02") == "BEAR_REBOUND"
+
+
+def test_resolve_step4_gate_regime_falls_back_to_market_signal(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "workflows.step4_market.load_market_signal_for_trade_date",
+        lambda _date: {
+            "trade_date": "2026-11-02",
+            "benchmark_regime": "BEAR_REBOUND",
+            "as_of": "2026-11-02T16:00:00+08:00",
+        },
+    )
+    monkeypatch.setattr(
+        "workflows.step4_market.market_signal_readiness",
+        lambda _row, _date: {"status": "ok", "reason": ""},
+    )
+    assert resolve_step4_gate_regime({}, "2026-11-02") == "BEAR_REBOUND"
+    assert resolve_step4_gate_regime(None, "2026-11-02") == "BEAR_REBOUND"
+
+
+def test_resolve_step4_gate_regime_missing_signal_is_unknown(monkeypatch) -> None:
+    monkeypatch.setattr("workflows.step4_market.load_market_signal_for_trade_date", lambda _date: None)
+    monkeypatch.setattr(
+        "workflows.step4_market.market_signal_readiness",
+        lambda _row, _date: {"status": "missing", "reason": "no row"},
+    )
+    assert resolve_step4_gate_regime({}, "2026-11-02") == "UNKNOWN"

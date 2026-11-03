@@ -24,6 +24,9 @@ def test_load_recommendations_maps_rows(monkeypatch):
                 "capital_migration_bonus": 4.5,
                 "selection_source": "二次确认",
                 "candidate_lane": "mainline",
+                "primary_signal": "trend_breakout",
+                "signal_types": ["trend_breakout"],
+                "entry_type": "trend_breakout",
                 "is_ai_recommended": True,
             },
             {"code": "bad", "name": "坏行", "funnel_score": 10, "is_ai_recommended": False},
@@ -38,10 +41,28 @@ def test_load_recommendations_maps_rows(monkeypatch):
     assert symbols_info[0]["capital_migration_bonus"] == 4.5
     assert symbols_info[0]["selection_source"] == "二次确认"
     assert symbols_info[0]["candidate_lane"] == "mainline"
+    assert symbols_info[0]["signal_type"] == "trend_breakout"
+    assert symbols_info[0]["primary_signal"] == "trend_breakout"
     assert symbols_info[0]["source_type"] == "supabase_recommendation_tracking"
     assert ai_codes == ["000390"]
     report = workflow.build_external_report(20260621, symbols_info, ai_codes)
     assert "capital_migration=4.5" in report
+
+
+def test_recommendation_item_restores_signal_type_from_entry_type():
+    item = workflow.recommendation_item(
+        {
+            "code": 7,
+            "name": "全新好",
+            "recommend_reason": "TREND_BREAKOUT起跳板结构(A+C)",
+            "entry_type": "trend_breakout",
+            "candidate_status": "跨日确认观察",
+            "is_ai_recommended": True,
+        }
+    )
+    assert item is not None
+    assert item["signal_type"] == "trend_breakout"
+    assert item["entry_type"] == "trend_breakout"
 
 
 def test_run_step4_from_supabase_delegates_pipeline(monkeypatch):

@@ -125,7 +125,8 @@ def fetch_recommendation_rows(recommend_date: int) -> list[dict[str, Any]]:
             .select(
                 "code,name,recommend_reason,initial_price,current_price,"
                 "funnel_score,priority_score,capital_migration_bonus,selection_source,"
-                "stage,industry,candidate_lane,entry_type,candidate_status,candidate_risk,"
+                "stage,industry,candidate_lane,entry_type,primary_signal,signal_types,"
+                "candidate_status,candidate_risk,"
                 "is_ai_recommended,recommend_count,recommend_date"
             )
             .eq("recommend_date", recommend_date)
@@ -142,6 +143,11 @@ def recommendation_item(row: dict[str, Any]) -> dict | None:
         return None
     score = row.get("funnel_score")
     priority_score = row.get("priority_score") if row.get("priority_score") not in (None, "") else score
+    signal_types = row.get("signal_types") if isinstance(row.get("signal_types"), list) else []
+    primary_signal = str(row.get("primary_signal") or "").strip()
+    if not primary_signal and signal_types:
+        primary_signal = str(signal_types[0] or "").strip()
+    entry_type = str(row.get("entry_type") or "").strip()
     return {
         "code": code,
         "name": str(row.get("name") or code).strip(),
@@ -154,7 +160,11 @@ def recommendation_item(row: dict[str, Any]) -> dict | None:
         "stage": row.get("stage"),
         "industry": row.get("industry"),
         "candidate_lane": row.get("candidate_lane"),
-        "entry_type": row.get("entry_type"),
+        "entry_type": entry_type,
+        "primary_signal": primary_signal,
+        "signal_types": signal_types,
+        # Step4 regime×signal 闸门读 signal_type；回读行必须还原，否则对空串 fail-open。
+        "signal_type": primary_signal or entry_type,
         "candidate_status": row.get("candidate_status"),
         "candidate_risk": row.get("candidate_risk"),
         "initial_price": row.get("initial_price"),
