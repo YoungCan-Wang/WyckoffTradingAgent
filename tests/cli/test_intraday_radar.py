@@ -336,16 +336,16 @@ def test_l3_ignition_and_l1_drift_immune_cadence(tmp_path):
             "is_springboard": False,
         }
     }
-    # New-opportunity Wyckoff signal surfaces as L2 observation card (not L3 SMS / L4 phone) and logs to jsonl
+    # Wyckoff L2+L3 dry-volume ignition triggers L3 SMS alert and logs to jsonl
     level1, _, body1, _, cd1 = radar.analyze_snapshot_diff(
         curr_quotes, prev_state, l2_map, {}, now_ts=1200.0, turnover_dir=t_dir, alert_log_path=alert_log
     )
-    assert level1 == "L2"
+    assert level1 == "L3"
     assert "688001.SH" in body1
-    assert "威科夫盘中观察池" in body1
     logged = [json.loads(line) for line in alert_log.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert len(logged) == 1
-    assert logged[0]["kind"] == "wyckoff_l2l3_obs"
+    assert logged[0]["kind"] == "wyckoff_l2l3_ignition"
+    assert logged[0]["level"] == "L3"
     assert logged[0]["symbol"] == "688001.SH"
 
     prev_state["cooldowns"] = cd1

@@ -482,15 +482,15 @@ def _check_wyckoff_signals(
         and 0.0 <= m["vwap_dev"] <= 2.0
         and damt >= 0.30
     ):
-        if _check_cooldown(cooldowns, f"OBS:sb:{sym}", now_ts):
-            buckets["wyckoff_obs"].append(
-                f"- 🔎 **【起跳板突破观察】{sym} {m['name']}** [{info.get('sector', '')}]：{m['last']:.2f} ({m['pct']:+.2f}%) | 5m +{dpct:.2f}% (+{damt:.2f}亿) | 均 {m['vwap']:.2f}（仅观察留档，不追高）"
+        if _check_cooldown(cooldowns, f"L4:{sym}", now_ts):
+            buckets["l4"].append(
+                f"🔴 **【L4 满级起跳板突破】{sym} {m['name']}** [{info.get('sector', '')}]：{m['last']:.2f} ({m['pct']:+.2f}%) | 5m +{dpct:.2f}% (+{damt:.2f}亿) | 均 {m['vwap']:.2f}"
             )
             alert_records.append(
                 {
                     "ts": now_ts,
-                    "level": "L2",
-                    "kind": "springboard_obs",
+                    "level": "L4",
+                    "kind": "springboard_breakout",
                     "symbol": sym,
                     "name": m["name"],
                     "sector": info.get("sector", ""),
@@ -513,16 +513,16 @@ def _check_wyckoff_signals(
         and damt >= 0.30
         and m["amt_yi"] >= 1.0
     ):
-        if _check_cooldown(cooldowns, f"OBS:l3:{sym}", now_ts):
-            buckets["wyckoff_obs"].append(
-                f"- 🔎 **【L2+L3 地量/吸筹观察】{sym} {m['name']}** [{info.get('sector', '')}]：**{m['last']:.2f} ({m['pct']:+.2f}%)** | "
-                f"5m **+{dpct:.2f}%** (+{damt:.2f}亿) | 均 {m['vwap']:.2f} | {chans} RPS={info.get('rps', 0):.0f}"
+        if _check_cooldown(cooldowns, f"L3:{sym}", now_ts):
+            buckets["l3"].append(
+                f"- **{sym} {m['name']}** [{info.get('sector', '')}]：**{m['last']:.2f} ({m['pct']:+.2f}%)** | "
+                f"5m **+{dpct:.2f}%** (+{damt:.2f}亿) | 均 {m['vwap']:.2f} ✅ | {chans} RPS={info.get('rps', 0):.0f}"
             )
             alert_records.append(
                 {
                     "ts": now_ts,
-                    "level": "L2",
-                    "kind": "wyckoff_l2l3_obs",
+                    "level": "L3",
+                    "kind": "wyckoff_l2l3_ignition",
                     "symbol": sym,
                     "name": m["name"],
                     "sector": info.get("sector", ""),
@@ -685,8 +685,8 @@ def analyze_snapshot_diff(
         curr_quotes, prev_q, has_baseline, l2_map, red_ratio, coverage_ok, cooldowns, ts, alert_records
     )
     buckets["l2_events"] = h_l2 + buckets["l2_events"]
-    buckets["l3"] = h_l3
-    buckets["l4"] = h_l4
+    buckets["l3"] = h_l3 + buckets["l3"]
+    buckets["l4"] = h_l4 + buckets["l4"]
     if gap_msg:
         buckets["warnings"].append(gap_msg)
     if index_gap_warn:
@@ -726,7 +726,7 @@ def _determine_alert_level(buckets: dict[str, list[str]]) -> str:
         return "L4"
     if buckets["l3"]:
         return "L3"
-    if buckets["l2_events"] or buckets["wyckoff_obs"]:
+    if buckets["l2_events"]:
         return "L2"
     return "L1"
 
@@ -762,20 +762,15 @@ def _format_card(
     if h_lines:
         secs.append("**1. 持仓5分钟贴身监控**\n" + "\n".join(h_lines))
     if buckets["l4"]:
-        secs.append("**2. 🔴 L4 电话级警报（持仓破止损）**\n" + "\n".join(buckets["l4"][:5]))
+        secs.append("**2. 🔴 L4 电话级警报（持仓破止损 / 满级起跳板突破）**\n" + "\n".join(buckets["l4"][:5]))
     if buckets["l3"]:
-        secs.append("**3. 🟠 L3 短信级警报（持仓5m急跌破均线）**\n" + "\n".join(buckets["l3"][:5]))
-    if buckets["wyckoff_obs"]:
-        secs.append(
-            "**4. 🔎 威科夫盘中观察池（地量/吸筹 & 起跳板观察，已留档验证，盘中不追高）**\n"
-            + "\n".join(buckets["wyckoff_obs"][:8])
-        )
+        secs.append("**3. 🟠 L3 短信级：威科夫 L2+L3 地量/吸筹 5m 点火 & 持仓急跌**\n" + "\n".join(buckets["l3"][:8]))
     if buckets["l2_events"]:
-        secs.append("**5. 🟡 L2 加急事件（持仓做T / 板块共振 / 情绪骤变）**\n" + "\n".join(buckets["l2_events"][:6]))
+        secs.append("**4. 🟡 L2 加急事件（持仓做T / 板块共振 / 情绪骤变）**\n" + "\n".join(buckets["l2_events"][:6]))
     if buckets["etf_up"] or buckets["etf_down"]:
-        secs.append("**6. 全市场 ETF 5m 异动榜**\n" + "\n".join(buckets["etf_up"][:6] + buckets["etf_down"][:5]))
+        secs.append("**5. 全市场 ETF 5m 异动榜**\n" + "\n".join(buckets["etf_up"][:6] + buckets["etf_down"][:5]))
     if buckets["stock_up"] or buckets["stock_down"]:
-        secs.append("**7. 全市场 A 股 5m 异动榜**\n" + "\n".join(buckets["stock_up"][:6] + buckets["stock_down"][:6]))
+        secs.append("**6. 全市场 A 股 5m 异动榜**\n" + "\n".join(buckets["stock_up"][:6] + buckets["stock_down"][:6]))
     secs.append("⚠️ 风险提醒: 严守分时均价线（VWAP）与量比确认，不在均线下方接飞刀。")
     return title, "\n\n".join(secs)
 
