@@ -378,7 +378,10 @@ def test_resolve_lark_open_id_and_parse_holdings_arg(monkeypatch):
 def test_failed_send_does_not_persist_cooldown_in_run_once(tmp_path, monkeypatch):
     radar = _load_radar_module()
     state_file = tmp_path / "state.json"
+    alert_log = tmp_path / "radar_alerts.jsonl"
     monkeypatch.setattr(radar, "STATE_PATH", state_file)
+    monkeypatch.setattr(radar, "ALERT_LOG_PATH", alert_log)
+    monkeypatch.setattr(radar, "TURNOVER_DIR", tmp_path / "turnover")
     monkeypatch.setattr(radar, "load_wyckoff_l2_map", lambda *a, **kw: {})
     monkeypatch.setattr(radar, "resolve_lark_open_id", lambda *a, **kw: "ou_test")
 
@@ -411,17 +414,22 @@ def test_failed_send_does_not_persist_cooldown_in_run_once(tmp_path, monkeypatch
         urgent_only=False,
     )
 
-    # First run: Feishu send fails -> cooldown must NOT be saved
+    # First run: Feishu send fails -> cooldown must NOT be saved AND alert log must NOT be written
     monkeypatch.setattr(radar, "send_feishu_tiered_alert", lambda *a, **kw: None)
     radar.run_once(args)
     saved1 = json.loads(state_file.read_text(encoding="utf-8"))
     assert "L4:600000.SH" not in saved1["cooldowns"]
+    assert not alert_log.exists()
 
-    # Second run: Feishu send succeeds -> cooldown IS saved
+    # Second run: Feishu send succeeds -> cooldown IS saved AND alert log records sent=True, msg_id=om_ok_1
     monkeypatch.setattr(radar, "send_feishu_tiered_alert", lambda *a, **kw: "om_ok_1")
     radar.run_once(args)
     saved2 = json.loads(state_file.read_text(encoding="utf-8"))
     assert "L4:600000.SH" in saved2["cooldowns"]
+    rows = [json.loads(line) for line in alert_log.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(rows) == 1
+    assert rows[0]["sent"] is True
+    assert rows[0]["msg_id"] == "om_ok_1"
 
 
 def test_daemon_loop_sends_l1_alert_on_third_consecutive_error(monkeypatch):
@@ -571,6 +579,6 @@ def test_intraday_turnover_curve_and_same_timestamp_comparison(tmp_path):
     assert "同时刻对比：无基准" in s1_pm
     assert "13:00至今 6000亿" in s1_pm
 
-    # Day 2 at 14:45: compares against Day 1 14:45 (18000亿) -> +10.0%
+    # Day 2 at 14:45: compares against Day 1 14:45 (18000亿) with explicit benchmark date 2026-11-04 -> +10.0%
     s2_pm = radar.update_and_compare_turnover(d2, "14:45", 19800.0, index_ok=True, turnover_dir=t_dir)
-    assert "较上日14:45 18000亿 +10.0%" in s2_pm
+    assert "较 2026-11-04 14:45 18000亿 +10.0%" in s2_pm

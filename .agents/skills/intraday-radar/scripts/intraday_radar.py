@@ -25,6 +25,7 @@ from utils.trading_clock import CN_TZ, cn_today, is_a_share_trading_day  # noqa:
 STATE_PATH = Path("/tmp/wyckoff_intraday_radar_state.json")
 ALERT_LOG_PATH = Path.home() / ".wyckoff" / "radar_alerts.jsonl"
 TURNOVER_DIR = Path.home() / ".wyckoff" / "intraday_turnover"
+_LAST_ALERT_RECORDS: list[dict[str, Any]] = []
 COOLDOWN_SECONDS = 1800
 HOLDING_STOP_COOLDOWN_SECONDS = 86400
 L1_INTERVAL_SECONDS = 1740
@@ -581,7 +582,10 @@ def update_and_compare_turnover(
     prev_files = sorted(p for p in base_dir.glob("turnover_*.jsonl") if p.name < today_file.name)
     if not prev_files:
         return f"两市成交 {tot_amt_yi:.0f} 亿（同时刻对比：无基准）{pm_part}"
-    prev_pts = _read_turnover_points(prev_files[-1])
+    prev_file = prev_files[-1]
+    raw_ymd = prev_file.stem.replace("turnover_", "")
+    bench_date = f"{raw_ymd[:4]}-{raw_ymd[4:6]}-{raw_ymd[6:8]}" if len(raw_ymd) == 8 and raw_ymd.isdigit() else raw_ymd
+    prev_pts = _read_turnover_points(prev_file)
     now_min = _hm_to_minutes(now_hm)
     best_hm, best_gap = "", 999
     for k in prev_pts:
@@ -592,10 +596,15 @@ def update_and_compare_turnover(
         return f"两市成交 {tot_amt_yi:.0f} 亿（同时刻对比：无基准）{pm_part}"
     prev_amt = prev_pts[best_hm]
     diff_pct = (tot_amt_yi / prev_amt - 1.0) * 100.0
-    return f"两市成交 {tot_amt_yi:.0f} 亿（较上日{best_hm} {prev_amt:.0f}亿 {diff_pct:+.1f}%）{pm_part}"
+    return f"两市成交 {tot_amt_yi:.0f} 亿（较 {bench_date} {best_hm} {prev_amt:.0f}亿 {diff_pct:+.1f}%）{pm_part}"
 
 
-def append_alert_records(records: list[dict[str, Any]], log_path: Path | None = None) -> None:
+def append_alert_records(
+    records: list[dict[str, Any]],
+    log_path: Path | None = None,
+    sent: bool = True,
+    msg_id: str | None = None,
+) -> None:
     if not records:
         return
     target = log_path or ALERT_LOG_PATH
@@ -605,7 +614,7 @@ def append_alert_records(records: list[dict[str, Any]], log_path: Path | None = 
         now_hm = datetime.now(CN_TZ).strftime("%H:%M")
         with open(target, "a", encoding="utf-8") as f:
             for rec in records:
-                payload = {"date": today_str, "hm": now_hm, **rec}
+                payload = {"date": today_str, "hm": now_hm, **rec, "sent": sent, "msg_id": msg_id}
                 f.write(json.dumps(payload, ensure_ascii=False) + "\n")
     except Exception:
         return
@@ -701,8 +710,9 @@ def analyze_snapshot_diff(
 
     now_hm = datetime.fromtimestamp(ts, tz=CN_TZ).strftime("%H:%M")
     turnover_summary = update_and_compare_turnover(today_date, now_hm, tot_amt_yi, index_ok, turnover_dir=turnover_dir)
+    _LAST_ALERT_RECORDS[:] = alert_records
     if alert_log_path is not None:
-        append_alert_records(alert_records, log_path=alert_log_path)
+        append_alert_records(alert_records, log_path=alert_log_path, sent=True, msg_id="direct_call")
     level = _determine_alert_level(buckets)
     title, body = _format_card(
         level,
@@ -881,7 +891,6 @@ def run_once(args: argparse.Namespace) -> None:
         l2_map,
         holdings,
         now_ts=now_ts,
-        alert_log_path=None if args.dry_run else ALERT_LOG_PATH,
     )
     compact_snaps = {}
     for sym, q in curr_quotes.items():
@@ -899,6 +908,8 @@ def run_once(args: argparse.Namespace) -> None:
         msg_id = send_feishu_tiered_alert(title, content, level=level, user_open_id=open_id, dry_run=args.dry_run)
         if msg_id:
             saved_cooldowns = cooldowns
+            if not args.dry_run:
+                append_alert_records(_LAST_ALERT_RECORDS, log_path=ALERT_LOG_PATH, sent=True, msg_id=msg_id)
             if level == "L1":
                 last_l1_ts = now_ts
             print(f"[{now_bjt.strftime('%H:%M:%S')}] Sent {level} alert: msg_id={msg_id}")
