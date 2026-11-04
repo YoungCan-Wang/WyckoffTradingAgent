@@ -26,9 +26,10 @@ description: >-
 2. **⏰ 12:50 午间休市“全球突发与跨市场异动”扫描（覆盖 11:30~13:00 盲区）**：
    * 北京时间 `11:30~13:00` A 股休市期间，港股（`11:30~12:00`）、离岸人民币（USD/CNH）、美股夜盘期货、A50 期指仍在交易定价。
    * 每日 **`12:50`** 执行一次中英双语全球突发新闻与跨市场异动扫描；若午间出现重大国际宏观变化或汇率异动，在 `12:55` 前推送飞书预警。
-3. **RPS 高低位反身性校验（防止高位接盘“利好出尽”）**：
-   * 对政策或宏观事件受益板块，读取最新 `review_trace_*.json.gz`（按 A 股交易日计算，距离当日超过 3 个交易日自动告警忽略，兼容国庆/春节长假后首日）中该板块的 20 日 `RPS(fast)` 分布：
-   * **高位兑现警告**：若板块核心股平均 `RPS > 80`，在盘前卡片标注 **“⚠️ 高位利好兑现风险，切勿早盘盲目追高”**；
+3. **RPS 高低位反身性校验与生产 Trace 自动同步（防止高位接盘“利好出尽” & 防止无声失效）**：
+   * **生产 Trace 来源与自动下载**：生产环境的 `review_trace_YYYYMMDD.json.gz` 与 `recommendation_tracking_YYYYMMDD.json` 由 GitHub Actions 工作流 **`Wyckoff Funnel`（`wyckoff_funnel.yml`）** 在每个交易日盘后产出（Artifact 名称 `daily-job-artifacts-<run_number>`）。[intraday_radar.py](./scripts/intraday_radar.py) 启动时会自动检查 `~/.wyckoff/traces`；若本机缺失或现有文件超过 3 个交易日，脚本会自动调用 `gh run list --workflow wyckoff_funnel.yml --status success -L 1` 与 `gh run download <run_id> -p "daily-job-artifacts-*" -D ~/.wyckoff/traces` 拉取最新生产产物。
+   * **缺失/过期显式提醒**：若本机无有效 `review_trace` 且自动拉取未成功（或账龄按交易日计算超过 3 个交易日），终端输出 `[WARN]` 告警，且飞书卡片顶部强制置顶显示 **`⚠️ 今日无威科夫 trace，L3/L4/板块共振已停用`**，绝不静默伪装成“今日无信号”。
+   * **高位兑现警告**：对政策或宏观事件受益板块，若板块核心股平均 20 日 `RPS(fast) > 80`，在盘前卡片标注 **“⚠️ 高位利好兑现风险，切勿早盘盲目追高”**；
    * **低位弹簧挖掘**：重点检索同受催化、处于超跌低位（`RPS < 35`）且同时命中威科夫 **`l2_eligible = True` 与 `l3_eligible = True`（或 `stage = 候选池已捕获`）** 的 `地量蓄势 / 吸筹` 标的。
 
 ---
@@ -94,12 +95,21 @@ description: >-
 
 ---
 
-## 六、 本地 `lark-cli` 调用说明与执行命令
+## 六、 生产 Trace 同步与本地 `lark-cli` 执行命令
 
-脚本直接调用本机已登录的 `lark-cli`（通过 `lark-cli auth status` 动态获取当前登录用户的 `identities.user.openId`，并以 `--as bot` 发送互动卡片与加急通知），**无需在代码仓库或磁盘配置文件中存储任何个人 `open_id` 或持仓信息**。如需在单次运行中附带持仓监控，可通过命令行参数 `--holding <代码:成本:止损>` 传入：
+1. **生产 `review_trace` 自动与手动同步（`~/.wyckoff/traces`）**：
+   * 脚本在未指定 `--trace` 时默认按 `~/.wyckoff/traces`、`/tmp`、`data/` 顺序查找最新 `review_trace_*.json.gz`，并在缺失或过期时自动通过 `gh run download` 从 GitHub Actions `wyckoff_funnel.yml` 下载最新 `daily-job-artifacts-*` 到 `~/.wyckoff/traces`。
+   * 如需在盘前手动预拉取最新生产 Trace，可执行：
 
 ```bash
-# 单次运行全市场 7,807 标的差分扫描（自动通过本机 lark-cli 发送）：
+mkdir -p ~/.wyckoff/traces && gh run download $(gh run list --workflow wyckoff_funnel.yml --status success -L 1 --json databaseId --jq '.[0].databaseId') -p "daily-job-artifacts-*" -D ~/.wyckoff/traces
+```
+
+2. **本地 `lark-cli` 调用说明**：
+   * 脚本直接调用本机已登录的 `lark-cli`（通过 `lark-cli auth status` 动态获取当前登录用户的 `identities.user.openId`，并以 `--as bot` 发送互动卡片与加急通知），**无需在代码仓库或磁盘配置文件中存储任何个人 `open_id` 或持仓信息**。如需在单次运行中附带持仓监控，可通过命令行参数 `--holding <代码:成本:止损>` 传入：
+
+```bash
+# 单次运行全市场 7,807 标的差分扫描（自动同步 trace 并通过本机 lark-cli 发送）：
 .venv/bin/python .agents/skills/intraday-radar/scripts/intraday_radar.py --once
 
 # 盘中每 5 分钟守护扫描（自动对齐时钟周期、异常自愈、非交易时段休眠）：

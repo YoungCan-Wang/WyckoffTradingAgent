@@ -441,3 +441,50 @@ def test_daemon_loop_sends_l1_alert_on_third_consecutive_error(monkeypatch):
     assert len(sent_alerts) == 1
     assert "连续 3 次扫描异常" in sent_alerts[0][0]
     assert sent_alerts[0][2] == "L1"
+
+
+def test_missing_trace_shows_explicit_warning_banner_and_auto_fetches(tmp_path, monkeypatch, capsys):
+    radar = _load_radar_module()
+    today = cn_today()
+    today_compact = today.strftime("%Y%m%d")
+
+    # 1) When l2_map is empty, card body starts with explicit missing-trace warning
+    _, _, body_no_trace, _, _ = radar.analyze_snapshot_diff({}, {}, {}, {}, now_ts=1000.0)
+    assert "⚠️ **今日无威科夫 trace，L3/L4/板块共振已停用" in body_no_trace
+
+    # When l2_map is present, warning is absent
+    _, _, body_with_trace, _, _ = radar.analyze_snapshot_diff(
+        {}, {}, {"688001": {"l2_eligible": True}}, {}, now_ts=1000.0
+    )
+    assert "今日无威科夫 trace" not in body_with_trace
+
+    # 2) When trace dir is empty and auto_fetch=False, prints warning to stderr
+    empty_dir = tmp_path / "empty_traces"
+    empty_dir.mkdir()
+    assert radar.load_wyckoff_l2_map(trace_dirs=[str(empty_dir)], auto_fetch=False) == {}
+    assert "No review_trace_*.json.gz found" in capsys.readouterr().err
+
+    # 3) When auto_fetch=True, calls gh run list + gh run download to populate trace_dir
+    fetch_dir = tmp_path / "gh_traces"
+
+    def fake_gh_run(cmd, **kw):
+        if "list" in cmd:
+            return SimpleNamespace(returncode=0, stdout=json.dumps([{"databaseId": 999888}]), stderr="")
+        if "download" in cmd:
+            art_dir = fetch_dir / "daily-job-artifacts-1" / "artifacts"
+            art_dir.mkdir(parents=True, exist_ok=True)
+            tf = art_dir / f"review_trace_{today_compact}.json.gz"
+            with gzip.open(tf, "wt", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "trade_date": today.isoformat(),
+                        "symbols": {"688001": {"name": "自动拉取芯", "sector": "半导体", "l2_eligible": True}},
+                    },
+                    f,
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+    monkeypatch.setattr(radar.subprocess, "run", fake_gh_run)
+    l2_loaded = radar.load_wyckoff_l2_map(trace_dirs=[str(fetch_dir)], auto_fetch=True)
+    assert l2_loaded["688001"]["name"] == "自动拉取芯"

@@ -134,29 +134,65 @@ def _load_sibling_springboards(trace_file: Path, trace_date: date | None) -> set
     return springboards
 
 
-def load_wyckoff_l2_map(
-    trace_path: str | None = None,
-    trace_dirs: list[str] | None = None,
-    max_age_days: int | None = MAX_TRACE_AGE_DAYS,
-) -> dict[str, dict[str, Any]]:
+def _collect_trace_candidates(trace_path: str | None, trace_dirs: list[str] | None) -> list[Path]:
+    if trace_path:
+        p = Path(trace_path).expanduser()
+        return [p] if p.exists() else []
     candidates: list[Path] = []
-    if trace_path and Path(trace_path).exists():
-        candidates.append(Path(trace_path))
-    else:
-        for raw_dir in trace_dirs or [str(Path.home() / ".wyckoff" / "traces"), "/tmp", str(REPO_ROOT / "data")]:
-            base = Path(raw_dir).expanduser()
-            if base.exists():
-                candidates.extend(base.rglob("review_trace_*.json.gz"))
-    if not candidates:
-        return {}
-    latest = sorted(candidates, key=lambda p: p.name)[-1]
-    with gzip.open(latest, "rt", encoding="utf-8") as f:
-        data = json.load(f)
-    t_date = _parse_trace_date(latest, data)
-    if max_age_days is not None and t_date is not None and _trading_days_since(t_date, cn_today()) > max_age_days:
-        print(f"[WARN] Ignoring stale review_trace {latest.name} (trade_date={t_date})", file=sys.stderr)
-        return {}
-    springboards = _load_sibling_springboards(latest, t_date)
+    for raw_dir in trace_dirs or [str(Path.home() / ".wyckoff" / "traces"), "/tmp", str(REPO_ROOT / "data")]:
+        base = Path(raw_dir).expanduser()
+        if base.exists():
+            candidates.extend(base.rglob("review_trace_*.json.gz"))
+    return sorted(candidates, key=lambda p: p.name)
+
+
+def _auto_fetch_latest_trace(target_dir: Path) -> bool:
+    try:
+        res = subprocess.run(
+            [
+                "gh",
+                "run",
+                "list",
+                "--workflow",
+                "wyckoff_funnel.yml",
+                "--status",
+                "success",
+                "-L",
+                "1",
+                "--json",
+                "databaseId",
+            ],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if res.returncode != 0 or not res.stdout.strip():
+            return False
+        runs = json.loads(res.stdout)
+        run_id = str((runs[0] if runs else {}).get("databaseId") or "").strip()
+        if not run_id:
+            return False
+        target_dir.mkdir(parents=True, exist_ok=True)
+        marker = target_dir / f".fetched_run_{run_id}"
+        if marker.exists():
+            return False
+        dl = subprocess.run(
+            ["gh", "run", "download", run_id, "-p", "daily-job-artifacts-*", "-D", str(target_dir)],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if dl.returncode == 0:
+            marker.write_text(run_id, encoding="utf-8")
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def _parse_trace_symbols(data: dict[str, Any], springboards: set[str]) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     raw_syms = data.get("symbols", {})
     entries = (
@@ -190,6 +226,45 @@ def load_wyckoff_l2_map(
             "is_springboard": is_sb,
         }
     return out
+
+
+def load_wyckoff_l2_map(
+    trace_path: str | None = None,
+    trace_dirs: list[str] | None = None,
+    max_age_days: int | None = MAX_TRACE_AGE_DAYS,
+    auto_fetch: bool | None = None,
+) -> dict[str, dict[str, Any]]:
+    do_fetch = (trace_path is None and trace_dirs is None) if auto_fetch is None else auto_fetch
+    default_trace_dir = Path(trace_dirs[0]).expanduser() if trace_dirs else Path.home() / ".wyckoff" / "traces"
+    candidates = _collect_trace_candidates(trace_path, trace_dirs)
+    if not candidates and do_fetch and _auto_fetch_latest_trace(default_trace_dir):
+        candidates = _collect_trace_candidates(trace_path, trace_dirs)
+    if not candidates:
+        print(
+            "[WARN] No review_trace_*.json.gz found; Wyckoff L3/L4 and sector resonance are disabled.",
+            file=sys.stderr,
+        )
+        return {}
+    latest = candidates[-1]
+    with gzip.open(latest, "rt", encoding="utf-8") as f:
+        data = json.load(f)
+    t_date = _parse_trace_date(latest, data)
+    if max_age_days is not None and t_date is not None and _trading_days_since(t_date, cn_today()) > max_age_days:
+        if do_fetch and _auto_fetch_latest_trace(default_trace_dir):
+            candidates = _collect_trace_candidates(trace_path, trace_dirs)
+            latest = candidates[-1]
+            with gzip.open(latest, "rt", encoding="utf-8") as f:
+                data = json.load(f)
+            t_date = _parse_trace_date(latest, data)
+        if t_date is not None and _trading_days_since(t_date, cn_today()) > max_age_days:
+            print(
+                f"[WARN] Ignoring stale review_trace {latest.name} (trade_date={t_date}); "
+                "Wyckoff L3/L4 and sector resonance are disabled.",
+                file=sys.stderr,
+            )
+            return {}
+    springboards = _load_sibling_springboards(latest, t_date)
+    return _parse_trace_symbols(data, springboards)
 
 
 def compute_quote_metrics(q: dict[str, Any]) -> dict[str, Any] | None:
@@ -429,7 +504,18 @@ def analyze_snapshot_diff(
         )
 
     level = _determine_alert_level(buckets)
-    title, body = _format_card(level, tot_amt_yi, sh_pct, sz_pct, red_count, green_count, d_red, h_lines, buckets)
+    title, body = _format_card(
+        level,
+        tot_amt_yi,
+        sh_pct,
+        sz_pct,
+        red_count,
+        green_count,
+        d_red,
+        h_lines,
+        buckets,
+        has_trace=bool(l2_map),
+    )
     return level, title, body, red_count, cooldowns
 
 
@@ -453,13 +539,19 @@ def _format_card(
     d_red: int,
     h_lines: list[str],
     buckets: dict[str, list[str]],
+    has_trace: bool = True,
 ) -> tuple[str, str]:
     now_hm = datetime.now(CN_TZ).strftime("%H:%M")
     title = f"【{level}】{now_hm} 5m全市场雷达：两市{tot_amt_yi:.0f}亿 | 红{red_count}/绿{green_count} ({d_red:+d})"
-    secs = [
+    secs: list[str] = []
+    if not has_trace:
+        secs.append(
+            "⚠️ **今日无威科夫 trace，L3/L4/板块共振已停用（请检查 ~/.wyckoff/traces 或同步 Wyckoff Funnel 产物）**"
+        )
+    secs.append(
         f"全市场 7,807 标的 5 分钟扫描完成：两市成交 {tot_amt_yi:.0f} 亿 | 上证 {sh_pct:+.2f}% 深成指 {sz_pct:+.2f}% | "
         f"上涨 {red_count} 家 / 下跌 {green_count} 家（5m变化 {d_red:+d} 家）。"
-    ]
+    )
     if h_lines:
         secs.append("**1. 持仓5分钟贴身监控**\n" + "\n".join(h_lines))
     if buckets["l4"]:
