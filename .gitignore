@@ -6,7 +6,9 @@
 !.vscode/launch.json
 .pnpm-store/
 .codex/
-.agents/
+.agents/*
+!.agents/skills/
+!.agents/skills/**
 
 .venv/
 venv/
