@@ -315,6 +315,9 @@ class TestAuthMethodsAreExposed:
             lambda e, p: {"user_id": "u1", "email": e, "access_token": "t", "refresh_token": "r"},
         )
         monkeypatch.setattr(cc, "_fetch_settings", lambda *_a: None)
+        # auth_login 会对齐常驻会话；不替换的话 get_session() 会真起一个桌面会话
+        # （init_local_services 的后台同步线程、工具注册表），并留在模块级 _sessions 里。
+        monkeypatch.setattr("cli.ipc.session.get_session", lambda *_a: object())
         from cli.ipc.methods import auth_login
 
         events = list(auth_login({"email": "a@b.c", "password": "secret-pw"}))
