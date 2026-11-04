@@ -8,6 +8,7 @@ TickFlow 港股/美股 Wyckoff 漏斗工作流。
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ import pandas as pd
 
 from core.candidate_policy import candidate_score_value
 from core.candidate_ranker import TRIGGER_LABELS
+from core.market_funnel_config import apply_funnel_config_overrides, funnel_config_for_market
 from core.wyckoff_engine import (
     FunnelConfig,
     detect_leader_radar,
@@ -26,7 +28,6 @@ from core.wyckoff_engine import (
 from integrations.tickflow_client import TickFlowClient
 from integrations.tickflow_notice import TICKFLOW_UPGRADE_URL
 from workflows.hk_risk_gate import apply_hk_risk_gate
-from workflows.market_funnel_config import funnel_config_for_market
 from workflows.market_funnel_data import fetch_market_inputs, load_market_symbols
 from workflows.market_funnel_report import (
     market_funnel_report_path,
@@ -116,12 +117,15 @@ def _tune_funnel_for_regime(cfg: FunnelConfig, regime: str, *, is_hk: bool = Fal
         cfg.rs_min_short = max(cfg.rs_min_short, 1.0)
 
 
-def _funnel_config(cfg: RuntimeConfig) -> FunnelConfig:
-    return funnel_config_for_market(
+def _funnel_config(cfg: RuntimeConfig, overrides: Mapping[str, object] | None = None) -> FunnelConfig:
+    funnel_cfg = funnel_config_for_market(
         cfg.spec.key,
         trading_days=cfg.kline_count,
         min_avg_amount=cfg.min_avg_amount,
     )
+    # 只有回测的研究变体会传覆盖；先覆盖再按水温调参，与回测里 base_cfg 的叠加顺序一致。
+    apply_funnel_config_overrides(funnel_cfg, overrides or {})
+    return funnel_cfg
 
 
 def _run_layers(
@@ -131,8 +135,9 @@ def _run_layers(
     cfg: RuntimeConfig,
     bench_df: pd.DataFrame | None = None,
     sector_map: dict[str, str] | None = None,
+    cfg_overrides: Mapping[str, object] | None = None,
 ) -> tuple[dict[str, list[tuple[str, float]]], dict[str, Any]]:
-    funnel_cfg = _funnel_config(cfg)
+    funnel_cfg = _funnel_config(cfg, cfg_overrides)
     benchmark_context = _market_regime_context(bench_df, funnel_cfg, is_hk=cfg.spec.key == "hk")
     layer1 = layer1_filter(symbols, name_map, {}, df_map, funnel_cfg)
     layer2, channel_map, _ = layer2_strength_detailed(layer1, df_map, bench_df, funnel_cfg, rps_universe=symbols)
@@ -266,6 +271,8 @@ def run_funnel_for_ranked(
     runtime: RuntimeConfig,
     bench_df: pd.DataFrame | None,
     bench_symbol: str,
+    *,
+    cfg_overrides: Mapping[str, object] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     symbols = [str(item["symbol"]) for item in ranked]
     fetched_symbols = [symbol for symbol in symbols if symbol in df_map]
@@ -276,7 +283,15 @@ def run_funnel_for_ranked(
     sector_map = _sector_map_from_ranked(ranked)
     print(f"[market-funnel] {runtime.spec.label} 漏斗筛选 L1~L4 symbols={len(fetched_symbols)}")
     triggers, metrics = (
-        _run_layers(fetched_symbols, name_map, df_map, runtime, bench_df=bench_df, sector_map=sector_map)
+        _run_layers(
+            fetched_symbols,
+            name_map,
+            df_map,
+            runtime,
+            bench_df=bench_df,
+            sector_map=sector_map,
+            cfg_overrides=cfg_overrides,
+        )
         if df_map
         else ({}, {})
     )

@@ -12,6 +12,7 @@ import pandas as pd
 
 from core.backtest_config import BacktestRunConfig, BacktestRunInput, build_backtest_run_config
 from core.backtest_execution import ExitSimulationConfig
+from core.backtest_replay import MarketDayFunnel
 from core.backtest_run import (
     BacktestPreparedData,
     BacktestRunContext,
@@ -21,6 +22,7 @@ from core.backtest_run import (
 from core.cash_portfolio import CashPortfolioConfig
 from core.dynamic_policy import dynamic_policy_mode
 from core.market_breadth import calc_market_breadth
+from core.market_funnel_config import MARKET_FUNNEL_BOARDS
 from core.theme_activity import build_theme_member_index
 from tools.mainline_config import load_mainline_engine_config
 from tools.market_liquidity import calc_amount_distribution_health, calc_market_money_flow
@@ -77,6 +79,8 @@ from workflows.backtest_turnover import validate_snapshot_turnover
 from workflows.candidate_policy_config import candidate_policy_config_from_env
 from workflows.dynamic_policy_config import dynamic_policy_config_from_env
 from workflows.funnel_config_overrides import funnel_cfg_overrides_from_env
+from workflows.market_funnel_asof import run_asof_market_funnel
+from workflows.market_funnel_runtime import RuntimeConfig, runtime_config_from_env
 from workflows.market_liquidity_config import (
     amount_distribution_config_from_env,
     market_money_flow_config_from_env,
@@ -258,6 +262,7 @@ def _build_run_config(request: BacktestWorkflowRequest) -> BacktestRunConfig:
             market_regime_analyzer=_market_regime_analyzer_from_env(),
             market_money_flow_calculator=_market_money_flow_calculator_from_env(),
             amount_distribution_calculator=_amount_distribution_calculator_from_env(),
+            market_day_funnel=_market_day_funnel_from_env(request, funnel_overrides),
             candidate_policy=candidate_policy_config_from_env(),
             ai_allocation=ai_candidate_allocation_config_from_env(),
             mainline_config=load_mainline_engine_config(),
@@ -269,6 +274,38 @@ def _build_run_config(request: BacktestWorkflowRequest) -> BacktestRunConfig:
             control_seed=request.control_seed,
         )
     )
+
+
+def _market_day_funnel_from_env(
+    request: BacktestWorkflowRequest,
+    funnel_overrides: dict[str, object],
+) -> MarketDayFunnel | None:
+    """港美股回测逐日调用生产漏斗（as-of 口径），阈值与生产任务读同一份环境变量。"""
+    board = normalize_backtest_board(request.board)
+    if board not in MARKET_FUNNEL_BOARDS:
+        return None
+    if request.abc_filter:
+        raise ValueError("abc_filter 是 A 股回测的选股护栏，港美股生产漏斗没有这一环节")
+    runtime = runtime_config_from_env(board, None)
+    if request.trading_days != runtime.kline_count:
+        raise ValueError(
+            f"港美股回测 trading_days 须等于生产 K 线条数 {runtime.kline_count}"
+            f"（MARKET_FUNNEL_KLINE_COUNT），当前 {request.trading_days}：条数不同，"
+            "250 日窗口通道与 RPS 的取值就和生产不是同一份数据"
+        )
+    return partial(_run_market_day, runtime, dict(funnel_overrides))
+
+
+def _run_market_day(
+    runtime: RuntimeConfig,
+    cfg_overrides: dict[str, object],
+    day_df_map: dict[str, pd.DataFrame],
+    bench_slice: pd.DataFrame,
+    name_map: dict[str, str],
+    signal_date: date,
+) -> tuple[dict, list[dict]]:
+    day = run_asof_market_funnel(day_df_map, name_map, runtime, bench_slice, signal_date, cfg_overrides=cfg_overrides)
+    return day.metrics, day.candidates
 
 
 def _market_regime_analyzer_from_env():

@@ -14,6 +14,7 @@ from core.candidate_lanes import build_l1_candidate_lane_entries
 from core.candidate_policy import candidate_score_value, loss_guard_reason
 from core.candidate_ranker import TRIGGER_LABELS, TRIGGER_SHORT_LABELS
 from core.cn_boards import is_supported_cn_board
+from core.market_funnel_config import funnel_config_for_market
 from core.signal_confirmation import score_springboard_abc
 from core.wyckoff_engine import (
     FunnelConfig,
@@ -22,7 +23,6 @@ from core.wyckoff_engine import (
     layer3_sector_resonance,
     layer4_triggers,
 )
-from workflows.market_funnel_config import funnel_config_for_market
 from workflows.single_symbol_diagnosis_data import (
     fetch_symbol_history,
     load_rps_universe_histories,

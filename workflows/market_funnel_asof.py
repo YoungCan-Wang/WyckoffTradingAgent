@@ -11,10 +11,16 @@
   名称会是代码，这是取数侧限制，调用方需知情）。
 
 只做信号重建，不做收益归因；``current_price`` 由下游 performance 刷新任务负责。
+
+``run_asof_market_funnel`` 是「某历史日的生产漏斗」的唯一入口：推荐表回刷与港美股
+回测（workflows/backtest.py 注入 core/backtest_replay.py）都走它，L1~L4、水温调参、
+港股风险门、候选排序与水温上限全部复用生产的 ``run_funnel_for_ranked``，生产改了
+回测自动跟随。
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
@@ -22,6 +28,7 @@ from typing import Any
 import pandas as pd
 
 from core.wyckoff_engine import dollar_volume_series, sort_by_date_if_needed
+from workflows.market_funnel_job import run_funnel_for_ranked
 from workflows.market_funnel_runtime import RuntimeConfig
 
 
@@ -32,6 +39,15 @@ class AsOfPool:
     as_of: date
     ranked: list[dict[str, Any]]
     df_map: dict[str, pd.DataFrame]
+
+
+@dataclass(frozen=True)
+class AsOfFunnelDay:
+    """目标日的候选池与生产漏斗输出（metrics 里带 benchmark.regime / candidate_cap）。"""
+
+    pool: AsOfPool
+    metrics: dict[str, Any]
+    candidates: list[dict[str, Any]]
 
 
 def truncate_history(df: pd.DataFrame | None, as_of: date) -> pd.DataFrame | None:
@@ -69,6 +85,29 @@ def build_asof_pool(
     ranked = rows[: runtime.max_symbols]
     kept = {str(item["symbol"]) for item in ranked}
     return AsOfPool(as_of=as_of, ranked=ranked, df_map={k: v for k, v in truncated.items() if k in kept})
+
+
+def run_asof_market_funnel(
+    df_map: dict[str, pd.DataFrame],
+    name_map: dict[str, str],
+    runtime: RuntimeConfig,
+    bench_df: pd.DataFrame | None,
+    as_of: date,
+    *,
+    bench_symbol: str = "",
+    cfg_overrides: Mapping[str, object] | None = None,
+) -> AsOfFunnelDay:
+    """按 as_of 重建候选池后跑生产漏斗；cfg_overrides 只给回测研究变体用。"""
+    pool = build_asof_pool(df_map, name_map, runtime, as_of)
+    metrics, candidates = run_funnel_for_ranked(
+        pool.ranked,
+        pool.df_map,
+        runtime,
+        truncate_history(bench_df, as_of),
+        bench_symbol,
+        cfg_overrides=cfg_overrides,
+    )
+    return AsOfFunnelDay(pool=pool, metrics=metrics, candidates=candidates)
 
 
 def _asof_rank_row(
@@ -115,4 +154,4 @@ def _latest_change_pct(frame: pd.DataFrame) -> float:
     return (float(close.iloc[-1]) / float(close.iloc[-2]) - 1.0) * 100.0
 
 
-__all__ = ["AsOfPool", "build_asof_pool", "truncate_history"]
+__all__ = ["AsOfFunnelDay", "AsOfPool", "build_asof_pool", "run_asof_market_funnel", "truncate_history"]

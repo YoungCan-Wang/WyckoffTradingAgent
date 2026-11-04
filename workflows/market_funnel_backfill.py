@@ -20,14 +20,13 @@ from integrations.recommendation_global import resolve_global_table, upsert_glob
 from integrations.recommendation_tracking_common import chunked, fetch_records_from_table
 from integrations.supabase_base import create_admin_client, is_admin_configured, require_server_write_context
 from integrations.tickflow_client import TickFlowClient
-from workflows.market_funnel_asof import build_asof_pool, truncate_history
+from workflows.market_funnel_asof import run_asof_market_funnel
 from workflows.market_funnel_data import (
     fetch_benchmark_history,
     fetch_daily_histories,
     fetch_quotes,
     quote_name,
 )
-from workflows.market_funnel_job import run_funnel_for_ranked
 from workflows.market_funnel_runtime import RuntimeConfig, runtime_config_from_env
 
 _LOADERS = {"us": load_us_symbols, "hk": load_hk_symbols}
@@ -85,12 +84,10 @@ def _replay_dates(
 
     out: dict[int, list[dict[str, Any]]] = {}
     for as_of in target_dates:
-        pool = build_asof_pool(df_map, name_map, runtime, as_of)
-        bench_asof = truncate_history(bench_df, as_of)
-        _, candidates = run_funnel_for_ranked(pool.ranked, pool.df_map, runtime, bench_asof, bench_symbol)
-        rows = [_tracking_row(item) for item in candidates]
+        day = run_asof_market_funnel(df_map, name_map, runtime, bench_df, as_of, bench_symbol=bench_symbol)
+        rows = [_tracking_row(item) for item in day.candidates]
         out[_date_int(as_of)] = rows
-        print(f"[funnel-backfill] {as_of.isoformat()} pool={len(pool.ranked)} candidates={len(rows)}")
+        print(f"[funnel-backfill] {as_of.isoformat()} pool={len(day.pool.ranked)} candidates={len(rows)}")
     return out
 
 

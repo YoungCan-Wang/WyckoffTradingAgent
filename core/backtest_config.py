@@ -16,6 +16,7 @@ from core.backtest_replay import (
     AmountDistributionCalculator,
     BacktestReplayConfig,
     MarketBreadthCalculator,
+    MarketDayFunnel,
     MarketMoneyFlowCalculator,
     MarketRegimeAnalyzer,
 )
@@ -67,6 +68,8 @@ class BacktestRunInput:
     amount_distribution_calculator: AmountDistributionCalculator | None = None
     # 小盘基准；缺失时防守档判据退化，见 core/backtest_replay._analyze_market_regime。
     smallcap_bench_df: pd.DataFrame | None = None
+    # 港美股生产漏斗，见 core/backtest_replay.BacktestReplayConfig.market_day_funnel。
+    market_day_funnel: MarketDayFunnel | None = None
     candidate_policy: CandidatePolicyConfig = field(default_factory=CandidatePolicyConfig)
     ai_allocation: AiCandidateAllocationConfig = field(default_factory=AiCandidateAllocationConfig)
     concept_map: dict[str, list[str]] = field(default_factory=dict)
@@ -344,6 +347,7 @@ def _replay_config(
         selection_strategy=str(params.selection_strategy or "wyckoff").strip().lower(),
         rs_window=int(params.rs_window),
         control_seed=int(params.control_seed),
+        market_day_funnel=params.market_day_funnel,
     )
 
 

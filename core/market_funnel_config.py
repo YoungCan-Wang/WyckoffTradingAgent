@@ -1,9 +1,17 @@
-"""Market-specific funnel configuration."""
+"""Market-specific funnel configuration.
+
+港美股漏斗参数的唯一来源：生产任务（workflows/market_funnel_job.py）与回测
+（core/backtest_run.py）都从这里取，不各自维护一份副本。
+"""
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from core.hk_boards import apply_hk_funnel_cfg
 from core.wyckoff_engine import FunnelConfig
+
+MARKET_FUNNEL_BOARDS = frozenset({"us", "hk"})
 
 
 def funnel_config_for_market(market: str, *, trading_days: int = 320, min_avg_amount: float = 0.0) -> FunnelConfig:
@@ -29,3 +37,11 @@ def funnel_config_for_market(market: str, *, trading_days: int = 320, min_avg_am
         apply_hk_funnel_cfg(funnel_cfg, min_avg_amount=min_avg_amount)
 
     return funnel_cfg
+
+
+def apply_funnel_config_overrides(cfg: FunnelConfig, overrides: Mapping[str, object]) -> None:
+    """研究用覆盖；字段名拼错直接报错，避免覆盖静默不生效。"""
+    for name, value in overrides.items():
+        if not hasattr(cfg, name):
+            raise ValueError(f"未知 FunnelConfig 覆盖字段: {name}")
+        setattr(cfg, name, value)

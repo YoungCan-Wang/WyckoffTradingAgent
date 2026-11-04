@@ -66,6 +66,11 @@ MarketRegimeAnalyzer = Callable[..., dict]
 MarketMoneyFlowCalculator = Callable[..., dict]
 AmountDistributionCalculator = Callable[..., dict]
 HistoryEndPositions = dict[str, NDArray[np.intp]]
+# 港美股整日漏斗：(day_df_map, bench_slice, name_map, signal_date) -> (metrics, candidates)。
+# 由 workflows 层注入生产实现（workflows/market_funnel_asof.py::run_asof_market_funnel），
+# core 不 import workflows，也就不会留下一份会和生产漂移的副本。
+MarketDayFunnel = Callable[[dict[str, pd.DataFrame], pd.DataFrame, dict[str, str], date], tuple[dict, list[dict]]]
+MARKET_FUNNEL_TRACK = "market_funnel"
 
 
 def analyze_benchmark_and_tune_cfg(
@@ -142,6 +147,9 @@ class BacktestReplayConfig:
     selection_strategy: str = "wyckoff"
     rs_window: int = 60
     control_seed: int = 0
+    # 非空即走港美股路径（见 _market_day_context）：选股、水温与下单上限全部来自生产实现，
+    # A 股专属的水温 analyzer / 待确认池 / AI 选股 / Step4 禁买闸门在这条路径上不生效。
+    market_day_funnel: MarketDayFunnel | None = None
 
 
 @dataclass(frozen=True)
@@ -164,6 +172,15 @@ class BacktestSignalLedger:
 
 
 @dataclass(frozen=True)
+class _MarketDay:
+    """生产港美股漏斗当日输出；candidates 已按生产口径排序并截到水温上限。"""
+
+    metrics: dict
+    candidates: list[dict]
+    candidate_cap: int | None
+
+
+@dataclass(frozen=True)
 class _DayContext:
     idx: int
     signal_date: date
@@ -174,6 +191,7 @@ class _DayContext:
     result: FunnelResult
     regime: str
     breadth: dict[str, object] = field(default_factory=dict)
+    market: _MarketDay | None = None
 
 
 @dataclass(frozen=True)
@@ -349,16 +367,30 @@ def _selection_coverage(
     return {
         "signal_date": ctx.signal_date.isoformat(),
         "history_symbols": len(ctx.day_df_map),
-        "layer1_symbols": len(ctx.result.layer1_symbols),
-        "layer2_symbols": len(ctx.result.layer2_symbols),
-        "layer3_symbols": len(ctx.result.layer3_symbols),
-        "candidate_entries": len(ctx.result.candidate_entries or []),
+        **_layer_coverage(ctx),
         "mainline_entry_codes": mainline_codes,
         "mainline_selection_evaluated": config.pending_mode != "only" and config.selection_mode == "tradeable_l4",
         "selected_before_gate": selected_before,
         "selected_after_gate": selected_after,
         "selected_with_mainline_entry": sorted(set(selected_after) & set(mainline_codes)),
         "regime": ctx.regime,
+    }
+
+
+def _layer_coverage(ctx: _DayContext) -> dict[str, int]:
+    if ctx.market is not None and ctx.market.metrics:
+        metrics = ctx.market.metrics
+        return {
+            "layer1_symbols": int(metrics.get("layer1") or 0),
+            "layer2_symbols": int(metrics.get("layer2") or 0),
+            "layer3_symbols": int(metrics.get("layer3") or 0),
+            "candidate_entries": len(ctx.market.candidates),
+        }
+    return {
+        "layer1_symbols": len(ctx.result.layer1_symbols),
+        "layer2_symbols": len(ctx.result.layer2_symbols),
+        "layer3_symbols": len(ctx.result.layer3_symbols),
+        "candidate_entries": len(ctx.result.candidate_entries or []),
     }
 
 
@@ -373,6 +405,8 @@ def _apply_execution_gates(
     selected: _RankedSelection | None,
     config: BacktestReplayConfig,
 ) -> tuple[_ExecutionGateResult, int]:
+    if ctx.market is not None:
+        return _apply_market_candidate_cap(ctx.market, selected)
     blocked = config.buy_block_regimes or None
     if selected is not None and not _execution_regime_allows(ctx.regime, config.execution_regime_gate, blocked):
         return _ExecutionGateResult(None, True), len(selected.codes)
@@ -380,6 +414,38 @@ def _apply_execution_gates(
         return _ExecutionGateResult(None, False), 0
     limited_selection, limited = _limit_probe_only_selection(selected, ctx.regime, config.execution_regime_gate)
     return _ExecutionGateResult(limited_selection, False), limited
+
+
+def _apply_market_candidate_cap(
+    market: _MarketDay,
+    selected: _RankedSelection | None,
+) -> tuple[_ExecutionGateResult, int]:
+    """港美股生产唯一的下单约束是水温上限（CRASH 0 只 / RISK_OFF 30 只）。
+
+    漏斗组的候选在生产实现里已截过；这里再截一次是给对照组用的——对照组不跑漏斗，
+    但水温约束必须与漏斗组相同，否则比较的是「有没有闸门」而不是「选股好不好」。
+    """
+    if selected is None:
+        return _ExecutionGateResult(None, False), 0
+    if market.candidate_cap is None or len(selected.codes) <= market.candidate_cap:
+        return _ExecutionGateResult(selected, False), 0
+    limit = max(int(market.candidate_cap), 0)
+    if limit == 0:
+        return _ExecutionGateResult(None, True), len(selected.codes)
+    return _ExecutionGateResult(_truncate_selection(selected, limit), False), len(selected.codes) - limit
+
+
+def _truncate_selection(selected: _RankedSelection, limit: int) -> _RankedSelection:
+    kept = selected.codes[:limit]
+    return _RankedSelection(
+        kept,
+        {code: selected.score_map[code] for code in kept if code in selected.score_map},
+        {code: selected.track_map[code] for code in kept if code in selected.track_map},
+        {code: selected.trigger_name_map[code] for code in kept if code in selected.trigger_name_map},
+        frozenset(code for code in kept if code in selected.confirmed_codes),
+        {code: selected.signal_type_map[code] for code in kept if code in selected.signal_type_map},
+        {code: selected.watch_score_map[code] for code in kept if code in selected.watch_score_map},
+    )
 
 
 def replay_signal_ledger(
@@ -464,19 +530,7 @@ def _limit_probe_only_selection(
 ) -> tuple[_RankedSelection, int]:
     if mode != "live" or normalize_regime(regime) not in probe_only_regimes() or len(selected.codes) <= 1:
         return selected, 0
-    kept = selected.codes[:1]
-    return (
-        _RankedSelection(
-            kept,
-            {code: selected.score_map[code] for code in kept if code in selected.score_map},
-            {code: selected.track_map[code] for code in kept if code in selected.track_map},
-            {code: selected.trigger_name_map[code] for code in kept if code in selected.trigger_name_map},
-            frozenset(code for code in kept if code in selected.confirmed_codes),
-            {code: selected.signal_type_map[code] for code in kept if code in selected.signal_type_map},
-            {code: selected.watch_score_map[code] for code in kept if code in selected.watch_score_map},
-        ),
-        len(selected.codes) - 1,
-    )
+    return _truncate_selection(selected, 1), len(selected.codes) - 1
 
 
 def _build_day_context(
@@ -503,6 +557,10 @@ def _build_day_context(
     bench_slice = _history_tail(bench_df, signal_date, config.trading_days)
     if not day_df_map or len(bench_slice) < base_cfg.ma_long:
         return None
+    if config.market_day_funnel is not None:
+        return _market_day_context(
+            idx, trade_dates, day_df_map, bench_slice, name_map, sector_map, base_cfg, config, config.market_day_funnel
+        )
     smallcap_slice = (
         _history_tail(config.smallcap_bench_df, signal_date, config.trading_days)
         if config.smallcap_bench_df is not None
@@ -537,6 +595,45 @@ def _build_day_context(
         str(regime),
         breadth,
     )
+
+
+def _market_day_context(
+    idx: int,
+    trade_dates: list[date],
+    day_df_map: dict[str, pd.DataFrame],
+    bench_slice: pd.DataFrame,
+    name_map: dict[str, str],
+    sector_map: dict[str, str],
+    base_cfg: FunnelConfig,
+    config: BacktestReplayConfig,
+    market_day_funnel: MarketDayFunnel,
+) -> _DayContext:
+    """港美股：整日漏斗（候选池预筛、L1~L4、水温、排序、上限）交给生产实现。"""
+    signal_date = trade_dates[idx]
+    metrics, candidates = market_day_funnel(day_df_map, bench_slice, name_map, signal_date)
+    benchmark = metrics.get("benchmark") if isinstance(metrics.get("benchmark"), dict) else {}
+    cap = benchmark.get("candidate_cap")
+    day_cfg = replace(base_cfg)
+    result = (
+        _control_funnel_result(day_df_map, bench_slice, signal_date, day_cfg, name_map, sector_map, config)
+        if config.selection_strategy in CONTROL_STRATEGIES
+        else _empty_funnel_result()
+    )
+    return _DayContext(
+        idx,
+        signal_date,
+        trade_dates[idx + 1],
+        day_df_map,
+        name_map,
+        day_cfg,
+        result,
+        str(benchmark.get("regime") or "UNKNOWN"),
+        market=_MarketDay(metrics, list(candidates), None if cap is None else int(cap)),
+    )
+
+
+def _empty_funnel_result() -> FunnelResult:
+    return FunnelResult([], [], [], [], {}, {}, [], {}, {}, [], [])
 
 
 def _run_day_funnel(
@@ -748,6 +845,8 @@ def _select_ranked_codes(
 ) -> tuple[_RankedSelection | None, int]:
     if config.selection_strategy in CONTROL_STRATEGIES:
         return _select_control_codes(ctx, config, control_cooldown or {}), 0
+    if ctx.market is not None:
+        return _select_market_codes(ctx.market, config), 0
     selected_codes, score_map, track_map = select_ai_input_codes(
         result=ctx.result,
         day_df_map=ctx.day_df_map,
@@ -814,6 +913,22 @@ def _select_control_codes(
         frozenset(),
         dict.fromkeys(codes, trigger),
         {},
+    )
+
+
+def _select_market_codes(market: _MarketDay, config: BacktestReplayConfig) -> _RankedSelection | None:
+    """按生产候选顺序取前 top_n（0 表示全取）；trigger 列与推荐表 tag 同构。"""
+    rows = market.candidates[: config.top_n] if config.top_n > 0 else market.candidates
+    if not rows:
+        return None
+    codes = [str(row["symbol"]) for row in rows]
+    score_map = {code: candidate_score_value(row.get("score")) for code, row in zip(codes, rows, strict=True)}
+    tags = {code: ",".join(row.get("triggers") or []) for code, row in zip(codes, rows, strict=True)}
+    return _RankedSelection(
+        codes,
+        score_map,
+        dict.fromkeys(codes, MARKET_FUNNEL_TRACK),
+        {code: (score_map[code], tags[code]) for code in codes},
     )
 
 

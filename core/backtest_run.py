@@ -18,7 +18,11 @@ from core.backtest_replay import (
     replay_signal_ledger,
 )
 from core.backtest_trade_benchmark import attach_benchmark_returns
-from core.hk_boards import apply_hk_funnel_cfg
+from core.market_funnel_config import (
+    MARKET_FUNNEL_BOARDS,
+    apply_funnel_config_overrides,
+    funnel_config_for_market,
+)
 from core.market_sentiment import build_market_sentiment
 from core.theme_activity import build_theme_member_index
 from core.wyckoff_engine import FunnelConfig
@@ -149,12 +153,15 @@ def _validate_trade_dates(trade_dates: list[date], hold_days: int) -> None:
 
 
 def _base_funnel_config(config: BacktestRunConfig) -> FunnelConfig:
-    base_cfg = FunnelConfig(trading_days=config.replay.trading_days)
-    if config.replay.board == "us":
-        _apply_us_cfg(base_cfg)
-    elif config.replay.board == "hk":
-        apply_hk_funnel_cfg(base_cfg)
-    _apply_funnel_config_overrides(base_cfg, config.funnel_config_overrides)
+    board = config.replay.board
+    if board in MARKET_FUNNEL_BOARDS:
+        # 港美股选股走注入的生产漏斗（replay.market_day_funnel），它自己从同一个
+        # funnel_config_for_market 取参数；这份 base_cfg 只服务于切片行数与对照组。
+        base_cfg = funnel_config_for_market(board, trading_days=config.replay.trading_days)
+        apply_funnel_config_overrides(base_cfg, config.funnel_config_overrides)
+    else:
+        base_cfg = FunnelConfig(trading_days=config.replay.trading_days)
+        _apply_funnel_config_overrides(base_cfg, config.funnel_config_overrides)
     # Backtest selection never consumes display-only radar rows; skip their full-universe scan.
     base_cfg.enable_leader_radar = False
     return base_cfg
@@ -175,24 +182,10 @@ def _replay_config_with_metadata(config: BacktestRunConfig, data: BacktestPrepar
 
 
 def _apply_funnel_config_overrides(cfg: FunnelConfig, overrides: dict[str, object]) -> None:
-    for name, value in overrides.items():
-        if name == "enable_evr_trigger":
-            continue
-        if not hasattr(cfg, name):
-            raise ValueError(f"未知 FunnelConfig 覆盖字段: {name}")
-        setattr(cfg, name, value)
-
-
-def _apply_us_cfg(cfg: FunnelConfig) -> None:
-    # 与实盘 workflows/market_funnel_config.py::funnel_config_for_market("us") 保持一致，
-    # 否则回测评估的不是线上真实漏斗（此前误关闭了 RS 过滤，阈值也偏松）。
-    cfg.require_cn_main_or_chinext = False
-    cfg.require_bench_latest_alignment = False
-    # 恢复收敛前参数：SOS 8%/3.2x，不设低价股闸门（与 workflows/market_funnel_config.py 同步）
-    cfg.sos_pct_min = 8.0
-    cfg.sos_vol_ratio = 3.2
-    cfg.spring_vol_ratio = 1.3
-    cfg.evr_max_rise = 3.0
+    # 沿用原行为：A 股回测不接受 enable_evr_trigger 覆盖，EVR 开关归水温 evr_policy 管。
+    apply_funnel_config_overrides(
+        cfg, {name: value for name, value in overrides.items() if name != "enable_evr_trigger"}
+    )
 
 
 def _build_run_summary(
@@ -279,19 +272,22 @@ def _exit_summary(config: BacktestRunConfig) -> dict:
 
 
 def _execution_summary(config: BacktestRunConfig, replay: BacktestReplayResult, trades_df: pd.DataFrame) -> dict:
+    market_funnel = config.replay.market_day_funnel is not None
     summary = {
         "buy_friction_pct": float(config.replay.buy_friction_pct),
         "sell_friction_pct": float(config.replay.sell_friction_pct),
         "regime_filter": False,
         "regime_filter_note": "deprecated_live_aligned_noop",
-        "execution_regime_gate": config.replay.execution_regime_gate,
+        # 港美股走生产漏斗：A 股的选股模式 / 待确认池 / 禁买闸门都不生效，报表要能看出来。
+        "selection_pipeline": "market_funnel" if market_funnel else "a_share_funnel",
+        "execution_regime_gate": "market_candidate_cap" if market_funnel else config.replay.execution_regime_gate,
         "regime_day_counts": dict(replay.regime_day_counts),
         "regime_blocked_signal_days": replay.regime_blocked_signal_days,
         "regime_blocked_candidates": replay.regime_blocked_candidates,
         "selection_coverage": replay.selection_coverage,
         "mainline_selection_evaluated": config.pending_mode != "only"
         and config.replay.selection_mode == "tradeable_l4",
-        "pending_mode": config.pending_mode,
+        "pending_mode": "off" if market_funnel else config.pending_mode,
         "pending_merge_order": config.pending_merge_order,
         "pending_confirmed_total": replay.pending_confirmed_total,
         "entry_price_mode": config.entry_price_mode,
