@@ -302,9 +302,11 @@ def test_real_trace_schema_and_stale_trace_guard(tmp_path, monkeypatch):
     assert radar.load_wyckoff_l2_map(str(stale_file), max_age_days=3) == {}
 
 
-def test_l3_ignition_and_l1_drift_immune_cadence():
+def test_l3_ignition_and_l1_drift_immune_cadence(tmp_path):
     radar = _load_radar_module()
     today = cn_today().isoformat()
+    alert_log = tmp_path / "radar_alerts.jsonl"
+    t_dir = tmp_path / "turnover"
     prev_state = {
         "date": today,
         "ts": 1000.0,
@@ -334,12 +336,22 @@ def test_l3_ignition_and_l1_drift_immune_cadence():
             "is_springboard": False,
         }
     }
-    level1, _, body1, _, cd1 = radar.analyze_snapshot_diff(curr_quotes, prev_state, l2_map, {}, now_ts=1200.0)
-    assert level1 == "L3"
+    # New-opportunity Wyckoff signal surfaces as L2 observation card (not L3 SMS / L4 phone) and logs to jsonl
+    level1, _, body1, _, cd1 = radar.analyze_snapshot_diff(
+        curr_quotes, prev_state, l2_map, {}, now_ts=1200.0, turnover_dir=t_dir, alert_log_path=alert_log
+    )
+    assert level1 == "L2"
     assert "688001.SH" in body1
+    assert "威科夫盘中观察池" in body1
+    logged = [json.loads(line) for line in alert_log.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(logged) == 1
+    assert logged[0]["kind"] == "wyckoff_l2l3_obs"
+    assert logged[0]["symbol"] == "688001.SH"
 
     prev_state["cooldowns"] = cd1
-    level2, _, _, _, _ = radar.analyze_snapshot_diff(curr_quotes, prev_state, l2_map, {}, now_ts=1400.0)
+    level2, _, _, _, _ = radar.analyze_snapshot_diff(
+        curr_quotes, prev_state, l2_map, {}, now_ts=1400.0, turnover_dir=t_dir
+    )
     assert level2 == "L1"
 
     assert radar.should_send_card("L1", now_ts=2000.0, last_l1_ts=0.0, force_send=False, urgent_only=False)
@@ -488,3 +500,77 @@ def test_missing_trace_shows_explicit_warning_banner_and_auto_fetches(tmp_path, 
     monkeypatch.setattr(radar.subprocess, "run", fake_gh_run)
     l2_loaded = radar.load_wyckoff_l2_map(trace_dirs=[str(fetch_dir)], auto_fetch=True)
     assert l2_loaded["688001"]["name"] == "自动拉取芯"
+
+
+def test_breadth_alignment_coverage_gate_and_index_gap(tmp_path):
+    radar = _load_radar_module()
+    today = cn_today().isoformat()
+    t_dir = tmp_path / "turnover"
+
+    # Reproduction from review: prev frame has 500 red stocks, current frame only returns 99 unchanged
+    prev_quotes = {f"{600001 + i:06d}.SH": {"pct": 1.5, "amt_yi": 0.5} for i in range(500)}
+    prev_state = {"date": today, "ts": 1000.0, "red": 500, "cooldowns": {}, "quotes": prev_quotes}
+    curr_99 = {
+        f"{600001 + i:06d}.SH": {
+            "symbol": f"{600001 + i:06d}.SH",
+            "last_price": 10.15,
+            "prev_close": 10.0,
+            "volume": 5e6,
+            "amount": 5e7,
+            "ext": {"name": f"股票{i}"},
+        }
+        for i in range(99)
+    }
+    # Only 000001.SH present (399001.SZ missing) -> index gap warning
+    curr_99["000001.SH"] = {
+        "symbol": "000001.SH",
+        "last_price": 3400.0,
+        "prev_close": 3350.0,
+        "volume": 1e9,
+        "amount": 5000e8,
+        "ext": {"name": "上证指数"},
+    }
+    level_gap, _, body_gap, red_gap, _ = radar.analyze_snapshot_diff(
+        curr_99, prev_state, {"600001": {"l2_eligible": True}}, {}, now_ts=1200.0, turnover_dir=t_dir
+    )
+    assert red_gap == 99
+    assert level_gap == "L1"
+    assert "市场情绪5m骤变" not in body_gap
+    assert "数据缺口：本帧只回来 99 只 A 股" in body_gap
+    assert "指数数据缺口" in body_gap
+
+    # When 480 out of 500 return (96% >= 90%) with unchanged prices, common-pool d_red must be 0 (not -20)
+    curr_480 = {
+        f"{600001 + i:06d}.SH": {
+            "symbol": f"{600001 + i:06d}.SH",
+            "last_price": 10.15,
+            "prev_close": 10.0,
+            "volume": 5e6,
+            "amount": 5e7,
+            "ext": {"name": f"股票{i}"},
+        }
+        for i in range(480)
+    }
+    level_ok, _, body_ok, _, _ = radar.analyze_snapshot_diff(
+        curr_480, prev_state, {"600001": {"l2_eligible": True}}, {}, now_ts=1200.0, turnover_dir=t_dir
+    )
+    assert level_ok == "L1"
+    assert "同池5m变化 +0 家" in body_ok
+
+
+def test_intraday_turnover_curve_and_same_timestamp_comparison(tmp_path):
+    radar = _load_radar_module()
+    t_dir = tmp_path / "turnover"
+    d1 = date(2026, 11, 4)
+    d2 = date(2026, 11, 5)
+
+    # Day 1 morning close (11:30) and afternoon (14:45): no previous day -> reports "无基准" and afternoon increment
+    s1_am = radar.update_and_compare_turnover(d1, "11:30", 12000.0, index_ok=True, turnover_dir=t_dir)
+    assert "同时刻对比：无基准" in s1_am
+    s1_pm = radar.update_and_compare_turnover(d1, "14:45", 18000.0, index_ok=True, turnover_dir=t_dir)
+    assert "同时刻对比：无基准" in s1_pm
+    assert "13:00至今 6000亿" in s1_pm
+
+    # Day 2 at 14:45: compares against Day 1 14:45 (18000亿) -> +10.0%
+    s2_pm = radar.update_and_compare_turnover(d2, "14:45", 19800.0, index_ok=True, turnover_dir=t_dir)
+    assert "较上日14:45 18000亿 +10.0%" in s2_pm
