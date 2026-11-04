@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import gzip
 import importlib.util
+import json
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from utils.trading_clock import CN_TZ, cn_today
 
@@ -43,6 +46,7 @@ def test_index_never_counted_in_breadth_or_l2_map():
     today = cn_today().isoformat()
     prev_state = {
         "date": today,
+        "ts": 900.0,
         "red": 0,
         "quotes": {"000001.SH": {"pct": 1.0, "amt_yi": 5000.0}},
     }
@@ -62,8 +66,8 @@ def test_index_never_counted_in_breadth_or_l2_map():
             "sector": "银行",
             "rps": 20.0,
             "l2_eligible": True,
+            "l3_eligible": True,
             "channels": ["地量蓄势"],
-            "prev_amt_yi": 10.0,
         }
     }
     level, _, body, red_count, _ = radar.analyze_snapshot_diff(curr_quotes, prev_state, l2_map, {}, now_ts=1000.0)
@@ -72,49 +76,226 @@ def test_index_never_counted_in_breadth_or_l2_map():
     assert "平安银行" not in body
 
 
-def test_first_scan_without_baseline_suppresses_5m_deltas():
+def test_feishu_send_uses_lark_cli_same_bot_and_checks_failure(monkeypatch):
     radar = _load_radar_module()
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if "+messages-send" in cmd:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({"code": 0, "data": {"message_id": "om_test_123"}}),
+                stderr="",
+            )
+        return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+
+    monkeypatch.setattr(radar.subprocess, "run", fake_run)
+    msg_id = radar.send_feishu_tiered_alert("Title", "Body", level="L4", user_open_id="ou_mock_user", dry_run=False)
+    assert msg_id == "om_test_123"
+    assert len(calls) == 2
+    assert calls[0][:5] == ["lark-cli", "im", "+messages-send", "--as", "bot"]
+    assert calls[1][:5] == ["lark-cli", "im", "messages", "urgent_phone", "--as"]
+
+    monkeypatch.setattr(
+        radar.subprocess,
+        "run",
+        lambda cmd, **kw: SimpleNamespace(returncode=1, stdout="", stderr="bot error"),
+    )
+    assert (
+        radar.send_feishu_tiered_alert("Title", "Body", level="L3", user_open_id="ou_mock_user", dry_run=False) is None
+    )
+
+
+def test_holdings_stop_loss_fires_on_zero_volume_open_without_cooldown_downgrade():
+    radar = _load_radar_module()
+    today = cn_today().isoformat()
+    holdings = {"600000.SH": {"cost": 10.0, "stop": 9.50}}
+    prev_state = {
+        "date": today,
+        "ts": 1000.0,
+        "red": 0,
+        "cooldowns": {},
+        "quotes": {"600000.SH": {"pct": -1.0, "amt_yi": 0.01}},
+    }
     curr_quotes = {
-        "688001.SH": {
-            "symbol": "688001.SH",
-            "last_price": 10.4,
+        "600000.SH": {
+            "symbol": "600000.SH",
+            "last_price": 9.40,
             "prev_close": 10.0,
-            "volume": 1e7,
-            "amount": 1.035e8,
-            "ext": {"name": "测试芯片"},
+            "volume": 1000,
+            "amount": 9400.0,
+            "high": 9.80,
+            "low": 9.40,
+            "ext": {"name": "浦发银行"},
         }
     }
-    l2_map = {
-        "688001": {
-            "name": "测试芯片",
-            "sector": "半导体",
-            "rps": 12.0,
-            "l2_eligible": True,
-            "channels": ["地量蓄势"],
-            "prev_amt_yi": 1.5,
-        }
-    }
-    level, _, _, red_count, _ = radar.analyze_snapshot_diff(curr_quotes, {}, l2_map, {}, now_ts=1000.0)
-    assert red_count == 1
-    assert level == "L1"
+    level1, _, body1, _, cd1 = radar.analyze_snapshot_diff(curr_quotes, prev_state, {}, holdings, now_ts=1300.0)
+    assert level1 == "L4"
+    assert "L4 破位止损" in body1
+
+    prev_state["cooldowns"] = cd1
+    prev_state["ts"] = 1300.0
+    level2, _, _, _, _ = radar.analyze_snapshot_diff(curr_quotes, prev_state, {}, holdings, now_ts=1600.0)
+    assert level2 == "L1"
 
 
-def test_second_scan_triggers_l3_and_enforces_30m_cooldown():
+def test_etf_and_unrelated_stock_moves_do_not_spam_l2_urgent():
     radar = _load_radar_module()
     today = cn_today().isoformat()
     prev_state = {
         "date": today,
+        "ts": 1000.0,
+        "red": 10,
+        "cooldowns": {},
+        "quotes": {
+            "588170.SH": {"pct": 1.0, "amt_yi": 2.0},
+            "600001.SH": {"pct": 0.0, "amt_yi": 1.0},
+            "600002.SH": {"pct": 0.0, "amt_yi": 1.0},
+            "600003.SH": {"pct": 0.0, "amt_yi": 1.0},
+        },
+    }
+    curr_quotes = {
+        "588170.SH": {
+            "symbol": "588170.SH",
+            "last_price": 1.025,
+            "prev_close": 1.0,
+            "volume": 3e8,
+            "amount": 3.05e8,
+            "ext": {"name": "半导体ETF"},
+        },
+        "600001.SH": {
+            "symbol": "600001.SH",
+            "last_price": 10.3,
+            "prev_close": 10.0,
+            "volume": 1.5e7,
+            "amount": 1.5e8,
+            "ext": {"name": "甲股"},
+        },
+        "600002.SH": {
+            "symbol": "600002.SH",
+            "last_price": 10.3,
+            "prev_close": 10.0,
+            "volume": 1.5e7,
+            "amount": 1.5e8,
+            "ext": {"name": "乙股"},
+        },
+        "600003.SH": {
+            "symbol": "600003.SH",
+            "last_price": 10.3,
+            "prev_close": 10.0,
+            "volume": 1.5e7,
+            "amount": 1.5e8,
+            "ext": {"name": "丙股"},
+        },
+    }
+    l2_map = {
+        "600001": {"sector": "医药"},
+        "600002": {"sector": "煤炭"},
+        "600003": {"sector": "农业"},
+    }
+    level, _, body, _, _ = radar.analyze_snapshot_diff(curr_quotes, prev_state, l2_map, {}, now_ts=1300.0)
+    assert level == "L1"
+    assert "588170.SH" in body
+
+    same_sec_map = {
+        "600001": {"sector": "半导体"},
+        "600002": {"sector": "半导体"},
+        "600003": {"sector": "半导体"},
+    }
+    level_sec, _, body_sec, _, cd_sec = radar.analyze_snapshot_diff(
+        curr_quotes, prev_state, same_sec_map, {}, now_ts=1300.0
+    )
+    assert level_sec == "L2"
+    assert "半导体 板块5m共振" in body_sec
+
+    prev_state["cooldowns"] = cd_sec
+    level_sec2, _, _, _, _ = radar.analyze_snapshot_diff(curr_quotes, prev_state, same_sec_map, {}, now_ts=1500.0)
+    assert level_sec2 == "L1"
+
+
+def test_midday_restart_gap_resets_baseline_and_lunch_bridge_preserves_it():
+    radar = _load_radar_module()
+    today = cn_today()
+    t_1000 = datetime(today.year, today.month, today.day, 10, 0, tzinfo=CN_TZ).timestamp()
+    t_1400 = datetime(today.year, today.month, today.day, 14, 0, tzinfo=CN_TZ).timestamp()
+    t_1130 = datetime(today.year, today.month, today.day, 11, 30, tzinfo=CN_TZ).timestamp()
+    t_1300 = datetime(today.year, today.month, today.day, 13, 0, tzinfo=CN_TZ).timestamp()
+
+    state_1000 = {"date": today.isoformat(), "ts": t_1000, "quotes": {"688001.SH": {"pct": 0.5, "amt_yi": 0.5}}}
+    assert not radar._is_fresh_baseline(state_1000, today.isoformat(), t_1400)
+
+    state_1130 = {"date": today.isoformat(), "ts": t_1130, "quotes": {"688001.SH": {"pct": 0.5, "amt_yi": 0.5}}}
+    assert radar._is_fresh_baseline(state_1130, today.isoformat(), t_1300)
+
+
+def test_real_trace_schema_and_stale_trace_guard(tmp_path):
+    radar = _load_radar_module()
+    today_compact = cn_today().strftime("%Y%m%d")
+    trace_file = tmp_path / f"review_trace_{today_compact}.json.gz"
+    rec_file = tmp_path / f"recommendation_tracking_{today_compact}.json"
+
+    trace_payload = {
+        "trade_date": cn_today().isoformat(),
+        "symbols": {
+            "688001": {
+                "name": "测试芯片",
+                "sector": "半导体",
+                "rps_fast": 11.2,
+                "l2_eligible": True,
+                "l3_eligible": True,
+                "l2_channel": "地量蓄势",
+                "stage": "候选池已捕获",
+                "entry": {"entry_type": "launchpad"},
+                "reason": "候选车道: 启动平台",
+            },
+            "300001": {
+                "name": "起跳测试",
+                "sector": "通信设备",
+                "rps_fast": 82.0,
+                "l2_eligible": True,
+                "l3_eligible": False,
+                "l2_channel": "主升通道",
+                "stage": "买点未确认",
+            },
+        },
+    }
+    with gzip.open(trace_file, "wt", encoding="utf-8") as f:
+        json.dump(trace_payload, f)
+    rec_file.write_text(
+        json.dumps({"rows": [{"code": "300001", "springboard_combo": "A+B+C"}]}),
+        encoding="utf-8",
+    )
+
+    l2_map = radar.load_wyckoff_l2_map(str(trace_file))
+    assert l2_map["688001"]["is_springboard"] is True
+    assert l2_map["688001"]["l3_eligible"] is True
+    assert l2_map["688001"]["channels"] == ["地量蓄势"]
+    assert l2_map["300001"]["is_springboard"] is True
+
+    stale_file = tmp_path / "review_trace_20250101.json.gz"
+    with gzip.open(stale_file, "wt", encoding="utf-8") as f:
+        json.dump({"trade_date": "2025-01-01", "symbols": trace_payload["symbols"]}, f)
+    assert radar.load_wyckoff_l2_map(str(stale_file), max_age_days=5) == {}
+
+
+def test_l3_ignition_and_l1_drift_immune_cadence():
+    radar = _load_radar_module()
+    today = cn_today().isoformat()
+    prev_state = {
+        "date": today,
+        "ts": 1000.0,
         "red": 1,
         "cooldowns": {},
-        "quotes": {"688001.SH": {"pct": 1.0, "amt_yi": 0.50}},
+        "quotes": {"688001.SH": {"pct": 1.0, "amt_yi": 0.80}},
     }
     curr_quotes = {
         "688001.SH": {
             "symbol": "688001.SH",
             "last_price": 10.35,
             "prev_close": 10.0,
-            "volume": 1e7,
-            "amount": 1.03e8,
+            "volume": 1.2e7,
+            "amount": 1.236e8,
             "ext": {"name": "测试芯片"},
         }
     }
@@ -124,33 +305,20 @@ def test_second_scan_triggers_l3_and_enforces_30m_cooldown():
             "sector": "半导体",
             "rps": 12.0,
             "l2_eligible": True,
+            "l3_eligible": True,
+            "is_candidate": True,
             "channels": ["地量蓄势"],
-            "prev_amt_yi": 2.0,
+            "is_springboard": False,
         }
     }
-    level1, _, body1, _, cd1 = radar.analyze_snapshot_diff(curr_quotes, prev_state, l2_map, {}, now_ts=1000.0)
+    level1, _, body1, _, cd1 = radar.analyze_snapshot_diff(curr_quotes, prev_state, l2_map, {}, now_ts=1200.0)
     assert level1 == "L3"
     assert "688001.SH" in body1
 
     prev_state["cooldowns"] = cd1
-    level2, _, _, _, _ = radar.analyze_snapshot_diff(curr_quotes, prev_state, l2_map, {}, now_ts=1300.0)
+    level2, _, _, _, _ = radar.analyze_snapshot_diff(curr_quotes, prev_state, l2_map, {}, now_ts=1400.0)
     assert level2 == "L1"
 
-
-def test_trading_session_and_send_cadence(monkeypatch):
-    radar = _load_radar_module()
-    monkeypatch.setattr(radar, "is_a_share_trading_day", lambda d: True)
-    t_open = datetime(2026, 11, 4, 10, 0, tzinfo=CN_TZ)
-    t_mid = datetime(2026, 11, 4, 10, 5, tzinfo=CN_TZ)
-    t_lunch = datetime(2026, 11, 4, 12, 15, tzinfo=CN_TZ)
-    t_after = datetime(2026, 11, 4, 16, 0, tzinfo=CN_TZ)
-
-    assert radar.is_cn_trading_session(t_open)
-    assert not radar.is_cn_trading_session(t_lunch)
-    assert not radar.is_cn_trading_session(t_after)
-
-    assert radar.should_send_card("L1", t_open, force_send=False, urgent_only=False)
-    assert not radar.should_send_card("L1", t_mid, force_send=False, urgent_only=False)
-    assert radar.should_send_card("L1", t_mid, force_send=True, urgent_only=False)
-    assert not radar.should_send_card("L1", t_open, force_send=True, urgent_only=True)
-    assert radar.should_send_card("L3", t_mid, force_send=False, urgent_only=True)
+    assert radar.should_send_card("L1", now_ts=2000.0, last_l1_ts=0.0, force_send=False, urgent_only=False)
+    assert not radar.should_send_card("L1", now_ts=3000.0, last_l1_ts=2000.0, force_send=False, urgent_only=False)
+    assert radar.should_send_card("L1", now_ts=3800.0, last_l1_ts=2000.0, force_send=False, urgent_only=False)
