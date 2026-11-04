@@ -95,18 +95,28 @@ def load_wyckoff_l2_map(
     with gzip.open(latest, "rt", encoding="utf-8") as f:
         data = json.load(f)
     out: dict[str, dict[str, Any]] = {}
-    for s in data.get("symbols", []):
-        code6 = str(s.get("symbol", ""))[:6]
-        chans = s.get("l2_channels") or []
-        tier = str(s.get("actionable_tier") or s.get("tier") or "")
+    raw_syms = data.get("symbols", {})
+    entries = (
+        raw_syms.items()
+        if isinstance(raw_syms, dict)
+        else ((s.get("symbol", ""), s) for s in raw_syms if isinstance(s, dict))
+    )
+    for raw_key, s in entries:
+        if not isinstance(s, dict):
+            continue
+        code6 = str(raw_key or s.get("symbol", ""))[:6]
+        raw_ch = s.get("l2_channels") or s.get("l2_channel") or []
+        chans = [raw_ch] if isinstance(raw_ch, str) else list(raw_ch)
+        tier = str(s.get("actionable_tier") or s.get("tier") or s.get("shadow_lane") or "")
         out[code6] = {
             "name": s.get("name", ""),
             "sector": s.get("sector", ""),
             "rps": float(s.get("rps_fast") or 0.0),
             "l2_eligible": bool(s.get("l2_eligible")),
+            "l3_eligible": bool(s.get("l3_eligible")),
             "channels": chans,
             "prev_amt_yi": float(s.get("amount_yi") or s.get("prev_amount_yi") or 0.0),
-            "is_springboard": ("A+B+C" in tier) or bool(s.get("is_springboard")),
+            "is_springboard": ("A+B+C" in tier) or ("启动平台" in tier) or bool(s.get("is_springboard")),
         }
     return out
 
