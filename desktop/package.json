@@ -24,12 +24,12 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^4.7.0",
-    "electron": "43.5.0",
+    "electron": "43.8.7",
     "electron-builder": "^26.15.3",
     "playwright": "1.62.1",
     "sprintf-js": "file:vendor/sprintf-js",
     "typescript": "^5.9.3",
-    "vite": "^6.4.3"
+    "vite": "^6.4.5"
   },
   "build": {
     "appId": "com.youngcan.wyckoff",
@@ -81,6 +81,14 @@
     "react-dom": "^19.2.8"
   },
   "overrides": {
-    "sprintf-js": "$sprintf-js"
+    "sprintf-js": "$sprintf-js",
+    "fast-uri": "3.1.9",
+    "minimatch": "11.0.4",
+    "node-gyp": {
+      "undici": "6.29.1"
+    },
+    "@electron/get": {
+      "undici": "7.30.1"
+    }
   }
 }
