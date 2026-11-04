@@ -21,13 +21,13 @@ dependencies = [
     "requests>=2.31.0",
     "urllib3>=2.7.0",
     "idna>=3.15",
-    "certifi",
+    "certifi>=2026.10.18",
     "python-dotenv>=1.0.0",
     "supabase>=2.0.0,<3.0",
     # httpx 建客户端时会为 ALL_PROXY=socks5://… 挂 SOCKS transport，缺 socksio 直接抛 ImportError
     "httpx[socks]>=0.27,<1.0",
     "matplotlib>=3.8.0",
-    "pillow>=10.0.0",
+    "pillow>=13",
     "rich>=13.0.0",
     "textual>=0.50.0",
     "anthropic>=0.30.0",
@@ -71,6 +71,11 @@ llmdoc = ["*.json", "*.md", "cases/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.uv]
+# litellm 到 1.108.0 仍声明 filelock<4；4.2.1 才补上 ReadWriteLock 被符号链接带走的问题。override 只抬解析结果。
+override-dependencies = ["filelock>=4.2.1"]
+constraint-dependencies = ["pyasn1>=0.6.5", "virtualenv>=21.14.9,<21.15"]
 
 [tool.ruff]
 target-version = "py311"
