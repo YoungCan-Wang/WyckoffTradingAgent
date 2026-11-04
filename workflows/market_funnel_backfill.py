@@ -28,6 +28,7 @@ from workflows.market_funnel_data import (
     quote_name,
 )
 from workflows.market_funnel_runtime import RuntimeConfig, runtime_config_from_env
+from workflows.market_funnel_tracking import tracking_row
 
 _LOADERS = {"us": load_us_symbols, "hk": load_hk_symbols}
 
@@ -85,7 +86,7 @@ def _replay_dates(
     out: dict[int, list[dict[str, Any]]] = {}
     for as_of in target_dates:
         day = run_asof_market_funnel(df_map, name_map, runtime, bench_df, as_of, bench_symbol=bench_symbol)
-        rows = [_tracking_row(item) for item in day.candidates]
+        rows = [tracking_row(item) for item in day.candidates]
         out[_date_int(as_of)] = rows
         print(f"[funnel-backfill] {as_of.isoformat()} pool={len(day.pool.ranked)} candidates={len(rows)}")
     return out
@@ -111,17 +112,6 @@ def _augment_names(
             out[code] = name
     print(f"[funnel-backfill] 名称补齐 {len(out)}/{len(symbols)}（meta 为空，取自实时报价）")
     return out
-
-
-def _tracking_row(candidate: dict[str, Any]) -> dict[str, Any]:
-    """与生产 ``market_funnel_tracking._tracking_row`` 同构；日期由 upsert 的参数决定。"""
-    return {
-        "code": str(candidate.get("symbol", "")).strip(),
-        "name": str(candidate.get("name", "")).strip(),
-        "tag": ",".join(candidate.get("triggers") or []),
-        "score": float(candidate.get("score") or 0),
-        "latest_close": float(candidate.get("latest_close") or 0),
-    }
 
 
 def _apply(

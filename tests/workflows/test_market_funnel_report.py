@@ -30,6 +30,29 @@ class TestRenderMarketFunnelReport:
         assert "00099.HK" in report
         assert "疑似仙股" in report
 
+    def test_report_renders_actionable_section_when_present(self):
+        payload = _result(actionable_count=1)
+        payload["top_candidates"] = [
+            {
+                "symbol": "AAPL.US",
+                "name": "Apple",
+                "score": 85.0,
+                "latest_close": 215.5,
+                "support_level": 208.0,
+                "bias_20": 2.45,
+                "entry_quality_grade": "A",
+                "entry_quality_score": 76.0,
+                "springboard_combo": "A+C",
+                "triggers": ["Spring（终极震仓）"],
+                "actionable": True,
+            }
+        ]
+        report = render_market_funnel_report(payload)
+        assert "| 优先建仓 | 1 |" in report
+        assert "## ★ 优先建仓候选" in report
+        assert "A(76.0)" in report
+        assert "208.000" in report
+
 
 class TestSendMarketFunnelNotification:
     def test_missing_webhook_returns_false(self):

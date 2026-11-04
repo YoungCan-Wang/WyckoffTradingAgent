@@ -17,9 +17,11 @@ import pandas as pd
 from core.candidate_policy import candidate_score_value
 from core.candidate_ranker import TRIGGER_LABELS
 from core.market_funnel_config import apply_funnel_config_overrides, funnel_config_for_market
+from core.signal_confirmation import compute_support_level, score_springboard_abc
 from core.wyckoff_engine import (
     FunnelConfig,
     detect_leader_radar,
+    dollar_volume_series,
     layer1_filter,
     layer2_strength_detailed,
     layer3_sector_resonance,
@@ -37,6 +39,7 @@ from workflows.market_funnel_report import (
 )
 from workflows.market_funnel_runtime import MARKET_SPECS, RuntimeConfig, runtime_config_from_env
 from workflows.market_funnel_tracking import write_tracking_candidates_if_enabled
+from workflows.step3_entry_quality import annotate_entry_quality
 
 MARKET_CHOICES = tuple(sorted(MARKET_SPECS))
 
@@ -178,21 +181,38 @@ def _latest_history_snapshot(df: pd.DataFrame | None) -> tuple[float | None, int
     return (float(close.iloc[-1]), None) if not close.empty else (None, None)
 
 
+# step3_entry_quality._liquidity_points 的阈值（1 / 3）按 A 股「亿元人民币」(1e8 CNY) 标定；
+# 将美股美元 (USD ≈ 7.2 CNY) 与港股港币 (HKD ≈ 0.92 CNY) 的成交额折算为等值亿元人民币。
+_CURRENCY_TO_CNY_YI: dict[str, float] = {
+    "us": 7.2 / 1e8,
+    "hk": 0.92 / 1e8,
+}
+
+
 def _candidate_rows(
     triggers: dict[str, list[tuple[str, float]]],
     *,
     name_map: dict[str, str],
     df_map: dict[str, pd.DataFrame],
+    bench_df: pd.DataFrame | None = None,
+    market: str = "us",
 ) -> list[dict[str, Any]]:
     rows: dict[str, dict[str, Any]] = {}
     for trigger, hits in triggers.items():
         for symbol, score in hits:
             item = rows.setdefault(
                 symbol,
-                {"symbol": symbol, "name": name_map.get(symbol, symbol), "score": 0.0, "triggers": []},
+                {
+                    "symbol": symbol,
+                    "name": name_map.get(symbol, symbol),
+                    "score": 0.0,
+                    "triggers": [],
+                    "raw_triggers": [],
+                },
             )
             item["score"] = candidate_score_value(item["score"]) + candidate_score_value(score)
             item["triggers"].append(TRIGGER_LABELS.get(trigger, trigger))
+            item["raw_triggers"].append(str(trigger).strip().lower())
     out = list(rows.values())
     for item in out:
         latest_close, latest_trade_date = _latest_history_snapshot(df_map.get(str(item["symbol"])))
@@ -200,7 +220,126 @@ def _candidate_rows(
         if latest_trade_date is not None:
             item["latest_trade_date"] = latest_trade_date
     out.sort(key=lambda item: candidate_score_value(item.get("score")), reverse=True)
+    _enrich_candidates_entry_context(out, df_map, bench_df, market=market)
     return out
+
+
+def _enrich_candidates_entry_context(
+    candidates: list[dict[str, Any]],
+    df_map: dict[str, pd.DataFrame],
+    bench_df: pd.DataFrame | None,
+    *,
+    market: str = "us",
+) -> None:
+    bench_closes = _sorted_close_series(bench_df)
+    enriched_indices: list[int] = []
+    metric_rows: list[dict[str, Any]] = []
+    for idx, item in enumerate(candidates):
+        symbol = str(item.get("symbol") or "")
+        df = df_map.get(symbol)
+        if df is None or len(df) < 20 or not {"high", "low", "close", "volume"}.issubset(df.columns):
+            continue
+        raw_trigs = [str(t) for t in (item.get("raw_triggers") or []) if str(t)]
+        metrics = _candidate_entry_metrics(
+            df,
+            raw_trigs,
+            float(item.get("score") or 0.0),
+            bench_closes,
+            market=market,
+            symbol=symbol,
+        )
+        item.update(metrics)
+        enriched_indices.append(idx)
+        metric_rows.append(metrics)
+    if not metric_rows:
+        return
+    annotated = annotate_entry_quality(pd.DataFrame(metric_rows)).to_dict("records")
+    for idx, eq in zip(enriched_indices, annotated, strict=False):
+        item = candidates[idx]
+        for key in ("entry_quality_score", "entry_quality_grade", "entry_quality_tag", "entry_risk_flags"):
+            item[key] = eq.get(key)
+        right_side = bool(item.get("springboard_b")) or any(
+            t in ("spring", "trend_pullback", "sos") for t in (item.get("raw_triggers") or [])
+        )
+        bias_200 = item.get("bias_200")
+        bias_20 = item.get("bias_20")
+        actionable = (
+            str(item.get("entry_quality_grade") or "") in ("S", "A", "B")
+            and bias_200 is not None
+            and float(bias_200) >= 0.0
+            and bias_20 is not None
+            and 0.0 <= float(bias_20) <= 10.0
+            and right_side
+        )
+        item["actionable"] = actionable
+        item["action_label"] = "优先建仓" if actionable else "观察池"
+
+
+def _sorted_close_series(df: pd.DataFrame | None) -> pd.Series | None:
+    if df is None or df.empty or "close" not in df.columns:
+        return None
+    work = df.sort_values("date") if "date" in df.columns else df
+    closes = pd.to_numeric(work["close"], errors="coerce").dropna()
+    return closes if len(closes) >= 11 else None
+
+
+def _candidate_entry_metrics(
+    df: pd.DataFrame,
+    raw_trigs: list[str],
+    score: float,
+    bench_closes: pd.Series | None,
+    *,
+    market: str = "us",
+    symbol: str = "",
+) -> dict[str, Any]:
+    work = (df.sort_values("date") if "date" in df.columns else df).reset_index(drop=True)
+    closes = pd.to_numeric(work["close"], errors="coerce")
+    vols = pd.to_numeric(work["volume"], errors="coerce")
+    amts = dollar_volume_series(work)
+    close_px = float(closes.iloc[-1])
+    ma20 = float(closes.rolling(20).mean().iloc[-1])
+    ma200 = float(closes.rolling(200).mean().iloc[-1]) if len(closes) >= 200 else 0.0
+    vol_ma20 = vols.rolling(20).mean()
+    vr = vols / vol_ma20.where(vol_ma20 > 0)
+    stock_10 = (close_px / float(closes.iloc[-11]) - 1.0) * 100.0 if len(closes) >= 11 else 0.0
+    bench_10 = (
+        (float(bench_closes.iloc[-1]) / float(bench_closes.iloc[-11]) - 1.0) * 100.0
+        if bench_closes is not None and len(bench_closes) >= 11
+        else 0.0
+    )
+    trig_keys = raw_trigs or ["lps"]
+    best_trig, sb = max(
+        ((t, score_springboard_abc(work, t)) for t in trig_keys),
+        key=lambda pair: (
+            int(pair[1].get("met_count") or 0),
+            bool(pair[1].get("b")),
+            bool(pair[1].get("a")),
+            bool(pair[1].get("c")),
+            int(pair[1].get("touch_count") or 0),
+        ),
+    )
+    grade = str(sb.get("grade") or "none")
+    mkt_key = "hk" if market.lower() == "hk" or symbol.upper().endswith(".HK") else "us"
+    avg_amt = float(amts.tail(20).mean()) if not amts.empty else 0.0
+    return {
+        "support_level": round(compute_support_level(work, best_trig), 4),
+        "bias_20": round((close_px / ma20 - 1.0) * 100.0, 2) if ma20 > 0 else None,
+        "bias_200": round((close_px / ma200 - 1.0) * 100.0, 2) if ma200 > 0 else None,
+        "rs_10": round(stock_10 - bench_10, 2),
+        "min_vol_ratio_5d": round(float(vr.tail(5).min()), 4) if len(vr) >= 5 else 1.0,
+        "avg_amount_20_yi": round(avg_amt * _CURRENCY_TO_CNY_YI[mkt_key], 4),
+        "priority_score": score,
+        "springboard_a": bool(sb.get("a")),
+        "springboard_b": bool(sb.get("b")),
+        "springboard_c": bool(sb.get("c")),
+        "springboard_combo": grade,
+        "springboard_grade": grade,
+        "springboard_met_count": int(sb.get("met_count") or 0),
+        "springboard_support": sb.get("support"),
+        "springboard_touch_count": int(sb.get("touch_count") or 0),
+        "springboard_evidence": sb.get("evidence") or {},
+        "springboard_scored": True,
+    }
 
 
 def _sector_map_from_ranked(ranked: list[dict[str, Any]]) -> dict[str, str]:
@@ -299,8 +438,16 @@ def run_funnel_for_ranked(
         metrics["benchmark_symbol"] = bench_symbol
     if hk_risk_blocked:
         metrics["hk_risk_blocked"] = hk_risk_blocked
-    raw_candidates = _candidate_rows(triggers, name_map=name_map, df_map=df_map)
+    raw_candidates = _candidate_rows(
+        triggers,
+        name_map=name_map,
+        df_map=df_map,
+        bench_df=bench_df,
+        market=runtime.spec.key,
+    )
     candidates = _cap_candidates_for_regime(raw_candidates, metrics)
+    if metrics:
+        metrics["actionable_count"] = sum(1 for item in candidates if item.get("actionable"))
     if len(candidates) < len(raw_candidates):
         print(f"[market-funnel] regime cap: kept={len(candidates)}/{len(raw_candidates)}")
     return metrics, candidates

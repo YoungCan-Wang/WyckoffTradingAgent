@@ -306,3 +306,72 @@ def test_upsert_funnel_to_tracking_groups_by_trade_date(monkeypatch):
         (20260513, ["HALT.US"], "us"),
         (20260514, ["AAPL.US"], "us"),
     ]
+
+
+def test_candidate_rows_enriches_actionable_entry_metrics():
+    df = _daily_frame(230).copy()
+    # TickFlow US/HK daily klines have amount=0.0; verify fallback to close*volume via dollar_volume_series.
+    df["amount"] = 0.0
+    rows = _candidate_rows(
+        {"spring": [("AAPL.US", 82.0)], "evr": [("WEAK.US", 40.0)]},
+        name_map={"AAPL.US": "Apple", "WEAK.US": "Weak Corp"},
+        df_map={"AAPL.US": df, "WEAK.US": df},
+        bench_df=df,
+        market="us",
+    )
+
+    by_symbol = {row["symbol"]: row for row in rows}
+    aapl = by_symbol["AAPL.US"]
+    assert aapl["springboard_scored"] is True
+    assert aapl["avg_amount_20_yi"] > 3.0
+    assert "成交额偏低" not in str(aapl.get("entry_risk_flags") or "")
+    assert aapl["entry_quality_grade"] in ("S", "A", "B")
+    assert aapl["support_level"] > 0
+    assert aapl["actionable"] is True
+    assert aapl["action_label"] == "优先建仓"
+    assert by_symbol["WEAK.US"]["actionable"] is False
+    assert by_symbol["WEAK.US"]["action_label"] == "观察池"
+
+
+def test_candidate_rows_handles_zero_bias_short_history_and_multi_triggers(monkeypatch):
+    flat_df = _daily_frame(230).copy()
+    flat_df["close"] = 100.0
+    flat_df["high"] = 101.0
+    flat_df["low"] = 99.0
+    flat_df["volume"] = 2_000_000.0
+    flat_df.loc[flat_df.index[-3:], "volume"] = 1_200_000.0
+    flat_df["amount"] = 0.0
+    short_df = flat_df.tail(80).reset_index(drop=True)
+
+    monkeypatch.setattr(
+        "workflows.market_funnel_job.score_springboard_abc",
+        lambda _df, trig: (
+            {"a": True, "b": True, "c": False, "grade": "A+B", "met_count": 2, "support": 99.0, "touch_count": 2}
+            if trig == "spring"
+            else {
+                "a": False,
+                "b": False,
+                "c": False,
+                "grade": "none",
+                "met_count": 0,
+                "support": None,
+                "touch_count": 0,
+            }
+        ),
+    )
+    rows = _candidate_rows(
+        {"evr": [("FLAT.US", 40.0)], "spring": [("FLAT.US", 45.0), ("SHORT.HK", 85.0)]},
+        name_map={"FLAT.US": "Flat", "SHORT.HK": "Short History"},
+        df_map={"FLAT.US": flat_df, "SHORT.HK": short_df},
+        bench_df=flat_df,
+        market="us",
+    )
+    by_sym = {r["symbol"]: r for r in rows}
+    # FLAT.US has bias_20 == 0.0 and bias_200 == 0.0, and best trigger is "spring" (second in triggers dict)
+    assert by_sym["FLAT.US"]["bias_20"] == 0.0
+    assert by_sym["FLAT.US"]["bias_200"] == 0.0
+    assert by_sym["FLAT.US"]["springboard_combo"] == "A+B"
+    assert by_sym["FLAT.US"]["actionable"] is True
+    # SHORT.HK has <200 bars -> bias_200 is None (not MA60) and actionable is False
+    assert by_sym["SHORT.HK"]["bias_200"] is None
+    assert by_sym["SHORT.HK"]["actionable"] is False
