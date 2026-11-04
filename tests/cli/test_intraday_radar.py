@@ -410,3 +410,34 @@ def test_failed_send_does_not_persist_cooldown_in_run_once(tmp_path, monkeypatch
     radar.run_once(args)
     saved2 = json.loads(state_file.read_text(encoding="utf-8"))
     assert "L4:600000.SH" in saved2["cooldowns"]
+
+
+def test_daemon_loop_sends_l1_alert_on_third_consecutive_error(monkeypatch):
+    radar = _load_radar_module()
+    sent_alerts = []
+    calls = 0
+
+    def failing_run_once(args):
+        nonlocal calls
+        calls += 1
+        if calls <= 3:
+            raise RuntimeError("TickFlow timeout")
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(radar, "run_once", failing_run_once)
+    monkeypatch.setattr(radar, "resolve_lark_open_id", lambda *a, **kw: "ou_test")
+    monkeypatch.setattr(
+        radar,
+        "send_feishu_tiered_alert",
+        lambda title, content, **kw: sent_alerts.append((title, content, kw.get("level"))) or "om_err",
+    )
+    monkeypatch.setattr(radar.time, "sleep", lambda s: None)
+
+    args = SimpleNamespace(interval=30, dry_run=False, user_id="ou_test")
+    try:
+        radar._run_daemon_loop(args)
+    except KeyboardInterrupt:
+        pass
+    assert len(sent_alerts) == 1
+    assert "连续 3 次扫描异常" in sent_alerts[0][0]
+    assert sent_alerts[0][2] == "L1"
