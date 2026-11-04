@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 from collections import defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -24,9 +24,10 @@ from utils.trading_clock import CN_TZ, cn_today, is_a_share_trading_day  # noqa:
 
 STATE_PATH = Path("/tmp/wyckoff_intraday_radar_state.json")
 COOLDOWN_SECONDS = 1800
+HOLDING_STOP_COOLDOWN_SECONDS = 86400
 L1_INTERVAL_SECONDS = 1740
 MAX_BASELINE_GAP_SECONDS = 900
-MAX_TRACE_AGE_DAYS = 5
+MAX_TRACE_AGE_DAYS = 3
 
 
 def load_env_file() -> None:
@@ -98,16 +99,38 @@ def _parse_trace_date(latest: Path, data: dict[str, Any]) -> date | None:
     return date(int(raw[:4]), int(raw[4:6]), int(raw[6:8]))
 
 
-def _load_sibling_springboards(trace_file: Path) -> set[str]:
+def _trading_days_since(trace_date: date, today: date) -> int:
+    if today <= trace_date:
+        return 0
+    if (today - trace_date).days > 25:
+        return (today - trace_date).days
+    cur = trace_date
+    count = 0
+    while cur < today:
+        cur = cur + timedelta(days=1)
+        if is_a_share_trading_day(cur):
+            count += 1
+    return count
+
+
+def _load_sibling_springboards(trace_file: Path, trace_date: date | None) -> set[str]:
     springboards: set[str] = set()
-    for rec_file in sorted(trace_file.parent.glob("recommendation_tracking_*.json")):
-        try:
-            payload = json.loads(rec_file.read_text(encoding="utf-8"))
-            for row in payload.get("rows", []):
-                if row.get("springboard_combo") == "A+B+C" or row.get("springboard_grade") == "A+B+C":
-                    springboards.add(str(row.get("code", ""))[:6])
-        except Exception:
-            continue
+    if trace_date is None:
+        return springboards
+    ymd = trace_date.strftime("%Y%m%d")
+    rec_file = trace_file.parent / f"recommendation_tracking_{ymd}.json"
+    if not rec_file.exists():
+        return springboards
+    try:
+        payload = json.loads(rec_file.read_text(encoding="utf-8"))
+        rec_date = str(payload.get("recommend_date") or ymd).replace("-", "")
+        if rec_date != ymd:
+            return springboards
+        for row in payload.get("rows", []):
+            if row.get("springboard_combo") == "A+B+C" or row.get("springboard_grade") == "A+B+C":
+                springboards.add(str(row.get("code", ""))[:6])
+    except Exception:
+        return springboards
     return springboards
 
 
@@ -130,10 +153,10 @@ def load_wyckoff_l2_map(
     with gzip.open(latest, "rt", encoding="utf-8") as f:
         data = json.load(f)
     t_date = _parse_trace_date(latest, data)
-    if max_age_days is not None and t_date is not None and (cn_today() - t_date).days > max_age_days:
+    if max_age_days is not None and t_date is not None and _trading_days_since(t_date, cn_today()) > max_age_days:
         print(f"[WARN] Ignoring stale review_trace {latest.name} (trade_date={t_date})", file=sys.stderr)
         return {}
-    springboards = _load_sibling_springboards(latest)
+    springboards = _load_sibling_springboards(latest, t_date)
     out: dict[str, dict[str, Any]] = {}
     raw_syms = data.get("symbols", {})
     entries = (
@@ -246,7 +269,7 @@ def _evaluate_holdings(
         tag = ""
         if stop > 0 and m["last"] <= stop:
             tag = " 🔴破止损!"
-            if _check_cooldown(cooldowns, f"L4:{sym}", now_ts):
+            if _check_cooldown(cooldowns, f"L4:{sym}", now_ts, window=HOLDING_STOP_COOLDOWN_SECONDS):
                 l4_alerts.append(f"🔴 **【L4 破位止损】{sym} {m['name']}** 跌破止损 {stop}（现价 {m['last']:.2f}）")
         elif dpct <= -2.0 and m["last"] < m["vwap"]:
             tag = " 🟠急跌!"
@@ -562,14 +585,21 @@ def run_once(args: argparse.Namespace) -> None:
         if m:
             compact_snaps[sym] = {"pct": round(m["pct"], 3), "amt_yi": round(m["amt_yi"], 3)}
     today_str = cn_today().isoformat()
+    prev_cooldowns: dict[str, float] = (
+        dict(prev_state.get("cooldowns", {})) if prev_state.get("date") == today_str else {}
+    )
     last_l1_ts = float(prev_state.get("last_l1_ts") or 0.0) if prev_state.get("date") == today_str else 0.0
+    saved_cooldowns = prev_cooldowns
     if should_send_card(level, now_ts, last_l1_ts, args.force_send, args.urgent_only):
         open_id = "" if args.dry_run else resolve_lark_open_id(args.user_id)
         msg_id = send_feishu_tiered_alert(title, content, level=level, user_open_id=open_id, dry_run=args.dry_run)
         if msg_id:
+            saved_cooldowns = cooldowns
             if level == "L1":
                 last_l1_ts = now_ts
             print(f"[{now_bjt.strftime('%H:%M:%S')}] Sent {level} alert: msg_id={msg_id}")
+    else:
+        saved_cooldowns = cooldowns
     STATE_PATH.write_text(
         json.dumps(
             {
@@ -577,12 +607,38 @@ def run_once(args: argparse.Namespace) -> None:
                 "ts": now_ts,
                 "last_l1_ts": last_l1_ts,
                 "red": red_count,
-                "cooldowns": cooldowns,
+                "cooldowns": saved_cooldowns,
                 "quotes": compact_snaps,
             }
         ),
         encoding="utf-8",
     )
+
+
+def _run_daemon_loop(args: argparse.Namespace) -> None:
+    interval = max(args.interval, 30)
+    err_count = 0
+    while True:
+        try:
+            run_once(args)
+            err_count = 0
+        except Exception as exc:
+            err_count += 1
+            print(
+                f"[{datetime.now(CN_TZ).strftime('%Y-%m-%d %H:%M:%S')}] ERROR in radar loop ({err_count}): {exc}",
+                file=sys.stderr,
+            )
+            if err_count == 3:
+                open_id = "" if args.dry_run else resolve_lark_open_id(args.user_id)
+                send_feishu_tiered_alert(
+                    "【L1 雷达故障告警】盘中雷达连续 3 次扫描异常",
+                    f"盘中雷达连续 3 次执行异常，请检查网络或行情源。\n最近错误：`{exc}`",
+                    level="L1",
+                    user_open_id=open_id,
+                    dry_run=args.dry_run,
+                )
+        sleep_s = max(5.0, interval - (time.time() % interval))
+        time.sleep(sleep_s)
 
 
 def main() -> None:
@@ -601,16 +657,7 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Print card without sending to Feishu")
     args = parser.parse_args()
     if args.daemon:
-        interval = max(args.interval, 30)
-        while True:
-            try:
-                run_once(args)
-            except Exception as exc:
-                print(
-                    f"[{datetime.now(CN_TZ).strftime('%Y-%m-%d %H:%M:%S')}] ERROR in radar loop: {exc}", file=sys.stderr
-                )
-            sleep_s = max(5.0, interval - (time.time() % interval))
-            time.sleep(sleep_s)
+        _run_daemon_loop(args)
     else:
         run_once(args)
 

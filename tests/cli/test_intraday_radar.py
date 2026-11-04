@@ -5,7 +5,7 @@ from __future__ import annotations
 import gzip
 import importlib.util
 import json
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -138,6 +138,10 @@ def test_holdings_stop_loss_fires_on_zero_volume_open_without_cooldown_downgrade
     prev_state["ts"] = 1300.0
     level2, _, _, _, _ = radar.analyze_snapshot_diff(curr_quotes, prev_state, {}, holdings, now_ts=1600.0)
     assert level2 == "L1"
+    # Even 2 hours (7200s) later on the same trading day, L4 stop-loss stays cooled down (86400s window)
+    prev_state["ts"] = 8500.0
+    level3, _, _, _, _ = radar.analyze_snapshot_diff(curr_quotes, prev_state, {}, holdings, now_ts=8800.0)
+    assert level3 == "L1"
 
 
 def test_etf_and_unrelated_stock_moves_do_not_spam_l2_urgent():
@@ -229,11 +233,12 @@ def test_midday_restart_gap_resets_baseline_and_lunch_bridge_preserves_it():
     assert radar._is_fresh_baseline(state_1130, today.isoformat(), t_1300)
 
 
-def test_real_trace_schema_and_stale_trace_guard(tmp_path):
+def test_real_trace_schema_and_stale_trace_guard(tmp_path, monkeypatch):
     radar = _load_radar_module()
     today_compact = cn_today().strftime("%Y%m%d")
     trace_file = tmp_path / f"review_trace_{today_compact}.json.gz"
     rec_file = tmp_path / f"recommendation_tracking_{today_compact}.json"
+    old_rec_file = tmp_path / "recommendation_tracking_20260501.json"
 
     trace_payload = {
         "trade_date": cn_today().isoformat(),
@@ -258,6 +263,15 @@ def test_real_trace_schema_and_stale_trace_guard(tmp_path):
                 "l2_channel": "主升通道",
                 "stage": "买点未确认",
             },
+            "600999": {
+                "name": "五个月前老票",
+                "sector": "券商",
+                "rps_fast": 50.0,
+                "l2_eligible": True,
+                "l3_eligible": False,
+                "l2_channel": "主升通道",
+                "stage": "买点未确认",
+            },
         },
     }
     with gzip.open(trace_file, "wt", encoding="utf-8") as f:
@@ -266,17 +280,26 @@ def test_real_trace_schema_and_stale_trace_guard(tmp_path):
         json.dumps({"rows": [{"code": "300001", "springboard_combo": "A+B+C"}]}),
         encoding="utf-8",
     )
+    old_rec_file.write_text(
+        json.dumps({"rows": [{"code": "600999", "springboard_combo": "A+B+C"}]}),
+        encoding="utf-8",
+    )
 
     l2_map = radar.load_wyckoff_l2_map(str(trace_file))
     assert l2_map["688001"]["is_springboard"] is True
     assert l2_map["688001"]["l3_eligible"] is True
     assert l2_map["688001"]["channels"] == ["地量蓄势"]
     assert l2_map["300001"]["is_springboard"] is True
+    assert l2_map["600999"]["is_springboard"] is False
+
+    # Holiday trading-day check: 2026-09-30 -> 2026-10-08 (8 calendar days, only 1 trading day)
+    monkeypatch.setattr(radar, "is_a_share_trading_day", lambda d: d == date(2026, 10, 8))
+    assert radar._trading_days_since(date(2026, 9, 30), date(2026, 10, 8)) == 1
 
     stale_file = tmp_path / "review_trace_20250101.json.gz"
     with gzip.open(stale_file, "wt", encoding="utf-8") as f:
         json.dump({"trade_date": "2025-01-01", "symbols": trace_payload["symbols"]}, f)
-    assert radar.load_wyckoff_l2_map(str(stale_file), max_age_days=5) == {}
+    assert radar.load_wyckoff_l2_map(str(stale_file), max_age_days=3) == {}
 
 
 def test_l3_ignition_and_l1_drift_immune_cadence():
@@ -338,3 +361,52 @@ def test_resolve_lark_open_id_and_parse_holdings_arg(monkeypatch):
     )
     assert radar.resolve_lark_open_id() == "ou_from_lark_cli"
     assert radar.parse_holdings_arg(["600000.SH:10.5:9.8"]) == {"600000.SH": {"cost": 10.5, "stop": 9.8}}
+
+
+def test_failed_send_does_not_persist_cooldown_in_run_once(tmp_path, monkeypatch):
+    radar = _load_radar_module()
+    state_file = tmp_path / "state.json"
+    monkeypatch.setattr(radar, "STATE_PATH", state_file)
+    monkeypatch.setattr(radar, "load_wyckoff_l2_map", lambda *a, **kw: {})
+    monkeypatch.setattr(radar, "resolve_lark_open_id", lambda *a, **kw: "ou_test")
+
+    class FakeClient:
+        def __init__(self, **kw):
+            pass
+
+        def get_quotes(self, universes):
+            return {
+                "600000.SH": {
+                    "symbol": "600000.SH",
+                    "last_price": 9.40,
+                    "prev_close": 10.0,
+                    "volume": 1000,
+                    "amount": 9400.0,
+                    "ext": {"name": "浦发银行"},
+                }
+            }
+
+    import integrations.tickflow_client as tf_mod
+
+    monkeypatch.setattr(tf_mod, "TickFlowClient", FakeClient)
+    args = SimpleNamespace(
+        ignore_hours=True,
+        dry_run=False,
+        trace=None,
+        holding=["600000.SH:10.0:9.50"],
+        user_id="ou_test",
+        force_send=False,
+        urgent_only=False,
+    )
+
+    # First run: Feishu send fails -> cooldown must NOT be saved
+    monkeypatch.setattr(radar, "send_feishu_tiered_alert", lambda *a, **kw: None)
+    radar.run_once(args)
+    saved1 = json.loads(state_file.read_text(encoding="utf-8"))
+    assert "L4:600000.SH" not in saved1["cooldowns"]
+
+    # Second run: Feishu send succeeds -> cooldown IS saved
+    monkeypatch.setattr(radar, "send_feishu_tiered_alert", lambda *a, **kw: "om_ok_1")
+    radar.run_once(args)
+    saved2 = json.loads(state_file.read_text(encoding="utf-8"))
+    assert "L4:600000.SH" in saved2["cooldowns"]
