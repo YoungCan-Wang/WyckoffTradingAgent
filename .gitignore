@@ -9,6 +9,7 @@
 .agents/*
 !.agents/skills/
 !.agents/skills/**
+*intraday_radar_config*.json
 
 .venv/
 venv/
