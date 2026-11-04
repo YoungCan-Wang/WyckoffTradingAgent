@@ -23,7 +23,6 @@ from utils.feishu_report_card import build_report_card_elements, report_card_tem
 from utils.trading_clock import CN_TZ, cn_today, is_a_share_trading_day  # noqa: E402
 
 STATE_PATH = Path("/tmp/wyckoff_intraday_radar_state.json")
-DEFAULT_CONFIG_PATH = Path.home() / ".wyckoff" / "intraday_radar_config.json"
 COOLDOWN_SECONDS = 1800
 L1_INTERVAL_SECONDS = 1740
 MAX_BASELINE_GAP_SECONDS = 900
@@ -42,22 +41,29 @@ def load_env_file() -> None:
         os.environ.setdefault(k.strip(), v.strip().strip("'\""))
 
 
-def load_radar_config(config_path: str | None = None) -> dict[str, Any]:
-    path = Path(config_path).expanduser() if config_path else DEFAULT_CONFIG_PATH
-    cfg: dict[str, Any] = {}
-    if path.exists():
+def resolve_lark_open_id(explicit_id: str | None = None) -> str:
+    if explicit_id and explicit_id.strip():
+        return explicit_id.strip()
+    env_id = os.environ.get("FEISHU_USER_OPEN_ID", "").strip()
+    if env_id:
+        return env_id
+    res = subprocess.run(["lark-cli", "auth", "status"], capture_output=True, text=True, check=False)
+    if res.returncode == 0 and res.stdout.strip():
         try:
-            cfg = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(res.stdout)
+            return str(((data.get("identities") or {}).get("user") or {}).get("openId") or "").strip()
         except Exception:
-            cfg = {}
-    open_id = os.environ.get("FEISHU_USER_OPEN_ID", "").strip() or str(cfg.get("feishu_user_open_id", "")).strip()
-    holdings = cfg.get("holdings") if isinstance(cfg.get("holdings"), dict) else {}
-    env_trace_dir = os.environ.get("WYCKOFF_TRACE_DIR", "").strip()
-    trace_dirs = [env_trace_dir] if env_trace_dir else list(cfg.get("trace_dirs", []))
-    for fallback in [str(Path.home() / ".wyckoff" / "traces"), "/tmp", str(REPO_ROOT / "data")]:
-        if fallback not in trace_dirs:
-            trace_dirs.append(fallback)
-    return {"feishu_user_open_id": open_id, "holdings": holdings, "trace_dirs": trace_dirs}
+            return ""
+    return ""
+
+
+def parse_holdings_arg(raw_list: list[str] | None) -> dict[str, dict[str, float]]:
+    out: dict[str, dict[str, float]] = {}
+    for item in raw_list or []:
+        parts = [p.strip() for p in item.split(":") if p.strip()]
+        if len(parts) >= 3:
+            out[parts[0]] = {"cost": float(parts[1]), "stop": float(parts[2])}
+    return out
 
 
 def is_cn_trading_session(now: datetime | None = None) -> bool:
@@ -539,16 +545,16 @@ def run_once(args: argparse.Namespace) -> None:
         print(f"[{now_bjt.strftime('%Y-%m-%d %H:%M:%S')}] Outside A-share trading hours, skipping.")
         return
     load_env_file()
-    cfg = load_radar_config(args.config)
     from integrations.tickflow_client import TickFlowClient
 
     client = TickFlowClient(api_key=os.environ.get("TICKFLOW_API_KEY", ""))
-    l2_map = load_wyckoff_l2_map(args.trace, cfg["trace_dirs"])
+    l2_map = load_wyckoff_l2_map(args.trace)
+    holdings = parse_holdings_arg(args.holding)
     prev_state = json.loads(STATE_PATH.read_text(encoding="utf-8")) if STATE_PATH.exists() else {}
     now_ts = time.time()
     curr_quotes = client.get_quotes(universes=["CN_Equity_A", "CN_ETF", "CN_Index"])
     level, title, content, red_count, cooldowns = analyze_snapshot_diff(
-        curr_quotes, prev_state, l2_map, cfg["holdings"], now_ts=now_ts
+        curr_quotes, prev_state, l2_map, holdings, now_ts=now_ts
     )
     compact_snaps = {}
     for sym, q in curr_quotes.items():
@@ -558,9 +564,8 @@ def run_once(args: argparse.Namespace) -> None:
     today_str = cn_today().isoformat()
     last_l1_ts = float(prev_state.get("last_l1_ts") or 0.0) if prev_state.get("date") == today_str else 0.0
     if should_send_card(level, now_ts, last_l1_ts, args.force_send, args.urgent_only):
-        msg_id = send_feishu_tiered_alert(
-            title, content, level=level, user_open_id=cfg["feishu_user_open_id"], dry_run=args.dry_run
-        )
+        open_id = "" if args.dry_run else resolve_lark_open_id(args.user_id)
+        msg_id = send_feishu_tiered_alert(title, content, level=level, user_open_id=open_id, dry_run=args.dry_run)
         if msg_id:
             if level == "L1":
                 last_l1_ts = now_ts
@@ -585,8 +590,11 @@ def main() -> None:
     parser.add_argument("--once", action="store_true", help="Run a single 5-min scan")
     parser.add_argument("--daemon", action="store_true", help="Run every 5 minutes during trading hours")
     parser.add_argument("--interval", type=int, default=300, help="Poll interval seconds (default 300 = 5m)")
-    parser.add_argument("--config", type=str, default=None, help="Path to local radar config JSON")
     parser.add_argument("--trace", type=str, default=None, help="Path to review_trace_*.json.gz")
+    parser.add_argument("--holding", action="append", default=[], help="Holding spec CODE:COST:STOP (repeatable)")
+    parser.add_argument(
+        "--user-id", type=str, default=None, help="Override Feishu open_id (default: from lark-cli auth status)"
+    )
     parser.add_argument("--urgent-only", action="store_true", help="Only send Feishu card when L2/L3/L4 triggers")
     parser.add_argument("--force-send", action="store_true", help="Always send Feishu card on every scan")
     parser.add_argument("--ignore-hours", action="store_true", help="Run scan even outside trading hours")

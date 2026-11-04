@@ -322,3 +322,19 @@ def test_l3_ignition_and_l1_drift_immune_cadence():
     assert radar.should_send_card("L1", now_ts=2000.0, last_l1_ts=0.0, force_send=False, urgent_only=False)
     assert not radar.should_send_card("L1", now_ts=3000.0, last_l1_ts=2000.0, force_send=False, urgent_only=False)
     assert radar.should_send_card("L1", now_ts=3800.0, last_l1_ts=2000.0, force_send=False, urgent_only=False)
+
+
+def test_resolve_lark_open_id_and_parse_holdings_arg(monkeypatch):
+    radar = _load_radar_module()
+    monkeypatch.delenv("FEISHU_USER_OPEN_ID", raising=False)
+    monkeypatch.setattr(
+        radar.subprocess,
+        "run",
+        lambda cmd, **kw: SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"identities": {"user": {"openId": "ou_from_lark_cli"}}}),
+            stderr="",
+        ),
+    )
+    assert radar.resolve_lark_open_id() == "ou_from_lark_cli"
+    assert radar.parse_holdings_arg(["600000.SH:10.5:9.8"]) == {"600000.SH": {"cost": 10.5, "stop": 9.8}}

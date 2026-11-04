@@ -94,22 +94,12 @@ description: >-
 
 ---
 
-## 六、 本地私有配置与执行命令
+## 六、 本地 `lark-cli` 调用说明与执行命令
 
-个人飞书 `open_id`、持仓成本/止损与本地 trace 目录请配置在仓库外的 `~/.wyckoff/intraday_radar_config.json`（权限 `0600`）或通过环境变量 `FEISHU_USER_OPEN_ID` 传入，**严禁将个人信息硬编码提交至代码仓库**：
-
-```json
-{
-  "feishu_user_open_id": "ou_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-  "holdings": {
-    "600000.SH": {"cost": 10.0, "stop": 9.5}
-  },
-  "trace_dirs": ["~/.wyckoff/traces", "/tmp", "data"]
-}
-```
+脚本直接调用本机已登录的 `lark-cli`（通过 `lark-cli auth status` 动态获取当前登录用户的 `identities.user.openId`，并以 `--as bot` 发送互动卡片与加急通知），**无需在代码仓库或磁盘配置文件中存储任何个人 `open_id` 或持仓信息**。如需在单次运行中附带持仓监控，可通过命令行参数 `--holding <代码:成本:止损>` 传入：
 
 ```bash
-# 单次运行全市场 7,807 标的差分扫描：
+# 单次运行全市场 7,807 标的差分扫描（自动通过本机 lark-cli 发送）：
 .venv/bin/python .agents/skills/intraday-radar/scripts/intraday_radar.py --once
 
 # 盘中每 5 分钟守护扫描（自动对齐时钟周期、异常自愈、非交易时段休眠）：
