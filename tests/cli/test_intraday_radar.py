@@ -144,6 +144,30 @@ def test_holdings_stop_loss_fires_on_zero_volume_open_without_cooldown_downgrade
     assert level3 == "L1"
 
 
+def test_holdings_stop_loss_matches_bare_six_digit_portfolio_codes():
+    """Portfolio codes are bare 6-digit; TickFlow quotes are suffixed — must still L4."""
+    radar = _load_radar_module()
+    holdings = radar.parse_holdings_arg(["600000:10.0:9.50", "000001:12.0:11.0"])
+    assert holdings == {
+        "600000.SH": {"cost": 10.0, "stop": 9.50},
+        "000001.SZ": {"cost": 12.0, "stop": 11.0},
+    }
+    curr_quotes = {
+        "600000.SH": {
+            "symbol": "600000.SH",
+            "last_price": 9.40,
+            "prev_close": 10.0,
+            "volume": 1000,
+            "amount": 9400.0,
+            "ext": {"name": "浦发银行"},
+        }
+    }
+    level, _, body, _, _ = radar.analyze_snapshot_diff(curr_quotes, {}, {}, holdings, now_ts=1300.0)
+    assert level == "L4"
+    assert "L4 破位止损" in body
+    assert "600000.SH" in body
+
+
 def test_etf_and_unrelated_stock_moves_do_not_spam_l2_urgent():
     radar = _load_radar_module()
     today = cn_today().isoformat()
@@ -373,6 +397,7 @@ def test_resolve_lark_open_id_and_parse_holdings_arg(monkeypatch):
     )
     assert radar.resolve_lark_open_id() == "ou_from_lark_cli"
     assert radar.parse_holdings_arg(["600000.SH:10.5:9.8"]) == {"600000.SH": {"cost": 10.5, "stop": 9.8}}
+    assert radar.parse_holdings_arg(["600000:10.5:9.8"]) == {"600000.SH": {"cost": 10.5, "stop": 9.8}}
 
 
 def test_failed_send_does_not_persist_cooldown_in_run_once(tmp_path, monkeypatch):
