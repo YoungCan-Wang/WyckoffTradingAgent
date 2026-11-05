@@ -62,12 +62,36 @@ def resolve_lark_open_id(explicit_id: str | None = None) -> str:
     return ""
 
 
+def _normalize_holding_symbol(raw: str) -> str:
+    """Map portfolio 6-digit codes to TickFlow quote keys (.SH/.SZ/.BJ).
+
+    Mirrors integrations.tickflow_client.normalize_cn_symbol without importing
+    that module (pandas) at parse time.
+    """
+    s = str(raw or "").strip().upper()
+    if not s:
+        return ""
+    if "." in s and len(s.split(".", 1)[0]) == 6:
+        return s
+    digits = "".join(ch for ch in s if ch.isdigit())
+    if len(digits) != 6:
+        return s
+    if digits.startswith(("0", "1", "2", "3")):
+        return f"{digits}.SZ"
+    if digits.startswith(("4", "8", "9")):
+        return f"{digits}.BJ"
+    return f"{digits}.SH"
+
+
 def parse_holdings_arg(raw_list: list[str] | None) -> dict[str, dict[str, float]]:
+    # Portfolio / CLI often pass bare 6-digit A-share codes; TickFlow quotes are
+    # always suffixed (.SH/.SZ/.BJ). Without normalization, stop-loss L4 never matches.
     out: dict[str, dict[str, float]] = {}
     for item in raw_list or []:
         parts = [p.strip() for p in item.split(":") if p.strip()]
         if len(parts) >= 3:
-            out[parts[0]] = {"cost": float(parts[1]), "stop": float(parts[2])}
+            sym = _normalize_holding_symbol(parts[0]) or parts[0]
+            out[sym] = {"cost": float(parts[1]), "stop": float(parts[2])}
     return out
 
 

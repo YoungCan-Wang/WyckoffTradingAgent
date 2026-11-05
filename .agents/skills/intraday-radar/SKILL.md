@@ -119,7 +119,7 @@ mkdir -p ~/.wyckoff/traces && gh run download $(gh run list --workflow wyckoff_f
 ```
 
 2. **本地 `lark-cli` 调用说明**：
-   * 脚本直接调用本机已登录的 `lark-cli`（通过 `lark-cli auth status` 动态获取当前登录用户的 `identities.user.openId`，并以 `--as bot` 发送互动卡片与加急通知），**无需在代码仓库或磁盘配置文件中存储任何个人 `open_id` 或持仓信息**。如需在单次运行中附带持仓监控，可通过命令行参数 `--holding <代码:成本:止损>` 传入：
+   * 脚本直接调用本机已登录的 `lark-cli`（通过 `lark-cli auth status` 动态获取当前登录用户的 `identities.user.openId`，并以 `--as bot` 发送互动卡片与加急通知），**无需在代码仓库或磁盘配置文件中存储任何个人 `open_id` 或持仓信息**。如需在单次运行中附带持仓监控，可通过命令行参数 `--holding <代码:成本:止损>` 传入（`代码` 可为持仓账本六位码如 `600000`，或 TickFlow 后缀形式如 `600000.SH`；脚本会规范成行情键后再做止损匹配）：
 
 ```bash
 # 单次运行全市场 7,807 标的差分扫描（自动同步 trace 并通过本机 lark-cli 发送）：
