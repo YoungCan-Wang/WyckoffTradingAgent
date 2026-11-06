@@ -94,30 +94,39 @@ def restore_session() -> dict[str, Any] | None:
     data = load_session()
     if not data or not data.get("access_token") or not data.get("refresh_token"):
         return auto_relogin()
-    # Capture identity before the network round-trip. Desktop IPC overlaps
-    # account→restore_session with auth_logout / auth_login on other workers;
-    # saving or clearing after logout/switch would resurrect Alice or wipe Bob.
+    # Capture identity + the refresh token we are about to present before the
+    # network round-trip. Desktop IPC overlaps account→restore_session with
+    # auth_logout / auth_login on other workers; saving or clearing after
+    # logout/switch would resurrect Alice or wipe Bob. Same-user overlap is
+    # also real: GoTrue rotates refresh tokens, so a sibling restore that
+    # already wrote RT2 must not be cleared when our stale RT1 comes back
+    # "already used" — #512 only CAS'd user_id.
     expected_user_id = str(data.get("user_id") or "")
+    expected_refresh_token = str(data.get("refresh_token") or "")
     try:
         client = _create_client()
         client.auth.set_session(data["access_token"], data["refresh_token"])
         user_resp = client.auth.get_user()
         if not user_resp or not user_resp.user:
-            if _clear_session_if_same_user(expected_user_id):
+            if _clear_session_if_same_user(expected_user_id, expected_refresh_token=expected_refresh_token):
                 return auto_relogin()
             return load_session()
         session = client.auth.get_session()
         if session:
             data["access_token"] = session.access_token
             data["refresh_token"] = session.refresh_token
-            if not _save_session_if_same_user(expected_user_id, data):
+            if not _save_session_if_same_user(
+                expected_user_id,
+                data,
+                expected_refresh_token=expected_refresh_token,
+            ):
                 logger.warning("refusing to persist restored session: disk identity changed during refresh")
                 return load_session()
         return _restored_session_if_disk_unchanged(expected_user_id, data)
     except Exception as exc:
         logger.debug("session restore failed", exc_info=True)
         if _invalid_session_error(exc):
-            if _clear_session_if_same_user(expected_user_id):
+            if _clear_session_if_same_user(expected_user_id, expected_refresh_token=expected_refresh_token):
                 return auto_relogin()
             return load_session()
         # Transient network errors still must not return the pre-flight principal
@@ -273,21 +282,43 @@ def _restored_session_if_disk_unchanged(expected_user_id: str, data: dict[str, A
     return data
 
 
-def _save_session_if_same_user(expected_user_id: str, data: dict[str, Any]) -> bool:
-    """Persist refreshed tokens only when disk still matches the restored user."""
+def _save_session_if_same_user(
+    expected_user_id: str,
+    data: dict[str, Any],
+    *,
+    expected_refresh_token: str = "",
+) -> bool:
+    """Persist refreshed tokens only when disk still matches the restored flight.
+
+    ``expected_refresh_token`` is the pre-flight disk value. If another same-user
+    restore already rotated past it, refuse so we do not clobber the newer tokens.
+    """
     with _write_lock(SESSION_FILE, _SESSION_THREAD_LOCK):
         current = _read_session_file()
         if not _same_session_user(current, expected_user_id):
+            return False
+        if not _same_session_refresh_token(current, expected_refresh_token):
             return False
         _atomic_write_json(SESSION_FILE, data)
         return True
 
 
-def _clear_session_if_same_user(expected_user_id: str) -> bool:
-    """Delete session.json only when it still belongs to the restored user."""
+def _clear_session_if_same_user(
+    expected_user_id: str,
+    *,
+    expected_refresh_token: str = "",
+) -> bool:
+    """Delete session.json only when it still matches the failed restore flight.
+
+    Matching ``user_id`` alone is not enough: a concurrent restore for the same
+    user may have already written a rotated refresh token. Clearing on user_id
+    would delete that valid session after GoTrue rejects the stale token.
+    """
     with _write_lock(SESSION_FILE, _SESSION_THREAD_LOCK):
         current = _read_session_file()
         if not _same_session_user(current, expected_user_id):
+            return False
+        if not _same_session_refresh_token(current, expected_refresh_token):
             return False
         try:
             SESSION_FILE.unlink(missing_ok=True)
@@ -295,6 +326,21 @@ def _clear_session_if_same_user(expected_user_id: str) -> bool:
             logger.warning("failed to clear session file", exc_info=True)
             return False
         return True
+
+
+def _same_session_refresh_token(current: dict[str, Any] | None, expected_refresh_token: str) -> bool:
+    """True when disk still holds the refresh token this restore flight started with.
+
+    Empty ``expected_refresh_token`` skips the check (callers that only know
+    user_id). Non-empty requires an exact match so a rotated same-user session
+    is neither cleared nor overwritten.
+    """
+    expected = str(expected_refresh_token or "")
+    if not expected:
+        return True
+    if current is None:
+        return False
+    return str(current.get("refresh_token") or "") == expected
 
 
 def load_model_configs() -> list[dict[str, Any]]:

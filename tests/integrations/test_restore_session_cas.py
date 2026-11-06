@@ -159,6 +159,78 @@ def test_restore_invalid_token_does_not_clear_switched_account(tmp_path, monkeyp
     assert result["user_id"] == "bob"
 
 
+def test_restore_stale_refresh_does_not_clear_rotated_same_user_session(tmp_path, monkeypatch):
+    """GoTrue one-time refresh: sibling restore wrote RT2; our stale RT1 must not wipe it."""
+    _point_session(tmp_path, monkeypatch)
+    local_auth.save_session(
+        {
+            "user_id": "alice",
+            "email": "alice@example.test",
+            "access_token": "alice-old-at",
+            "refresh_token": "alice-old-rt",
+        }
+    )
+
+    def fake_create():
+        local_auth.save_session(
+            {
+                "user_id": "alice",
+                "email": "alice@example.test",
+                "access_token": "alice-new-at",
+                "refresh_token": "alice-new-rt",
+            }
+        )
+        return _FakeClient(_FakeAuth(error=RuntimeError("Invalid Refresh Token: Already Used")))
+
+    monkeypatch.setattr(local_auth, "_create_client", fake_create)
+    monkeypatch.setattr(local_auth, "auto_relogin", lambda: {"user_id": "should-not-run"})
+
+    result = local_auth.restore_session()
+
+    disk = local_auth.load_session()
+    assert disk is not None
+    assert disk["user_id"] == "alice"
+    assert disk["access_token"] == "alice-new-at"
+    assert disk["refresh_token"] == "alice-new-rt"
+    assert result is not None
+    assert result["refresh_token"] == "alice-new-rt"
+
+
+def test_restore_refuses_to_overwrite_rotated_same_user_tokens(tmp_path, monkeypatch):
+    _point_session(tmp_path, monkeypatch)
+    local_auth.save_session(
+        {
+            "user_id": "alice",
+            "email": "alice@example.test",
+            "access_token": "alice-old-at",
+            "refresh_token": "alice-old-rt",
+        }
+    )
+    refreshed = SimpleNamespace(access_token="alice-flight-at", refresh_token="alice-flight-rt")
+
+    def fake_create():
+        local_auth.save_session(
+            {
+                "user_id": "alice",
+                "email": "alice@example.test",
+                "access_token": "alice-newer-at",
+                "refresh_token": "alice-newer-rt",
+            }
+        )
+        return _FakeClient(_FakeAuth(user=SimpleNamespace(id="alice"), session=refreshed))
+
+    monkeypatch.setattr(local_auth, "_create_client", fake_create)
+
+    result = local_auth.restore_session()
+
+    disk = local_auth.load_session()
+    assert disk is not None
+    assert disk["access_token"] == "alice-newer-at"
+    assert disk["refresh_token"] == "alice-newer-rt"
+    assert result is not None
+    assert result["refresh_token"] == "alice-newer-rt"
+
+
 def test_restore_timeout_does_not_return_preflight_after_logout(tmp_path, monkeypatch):
     _point_session(tmp_path, monkeypatch)
     local_auth.save_session(
