@@ -637,7 +637,7 @@ def test_telegraph_catalyst_theme_and_wyckoff_mapping() -> None:
     ag_map = {
         f"6003{i:02d}": {
             "name": f"东方种业{i}" if i < 4 else f"种业股{i}",
-            "sector": "种植业",
+            "sector": "种植业" if i != 1 else "渔业",
             "rps": 20.0 + i,
             "l2_eligible": i == 5,
             "is_candidate": False,
@@ -652,3 +652,76 @@ def test_telegraph_catalyst_theme_and_wyckoff_mapping() -> None:
     assert "种植业" in mainline_md
     assert "600305" in mainline_md
     assert "东方系字头抱团" in mainline_md
+
+
+def test_review_fixes_telegraph_filtering_cooldown_and_sector_priority(tmp_path) -> None:
+    radar = _load_radar_module()
+    spec = importlib.util.spec_from_file_location("telegraph_catalysts", SCRIPT_PATH.parent / "telegraph_catalysts.py")
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    # 1. 159919.SZ suffix & BJ 92xxxx symbol resolution
+    assert "159919.SZ" in mod.NATIONAL_TEAM_20_ETFS
+    assert "159919.SH" not in mod.NATIONAL_TEAM_20_ETFS
+    assert mod.resolve_code6_symbol("920087") == "920087.BJ"
+
+    # 2. Foreign & negative headlines must not produce false Wyckoff buy mappings; macro news has empty picks
+    l2_map = {
+        "688316": {"name": "青云科技", "sector": "软件服务", "rps": 25.0, "l2_eligible": True},
+        "920087": {"name": "秋乐种业", "sector": "种植业", "rps": 30.0, "l2_eligible": True},
+    }
+    for bad_txt in (
+        "印度汽车经销商协会：10月汽车零售销量同比增长",
+        "午评：创业板指收跌3.5%，算力硬件领跌",
+        "日本篡改核电站数据公司被勒令整改",
+    ):
+        assert mod.match_theme_and_candidates(bad_txt, l2_map) == ("", [])
+
+    macro_theme, macro_picks = mod.match_theme_and_candidates("央行发布最新再贷款操作指引", l2_map)
+    assert "宏观" in macro_theme
+    assert macro_picks == []
+
+    # 3. Cooldown deduplication prevents identical telegraph item from repeating across consecutive 5m scans
+    cd: dict[str, float] = {}
+    fake_raw = [{"id": "sina_101", "ts": 1950.0, "hm": "13:15", "text": "工信部加快推进具身智能机器人产业落地"}]
+    first_lines = mod.scan_live_telegraph_catalysts(l2_map, cooldowns=cd, now_ts=2000.0, raw_items=fake_raw)
+    second_lines = mod.scan_live_telegraph_catalysts(l2_map, cooldowns=cd, now_ts=2300.0, raw_items=fake_raw)
+    assert len(first_lines) == 1
+    assert second_lines == []
+
+    # 4. National Team ETF 5m surge >=25亿 promotes card level to L2 and sector resonance survives >6 stock L2s
+    today = cn_today().isoformat()
+    prev_q = {"588000.SH": {"pct": -1.0, "amt_yi": 100.0}, "159919.SZ": {"pct": -0.5, "amt_yi": 20.0}}
+    curr_q: dict[str, dict] = {
+        "588000.SH": {"symbol": "588000.SH", "last_price": 1.40, "prev_close": 1.41, "volume": 1e9, "amount": 130.0e8},
+        "159919.SZ": {"symbol": "159919.SZ", "last_price": 4.00, "prev_close": 4.02, "volume": 1e8, "amount": 25.0e8},
+    }
+    sec_l2_map: dict[str, dict] = {}
+    for i in range(10):
+        code = f"6001{i:02d}"
+        sym = f"{code}.SH"
+        is_ag = i < 3
+        sec_l2_map[code] = {
+            "name": f"种业{i}" if is_ag else f"其他{i}",
+            "sector": "种植业" if is_ag else f"行业{i}",
+            "rps": 60.0,
+            "l2_eligible": True,
+            "channels": ["主升通道"],
+        }
+        prev_q[sym] = {"pct": 1.0, "amt_yi": 1.0}
+        curr_q[sym] = {
+            "symbol": sym,
+            "last_price": 10.45,
+            "prev_close": 10.0,
+            "volume": 2e7,
+            "amount": 1.8e8,
+            "ext": {"name": sec_l2_map[code]["name"]},
+        }
+    prev_state = {"date": today, "ts": 1000.0, "red": 10, "cooldowns": {}, "quotes": prev_q}
+    level, _, body, _, _ = radar.analyze_snapshot_diff(
+        curr_q, prev_state, sec_l2_map, {}, now_ts=1200.0, turnover_dir=tmp_path / "to"
+    )
+    assert level == "L2"
+    assert "国家队20大宽基ETF 5m放量异动" in body
+    assert "种植业 板块5m共振" in body
