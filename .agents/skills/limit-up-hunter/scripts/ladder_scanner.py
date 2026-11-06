@@ -152,7 +152,7 @@ def compute_ladder_from_daily_rows(
     for sym, rows in rows_by_sym.items():
         if sym.endswith(".BJ") or not rows:
             continue
-        ordered = sorted(rows, key=lambda x: x[0])[-6:]
+        ordered = sorted(rows, key=lambda x: x[0])[-20:]
         flags = [prev > 0 and close >= calc_limit_up_price(prev, sym) - PRICE_TOL for _, prev, close in ordered]
         consec = 0
         for is_lu in reversed(flags):
@@ -160,8 +160,16 @@ def compute_ladder_from_daily_rows(
                 consec += 1
             else:
                 break
-        total_lu = sum(1 for f in flags if f)
-        m_label = f"{len(ordered)}天{total_lu}板" if total_lu >= 3 and total_lu > consec else ""
+        win6 = flags[-6:]
+        lu6 = sum(1 for f in win6 if f)
+        win10 = flags[-10:]
+        lu10 = sum(1 for f in win10 if f)
+        if lu6 >= 3 and lu6 > consec:
+            m_label = f"{len(win6)}天{lu6}板"
+        elif lu10 >= 5 and lu10 > consec:
+            m_label = f"{len(win10)}天{lu10}板"
+        else:
+            m_label = ""
         if consec >= 1 or m_label:
             result[sym] = {"prev_boards": consec, "m_days_n_boards": m_label}
     return result
@@ -169,20 +177,24 @@ def compute_ladder_from_daily_rows(
 
 def load_prev_ladder(snapshot_date: str, tushare_token: str | None) -> dict[str, dict[str, Any]]:
     cache_dir = Path.home() / ".wyckoff" / "cache"
-    cache_file = cache_dir / f"prev_ladder_{snapshot_date}.json"
+    cache_file = cache_dir / f"prev_ladder_v2_{snapshot_date}.json"
     if cache_file.exists():
         try:
             return json.loads(cache_file.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"[WARN] 读取连板缓存失败 ({cache_file}): {exc}", file=sys.stderr)
     if not tushare_token:
+        print("[WARN] TUSHARE_TOKEN 未配置，无法加载昨日连板梯队高度。", file=sys.stderr)
         return {}
     try:
         import tushare as ts
 
         pro = ts.pro_api(tushare_token)
-        cal = pro.trade_cal(exchange="SSE", end_date=snapshot_date, is_open="1", limit=10)
-        dates = sorted(d for d in cal["cal_date"].tolist() if d < snapshot_date)[-6:]
+        cal = pro.trade_cal(exchange="SSE", end_date=snapshot_date, is_open="1", limit=25)
+        dates = sorted(d for d in cal["cal_date"].tolist() if d < snapshot_date)[-20:]
+        if not dates:
+            print(f"[WARN] 未获取到 {snapshot_date} 之前的交易日历，跳过连板计算。", file=sys.stderr)
+            return {}
         rows_by_sym: dict[str, list[tuple[str, float, float]]] = {}
         with ThreadPoolExecutor(max_workers=4) as ex:
             dfs = list(
@@ -191,14 +203,21 @@ def load_prev_ladder(snapshot_date: str, tushare_token: str | None) -> dict[str,
                     dates,
                 )
             )
+        empty_dates = [d for d, df in dfs if df is None or df.empty]
         for d, df in dfs:
+            if df is None or df.empty:
+                continue
             for row in df.itertuples(index=False):
                 rows_by_sym.setdefault(str(row.ts_code), []).append((d, float(row.pre_close), float(row.close)))
         ladder = compute_ladder_from_daily_rows(rows_by_sym)
+        if empty_dates:
+            print(f"[WARN] Tushare 日线存在空表日期 {empty_dates}，本次结果不写入缓存。", file=sys.stderr)
+            return ladder
         cache_dir.mkdir(parents=True, exist_ok=True)
         cache_file.write_text(json.dumps(ladder, ensure_ascii=False), encoding="utf-8")
         return ladder
-    except Exception:
+    except Exception as exc:
+        print(f"[WARN] 拉取昨日连板梯队失败: {exc}", file=sys.stderr)
         return {}
 
 
@@ -251,7 +270,14 @@ def extract_snapshot_time(quotes: Iterable[dict[str, Any]], fallback_now: dateti
 
 
 def _is_first_board_reversal(m: QuoteMetrics) -> bool:
-    if m.is_limit_up or m.prev_boards > 0 or m.open_pct > -2.5 or not m.above_vwap or m.amount_yi < 1.0:
+    if (
+        m.is_limit_up
+        or m.prev_boards > 0
+        or m.m_days_n_boards
+        or m.open_pct > -2.5
+        or not m.above_vwap
+        or m.amount_yi < 1.0
+    ):
         return False
     is_20cm = m.symbol.startswith(("30", "68"))
     min_surge = 11.0 if is_20cm else 6.0

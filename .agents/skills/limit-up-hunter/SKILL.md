@@ -64,7 +64,7 @@ description: >-
 
 ## 二、 标准执行脚本与输出说明
 
-运行 [ladder_scanner.py](./scripts/ladder_scanner.py) 一键拉取全市场行情、近 6 日连板梯队高度（自动缓存至 `~/.wyckoff/cache/prev_ladder_<YYYYMMDD>.json`）与候选池 5 分钟 K 线结构：
+运行 [ladder_scanner.py](./scripts/ladder_scanner.py) 一键拉取全市场行情、近 20 个交易日连板梯队高度（自动缓存至 `~/.wyckoff/cache/prev_ladder_v2_<YYYYMMDD>.json`）与候选池 5 分钟 K 线结构：
 
 ```bash
 # 扫描全市场昨日连板晋级池、一字板、换手板、深水弱转强与冲高破均线观察名单

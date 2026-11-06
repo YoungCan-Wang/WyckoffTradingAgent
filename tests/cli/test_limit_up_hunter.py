@@ -77,8 +77,17 @@ def test_parse_quote_filters_st_bj_new_ipo_and_checks_exact_one_word():
     assert ">=VWAP: 20.74" in LS.format_row(ow)
 
 
-def test_compute_ladder_from_daily_rows_and_5m_analysis():
+def test_compute_ladder_from_daily_rows_and_5m_analysis(capsys, tmp_path, monkeypatch):
+    # Generate a 9-consecutive-board monster stock across 10 trading days (untruncated >6 boards)
+    nine_board_rows: list[tuple[str, float, float]] = [("20261020", 10.00, 10.00)]
+    p = 10.00
+    for i in range(1, 10):
+        nxt = LS.calc_limit_up_price(p, "002852.SZ")
+        nine_board_rows.append((f"202610{20 + i:02d}", p, nxt))
+        p = nxt
+
     rows_by_sym = {
+        "002852.SZ": nine_board_rows,
         "002388.SZ": [
             ("20261103", 5.00, 5.00),
             ("20261104", 5.00, 5.50),
@@ -94,8 +103,14 @@ def test_compute_ladder_from_daily_rows_and_5m_analysis():
         ],
     }
     ladder = LS.compute_ladder_from_daily_rows(rows_by_sym)
+    assert ladder["002852.SZ"] == {"prev_boards": 9, "m_days_n_boards": ""}
     assert ladder["002388.SZ"] == {"prev_boards": 2, "m_days_n_boards": ""}
     assert ladder["002086.SZ"] == {"prev_boards": 1, "m_days_n_boards": "6天4板"}
+
+    # Verify missing TUSHARE_TOKEN emits [WARN] to stderr
+    monkeypatch.setattr(LS.Path, "home", lambda: tmp_path)
+    assert LS.load_prev_ladder("20990101", None) == {}
+    assert "[WARN]" in capsys.readouterr().err
 
     import pandas as pd
 
