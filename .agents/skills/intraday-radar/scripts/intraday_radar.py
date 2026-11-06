@@ -16,8 +16,10 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+SCRIPT_DIR = Path(__file__).resolve().parent
+for _p in (str(REPO_ROOT), str(SCRIPT_DIR)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from utils.feishu_report_card import build_report_card_elements, report_card_template  # noqa: E402
 from utils.trading_clock import CN_TZ, cn_today, is_a_share_trading_day  # noqa: E402
@@ -447,15 +449,39 @@ def _scan_equities_and_etfs(
         _check_wyckoff_signals(
             sym, m, dpct, damt, info, red_ratio, coverage_ok, cooldowns, now_ts, buckets, alert_records
         )
-    for sec, members in sector_surges.items():
+    _prepend_sector_resonances(sector_surges, l2_map, cooldowns, now_ts, buckets, alert_records)
+    return buckets
+
+
+def _prepend_sector_resonances(
+    sector_surges: dict[str, list[str]],
+    l2_map: dict[str, dict[str, Any]],
+    cooldowns: dict[str, float],
+    now_ts: float,
+    buckets: dict[str, list[str]],
+    alert_records: list[dict[str, Any]],
+) -> None:
+    sec_totals: dict[str, int] = defaultdict(int)
+    for meta in l2_map.values():
+        s_name = str(meta.get("sector") or "")
+        if s_name:
+            sec_totals[s_name] += 1
+    ranked_surges = sorted(
+        sector_surges.items(),
+        key=lambda kv: (len(kv[1]) / max(sec_totals.get(kv[0], 30), 10), len(kv[1])),
+        reverse=True,
+    )
+    sector_events: list[str] = []
+    for sec, members in ranked_surges:
         if len(members) >= 3 and _check_cooldown(cooldowns, f"L2:sec:{sec}", now_ts):
-            buckets["l2_events"].append(
+            sector_events.append(
                 f"- 🟡 **【{sec} 板块5m共振】** {len(members)} 只个股同时急涨：{', '.join(members[:4])}"
             )
             alert_records.append(
                 {"ts": now_ts, "level": "L2", "kind": "sector_resonance", "sector": sec, "count": len(members)}
             )
-    return buckets
+    if sector_events:
+        buckets["l2_events"] = sector_events + buckets["l2_events"]
 
 
 def _check_wyckoff_signals(
@@ -652,6 +678,48 @@ def _compute_breadth_and_coverage(
     return red_count, green_count, d_red, red_ratio, True, ""
 
 
+def _enrich_mainline_and_telegraph(
+    curr_quotes: dict[str, dict[str, Any]],
+    prev_q: dict[str, dict[str, float]],
+    has_baseline: bool,
+    l2_map: dict[str, dict[str, Any]],
+    cooldowns: dict[str, float],
+    ts: float,
+    buckets: dict[str, list[str]],
+    alert_records: list[dict[str, Any]],
+    fetch_telegraph: bool = False,
+    turnover_dir: Path | None = None,
+) -> None:
+    try:
+        from telegraph_catalysts import (
+            scan_live_telegraph_catalysts,
+            summarize_national_team_etfs,
+            summarize_top_sector_mainlines,
+        )
+
+        now_dt = datetime.fromtimestamp(ts, tz=CN_TZ)
+        nt_summary, nt_l2_alert = summarize_national_team_etfs(
+            curr_quotes, prev_q, has_baseline, now_dt=now_dt, turnover_dir=turnover_dir
+        )
+        if nt_l2_alert and _check_cooldown(cooldowns, "L2:nt_etf_surge", ts):
+            buckets["l2_events"].insert(0, nt_l2_alert)
+            alert_records.append({"ts": ts, "level": "L2", "kind": "national_team_etf_surge"})
+        mainline_summary = summarize_top_sector_mainlines(curr_quotes, l2_map)
+        if mainline_summary:
+            buckets["mainlines"].append(mainline_summary)
+        if nt_summary:
+            buckets["mainlines"].append(nt_summary)
+        if fetch_telegraph:
+            buckets["telegraph"].extend(
+                scan_live_telegraph_catalysts(
+                    l2_map, curr_quotes, window_minutes=15, max_items=4, pages=1, cooldowns=cooldowns, now_ts=ts
+                )
+            )
+    except Exception as exc:
+        print(f"[WARN] Mainline/telegraph enrichment failed: {exc}", file=sys.stderr)
+        buckets["warnings"].append(f"⚠️ **主线/电报扩展模块异常：{exc}**")
+
+
 def analyze_snapshot_diff(
     curr_quotes: dict[str, dict[str, Any]],
     prev_state: dict[str, Any],
@@ -660,6 +728,7 @@ def analyze_snapshot_diff(
     now_ts: float | None = None,
     turnover_dir: Path | None = None,
     alert_log_path: Path | None = None,
+    fetch_telegraph: bool = False,
 ) -> tuple[str, str, str, int, dict[str, float]]:
     ts = now_ts if now_ts is not None else time.time()
     today_date = cn_today()
@@ -700,6 +769,19 @@ def analyze_snapshot_diff(
         buckets["warnings"].append(gap_msg)
     if index_gap_warn:
         buckets["warnings"].append(index_gap_warn)
+
+    _enrich_mainline_and_telegraph(
+        curr_quotes,
+        prev_q,
+        has_baseline,
+        l2_map,
+        cooldowns,
+        ts,
+        buckets,
+        alert_records,
+        fetch_telegraph=fetch_telegraph,
+        turnover_dir=turnover_dir,
+    )
 
     if coverage_ok and abs(d_red) >= 400 and _check_cooldown(cooldowns, "L2:breadth", ts):
         buckets["l2_events"].insert(
@@ -781,6 +863,10 @@ def _format_card(
         secs.append("**5. 全市场 ETF 5m 异动榜**\n" + "\n".join(buckets["etf_up"][:6] + buckets["etf_down"][:5]))
     if buckets["stock_up"] or buckets["stock_down"]:
         secs.append("**6. 全市场 A 股 5m 异动榜**\n" + "\n".join(buckets["stock_up"][:6] + buckets["stock_down"][:6]))
+    for m_block in buckets.get("mainlines", []):
+        secs.append(m_block)
+    if buckets.get("telegraph"):
+        secs.append("**7. ⚡ 7x24 实时电报催化与威科夫映射**\n" + "\n".join(buckets["telegraph"][:5]))
     secs.append("⚠️ 风险提醒: 严守分时均价线（VWAP）与量比确认，不在均线下方接飞刀。")
     return title, "\n\n".join(secs)
 
@@ -891,6 +977,7 @@ def run_once(args: argparse.Namespace) -> None:
         l2_map,
         holdings,
         now_ts=now_ts,
+        fetch_telegraph=not args.dry_run,
     )
     compact_snaps = {}
     for sym, q in curr_quotes.items():

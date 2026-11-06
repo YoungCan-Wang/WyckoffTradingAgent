@@ -582,3 +582,159 @@ def test_intraday_turnover_curve_and_same_timestamp_comparison(tmp_path):
     # Day 2 at 14:45: compares against Day 1 14:45 (18000亿) with explicit benchmark date 2026-11-04 -> +10.0%
     s2_pm = radar.update_and_compare_turnover(d2, "14:45", 19800.0, index_ok=True, turnover_dir=t_dir)
     assert "较 2026-11-04 14:45 18000亿 +10.0%" in s2_pm
+
+
+def test_telegraph_catalyst_theme_and_wyckoff_mapping() -> None:
+    spec = importlib.util.spec_from_file_location("telegraph_catalysts", SCRIPT_PATH.parent / "telegraph_catalysts.py")
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    l2_map = {
+        "000700": {
+            "name": "模塑科技",
+            "sector": "汽车配件",
+            "rps": 93.8,
+            "l2_eligible": True,
+            "l3_eligible": True,
+            "is_candidate": True,
+            "channels": ["主升通道"],
+        },
+        "688316": {
+            "name": "青云科技",
+            "sector": "软件服务",
+            "rps": 14.9,
+            "l2_eligible": True,
+            "l3_eligible": True,
+            "is_candidate": False,
+            "channels": ["地量蓄势"],
+        },
+    }
+    quotes = {"000700.SZ": {"last_price": 9.92, "prev_close": 9.87}}
+    theme, picks = mod.match_theme_and_candidates("【丰田汽车将在重组中设立机器人部门】", l2_map, quotes)
+    assert "机器人" in theme
+    assert any("000700" in p and "模塑科技" in p for p in picks)
+
+    noise_theme, noise_picks = mod.match_theme_and_candidates("荷兰皇家航空发言人：A320订单尚未取消", l2_map, quotes)
+    assert noise_theme == ""
+    assert noise_picks == []
+
+    etf_quotes = {
+        "588000.SH": {"amount": 188.86e8},
+        "159915.SZ": {"amount": 163.95e8},
+        "510210.SH": {"amount": 9.97e8},
+    }
+    prev_etf = {
+        "588000.SH": {"amt_yi": 170.0},
+        "159915.SZ": {"amt_yi": 150.0},
+        "510210.SH": {"amt_yi": 9.5},
+    }
+    nt_dt = datetime(2026, 11, 6, 10, 30, tzinfo=CN_TZ)
+    nt_summary, nt_l2 = mod.summarize_national_team_etfs(etf_quotes, prev_etf, has_baseline=True, now_dt=nt_dt)
+    assert "362.8亿" in nt_summary
+    assert "588000" in nt_summary
+    assert "国家队20大宽基ETF 5m放量异动" in nt_l2
+    open_dt = datetime(2026, 11, 6, 9, 35, tzinfo=CN_TZ)
+    _, open_l2 = mod.summarize_national_team_etfs(etf_quotes, prev_etf, has_baseline=True, now_dt=open_dt)
+    assert open_l2 == ""
+
+    ag_map = {
+        f"6003{i:02d}": {
+            "name": f"东方种业{i}" if i < 4 else f"种业股{i}",
+            "sector": "种植业" if i != 1 else "渔业",
+            "rps": 20.0 + i,
+            "l2_eligible": i == 5,
+            "is_candidate": False,
+        }
+        for i in range(10)
+    }
+    ag_quotes = {f"6003{i:02d}.SH": {"pct": 6.0 if i < 4 else 3.5} for i in range(10)}
+    ag_theme, ag_picks = mod.match_theme_and_candidates("农业农村部推进种业振兴与粮食安全", ag_map, ag_quotes)
+    assert "农业" in ag_theme
+    assert any("600305" in p for p in ag_picks)
+    mainline_md = mod.summarize_top_sector_mainlines(ag_quotes, ag_map)
+    assert "种植业" in mainline_md
+    assert "600305" in mainline_md
+    assert "东方系字头抱团" in mainline_md
+
+
+def test_review_fixes_telegraph_filtering_cooldown_and_sector_priority(tmp_path) -> None:
+    radar = _load_radar_module()
+    spec = importlib.util.spec_from_file_location("telegraph_catalysts", SCRIPT_PATH.parent / "telegraph_catalysts.py")
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    # 1. 159919.SZ suffix & BJ 92xxxx symbol resolution
+    assert "159919.SZ" in mod.NATIONAL_TEAM_20_ETFS
+    assert "159919.SH" not in mod.NATIONAL_TEAM_20_ETFS
+    assert mod.resolve_code6_symbol("920087") == "920087.BJ"
+
+    # 2. Foreign & negative headlines must not produce false Wyckoff buy mappings; macro news has empty picks
+    l2_map = {
+        "688316": {"name": "青云科技", "sector": "软件服务", "rps": 25.0, "l2_eligible": True},
+        "920087": {"name": "秋乐种业", "sector": "种植业", "rps": 30.0, "l2_eligible": True},
+    }
+    for bad_txt in (
+        "印度汽车经销商协会：10月汽车零售销量同比增长",
+        "午评：创业板指收跌3.5%，算力硬件领跌",
+        "日本篡改核电站数据公司被勒令整改",
+        "韩财政部召开半导体专家座谈会",
+        "欧盟能源监管：欧洲电网费用或翻倍",
+    ):
+        assert mod.match_theme_and_candidates(bad_txt, l2_map) == ("", [])
+
+    stat_theme, stat_picks = mod.match_theme_and_candidates("ETF两市成交额报6372亿，半导体ETF领跑", l2_map)
+    assert stat_picks == []
+    anti_dump_theme, _ = mod.match_theme_and_candidates("商务部对欧盟进口对位芳纶发起反倾销立案调查", l2_map)
+    assert "化工" in anti_dump_theme
+    assert mod._detect_prefix_clusters({"中国": [("a", "银行"), ("b", "石油"), ("c", "建筑"), ("d", "电信")]}) == []
+
+    macro_theme, macro_picks = mod.match_theme_and_candidates("央行发布最新再贷款操作指引", l2_map)
+    assert "宏观" in macro_theme
+    assert macro_picks == []
+
+    # 3. Cooldown deduplication prevents identical telegraph item from repeating across consecutive 5m scans
+    cd: dict[str, float] = {}
+    fake_raw = [{"id": "sina_101", "ts": 1950.0, "hm": "13:15", "text": "工信部加快推进具身智能机器人产业落地"}]
+    first_lines = mod.scan_live_telegraph_catalysts(l2_map, cooldowns=cd, now_ts=2000.0, raw_items=fake_raw)
+    second_lines = mod.scan_live_telegraph_catalysts(l2_map, cooldowns=cd, now_ts=2300.0, raw_items=fake_raw)
+    assert len(first_lines) == 1
+    assert second_lines == []
+
+    # 4. National Team ETF 5m surge >=25亿 after 09:45 promotes card level to L2 and sector resonance survives >6 stock L2s
+    today = cn_today().isoformat()
+    post_open_ts = datetime(2026, 11, 6, 10, 30, tzinfo=CN_TZ).timestamp()
+    prev_q = {"588000.SH": {"pct": -1.0, "amt_yi": 100.0}, "159919.SZ": {"pct": -0.5, "amt_yi": 20.0}}
+    curr_q: dict[str, dict] = {
+        "588000.SH": {"symbol": "588000.SH", "last_price": 1.40, "prev_close": 1.41, "volume": 1e9, "amount": 130.0e8},
+        "159919.SZ": {"symbol": "159919.SZ", "last_price": 4.00, "prev_close": 4.02, "volume": 1e8, "amount": 25.0e8},
+    }
+    sec_l2_map: dict[str, dict] = {}
+    for i in range(10):
+        code = f"6001{i:02d}"
+        sym = f"{code}.SH"
+        is_ag = i < 3
+        sec_l2_map[code] = {
+            "name": f"种业{i}" if is_ag else f"其他{i}",
+            "sector": "种植业" if is_ag else f"行业{i}",
+            "rps": 60.0,
+            "l2_eligible": True,
+            "channels": ["主升通道"],
+        }
+        prev_q[sym] = {"pct": 1.0, "amt_yi": 1.0}
+        curr_q[sym] = {
+            "symbol": sym,
+            "last_price": 10.45,
+            "prev_close": 10.0,
+            "volume": 2e7,
+            "amount": 1.8e8,
+            "ext": {"name": sec_l2_map[code]["name"]},
+        }
+    prev_state = {"date": today, "ts": post_open_ts - 300.0, "red": 10, "cooldowns": {}, "quotes": prev_q}
+    level, _, body, _, _ = radar.analyze_snapshot_diff(
+        curr_q, prev_state, sec_l2_map, {}, now_ts=post_open_ts, turnover_dir=tmp_path / "to"
+    )
+    assert level == "L2"
+    assert "国家队20大宽基ETF 5m放量异动" in body
+    assert "种植业 板块5m共振" in body
