@@ -629,10 +629,14 @@ def test_telegraph_catalyst_theme_and_wyckoff_mapping() -> None:
         "159915.SZ": {"amt_yi": 150.0},
         "510210.SH": {"amt_yi": 9.5},
     }
-    nt_summary, nt_l2 = mod.summarize_national_team_etfs(etf_quotes, prev_etf, has_baseline=True)
+    nt_dt = datetime(2026, 11, 6, 10, 30, tzinfo=CN_TZ)
+    nt_summary, nt_l2 = mod.summarize_national_team_etfs(etf_quotes, prev_etf, has_baseline=True, now_dt=nt_dt)
     assert "362.8亿" in nt_summary
     assert "588000" in nt_summary
     assert "国家队20大宽基ETF 5m放量异动" in nt_l2
+    open_dt = datetime(2026, 11, 6, 9, 35, tzinfo=CN_TZ)
+    _, open_l2 = mod.summarize_national_team_etfs(etf_quotes, prev_etf, has_baseline=True, now_dt=open_dt)
+    assert open_l2 == ""
 
     ag_map = {
         f"6003{i:02d}": {
@@ -675,8 +679,16 @@ def test_review_fixes_telegraph_filtering_cooldown_and_sector_priority(tmp_path)
         "印度汽车经销商协会：10月汽车零售销量同比增长",
         "午评：创业板指收跌3.5%，算力硬件领跌",
         "日本篡改核电站数据公司被勒令整改",
+        "韩财政部召开半导体专家座谈会",
+        "欧盟能源监管：欧洲电网费用或翻倍",
     ):
         assert mod.match_theme_and_candidates(bad_txt, l2_map) == ("", [])
+
+    stat_theme, stat_picks = mod.match_theme_and_candidates("ETF两市成交额报6372亿，半导体ETF领跑", l2_map)
+    assert stat_picks == []
+    anti_dump_theme, _ = mod.match_theme_and_candidates("商务部对欧盟进口对位芳纶发起反倾销立案调查", l2_map)
+    assert "化工" in anti_dump_theme
+    assert mod._detect_prefix_clusters({"中国": [("a", "银行"), ("b", "石油"), ("c", "建筑"), ("d", "电信")]}) == []
 
     macro_theme, macro_picks = mod.match_theme_and_candidates("央行发布最新再贷款操作指引", l2_map)
     assert "宏观" in macro_theme
@@ -690,8 +702,9 @@ def test_review_fixes_telegraph_filtering_cooldown_and_sector_priority(tmp_path)
     assert len(first_lines) == 1
     assert second_lines == []
 
-    # 4. National Team ETF 5m surge >=25亿 promotes card level to L2 and sector resonance survives >6 stock L2s
+    # 4. National Team ETF 5m surge >=25亿 after 09:45 promotes card level to L2 and sector resonance survives >6 stock L2s
     today = cn_today().isoformat()
+    post_open_ts = datetime(2026, 11, 6, 10, 30, tzinfo=CN_TZ).timestamp()
     prev_q = {"588000.SH": {"pct": -1.0, "amt_yi": 100.0}, "159919.SZ": {"pct": -0.5, "amt_yi": 20.0}}
     curr_q: dict[str, dict] = {
         "588000.SH": {"symbol": "588000.SH", "last_price": 1.40, "prev_close": 1.41, "volume": 1e9, "amount": 130.0e8},
@@ -718,9 +731,9 @@ def test_review_fixes_telegraph_filtering_cooldown_and_sector_priority(tmp_path)
             "amount": 1.8e8,
             "ext": {"name": sec_l2_map[code]["name"]},
         }
-    prev_state = {"date": today, "ts": 1000.0, "red": 10, "cooldowns": {}, "quotes": prev_q}
+    prev_state = {"date": today, "ts": post_open_ts - 300.0, "red": 10, "cooldowns": {}, "quotes": prev_q}
     level, _, body, _, _ = radar.analyze_snapshot_diff(
-        curr_q, prev_state, sec_l2_map, {}, now_ts=1200.0, turnover_dir=tmp_path / "to"
+        curr_q, prev_state, sec_l2_map, {}, now_ts=post_open_ts, turnover_dir=tmp_path / "to"
     )
     assert level == "L2"
     assert "国家队20大宽基ETF 5m放量异动" in body

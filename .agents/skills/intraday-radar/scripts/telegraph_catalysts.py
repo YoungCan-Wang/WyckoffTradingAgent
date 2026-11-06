@@ -8,17 +8,16 @@ import json
 import re
 import sys
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 CN_TZ = timezone(timedelta(hours=8))
 SINA_7X24_URL = "https://zhibo.sina.com.cn/api/zhibo/feed?page={page}&page_size=40&zhibo_id=152"
 WSCN_LIVE_URL = "https://api-one-wscn.awtmt.com/apiv1/content/lives?channel=global-channel&limit=25"
+DEFAULT_TURNOVER_DIR = Path.home() / ".wyckoff" / "intraday_turnover"
 
-# 来源说明：根据中央汇金/证金公司 ETF 前十大持有人披露及 2026-10-15 宽基换仓跟踪构建的 20 只核心宽基 ETF 篮子。
-# 全天成交基准：563 亿为近 20 个常态交易日全天均值；785 亿为护盘放量日（90 分位）全天阈值。
-NATIONAL_TEAM_FULLDAY_NORM_YI = 563.0
-NATIONAL_TEAM_FULLDAY_SURGE_YI = 785.0
+# 来源说明：根据中央汇金/证金公司 ETF 前十大持有人披露及宽基持仓跟踪构建的 20 只核心宽基 ETF 篮子。
 NATIONAL_TEAM_20_ETFS: dict[str, str] = {
     "510310.SH": "沪深300ETF易方达",
     "588000.SH": "科创50ETF华夏",
@@ -32,14 +31,35 @@ NATIONAL_TEAM_20_ETFS: dict[str, str] = {
     "159949.SZ": "创业板50ETF华安",
     "588080.SH": "科创50ETF易方达",
     "510050.SH": "上证50ETF华夏",
-    "510210.SH": "上证指数ETF富国",
     "159845.SZ": "中证1000ETF华夏",
+    "510210.SH": "上证指数ETF富国",
     "159952.SZ": "创业板ETF广发",
     "159361.SZ": "A500ETF易方达",
     "512050.SH": "A500ETF华夏",
     "159633.SZ": "中证1000ETF易方达",
     "560010.SH": "中证1000ETF广发",
     "159919.SZ": "沪深300ETF嘉实",
+}
+
+GENERIC_PREFIX_STOPWORDS = {
+    "中国",
+    "中信",
+    "国泰",
+    "中航",
+    "中金",
+    "中银",
+    "招商",
+    "华泰",
+    "国信",
+    "广发",
+    "申万",
+    "平安",
+    "华润",
+    "国电",
+    "华能",
+    "华电",
+    "大唐",
+    "国投",
 }
 
 CATALYST_THEMES: list[tuple[str, list[str], list[str]]] = [
@@ -70,8 +90,8 @@ CATALYST_THEMES: list[tuple[str, list[str], list[str]]] = [
     ),
     (
         "🧪 化工/钢铁/周期涨价",
-        ["纯碱", "磷化工", "钛白粉", "氟化工", "制冷剂", "MDI", "煤炭", "粗钢", "特种钢"],
-        ["化工原料", "农药化肥", "化学制品", "煤炭开采", "普钢", "特种钢"],
+        ["纯碱", "磷化工", "钛白粉", "氟化工", "制冷剂", "MDI", "芳纶", "煤炭", "粗钢", "特种钢"],
+        ["化工原料", "农药化肥", "化学制品", "化纤", "煤炭开采", "普钢", "特种钢"],
     ),
     (
         "🛒 消费/免税/商业零售",
@@ -121,10 +141,27 @@ A_SHARE_TAPE_KEYWORDS = (
     "A股",
     "沪指",
     "南向资金",
-    "主力资金",
 )
 
-FOREIGN_ONLY_MARKERS = ("印度", "日本", "韩国", "越南", "印尼", "英国", "德国", "法国", "巴西", "澳大利亚")
+FOREIGN_ONLY_MARKERS = (
+    "印度",
+    "日本",
+    "韩国",
+    "韩财政部",
+    "韩元",
+    "越南",
+    "印尼",
+    "英国",
+    "德国",
+    "法国",
+    "欧盟",
+    "欧洲",
+    "欧元区",
+    "斯里兰卡",
+    "土耳其",
+    "巴西",
+    "澳大利亚",
+)
 DOMESTIC_ANCHORS = ("中国", "国内", "我国", "A股", "沪深", "港股", "央行", "商务部", "工信部", "证监会", "发改委")
 NEGATIVE_TAPE_MARKERS = (
     "收跌",
@@ -135,13 +172,15 @@ NEGATIVE_TAPE_MARKERS = (
     "跌停",
     "下挫",
     "走低",
+    "净流出",
     "午评：",
     "午评:",
     "早评：",
     "收评：",
     "被勒令",
     "整改",
-    "立案",
+    "被立案",
+    "证监会立案",
     "处罚",
     "违规",
     "减持",
@@ -149,6 +188,14 @@ NEGATIVE_TAPE_MARKERS = (
     "辟谣",
     "风险提示",
     "篡改",
+)
+STAT_SUMMARY_MARKERS = (
+    "ETF两市成交",
+    "ETF 两市成交",
+    "两市成交额报",
+    "主力资金：",
+    "融资融券板块",
+    "发明专利拥有量",
 )
 
 
@@ -265,6 +312,8 @@ def match_theme_and_candidates(
 ) -> tuple[str, list[str]]:
     if _is_filtered_telegraph(text):
         return "", []
+    if any(s in text for s in STAT_SUMMARY_MARKERS):
+        return "⚡ 盘面资金统计", []
     best_theme = ""
     best_sectors: list[str] = []
     best_hits = 0
@@ -326,18 +375,50 @@ def scan_live_telegraph_catalysts(
     return lines
 
 
-def _trading_session_elapsed_ratio(now_dt: datetime | None = None) -> float:
-    dt = now_dt.astimezone(CN_TZ) if now_dt else datetime.now(CN_TZ)
-    mins = dt.hour * 60 + dt.minute
-    if mins <= 9 * 60 + 30:
-        return 0.05
-    if mins <= 11 * 60 + 30:
-        return max(0.05, (mins - (9 * 60 + 30)) / 240.0)
-    if mins < 13 * 60:
-        return 0.50
-    if mins <= 15 * 60:
-        return min(1.0, (120 + mins - 13 * 60) / 240.0)
-    return 1.0
+def _hm_to_mins(hm: str) -> int:
+    parts = hm.split(":")
+    return int(parts[0]) * 60 + int(parts[1]) if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit() else 0
+
+
+def _compare_nt_etf_same_timestamp(
+    today_date: date,
+    now_hm: str,
+    tot_amt_yi: float,
+    turnover_dir: Path | None = None,
+) -> str:
+    base_dir = turnover_dir or DEFAULT_TURNOVER_DIR
+    try:
+        base_dir.mkdir(parents=True, exist_ok=True)
+        today_file = base_dir / f"nt_etf_{today_date.strftime('%Y%m%d')}.jsonl"
+        today_pts: dict[str, float] = {}
+        if today_file.exists():
+            for ln in today_file.read_text(encoding="utf-8").splitlines():
+                if ln.strip():
+                    row = json.loads(ln)
+                    today_pts[str(row["hm"])] = float(row["tot_amt_yi"])
+        if now_hm not in today_pts:
+            with open(today_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"hm": now_hm, "tot_amt_yi": round(tot_amt_yi, 2)}, ensure_ascii=False) + "\n")
+        prev_files = sorted(p for p in base_dir.glob("nt_etf_*.jsonl") if p.name < today_file.name)
+        if not prev_files:
+            return "同时刻对比：无历史基准"
+        prev_file = prev_files[-1]
+        raw_ymd = prev_file.stem.replace("nt_etf_", "")
+        b_date = f"{raw_ymd[:4]}-{raw_ymd[4:6]}-{raw_ymd[6:8]}" if len(raw_ymd) == 8 else raw_ymd
+        prev_pts = {
+            str(json.loads(ln)["hm"]): float(json.loads(ln)["tot_amt_yi"])
+            for ln in prev_file.read_text(encoding="utf-8").splitlines()
+            if ln.strip()
+        }
+        now_min = _hm_to_mins(now_hm)
+        best_hm = min(prev_pts.keys(), key=lambda k: abs(_hm_to_mins(k) - now_min), default="")
+        if not best_hm or abs(_hm_to_mins(best_hm) - now_min) > 10 or prev_pts[best_hm] <= 0:
+            return "同时刻对比：无历史基准"
+        prev_amt = prev_pts[best_hm]
+        diff_pct = (tot_amt_yi / prev_amt - 1.0) * 100.0
+        return f"较 {b_date} {best_hm} {prev_amt:.1f}亿 {diff_pct:+.1f}%"
+    except Exception:
+        return "同时刻对比：无历史基准"
 
 
 def summarize_national_team_etfs(
@@ -345,6 +426,7 @@ def summarize_national_team_etfs(
     prev_q: dict[str, dict[str, float]] | None = None,
     has_baseline: bool = False,
     now_dt: datetime | None = None,
+    turnover_dir: Path | None = None,
 ) -> tuple[str, str]:
     prev_map = prev_q or {}
     tot_amt = 0.0
@@ -364,18 +446,15 @@ def summarize_national_team_etfs(
         return "", ""
     movers.sort(key=lambda x: -x[0])
     top_str = "、".join(m[2] for m in movers[:3])
-    elapsed = _trading_session_elapsed_ratio(now_dt)
-    same_time_norm = NATIONAL_TEAM_FULLDAY_NORM_YI * elapsed
-    ratio_pct = (tot_amt / same_time_norm * 100.0) if same_time_norm > 0 else 100.0
+    dt = now_dt.astimezone(CN_TZ) if now_dt else datetime.now(CN_TZ)
+    now_hm = dt.strftime("%H:%M")
+    same_ts_cmp = _compare_nt_etf_same_timestamp(dt.date(), now_hm, tot_amt, turnover_dir=turnover_dir)
     pulse_tag = f" [5m: +{tot_damt:.1f}亿]" if has_baseline and tot_damt > 0 else ""
-    summary = (
-        f"🏦 **国家队20大重点ETF**：合计成交 **{tot_amt:.1f}亿**{pulse_tag}"
-        f"（同刻常态基准 **{same_time_norm:.0f}亿** 的 **{ratio_pct:.0f}%** | 全天常态 {NATIONAL_TEAM_FULLDAY_NORM_YI:.0f}亿 / 护盘日 {NATIONAL_TEAM_FULLDAY_SURGE_YI:.0f}亿+）"
-        f" | 领头：{top_str}"
-    )
+    summary = f"🏦 **国家队20大重点ETF**：合计成交 **{tot_amt:.1f}亿**{pulse_tag}（{same_ts_cmp}）| 领头：{top_str}"
+    is_post_opening_rush = now_hm > "09:45"
     l2_alert = (
         f"- 🟡 **【国家队20大宽基ETF 5m放量异动】** 5分钟合计爆量 **+{tot_damt:.1f}亿**（累计 {tot_amt:.1f}亿），领头：{top_str}"
-        if (has_baseline and tot_damt >= 25.0)
+        if (has_baseline and is_post_opening_rush and tot_damt >= 25.0)
         else ""
     )
     return summary, l2_alert
@@ -386,6 +465,8 @@ def _detect_prefix_clusters(
 ) -> list[str]:
     out: list[str] = []
     for pfx, rows in sorted(prefix_up5.items(), key=lambda x: -len(x[1])):
+        if pfx in GENERIC_PREFIX_STOPWORDS:
+            continue
         sectors = {sec for _, sec in rows if sec}
         if len(rows) >= 4 and len(sectors) >= 2:
             labels = [lbl for lbl, _ in rows[:4]]

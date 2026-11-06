@@ -688,6 +688,7 @@ def _enrich_mainline_and_telegraph(
     buckets: dict[str, list[str]],
     alert_records: list[dict[str, Any]],
     fetch_telegraph: bool = False,
+    turnover_dir: Path | None = None,
 ) -> None:
     try:
         from telegraph_catalysts import (
@@ -697,7 +698,9 @@ def _enrich_mainline_and_telegraph(
         )
 
         now_dt = datetime.fromtimestamp(ts, tz=CN_TZ)
-        nt_summary, nt_l2_alert = summarize_national_team_etfs(curr_quotes, prev_q, has_baseline, now_dt=now_dt)
+        nt_summary, nt_l2_alert = summarize_national_team_etfs(
+            curr_quotes, prev_q, has_baseline, now_dt=now_dt, turnover_dir=turnover_dir
+        )
         if nt_l2_alert and _check_cooldown(cooldowns, "L2:nt_etf_surge", ts):
             buckets["l2_events"].insert(0, nt_l2_alert)
             alert_records.append({"ts": ts, "level": "L2", "kind": "national_team_etf_surge"})
@@ -777,6 +780,7 @@ def analyze_snapshot_diff(
         buckets,
         alert_records,
         fetch_telegraph=fetch_telegraph,
+        turnover_dir=turnover_dir,
     )
 
     if coverage_ok and abs(d_red) >= 400 and _check_cooldown(cooldowns, "L2:breadth", ts):
