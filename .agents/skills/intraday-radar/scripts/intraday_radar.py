@@ -447,7 +447,17 @@ def _scan_equities_and_etfs(
         _check_wyckoff_signals(
             sym, m, dpct, damt, info, red_ratio, coverage_ok, cooldowns, now_ts, buckets, alert_records
         )
-    for sec, members in sector_surges.items():
+    sec_totals: dict[str, int] = defaultdict(int)
+    for meta in l2_map.values():
+        s_name = str(meta.get("sector") or "")
+        if s_name:
+            sec_totals[s_name] += 1
+    ranked_surges = sorted(
+        sector_surges.items(),
+        key=lambda kv: (len(kv[1]) / max(sec_totals.get(kv[0], 30), 10), len(kv[1])),
+        reverse=True,
+    )
+    for sec, members in ranked_surges:
         if len(members) >= 3 and _check_cooldown(cooldowns, f"L2:sec:{sec}", now_ts):
             buckets["l2_events"].append(
                 f"- 🟡 **【{sec} 板块5m共振】** {len(members)} 只个股同时急涨：{', '.join(members[:4])}"
@@ -781,6 +791,8 @@ def _format_card(
         secs.append("**5. 全市场 ETF 5m 异动榜**\n" + "\n".join(buckets["etf_up"][:6] + buckets["etf_down"][:5]))
     if buckets["stock_up"] or buckets["stock_down"]:
         secs.append("**6. 全市场 A 股 5m 异动榜**\n" + "\n".join(buckets["stock_up"][:6] + buckets["stock_down"][:6]))
+    if buckets.get("telegraph"):
+        secs.append("**7. ⚡ 7x24 实时电报催化与威科夫映射**\n" + "\n".join(buckets["telegraph"][:5]))
     secs.append("⚠️ 风险提醒: 严守分时均价线（VWAP）与量比确认，不在均线下方接飞刀。")
     return title, "\n\n".join(secs)
 
@@ -892,6 +904,27 @@ def run_once(args: argparse.Namespace) -> None:
         holdings,
         now_ts=now_ts,
     )
+    if not args.dry_run:
+        try:
+            from telegraph_catalysts import (
+                scan_live_telegraph_catalysts,
+                summarize_national_team_etfs,
+                summarize_top_sector_mainlines,
+            )
+
+            has_base = _is_fresh_baseline(prev_state, cn_today().isoformat(), now_ts)
+            nt_summary, _ = summarize_national_team_etfs(curr_quotes, prev_state.get("quotes"), has_base)
+            mainline_summary = summarize_top_sector_mainlines(curr_quotes, l2_map)
+            t_lines = scan_live_telegraph_catalysts(l2_map, curr_quotes, window_minutes=15, max_items=4, pages=1)
+            extra = (
+                ([mainline_summary] if mainline_summary else [])
+                + ([nt_summary] if nt_summary else [])
+                + (["**7. ⚡ 7x24 实时电报催化与威科夫映射**\n" + "\n".join(t_lines)] if t_lines else [])
+            )
+            if extra:
+                content = content.replace("⚠️ 风险提醒:", "\n\n".join(extra) + "\n\n⚠️ 风险提醒:")
+        except Exception:
+            pass
     compact_snaps = {}
     for sym, q in curr_quotes.items():
         m = compute_quote_metrics(q)

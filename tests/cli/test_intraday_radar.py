@@ -582,3 +582,73 @@ def test_intraday_turnover_curve_and_same_timestamp_comparison(tmp_path):
     # Day 2 at 14:45: compares against Day 1 14:45 (18000亿) with explicit benchmark date 2026-11-04 -> +10.0%
     s2_pm = radar.update_and_compare_turnover(d2, "14:45", 19800.0, index_ok=True, turnover_dir=t_dir)
     assert "较 2026-11-04 14:45 18000亿 +10.0%" in s2_pm
+
+
+def test_telegraph_catalyst_theme_and_wyckoff_mapping() -> None:
+    spec = importlib.util.spec_from_file_location("telegraph_catalysts", SCRIPT_PATH.parent / "telegraph_catalysts.py")
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    l2_map = {
+        "000700": {
+            "name": "模塑科技",
+            "sector": "汽车配件",
+            "rps": 93.8,
+            "l2_eligible": True,
+            "l3_eligible": True,
+            "is_candidate": True,
+            "channels": ["主升通道"],
+        },
+        "688316": {
+            "name": "青云科技",
+            "sector": "软件服务",
+            "rps": 14.9,
+            "l2_eligible": True,
+            "l3_eligible": True,
+            "is_candidate": False,
+            "channels": ["地量蓄势"],
+        },
+    }
+    quotes = {"000700.SZ": {"last_price": 9.92, "prev_close": 9.87}}
+    theme, picks = mod.match_theme_and_candidates("【丰田汽车将在重组中设立机器人部门】", l2_map, quotes)
+    assert "机器人" in theme
+    assert any("000700" in p and "模塑科技" in p for p in picks)
+
+    noise_theme, noise_picks = mod.match_theme_and_candidates("荷兰皇家航空发言人：A320订单尚未取消", l2_map, quotes)
+    assert noise_theme == ""
+    assert noise_picks == []
+
+    etf_quotes = {
+        "588000.SH": {"amount": 188.86e8},
+        "159915.SZ": {"amount": 163.95e8},
+        "510210.SH": {"amount": 9.97e8},
+    }
+    prev_etf = {
+        "588000.SH": {"amt_yi": 170.0},
+        "159915.SZ": {"amt_yi": 150.0},
+        "510210.SH": {"amt_yi": 9.5},
+    }
+    nt_summary, nt_l2 = mod.summarize_national_team_etfs(etf_quotes, prev_etf, has_baseline=True)
+    assert "362.8亿" in nt_summary
+    assert "588000" in nt_summary
+    assert "国家队20大宽基ETF 5m放量异动" in nt_l2
+
+    ag_map = {
+        f"6003{i:02d}": {
+            "name": f"东方种业{i}" if i < 4 else f"种业股{i}",
+            "sector": "种植业",
+            "rps": 20.0 + i,
+            "l2_eligible": i == 5,
+            "is_candidate": False,
+        }
+        for i in range(10)
+    }
+    ag_quotes = {f"6003{i:02d}.SH": {"pct": 6.0 if i < 4 else 3.5} for i in range(10)}
+    ag_theme, ag_picks = mod.match_theme_and_candidates("农业农村部推进种业振兴与粮食安全", ag_map, ag_quotes)
+    assert "农业" in ag_theme
+    assert any("600305" in p for p in ag_picks)
+    mainline_md = mod.summarize_top_sector_mainlines(ag_quotes, ag_map)
+    assert "种植业" in mainline_md
+    assert "600305" in mainline_md
+    assert "东方系字头抱团" in mainline_md
