@@ -418,14 +418,14 @@ def test_failed_send_does_not_persist_cooldown_in_run_once(tmp_path, monkeypatch
     monkeypatch.setattr(radar, "send_feishu_tiered_alert", lambda *a, **kw: None)
     radar.run_once(args)
     saved1 = json.loads(state_file.read_text(encoding="utf-8"))
-    assert "L4:600000.SH" not in saved1["cooldowns"]
+    assert "L4:holding_stop:600000.SH" not in saved1["cooldowns"]
     assert not alert_log.exists()
 
     # Second run: Feishu send succeeds -> cooldown IS saved AND alert log records sent=True, msg_id=om_ok_1
     monkeypatch.setattr(radar, "send_feishu_tiered_alert", lambda *a, **kw: "om_ok_1")
     radar.run_once(args)
     saved2 = json.loads(state_file.read_text(encoding="utf-8"))
-    assert "L4:600000.SH" in saved2["cooldowns"]
+    assert "L4:holding_stop:600000.SH" in saved2["cooldowns"]
     rows = [json.loads(line) for line in alert_log.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert len(rows) == 1
     assert rows[0]["sent"] is True
@@ -582,3 +582,134 @@ def test_intraday_turnover_curve_and_same_timestamp_comparison(tmp_path):
     # Day 2 at 14:45: compares against Day 1 14:45 (18000亿) with explicit benchmark date 2026-11-04 -> +10.0%
     s2_pm = radar.update_and_compare_turnover(d2, "14:45", 19800.0, index_ok=True, turnover_dir=t_dir)
     assert "较 2026-11-04 14:45 18000亿 +10.0%" in s2_pm
+
+
+def test_springboard_l4_cooldown_does_not_mute_holding_stop_phone():
+    """Same-symbol springboard L4 must not consume the 86400s holding-stop phone budget."""
+    radar = _load_radar_module()
+    today = cn_today().isoformat()
+    holdings_wide_stop = {"600000.SH": {"cost": 10.0, "stop": 8.0}}
+    l2_map = {
+        "600000": {
+            "name": "浦发银行",
+            "sector": "银行",
+            "rps": 50.0,
+            "l2_eligible": True,
+            "l3_eligible": True,
+            "is_candidate": True,
+            "channels": ["地量蓄势"],
+            "is_springboard": True,
+        }
+    }
+    prev_quotes = {"600000.SH": {"pct": 1.0, "amt_yi": 0.2}}
+    curr = {
+        "600000.SH": {
+            "symbol": "600000.SH",
+            "last_price": 10.40,
+            "prev_close": 10.0,
+            "volume": 5e6,
+            "amount": 10.4 * 5e6,
+            "ext": {"name": "浦发银行"},
+        }
+    }
+    for i in range(1, 101):
+        sym = f"601{i:03d}.SH"
+        prev_quotes[sym] = {"pct": 0.0, "amt_yi": 1.0}
+        curr[sym] = {
+            "symbol": sym,
+            "last_price": 10.5 if i <= 85 else 9.5,
+            "prev_close": 10.0,
+            "volume": 1e6,
+            "amount": 1e7,
+            "ext": {"name": f"s{i}"},
+        }
+    prev_state = {"date": today, "ts": 1000.0, "red": 50, "cooldowns": {}, "quotes": prev_quotes}
+    level1, _, body1, _, cd1 = radar.analyze_snapshot_diff(curr, prev_state, l2_map, holdings_wide_stop, now_ts=1300.0)
+    assert level1 == "L4"
+    assert "起跳板" in body1
+    assert "L4:springboard:600000.SH" in cd1
+    assert "L4:holding_stop:600000.SH" not in cd1
+
+    compact = {}
+    for sym, qq in curr.items():
+        m = radar.compute_quote_metrics(qq)
+        if m:
+            compact[sym] = {"pct": round(m["pct"], 3), "amt_yi": round(m["amt_yi"], 3)}
+    curr2 = dict(curr)
+    curr2["600000.SH"] = {
+        "symbol": "600000.SH",
+        "last_price": 9.40,
+        "prev_close": 10.0,
+        "volume": 5e6,
+        "amount": 9.40 * 5e6,
+        "ext": {"name": "浦发银行"},
+    }
+    prev_state2 = {"date": today, "ts": 1300.0, "red": 85, "cooldowns": dict(cd1), "quotes": compact}
+    holdings_hit = {"600000.SH": {"cost": 10.0, "stop": 9.50}}
+    level2, _, body2, _, cd2 = radar.analyze_snapshot_diff(curr2, prev_state2, l2_map, holdings_hit, now_ts=4900.0)
+    assert level2 == "L4"
+    assert "破位止损" in body2
+    assert "L4:holding_stop:600000.SH" in cd2
+
+
+def test_urgent_phone_failure_does_not_return_msg_id(monkeypatch):
+    radar = _load_radar_module()
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if "+messages-send" in cmd:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({"code": 0, "data": {"message_id": "om_card_ok"}}),
+                stderr="",
+            )
+        return SimpleNamespace(returncode=1, stdout="", stderr="urgent_phone denied")
+
+    monkeypatch.setattr(radar.subprocess, "run", fake_run)
+    assert (
+        radar.send_feishu_tiered_alert("Title", "Body", level="L4", user_open_id="ou_mock_user", dry_run=False) is None
+    )
+    assert any("urgent_phone" in c for c in calls)
+
+
+def test_dry_run_does_not_write_shared_state_file(tmp_path, monkeypatch):
+    radar = _load_radar_module()
+    state_file = tmp_path / "state.json"
+    state_file.write_text(json.dumps({"date": "2099-01-01", "cooldowns": {}, "quotes": {}}), encoding="utf-8")
+    before = state_file.read_text(encoding="utf-8")
+    monkeypatch.setattr(radar, "STATE_PATH", state_file)
+    monkeypatch.setattr(radar, "ALERT_LOG_PATH", tmp_path / "alerts.jsonl")
+    monkeypatch.setattr(radar, "TURNOVER_DIR", tmp_path / "turnover")
+    monkeypatch.setattr(radar, "load_wyckoff_l2_map", lambda *a, **kw: {})
+
+    class FakeClient:
+        def __init__(self, **kw):
+            pass
+
+        def get_quotes(self, universes):
+            return {
+                "600000.SH": {
+                    "symbol": "600000.SH",
+                    "last_price": 9.40,
+                    "prev_close": 10.0,
+                    "volume": 1000,
+                    "amount": 9400.0,
+                    "ext": {"name": "浦发银行"},
+                }
+            }
+
+    import integrations.tickflow_client as tf_mod
+
+    monkeypatch.setattr(tf_mod, "TickFlowClient", FakeClient)
+    args = SimpleNamespace(
+        ignore_hours=True,
+        dry_run=True,
+        trace=None,
+        holding=["600000.SH:10.0:9.50"],
+        user_id="ou_test",
+        force_send=False,
+        urgent_only=False,
+    )
+    radar.run_once(args)
+    assert state_file.read_text(encoding="utf-8") == before
