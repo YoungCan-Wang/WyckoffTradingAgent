@@ -349,7 +349,8 @@ def _evaluate_holdings(
         tag = ""
         if stop > 0 and m["last"] <= stop:
             tag = " 🔴破止损!"
-            if _check_cooldown(cooldowns, f"L4:{sym}", now_ts, window=HOLDING_STOP_COOLDOWN_SECONDS):
+            # Kind-scoped key: must not share L4:{sym} with springboard breakout (86400s would mute stop phone).
+            if _check_cooldown(cooldowns, f"L4:holding_stop:{sym}", now_ts, window=HOLDING_STOP_COOLDOWN_SECONDS):
                 l4_alerts.append(f"🔴 **【L4 破位止损】{sym} {m['name']}** 跌破止损 {stop}（现价 {m['last']:.2f}）")
                 alert_records.append(
                     {
@@ -363,7 +364,7 @@ def _evaluate_holdings(
                 )
         elif dpct <= -2.0 and m["last"] < m["vwap"]:
             tag = " 🟠急跌!"
-            if _check_cooldown(cooldowns, f"L3:{sym}", now_ts):
+            if _check_cooldown(cooldowns, f"L3:holding_plunge:{sym}", now_ts):
                 l3_alerts.append(f"🟠 **【持仓急跌】{sym} {m['name']}** 5m 急跌 {dpct:.2f}% 且跌破均线 {m['vwap']:.2f}")
                 alert_records.append(
                     {
@@ -377,7 +378,7 @@ def _evaluate_holdings(
                 )
         elif m["vwap_dev"] > 3.0:
             tag = " 🟡偏离均线>3%可做T高抛"
-            if _check_cooldown(cooldowns, f"L2:{sym}", now_ts):
+            if _check_cooldown(cooldowns, f"L2:holding_t0:{sym}", now_ts):
                 l2_alerts.append(
                     f"- 🟡 **【持仓做T高抛】{sym} {m['name']}** 现价 {m['last']:.2f} 偏离均线 +{m['vwap_dev']:.2f}%"
                 )
@@ -483,7 +484,7 @@ def _check_wyckoff_signals(
         and 0.0 <= m["vwap_dev"] <= 2.0
         and damt >= 0.30
     ):
-        if _check_cooldown(cooldowns, f"L4:{sym}", now_ts):
+        if _check_cooldown(cooldowns, f"L4:springboard:{sym}", now_ts):
             buckets["l4"].append(
                 f"🔴 **【L4 满级起跳板突破】{sym} {m['name']}** [{info.get('sector', '')}]：{m['last']:.2f} ({m['pct']:+.2f}%) | 5m +{dpct:.2f}% (+{damt:.2f}亿) | 均 {m['vwap']:.2f}"
             )
@@ -514,7 +515,7 @@ def _check_wyckoff_signals(
         and damt >= 0.30
         and m["amt_yi"] >= 1.0
     ):
-        if _check_cooldown(cooldowns, f"L3:{sym}", now_ts):
+        if _check_cooldown(cooldowns, f"L3:wyckoff_ignition:{sym}", now_ts):
             buckets["l3"].append(
                 f"- **{sym} {m['name']}** [{info.get('sector', '')}]：**{m['last']:.2f} ({m['pct']:+.2f}%)** | "
                 f"5m **+{dpct:.2f}%** (+{damt:.2f}亿) | 均 {m['vwap']:.2f} ✅ | {chans} RPS={info.get('rps', 0):.0f}"
@@ -868,6 +869,8 @@ def send_feishu_tiered_alert(
         )
         if urg_res.returncode != 0:
             print(f"[ERROR-FEISHU {level}] Urgent buzz failed: {urg_res.stderr.strip()}", file=sys.stderr)
+            # Incomplete L2/L3/L4 delivery: caller must not persist cooldown (esp. 86400s stop phone).
+            return None
     return msg_id
 
 
@@ -915,6 +918,10 @@ def run_once(args: argparse.Namespace) -> None:
             print(f"[{now_bjt.strftime('%H:%M:%S')}] Sent {level} alert: msg_id={msg_id}")
     else:
         saved_cooldowns = cooldowns
+    # dry-run must not touch the live daemon state file (shared /tmp path); a fake success
+    # would otherwise lock L4 holding_stop cooldown for the rest of the trading day.
+    if args.dry_run:
+        return
     STATE_PATH.write_text(
         json.dumps(
             {
