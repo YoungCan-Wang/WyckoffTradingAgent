@@ -432,6 +432,106 @@ def test_failed_send_does_not_persist_cooldown_in_run_once(tmp_path, monkeypatch
     assert rows[0]["msg_id"] == "om_ok_1"
 
 
+def test_failed_send_keeps_quote_baseline_so_holding_plunge_retries(tmp_path, monkeypatch):
+    """Card send fail must not advance quotes — else Δpct L3 is zeroed and never retries."""
+    import time
+
+    radar = _load_radar_module()
+    state_file = tmp_path / "state.json"
+    monkeypatch.setattr(radar, "STATE_PATH", state_file)
+    monkeypatch.setattr(radar, "ALERT_LOG_PATH", tmp_path / "radar_alerts.jsonl")
+    monkeypatch.setattr(radar, "TURNOVER_DIR", tmp_path / "turnover")
+    monkeypatch.setattr(radar, "load_wyckoff_l2_map", lambda *a, **kw: {})
+    monkeypatch.setattr(radar, "resolve_lark_open_id", lambda *a, **kw: "ou_test")
+
+    seed_ts = time.time() - 60
+    state_file.write_text(
+        json.dumps(
+            {
+                "date": cn_today().isoformat(),
+                "ts": seed_ts,
+                "last_l1_ts": 0,
+                "red": 0,
+                "cooldowns": {},
+                "quotes": {
+                    "600000.SH": {"pct": 0.0, "amt_yi": 1.0},
+                    "000001.SH": {"pct": 0.0, "amt_yi": 10.0},
+                    "399001.SZ": {"pct": 0.0, "amt_yi": 10.0},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    # last 9.5 < vwap 9.7; day pct -5 vs baseline 0 → dpct -5 → L3 holding plunge
+    plunge_quotes = {
+        "600000.SH": {
+            "symbol": "600000.SH",
+            "last_price": 9.5,
+            "prev_close": 10.0,
+            "volume": 1e8,
+            "amount": 9.7e8,
+            "ext": {"name": "浦发银行"},
+        },
+        "000001.SH": {
+            "symbol": "000001.SH",
+            "last_price": 3000,
+            "prev_close": 3000,
+            "volume": 1e8,
+            "amount": 1e10,
+            "ext": {"name": "上证"},
+        },
+        "399001.SZ": {
+            "symbol": "399001.SZ",
+            "last_price": 10000,
+            "prev_close": 10000,
+            "volume": 1e8,
+            "amount": 1e10,
+            "ext": {"name": "深证"},
+        },
+    }
+
+    class FakeClient:
+        def __init__(self, **kw):
+            pass
+
+        def get_quotes(self, universes):
+            return plunge_quotes
+
+    import integrations.tickflow_client as tf_mod
+
+    monkeypatch.setattr(tf_mod, "TickFlowClient", FakeClient)
+    args = SimpleNamespace(
+        ignore_hours=True,
+        dry_run=False,
+        trace=None,
+        holding=["600000.SH:10.0:8.0"],
+        user_id="ou_test",
+        force_send=False,
+        urgent_only=False,
+    )
+
+    monkeypatch.setattr(radar, "send_feishu_tiered_alert", lambda *a, **kw: None)
+    radar.run_once(args)
+    after_fail = json.loads(state_file.read_text(encoding="utf-8"))
+    assert after_fail["quotes"]["600000.SH"]["pct"] == 0.0
+    assert after_fail["ts"] == seed_ts
+    assert after_fail["cooldowns"] == {}
+
+    sent: list[dict[str, object]] = []
+
+    def capture(title, content, level="L1", **kw):
+        sent.append({"level": level, "has_plunge": "持仓急跌" in content})
+        return "om_retry"
+
+    monkeypatch.setattr(radar, "send_feishu_tiered_alert", capture)
+    radar.run_once(args)
+    assert sent and sent[0]["level"] == "L3" and sent[0]["has_plunge"] is True
+    after_ok = json.loads(state_file.read_text(encoding="utf-8"))
+    assert "L3:600000.SH" in after_ok["cooldowns"]
+    assert after_ok["quotes"]["600000.SH"]["pct"] == -5.0
+
+
 def test_daemon_loop_sends_l1_alert_on_third_consecutive_error(monkeypatch):
     radar = _load_radar_module()
     sent_alerts = []

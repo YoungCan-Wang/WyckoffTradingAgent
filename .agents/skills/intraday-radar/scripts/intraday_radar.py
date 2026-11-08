@@ -871,6 +871,25 @@ def send_feishu_tiered_alert(
     return msg_id
 
 
+def _baseline_after_send(
+    prev_state: dict[str, Any],
+    today_str: str,
+    now_ts: float,
+    compact_snaps: dict[str, dict[str, float]],
+    send_attempted: bool,
+    send_ok: bool,
+) -> tuple[float, dict[str, dict[str, float]]]:
+    """Keep prior quote baseline when a card send was attempted but failed.
+
+    Δpct/Δamt L3/L4 alerts are measured against the stored quotes snapshot.
+    Advancing quotes after a failed send zeroes the delta and drops that move
+    even though cooldowns were correctly left unstamped for retry.
+    """
+    if send_attempted and not send_ok and prev_state.get("date") == today_str and prev_state.get("quotes"):
+        return float(prev_state.get("ts") or now_ts), dict(prev_state["quotes"])
+    return now_ts, compact_snaps
+
+
 def run_once(args: argparse.Namespace) -> None:
     now_bjt = datetime.now(CN_TZ)
     if not args.ignore_hours and not args.dry_run and not is_cn_trading_session(now_bjt):
@@ -892,7 +911,7 @@ def run_once(args: argparse.Namespace) -> None:
         holdings,
         now_ts=now_ts,
     )
-    compact_snaps = {}
+    compact_snaps: dict[str, dict[str, float]] = {}
     for sym, q in curr_quotes.items():
         m = compute_quote_metrics(q)
         if m:
@@ -903,10 +922,14 @@ def run_once(args: argparse.Namespace) -> None:
     )
     last_l1_ts = float(prev_state.get("last_l1_ts") or 0.0) if prev_state.get("date") == today_str else 0.0
     saved_cooldowns = prev_cooldowns
+    send_attempted = False
+    send_ok = False
     if should_send_card(level, now_ts, last_l1_ts, args.force_send, args.urgent_only):
+        send_attempted = True
         open_id = "" if args.dry_run else resolve_lark_open_id(args.user_id)
         msg_id = send_feishu_tiered_alert(title, content, level=level, user_open_id=open_id, dry_run=args.dry_run)
         if msg_id:
+            send_ok = True
             saved_cooldowns = cooldowns
             if not args.dry_run:
                 append_alert_records(_LAST_ALERT_RECORDS, log_path=ALERT_LOG_PATH, sent=True, msg_id=msg_id)
@@ -915,15 +938,16 @@ def run_once(args: argparse.Namespace) -> None:
             print(f"[{now_bjt.strftime('%H:%M:%S')}] Sent {level} alert: msg_id={msg_id}")
     else:
         saved_cooldowns = cooldowns
+    state_ts, saved_quotes = _baseline_after_send(prev_state, today_str, now_ts, compact_snaps, send_attempted, send_ok)
     STATE_PATH.write_text(
         json.dumps(
             {
                 "date": today_str,
-                "ts": now_ts,
+                "ts": state_ts,
                 "last_l1_ts": last_l1_ts,
                 "red": red_count,
                 "cooldowns": saved_cooldowns,
-                "quotes": compact_snaps,
+                "quotes": saved_quotes,
             }
         ),
         encoding="utf-8",
