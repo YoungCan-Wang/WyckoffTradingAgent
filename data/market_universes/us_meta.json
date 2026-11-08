@@ -1377,6 +1377,15 @@
     "active": true
   },
   {
+    "symbol": "AGLT.US",
+    "code": "AGLT",
+    "name": "Agility Robotics, Inc.",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
     "symbol": "AGM.A.US",
     "code": "AGM",
     "name": "Federal Agricultural Mortgage Corporation Class A",
@@ -1983,15 +1992,6 @@
     "symbol": "ALCO.US",
     "code": "ALCO",
     "name": "Alico, Inc.",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
-    "symbol": "ALDF.US",
-    "code": "ALDF",
-    "name": "Aldel Financial II, Inc. Class A",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -8865,6 +8865,15 @@
     "active": true
   },
   {
+    "symbol": "CASK.US",
+    "code": "CASK",
+    "name": "Sempreon, Inc.",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
     "symbol": "CASS.US",
     "code": "CASS",
     "name": "卡斯信息系统",
@@ -9111,15 +9120,6 @@
     "symbol": "CBUS.US",
     "code": "CBUS",
     "name": "Cibus, Inc. Class A",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
-    "symbol": "CBZ.US",
-    "code": "CBZ",
-    "name": "CBIZ, Inc.",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -9381,15 +9381,6 @@
     "symbol": "CCU.US",
     "code": "CCU",
     "name": "Compania Cervecerias Unidas S.A. Sponsored ADR",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
-    "symbol": "CCXI.US",
-    "code": "CCXI",
-    "name": "Churchill Capital Corp. XI Class A",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -16823,7 +16814,7 @@
   {
     "symbol": "EUDA.US",
     "code": "EUDA",
-    "name": "EUDA Health Holdings Limited",
+    "name": "EUDA Health Holdings Limited Class A",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -19782,15 +19773,6 @@
     "active": true
   },
   {
-    "symbol": "GCDT.US",
-    "code": "GCDT",
-    "name": "Green Circle Decarbonize Technology Limited Class A",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
     "symbol": "GCGR.US",
     "code": "GCGR",
     "name": "General Catalyst Global Resilience Merger Corp. Class A",
@@ -20934,15 +20916,6 @@
     "active": true
   },
   {
-    "symbol": "GNTA.US",
-    "code": "GNTA",
-    "name": "Genenta Science SpA Sponsored ADR",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
     "symbol": "GNTX.US",
     "code": "GNTX",
     "name": "真泰克",
@@ -21737,7 +21710,7 @@
   {
     "symbol": "GUNN.US",
     "code": "GUNN",
-    "name": "Gunnison Copper Corp Sponsored ADR",
+    "name": "Gunnison Copper Corp. Sponsored ADR",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -22709,7 +22682,7 @@
   {
     "symbol": "HLT.US",
     "code": "HLT",
-    "name": "希尔顿酒店",
+    "name": "Hilton Worldwide Holdings Inc.",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -22818,15 +22791,6 @@
     "symbol": "HNVR.US",
     "code": "HNVR",
     "name": "Hanover Bancorp Inc",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
-    "symbol": "HODO.US",
-    "code": "HODO",
-    "name": "House of Doge Inc.",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -24687,15 +24651,6 @@
     "active": true
   },
   {
-    "symbol": "INDV.US",
-    "code": "INDV",
-    "name": "Indivior Pharmaceuticals, Inc.",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
     "symbol": "INEO.US",
     "code": "INEO",
     "name": "INNEOVA Holdings Limited",
@@ -25868,7 +25823,7 @@
   {
     "symbol": "JBDI.US",
     "code": "JBDI",
-    "name": "JBDI Holdings Limited",
+    "name": "JBDI Holdings Limited Class A",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -27549,15 +27504,6 @@
     "active": true
   },
   {
-    "symbol": "KVUE.US",
-    "code": "KVUE",
-    "name": "Kenvue, Inc.",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
     "symbol": "KVYO.US",
     "code": "KVYO",
     "name": "Klaviyo, Inc. Class A",
@@ -27785,7 +27731,7 @@
   {
     "symbol": "LASE.US",
     "code": "LASE",
-    "name": "Laser Photonics Corp.",
+    "name": "LASE Corp.",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -28038,6 +27984,15 @@
     "symbol": "LECO.US",
     "code": "LECO",
     "name": "林肯电气控股",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
+    "symbol": "LEDR.US",
+    "code": "LEDR",
+    "name": "Leaders Advantage Acquisition Corp. Class A",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -29439,15 +29394,6 @@
     "active": true
   },
   {
-    "symbol": "LXP.US",
-    "code": "LXP",
-    "name": "LXP Industrial Trust",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
     "symbol": "LXRX.US",
     "code": "LXRX",
     "name": "莱斯康制药",
@@ -30663,15 +30609,6 @@
     "active": true
   },
   {
-    "symbol": "MGPI.US",
-    "code": "MGPI",
-    "name": "MGP Ingredients, Inc.",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
     "symbol": "MGRC.US",
     "code": "MGRC",
     "name": "McGrath RentCorp",
@@ -31044,15 +30981,6 @@
     "symbol": "MLCO.US",
     "code": "MLCO",
     "name": "新濠博亚娱乐",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
-    "symbol": "MLEC.US",
-    "code": "MLEC",
-    "name": "Moolec Science SA",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -32727,6 +32655,15 @@
     "symbol": "NANO.US",
     "code": "NANO",
     "name": "Forge Nano Holdings Inc.",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
+    "symbol": "NARA.US",
+    "code": "NARA",
+    "name": "Narragansett Bancorp, Inc.",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -36048,6 +35985,15 @@
     "symbol": "OPAL.US",
     "code": "OPAL",
     "name": "OPAL Fuels Inc. Class A",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
+    "symbol": "OPAY.US",
+    "code": "OPAY",
+    "name": "OPay Limited American Depositary Shares, each representing ten",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -40203,15 +40149,6 @@
     "active": true
   },
   {
-    "symbol": "RAMP.US",
-    "code": "RAMP",
-    "name": "LiveRamp Holdings, Inc.",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
     "symbol": "RAND.US",
     "code": "RAND",
     "name": "兰德资本",
@@ -42366,6 +42303,15 @@
     "symbol": "SACH.US",
     "code": "SACH",
     "name": "Sachem Capital Corp.",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
+    "symbol": "SAEN.US",
+    "code": "SAEN",
+    "name": "Genenta Science SpA Sponsored ADR",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -46028,7 +45974,7 @@
   {
     "symbol": "SUPN.US",
     "code": "SUPN",
-    "name": "Supernus Pharmaceuticals, Inc.",
+    "name": "Supernus, Inc.",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -53039,7 +52985,7 @@
   {
     "symbol": "XTER.US",
     "code": "XTER",
-    "name": "Karman Line Acquisition Corp. Class A",
+    "name": "Xterax Corporation II Class A",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
