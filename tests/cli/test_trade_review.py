@@ -72,6 +72,48 @@ def test_round_trips_split_on_flat_and_report_open_positions(tmp_path):
     assert TR.trip_pnl(trips[0].fills) == pytest.approx(1100 - 1000 - 10)
 
 
+def test_same_day_flatten_then_reopen_keeps_two_trips():
+    """Date-only 清仓再买 must not be buy-sorted into one merged round trip."""
+    trips, open_pos = TR.build_round_trips(
+        _fills(
+            [
+                ("2026-01-05", "buy", 10.0, 100),
+                ("2026-01-06", "sell", 11.0, 100),
+                ("2026-01-06", "buy", 10.5, 100),
+                ("2026-01-07", "sell", 10.8, 100),
+            ]
+        )
+    )
+    assert open_pos == []
+    assert len(trips) == 2
+    assert list(trips[0].fills["side"]) == ["buy", "sell"]
+    assert list(trips[1].fills["side"]) == ["buy", "sell"]
+    assert TR.trip_pnl(trips[0].fills) == pytest.approx(1100 - 1000 - 10)
+    assert TR.trip_pnl(trips[1].fills) == pytest.approx(1080 - 1050 - 10)
+
+
+def test_timestamped_fills_match_midnight_bars(tmp_path):
+    csv = tmp_path / "fills.csv"
+    _fills([("2026-01-05 09:31:00", "buy", 10.0, 100), ("2026-01-06 14:00:00", "sell", 11.0, 100)]).to_csv(
+        csv, index=False
+    )
+    trips, open_pos = TR.build_round_trips(TR.load_fills(csv))
+    bars = _bars([("2026-01-05", 10.0, 10.2, 9.9, 10.0), ("2026-01-06", 10.0, 11.2, 10.0, 11.0)])
+    assert open_pos == []
+    assert len(trips) == 1
+    assert TR.fills_inside_bars(trips[0], bars)
+    assert trips[0].start == pd.Timestamp("2026-01-05")
+    assert trips[0].end == pd.Timestamp("2026-01-06")
+
+
+def test_bare_bse_codes_use_30_percent_limit():
+    assert TR.limit_pct("920001") == 0.30
+    assert TR.limit_pct("430047") == 0.30
+    assert TR.limit_pct("920001.BJ") == 0.30
+    assert TR.limit_pct("600000.SH") == 0.10
+    assert TR.limit_pct("300001.SZ") == 0.20
+
+
 def test_load_fills_rejects_unknown_side(tmp_path):
     csv = tmp_path / "bad.csv"
     pd.DataFrame(
