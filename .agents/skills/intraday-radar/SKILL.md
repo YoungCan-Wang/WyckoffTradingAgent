@@ -60,9 +60,10 @@ description: >-
    * **🔴 L4 破位止损（电话加急，无成交额门槛，防开盘跳空/一字跌停漏报）**：持仓股 `现价 <= 预设硬止损价` $\rightarrow$ 立即触发 `L4` 电话加急（按 `86400 秒` 全天冷却，每个交易日仅拨打一次电话，且冷却期内不向下穿透降级为 L3/L2）；
    * **🟠 L3 持仓急跌（短信加急）**：持仓股 5 分钟急跌 `Δpct_5m <= -2.0%` 且 `现价 < VWAP` $\rightarrow$ 触发 `L3` 短信加急；
    * **🟡 L2 做 T 高抛（应用内加急）**：持仓股偏离 VWAP `vwap_dev > +3.0%` $\rightarrow$ 触发 `L2` 应用内加急。
+   * **持仓行情回补与缺口告警**：全市场 `universes` 快照若漏掉持仓代码，`run_once` 会按 `--holding` 列表再拉一次个股报价；若仍无有效报价，卡片置顶 `持仓行情缺口` 并以 `L2` 加急提示（禁止静默跳过止损监控）。
 2. **威科夫核心池信号与市场共振监控（保留 L4 电话 / L3 短信加急 + 同步写入留档日志）**：
    * **🔴 L4 满级起跳板突破（电话加急）**：
-     * 命中与当日 `review_trace_YYYYMMDD.json.gz` 同日期的 `recommendation_tracking_YYYYMMDD.json` 的 `springboard_combo == "A+B+C"`（严格过滤旧日期推荐文件），或 `review_trace` 内的 `entry.entry_type == "launchpad"` / `"启动平台"`；
+     * 命中与当日 `review_trace_YYYYMMDD.json.gz` 同日期的 `recommendation_tracking_YYYYMMDD.json` 的 `springboard_combo == "A+B+C"`（严格过滤旧日期推荐文件），或 `review_trace` 内的 `entry.entry_type == "launchpad"` / `"启动平台"`（**不要求** `l2_eligible`；L3 地量点火才要求 L2/L3 资格）；
      * 覆盖率正常（`coverage_ok = True`）且全市场红盘率 `> 80%`，5 分钟涨速 `Δpct_5m >= +2.5%`，总涨幅 `+2.8% ~ +6.0%`，`0% <= vwap_dev <= 2.0%`，5 分钟新增成交额 `Δamt_5m >= 0.30亿`。
    * **🟠 L3 威科夫 `L2+L3 地量 / 吸筹` 5 分钟点火（短信加急）**：
      * 同时满足 `l2_eligible = True` 且 `l3_eligible = True`（或 `stage == "候选池已捕获"`），且 `l2_channel` 含 `地量` 或 `吸筹`；
@@ -77,7 +78,7 @@ description: >-
 
 ## 四、 飞书四级加急通知矩阵（普通 / App / 短信 / 电话）
 
-卡片发送与加急请求统一通过 `lark-cli --as bot` 以同一机器人身份调用，**仅当飞书卡片实际发送成功（返回有效 `message_id`）后才将冷却时间戳写入状态文件**（防止网络抖动发送失败却提前锁死冷却）；守护进程 `--daemon` 连续 3 次扫描异常时自动推送一条 `L1` 故障告警卡片：
+卡片发送与加急请求统一通过 `lark-cli --as bot` 以同一机器人身份调用，**仅当卡片与所需加急均成功时才将冷却时间戳写入状态文件**（卡片成功但 `urgent_phone`/`urgent_sms`/`urgent_app` 失败视为投递未完成，不锁冷却；若已尝试发送但失败，行情差分基线 `quotes`/`ts` 也保持上一份成功快照不动，避免 `Δpct_5m`/`Δamt_5m` 被归零后无法重试；`--dry-run` 不写共享状态文件）。持仓止损与起跳板突破、持仓急跌与威科夫点火使用**分种类冷却键**（如 `L4:holding_stop:{sym}` vs `L4:springboard:{sym}`），避免起跳板电话耗尽同标的全日止损电话配额。守护进程 `--daemon` 连续 3 次扫描异常时自动推送一条 `L1` 故障告警卡片：
 
 | 等级 | 飞书通知方式 | 触发命令 | 严格触发阈值 |
 | :--- | :--- | :--- | :--- |
@@ -119,7 +120,7 @@ mkdir -p ~/.wyckoff/traces && gh run download $(gh run list --workflow wyckoff_f
 ```
 
 2. **本地 `lark-cli` 调用说明**：
-   * 脚本直接调用本机已登录的 `lark-cli`（通过 `lark-cli auth status` 动态获取当前登录用户的 `identities.user.openId`，并以 `--as bot` 发送互动卡片与加急通知），**无需在代码仓库或磁盘配置文件中存储任何个人 `open_id` 或持仓信息**。如需在单次运行中附带持仓监控，可通过命令行参数 `--holding <代码:成本:止损>` 传入：
+   * 脚本直接调用本机已登录的 `lark-cli`（通过 `lark-cli auth status` 动态获取当前登录用户的 `identities.user.openId`，并以 `--as bot` 发送互动卡片与加急通知），**无需在代码仓库或磁盘配置文件中存储任何个人 `open_id` 或持仓信息**。如需在单次运行中附带持仓监控，可通过命令行参数 `--holding <代码:成本:止损>` 传入（`代码` 可为持仓账本六位码如 `600000`，或 TickFlow 后缀形式如 `600000.SH`；脚本会规范成行情键后再做止损匹配）：
 
 ```bash
 # 单次运行全市场 7,807 标的差分扫描（自动同步 trace 并通过本机 lark-cli 发送）：
