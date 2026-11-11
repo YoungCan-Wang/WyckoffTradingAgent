@@ -144,6 +144,121 @@ def test_holdings_stop_loss_fires_on_zero_volume_open_without_cooldown_downgrade
     assert level3 == "L1"
 
 
+def test_holdings_stop_loss_matches_bare_six_digit_portfolio_codes():
+    """Portfolio codes are bare 6-digit; TickFlow quotes are suffixed — must still L4."""
+    radar = _load_radar_module()
+    holdings = radar.parse_holdings_arg(["600000:10.0:9.50", "000001:12.0:11.0", "830799:8.0:7.2"])
+    assert holdings == {
+        "600000.SH": {"cost": 10.0, "stop": 9.50},
+        "000001.SZ": {"cost": 12.0, "stop": 11.0},
+        "830799.BJ": {"cost": 8.0, "stop": 7.2},
+    }
+    curr_quotes = {
+        "600000.SH": {
+            "symbol": "600000.SH",
+            "last_price": 9.40,
+            "prev_close": 10.0,
+            "volume": 1000,
+            "amount": 9400.0,
+            "ext": {"name": "浦发银行"},
+        }
+    }
+    level, _, body, _, _ = radar.analyze_snapshot_diff(curr_quotes, {}, {}, holdings, now_ts=1300.0)
+    assert level == "L4"
+    assert "L4 破位止损" in body
+    assert "600000.SH" in body
+
+
+def test_springboard_l4_does_not_require_l2_eligible():
+    """A+B+C / launchpad L4 must fire even when review_trace row has l2_eligible=False."""
+    radar = _load_radar_module()
+    today = cn_today().isoformat()
+    prev_state = {"date": today, "ts": 1000.0, "red": 0, "cooldowns": {}, "quotes": {}}
+    curr_quotes = {}
+    for i in range(20):
+        sym = f"{600100 + i:06d}.SH"
+        prev_state["quotes"][sym] = {"pct": 1.0, "amt_yi": 1.0}
+        curr_quotes[sym] = {
+            "symbol": sym,
+            "last_price": 10.2,
+            "prev_close": 10.0,
+            "volume": 1e7,
+            "amount": 1.02e8,
+            "ext": {"name": f"红{i}"},
+        }
+    prev_state["quotes"]["688001.SH"] = {"pct": 1.0, "amt_yi": 1.0}
+    curr_quotes["688001.SH"] = {
+        "symbol": "688001.SH",
+        "last_price": 10.40,
+        "prev_close": 10.0,
+        "volume": 2e7,
+        "amount": 2.08e8,
+        "ext": {"name": "启动板"},
+    }
+    l2_map = {
+        "688001": {
+            "name": "启动板",
+            "sector": "半导体",
+            "rps": 15.0,
+            "l2_eligible": False,
+            "l3_eligible": False,
+            "is_candidate": True,
+            "channels": [],
+            "is_springboard": True,
+        }
+    }
+    level, _, body, _, _ = radar.analyze_snapshot_diff(curr_quotes, prev_state, l2_map, {}, now_ts=1300.0)
+    assert level == "L4"
+    assert "L4 满级起跳板突破" in body
+
+
+def test_missing_holding_quote_is_not_silent_and_backfill_restores_stop():
+    """Universe omission of a holding must warn (L2) and backfill can still fire L4 stop."""
+    radar = _load_radar_module()
+    today = cn_today().isoformat()
+    holdings = {"600000.SH": {"cost": 10.0, "stop": 9.50}}
+    prev_state = {
+        "date": today,
+        "ts": 1000.0,
+        "quotes": {"600001.SH": {"pct": 1.0, "amt_yi": 0.5}, "600000.SH": {"pct": -1.0, "amt_yi": 0.5}},
+    }
+    gap_quotes = {
+        "600001.SH": {
+            "symbol": "600001.SH",
+            "last_price": 10.1,
+            "prev_close": 10.0,
+            "volume": 1e6,
+            "amount": 1e7,
+            "ext": {"name": "其他"},
+        }
+    }
+    level_gap, _, body_gap, _, _ = radar.analyze_snapshot_diff(gap_quotes, prev_state, {}, holdings, now_ts=1200.0)
+    assert level_gap == "L2"
+    assert "持仓行情缺口" in body_gap
+    assert "L4 破位止损" not in body_gap
+    assert "无法判定" in body_gap
+
+    holding_row = {
+        "symbol": "600000.SH",
+        "last_price": 9.40,
+        "prev_close": 10.0,
+        "volume": 1000,
+        "amount": 9400.0,
+        "ext": {"name": "浦发银行"},
+    }
+
+    class FakeClient:
+        def get_quotes(self, symbols=None, universes=None):
+            assert symbols == ["600000.SH"]
+            return {"600000.SH": holding_row}
+
+    merged = radar._backfill_holding_quotes(FakeClient(), gap_quotes, holdings)
+    assert "600000.SH" in merged
+    level_ok, _, body_ok, _, _ = radar.analyze_snapshot_diff(merged, prev_state, {}, holdings, now_ts=1300.0)
+    assert level_ok == "L4"
+    assert "L4 破位止损" in body_ok
+
+
 def test_etf_and_unrelated_stock_moves_do_not_spam_l2_urgent():
     radar = _load_radar_module()
     today = cn_today().isoformat()
@@ -373,6 +488,7 @@ def test_resolve_lark_open_id_and_parse_holdings_arg(monkeypatch):
     )
     assert radar.resolve_lark_open_id() == "ou_from_lark_cli"
     assert radar.parse_holdings_arg(["600000.SH:10.5:9.8"]) == {"600000.SH": {"cost": 10.5, "stop": 9.8}}
+    assert radar.parse_holdings_arg(["600000:10.5:9.8"]) == {"600000.SH": {"cost": 10.5, "stop": 9.8}}
 
 
 def test_failed_send_does_not_persist_cooldown_in_run_once(tmp_path, monkeypatch):
@@ -389,7 +505,7 @@ def test_failed_send_does_not_persist_cooldown_in_run_once(tmp_path, monkeypatch
         def __init__(self, **kw):
             pass
 
-        def get_quotes(self, universes):
+        def get_quotes(self, universes=None, symbols=None):
             return {
                 "600000.SH": {
                     "symbol": "600000.SH",
@@ -418,18 +534,117 @@ def test_failed_send_does_not_persist_cooldown_in_run_once(tmp_path, monkeypatch
     monkeypatch.setattr(radar, "send_feishu_tiered_alert", lambda *a, **kw: None)
     radar.run_once(args)
     saved1 = json.loads(state_file.read_text(encoding="utf-8"))
-    assert "L4:600000.SH" not in saved1["cooldowns"]
+    assert "L4:holding_stop:600000.SH" not in saved1["cooldowns"]
     assert not alert_log.exists()
 
     # Second run: Feishu send succeeds -> cooldown IS saved AND alert log records sent=True, msg_id=om_ok_1
     monkeypatch.setattr(radar, "send_feishu_tiered_alert", lambda *a, **kw: "om_ok_1")
     radar.run_once(args)
     saved2 = json.loads(state_file.read_text(encoding="utf-8"))
-    assert "L4:600000.SH" in saved2["cooldowns"]
+    assert "L4:holding_stop:600000.SH" in saved2["cooldowns"]
     rows = [json.loads(line) for line in alert_log.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert len(rows) == 1
     assert rows[0]["sent"] is True
     assert rows[0]["msg_id"] == "om_ok_1"
+
+
+def test_failed_send_keeps_quote_baseline_so_holding_plunge_retries(tmp_path, monkeypatch):
+    """Card send fail must not advance quotes — else Δpct L3 is zeroed and never retries."""
+    import time
+
+    radar = _load_radar_module()
+    state_file = tmp_path / "state.json"
+    monkeypatch.setattr(radar, "STATE_PATH", state_file)
+    monkeypatch.setattr(radar, "ALERT_LOG_PATH", tmp_path / "radar_alerts.jsonl")
+    monkeypatch.setattr(radar, "TURNOVER_DIR", tmp_path / "turnover")
+    monkeypatch.setattr(radar, "load_wyckoff_l2_map", lambda *a, **kw: {})
+    monkeypatch.setattr(radar, "resolve_lark_open_id", lambda *a, **kw: "ou_test")
+
+    seed_ts = time.time() - 60
+    state_file.write_text(
+        json.dumps(
+            {
+                "date": cn_today().isoformat(),
+                "ts": seed_ts,
+                "last_l1_ts": 0,
+                "red": 0,
+                "cooldowns": {},
+                "quotes": {
+                    "600000.SH": {"pct": 0.0, "amt_yi": 1.0},
+                    "000001.SH": {"pct": 0.0, "amt_yi": 10.0},
+                    "399001.SZ": {"pct": 0.0, "amt_yi": 10.0},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    plunge_quotes = {
+        "600000.SH": {
+            "symbol": "600000.SH",
+            "last_price": 9.5,
+            "prev_close": 10.0,
+            "volume": 1e8,
+            "amount": 9.7e8,
+            "ext": {"name": "浦发银行"},
+        },
+        "000001.SH": {
+            "symbol": "000001.SH",
+            "last_price": 3000,
+            "prev_close": 3000,
+            "volume": 1e8,
+            "amount": 1e10,
+            "ext": {"name": "上证"},
+        },
+        "399001.SZ": {
+            "symbol": "399001.SZ",
+            "last_price": 10000,
+            "prev_close": 10000,
+            "volume": 1e8,
+            "amount": 1e10,
+            "ext": {"name": "深证"},
+        },
+    }
+
+    class FakeClient:
+        def __init__(self, **kw):
+            pass
+
+        def get_quotes(self, universes=None, symbols=None):
+            return plunge_quotes
+
+    import integrations.tickflow_client as tf_mod
+
+    monkeypatch.setattr(tf_mod, "TickFlowClient", FakeClient)
+    args = SimpleNamespace(
+        ignore_hours=True,
+        dry_run=False,
+        trace=None,
+        holding=["600000.SH:10.0:8.0"],
+        user_id="ou_test",
+        force_send=False,
+        urgent_only=False,
+    )
+
+    monkeypatch.setattr(radar, "send_feishu_tiered_alert", lambda *a, **kw: None)
+    radar.run_once(args)
+    after_fail = json.loads(state_file.read_text(encoding="utf-8"))
+    assert after_fail["quotes"]["600000.SH"]["pct"] == 0.0
+    assert after_fail["ts"] == seed_ts
+    assert after_fail["cooldowns"] == {}
+
+    sent: list[dict[str, object]] = []
+
+    def capture(title, content, level="L1", **kw):
+        sent.append({"level": level, "has_plunge": "持仓急跌" in content})
+        return "om_retry"
+
+    monkeypatch.setattr(radar, "send_feishu_tiered_alert", capture)
+    radar.run_once(args)
+    assert sent and sent[0]["level"] == "L3" and sent[0]["has_plunge"] is True
+    after_ok = json.loads(state_file.read_text(encoding="utf-8"))
+    assert "L3:holding_plunge:600000.SH" in after_ok["cooldowns"]
+    assert after_ok["quotes"]["600000.SH"]["pct"] == -5.0
 
 
 def test_daemon_loop_sends_l1_alert_on_third_consecutive_error(monkeypatch):
@@ -582,3 +797,134 @@ def test_intraday_turnover_curve_and_same_timestamp_comparison(tmp_path):
     # Day 2 at 14:45: compares against Day 1 14:45 (18000亿) with explicit benchmark date 2026-11-04 -> +10.0%
     s2_pm = radar.update_and_compare_turnover(d2, "14:45", 19800.0, index_ok=True, turnover_dir=t_dir)
     assert "较 2026-11-04 14:45 18000亿 +10.0%" in s2_pm
+
+
+def test_springboard_l4_cooldown_does_not_mute_holding_stop_phone():
+    """Same-symbol springboard L4 must not consume the 86400s holding-stop phone budget."""
+    radar = _load_radar_module()
+    today = cn_today().isoformat()
+    holdings_wide_stop = {"600000.SH": {"cost": 10.0, "stop": 8.0}}
+    l2_map = {
+        "600000": {
+            "name": "浦发银行",
+            "sector": "银行",
+            "rps": 50.0,
+            "l2_eligible": True,
+            "l3_eligible": True,
+            "is_candidate": True,
+            "channels": ["地量蓄势"],
+            "is_springboard": True,
+        }
+    }
+    prev_quotes = {"600000.SH": {"pct": 1.0, "amt_yi": 0.2}}
+    curr = {
+        "600000.SH": {
+            "symbol": "600000.SH",
+            "last_price": 10.40,
+            "prev_close": 10.0,
+            "volume": 5e6,
+            "amount": 10.4 * 5e6,
+            "ext": {"name": "浦发银行"},
+        }
+    }
+    for i in range(1, 101):
+        sym = f"601{i:03d}.SH"
+        prev_quotes[sym] = {"pct": 0.0, "amt_yi": 1.0}
+        curr[sym] = {
+            "symbol": sym,
+            "last_price": 10.5 if i <= 85 else 9.5,
+            "prev_close": 10.0,
+            "volume": 1e6,
+            "amount": 1e7,
+            "ext": {"name": f"s{i}"},
+        }
+    prev_state = {"date": today, "ts": 1000.0, "red": 50, "cooldowns": {}, "quotes": prev_quotes}
+    level1, _, body1, _, cd1 = radar.analyze_snapshot_diff(curr, prev_state, l2_map, holdings_wide_stop, now_ts=1300.0)
+    assert level1 == "L4"
+    assert "起跳板" in body1
+    assert "L4:springboard:600000.SH" in cd1
+    assert "L4:holding_stop:600000.SH" not in cd1
+
+    compact = {}
+    for sym, qq in curr.items():
+        m = radar.compute_quote_metrics(qq)
+        if m:
+            compact[sym] = {"pct": round(m["pct"], 3), "amt_yi": round(m["amt_yi"], 3)}
+    curr2 = dict(curr)
+    curr2["600000.SH"] = {
+        "symbol": "600000.SH",
+        "last_price": 9.40,
+        "prev_close": 10.0,
+        "volume": 5e6,
+        "amount": 9.40 * 5e6,
+        "ext": {"name": "浦发银行"},
+    }
+    prev_state2 = {"date": today, "ts": 1300.0, "red": 85, "cooldowns": dict(cd1), "quotes": compact}
+    holdings_hit = {"600000.SH": {"cost": 10.0, "stop": 9.50}}
+    level2, _, body2, _, cd2 = radar.analyze_snapshot_diff(curr2, prev_state2, l2_map, holdings_hit, now_ts=4900.0)
+    assert level2 == "L4"
+    assert "破位止损" in body2
+    assert "L4:holding_stop:600000.SH" in cd2
+
+
+def test_urgent_phone_failure_does_not_return_msg_id(monkeypatch):
+    radar = _load_radar_module()
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if "+messages-send" in cmd:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({"code": 0, "data": {"message_id": "om_card_ok"}}),
+                stderr="",
+            )
+        return SimpleNamespace(returncode=1, stdout="", stderr="urgent_phone denied")
+
+    monkeypatch.setattr(radar.subprocess, "run", fake_run)
+    assert (
+        radar.send_feishu_tiered_alert("Title", "Body", level="L4", user_open_id="ou_mock_user", dry_run=False) is None
+    )
+    assert any("urgent_phone" in c for c in calls)
+
+
+def test_dry_run_does_not_write_shared_state_file(tmp_path, monkeypatch):
+    radar = _load_radar_module()
+    state_file = tmp_path / "state.json"
+    state_file.write_text(json.dumps({"date": "2099-01-01", "cooldowns": {}, "quotes": {}}), encoding="utf-8")
+    before = state_file.read_text(encoding="utf-8")
+    monkeypatch.setattr(radar, "STATE_PATH", state_file)
+    monkeypatch.setattr(radar, "ALERT_LOG_PATH", tmp_path / "alerts.jsonl")
+    monkeypatch.setattr(radar, "TURNOVER_DIR", tmp_path / "turnover")
+    monkeypatch.setattr(radar, "load_wyckoff_l2_map", lambda *a, **kw: {})
+
+    class FakeClient:
+        def __init__(self, **kw):
+            pass
+
+        def get_quotes(self, universes=None, symbols=None):
+            return {
+                "600000.SH": {
+                    "symbol": "600000.SH",
+                    "last_price": 9.40,
+                    "prev_close": 10.0,
+                    "volume": 1000,
+                    "amount": 9400.0,
+                    "ext": {"name": "浦发银行"},
+                }
+            }
+
+    import integrations.tickflow_client as tf_mod
+
+    monkeypatch.setattr(tf_mod, "TickFlowClient", FakeClient)
+    args = SimpleNamespace(
+        ignore_hours=True,
+        dry_run=True,
+        trace=None,
+        holding=["600000.SH:10.0:9.50"],
+        user_id="ou_test",
+        force_send=False,
+        urgent_only=False,
+    )
+    radar.run_once(args)
+    assert state_file.read_text(encoding="utf-8") == before

@@ -62,12 +62,30 @@ def resolve_lark_open_id(explicit_id: str | None = None) -> str:
     return ""
 
 
+def _normalize_holding_symbol(raw: str) -> str:
+    """Map portfolio 6-digit codes to TickFlow quote keys (.SH/.SZ/.BJ)."""
+    s = str(raw or "").strip().upper()
+    if not s:
+        return ""
+    if "." in s and len(s.split(".", 1)[0]) == 6:
+        return s
+    digits = "".join(ch for ch in s if ch.isdigit())
+    if len(digits) != 6:
+        return s
+    if digits.startswith(("0", "1", "2", "3")):
+        return f"{digits}.SZ"
+    if digits.startswith(("4", "8", "9")):
+        return f"{digits}.BJ"
+    return f"{digits}.SH"
+
+
 def parse_holdings_arg(raw_list: list[str] | None) -> dict[str, dict[str, float]]:
     out: dict[str, dict[str, float]] = {}
     for item in raw_list or []:
         parts = [p.strip() for p in item.split(":") if p.strip()]
         if len(parts) >= 3:
-            out[parts[0]] = {"cost": float(parts[1]), "stop": float(parts[2])}
+            sym = _normalize_holding_symbol(parts[0]) or parts[0]
+            out[sym] = {"cost": float(parts[1]), "stop": float(parts[2])}
     return out
 
 
@@ -326,6 +344,14 @@ def _is_fresh_baseline(prev_state: dict[str, Any], today_str: str, now_ts: float
     return is_lunch_bridge and gap <= 6300
 
 
+def holdings_missing_quote_symbols(
+    holdings: dict[str, dict[str, float]],
+    curr_quotes: dict[str, dict[str, Any]],
+) -> list[str]:
+    """Holdings with no usable TickFlow row this frame (stop/plunge would be skipped)."""
+    return [sym for sym in holdings if not compute_quote_metrics(curr_quotes.get(sym, {}))]
+
+
 def _evaluate_holdings(
     curr_quotes: dict[str, dict[str, Any]],
     prev_q: dict[str, dict[str, float]],
@@ -349,7 +375,8 @@ def _evaluate_holdings(
         tag = ""
         if stop > 0 and m["last"] <= stop:
             tag = " 🔴破止损!"
-            if _check_cooldown(cooldowns, f"L4:{sym}", now_ts, window=HOLDING_STOP_COOLDOWN_SECONDS):
+            # Kind-scoped key: must not share L4:{sym} with springboard breakout (86400s would mute stop phone).
+            if _check_cooldown(cooldowns, f"L4:holding_stop:{sym}", now_ts, window=HOLDING_STOP_COOLDOWN_SECONDS):
                 l4_alerts.append(f"🔴 **【L4 破位止损】{sym} {m['name']}** 跌破止损 {stop}（现价 {m['last']:.2f}）")
                 alert_records.append(
                     {
@@ -363,7 +390,7 @@ def _evaluate_holdings(
                 )
         elif dpct <= -2.0 and m["last"] < m["vwap"]:
             tag = " 🟠急跌!"
-            if _check_cooldown(cooldowns, f"L3:{sym}", now_ts):
+            if _check_cooldown(cooldowns, f"L3:holding_plunge:{sym}", now_ts):
                 l3_alerts.append(f"🟠 **【持仓急跌】{sym} {m['name']}** 5m 急跌 {dpct:.2f}% 且跌破均线 {m['vwap']:.2f}")
                 alert_records.append(
                     {
@@ -377,7 +404,7 @@ def _evaluate_holdings(
                 )
         elif m["vwap_dev"] > 3.0:
             tag = " 🟡偏离均线>3%可做T高抛"
-            if _check_cooldown(cooldowns, f"L2:{sym}", now_ts):
+            if _check_cooldown(cooldowns, f"L2:holding_t0:{sym}", now_ts):
                 l2_alerts.append(
                     f"- 🟡 **【持仓做T高抛】{sym} {m['name']}** 现价 {m['last']:.2f} 偏离均线 +{m['vwap_dev']:.2f}%"
                 )
@@ -471,8 +498,7 @@ def _check_wyckoff_signals(
     buckets: dict[str, list[str]],
     alert_records: list[dict[str, Any]],
 ) -> None:
-    if not info.get("l2_eligible"):
-        return
+    # L4 springboard is identity-based (A+B+C / launchpad); must NOT require l2_eligible.
     chans = "+".join(info.get("channels", []))
     if (
         info.get("is_springboard")
@@ -483,7 +509,7 @@ def _check_wyckoff_signals(
         and 0.0 <= m["vwap_dev"] <= 2.0
         and damt >= 0.30
     ):
-        if _check_cooldown(cooldowns, f"L4:{sym}", now_ts):
+        if _check_cooldown(cooldowns, f"L4:springboard:{sym}", now_ts):
             buckets["l4"].append(
                 f"🔴 **【L4 满级起跳板突破】{sym} {m['name']}** [{info.get('sector', '')}]：{m['last']:.2f} ({m['pct']:+.2f}%) | 5m +{dpct:.2f}% (+{damt:.2f}亿) | 均 {m['vwap']:.2f}"
             )
@@ -504,6 +530,8 @@ def _check_wyckoff_signals(
                 }
             )
         return
+    if not info.get("l2_eligible"):
+        return
     is_core_pool = bool(info.get("l3_eligible") or info.get("is_candidate"))
     if (
         is_core_pool
@@ -514,7 +542,7 @@ def _check_wyckoff_signals(
         and damt >= 0.30
         and m["amt_yi"] >= 1.0
     ):
-        if _check_cooldown(cooldowns, f"L3:{sym}", now_ts):
+        if _check_cooldown(cooldowns, f"L3:wyckoff_ignition:{sym}", now_ts):
             buckets["l3"].append(
                 f"- **{sym} {m['name']}** [{info.get('sector', '')}]：**{m['last']:.2f} ({m['pct']:+.2f}%)** | "
                 f"5m **+{dpct:.2f}%** (+{damt:.2f}亿) | 均 {m['vwap']:.2f} ✅ | {chans} RPS={info.get('rps', 0):.0f}"
@@ -696,6 +724,23 @@ def analyze_snapshot_diff(
     buckets["l2_events"] = h_l2 + buckets["l2_events"]
     buckets["l3"] = h_l3 + buckets["l3"]
     buckets["l4"] = h_l4 + buckets["l4"]
+    missing_holdings = holdings_missing_quote_symbols(holdings, curr_quotes)
+    if missing_holdings:
+        joined = ", ".join(missing_holdings[:8])
+        more = f" 等{len(missing_holdings)}只" if len(missing_holdings) > 8 else ""
+        buckets["warnings"].append(
+            f"⚠️ **持仓行情缺口：{joined}{more} 本帧无有效报价，止损/急跌/做T 监控已跳过这些标的**"
+        )
+        if _check_cooldown(cooldowns, "L2:holding_quote_gap", ts):
+            buckets["l2_events"].insert(0, f"- 🟡 **【持仓行情缺口】** {joined}{more} 无报价，破位止损电话本帧无法判定")
+            alert_records.append(
+                {
+                    "ts": ts,
+                    "level": "L2",
+                    "kind": "holding_quote_gap",
+                    "symbols": missing_holdings,
+                }
+            )
     if gap_msg:
         buckets["warnings"].append(gap_msg)
     if index_gap_warn:
@@ -868,7 +913,44 @@ def send_feishu_tiered_alert(
         )
         if urg_res.returncode != 0:
             print(f"[ERROR-FEISHU {level}] Urgent buzz failed: {urg_res.stderr.strip()}", file=sys.stderr)
+            # Incomplete L2/L3/L4 delivery: caller must not persist cooldown (esp. 86400s stop phone).
+            return None
     return msg_id
+
+
+def _backfill_holding_quotes(
+    client: Any,
+    curr_quotes: dict[str, dict[str, Any]],
+    holdings: dict[str, dict[str, float]],
+) -> dict[str, dict[str, Any]]:
+    """Universe snapshots can omit symbols; re-fetch holdings so stop-loss is not silently skipped."""
+    missing = holdings_missing_quote_symbols(holdings, curr_quotes)
+    if not missing:
+        return curr_quotes
+    try:
+        extra = client.get_quotes(symbols=missing)
+    except Exception as exc:
+        print(f"[WARN] Holding quote backfill failed for {missing}: {exc}", file=sys.stderr)
+        return curr_quotes
+    if not extra:
+        return curr_quotes
+    merged = dict(curr_quotes)
+    merged.update(extra)
+    return merged
+
+
+def _baseline_after_send(
+    prev_state: dict[str, Any],
+    today_str: str,
+    now_ts: float,
+    compact_snaps: dict[str, dict[str, float]],
+    send_attempted: bool,
+    send_ok: bool,
+) -> tuple[float, dict[str, dict[str, float]]]:
+    """Keep prior quote baseline when a card send was attempted but failed."""
+    if send_attempted and not send_ok and prev_state.get("date") == today_str and prev_state.get("quotes"):
+        return float(prev_state.get("ts") or now_ts), dict(prev_state["quotes"])
+    return now_ts, compact_snaps
 
 
 def run_once(args: argparse.Namespace) -> None:
@@ -885,6 +967,7 @@ def run_once(args: argparse.Namespace) -> None:
     prev_state = json.loads(STATE_PATH.read_text(encoding="utf-8")) if STATE_PATH.exists() else {}
     now_ts = time.time()
     curr_quotes = client.get_quotes(universes=["CN_Equity_A", "CN_ETF", "CN_Index"])
+    curr_quotes = _backfill_holding_quotes(client, curr_quotes, holdings)
     level, title, content, red_count, cooldowns = analyze_snapshot_diff(
         curr_quotes,
         prev_state,
@@ -892,7 +975,7 @@ def run_once(args: argparse.Namespace) -> None:
         holdings,
         now_ts=now_ts,
     )
-    compact_snaps = {}
+    compact_snaps: dict[str, dict[str, float]] = {}
     for sym, q in curr_quotes.items():
         m = compute_quote_metrics(q)
         if m:
@@ -903,10 +986,14 @@ def run_once(args: argparse.Namespace) -> None:
     )
     last_l1_ts = float(prev_state.get("last_l1_ts") or 0.0) if prev_state.get("date") == today_str else 0.0
     saved_cooldowns = prev_cooldowns
+    send_attempted = False
+    send_ok = False
     if should_send_card(level, now_ts, last_l1_ts, args.force_send, args.urgent_only):
+        send_attempted = True
         open_id = "" if args.dry_run else resolve_lark_open_id(args.user_id)
         msg_id = send_feishu_tiered_alert(title, content, level=level, user_open_id=open_id, dry_run=args.dry_run)
         if msg_id:
+            send_ok = True
             saved_cooldowns = cooldowns
             if not args.dry_run:
                 append_alert_records(_LAST_ALERT_RECORDS, log_path=ALERT_LOG_PATH, sent=True, msg_id=msg_id)
@@ -915,15 +1002,19 @@ def run_once(args: argparse.Namespace) -> None:
             print(f"[{now_bjt.strftime('%H:%M:%S')}] Sent {level} alert: msg_id={msg_id}")
     else:
         saved_cooldowns = cooldowns
+    # dry-run must not touch the live daemon state file (shared /tmp path).
+    if args.dry_run:
+        return
+    state_ts, saved_quotes = _baseline_after_send(prev_state, today_str, now_ts, compact_snaps, send_attempted, send_ok)
     STATE_PATH.write_text(
         json.dumps(
             {
                 "date": today_str,
-                "ts": now_ts,
+                "ts": state_ts,
                 "last_l1_ts": last_l1_ts,
                 "red": red_count,
                 "cooldowns": saved_cooldowns,
-                "quotes": compact_snaps,
+                "quotes": saved_quotes,
             }
         ),
         encoding="utf-8",
