@@ -1322,3 +1322,55 @@ def test_sh_index_never_collides_with_sz_equity_and_median_thermometer_renders(t
 
     _, _, body, _, _ = radar.analyze_snapshot_diff(quotes, {}, l2_map, {}, now_ts=1000.0, turnover_dir=tmp_path / "to")
     assert "创业板 +3.11%（全A中位数 +1.50%）" in body
+
+
+def test_silent_l1_scan_preserves_telegraph_until_next_sent_card(tmp_path, monkeypatch):
+    radar = _load_radar_module()
+    import sys
+
+    sys.path.insert(0, str(SCRIPT_PATH.parent))
+    import telegraph_catalysts as tc
+
+    today_str = radar.cn_today().isoformat()
+    state_file = tmp_path / "state.json"
+    state_file.write_text(
+        json.dumps({"date": today_str, "ts": 900.0, "last_l1_ts": 900.0, "cooldowns": {}, "quotes": {}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(radar, "STATE_PATH", state_file)
+    monkeypatch.setattr(radar, "ALERT_LOG_PATH", tmp_path / "alerts.jsonl")
+    monkeypatch.setattr(radar, "TURNOVER_DIR", tmp_path / "turnover")
+    monkeypatch.setattr(radar, "load_wyckoff_l2_map", lambda *a, **kw: {})
+    fake_item = [{"id": "sina_tg_950", "ts": 950.0, "hm": "09:31", "text": "工信部加快推进具身智能机器人产业落地"}]
+    monkeypatch.setattr(tc, "fetch_sina_telegraph", lambda pages=1: list(fake_item))
+    monkeypatch.setattr(tc, "fetch_wscn_telegraph", lambda: [])
+
+    class FakeClient:
+        def __init__(self, **kw):
+            pass
+
+        def get_quotes(self, universes=None, symbols=None):
+            return {"000001.SH": {"last_price": 3300.0, "prev_close": 3300.0, "amount": 100e8}}
+
+    import integrations.tickflow_client as tf_mod
+
+    monkeypatch.setattr(tf_mod, "TickFlowClient", FakeClient)
+    sent_cards: list[str] = []
+    monkeypatch.setattr(radar, "resolve_lark_open_id", lambda *a: "ou_mock")
+    monkeypatch.setattr(
+        radar, "send_feishu_tiered_alert", lambda title, content, **kw: sent_cards.append(content) or "om_ok"
+    )
+    args = SimpleNamespace(
+        ignore_hours=True, dry_run=False, trace=None, holding=[], user_id="ou_mock", force_send=False, urgent_only=False
+    )
+
+    monkeypatch.setattr(radar.time, "time", lambda: 1200.0)
+    radar.run_once(args)
+    assert sent_cards == []
+    assert "tg:sina_tg_950" not in json.loads(state_file.read_text(encoding="utf-8"))["cooldowns"]
+
+    monkeypatch.setattr(radar.time, "time", lambda: 2700.0)
+    radar.run_once(args)
+    assert len(sent_cards) == 1
+    assert "具身智能" in sent_cards[0]
+    assert "tg:sina_tg_950" in json.loads(state_file.read_text(encoding="utf-8"))["cooldowns"]

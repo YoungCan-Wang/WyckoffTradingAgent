@@ -25,7 +25,7 @@ description: >-
      4. **💰 早间上市公司真金白银公告（中文必搜）**：7:30~8:30 大额回购、增持、定增落地或业绩预告。
 2. **⏰ 12:50 午间休市“全球突发与 7x24 实时电报映射”扫描（覆盖 11:30~13:00 盲区）**：
    * 北京时间 `11:30~13:00` A 股休市期间，港股（`11:30~12:00`）、离岸人民币（USD/CNH）、美股夜盘期货、A50 期指仍在交易定价，同时国内各大财经电报（新浪 7x24 / 华尔街见闻 / 财联社）会密集发布产业催化（如跨国车企成立机器人部门、券商深度研报、港股概念异动）。
-   * 每日 **`08:35`** 与 **`12:50`** 除执行中英双语全球搜索外，**必须同步运行 `.venv/bin/python .agents/skills/intraday-radar/scripts/telegraph_catalysts.py --window 120`**，秒级拉取 7x24 实时财经电报并自动映射至威科夫 `L2`（`主升通道 / 地量蓄势`）与高 `RPS` 备选池；盘中每 5 分钟雷达（[intraday_radar.py](./scripts/intraday_radar.py)）亦自动挂载最近 15 分钟的 7x24 电报催化与威科夫先手映射（第 7 节）。
+   * 每日 **`08:35`** 与 **`12:50`** 除执行中英双语全球搜索外，**必须同步运行 `.venv/bin/python .agents/skills/intraday-radar/scripts/telegraph_catalysts.py --window 120`**，秒级拉取 7x24 实时财经电报并自动映射至威科夫 `L2`（`主升通道 / 地量蓄势`）与高 `RPS` 备选池；盘中每 5 分钟雷达（[intraday_radar.py](./scripts/intraday_radar.py)）亦自动挂载最近 30 分钟（覆盖完整 `L1` 常规发卡周期）的 7x24 电报催化与威科夫先手映射（第 7 节）。
 3. **RPS 高低位反身性校验与生产 Trace 自动同步（防止高位接盘“利好出尽” & 防止无声失效）**：
    * **生产 Trace 来源与自动下载**：生产环境的 `review_trace_YYYYMMDD.json.gz` 与 `recommendation_tracking_YYYYMMDD.json` 由 GitHub Actions 工作流 **`Wyckoff Funnel`（`wyckoff_funnel.yml`）** 在每个交易日盘后产出（Artifact 名称 `daily-job-artifacts-<run_number>`）。[intraday_radar.py](./scripts/intraday_radar.py) 启动时会自动检查 `~/.wyckoff/traces`；若本机缺失或现有文件超过 3 个交易日，脚本会自动调用 `gh run list --workflow wyckoff_funnel.yml --status success -L 1` 与 `gh run download <run_id> -p "daily-job-artifacts-*" -D ~/.wyckoff/traces` 拉取最新生产产物。
    * **缺失/过期显式提醒**：若本机无有效 `review_trace` 且自动拉取未成功（或账龄按交易日计算超过 3 个交易日），终端输出 `[WARN]` 告警，且飞书卡片顶部强制置顶显示 **`⚠️ 今日无威科夫 trace，L3/L4/板块共振已停用`**，绝不静默伪装成“今日无信号”。
@@ -90,7 +90,7 @@ description: >-
 
 ## 四、 飞书四级加急通知矩阵与加急焦点置顶规范（普通 / App / 短信 / 电话）
 
-卡片发送与加急请求统一通过 `lark-cli --as bot` 以同一机器人身份调用，**仅当卡片与所需加急均成功时才将冷却时间戳写入状态文件**（卡片成功但 `urgent_phone`/`urgent_sms`/`urgent_app` 失败视为投递未完成，不锁冷却；若已尝试发送但失败，行情差分基线 `quotes`/`ts` 也保持上一份成功快照不动，避免 `Δpct_5m`/`Δamt_5m` 被归零后无法重试；`--dry-run` 不写共享状态文件）。持仓止损与起跳板突破、持仓急跌与威科夫点火使用**分种类冷却键**（如 `L4:holding_stop:{sym}` vs `L4:springboard:{sym}`），避免起跳板电话耗尽同标的全日止损电话配额。守护进程 `--daemon` 连续 3 次扫描异常时自动推送一条 `L1` 故障告警卡片。
+卡片发送与加急请求统一通过 `lark-cli --as bot` 以同一机器人身份调用，**仅当卡片与所需加急均成功时才将冷却时间戳写入状态文件**（卡片成功但 `urgent_phone`/`urgent_sms`/`urgent_app` 失败视为投递未完成，不锁冷却；未触发发卡的静默 5m 扫描帧同样不得把 `tg:{id}` 等去重键提前写入冷却；若已尝试发送但失败，行情差分基线 `quotes`/`ts` 也保持上一份成功快照不动，避免 `Δpct_5m`/`Δamt_5m` 被归零后无法重试；`--dry-run` 不写共享状态文件）。持仓止损与起跳板突破、持仓急跌与威科夫点火使用**分种类冷却键**（如 `L4:holding_stop:{sym}` vs `L4:springboard:{sym}`），避免起跳板电话耗尽同标的全日止损电话配额。守护进程 `--daemon` 连续 3 次扫描异常时自动推送一条 `L1` 故障告警卡片。
 
 * **🚨 加急焦点一目了然（`_build_urgent_focus_banner`）**：凡触发 `L2 / L3 / L4` 加急通知的卡片，标题强制改写为 `【L2/L3/L4 加急焦点】HH:MM <第一触发焦点>`，并在卡片正文最顶部置顶渲染 **`🚨 【本次 L2/L3/L4 加急核心焦点 — 为什么给你发加急】`** 与 **`💡 关注重点`**，确保用户在手机锁屏弹窗或打开卡片第一眼即可明确核心异动标的与操作应对方向。
 

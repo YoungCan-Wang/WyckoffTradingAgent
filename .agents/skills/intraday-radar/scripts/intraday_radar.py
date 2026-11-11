@@ -852,7 +852,7 @@ def _enrich_mainline_and_telegraph(
         if fetch_telegraph:
             buckets["telegraph"].extend(
                 scan_live_telegraph_catalysts(
-                    l2_map, curr_quotes, window_minutes=15, max_items=4, pages=1, cooldowns=cooldowns, now_ts=ts
+                    l2_map, curr_quotes, window_minutes=30, max_items=4, pages=1, cooldowns=cooldowns, now_ts=ts
                 )
             )
     except Exception as exc:
@@ -1239,8 +1239,6 @@ def run_once(args: argparse.Namespace) -> None:
             if level == "L1":
                 last_l1_ts = now_ts
             print(f"[{now_bjt.strftime('%H:%M:%S')}] Sent {level} alert: msg_id={msg_id}")
-    else:
-        saved_cooldowns = cooldowns
     # dry-run must not touch the live daemon state file (shared /tmp path).
     if args.dry_run:
         return
