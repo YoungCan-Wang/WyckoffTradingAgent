@@ -254,9 +254,9 @@ def test_real_trace_schema_and_stale_trace_guard(tmp_path, monkeypatch):
                 "entry": {"entry_type": "launchpad"},
                 "reason": "候选车道: 启动平台",
             },
-            "300001": {
-                "name": "起跳测试",
-                "sector": "通信设备",
+            "002594": {
+                "name": "起跳测试深市",
+                "sector": "汽车",
                 "rps_fast": 82.0,
                 "l2_eligible": True,
                 "l3_eligible": False,
@@ -276,8 +276,14 @@ def test_real_trace_schema_and_stale_trace_guard(tmp_path, monkeypatch):
     }
     with gzip.open(trace_file, "wt", encoding="utf-8") as f:
         json.dump(trace_payload, f)
+    # Production backup stores code as int; leading zeros must be restored for SZ matches.
     rec_file.write_text(
-        json.dumps({"rows": [{"code": "300001", "springboard_combo": "A+B+C"}]}),
+        json.dumps(
+            {
+                "recommend_date": int(today_compact),
+                "rows": [{"code": 2594, "springboard_combo": "A+B+C"}],
+            }
+        ),
         encoding="utf-8",
     )
     old_rec_file.write_text(
@@ -289,7 +295,7 @@ def test_real_trace_schema_and_stale_trace_guard(tmp_path, monkeypatch):
     assert l2_map["688001"]["is_springboard"] is True
     assert l2_map["688001"]["l3_eligible"] is True
     assert l2_map["688001"]["channels"] == ["地量蓄势"]
-    assert l2_map["300001"]["is_springboard"] is True
+    assert l2_map["002594"]["is_springboard"] is True
     assert l2_map["600999"]["is_springboard"] is False
 
     # Holiday trading-day check: 2026-09-30 -> 2026-10-08 (8 calendar days, only 1 trading day)

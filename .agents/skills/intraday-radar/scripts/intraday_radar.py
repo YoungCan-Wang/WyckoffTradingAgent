@@ -19,6 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from core.candidate_metadata import code6 as _code6  # noqa: E402
 from utils.feishu_report_card import build_report_card_elements, report_card_template  # noqa: E402
 from utils.trading_clock import CN_TZ, cn_today, is_a_share_trading_day  # noqa: E402
 
@@ -132,7 +133,10 @@ def _load_sibling_springboards(trace_file: Path, trace_date: date | None) -> set
             return springboards
         for row in payload.get("rows", []):
             if row.get("springboard_combo") == "A+B+C" or row.get("springboard_grade") == "A+B+C":
-                springboards.add(str(row.get("code", ""))[:6])
+                # Backup artifact stores code as int (e.g. 2594); match zero-padded trace keys.
+                normalized = _code6(row.get("code"))
+                if normalized:
+                    springboards.add(normalized)
     except Exception:
         return springboards
     return springboards
@@ -207,19 +211,21 @@ def _parse_trace_symbols(data: dict[str, Any], springboards: set[str]) -> dict[s
     for raw_key, s in entries:
         if not isinstance(s, dict):
             continue
-        code6 = str(raw_key or s.get("symbol", ""))[:6]
+        code = _code6(raw_key or s.get("symbol", ""))
+        if not code:
+            continue
         raw_ch = s.get("l2_channels") or s.get("l2_channel") or []
         chans = [raw_ch] if isinstance(raw_ch, str) else list(raw_ch)
         entry_obj = s.get("entry") if isinstance(s.get("entry"), dict) else {}
         entry_type = str(entry_obj.get("entry_type") or "")
         stage = str(s.get("stage") or "")
         is_sb = (
-            code6 in springboards
+            code in springboards
             or entry_type == "launchpad"
             or "启动平台" in str(s.get("reason") or "")
             or bool(s.get("is_springboard"))
         )
-        out[code6] = {
+        out[code] = {
             "name": s.get("name", ""),
             "sector": s.get("sector", ""),
             "rps": float(s.get("rps_fast") or 0.0),

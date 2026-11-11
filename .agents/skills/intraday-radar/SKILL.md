@@ -62,7 +62,7 @@ description: >-
    * **🟡 L2 做 T 高抛（应用内加急）**：持仓股偏离 VWAP `vwap_dev > +3.0%` $\rightarrow$ 触发 `L2` 应用内加急。
 2. **威科夫核心池信号与市场共振监控（保留 L4 电话 / L3 短信加急 + 同步写入留档日志）**：
    * **🔴 L4 满级起跳板突破（电话加急）**：
-     * 命中与当日 `review_trace_YYYYMMDD.json.gz` 同日期的 `recommendation_tracking_YYYYMMDD.json` 的 `springboard_combo == "A+B+C"`（严格过滤旧日期推荐文件），或 `review_trace` 内的 `entry.entry_type == "launchpad"` / `"启动平台"`；
+     * 命中与当日 `review_trace_YYYYMMDD.json.gz` 同日期的 `recommendation_tracking_YYYYMMDD.json` 的 `springboard_combo == "A+B+C"`（严格过滤旧日期推荐文件；备份里 `code` 常为整型如 `2594`，读入时须规范成 6 位 `002594` 才能对齐 trace），或 `review_trace` 内的 `entry.entry_type == "launchpad"` / `"启动平台"`；
      * 覆盖率正常（`coverage_ok = True`）且全市场红盘率 `> 80%`，5 分钟涨速 `Δpct_5m >= +2.5%`，总涨幅 `+2.8% ~ +6.0%`，`0% <= vwap_dev <= 2.0%`，5 分钟新增成交额 `Δamt_5m >= 0.30亿`。
    * **🟠 L3 威科夫 `L2+L3 地量 / 吸筹` 5 分钟点火（短信加急）**：
      * 同时满足 `l2_eligible = True` 且 `l3_eligible = True`（或 `stage == "候选池已捕获"`），且 `l2_channel` 含 `地量` 或 `吸筹`；
