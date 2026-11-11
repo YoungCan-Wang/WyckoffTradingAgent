@@ -421,12 +421,15 @@ def test_real_trace_schema_and_stale_trace_guard(tmp_path, monkeypatch):
 
 def test_l3_ignition_and_l1_drift_immune_cadence(tmp_path):
     radar = _load_radar_module()
-    today = cn_today().isoformat()
+    today_d = cn_today()
+    today = today_d.isoformat()
     alert_log = tmp_path / "radar_alerts.jsonl"
     t_dir = tmp_path / "turnover"
+    ts_0940 = datetime(today_d.year, today_d.month, today_d.day, 9, 40, tzinfo=CN_TZ).timestamp()
+    ts_1035 = datetime(today_d.year, today_d.month, today_d.day, 10, 35, tzinfo=CN_TZ).timestamp()
     prev_state = {
         "date": today,
-        "ts": 1000.0,
+        "ts": ts_0940 - 300.0,
         "red": 1,
         "cooldowns": {},
         "quotes": {"688001.SH": {"pct": 1.0, "amt_yi": 0.80}},
@@ -453,9 +456,21 @@ def test_l3_ignition_and_l1_drift_immune_cadence(tmp_path):
             "is_springboard": False,
         }
     }
-    # Wyckoff L2+L3 dry-volume ignition triggers L3 SMS alert and logs to jsonl
+    # 1) Pre-10:30 (09:40 BJT): downgraded to L1 card observation, no L3 SMS, does NOT burn L3 cooldown
+    level_am, _, body_am, _, cd_am = radar.analyze_snapshot_diff(
+        curr_quotes, prev_state, l2_map, {}, now_ts=ts_0940, turnover_dir=t_dir, alert_log_path=alert_log
+    )
+    assert level_am == "L1"
+    assert "待10:30验钞观察" in body_am
+    assert "L1:pre1030_obs:688001.SH" in cd_am
+    assert "L3:wyckoff_ignition:688001.SH" not in cd_am
+    assert not alert_log.exists()
+
+    # 2) Post-10:30 (10:35 BJT): same symbol igniting after 10:30 fires L3 SMS alert and logs to jsonl
+    prev_state["cooldowns"] = cd_am
+    prev_state["ts"] = ts_1035 - 300.0
     level1, _, body1, _, cd1 = radar.analyze_snapshot_diff(
-        curr_quotes, prev_state, l2_map, {}, now_ts=1200.0, turnover_dir=t_dir, alert_log_path=alert_log
+        curr_quotes, prev_state, l2_map, {}, now_ts=ts_1035, turnover_dir=t_dir, alert_log_path=alert_log
     )
     assert level1 == "L3"
     assert "688001.SH" in body1
@@ -466,8 +481,9 @@ def test_l3_ignition_and_l1_drift_immune_cadence(tmp_path):
     assert logged[0]["symbol"] == "688001.SH"
 
     prev_state["cooldowns"] = cd1
+    prev_state["ts"] = ts_1035
     level2, _, _, _, _ = radar.analyze_snapshot_diff(
-        curr_quotes, prev_state, l2_map, {}, now_ts=1400.0, turnover_dir=t_dir
+        curr_quotes, prev_state, l2_map, {}, now_ts=ts_1035 + 200.0, turnover_dir=t_dir
     )
     assert level2 == "L1"
 

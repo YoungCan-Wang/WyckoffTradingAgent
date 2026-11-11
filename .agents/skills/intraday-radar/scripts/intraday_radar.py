@@ -606,6 +606,21 @@ def _check_wyckoff_signals(
                 }
             )
         return
+    _check_wyckoff_ignition(sym, m, dpct, damt, info, chans, cooldowns, now_ts, buckets, alert_records)
+
+
+def _check_wyckoff_ignition(
+    sym: str,
+    m: dict[str, Any],
+    dpct: float,
+    damt: float,
+    info: dict[str, Any],
+    chans: str,
+    cooldowns: dict[str, float],
+    now_ts: float,
+    buckets: dict[str, list[str]],
+    alert_records: list[dict[str, Any]],
+) -> None:
     if not info.get("l2_eligible") or float(m.get("upper_wick_pct", 0.0)) > 2.0:
         return
     is_core_pool = bool(info.get("l3_eligible") or info.get("is_candidate"))
@@ -621,7 +636,7 @@ def _check_wyckoff_signals(
         and m["amt_yi"] >= 1.8
     )
     is_standard_ign = dpct >= 1.8 and damt >= 0.30 and m["amt_yi"] >= 1.0
-    if (
+    if not (
         is_core_pool
         and ("地量" in chans or "吸筹" in chans)
         and rps_val <= 80.0
@@ -631,28 +646,36 @@ def _check_wyckoff_signals(
         and 2.8 <= m["pct"] <= 5.0
         and 0.0 <= m["vwap_dev"] <= 2.0
     ):
-        if _check_cooldown(cooldowns, f"L3:wyckoff_ignition:{sym}", now_ts):
-            mode_tag = "🎯稳健中军加速" if (is_steady_push and not is_standard_ign) else "✅"
-            buckets["l3"].append(
+        return
+    if now_hm < "10:30":
+        if _check_cooldown(cooldowns, f"L1:pre1030_obs:{sym}", now_ts):
+            buckets["l1_obs"].append(
                 f"- **{sym} {m['name']}** [{info.get('sector', '')}]：**{m['last']:.2f} ({m['pct']:+.2f}%)** | "
-                f"5m **+{dpct:.2f}%** (+{damt:.2f}亿) | 均 {m['vwap']:.2f} {mode_tag} | {chans} RPS={info.get('rps', 0):.0f}"
+                f"5m **+{dpct:.2f}%** (+{damt:.2f}亿) | 均 {m['vwap']:.2f} ⏳[待10:30验钞观察] | {chans} RPS={rps_val:.0f}"
             )
-            alert_records.append(
-                {
-                    "ts": now_ts,
-                    "level": "L3",
-                    "kind": "wyckoff_l2l3_ignition",
-                    "symbol": sym,
-                    "name": m["name"],
-                    "sector": info.get("sector", ""),
-                    "last": round(m["last"], 3),
-                    "pct": round(m["pct"], 2),
-                    "dpct_5m": round(dpct, 2),
-                    "vwap": round(m["vwap"], 3),
-                    "vwap_dev": round(m["vwap_dev"], 2),
-                    "amt_yi": round(m["amt_yi"], 2),
-                }
-            )
+        return
+    if _check_cooldown(cooldowns, f"L3:wyckoff_ignition:{sym}", now_ts):
+        mode_tag = "🎯稳健中军加速" if (is_steady_push and not is_standard_ign) else "✅"
+        buckets["l3"].append(
+            f"- **{sym} {m['name']}** [{info.get('sector', '')}]：**{m['last']:.2f} ({m['pct']:+.2f}%)** | "
+            f"5m **+{dpct:.2f}%** (+{damt:.2f}亿) | 均 {m['vwap']:.2f} {mode_tag} | {chans} RPS={rps_val:.0f}"
+        )
+        alert_records.append(
+            {
+                "ts": now_ts,
+                "level": "L3",
+                "kind": "wyckoff_l2l3_ignition",
+                "symbol": sym,
+                "name": m["name"],
+                "sector": info.get("sector", ""),
+                "last": round(m["last"], 3),
+                "pct": round(m["pct"], 2),
+                "dpct_5m": round(dpct, 2),
+                "vwap": round(m["vwap"], 3),
+                "vwap_dev": round(m["vwap_dev"], 2),
+                "amt_yi": round(m["amt_yi"], 2),
+            }
+        )
 
 
 def _hm_to_minutes(hm: str) -> int:
@@ -1054,6 +1077,8 @@ def _format_card(
         secs.append("**2. 🔴 L4 电话级警报（持仓破止损 / 满级起跳板突破）**\n" + "\n".join(buckets["l4"][:5]))
     if buckets["l3"]:
         secs.append("**3. 🟠 L3 短信级：威科夫 L2+L3 地量/吸筹 5m 点火 & 持仓急跌**\n" + "\n".join(buckets["l3"][:8]))
+    if buckets["l1_obs"]:
+        secs.append("**3b. 👀 早盘 L2+L3 异动观察（10:30前验钞期·不发短信加急）**\n" + "\n".join(buckets["l1_obs"][:6]))
     if buckets["l2_events"]:
         secs.append("**4. 🟡 L2 加急事件（持仓做T / 板块共振 / 情绪骤变）**\n" + "\n".join(buckets["l2_events"][:6]))
     if buckets["etf_up"] or buckets["etf_down"]:
