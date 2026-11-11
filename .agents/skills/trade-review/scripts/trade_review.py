@@ -52,8 +52,12 @@ class RoundTrip:
     end: pd.Timestamp = field(init=False)
 
     def __post_init__(self) -> None:
-        self.start = self.fills["date"].min()
-        self.end = self.fills["date"].max()
+        # Bar lookups are midnight-indexed; keep intraday timestamps only for fill ordering.
+        fills = self.fills.copy()
+        fills["date"] = pd.to_datetime(fills["date"]).dt.normalize()
+        self.fills = fills
+        self.start = fills["date"].min()
+        self.end = fills["date"].max()
 
     @property
     def n_buys(self) -> int:
@@ -74,6 +78,7 @@ def load_fills(path: str | Path) -> pd.DataFrame:
     bad = sorted(set(df["side"]) - {"buy", "sell"})
     if bad:
         raise ValueError(f"side must be buy/sell, got {bad}")
+    # Keep clock time so same-day sell-then-buy sorts correctly; RoundTrip normalizes later.
     df["date"] = pd.to_datetime(df["date"])
     for col in ("price", "qty", "amount", "fee"):
         df[col] = pd.to_numeric(df[col], errors="raise").astype(float)
@@ -86,14 +91,16 @@ def build_round_trips(fills: pd.DataFrame) -> tuple[list[RoundTrip], list[str]]:
     """Split fills into round trips that start flat and return to zero shares."""
     trips: list[RoundTrip] = []
     open_positions: list[str] = []
-    order = fills.assign(_k=(fills["side"] == "sell").astype(int)).sort_values(["code", "date", "_k"], kind="stable")
+    # Preserve transcript/CSV order within a day. Buy-before-sell reordering merges
+    # overnight flatten+reopen (清仓再买 / 做T) when the CSV is date-only.
+    order = fills.assign(_ord=np.arange(len(fills))).sort_values(["code", "date", "_ord"], kind="stable")
     for (code, name), group in order.groupby(["code", "name"], sort=False):
         pos, rows = 0.0, []
         for _, row in group.iterrows():
             rows.append(row)
             pos += row["qty"] if row["side"] == "buy" else -row["qty"]
             if abs(pos) < 1e-6:
-                trips.append(RoundTrip(code, name, pd.DataFrame(rows).drop(columns="_k")))
+                trips.append(RoundTrip(code, name, pd.DataFrame(rows).drop(columns="_ord")))
                 rows = []
         if rows:
             open_positions.append(f"{name}({code}) 剩余 {pos:g} 股")
@@ -123,11 +130,16 @@ def max_exposure(fills: pd.DataFrame) -> float:
 
 
 def limit_pct(code: str, name: str = "") -> float:
-    if "ST" in name.upper():
-        return 0.05
-    if code.endswith(".BJ"):
+    from core.cn_boards import cn_board
+
+    board = cn_board(code)
+    if board == "bse":
         return 0.30
-    return 0.20 if code[:2] in ("30", "68") else 0.10
+    if board in {"chinext", "star"}:
+        return 0.20
+    if "ST" in str(name or "").upper():
+        return 0.05
+    return 0.10
 
 
 def prepare_bars(raw: pd.DataFrame) -> pd.DataFrame:
@@ -172,9 +184,10 @@ def fills_inside_bars(trip: RoundTrip, bars: pd.DataFrame) -> bool:
     """False when any fill price is outside its day's raw range (wrong listing, adjusted bars, typo)."""
     by_day = bars.set_index("d")
     for _, row in trip.fills.iterrows():
-        if row["date"] not in by_day.index:
+        day = pd.Timestamp(row["date"]).normalize()
+        if day not in by_day.index:
             return False
-        bar = by_day.loc[row["date"]]
+        bar = by_day.loc[day]
         if not (bar["low"] - FILL_TOLERANCE <= row["price"] <= bar["high"] + FILL_TOLERANCE):
             return False
     return True
@@ -532,8 +545,8 @@ def cmd_analyze(args: argparse.Namespace) -> None:
 def cmd_solve_lots(args: argparse.Namespace) -> None:
     _guard_out_dir(Path(args.out).parent, args.allow_repo_output)
     summary = pd.read_csv(args.summary, encoding="utf-8-sig", dtype={"code": str})
-    summary["entry_date"] = pd.to_datetime(summary["entry_date"])
-    summary["exit_date"] = pd.to_datetime(summary["exit_date"])
+    summary["entry_date"] = pd.to_datetime(summary["entry_date"]).dt.normalize()
+    summary["exit_date"] = pd.to_datetime(summary["exit_date"]).dt.normalize()
     bars = fetch_bars(sorted(set(summary["code"])))
     rows, unsolved = [], []
     for _, r in summary.iterrows():
