@@ -1470,3 +1470,13 @@ def test_heartbeat_mode_sends_compact_card_without_resetting_l1_or_telegraph_coo
     saved_after_full = json.loads(state_file.read_text(encoding="utf-8"))
     assert saved_after_full["last_l1_ts"] == 2800.0
     assert "tg:sina_tg_hb1" in saved_after_full["cooldowns"]
+
+    # If a holding is below hard stop during its 24h L4 cooldown, heartbeat line must never say "持仓正常"
+    _, breach_body = radar._format_heartbeat_card(
+        {"600900.SH": {"last_price": 26.40, "prev_close": 28.00, "volume": 1e7, "amount": 2.64e8}},
+        {"600900.SH": {"cost": 27.50, "stop": 26.50}},
+        500,
+        "14:05",
+    )
+    assert "⚠️ 持仓破位待处理：600900 -5.71%🔴破止损" in breach_body
+    assert "持仓正常" not in breach_body

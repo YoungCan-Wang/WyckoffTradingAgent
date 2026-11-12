@@ -1221,11 +1221,15 @@ def _format_heartbeat_card(
     title = f"【💓 心跳】{now_hm} 雷达在线 | {sh_s}{cy_s} | 红{red_count}家"
     lines = [f"✅ 7,807 标的 5m 巡检正常（本帧无 L2/L3/L4 加急异动）：{thermo} | 红盘 {red_count} 家"]
     if holdings:
-        h_parts = []
-        for sym in holdings:
+        h_parts, any_stop = [], False
+        for sym, cfg in holdings.items():
             hm = compute_quote_metrics(curr_quotes.get(sym, {}))
-            h_parts.append(f"{sym[:6]} {hm['pct']:+.2f}%" if hm else f"{sym[:6]} --")
-        lines.append("🛡️ 持仓正常：" + " | ".join(h_parts))
+            breached = bool(hm and cfg.get("stop", 0.0) > 0 and hm["last"] <= cfg["stop"])
+            any_stop = any_stop or breached
+            tag = "🔴破止损" if breached else ""
+            h_parts.append(f"{sym[:6]} {hm['pct']:+.2f}%{tag}" if hm else f"{sym[:6]} --")
+        prefix = "⚠️ 持仓破位待处理：" if any_stop else "🛡️ 持仓正常："
+        lines.append(prefix + " | ".join(h_parts))
     return title, "\n".join(lines)
 
 
