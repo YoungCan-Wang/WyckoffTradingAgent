@@ -114,6 +114,104 @@ def test_bare_bse_codes_use_30_percent_limit():
     assert TR.limit_pct("300001.SZ") == 0.20
 
 
+def test_blank_name_cells_still_form_round_trips(tmp_path):
+    """Empty name CSV cells become NaN; groupby must not drop those fills."""
+    csv = tmp_path / "fills.csv"
+    pd.DataFrame(
+        [
+            {
+                "name": "",
+                "code": "600001.SH",
+                "date": "2026-01-05",
+                "side": "buy",
+                "price": 10,
+                "qty": 100,
+                "amount": 1000,
+                "fee": 5,
+            },
+            {
+                "name": "",
+                "code": "600001.SH",
+                "date": "2026-01-06",
+                "side": "sell",
+                "price": 11,
+                "qty": 100,
+                "amount": 1100,
+                "fee": 5,
+            },
+        ]
+    ).to_csv(csv, index=False)
+    trips, open_pos = TR.build_round_trips(TR.load_fills(csv))
+    assert open_pos == []
+    assert len(trips) == 1
+    assert TR.trip_pnl(trips[0].fills) == pytest.approx(90.0)
+
+
+def test_name_whitespace_and_bare_code_do_not_split_ledger(tmp_path):
+    csv = tmp_path / "fills.csv"
+    pd.DataFrame(
+        [
+            {
+                "name": "测试",
+                "code": "600001",
+                "date": "2026-01-05",
+                "side": "buy",
+                "price": 10,
+                "qty": 100,
+                "amount": 1000,
+                "fee": 5,
+            },
+            {
+                "name": "测试 ",
+                "code": "600001.SH",
+                "date": "2026-01-06",
+                "side": "sell",
+                "price": 11,
+                "qty": 100,
+                "amount": 1100,
+                "fee": 5,
+            },
+        ]
+    ).to_csv(csv, index=False)
+    trips, open_pos = TR.build_round_trips(TR.load_fills(csv))
+    assert open_pos == []
+    assert len(trips) == 1
+    assert trips[0].code == "600001.SH"
+
+
+def test_sell_first_cycle_is_not_a_phantom_short_trip():
+    """Partial exports that start mid-position must not invent short round-trip P&L."""
+    trips, open_pos = TR.build_round_trips(
+        _fills(
+            [
+                ("2026-01-06", "sell", 11.0, 100),
+                ("2026-01-07", "buy", 10.0, 100),
+                ("2026-01-08", "sell", 10.5, 100),
+            ]
+        )
+    )
+    assert trips == []
+    assert open_pos
+    assert any("卖出优先" in note or "剩余" in note for note in open_pos)
+
+
+def test_empty_usable_trips_still_write_report(tmp_path):
+    table = TR.trip_table([], {}, {})
+    rules = TR.rule_table([], {}, {"stop5": {"stop": ("intra", 0.05)}})
+    path = TR.write_report(tmp_path / "out", table, rules, ["仅未清仓"])
+    assert path.exists()
+    summary = (tmp_path / "out" / "summary.json").read_text(encoding="utf-8")
+    assert '"trips": 0' in summary
+
+
+def test_chinext_star_st_keep_board_limit_not_five_percent():
+    """ST only narrows main-board limits; ChiNext/STAR/BSE ST stay on board pct."""
+    assert TR.limit_pct("300001.SZ", "ST创业") == 0.20
+    assert TR.limit_pct("688001.SH", "*ST科创") == 0.20
+    assert TR.limit_pct("920001", "ST北交") == 0.30
+    assert TR.limit_pct("600001.SH", "ST主板") == 0.05
+
+
 def test_load_fills_rejects_unknown_side(tmp_path):
     csv = tmp_path / "bad.csv"
     pd.DataFrame(
