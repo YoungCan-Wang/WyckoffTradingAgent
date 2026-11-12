@@ -535,6 +535,14 @@ def test_promotion_battle_and_backrow_echelon_veto():
         concepts=("健康主线",),
         five_min=fm,
     )
+    q_true_monster = replace(
+        LS.parse_quote(_raw_quote("000088.SZ", "样本真妖二波", 7.0, 7.05, 7.32, 7.02, 7.28, 7.20, 2.2)),
+        concepts=("分化题材",),
+        five_min=fm,
+        lu_60d=5,
+        lu_10d=2,
+        circ_mv_yi=45.0,
+    )
     pool = [
         p_3to4,
         p_2to3,
@@ -547,6 +555,7 @@ def test_promotion_battle_and_backrow_echelon_veto():
         q_near_blown,
         q_backrow_bad,
         q_front_good,
+        q_true_monster,
     ]
     pk_lines = LS.summarize_promotion_battle(LS.classify_ladder_buckets(pool)["prev_ladder_pool"])
     assert any("3进4(1只): 晋级1只(100%" in ln for ln in pk_lines)
@@ -559,6 +568,6 @@ def test_promotion_battle_and_backrow_echelon_veto():
 
     sent = SF.MarketSentiment(2500, 2100, 45, 30)
     picked = SF.select_sniper_targets(pool, themes, sent, "10:10", {}, 15.0, LS.reversal_risk_tag)
-    assert [c.symbol for c in picked] == ["600099.SH"]
+    assert [c.symbol for c in picked] == ["000088.SZ", "600099.SH"]
     _, md = SF.build_sniper_card_markdown(picked, sent, "2026-03-10 10:10:00", ladder_brief=pk_lines)
     assert "连板晋级生态" in md and "3进4" in md

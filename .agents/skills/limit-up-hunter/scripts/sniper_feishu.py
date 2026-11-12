@@ -171,19 +171,20 @@ def select_sniper_targets(
         if not _passes_sniper_bar_gate(m, sentiment, now_hhmm, reversal_risk_fn):
             continue
         hit_themes = tuple(c for c in m.concepts if c in theme_scores)
-        is_promo = m.prev_boards >= 1 or bool(m.m_days_n_boards)
+        m_tier = getattr(m, "monster_tier", 1)
+        is_promo = m.prev_boards >= 1 or bool(m.m_days_n_boards) or (m_tier >= 3 and getattr(m, "lu_10d", 0) >= 2)
         if not hit_themes and not is_promo:
             continue
         best_ech = max((theme_scores[th] for th in hit_themes), default=0)
-        if hit_themes and best_ech < 0 and not is_promo:
+        if hit_themes and best_ech < 0 and not is_promo and m_tier < 2:
             continue
         shortlist.append((m, hit_themes, best_ech))
 
     shortlist.sort(
         key=lambda item: (
-            item[2],
             getattr(item[0], "monster_tier", 1),
-            item[0].prev_boards >= 1,
+            item[0].prev_boards >= 1 or bool(item[0].m_days_n_boards),
+            item[2],
             len(item[1]),
             item[0].last_price <= 10.0,
             item[0].five_min.first_5m_surge_pct if item[0].five_min else item[0].high_pct,
