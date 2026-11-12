@@ -425,3 +425,48 @@ def test_sniper_feishu_quiet_open_low_cap_and_60d_overhead_filter():
     assert [c.symbol for c in picked_norm] == ["000073.SZ", "600074.SH"]
     title, md = SF.build_sniper_card_markdown(picked_norm, normal_sent, "2026-03-10 10:15:00")
     assert "样本突破(000073)" in title and "目标价:" in title and "突破60日箱体新高" in md
+
+
+def test_monster_gene_filters_dead_elephants_and_boosts_n_wave_stocks():
+    import sniper_feishu as SF
+
+    gene_map = LS.compute_monster_gene_from_rows(
+        {
+            "000081.SZ": [("20260301", 6.0, 6.1)],
+            "000082.SZ": [("20260201", 8.0, 8.8), ("20260309", 9.0, 9.9)],
+            "600083.SH": [("20260201", 7.0, 7.7)] + [(f"202602{10 + i:02d}", 7.7, 7.7) for i in range(11)],
+        },
+        {"000081.SZ": (310.0, 1.1), "000082.SZ": (48.0, 12.5), "600083.SH": (55.0, 6.2)},
+    )
+    fm = LS.FiveMinSummary(3.5, True, 0.12, 6.95, True, 0, 6.60, True)
+    q_elephant = replace(
+        LS.parse_quote(
+            _raw_quote("000081.SZ", "样本大象", 6.50, 6.55, 6.82, 6.54, 6.80, 6.72, 4.50), gene_map=gene_map
+        ),
+        concepts=("算力概念",),
+        five_min=fm,
+    )
+    q_n_wave = replace(
+        LS.parse_quote(
+            _raw_quote("000082.SZ", "样本妖苗", 9.90, 9.95, 10.38, 9.92, 10.35, 10.22, 1.60), gene_map=gene_map
+        ),
+        concepts=("算力概念",),
+        five_min=fm,
+    )
+    q_60d_one = replace(
+        LS.parse_quote(
+            _raw_quote("600083.SH", "样本活股", 7.80, 7.85, 8.18, 7.84, 8.15, 8.05, 3.00), gene_map=gene_map
+        ),
+        concepts=("算力概念",),
+        five_min=fm,
+    )
+    assert q_elephant.has_monster_gene is False and "缺妖气" in LS.tag_theme_front_runner(q_elephant)
+    assert q_n_wave.monster_tier == 3 and "妖股苗子" in LS.tag_theme_front_runner(q_n_wave)
+    assert q_60d_one.monster_tier == 1
+
+    sent = SF.MarketSentiment(2800, 1800, 60, 20)
+    themes = [{"theme": "算力概念", "lu_count": 5}]
+    overhead = {"000082.SZ": [{"trade_date": "20260309", "high": 10.50, "low": 9.0, "pct_chg": 10.0}]}
+    picked = SF.select_sniper_targets([q_elephant, q_60d_one, q_n_wave], themes, sent, "09:45", overhead, 15.0)
+    assert [c.symbol for c in picked] == ["000082.SZ", "600083.SH"]
+    assert picked[0].daily_tag == "[🔥N字首板揉搓·二波起跳区]"

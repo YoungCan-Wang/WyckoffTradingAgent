@@ -139,6 +139,37 @@ class QuoteMetrics:
     concepts: tuple[str, ...] = ()
     lu_reason: str = ""
     five_min: FiveMinSummary | None = None
+    lu_60d: int | None = None
+    lu_10d: int = 0
+    circ_mv_yi: float = 0.0
+    prev_turnover_pct: float = 0.0
+
+    @property
+    def has_monster_gene(self) -> bool:
+        if self.is_limit_up or self.prev_boards >= 1 or bool(self.m_days_n_boards):
+            return True
+        if self.circ_mv_yi > 200.0:
+            return self.lu_10d >= 2 and self.prev_turnover_pct >= 8.0
+        if self.circ_mv_yi > 120.0 and (self.lu_10d < 1 or self.prev_turnover_pct < 5.0):
+            return False
+        intraday_tr = (self.amount_yi / self.circ_mv_yi * 100.0) if self.circ_mv_yi > 0 else 99.0
+        if self.prev_turnover_pct > 0 and self.prev_turnover_pct < 2.5 and intraday_tr < 2.5:
+            return False
+        if self.lu_60d is not None and self.lu_60d < 1:
+            return False
+        return True
+
+    @property
+    def monster_tier(self) -> int:
+        if not self.has_monster_gene:
+            return 0
+        if (self.lu_10d >= 1 or self.prev_boards >= 1 or bool(self.m_days_n_boards)) and (
+            self.circ_mv_yi <= 0 or self.circ_mv_yi <= 150.0
+        ):
+            return 3
+        if (self.lu_60d or 0) >= 2 and (self.circ_mv_yi <= 0 or self.circ_mv_yi <= 100.0):
+            return 2
+        return 1
 
     @property
     def above_vwap(self) -> bool:
@@ -182,6 +213,7 @@ def parse_quote(
     q: dict[str, Any],
     ladder_info: dict[str, dict[str, Any]] | None = None,
     industry_map: dict[str, str] | None = None,
+    gene_map: dict[str, dict[str, float]] | None = None,
 ) -> QuoteMetrics | None:
     sym = str(q.get("symbol") or "")
     if not sym or sym.endswith(".BJ"):
@@ -209,6 +241,7 @@ def parse_quote(
     high_pct = (high_p - prev) / prev * 100.0
     low_pct = (low_p - prev) / prev * 100.0
     info = (ladder_info or {}).get(sym) or {}
+    ginfo = (gene_map or {}).get(sym) if gene_map is not None else None
     industry = (industry_map or {}).get(sym) or str(info.get("industry") or ext.get("industry") or "")
 
     return QuoteMetrics(
@@ -234,6 +267,10 @@ def parse_quote(
         prev_boards=int(info.get("prev_boards") or 0),
         m_days_n_boards=str(info.get("m_days_n_boards") or ""),
         industry=industry,
+        lu_60d=int(ginfo["lu_60d"]) if ginfo and "lu_60d" in ginfo else None,
+        lu_10d=int(ginfo.get("lu_10d", 0)) if ginfo else 0,
+        circ_mv_yi=float(ginfo.get("circ_mv_yi", 0.0)) if ginfo else 0.0,
+        prev_turnover_pct=float(ginfo.get("turnover_pct", 0.0)) if ginfo else 0.0,
     )
 
 
@@ -338,6 +375,68 @@ def load_industry_map(tushare_token: str | None) -> dict[str, str]:
         return mapping
     except Exception as exc:
         print(f"[WARN] 拉取 Tushare 行业分类失败: {exc}", file=sys.stderr)
+        return {}
+
+
+def compute_monster_gene_from_rows(
+    rows_by_sym: dict[str, list[tuple[str, float, float]]],
+    basic_by_sym: dict[str, tuple[float, float]] | None = None,
+) -> dict[str, dict[str, float]]:
+    bmap = basic_by_sym or {}
+    all_syms = set(rows_by_sym.keys()) | set(bmap.keys())
+    out: dict[str, dict[str, float]] = {}
+    for sym in all_syms:
+        if sym.endswith(".BJ"):
+            continue
+        ordered = sorted(rows_by_sym.get(sym, []), key=lambda x: x[0])[-60:]
+        flags = [prev > 0 and close >= calc_limit_up_price(prev, sym) - PRICE_TOL for _, prev, close in ordered]
+        cmv, tr = bmap.get(sym, (0.0, 0.0))
+        out[sym] = {
+            "lu_60d": sum(1 for f in flags if f),
+            "lu_10d": sum(1 for f in flags[-10:] if f),
+            "circ_mv_yi": round(cmv, 2),
+            "turnover_pct": round(tr, 2),
+        }
+    return out
+
+
+def load_monster_gene_map(snapshot_date: str, tushare_token: str | None) -> dict[str, dict[str, float]]:
+    cache_dir = Path.home() / ".wyckoff" / "cache"
+    cache_file = cache_dir / f"monster_gene_v1_{snapshot_date}.json"
+    if cache_file.exists():
+        try:
+            return json.loads(cache_file.read_text(encoding="utf-8"))
+        except Exception as exc:
+            print(f"[WARN] 读取妖股基因缓存失败 ({cache_file}): {exc}", file=sys.stderr)
+    if not tushare_token:
+        return {}
+    try:
+        import tushare as ts
+
+        pro = ts.pro_api(tushare_token)
+        cal = pro.trade_cal(exchange="SSE", end_date=snapshot_date, is_open="1", limit=75)
+        dates = sorted(d for d in cal["cal_date"].tolist() if d < snapshot_date)[-60:]
+        if not dates:
+            return {}
+        rows_by_sym: dict[str, list[tuple[str, float, float]]] = {}
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            dfs = list(ex.map(lambda d: (d, pro.daily(trade_date=d, fields="ts_code,close,pre_close")), dates))
+        for d, df in dfs:
+            if df is not None and not df.empty:
+                for r in df.itertuples(index=False):
+                    rows_by_sym.setdefault(str(r.ts_code), []).append((d, float(r.pre_close), float(r.close)))
+        bdf = pro.daily_basic(trade_date=dates[-1], fields="ts_code,circ_mv,turnover_rate")
+        basic_by_sym = {
+            str(r.ts_code): (float(r.circ_mv or 0.0) / 10000.0, float(r.turnover_rate or 0.0))
+            for r in (bdf.itertuples(index=False) if bdf is not None and not bdf.empty else [])
+        }
+        gene_map = compute_monster_gene_from_rows(rows_by_sym, basic_by_sym)
+        if rows_by_sym and basic_by_sym:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            cache_file.write_text(json.dumps(gene_map, ensure_ascii=False), encoding="utf-8")
+        return gene_map
+    except Exception as exc:
+        print(f"[WARN] 拉取 60 日涨停基因与流通市值失败: {exc}", file=sys.stderr)
         return {}
 
 
@@ -516,9 +615,13 @@ def tag_theme_front_runner(m: QuoteMetrics) -> str:
     risk = reversal_risk_tag(m)
     if "🚨" in risk or "⚠️" in risk:
         return risk
+    if not m.has_monster_gene:
+        return "[🧊缺妖气(60日0板/大盘低换手)·勿选]"
     near_vwap = m.vwap > 0 and (m.last_price - m.vwap) / m.vwap <= 0.025
     held_low = m.five_min.held_first_5m_low if m.five_min else True
     if 3.0 <= m.last_pct <= 6.8 and near_vwap and held_low:
+        if m.monster_tier >= 3:
+            return "[🎯主线妖股苗子·N字基因贴均线守首K]"
         return "[🎯主线低吸首选·贴均线守首K]"
     if m.last_pct >= 6.8 and held_low:
         return "[⚡主线前排冲板博弈]"
@@ -540,13 +643,19 @@ def tag_keyword_candidate(m: QuoteMetrics, front_lu_count: int, now_hhmm: str) -
 def format_row(m: QuoteMetrics, extra_tag: str = "") -> str:
     vwap_tag = ">=VWAP" if m.above_vwap else "<VWAP"
     five_tag = f" {m.five_min.format_tag()}" if m.five_min else ""
+    gene_parts: list[str] = []
+    if m.circ_mv_yi > 0:
+        gene_parts.append(f"盘{m.circ_mv_yi:.0f}亿")
+    if m.lu_60d is not None:
+        gene_parts.append(f"60d:{m.lu_60d}板" + (f"/10d:{m.lu_10d}板" if m.lu_10d > 0 else ""))
+    gene_tag = f" [{'|'.join(gene_parts)}]" if gene_parts else ""
     reg_tag = f" [{m.reg_risk_tag}]" if m.reg_risk_tag else ""
     rsn_tag = f" [归因:{m.lu_reason}]" if m.lu_reason else ""
     suffix = f" {extra_tag}" if extra_tag else ""
     return (
         f"  {m.symbol:10s} {m.name:8s} [{m.ladder_label:8s}] | Open:{m.open_pct:+6.2f}% Low:{m.low_pct:+6.2f}% "
         f"-> Now:{m.last_pct:+6.2f}% ({m.last_price:6.2f}, {vwap_tag}:{m.vwap:6.2f}) "
-        f"| High:{m.high_pct:+6.2f}% | FromOpen:{m.diff_from_open:+6.2f}% | Amt:{m.amount_yi:5.2f}亿{five_tag}{reg_tag}{rsn_tag}{suffix}"
+        f"| High:{m.high_pct:+6.2f}% | FromOpen:{m.diff_from_open:+6.2f}% | Amt:{m.amount_yi:5.2f}亿{gene_tag}{five_tag}{reg_tag}{rsn_tag}{suffix}"
     )
 
 
@@ -739,7 +848,7 @@ def find_dragon_companions(
                 continue
             if m.prev_boards > 0 or m.m_days_n_boards or m.last_price > price_cap + PRICE_TOL:
                 continue
-            if not m.above_vwap or m.last_pct < 0.0 or m.amount_yi < 0.8:
+            if not m.above_vwap or m.last_pct < 0.0 or m.amount_yi < 0.8 or not m.has_monster_gene:
                 continue
             name_hit = any(r in m.name for r in roots)
             ind_hit = bool(m.industry and any(r in m.industry for r in roots if r in DRAGON_CORE_CHARS))
@@ -796,12 +905,12 @@ def _select_theme_display_candidates(
     dip_limit: int = 2,
     max_price: float | None = None,
 ) -> list[QuoteMetrics]:
-    filtered = [m for m in active if _passes_price_cap(m, max_price)]
+    filtered = [m for m in active if _passes_price_cap(m, max_price) and m.has_monster_gene]
     top_front = filtered[:3]
     seen = {m.symbol for m in top_front}
     dip_picks = sorted(
-        [m for m in filtered if m.symbol not in seen and "🎯" in tag_theme_front_runner(m) and m.amount_yi >= 1.5],
-        key=lambda x: (0 if x.last_price <= 10.0 else (1 if x.last_price <= 15.0 else 2), -x.amount_yi),
+        [m for m in filtered if m.symbol not in seen and "🎯" in tag_theme_front_runner(m) and m.amount_yi >= 0.8],
+        key=lambda x: (-x.monster_tier, 0 if x.last_price <= 10.0 else (1 if x.last_price <= 15.0 else 2), -x.last_pct),
     )[:dip_limit]
     return top_front + dip_picks
 
@@ -917,16 +1026,20 @@ def enrich_with_5m_bars(
         )
     ]
     companion_items = [c for _, comps in find_dragon_companions(metrics, max_price=max_price, limit=15) for c in comps]
-    sniper_pool = [
-        m
-        for m in metrics
-        if not m.symbol.startswith(("30", "68"))
-        and m.above_vwap
-        and 2.5 <= m.last_pct <= 7.2
-        and m.amount_yi >= 0.6
-        and _passes_price_cap(m, max_price)
-        and m.concepts
-    ][:30]
+    sniper_pool = sorted(
+        [
+            m
+            for m in metrics
+            if not m.symbol.startswith(("30", "68"))
+            and m.above_vwap
+            and 2.5 <= m.last_pct <= 7.2
+            and m.amount_yi >= 0.6
+            and m.has_monster_gene
+            and _passes_price_cap(m, max_price)
+            and m.concepts
+        ],
+        key=lambda x: (-x.monster_tier, x.last_price > 10.0, -x.last_pct),
+    )[:30]
     hold_set = set(holding_syms)
     hold_items = [m for m in metrics if m.symbol in hold_set]
     targets = {
@@ -1036,9 +1149,11 @@ def main() -> None:
     qmap = client.get_quotes(universes=["CN_Equity_A"])
     snap_dt = extract_snapshot_time(qmap.values())
     ts_token = os.environ.get("TUSHARE_TOKEN")
-    ladder_info = load_prev_ladder(snap_dt.strftime("%Y%m%d"), ts_token)
+    snap_ymd = snap_dt.strftime("%Y%m%d")
+    ladder_info = load_prev_ladder(snap_ymd, ts_token)
     industry_map = load_industry_map(ts_token)
-    parsed = [m for q in qmap.values() if (m := parse_quote(q, ladder_info, industry_map)) is not None]
+    gene_map = load_monster_gene_map(snap_ymd, ts_token)
+    parsed = [m for q in qmap.values() if (m := parse_quote(q, ladder_info, industry_map, gene_map)) is not None]
     parsed = enrich_with_realtime_concepts(parsed, holdings.keys())
     if not args.no_5m:
         parsed = enrich_with_5m_bars(client, parsed, holdings.keys(), max_price=args.max_price)

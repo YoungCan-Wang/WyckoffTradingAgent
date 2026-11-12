@@ -89,6 +89,8 @@ def evaluate_daily_overhead(daily_rows: list[dict[str, float]], last_price: floa
     lu_10d = sum(1 for r in ordered[-10:] if float(r.get("pct_chg") or 0.0) >= 9.6)
     if lu_10d >= 2 and last_price >= high_15d * 0.94:
         return True, "[🔥人气连板强势洗盘·二波起跳区]"
+    if lu_10d >= 1 and last_price >= high_15d * 0.93:
+        return True, "[🔥N字首板揉搓·二波起跳区]"
     return True, "[✅日线结构干净·无密集大阴套牢]"
 
 
@@ -139,6 +141,8 @@ def select_sniper_targets(
     for m in metrics:
         if m.symbol.startswith(("30", "68")) or m.is_limit_up or m.reg_risk_tag:
             continue
+        if not getattr(m, "has_monster_gene", True):
+            continue
         if m.last_price > max_price + 1e-4 or not m.above_vwap or m.amount_yi < 0.6:
             continue
         vwap_gap = (m.last_price - m.vwap) / m.vwap if m.vwap > 0 else 1.0
@@ -162,7 +166,15 @@ def select_sniper_targets(
                 continue
         shortlist.append((m, hit_themes))
 
-    shortlist.sort(key=lambda item: (len(item[1]), item[0].last_price <= 10.0, item[0].amount_yi), reverse=True)
+    shortlist.sort(
+        key=lambda item: (
+            getattr(item[0], "monster_tier", 1),
+            len(item[1]),
+            item[0].last_price <= 10.0,
+            item[0].five_min.first_5m_surge_pct if item[0].five_min else item[0].high_pct,
+        ),
+        reverse=True,
+    )
     results: list[SniperCandidate] = []
     for m, hit_themes in shortlist[:6]:
         ok_daily, d_tag = evaluate_daily_overhead((overhead_rows or {}).get(m.symbol, []), m.last_price)
