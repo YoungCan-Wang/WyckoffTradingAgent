@@ -127,6 +127,23 @@ def fetch_daily_overhead_map(
         return {}
 
 
+def _passes_sniper_bar_gate(m: Any, sentiment: MarketSentiment, now_hhmm: str, reversal_risk_fn: Any) -> bool:
+    fm = m.five_min
+    if not fm or not fm.held_first_5m_low:
+        return False
+    if fm.first_5m_surge_pct >= 3.0:
+        if fm.min_vol_ratio > 0.25:
+            return False
+    elif not fm.broke_morning_high:
+        return False
+    if reversal_risk_fn and ("🚨" in reversal_risk_fn(m) or "⚠️" in reversal_risk_fn(m)):
+        return False
+    if sentiment.is_trap_wave and now_hhmm < "10:40":
+        if not fm.broke_morning_high or m.drop_from_high < -1.2 or m.amount_yi < 1.5:
+            return False
+    return True
+
+
 def select_sniper_targets(
     metrics: list[Any],
     themes: list[dict[str, Any]],
@@ -136,39 +153,37 @@ def select_sniper_targets(
     max_price: float = 15.0,
     reversal_risk_fn: Any = None,
 ) -> list[SniperCandidate]:
-    hot_names = {t["theme"] for t in themes if t.get("lu_count", 0) >= 3}
-    shortlist: list[Any] = []
+    theme_scores = {t["theme"]: int(t.get("echelon_score", 0)) for t in themes if t.get("lu_count", 0) >= 3}
+    shortlist: list[tuple[Any, tuple[str, ...], int]] = []
     for m in metrics:
-        if m.symbol.startswith(("30", "68")) or m.is_limit_up or m.reg_risk_tag:
-            continue
-        if not getattr(m, "has_monster_gene", True):
+        if (
+            m.symbol.startswith(("30", "68"))
+            or m.is_limit_up
+            or m.reg_risk_tag
+            or not getattr(m, "has_monster_gene", True)
+        ):
             continue
         if m.last_price > max_price + 1e-4 or not m.above_vwap or m.amount_yi < 0.6:
             continue
         vwap_gap = (m.last_price - m.vwap) / m.vwap if m.vwap > 0 else 1.0
         if not (2.5 <= m.last_pct <= 7.2 and 0.0 <= vwap_gap <= 0.025):
             continue
-        fm = m.five_min
-        if not fm or not fm.held_first_5m_low:
+        if not _passes_sniper_bar_gate(m, sentiment, now_hhmm, reversal_risk_fn):
             continue
-        if fm.first_5m_surge_pct >= 3.0:
-            if fm.min_vol_ratio > 0.25:
-                continue
-        elif not fm.broke_morning_high:
+        hit_themes = tuple(c for c in m.concepts if c in theme_scores)
+        is_promo = m.prev_boards >= 1 or bool(m.m_days_n_boards)
+        if not hit_themes and not is_promo:
             continue
-        if reversal_risk_fn and ("🚨" in reversal_risk_fn(m) or "⚠️" in reversal_risk_fn(m)):
+        best_ech = max((theme_scores[th] for th in hit_themes), default=0)
+        if hit_themes and best_ech < 0 and not is_promo:
             continue
-        hit_themes = tuple(c for c in m.concepts if c in hot_names)
-        if not hit_themes and m.prev_boards == 0 and not m.m_days_n_boards:
-            continue
-        if sentiment.is_trap_wave and now_hhmm < "10:40":
-            if not fm.broke_morning_high or m.drop_from_high < -1.2 or m.amount_yi < 1.5:
-                continue
-        shortlist.append((m, hit_themes))
+        shortlist.append((m, hit_themes, best_ech))
 
     shortlist.sort(
         key=lambda item: (
+            item[2],
             getattr(item[0], "monster_tier", 1),
+            item[0].prev_boards >= 1,
             len(item[1]),
             item[0].last_price <= 10.0,
             item[0].five_min.first_5m_surge_pct if item[0].five_min else item[0].high_pct,
@@ -176,14 +191,12 @@ def select_sniper_targets(
         reverse=True,
     )
     results: list[SniperCandidate] = []
-    for m, hit_themes in shortlist[:6]:
+    for m, hit_themes, _ in shortlist[:6]:
         ok_daily, d_tag = evaluate_daily_overhead((overhead_rows or {}).get(m.symbol, []), m.last_price)
         if not ok_daily:
             continue
         buy_low = round(m.vwap, 2)
-        buy_high = round(min(m.last_price, m.vwap * 1.015), 2)
-        if buy_high < buy_low:
-            buy_high = buy_low
+        buy_high = round(max(buy_low, min(m.last_price, m.vwap * 1.015)), 2)
         f_low = m.five_min.first_5m_low if m.five_min and m.five_min.first_5m_low > 0 else m.low_price
         defense = round(max(f_low, m.vwap * 0.975), 2)
         results.append(
@@ -226,6 +239,7 @@ def build_sniper_card_markdown(
     targets: list[SniperCandidate],
     sentiment: MarketSentiment,
     snap_time: str,
+    ladder_brief: list[str] | None = None,
 ) -> tuple[str, str]:
     top = targets[0]
     title = (
@@ -235,8 +249,10 @@ def build_sniper_card_markdown(
     lines = [
         f"**⏱️ 扫描时刻**：`{snap_time}`",
         f"**🌡️ 市场温度**：{sentiment.format_banner()}",
-        "---",
     ]
+    if ladder_brief:
+        lines.append("**🪜 连板晋级生态**：\n" + "\n".join(f"- {row}" for row in ladder_brief[:4]))
+    lines.append("---")
     for idx, c in enumerate(targets[:3], 1):
         lines.extend(
             [
@@ -258,6 +274,7 @@ def push_sniper_feishu_alert(
     level: str = "L2",
     user_open_id: str | None = None,
     dry_run: bool = False,
+    ladder_brief: list[str] | None = None,
 ) -> str | None:
     cache_dir = Path.home() / ".wyckoff" / "cache"
     sent_file = cache_dir / f"hunter_feishu_sent_{snap_date}.json"
@@ -271,7 +288,7 @@ def push_sniper_feishu_alert(
     fresh = [c for c in targets if c.symbol not in already_sent]
     if not fresh:
         return None
-    title, content = build_sniper_card_markdown(fresh, sentiment, snap_time)
+    title, content = build_sniper_card_markdown(fresh, sentiment, snap_time, ladder_brief=ladder_brief)
     if dry_run:
         print(f"[DRY-RUN FEISHU {level}] {title}\n{content}")
         return "dry_run_msg_id"

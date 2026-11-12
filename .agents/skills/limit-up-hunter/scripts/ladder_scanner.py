@@ -597,7 +597,7 @@ def reversal_risk_tag(m: QuoteMetrics) -> str:
     if m.is_limit_up:
         return ""
     bars_high = m.five_min.bars_since_high if m.five_min else 0
-    if m.high_pct >= 8.0 and (m.rebound_from_low >= 9.0 or m.ladder_tier >= 1):
+    if m.high_pct >= 8.0 and (m.rebound_from_low >= 9.0 or m.ladder_tier >= 1 or m.high_pct >= 9.2):
         if m.drop_from_high <= -4.5:
             return "[🚨冲板失败大幅回落·做T砸盘兑现]"
         if bars_high >= 15:
@@ -706,6 +706,68 @@ def _build_seed_theme_groups(strong: list[QuoteMetrics]) -> dict[str, list[Quote
     return groups
 
 
+def summarize_promotion_battle(prev_pool: list[QuoteMetrics]) -> list[str]:
+    if not prev_pool:
+        return []
+    tiers: dict[str, list[QuoteMetrics]] = {}
+    high_boards = sorted({m.prev_boards for m in prev_pool if m.prev_boards >= 2}, reverse=True)
+    for b in high_boards:
+        tiers[f"{b}进{b + 1}"] = [m for m in prev_pool if m.prev_boards == b]
+    if any(m.prev_boards == 1 for m in prev_pool):
+        tiers["1进2"] = [m for m in prev_pool if m.prev_boards == 1]
+    if any(m.prev_boards == 0 and m.m_days_n_boards for m in prev_pool):
+        tiers["断板反包"] = [m for m in prev_pool if m.prev_boards == 0 and m.m_days_n_boards]
+    lines: list[str] = []
+    for label, group in tiers.items():
+        prom = [m for m in group if m.is_limit_up]
+        fight = [m for m in group if not m.is_limit_up and m.above_vwap and m.last_pct >= 2.0]
+        blown = [m for m in group if not m.is_limit_up and m.high_pct >= 8.0 and m.drop_from_high <= -4.0]
+        elim = [m for m in group if m.last_pct <= -2.0 or (not m.above_vwap and m.last_pct < 0)]
+        rate = int(round(len(prom) / len(group) * 100))
+        p_names = f": {'/'.join(m.name for m in prom[:4])}" if prom else ""
+        b_names = f"({'/'.join(m.name for m in blown[:3])})" if blown else ""
+        lines.append(
+            f"⚔️ {label}({len(group)}只): 晋级{len(prom)}只({rate}%{p_names}) | 均线上待晋{len(fight)}只 "
+            f"| 冲板派面{len(blown)}只{b_names} | 绿盘掉队{len(elim)}只"
+        )
+    return lines
+
+
+def _evaluate_theme_echelon(
+    name: str,
+    sealed: list[QuoteMetrics],
+    all_metrics: list[QuoteMetrics],
+) -> dict[str, Any]:
+    ladder_peers = [
+        m for m in all_metrics if (m.prev_boards >= 1 or bool(m.m_days_n_boards)) and matches_theme_cluster(m, name)
+    ]
+    prom_cnt = sum(1 for m in ladder_peers if m.is_limit_up)
+    casualties = [
+        m
+        for m in all_metrics
+        if matches_theme_cluster(m, name)
+        and not m.is_limit_up
+        and (
+            ((m.prev_boards >= 1 or bool(m.m_days_n_boards)) and m.last_pct <= -2.5)
+            or (m.high_pct >= 7.5 and m.drop_from_high <= -4.0 and not m.above_vwap)
+        )
+    ]
+    heights = sorted({(m.prev_boards + 1 if m.prev_boards >= 1 else 1) for m in sealed}, reverse=True)
+    t_str = "-".join(str(h) for h in heights) + "板" if heights else "0板"
+    cas_n = len(casualties)
+    if prom_cnt >= 2 and cas_n <= prom_cnt:
+        score = 2
+        tag = f"[🏆梯队完整({t_str})·晋级{prom_cnt}/{len(ladder_peers)}·小弟正反馈]"
+    elif cas_n >= 3 and cas_n > max(prom_cnt, 1) * 1.5:
+        score = -1
+        bad_str = "/".join(f"{m.name}{m.last_pct:+.1f}%" for m in sorted(casualties, key=lambda x: x.last_pct)[:3])
+        tag = f"[⚠️前排独食/后排派面·掉队{cas_n}只({bad_str})·慎追后排]"
+    else:
+        score = 0
+        tag = f"[⚖️梯队({t_str})·晋级{prom_cnt}/{len(ladder_peers)}·后排掉队{cas_n}只]"
+    return {"echelon_score": score, "echelon_tag": tag, "promoted_cnt": prom_cnt, "backrow_drop_cnt": cas_n}
+
+
 def detect_fermenting_themes(metrics: list[QuoteMetrics]) -> list[dict[str, Any]]:
     strong = [m for m in metrics if m.is_limit_up or (m.above_vwap and m.last_pct >= 3.5)]
     has_rt_concepts = any(m.concepts for m in strong)
@@ -743,6 +805,7 @@ def detect_fermenting_themes(metrics: list[QuoteMetrics]) -> list[dict[str, Any]
         )
         if len(sealed) >= 2 or (len(sealed) >= 1 and len(members) >= 4):
             meta_info = _CONCEPT_META_CACHE.get(name, {})
+            ech = _evaluate_theme_echelon(name, sealed, metrics)
             results.append(
                 {
                     "theme": name,
@@ -752,9 +815,12 @@ def detect_fermenting_themes(metrics: list[QuoteMetrics]) -> list[dict[str, Any]
                     "total_strong": len(members),
                     "sealed": sealed,
                     "active_front": active,
+                    **ech,
                 }
             )
-    return sorted(results, key=lambda r: (r["lu_count"], -r["hot_rank"], r["total_strong"]), reverse=True)
+    return sorted(
+        results, key=lambda r: (r["lu_count"], r["echelon_score"], -r["hot_rank"], r["total_strong"]), reverse=True
+    )
 
 
 def parse_holdings_arg(raw: str | None) -> dict[str, float]:
@@ -921,8 +987,9 @@ def print_theme_resonance(metrics: list[QuoteMetrics], max_price: float | None =
     for item in themes[:8]:
         lu_names = "、".join(f"{m.name}[{m.ladder_label}]" for m in item["sealed"][:6])
         meta_str = item.get("meta_tag") or ""
+        ech_str = f" {item['echelon_tag']}" if item.get("echelon_tag") else ""
         print(
-            f"  🔥 【{item['theme']}】{meta_str} (共振强股 {item['total_strong']}只 | 已涨停 {item['lu_count']}只: {lu_names})"
+            f"  🔥 【{item['theme']}】{meta_str}{ech_str} (共振强股 {item['total_strong']}只 | 已涨停 {item['lu_count']}只: {lu_names})"
         )
         for m in _select_theme_display_candidates(item["active_front"], max_price=max_price):
             print("    ->" + format_row(m, tag_theme_front_runner(m)))
@@ -939,8 +1006,11 @@ def print_sections(
     buckets = classify_ladder_buckets(metrics, keyword, max_price=max_price)
     if buckets["prev_ladder_pool"]:
         print(
-            f"=== [0] 昨日涨停/连板池今日晋级全量监控 (100%保留不因低开剔除: {len(buckets['prev_ladder_pool'])}只) ==="
+            f"=== [0] 昨日涨停/连板池今日晋级PK记分牌 & 全量监控 (100%保留不因低开剔除: {len(buckets['prev_ladder_pool'])}只) ==="
         )
+        for pk_line in summarize_promotion_battle(buckets["prev_ladder_pool"]):
+            print(f"  {pk_line}")
+        print("  ---")
         for m in buckets["prev_ladder_pool"]:
             print(format_row(m, reversal_risk_tag(m)))
         print()
@@ -1118,6 +1188,7 @@ def _run_sniper_and_feishu(
             f"| 冲板目标:{c.limit_up_price:.2f}元 | {c.daily_tag} | 主线:{'+'.join(c.themes[:3])}"
         )
     if feishu_notify or dry_run_feishu:
+        prev_pool = classify_ladder_buckets(parsed)["prev_ladder_pool"]
         push_sniper_feishu_alert(
             final_cands,
             sentiment,
@@ -1125,6 +1196,7 @@ def _run_sniper_and_feishu(
             snap_dt.strftime("%Y-%m-%d %H:%M:%S"),
             level=feishu_level,
             dry_run=dry_run_feishu,
+            ladder_brief=summarize_promotion_battle(prev_pool),
         )
 
 

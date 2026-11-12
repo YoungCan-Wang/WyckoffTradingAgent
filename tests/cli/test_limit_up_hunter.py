@@ -470,3 +470,95 @@ def test_monster_gene_filters_dead_elephants_and_boosts_n_wave_stocks():
     picked = SF.select_sniper_targets([q_elephant, q_60d_one, q_n_wave], themes, sent, "09:45", overhead, 15.0)
     assert [c.symbol for c in picked] == ["000082.SZ", "600083.SH"]
     assert picked[0].daily_tag == "[🔥N字首板揉搓·二波起跳区]"
+
+
+def test_promotion_battle_and_backrow_echelon_veto():
+    import sniper_feishu as SF
+
+    ladder_info = {
+        "600090.SH": {"prev_boards": 3, "m_days_n_boards": ""},
+        "000091.SZ": {"prev_boards": 2, "m_days_n_boards": ""},
+        "000092.SZ": {"prev_boards": 1, "m_days_n_boards": ""},
+        "000093.SZ": {"prev_boards": 1, "m_days_n_boards": ""},
+        "000094.SZ": {"prev_boards": 1, "m_days_n_boards": ""},
+        "000095.SZ": {"prev_boards": 1, "m_days_n_boards": ""},
+    }
+    p_3to4 = replace(
+        LS.parse_quote(_raw_quote("600090.SH", "样本龙四", 10.0, 10.5, 11.0, 10.4, 11.0, 10.8, 8.0), ladder_info),
+        concepts=("健康主线", "分化题材"),
+    )
+    p_2to3 = replace(
+        LS.parse_quote(_raw_quote("000091.SZ", "样本龙三", 8.0, 8.3, 8.8, 8.2, 8.8, 8.6, 5.0), ladder_info),
+        concepts=("健康主线",),
+    )
+    p_1to2_ok = replace(
+        LS.parse_quote(_raw_quote("000092.SZ", "样本晋二", 6.0, 6.2, 6.6, 6.1, 6.6, 6.45, 3.0), ladder_info),
+        concepts=("健康主线",),
+    )
+    # Three back-row casualties in 分化题材 (blown + deep green)
+    c_drop1 = replace(
+        LS.parse_quote(_raw_quote("000093.SZ", "样本炸一", 10.0, 10.6, 10.95, 9.8, 9.9, 10.35, 6.0), ladder_info),
+        concepts=("分化题材",),
+    )
+    c_drop2 = replace(
+        LS.parse_quote(_raw_quote("000094.SZ", "样本跌二", 10.0, 9.8, 9.9, 9.4, 9.5, 9.65, 4.0), ladder_info),
+        concepts=("分化题材",),
+    )
+    c_drop3 = replace(
+        LS.parse_quote(_raw_quote("000095.SZ", "样本跌三", 10.0, 9.9, 10.0, 9.3, 9.4, 9.60, 4.0), ladder_info),
+        concepts=("分化题材",),
+    )
+    f_lu1 = replace(
+        LS.parse_quote(_raw_quote("600096.SH", "样本独食甲", 5.0, 5.5, 5.5, 5.5, 5.5, 5.5, 0.5)),
+        concepts=("分化题材",),
+    )
+    f_lu2 = replace(
+        LS.parse_quote(_raw_quote("600097.SH", "样本独食乙", 5.0, 5.5, 5.5, 5.5, 5.5, 5.5, 0.5)),
+        concepts=("分化题材",),
+    )
+    fm = LS.FiveMinSummary(3.8, True, 0.12, 7.30, True, 0, 7.02, True)
+    # Near-board blown first-board (+9.8% -> +6.9%) flagged by reversal_risk_tag
+    q_near_blown = replace(
+        LS.parse_quote(_raw_quote("000098.SZ", "样本摸炸", 10.0, 10.2, 10.98, 10.1, 10.69, 10.58, 5.0)),
+        concepts=("健康主线",),
+        five_min=fm,
+    )
+    assert "⚠️冲板未封回落" in LS.reversal_risk_tag(q_near_blown)
+
+    q_backrow_bad = replace(
+        LS.parse_quote(_raw_quote("000099.SZ", "样本后排弱", 7.0, 7.05, 7.32, 7.02, 7.28, 7.20, 1.8)),
+        concepts=("分化题材",),
+        five_min=fm,
+    )
+    q_front_good = replace(
+        LS.parse_quote(_raw_quote("600099.SH", "样本前排强", 7.0, 7.05, 7.32, 7.02, 7.28, 7.20, 1.8)),
+        concepts=("健康主线",),
+        five_min=fm,
+    )
+    pool = [
+        p_3to4,
+        p_2to3,
+        p_1to2_ok,
+        c_drop1,
+        c_drop2,
+        c_drop3,
+        f_lu1,
+        f_lu2,
+        q_near_blown,
+        q_backrow_bad,
+        q_front_good,
+    ]
+    pk_lines = LS.summarize_promotion_battle(LS.classify_ladder_buckets(pool)["prev_ladder_pool"])
+    assert any("3进4(1只): 晋级1只(100%" in ln for ln in pk_lines)
+    assert any("1进2(4只): 晋级1只(25%" in ln and "冲板派面1只(样本炸一)" in ln for ln in pk_lines)
+
+    themes = LS.detect_fermenting_themes(pool)
+    by_t = {t["theme"]: t for t in themes}
+    assert by_t["健康主线"]["echelon_score"] == 2 and "🏆梯队完整" in by_t["健康主线"]["echelon_tag"]
+    assert by_t["分化题材"]["echelon_score"] == -1 and "⚠️前排独食/后排派面" in by_t["分化题材"]["echelon_tag"]
+
+    sent = SF.MarketSentiment(2500, 2100, 45, 30)
+    picked = SF.select_sniper_targets(pool, themes, sent, "10:10", {}, 15.0, LS.reversal_risk_tag)
+    assert [c.symbol for c in picked] == ["600099.SH"]
+    _, md = SF.build_sniper_card_markdown(picked, sent, "2026-03-10 10:10:00", ladder_brief=pk_lines)
+    assert "连板晋级生态" in md and "3进4" in md
