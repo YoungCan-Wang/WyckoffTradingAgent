@@ -25,6 +25,11 @@ CONCEPT_ALIASES: dict[str, str] = {
     "短剧互动游戏": "短剧游戏",
     "文化传媒概念": "影视概念",
     "卫星互联网": "商业航天",
+    "太阳能": "光伏概念",
+    "光伏": "光伏概念",
+    "CPO概念": "共封装光学(CPO)",
+    "CPO": "共封装光学(CPO)",
+    "数据中心": "数据中心(AIDC)",
 }
 
 NOISE_CONCEPTS = frozenset(
@@ -122,9 +127,11 @@ def fetch_ths_hot_plates(timeout: float = 4.0) -> dict[str, dict[str, Any]]:
 
 def fetch_ths_limit_up_blocks(
     timeout: float = 4.0,
+    date_ymd: str | None = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, set[str]], dict[str, str]]:
+    url = f"{THS_BLOCK_TOP_URL}&date={date_ymd}" if date_ymd else THS_BLOCK_TOP_URL
     try:
-        resp = requests.get(THS_BLOCK_TOP_URL, headers=THS_HEADERS, timeout=timeout)
+        resp = requests.get(url, headers=THS_HEADERS, timeout=timeout)
         blocks = resp.json().get("data") or []
     except Exception:
         return {}, {}, {}
@@ -241,19 +248,41 @@ def fetch_em_stock_concepts(symbols: Iterable[str], timeout: float = 4.0) -> dic
     return out
 
 
+def _fetch_prev_ladder_blocks(snap_ymd: str | None) -> dict[str, set[str]]:
+    if not snap_ymd or len(snap_ymd) != 8:
+        return {}
+    from datetime import datetime, timedelta
+
+    base = datetime.strptime(snap_ymd, "%Y%m%d")
+    for delta in range(1, 6):
+        cand = base - timedelta(days=delta)
+        if cand.weekday() >= 5:
+            continue
+        _, prev_blocks, _ = fetch_ths_limit_up_blocks(timeout=3.5, date_ymd=cand.strftime("%Y%m%d"))
+        if prev_blocks:
+            return prev_blocks
+    return {}
+
+
 def fetch_realtime_concept_bundle(
     target_symbols: Iterable[str],
+    snap_ymd: str | None = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, tuple[str, tuple[str, ...]]], dict[str, str]]:
-    with ThreadPoolExecutor(max_workers=4) as ex:
+    with ThreadPoolExecutor(max_workers=5) as ex:
         f_hot = ex.submit(fetch_ths_hot_plates)
         f_blk = ex.submit(fetch_ths_limit_up_blocks)
+        f_prev = ex.submit(_fetch_prev_ladder_blocks, snap_ymd)
         f_em_hot = ex.submit(fetch_em_hot_concepts)
         f_em_stk = ex.submit(fetch_em_stock_concepts, list(target_symbols))
 
         ths_hot = f_hot.result()
         ths_blk, code_blocks, code_reasons = f_blk.result()
+        prev_blocks = f_prev.result()
         em_hot = f_em_hot.result()
         em_stk = f_em_stk.result()
+
+    for code6, bset in prev_blocks.items():
+        code_blocks.setdefault(code6, set()).update(bset)
 
     merged_meta: dict[str, dict[str, Any]] = {}
     for cname, info in em_hot.items():

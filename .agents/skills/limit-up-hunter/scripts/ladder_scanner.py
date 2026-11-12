@@ -755,16 +755,17 @@ def _evaluate_theme_echelon(
     heights = sorted({(m.prev_boards + 1 if m.prev_boards >= 1 else 1) for m in sealed}, reverse=True)
     t_str = "-".join(str(h) for h in heights) + "板" if heights else "0板"
     cas_n = len(casualties)
-    if prom_cnt >= 2 and cas_n <= prom_cnt:
+    peer_n = len(ladder_peers)
+    if prom_cnt >= 2 and cas_n <= prom_cnt and (peer_n == 0 or prom_cnt / peer_n >= 0.45):
         score = 2
-        tag = f"[🏆梯队完整({t_str})·晋级{prom_cnt}/{len(ladder_peers)}·小弟正反馈]"
+        tag = f"[🏆梯队完整({t_str})·晋级{prom_cnt}/{peer_n}·小弟正反馈]"
     elif cas_n >= 3 and cas_n > max(prom_cnt, 1) * 1.5:
         score = -1
         bad_str = "/".join(f"{m.name}{m.last_pct:+.1f}%" for m in sorted(casualties, key=lambda x: x.last_pct)[:3])
         tag = f"[⚠️前排独食/后排派面·掉队{cas_n}只({bad_str})·慎追后排]"
     else:
         score = 0
-        tag = f"[⚖️梯队({t_str})·晋级{prom_cnt}/{len(ladder_peers)}·后排掉队{cas_n}只]"
+        tag = f"[⚖️梯队({t_str})·晋级{prom_cnt}/{peer_n}·后排掉队{cas_n}只]"
     return {"echelon_score": score, "echelon_tag": tag, "promoted_cnt": prom_cnt, "backrow_drop_cnt": cas_n}
 
 
@@ -1047,6 +1048,7 @@ def print_sections(
 def enrich_with_realtime_concepts(
     metrics: list[QuoteMetrics],
     holding_syms: Iterable[str] = (),
+    snap_ymd: str | None = None,
 ) -> list[QuoteMetrics]:
     hold_set = set(holding_syms)
     target_syms = [
@@ -1056,9 +1058,14 @@ def enrich_with_realtime_concepts(
         or m.prev_boards >= 1
         or bool(m.m_days_n_boards)
         or (m.above_vwap and m.last_pct >= 2.5)
+        or (m.high_pct >= 7.5 and m.drop_from_high <= -4.0 and not m.above_vwap)
         or m.symbol in hold_set
     ]
-    meta, stk_map, reasons = fetch_realtime_concept_bundle(target_syms)
+    meta, stk_map, reasons = (
+        fetch_realtime_concept_bundle(target_syms, snap_ymd=snap_ymd)
+        if snap_ymd
+        else fetch_realtime_concept_bundle(target_syms)
+    )
     _CONCEPT_META_CACHE.clear()
     _CONCEPT_META_CACHE.update(meta)
     enriched: list[QuoteMetrics] = []
@@ -1226,7 +1233,7 @@ def main() -> None:
     industry_map = load_industry_map(ts_token)
     gene_map = load_monster_gene_map(snap_ymd, ts_token)
     parsed = [m for q in qmap.values() if (m := parse_quote(q, ladder_info, industry_map, gene_map)) is not None]
-    parsed = enrich_with_realtime_concepts(parsed, holdings.keys())
+    parsed = enrich_with_realtime_concepts(parsed, holdings.keys(), snap_ymd=snap_ymd)
     if not args.no_5m:
         parsed = enrich_with_5m_bars(client, parsed, holdings.keys(), max_price=args.max_price)
     print(
