@@ -1390,3 +1390,83 @@ def test_silent_l1_scan_preserves_telegraph_until_next_sent_card(tmp_path, monke
     assert len(sent_cards) == 1
     assert "具身智能" in sent_cards[0]
     assert "tg:sina_tg_950" in json.loads(state_file.read_text(encoding="utf-8"))["cooldowns"]
+
+
+def test_heartbeat_mode_sends_compact_card_without_resetting_l1_or_telegraph_cooldown(tmp_path, monkeypatch):
+    radar = _load_radar_module()
+    import sys
+
+    sys.path.insert(0, str(SCRIPT_PATH.parent))
+    import telegraph_catalysts as tc
+
+    today_str = radar.cn_today().isoformat()
+    state_file = tmp_path / "state_hb.json"
+    state_file.write_text(
+        json.dumps({"date": today_str, "ts": 1000.0, "last_l1_ts": 1000.0, "cooldowns": {}, "quotes": {}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(radar, "STATE_PATH", state_file)
+    monkeypatch.setattr(radar, "ALERT_LOG_PATH", tmp_path / "alerts_hb.jsonl")
+    monkeypatch.setattr(radar, "TURNOVER_DIR", tmp_path / "turnover_hb")
+    monkeypatch.setattr(radar, "load_wyckoff_l2_map", lambda *a, **kw: {})
+    fake_item = [{"id": "sina_tg_hb1", "ts": 1050.0, "hm": "13:05", "text": "央行推进互换便利工具落地支持资本市场"}]
+    monkeypatch.setattr(tc, "fetch_sina_telegraph", lambda pages=1: list(fake_item))
+    monkeypatch.setattr(tc, "fetch_wscn_telegraph", lambda: [])
+
+    class FakeClient:
+        def __init__(self, **kw):
+            pass
+
+        def get_quotes(self, universes=None, symbols=None):
+            return {
+                "000001.SH": {"last_price": 3306.6, "prev_close": 3300.0, "volume": 1e9, "amount": 5000e8},
+                "399001.SZ": {"last_price": 10521.0, "prev_close": 10500.0, "volume": 1e9, "amount": 6000e8},
+                "399006.SZ": {"last_price": 2102.1, "prev_close": 2100.0, "volume": 5e8, "amount": 2500e8},
+                "600900.SH": {"last_price": 28.14, "prev_close": 28.00, "volume": 1e7, "amount": 2.8e8},
+            }
+
+    import integrations.tickflow_client as tf_mod
+
+    monkeypatch.setattr(tf_mod, "TickFlowClient", FakeClient)
+    sent_events: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(radar, "resolve_lark_open_id", lambda *a: "ou_mock")
+    monkeypatch.setattr(
+        radar,
+        "send_feishu_tiered_alert",
+        lambda title, content, level="L1", **kw: sent_events.append((level, title, content)) or "om_hb",
+    )
+    args = SimpleNamespace(
+        ignore_hours=True,
+        dry_run=False,
+        trace=None,
+        holding=["600900.SH:27.50:26.50"],
+        user_id="ou_mock",
+        force_send=False,
+        urgent_only=False,
+        heartbeat=True,
+    )
+
+    monkeypatch.setattr(radar.time, "time", lambda: 1300.0)
+    radar.run_once(args)
+    assert len(sent_events) == 1
+    hb_level, hb_title, hb_body = sent_events[0]
+    assert hb_level == "L1"
+    assert hb_title.startswith("【💓 心跳】")
+    assert "上证+0.20% 创+0.10%" in hb_title
+    assert "🛡️ 持仓正常：600900 +0.50%" in hb_body
+    assert len(hb_body.splitlines()) == 2
+    saved_after_hb = json.loads(state_file.read_text(encoding="utf-8"))
+    assert saved_after_hb["last_l1_ts"] == 1000.0
+    assert "tg:sina_tg_hb1" not in saved_after_hb["cooldowns"]
+
+    monkeypatch.setattr(radar.time, "time", lambda: 2800.0)
+    radar.run_once(args)
+    assert len(sent_events) == 2
+    full_level, full_title, full_body = sent_events[1]
+    assert full_level == "L1"
+    assert full_title.startswith("【L1】")
+    assert "5m全市场雷达" in full_title
+    assert "互换便利" in full_body
+    saved_after_full = json.loads(state_file.read_text(encoding="utf-8"))
+    assert saved_after_full["last_l1_ts"] == 2800.0
+    assert "tg:sina_tg_hb1" in saved_after_full["cooldowns"]

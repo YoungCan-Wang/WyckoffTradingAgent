@@ -1202,6 +1202,33 @@ def _backfill_holding_quotes(
     return merged
 
 
+def _format_heartbeat_card(
+    curr_quotes: dict[str, dict[str, Any]],
+    holdings: dict[str, dict[str, float]],
+    red_count: int,
+    now_hm: str,
+) -> tuple[str, str]:
+    sh_m = compute_quote_metrics(curr_quotes.get("000001.SH", {}))
+    sz_m = compute_quote_metrics(curr_quotes.get("399001.SZ", {}))
+    cy_m = compute_quote_metrics(curr_quotes.get("399006.SZ", {}))
+    sh_s = f"上证{sh_m['pct']:+.2f}%" if sh_m else "上证--"
+    cy_s = f" 创{cy_m['pct']:+.2f}%" if cy_m else ""
+    thermo = (
+        _build_index_thermometer(curr_quotes, sh_m["pct"], sz_m["pct"])
+        if sh_m and sz_m
+        else f"{sh_s}{' 深' + format(sz_m['pct'], '+.2f') + '%' if sz_m else ' 深--'}{cy_s}"
+    )
+    title = f"【💓 心跳】{now_hm} 雷达在线 | {sh_s}{cy_s} | 红{red_count}家"
+    lines = [f"✅ 7,807 标的 5m 巡检正常（本帧无 L2/L3/L4 加急异动）：{thermo} | 红盘 {red_count} 家"]
+    if holdings:
+        h_parts = []
+        for sym in holdings:
+            hm = compute_quote_metrics(curr_quotes.get(sym, {}))
+            h_parts.append(f"{sym[:6]} {hm['pct']:+.2f}%" if hm else f"{sym[:6]} --")
+        lines.append("🛡️ 持仓正常：" + " | ".join(h_parts))
+    return title, "\n".join(lines)
+
+
 def _baseline_after_send(
     prev_state: dict[str, Any],
     today_str: str,
@@ -1229,42 +1256,41 @@ def run_once(args: argparse.Namespace) -> None:
     holdings = parse_holdings_arg(args.holding)
     prev_state = json.loads(STATE_PATH.read_text(encoding="utf-8")) if STATE_PATH.exists() else {}
     now_ts = time.time()
-    curr_quotes = client.get_quotes(universes=["CN_Equity_A", "CN_ETF", "CN_Index"])
-    curr_quotes = _backfill_holding_quotes(client, curr_quotes, holdings)
-    level, title, content, red_count, cooldowns = analyze_snapshot_diff(
-        curr_quotes,
-        prev_state,
-        l2_map,
-        holdings,
-        now_ts=now_ts,
-        fetch_telegraph=not args.dry_run,
+    curr_quotes = _backfill_holding_quotes(
+        client, client.get_quotes(universes=["CN_Equity_A", "CN_ETF", "CN_Index"]), holdings
     )
-    compact_snaps: dict[str, dict[str, float]] = {}
-    for sym, q in curr_quotes.items():
-        m = compute_quote_metrics(q)
-        if m:
-            compact_snaps[sym] = {"pct": round(m["pct"], 3), "amt_yi": round(m["amt_yi"], 3)}
+    level, title, content, red_count, cooldowns = analyze_snapshot_diff(
+        curr_quotes, prev_state, l2_map, holdings, now_ts=now_ts, fetch_telegraph=not args.dry_run
+    )
+    compact_snaps = {
+        sym: {"pct": round(m["pct"], 3), "amt_yi": round(m["amt_yi"], 3)}
+        for sym, q in curr_quotes.items()
+        if (m := compute_quote_metrics(q)) is not None
+    }
     today_str = cn_today().isoformat()
     prev_cooldowns: dict[str, float] = (
         dict(prev_state.get("cooldowns", {})) if prev_state.get("date") == today_str else {}
     )
     last_l1_ts = float(prev_state.get("last_l1_ts") or 0.0) if prev_state.get("date") == today_str else 0.0
     saved_cooldowns = prev_cooldowns
-    send_attempted = False
-    send_ok = False
+    send_attempted, send_ok = False, False
     if should_send_card(level, now_ts, last_l1_ts, args.force_send, args.urgent_only):
         send_attempted = True
         open_id = "" if args.dry_run else resolve_lark_open_id(args.user_id)
         msg_id = send_feishu_tiered_alert(title, content, level=level, user_open_id=open_id, dry_run=args.dry_run)
         if msg_id:
-            send_ok = True
-            saved_cooldowns = cooldowns
+            send_ok, saved_cooldowns = True, cooldowns
             if not args.dry_run:
                 append_alert_records(_LAST_ALERT_RECORDS, log_path=ALERT_LOG_PATH, sent=True, msg_id=msg_id)
             if level == "L1":
                 last_l1_ts = now_ts
             print(f"[{now_bjt.strftime('%H:%M:%S')}] Sent {level} alert: msg_id={msg_id}")
-    # dry-run must not touch the live daemon state file (shared /tmp path).
+    elif getattr(args, "heartbeat", False) and not args.urgent_only:
+        hb_title, hb_body = _format_heartbeat_card(curr_quotes, holdings, red_count, now_bjt.strftime("%H:%M"))
+        open_id = "" if args.dry_run else resolve_lark_open_id(args.user_id)
+        msg_id = send_feishu_tiered_alert(hb_title, hb_body, level="L1", user_open_id=open_id, dry_run=args.dry_run)
+        if msg_id:
+            print(f"[{now_bjt.strftime('%H:%M:%S')}] Sent HEARTBEAT card: msg_id={msg_id}")
     if args.dry_run:
         return
     state_ts, saved_quotes = _baseline_after_send(prev_state, today_str, now_ts, compact_snaps, send_attempted, send_ok)
@@ -1320,7 +1346,12 @@ def main() -> None:
         "--user-id", type=str, default=None, help="Override Feishu open_id (default: from lark-cli auth status)"
     )
     parser.add_argument("--urgent-only", action="store_true", help="Only send Feishu card when L2/L3/L4 triggers")
-    parser.add_argument("--force-send", action="store_true", help="Always send Feishu card on every scan")
+    parser.add_argument("--force-send", action="store_true", help="Always send full Feishu card on every scan")
+    parser.add_argument(
+        "--heartbeat",
+        action="store_true",
+        help="Send 2-line alive heartbeat card on routine 5m scans while keeping full L1 card every ~30m",
+    )
     parser.add_argument("--ignore-hours", action="store_true", help="Run scan even outside trading hours")
     parser.add_argument("--dry-run", action="store_true", help="Print card without sending to Feishu")
     args = parser.parse_args()
