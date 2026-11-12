@@ -363,3 +363,77 @@ def test_merge_updates_when_expected_refresh_still_on_disk(tmp_path, monkeypatch
     assert disk is not None
     assert disk["refresh_token"] == "alice-rt2"
     assert disk["access_token"] == "alice-rt2-at"
+
+
+def test_invalid_session_error_ignores_tls_and_invalid_json():
+    assert local_auth._invalid_session_error(RuntimeError("Invalid Refresh Token: Already Used"))
+    assert local_auth._invalid_session_error(RuntimeError("token expired"))
+    assert not local_auth._invalid_session_error(RuntimeError("certificate has expired"))
+    assert not local_auth._invalid_session_error(RuntimeError("invalid JSON response from proxy"))
+
+
+def test_restore_tls_expired_does_not_clear_valid_session(tmp_path, monkeypatch):
+    _point_session(tmp_path, monkeypatch)
+    local_auth.save_session(
+        {
+            "user_id": "alice",
+            "email": "alice@example.test",
+            "access_token": "alice-at",
+            "refresh_token": "alice-rt",
+        }
+    )
+    monkeypatch.setattr(
+        local_auth,
+        "_create_client",
+        lambda: _FakeClient(_FakeAuth(error=RuntimeError("SSLCertVerificationError: certificate has expired"))),
+    )
+    monkeypatch.setattr(local_auth, "auto_relogin", lambda: {"user_id": "should-not-run"})
+
+    result = local_auth.restore_session()
+
+    disk = local_auth.load_session()
+    assert disk is not None
+    assert disk["refresh_token"] == "alice-rt"
+    assert result is not None
+    assert result["refresh_token"] == "alice-rt"
+
+
+def test_restore_get_session_none_returns_rotated_disk_tokens(tmp_path, monkeypatch):
+    """Sibling wrote RT2 while get_user succeeded but get_session returned None."""
+    _point_session(tmp_path, monkeypatch)
+    local_auth.save_session(
+        {
+            "user_id": "alice",
+            "email": "alice@example.test",
+            "access_token": "alice-old-at",
+            "refresh_token": "alice-old-rt",
+        }
+    )
+
+    class Auth(_FakeAuth):
+        def set_session(self, access_token: str, refresh_token: str) -> None:
+            return None
+
+        def get_user(self):
+            local_auth.save_session(
+                {
+                    "user_id": "alice",
+                    "email": "alice@example.test",
+                    "access_token": "alice-new-at",
+                    "refresh_token": "alice-new-rt",
+                }
+            )
+            return SimpleNamespace(user=SimpleNamespace(id="alice"))
+
+        def get_session(self):
+            return None
+
+    monkeypatch.setattr(local_auth, "_create_client", lambda: _FakeClient(Auth()))
+
+    result = local_auth.restore_session()
+
+    disk = local_auth.load_session()
+    assert disk is not None
+    assert disk["refresh_token"] == "alice-new-rt"
+    assert result is not None
+    assert result["refresh_token"] == "alice-new-rt"

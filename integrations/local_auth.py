@@ -122,7 +122,9 @@ def restore_session() -> dict[str, Any] | None:
             ):
                 logger.warning("refusing to persist restored session: disk identity changed during refresh")
                 return load_session()
-        return _restored_session_if_disk_unchanged(expected_user_id, data)
+        return _restored_session_if_disk_unchanged(
+            expected_user_id, data, expected_refresh_token=expected_refresh_token
+        )
     except Exception as exc:
         logger.debug("session restore failed", exc_info=True)
         if _invalid_session_error(exc):
@@ -131,7 +133,10 @@ def restore_session() -> dict[str, Any] | None:
             return load_session()
         # Transient network errors still must not return the pre-flight principal
         # after logout/switch — #512 only CAS'd disk writes, not this return.
-        return _restored_session_if_disk_unchanged(expected_user_id, data)
+        # Same-user RT rotation: do not hand the caller a stale RT1 while disk has RT2.
+        return _restored_session_if_disk_unchanged(
+            expected_user_id, data, expected_refresh_token=expected_refresh_token
+        )
 
 
 def logout() -> None:
@@ -282,12 +287,25 @@ def _same_session_user(current: dict[str, Any] | None, expected_user_id: str) ->
     return str(current.get("user_id") or "") == expected
 
 
-def _restored_session_if_disk_unchanged(expected_user_id: str, data: dict[str, Any]) -> dict[str, Any] | None:
-    """Return in-memory restore result only when disk still matches expected user."""
+def _restored_session_if_disk_unchanged(
+    expected_user_id: str,
+    data: dict[str, Any],
+    *,
+    expected_refresh_token: str = "",
+) -> dict[str, Any] | None:
+    """Return in-memory restore result only when disk still matches this flight."""
     disk = load_session()
     if not _same_session_user(disk, expected_user_id):
         logger.warning("refusing to return restored session: disk identity changed during refresh")
         return disk
+    if expected_refresh_token and disk is not None:
+        disk_rt = str(disk.get("refresh_token") or "")
+        data_rt = str(data.get("refresh_token") or "")
+        # Allow pre-flight RT (no rotation yet) or the tokens we just wrote/hold.
+        # A sibling's newer RT must win — do not return stale RT1 to sync/IPC.
+        if disk_rt and disk_rt not in {expected_refresh_token, data_rt}:
+            logger.warning("refusing to return restored session: disk refresh rotated during refresh")
+            return disk
     return data
 
 
@@ -655,8 +673,33 @@ def _create_client():
 
 
 def _invalid_session_error(exc: Exception) -> bool:
+    """True when the failure means the presented session/refresh is dead.
+
+    Substring ``expired`` / ``invalid`` alone are too broad: TLS
+    ``certificate has expired`` and proxy ``invalid JSON`` would clear a still-
+    valid same-user session (RT CAS does not help — disk still holds the
+    pre-flight refresh). Match auth/session-shaped markers only.
+    """
     text = str(exc).lower()
-    return "invalid" in text or "expired" in text or "revoked" in text
+    markers = (
+        "invalid refresh",
+        "invalid jwt",
+        "invalid token",
+        "token is invalid",
+        "token invalid",
+        "token expired",
+        "token is expired",
+        "jwt expired",
+        "access token expired",
+        "session expired",
+        "refresh_token",
+        "refresh token",
+        "already used",
+        "token revoked",
+        "session revoked",
+        "user revoked",
+    )
+    return any(marker in text for marker in markers)
 
 
 def _update_config(update: Callable[[dict[str, Any]], bool | None]) -> None:
