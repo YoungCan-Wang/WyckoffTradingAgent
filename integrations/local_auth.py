@@ -187,11 +187,18 @@ def merge_session_tokens_if_same_user(
     access_token: str,
     refresh_token: str,
     email: str = "",
+    expected_refresh_token: str = "",
 ) -> bool:
-    """Update tokens on disk only when session still belongs to expected_user_id.
+    """Update tokens on disk only when session still matches this tool flight.
 
     Read-check-write runs under the session lock so MCP/tool refresh cannot
     clobber a concurrent desktop logout or account switch (#507 TOCTOU).
+
+    ``expected_refresh_token`` is the refresh token the caller held before
+    ``create_user_client`` / refresh. Matching ``user_id`` alone is not enough:
+    GoTrue ``set_session`` with a still-valid access token does **not** refresh,
+    so a stale in-memory RT1 would otherwise overwrite a sibling restore's RT2
+    and leave disk holding an already-used refresh token (#633 family).
     """
     if not str(expected_user_id or "").strip():
         return False
@@ -200,6 +207,8 @@ def merge_session_tokens_if_same_user(
     with _write_lock(SESSION_FILE, _SESSION_THREAD_LOCK):
         current = _read_session_file()
         if not _same_session_user(current, expected_user_id):
+            return False
+        if not _same_session_refresh_token(current, expected_refresh_token):
             return False
         assert current is not None
         current["access_token"] = access_token

@@ -314,3 +314,52 @@ def test_restore_timeout_keeps_same_user_when_disk_unchanged(tmp_path, monkeypat
     disk = local_auth.load_session()
     assert disk is not None
     assert disk["user_id"] == "alice"
+
+
+def test_merge_refuses_stale_refresh_when_disk_already_rotated(tmp_path, monkeypatch):
+    _point_session(tmp_path, monkeypatch)
+    local_auth.save_session(
+        {
+            "user_id": "alice",
+            "email": "alice@example.test",
+            "access_token": "alice-rt2-at",
+            "refresh_token": "alice-rt2",
+        }
+    )
+
+    ok = local_auth.merge_session_tokens_if_same_user(
+        "alice",
+        access_token="alice-rt1-at",
+        refresh_token="alice-rt1",
+        expected_refresh_token="alice-rt1",
+    )
+
+    assert ok is False
+    disk = local_auth.load_session()
+    assert disk is not None
+    assert disk["refresh_token"] == "alice-rt2"
+
+
+def test_merge_updates_when_expected_refresh_still_on_disk(tmp_path, monkeypatch):
+    _point_session(tmp_path, monkeypatch)
+    local_auth.save_session(
+        {
+            "user_id": "alice",
+            "email": "alice@example.test",
+            "access_token": "alice-rt1-at",
+            "refresh_token": "alice-rt1",
+        }
+    )
+
+    ok = local_auth.merge_session_tokens_if_same_user(
+        "alice",
+        access_token="alice-rt2-at",
+        refresh_token="alice-rt2",
+        expected_refresh_token="alice-rt1",
+    )
+
+    assert ok is True
+    disk = local_auth.load_session()
+    assert disk is not None
+    assert disk["refresh_token"] == "alice-rt2"
+    assert disk["access_token"] == "alice-rt2-at"

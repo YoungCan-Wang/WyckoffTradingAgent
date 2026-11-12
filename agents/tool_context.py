@@ -171,6 +171,9 @@ def get_user_client(tool_context: ToolContext | None):
     cached = _user_client_cache.get(cache_key)
     if cached is not None:
         return cached
+    # Capture pre-flight refresh before create_user_client may rotate tokens in
+    # memory; merge CAS needs it so a stale unexpired AT+RT1 cannot overwrite RT2.
+    expected_refresh = str(tool_context.state.get("refresh_token") or "")
     client, new_access, new_refresh = _create_or_relogin_client(tool_context, access_token)
     if client is None:
         return None
@@ -179,7 +182,7 @@ def get_user_client(tool_context: ToolContext | None):
     if new_refresh:
         tool_context.state["refresh_token"] = new_refresh
     if new_access or new_refresh:
-        _persist_tool_session(tool_context)
+        _persist_tool_session(tool_context, expected_refresh_token=expected_refresh)
     final_key = _user_client_cache_key(get_user_id(tool_context), new_access or access_token)
     _evict_stale_clients(final_key)
     _user_client_cache[final_key] = client
@@ -243,7 +246,11 @@ def _evict_stale_clients(keep_key: str) -> None:
         close_client(_user_client_cache.pop(key))
 
 
-def _persist_tool_session(tool_context: ToolContext | None) -> None:
+def _persist_tool_session(
+    tool_context: ToolContext | None,
+    *,
+    expected_refresh_token: str = "",
+) -> None:
     if tool_context is None:
         return
     state = tool_context.state
@@ -260,14 +267,17 @@ def _persist_tool_session(tool_context: ToolContext | None) -> None:
         # stale in-memory principal (that resurrects logout or clobbers Bob→Alice).
         # Compare-and-swap under the session lock — a check-then-save outside the
         # lock still races with auth_logout / auth_login on other IPC workers.
+        # Also CAS the pre-flight refresh token: unexpired AT + already-used RT
+        # still passes set_session without refreshing, and must not clobber RT2.
         if not merge_session_tokens_if_same_user(
             ctx_user,
             access_token=access_token,
             refresh_token=refresh_token,
             email=str(state.get("email") or ""),
+            expected_refresh_token=expected_refresh_token,
         ):
             logger.warning(
-                "refusing to persist tool session: disk missing or user_id != %s",
+                "refusing to persist tool session: disk missing, user_id != %s, or refresh rotated",
                 ctx_user,
             )
     except Exception:
@@ -313,13 +323,16 @@ def _relogin_and_create_client(tool_context: ToolContext | None):
     tool_context.state["refresh_token"] = data["refresh_token"]
     from integrations.supabase_base import create_user_client, get_session_tokens
 
+    # auto_relogin already wrote these tokens; CAS merge against that disk RT so a
+    # concurrent same-user restore that rotated further is not overwritten.
+    expected_refresh = str(data.get("refresh_token") or "")
     client = create_user_client(data["access_token"], data["refresh_token"])
     new_access, new_refresh = get_session_tokens(client)
     if new_access:
         tool_context.state["access_token"] = new_access
     if new_refresh:
         tool_context.state["refresh_token"] = new_refresh
-    _persist_tool_session(tool_context)
+    _persist_tool_session(tool_context, expected_refresh_token=expected_refresh)
     return client, new_access or data["access_token"], new_refresh or data["refresh_token"]
 
 
