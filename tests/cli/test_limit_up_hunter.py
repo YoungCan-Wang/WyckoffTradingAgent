@@ -468,7 +468,7 @@ def test_monster_gene_filters_dead_elephants_and_boosts_n_wave_stocks():
     themes = [{"theme": "算力概念", "lu_count": 5}]
     overhead = {"000082.SZ": [{"trade_date": "20260309", "high": 10.50, "low": 9.0, "pct_chg": 10.0}]}
     picked = SF.select_sniper_targets([q_elephant, q_60d_one, q_n_wave], themes, sent, "09:45", overhead, 15.0)
-    assert [c.symbol for c in picked] == ["000082.SZ", "600083.SH"]
+    assert [c.symbol for c in picked] == ["000082.SZ"]
     assert picked[0].daily_tag == "[🔥N字首板揉搓·二波起跳区]"
 
 
@@ -571,3 +571,56 @@ def test_promotion_battle_and_backrow_echelon_veto():
     assert [c.symbol for c in picked] == ["000088.SZ", "600099.SH"]
     _, md = SF.build_sniper_card_markdown(picked, sent, "2026-03-10 10:10:00", ladder_brief=pk_lines)
     assert "连板晋级生态" in md and "3进4" in md
+
+
+def test_t1_dual_track_consec_gene_vs_underwater_amplitude():
+    import sniper_feishu as SF
+
+    rows_by_sym = {
+        "000070.SZ": [("20260301", 10.0, 11.0), ("20260302", 11.0, 12.1), ("20260303", 12.1, 11.8)],
+        "000071.SZ": [("20260301", 10.0, 11.0), ("20260302", 11.0, 10.8), ("20260309", 10.0, 11.0)],
+    }
+    gmap = LS.compute_monster_gene_from_rows(rows_by_sym, {"000070.SZ": (40.0, 8.0), "000071.SZ": (45.0, 7.0)})
+    assert gmap["000070.SZ"]["max_consec_60d"] == 2
+    assert gmap["000071.SZ"]["max_consec_60d"] == 1
+
+    fm_ok = LS.FiveMinSummary(3.5, True, 0.12, 8.35, True, 0, 8.02, True)
+    fm_deep = LS.FiveMinSummary(1.2, False, 0.20, 8.08, True, 0, 7.80, False)
+    # 1) Water-above (+4.0%) with isolated 1-board only (lu_60d=1, max_consec=1) -> rejected on water
+    q_one_day_wonder = replace(
+        LS.parse_quote(_raw_quote("000072.SZ", "样本一日游", 8.0, 8.05, 8.35, 8.02, 8.32, 8.22, 1.5)),
+        concepts=("主线A",),
+        five_min=fm_ok,
+        lu_60d=1,
+        lu_10d=0,
+        max_consec_60d=1,
+        circ_mv_yi=50.0,
+    )
+    assert not q_one_day_wonder.has_consec_gene
+    # 2) Water-above (+4.0%) with real 2-consecutive-board gene -> passes Track A
+    q_consec_ok = replace(
+        LS.parse_quote(_raw_quote("000070.SZ", "样本真连板", 8.0, 8.05, 8.35, 8.02, 8.32, 8.22, 1.8), None, None, gmap),
+        concepts=("主线A",),
+        five_min=fm_ok,
+    )
+    assert q_consec_ok.has_consec_gene
+    # 3) Deep-water washout (-4.5% -> +0.75% above VWAP) -> passes Track B for big amplitude cushion
+    q_deep_turn = replace(
+        LS.parse_quote(_raw_quote("000073.SZ", "样本深水妖", 8.0, 7.84, 8.08, 7.64, 8.06, 7.92, 2.0)),
+        concepts=("主线A",),
+        five_min=fm_deep,
+        lu_60d=3,
+        lu_10d=1,
+        max_consec_60d=2,
+        circ_mv_yi=42.0,
+    )
+    assert "🌊深水翻均线·T+1博大振幅垫" in LS.reversal_risk_tag(q_deep_turn)
+
+    themes = [{"theme": "主线A", "lu_count": 4, "echelon_score": 2}]
+    sent = SF.MarketSentiment(2600, 2000, 50, 25)
+    picked = SF.select_sniper_targets(
+        [q_one_day_wonder, q_consec_ok, q_deep_turn], themes, sent, "10:05", {}, 15.0, LS.reversal_risk_tag
+    )
+    assert [c.symbol for c in picked] == ["000073.SZ", "000070.SZ"]
+    assert "🌊T+1水下承接·博大振幅垫" in picked[0].entry_mode
+    assert "🚀T+1水上接力·真连板基因" in picked[1].entry_mode

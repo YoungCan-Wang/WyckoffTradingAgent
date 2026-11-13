@@ -141,8 +141,22 @@ class QuoteMetrics:
     five_min: FiveMinSummary | None = None
     lu_60d: int | None = None
     lu_10d: int = 0
+    max_consec_60d: int = 0
     circ_mv_yi: float = 0.0
     prev_turnover_pct: float = 0.0
+
+    @property
+    def has_consec_gene(self) -> bool:
+        if self.lu_60d is None:
+            return True
+        return (
+            self.prev_boards >= 1
+            or bool(self.m_days_n_boards)
+            or self.max_consec_60d >= 2
+            or self.lu_10d >= 2
+            or (self.lu_60d >= 2 and self.lu_10d >= 1)
+            or self.lu_60d >= 3
+        )
 
     @property
     def has_monster_gene(self) -> bool:
@@ -269,6 +283,7 @@ def parse_quote(
         industry=industry,
         lu_60d=int(ginfo["lu_60d"]) if ginfo and "lu_60d" in ginfo else None,
         lu_10d=int(ginfo.get("lu_10d", 0)) if ginfo else 0,
+        max_consec_60d=int(ginfo.get("max_consec_60d", 0)) if ginfo else 0,
         circ_mv_yi=float(ginfo.get("circ_mv_yi", 0.0)) if ginfo else 0.0,
         prev_turnover_pct=float(ginfo.get("turnover_pct", 0.0)) if ginfo else 0.0,
     )
@@ -390,10 +405,16 @@ def compute_monster_gene_from_rows(
             continue
         ordered = sorted(rows_by_sym.get(sym, []), key=lambda x: x[0])[-60:]
         flags = [prev > 0 and close >= calc_limit_up_price(prev, sym) - PRICE_TOL for _, prev, close in ordered]
+        max_consec = streak = 0
+        for is_lu in flags:
+            streak = streak + 1 if is_lu else 0
+            if streak > max_consec:
+                max_consec = streak
         cmv, tr = bmap.get(sym, (0.0, 0.0))
         out[sym] = {
             "lu_60d": sum(1 for f in flags if f),
             "lu_10d": sum(1 for f in flags[-10:] if f),
+            "max_consec_60d": max_consec,
             "circ_mv_yi": round(cmv, 2),
             "turnover_pct": round(tr, 2),
         }
@@ -402,7 +423,7 @@ def compute_monster_gene_from_rows(
 
 def load_monster_gene_map(snapshot_date: str, tushare_token: str | None) -> dict[str, dict[str, float]]:
     cache_dir = Path.home() / ".wyckoff" / "cache"
-    cache_file = cache_dir / f"monster_gene_v1_{snapshot_date}.json"
+    cache_file = cache_dir / f"monster_gene_v2_{snapshot_date}.json"
     if cache_file.exists():
         try:
             return json.loads(cache_file.read_text(encoding="utf-8"))
@@ -608,6 +629,15 @@ def reversal_risk_tag(m: QuoteMetrics) -> str:
         return "[⚠️午后量化脉冲衰竭·防冲高回落]"
     if m.above_vwap and 1.5 <= m.last_pct <= 5.5 and m.vwap > 0 and (m.last_price - m.vwap) / m.vwap <= 0.025:
         return "[✅贴均线弱转强低吸区]"
+    if (
+        m.above_vwap
+        and m.low_pct <= -3.0
+        and m.rebound_from_low >= 3.5
+        and -2.5 <= m.last_pct < 1.5
+        and m.vwap > 0
+        and (m.last_price - m.vwap) / m.vwap <= 0.028
+    ):
+        return "[🌊深水翻均线·T+1博大振幅垫]"
     return ""
 
 
@@ -647,7 +677,8 @@ def format_row(m: QuoteMetrics, extra_tag: str = "") -> str:
     if m.circ_mv_yi > 0:
         gene_parts.append(f"盘{m.circ_mv_yi:.0f}亿")
     if m.lu_60d is not None:
-        gene_parts.append(f"60d:{m.lu_60d}板" + (f"/10d:{m.lu_10d}板" if m.lu_10d > 0 else ""))
+        consec_s = f"(连{m.max_consec_60d})" if m.max_consec_60d >= 2 else ""
+        gene_parts.append(f"60d:{m.lu_60d}板{consec_s}" + (f"/10d:{m.lu_10d}板" if m.lu_10d > 0 else ""))
     gene_tag = f" [{'|'.join(gene_parts)}]" if gene_parts else ""
     reg_tag = f" [{m.reg_risk_tag}]" if m.reg_risk_tag else ""
     rsn_tag = f" [归因:{m.lu_reason}]" if m.lu_reason else ""
@@ -1058,6 +1089,7 @@ def enrich_with_realtime_concepts(
         or m.prev_boards >= 1
         or bool(m.m_days_n_boards)
         or (m.above_vwap and m.last_pct >= 2.5)
+        or (m.above_vwap and m.low_pct <= -3.0 and m.rebound_from_low >= 3.5 and -2.5 <= m.last_pct < 2.5)
         or (m.high_pct >= 7.5 and m.drop_from_high <= -4.0 and not m.above_vwap)
         or m.symbol in hold_set
     ]
@@ -1109,7 +1141,10 @@ def enrich_with_5m_bars(
             for m in metrics
             if not m.symbol.startswith(("30", "68"))
             and m.above_vwap
-            and 2.5 <= m.last_pct <= 7.2
+            and (
+                (2.5 <= m.last_pct <= 7.2)
+                or (m.low_pct <= -3.0 and m.rebound_from_low >= 3.5 and -2.5 <= m.last_pct < 2.5)
+            )
             and m.amount_yi >= 0.6
             and m.has_monster_gene
             and _passes_price_cap(m, max_price)
@@ -1190,7 +1225,7 @@ def _run_sniper_and_feishu(
         return
     for c in final_cands[:3]:
         print(
-            f"  🎯 {c.symbol} {c.name:<6} 现价:{c.last_price:6.2f}元({c.last_pct:+5.2f}%) "
+            f"  🎯 {c.symbol} {c.name:<6} {c.entry_mode} 现价:{c.last_price:6.2f}元({c.last_pct:+5.2f}%) "
             f"| 目标低吸:{c.target_buy_low:.2f}~{c.target_buy_high:.2f}元 | 防守:{c.defense_price:.2f}元 "
             f"| 冲板目标:{c.limit_up_price:.2f}元 | {c.daily_tag} | 主线:{'+'.join(c.themes[:3])}"
         )

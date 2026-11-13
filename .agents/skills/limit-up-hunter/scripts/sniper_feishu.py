@@ -59,6 +59,7 @@ class SniperCandidate:
     daily_tag: str
     five_min_tag: str
     amount_yi: float
+    entry_mode: str = "[🚀T+1水上接力·真连板基因]"
 
 
 def compute_market_sentiment(metrics: list[Any]) -> MarketSentiment:
@@ -129,9 +130,12 @@ def fetch_daily_overhead_map(
 
 def _passes_sniper_bar_gate(m: Any, sentiment: MarketSentiment, now_hhmm: str, reversal_risk_fn: Any) -> bool:
     fm = m.five_min
-    if not fm or not fm.held_first_5m_low:
+    if not fm:
         return False
-    if fm.first_5m_surge_pct >= 3.0:
+    is_deep_breakout = m.low_pct <= -3.0 and m.rebound_from_low >= 5.5 and fm.broke_morning_high and m.last_pct <= 4.8
+    if not fm.held_first_5m_low and not is_deep_breakout:
+        return False
+    if fm.held_first_5m_low and fm.first_5m_surge_pct >= 3.0:
         if fm.min_vol_ratio > 0.25:
             return False
     elif not fm.broke_morning_high:
@@ -144,6 +148,55 @@ def _passes_sniper_bar_gate(m: Any, sentiment: MarketSentiment, now_hhmm: str, r
     return True
 
 
+def _classify_t1_entry_mode(
+    m: Any,
+    sentiment: MarketSentiment,
+    now_hhmm: str,
+    reversal_risk_fn: Any,
+) -> str:
+    vwap_gap = (m.last_price - m.vwap) / m.vwap if m.vwap > 0 else 1.0
+    if vwap_gap < 0.0 or (reversal_risk_fn and ("🚨" in reversal_risk_fn(m) or "⚠️" in reversal_risk_fn(m))):
+        return ""
+    fm = m.five_min
+    if m.low_pct <= -3.0 and m.rebound_from_low >= 3.5 and -2.5 <= m.last_pct < 2.5 and vwap_gap <= 0.028:
+        if not fm or not (fm.held_first_5m_low or fm.broke_morning_high or m.last_pct >= m.open_pct):
+            return ""
+        if sentiment.is_trap_wave and now_hhmm < "10:40" and m.amount_yi < 1.2:
+            return ""
+        return "[🌊T+1水下承接·博大振幅垫]"
+    if 2.5 <= m.last_pct <= 7.2 and vwap_gap <= 0.025:
+        if not getattr(m, "has_consec_gene", True):
+            return ""
+        if not _passes_sniper_bar_gate(m, sentiment, now_hhmm, reversal_risk_fn):
+            return ""
+        return "[🚀T+1水上接力·真连板基因]"
+    return ""
+
+
+def _build_sniper_candidate(m: Any, hit_themes: tuple[str, ...], d_tag: str, entry_mode: str) -> SniperCandidate:
+    buy_low = round(m.vwap, 2)
+    buy_high = round(max(buy_low, min(m.last_price, m.vwap * 1.015)), 2)
+    fm = m.five_min
+    f_low = fm.first_5m_low if fm and fm.held_first_5m_low and fm.first_5m_low > 0 else m.low_price
+    defense = round(max(f_low, m.vwap * 0.975), 2)
+    return SniperCandidate(
+        symbol=m.symbol,
+        name=m.name,
+        last_price=m.last_price,
+        last_pct=m.last_pct,
+        vwap=m.vwap,
+        limit_up_price=m.limit_up_price,
+        target_buy_low=buy_low,
+        target_buy_high=buy_high,
+        defense_price=defense,
+        themes=hit_themes or (m.ladder_label,),
+        daily_tag=d_tag,
+        five_min_tag=fm.format_tag() if fm else "",
+        amount_yi=m.amount_yi,
+        entry_mode=entry_mode,
+    )
+
+
 def select_sniper_targets(
     metrics: list[Any],
     themes: list[dict[str, Any]],
@@ -154,21 +207,20 @@ def select_sniper_targets(
     reversal_risk_fn: Any = None,
 ) -> list[SniperCandidate]:
     theme_scores = {t["theme"]: int(t.get("echelon_score", 0)) for t in themes if t.get("lu_count", 0) >= 3}
-    shortlist: list[tuple[Any, tuple[str, ...], int]] = []
+    shortlist: list[tuple[Any, tuple[str, ...], int, str]] = []
     for m in metrics:
         if (
             m.symbol.startswith(("30", "68"))
             or m.is_limit_up
             or m.reg_risk_tag
             or not getattr(m, "has_monster_gene", True)
+            or m.last_price > max_price + 1e-4
+            or not m.above_vwap
+            or m.amount_yi < 0.6
         ):
             continue
-        if m.last_price > max_price + 1e-4 or not m.above_vwap or m.amount_yi < 0.6:
-            continue
-        vwap_gap = (m.last_price - m.vwap) / m.vwap if m.vwap > 0 else 1.0
-        if not (2.5 <= m.last_pct <= 7.2 and 0.0 <= vwap_gap <= 0.025):
-            continue
-        if not _passes_sniper_bar_gate(m, sentiment, now_hhmm, reversal_risk_fn):
+        entry_mode = _classify_t1_entry_mode(m, sentiment, now_hhmm, reversal_risk_fn)
+        if not entry_mode:
             continue
         hit_themes = tuple(c for c in m.concepts if c in theme_scores)
         m_tier = getattr(m, "monster_tier", 1)
@@ -178,45 +230,25 @@ def select_sniper_targets(
         best_ech = max((theme_scores[th] for th in hit_themes), default=0)
         if hit_themes and best_ech < 0 and not is_promo and m_tier < 2:
             continue
-        shortlist.append((m, hit_themes, best_ech))
+        shortlist.append((m, hit_themes, best_ech, entry_mode))
 
     shortlist.sort(
         key=lambda item: (
             getattr(item[0], "monster_tier", 1),
             item[0].prev_boards >= 1 or bool(item[0].m_days_n_boards),
+            "🌊" in item[3],
             item[2],
             len(item[1]),
             item[0].last_price <= 10.0,
-            item[0].five_min.first_5m_surge_pct if item[0].five_min else item[0].high_pct,
+            item[0].rebound_from_low,
         ),
         reverse=True,
     )
     results: list[SniperCandidate] = []
-    for m, hit_themes, _ in shortlist[:6]:
+    for m, hit_themes, _, entry_mode in shortlist[:6]:
         ok_daily, d_tag = evaluate_daily_overhead((overhead_rows or {}).get(m.symbol, []), m.last_price)
-        if not ok_daily:
-            continue
-        buy_low = round(m.vwap, 2)
-        buy_high = round(max(buy_low, min(m.last_price, m.vwap * 1.015)), 2)
-        f_low = m.five_min.first_5m_low if m.five_min and m.five_min.first_5m_low > 0 else m.low_price
-        defense = round(max(f_low, m.vwap * 0.975), 2)
-        results.append(
-            SniperCandidate(
-                symbol=m.symbol,
-                name=m.name,
-                last_price=m.last_price,
-                last_pct=m.last_pct,
-                vwap=m.vwap,
-                limit_up_price=m.limit_up_price,
-                target_buy_low=buy_low,
-                target_buy_high=buy_high,
-                defense_price=defense,
-                themes=hit_themes or (m.ladder_label,),
-                daily_tag=d_tag,
-                five_min_tag=m.five_min.format_tag() if m.five_min else "",
-                amount_yi=m.amount_yi,
-            )
-        )
+        if ok_daily:
+            results.append(_build_sniper_candidate(m, hit_themes, d_tag, entry_mode))
     return results
 
 
@@ -255,10 +287,11 @@ def build_sniper_card_markdown(
         lines.append("**🪜 连板晋级生态**：\n" + "\n".join(f"- {row}" for row in ladder_brief[:4]))
     lines.append("---")
     for idx, c in enumerate(targets[:3], 1):
+        room_pct = (c.limit_up_price / c.last_price - 1.0) * 100.0 if c.last_price > 0 else 0.0
         lines.extend(
             [
-                f"### {idx}. 🔥 {c.name}（`{c.symbol}`）— 现价 `{c.last_price:.2f}元 ({c.last_pct:+.2f}%)`",
-                f"- **🎯 建议低吸目标价**：**`{c.target_buy_low:.2f} ~ {c.target_buy_high:.2f}元`**（贴均线 `VWAP {c.vwap:.2f}元`）",
+                f"### {idx}. 🔥 {c.name}（`{c.symbol}`）`{c.entry_mode}` — 现价 `{c.last_price:.2f}元 ({c.last_pct:+.2f}%)`",
+                f"- **🎯 建议低吸目标价**：**`{c.target_buy_low:.2f} ~ {c.target_buy_high:.2f}元`**（贴均线 `VWAP {c.vwap:.2f}元` | 距板垫 `+{room_pct:.1f}%`）",
                 f"- **🚀 日内冲板目标价**：`{c.limit_up_price:.2f}元` | **🛡️ 破位防守价**：**`{c.defense_price:.2f}元`**",
                 f"- **🧭 共振主线**：`{' + '.join(c.themes[:4])}` | 成交 `{c.amount_yi:.2f}亿`",
                 f"- **📊 结构验钞**：`{c.daily_tag}` `{c.five_min_tag}`",
