@@ -217,8 +217,13 @@ class QuoteMetrics:
         return ""
 
 
-def calc_limit_up_price(prev_close: float, symbol: str) -> float:
-    ratio = Decimal("1.20") if symbol.startswith(("30", "68")) else Decimal("1.10")
+def calc_limit_up_price(prev_close: float, symbol: str, name: str = "") -> float:
+    if symbol.startswith(("30", "68")):
+        ratio = Decimal("1.20")
+    elif "ST" in name:
+        ratio = Decimal("1.05")
+    else:
+        ratio = Decimal("1.10")
     base = Decimal(f"{prev_close:.2f}")
     return float((base * ratio).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
@@ -228,13 +233,14 @@ def parse_quote(
     ladder_info: dict[str, dict[str, Any]] | None = None,
     industry_map: dict[str, str] | None = None,
     gene_map: dict[str, dict[str, float]] | None = None,
+    allow_st: bool = False,
 ) -> QuoteMetrics | None:
     sym = str(q.get("symbol") or "")
     if not sym or sym.endswith(".BJ"):
         return None
     ext = q.get("ext") or {}
     name = str(ext.get("name") or "").strip()
-    if not name or "ST" in name or name.startswith(("N", "C")):
+    if not name or name.startswith(("N", "C")) or ("ST" in name and not allow_st):
         return None
     prev = float(q.get("prev_close") or 0.0)
     open_p = float(q.get("open") or 0.0)
@@ -247,7 +253,7 @@ def parse_quote(
     vol = float(q.get("volume") or 0.0)
     amt = float(q.get("amount") or 0.0)
     vwap = amt / vol / 100.0 if vol > 0 else last_p
-    lu_price = calc_limit_up_price(prev, sym)
+    lu_price = calc_limit_up_price(prev, sym, name=name)
     is_lu = last_p >= lu_price - PRICE_TOL
     is_ow = is_lu and open_p >= lu_price - PRICE_TOL and low_p >= lu_price - PRICE_TOL
     open_pct = (open_p - prev) / prev * 100.0
@@ -291,13 +297,18 @@ def parse_quote(
 
 def compute_ladder_from_daily_rows(
     rows_by_sym: dict[str, list[tuple[str, float, float]]],
+    st_syms: Iterable[str] = (),
 ) -> dict[str, dict[str, Any]]:
+    st_set = set(st_syms)
     result: dict[str, dict[str, Any]] = {}
     for sym, rows in rows_by_sym.items():
         if sym.endswith(".BJ") or not rows:
             continue
+        nm = "ST" if sym in st_set else ""
         ordered = sorted(rows, key=lambda x: x[0])[-20:]
-        flags = [prev > 0 and close >= calc_limit_up_price(prev, sym) - PRICE_TOL for _, prev, close in ordered]
+        flags = [
+            prev > 0 and close >= calc_limit_up_price(prev, sym, name=nm) - PRICE_TOL for _, prev, close in ordered
+        ]
         consec = 0
         for is_lu in reversed(flags):
             if is_lu:
@@ -319,9 +330,13 @@ def compute_ladder_from_daily_rows(
     return result
 
 
-def load_prev_ladder(snapshot_date: str, tushare_token: str | None) -> dict[str, dict[str, Any]]:
+def load_prev_ladder(
+    snapshot_date: str,
+    tushare_token: str | None,
+    st_syms: Iterable[str] = (),
+) -> dict[str, dict[str, Any]]:
     cache_dir = Path.home() / ".wyckoff" / "cache"
-    cache_file = cache_dir / f"prev_ladder_v2_{snapshot_date}.json"
+    cache_file = cache_dir / f"prev_ladder_v3_{snapshot_date}.json"
     if cache_file.exists():
         try:
             return json.loads(cache_file.read_text(encoding="utf-8"))
@@ -353,7 +368,7 @@ def load_prev_ladder(snapshot_date: str, tushare_token: str | None) -> dict[str,
                 continue
             for row in df.itertuples(index=False):
                 rows_by_sym.setdefault(str(row.ts_code), []).append((d, float(row.pre_close), float(row.close)))
-        ladder = compute_ladder_from_daily_rows(rows_by_sym)
+        ladder = compute_ladder_from_daily_rows(rows_by_sym, st_syms=st_syms)
         if empty_dates:
             print(f"[WARN] Tushare 日线存在空表日期 {empty_dates}，本次结果不写入缓存。", file=sys.stderr)
             return ladder
@@ -396,15 +411,20 @@ def load_industry_map(tushare_token: str | None) -> dict[str, str]:
 def compute_monster_gene_from_rows(
     rows_by_sym: dict[str, list[tuple[str, float, float]]],
     basic_by_sym: dict[str, tuple[float, float]] | None = None,
+    st_syms: Iterable[str] = (),
 ) -> dict[str, dict[str, float]]:
+    st_set = set(st_syms)
     bmap = basic_by_sym or {}
     all_syms = set(rows_by_sym.keys()) | set(bmap.keys())
     out: dict[str, dict[str, float]] = {}
     for sym in all_syms:
         if sym.endswith(".BJ"):
             continue
+        nm = "ST" if sym in st_set else ""
         ordered = sorted(rows_by_sym.get(sym, []), key=lambda x: x[0])[-60:]
-        flags = [prev > 0 and close >= calc_limit_up_price(prev, sym) - PRICE_TOL for _, prev, close in ordered]
+        flags = [
+            prev > 0 and close >= calc_limit_up_price(prev, sym, name=nm) - PRICE_TOL for _, prev, close in ordered
+        ]
         max_consec = streak = 0
         for is_lu in flags:
             streak = streak + 1 if is_lu else 0
@@ -421,9 +441,13 @@ def compute_monster_gene_from_rows(
     return out
 
 
-def load_monster_gene_map(snapshot_date: str, tushare_token: str | None) -> dict[str, dict[str, float]]:
+def load_monster_gene_map(
+    snapshot_date: str,
+    tushare_token: str | None,
+    st_syms: Iterable[str] = (),
+) -> dict[str, dict[str, float]]:
     cache_dir = Path.home() / ".wyckoff" / "cache"
-    cache_file = cache_dir / f"monster_gene_v2_{snapshot_date}.json"
+    cache_file = cache_dir / f"monster_gene_v3_{snapshot_date}.json"
     if cache_file.exists():
         try:
             return json.loads(cache_file.read_text(encoding="utf-8"))
@@ -451,7 +475,7 @@ def load_monster_gene_map(snapshot_date: str, tushare_token: str | None) -> dict
             str(r.ts_code): (float(r.circ_mv or 0.0) / 10000.0, float(r.turnover_rate or 0.0))
             for r in (bdf.itertuples(index=False) if bdf is not None and not bdf.empty else [])
         }
-        gene_map = compute_monster_gene_from_rows(rows_by_sym, basic_by_sym)
+        gene_map = compute_monster_gene_from_rows(rows_by_sym, basic_by_sym, st_syms=st_syms)
         if rows_by_sym and basic_by_sym:
             cache_dir.mkdir(parents=True, exist_ok=True)
             cache_file.write_text(json.dumps(gene_map, ensure_ascii=False), encoding="utf-8")
@@ -1076,6 +1100,56 @@ def print_sections(
             print(format_row(m, tag_keyword_candidate(m, lu_cnt, now_hhmm)))
 
 
+def find_st_hat_removal_candidates(
+    st_metrics: list[QuoteMetrics],
+    max_price: float | None = None,
+    limit: int = 8,
+) -> list[tuple[QuoteMetrics, str]]:
+    cap = max_price if max_price is not None else 15.0
+    results: list[tuple[QuoteMetrics, str, tuple[Any, ...]]] = []
+    for m in st_metrics:
+        if "ST" not in m.name or m.last_price < 1.80 or m.last_price > cap + PRICE_TOL:
+            continue
+        if not m.above_vwap or m.amount_yi < 0.20 or (m.circ_mv_yi > 0 and m.circ_mv_yi > 120.0):
+            continue
+        is_pure_st = not m.name.startswith("*ST")
+        has_hat_concept = any("摘帽" in c or "重整" in c for c in m.concepts)
+        has_gene = (
+            m.is_limit_up or m.prev_boards >= 1 or bool(m.m_days_n_boards) or (m.lu_60d or 0) >= 2 or has_hat_concept
+        )
+        if not has_gene:
+            continue
+        if not is_pure_st:
+            if m.last_price < 2.20 or not (
+                m.prev_boards >= 1 or m.max_consec_60d >= 2 or m.lu_10d >= 2 or has_hat_concept
+            ):
+                continue
+        is_deep = m.low_pct <= -1.8 and m.rebound_from_low >= 2.2 and m.drop_from_high >= -1.2
+        if not (m.is_limit_up or m.last_pct >= 1.2 or is_deep):
+            continue
+        if not is_pure_st:
+            tag = "[⚡*ST重整摘星博弈·连板基因(严控仓位)]"
+        elif m.is_limit_up or m.prev_boards >= 1:
+            tag = "[👑纯ST摘帽预期·连板/封板晋级]"
+        elif is_deep:
+            tag = "[🌊纯ST摘帽预期·水下翻均线吃振幅]"
+        else:
+            tag = "[🎯纯ST摘帽苗子·贴VWAP博5cm板]"
+        sort_key = (is_pure_st, m.is_limit_up, m.prev_boards, m.max_consec_60d, m.lu_10d, m.last_pct)
+        results.append((m, tag, sort_key))
+    results.sort(key=lambda item: item[2], reverse=True)
+    return [(m, tag) for m, tag, _ in results[:limit]]
+
+
+def print_st_hat_removal_section(st_metrics: list[QuoteMetrics], max_price: float | None = None) -> None:
+    cands = find_st_hat_removal_candidates(st_metrics, max_price=max_price)
+    if not cands:
+        return
+    print(f"\n=== [T] 可摘帽/重整预期 ST 专属猎场 (5cm涨跌停标尺·剔除<1.8元面值退市雷: {len(cands)}只) ===")
+    for m, tag in cands:
+        print(format_row(m, tag))
+
+
 def enrich_with_realtime_concepts(
     metrics: list[QuoteMetrics],
     holding_syms: Iterable[str] = (),
@@ -1264,10 +1338,17 @@ def main() -> None:
     snap_dt = extract_snapshot_time(qmap.values())
     ts_token = os.environ.get("TUSHARE_TOKEN")
     snap_ymd = snap_dt.strftime("%Y%m%d")
-    ladder_info = load_prev_ladder(snap_ymd, ts_token)
+    st_syms = [str(q.get("symbol") or "") for q in qmap.values() if "ST" in str((q.get("ext") or {}).get("name") or "")]
+    ladder_info = load_prev_ladder(snap_ymd, ts_token, st_syms=st_syms)
     industry_map = load_industry_map(ts_token)
-    gene_map = load_monster_gene_map(snap_ymd, ts_token)
+    gene_map = load_monster_gene_map(snap_ymd, ts_token, st_syms=st_syms)
     parsed = [m for q in qmap.values() if (m := parse_quote(q, ladder_info, industry_map, gene_map)) is not None]
+    st_parsed = [
+        m
+        for q in qmap.values()
+        if "ST" in str((q.get("ext") or {}).get("name") or "")
+        and (m := parse_quote(q, ladder_info, industry_map, gene_map, allow_st=True)) is not None
+    ]
     parsed = enrich_with_realtime_concepts(parsed, holdings.keys(), snap_ymd=snap_ymd)
     if not args.no_5m:
         parsed = enrich_with_5m_bars(client, parsed, holdings.keys(), max_price=args.max_price)
@@ -1276,6 +1357,7 @@ def main() -> None:
         f"| Valid Non-ST Main/ChiNext/STAR A-Shares: {len(parsed)} | Prev Ladder Pool: {len(ladder_info)}\n"
     )
     print_sections(parsed, args.keyword, snap_dt.strftime("%H:%M"), holdings, max_price=args.max_price)
+    print_st_hat_removal_section(st_parsed, max_price=args.max_price)
     _run_sniper_and_feishu(
         parsed,
         snap_dt,
