@@ -218,12 +218,8 @@ class QuoteMetrics:
 
 
 def calc_limit_up_price(prev_close: float, symbol: str, name: str = "") -> float:
-    if symbol.startswith(("30", "68")):
-        ratio = Decimal("1.20")
-    elif "ST" in name:
-        ratio = Decimal("1.05")
-    else:
-        ratio = Decimal("1.10")
+    _ = name
+    ratio = Decimal("1.20") if symbol.startswith(("30", "68")) else Decimal("1.10")
     base = Decimal(f"{prev_close:.2f}")
     return float((base * ratio).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
@@ -243,10 +239,10 @@ def parse_quote(
     if not name or name.startswith(("N", "C")) or ("ST" in name and not allow_st):
         return None
     prev = float(q.get("prev_close") or 0.0)
-    open_p = float(q.get("open") or 0.0)
     last_p = float(q.get("last_price") or 0.0)
-    high_p = float(q.get("high") or 0.0)
-    low_p = float(q.get("low") or 0.0)
+    open_p = float(q.get("open") or last_p)
+    high_p = float(q.get("high") or max(open_p, last_p))
+    low_p = float(q.get("low") or min(open_p, last_p))
     if prev <= 0 or open_p <= 0 or last_p <= 0:
         return None
 
@@ -336,7 +332,7 @@ def load_prev_ladder(
     st_syms: Iterable[str] = (),
 ) -> dict[str, dict[str, Any]]:
     cache_dir = Path.home() / ".wyckoff" / "cache"
-    cache_file = cache_dir / f"prev_ladder_v3_{snapshot_date}.json"
+    cache_file = cache_dir / f"prev_ladder_v2_{snapshot_date}.json"
     if cache_file.exists():
         try:
             return json.loads(cache_file.read_text(encoding="utf-8"))
@@ -447,7 +443,7 @@ def load_monster_gene_map(
     st_syms: Iterable[str] = (),
 ) -> dict[str, dict[str, float]]:
     cache_dir = Path.home() / ".wyckoff" / "cache"
-    cache_file = cache_dir / f"monster_gene_v3_{snapshot_date}.json"
+    cache_file = cache_dir / f"monster_gene_v2_{snapshot_date}.json"
     if cache_file.exists():
         try:
             return json.loads(cache_file.read_text(encoding="utf-8"))
@@ -1124,17 +1120,17 @@ def find_st_hat_removal_candidates(
                 m.prev_boards >= 1 or m.max_consec_60d >= 2 or m.lu_10d >= 2 or has_hat_concept
             ):
                 continue
-        is_deep = m.low_pct <= -1.8 and m.rebound_from_low >= 2.2 and m.drop_from_high >= -1.2
-        if not (m.is_limit_up or m.last_pct >= 1.2 or is_deep):
+        is_deep = m.low_pct <= -2.5 and m.rebound_from_low >= 3.2 and m.drop_from_high >= -1.8
+        if not (m.is_limit_up or m.last_pct >= 2.0 or is_deep):
             continue
         if not is_pure_st:
-            tag = "[⚡*ST重整摘星博弈·连板基因(严控仓位)]"
+            tag = "[⚡*ST重整摘星博弈·10cm连板基因(严控仓位)]"
         elif m.is_limit_up or m.prev_boards >= 1:
-            tag = "[👑纯ST摘帽预期·连板/封板晋级]"
+            tag = "[👑纯ST摘帽预期·10cm连板/封板晋级]"
         elif is_deep:
-            tag = "[🌊纯ST摘帽预期·水下翻均线吃振幅]"
+            tag = "[🌊纯ST摘帽预期·水下翻均线吃10cm振幅]"
         else:
-            tag = "[🎯纯ST摘帽苗子·贴VWAP博5cm板]"
+            tag = "[🎯纯ST摘帽苗子·贴VWAP博10cm板]"
         sort_key = (is_pure_st, m.is_limit_up, m.prev_boards, m.max_consec_60d, m.lu_10d, m.last_pct)
         results.append((m, tag, sort_key))
     results.sort(key=lambda item: item[2], reverse=True)
@@ -1145,7 +1141,7 @@ def print_st_hat_removal_section(st_metrics: list[QuoteMetrics], max_price: floa
     cands = find_st_hat_removal_candidates(st_metrics, max_price=max_price)
     if not cands:
         return
-    print(f"\n=== [T] 可摘帽/重整预期 ST 专属猎场 (5cm涨跌停标尺·剔除<1.8元面值退市雷: {len(cands)}只) ===")
+    print(f"\n=== [T] 可摘帽/重整预期 ST 专属猎场 (新规10cm涨跌停·剔除<1.8元面值退市雷: {len(cands)}只) ===")
     for m, tag in cands:
         print(format_row(m, tag))
 
@@ -1350,16 +1346,20 @@ def main() -> None:
         and (m := parse_quote(q, ladder_info, industry_map, gene_map, allow_st=True)) is not None
     ]
     parsed = enrich_with_realtime_concepts(parsed, holdings.keys(), snap_ymd=snap_ymd)
+    st_parsed = enrich_with_realtime_concepts(st_parsed, holdings.keys(), snap_ymd=snap_ymd) if st_parsed else []
     if not args.no_5m:
         parsed = enrich_with_5m_bars(client, parsed, holdings.keys(), max_price=args.max_price)
+        if st_parsed:
+            st_parsed = enrich_with_5m_bars(client, st_parsed, holdings.keys(), max_price=args.max_price)
     print(
         f"Snapshot Time (Asia/Shanghai): {snap_dt.strftime('%Y-%m-%d %H:%M:%S')} "
         f"| Valid Non-ST Main/ChiNext/STAR A-Shares: {len(parsed)} | Prev Ladder Pool: {len(ladder_info)}\n"
     )
     print_sections(parsed, args.keyword, snap_dt.strftime("%H:%M"), holdings, max_price=args.max_price)
     print_st_hat_removal_section(st_parsed, max_price=args.max_price)
+    sniper_pool = parsed + [m for m, _ in find_st_hat_removal_candidates(st_parsed) if not m.name.startswith("*ST")]
     _run_sniper_and_feishu(
-        parsed,
+        sniper_pool,
         snap_dt,
         ts_token,
         args.max_price,

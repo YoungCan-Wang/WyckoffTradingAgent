@@ -626,30 +626,30 @@ def test_t1_dual_track_consec_gene_vs_underwater_amplitude():
     assert "🚀T+1水上接力·真连板基因" in picked[1].entry_mode
 
 
-def test_st_hat_removal_5cm_pool_and_delisting_filter():
+def test_st_hat_removal_10cm_pool_and_delisting_filter():
     rows_by_sym = {
-        "000060.SZ": [("20260308", 4.00, 4.20), ("20260309", 4.20, 4.41)],
-        "000061.SZ": [("20260308", 1.20, 1.26), ("20260309", 1.26, 1.32)],
+        "000060.SZ": [("20260308", 4.00, 4.40), ("20260309", 4.40, 4.84)],
+        "000061.SZ": [("20260308", 1.20, 1.32), ("20260309", 1.32, 1.45)],
     }
     ladder = LS.compute_ladder_from_daily_rows(rows_by_sym, st_syms=["000060.SZ", "000061.SZ"])
     assert ladder["000060.SZ"]["prev_boards"] == 2
     gmap = LS.compute_monster_gene_from_rows(rows_by_sym, {"000060.SZ": (30.0, 5.0)}, st_syms=["000060.SZ"])
     assert gmap["000060.SZ"]["max_consec_60d"] == 2
 
-    # Default parse_quote still excludes ST from 10cm mainboard pool
-    assert LS.parse_quote(_raw_quote("000060.SZ", "ST摘帽牛", 4.41, 4.45, 4.63, 4.42, 4.60, 4.52, 0.5)) is None
+    # Default parse_quote still excludes ST unless allow_st=True
+    assert LS.parse_quote(_raw_quote("000060.SZ", "ST摘帽牛", 4.84, 4.90, 5.32, 4.88, 5.20, 5.08, 0.5)) is None
 
     q_pure_st = LS.parse_quote(
-        _raw_quote("000060.SZ", "ST摘帽牛", 4.41, 4.45, 4.63, 4.42, 4.60, 4.52, 0.5),
+        _raw_quote("000060.SZ", "ST摘帽牛", 4.84, 4.90, 5.32, 4.88, 5.20, 5.08, 0.5),
         ladder,
         None,
         gmap,
         allow_st=True,
     )
-    assert q_pure_st is not None and q_pure_st.limit_up_price == 4.63
+    assert q_pure_st is not None and q_pure_st.limit_up_price == 5.32
     # Penny *ST (< 1.80) delisting danger filtered out
     q_penny_st = LS.parse_quote(
-        _raw_quote("000061.SZ", "*ST退险", 1.32, 1.34, 1.39, 1.33, 1.38, 1.36, 0.5),
+        _raw_quote("000061.SZ", "*ST退险", 1.45, 1.48, 1.60, 1.46, 1.55, 1.50, 0.5),
         ladder,
         None,
         gmap,
@@ -657,4 +657,4 @@ def test_st_hat_removal_5cm_pool_and_delisting_filter():
     )
     cands = LS.find_st_hat_removal_candidates([q_pure_st, q_penny_st])
     assert len(cands) == 1 and cands[0][0].symbol == "000060.SZ"
-    assert "👑纯ST摘帽预期" in cands[0][1]
+    assert "👑纯ST摘帽预期·10cm" in cands[0][1]
