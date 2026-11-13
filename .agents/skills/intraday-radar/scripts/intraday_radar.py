@@ -731,14 +731,22 @@ def analyze_snapshot_diff(
         buckets["warnings"].append(
             f"⚠️ **持仓行情缺口：{joined}{more} 本帧无有效报价，止损/急跌/做T 监控已跳过这些标的**"
         )
-        if _check_cooldown(cooldowns, "L2:holding_quote_gap", ts):
-            buckets["l2_events"].insert(0, f"- 🟡 **【持仓行情缺口】** {joined}{more} 无报价，破位止损电话本帧无法判定")
+        # Per-symbol keys: a shared L2:holding_quote_gap stamp muted later gaps for
+        # other holdings within 1800s, dropping the frame to L1 so Feishu (esp.
+        # --urgent-only) never warned that stop monitoring was blind.
+        fresh_gap = [sym for sym in missing_holdings if _check_cooldown(cooldowns, f"L2:holding_quote_gap:{sym}", ts)]
+        if fresh_gap:
+            gap_joined = ", ".join(fresh_gap[:8])
+            gap_more = f" 等{len(fresh_gap)}只" if len(fresh_gap) > 8 else ""
+            buckets["l2_events"].insert(
+                0, f"- 🟡 **【持仓行情缺口】** {gap_joined}{gap_more} 无报价，破位止损电话本帧无法判定"
+            )
             alert_records.append(
                 {
                     "ts": ts,
                     "level": "L2",
                     "kind": "holding_quote_gap",
-                    "symbols": missing_holdings,
+                    "symbols": fresh_gap,
                 }
             )
     if gap_msg:
