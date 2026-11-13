@@ -158,7 +158,14 @@ def _classify_t1_entry_mode(
     if vwap_gap < 0.0 or (reversal_risk_fn and ("🚨" in reversal_risk_fn(m) or "⚠️" in reversal_risk_fn(m))):
         return ""
     fm = m.five_min
-    if m.low_pct <= -3.0 and m.rebound_from_low >= 3.5 and -2.5 <= m.last_pct < 2.5 and vwap_gap <= 0.028:
+    if (
+        m.low_pct <= -3.0
+        and m.rebound_from_low >= 3.5
+        and -2.5 <= m.last_pct < 2.5
+        and vwap_gap <= 0.028
+        and m.drop_from_high >= -2.2
+        and getattr(m, "has_consec_gene", True)
+    ):
         if not fm or not (fm.held_first_5m_low or fm.broke_morning_high or m.last_pct >= m.open_pct):
             return ""
         if sentiment.is_trap_wave and now_hhmm < "10:40" and m.amount_yi < 1.2:
