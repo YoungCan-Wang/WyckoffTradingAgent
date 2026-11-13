@@ -302,7 +302,10 @@ def _rank_wyckoff_picks(
         mb_bonus = 20.0 if code6.startswith(("60", "00")) else 0.0
         l2_bonus = 30.0 if is_l2 else 15.0
         rps_bonus = 15.0 if 22.0 <= rps <= 70.0 else 0.0
-        score = mb_bonus + l2_bonus + rps_bonus + max(min(pct, 4.5), -1.0) * 2.0
+        streak_bonus = min(int(meta.get("streak_days") or 0), 3) * 6.0 - (
+            25.0 if meta.get("t1_isolated_spike") else 0.0
+        )
+        score = mb_bonus + l2_bonus + rps_bonus + streak_bonus + max(min(pct, 4.5), -1.0) * 2.0
         ch_str = "/".join(meta.get("channels") or []) or ("候选" if is_cand else f"RPS{rps:.0f}")
         tag = f"{pct:+.1f}%·{ch_str}" if (has_q or "pct" in q) else ch_str
         scored.append((score, f"`{code6}` {meta.get('name', '')}({tag})"))
@@ -604,20 +607,23 @@ def summarize_zero_bias_l2_leaders(
         if pct < avg_p * 0.75:
             continue
         rps_sweet = 18.0 if 24.0 <= rps <= 68.0 else 0.0
+        streak_bonus = min(int(meta.get("streak_days") or 0), 3) * 6.0
         score = (
             (20.0 if meta.get("is_candidate") else 0.0)
             + rps_sweet
+            + streak_bonus
             + len(chans) * 8.0
             + (pct + avg_p) * 3.0
             + min(amt_yi, 10.0) * 2.0
         )
         v_dev = (last / vwap - 1.0) * 100.0
+        f_tag = f" [{meta['funnel_tag']}]" if meta.get("funnel_tag") else ""
         scored.append(
             (
                 score,
                 sec,
                 f"- **{sym} {name}** [{sec} 红{red_r:.0f}%]：现价 **{last:.2f} ({pct:+.2f}%)** | "
-                f"均价 {vwap:.2f} (乖离 {v_dev:+.2f}%) | 额 {amt_yi:.1f}亿 | {'+'.join(chans)} RPS={rps:.0f}",
+                f"均价 {vwap:.2f} (乖离 {v_dev:+.2f}%) | 额 {amt_yi:.1f}亿 | {'+'.join(chans)}{f_tag} RPS={rps:.0f}",
             )
         )
     scored.sort(key=lambda x: -x[0])

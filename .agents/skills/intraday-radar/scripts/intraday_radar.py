@@ -166,12 +166,13 @@ def _collect_trace_candidates(trace_path: str | None, trace_dirs: list[str] | No
     if trace_path:
         p = Path(trace_path).expanduser()
         return [p] if p.exists() else []
-    candidates: list[Path] = []
+    by_name: dict[str, Path] = {}
     for raw_dir in trace_dirs or [str(Path.home() / ".wyckoff" / "traces"), "/tmp", str(REPO_ROOT / "data")]:
         base = Path(raw_dir).expanduser()
         if base.exists():
-            candidates.extend(base.rglob("review_trace_*.json.gz"))
-    return sorted(candidates, key=lambda p: p.name)
+            for p in base.rglob("review_trace_*.json.gz"):
+                by_name[p.name] = p
+    return [by_name[k] for k in sorted(by_name)]
 
 
 def _auto_fetch_latest_trace(target_dir: Path) -> bool:
@@ -262,6 +263,54 @@ def _parse_trace_symbols(data: dict[str, Any], springboards: set[str]) -> dict[s
     return out
 
 
+def _merge_multi_day_l2_maps(daily_maps: list[dict[str, dict[str, Any]]]) -> dict[str, dict[str, Any]]:
+    if not daily_maps:
+        return {}
+    latest = {k: dict(v) for k, v in daily_maps[-1].items()}
+    if len(daily_maps) == 1:
+        for info in latest.values():
+            info["streak_days"] = int(bool(info.get("l2_eligible") or info.get("is_candidate")))
+            info.setdefault("funnel_tag", "")
+        return latest
+    priors = daily_maps[:-1]
+    n_days = len(daily_maps)
+    for code, info in latest.items():
+        p_rows = [m[code] for m in priors if code in m]
+        if not p_rows:
+            info["streak_days"] = int(bool(info.get("l2_eligible") or info.get("is_candidate")))
+            info["funnel_tag"] = ""
+            continue
+        core_now = bool((info.get("l2_eligible") and info.get("l3_eligible")) or info.get("is_candidate"))
+        core_priors = sum(1 for p in p_rows if (p.get("l2_eligible") and p.get("l3_eligible")) or p.get("is_candidate"))
+        l2_priors = sum(1 for p in p_rows if p.get("l2_eligible") or p.get("is_candidate"))
+        cand_all = bool(info.get("is_candidate")) and all(p.get("is_candidate") for p in p_rows)
+        info["streak_days"] = (core_priors + 1) if core_now else 0
+        info["funnel_tag"] = ""
+        if cand_all:
+            info["funnel_tag"] = f"🏆{n_days}日候选连入"
+        elif core_now and core_priors >= 1:
+            info["funnel_tag"] = f"🔥{core_priors + 1}日L2+L3连入"
+        elif core_now and l2_priors == 0 and not info.get("is_springboard"):
+            # Reject isolated T-1 single-day impulse entrants with zero T-2/T-3 L2/candidate history
+            info["t1_isolated_spike"] = True
+            info["l3_eligible"] = False
+            info["is_candidate"] = False
+            info["streak_days"] = 0
+            info["funnel_tag"] = "⚠️T-1单日新进"
+        elif not core_now and float(info.get("rps") or 0.0) <= 75.0:
+            p_last = p_rows[-1]
+            was_strong = bool(p_last.get("is_candidate")) or (core_priors >= len(p_rows))
+            if was_strong:
+                info["l2_eligible"] = True
+                info["is_candidate"] = True
+                if not info.get("channels"):
+                    info["channels"] = list(p_last.get("channels") or ["地量蓄势"])
+                info["t2_shakeout_recall"] = True
+                info["streak_days"] = core_priors
+                info["funnel_tag"] = "♻️T-2洗盘回流"
+    return latest
+
+
 def load_wyckoff_l2_map(
     trace_path: str | None = None,
     trace_dirs: list[str] | None = None,
@@ -297,8 +346,19 @@ def load_wyckoff_l2_map(
                 file=sys.stderr,
             )
             return {}
-    springboards = _load_sibling_springboards(latest, t_date)
-    return _parse_trace_symbols(data, springboards)
+    daily_maps: list[dict[str, dict[str, Any]]] = []
+    for p in candidates[-3:]:
+        try:
+            p_data = data if p == latest else json.loads(gzip.open(p, "rt", encoding="utf-8").read())
+            p_date = _parse_trace_date(p, p_data)
+            if t_date and p_date and _trading_days_since(p_date, t_date) > MAX_TRACE_AGE_DAYS:
+                continue
+            daily_maps.append(_parse_trace_symbols(p_data, _load_sibling_springboards(p, p_date)))
+        except Exception:
+            continue
+    return _merge_multi_day_l2_maps(
+        daily_maps or [_parse_trace_symbols(data, _load_sibling_springboards(latest, t_date))]
+    )
 
 
 def compute_quote_metrics(q: dict[str, Any]) -> dict[str, Any] | None:
@@ -647,18 +707,19 @@ def _check_wyckoff_ignition(
         and 0.0 <= m["vwap_dev"] <= 2.0
     ):
         return
+    f_tag = f" [{info['funnel_tag']}]" if info.get("funnel_tag") else ""
     if now_hm < "10:30":
         if _check_cooldown(cooldowns, f"L1:pre1030_obs:{sym}", now_ts):
             buckets["l1_obs"].append(
                 f"- **{sym} {m['name']}** [{info.get('sector', '')}]：**{m['last']:.2f} ({m['pct']:+.2f}%)** | "
-                f"5m **+{dpct:.2f}%** (+{damt:.2f}亿) | 均 {m['vwap']:.2f} ⏳[待10:30验钞观察] | {chans} RPS={rps_val:.0f}"
+                f"5m **+{dpct:.2f}%** (+{damt:.2f}亿) | 均 {m['vwap']:.2f} ⏳[待10:30验钞观察] | {chans}{f_tag} RPS={rps_val:.0f}"
             )
         return
     if _check_cooldown(cooldowns, f"L3:wyckoff_ignition:{sym}", now_ts):
         mode_tag = "🎯稳健中军加速" if (is_steady_push and not is_standard_ign) else "✅"
         buckets["l3"].append(
             f"- **{sym} {m['name']}** [{info.get('sector', '')}]：**{m['last']:.2f} ({m['pct']:+.2f}%)** | "
-            f"5m **+{dpct:.2f}%** (+{damt:.2f}亿) | 均 {m['vwap']:.2f} {mode_tag} | {chans} RPS={rps_val:.0f}"
+            f"5m **+{dpct:.2f}%** (+{damt:.2f}亿) | 均 {m['vwap']:.2f} {mode_tag} | {chans}{f_tag} RPS={rps_val:.0f}"
         )
         alert_records.append(
             {

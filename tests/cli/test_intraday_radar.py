@@ -1480,3 +1480,62 @@ def test_heartbeat_mode_sends_compact_card_without_resetting_l1_or_telegraph_coo
     )
     assert "⚠️ 持仓破位待处理：600900 -5.71%🔴破止损" in breach_body
     assert "持仓正常" not in breach_body
+
+
+def test_multi_day_wyckoff_funnel_continuity_and_shakeout_recall(tmp_path):
+    radar = _load_radar_module()
+    trace_dir = tmp_path / "traces"
+    trace_dir.mkdir()
+    days = ["2026-11-10", "2026-11-11", "2026-11-12"]
+    for idx, d_str in enumerate(days):
+        ymd = d_str.replace("-", "")
+        symbols = {
+            # 1) 3-day consecutive candidate -> 🏆3日候选连入
+            "600111.SH": {
+                "name": "三日连入股",
+                "sector": "半导体",
+                "rps_fast": 35.0,
+                "l2_eligible": True,
+                "l3_eligible": True,
+                "stage": "候选池已捕获",
+                "l2_channels": ["地量蓄势"],
+            },
+            # 2) T-3 & T-2 candidate, shaken out on T-1 (idx==2) -> ♻️T-2洗盘回流
+            "002222.SZ": {
+                "name": "洗盘回流股",
+                "sector": "专用机械",
+                "rps_fast": 42.0,
+                "l2_eligible": idx < 2,
+                "l3_eligible": idx < 2,
+                "stage": "候选池已捕获" if idx < 2 else "观察",
+                "l2_channels": ["吸筹通道"] if idx < 2 else [],
+            },
+            # 3) Absent in T-3 & T-2, sudden 1-day impulse in T-1 (idx==2) -> ⚠️T-1单日新进 (demoted from L3)
+            "300333.SZ": {
+                "name": "一日游脉冲",
+                "sector": "元器件",
+                "rps_fast": 55.0,
+                "l2_eligible": idx == 2,
+                "l3_eligible": idx == 2,
+                "stage": "观察",
+                "l2_channels": ["地量蓄势"] if idx == 2 else [],
+            },
+        }
+        with gzip.open(trace_dir / f"review_trace_{ymd}.json.gz", "wt", encoding="utf-8") as f:
+            json.dump({"trade_date": d_str, "symbols": symbols}, f)
+
+    merged = radar.load_wyckoff_l2_map(trace_dirs=[str(trace_dir)], max_age_days=None, auto_fetch=False)
+    assert merged["600111"]["streak_days"] == 3
+    assert merged["600111"]["funnel_tag"] == "🏆3日候选连入"
+    assert merged["600111"]["is_candidate"] is True
+
+    assert merged["002222"]["t2_shakeout_recall"] is True
+    assert merged["002222"]["is_candidate"] is True
+    assert merged["002222"]["l2_eligible"] is True
+    assert merged["002222"]["channels"] == ["吸筹通道"]
+    assert merged["002222"]["funnel_tag"] == "♻️T-2洗盘回流"
+
+    assert merged["300333"]["t1_isolated_spike"] is True
+    assert merged["300333"]["l3_eligible"] is False
+    assert merged["300333"]["is_candidate"] is False
+    assert merged["300333"]["funnel_tag"] == "⚠️T-1单日新进"
