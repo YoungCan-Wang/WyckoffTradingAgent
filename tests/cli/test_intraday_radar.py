@@ -627,10 +627,12 @@ def test_failed_send_keeps_quote_baseline_so_holding_plunge_retries(tmp_path, mo
     )
 
     monkeypatch.setattr(radar, "send_feishu_tiered_alert", lambda *a, **kw: None)
+    before_fail = time.time()
     radar.run_once(args)
     after_fail = json.loads(state_file.read_text(encoding="utf-8"))
     assert after_fail["quotes"]["600000.SH"]["pct"] == 0.0
-    assert after_fail["ts"] == seed_ts
+    # Quotes stay frozen; ts must advance so the 900s freshness gate does not expire the keep.
+    assert after_fail["ts"] >= before_fail
     assert after_fail["cooldowns"] == {}
 
     sent: list[dict[str, object]] = []
@@ -645,6 +647,35 @@ def test_failed_send_keeps_quote_baseline_so_holding_plunge_retries(tmp_path, mo
     after_ok = json.loads(state_file.read_text(encoding="utf-8"))
     assert "L3:holding_plunge:600000.SH" in after_ok["cooldowns"]
     assert after_ok["quotes"]["600000.SH"]["pct"] == -5.0
+
+
+def test_failed_send_refreshes_ts_so_delta_survives_900s_outage():
+    """Failed send must refresh ts while freezing quotes — else 900s gate drops Δ forever."""
+    radar = _load_radar_module()
+    today = cn_today().isoformat()
+    t0 = 1_700_000_000.0
+    prev = {
+        "date": today,
+        "ts": t0,
+        "quotes": {"600000.SH": {"pct": 0.0, "amt_yi": 1.0}},
+    }
+    compact = {"600000.SH": {"pct": -5.0, "amt_yi": 1.2}}
+
+    ts1, quotes1 = radar._baseline_after_send(prev, today, t0 + 60, compact, True, False)
+    assert ts1 == t0 + 60
+    assert quotes1 == prev["quotes"]
+
+    # Multi-frame Feishu outage spanning >900s: each fail refreshes ts, keeps pre-move quotes.
+    t_late = t0 + 60 + 1200
+    mid = {"date": today, "ts": ts1, "quotes": quotes1}
+    ts2, quotes2 = radar._baseline_after_send(mid, today, t_late, compact, True, False)
+    assert ts2 == t_late
+    assert quotes2["600000.SH"]["pct"] == 0.0
+    assert radar._is_fresh_baseline({"date": today, "ts": ts2, "quotes": quotes2}, today, t_late + 30)
+
+    # Old behavior (freeze ts at first fail) would expire the keep and zero Δpct.
+    frozen_ts_state = {"date": today, "ts": t0 + 60, "quotes": quotes1}
+    assert not radar._is_fresh_baseline(frozen_ts_state, today, t_late + 30)
 
 
 def test_daemon_loop_sends_l1_alert_on_third_consecutive_error(monkeypatch):

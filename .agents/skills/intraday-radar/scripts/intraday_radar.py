@@ -947,9 +947,15 @@ def _baseline_after_send(
     send_attempted: bool,
     send_ok: bool,
 ) -> tuple[float, dict[str, dict[str, float]]]:
-    """Keep prior quote baseline when a card send was attempted but failed."""
+    """Keep prior quote baseline when a card send was attempted but failed.
+
+    Refresh ``ts`` to ``now_ts`` so ``_is_fresh_baseline`` (900s gate) stays true
+    across a multi-frame Feishu outage. Freezing both quotes *and* ts (#635) made
+    the keep expire after 15 minutes; the next L1/``--urgent-only`` no-send frame
+    then advanced quotes to post-move levels and permanently buried Δpct L3/L4.
+    """
     if send_attempted and not send_ok and prev_state.get("date") == today_str and prev_state.get("quotes"):
-        return float(prev_state.get("ts") or now_ts), dict(prev_state["quotes"])
+        return now_ts, dict(prev_state["quotes"])
     return now_ts, compact_snaps
 
 
