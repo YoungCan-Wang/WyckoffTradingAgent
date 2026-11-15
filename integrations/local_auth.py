@@ -238,22 +238,31 @@ def _sign_in_with_password(email: str, password: str) -> dict[str, Any]:
 
 
 def _persist_auto_relogin_if_unchanged(email: str, password: str, data: dict[str, Any]) -> dict[str, Any] | None:
-    """Save auto-relogin only when logout/switch did not change credentials mid-flight."""
-    current_email, current_password = _stored_login_credentials()
-    if current_email != email or current_password != password:
-        logger.warning("refusing to persist auto-relogin: credentials changed during sign-in")
-        return None
-    disk = _read_session_file()
+    """Save auto-relogin only when logout/switch did not change identity mid-flight.
+
+    Credential and session checks must run under the session file lock: IPC workers
+    are separate processes, so ``_AUTH_IDENTITY_LOCK`` cannot serialize them. A
+    check-then-``save_session`` gap lets ``auth_login(Bob)`` land after Alice's
+    unlocked observation and get overwritten (Alice tokens + Bob password).
+    """
     new_user = str(data.get("user_id") or "")
-    if disk is not None and not _same_session_user(disk, new_user):
-        logger.warning(
-            "refusing to persist auto-relogin: disk user %s != signed-in user %s",
-            disk.get("user_id"),
-            new_user,
-        )
+    if not new_user:
         return None
-    save_session(data)
-    return data
+    with _write_lock(SESSION_FILE, _SESSION_THREAD_LOCK):
+        current_email, current_password = _stored_login_credentials()
+        if current_email != email or current_password != password:
+            logger.warning("refusing to persist auto-relogin: credentials changed during sign-in")
+            return None
+        disk = _read_session_file()
+        if disk is not None and not _same_session_user(disk, new_user):
+            logger.warning(
+                "refusing to persist auto-relogin: disk user %s != signed-in user %s",
+                disk.get("user_id"),
+                new_user,
+            )
+            return None
+        _atomic_write_json(SESSION_FILE, data)
+        return data
 
 
 def _login_attempt_still_current(attempt_id: str) -> bool:

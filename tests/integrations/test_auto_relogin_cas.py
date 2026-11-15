@@ -84,6 +84,64 @@ def test_auto_relogin_refuses_to_clobber_switched_account_during_signin(tmp_path
     assert cfg.get("password") == "bob-secret"
 
 
+def test_auto_relogin_rechecks_disk_under_lock_after_switch(tmp_path, monkeypatch):
+    """IPC: Bob can land after Alice's credential snapshot and before the session CAS write."""
+    _point_auth(tmp_path, monkeypatch)
+    local_auth.save_config_key("email", "alice@example.test")
+    local_auth.save_config_key("password", "alice-secret")
+    local_auth.save_session(
+        {
+            "user_id": "alice",
+            "email": "alice@example.test",
+            "access_token": "alice-old-at",
+            "refresh_token": "alice-old-rt",
+        }
+    )
+    monkeypatch.setattr(
+        local_auth,
+        "_sign_in_with_password",
+        lambda email, password: {
+            "user_id": "alice",
+            "email": email,
+            "access_token": "alice-new-at",
+            "refresh_token": "alice-new-rt",
+        },
+    )
+
+    cred_reads = {"n": 0}
+    real_creds = local_auth._stored_login_credentials
+
+    def creds_then_bob_wins():
+        cred_reads["n"] += 1
+        email, password = real_creds()
+        if cred_reads["n"] == 1:
+            # auth_login(Bob) completes after Alice's credential snapshot, before disk CAS.
+            # Write session via atomic helper — save_session would nest-flock deadlock.
+            local_auth._atomic_write_json(
+                local_auth.SESSION_FILE,
+                {
+                    "user_id": "bob",
+                    "email": "bob@example.test",
+                    "access_token": "bob-at",
+                    "refresh_token": "bob-rt",
+                },
+            )
+            local_auth.save_config_key("email", "bob@example.test")
+            local_auth.save_config_key("password", "bob-secret")
+        return email, password
+
+    monkeypatch.setattr(local_auth, "_stored_login_credentials", creds_then_bob_wins)
+
+    assert local_auth.auto_relogin() is None
+    disk = local_auth.load_session()
+    assert disk is not None
+    assert disk["user_id"] == "bob"
+    assert disk["access_token"] == "bob-at"
+    cfg = local_auth.load_config()
+    assert cfg.get("email") == "bob@example.test"
+    assert cfg.get("password") == "bob-secret"
+
+
 def test_auto_relogin_persists_when_credentials_unchanged(tmp_path, monkeypatch):
     _point_auth(tmp_path, monkeypatch)
     local_auth.save_config_key("email", "alice@example.test")
