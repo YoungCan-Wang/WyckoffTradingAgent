@@ -43,6 +43,25 @@ DEFAULT_RULES: dict[str, dict[str, Any]] = {
 # ---------------------------------------------------------------- fills & trips
 
 
+def _as_cn_midnight(value: Any) -> pd.Timestamp:
+    """Trading calendar day in China: tz-aware → Asia/Shanghai, then naive midnight.
+
+    UTC/Zulu fill timestamps must not stay as UTC midnight — naive bar indexes are
+    Shanghai calendar days, and a UTC-midnight mismatch silently drops the trip.
+    """
+    ts = pd.Timestamp(value)
+    if ts.tzinfo is not None:
+        ts = ts.tz_convert("Asia/Shanghai").tz_localize(None)
+    return ts.normalize()
+
+
+def _series_cn_midnight(values: pd.Series) -> pd.Series:
+    series = pd.to_datetime(values)
+    if getattr(series.dt, "tz", None) is not None:
+        series = series.dt.tz_convert("Asia/Shanghai").dt.tz_localize(None)
+    return series.dt.normalize()
+
+
 @dataclass(eq=False)
 class RoundTrip:
     code: str
@@ -54,7 +73,7 @@ class RoundTrip:
     def __post_init__(self) -> None:
         # Bar lookups are midnight-indexed; keep intraday timestamps only for fill ordering.
         fills = self.fills.copy()
-        fills["date"] = pd.to_datetime(fills["date"]).dt.normalize()
+        fills["date"] = _series_cn_midnight(fills["date"])
         self.fills = fills
         self.start = fills["date"].min()
         self.end = fills["date"].max()
@@ -184,7 +203,7 @@ def fills_inside_bars(trip: RoundTrip, bars: pd.DataFrame) -> bool:
     """False when any fill price is outside its day's raw range (wrong listing, adjusted bars, typo)."""
     by_day = bars.set_index("d")
     for _, row in trip.fills.iterrows():
-        day = pd.Timestamp(row["date"]).normalize()
+        day = _as_cn_midnight(row["date"])
         if day not in by_day.index:
             return False
         bar = by_day.loc[day]
@@ -413,6 +432,9 @@ def summarize(table: pd.DataFrame) -> dict[str, float]:
 
 def group_table(table: pd.DataFrame, column: str, bins: list[float], labels: list[str]) -> pd.DataFrame:
     cut = pd.cut(table[column], bins=bins, labels=labels)
+    # NaN (e.g. IPO / short history priors) must stay visible — dropna flips section sign vs total_pnl.
+    if isinstance(cut.dtype, pd.CategoricalDtype) and cut.isna().any():
+        cut = cut.cat.add_categories(["样本不足"]).fillna("样本不足")
     return (
         table.groupby(cut, observed=True)
         .agg(笔数=("pnl", "size"), 合计=("pnl", "sum"), 胜率=("pnl", lambda s: round((s > 0).mean() * 100, 1)))
@@ -545,8 +567,8 @@ def cmd_analyze(args: argparse.Namespace) -> None:
 def cmd_solve_lots(args: argparse.Namespace) -> None:
     _guard_out_dir(Path(args.out).parent, args.allow_repo_output)
     summary = pd.read_csv(args.summary, encoding="utf-8-sig", dtype={"code": str})
-    summary["entry_date"] = pd.to_datetime(summary["entry_date"]).dt.normalize()
-    summary["exit_date"] = pd.to_datetime(summary["exit_date"]).dt.normalize()
+    summary["entry_date"] = _series_cn_midnight(summary["entry_date"])
+    summary["exit_date"] = _series_cn_midnight(summary["exit_date"])
     bars = fetch_bars(sorted(set(summary["code"])))
     rows, unsolved = [], []
     for _, r in summary.iterrows():
