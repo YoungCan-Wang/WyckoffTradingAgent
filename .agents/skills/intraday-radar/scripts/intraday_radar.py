@@ -686,14 +686,15 @@ def _check_wyckoff_ignition(
     is_core_pool = bool(info.get("l3_eligible") or info.get("is_candidate"))
     rps_val = float(info.get("rps") or 0.0)
     now_hm = datetime.fromtimestamp(now_ts, tz=CN_TZ).strftime("%H:%M")
+    has_streak = int(info.get("streak_days") or 0) >= 2
     is_steady_push = (
         now_hm >= "10:30"
         and 24.0 <= rps_val <= 68.0
         and float(m.get("upper_wick_pct", 0.0)) <= 1.0
         and float(m.get("amp_pct", 0.0)) <= 5.5
         and dpct >= 1.2
-        and damt >= 0.25
-        and m["amt_yi"] >= 1.8
+        and damt >= (0.20 if has_streak else 0.25)
+        and m["amt_yi"] >= (1.5 if has_streak else 1.8)
     )
     is_standard_ign = dpct >= 1.8 and damt >= 0.30 and m["amt_yi"] >= 1.0
     if not (

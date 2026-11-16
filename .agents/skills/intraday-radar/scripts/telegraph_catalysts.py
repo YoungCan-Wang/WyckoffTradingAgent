@@ -553,18 +553,23 @@ def _collect_strong_sectors(
     l2_map: dict[str, dict[str, Any]],
 ) -> dict[str, tuple[float, float]]:
     sec_pcts: dict[str, list[float]] = {}
+    l2_up_counts: dict[str, int] = {}
     for sym, q in curr_quotes.items():
         if not _is_equity_symbol(sym):
             continue
         last = float(q.get("last_price") or q.get("price") or 0.0)
         pre = float(q.get("prev_close") or 0.0)
-        sec = str((l2_map.get(sym[:6]) or {}).get("sector") or "")
+        meta = l2_map.get(sym[:6]) or {}
+        sec = str(meta.get("sector") or "")
         if last > 0 and pre > 0 and sec:
-            sec_pcts.setdefault(sec, []).append((last / pre - 1.0) * 100.0)
+            pct = (last / pre - 1.0) * 100.0
+            sec_pcts.setdefault(sec, []).append(pct)
+            if pct >= 2.0 and (meta.get("l2_eligible") or meta.get("is_candidate")):
+                l2_up_counts[sec] = l2_up_counts.get(sec, 0) + 1
     return {
         s: (sum(1 for p in ps if p > 0) / len(ps) * 100.0, sum(ps) / len(ps))
         for s, ps in sec_pcts.items()
-        if len(ps) >= 8 and (sum(1 for p in ps if p > 0) / len(ps)) >= 0.75
+        if len(ps) >= 8 and ((sum(1 for p in ps if p > 0) / len(ps)) >= 0.75 or l2_up_counts.get(s, 0) >= 4)
     }
 
 
@@ -604,7 +609,11 @@ def summarize_zero_bias_l2_leaders(
         if last < open_p or (high_p - last) / high_p > 0.012 or (high_p - low_p) / pre > 0.065:
             continue
         red_r, avg_p = strong_secs[sec]
-        if pct < avg_p * 0.75:
+        streak_n = int(meta.get("streak_days") or 0)
+        if red_r >= 75.0:
+            if pct < avg_p * 0.75:
+                continue
+        elif streak_n < 2 or pct < max(avg_p + 2.5, 2.0):
             continue
         rps_sweet = 18.0 if 24.0 <= rps <= 68.0 else 0.0
         streak_bonus = min(int(meta.get("streak_days") or 0), 3) * 6.0

@@ -1539,3 +1539,42 @@ def test_multi_day_wyckoff_funnel_continuity_and_shakeout_recall(tmp_path):
     assert merged["300333"]["l3_eligible"] is False
     assert merged["300333"]["is_candidate"] is False
     assert merged["300333"]["funnel_tag"] == "⚠️T-1单日新进"
+
+    # Verify sub-sector L2 cluster (>=4 L2 stocks up >=+2%) allows 3-day consecutive leader (like 002452 长高电气)
+    # to enter summarize_zero_bias_l2_leaders even when broad sector red_ratio < 75%
+    import sys
+
+    sys.path.insert(0, str(SCRIPT_PATH.parent))
+    import telegraph_catalysts as tc
+
+    sec_l2_map = {}
+    sec_quotes = {}
+    for i in range(10):
+        c6 = f"00245{i}"
+        sym = f"{c6}.SZ"
+        is_up = i < 4  # 4 L2 stocks up >= +2.0% out of 10 (red_ratio = 40% < 75%)
+        sec_l2_map[c6] = {
+            "name": "长高电气" if i == 2 else f"电企{i}",
+            "sector": "电气设备",
+            "rps": 32.0,
+            "l2_eligible": True,
+            "l3_eligible": i == 2,
+            "is_candidate": False,
+            "channels": ["吸筹通道", "地量蓄势"],
+            "streak_days": 3 if i == 2 else 1,
+            "funnel_tag": "🔥3日L2+L3连入" if i == 2 else "",
+        }
+        sec_quotes[sym] = {
+            "symbol": sym,
+            "last_price": 9.88 if i == 2 else (10.30 if is_up else 9.80),
+            "prev_close": 9.45 if i == 2 else 10.00,
+            "open": 9.50 if i == 2 else 10.00,
+            "high": 9.90 if i == 2 else (10.35 if is_up else 10.00),
+            "low": 9.48 if i == 2 else (10.00 if is_up else 9.75),
+            "volume": 1.9e7,
+            "amount": 1.85e8,
+            "vwap": 9.78 if i == 2 else 10.10,
+        }
+    zb_summary = tc.summarize_zero_bias_l2_leaders(sec_quotes, sec_l2_map)
+    assert "002452.SZ 长高电气" in zb_summary
+    assert "🔥3日L2+L3连入" in zb_summary
