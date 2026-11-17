@@ -259,6 +259,69 @@ def test_missing_holding_quote_is_not_silent_and_backfill_restores_stop():
     assert "L4 破位止损" in body_ok
 
 
+def test_holding_quote_gap_cooldown_is_per_symbol():
+    """A gap stamp for holding A must not mute a later gap urgent for holding B."""
+    radar = _load_radar_module()
+    today = cn_today().isoformat()
+    holdings = {
+        "600000.SH": {"cost": 10.0, "stop": 9.50},
+        "000001.SZ": {"cost": 10.0, "stop": 9.50},
+    }
+    base_quotes = {
+        "600001.SH": {
+            "symbol": "600001.SH",
+            "last_price": 10.1,
+            "prev_close": 10.0,
+            "volume": 1e6,
+            "amount": 1e7,
+            "ext": {"name": "其他"},
+        },
+        "000001.SZ": {
+            "symbol": "000001.SZ",
+            "last_price": 10.1,
+            "prev_close": 10.0,
+            "volume": 1e6,
+            "amount": 1e7,
+            "ext": {"name": "平安银行"},
+        },
+    }
+    prev_state = {
+        "date": today,
+        "ts": 1000.0,
+        "quotes": {
+            "600000.SH": {"pct": -1.0, "amt_yi": 0.5},
+            "000001.SZ": {"pct": -1.0, "amt_yi": 0.5},
+            "600001.SH": {"pct": 1.0, "amt_yi": 0.5},
+        },
+        "cooldowns": {},
+    }
+    level_a, _, body_a, _, cds = radar.analyze_snapshot_diff(base_quotes, prev_state, {}, holdings, now_ts=1200.0)
+    assert level_a == "L2"
+    assert "600000.SH" in body_a
+    assert cds.get("L2:holding_quote_gap:600000.SH") == 1200.0
+    assert "L2:holding_quote_gap" not in cds
+
+    quotes_b = {
+        "600001.SH": base_quotes["600001.SH"],
+        "600000.SH": {
+            "symbol": "600000.SH",
+            "last_price": 10.0,
+            "prev_close": 10.0,
+            "volume": 1e6,
+            "amount": 1e7,
+            "ext": {"name": "浦发银行"},
+        },
+    }
+    prev_b = {**prev_state, "ts": 1200.0, "cooldowns": cds}
+    level_b, _, body_b, _, cds_b = radar.analyze_snapshot_diff(quotes_b, prev_b, {}, holdings, now_ts=1500.0)
+    assert level_b == "L2"
+    assert "000001.SZ" in body_b
+    assert "【持仓行情缺口】" in body_b
+    assert cds_b.get("L2:holding_quote_gap:000001.SZ") == 1500.0
+    assert not radar.should_send_card("L1", 1500.0, 1400.0, False, False)
+    assert radar.should_send_card(level_b, 1500.0, 1400.0, False, True)
+
+
 def test_etf_and_unrelated_stock_moves_do_not_spam_l2_urgent():
     radar = _load_radar_module()
     today = cn_today().isoformat()
