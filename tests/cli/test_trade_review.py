@@ -106,6 +106,57 @@ def test_timestamped_fills_match_midnight_bars(tmp_path):
     assert trips[0].end == pd.Timestamp("2026-01-06")
 
 
+def test_zulu_fill_timestamps_align_to_shanghai_bar_days(tmp_path):
+    """UTC/Zulu instants must map to CN trading days or fills_inside_bars drops the cohort."""
+    csv = tmp_path / "fills.csv"
+    pd.DataFrame(
+        [
+            {
+                "name": "测试",
+                "code": "600001.SH",
+                "date": "2026-01-05T01:31:00.000Z",
+                "side": "buy",
+                "price": 10.0,
+                "qty": 100,
+                "amount": 1000.0,
+                "fee": 5.0,
+            },
+            {
+                "name": "测试",
+                "code": "600001.SH",
+                "date": "2026-01-06T06:00:00.000Z",
+                "side": "sell",
+                "price": 11.0,
+                "qty": 100,
+                "amount": 1100.0,
+                "fee": 5.0,
+            },
+        ]
+    ).to_csv(csv, index=False)
+    trips, open_pos = TR.build_round_trips(TR.load_fills(csv))
+    bars = _bars([("2026-01-05", 10.0, 10.2, 9.9, 10.0), ("2026-01-06", 10.0, 11.2, 10.0, 11.0)])
+    assert open_pos == []
+    assert len(trips) == 1
+    assert trips[0].start == pd.Timestamp("2026-01-05")
+    assert trips[0].end == pd.Timestamp("2026-01-06")
+    assert trips[0].start.tzinfo is None
+    assert TR.fills_inside_bars(trips[0], bars)
+
+
+def test_group_table_keeps_nan_priors_as_insufficient_sample():
+    table = pd.DataFrame(
+        {
+            "pnl": [-8000.0, -6000.0, 400.0, 300.0, 300.0],
+            "prior_limit_ups": [float("nan"), float("nan"), 0.0, 0.0, 0.0],
+        }
+    )
+    grouped = TR.group_table(table, "prior_limit_ups", [-1, 0, 1, 99], ["0", "1", "≥2"])
+    assert grouped.loc["样本不足", "笔数"] == 2
+    assert grouped.loc["样本不足", "合计"] == -14000
+    assert grouped.loc["0", "合计"] == 1000
+    assert grouped["合计"].sum() == table["pnl"].sum()
+
+
 def test_bare_bse_codes_use_30_percent_limit():
     assert TR.limit_pct("920001") == 0.30
     assert TR.limit_pct("430047") == 0.30
