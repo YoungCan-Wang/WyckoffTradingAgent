@@ -57,22 +57,9 @@ def login(email: str, password: str) -> dict[str, Any]:
         save_config_key(_LOGIN_ATTEMPT_ID_KEY, attempt_id)
     data = _sign_in_with_password(email, password)
     with _AUTH_IDENTITY_LOCK:
-        if not _login_attempt_still_current(attempt_id):
+        if not _persist_login_if_attempt_current(attempt_id, email, password, data):
             logger.warning("refusing to persist login: logout or newer login during sign-in")
             raise RuntimeError("登录未完成：期间发生了退出或另一次登录")
-        # Flip disk identity before purging the previous account's cloud keys so an
-        # in-flight pull that CAS-checks session.json already sees the new user
-        # (and save_cloud_* refuses). clear_cloud then sweeps anything that landed
-        # before the flip.
-        save_session(data)
-        clear_cloud_synced_config(keep_user_id=str(data.get("user_id") or ""))
-        save_config_key("email", email)
-        save_config_key("password", password)
-        # 单独记一份**不参与自动登录**的邮箱：退出登录会清掉 email/password
-        # （否则会被静默登回去），但下次登录页仍该预填邮箱 —— 那是便利，不是凭据。
-        # 拆成两个键才能让「清凭据」和「记住是谁」互不干扰。
-        save_config_key("last_email", email)
-        save_config_key(_LOGIN_ATTEMPT_ID_KEY, "")
     return data
 
 
@@ -276,6 +263,45 @@ def _login_attempt_still_current(attempt_id: str) -> bool:
     if not expected:
         return False
     return str(load_config().get(_LOGIN_ATTEMPT_ID_KEY) or "").strip() == expected
+
+
+def _persist_login_if_attempt_current(
+    attempt_id: str,
+    email: str,
+    password: str,
+    data: dict[str, Any],
+) -> bool:
+    """Persist login only when this attempt still owns the disk marker.
+
+    Attempt re-check and session/credential writes run under the config + session
+    file locks: IPC workers are separate processes, so ``_AUTH_IDENTITY_LOCK``
+    cannot serialize them. An unlocked check-then-``save_session`` gap lets a
+    finished ``auth_login(Bob)`` / ``logout`` land after Alice's observation and
+    get overwritten (Bob clobbered / logout resurrection).
+    """
+    expected = str(attempt_id or "").strip()
+    if not expected:
+        return False
+    # Config then session — same order as logout's credential clear → session
+    # clear — so cross-process login/logout cannot ABBA-deadlock on the flocks.
+    with _write_lock(CONFIG_FILE, _CONFIG_THREAD_LOCK):
+        cfg = _ensure_models_format(_load_config_for_update())
+        if str(cfg.get(_LOGIN_ATTEMPT_ID_KEY) or "").strip() != expected:
+            return False
+        with _write_lock(SESSION_FILE, _SESSION_THREAD_LOCK):
+            _atomic_write_json(SESSION_FILE, data)
+        # Keep config lock through credential flip, attempt clear, and cloud purge
+        # so another worker cannot observe a half-written identity.
+        keep_user_id = str(data.get("user_id") or "")
+        cfg["email"] = email
+        cfg["password"] = password
+        # last_email is convenience-only (not a credential); logout keeps it.
+        cfg["last_email"] = email
+        cfg[_LOGIN_ATTEMPT_ID_KEY] = ""
+        if _CLOUD_SYNCED_KEY in cfg:
+            _purge_cloud_synced(cfg, keep_user_id=keep_user_id)
+        _atomic_write_json(CONFIG_FILE, cfg, indent=2)
+        return True
 
 
 def _same_session_user(current: dict[str, Any] | None, expected_user_id: str) -> bool:
