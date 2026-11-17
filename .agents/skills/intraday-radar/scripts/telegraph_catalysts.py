@@ -274,12 +274,38 @@ def fetch_wscn_telegraph(timeout: float = 4.0) -> list[dict[str, Any]]:
     return items
 
 
+def _estimate_red_ratio(quotes: dict[str, dict[str, Any]]) -> float | None:
+    red = 0
+    green = 0
+    for sym, q in (quotes or {}).items():
+        if not _is_equity_symbol(sym, allow_bj=True) or not isinstance(q, dict):
+            continue
+        last = float(q.get("last_price") or q.get("price") or 0.0)
+        pre = float(q.get("prev_close") or 0.0)
+        if last > 0 and pre > 0:
+            pct = (last / pre - 1.0) * 100.0
+        elif "pct" in q:
+            pct = float(q.get("pct") or 0.0)
+        else:
+            continue
+        red += int(pct > 0)
+        green += int(pct < 0)
+    if red + green < 50:
+        return None
+    return red / max(red + green, 1)
+
+
 def _rank_wyckoff_picks(
     target_sectors: list[str],
     l2_map: dict[str, dict[str, Any]],
     quotes: dict[str, dict[str, Any]],
+    *,
+    now_hm: str = "",
+    red_ratio: float | None = None,
 ) -> list[str]:
     scored: list[tuple[float, str]] = []
+    is_afternoon_window = bool(now_hm and now_hm >= "11:00")
+    max_pct = 3.8 if is_afternoon_window else 5.2
     for code6, meta in l2_map.items():
         if meta.get("sector") not in target_sectors:
             continue
@@ -287,7 +313,9 @@ def _rank_wyckoff_picks(
         is_cand = bool(meta.get("is_candidate"))
         rps = float(meta.get("rps") or 0.0)
         chans = [str(c) for c in (meta.get("channels") or [])]
-        if not (is_l2 or is_cand) or (rps >= 85.0 and not is_cand and all("点火" in c for c in chans if c)):
+        if not is_l2 or meta.get("t1_isolated_spike"):
+            continue
+        if rps >= 85.0 and not is_cand and all("点火" in c for c in chans if c):
             continue
         sym = resolve_code6_symbol(code6, quotes)
         q = quotes.get(sym, {})
@@ -295,20 +323,31 @@ def _rank_wyckoff_picks(
         pre = float(q.get("prev_close") or 0.0)
         has_q = last > 0 and pre > 0
         pct = ((last - pre) / pre * 100.0) if has_q else float(q.get("pct") or 0.0)
-        if pct < -1.5 or pct > 5.2:
+        if pct < -1.5 or pct > max_pct:
             continue
         if has_q and last < _resolve_vwap(q, last):
             continue
         mb_bonus = 20.0 if code6.startswith(("60", "00")) else 0.0
-        l2_bonus = 30.0 if is_l2 else 15.0
+        l2_bonus = 30.0
         rps_bonus = 15.0 if 22.0 <= rps <= 70.0 else 0.0
-        streak_bonus = min(int(meta.get("streak_days") or 0), 3) * 6.0 - (
-            25.0 if meta.get("t1_isolated_spike") else 0.0
-        )
-        score = mb_bonus + l2_bonus + rps_bonus + streak_bonus + max(min(pct, 4.5), -1.0) * 2.0
+        streak_bonus = min(int(meta.get("streak_days") or 0), 3) * 6.0
+        if is_afternoon_window:
+            pct_score = pct * 2.5 if pct <= 2.8 else (7.0 - (pct - 2.8) * 8.0)
+        else:
+            pct_score = max(min(pct, 3.5), -1.0) * 2.0
+        score = mb_bonus + l2_bonus + rps_bonus + streak_bonus + pct_score
         ch_str = "/".join(meta.get("channels") or []) or ("候选" if is_cand else f"RPS{rps:.0f}")
-        tag = f"{pct:+.1f}%·{ch_str}" if (has_q or "pct" in q) else ch_str
-        scored.append((score, f"`{code6}` {meta.get('name', '')}({tag})"))
+        raw_ftag = str(meta.get("funnel_tag") or "")
+        ftag = raw_ftag.replace("L2+L3连入", "L2").replace("候选连入", "候选").replace("T-2洗盘回流", "回流")
+        parts: list[str] = []
+        if has_q or "pct" in q:
+            parts.append(f"{pct:+.1f}%")
+        if ftag and not ftag.startswith("⚠️"):
+            parts.append(ftag)
+        parts.append(ch_str)
+        if red_ratio is not None and red_ratio < 0.45 and pct >= 2.0:
+            parts.append("⚠️弱市禁追")
+        scored.append((score, f"`{code6}` {meta.get('name', '')}({'·'.join(parts)})"))
     scored.sort(key=lambda x: -x[0])
     return [item[1] for item in scored[:3]]
 
@@ -325,6 +364,9 @@ def match_theme_and_candidates(
     text: str,
     l2_map: dict[str, dict[str, Any]],
     curr_quotes: dict[str, dict[str, Any]] | None = None,
+    *,
+    now_hm: str = "",
+    red_ratio: float | None = None,
 ) -> tuple[str, list[str]]:
     if _is_filtered_telegraph(text):
         return "", []
@@ -345,7 +387,7 @@ def match_theme_and_candidates(
         best_theme = "⚡ 盘面异动电报"
     if not best_sectors or not l2_map:
         return best_theme, []
-    return best_theme, _rank_wyckoff_picks(best_sectors, l2_map, curr_quotes or {})
+    return best_theme, _rank_wyckoff_picks(best_sectors, l2_map, curr_quotes or {}, now_hm=now_hm, red_ratio=red_ratio)
 
 
 def scan_live_telegraph_catalysts(
@@ -358,8 +400,13 @@ def scan_live_telegraph_catalysts(
     cooldowns: dict[str, float] | None = None,
     now_ts: float | None = None,
     raw_items: list[dict[str, Any]] | None = None,
+    *,
+    now_hm: str = "",
+    red_ratio: float | None = None,
 ) -> list[str]:
     cur_ts = now_ts if now_ts is not None else datetime.now(CN_TZ).timestamp()
+    eff_hm = now_hm or datetime.fromtimestamp(cur_ts, tz=CN_TZ).strftime("%H:%M")
+    eff_red_ratio = red_ratio if red_ratio is not None else _estimate_red_ratio(curr_quotes or {})
     cutoff = since_ts if (since_ts and since_ts > 0) else (cur_ts - window_minutes * 60)
     fetched = list(raw_items) if raw_items is not None else (fetch_sina_telegraph(pages=pages) + fetch_wscn_telegraph())
     fetched.sort(key=lambda x: -float(x.get("ts") or 0.0))
@@ -377,7 +424,7 @@ def scan_live_telegraph_catalysts(
         dedup_key = re.sub(r"^【[^】]+】", "", txt)[:24]
         if dedup_key in seen_snippets:
             continue
-        theme, picks = match_theme_and_candidates(txt, l2_map, curr_quotes)
+        theme, picks = match_theme_and_candidates(txt, l2_map, curr_quotes, now_hm=eff_hm, red_ratio=eff_red_ratio)
         if not theme:
             continue
         seen_snippets.add(dedup_key)
@@ -444,6 +491,10 @@ def summarize_national_team_etfs(
     has_baseline: bool = False,
     now_dt: datetime | None = None,
     turnover_dir: Path | None = None,
+    *,
+    red_count: int | None = None,
+    green_count: int | None = None,
+    d_red: int | None = None,
 ) -> tuple[str, str]:
     prev_map = prev_q or {}
     tot_amt = 0.0
@@ -476,11 +527,19 @@ def summarize_national_team_etfs(
     pulse_tag = f" [5m: +{tot_damt:.1f}亿]" if has_baseline and tot_damt > 0 else ""
     summary = f"🏦 **国家队20大重点ETF**：合计成交 **{tot_amt:.1f}亿**{pulse_tag}（{same_ts_cmp}）| 领头：{top_str}"
     is_post_opening_rush = now_hm > "09:45"
-    l2_alert = (
-        f"- 🟡 **【国家队20大宽基ETF 5m放量异动】** 5分钟合计爆量 **+{tot_damt:.1f}亿**（累计 {tot_amt:.1f}亿），领头：{top_str}"
-        if (has_baseline and is_post_opening_rush and tot_damt >= 25.0)
-        else ""
-    )
+    has_full_breadth = red_count is not None and (red_count + (green_count or 0)) >= 100
+    is_defensive_floor = has_full_breadth and (red_count < 2000 or (d_red is not None and d_red <= 0))
+    if has_baseline and is_post_opening_rush and tot_damt >= 25.0:
+        if is_defensive_floor:
+            d_note = f"({d_red:+d})" if d_red is not None else ""
+            l2_alert = (
+                f"- 🛡️ **【国家队宽基托底护盘（托指不救股）】** 5分钟宽基爆量 **+{tot_damt:.1f}亿**"
+                f"（累计 {tot_amt:.1f}亿，当前红盘 {red_count} 家{d_note}，属护指数非普涨信号，个股勿盲目抄底），领头：{top_str}"
+            )
+        else:
+            l2_alert = f"- 🚀 **【国家队20大宽基ETF 5m放量异动】** 5分钟合计爆量 **+{tot_damt:.1f}亿**（累计 {tot_amt:.1f}亿），领头：{top_str}"
+    else:
+        l2_alert = ""
     return summary, l2_alert
 
 
@@ -525,8 +584,8 @@ def summarize_top_sector_mainlines(
         leader = f"`{items[0][1]}` {items[0][2]}({items[0][0]:+.1f}%)"
         wyckoff_picks = [
             f"`{c}` {n}({p:+.1f}%)"
-            for p, c, n, is_l2, is_cand in items
-            if (is_l2 or is_cand) and float((l2_map.get(c) or {}).get("rps") or 0.0) <= 82.0 and 0.5 <= p <= 5.2
+            for p, c, n, is_l2, _is_cand in items
+            if is_l2 and float((l2_map.get(c) or {}).get("rps") or 0.0) <= 82.0 and 0.5 <= p <= 5.2
         ]
         w_tag = f" | 🎯L2可买：{'、'.join(wyckoff_picks[:2])}" if wyckoff_picks else ""
         lines.append(

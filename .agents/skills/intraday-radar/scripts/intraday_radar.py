@@ -269,7 +269,7 @@ def _merge_multi_day_l2_maps(daily_maps: list[dict[str, dict[str, Any]]]) -> dic
     latest = {k: dict(v) for k, v in daily_maps[-1].items()}
     if len(daily_maps) == 1:
         for info in latest.values():
-            info["streak_days"] = int(bool(info.get("l2_eligible") or info.get("is_candidate")))
+            info["streak_days"] = int(bool(info.get("l2_eligible")))
             info.setdefault("funnel_tag", "")
         return latest
     priors = daily_maps[:-1]
@@ -277,13 +277,15 @@ def _merge_multi_day_l2_maps(daily_maps: list[dict[str, dict[str, Any]]]) -> dic
     for code, info in latest.items():
         p_rows = [m[code] for m in priors if code in m]
         if not p_rows:
-            info["streak_days"] = int(bool(info.get("l2_eligible") or info.get("is_candidate")))
+            info["streak_days"] = int(bool(info.get("l2_eligible")))
             info["funnel_tag"] = ""
             continue
-        core_now = bool((info.get("l2_eligible") and info.get("l3_eligible")) or info.get("is_candidate"))
-        core_priors = sum(1 for p in p_rows if (p.get("l2_eligible") and p.get("l3_eligible")) or p.get("is_candidate"))
-        l2_priors = sum(1 for p in p_rows if p.get("l2_eligible") or p.get("is_candidate"))
-        cand_all = bool(info.get("is_candidate")) and all(p.get("is_candidate") for p in p_rows)
+        core_now = bool(info.get("l2_eligible") and (info.get("l3_eligible") or info.get("is_candidate")))
+        core_priors = sum(1 for p in p_rows if p.get("l2_eligible") and (p.get("l3_eligible") or p.get("is_candidate")))
+        l2_priors = sum(1 for p in p_rows if p.get("l2_eligible"))
+        cand_all = bool(info.get("l2_eligible") and info.get("is_candidate")) and all(
+            p.get("l2_eligible") and p.get("is_candidate") for p in p_rows
+        )
         info["streak_days"] = (core_priors + 1) if core_now else 0
         info["funnel_tag"] = ""
         if cand_all:
@@ -291,7 +293,7 @@ def _merge_multi_day_l2_maps(daily_maps: list[dict[str, dict[str, Any]]]) -> dic
         elif core_now and core_priors >= 1:
             info["funnel_tag"] = f"🔥{core_priors + 1}日L2+L3连入"
         elif core_now and l2_priors == 0 and not info.get("is_springboard"):
-            # Reject isolated T-1 single-day impulse entrants with zero T-2/T-3 L2/candidate history
+            # Reject isolated T-1 single-day impulse entrants with zero T-2/T-3 L2 history
             info["t1_isolated_spike"] = True
             info["l3_eligible"] = False
             info["is_candidate"] = False
@@ -299,7 +301,7 @@ def _merge_multi_day_l2_maps(daily_maps: list[dict[str, dict[str, Any]]]) -> dic
             info["funnel_tag"] = "⚠️T-1单日新进"
         elif not core_now and float(info.get("rps") or 0.0) <= 75.0:
             p_last = p_rows[-1]
-            was_strong = bool(p_last.get("is_candidate")) or (core_priors >= len(p_rows))
+            was_strong = bool(p_last.get("l2_eligible") and p_last.get("is_candidate")) or (core_priors >= len(p_rows))
             if was_strong:
                 info["l2_eligible"] = True
                 info["is_candidate"] = True
@@ -896,6 +898,18 @@ def _format_index_open_drift(curr_quotes: dict[str, dict[str, Any]]) -> str:
     return ""
 
 
+def _is_unrolled_preopen_snapshot(curr_quotes: dict[str, dict[str, Any]], now_dt: datetime) -> tuple[bool, float]:
+    """Detect prior-day unrolled snapshots between 09:15 and 09:29 BJT via index turnover."""
+    if not ((9, 15) <= (now_dt.hour, now_dt.minute) < (9, 30)):
+        return False, 0.0
+    sh_amt = float((curr_quotes.get("000001.SH") or {}).get("amount") or 0.0) / 1e8
+    sz_amt = float((curr_quotes.get("399001.SZ") or {}).get("amount") or 0.0) / 1e8
+    tot = sh_amt + sz_amt
+    if tot > 500.0:
+        return True, tot
+    return False, 0.0
+
+
 def _enrich_mainline_and_telegraph(
     curr_quotes: dict[str, dict[str, Any]],
     prev_q: dict[str, dict[str, float]],
@@ -907,6 +921,10 @@ def _enrich_mainline_and_telegraph(
     alert_records: list[dict[str, Any]],
     fetch_telegraph: bool = False,
     turnover_dir: Path | None = None,
+    red_count: int | None = None,
+    green_count: int | None = None,
+    d_red: int | None = None,
+    red_ratio: float | None = None,
 ) -> None:
     try:
         from telegraph_catalysts import (
@@ -921,7 +939,14 @@ def _enrich_mainline_and_telegraph(
             buckets["warnings"].append(drift_note)
         now_dt = datetime.fromtimestamp(ts, tz=CN_TZ)
         nt_summary, nt_l2_alert = summarize_national_team_etfs(
-            curr_quotes, prev_q, has_baseline, now_dt=now_dt, turnover_dir=turnover_dir
+            curr_quotes,
+            prev_q,
+            has_baseline,
+            now_dt=now_dt,
+            turnover_dir=turnover_dir,
+            red_count=red_count,
+            green_count=green_count,
+            d_red=d_red,
         )
         if nt_l2_alert and _check_cooldown(cooldowns, "L2:nt_etf_surge", ts):
             buckets["l2_events"].insert(0, nt_l2_alert)
@@ -937,7 +962,15 @@ def _enrich_mainline_and_telegraph(
         if fetch_telegraph:
             buckets["telegraph"].extend(
                 scan_live_telegraph_catalysts(
-                    l2_map, curr_quotes, window_minutes=30, max_items=4, pages=1, cooldowns=cooldowns, now_ts=ts
+                    l2_map,
+                    curr_quotes,
+                    window_minutes=30,
+                    max_items=4,
+                    pages=1,
+                    cooldowns=cooldowns,
+                    now_ts=ts,
+                    now_hm=now_dt.strftime("%H:%M"),
+                    red_ratio=red_ratio,
                 )
             )
     except Exception as exc:
@@ -961,6 +994,18 @@ def analyze_snapshot_diff(
     has_baseline = _is_fresh_baseline(prev_state, today_str, ts)
     prev_q = prev_state.get("quotes", {}) if has_baseline else {}
     cooldowns: dict[str, float] = dict(prev_state.get("cooldowns", {})) if prev_state.get("date") == today_str else {}
+    now_dt = datetime.fromtimestamp(ts, tz=CN_TZ)
+    unrolled_preopen, stale_amt = _is_unrolled_preopen_snapshot(curr_quotes, now_dt)
+    if unrolled_preopen:
+        _LAST_ALERT_RECORDS[:] = []
+        return (
+            "L1",
+            f"【L1】{now_dt.strftime('%H:%M')} 盘前竞价待切换：数据源仍为昨收({stale_amt:.0f}亿)",
+            f"⚠️ **盘前未清零保护已激活**：当前早于 09:30 且两市成交额仍显示昨收量级（{stale_amt:.0f}亿 > 500亿阈值），"
+            "已跳过本帧持仓止损冷却与 5m 异动判定，待 09:30 正式开盘建立干净基线。",
+            0,
+            cooldowns,
+        )
 
     sh = curr_quotes.get("000001.SH", {})
     sz = curr_quotes.get("399001.SZ", {})
@@ -1031,6 +1076,10 @@ def analyze_snapshot_diff(
         alert_records,
         fetch_telegraph=fetch_telegraph,
         turnover_dir=turnover_dir,
+        red_count=red_count,
+        green_count=green_count,
+        d_red=d_red,
+        red_ratio=red_ratio,
     )
 
     if coverage_ok and abs(d_red) >= 400 and _check_cooldown(cooldowns, "L2:breadth", ts):
@@ -1330,9 +1379,11 @@ def run_once(args: argparse.Namespace) -> None:
     holdings = parse_holdings_arg(args.holding)
     prev_state = json.loads(STATE_PATH.read_text(encoding="utf-8")) if STATE_PATH.exists() else {}
     now_ts = time.time()
+    now_bjt = datetime.fromtimestamp(now_ts, tz=CN_TZ)
     curr_quotes = _backfill_holding_quotes(
         client, client.get_quotes(universes=["CN_Equity_A", "CN_ETF", "CN_Index"]), holdings
     )
+    unrolled_preopen, _ = _is_unrolled_preopen_snapshot(curr_quotes, now_bjt)
     level, title, content, red_count, cooldowns = analyze_snapshot_diff(
         curr_quotes, prev_state, l2_map, holdings, now_ts=now_ts, fetch_telegraph=not args.dry_run
     )
@@ -1356,10 +1407,10 @@ def run_once(args: argparse.Namespace) -> None:
             send_ok, saved_cooldowns = True, cooldowns
             if not args.dry_run:
                 append_alert_records(_LAST_ALERT_RECORDS, log_path=ALERT_LOG_PATH, sent=True, msg_id=msg_id)
-            if level == "L1":
+            if level == "L1" and not unrolled_preopen:
                 last_l1_ts = now_ts
             print(f"[{now_bjt.strftime('%H:%M:%S')}] Sent {level} alert: msg_id={msg_id}")
-    elif getattr(args, "heartbeat", False) and not args.urgent_only:
+    elif not unrolled_preopen and getattr(args, "heartbeat", False) and not args.urgent_only:
         hb_title, hb_body = _format_heartbeat_card(curr_quotes, holdings, red_count, now_bjt.strftime("%H:%M"))
         open_id = "" if args.dry_run else resolve_lark_open_id(args.user_id)
         msg_id = send_feishu_tiered_alert(hb_title, hb_body, level="L1", user_open_id=open_id, dry_run=args.dry_run)
@@ -1367,7 +1418,14 @@ def run_once(args: argparse.Namespace) -> None:
             print(f"[{now_bjt.strftime('%H:%M:%S')}] Sent HEARTBEAT card: msg_id={msg_id}")
     if args.dry_run:
         return
-    state_ts, saved_quotes = _baseline_after_send(prev_state, today_str, now_ts, compact_snaps, send_attempted, send_ok)
+    if unrolled_preopen:
+        state_ts = float(prev_state.get("ts") or 0.0) if prev_state.get("date") == today_str else 0.0
+        saved_quotes = dict(prev_state.get("quotes", {})) if prev_state.get("date") == today_str else {}
+        saved_cooldowns = dict(prev_cooldowns)
+    else:
+        state_ts, saved_quotes = _baseline_after_send(
+            prev_state, today_str, now_ts, compact_snaps, send_attempted, send_ok
+        )
     STATE_PATH.write_text(
         json.dumps(
             {

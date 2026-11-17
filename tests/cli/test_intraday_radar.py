@@ -1641,3 +1641,167 @@ def test_multi_day_wyckoff_funnel_continuity_and_shakeout_recall(tmp_path):
     zb_summary = tc.summarize_zero_bias_l2_leaders(sec_quotes, sec_l2_map)
     assert "002452.SZ 长高电气" in zb_summary
     assert "🔥3日L2+L3连入" in zb_summary
+
+
+def test_l2_only_streak_blocks_l1_trend_bypass_candidates(tmp_path) -> None:
+    radar = _load_radar_module()
+    trace_dir = tmp_path / "traces_l2_only"
+    trace_dir.mkdir()
+    for d_str in ("2026-11-12", "2026-11-13", "2026-11-16"):
+        ymd = d_str.replace("-", "")
+        symbols = {
+            "300133.SZ": {
+                "name": "旁路样本",
+                "sector": "影视音像",
+                "rps_fast": 48.0,
+                "l2_eligible": False,
+                "l3_eligible": False,
+                "stage": "候选池已捕获",
+                "l2_channels": [],
+            }
+        }
+        with gzip.open(trace_dir / f"review_trace_{ymd}.json.gz", "wt", encoding="utf-8") as f:
+            json.dump({"trade_date": d_str, "symbols": symbols}, f)
+
+    merged = radar.load_wyckoff_l2_map(trace_dirs=[str(trace_dir)], max_age_days=None, auto_fetch=False)
+    assert merged["300133"]["streak_days"] == 0
+    assert merged["300133"]["funnel_tag"] == ""
+    assert merged["300133"].get("t2_shakeout_recall") is not True
+
+
+def test_preopen_unrolled_snapshot_skips_stop_cooldown_and_state_write(tmp_path, monkeypatch) -> None:
+    radar = _load_radar_module()
+    import sys
+
+    sys.path.insert(0, str(SCRIPT_PATH.parent))
+    import telegraph_catalysts as tc
+
+    monkeypatch.setattr(tc, "fetch_sina_telegraph", lambda pages=1: [])
+    monkeypatch.setattr(tc, "fetch_wscn_telegraph", lambda: [])
+
+    today_d = cn_today()
+    ts_0925 = datetime(today_d.year, today_d.month, today_d.day, 9, 25, 40, tzinfo=CN_TZ).timestamp()
+    state_file = tmp_path / "state_preopen.json"
+    monkeypatch.setattr(radar, "STATE_PATH", state_file)
+    monkeypatch.setattr(radar, "ALERT_LOG_PATH", tmp_path / "alerts_preopen.jsonl")
+    monkeypatch.setattr(radar, "TURNOVER_DIR", tmp_path / "turnover_preopen")
+    monkeypatch.setattr(radar, "load_wyckoff_l2_map", lambda *a, **kw: {})
+
+    class FakeClient:
+        def __init__(self, **kw):
+            pass
+
+        def get_quotes(self, universes=None, symbols=None):
+            return {
+                "000001.SH": {"last_price": 3602.57, "prev_close": 3602.57, "amount": 4200e8},
+                "399001.SZ": {"last_price": 10690.78, "prev_close": 10690.78, "amount": 4800e8},
+                "603011.SH": {"last_price": 15.74, "prev_close": 15.74, "amount": 3e8},
+            }
+
+    import integrations.tickflow_client as tf_mod
+
+    monkeypatch.setattr(tf_mod, "TickFlowClient", FakeClient)
+    sent_cards: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(radar, "resolve_lark_open_id", lambda *a: "ou_mock")
+    monkeypatch.setattr(
+        radar,
+        "send_feishu_tiered_alert",
+        lambda title, content, level="L1", **kw: sent_cards.append((level, title, content)) or "om_preopen",
+    )
+    monkeypatch.setattr(radar.time, "time", lambda: ts_0925)
+    args = SimpleNamespace(
+        ignore_hours=True,
+        dry_run=False,
+        trace=None,
+        holding=["603011.SH:18.252:17.55"],
+        user_id="ou_mock",
+        force_send=False,
+        urgent_only=False,
+        heartbeat=True,
+    )
+    radar.run_once(args)
+
+    assert len(sent_cards) == 1
+    assert sent_cards[0][0] == "L1"
+    assert "盘前竞价待切换" in sent_cards[0][1]
+    saved = json.loads(state_file.read_text(encoding="utf-8"))
+    assert "L4:holding_stop:603011.SH" not in saved["cooldowns"]
+    assert saved["last_l1_ts"] == 0.0
+    assert saved["quotes"] == {}
+
+
+def test_afternoon_telegraph_anti_chase_and_nt_etf_floor_split() -> None:
+    import sys
+
+    sys.path.insert(0, str(SCRIPT_PATH.parent))
+    import telegraph_catalysts as tc
+
+    l2_map = {
+        "002261": {
+            "name": "拓维信息",
+            "sector": "软件服务",
+            "rps": 45.0,
+            "l2_eligible": True,
+            "l3_eligible": True,
+            "is_candidate": True,
+            "channels": ["地量蓄势"],
+            "streak_days": 3,
+            "funnel_tag": "🔥3日L2+L3连入",
+        },
+        "300999": {
+            "name": "高追样本",
+            "sector": "软件服务",
+            "rps": 55.0,
+            "l2_eligible": True,
+            "l3_eligible": True,
+            "is_candidate": True,
+            "channels": ["地量蓄势"],
+            "streak_days": 3,
+            "funnel_tag": "🔥3日L2+L3连入",
+        },
+        "688316": {
+            "name": "温和样本",
+            "sector": "软件服务",
+            "rps": 42.0,
+            "l2_eligible": True,
+            "l3_eligible": True,
+            "is_candidate": True,
+            "channels": ["地量蓄势"],
+            "streak_days": 2,
+            "funnel_tag": "🔥2日L2+L3连入",
+        },
+    }
+    quotes = {
+        "002261.SZ": {"last_price": 10.22, "prev_close": 10.00, "amount": 2e8, "vwap": 10.10},
+        "300999.SZ": {"last_price": 10.45, "prev_close": 10.00, "amount": 2e8, "vwap": 10.20},
+        "688316.SH": {"last_price": 10.35, "prev_close": 10.00, "amount": 2e8, "vwap": 10.20},
+    }
+    raw_items = [{"id": "sina_pm", "ts": 1000.0, "hm": "12:50", "text": "工信部加快推进国产算力芯片与软件协同突破"}]
+    lines = tc.scan_live_telegraph_catalysts(
+        l2_map,
+        quotes,
+        since_ts=500.0,
+        now_ts=1200.0,
+        now_hm="12:50",
+        red_ratio=0.30,
+        raw_items=raw_items,
+    )
+    assert len(lines) == 1
+    out = lines[0]
+    assert "300999" not in out  # +4.5% > +3.8% cap dropped after 11:00
+    assert "002261" in out
+    assert "🔥3日L2" in out
+    assert "⚠️弱市禁追" in out
+    assert out.index("002261") < out.index("688316")
+
+    etf_quotes = {"588000.SH": {"amount": 190.0e8}, "159915.SZ": {"amount": 165.0e8}}
+    prev_etf = {"588000.SH": {"amt_yi": 170.0}, "159915.SZ": {"amt_yi": 150.0}}
+    nt_dt = datetime(2026, 11, 17, 14, 40, tzinfo=CN_TZ)
+    _, floor_alert = tc.summarize_national_team_etfs(
+        etf_quotes, prev_etf, has_baseline=True, now_dt=nt_dt, red_count=1311, green_count=4134, d_red=-150
+    )
+    assert "🛡️ **【国家队宽基托底护盘（托指不救股）】**" in floor_alert
+    _, rush_alert = tc.summarize_national_team_etfs(
+        etf_quotes, prev_etf, has_baseline=True, now_dt=nt_dt, red_count=3467, green_count=1900, d_red=420
+    )
+    assert "🚀 **【国家队20大宽基ETF 5m放量异动】**" in rush_alert
