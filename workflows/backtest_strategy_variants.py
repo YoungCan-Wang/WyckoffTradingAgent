@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import TYPE_CHECKING
 
-from core.a_share_entry_research import AShareEntryResearchPolicy
+if TYPE_CHECKING:
+    from core.a_share_entry_research import AShareEntryResearchPolicy
 
 VARIANT_LABELS = {
     "live": "当前生产配置",
@@ -26,6 +28,9 @@ VARIANT_LABELS = {
     "T": "A股实证：L2 跨日结构持续性护栏（live + H2）",
     "U": "A股实证：L4 近端天量长上影筹码压制护栏（live + H5）",
     "V": "A股实证：主漏斗结构护栏联合消融（live + S+T+U）",
+    "ST": "A股实证：主漏斗结构护栏组合（live + S+T）",
+    "SU": "A股实证：主漏斗结构护栏组合（live + S+U）",
+    "TU": "A股实证：主漏斗结构护栏组合（live + T+U）",
 }
 
 DEFAULT_COMPARISON_VARIANTS = ("A", "M", "P")
@@ -104,6 +109,24 @@ _VARIANT_SWITCHES = {
         "l2_persistence_guard_enabled": True,
         "supply_overhang_guard_enabled": True,
     },
+    "ST": {
+        "dist_upthrust_enabled": True,
+        "lps_creek_confirmation_enabled": True,
+        "dry_vol_breakdown_guard_enabled": True,
+        "l2_persistence_guard_enabled": True,
+    },
+    "SU": {
+        "dist_upthrust_enabled": True,
+        "lps_creek_confirmation_enabled": True,
+        "dry_vol_breakdown_guard_enabled": True,
+        "supply_overhang_guard_enabled": True,
+    },
+    "TU": {
+        "dist_upthrust_enabled": True,
+        "lps_creek_confirmation_enabled": True,
+        "l2_persistence_guard_enabled": True,
+        "supply_overhang_guard_enabled": True,
+    },
 }
 
 _WEAK_REGIME_WEIGHTS = (
@@ -124,14 +147,19 @@ _LOWER_NEUTRAL_SPRING_WEIGHTS = (
     ("PANIC_REPAIR_INTRADAY", "sos", 0.25),
 )
 
-_ENTRY_POLICIES = {
-    "F": AShareEntryResearchPolicy(blocked_confirmed_signals=("evr",)),
-    "G": AShareEntryResearchPolicy(blocked_confirmed_signals=("evr", "sos")),
-    "H": AShareEntryResearchPolicy(require_neutral_breadth_confirmation=True),
-    "I": AShareEntryResearchPolicy(calibrate_confirmed_score=True),
-    "M": AShareEntryResearchPolicy(entry_weight_multipliers=_WEAK_REGIME_WEIGHTS),
-    "P": AShareEntryResearchPolicy(entry_weight_multipliers=_LOWER_NEUTRAL_SPRING_WEIGHTS),
-}
+
+def _entry_policy_map() -> dict[str, AShareEntryResearchPolicy]:
+    # 延迟导入避免纯调度 job（prepare_ablation）在未装 pandas 的裸 Python 环境导入失败。
+    from core.a_share_entry_research import AShareEntryResearchPolicy
+
+    return {
+        "F": AShareEntryResearchPolicy(blocked_confirmed_signals=("evr",)),
+        "G": AShareEntryResearchPolicy(blocked_confirmed_signals=("evr", "sos")),
+        "H": AShareEntryResearchPolicy(require_neutral_breadth_confirmation=True),
+        "I": AShareEntryResearchPolicy(calibrate_confirmed_score=True),
+        "M": AShareEntryResearchPolicy(entry_weight_multipliers=_WEAK_REGIME_WEIGHTS),
+        "P": AShareEntryResearchPolicy(entry_weight_multipliers=_LOWER_NEUTRAL_SPRING_WEIGHTS),
+    }
 
 
 def normalize_strategy_variant(raw: str) -> str:
@@ -142,6 +170,23 @@ def normalize_strategy_variant(raw: str) -> str:
     return normalized
 
 
+def parse_live_ablation_spec(raw: str) -> tuple[bool, list[str]]:
+    """Parse ``live_ablation_variants`` input such as ``only:live,S,T,U,V``."""
+    text = str(raw or "").strip()
+    if not text:
+        return False, []
+    ablation_only = text.lower().startswith("only:")
+    body = text[5:].strip() if ablation_only else text
+    if not body:
+        return False, []
+    variants = list(dict.fromkeys(normalize_strategy_variant(item) for item in body.split(",") if item.strip()))
+    if not variants:
+        return False, []
+    if "live" not in variants:
+        variants.insert(0, "live")
+    return ablation_only, variants
+
+
 def strategy_variant_overrides(raw: str) -> dict[str, object]:
     variant = normalize_strategy_variant(raw)
     if variant == "live":
@@ -150,7 +195,9 @@ def strategy_variant_overrides(raw: str) -> dict[str, object]:
 
 
 def strategy_variant_entry_policy(raw: str) -> AShareEntryResearchPolicy:
-    return _ENTRY_POLICIES.get(normalize_strategy_variant(raw), AShareEntryResearchPolicy())
+    from core.a_share_entry_research import AShareEntryResearchPolicy
+
+    return _entry_policy_map().get(normalize_strategy_variant(raw), AShareEntryResearchPolicy())
 
 
 def strategy_variants_share_signal_ledger(raw_variants: list[str]) -> bool:

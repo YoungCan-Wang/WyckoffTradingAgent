@@ -15,16 +15,28 @@ from workflows.backtest_strategy_comparison import (
 )
 
 
+def _parse_csv_arg(raw: str) -> tuple[str, ...] | None:
+    items = tuple(item.strip() for item in str(raw or "").split(",") if item.strip())
+    return items or None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="汇总策略 A/M/P 消融回测")
     parser.add_argument("--artifacts-dir", type=Path, required=True)
     parser.add_argument("--markdown-output", type=Path, required=True)
     parser.add_argument("--json-output", type=Path, required=True)
     parser.add_argument("--require-complete", action="store_true")
+    parser.add_argument("--expected-periods", default="")
+    parser.add_argument("--expected-variants", default="")
     args = parser.parse_args()
     ignored_dirs: list[str] = []
     rows = load_strategy_comparison_rows(args.artifacts_dir, ignored_dirs)
-    report = build_strategy_comparison(rows, ignored_dirs)
+    report = build_strategy_comparison(
+        rows,
+        ignored_dirs,
+        expected_periods=_parse_csv_arg(args.expected_periods),
+        expected_variants=_parse_csv_arg(args.expected_variants),
+    )
     for directory in ignored_dirs:
         print(f"[strategy-comparison] 忽略无法归组的产物目录: {directory}")
     args.markdown_output.write_text(render_strategy_comparison(report), encoding="utf-8")

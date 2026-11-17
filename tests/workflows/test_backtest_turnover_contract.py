@@ -175,7 +175,15 @@ def test_replay_jobs_share_one_policy_environment():
             for key, value in {**workflow["env"], **workflow["jobs"][job].get("env", {})}.items()
             if key.startswith(prefixes)
         }
-        for job in ["grid", "strategy_compare", "gate_baseline", "exit_baseline", "leader_baseline", "notify"]
+        for job in [
+            "grid",
+            "strategy_compare",
+            "live_ablation",
+            "gate_baseline",
+            "exit_baseline",
+            "leader_baseline",
+            "notify",
+        ]
     ]
     assert len({json.dumps(env, sort_keys=True) for env in effective}) == 1
 

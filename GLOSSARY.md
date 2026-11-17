@@ -79,7 +79,7 @@
 | **地量破位飞刀护栏 (变体 S)** | Dry Volume Breakdown Guard（研究开关）：`FunnelConfig.dry_vol_breakdown_guard_enabled`（默认 `False`）。开启后在 `dry_volume_channel_ok` 额外校验收盘距 `MA20` 未深破且近 N 日无放量大阴破位，用于隔离过滤“破位前夕曾缩量”的下跌中继标的。 |
 | **L2 跨日持续性护栏 (变体 T)** | Layer 2 Persistence Guard（研究开关）：`FunnelConfig.l2_persistence_guard_enabled`（默认 `False`）。开启后要求当日通过 `L2` 的标的在过去 `T-1 / T-2` 无前视点截面上至少有 1 日也曾通过 `L2`，保留连续驻留与大盘急跌洗盘回流，拦截单日孤立脉冲。 |
 | **派发上影筹码压制护栏 (变体 U)** | Supply Overhang Guard（研究开关）：`FunnelConfig.supply_overhang_guard_enabled`（默认 `False`）。开启后若近 N 日内出现高位放量长上影派发 K 线且收盘尚未站回该上影最高价之上，则在 `layer4_triggers` 中暂予拦截。 |
-| **主漏斗结构护栏联合消融 (变体 V)** | Main Funnel Structural Guards Combined Ablation：同时启用变体 `S + T + U`（`live` 配置下仅切换三项结构护栏），用于按 `AGENTS.md` 策略证据规则第 7 条检验多项护栏组合后的真实边际成交与净超额，防单改叠加互相抵消或退化填空。 |
+| **主漏斗结构护栏联合消融 (变体 V / ST / SU / TU)** | Main Funnel Structural Guards Combined Ablation：在 `live` 配置下分别开启三项联合 `V`（`S+T+U`）或两两子集 `ST`（`S+T`）、`SU`（`S+U`）、`TU`（`T+U`），用于按 `AGENTS.md` 策略证据规则第 7 条检验多项护栏组合后的真实边际成交与净超额，防单改叠加互相抵消或退化填空。 |
 | **confirmed 分数校准** | 不再把不同 Wyckoff 触发器的原始分数直接横比；研究组 I 用信号族历史先验与封顶后的形态强度合成可比分数，避免极高原始分主导 Top1 |
 | **Treatment exposure** | 消融组相对参照组实际改变的交易键，包括 `(signal_date, code)`、仓位倍率和退出日期；零暴露表示规则没有改变真实成交，不能据此评价收益贡献 |
 | **逐次推荐事件收益** | 每条推荐使用该信号日期之后首根可用 K 线的开盘价，不使用同票首次推荐价；必须有开盘前的有效发布时间。H 表示入场后的 H 根观测 K 线，标签未成熟/缺开盘/停牌/开盘涨停/发布过晚均单列，不按零收益或成功样本填充。净收益扣 `round_trip_cost_pct()`；仍非账户成交或超额收益 |
