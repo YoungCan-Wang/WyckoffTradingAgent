@@ -34,6 +34,13 @@ def test_strategy_variants_isolate_each_research_switch() -> None:
     assert strategy_variant_overrides("R")["enable_layer3"] is False
     assert strategy_variant_overrides("R")["dist_upthrust_enabled"] is True
     assert strategy_variant_overrides("R")["lps_creek_confirmation_enabled"] is True
+    assert strategy_variant_overrides("S")["dry_vol_breakdown_guard_enabled"] is True
+    assert "l2_persistence_guard_enabled" not in strategy_variant_overrides("S")
+    assert strategy_variant_overrides("T")["l2_persistence_guard_enabled"] is True
+    assert strategy_variant_overrides("U")["supply_overhang_guard_enabled"] is True
+    assert strategy_variant_overrides("V")["dry_vol_breakdown_guard_enabled"] is True
+    assert strategy_variant_overrides("V")["l2_persistence_guard_enabled"] is True
+    assert strategy_variant_overrides("V")["supply_overhang_guard_enabled"] is True
     assert strategy_variants_share_signal_ledger(["A", "M", "P"]) is True
     assert strategy_variants_share_signal_ledger(["A", "F"]) is False
     assert strategy_variants_share_signal_ledger(["A", "I"]) is False

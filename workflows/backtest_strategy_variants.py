@@ -22,6 +22,10 @@ VARIANT_LABELS = {
     "P": "A股实证：M + NEUTRAL Spring 缩仓至 25%",
     "Q": "A股实证：候选入口层真剪枝（live + 剔除 6 个弱动量通道）",
     "R": "A股实证：关闭 Layer 3 行业共振（全量 L2 直通 L4）",
+    "S": "A股实证：L2 地量蓄势破位飞刀护栏（live + H1）",
+    "T": "A股实证：L2 跨日结构持续性护栏（live + H2）",
+    "U": "A股实证：L4 近端天量长上影筹码压制护栏（live + H5）",
+    "V": "A股实证：主漏斗结构护栏联合消融（live + S+T+U）",
 }
 
 DEFAULT_COMPARISON_VARIANTS = ("A", "M", "P")
@@ -77,6 +81,28 @@ _VARIANT_SWITCHES = {
         "dist_upthrust_enabled": True,
         "lps_creek_confirmation_enabled": True,
         "enable_layer3": False,
+    },
+    "S": {
+        "dist_upthrust_enabled": True,
+        "lps_creek_confirmation_enabled": True,
+        "dry_vol_breakdown_guard_enabled": True,
+    },
+    "T": {
+        "dist_upthrust_enabled": True,
+        "lps_creek_confirmation_enabled": True,
+        "l2_persistence_guard_enabled": True,
+    },
+    "U": {
+        "dist_upthrust_enabled": True,
+        "lps_creek_confirmation_enabled": True,
+        "supply_overhang_guard_enabled": True,
+    },
+    "V": {
+        "dist_upthrust_enabled": True,
+        "lps_creek_confirmation_enabled": True,
+        "dry_vol_breakdown_guard_enabled": True,
+        "l2_persistence_guard_enabled": True,
+        "supply_overhang_guard_enabled": True,
     },
 }
 

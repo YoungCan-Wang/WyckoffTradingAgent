@@ -26,10 +26,12 @@ from workflows.backtest_strategy_variants import DEFAULT_COMPARISON_VARIANTS, VA
 
 DEFAULT_COMPARISON_PERIODS = ("bull_2020", "bear_2022", "sideways_2023", "volatile_2024", "recent_6m")
 MAX_CASH_DRAWDOWN_PCT = 20.0
+LIVE_ABLATION_VARIANTS = frozenset({"Q", "R", "S", "T", "U", "V"})
+_VARIANT_PATTERN = "|".join(re.escape(k) for k in sorted(VARIANT_LABELS, key=len, reverse=True))
 _DIR_PATTERN = re.compile(
     r"backtest-strategy-"
     r"(?P<period>recent_2m|recent_6m|bull_2020|bear_2022|sideways_2023|volatile_2024|bull_2025|custom)-"
-    r"(?P<variant>[A-P])"
+    rf"(?P<variant>{_VARIANT_PATTERN})"
     r"(?:-\d+)?$"
 )
 
@@ -113,7 +115,12 @@ def build_strategy_comparison(
     required = {(period, variant) for period in DEFAULT_COMPARISON_PERIODS for variant in DEFAULT_COMPARISON_VARIANTS}
     evaluations = {}
     for variant, values in by_variant.items():
-        reference = {"M": "A", "P": "M"}.get(variant, "A")
+        if variant in {"A", "live"}:
+            reference = variant
+        elif variant in LIVE_ABLATION_VARIANTS and "live" in by_variant:
+            reference = "live"
+        else:
+            reference = {"M": "A", "P": "M"}.get(variant, "A")
         evaluations[variant] = _evaluate_variant(variant, values, by_variant.get(reference, []), reference)
     return {
         "status": "ready" if required.issubset(available) else "incomplete",
@@ -162,7 +169,7 @@ def render_strategy_comparison(report: dict[str, Any]) -> str:
             "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
         ]
     )
-    for variant in sorted(key for key in (report.get("evaluations") or {}) if key != "A"):
+    for variant in sorted(key for key in (report.get("evaluations") or {}) if key not in {"A", "live"}):
         item = (report.get("evaluations") or {}).get(variant, {})
         lines.append(
             f"| {variant} | {item.get('reference_variant', 'A')} | {item.get('common_periods', 0)} | "
@@ -191,8 +198,8 @@ def _evaluate_variant(
     baseline_rows: list[StrategyComparisonRow],
     reference_variant: str,
 ) -> dict[str, Any]:
-    if variant == "A":
-        return {"status": "baseline", "reference_variant": "A", "common_periods": len(rows), "wins": 0}
+    if variant == reference_variant:
+        return {"status": "baseline", "reference_variant": reference_variant, "common_periods": len(rows), "wins": 0}
     baseline = {row.period: row for row in baseline_rows if row.cash_return is not None}
     pairs = [(baseline[row.period], row) for row in rows if row.period in baseline and row.cash_return is not None]
     deltas = [float(row.cash_return) - float(base.cash_return) for base, row in pairs]
@@ -266,7 +273,7 @@ def _marginal_lines(evaluations: dict[str, Any]) -> list[str]:
         "| 组别 | 参照 | 共同 | 仅参照 n / 均收 / 胜率 | 仅本组 n / 均收 / 胜率 |",
         "|---|---|---:|---:|---:|",
     ]
-    for variant in sorted(key for key in evaluations if key != "A"):
+    for variant in sorted(key for key in evaluations if key not in {"A", "live"}):
         item = evaluations.get(variant, {})
         marginal = item.get("marginal") or {}
         lines.append(

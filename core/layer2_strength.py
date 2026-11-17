@@ -398,7 +398,40 @@ def dry_volume_channel_ok(cfg: Any, *, df_sorted: pd.DataFrame, close: pd.Series
     if len(ref_vol.dropna()) < 50:
         return False
     vol_threshold = float(np.quantile(ref_vol.dropna().values, cfg.dry_vol_quantile))
-    return float(vol.tail(cfg.dry_vol_lookback).min()) <= vol_threshold
+    if float(vol.tail(cfg.dry_vol_lookback).min()) > vol_threshold:
+        return False
+    if getattr(cfg, "dry_vol_breakdown_guard_enabled", False):
+        return _dry_vol_breakdown_guard_ok(cfg, df_sorted, close, last_close)
+    return True
+
+
+def _dry_vol_breakdown_reason(
+    cfg: Any, df_sorted: pd.DataFrame, close: pd.Series, last_close: float | None
+) -> tuple[float | None, str | None]:
+    """Reject falling knives whose 10-day window happens to include one prior low-volume bar."""
+    if len(close) >= 20 and last_close is not None and pd.notna(last_close):
+        ma20 = float(close.tail(20).mean())
+        if ma20 > 0:
+            dist_ma20 = (float(last_close) - ma20) / ma20 * 100.0
+            min_dist = float(getattr(cfg, "dry_vol_min_dist_ma20_pct", -6.0))
+            if dist_ma20 < min_dist:
+                gap = abs(dist_ma20 - min_dist) / max(abs(min_dist), 1.0)
+                return gap, f"跌破MA20支撑超限: 当前 {dist_ma20:+.1f}%, 下限 {min_dist:+.1f}%"
+    lookback = max(int(getattr(cfg, "dry_vol_breakdown_lookback", 3)), 1)
+    if len(close) >= max(20, lookback + 1):
+        pct = close.pct_change() * 100.0
+        vol = pd.to_numeric(df_sorted.get("volume"), errors="coerce")
+        vol_ma20 = vol.rolling(20).mean()
+        max_drop = float(getattr(cfg, "dry_vol_max_drop_day_pct", -4.5))
+        min_vol_ratio = float(getattr(cfg, "dry_vol_breakdown_vol_ratio", 1.3))
+        recent_breakdown = (pct <= max_drop) & (vol_ma20 > 0) & ((vol / vol_ma20) >= min_vol_ratio)
+        if bool(recent_breakdown.tail(lookback).fillna(False).any()):
+            return 0.5, "近端出现放量大阴破位，非横盘缩量企稳"
+    return None, None
+
+
+def _dry_vol_breakdown_guard_ok(cfg: Any, df_sorted: pd.DataFrame, close: pd.Series, last_close: float | None) -> bool:
+    return _dry_vol_breakdown_reason(cfg, df_sorted, close, last_close)[0] is None
 
 
 def rs_divergence_channel_ok(
@@ -1061,6 +1094,12 @@ def _diagnose_dry_vol(
             fail.append(
                 f"未见地量: 当前最小量 {min_vol:.0f}, 阈值量 {vol_threshold:.0f}, 差距 {min_vol - vol_threshold:.0f}"
             )
+
+    if getattr(cfg, "dry_vol_breakdown_guard_enabled", False):
+        gap, desc = _dry_vol_breakdown_reason(cfg, df_sorted, close_series, last_close)
+        if gap is not None and desc is not None:
+            gaps.append(gap)
+            fail.append(desc)
 
     if not gaps:
         return 0.0, []

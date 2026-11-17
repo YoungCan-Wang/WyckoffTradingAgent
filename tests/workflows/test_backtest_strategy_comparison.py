@@ -265,3 +265,18 @@ def test_strategy_comparison_attributes_executed_cash_losses_and_joins_legacy_re
     markdown = render_strategy_comparison(report)
     assert "P 组实际成交亏损归因" in markdown
     assert "| 水温 | NEUTRAL | 1 | +0.00% | -10.00% | -100.00 | -10.00% |" in markdown
+
+
+def test_strategy_comparison_pairs_live_ablation_variants_s_and_v(tmp_path: Path) -> None:
+    for period in ("recent_6m", "volatile_2024"):
+        _write_summary(tmp_path, period, "live", 1.0, -5.0)
+        _write_summary(tmp_path, period, "S", 2.0, -4.0)
+        _write_summary(tmp_path, period, "V", 3.5, -3.5)
+
+    report = build_strategy_comparison(load_strategy_comparison_rows(tmp_path))
+
+    assert report["evaluations"]["live"]["status"] == "baseline"
+    assert report["evaluations"]["S"]["reference_variant"] == "live"
+    assert report["evaluations"]["S"]["wins"] == 2
+    assert report["evaluations"]["V"]["reference_variant"] == "live"
+    assert report["evaluations"]["V"]["status"] == "pass"
