@@ -60,7 +60,7 @@ description: >-
    * **🔴 L4 破位止损（电话加急，无成交额门槛，防开盘跳空/一字跌停漏报）**：持仓股 `现价 <= 预设硬止损价` $\rightarrow$ 立即触发 `L4` 电话加急（按 `86400 秒` 全天冷却，每个交易日仅拨打一次电话，且冷却期内不向下穿透降级为 L3/L2）；
    * **🟠 L3 持仓急跌（短信加急）**：持仓股 5 分钟急跌 `Δpct_5m <= -2.0%` 且 `现价 < VWAP` $\rightarrow$ 触发 `L3` 短信加急；
    * **🟡 L2 做 T 高抛（应用内加急）**：持仓股偏离 VWAP `vwap_dev > +3.0%` $\rightarrow$ 触发 `L2` 应用内加急。
-   * **持仓行情回补与缺口告警**：全市场 `universes` 快照若漏掉持仓代码，`run_once` 会按 `--holding` 列表再拉一次个股报价；若仍无有效报价，卡片置顶 `持仓行情缺口` 并以 `L2` 加急提示（禁止静默跳过止损监控）。
+   * **持仓行情回补与缺口告警**：全市场 `universes` 快照若漏掉持仓代码，`run_once` 会按 `--holding` 列表再拉一次个股报价；若仍无有效报价，卡片置顶 `持仓行情缺口` 并以 `L2` 加急提示（冷却键按标的 `L2:holding_quote_gap:{sym}`，禁止因 A 的缺口戳记静默跳过 B 的止损监控）。
 2. **威科夫核心池信号与市场共振监控（保留 L4 电话 / L3 短信加急 + 同步写入留档日志）**：
    * **🔴 L4 满级起跳板突破（电话加急）**：
      * 命中与当日 `review_trace_YYYYMMDD.json.gz` 同日期的 `recommendation_tracking_YYYYMMDD.json` 的 `springboard_combo == "A+B+C"`（严格过滤旧日期推荐文件），或 `review_trace` 内的 `entry.entry_type == "launchpad"` / `"启动平台"`（**不要求** `l2_eligible`；L3 地量点火才要求 L2/L3 资格）；

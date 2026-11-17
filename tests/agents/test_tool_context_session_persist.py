@@ -81,7 +81,11 @@ def test_relogin_refuses_to_swap_frozen_principal(monkeypatch):
     monkeypatch.setattr("integrations.supabase_base.create_user_client", lambda *_a, **_k: Client())
     monkeypatch.setattr("integrations.supabase_base.get_session_tokens", lambda _c: ("", ""))
     persist_calls: list[object] = []
-    monkeypatch.setattr(tool_context, "_persist_tool_session", lambda ctx: persist_calls.append(ctx))
+    monkeypatch.setattr(
+        tool_context,
+        "_persist_tool_session",
+        lambda ctx, *, expected_refresh_token="": persist_calls.append(ctx),
+    )
 
     ctx = tool_context.ToolContext(
         {
@@ -122,7 +126,11 @@ def test_relogin_keeps_same_user_token_refresh(monkeypatch):
         lambda _c: ("alice-refreshed-at", "alice-refreshed-rt"),
     )
     persist_calls: list[object] = []
-    monkeypatch.setattr(tool_context, "_persist_tool_session", lambda ctx: persist_calls.append(ctx))
+
+    def capture_persist(ctx, *, expected_refresh_token: str = ""):
+        persist_calls.append((ctx, expected_refresh_token))
+
+    monkeypatch.setattr(tool_context, "_persist_tool_session", capture_persist)
 
     ctx = tool_context.ToolContext(
         {
@@ -140,7 +148,7 @@ def test_relogin_keeps_same_user_token_refresh(monkeypatch):
     assert refresh == "alice-refreshed-rt"
     assert ctx.state["user_id"] == "alice"
     assert ctx.state["access_token"] == "alice-refreshed-at"
-    assert len(persist_calls) == 1
+    assert persist_calls == [(ctx, "alice-new-rt")]
 
 
 def test_persist_refuses_to_clobber_switched_account(tmp_path, monkeypatch):
@@ -215,13 +223,89 @@ def test_persist_updates_tokens_for_same_user(tmp_path, monkeypatch):
         }
     )
 
-    tool_context._persist_tool_session(ctx)
+    tool_context._persist_tool_session(ctx, expected_refresh_token="old-rt")
 
     disk = load_session()
     assert disk is not None
     assert disk["user_id"] == "alice"
     assert disk["access_token"] == "new-at"
     assert disk["refresh_token"] == "new-rt"
+
+
+def test_persist_refuses_to_clobber_rotated_same_user_refresh(tmp_path, monkeypatch):
+    """Unexpired AT + stale RT must not overwrite a sibling restore's RT2 (#633 family)."""
+    session_file = tmp_path / "session.json"
+    monkeypatch.setattr("integrations.local_auth.SESSION_FILE", session_file)
+    from integrations.local_auth import load_session, save_session
+
+    save_session(
+        {
+            "user_id": "alice",
+            "email": "alice@example.test",
+            "access_token": "alice-rt2-at",
+            "refresh_token": "alice-rt2",
+        }
+    )
+    ctx = tool_context.ToolContext(
+        {
+            "user_id": "alice",
+            "email": "alice@example.test",
+            "access_token": "alice-rt1-at",
+            "refresh_token": "alice-rt1",
+        }
+    )
+
+    tool_context._persist_tool_session(ctx, expected_refresh_token="alice-rt1")
+
+    disk = load_session()
+    assert disk is not None
+    assert disk["user_id"] == "alice"
+    assert disk["access_token"] == "alice-rt2-at"
+    assert disk["refresh_token"] == "alice-rt2"
+
+
+def test_get_user_client_does_not_persist_stale_refresh_over_rotated_disk(tmp_path, monkeypatch):
+    """GoTrue set_session with unexpired AT reuses stale RT1; disk already on RT2 must win."""
+    session_file = tmp_path / "session.json"
+    monkeypatch.setattr("integrations.local_auth.SESSION_FILE", session_file)
+    from integrations.local_auth import load_session, save_session
+
+    tool_context.close_cached_clients()
+    save_session(
+        {
+            "user_id": "alice",
+            "email": "alice@example.test",
+            "access_token": "alice-rt2-at",
+            "refresh_token": "alice-rt2",
+        }
+    )
+
+    class Client:
+        pass
+
+    monkeypatch.setattr("integrations.supabase_base.create_user_client", lambda *_a, **_k: Client())
+    # Mirrors supabase_auth set_session when access_token is still valid: no refresh.
+    monkeypatch.setattr(
+        "integrations.supabase_base.get_session_tokens",
+        lambda _c: ("alice-rt1-at", "alice-rt1"),
+    )
+    ctx = tool_context.ToolContext(
+        {
+            "user_id": "alice",
+            "email": "alice@example.test",
+            "access_token": "alice-rt1-at",
+            "refresh_token": "alice-rt1",
+        }
+    )
+
+    client = tool_context.get_user_client(ctx)
+
+    assert client is not None
+    disk = load_session()
+    assert disk is not None
+    assert disk["refresh_token"] == "alice-rt2"
+    assert disk["access_token"] == "alice-rt2-at"
+    tool_context.close_cached_clients()
 
 
 def test_persist_refuses_without_context_user_id(tmp_path, monkeypatch):

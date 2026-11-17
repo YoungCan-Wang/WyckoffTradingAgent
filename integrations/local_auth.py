@@ -57,22 +57,9 @@ def login(email: str, password: str) -> dict[str, Any]:
         save_config_key(_LOGIN_ATTEMPT_ID_KEY, attempt_id)
     data = _sign_in_with_password(email, password)
     with _AUTH_IDENTITY_LOCK:
-        if not _login_attempt_still_current(attempt_id):
+        if not _persist_login_if_attempt_current(attempt_id, email, password, data):
             logger.warning("refusing to persist login: logout or newer login during sign-in")
             raise RuntimeError("登录未完成：期间发生了退出或另一次登录")
-        # Flip disk identity before purging the previous account's cloud keys so an
-        # in-flight pull that CAS-checks session.json already sees the new user
-        # (and save_cloud_* refuses). clear_cloud then sweeps anything that landed
-        # before the flip.
-        save_session(data)
-        clear_cloud_synced_config(keep_user_id=str(data.get("user_id") or ""))
-        save_config_key("email", email)
-        save_config_key("password", password)
-        # 单独记一份**不参与自动登录**的邮箱：退出登录会清掉 email/password
-        # （否则会被静默登回去），但下次登录页仍该预填邮箱 —— 那是便利，不是凭据。
-        # 拆成两个键才能让「清凭据」和「记住是谁」互不干扰。
-        save_config_key("last_email", email)
-        save_config_key(_LOGIN_ATTEMPT_ID_KEY, "")
     return data
 
 
@@ -122,7 +109,9 @@ def restore_session() -> dict[str, Any] | None:
             ):
                 logger.warning("refusing to persist restored session: disk identity changed during refresh")
                 return load_session()
-        return _restored_session_if_disk_unchanged(expected_user_id, data)
+        return _restored_session_if_disk_unchanged(
+            expected_user_id, data, expected_refresh_token=expected_refresh_token
+        )
     except Exception as exc:
         logger.debug("session restore failed", exc_info=True)
         if _invalid_session_error(exc):
@@ -131,7 +120,10 @@ def restore_session() -> dict[str, Any] | None:
             return load_session()
         # Transient network errors still must not return the pre-flight principal
         # after logout/switch — #512 only CAS'd disk writes, not this return.
-        return _restored_session_if_disk_unchanged(expected_user_id, data)
+        # Same-user RT rotation: do not hand the caller a stale RT1 while disk has RT2.
+        return _restored_session_if_disk_unchanged(
+            expected_user_id, data, expected_refresh_token=expected_refresh_token
+        )
 
 
 def logout() -> None:
@@ -187,11 +179,18 @@ def merge_session_tokens_if_same_user(
     access_token: str,
     refresh_token: str,
     email: str = "",
+    expected_refresh_token: str = "",
 ) -> bool:
-    """Update tokens on disk only when session still belongs to expected_user_id.
+    """Update tokens on disk only when session still matches this tool flight.
 
     Read-check-write runs under the session lock so MCP/tool refresh cannot
     clobber a concurrent desktop logout or account switch (#507 TOCTOU).
+
+    ``expected_refresh_token`` is the refresh token the caller held before
+    ``create_user_client`` / refresh. Matching ``user_id`` alone is not enough:
+    GoTrue ``set_session`` with a still-valid access token does **not** refresh,
+    so a stale in-memory RT1 would otherwise overwrite a sibling restore's RT2
+    and leave disk holding an already-used refresh token (#633 family).
     """
     if not str(expected_user_id or "").strip():
         return False
@@ -200,6 +199,8 @@ def merge_session_tokens_if_same_user(
     with _write_lock(SESSION_FILE, _SESSION_THREAD_LOCK):
         current = _read_session_file()
         if not _same_session_user(current, expected_user_id):
+            return False
+        if not _same_session_refresh_token(current, expected_refresh_token):
             return False
         assert current is not None
         current["access_token"] = access_token
@@ -273,6 +274,45 @@ def _login_attempt_still_current(attempt_id: str) -> bool:
     return str(load_config().get(_LOGIN_ATTEMPT_ID_KEY) or "").strip() == expected
 
 
+def _persist_login_if_attempt_current(
+    attempt_id: str,
+    email: str,
+    password: str,
+    data: dict[str, Any],
+) -> bool:
+    """Persist login only when this attempt still owns the disk marker.
+
+    Attempt re-check and session/credential writes run under the config + session
+    file locks: IPC workers are separate processes, so ``_AUTH_IDENTITY_LOCK``
+    cannot serialize them. An unlocked check-then-``save_session`` gap lets a
+    finished ``auth_login(Bob)`` / ``logout`` land after Alice's observation and
+    get overwritten (Bob clobbered / logout resurrection).
+    """
+    expected = str(attempt_id or "").strip()
+    if not expected:
+        return False
+    # Config then session — same order as logout's credential clear → session
+    # clear — so cross-process login/logout cannot ABBA-deadlock on the flocks.
+    with _write_lock(CONFIG_FILE, _CONFIG_THREAD_LOCK):
+        cfg = _ensure_models_format(_load_config_for_update())
+        if str(cfg.get(_LOGIN_ATTEMPT_ID_KEY) or "").strip() != expected:
+            return False
+        with _write_lock(SESSION_FILE, _SESSION_THREAD_LOCK):
+            _atomic_write_json(SESSION_FILE, data)
+        # Keep config lock through credential flip, attempt clear, and cloud purge
+        # so another worker cannot observe a half-written identity.
+        keep_user_id = str(data.get("user_id") or "")
+        cfg["email"] = email
+        cfg["password"] = password
+        # last_email is convenience-only (not a credential); logout keeps it.
+        cfg["last_email"] = email
+        cfg[_LOGIN_ATTEMPT_ID_KEY] = ""
+        if _CLOUD_SYNCED_KEY in cfg:
+            _purge_cloud_synced(cfg, keep_user_id=keep_user_id)
+        _atomic_write_json(CONFIG_FILE, cfg, indent=2)
+        return True
+
+
 def _same_session_user(current: dict[str, Any] | None, expected_user_id: str) -> bool:
     if current is None:
         return False
@@ -282,12 +322,25 @@ def _same_session_user(current: dict[str, Any] | None, expected_user_id: str) ->
     return str(current.get("user_id") or "") == expected
 
 
-def _restored_session_if_disk_unchanged(expected_user_id: str, data: dict[str, Any]) -> dict[str, Any] | None:
-    """Return in-memory restore result only when disk still matches expected user."""
+def _restored_session_if_disk_unchanged(
+    expected_user_id: str,
+    data: dict[str, Any],
+    *,
+    expected_refresh_token: str = "",
+) -> dict[str, Any] | None:
+    """Return in-memory restore result only when disk still matches this flight."""
     disk = load_session()
     if not _same_session_user(disk, expected_user_id):
         logger.warning("refusing to return restored session: disk identity changed during refresh")
         return disk
+    if expected_refresh_token and disk is not None:
+        disk_rt = str(disk.get("refresh_token") or "")
+        data_rt = str(data.get("refresh_token") or "")
+        # Allow pre-flight RT (no rotation yet) or the tokens we just wrote/hold.
+        # A sibling's newer RT must win — do not return stale RT1 to sync/IPC.
+        if disk_rt and disk_rt not in {expected_refresh_token, data_rt}:
+            logger.warning("refusing to return restored session: disk refresh rotated during refresh")
+            return disk
     return data
 
 
@@ -655,8 +708,33 @@ def _create_client():
 
 
 def _invalid_session_error(exc: Exception) -> bool:
+    """True when the failure means the presented session/refresh is dead.
+
+    Substring ``expired`` / ``invalid`` alone are too broad: TLS
+    ``certificate has expired`` and proxy ``invalid JSON`` would clear a still-
+    valid same-user session (RT CAS does not help — disk still holds the
+    pre-flight refresh). Match auth/session-shaped markers only.
+    """
     text = str(exc).lower()
-    return "invalid" in text or "expired" in text or "revoked" in text
+    markers = (
+        "invalid refresh",
+        "invalid jwt",
+        "invalid token",
+        "token is invalid",
+        "token invalid",
+        "token expired",
+        "token is expired",
+        "jwt expired",
+        "access token expired",
+        "session expired",
+        "refresh_token",
+        "refresh token",
+        "already used",
+        "token revoked",
+        "session revoked",
+        "user revoked",
+    )
+    return any(marker in text for marker in markers)
 
 
 def _update_config(update: Callable[[dict[str, Any]], bool | None]) -> None:
