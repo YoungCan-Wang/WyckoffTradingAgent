@@ -1,6 +1,9 @@
+import pytest
+
 from workflows.backtest_strategy_variants import (
     DEFAULT_COMPARISON_VARIANTS,
     normalize_strategy_variant,
+    parse_live_ablation_spec,
     strategy_variant_entry_policy,
     strategy_variant_overrides,
     strategy_variants_share_signal_ledger,
@@ -41,6 +44,13 @@ def test_strategy_variants_isolate_each_research_switch() -> None:
     assert strategy_variant_overrides("V")["dry_vol_breakdown_guard_enabled"] is True
     assert strategy_variant_overrides("V")["l2_persistence_guard_enabled"] is True
     assert strategy_variant_overrides("V")["supply_overhang_guard_enabled"] is True
+    assert strategy_variant_overrides("ST")["dry_vol_breakdown_guard_enabled"] is True
+    assert strategy_variant_overrides("ST")["l2_persistence_guard_enabled"] is True
+    assert "supply_overhang_guard_enabled" not in strategy_variant_overrides("ST")
+    assert strategy_variant_overrides("SU")["dry_vol_breakdown_guard_enabled"] is True
+    assert strategy_variant_overrides("SU")["supply_overhang_guard_enabled"] is True
+    assert strategy_variant_overrides("TU")["l2_persistence_guard_enabled"] is True
+    assert strategy_variant_overrides("TU")["supply_overhang_guard_enabled"] is True
     assert strategy_variants_share_signal_ledger(["A", "M", "P"]) is True
     assert strategy_variants_share_signal_ledger(["A", "F"]) is False
     assert strategy_variants_share_signal_ledger(["A", "I"]) is False
@@ -50,3 +60,12 @@ def test_live_variant_preserves_production_configuration() -> None:
     assert normalize_strategy_variant("live") == "live"
     assert strategy_variant_overrides("live") == {}
     assert strategy_variant_entry_policy("live").blocked_confirmed_signals == ()
+
+
+def test_parse_live_ablation_spec() -> None:
+    assert parse_live_ablation_spec("") == (False, [])
+    assert parse_live_ablation_spec("only:") == (False, [])
+    assert parse_live_ablation_spec("S,T,s") == (False, ["live", "S", "T"])
+    assert parse_live_ablation_spec("only:live,S,T,U,V,Q,R") == (True, ["live", "S", "T", "U", "V", "Q", "R"])
+    with pytest.raises(ValueError):
+        parse_live_ablation_spec("only:live,ZZZ")

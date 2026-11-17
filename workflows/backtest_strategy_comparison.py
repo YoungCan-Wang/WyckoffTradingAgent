@@ -7,6 +7,7 @@ import glob
 import math
 import re
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean
@@ -22,11 +23,15 @@ from workflows.backtest_report_stats import (
     optional_float,
     return_stats,
 )
-from workflows.backtest_strategy_variants import DEFAULT_COMPARISON_VARIANTS, VARIANT_LABELS
+from workflows.backtest_strategy_variants import (
+    DEFAULT_COMPARISON_VARIANTS,
+    VARIANT_LABELS,
+    normalize_strategy_variant,
+)
 
 DEFAULT_COMPARISON_PERIODS = ("bull_2020", "bear_2022", "sideways_2023", "volatile_2024", "recent_6m")
 MAX_CASH_DRAWDOWN_PCT = 20.0
-LIVE_ABLATION_VARIANTS = frozenset({"Q", "R", "S", "T", "U", "V"})
+LIVE_ABLATION_VARIANTS = frozenset({"Q", "R", "S", "T", "U", "V", "ST", "SU", "TU"})
 _VARIANT_PATTERN = "|".join(re.escape(k) for k in sorted(VARIANT_LABELS, key=len, reverse=True))
 _DIR_PATTERN = re.compile(
     r"backtest-strategy-"
@@ -106,13 +111,41 @@ def load_strategy_comparison_rows(
     return rows
 
 
+def _resolve_required_cells(
+    by_variant: dict[str, list[StrategyComparisonRow]],
+    expected_periods: Iterable[str] | None,
+    expected_variants: Iterable[str] | None,
+) -> tuple[str, set[tuple[str, str]]]:
+    periods = tuple(dict.fromkeys(str(p).strip() for p in (expected_periods or ()) if str(p).strip()))
+    variants = tuple(dict.fromkeys(normalize_strategy_variant(v) for v in (expected_variants or ()) if str(v).strip()))
+    if variants:
+        baseline = "live" if set(variants) <= ({"live"} | LIVE_ABLATION_VARIANTS) else "A"
+        target_periods = periods or DEFAULT_COMPARISON_PERIODS
+        return baseline, {(period, variant) for period in target_periods for variant in variants}
+    has_default_variants = bool(set(by_variant) & set(DEFAULT_COMPARISON_VARIANTS))
+    has_live_ablation = bool(set(by_variant) & ({"live"} | LIVE_ABLATION_VARIANTS))
+    if has_live_ablation and not has_default_variants:
+        live_children = tuple(sorted(set(by_variant) & LIVE_ABLATION_VARIANTS))
+        target_variants = ("live", *live_children) if live_children else ("live", "live_ablation")
+        has_bull_2025 = any(row.period == "bull_2025" for values in by_variant.values() for row in values)
+        target_periods = periods or (
+            (*DEFAULT_COMPARISON_PERIODS, "bull_2025") if has_bull_2025 else DEFAULT_COMPARISON_PERIODS
+        )
+        return "live", {(period, variant) for period in target_periods for variant in target_variants}
+    target_periods = periods or DEFAULT_COMPARISON_PERIODS
+    return "A", {(period, variant) for period in target_periods for variant in DEFAULT_COMPARISON_VARIANTS}
+
+
 def build_strategy_comparison(
     rows: list[StrategyComparisonRow],
     ignored_dirs: list[str] | None = None,
+    *,
+    expected_periods: Iterable[str] | None = None,
+    expected_variants: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     by_variant = _by_variant(rows)
     available = {(row.period, row.variant) for row in rows}
-    required = {(period, variant) for period in DEFAULT_COMPARISON_PERIODS for variant in DEFAULT_COMPARISON_VARIANTS}
+    baseline, required = _resolve_required_cells(by_variant, expected_periods, expected_variants)
     evaluations = {}
     for variant, values in by_variant.items():
         if variant in {"A", "live"}:
@@ -122,9 +155,14 @@ def build_strategy_comparison(
         else:
             reference = {"M": "A", "P": "M"}.get(variant, "A")
         evaluations[variant] = _evaluate_variant(variant, values, by_variant.get(reference, []), reference)
+    scope = (
+        "以当前生产配置 live 为参照，评估主漏斗消融组相对 live 的跨周期净收益与边际成交。"
+        if baseline == "live"
+        else "默认矩阵评估 M 相对 A 的弱水温缩仓，以及 P 相对 M 的 NEUTRAL Spring 再缩仓。"
+    )
     return {
         "status": "ready" if required.issubset(available) else "incomplete",
-        "baseline": "A",
+        "baseline": baseline,
         "missing_cells": [f"{period}/{variant}" for period, variant in sorted(required - available)],
         "ignored_dirs": sorted(ignored_dirs or []),
         "cost_basis": _cost_basis(rows),
@@ -133,17 +171,26 @@ def build_strategy_comparison(
         "evaluations": evaluations,
         "walk_forward": _walk_forward(rows),
         "loss_attribution": _loss_attribution(rows),
-        "scope": "默认矩阵评估 M 相对 A 的弱水温缩仓，以及 P 相对 M 的 NEUTRAL Spring 再缩仓。",
+        "scope": scope,
         "decision_rule": "全部周期现金收益为正、绝对回撤不超过20%，且真实改变交易、胜出过半、平均增量为正、回撤恶化不超过2个百分点。",
     }
 
 
 def render_strategy_comparison(report: dict[str, Any]) -> str:
+    baseline = str(report.get("baseline") or "A")
+    title = "# 策略 live 基线消融 A股实证对比" if baseline == "live" else "# 策略 A/M/P A股实证对比"
+    subtitle = (
+        "固定同一数据快照、确认口径、固定退出与等额四仓。各消融组各自独立构建信号台账并对照 live 基线。"
+        if baseline == "live"
+        else "M 验证弱水温信号缩仓；P 在 M 上验证 NEUTRAL Spring 再缩仓；全部为研究策略。"
+    )
     lines = [
-        "# 策略 A/M/P A股实证对比",
+        title,
         "",
-        "固定同一数据快照、确认口径和组合。A/M/P 共用固定退出。",
-        "M 验证弱水温信号缩仓；P 在 M 上验证 NEUTRAL Spring 再缩仓；全部为研究策略。",
+        "固定同一数据快照、确认口径和组合。"
+        if baseline == "live"
+        else "固定同一数据快照、确认口径和组合。A/M/P 共用固定退出。",
+        subtitle,
         "",
         "| 周期 | 组别 | 现金收益 | 现金回撤 | 成交 | 胜率 | 平均单笔 | 夏普 |",
         "|---|---|---:|---:|---:|---:|---:|---:|",
@@ -180,7 +227,7 @@ def render_strategy_comparison(report: dict[str, Any]) -> str:
             f"{item.get('status', 'missing')} |"
         )
     lines.extend(_marginal_lines(report.get("evaluations") or {}))
-    lines.extend(_loss_attribution_lines(report.get("loss_attribution") or {}))
+    lines.extend(_loss_attribution_lines(report.get("loss_attribution") or {}, baseline))
     lines.extend(_walk_forward_lines(report.get("walk_forward") or {}))
     return "\n".join(lines) + "\n"
 
@@ -248,11 +295,11 @@ def _marginal_trades(
     Cash return deltas hide *which* trades a variant swapped; the two exclusive sets answer
     whether the variant's marginal picks beat the ones it dropped.
     """
-    baseline = {row.period: dict(row.signal_trades) for row in baseline_rows if row.signal_trades}
+    baseline = {row.period: dict(row.signal_trades) for row in baseline_rows}
     groups: dict[str, list[float | None]] = {"common": [], "reference_only": [], "variant_only": []}
     for row in rows:
         base = baseline.get(row.period)
-        if base is None or not row.signal_trades:
+        if base is None:
             continue
         variant = dict(row.signal_trades)
         common = base.keys() & variant.keys()
@@ -346,8 +393,9 @@ def _walk_forward_lines(result: dict[str, Any]) -> list[str]:
 
 def _loss_attribution(rows: list[StrategyComparisonRow]) -> dict[str, Any]:
     result = {}
-    for variant in DEFAULT_COMPARISON_VARIANTS:
-        selected = [row for row in rows if row.variant == variant and row.period in DEFAULT_COMPARISON_PERIODS]
+    variants = list(dict.fromkeys([*DEFAULT_COMPARISON_VARIANTS, *(row.variant for row in rows)]))
+    for variant in variants:
+        selected = [row for row in rows if row.variant == variant and row.period != "recent_2m"]
         trades = [trade for row in selected for trade in row.executed_trades]
         result[variant] = {
             "source": "executed_cash_trades",
@@ -385,9 +433,10 @@ def _attribution_sort_key(row: dict[str, Any]) -> tuple[float, str]:
     return float(row.get("pnl") or 0.0), str(row.get("group") or "")
 
 
-def _loss_attribution_lines(result: dict[str, Any]) -> list[str]:
-    selected = result.get("P") or {}
-    lines = ["", "## P 组实际成交亏损归因", ""]
+def _loss_attribution_lines(result: dict[str, Any], baseline: str = "A") -> list[str]:
+    target = "live" if baseline == "live" and not (result.get("P") or {}).get("trade_count") else "P"
+    selected = result.get(target) or {}
+    lines = ["", f"## {target} 组实际成交亏损归因", ""]
     if not selected.get("trade_count"):
         return [*lines, "- 缺少现金成交明细，无法归因。"]
     lines.extend(
