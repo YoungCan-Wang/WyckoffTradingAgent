@@ -695,10 +695,30 @@ def _evaluate_and_record_layer2_symbol(
         pre_ignition_list.append(sym)
 
 
-def _slice_df_at_lag(df: pd.DataFrame | None, lag: int) -> pd.DataFrame | None:
-    if df is None or df.empty or len(df) <= lag:
+def _persistence_session_as_of(
+    df_map: dict[str, pd.DataFrame],
+    bench_df: pd.DataFrame | None,
+    universe: list[str],
+    lag: int,
+) -> object | None:
+    """Calendar date lag sessions before the latest shared session (not bar-count)."""
+    frame = None
+    if bench_df is not None and not bench_df.empty and "date" in bench_df.columns:
+        frame = sort_by_date_if_needed(bench_df)
+    else:
+        for sym in dict.fromkeys([*universe, *df_map]):
+            candidate = df_map.get(sym)
+            if candidate is None or candidate.empty or "date" not in candidate.columns:
+                continue
+            sorted_df = sort_by_date_if_needed(candidate)
+            if frame is None or len(sorted_df) > len(frame):
+                frame = sorted_df
+    if frame is None or len(frame) <= lag:
         return None
-    return sort_by_date_if_needed(df).iloc[:-lag]
+    stamps = pd.to_datetime(frame["date"], errors="coerce").dropna()
+    if len(stamps) <= lag:
+        return None
+    return stamps.iloc[-(lag + 1)].date()
 
 
 def _passed_l2_at_lag(
@@ -709,14 +729,24 @@ def _passed_l2_at_lag(
     universe: list[str],
     lag: int,
 ) -> set[str]:
-    """Recompute point-in-time Layer 2 passes at T-lag without leaking T-day bars into RPS."""
+    """Recompute point-in-time Layer 2 passes at calendar T-lag.
+
+    Uses shared session dates (bench preferred) and requires an exact as-of bar so a
+    halt gap cannot impersonate T-1/T-2 via bar-count ``iloc`` (same rule as
+    ``cut_ohlcv_to_as_of``).
+    """
+    from core.asof_cut import cut_ohlcv_to_as_of
+
+    as_of = _persistence_session_as_of(df_map, bench_df, universe, lag)
+    if as_of is None:
+        return set()
     base_cfg = replace(cfg, l2_persistence_guard_enabled=False)
     lag_df_map: dict[str, pd.DataFrame] = {}
     for sym in dict.fromkeys([*universe, *candidates]):
-        sliced = _slice_df_at_lag(df_map.get(sym), lag)
+        sliced = cut_ohlcv_to_as_of(df_map.get(sym), as_of)
         if sliced is not None and len(sliced) >= base_cfg.ma_long:
             lag_df_map[sym] = sliced
-    bench_lag = _slice_df_at_lag(bench_df, lag)
+    bench_lag = cut_ohlcv_to_as_of(bench_df, as_of)
     rps_universe_lag = [sym for sym in universe if sym in lag_df_map]
     ctx_lag = build_layer2_evaluation_context(
         candidates, lag_df_map, bench_lag, base_cfg, rps_universe=rps_universe_lag

@@ -56,14 +56,8 @@ def test_dry_vol_breakdown_guard_blocks_falling_knife_but_keeps_tight_base() -> 
     assert any("跌破MA20支撑超限" in reason for reason in reasons)
 
 
-def test_l2_persistence_guard_filters_single_day_impulse_and_keeps_shakeout_reclaim() -> None:
-    closes = [11.0 - 0.01 * i for i in range(80)]
-    df_map = {
-        "300001": _make_ohlcv_df(closes, [1000.0] * 77 + [100.0, 100.0, 100.0]),
-        "300002": _make_ohlcv_df(closes, [1000.0] * 77 + [100.0, 5000.0, 100.0]),
-        "300003": _make_ohlcv_df(closes, [1000.0] * 77 + [5000.0, 5000.0, 100.0]),
-    }
-    cfg = FunnelConfig(
+def _persistence_cfg() -> FunnelConfig:
+    return FunnelConfig(
         ma_short=5,
         ma_long=20,
         enable_rs_filter=False,
@@ -76,14 +70,41 @@ def test_l2_persistence_guard_filters_single_day_impulse_and_keeps_shakeout_recl
         l2_persistence_guard_enabled=True,
         l2_persistence_window_days=3,
     )
+
+
+def test_l2_persistence_guard_filters_single_day_impulse_and_keeps_shakeout_reclaim() -> None:
+    closes = [11.0 - 0.01 * i for i in range(80)]
+    df_map = {
+        "300001": _make_ohlcv_df(closes, [1000.0] * 77 + [100.0, 100.0, 100.0]),
+        "300002": _make_ohlcv_df(closes, [1000.0] * 77 + [100.0, 5000.0, 100.0]),
+        "300003": _make_ohlcv_df(closes, [1000.0] * 77 + [5000.0, 5000.0, 100.0]),
+    }
     rejections: dict[str, str] = {}
     passed, channel_map, _ = layer2_strength_detailed(
-        ["300001", "300002", "300003"], df_map, None, cfg, rejections=rejections
+        ["300001", "300002", "300003"], df_map, None, _persistence_cfg(), rejections=rejections
     )
     assert passed == ["300001", "300002"]
     assert set(channel_map) == {"300001", "300002"}
     assert "300003" not in passed
     assert "L2跨日持续性不足" in rejections["300003"]
+
+
+def test_l2_persistence_guard_halt_gap_cannot_impersonate_prior_session() -> None:
+    """Bar-count iloc[:-2] would land on T-3 after a T-1 halt and false-confirm persistence."""
+    closes = [11.0 - 0.01 * i for i in range(80)]
+    # Dense bench/calendar: T-3 dry, T-2 dry, T-1 dry, T dry.
+    bench = _make_ohlcv_df(closes, [1000.0] * 76 + [100.0, 100.0, 100.0, 100.0])
+    # Stock: Pass(T-3 dry) → Fail(T-2 climax) → [halt T-1] → Pass(T dry).
+    # Calendar rule: neither T-1 nor T-2 confirms → reject. Bar-lag=2 would see T-3 and keep.
+    stock = _make_ohlcv_df(closes[:-1], [1000.0] * 76 + [100.0, 5000.0, 100.0])
+    stock = stock.copy()
+    stock.loc[stock.index[-1], "date"] = bench["date"].iloc[-1]
+    rejections: dict[str, str] = {}
+    passed, _, _ = layer2_strength_detailed(
+        ["300099"], {"300099": stock}, bench, _persistence_cfg(), rejections=rejections
+    )
+    assert passed == []
+    assert "L2跨日持续性不足" in rejections["300099"]
 
 
 def _overhang_evr_df(last_close: float) -> pd.DataFrame:
