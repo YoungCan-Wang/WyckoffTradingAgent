@@ -344,7 +344,7 @@
   {
     "symbol": "ABX.US",
     "code": "ABX",
-    "name": "Abacus Global Management, Inc. Class A",
+    "name": "BARRICK GOLD CORP",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -489,15 +489,6 @@
     "symbol": "ACHR.US",
     "code": "ACHR",
     "name": "Archer Aviation Inc Class A",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
-    "symbol": "ACHV.US",
-    "code": "ACHV",
-    "name": "Achieve Life Sciences, Inc.",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -3627,15 +3618,6 @@
     "active": true
   },
   {
-    "symbol": "ARI.US",
-    "code": "ARI",
-    "name": "阿波罗房地产金融",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
     "symbol": "ARIS.US",
     "code": "ARIS",
     "name": "Aris Mining Corp",
@@ -4188,15 +4170,6 @@
     "symbol": "ATAT.US",
     "code": "ATAT",
     "name": "亚朵",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
-    "symbol": "ATCH.US",
-    "code": "ATCH",
-    "name": "AtlasClear Holdings, Inc.",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -5096,7 +5069,7 @@
   {
     "symbol": "AZR.US",
     "code": "AZR",
-    "name": "Azora Therapeutics, Inc.",
+    "name": "联合食品",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -6419,7 +6392,7 @@
   {
     "symbol": "BID.US",
     "code": "BID",
-    "name": "Tribeca Strategic Acquisition Corp. Class A",
+    "name": "JOINT STOCK COMMERCIAL BANK FOR INVESTMENT AND DEVELOPMENT OF VIETNAM",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -6716,7 +6689,7 @@
   {
     "symbol": "BKV.US",
     "code": "BKV",
-    "name": "BKV Corporation",
+    "name": "中国神山果农",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -8003,7 +7976,7 @@
   {
     "symbol": "BTO.US",
     "code": "BTO",
-    "name": "John Hancock Financial Opportunities Fund",
+    "name": "B2GOLD CORP",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -8075,7 +8048,7 @@
   {
     "symbol": "BTX.US",
     "code": "BTX",
-    "name": "BlackRock Technology and Private Equity Term Trust Common Shares of Beneficial Interest",
+    "name": "安淳国际",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -8301,15 +8274,6 @@
     "symbol": "BWLP.US",
     "code": "BWLP",
     "name": "BW LPG Limited",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
-    "symbol": "BWMN.US",
-    "code": "BWMN",
-    "name": "Bowman Consulting Group, Ltd.",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -9056,7 +9020,7 @@
   {
     "symbol": "CBOE.US",
     "code": "CBOE",
-    "name": "Cboe Global Markets, Inc.",
+    "name": "Cboe Global Markets Inc",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -10593,15 +10557,6 @@
     "active": true
   },
   {
-    "symbol": "CLGN.US",
-    "code": "CLGN",
-    "name": "CollPlant Biotechnologies Ltd",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
     "symbol": "CLH.US",
     "code": "CLH",
     "name": "Clean Harbors, Inc.",
@@ -11504,7 +11459,7 @@
   {
     "symbol": "CON.US",
     "code": "CON",
-    "name": "Concentra Group Holdings Parent, Inc.",
+    "name": "德国大陆",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -12099,6 +12054,15 @@
     "symbol": "CRML.US",
     "code": "CRML",
     "name": "Critical Metals Corp.",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
+    "symbol": "CRMN.US",
+    "code": "CRMN",
+    "name": "Skyline Builders Group Holding Limited",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -13313,7 +13277,7 @@
   {
     "symbol": "DAVI.US",
     "code": "DAVI",
-    "name": "Davion Healthcare PLC",
+    "name": "Davion Healthcare Plc",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -16814,7 +16778,7 @@
   {
     "symbol": "EUDA.US",
     "code": "EUDA",
-    "name": "EUDA Health Holdings Limited Class A",
+    "name": "EUDA Health Holdings Limited",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -16967,7 +16931,7 @@
   {
     "symbol": "EVN.US",
     "code": "EVN",
-    "name": "Eaton Vance Municipal Income Trust",
+    "name": "Evolution Mining Ltd",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -17256,15 +17220,6 @@
     "symbol": "EZPW.US",
     "code": "EZPW",
     "name": "艾茨克普",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
-    "symbol": "EZRA.US",
-    "code": "EZRA",
-    "name": "Reliance Global Group, Inc.",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -17894,7 +17849,7 @@
   {
     "symbol": "FFTT.US",
     "code": "FFTT",
-    "name": "Masonglory Limited Class A",
+    "name": "Masonglory Limited",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -21710,7 +21665,7 @@
   {
     "symbol": "GUNN.US",
     "code": "GUNN",
-    "name": "Gunnison Copper Corp. Sponsored ADR",
+    "name": "Gunnison Copper Corp. American Depositary Shares (each representing thirty (30) Common Shares)",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -22671,18 +22626,9 @@
     "active": true
   },
   {
-    "symbol": "HLSQ.US",
-    "code": "HLSQ",
-    "name": "Tessera Defense and Homeland Security Inc.",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
     "symbol": "HLT.US",
     "code": "HLT",
-    "name": "Hilton Worldwide Holdings Inc.",
+    "name": "希尔顿酒店",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -23547,6 +23493,15 @@
     "symbol": "HY.US",
     "code": "HY",
     "name": "海斯特-耶鲁物料搬运",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
+    "symbol": "HYAC.US",
+    "code": "HYAC",
+    "name": "Haymaker Acquisition Corp V Class A",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -24768,15 +24723,6 @@
     "active": true
   },
   {
-    "symbol": "INM.US",
-    "code": "INM",
-    "name": "InMed Pharmaceuticals Inc.",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
     "symbol": "INMB.US",
     "code": "INMB",
     "name": "INmune Bio, Inc.",
@@ -25823,7 +25769,7 @@
   {
     "symbol": "JBDI.US",
     "code": "JBDI",
-    "name": "JBDI Holdings Limited Class A",
+    "name": "JBDI Holdings Limited",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -26496,15 +26442,6 @@
     "active": true
   },
   {
-    "symbol": "KAZR.US",
-    "code": "KAZR",
-    "name": "Skyline Builders Group Holding Limited",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
     "symbol": "KB.US",
     "code": "KB",
     "name": "韩国国民银行",
@@ -26849,7 +26786,7 @@
   {
     "symbol": "KIO.US",
     "code": "KIO",
-    "name": "KKR Income Opportunities Fund Common Shares",
+    "name": "昆巴铁矿石",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -27045,15 +26982,6 @@
     "active": true
   },
   {
-    "symbol": "KNRX.US",
-    "code": "KNRX",
-    "name": "Knorex Ltd. Class A",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
     "symbol": "KNSA.US",
     "code": "KNSA",
     "name": "Kiniksa Pharmaceuticals International, plc Class A",
@@ -27183,15 +27111,6 @@
     "symbol": "KPRX.US",
     "code": "KPRX",
     "name": "Kiora Pharmaceuticals, Inc.",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
-    "symbol": "KPTI.US",
-    "code": "KPTI",
-    "name": "Karyopharm Therapeutics, Inc.",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -27731,7 +27650,7 @@
   {
     "symbol": "LASE.US",
     "code": "LASE",
-    "name": "LASE Corp.",
+    "name": "Laser Photonics Corp.",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -27992,7 +27911,7 @@
   {
     "symbol": "LEDR.US",
     "code": "LEDR",
-    "name": "Leaders Advantage Acquisition Corp. Class A",
+    "name": "Leader's Advantage Acquisition Corp.",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -28857,6 +28776,15 @@
     "symbol": "LOVE.US",
     "code": "LOVE",
     "name": "Lovesac Company",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
+    "symbol": "LOVI.US",
+    "code": "LOVI",
+    "name": "Live Oak Acquisition Corp. VI",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -30114,15 +30042,6 @@
     "active": true
   },
   {
-    "symbol": "MCTA.US",
-    "code": "MCTA",
-    "name": "Charming Medical Limited Class A",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
     "symbol": "MCY.US",
     "code": "MCY",
     "name": "默邱利通用",
@@ -30216,6 +30135,15 @@
     "symbol": "MDLZ.US",
     "code": "MDLZ",
     "name": "亿滋国际",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
+    "symbol": "MDRN.US",
+    "code": "MDRN",
+    "name": "Modern Mining Technology Corp. Common Shares",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -31871,7 +31799,7 @@
   {
     "symbol": "MSGR.US",
     "code": "MSGR",
-    "name": "MSG Rangers Corp Class A",
+    "name": "MSG Rangers Corp. Class A",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -32115,6 +32043,15 @@
     "symbol": "MTR.US",
     "code": "MTR",
     "name": "Mesa Royalty Trust",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
+    "symbol": "MTRI.US",
+    "code": "MTRI",
+    "name": "Mentari Therapeutics, Inc.",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -32708,7 +32645,7 @@
   {
     "symbol": "NAVI.US",
     "code": "NAVI",
-    "name": "Navient Holdings, Inc.",
+    "name": "Navient Corp",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -35082,15 +35019,6 @@
     "active": true
   },
   {
-    "symbol": "NXXT.US",
-    "code": "NXXT",
-    "name": "NextNRG, Inc.",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
     "symbol": "NYAX.US",
     "code": "NYAX",
     "name": "Nayax Ltd.",
@@ -36045,6 +35973,15 @@
     "active": true
   },
   {
+    "symbol": "OPHI.US",
+    "code": "OPHI",
+    "name": "CollPlant Biotechnologies Ltd.",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
     "symbol": "OPI.US",
     "code": "OPI",
     "name": "Office Properties Income Trust",
@@ -36857,7 +36794,7 @@
   {
     "symbol": "PARA.US",
     "code": "PARA",
-    "name": "Parabolic Technologies, Inc. Class A",
+    "name": "Banzai International, Inc. Class A",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -36947,7 +36884,7 @@
   {
     "symbol": "PAXG.US",
     "code": "PAXG",
-    "name": "Pine Tree Acquisition Corp. Class A",
+    "name": "Pine Tree Acquisition Corp.",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -39312,15 +39249,6 @@
     "active": true
   },
   {
-    "symbol": "PSQH.US",
-    "code": "PSQH",
-    "name": "PSQ Holdings, Inc.",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
     "symbol": "PSQL.US",
     "code": "PSQL",
     "name": "Pasqal Holding SA",
@@ -39414,15 +39342,6 @@
     "symbol": "PTIV.US",
     "code": "PTIV",
     "name": "Pineapple Financial Inc.",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
-    "symbol": "PTLE.US",
-    "code": "PTLE",
-    "name": "长安能源",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -40008,6 +39927,15 @@
     "symbol": "QUIK.US",
     "code": "QUIK",
     "name": "快辑半导体",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
+    "symbol": "QUIT.US",
+    "code": "QUIT",
+    "name": "Achieve Life Sciences, Inc.",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -41607,15 +41535,6 @@
     "active": true
   },
   {
-    "symbol": "ROKU.US",
-    "code": "ROKU",
-    "name": "Roku, Inc. Class A",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
     "symbol": "ROL.US",
     "code": "ROL",
     "name": "Rollins, Inc.",
@@ -42311,7 +42230,7 @@
   {
     "symbol": "SAEN.US",
     "code": "SAEN",
-    "name": "Genenta Science SpA Sponsored ADR",
+    "name": "Genenta Science S.p.A.",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -42834,6 +42753,15 @@
     "symbol": "SCPQU.US",
     "code": "SCPQU",
     "name": "Social Commerce Partners Corporation",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
+    "symbol": "SCQC.US",
+    "code": "SCQC",
+    "name": "SPACCircle Acquisition Corp.",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -43373,7 +43301,7 @@
   {
     "symbol": "SGP.US",
     "code": "SGP",
-    "name": "SpyGlass Pharma, Inc.",
+    "name": "Synergy Grid & Development Phils Inc",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -44093,7 +44021,7 @@
   {
     "symbol": "SLMT.US",
     "code": "SLMT",
-    "name": "Solmate Infrastructure Public Limited Company Class B",
+    "name": "Brera Holdings PLC Class B",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -44471,7 +44399,7 @@
   {
     "symbol": "SNDK.US",
     "code": "SNDK",
-    "name": "闪迪",
+    "name": "Sandisk Corporation",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -45974,7 +45902,7 @@
   {
     "symbol": "SUPN.US",
     "code": "SUPN",
-    "name": "Supernus, Inc.",
+    "name": "Supernus Pharmaceuticals, Inc.",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -46650,15 +46578,6 @@
     "symbol": "TC.US",
     "code": "TC",
     "name": "团车",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
-    "symbol": "TCBI.US",
-    "code": "TCBI",
-    "name": "Texas Capital Bancshares, Inc.",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -48900,6 +48819,15 @@
     "symbol": "TX.US",
     "code": "TX",
     "name": "特尔尼翁钢铁",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
+    "symbol": "TXCP.US",
+    "code": "TXCP",
+    "name": "Texas Capital Bancshares, Inc.",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -51228,6 +51156,15 @@
     "active": true
   },
   {
+    "symbol": "VVVV.US",
+    "code": "VVVV",
+    "name": "vVARDIS Holding AG Class A",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
     "symbol": "VVX.US",
     "code": "VVX",
     "name": "V2X Inc",
@@ -52497,6 +52434,15 @@
     "active": true
   },
   {
+    "symbol": "WWB.US",
+    "code": "WWB",
+    "name": "Windward Bio Group AG",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
     "symbol": "WWD.US",
     "code": "WWD",
     "name": "Woodward, Inc.",
@@ -52725,6 +52671,15 @@
     "symbol": "XGN.US",
     "code": "XGN",
     "name": "Exagen, Inc.",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
+    "symbol": "XGPU.US",
+    "code": "XGPU",
+    "name": "Reliance Global Group, Inc.",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -52985,7 +52940,7 @@
   {
     "symbol": "XTER.US",
     "code": "XTER",
-    "name": "Xterax Corporation II Class A",
+    "name": "Karman Line Acquisition Corp. Class A",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -53823,6 +53778,15 @@
     "symbol": "ZYME.US",
     "code": "ZYME",
     "name": "Zymeworks Inc.",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
+    "symbol": "ZYN.US",
+    "code": "ZYN",
+    "name": "PTL LTD",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",

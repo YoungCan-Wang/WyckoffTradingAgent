@@ -43,6 +43,25 @@ DEFAULT_RULES: dict[str, dict[str, Any]] = {
 # ---------------------------------------------------------------- fills & trips
 
 
+def _as_cn_midnight(value: Any) -> pd.Timestamp:
+    """Trading calendar day in China: tz-aware → Asia/Shanghai, then naive midnight.
+
+    UTC/Zulu fill timestamps must not stay as UTC midnight — naive bar indexes are
+    Shanghai calendar days, and a UTC-midnight mismatch silently drops the trip.
+    """
+    ts = pd.Timestamp(value)
+    if ts.tzinfo is not None:
+        ts = ts.tz_convert("Asia/Shanghai").tz_localize(None)
+    return ts.normalize()
+
+
+def _series_cn_midnight(values: pd.Series) -> pd.Series:
+    series = pd.to_datetime(values)
+    if getattr(series.dt, "tz", None) is not None:
+        series = series.dt.tz_convert("Asia/Shanghai").dt.tz_localize(None)
+    return series.dt.normalize()
+
+
 @dataclass(eq=False)
 class RoundTrip:
     code: str
@@ -54,7 +73,7 @@ class RoundTrip:
     def __post_init__(self) -> None:
         # Bar lookups are midnight-indexed; keep intraday timestamps only for fill ordering.
         fills = self.fills.copy()
-        fills["date"] = pd.to_datetime(fills["date"]).dt.normalize()
+        fills["date"] = _series_cn_midnight(fills["date"])
         self.fills = fills
         self.start = fills["date"].min()
         self.end = fills["date"].max()
@@ -66,6 +85,8 @@ class RoundTrip:
 
 def load_fills(path: str | Path) -> pd.DataFrame:
     """Read a fills CSV: name,code,date,side,price,qty,amount,fee (code may be blank)."""
+    from integrations.tickflow_client import normalize_cn_symbol
+
     df = pd.read_csv(path, encoding="utf-8-sig", dtype={"code": str})
     need = {"name", "date", "side", "price", "qty", "amount", "fee"}
     missing = need - set(df.columns)
@@ -73,7 +94,10 @@ def load_fills(path: str | Path) -> pd.DataFrame:
         raise ValueError(f"fills CSV missing columns: {sorted(missing)}")
     if "code" not in df.columns:
         df["code"] = ""
+    # Blank CSV name cells become NaN; strip so groupby cannot split one stock's ledger.
+    df["name"] = df["name"].fillna("").astype(str).str.strip()
     df["code"] = df["code"].fillna("").astype(str).str.strip().str.upper()
+    df["code"] = df["code"].map(lambda c: normalize_cn_symbol(c) if c else "")
     df["side"] = df["side"].astype(str).str.strip().str.lower()
     bad = sorted(set(df["side"]) - {"buy", "sell"})
     if bad:
@@ -93,15 +117,24 @@ def build_round_trips(fills: pd.DataFrame) -> tuple[list[RoundTrip], list[str]]:
     open_positions: list[str] = []
     # Preserve transcript/CSV order within a day. Buy-before-sell reordering merges
     # overnight flatten+reopen (清仓再买 / 做T) when the CSV is date-only.
+    # Group by code only: name is display metadata (blank/NaN/whitespace variants must
+    # not drop sells via groupby dropna or split one long into two open legs).
     order = fills.assign(_ord=np.arange(len(fills))).sort_values(["code", "date", "_ord"], kind="stable")
-    for (code, name), group in order.groupby(["code", "name"], sort=False):
-        pos, rows = 0.0, []
+    for code, group in order.groupby("code", sort=False, dropna=False):
+        name = next((str(n) for n in group["name"] if str(n).strip()), str(code))
+        pos, rows, min_pos = 0.0, [], 0.0
         for _, row in group.iterrows():
             rows.append(row)
             pos += row["qty"] if row["side"] == "buy" else -row["qty"]
+            min_pos = min(min_pos, pos)
             if abs(pos) < 1e-6:
-                trips.append(RoundTrip(code, name, pd.DataFrame(rows).drop(columns="_ord")))
-                rows = []
+                # A-share review is long-only. A cycle that went short (sell-first /
+                # missing opening buy in a partial export) must not become a phantom trip.
+                if min_pos >= -1e-6 and str(rows[0]["side"]) == "buy":
+                    trips.append(RoundTrip(str(code), name, pd.DataFrame(rows).drop(columns="_ord")))
+                else:
+                    open_positions.append(f"{name}({code}) 卖出优先/缺期初持仓，未计入回合")
+                rows, min_pos = [], 0.0
         if rows:
             open_positions.append(f"{name}({code}) 剩余 {pos:g} 股")
     return trips, open_positions
@@ -184,7 +217,7 @@ def fills_inside_bars(trip: RoundTrip, bars: pd.DataFrame) -> bool:
     """False when any fill price is outside its day's raw range (wrong listing, adjusted bars, typo)."""
     by_day = bars.set_index("d")
     for _, row in trip.fills.iterrows():
-        day = pd.Timestamp(row["date"]).normalize()
+        day = _as_cn_midnight(row["date"])
         if day not in by_day.index:
             return False
         bar = by_day.loc[day]
@@ -390,13 +423,26 @@ def solve_lots(buy_amount: float, pnl: float, total_fee: float, entry_bar: pd.Se
 
 
 def summarize(table: pd.DataFrame) -> dict[str, float]:
+    if not len(table):
+        return {
+            "trips": 0,
+            "total_pnl": 0.0,
+            "win_rate": 0.0,
+            "avg_win": 0.0,
+            "avg_loss": 0.0,
+            "expectancy_per_trip": 0.0,
+            "breakeven_win_rate": None,
+            "fees": 0.0,
+            "top10_loss_share": 0.0,
+            "total_without_top2_losses": 0.0,
+        }
     wins = table[table["pnl"] > 0]
     losses = table[table["pnl"] <= 0]
-    win_rate = len(wins) / len(table) if len(table) else 0.0
+    win_rate = len(wins) / len(table)
     avg_win = float(wins["pnl"].mean()) if len(wins) else 0.0
     avg_loss = float(-losses["pnl"].mean()) if len(losses) else 0.0
     loss_total = float(-losses["pnl"].sum())
-    top2_losses = float(-losses["pnl"].nsmallest(2).sum())
+    top2_losses = float(-losses["pnl"].nsmallest(2).sum()) if len(losses) else 0.0
     return {
         "trips": len(table),
         "total_pnl": round(float(table["pnl"].sum()), 2),
@@ -413,11 +459,31 @@ def summarize(table: pd.DataFrame) -> dict[str, float]:
 
 def group_table(table: pd.DataFrame, column: str, bins: list[float], labels: list[str]) -> pd.DataFrame:
     cut = pd.cut(table[column], bins=bins, labels=labels)
+    # NaN (e.g. IPO / short history priors) must stay visible — dropna flips section sign vs total_pnl.
+    if isinstance(cut.dtype, pd.CategoricalDtype) and cut.isna().any():
+        cut = cut.cat.add_categories(["样本不足"]).fillna("样本不足")
     return (
         table.groupby(cut, observed=True)
         .agg(笔数=("pnl", "size"), 合计=("pnl", "sum"), 胜率=("pnl", lambda s: round((s > 0).mean() * 100, 1)))
         .round(0)
     )
+
+
+_TRIP_TABLE_COLUMNS = [
+    "name",
+    "code",
+    "start",
+    "end",
+    "holding_days",
+    "n_buys",
+    "pnl",
+    "fees",
+    "max_exposure",
+    "averaged_down",
+    "limit_down_closes",
+    "prior_limit_ups",
+    "prior_runup_pct",
+]
 
 
 def trip_table(trips: list[RoundTrip], bars: dict[str, pd.DataFrame], indices: dict[str, pd.Series]) -> pd.DataFrame:
@@ -441,6 +507,10 @@ def trip_table(trips: list[RoundTrip], bars: dict[str, pd.DataFrame], indices: d
         for code, closes in indices.items():
             row[f"index_{code}"] = index_shadow_pnl(t, closes)
         rows.append(row)
+    if not rows:
+        # Empty DataFrame must keep the schema: summarize/write_report index pnl/fees.
+        cols = list(_TRIP_TABLE_COLUMNS) + [f"index_{c}" for c in indices]
+        return pd.DataFrame(columns=cols)
     return pd.DataFrame(rows)
 
 
@@ -463,22 +533,34 @@ def _md(df: pd.DataFrame, index: bool = True) -> str:
 def write_report(out_dir: Path, table: pd.DataFrame, rules: pd.DataFrame, notes: list[str]) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     s = summarize(table)
-    table.assign(month=table["end"].dt.strftime("%Y-%m")).to_csv(out_dir / "trips.csv", index=False)
+    if len(table):
+        table.assign(month=table["end"].dt.strftime("%Y-%m")).to_csv(out_dir / "trips.csv", index=False)
+    else:
+        table.to_csv(out_dir / "trips.csv", index=False)
     rules.to_csv(out_dir / "exit_rules.csv", index=False)
+    if len(table):
+        month_md = _md(table.groupby(table["end"].dt.strftime("%Y-%m"))["pnl"].agg(笔数="size", 合计="sum").round(0))
+        hold_md = _md(
+            group_table(table, "holding_days", [-1, 1, 3, 7, 14, 30, 1e9], ["≤1", "2-3", "4-7", "8-14", "15-30", ">30"])
+        )
+        limit_md = _md(group_table(table, "prior_limit_ups", [-1, 0, 1, 99], ["0", "1", "≥2"]))
+        runup_md = _md(
+            group_table(table, "prior_runup_pct", [-1e9, 0, 15, 30, 1e9], ["下跌", "0~15%", "15~30%", ">30%"])
+        )
+        risk_md = _risk_section(table)
+        index_md = _index_section(table)
+    else:
+        empty = "_（无已清仓回合纳入）_"
+        month_md = hold_md = limit_md = runup_md = risk_md = index_md = empty
     sections = [
         "# 交易复盘报告",
         "## 期望值\n" + _md(pd.Series(s).rename_axis("指标").to_frame("值")),
-        "## 按清仓月份\n"
-        + _md(table.groupby(table["end"].dt.strftime("%Y-%m"))["pnl"].agg(笔数="size", 合计="sum").round(0)),
-        "## 同时点换成指数\n" + _index_section(table),
-        "## 按持有自然日\n"
-        + _md(
-            group_table(table, "holding_days", [-1, 1, 3, 7, 14, 30, 1e9], ["≤1", "2-3", "4-7", "8-14", "15-30", ">30"])
-        ),
-        "## 按买入前10日涨停数\n" + _md(group_table(table, "prior_limit_ups", [-1, 0, 1, 99], ["0", "1", "≥2"])),
-        "## 按买入前20日涨幅\n"
-        + _md(group_table(table, "prior_runup_pct", [-1e9, 0, 15, 30, 1e9], ["下跌", "0~15%", "15~30%", ">30%"])),
-        "## 补仓与跌停\n" + _risk_section(table),
+        "## 按清仓月份\n" + month_md,
+        "## 同时点换成指数\n" + index_md,
+        "## 按持有自然日\n" + hold_md,
+        "## 按买入前10日涨停数\n" + limit_md,
+        "## 按买入前20日涨幅\n" + runup_md,
+        "## 补仓与跌停\n" + risk_md,
         "## 离场规则回放（事后挑选，仅作线索）\n" + _md(rules, index=False),
         "## 数据口径\n" + "\n".join(f"- {n}" for n in notes),
     ]
@@ -545,8 +627,8 @@ def cmd_analyze(args: argparse.Namespace) -> None:
 def cmd_solve_lots(args: argparse.Namespace) -> None:
     _guard_out_dir(Path(args.out).parent, args.allow_repo_output)
     summary = pd.read_csv(args.summary, encoding="utf-8-sig", dtype={"code": str})
-    summary["entry_date"] = pd.to_datetime(summary["entry_date"]).dt.normalize()
-    summary["exit_date"] = pd.to_datetime(summary["exit_date"]).dt.normalize()
+    summary["entry_date"] = _series_cn_midnight(summary["entry_date"])
+    summary["exit_date"] = _series_cn_midnight(summary["exit_date"])
     bars = fetch_bars(sorted(set(summary["code"])))
     rows, unsolved = [], []
     for _, r in summary.iterrows():

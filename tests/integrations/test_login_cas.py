@@ -88,3 +88,50 @@ def test_login_persists_when_attempt_unchanged(tmp_path, monkeypatch):
     assert cfg.get("email") == "alice@example.test"
     assert cfg.get("password") == "alice-secret"
     assert not cfg.get(local_auth._LOGIN_ATTEMPT_ID_KEY)
+
+
+def test_login_rechecks_attempt_under_lock_after_switch(tmp_path, monkeypatch):
+    """IPC: Bob can land after Alice's unlocked attempt snapshot and before persist."""
+    _point_auth(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        local_auth,
+        "_sign_in_with_password",
+        lambda email, password: {
+            "user_id": "alice",
+            "email": email,
+            "access_token": "alice-at",
+            "refresh_token": "alice-rt",
+        },
+    )
+
+    real_persist = local_auth._persist_login_if_attempt_current
+
+    def bob_wins_then_persist(attempt_id: str, email: str, password: str, data: dict):
+        # Other worker finished auth_login(Bob) after Alice returned from network
+        # but before Alice's locked persist — the old check-then-save window.
+        local_auth.save_session(
+            {
+                "user_id": "bob",
+                "email": "bob@example.test",
+                "access_token": "bob-at",
+                "refresh_token": "bob-rt",
+            }
+        )
+        local_auth.save_config_key("email", "bob@example.test")
+        local_auth.save_config_key("password", "bob-secret")
+        local_auth.save_config_key("last_email", "bob@example.test")
+        local_auth.save_config_key(local_auth._LOGIN_ATTEMPT_ID_KEY, "")
+        return real_persist(attempt_id, email, password, data)
+
+    monkeypatch.setattr(local_auth, "_persist_login_if_attempt_current", bob_wins_then_persist)
+
+    with pytest.raises(RuntimeError, match="退出或另一次登录"):
+        local_auth.login("alice@example.test", "alice-secret")
+
+    disk = local_auth.load_session()
+    assert disk is not None
+    assert disk["user_id"] == "bob"
+    assert disk["access_token"] == "bob-at"
+    cfg = local_auth.load_config()
+    assert cfg.get("email") == "bob@example.test"
+    assert cfg.get("password") == "bob-secret"
