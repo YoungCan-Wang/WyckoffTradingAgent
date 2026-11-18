@@ -1,4 +1,4 @@
-"""Tests for candidate lane pruning mechanisms and variant Q configuration."""
+"""Tests for candidate lane pruning mechanisms."""
 
 from __future__ import annotations
 
@@ -10,11 +10,6 @@ from core.wyckoff_engine import (
     _alpha_entry_options,
     _formal_candidate_entries,
     build_candidate_entries,
-)
-from workflows.backtest_strategy_variants import (
-    normalize_strategy_variant,
-    strategy_variant_entry_policy,
-    strategy_variant_overrides,
 )
 
 
@@ -147,28 +142,3 @@ def test_build_l1_candidate_lane_entries_and_merge_filtering():
     # Test merge_candidate_entries filtering
     merged = merge_candidate_entries(lanes_all, blocked_types=(chosen_lane,))
     assert all(item["entry_type"] != chosen_lane for item in merged)
-
-
-def test_strategy_variant_q_clean_isolation():
-    variant = normalize_strategy_variant("Q")
-    assert variant == "Q"
-
-    overrides = strategy_variant_overrides("Q")
-    # Live parity switches must be explicitly True, NOT flipped to False like _ALL_SWITCHES
-    assert overrides["dist_upthrust_enabled"] is True
-    assert overrides["lps_creek_confirmation_enabled"] is True
-    # Target 6 channels are blocked
-    blocked = overrides["blocked_candidate_entry_types"]
-    assert set(blocked) == {
-        "launchpad",
-        "early_breakout",
-        "volatile_pullback",
-        "trend_lane_pullback",
-        "trend_breakout",
-        "main_force_entry",
-    }
-
-    # Zero policy distortion on entry weights or confirmation rules
-    policy = strategy_variant_entry_policy("Q")
-    assert policy.blocked_confirmed_signals == ()
-    assert policy.entry_weight_multipliers == ()

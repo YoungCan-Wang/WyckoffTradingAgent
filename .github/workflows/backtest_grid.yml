@@ -68,7 +68,7 @@ on:
         type: boolean
         default: false
       live_ablation_variants:
-        description: "按需运行 live 基线独立台账消融组（如 live,S,T,U,V,Q,R；加 only: 前缀则仅跑消融跳过常规网格）"
+        description: "按需运行 live 基线独立台账消融组（如 live,I；加 only: 前缀则仅跑消融跳过常规网格）"
         required: false
         default: ""
 

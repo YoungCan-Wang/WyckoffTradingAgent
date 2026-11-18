@@ -22,15 +22,6 @@ VARIANT_LABELS = {
     "K": "A股实证：Fib-LPS 几何增强 + 动态小溪放宽",
     "M": "A股实证：弱水温信号缩仓",
     "P": "A股实证：M + NEUTRAL Spring 缩仓至 25%",
-    "Q": "A股实证：候选入口层真剪枝（live + 剔除 6 个弱动量通道）",
-    "R": "A股实证：关闭 Layer 3 行业共振（全量 L2 直通 L4）",
-    "S": "A股实证：L2 地量蓄势破位飞刀护栏（live + H1）",
-    "T": "A股实证：L2 跨日结构持续性护栏（live + H2）",
-    "U": "A股实证：L4 近端天量长上影筹码压制护栏（live + H5）",
-    "V": "A股实证：主漏斗结构护栏联合消融（live + S+T+U）",
-    "ST": "A股实证：主漏斗结构护栏组合（live + S+T）",
-    "SU": "A股实证：主漏斗结构护栏组合（live + S+U）",
-    "TU": "A股实证：主漏斗结构护栏组合（live + T+U）",
 }
 
 DEFAULT_COMPARISON_VARIANTS = ("A", "M", "P")
@@ -70,63 +61,6 @@ _VARIANT_SWITCHES = {
     },
     "M": {},
     "P": {},
-    "Q": {
-        "dist_upthrust_enabled": True,
-        "lps_creek_confirmation_enabled": True,
-        "blocked_candidate_entry_types": (
-            "launchpad",
-            "early_breakout",
-            "volatile_pullback",
-            "trend_lane_pullback",
-            "trend_breakout",
-            "main_force_entry",
-        ),
-    },
-    "R": {
-        "dist_upthrust_enabled": True,
-        "lps_creek_confirmation_enabled": True,
-        "enable_layer3": False,
-    },
-    "S": {
-        "dist_upthrust_enabled": True,
-        "lps_creek_confirmation_enabled": True,
-        "dry_vol_breakdown_guard_enabled": True,
-    },
-    "T": {
-        "dist_upthrust_enabled": True,
-        "lps_creek_confirmation_enabled": True,
-        "l2_persistence_guard_enabled": True,
-    },
-    "U": {
-        "dist_upthrust_enabled": True,
-        "lps_creek_confirmation_enabled": True,
-        "supply_overhang_guard_enabled": True,
-    },
-    "V": {
-        "dist_upthrust_enabled": True,
-        "lps_creek_confirmation_enabled": True,
-        "dry_vol_breakdown_guard_enabled": True,
-        "l2_persistence_guard_enabled": True,
-        "supply_overhang_guard_enabled": True,
-    },
-    "ST": {
-        "dist_upthrust_enabled": True,
-        "lps_creek_confirmation_enabled": True,
-        "dry_vol_breakdown_guard_enabled": True,
-        "l2_persistence_guard_enabled": True,
-    },
-    "SU": {
-        "dist_upthrust_enabled": True,
-        "lps_creek_confirmation_enabled": True,
-        "dry_vol_breakdown_guard_enabled": True,
-        "supply_overhang_guard_enabled": True,
-    },
-    "TU": {
-        "dist_upthrust_enabled": True,
-        "lps_creek_confirmation_enabled": True,
-        "l2_persistence_guard_enabled": True,
-        "supply_overhang_guard_enabled": True,
-    },
 }
 
 _WEAK_REGIME_WEIGHTS = (
@@ -171,7 +105,7 @@ def normalize_strategy_variant(raw: str) -> str:
 
 
 def parse_live_ablation_spec(raw: str) -> tuple[bool, list[str]]:
-    """Parse ``live_ablation_variants`` input such as ``only:live,S,T,U,V``."""
+    """Parse ``live_ablation_variants`` input such as ``only:live,I``."""
     text = str(raw or "").strip()
     if not text:
         return False, []

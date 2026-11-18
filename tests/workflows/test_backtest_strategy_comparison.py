@@ -267,24 +267,24 @@ def test_strategy_comparison_attributes_executed_cash_losses_and_joins_legacy_re
     assert "| 水温 | NEUTRAL | 1 | +0.00% | -10.00% | -100.00 | -10.00% |" in markdown
 
 
-def test_strategy_comparison_pairs_live_ablation_variants_s_and_v(tmp_path: Path) -> None:
+def test_strategy_comparison_pairs_live_ablation_variants(tmp_path: Path) -> None:
     for period in ("recent_6m", "volatile_2024"):
         _write_summary(tmp_path, period, "live", 1.0, -5.0)
-        _write_summary(tmp_path, period, "S", 2.0, -4.0)
-        _write_summary(tmp_path, period, "V", 3.5, -3.5)
+        _write_summary(tmp_path, period, "B", 2.0, -4.0)
+        _write_summary(tmp_path, period, "K", 3.5, -3.5)
 
     report = build_strategy_comparison(load_strategy_comparison_rows(tmp_path))
 
     assert report["evaluations"]["live"]["status"] == "baseline"
-    assert report["evaluations"]["S"]["reference_variant"] == "live"
-    assert report["evaluations"]["S"]["wins"] == 2
-    assert report["evaluations"]["V"]["reference_variant"] == "live"
-    assert report["evaluations"]["V"]["status"] == "pass"
+    assert report["evaluations"]["B"]["reference_variant"] == "live"
+    assert report["evaluations"]["B"]["wins"] == 2
+    assert report["evaluations"]["K"]["reference_variant"] == "live"
+    assert report["evaluations"]["K"]["status"] == "pass"
 
 
 def test_strategy_comparison_ready_for_six_period_live_ablation_without_amp(tmp_path: Path) -> None:
     periods = ("bull_2020", "bear_2022", "sideways_2023", "volatile_2024", "bull_2025", "recent_6m")
-    variants = ("live", "S", "T", "U", "V")
+    variants = ("live", "B", "C", "D", "K")
     for period in periods:
         for idx, variant in enumerate(variants):
             _write_summary(tmp_path, period, variant, 1.0 + idx * 0.5, -4.0)
@@ -294,8 +294,8 @@ def test_strategy_comparison_ready_for_six_period_live_ablation_without_amp(tmp_
     assert report["status"] == "ready"
     assert report["baseline"] == "live"
     assert report["missing_cells"] == []
-    assert report["evaluations"]["S"]["common_periods"] == 6
-    assert report["evaluations"]["V"]["status"] == "pass"
+    assert report["evaluations"]["B"]["common_periods"] == 6
+    assert report["evaluations"]["K"]["status"] == "pass"
     assert "策略 live 基线消融" in render_strategy_comparison(report)
 
 
@@ -304,32 +304,32 @@ def test_strategy_comparison_expected_variants_flags_missing_cells(tmp_path: Pat
     for period in periods:
         _write_summary(tmp_path, period, "live", 1.0, -4.0)
         if period != "bull_2025":
-            _write_summary(tmp_path, period, "ST", 2.0, -3.5)
+            _write_summary(tmp_path, period, "K", 2.0, -3.5)
 
     report = build_strategy_comparison(
         load_strategy_comparison_rows(tmp_path),
         expected_periods=periods,
-        expected_variants=("live", "ST"),
+        expected_variants=("live", "K"),
     )
 
     assert report["status"] == "incomplete"
-    assert report["missing_cells"] == ["bull_2025/ST"]
+    assert report["missing_cells"] == ["bull_2025/K"]
 
 
 def test_strategy_comparison_marginal_trades_counts_zero_trade_period_in_reference_only(tmp_path: Path) -> None:
     _write_summary(tmp_path, "bear_2022", "live", -2.0, -5.0)
-    _write_summary(tmp_path, "bear_2022", "S", 0.0, 0.0)
+    _write_summary(tmp_path, "bear_2022", "B", 0.0, 0.0)
     (tmp_path / "backtest-strategy-bear_2022-live" / "trades_fixture.csv").write_text(
         "signal_date,code,ret_pct\n2022-03-01,000001,-4.0\n2022-03-02,000002,-2.0\n",
         encoding="utf-8",
     )
-    (tmp_path / "backtest-strategy-bear_2022-S" / "trades_fixture.csv").write_text(
+    (tmp_path / "backtest-strategy-bear_2022-B" / "trades_fixture.csv").write_text(
         "signal_date,code,ret_pct\n",
         encoding="utf-8",
     )
 
     report = build_strategy_comparison(load_strategy_comparison_rows(tmp_path))
-    marginal = report["evaluations"]["S"]["marginal"]
+    marginal = report["evaluations"]["B"]["marginal"]
 
     assert marginal["common"]["trades"] == 0
     assert marginal["reference_only"] == {"trades": 2, "avg_return": -3.0, "win_rate": 0.0}
@@ -340,6 +340,6 @@ def test_load_grid_cells_ignores_strategy_ablation_directories(tmp_path: Path) -
     from workflows.backtest_market_report_artifacts import load_grid_cells
 
     _write_summary(tmp_path, "bull_2025", "live", 10.0, -3.0)
-    _write_summary(tmp_path, "bull_2025", "V", 12.0, -2.5)
+    _write_summary(tmp_path, "bull_2025", "K", 12.0, -2.5)
 
     assert load_grid_cells(tmp_path) == []
