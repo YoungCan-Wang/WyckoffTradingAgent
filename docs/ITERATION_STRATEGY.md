@@ -1131,8 +1131,7 @@ P90 港股 8.39%、美股 **13.18%**——**该收紧的是美股，方向与直
    - **`trigger_weight_eval` 降为月频（12 日），不归档**：路径 B（六档分值）已于 #498 拍平，那半边答完了；但路径 A（`watch_score` 的 `trigger_q` 0.30）仍是「方向指向下调，档位待更多样本」，停掉定时就攒不到样本。
    - **月频统一放在 UTC 22:10（北京次日 06:10）**：派发晚 3~4.5 小时后实际起跑在北京 06:10~10:40，这段没有读 Tushare 的定时任务，延迟为零也空闲。原定的北京 22:10 起跑会落在 01:10~02:40，与工作日 `recommendation_tracking_reprice`（UTC 15:00）、`signal_feedback`（UTC 15:30）延迟后的 02:00~04:00 重叠；`pattern_forward_eval`（6 日）原本就在那个时段，一并挪过来。五个按 4/6/8/10/12 日错开，只为分摊配额，不构成先后（AGENTS.md 评审规则 7）。
    - 周六定时保留快变量三件套：`regime_forward_eval.yml`（水温前瞻）、`exit_attribution.yml`（近 60 日 5% 硬止损离场工单归因）、`gate_alpha_eval.yml`（L3 生产 trace 同动量置换检验）。
-3. **待推进 `backtest_grid.yml` 生产级消融候选**：`gate_alpha_eval`（L3 被拒票 T+5 跑赢留下票 `+1.70%`）指向策略变体 `R`（关闭 L3 行业共振），在 #539 基线上通过 `backtest_grid.yml` 跨周期边际成交验证后决断。
-   - **变体 `Q`（剪枝 6 条动量入口车道）已被 #467 否决，不再排回测**：旧 Q 的差异全部来自 `_ALL_SWITCHES` 翻转的两个开关；与 live 开关对齐、在候选入口层剪枝的 Q2 在 2024 全年与 live 逐笔一致（982 vs 982，差 `0.0000pp`）——`merge_candidate_entries` 按 code 留最优入口，2024 年被剪车道从不是成交票的唯一或最优入口。剩下的问题在立项依据本身：−3.79pp 生产归因始于 2026-05-25，而 05-25..06-30 `candidate_lane` 只写 Lane 通道名、正式 L4 恒为 0，「6 车道占负期望 81%」可能部分是命名边界造成的。先审计该归因口径，再决定是否还有可剪的东西。
+3. **`backtest_grid.yml` 生产级消融结案（`Q/R/S/T/U/V`，Issue `#648`）**：原由 `gate_alpha_eval` 指向的 `R`（`enable_layer3=False`）、`Q`（6 弱动量入口车道剪枝）以及 PR `#645` 合入的三项主漏斗结构护栏开关 `S`（`dry_vol_breakdown_guard_enabled`）、`T`（`l2_persistence_guard_enabled`）、`U`（`supply_overhang_guard_enabled`）与联合组 `V`，已通过 `backtest_grid.yml` 在 6 大跨牛熊窗口完成对照 `live` 的全市场生产回放与 `signal_date+code` 边际成交对账。全部变体均未达晋级标准（详见 `#648`），故保持生产 `enable_layer3=True` 与 `blocked_candidate_entry_types` 水温车道过滤机制不变，并将已证伪/零暴露的研究开关 `S/T/U` 与已结案消融变体 `Q/R/S/T/U/V/ST/SU/TU` 从代码中彻底删除。
 
 ### 三处 eval 断链的根因（均已修）
 

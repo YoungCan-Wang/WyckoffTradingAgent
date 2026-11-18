@@ -74,12 +74,7 @@
 | **情绪周期状态 (Sentiment Cycle State)** | 每次回测写出的 `market_sentiment_<stamp>.csv` 统计全市场逐日涨停 / 跌停 / 触板 / 炸板 / 最高连板数（生产 `limit_pct` 与触板容差，前复权收盘对前收）。择时基线只用净涨停数（涨停 − 跌停）在过去 250 个交易日的分位：< 20% `ice`、< 50% `ebb`、< 80% `warm`、其余 `climax`，不足 120 个观测日不打标签。变体 `sentiment_follow`（warm / climax 在场）、`sentiment_not_ice`、`sentiment_ice_contrarian` 走与水温变体相同的成本与判定规则。对应游资口径的「赚钱效应 / 亏钱效应」，是研究对照，不是生产闸门 |
 | **方案 A 前瞻影子跟踪** | Forward Shadow Mode（#470/#471）：日常漏斗并行计算中证全指（`000985`）MA20 + 1% 缓冲 hurdle 的 `ALLOW`/`BLOCK` 裁决，打标入库并写入研报 `market_regime_shadow`。生产总门控保持关闭（`enable_market_regime_gate=False`，零阻断、零干扰），以无偏前瞻样本检验大盘择时有效性。 |
 | **历史原生换手合同** | `date_keyed_native_pct_v1`：Backtest Grid 开启 `pit_turnover` 时，快照保存按日期键取得的原生百分比换手、`turnover_source` 与 `metadata.turnover_pit`。严格回放拒绝旧快照或任一评估日覆盖低于 95%，不填假零，也不用当前股本倒推。未开启时回放不读 `turnover`，EVR 换手下限不生效，默认基线不变。 |
-| **候选车道真剪枝 (变体 Q)** | Candidate Lane Pruning（#467/#472）：通过 `FunnelConfig.blocked_candidate_entry_types` 实现车道级入口拦截与通道降级回退，使被拦候选彻底不进入统一质量池竞争；消融变体 Q 显式锁定其它开关，用于离线隔离度量特定车道的纯净贡献；生产默认为空元组 `()`。 |
-| **Layer 3 剥离消融 (变体 R)** | Layer 3 Bypass Ablation：通过 `FunnelConfig.enable_layer3=False` 完全跳过行业共振过滤，所有 L2 候选全量直通 L4，用于在多周期回测中验证关闭行业共振对整体收益与回撤的真实影响；生产默认开启（`True`）。 |
-| **地量破位飞刀护栏 (变体 S)** | Dry Volume Breakdown Guard（研究开关）：`FunnelConfig.dry_vol_breakdown_guard_enabled`（默认 `False`）。开启后在 `dry_volume_channel_ok` 额外校验收盘距 `MA20` 未深破且近 N 日无放量大阴破位，用于隔离过滤“破位前夕曾缩量”的下跌中继标的。 |
-| **L2 跨日持续性护栏 (变体 T)** | Layer 2 Persistence Guard（研究开关）：`FunnelConfig.l2_persistence_guard_enabled`（默认 `False`）。开启后要求当日通过 `L2` 的标的在过去 `T-1 / T-2` 无前视点截面上至少有 1 日也曾通过 `L2`，保留连续驻留与大盘急跌洗盘回流，拦截单日孤立脉冲。 |
-| **派发上影筹码压制护栏 (变体 U)** | Supply Overhang Guard（研究开关）：`FunnelConfig.supply_overhang_guard_enabled`（默认 `False`）。开启后若近 N 日内出现高位放量长上影派发 K 线且收盘尚未站回该上影最高价之上，则在 `layer4_triggers` 中暂予拦截。 |
-| **主漏斗结构护栏联合消融 (变体 V / ST / SU / TU)** | Main Funnel Structural Guards Combined Ablation：在 `live` 配置下分别开启三项联合 `V`（`S+T+U`）或两两子集 `ST`（`S+T`）、`SU`（`S+U`）、`TU`（`T+U`），用于按 `AGENTS.md` 策略证据规则第 7 条检验多项护栏组合后的真实边际成交与净超额，防单改叠加互相抵消或退化填空。 |
+| **候选车道入口过滤** | Candidate Lane Filtering（#467/#472）：通过 `FunnelConfig.blocked_candidate_entry_types` 实现车道级入口拦截与通道降级回退（如弱势水温阻断 `trend_breakout`），使被拦候选彻底不进入统一质量池竞争；生产默认为空元组 `()`，离线 6 通道剪枝消融组 Q 已证伪移除（#648）。 |
 | **confirmed 分数校准** | 不再把不同 Wyckoff 触发器的原始分数直接横比；研究组 I 用信号族历史先验与封顶后的形态强度合成可比分数，避免极高原始分主导 Top1 |
 | **Treatment exposure** | 消融组相对参照组实际改变的交易键，包括 `(signal_date, code)`、仓位倍率和退出日期；零暴露表示规则没有改变真实成交，不能据此评价收益贡献 |
 | **逐次推荐事件收益** | 每条推荐使用该信号日期之后首根可用 K 线的开盘价，不使用同票首次推荐价；必须有开盘前的有效发布时间。H 表示入场后的 H 根观测 K 线，标签未成熟/缺开盘/停牌/开盘涨停/发布过晚均单列，不按零收益或成功样本填充。净收益扣 `round_trip_cost_pct()`；仍非账户成交或超额收益 |

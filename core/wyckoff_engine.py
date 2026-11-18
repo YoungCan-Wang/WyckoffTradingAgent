@@ -12,7 +12,7 @@ Layer 4: 威科夫狙击（Spring / SOS / LPS / Effort vs Result）
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any, NamedTuple
 
 import numpy as np
@@ -188,14 +188,6 @@ class FunnelConfig:
     # （让技术面强势股先进池子，人工二次确认），不是靠这 0.11pct 赚钱。
     dry_vol_quantile: float = 0.20
     dry_vol_price_from_low_max: float = 0.35  # 位阶保护：现价 <= 年内低点 +35%
-    # 地量破位飞刀与 L2 跨日持续性研究开关（默认 False，经回测边际验证前不影响 live）
-    dry_vol_breakdown_guard_enabled: bool = False
-    dry_vol_min_dist_ma20_pct: float = -6.0
-    dry_vol_breakdown_lookback: int = 3
-    dry_vol_max_drop_day_pct: float = -4.5
-    dry_vol_breakdown_vol_ratio: float = 1.3
-    l2_persistence_guard_enabled: bool = False
-    l2_persistence_window_days: int = 3
 
     # Layer 2 暗中护盘通道（RS Divergence Channel）
     # 弃用标记：实测2年大盘放量1.2倍满足天数为0天（0.0%），命中恒为0，默认关闭以精简参数。
@@ -284,12 +276,6 @@ class FunnelConfig:
     signal_sequence_bonus_enabled: bool = False
     signal_sequence_lookback: int = 12
     signal_sequence_score_bonus: float = 0.5
-    supply_overhang_guard_enabled: bool = False
-    supply_overhang_lookback: int = 7
-    supply_overhang_upper_shadow_pct: float = 5.0
-    supply_overhang_vol_ratio: float = 1.8
-    supply_overhang_max_close_pos: float = 0.45
-    supply_overhang_min_range_pos60: float = 0.65
 
     # Layer 4 - Effort vs Result
     enable_evr_trigger: bool = True
@@ -654,10 +640,6 @@ def layer2_strength_detailed(
         _evaluate_and_record_layer2_symbol(
             sym, df, cfg, bench_ctx, rps_ctx, passed, channel_map, pre_ignition_list, channel_hit_counter, rejections
         )
-    if cfg.l2_persistence_guard_enabled and passed:
-        passed, channel_map = _filter_l2_persistent_symbols(
-            passed, channel_map, df_map, bench_df, cfg, rps_universe or symbols, rejections
-        )
     return passed, channel_map, pre_ignition_list
 
 
@@ -693,71 +675,6 @@ def _evaluate_and_record_layer2_symbol(
         _diagnose_symbol_rejection(sym, df_sorted, cfg, bench_ctx, rps_ctx, rejections)
     if result.pre_ignition:
         pre_ignition_list.append(sym)
-
-
-def _slice_df_at_lag(df: pd.DataFrame | None, lag: int) -> pd.DataFrame | None:
-    if df is None or df.empty or len(df) <= lag:
-        return None
-    return sort_by_date_if_needed(df).iloc[:-lag]
-
-
-def _passed_l2_at_lag(
-    candidates: list[str],
-    df_map: dict[str, pd.DataFrame],
-    bench_df: pd.DataFrame | None,
-    cfg: FunnelConfig,
-    universe: list[str],
-    lag: int,
-) -> set[str]:
-    """Recompute point-in-time Layer 2 passes at T-lag without leaking T-day bars into RPS."""
-    base_cfg = replace(cfg, l2_persistence_guard_enabled=False)
-    lag_df_map: dict[str, pd.DataFrame] = {}
-    for sym in dict.fromkeys([*universe, *candidates]):
-        sliced = _slice_df_at_lag(df_map.get(sym), lag)
-        if sliced is not None and len(sliced) >= base_cfg.ma_long:
-            lag_df_map[sym] = sliced
-    bench_lag = _slice_df_at_lag(bench_df, lag)
-    rps_universe_lag = [sym for sym in universe if sym in lag_df_map]
-    ctx_lag = build_layer2_evaluation_context(
-        candidates, lag_df_map, bench_lag, base_cfg, rps_universe=rps_universe_lag
-    )
-    return {
-        sym
-        for sym in candidates
-        if sym in lag_df_map
-        and evaluate_layer2_symbol(
-            sym,
-            lag_df_map[sym],
-            base_cfg,
-            bench_ctx=ctx_lag.benchmark,
-            rps_ctx=ctx_lag.rps,
-            detect_sos=_detect_sos,
-        ).passed
-    }
-
-
-def _filter_l2_persistent_symbols(
-    passed: list[str],
-    channel_map: dict[str, str],
-    df_map: dict[str, pd.DataFrame],
-    bench_df: pd.DataFrame | None,
-    cfg: FunnelConfig,
-    universe: list[str],
-    rejections: dict[str, str] | None,
-) -> tuple[list[str], dict[str, str]]:
-    confirmed_prior: set[str] = set()
-    max_lag = max(int(cfg.l2_persistence_window_days) - 1, 1)
-    for lag in range(1, max_lag + 1):
-        remaining = [sym for sym in passed if sym not in confirmed_prior]
-        if not remaining:
-            break
-        confirmed_prior.update(_passed_l2_at_lag(remaining, df_map, bench_df, cfg, universe, lag))
-    kept = [sym for sym in passed if sym in confirmed_prior]
-    if rejections is not None:
-        for sym in passed:
-            if sym not in confirmed_prior:
-                rejections[sym] = "L2跨日持续性不足: 近端交易日(T-1/T-2)均未通过L2，拦截单日脉冲"
-    return kept, {sym: channel_map[sym] for sym in kept if sym in channel_map}
 
 
 def _diagnose_symbol_rejection(
@@ -1731,8 +1648,6 @@ def layer4_triggers(
         df = df_map.get(sym)
         if df is None or df.empty:
             continue
-        if cfg.supply_overhang_guard_enabled and _has_unabsorbed_supply_overhang(df, cfg):
-            continue
         channel = channel_map.get(sym, "")
         max_bias_200 = _effective_entry_max_bias_200(
             sym,
@@ -1746,49 +1661,6 @@ def layer4_triggers(
     if cfg.signal_sequence_bonus_enabled:
         _apply_signal_sequence_bonus(results, df_map, cfg)
     return results
-
-
-def _has_unabsorbed_supply_overhang(df: pd.DataFrame, cfg: FunnelConfig) -> bool:
-    """Veto L4 entries while a recent high-volume distribution upper wick remains unabsorbed."""
-    df_s = sort_by_date_if_needed(df)
-    lookback = max(int(cfg.supply_overhang_lookback), 1)
-    if len(df_s) < max(25, lookback + 1):
-        return False
-    open_s = pd.to_numeric(df_s.get("open"), errors="coerce")
-    high_s = pd.to_numeric(df_s.get("high"), errors="coerce")
-    low_s = pd.to_numeric(df_s.get("low"), errors="coerce")
-    close_s = pd.to_numeric(df_s.get("close"), errors="coerce")
-    vol_s = pd.to_numeric(df_s.get("volume"), errors="coerce")
-    vol_ma20 = vol_s.rolling(20).mean()
-    high60 = high_s.rolling(60, min_periods=20).max()
-    low60 = low_s.rolling(60, min_periods=20).min()
-    max_climax_high = 0.0
-    for idx in range(len(df_s) - lookback, len(df_s)):
-        vals = (
-            open_s.iloc[idx],
-            high_s.iloc[idx],
-            low_s.iloc[idx],
-            close_s.iloc[idx],
-            vol_s.iloc[idx],
-            vol_ma20.iloc[idx],
-            high60.iloc[idx],
-            low60.iloc[idx],
-        )
-        if any(pd.isna(v) for v in vals):
-            continue
-        o_val, h_val, l_val, c_val, v_val, v_ma, h60, l60 = (float(v) for v in vals)
-        if c_val <= 0 or h_val <= l_val or v_ma <= 0 or h60 <= l60:
-            continue
-        upper_shadow_pct = (h_val - max(o_val, c_val)) / c_val * 100.0
-        if (
-            upper_shadow_pct >= float(cfg.supply_overhang_upper_shadow_pct)
-            and (v_val / v_ma) >= float(cfg.supply_overhang_vol_ratio)
-            and ((c_val - l_val) / (h_val - l_val)) <= float(cfg.supply_overhang_max_close_pos)
-            and ((h_val - l60) / (h60 - l60)) >= float(cfg.supply_overhang_min_range_pos60)
-        ):
-            max_climax_high = max(max_climax_high, h_val)
-    last_close = close_s.iloc[-1]
-    return bool(max_climax_high > 0 and pd.notna(last_close) and float(last_close) < max_climax_high)
 
 
 def _append_symbol_l4_triggers(

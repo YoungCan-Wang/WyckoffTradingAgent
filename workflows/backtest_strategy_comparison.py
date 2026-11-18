@@ -31,7 +31,7 @@ from workflows.backtest_strategy_variants import (
 
 DEFAULT_COMPARISON_PERIODS = ("bull_2020", "bear_2022", "sideways_2023", "volatile_2024", "recent_6m")
 MAX_CASH_DRAWDOWN_PCT = 20.0
-LIVE_ABLATION_VARIANTS = frozenset({"Q", "R", "S", "T", "U", "V", "ST", "SU", "TU"})
+LIVE_ABLATION_VARIANTS: frozenset[str] = frozenset()
 _VARIANT_PATTERN = "|".join(re.escape(k) for k in sorted(VARIANT_LABELS, key=len, reverse=True))
 _DIR_PATTERN = re.compile(
     r"backtest-strategy-"
@@ -119,13 +119,18 @@ def _resolve_required_cells(
     periods = tuple(dict.fromkeys(str(p).strip() for p in (expected_periods or ()) if str(p).strip()))
     variants = tuple(dict.fromkeys(normalize_strategy_variant(v) for v in (expected_variants or ()) if str(v).strip()))
     if variants:
-        baseline = "live" if set(variants) <= ({"live"} | LIVE_ABLATION_VARIANTS) else "A"
+        is_live_run = ("live" in variants and "A" not in variants) or (
+            set(variants) <= ({"live"} | LIVE_ABLATION_VARIANTS)
+        )
+        baseline = "live" if is_live_run else "A"
         target_periods = periods or DEFAULT_COMPARISON_PERIODS
         return baseline, {(period, variant) for period in target_periods for variant in variants}
     has_default_variants = bool(set(by_variant) & set(DEFAULT_COMPARISON_VARIANTS))
     has_live_ablation = bool(set(by_variant) & ({"live"} | LIVE_ABLATION_VARIANTS))
     if has_live_ablation and not has_default_variants:
-        live_children = tuple(sorted(set(by_variant) & LIVE_ABLATION_VARIANTS))
+        live_children = tuple(
+            sorted((set(by_variant) - {"live"}) if "live" in by_variant else (set(by_variant) & LIVE_ABLATION_VARIANTS))
+        )
         target_variants = ("live", *live_children) if live_children else ("live", "live_ablation")
         has_bull_2025 = any(row.period == "bull_2025" for values in by_variant.values() for row in values)
         target_periods = periods or (
@@ -150,7 +155,7 @@ def build_strategy_comparison(
     for variant, values in by_variant.items():
         if variant in {"A", "live"}:
             reference = variant
-        elif variant in LIVE_ABLATION_VARIANTS and "live" in by_variant:
+        elif (variant in LIVE_ABLATION_VARIANTS or baseline == "live") and "live" in by_variant:
             reference = "live"
         else:
             reference = {"M": "A", "P": "M"}.get(variant, "A")

@@ -34,26 +34,15 @@ def test_strategy_variants_isolate_each_research_switch() -> None:
     assert strategy_variant_entry_policy("H").require_neutral_breadth_confirmation is True
     assert strategy_variant_entry_policy("I").calibrate_confirmed_score is True
     assert strategy_variant_entry_policy("P").entry_weight_multipliers[0] == ("NEUTRAL", "spring", 0.25)
-    assert strategy_variant_overrides("R")["enable_layer3"] is False
-    assert strategy_variant_overrides("R")["dist_upthrust_enabled"] is True
-    assert strategy_variant_overrides("R")["lps_creek_confirmation_enabled"] is True
-    assert strategy_variant_overrides("S")["dry_vol_breakdown_guard_enabled"] is True
-    assert "l2_persistence_guard_enabled" not in strategy_variant_overrides("S")
-    assert strategy_variant_overrides("T")["l2_persistence_guard_enabled"] is True
-    assert strategy_variant_overrides("U")["supply_overhang_guard_enabled"] is True
-    assert strategy_variant_overrides("V")["dry_vol_breakdown_guard_enabled"] is True
-    assert strategy_variant_overrides("V")["l2_persistence_guard_enabled"] is True
-    assert strategy_variant_overrides("V")["supply_overhang_guard_enabled"] is True
-    assert strategy_variant_overrides("ST")["dry_vol_breakdown_guard_enabled"] is True
-    assert strategy_variant_overrides("ST")["l2_persistence_guard_enabled"] is True
-    assert "supply_overhang_guard_enabled" not in strategy_variant_overrides("ST")
-    assert strategy_variant_overrides("SU")["dry_vol_breakdown_guard_enabled"] is True
-    assert strategy_variant_overrides("SU")["supply_overhang_guard_enabled"] is True
-    assert strategy_variant_overrides("TU")["l2_persistence_guard_enabled"] is True
-    assert strategy_variant_overrides("TU")["supply_overhang_guard_enabled"] is True
     assert strategy_variants_share_signal_ledger(["A", "M", "P"]) is True
     assert strategy_variants_share_signal_ledger(["A", "F"]) is False
     assert strategy_variants_share_signal_ledger(["A", "I"]) is False
+
+
+def test_removed_strategy_variants_are_rejected() -> None:
+    for removed in ("Q", "R", "S", "T", "U", "V", "ST", "SU", "TU"):
+        with pytest.raises(ValueError):
+            normalize_strategy_variant(removed)
 
 
 def test_live_variant_preserves_production_configuration() -> None:
@@ -65,7 +54,7 @@ def test_live_variant_preserves_production_configuration() -> None:
 def test_parse_live_ablation_spec() -> None:
     assert parse_live_ablation_spec("") == (False, [])
     assert parse_live_ablation_spec("only:") == (False, [])
-    assert parse_live_ablation_spec("S,T,s") == (False, ["live", "S", "T"])
-    assert parse_live_ablation_spec("only:live,S,T,U,V,Q,R") == (True, ["live", "S", "T", "U", "V", "Q", "R"])
+    assert parse_live_ablation_spec("B,I,b") == (False, ["live", "B", "I"])
+    assert parse_live_ablation_spec("only:live,B,I") == (True, ["live", "B", "I"])
     with pytest.raises(ValueError):
         parse_live_ablation_spec("only:live,ZZZ")
