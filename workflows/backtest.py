@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from datetime import date, timedelta
 from functools import partial
@@ -219,9 +220,10 @@ def _shared_request_key(request: BacktestWorkflowRequest) -> tuple:
 def _build_run_config(request: BacktestWorkflowRequest) -> BacktestRunConfig:
     signal_weight_map, signal_weight_meta, signal_weight_mode = _signal_policy_from_env()
     strategy_variant = normalize_strategy_variant(request.strategy_variant)
+    relative_to = str(os.environ.get("STRATEGY_VARIANT_RELATIVE_TO", "A") or "A").strip() or "A"
     funnel_overrides = {
         **funnel_cfg_overrides_from_env(),
-        **strategy_variant_overrides(strategy_variant),
+        **strategy_variant_overrides(strategy_variant, relative_to=relative_to),
         **dict(request.funnel_overrides),
     }
     return build_backtest_run_config(
