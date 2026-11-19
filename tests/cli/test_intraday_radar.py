@@ -1805,3 +1805,71 @@ def test_afternoon_telegraph_anti_chase_and_nt_etf_floor_split() -> None:
         etf_quotes, prev_etf, has_baseline=True, now_dt=nt_dt, red_count=3467, green_count=1900, d_red=420
     )
     assert "🚀 **【国家队20大宽基ETF 5m放量异动】**" in rush_alert
+
+
+def test_capex_fcf_headwind_warning_and_freeze_sector_resonance_tag() -> None:
+    import sys
+
+    sys.path.insert(0, str(SCRIPT_PATH.parent))
+    import telegraph_catalysts as tc
+
+    radar = _load_radar_module()
+    l2_map = {
+        "688008": {
+            "name": "澜起科技",
+            "sector": "半导体",
+            "rps": 35.0,
+            "l2_eligible": True,
+            "l3_eligible": True,
+            "is_candidate": True,
+            "channels": ["地量蓄势"],
+            "streak_days": 3,
+            "funnel_tag": "🔥3日L2+L3连入",
+        }
+    }
+    quotes = {"688008.SH": {"last_price": 101.0, "prev_close": 100.0, "amount": 2e8, "vwap": 100.5}}
+    raw_items = [
+        {
+            "id": "sina_fcf",
+            "ts": 1000.0,
+            "hm": "08:40",
+            "text": "科技巨头三季报AI算力资本开支暴增500%导致自由现金流转负",
+        },
+        {"id": "sina_normal", "ts": 990.0, "hm": "08:38", "text": "工信部推进国产算力芯片应用生态落地"},
+    ]
+    lines = tc.scan_live_telegraph_catalysts(
+        l2_map, quotes, since_ts=500.0, now_ts=1200.0, now_hm="08:45", red_ratio=0.50, raw_items=raw_items
+    )
+    assert len(lines) == 2
+    assert "宏观FCF逆风校验" in lines[0]
+    assert "宏观FCF逆风校验" not in lines[1]
+
+    buckets: dict[str, list[str]] = {"l2_events": []}
+    records: list[dict[str, object]] = []
+    radar._prepend_sector_resonances(
+        {"半导体": ["688008.SH 澜起科技", "688525.SH 佰维存储", "301308.SZ 江波龙"]},
+        {},
+        l2_map,
+        {},
+        1000.0,
+        buckets,
+        records,
+        red_count=650,
+        total_active=5400,
+    )
+    assert len(buckets["l2_events"]) == 1
+    assert "高相关性冰点(红650家)：防半小时回吐，仅观察不追高" in buckets["l2_events"][0]
+
+    buckets_warm: dict[str, list[str]] = {"l2_events": []}
+    radar._prepend_sector_resonances(
+        {"半导体": ["688008.SH 澜起科技", "688525.SH 佰维存储", "301308.SZ 江波龙"]},
+        {},
+        l2_map,
+        {},
+        1000.0,
+        buckets_warm,
+        [],
+        red_count=2600,
+        total_active=5400,
+    )
+    assert "高相关性冰点" not in buckets_warm["l2_events"][0]

@@ -196,6 +196,19 @@ STAT_SUMMARY_MARKERS = (
     "融资融券板块",
     "发明专利拥有量",
 )
+CAPEX_FCF_HEADWIND_KEYWORDS = (
+    "资本开支",
+    "Capex",
+    "capex",
+    "自由现金流",
+    "FCF",
+    "fcf",
+    "资本支出",
+)
+
+
+def _has_capex_fcf_headwind(text: str, theme: str) -> bool:
+    return ("算力" in theme or "芯片" in theme) and any(k in text for k in CAPEX_FCF_HEADWIND_KEYWORDS)
 
 
 def _clean_text(raw: str) -> str:
@@ -432,7 +445,8 @@ def scan_live_telegraph_catalysts(
             cooldowns[f"tg:{item_id}"] = cur_ts
         short_txt = txt[:92] + ("..." if len(txt) > 92 else "")
         pick_suffix = f" 👉 **威科夫映射**: {'、'.join(picks)}" if picks else ""
-        lines.append(f"- **{item.get('hm', '')} [{theme}]** {short_txt}{pick_suffix}")
+        fcf_warn = " ⚠️[宏观FCF逆风校验：大厂Capex≠无脑利好，高开勿盲追]" if _has_capex_fcf_headwind(txt, theme) else ""
+        lines.append(f"- **{item.get('hm', '')} [{theme}]** {short_txt}{pick_suffix}{fcf_warn}")
         if len(lines) >= max_items:
             break
     return lines

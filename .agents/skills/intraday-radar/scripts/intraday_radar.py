@@ -525,6 +525,8 @@ def _scan_equities_and_etfs(
     cooldowns: dict[str, float],
     now_ts: float,
     alert_records: list[dict[str, Any]],
+    red_count: int | None = None,
+    total_active: int = 0,
 ) -> dict[str, list[str]]:
     buckets: dict[str, list[str]] = defaultdict(list)
     sector_surges: dict[str, list[str]] = defaultdict(list)
@@ -585,7 +587,17 @@ def _scan_equities_and_etfs(
         _check_wyckoff_signals(
             sym, m, dpct, damt, info, red_ratio, coverage_ok, cooldowns, now_ts, buckets, alert_records
         )
-    _prepend_sector_resonances(sector_surges, sector_leaders, l2_map, cooldowns, now_ts, buckets, alert_records)
+    _prepend_sector_resonances(
+        sector_surges,
+        sector_leaders,
+        l2_map,
+        cooldowns,
+        now_ts,
+        buckets,
+        alert_records,
+        red_count=red_count,
+        total_active=total_active,
+    )
     return buckets
 
 
@@ -597,6 +609,8 @@ def _prepend_sector_resonances(
     now_ts: float,
     buckets: dict[str, list[str]],
     alert_records: list[dict[str, Any]],
+    red_count: int | None = None,
+    total_active: int = 0,
 ) -> None:
     sec_totals: dict[str, int] = defaultdict(int)
     for meta in l2_map.values():
@@ -608,13 +622,18 @@ def _prepend_sector_resonances(
         key=lambda kv: (len(kv[1]) / max(sec_totals.get(kv[0], 30), 10), len(kv[1])),
         reverse=True,
     )
+    freeze_note = (
+        f" ⚠️[高相关性冰点(红{red_count}家)：防半小时回吐，仅观察不追高]"
+        if total_active >= 100 and red_count is not None and red_count < 1000
+        else ""
+    )
     sector_events: list[str] = []
     for sec, members in ranked_surges:
         if len(members) >= 3 and _check_cooldown(cooldowns, f"L2:sec:{sec}", now_ts):
             top_l2 = [x[1] for x in sorted(sector_leaders.get(sec, []), key=lambda t: -t[0])[:2]]
             l2_suffix = f" 👉 🎯同板块L2稳健中军：{'、'.join(top_l2)}" if top_l2 else ""
             sector_events.append(
-                f"- 🟡 **【{sec} 板块5m共振】** {len(members)} 只个股同时急涨：{', '.join(members[:4])}{l2_suffix}"
+                f"- 🟡 **【{sec} 板块5m共振】** {len(members)} 只个股同时急涨：{', '.join(members[:4])}{l2_suffix}{freeze_note}"
             )
             alert_records.append(
                 {"ts": now_ts, "level": "L2", "kind": "sector_resonance", "sector": sec, "count": len(members)}
@@ -1030,7 +1049,17 @@ def analyze_snapshot_diff(
         curr_quotes, prev_q, has_baseline, holdings, cooldowns, ts, alert_records
     )
     buckets = _scan_equities_and_etfs(
-        curr_quotes, prev_q, has_baseline, l2_map, red_ratio, coverage_ok, cooldowns, ts, alert_records
+        curr_quotes,
+        prev_q,
+        has_baseline,
+        l2_map,
+        red_ratio,
+        coverage_ok,
+        cooldowns,
+        ts,
+        alert_records,
+        red_count=red_count,
+        total_active=red_count + green_count,
     )
     buckets["l2_events"] = h_l2 + buckets["l2_events"]
     buckets["l3"] = h_l3 + buckets["l3"]
