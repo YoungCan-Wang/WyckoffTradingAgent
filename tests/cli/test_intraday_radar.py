@@ -191,6 +191,8 @@ def test_springboard_l4_does_not_require_l2_eligible():
         "symbol": "688001.SH",
         "last_price": 10.40,
         "prev_close": 10.0,
+        "high": 10.75,
+        "low": 10.10,
         "volume": 2e7,
         "amount": 2.08e8,
         "ext": {"name": "启动板"},
@@ -432,9 +434,9 @@ def test_real_trace_schema_and_stale_trace_guard(tmp_path, monkeypatch):
                 "entry": {"entry_type": "launchpad"},
                 "reason": "候选车道: 启动平台",
             },
-            "300001": {
-                "name": "起跳测试",
-                "sector": "通信设备",
+            "002594": {
+                "name": "起跳测试深市",
+                "sector": "汽车",
                 "rps_fast": 82.0,
                 "l2_eligible": True,
                 "l3_eligible": False,
@@ -455,7 +457,7 @@ def test_real_trace_schema_and_stale_trace_guard(tmp_path, monkeypatch):
     with gzip.open(trace_file, "wt", encoding="utf-8") as f:
         json.dump(trace_payload, f)
     rec_file.write_text(
-        json.dumps({"rows": [{"code": "300001", "springboard_combo": "A+B+C"}]}),
+        json.dumps({"recommend_date": int(today_compact), "rows": [{"code": 2594, "springboard_combo": "A+B+C"}]}),
         encoding="utf-8",
     )
     old_rec_file.write_text(
@@ -467,7 +469,7 @@ def test_real_trace_schema_and_stale_trace_guard(tmp_path, monkeypatch):
     assert l2_map["688001"]["is_springboard"] is True
     assert l2_map["688001"]["l3_eligible"] is True
     assert l2_map["688001"]["channels"] == ["地量蓄势"]
-    assert l2_map["300001"]["is_springboard"] is True
+    assert l2_map["002594"]["is_springboard"] is True
     assert l2_map["600999"]["is_springboard"] is False
 
     # Holiday trading-day check: 2026-09-30 -> 2026-10-08 (8 calendar days, only 1 trading day)
@@ -482,12 +484,15 @@ def test_real_trace_schema_and_stale_trace_guard(tmp_path, monkeypatch):
 
 def test_l3_ignition_and_l1_drift_immune_cadence(tmp_path):
     radar = _load_radar_module()
-    today = cn_today().isoformat()
+    today_d = cn_today()
+    today = today_d.isoformat()
     alert_log = tmp_path / "radar_alerts.jsonl"
     t_dir = tmp_path / "turnover"
+    ts_0940 = datetime(today_d.year, today_d.month, today_d.day, 9, 40, tzinfo=CN_TZ).timestamp()
+    ts_1035 = datetime(today_d.year, today_d.month, today_d.day, 10, 35, tzinfo=CN_TZ).timestamp()
     prev_state = {
         "date": today,
-        "ts": 1000.0,
+        "ts": ts_0940 - 300.0,
         "red": 1,
         "cooldowns": {},
         "quotes": {"688001.SH": {"pct": 1.0, "amt_yi": 0.80}},
@@ -514,9 +519,21 @@ def test_l3_ignition_and_l1_drift_immune_cadence(tmp_path):
             "is_springboard": False,
         }
     }
-    # Wyckoff L2+L3 dry-volume ignition triggers L3 SMS alert and logs to jsonl
+    # 1) Pre-10:30 (09:40 BJT): downgraded to L1 card observation, no L3 SMS, does NOT burn L3 cooldown
+    level_am, _, body_am, _, cd_am = radar.analyze_snapshot_diff(
+        curr_quotes, prev_state, l2_map, {}, now_ts=ts_0940, turnover_dir=t_dir, alert_log_path=alert_log
+    )
+    assert level_am == "L1"
+    assert "待10:30验钞观察" in body_am
+    assert "L1:pre1030_obs:688001.SH" in cd_am
+    assert "L3:wyckoff_ignition:688001.SH" not in cd_am
+    assert not alert_log.exists()
+
+    # 2) Post-10:30 (10:35 BJT): same symbol igniting after 10:30 fires L3 SMS alert and logs to jsonl
+    prev_state["cooldowns"] = cd_am
+    prev_state["ts"] = ts_1035 - 300.0
     level1, _, body1, _, cd1 = radar.analyze_snapshot_diff(
-        curr_quotes, prev_state, l2_map, {}, now_ts=1200.0, turnover_dir=t_dir, alert_log_path=alert_log
+        curr_quotes, prev_state, l2_map, {}, now_ts=ts_1035, turnover_dir=t_dir, alert_log_path=alert_log
     )
     assert level1 == "L3"
     assert "688001.SH" in body1
@@ -527,8 +544,9 @@ def test_l3_ignition_and_l1_drift_immune_cadence(tmp_path):
     assert logged[0]["symbol"] == "688001.SH"
 
     prev_state["cooldowns"] = cd1
+    prev_state["ts"] = ts_1035
     level2, _, _, _, _ = radar.analyze_snapshot_diff(
-        curr_quotes, prev_state, l2_map, {}, now_ts=1400.0, turnover_dir=t_dir
+        curr_quotes, prev_state, l2_map, {}, now_ts=ts_1035 + 200.0, turnover_dir=t_dir
     )
     assert level2 == "L1"
 
@@ -861,6 +879,10 @@ def test_intraday_turnover_curve_and_same_timestamp_comparison(tmp_path):
     s2_pm = radar.update_and_compare_turnover(d2, "14:45", 19800.0, index_ok=True, turnover_dir=t_dir)
     assert "较 2026-11-04 14:45 18000亿 +10.0%" in s2_pm
 
+    # Midday break (11:54 -> 11:30) clamping: compares against Day 1 11:30 (12000亿) instead of "无基准"
+    s2_midday = radar.update_and_compare_turnover(d2, "11:54", 11400.0, index_ok=True, turnover_dir=t_dir)
+    assert "较 2026-11-04 11:30 12000亿 -5.0%" in s2_midday
+
 
 def test_springboard_l4_cooldown_does_not_mute_holding_stop_phone():
     """Same-symbol springboard L4 must not consume the 86400s holding-stop phone budget."""
@@ -991,3 +1013,863 @@ def test_dry_run_does_not_write_shared_state_file(tmp_path, monkeypatch):
     )
     radar.run_once(args)
     assert state_file.read_text(encoding="utf-8") == before
+
+
+def test_telegraph_catalyst_theme_and_wyckoff_mapping() -> None:
+    spec = importlib.util.spec_from_file_location("telegraph_catalysts", SCRIPT_PATH.parent / "telegraph_catalysts.py")
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    l2_map = {
+        "000700": {
+            "name": "模塑科技",
+            "sector": "汽车配件",
+            "rps": 93.8,
+            "l2_eligible": True,
+            "l3_eligible": True,
+            "is_candidate": True,
+            "channels": ["主升通道"],
+        },
+        "688316": {
+            "name": "青云科技",
+            "sector": "软件服务",
+            "rps": 14.9,
+            "l2_eligible": True,
+            "l3_eligible": True,
+            "is_candidate": False,
+            "channels": ["地量蓄势"],
+        },
+    }
+    quotes = {"000700.SZ": {"last_price": 9.92, "prev_close": 9.87}}
+    theme, picks = mod.match_theme_and_candidates("【丰田汽车将在重组中设立机器人部门】", l2_map, quotes)
+    assert "机器人" in theme
+    assert any("000700" in p and "模塑科技" in p for p in picks)
+
+    noise_theme, noise_picks = mod.match_theme_and_candidates("荷兰皇家航空发言人：A320订单尚未取消", l2_map, quotes)
+    assert noise_theme == ""
+    assert noise_picks == []
+
+    etf_quotes = {
+        "588000.SH": {"amount": 188.86e8},
+        "159915.SZ": {"amount": 163.95e8},
+        "510210.SH": {"amount": 9.97e8},
+    }
+    prev_etf = {
+        "588000.SH": {"amt_yi": 170.0},
+        "159915.SZ": {"amt_yi": 150.0},
+        "510210.SH": {"amt_yi": 9.5},
+    }
+    nt_dt = datetime(2026, 11, 6, 10, 30, tzinfo=CN_TZ)
+    nt_summary, nt_l2 = mod.summarize_national_team_etfs(etf_quotes, prev_etf, has_baseline=True, now_dt=nt_dt)
+    assert "362.8亿" in nt_summary
+    assert "588000" in nt_summary
+    assert "国家队20大宽基ETF 5m放量异动" in nt_l2
+    open_dt = datetime(2026, 11, 6, 9, 35, tzinfo=CN_TZ)
+    _, open_l2 = mod.summarize_national_team_etfs(etf_quotes, prev_etf, has_baseline=True, now_dt=open_dt)
+    assert open_l2 == ""
+
+    ag_map = {
+        f"6003{i:02d}": {
+            "name": f"种业股{i}",
+            "sector": "种植业" if i != 1 else "渔业",
+            "rps": 20.0 + i,
+            "l2_eligible": i == 5,
+            "is_candidate": False,
+        }
+        for i in range(10)
+    }
+    ag_quotes = {f"6003{i:02d}.SH": {"pct": 3.5} for i in range(10)}
+    ag_theme, ag_picks = mod.match_theme_and_candidates("农业农村部推进种业振兴与粮食安全", ag_map, ag_quotes)
+    assert "农业" in ag_theme
+    assert any("600305" in p for p in ag_picks)
+    mainline_md = mod.summarize_top_sector_mainlines(ag_quotes, ag_map)
+    assert "种植业" in mainline_md
+    assert "600305" in mainline_md
+    assert "字头抱团" not in mainline_md
+
+
+def test_review_fixes_telegraph_filtering_cooldown_and_sector_priority(tmp_path) -> None:
+    radar = _load_radar_module()
+    spec = importlib.util.spec_from_file_location("telegraph_catalysts", SCRIPT_PATH.parent / "telegraph_catalysts.py")
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    # 1. 159919.SZ suffix & BJ 92xxxx symbol resolution
+    assert "159919.SZ" in mod.NATIONAL_TEAM_20_ETFS
+    assert "159919.SH" not in mod.NATIONAL_TEAM_20_ETFS
+    assert mod.resolve_code6_symbol("920087") == "920087.BJ"
+
+    # 2. Foreign & negative headlines must not produce false Wyckoff buy mappings; macro news has empty picks
+    l2_map = {
+        "688316": {"name": "青云科技", "sector": "软件服务", "rps": 25.0, "l2_eligible": True},
+        "920087": {"name": "秋乐种业", "sector": "种植业", "rps": 30.0, "l2_eligible": True},
+    }
+    for bad_txt in (
+        "印度汽车经销商协会：10月汽车零售销量同比增长",
+        "午评：创业板指收跌3.5%，算力硬件领跌",
+        "日本篡改核电站数据公司被勒令整改",
+        "韩财政部召开半导体专家座谈会",
+        "欧盟能源监管：欧洲电网费用或翻倍",
+    ):
+        assert mod.match_theme_and_candidates(bad_txt, l2_map) == ("", [])
+
+    stat_theme, stat_picks = mod.match_theme_and_candidates("ETF两市成交额报6372亿，半导体ETF领跑", l2_map)
+    assert stat_picks == []
+    anti_dump_theme, _ = mod.match_theme_and_candidates("商务部对欧盟进口对位芳纶发起反倾销立案调查", l2_map)
+    assert "化工" in anti_dump_theme
+
+    macro_theme, macro_picks = mod.match_theme_and_candidates("央行发布最新再贷款操作指引", l2_map)
+    assert "宏观" in macro_theme
+    assert macro_picks == []
+
+    # 3. Cooldown deduplication prevents identical telegraph item from repeating across consecutive 5m scans
+    cd: dict[str, float] = {}
+    fake_raw = [{"id": "sina_101", "ts": 1950.0, "hm": "13:15", "text": "工信部加快推进具身智能机器人产业落地"}]
+    first_lines = mod.scan_live_telegraph_catalysts(l2_map, cooldowns=cd, now_ts=2000.0, raw_items=fake_raw)
+    second_lines = mod.scan_live_telegraph_catalysts(l2_map, cooldowns=cd, now_ts=2300.0, raw_items=fake_raw)
+    assert len(first_lines) == 1
+    assert second_lines == []
+
+    # 4. National Team ETF 5m surge >=25亿 after 09:45 promotes card level to L2 and sector resonance survives >6 stock L2s
+    today = cn_today().isoformat()
+    post_open_ts = datetime(2026, 11, 6, 10, 30, tzinfo=CN_TZ).timestamp()
+    prev_q = {"588000.SH": {"pct": -1.0, "amt_yi": 100.0}, "159919.SZ": {"pct": -0.5, "amt_yi": 20.0}}
+    curr_q: dict[str, dict] = {
+        "588000.SH": {"symbol": "588000.SH", "last_price": 1.40, "prev_close": 1.41, "volume": 1e9, "amount": 130.0e8},
+        "159919.SZ": {"symbol": "159919.SZ", "last_price": 4.00, "prev_close": 4.02, "volume": 1e8, "amount": 25.0e8},
+    }
+    sec_l2_map: dict[str, dict] = {}
+    for i in range(10):
+        code = f"6001{i:02d}"
+        sym = f"{code}.SH"
+        is_ag = i < 3
+        sec_l2_map[code] = {
+            "name": f"种业{i}" if is_ag else f"其他{i}",
+            "sector": "种植业" if is_ag else f"行业{i}",
+            "rps": 60.0,
+            "l2_eligible": True,
+            "channels": ["主升通道"],
+        }
+        prev_q[sym] = {"pct": 1.0, "amt_yi": 1.0}
+        curr_q[sym] = {
+            "symbol": sym,
+            "last_price": 10.45,
+            "prev_close": 10.0,
+            "volume": 2e7,
+            "amount": 1.8e8,
+            "ext": {"name": sec_l2_map[code]["name"]},
+        }
+    prev_state = {"date": today, "ts": post_open_ts - 300.0, "red": 10, "cooldowns": {}, "quotes": prev_q}
+    level, title_l2, body, _, _ = radar.analyze_snapshot_diff(
+        curr_q, prev_state, sec_l2_map, {}, now_ts=post_open_ts, turnover_dir=tmp_path / "to"
+    )
+    assert level == "L2"
+    assert "【L2 加急焦点】" in title_l2
+    assert "🚨 **【本次 L2 加急核心焦点 — 为什么给你发加急】**" in body
+    assert "💡 **关注重点**" in body
+    assert "国家队20大宽基ETF 5m放量异动" in body
+    assert "种植业 板块5m共振" in body
+
+
+def test_tariff_telegraph_zero_bias_l2_leaders_and_upper_wick_filter(tmp_path) -> None:
+    radar = _load_radar_module()
+    spec = importlib.util.spec_from_file_location("telegraph_catalysts", SCRIPT_PATH.parent / "telegraph_catalysts.py")
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    l2_map: dict[str, dict] = {
+        "601898": {
+            "name": "中煤能源",
+            "sector": "煤炭开采",
+            "rps": 44.0,
+            "l2_eligible": True,
+            "l3_eligible": True,
+            "is_candidate": True,
+            "channels": ["吸筹通道+地量蓄势"],
+        },
+        "002088": {
+            "name": "鲁阳节能",
+            "sector": "煤炭开采",
+            "rps": 96.4,
+            "l2_eligible": True,
+            "l3_eligible": True,
+            "is_candidate": False,
+            "channels": ["点火破局"],
+        },
+        "600261": {
+            "name": "阳光照明",
+            "sector": "家用电器",
+            "rps": 99.2,
+            "l2_eligible": False,
+            "l3_eligible": False,
+            "is_candidate": False,
+            "channels": [],
+        },
+        "002611": {
+            "name": "东方精工",
+            "sector": "专用机械",
+            "rps": 34.5,
+            "l2_eligible": True,
+            "l3_eligible": True,
+            "is_candidate": True,
+            "channels": ["地量蓄势"],
+        },
+    }
+    tariff_txt = "经国务院批准，自2026年11月10日13时01分起，在2个月内继续暂停实施24%的对美加征关税税率，保留10%的对美加征关税税率"
+    t_theme, t_picks = mod.match_theme_and_candidates(tariff_txt, l2_map)
+    assert "关税豁免" in t_theme
+    assert not any("600261" in p for p in t_picks)
+
+    quotes: dict[str, dict] = {}
+    for i in range(8):
+        code = "601898" if i == 0 else ("002088" if i == 1 else f"6016{i + 10:02d}")
+        sym = f"{code}.SH" if code.startswith("6") else f"{code}.SZ"
+        l2_map.setdefault(
+            code,
+            {"name": f"煤企{i}", "sector": "煤炭开采", "rps": 35.0, "l2_eligible": False, "l3_eligible": False},
+        )
+        quotes[sym] = {
+            "symbol": sym,
+            "last_price": 13.38 if i == 0 else (11.94 if i == 1 else 10.20),
+            "prev_close": 12.91 if i == 0 else (11.09 if i == 1 else 10.00),
+            "open": 13.00 if i == 0 else (10.28 if i == 1 else 10.00),
+            "high": 13.45 if i == 0 else (12.19 if i == 1 else 10.25),
+            "low": 12.95 if i == 0 else (10.27 if i == 1 else 9.98),
+            "volume": 4.0e7 if i == 0 else 2.2e7,
+            "amount": 5.30e8 if i == 0 else 1.74e8,
+        }
+    zb_md = mod.summarize_zero_bias_l2_leaders(quotes, l2_map)
+    assert "全市场 L2+L3 稳健中军盘中观察池" in zb_md
+    assert "601898.SH 中煤能源" in zb_md
+    assert "002088" not in zb_md
+
+    # Upper-wick spike (>2.0%) is rejected by _check_wyckoff_signals, and non-L2 / high-RPS surge is tagged [⚠️妖股/高位勿追]
+    today = cn_today().isoformat()
+    ts = datetime(2026, 11, 9, 10, 35, tzinfo=CN_TZ).timestamp()
+    quotes["002611.SZ"] = {
+        "symbol": "002611.SZ",
+        "last_price": 14.35,
+        "prev_close": 13.91,
+        "open": 14.10,
+        "high": 14.86,
+        "low": 14.10,
+        "volume": 5e7,
+        "amount": 7.15e8,
+        "ext": {"name": "东方精工"},
+    }
+    quotes["600261.SH"] = {
+        "symbol": "600261.SH",
+        "last_price": 5.74,
+        "prev_close": 5.40,
+        "open": 5.32,
+        "high": 5.80,
+        "low": 5.09,
+        "volume": 3e8,
+        "amount": 16.8e8,
+        "ext": {"name": "阳光照明"},
+    }
+    quotes["000001.SH"] = {
+        "symbol": "000001.SH",
+        "last_price": 3662.81,
+        "prev_close": 3660.75,
+        "open": 3682.04,
+        "high": 3683.73,
+        "low": 3662.25,
+        "volume": 2e10,
+        "amount": 4281.23e8,
+        "ext": {"name": "上证指数"},
+    }
+    prev_state = {
+        "date": today,
+        "ts": ts - 300.0,
+        "red": 8,
+        "cooldowns": {},
+        "quotes": {"002611.SZ": {"pct": 1.0, "amt_yi": 5.0}, "600261.SH": {"pct": 2.0, "amt_yi": 10.0}},
+    }
+    holdings = {"601898.SH": {"cost": 13.40, "stop": 12.80}}
+    _, _, body, _, _ = radar.analyze_snapshot_diff(
+        quotes, prev_state, l2_map, holdings, now_ts=ts, turnover_dir=tmp_path / "to2"
+    )
+    assert "高开回落防骗炮" in body
+    assert "成本 13.40 (-0.15%)" in body
+    assert "🟢均线上" in body
+    assert "600261.SH 阳光照明** [⚠️妖股/高位勿追]" in body
+    assert "002611.SZ 东方精工** [专用机械]" not in body
+
+    # Post-10:30 steady leader push (dpct=+1.35% >= 1.2%, RPS=40 in 24~68, amt>=1.8亿, upper_wick<=1.0%) triggers L3 🎯稳健中军加速
+    l2_map["002635"] = {
+        "name": "安洁科技",
+        "sector": "煤炭开采",
+        "rps": 40.0,
+        "l2_eligible": True,
+        "l3_eligible": True,
+        "is_candidate": False,
+        "channels": ["吸筹通道"],
+    }
+    prev_state["quotes"]["002635.SZ"] = {"pct": 2.10, "amt_yi": 2.00}
+    quotes["002635.SZ"] = {
+        "symbol": "002635.SZ",
+        "last_price": 14.38,
+        "prev_close": 13.90,
+        "open": 14.05,
+        "high": 14.43,
+        "low": 13.88,
+        "volume": 1.65e7,
+        "amount": 2.35e8,
+        "ext": {"name": "安洁科技"},
+    }
+    level_steady, _, body_steady, _, _ = radar.analyze_snapshot_diff(
+        quotes, prev_state, l2_map, holdings, now_ts=ts, turnover_dir=tmp_path / "to3"
+    )
+    assert level_steady == "L3"
+    assert "002635.SZ 安洁科技" in body_steady
+    assert "🎯稳健中军加速" in body_steady
+
+
+def test_sh_index_never_collides_with_sz_equity_and_median_thermometer_renders(tmp_path):
+    radar = _load_radar_module()
+    import sys
+
+    sys.path.insert(0, str(SCRIPT_PATH.parent))
+    import telegraph_catalysts as tc
+
+    quotes = {
+        "000682.SH": {
+            "symbol": "000682.SH",
+            "last_price": 2011.0,
+            "prev_close": 1980.0,
+            "open": 1985.0,
+            "high": 2020.0,
+            "low": 1980.0,
+            "volume": 1e9,
+            "amount": 550e8,
+            "ext": {"name": "科创信息"},
+        },
+        "000682.SZ": {
+            "symbol": "000682.SZ",
+            "last_price": 10.15,
+            "prev_close": 10.00,
+            "open": 10.02,
+            "high": 10.20,
+            "low": 9.98,
+            "volume": 2e7,
+            "amount": 2.02e8,
+            "ext": {"name": "东方电子"},
+        },
+        "399006.SZ": {
+            "symbol": "399006.SZ",
+            "last_price": 2577.75,
+            "prev_close": 2500.00,
+            "volume": 1e9,
+            "amount": 4800e8,
+            "ext": {"name": "创业板指"},
+        },
+    }
+    assert tc.resolve_code6_symbol("000682", quotes) == "000682.SZ"
+    assert not tc._is_equity_symbol("000682.SH")
+    assert tc._is_equity_symbol("000682.SZ")
+
+    l2_map = {}
+    for idx in range(8):
+        code6 = f"00068{idx}"
+        l2_map[code6] = {
+            "name": f"深市电企{idx}",
+            "sector": "电气设备",
+            "rps": 35.0,
+            "l2_eligible": True,
+            "l3_eligible": True,
+            "is_candidate": False,
+            "channels": ["地量蓄势"],
+        }
+        # Populate only .SH indices for 0..6 (must NOT be counted as Shenzhen stocks!)
+        if idx != 2:
+            quotes[f"{code6}.SH"] = {
+                "symbol": f"{code6}.SH",
+                "last_price": 3090.0,
+                "prev_close": 3000.0,
+                "open": 3010.0,
+                "high": 3095.0,
+                "low": 3005.0,
+                "volume": 1e8,
+                "amount": 50e8,
+            }
+    assert tc.summarize_top_sector_mainlines(quotes, l2_map) == ""
+    assert tc.summarize_zero_bias_l2_leaders(quotes, l2_map) == ""
+
+    _, _, body, _, _ = radar.analyze_snapshot_diff(quotes, {}, l2_map, {}, now_ts=1000.0, turnover_dir=tmp_path / "to")
+    assert "创业板 +3.11%（全A中位数 +1.50%）" in body
+
+
+def test_silent_l1_scan_preserves_telegraph_until_next_sent_card(tmp_path, monkeypatch):
+    radar = _load_radar_module()
+    import sys
+
+    sys.path.insert(0, str(SCRIPT_PATH.parent))
+    import telegraph_catalysts as tc
+
+    today_str = radar.cn_today().isoformat()
+    state_file = tmp_path / "state.json"
+    state_file.write_text(
+        json.dumps({"date": today_str, "ts": 900.0, "last_l1_ts": 900.0, "cooldowns": {}, "quotes": {}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(radar, "STATE_PATH", state_file)
+    monkeypatch.setattr(radar, "ALERT_LOG_PATH", tmp_path / "alerts.jsonl")
+    monkeypatch.setattr(radar, "TURNOVER_DIR", tmp_path / "turnover")
+    monkeypatch.setattr(radar, "load_wyckoff_l2_map", lambda *a, **kw: {})
+    fake_item = [{"id": "sina_tg_950", "ts": 950.0, "hm": "09:31", "text": "工信部加快推进具身智能机器人产业落地"}]
+    monkeypatch.setattr(tc, "fetch_sina_telegraph", lambda pages=1: list(fake_item))
+    monkeypatch.setattr(tc, "fetch_wscn_telegraph", lambda: [])
+
+    class FakeClient:
+        def __init__(self, **kw):
+            pass
+
+        def get_quotes(self, universes=None, symbols=None):
+            return {"000001.SH": {"last_price": 3300.0, "prev_close": 3300.0, "amount": 100e8}}
+
+    import integrations.tickflow_client as tf_mod
+
+    monkeypatch.setattr(tf_mod, "TickFlowClient", FakeClient)
+    sent_cards: list[str] = []
+    monkeypatch.setattr(radar, "resolve_lark_open_id", lambda *a: "ou_mock")
+    monkeypatch.setattr(
+        radar, "send_feishu_tiered_alert", lambda title, content, **kw: sent_cards.append(content) or "om_ok"
+    )
+    args = SimpleNamespace(
+        ignore_hours=True, dry_run=False, trace=None, holding=[], user_id="ou_mock", force_send=False, urgent_only=False
+    )
+
+    monkeypatch.setattr(radar.time, "time", lambda: 1200.0)
+    radar.run_once(args)
+    assert sent_cards == []
+    assert "tg:sina_tg_950" not in json.loads(state_file.read_text(encoding="utf-8"))["cooldowns"]
+
+    monkeypatch.setattr(radar.time, "time", lambda: 2700.0)
+    radar.run_once(args)
+    assert len(sent_cards) == 1
+    assert "具身智能" in sent_cards[0]
+    assert "tg:sina_tg_950" in json.loads(state_file.read_text(encoding="utf-8"))["cooldowns"]
+
+
+def test_heartbeat_mode_sends_compact_card_without_resetting_l1_or_telegraph_cooldown(tmp_path, monkeypatch):
+    radar = _load_radar_module()
+    import sys
+
+    sys.path.insert(0, str(SCRIPT_PATH.parent))
+    import telegraph_catalysts as tc
+
+    today_str = radar.cn_today().isoformat()
+    state_file = tmp_path / "state_hb.json"
+    state_file.write_text(
+        json.dumps({"date": today_str, "ts": 1000.0, "last_l1_ts": 1000.0, "cooldowns": {}, "quotes": {}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(radar, "STATE_PATH", state_file)
+    monkeypatch.setattr(radar, "ALERT_LOG_PATH", tmp_path / "alerts_hb.jsonl")
+    monkeypatch.setattr(radar, "TURNOVER_DIR", tmp_path / "turnover_hb")
+    monkeypatch.setattr(radar, "load_wyckoff_l2_map", lambda *a, **kw: {})
+    fake_item = [{"id": "sina_tg_hb1", "ts": 1050.0, "hm": "13:05", "text": "央行推进互换便利工具落地支持资本市场"}]
+    monkeypatch.setattr(tc, "fetch_sina_telegraph", lambda pages=1: list(fake_item))
+    monkeypatch.setattr(tc, "fetch_wscn_telegraph", lambda: [])
+
+    class FakeClient:
+        def __init__(self, **kw):
+            pass
+
+        def get_quotes(self, universes=None, symbols=None):
+            return {
+                "000001.SH": {"last_price": 3306.6, "prev_close": 3300.0, "volume": 1e9, "amount": 5000e8},
+                "399001.SZ": {"last_price": 10521.0, "prev_close": 10500.0, "volume": 1e9, "amount": 6000e8},
+                "399006.SZ": {"last_price": 2102.1, "prev_close": 2100.0, "volume": 5e8, "amount": 2500e8},
+                "600900.SH": {"last_price": 28.14, "prev_close": 28.00, "volume": 1e7, "amount": 2.8e8},
+            }
+
+    import integrations.tickflow_client as tf_mod
+
+    monkeypatch.setattr(tf_mod, "TickFlowClient", FakeClient)
+    sent_events: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(radar, "resolve_lark_open_id", lambda *a: "ou_mock")
+    monkeypatch.setattr(
+        radar,
+        "send_feishu_tiered_alert",
+        lambda title, content, level="L1", **kw: sent_events.append((level, title, content)) or "om_hb",
+    )
+    args = SimpleNamespace(
+        ignore_hours=True,
+        dry_run=False,
+        trace=None,
+        holding=["600900.SH:27.50:26.50"],
+        user_id="ou_mock",
+        force_send=False,
+        urgent_only=False,
+        heartbeat=True,
+    )
+
+    monkeypatch.setattr(radar.time, "time", lambda: 1300.0)
+    radar.run_once(args)
+    assert len(sent_events) == 1
+    hb_level, hb_title, hb_body = sent_events[0]
+    assert hb_level == "L1"
+    assert hb_title.startswith("【💓 心跳】")
+    assert "上证+0.20% 创+0.10%" in hb_title
+    assert "🛡️ 持仓正常：600900 +0.50%" in hb_body
+    assert len(hb_body.splitlines()) == 2
+    saved_after_hb = json.loads(state_file.read_text(encoding="utf-8"))
+    assert saved_after_hb["last_l1_ts"] == 1000.0
+    assert "tg:sina_tg_hb1" not in saved_after_hb["cooldowns"]
+
+    monkeypatch.setattr(radar.time, "time", lambda: 2800.0)
+    radar.run_once(args)
+    assert len(sent_events) == 2
+    full_level, full_title, full_body = sent_events[1]
+    assert full_level == "L1"
+    assert full_title.startswith("【L1】")
+    assert "5m全市场雷达" in full_title
+    assert "互换便利" in full_body
+    saved_after_full = json.loads(state_file.read_text(encoding="utf-8"))
+    assert saved_after_full["last_l1_ts"] == 2800.0
+    assert "tg:sina_tg_hb1" in saved_after_full["cooldowns"]
+
+    # If a holding is below hard stop during its 24h L4 cooldown, heartbeat line must never say "持仓正常"
+    _, breach_body = radar._format_heartbeat_card(
+        {"600900.SH": {"last_price": 26.40, "prev_close": 28.00, "volume": 1e7, "amount": 2.64e8}},
+        {"600900.SH": {"cost": 27.50, "stop": 26.50}},
+        500,
+        "14:05",
+    )
+    assert "⚠️ 持仓破位待处理：600900 -5.71%🔴破止损" in breach_body
+    assert "持仓正常" not in breach_body
+
+
+def test_multi_day_wyckoff_funnel_continuity_and_shakeout_recall(tmp_path):
+    radar = _load_radar_module()
+    trace_dir = tmp_path / "traces"
+    trace_dir.mkdir()
+    days = ["2026-11-10", "2026-11-11", "2026-11-12"]
+    for idx, d_str in enumerate(days):
+        ymd = d_str.replace("-", "")
+        symbols = {
+            # 1) 3-day consecutive candidate -> 🏆3日候选连入
+            "600111.SH": {
+                "name": "三日连入股",
+                "sector": "半导体",
+                "rps_fast": 35.0,
+                "l2_eligible": True,
+                "l3_eligible": True,
+                "stage": "候选池已捕获",
+                "l2_channels": ["地量蓄势"],
+            },
+            # 2) T-3 & T-2 candidate, shaken out on T-1 (idx==2) -> ♻️T-2洗盘回流
+            "002222.SZ": {
+                "name": "洗盘回流股",
+                "sector": "专用机械",
+                "rps_fast": 42.0,
+                "l2_eligible": idx < 2,
+                "l3_eligible": idx < 2,
+                "stage": "候选池已捕获" if idx < 2 else "观察",
+                "l2_channels": ["吸筹通道"] if idx < 2 else [],
+            },
+            # 3) Absent in T-3 & T-2, sudden 1-day impulse in T-1 (idx==2) -> ⚠️T-1单日新进 (demoted from L3)
+            "300333.SZ": {
+                "name": "一日游脉冲",
+                "sector": "元器件",
+                "rps_fast": 55.0,
+                "l2_eligible": idx == 2,
+                "l3_eligible": idx == 2,
+                "stage": "观察",
+                "l2_channels": ["地量蓄势"] if idx == 2 else [],
+            },
+        }
+        with gzip.open(trace_dir / f"review_trace_{ymd}.json.gz", "wt", encoding="utf-8") as f:
+            json.dump({"trade_date": d_str, "symbols": symbols}, f)
+
+    merged = radar.load_wyckoff_l2_map(trace_dirs=[str(trace_dir)], max_age_days=None, auto_fetch=False)
+    assert merged["600111"]["streak_days"] == 3
+    assert merged["600111"]["funnel_tag"] == "🏆3日候选连入"
+    assert merged["600111"]["is_candidate"] is True
+
+    assert merged["002222"]["t2_shakeout_recall"] is True
+    assert merged["002222"]["is_candidate"] is True
+    assert merged["002222"]["l2_eligible"] is True
+    assert merged["002222"]["channels"] == ["吸筹通道"]
+    assert merged["002222"]["funnel_tag"] == "♻️T-2洗盘回流"
+
+    assert merged["300333"]["t1_isolated_spike"] is True
+    assert merged["300333"]["l3_eligible"] is False
+    assert merged["300333"]["is_candidate"] is False
+    assert merged["300333"]["funnel_tag"] == "⚠️T-1单日新进"
+
+    # Verify sub-sector L2 cluster (>=4 L2 stocks up >=+2%) allows 3-day consecutive leader (like 002452 长高电气)
+    # to enter summarize_zero_bias_l2_leaders even when broad sector red_ratio < 75%
+    import sys
+
+    sys.path.insert(0, str(SCRIPT_PATH.parent))
+    import telegraph_catalysts as tc
+
+    sec_l2_map = {}
+    sec_quotes = {}
+    for i in range(10):
+        c6 = f"00245{i}"
+        sym = f"{c6}.SZ"
+        is_up = i < 4  # 4 L2 stocks up >= +2.0% out of 10 (red_ratio = 40% < 75%)
+        sec_l2_map[c6] = {
+            "name": "长高电气" if i == 2 else f"电企{i}",
+            "sector": "电气设备",
+            "rps": 32.0,
+            "l2_eligible": True,
+            "l3_eligible": i == 2,
+            "is_candidate": False,
+            "channels": ["吸筹通道", "地量蓄势"],
+            "streak_days": 3 if i == 2 else 1,
+            "funnel_tag": "🔥3日L2+L3连入" if i == 2 else "",
+        }
+        sec_quotes[sym] = {
+            "symbol": sym,
+            "last_price": 9.88 if i == 2 else (10.30 if is_up else 9.80),
+            "prev_close": 9.45 if i == 2 else 10.00,
+            "open": 9.50 if i == 2 else 10.00,
+            "high": 9.90 if i == 2 else (10.35 if is_up else 10.00),
+            "low": 9.48 if i == 2 else (10.00 if is_up else 9.75),
+            "volume": 1.9e7,
+            "amount": 1.85e8,
+            "vwap": 9.78 if i == 2 else 10.10,
+        }
+    zb_summary = tc.summarize_zero_bias_l2_leaders(sec_quotes, sec_l2_map)
+    assert "002452.SZ 长高电气" in zb_summary
+    assert "🔥3日L2+L3连入" in zb_summary
+
+
+def test_l2_only_streak_blocks_l1_trend_bypass_candidates(tmp_path) -> None:
+    radar = _load_radar_module()
+    trace_dir = tmp_path / "traces_l2_only"
+    trace_dir.mkdir()
+    for d_str in ("2026-11-12", "2026-11-13", "2026-11-16"):
+        ymd = d_str.replace("-", "")
+        symbols = {
+            "300133.SZ": {
+                "name": "旁路样本",
+                "sector": "影视音像",
+                "rps_fast": 48.0,
+                "l2_eligible": False,
+                "l3_eligible": False,
+                "stage": "候选池已捕获",
+                "l2_channels": [],
+            }
+        }
+        with gzip.open(trace_dir / f"review_trace_{ymd}.json.gz", "wt", encoding="utf-8") as f:
+            json.dump({"trade_date": d_str, "symbols": symbols}, f)
+
+    merged = radar.load_wyckoff_l2_map(trace_dirs=[str(trace_dir)], max_age_days=None, auto_fetch=False)
+    assert merged["300133"]["streak_days"] == 0
+    assert merged["300133"]["funnel_tag"] == ""
+    assert merged["300133"].get("t2_shakeout_recall") is not True
+
+
+def test_preopen_unrolled_snapshot_skips_stop_cooldown_and_state_write(tmp_path, monkeypatch) -> None:
+    radar = _load_radar_module()
+    import sys
+
+    sys.path.insert(0, str(SCRIPT_PATH.parent))
+    import telegraph_catalysts as tc
+
+    monkeypatch.setattr(tc, "fetch_sina_telegraph", lambda pages=1: [])
+    monkeypatch.setattr(tc, "fetch_wscn_telegraph", lambda: [])
+
+    today_d = cn_today()
+    ts_0925 = datetime(today_d.year, today_d.month, today_d.day, 9, 25, 40, tzinfo=CN_TZ).timestamp()
+    state_file = tmp_path / "state_preopen.json"
+    monkeypatch.setattr(radar, "STATE_PATH", state_file)
+    monkeypatch.setattr(radar, "ALERT_LOG_PATH", tmp_path / "alerts_preopen.jsonl")
+    monkeypatch.setattr(radar, "TURNOVER_DIR", tmp_path / "turnover_preopen")
+    monkeypatch.setattr(radar, "load_wyckoff_l2_map", lambda *a, **kw: {})
+
+    class FakeClient:
+        def __init__(self, **kw):
+            pass
+
+        def get_quotes(self, universes=None, symbols=None):
+            return {
+                "000001.SH": {"last_price": 3602.57, "prev_close": 3602.57, "amount": 4200e8},
+                "399001.SZ": {"last_price": 10690.78, "prev_close": 10690.78, "amount": 4800e8},
+                "603011.SH": {"last_price": 15.74, "prev_close": 15.74, "amount": 3e8},
+            }
+
+    import integrations.tickflow_client as tf_mod
+
+    monkeypatch.setattr(tf_mod, "TickFlowClient", FakeClient)
+    sent_cards: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(radar, "resolve_lark_open_id", lambda *a: "ou_mock")
+    monkeypatch.setattr(
+        radar,
+        "send_feishu_tiered_alert",
+        lambda title, content, level="L1", **kw: sent_cards.append((level, title, content)) or "om_preopen",
+    )
+    monkeypatch.setattr(radar.time, "time", lambda: ts_0925)
+    args = SimpleNamespace(
+        ignore_hours=True,
+        dry_run=False,
+        trace=None,
+        holding=["603011.SH:18.252:17.55"],
+        user_id="ou_mock",
+        force_send=False,
+        urgent_only=False,
+        heartbeat=True,
+    )
+    radar.run_once(args)
+
+    assert len(sent_cards) == 1
+    assert sent_cards[0][0] == "L1"
+    assert "盘前竞价待切换" in sent_cards[0][1]
+    saved = json.loads(state_file.read_text(encoding="utf-8"))
+    assert "L4:holding_stop:603011.SH" not in saved["cooldowns"]
+    assert saved["last_l1_ts"] == 0.0
+    assert saved["quotes"] == {}
+
+
+def test_afternoon_telegraph_anti_chase_and_nt_etf_floor_split() -> None:
+    import sys
+
+    sys.path.insert(0, str(SCRIPT_PATH.parent))
+    import telegraph_catalysts as tc
+
+    l2_map = {
+        "002261": {
+            "name": "拓维信息",
+            "sector": "软件服务",
+            "rps": 45.0,
+            "l2_eligible": True,
+            "l3_eligible": True,
+            "is_candidate": True,
+            "channels": ["地量蓄势"],
+            "streak_days": 3,
+            "funnel_tag": "🔥3日L2+L3连入",
+        },
+        "300999": {
+            "name": "高追样本",
+            "sector": "软件服务",
+            "rps": 55.0,
+            "l2_eligible": True,
+            "l3_eligible": True,
+            "is_candidate": True,
+            "channels": ["地量蓄势"],
+            "streak_days": 3,
+            "funnel_tag": "🔥3日L2+L3连入",
+        },
+        "688316": {
+            "name": "温和样本",
+            "sector": "软件服务",
+            "rps": 42.0,
+            "l2_eligible": True,
+            "l3_eligible": True,
+            "is_candidate": True,
+            "channels": ["地量蓄势"],
+            "streak_days": 2,
+            "funnel_tag": "🔥2日L2+L3连入",
+        },
+    }
+    quotes = {
+        "002261.SZ": {"last_price": 10.22, "prev_close": 10.00, "amount": 2e8, "vwap": 10.10},
+        "300999.SZ": {"last_price": 10.45, "prev_close": 10.00, "amount": 2e8, "vwap": 10.20},
+        "688316.SH": {"last_price": 10.35, "prev_close": 10.00, "amount": 2e8, "vwap": 10.20},
+    }
+    raw_items = [{"id": "sina_pm", "ts": 1000.0, "hm": "12:50", "text": "工信部加快推进国产算力芯片与软件协同突破"}]
+    lines = tc.scan_live_telegraph_catalysts(
+        l2_map,
+        quotes,
+        since_ts=500.0,
+        now_ts=1200.0,
+        now_hm="12:50",
+        red_ratio=0.30,
+        raw_items=raw_items,
+    )
+    assert len(lines) == 1
+    out = lines[0]
+    assert "300999" not in out  # +4.5% > +3.8% cap dropped after 11:00
+    assert "002261" in out
+    assert "🔥3日L2" in out
+    assert "⚠️弱市禁追" in out
+    assert out.index("002261") < out.index("688316")
+
+    etf_quotes = {"588000.SH": {"amount": 190.0e8}, "159915.SZ": {"amount": 165.0e8}}
+    prev_etf = {"588000.SH": {"amt_yi": 170.0}, "159915.SZ": {"amt_yi": 150.0}}
+    nt_dt = datetime(2026, 11, 17, 14, 40, tzinfo=CN_TZ)
+    _, floor_alert = tc.summarize_national_team_etfs(
+        etf_quotes, prev_etf, has_baseline=True, now_dt=nt_dt, red_count=1311, green_count=4134, d_red=-150
+    )
+    assert "🛡️ **【国家队宽基托底护盘（托指不救股）】**" in floor_alert
+    _, rush_alert = tc.summarize_national_team_etfs(
+        etf_quotes, prev_etf, has_baseline=True, now_dt=nt_dt, red_count=3467, green_count=1900, d_red=420
+    )
+    assert "🚀 **【国家队20大宽基ETF 5m放量异动】**" in rush_alert
+
+
+def test_capex_fcf_headwind_warning_and_freeze_sector_resonance_tag() -> None:
+    import sys
+
+    sys.path.insert(0, str(SCRIPT_PATH.parent))
+    import telegraph_catalysts as tc
+
+    radar = _load_radar_module()
+    l2_map = {
+        "688008": {
+            "name": "澜起科技",
+            "sector": "半导体",
+            "rps": 35.0,
+            "l2_eligible": True,
+            "l3_eligible": True,
+            "is_candidate": True,
+            "channels": ["地量蓄势"],
+            "streak_days": 3,
+            "funnel_tag": "🔥3日L2+L3连入",
+        }
+    }
+    quotes = {"688008.SH": {"last_price": 101.0, "prev_close": 100.0, "amount": 2e8, "vwap": 100.5}}
+    raw_items = [
+        {
+            "id": "sina_fcf",
+            "ts": 1000.0,
+            "hm": "08:40",
+            "text": "科技巨头三季报AI算力资本开支暴增500%导致自由现金流转负",
+        },
+        {"id": "sina_normal", "ts": 990.0, "hm": "08:38", "text": "工信部推进国产算力芯片应用生态落地"},
+    ]
+    lines = tc.scan_live_telegraph_catalysts(
+        l2_map, quotes, since_ts=500.0, now_ts=1200.0, now_hm="08:45", red_ratio=0.50, raw_items=raw_items
+    )
+    assert len(lines) == 2
+    assert "宏观FCF逆风校验" in lines[0]
+    assert "宏观FCF逆风校验" not in lines[1]
+
+    buckets: dict[str, list[str]] = {"l2_events": []}
+    records: list[dict[str, object]] = []
+    radar._prepend_sector_resonances(
+        {"半导体": ["688008.SH 澜起科技", "688525.SH 佰维存储", "301308.SZ 江波龙"]},
+        {},
+        l2_map,
+        {},
+        1000.0,
+        buckets,
+        records,
+        red_count=650,
+        total_active=5400,
+    )
+    assert len(buckets["l2_events"]) == 1
+    assert "高相关性冰点(红650家)：防半小时回吐，仅观察不追高" in buckets["l2_events"][0]
+
+    buckets_warm: dict[str, list[str]] = {"l2_events": []}
+    radar._prepend_sector_resonances(
+        {"半导体": ["688008.SH 澜起科技", "688525.SH 佰维存储", "301308.SZ 江波龙"]},
+        {},
+        l2_map,
+        {},
+        1000.0,
+        buckets_warm,
+        [],
+        red_count=2600,
+        total_active=5400,
+    )
+    assert "高相关性冰点" not in buckets_warm["l2_events"][0]
