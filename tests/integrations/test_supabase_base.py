@@ -118,3 +118,79 @@ class TestNetworkTimeout:
 
         assert sb.CONNECT_TIMEOUT_SECONDS <= 10
         assert sb.READ_TIMEOUT_SECONDS <= 15
+
+
+class TestDisableAutoRefreshToken:
+    """GoTrue 默认 auto_refresh_token=True 会在后台轮换 RT 却不写 session.json。"""
+
+    def test_client_options_disable_auto_refresh(self) -> None:
+        from integrations import supabase_base as sb
+
+        options = sb._client_options()
+        assert options.auto_refresh_token is False
+
+    def test_anon_and_user_clients_disable_gotrue_auto_refresh(self, monkeypatch) -> None:
+        from integrations import supabase_base as sb
+
+        monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+        monkeypatch.setenv("SUPABASE_KEY", "anon-key")
+        anon = sb.create_anon_client()
+        assert getattr(anon.auth, "_auto_refresh_token", True) is False
+
+        captured: dict[str, object] = {}
+
+        class _Auth:
+            def set_session(self, access_token: str, refresh_token: str):
+                captured["set_session"] = (access_token, refresh_token)
+                return None
+
+        class _Postgrest:
+            def auth(self, _token: str) -> None:
+                return None
+
+        class _Client:
+            def __init__(self) -> None:
+                self.auth = _Auth()
+                self.postgrest = _Postgrest()
+
+        def fake_create_client(_url: str, _key: str, options=None):
+            captured["options"] = options
+            return _Client()
+
+        monkeypatch.setattr("supabase.create_client", fake_create_client)
+        sb.create_user_client("access-token", "refresh-token")
+        options = captured.get("options")
+        assert options is not None
+        assert getattr(options, "auto_refresh_token", True) is False
+
+    def test_close_client_cancels_refresh_timer(self) -> None:
+        from integrations import supabase_base as sb
+
+        class _Timer:
+            def __init__(self) -> None:
+                self.cancelled = False
+
+            def cancel(self) -> None:
+                self.cancelled = True
+
+        class _Auth:
+            def __init__(self) -> None:
+                self._refresh_token_timer = _Timer()
+                self._http_client = None
+
+        class _Client:
+            def __init__(self) -> None:
+                self.auth = _Auth()
+                self.postgrest = None
+
+        client = _Client()
+        timer = client.auth._refresh_token_timer
+        sb.close_client(client)  # type: ignore[arg-type]
+        assert timer.cancelled is True
+        assert client.auth._refresh_token_timer is None
+
+    def test_local_auth_create_client_disables_auto_refresh(self) -> None:
+        from integrations.local_auth import _create_client
+
+        client = _create_client()
+        assert getattr(client.auth, "_auto_refresh_token", True) is False

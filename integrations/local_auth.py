@@ -704,7 +704,10 @@ def _get_timeout_seconds(key: str, config: dict[str, Any] | None = None) -> int:
 def _create_client():
     from supabase import create_client
 
-    return create_client(SUPABASE_ANON_URL, SUPABASE_ANON_KEY)
+    from integrations.supabase_base import _client_options
+
+    # Same options as create_user_client: timeouts + no background RT rotation.
+    return create_client(SUPABASE_ANON_URL, SUPABASE_ANON_KEY, options=_client_options())
 
 
 def _invalid_session_error(exc: Exception) -> bool:
