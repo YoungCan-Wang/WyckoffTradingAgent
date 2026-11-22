@@ -991,3 +991,51 @@ def test_dry_run_does_not_write_shared_state_file(tmp_path, monkeypatch):
     )
     radar.run_once(args)
     assert state_file.read_text(encoding="utf-8") == before
+
+
+def test_corrupt_state_does_not_crash_run_once_before_holdings(tmp_path, monkeypatch):
+    """Truncated /tmp state must not JSONDecodeError before holdings L3/L4 monitoring."""
+    radar = _load_radar_module()
+    state_file = tmp_path / "state.json"
+    # Kill mid-write / concurrent once+daemon leave empty or partial JSON.
+    state_file.write_text("{", encoding="utf-8")
+    monkeypatch.setattr(radar, "STATE_PATH", state_file)
+    monkeypatch.setattr(radar, "ALERT_LOG_PATH", tmp_path / "alerts.jsonl")
+    monkeypatch.setattr(radar, "TURNOVER_DIR", tmp_path / "turnover")
+    monkeypatch.setattr(radar, "load_wyckoff_l2_map", lambda *a, **kw: {})
+    monkeypatch.setattr(radar, "resolve_lark_open_id", lambda *a, **kw: "ou_test")
+    monkeypatch.setattr(radar, "send_feishu_tiered_alert", lambda *a, **kw: "om_ok")
+
+    class FakeClient:
+        def __init__(self, **kw):
+            pass
+
+        def get_quotes(self, universes=None, symbols=None):
+            return {
+                "600000.SH": {
+                    "symbol": "600000.SH",
+                    "last_price": 9.40,
+                    "prev_close": 10.0,
+                    "volume": 1000,
+                    "amount": 9400.0,
+                    "ext": {"name": "浦发银行"},
+                }
+            }
+
+    import integrations.tickflow_client as tf_mod
+
+    monkeypatch.setattr(tf_mod, "TickFlowClient", FakeClient)
+    args = SimpleNamespace(
+        ignore_hours=True,
+        dry_run=False,
+        trace=None,
+        holding=["600000.SH:10.0:9.50"],
+        user_id="ou_test",
+        force_send=False,
+        urgent_only=False,
+    )
+    radar.run_once(args)
+    saved = json.loads(state_file.read_text(encoding="utf-8"))
+    assert saved["date"] == cn_today().isoformat()
+    assert "quotes" in saved
+    assert not state_file.with_suffix(".json.tmp").exists()
