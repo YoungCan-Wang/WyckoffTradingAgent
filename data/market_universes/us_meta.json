@@ -468,15 +468,6 @@
     "active": true
   },
   {
-    "symbol": "ACH.US",
-    "code": "ACH",
-    "name": "Accendra Health, Inc.",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
     "symbol": "ACHC.US",
     "code": "ACHC",
     "name": "阿卡迪亚医疗保健",
@@ -3000,6 +2991,15 @@
     "symbol": "ANRO.US",
     "code": "ANRO",
     "name": "Alto Neuroscience, Inc.",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
+    "symbol": "ANT.US",
+    "code": "ANT",
+    "name": "Anthropic, PBC",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -6606,15 +6606,6 @@
     "active": true
   },
   {
-    "symbol": "BKH.US",
-    "code": "BKH",
-    "name": "黑山",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
     "symbol": "BKHA.US",
     "code": "BKHA",
     "name": "Black Hawk Acquisition Corporation Class A",
@@ -7635,6 +7626,15 @@
     "symbol": "BROS.US",
     "code": "BROS",
     "name": "Dutch Bros, Inc. Class A",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
+    "symbol": "BRRK.US",
+    "code": "BRRK",
+    "name": "Bluerock Acquisition Corp. II",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -13149,6 +13149,15 @@
     "active": true
   },
   {
+    "symbol": "CZZL.US",
+    "code": "CZZL",
+    "name": "Cizzle Brands Corporation",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
     "symbol": "D.US",
     "code": "D",
     "name": "道明尼资源",
@@ -14772,15 +14781,6 @@
     "symbol": "DVA.US",
     "code": "DVA",
     "name": "达维塔保健",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
-    "symbol": "DVLT.US",
-    "code": "DVLT",
-    "name": "Datavault AI Inc.",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -17604,6 +17604,15 @@
     "active": true
   },
   {
+    "symbol": "FDGX.US",
+    "code": "FDGX",
+    "name": "First Digital Acquisition Corp Ltd.",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
     "symbol": "FDMM.US",
     "code": "FDMM",
     "name": "Freedom Metals Acquisition Corp. Class A",
@@ -18399,6 +18408,15 @@
     "symbol": "FMBH.US",
     "code": "FMBH",
     "name": "First Mid Bancshares, Inc.",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
+    "symbol": "FMBM.US",
+    "code": "FMBM",
+    "name": "F & M Bank Corp.",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -21654,6 +21672,15 @@
     "active": true
   },
   {
+    "symbol": "GUER.US",
+    "code": "GUER",
+    "name": "Guerrilla RF, Inc",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
     "symbol": "GUG.US",
     "code": "GUG",
     "name": "Guggenheim Active Allocation Fund Common Shares of Beneficial Interest",
@@ -23589,6 +23616,15 @@
     "active": true
   },
   {
+    "symbol": "HZN.US",
+    "code": "HZN",
+    "name": "Bright Horizon Energy Corporation",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
     "symbol": "HZO.US",
     "code": "HZO",
     "name": "海上麦斯服务",
@@ -23745,15 +23781,6 @@
     "symbol": "IBN.US",
     "code": "IBN",
     "name": "印度工业信贷投资银行",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
-    "symbol": "IBO.US",
-    "code": "IBO",
-    "name": "Impact BioMedical, Inc.",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -25479,15 +25506,6 @@
     "active": true
   },
   {
-    "symbol": "ITGR.US",
-    "code": "ITGR",
-    "name": "Integer Holdings Corporation",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
     "symbol": "ITHA.US",
     "code": "ITHA",
     "name": "ITHAX Acquisition Corp. III Class A",
@@ -27081,15 +27099,6 @@
     "active": true
   },
   {
-    "symbol": "KOYN.US",
-    "code": "KOYN",
-    "name": "CSLM Digital Asset Acquisition Corp III, Ltd Class A",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
     "symbol": "KPET.US",
     "code": "KPET",
     "name": "KPET Ultra Paceline Corporation Class A",
@@ -27336,15 +27345,6 @@
     "symbol": "KTCC.US",
     "code": "KTCC",
     "name": "Key Tronic Corporation",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
-    "symbol": "KTF.US",
-    "code": "KTF",
-    "name": "DWS Municipal Income Trust",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -29313,15 +29313,6 @@
     "active": true
   },
   {
-    "symbol": "LXFR.US",
-    "code": "LXFR",
-    "name": "Luxfer Holdings PLC",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
     "symbol": "LXRX.US",
     "code": "LXRX",
     "name": "莱斯康制药",
@@ -30288,15 +30279,6 @@
     "symbol": "MEOH.US",
     "code": "MEOH",
     "name": "梅思恩",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
-    "symbol": "MERC.US",
-    "code": "MERC",
-    "name": "美世国际",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -34758,15 +34740,6 @@
     "active": true
   },
   {
-    "symbol": "NWE.US",
-    "code": "NWE",
-    "name": "NorthWestern Energy Group, Inc.",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
     "symbol": "NWFL.US",
     "code": "NWFL",
     "name": "诺伍德金融",
@@ -35913,15 +35886,6 @@
     "symbol": "OPAL.US",
     "code": "OPAL",
     "name": "OPAL Fuels Inc. Class A",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
-    "symbol": "OPAY.US",
-    "code": "OPAY",
-    "name": "OPay Limited American Depositary Shares, each representing ten",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -37188,15 +37152,6 @@
     "active": true
   },
   {
-    "symbol": "PCRX.US",
-    "code": "PCRX",
-    "name": "Pacira Biosciences, Inc.",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
     "symbol": "PCSA.US",
     "code": "PCSA",
     "name": "Processa Pharmaceuticals, Inc.",
@@ -38079,15 +38034,6 @@
     "active": true
   },
   {
-    "symbol": "PLCE.US",
-    "code": "PLCE",
-    "name": "Children's Place, Inc.",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
     "symbol": "PLCI.US",
     "code": "PLCI",
     "name": "Pelican Acquisition II Corporation",
@@ -38658,6 +38604,15 @@
     "symbol": "POR.US",
     "code": "POR",
     "name": "波特兰通用电气",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
+    "symbol": "PORT.US",
+    "code": "PORT",
+    "name": "Southport Acquisition Corp. II Class A",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -42678,15 +42633,6 @@
     "active": true
   },
   {
-    "symbol": "SCKT.US",
-    "code": "SCKT",
-    "name": "Socket Mobile, Inc.",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
     "symbol": "SCL.US",
     "code": "SCL",
     "name": "Stepan Co",
@@ -43383,15 +43329,6 @@
     "symbol": "SHEN.US",
     "code": "SHEN",
     "name": "谢南多厄电讯",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
-    "symbol": "SHFS.US",
-    "code": "SHFS",
-    "name": "SHF Holdings Inc Class A",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -45381,15 +45318,6 @@
     "symbol": "SST.US",
     "code": "SST",
     "name": "System1, Inc. Class A",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
-    "symbol": "SSTI.US",
-    "code": "SSTI",
-    "name": "SoundThinking, Inc.",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -48870,6 +48798,15 @@
     "active": true
   },
   {
+    "symbol": "TXR.US",
+    "code": "TXR",
+    "name": "Torex Resources Inc. Common Shares",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
     "symbol": "TXRH.US",
     "code": "TXRH",
     "name": "德州公路酒吧",
@@ -49779,15 +49716,6 @@
     "active": true
   },
   {
-    "symbol": "UTZ.US",
-    "code": "UTZ",
-    "name": "UTZ Brands, Inc. Class A",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
     "symbol": "UUUU.US",
     "code": "UUUU",
     "name": "Energy Fuels Inc.",
@@ -49953,15 +49881,6 @@
     "symbol": "VBIO.US",
     "code": "VBIO",
     "name": "Valion Bio, Inc.",
-    "market": "us",
-    "asset_type": "stock",
-    "currency": "USD",
-    "active": true
-  },
-  {
-    "symbol": "VBNK.US",
-    "code": "VBNK",
-    "name": "VersaBank",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -50871,6 +50790,15 @@
     "symbol": "VRRM.US",
     "code": "VRRM",
     "name": "Verra Mobility Corp. Class A",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
+    "symbol": "VRSA.US",
+    "code": "VRSA",
+    "name": "Versa Bancorp",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",
@@ -53634,6 +53562,15 @@
     "symbol": "ZNTL.US",
     "code": "ZNTL",
     "name": "Zentalis Pharmaceuticals, Inc.",
+    "market": "us",
+    "asset_type": "stock",
+    "currency": "USD",
+    "active": true
+  },
+  {
+    "symbol": "ZOAR.US",
+    "code": "ZOAR",
+    "name": "Zoar Limited",
     "market": "us",
     "asset_type": "stock",
     "currency": "USD",

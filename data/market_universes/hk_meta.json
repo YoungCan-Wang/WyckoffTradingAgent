@@ -1262,7 +1262,7 @@
   {
     "symbol": "00167.HK",
     "code": "00167",
-    "name": "IDT INT'L",
+    "name": "IDT INT'L-500",
     "market": "hk",
     "asset_type": "stock",
     "currency": "HKD",
@@ -10271,7 +10271,7 @@
   {
     "symbol": "01560.HK",
     "code": "01560",
-    "name": "星星集团(新)",
+    "name": "星星集团",
     "market": "hk",
     "asset_type": "stock",
     "currency": "HKD",
@@ -10892,7 +10892,7 @@
   {
     "symbol": "01657.HK",
     "code": "01657",
-    "name": "桦欣控股",
+    "name": "四方伟业控股",
     "market": "hk",
     "asset_type": "stock",
     "currency": "HKD",
@@ -14978,7 +14978,7 @@
   {
     "symbol": "02299.HK",
     "code": "02299",
-    "name": "百宏实业(新)",
+    "name": "百宏实业",
     "market": "hk",
     "asset_type": "stock",
     "currency": "HKD",
@@ -15996,15 +15996,6 @@
     "symbol": "02477.HK",
     "code": "02477",
     "name": "经纬天地",
-    "market": "hk",
-    "asset_type": "stock",
-    "currency": "HKD",
-    "active": true
-  },
-  {
-    "symbol": "02479.HK",
-    "code": "02479",
-    "name": "天聚地合",
     "market": "hk",
     "asset_type": "stock",
     "currency": "HKD",
@@ -17534,7 +17525,7 @@
   {
     "symbol": "02723.HK",
     "code": "02723",
-    "name": "深演智能(新)",
+    "name": "深演智能",
     "market": "hk",
     "asset_type": "stock",
     "currency": "HKD",
@@ -18434,7 +18425,7 @@
   {
     "symbol": "03636.HK",
     "code": "03636",
-    "name": "金浔资源(五百)",
+    "name": "金浔资源",
     "market": "hk",
     "asset_type": "stock",
     "currency": "HKD",
@@ -21881,7 +21872,7 @@
   {
     "symbol": "08159.HK",
     "code": "08159",
-    "name": "新华联合投资-新",
+    "name": "新华联合投资",
     "market": "hk",
     "asset_type": "stock",
     "currency": "HKD",
@@ -22115,7 +22106,7 @@
   {
     "symbol": "08206.HK",
     "code": "08206",
-    "name": "神通机器人(新)",
+    "name": "神通机器人教育",
     "market": "hk",
     "asset_type": "stock",
     "currency": "HKD",
@@ -22826,7 +22817,7 @@
   {
     "symbol": "08366.HK",
     "code": "08366",
-    "name": "浙江联合投资",
+    "name": "浙江联合投资-新",
     "market": "hk",
     "asset_type": "stock",
     "currency": "HKD",
