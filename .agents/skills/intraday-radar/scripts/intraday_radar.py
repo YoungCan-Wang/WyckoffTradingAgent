@@ -11,6 +11,7 @@ import statistics
 import subprocess
 import sys
 import time
+import urllib.request
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -29,6 +30,7 @@ from utils.trading_clock import CN_TZ, cn_today, is_a_share_trading_day  # noqa:
 STATE_PATH = Path("/tmp/wyckoff_intraday_radar_state.json")
 ALERT_LOG_PATH = Path.home() / ".wyckoff" / "radar_alerts.jsonl"
 TURNOVER_DIR = Path.home() / ".wyckoff" / "intraday_turnover"
+MAINLINE_ANCHORS_PATH = Path.home() / ".wyckoff" / "mainline_anchors.json"
 _LAST_ALERT_RECORDS: list[dict[str, Any]] = []
 COOLDOWN_SECONDS = 1800
 HOLDING_STOP_COOLDOWN_SECONDS = 86400
@@ -83,13 +85,16 @@ def _normalize_holding_symbol(raw: str) -> str:
     return f"{digits}.SH"
 
 
-def parse_holdings_arg(raw_list: list[str] | None) -> dict[str, dict[str, float]]:
-    out: dict[str, dict[str, float]] = {}
+def parse_holdings_arg(raw_list: list[str] | None) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
     for item in raw_list or []:
         parts = [p.strip() for p in item.split(":") if p.strip()]
         if len(parts) >= 3:
             sym = _normalize_holding_symbol(parts[0]) or parts[0]
-            out[sym] = {"cost": float(parts[1]), "stop": float(parts[2])}
+            cfg: dict[str, Any] = {"cost": float(parts[1]), "stop": float(parts[2])}
+            if len(parts) >= 4 and parts[3].upper() in ("DEF", "ATK"):
+                cfg["role"] = parts[3].upper()
+            out[sym] = cfg
     return out
 
 
@@ -435,13 +440,56 @@ def holdings_missing_quote_symbols(
     return [sym for sym in holdings if not compute_quote_metrics(curr_quotes.get(sym, {}))]
 
 
-def _format_holding_line(sym: str, m: dict[str, Any], dpct: float, cfg: dict[str, float], tag: str) -> str:
+def _format_holding_line(sym: str, m: dict[str, Any], dpct: float, cfg: dict[str, Any], tag: str) -> str:
     cost = float(cfg.get("cost", 0.0))
-    cost_part = f" | 成本 {cost:.2f} ({(m['last'] / cost - 1.0) * 100.0:+.2f}%)" if cost > 0 else ""
+    stop = float(cfg.get("stop", 0.0))
+    role = str(cfg.get("role") or "")
+    role_prefix = f"[{'🛡️防守' if role == 'DEF' else '⚔️进攻'}] " if role in ("DEF", "ATK") else ""
+    pnl_pct = (m["last"] / cost - 1.0) * 100.0 if cost > 0 else 0.0
+    cost_part = f" | 成本 {cost:.2f} ({pnl_pct:+.2f}%)" if cost > 0 else ""
+    ratchet = (
+        f" 🛡️[浮盈>=4%·建议止损上移保本线{cost:.2f}]"
+        if cost > 0 and pnl_pct >= 4.0 and (stop <= 0 or stop < cost) and "破止损" not in tag
+        else ""
+    )
     vwap_status = "🟢均线上" if m["last"] >= m["vwap"] else "🔴均线水下"
     return (
-        f"- **{sym} {m['name']}**：现价 **{m['last']:.2f} ({m['pct']:+.2f}%)**{cost_part} | "
-        f"均价 {m['vwap']:.2f} ({vwap_status} {m['vwap_dev']:+.2f}%) | 5m涨速 {dpct:+.2f}% | 额 {m['amt_yi']:.2f}亿{tag}"
+        f"- {role_prefix}**{sym} {m['name']}**：现价 **{m['last']:.2f} ({m['pct']:+.2f}%)**{cost_part} | "
+        f"均价 {m['vwap']:.2f} ({vwap_status} {m['vwap_dev']:+.2f}%) | 5m涨速 {dpct:+.2f}% | 额 {m['amt_yi']:.2f}亿{tag}{ratchet}"
+    )
+
+
+def classify_market_regime(red_count: int, total_active: int, d_red: int = 0) -> tuple[str, str]:
+    """Layer 1 climate switch: DEFENSIVE (<38%), CAUTIOUS (38%~55%), ATTACK (>=55%)."""
+    if total_active < 100:
+        return "ATTACK", ""
+    red_ratio = red_count / max(total_active, 1)
+    if red_ratio < 0.38:
+        return (
+            "DEFENSIVE",
+            f"🚦 **【气候定性：❄️ 防守躲熊态（红盘率 {red_ratio * 100:.1f}% < 38%）】** "
+            "已自动关闭 L3 个股进攻短信，仅保留持仓止损守护，握住现金不接飞刀。",
+        )
+    if red_ratio < 0.55:
+        return (
+            "CAUTIOUS",
+            f"🚦 **【气候定性：🟡 结构分化态（红盘率 {red_ratio * 100:.1f}%）】** "
+            "仅观察 Top 主线 ETF 及 3 日连续 L2+L3 低偏离（VWAP<=+1.8%）稳健中军，严禁追高。",
+        )
+    pulse = f"（5m广度 {d_red:+d} 家）" if abs(d_red) >= 300 else ""
+    return (
+        "ATTACK",
+        f"🚦 **【气候定性：🟢 顺势进攻态（红盘率 {red_ratio * 100:.1f}% >= 55%）】**{pulse} "
+        "广度共振确认，聚焦去重主线 ETF 与 L2+L3 中军均线承接买点（VWAP>+2.5%仍禁追高）。",
+    )
+
+
+def _is_wyckoff_steady_core(info: dict[str, Any], rps_v: float, chans: str) -> bool:
+    return bool(
+        info.get("l2_eligible")
+        and (info.get("l3_eligible") or info.get("is_candidate"))
+        and ("地量" in chans or "吸筹" in chans)
+        and rps_v <= 80.0
     )
 
 
@@ -558,10 +606,8 @@ def _scan_equities_and_etfs(
         rps_v = float(info.get("rps") or 0.0)
         if (
             sec
-            and info.get("l2_eligible")
-            and (info.get("l3_eligible") or info.get("is_candidate"))
-            and ("地量" in chans or "吸筹" in chans)
-            and 12.0 <= rps_v <= 80.0
+            and _is_wyckoff_steady_core(info, rps_v, chans)
+            and rps_v >= 12.0
             and 1.5 <= m["pct"] <= 4.8
             and 0.0 <= m["vwap_dev"] <= 2.0
             and m["amt_yi"] >= 1.5
@@ -584,8 +630,9 @@ def _scan_equities_and_etfs(
             buckets["stock_down"].append(
                 f"- **{sym} {m['name']}**：{m['last']:.2f} ({m['pct']:+.2f}%) | 5m急跌 **{dpct:.2f}%** | 均 {m['vwap']:.2f} ⚠️"
             )
+        regime, _ = classify_market_regime(red_count or 0, total_active)
         _check_wyckoff_signals(
-            sym, m, dpct, damt, info, red_ratio, coverage_ok, cooldowns, now_ts, buckets, alert_records
+            sym, m, dpct, damt, info, red_ratio, coverage_ok, cooldowns, now_ts, buckets, alert_records, regime=regime
         )
     _prepend_sector_resonances(
         sector_surges,
@@ -654,6 +701,8 @@ def _check_wyckoff_signals(
     now_ts: float,
     buckets: dict[str, list[str]],
     alert_records: list[dict[str, Any]],
+    *,
+    regime: str = "ATTACK",
 ) -> None:
     # L4 springboard is identity-based (A+B+C / launchpad); must NOT be gated by l2_eligible or upper_wick_pct.
     chans = "+".join(info.get("channels", []))
@@ -687,7 +736,7 @@ def _check_wyckoff_signals(
                 }
             )
         return
-    _check_wyckoff_ignition(sym, m, dpct, damt, info, chans, cooldowns, now_ts, buckets, alert_records)
+    _check_wyckoff_ignition(sym, m, dpct, damt, info, chans, cooldowns, now_ts, buckets, alert_records, regime=regime)
 
 
 def _check_wyckoff_ignition(
@@ -701,13 +750,15 @@ def _check_wyckoff_ignition(
     now_ts: float,
     buckets: dict[str, list[str]],
     alert_records: list[dict[str, Any]],
+    *,
+    regime: str = "ATTACK",
 ) -> None:
-    if not info.get("l2_eligible") or float(m.get("upper_wick_pct", 0.0)) > 2.0:
-        return
-    is_core_pool = bool(info.get("l3_eligible") or info.get("is_candidate"))
     rps_val = float(info.get("rps") or 0.0)
+    if float(m.get("upper_wick_pct", 0.0)) > 2.0 or not _is_wyckoff_steady_core(info, rps_val, chans):
+        return
     now_hm = datetime.fromtimestamp(now_ts, tz=CN_TZ).strftime("%H:%M")
     has_streak = int(info.get("streak_days") or 0) >= 2
+    max_vwap_dev = 1.8 if regime == "CAUTIOUS" else 2.0
     is_steady_push = (
         now_hm >= "10:30"
         and 24.0 <= rps_val <= 68.0
@@ -719,22 +770,21 @@ def _check_wyckoff_ignition(
     )
     is_standard_ign = dpct >= 1.8 and damt >= 0.30 and m["amt_yi"] >= 1.0
     if not (
-        is_core_pool
-        and ("地量" in chans or "吸筹" in chans)
-        and rps_val <= 80.0
-        and float(m.get("amp_pct", 0.0)) <= 6.5
+        float(m.get("amp_pct", 0.0)) <= 6.5
         and float(m.get("open_pct", 0.0)) >= -2.0
         and (is_standard_ign or is_steady_push)
         and 2.8 <= m["pct"] <= 5.0
-        and 0.0 <= m["vwap_dev"] <= 2.0
+        and 0.0 <= m["vwap_dev"] <= max_vwap_dev
     ):
         return
     f_tag = f" [{info['funnel_tag']}]" if info.get("funnel_tag") else ""
-    if now_hm < "10:30":
-        if _check_cooldown(cooldowns, f"L1:pre1030_obs:{sym}", now_ts):
+    if now_hm < "10:30" or regime == "DEFENSIVE":
+        obs_key = f"L1:pre1030_obs:{sym}" if now_hm < "10:30" else f"L1:defensive_obs:{sym}"
+        obs_note = "⏳[待10:30验钞观察]" if now_hm < "10:30" else "❄️[防守气候禁追·转观察]"
+        if _check_cooldown(cooldowns, obs_key, now_ts):
             buckets["l1_obs"].append(
                 f"- **{sym} {m['name']}** [{info.get('sector', '')}]：**{m['last']:.2f} ({m['pct']:+.2f}%)** | "
-                f"5m **+{dpct:.2f}%** (+{damt:.2f}亿) | 均 {m['vwap']:.2f} ⏳[待10:30验钞观察] | {chans}{f_tag} RPS={rps_val:.0f}"
+                f"5m **+{dpct:.2f}%** (+{damt:.2f}亿) | 均 {m['vwap']:.2f} {obs_note} | {chans}{f_tag} RPS={rps_val:.0f}"
             )
         return
     if _check_cooldown(cooldowns, f"L3:wyckoff_ignition:{sym}", now_ts):
@@ -929,6 +979,98 @@ def _is_unrolled_preopen_snapshot(curr_quotes: dict[str, dict[str, Any]], now_dt
     return False, 0.0
 
 
+def save_closing_mainline_anchors(
+    today_str: str,
+    curr_quotes: dict[str, dict[str, Any]],
+    l2_map: dict[str, dict[str, Any]],
+    anchors_path: Path | None = None,
+) -> None:
+    from telegraph_catalysts import rank_deduplicated_theme_etfs
+
+    target = anchors_path or MAINLINE_ANCHORS_PATH
+    etf_anchors = [
+        {"symbol": r["symbol"], "name": r["name"], "kind": "ETF", "theme": r["theme"], "close_pct": round(r["pct"], 2)}
+        for r in rank_deduplicated_theme_etfs(curr_quotes, min_amt_yi=1.0, top_n=2)
+    ]
+    stock_cands: list[tuple[float, dict[str, Any]]] = []
+    for sym, q in curr_quotes.items():
+        if not is_a_share(sym):
+            continue
+        info = l2_map.get(sym[:6], {})
+        m = compute_quote_metrics(q)
+        if (
+            not m
+            or not info.get("l2_eligible")
+            or m["amt_yi"] < 3.0
+            or not (2.0 <= m["pct"] <= 8.5)
+            or m["vwap_dev"] < 0
+        ):
+            continue
+        stock_cands.append(
+            (
+                m["amt_yi"] + int(info.get("streak_days") or 0) * 3.0,
+                {
+                    "symbol": sym,
+                    "name": info.get("name") or m["name"],
+                    "kind": "L2中军",
+                    "theme": info.get("sector", ""),
+                    "close_pct": round(m["pct"], 2),
+                },
+            )
+        )
+    stock_cands.sort(key=lambda x: -x[0])
+    items = etf_anchors + [x[1] for x in stock_cands[:4]]
+    if not items:
+        return
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps({"trade_date": today_str, "anchors": items}, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        return
+
+
+def scan_next_day_lps_pullbacks(
+    today_str: str,
+    now_hm: str,
+    curr_quotes: dict[str, dict[str, Any]],
+    prev_q: dict[str, dict[str, float]],
+    has_baseline: bool,
+    red_ratio: float | None,
+    anchors_path: Path | None = None,
+) -> str:
+    if not ("09:40" <= now_hm <= "11:30") or (red_ratio is not None and red_ratio < 0.38):
+        return ""
+    src = anchors_path or MAINLINE_ANCHORS_PATH
+    if not src.exists():
+        return ""
+    try:
+        payload = json.loads(src.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    anchor_date = str(payload.get("trade_date") or "")
+    if not anchor_date or anchor_date >= today_str:
+        return ""
+    hits: list[str] = []
+    for item in payload.get("anchors") or []:
+        sym = str(item.get("symbol") or "")
+        m = compute_quote_metrics(curr_quotes.get(sym, {}))
+        if not m:
+            continue
+        dpct = (m["pct"] - float((prev_q.get(sym) or {}).get("pct") or 0.0)) if has_baseline else 0.0
+        if (
+            -1.8 <= m["pct"] <= 2.8
+            and -0.3 <= m["vwap_dev"] <= 1.3
+            and m["last"] >= float((curr_quotes.get(sym) or {}).get("open") or m["last"]) * 0.997
+        ):
+            hits.append(
+                f"- **[{item.get('kind', '')}·{item.get('theme', '')}] `{sym}` {item.get('name', '')}**："
+                f"现价 **{m['last']:.3f} ({m['pct']:+.2f}%)** | VWAP乖离 **{m['vwap_dev']:+.2f}%** | 5m {dpct:+.2f}% 🎯均线分歧承接"
+            )
+    return (
+        (f"**🎯 次日主线分歧回踩承接窗（LPS，锚定 {anchor_date} 强势主线）**\n" + "\n".join(hits[:4])) if hits else ""
+    )
+
+
 def _enrich_mainline_and_telegraph(
     curr_quotes: dict[str, dict[str, Any]],
     prev_q: dict[str, dict[str, float]],
@@ -944,11 +1086,13 @@ def _enrich_mainline_and_telegraph(
     green_count: int | None = None,
     d_red: int | None = None,
     red_ratio: float | None = None,
+    anchors_path: Path | None = None,
 ) -> None:
     try:
         from telegraph_catalysts import (
             scan_live_telegraph_catalysts,
             summarize_national_team_etfs,
+            summarize_theme_etf_leadership,
             summarize_top_sector_mainlines,
             summarize_zero_bias_l2_leaders,
         )
@@ -957,6 +1101,7 @@ def _enrich_mainline_and_telegraph(
         if drift_note:
             buckets["warnings"].append(drift_note)
         now_dt = datetime.fromtimestamp(ts, tz=CN_TZ)
+        now_hm = now_dt.strftime("%H:%M")
         nt_summary, nt_l2_alert = summarize_national_team_etfs(
             curr_quotes,
             prev_q,
@@ -970,6 +1115,14 @@ def _enrich_mainline_and_telegraph(
         if nt_l2_alert and _check_cooldown(cooldowns, "L2:nt_etf_surge", ts):
             buckets["l2_events"].insert(0, nt_l2_alert)
             alert_records.append({"ts": ts, "level": "L2", "kind": "national_team_etf_surge"})
+        etf_lead = summarize_theme_etf_leadership(curr_quotes, red_ratio=red_ratio, now_hm=now_hm)
+        if etf_lead:
+            buckets["mainlines"].append(etf_lead)
+        lps_block = scan_next_day_lps_pullbacks(
+            now_dt.date().isoformat(), now_hm, curr_quotes, prev_q, has_baseline, red_ratio, anchors_path=anchors_path
+        )
+        if lps_block:
+            buckets["mainlines"].append(lps_block)
         mainline_summary = summarize_top_sector_mainlines(curr_quotes, l2_map)
         if mainline_summary:
             buckets["mainlines"].append(mainline_summary)
@@ -978,6 +1131,8 @@ def _enrich_mainline_and_telegraph(
             buckets["mainlines"].append(zero_bias_summary)
         if nt_summary:
             buckets["mainlines"].append(nt_summary)
+        if now_hm >= "14:55" and (red_count or 0) + (green_count or 0) >= 100 and (red_ratio or 0.0) >= 0.50:
+            save_closing_mainline_anchors(now_dt.date().isoformat(), curr_quotes, l2_map, anchors_path=anchors_path)
         if fetch_telegraph:
             buckets["telegraph"].extend(
                 scan_live_telegraph_catalysts(
@@ -988,7 +1143,7 @@ def _enrich_mainline_and_telegraph(
                     pages=1,
                     cooldowns=cooldowns,
                     now_ts=ts,
-                    now_hm=now_dt.strftime("%H:%M"),
+                    now_hm=now_hm,
                     red_ratio=red_ratio,
                 )
             )
@@ -997,15 +1152,106 @@ def _enrich_mainline_and_telegraph(
         buckets["warnings"].append(f"⚠️ **主线/电报扩展模块异常：{exc}**")
 
 
+def _is_active_intraday_minute(now_dt: datetime) -> bool:
+    hm = (now_dt.hour, now_dt.minute)
+    return (9, 35) <= hm <= (11, 28) or (13, 5) <= hm <= (14, 58)
+
+
+def _detect_stale_quote_feed(
+    curr_quotes: dict[str, dict[str, Any]],
+    prev_state: dict[str, Any],
+    has_baseline: bool,
+    now_dt: datetime,
+    now_ts: float,
+) -> bool:
+    if not has_baseline or not _is_active_intraday_minute(now_dt):
+        return False
+    prev_ts = float(prev_state.get("ts") or 0.0)
+    if now_ts - prev_ts < 210:
+        return False
+    prev_q = prev_state.get("quotes") or {}
+    sh_amt = float((curr_quotes.get("000001.SH") or {}).get("amount") or 0.0) / 1e8
+    sz_amt = float((curr_quotes.get("399001.SZ") or {}).get("amount") or 0.0) / 1e8
+    prev_tot = float((prev_q.get("000001.SH") or {}).get("amt_yi") or 0.0) + float(
+        (prev_q.get("399001.SZ") or {}).get("amt_yi") or 0.0
+    )
+    curr_tot = sh_amt + sz_amt
+    return curr_tot > 500.0 and prev_tot > 500.0 and abs(curr_tot - prev_tot) < 0.05
+
+
+def _fetch_sina_holding_quotes(symbols: list[str]) -> dict[str, dict[str, Any]]:
+    if not symbols:
+        return {}
+    sina_pairs = []
+    for sym in symbols:
+        code, _, ex = sym.partition(".")
+        if ex in ("SH", "SZ", "BJ") and len(code) == 6:
+            sina_pairs.append((sym, f"{ex.lower()}{code}"))
+    if not sina_pairs:
+        return {}
+    try:
+        req = urllib.request.Request(
+            "https://hq.sinajs.cn/list=" + ",".join(sc for _, sc in sina_pairs),
+            headers={"Referer": "https://finance.sina.com.cn", "User-Agent": "Mozilla/5.0"},
+        )
+        raw = urllib.request.urlopen(req, timeout=4.0).read().decode("gbk", errors="ignore")
+    except Exception as exc:
+        print(f"[WARN] Sina holding fallback failed: {exc}", file=sys.stderr)
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for (sym, _), line in zip(sina_pairs, raw.strip().splitlines()):
+        if '"' not in line:
+            continue
+        p = line.split('"', 1)[1].rsplit('"', 1)[0].split(",")
+        if len(p) >= 10 and float(p[3] or 0.0) > 0 and float(p[2] or 0.0) > 0:
+            out[sym] = {
+                "symbol": sym,
+                "name": p[0],
+                "open": float(p[1] or p[2]),
+                "prev_close": float(p[2]),
+                "last_price": float(p[3]),
+                "high": float(p[4] or p[3]),
+                "low": float(p[5] or p[3]),
+                "volume": float(p[8] or 0.0),
+                "amount": float(p[9] or 0.0),
+            }
+    return out
+
+
+def _record_missing_holding_gaps(
+    holdings: dict[str, dict[str, Any]],
+    curr_quotes: dict[str, dict[str, Any]],
+    cooldowns: dict[str, float],
+    ts: float,
+    buckets: dict[str, list[str]],
+    alert_records: list[dict[str, Any]],
+) -> None:
+    missing_holdings = holdings_missing_quote_symbols(holdings, curr_quotes)
+    if not missing_holdings:
+        return
+    joined = ", ".join(missing_holdings[:8])
+    more = f" 等{len(missing_holdings)}只" if len(missing_holdings) > 8 else ""
+    buckets["warnings"].append(f"⚠️ **持仓行情缺口：{joined}{more} 本帧无有效报价，止损/急跌/做T 监控已跳过这些标的**")
+    fresh_gap = [sym for sym in missing_holdings if _check_cooldown(cooldowns, f"L2:holding_quote_gap:{sym}", ts)]
+    if fresh_gap:
+        gap_joined = ", ".join(fresh_gap[:8])
+        gap_more = f" 等{len(fresh_gap)}只" if len(fresh_gap) > 8 else ""
+        buckets["l2_events"].insert(
+            0, f"- 🟡 **【持仓行情缺口】** {gap_joined}{gap_more} 无报价，破位止损电话本帧无法判定"
+        )
+        alert_records.append({"ts": ts, "level": "L2", "kind": "holding_quote_gap", "symbols": fresh_gap})
+
+
 def analyze_snapshot_diff(
     curr_quotes: dict[str, dict[str, Any]],
     prev_state: dict[str, Any],
     l2_map: dict[str, dict[str, Any]],
-    holdings: dict[str, dict[str, float]],
+    holdings: dict[str, dict[str, Any]],
     now_ts: float | None = None,
     turnover_dir: Path | None = None,
     alert_log_path: Path | None = None,
     fetch_telegraph: bool = False,
+    anchors_path: Path | None = None,
 ) -> tuple[str, str, str, int, dict[str, float]]:
     ts = now_ts if now_ts is not None else time.time()
     today_date = cn_today()
@@ -1025,22 +1271,12 @@ def analyze_snapshot_diff(
             0,
             cooldowns,
         )
-
-    sh = curr_quotes.get("000001.SH", {})
-    sz = curr_quotes.get("399001.SZ", {})
+    sh, sz = curr_quotes.get("000001.SH", {}), curr_quotes.get("399001.SZ", {})
     sh_m, sz_m = compute_quote_metrics(sh), compute_quote_metrics(sz)
-    sh_amt = float(sh.get("amount") or 0.0) / 1e8
-    sz_amt = float(sz.get("amount") or 0.0) / 1e8
+    sh_amt, sz_amt = float(sh.get("amount") or 0.0) / 1e8, float(sz.get("amount") or 0.0) / 1e8
     index_ok = sh_m is not None and sz_m is not None and sh_amt > 0 and sz_amt > 0
     tot_amt_yi = (sh_amt + sz_amt) if index_ok else 0.0
-    sh_pct = sh_m["pct"] if sh_m else 0.0
-    sz_pct = sz_m["pct"] if sz_m else 0.0
-    index_gap_warn = (
-        "⚠️ **指数数据缺口：缺少 000001.SH 或 399001.SZ 完整报价，两市成交额暂不合并计算。**"
-        if not index_ok and ("000001.SH" in curr_quotes or "399001.SZ" in curr_quotes or len(curr_quotes) >= 50)
-        else ""
-    )
-
+    sh_pct, sz_pct = (sh_m["pct"] if sh_m else 0.0), (sz_m["pct"] if sz_m else 0.0)
     red_count, green_count, d_red, red_ratio, coverage_ok, gap_msg = _compute_breadth_and_coverage(
         curr_quotes, prev_q, has_baseline
     )
@@ -1062,38 +1298,19 @@ def analyze_snapshot_diff(
         total_active=red_count + green_count,
     )
     buckets["l2_events"] = h_l2 + buckets["l2_events"]
-    buckets["l3"] = h_l3 + buckets["l3"]
-    buckets["l4"] = h_l4 + buckets["l4"]
-    missing_holdings = holdings_missing_quote_symbols(holdings, curr_quotes)
-    if missing_holdings:
-        joined = ", ".join(missing_holdings[:8])
-        more = f" 等{len(missing_holdings)}只" if len(missing_holdings) > 8 else ""
+    buckets["l3"], buckets["l4"] = h_l3 + buckets["l3"], h_l4 + buckets["l4"]
+    _, regime_banner = classify_market_regime(red_count, red_count + green_count, d_red=d_red)
+    if regime_banner:
+        buckets["warnings"].append(regime_banner)
+    if _detect_stale_quote_feed(curr_quotes, prev_state, has_baseline, now_dt, ts):
         buckets["warnings"].append(
-            f"⚠️ **持仓行情缺口：{joined}{more} 本帧无有效报价，止损/急跌/做T 监控已跳过这些标的**"
+            "⚠️ **行情源疑似冻盘：交易时段两市成交额较上一帧零增长，持仓已启用新浪实时行情兜底守护。**"
         )
-        # Per-symbol keys: a shared L2:holding_quote_gap stamp muted later gaps for
-        # other holdings within 1800s, dropping the frame to L1 so Feishu (esp.
-        # --urgent-only) never warned that stop monitoring was blind.
-        fresh_gap = [sym for sym in missing_holdings if _check_cooldown(cooldowns, f"L2:holding_quote_gap:{sym}", ts)]
-        if fresh_gap:
-            gap_joined = ", ".join(fresh_gap[:8])
-            gap_more = f" 等{len(fresh_gap)}只" if len(fresh_gap) > 8 else ""
-            buckets["l2_events"].insert(
-                0, f"- 🟡 **【持仓行情缺口】** {gap_joined}{gap_more} 无报价，破位止损电话本帧无法判定"
-            )
-            alert_records.append(
-                {
-                    "ts": ts,
-                    "level": "L2",
-                    "kind": "holding_quote_gap",
-                    "symbols": fresh_gap,
-                }
-            )
+    _record_missing_holding_gaps(holdings, curr_quotes, cooldowns, ts, buckets, alert_records)
     if gap_msg:
         buckets["warnings"].append(gap_msg)
-    if index_gap_warn:
-        buckets["warnings"].append(index_gap_warn)
-
+    if not index_ok and ("000001.SH" in curr_quotes or "399001.SZ" in curr_quotes or len(curr_quotes) >= 50):
+        buckets["warnings"].append("⚠️ **指数数据缺口：缺少 000001.SH 或 399001.SZ 完整报价，两市成交额暂不合并计算。**")
     _enrich_mainline_and_telegraph(
         curr_quotes,
         prev_q,
@@ -1109,16 +1326,15 @@ def analyze_snapshot_diff(
         green_count=green_count,
         d_red=d_red,
         red_ratio=red_ratio,
+        anchors_path=anchors_path,
     )
-
     if coverage_ok and abs(d_red) >= 400 and _check_cooldown(cooldowns, "L2:breadth", ts):
         buckets["l2_events"].insert(
             0,
             f"- 🟡 **【市场情绪5m骤变】** 红盘家数 5 分钟变化 **{d_red:+d} 家**（当前红 {red_count} / 绿 {green_count}）",
         )
         alert_records.append({"ts": ts, "level": "L2", "kind": "breadth_shock", "d_red": d_red, "red": red_count})
-
-    now_hm = datetime.fromtimestamp(ts, tz=CN_TZ).strftime("%H:%M")
+    now_hm = now_dt.strftime("%H:%M")
     turnover_summary = update_and_compare_turnover(today_date, now_hm, tot_amt_yi, index_ok, turnover_dir=turnover_dir)
     _LAST_ALERT_RECORDS[:] = alert_records
     if alert_log_path is not None:
@@ -1136,7 +1352,7 @@ def analyze_snapshot_diff(
         d_red,
         h_lines,
         buckets,
-        has_trace=bool(l2_map),
+        bool(l2_map),
     )
     return level, title, body, red_count, cooldowns
 
@@ -1412,6 +1628,11 @@ def run_once(args: argparse.Namespace) -> None:
     curr_quotes = _backfill_holding_quotes(
         client, client.get_quotes(universes=["CN_Equity_A", "CN_ETF", "CN_Index"]), holdings
     )
+    has_base = _is_fresh_baseline(prev_state, cn_today().isoformat(), now_ts)
+    if holdings and _detect_stale_quote_feed(curr_quotes, prev_state, has_base, now_bjt, now_ts):
+        sina_hq = _fetch_sina_holding_quotes(list(holdings))
+        if sina_hq:
+            curr_quotes = {**curr_quotes, **sina_hq}
     unrolled_preopen, _ = _is_unrolled_preopen_snapshot(curr_quotes, now_bjt)
     level, title, content, red_count, cooldowns = analyze_snapshot_diff(
         curr_quotes, prev_state, l2_map, holdings, now_ts=now_ts, fetch_telegraph=not args.dry_run

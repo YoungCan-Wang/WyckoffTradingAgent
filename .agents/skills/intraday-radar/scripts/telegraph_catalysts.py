@@ -41,10 +41,47 @@ NATIONAL_TEAM_20_ETFS: dict[str, str] = {
     "159919.SZ": "沪深300ETF嘉实",
 }
 
+BLUECHIP_FLOOR_ETFS: frozenset[str] = frozenset(
+    {"510310.SH", "510300.SH", "510050.SH", "510210.SH", "159919.SZ", "563360.SH", "159352.SZ", "159338.SZ"}
+)
+
+# 按底层赛道去重的代表性高流动性行业 ETF（同主题多只通过 THEME_ETF_KEYWORDS 归一去重）
+THEME_ETF_UNIVERSE: list[tuple[str, str, list[str]]] = [
+    ("物理AI/机器人", "159530.SZ", ["机器人", "具身"]),
+    ("工业母机/高端制造", "159667.SZ", ["工业母机", "机床", "高端装备", "智能制造", "机械"]),
+    ("通信/CPO算力", "515880.SH", ["通信", "5G", "光模块"]),
+    ("半导体/芯片", "512480.SH", ["半导体", "芯片", "集成电路", "科创芯片"]),
+    ("AI应用/软件", "159819.SZ", ["人工智能", "软件", "大数据", "云计算", "计算机", "传媒", "影视", "游戏"]),
+    ("智能汽车/汽配", "515250.SH", ["智能汽车", "汽车", "新能车"]),
+    ("消费电子/端侧", "159732.SZ", ["消费电子", "电子", "VR"]),
+    ("锂电/储能", "159755.SZ", ["电池", "储能", "锂电", "新能源"]),
+    ("光伏/绿电", "515790.SH", ["光伏", "电力", "绿电", "电网"]),
+    ("黄金/贵金属", "518880.SH", ["黄金", "上海金", "金ETF"]),
+    ("有色/战略矿产", "512400.SH", ["有色", "稀土", "矿业", "化工"]),
+    ("医药/创新药", "512010.SH", ["医药", "医疗", "创新药", "生物", "中药"]),
+    ("国防军工", "512660.SH", ["军工", "国防", "航空", "航天", "卫星"]),
+    ("券商/多元金融", "512000.SH", ["证券", "券商", "金融科技", "保险", "银行"]),
+    ("高股息红利", "515080.SH", ["红利", "高股息", "央企", "煤炭"]),
+]
+
 CATALYST_THEMES: list[tuple[str, list[str], list[str]]] = [
     (
-        "🤖 机器人/具身智能",
-        ["机器人", "具身智能", "PEEK", "减速器", "滚珠丝杠", "丝杠", "灵巧手", "宇树", "智元", "外骨骼"],
+        "🤖 物理AI/机器人/具身智能",
+        [
+            "物理AI",
+            "世界模型",
+            "机器人",
+            "具身智能",
+            "工业母机",
+            "PEEK",
+            "减速器",
+            "滚珠丝杠",
+            "丝杠",
+            "灵巧手",
+            "宇树",
+            "智元",
+            "外骨骼",
+        ],
         ["汽车配件", "机械基件", "机床制造", "专用机械", "电器仪表"],
     ),
     (
@@ -53,8 +90,24 @@ CATALYST_THEMES: list[tuple[str, list[str], list[str]]] = [
         ["影视音像", "广告包装", "出版业", "互联网", "文教休闲"],
     ),
     (
-        "💻 算力/AI云/芯片",
-        ["算力", "大模型", "云计算", "光模块", "芯片", "半导体", "信创", "智算中心", "液冷", "AI服务器", "晶圆"],
+        "💻 算力/CPO/端侧芯片",
+        [
+            "算力",
+            "大模型",
+            "云计算",
+            "光模块",
+            "CPO",
+            "PCB",
+            "高速铜缆",
+            "端侧",
+            "芯片",
+            "半导体",
+            "信创",
+            "智算中心",
+            "液冷",
+            "AI服务器",
+            "晶圆",
+        ],
         ["软件服务", "IT设备", "半导体", "通信设备", "元器件"],
     ),
     (
@@ -513,6 +566,8 @@ def summarize_national_team_etfs(
     prev_map = prev_q or {}
     tot_amt = 0.0
     tot_damt = 0.0
+    bluechip_amt = 0.0
+    growth_amt = 0.0
     movers: list[tuple[float, float, str]] = []
     for sym, label in NATIONAL_TEAM_20_ETFS.items():
         q = curr_quotes.get(sym, {})
@@ -520,6 +575,10 @@ def summarize_national_team_etfs(
         if amt_yi <= 0:
             continue
         tot_amt += amt_yi
+        if sym in BLUECHIP_FLOOR_ETFS:
+            bluechip_amt += amt_yi
+        else:
+            growth_amt += amt_yi
         prev_amt = float((prev_map.get(sym) or {}).get("amt_yi") or 0.0) if has_baseline else amt_yi
         damt = max(0.0, amt_yi - prev_amt) if has_baseline else 0.0
         tot_damt += damt
@@ -539,7 +598,8 @@ def summarize_national_team_etfs(
     now_hm = dt.strftime("%H:%M")
     same_ts_cmp = _compare_nt_etf_same_timestamp(dt.date(), now_hm, tot_amt, turnover_dir=turnover_dir)
     pulse_tag = f" [5m: +{tot_damt:.1f}亿]" if has_baseline and tot_damt > 0 else ""
-    summary = f"🏦 **国家队20大重点ETF**：合计成交 **{tot_amt:.1f}亿**{pulse_tag}（{same_ts_cmp}）| 领头：{top_str}"
+    split_tag = f"（护盘蓝筹 {bluechip_amt:.1f}亿 / 成长弹性 {growth_amt:.1f}亿）"
+    summary = f"🏦 **国家队20大重点ETF**：合计成交 **{tot_amt:.1f}亿**{pulse_tag}{split_tag}（{same_ts_cmp}）| 领头：{top_str}"
     is_post_opening_rush = now_hm > "09:45"
     has_full_breadth = red_count is not None and (red_count + (green_count or 0)) >= 100
     is_defensive_floor = has_full_breadth and (red_count < 2000 or (d_red is not None and d_red <= 0))
@@ -606,6 +666,100 @@ def summarize_top_sector_mainlines(
             f"- **{sec}**：板块均涨 **{avg_pct:+.2f}%** | 红盘率 **{red_ratio:.0f}%** ({red_n}/{tot_n}) | 龙头：{leader}{w_tag}"
         )
     return ("**🔥 全市场真实主线板块 TOP 3（均涨 & 红盘率）**\n" + "\n".join(lines)) if lines else ""
+
+
+def _classify_etf_theme_bucket(sym: str, name: str) -> str:
+    broad_markers = (
+        "沪深300",
+        "上证50",
+        "上证180",
+        "中证500",
+        "中证800",
+        "中证1000",
+        "中证2000",
+        "A500",
+        "A50",
+        "创业板",
+        "科创50",
+        "科创100",
+        "科创200",
+        "科创创业",
+        "双创",
+        "深证100",
+        "主动ETF",
+    )
+    if sym in NATIONAL_TEAM_20_ETFS or any(w in name for w in broad_markers):
+        return ""
+    for bucket, anchor_sym, kws in THEME_ETF_UNIVERSE:
+        if sym == anchor_sym or any(k in name for k in kws):
+            return bucket
+    stem = name.split("ETF")[0].strip() if "ETF" in name else name[:6]
+    return stem or sym
+
+
+def rank_deduplicated_theme_etfs(
+    curr_quotes: dict[str, dict[str, Any]],
+    *,
+    min_amt_yi: float = 0.5,
+    top_n: int = 4,
+) -> list[dict[str, Any]]:
+    best_by_theme: dict[str, dict[str, Any]] = {}
+    for sym, q in (curr_quotes or {}).items():
+        if not ((sym.endswith(".SH") and sym[:2] in ("51", "56", "58")) or (sym.endswith(".SZ") and sym[:2] == "15")):
+            continue
+        last = float(q.get("last_price") or q.get("price") or 0.0)
+        pre = float(q.get("prev_close") or 0.0)
+        amt_yi = float(q.get("amount") or 0.0) / 1e8 if "amount" in q else float(q.get("amt_yi") or 0.0)
+        if last <= 0 or pre <= 0 or amt_yi < min_amt_yi:
+            continue
+        name = str((q.get("ext") or {}).get("name") or q.get("name") or sym)
+        bucket = _classify_etf_theme_bucket(sym, name)
+        if not bucket:
+            continue
+        vwap = _resolve_vwap(q, last)
+        pct = (last / pre - 1.0) * 100.0
+        v_dev = (last / vwap - 1.0) * 100.0 if vwap > 0 else 0.0
+        cand = {
+            "theme": bucket,
+            "symbol": sym,
+            "name": name,
+            "last": last,
+            "pct": pct,
+            "vwap_dev": v_dev,
+            "amt_yi": amt_yi,
+        }
+        prev = best_by_theme.get(bucket)
+        if prev is None or (amt_yi > prev["amt_yi"] * 1.25) or (amt_yi >= prev["amt_yi"] * 0.6 and pct > prev["pct"]):
+            best_by_theme[bucket] = cand
+    ranked = [v for v in best_by_theme.values() if v["pct"] > 0.3 and v["vwap_dev"] >= -0.2]
+    ranked.sort(key=lambda r: (r["pct"], r["amt_yi"]), reverse=True)
+    return ranked[:top_n]
+
+
+def summarize_theme_etf_leadership(
+    curr_quotes: dict[str, dict[str, Any]],
+    *,
+    red_ratio: float | None = None,
+    now_hm: str = "",
+) -> str:
+    leaders = rank_deduplicated_theme_etfs(curr_quotes, min_amt_yi=0.5, top_n=4)
+    if not leaders:
+        return ""
+    lines: list[str] = []
+    for item in leaders:
+        vd = item["vwap_dev"]
+        pct = item["pct"]
+        if vd > 2.5 or pct > 4.5:
+            zone = "⛔偏离过高禁追·等次日回踩"
+        elif (red_ratio is None or red_ratio >= 0.38) and now_hm >= "09:50" and 1.0 <= pct <= 3.5 and 0.0 <= vd <= 1.6:
+            zone = "🎯黄金低偏离起涨窗"
+        else:
+            zone = "👀均线上观察"
+        lines.append(
+            f"- **[{item['theme']}] `{item['symbol']}` {item['name']}**：现价 **{item['last']:.3f} ({pct:+.2f}%)** | "
+            f"VWAP乖离 **{vd:+.2f}%** | 额 {item['amt_yi']:.2f}亿 | {zone}"
+        )
+    return "**🏆 去重主题 ETF 主航道（同赛道仅留流动性龙头）**\n" + "\n".join(lines)
 
 
 def _resolve_vwap(q: dict[str, Any], last: float) -> float:

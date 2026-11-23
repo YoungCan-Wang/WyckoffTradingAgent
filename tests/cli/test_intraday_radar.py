@@ -1873,3 +1873,180 @@ def test_capex_fcf_headwind_warning_and_freeze_sector_resonance_tag() -> None:
         total_active=5400,
     )
     assert "高相关性冰点" not in buckets_warm["l2_events"][0]
+
+
+def test_three_layer_core_regime_gate_etf_dedup_lps_and_freeze_fallback(tmp_path, monkeypatch) -> None:
+    import sys
+
+    sys.path.insert(0, str(SCRIPT_PATH.parent))
+    import telegraph_catalysts as tc
+
+    radar = _load_radar_module()
+    today_d = cn_today()
+    today = today_d.isoformat()
+    ts_1040 = datetime(today_d.year, today_d.month, today_d.day, 10, 40, tzinfo=CN_TZ).timestamp()
+
+    # 1) Layer 1: DEFENSIVE climate (<38% red with >=100 active stocks) blocks L3 SMS and downgrades to L1 observation
+    prev_q: dict[str, dict[str, float]] = {
+        "000001.SH": {"pct": -1.2, "amt_yi": 3000.0},
+        "399001.SZ": {"pct": -1.5, "amt_yi": 4000.0},
+    }
+    curr_q: dict[str, dict[str, object]] = {
+        "000001.SH": {
+            "symbol": "000001.SH",
+            "last_price": 3450.0,
+            "prev_close": 3500.0,
+            "volume": 1e9,
+            "amount": 3000e8,
+        },
+        "399001.SZ": {
+            "symbol": "399001.SZ",
+            "last_price": 10800.0,
+            "prev_close": 11000.0,
+            "volume": 1e9,
+            "amount": 4000e8,
+        },
+    }
+    for i in range(120):
+        sym = f"{600100 + i:06d}.SH"
+        is_red = i < 25  # 25/121 ~= 20.7% < 38% -> DEFENSIVE
+        prev_q[sym] = {"pct": 0.2 if is_red else -1.5, "amt_yi": 0.5}
+        curr_q[sym] = {
+            "symbol": sym,
+            "last_price": 10.05 if is_red else 9.80,
+            "prev_close": 10.0,
+            "volume": 5e6,
+            "amount": 0.52e8,
+            "ext": {"name": f"样本{i}"},
+        }
+    prev_q["688001.SH"] = {"pct": 1.0, "amt_yi": 0.8}
+    curr_q["688001.SH"] = {
+        "symbol": "688001.SH",
+        "last_price": 10.35,
+        "prev_close": 10.0,
+        "volume": 1.2e7,
+        "amount": 1.236e8,
+        "ext": {"name": "逆势孤立芯"},
+    }
+    l2_map = {
+        "688001": {
+            "name": "逆势孤立芯",
+            "sector": "半导体",
+            "rps": 30.0,
+            "l2_eligible": True,
+            "l3_eligible": True,
+            "is_candidate": True,
+            "channels": ["地量蓄势"],
+            "streak_days": 3,
+        }
+    }
+    holdings = radar.parse_holdings_arg(["600519:100.0:95.0:DEF"])
+    assert holdings["600519.SH"]["role"] == "DEF"
+    curr_q["600519.SH"] = {
+        "symbol": "600519.SH",
+        "last_price": 104.5,
+        "prev_close": 100.0,
+        "volume": 1e6,
+        "amount": 1.04e8,
+        "ext": {"name": "防守测试"},
+    }
+    prev_state = {"date": today, "ts": ts_1040 - 300.0, "red": 25, "cooldowns": {}, "quotes": prev_q}
+    level_def, _, body_def, _, _ = radar.analyze_snapshot_diff(
+        curr_q, prev_state, l2_map, holdings, now_ts=ts_1040, turnover_dir=tmp_path / "to_def"
+    )
+    assert level_def == "L1"  # L3 SMS blocked in bear freeze!
+    assert "防守躲熊态" in body_def
+    assert "❄️[防守气候禁追·转观察]" in body_def
+    assert "行情源疑似冻盘" in body_def  # 3000+4000 == 7000 unchanged across 300s active session!
+    assert "[🛡️防守]" in body_def
+    assert "建议止损上移保本线100.00" in body_def
+
+    # 2) Layer 2: Deduplicated Theme ETF leadership merges multiple robotics ETFs & flags low-bias vs overextended
+    etf_q = {
+        "159530.SZ": {
+            "last_price": 1.020,
+            "prev_close": 1.000,
+            "amount": 5.0e8,
+            "vwap": 1.010,
+            "ext": {"name": "机器人ETF易方达"},
+        },
+        "562500.SH": {
+            "last_price": 0.812,
+            "prev_close": 0.800,
+            "amount": 2.0e8,
+            "vwap": 0.806,
+            "ext": {"name": "机器人ETF华夏"},
+        },
+        "515880.SH": {
+            "last_price": 1.060,
+            "prev_close": 1.000,
+            "amount": 8.0e8,
+            "vwap": 1.020,
+            "ext": {"name": "通信ETF"},
+        },
+        "510300.SH": {
+            "last_price": 4.020,
+            "prev_close": 4.000,
+            "amount": 30.0e8,
+            "vwap": 4.010,
+            "ext": {"name": "沪深300ETF"},
+        },
+    }
+    etf_md = tc.summarize_theme_etf_leadership(etf_q, red_ratio=0.60, now_hm="10:15")
+    assert etf_md.count("物理AI/机器人") == 1  # Deduplicated!
+    assert "159530.SZ" in etf_md and "🎯黄金低偏离起涨窗" in etf_md
+    assert "515880.SH" in etf_md and "⛔偏离过高禁追" in etf_md
+    nt_sum, _ = tc.summarize_national_team_etfs({"510300.SH": {"amount": 30e8}, "159915.SZ": {"amount": 90e8}})
+    assert "护盘蓝筹 30.0亿 / 成长弹性 90.0亿" in nt_sum
+    phys_theme, _ = tc.match_theme_and_candidates("宇树启动物理AI与世界模型自进化计划", l2_map)
+    assert "物理AI" in phys_theme
+
+    # 3) Layer 3: Closing mainline anchors persist on Day 1 and surface LPS pullback-to-VWAP on Day 2
+    anchors_file = tmp_path / "anchors.json"
+    day1_quotes = {
+        **etf_q,
+        "601689.SH": {
+            "symbol": "601689.SH",
+            "last_price": 52.5,
+            "prev_close": 50.0,
+            "volume": 1e7,
+            "amount": 5.2e8,
+            "vwap": 51.8,
+            "ext": {"name": "拓普集团"},
+        },
+    }
+    l2_day1 = {"601689": {"name": "拓普集团", "sector": "汽车配件", "l2_eligible": True, "streak_days": 2}}
+    radar.save_closing_mainline_anchors("2026-11-20", day1_quotes, l2_day1, anchors_path=anchors_file)
+    day2_quotes = {
+        "159530.SZ": {
+            "last_price": 1.015,
+            "prev_close": 1.020,
+            "open": 1.012,
+            "volume": 2e8,
+            "amount": 2.024e8,
+            "vwap": 1.012,
+        },
+        "601689.SH": {
+            "last_price": 52.8,
+            "prev_close": 52.5,
+            "open": 52.2,
+            "volume": 8e6,
+            "amount": 4.2e8,
+            "vwap": 52.5,
+        },
+    }
+    lps_md = radar.scan_next_day_lps_pullbacks(
+        "2026-11-23", "10:05", day2_quotes, {"601689.SH": {"pct": 0.1}}, True, 0.52, anchors_path=anchors_file
+    )
+    assert "次日主线分歧回踩承接窗" in lps_md
+    assert "159530.SZ" in lps_md and "601689.SH" in lps_md
+
+    # 4) Sina HQ fallback parses live row cleanly when feed is frozen
+    fake_sina = 'var hq_str_sz000543="皖能电力,7.65,7.68,7.40,7.66,7.39,7.40,7.41,15000000,112500000,0";\n'
+    monkeypatch.setattr(
+        radar.urllib.request,
+        "urlopen",
+        lambda req, timeout=4.0: SimpleNamespace(read=lambda: fake_sina.encode("gbk")),
+    )
+    sina_map = radar._fetch_sina_holding_quotes(["000543.SZ"])
+    assert sina_map["000543.SZ"]["last_price"] == 7.40
