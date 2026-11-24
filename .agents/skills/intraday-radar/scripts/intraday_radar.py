@@ -272,6 +272,8 @@ def _parse_trace_symbols(data: dict[str, Any], springboards: set[str]) -> dict[s
             "l2_eligible": bool(s.get("l2_eligible")),
             "l3_eligible": bool(s.get("l3_eligible")),
             "is_candidate": stage == "候选池已捕获",
+            "stage": stage,
+            "shadow_lane": str(s.get("shadow_lane") or ""),
             "channels": chans,
             "is_springboard": is_sb,
         }
@@ -295,7 +297,13 @@ def _merge_multi_day_l2_maps(daily_maps: list[dict[str, dict[str, Any]]]) -> dic
             info["streak_days"] = int(bool(info.get("l2_eligible")))
             info["funnel_tag"] = ""
             continue
-        core_now = bool(info.get("l2_eligible") and (info.get("l3_eligible") or info.get("is_candidate")))
+        chans_s = "+".join(info.get("channels") or [])
+        is_pre = info.get("shadow_lane") == "pre_breakout"
+        is_main = "主升" in chans_s
+        core_now = bool(
+            (info.get("l2_eligible") or is_pre)
+            and (info.get("l3_eligible") or info.get("is_candidate") or is_pre or is_main)
+        )
         core_priors = sum(1 for p in p_rows if p.get("l2_eligible") and (p.get("l3_eligible") or p.get("is_candidate")))
         l2_priors = sum(1 for p in p_rows if p.get("l2_eligible"))
         cand_all = bool(info.get("l2_eligible") and info.get("is_candidate")) and all(
@@ -307,8 +315,8 @@ def _merge_multi_day_l2_maps(daily_maps: list[dict[str, dict[str, Any]]]) -> dic
             info["funnel_tag"] = f"🏆{n_days}日候选连入"
         elif core_now and core_priors >= 1:
             info["funnel_tag"] = f"🔥{core_priors + 1}日L2+L3连入"
-        elif core_now and l2_priors == 0 and not info.get("is_springboard"):
-            # Reject isolated T-1 single-day impulse entrants with zero T-2/T-3 L2 history
+        elif core_now and l2_priors == 0 and not info.get("is_springboard") and not is_main and not is_pre:
+            # Reject isolated T-1 single-day dry-vol/accum impulse entrants with zero T-2/T-3 L2 history
             info["t1_isolated_spike"] = True
             info["l3_eligible"] = False
             info["is_candidate"] = False
@@ -495,12 +503,15 @@ def classify_market_regime(red_count: int, total_active: int, d_red: int = 0) ->
 
 
 def _is_wyckoff_steady_core(info: dict[str, Any], rps_v: float, chans: str) -> bool:
-    return bool(
+    main_rise = bool(info.get("l2_eligible") and "主升" in chans and 55.0 <= rps_v <= 88.0)
+    pre_brk = bool(info.get("shadow_lane") == "pre_breakout" and 50.0 <= rps_v <= 88.0)
+    accum = bool(
         info.get("l2_eligible")
         and (info.get("l3_eligible") or info.get("is_candidate"))
         and ("地量" in chans or "吸筹" in chans)
         and rps_v <= 80.0
     )
+    return main_rise or pre_brk or accum
 
 
 def _evaluate_holdings(
@@ -627,17 +638,23 @@ def _scan_equities_and_etfs(
             sec
             and _is_wyckoff_steady_core(info, rps_v, chans)
             and rps_v >= 12.0
-            and 1.5 <= m["pct"] <= 4.8
+            and 1.5 <= m["pct"] <= 6.8
             and 0.0 <= m["vwap_dev"] <= 2.0
             and m["amt_yi"] >= 1.5
             and m.get("upper_wick_pct", 0.0) <= 1.2
         ):
             sector_leaders[sec].append(
-                (m["amt_yi"], f"`{sym[:6]}` {m['name']}({m['last']:.2f} {m['pct']:+.1f}%·{chans})")
+                (
+                    m["amt_yi"],
+                    f"`{sym[:6]}` {m['name']}({m['last']:.2f} {m['pct']:+.1f}%·{chans or info.get('shadow_lane', '')})",
+                )
             )
         if dpct >= 2.5 and damt >= 0.30 and m["last"] >= m["vwap"]:
             is_steady = (
-                bool(info.get("l2_eligible")) and rps_v <= 80.0 and m["pct"] <= 5.0 and m.get("amp_pct", 0.0) <= 6.5
+                bool(info.get("l2_eligible") or info.get("shadow_lane") == "pre_breakout")
+                and rps_v <= 88.0
+                and m["pct"] <= 6.8
+                and m.get("amp_pct", 0.0) <= 6.5
             )
             style_tag = "🟢L2稳健" if is_steady else "⚠️妖股/高位勿追"
             buckets["stock_up"].append(
@@ -807,7 +824,7 @@ def _check_wyckoff_ignition(
     max_vwap_dev = 1.8 if regime == "CAUTIOUS" else 2.0
     is_steady_push = (
         now_hm >= "10:30"
-        and 24.0 <= rps_val <= 68.0
+        and 24.0 <= rps_val <= 88.0
         and float(m.get("upper_wick_pct", 0.0)) <= 1.0
         and float(m.get("amp_pct", 0.0)) <= 5.5
         and dpct >= 1.2
@@ -819,50 +836,26 @@ def _check_wyckoff_ignition(
         float(m.get("amp_pct", 0.0)) <= 6.5
         and float(m.get("open_pct", 0.0)) >= -2.0
         and (is_standard_ign or is_steady_push)
-        and 2.8 <= m["pct"] <= 5.0
+        and 2.5 <= m["pct"] <= 6.8
         and 0.0 <= m["vwap_dev"] <= max_vwap_dev
     ):
         return
     f_tag = f" [{info['funnel_tag']}]" if info.get("funnel_tag") else ""
     chip_locked = chip_regime == "CHIP_DUMP_LOCK" and now_hm < "14:35"
-    if now_hm < "10:30" or regime == "DEFENSIVE" or chip_locked:
-        obs_key = (
-            f"L1:pre1030_obs:{sym}"
-            if now_hm < "10:30"
-            else (f"L1:chip_lock_obs:{sym}" if chip_locked else f"L1:defensive_obs:{sym}")
-        )
-        obs_note = (
-            "⏳[待10:30验钞观察]"
-            if now_hm < "10:30"
-            else ("💣[T+1筹码兑现期禁追·转观察]" if chip_locked else "❄️[防守气候禁追·转观察]")
-        )
-        if _check_cooldown(cooldowns, obs_key, now_ts):
-            buckets["l1_obs"].append(
-                f"- **{sym} {m['name']}** [{info.get('sector', '')}]：**{m['last']:.2f} ({m['pct']:+.2f}%)** | "
-                f"5m **+{dpct:.2f}%** (+{damt:.2f}亿) | 均 {m['vwap']:.2f} {obs_note} | {chans}{f_tag} RPS={rps_val:.0f}"
-            )
-        return
-    if _check_cooldown(cooldowns, f"L3:wyckoff_ignition:{sym}", now_ts):
-        mode_tag = "🎯稳健中军加速" if (is_steady_push and not is_standard_ign) else "✅"
-        buckets["l3"].append(
+    # Abolish negative-expectancy L3 5m equity chase SMS (16.2% T+1 open / 32.4% T+1 close win across 37 live trades); keep strictly L1 obs.
+    if now_hm < "10:30":
+        obs_key, obs_note = f"L1:pre1030_obs:{sym}", "⏳[待10:30验钞观察]"
+    elif chip_locked:
+        obs_key, obs_note = f"L1:chip_lock_obs:{sym}", "💣[T+1筹码兑现期禁追·转观察]"
+    elif regime == "DEFENSIVE":
+        obs_key, obs_note = f"L1:defensive_obs:{sym}", "❄️[防守气候禁追·转观察]"
+    else:
+        obs_key = f"L1:pulse_obs:{sym}"
+        obs_note = f"{'🎯稳健中军加速 ' if (is_steady_push and not is_standard_ign) else ''}👀[盘中脉冲仅观察·禁追高点·等14:40确认]"
+    if _check_cooldown(cooldowns, obs_key, now_ts):
+        buckets["l1_obs"].append(
             f"- **{sym} {m['name']}** [{info.get('sector', '')}]：**{m['last']:.2f} ({m['pct']:+.2f}%)** | "
-            f"5m **+{dpct:.2f}%** (+{damt:.2f}亿) | 均 {m['vwap']:.2f} {mode_tag} | {chans}{f_tag} RPS={rps_val:.0f}"
-        )
-        alert_records.append(
-            {
-                "ts": now_ts,
-                "level": "L3",
-                "kind": "wyckoff_l2l3_ignition",
-                "symbol": sym,
-                "name": m["name"],
-                "sector": info.get("sector", ""),
-                "last": round(m["last"], 3),
-                "pct": round(m["pct"], 2),
-                "dpct_5m": round(dpct, 2),
-                "vwap": round(m["vwap"], 3),
-                "vwap_dev": round(m["vwap_dev"], 2),
-                "amt_yi": round(m["amt_yi"], 2),
-            }
+            f"5m **+{dpct:.2f}%** (+{damt:.2f}亿) | 均 {m['vwap']:.2f} {obs_note} | {chans or info.get('shadow_lane', '')}{f_tag} RPS={rps_val:.0f}"
         )
 
 
@@ -1040,7 +1033,7 @@ def save_closing_mainline_anchors(
     l2_map: dict[str, dict[str, Any]],
     anchors_path: Path | None = None,
 ) -> None:
-    from telegraph_catalysts import rank_deduplicated_theme_etfs
+    from telegraph_catalysts import rank_deduplicated_theme_etfs, rank_intraday_rs_leaders
 
     target = anchors_path or MAINLINE_ANCHORS_PATH
     etf_anchors = [
@@ -1048,18 +1041,28 @@ def save_closing_mainline_anchors(
         for r in rank_deduplicated_theme_etfs(curr_quotes, min_amt_yi=1.0, top_n=2)
     ]
     stock_cands: list[tuple[float, dict[str, Any]]] = []
+    seen_s: set[str] = set()
+    for r in rank_intraday_rs_leaders(curr_quotes, l2_map, top_n=4):
+        seen_s.add(r["symbol"])
+        stock_cands.append(
+            (
+                r["amt_yi"] + 30.0,
+                {
+                    "symbol": r["symbol"],
+                    "name": r["name"],
+                    "kind": r["tag"],
+                    "theme": r["sector"],
+                    "close_pct": round(r["pct"], 2),
+                },
+            )
+        )
     for sym, q in curr_quotes.items():
-        if not is_a_share(sym):
+        if sym in seen_s or not is_a_share(sym):
             continue
         info = l2_map.get(sym[:6], {})
         m = compute_quote_metrics(q)
-        if (
-            not m
-            or not info.get("l2_eligible")
-            or m["amt_yi"] < 3.0
-            or not (2.0 <= m["pct"] <= 8.5)
-            or m["vwap_dev"] < 0
-        ):
+        eligible = info.get("l2_eligible") or info.get("shadow_lane") == "pre_breakout"
+        if not m or not eligible or m["amt_yi"] < 3.0 or not (2.0 <= m["pct"] <= 8.5) or m["vwap_dev"] < 0:
             continue
         stock_cands.append(
             (
@@ -1136,18 +1139,48 @@ def scan_next_day_lps_pullbacks(
     )
 
 
+def _format_rs_late_picks(
+    curr_quotes: dict[str, dict[str, Any]],
+    l2_map: dict[str, dict[str, Any]] | None,
+    top_n: int = 2,
+) -> list[str]:
+    if not l2_map:
+        return []
+    from telegraph_catalysts import rank_intraday_rs_leaders
+
+    return [
+        f"- **[{r['tag']}·{r['sector']}] `{r['symbol']}` {r['name']}**："
+        f"现价 **{r['last']:.2f} ({r['pct']:+.2f}%)** | VWAP乖离 **{r['vwap_dev']:+.2f}%** | "
+        f"上影 {r['upper_wick_pct']:.2f}% | 额 {r['amt_yi']:.1f}亿 | "
+        f"🛑-3%硬止损 **{r['last'] * 0.97:.2f}** | 🛡️+4%保本 **{r['last'] * 1.04:.2f}**"
+        for r in rank_intraday_rs_leaders(curr_quotes, l2_map, top_n=top_n)
+    ]
+
+
 def build_late_day_decision_card(
     curr_quotes: dict[str, dict[str, Any]],
     red_count: int,
     total_active: int,
     daily_bars: dict[str, list[dict[str, Any]]] | None = None,
+    l2_map: dict[str, dict[str, Any]] | None = None,
 ) -> str:
-    """Layer 3 closing-hour gate: allow ETF entry only on broad attack with controlled VWAP & upper wick."""
+    """Layer 3 closing-hour gate: allow ETF entry on broad attack plus verified RS core stocks."""
     regime, _ = classify_market_regime(red_count, total_active)
-    if regime != "ATTACK" or (total_active > 0 and (red_count / max(total_active, 1)) < 0.55):
+    if regime == "DEFENSIVE":
         return (
             "🛑 **【14:40 尾盘明牌决策：今日不开新仓 · 握纯现金/511360】**"
+            "（红盘率低于 38% 防守线，拒绝在泥沙俱下日接飞刀）"
+        )
+    rs_lines = _format_rs_late_picks(curr_quotes, l2_map, top_n=2)
+    if regime != "ATTACK" or (total_active > 0 and (red_count / max(total_active, 1)) < 0.55):
+        base = (
+            "🛑 **【14:40 尾盘明牌决策：今日不开新仓 · 握纯现金/511360】**"
             "（当前红盘率未达 55% 顺势进攻线，拒绝勉强交易）"
+        )
+        return (
+            f"{base}\n\n**🛡️ 【分歧市逆势锁筹真中军观察（仅限<=20%观察仓·平开站稳VWAP）】**\n" + "\n".join(rs_lines)
+            if rs_lines
+            else base
         )
     cy_m = compute_quote_metrics(curr_quotes.get("399006.SZ", {}))
     sh_m = compute_quote_metrics(curr_quotes.get("000001.SH", {}))
@@ -1205,9 +1238,12 @@ def build_late_day_decision_card(
         if blocked_sub:
             return "🛑 **【14:40 尾盘明牌决策：今日不开新仓 · 宁缺毋滥禁买后排平替】**（前排正主偏离过高且后排跟风/重仓股背离，拒绝硬凑次选标的）"
         return "🛑 **【14:40 尾盘明牌决策：今日不开新仓 · 留现金等分歧】**（主线偏离过高或上影过长，不追高潮尾盘）"
-    return "**🎯 【14:40 尾盘明牌决策卡：顺势可介入主线 ETF（次日享 T+1 主动权）】**\n" + "\n".join(
+    out = "**🎯 【14:40 尾盘明牌决策卡：顺势可介入主线 ETF（次日享 T+1 主动权）】**\n" + "\n".join(
         r[2] for r in picked[:2]
     )
+    if rs_lines:
+        out += "\n\n**🏆 【14:40 尾盘抗跌主升/百亿中军备选（<=20%卫星仓·次日享T+1主动权）】**\n" + "\n".join(rs_lines)
+    return out
 
 
 def _resolve_chip_context(
@@ -1312,7 +1348,7 @@ def _enrich_mainline_and_telegraph(
             save_closing_mainline_anchors(now_dt.date().isoformat(), curr_quotes, l2_map, anchors_path=anchors_path)
         if late_decision or ("14:35" <= now_hm <= "14:52"):
             late_card = build_late_day_decision_card(
-                curr_quotes, red_count or 0, (red_count or 0) + (green_count or 0), daily_bars=daily_bars
+                curr_quotes, red_count or 0, (red_count or 0) + (green_count or 0), daily_bars=daily_bars, l2_map=l2_map
             )
             if late_card:
                 buckets["mainlines"].insert(0, late_card)
@@ -1638,9 +1674,9 @@ def _format_card(
     if buckets["l4"]:
         secs.append("**2. 🔴 L4 电话级警报（持仓破止损 / 满级起跳板突破）**\n" + "\n".join(buckets["l4"][:5]))
     if buckets["l3"]:
-        secs.append("**3. 🟠 L3 短信级：威科夫 L2+L3 地量/吸筹 5m 点火 & 持仓急跌**\n" + "\n".join(buckets["l3"][:8]))
+        secs.append("**3. 🟠 L3 短信级：持仓5m急跌破位预警**\n" + "\n".join(buckets["l3"][:8]))
     if buckets["l1_obs"]:
-        secs.append("**3b. 👀 早盘 L2+L3 异动观察（10:30前验钞期·不发短信加急）**\n" + "\n".join(buckets["l1_obs"][:6]))
+        secs.append("**3b. 👀 盘中 L2/主升 脉冲观察（仅观察·不发短信加急）**\n" + "\n".join(buckets["l1_obs"][:6]))
     if buckets["l2_events"]:
         secs.append("**4. 🟡 L2 加急事件（持仓做T / 板块共振 / 情绪骤变）**\n" + "\n".join(buckets["l2_events"][:6]))
     if buckets["etf_up"] or buckets["etf_down"]:

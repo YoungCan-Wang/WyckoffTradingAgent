@@ -670,7 +670,9 @@ def summarize_top_sector_mainlines(
         wyckoff_picks = [
             f"`{c}` {n}({p:+.1f}%)"
             for p, c, n, is_l2, _is_cand in items
-            if is_l2 and float((l2_map.get(c) or {}).get("rps") or 0.0) <= 82.0 and 0.5 <= p <= 5.2
+            if (is_l2 or (l2_map.get(c) or {}).get("shadow_lane") == "pre_breakout")
+            and float((l2_map.get(c) or {}).get("rps") or 0.0) <= 88.0
+            and 0.5 <= p <= 6.8
         ]
         w_tag = f" | 🎯L2可买：{'、'.join(wyckoff_picks[:2])}" if wyckoff_picks else ""
         lines.append(
@@ -1058,6 +1060,95 @@ def _collect_strong_sectors(
     }
 
 
+def rank_intraday_rs_leaders(
+    curr_quotes: dict[str, dict[str, Any]],
+    l2_map: dict[str, dict[str, Any]],
+    top_n: int = 3,
+) -> list[dict[str, Any]]:
+    """Select intraday relative-strength cores from empirically positive-alpha pools."""
+    scored: list[tuple[float, str, dict[str, Any]]] = []
+    for sym, q in (curr_quotes or {}).items():
+        if not _is_equity_symbol(sym):
+            continue
+        meta = (l2_map or {}).get(sym[:6]) or {}
+        name = str(meta.get("name") or (q.get("ext") or {}).get("name") or q.get("name") or "")
+        last = float(q.get("last_price") or q.get("price") or 0.0)
+        pre = float(q.get("prev_close") or 0.0)
+        if "ST" in name or last <= 0 or pre <= 0:
+            continue
+        amt_yi = float(q.get("amount") or 0.0) / 1e8 if "amount" in q else float(q.get("amt_yi") or 0.0)
+        if amt_yi < 3.0:
+            continue
+        open_p = float(q.get("open") or pre)
+        open_pct = (open_p / pre - 1.0) * 100.0
+        pct = (last / pre - 1.0) * 100.0
+        high_p = max(float(q.get("high") or last), last)
+        upper_wick_pct = (high_p - last) / high_p * 100.0 if high_p > 0 else 0.0
+        vwap = _resolve_vwap(q, last)
+        vwap_dev = (last / vwap - 1.0) * 100.0 if vwap > 0 else 0.0
+        if not (
+            open_pct <= 3.8
+            and last >= open_p
+            and 1.8 <= pct <= 7.5
+            and 0.0 <= vwap_dev <= 2.2
+            and upper_wick_pct <= 1.2
+        ):
+            continue
+        rps = float(meta.get("rps") or 0.0)
+        chans_s = "+".join(str(x).strip() for x in (meta.get("channels") or []))
+        is_main = bool(
+            (meta.get("l2_eligible") and "主升" in chans_s and 55.0 <= rps <= 88.0)
+            or (meta.get("shadow_lane") == "pre_breakout" and 50.0 <= rps <= 88.0)
+        )
+        is_giant = amt_yi >= 20.0 and 20.0 <= rps <= 82.0 and open_pct <= 3.0
+        is_accum = bool(
+            meta.get("l2_eligible")
+            and meta.get("l3_eligible")
+            and ("地量" in chans_s or "吸筹" in chans_s)
+            and 24.0 <= rps <= 80.0
+            and (int(meta.get("streak_days") or 0) >= 2 or meta.get("stage") != "风控拦截")
+        )
+        tag, bonus = (
+            ("🏆主升/前夜", 30.0)
+            if is_main
+            else (("🏛️百亿抗跌中军", 26.0) if is_giant else (("🛡️多日蓄势RS", 16.0) if is_accum else ("", 0.0)))
+        )
+        if not tag:
+            continue
+        sec = str(meta.get("sector") or "")
+        score = bonus + min(amt_yi, 30.0) * 1.2 + pct * 2.0 - vwap_dev * 3.0
+        scored.append(
+            (
+                score,
+                sec,
+                {
+                    "symbol": sym,
+                    "name": name,
+                    "sector": sec,
+                    "last": last,
+                    "pct": pct,
+                    "vwap": vwap,
+                    "vwap_dev": vwap_dev,
+                    "upper_wick_pct": upper_wick_pct,
+                    "amt_yi": amt_yi,
+                    "tag": tag,
+                    "rps": rps,
+                },
+            )
+        )
+    scored.sort(key=lambda x: -x[0])
+    picked, sec_counts = [], {}
+    for _, sec, row in scored:
+        if sec and sec_counts.get(sec, 0) >= 2:
+            continue
+        picked.append(row)
+        if sec:
+            sec_counts[sec] = sec_counts.get(sec, 0) + 1
+        if len(picked) >= top_n:
+            break
+    return picked
+
+
 def summarize_zero_bias_l2_leaders(
     curr_quotes: dict[str, dict[str, Any]],
     l2_map: dict[str, dict[str, Any]],
@@ -1066,7 +1157,7 @@ def summarize_zero_bias_l2_leaders(
     if not curr_quotes or not l2_map:
         return ""
     strong_secs = _collect_strong_sectors(curr_quotes, l2_map)
-    scored: list[tuple[float, str, str]] = []
+    scored: list[tuple[float, str, str, str]] = []
     for sym, q in curr_quotes.items():
         if not _is_equity_symbol(sym):
             continue
@@ -1075,13 +1166,23 @@ def summarize_zero_bias_l2_leaders(
         rps = float(meta.get("rps") or 0.0)
         raw_ch = meta.get("channels") or []
         chans = [c.strip() for x in raw_ch for c in str(x).split("+") if c.strip()]
+        chans_s = "+".join(chans)
         has_steady_ch = any("地量" in c or "吸筹" in c for c in chans)
-        if not (meta.get("l2_eligible") and meta.get("l3_eligible") and has_steady_ch and sec in strong_secs):
+        is_main_or_pre = ("主升" in chans_s and 55.0 <= rps <= 88.0) or (
+            meta.get("shadow_lane") == "pre_breakout" and 50.0 <= rps <= 88.0
+        )
+        if not (
+            (meta.get("l2_eligible") or meta.get("shadow_lane") == "pre_breakout")
+            and (has_steady_ch or is_main_or_pre)
+            and sec in strong_secs
+        ):
+            continue
+        if has_steady_ch and not is_main_or_pre and (not meta.get("l3_eligible") or not (12.0 <= rps <= 80.0)):
             continue
         name = str(meta.get("name") or (q.get("ext") or {}).get("name") or q.get("name") or "")
         last = float(q.get("last_price") or q.get("price") or 0.0)
         pre = float(q.get("prev_close") or 0.0)
-        if "ST" in name or last <= 0 or pre <= 0 or not (12.0 <= rps <= 80.0):
+        if "ST" in name or last <= 0 or pre <= 0:
             continue
         pct = (last / pre - 1.0) * 100.0
         amt_yi = float(q.get("amount") or 0.0) / 1e8 if "amount" in q else float(q.get("amt_yi") or 0.0)
@@ -1089,7 +1190,7 @@ def summarize_zero_bias_l2_leaders(
         open_p = float(q.get("open") or pre)
         high_p = max(float(q.get("high") or last), last)
         low_p = min(float(q.get("low") or last), last) if float(q.get("low") or 0.0) > 0 else last
-        if not (1.5 <= pct <= 5.0 and amt_yi >= 1.5 and vwap * 1.001 <= last <= vwap * 1.022):
+        if not (1.5 <= pct <= 6.8 and amt_yi >= 1.5 and vwap * 1.001 <= last <= vwap * 1.022):
             continue
         if last < open_p or (high_p - last) / high_p > 0.012 or (high_p - low_p) / pre > 0.065:
             continue
@@ -1100,10 +1201,10 @@ def summarize_zero_bias_l2_leaders(
                 continue
         elif streak_n < 2 or pct < max(avg_p + 2.5, 2.0):
             continue
-        rps_sweet = 18.0 if 24.0 <= rps <= 68.0 else 0.0
-        streak_bonus = min(int(meta.get("streak_days") or 0), 3) * 6.0
+        rps_sweet = 18.0 if (is_main_or_pre or 24.0 <= rps <= 68.0) else 0.0
+        streak_bonus = min(streak_n, 3) * 6.0
         score = (
-            (20.0 if meta.get("is_candidate") else 0.0)
+            (20.0 if (meta.get("is_candidate") or is_main_or_pre) else 0.0)
             + rps_sweet
             + streak_bonus
             + len(chans) * 8.0
@@ -1112,24 +1213,39 @@ def summarize_zero_bias_l2_leaders(
         )
         v_dev = (last / vwap - 1.0) * 100.0
         f_tag = f" [{meta['funnel_tag']}]" if meta.get("funnel_tag") else ""
+        ch_lbl = chans_s or ("前夜pre_breakout" if meta.get("shadow_lane") == "pre_breakout" else "")
         scored.append(
             (
                 score,
                 sec,
+                sym,
                 f"- **{sym} {name}** [{sec} 红{red_r:.0f}%]：现价 **{last:.2f} ({pct:+.2f}%)** | "
-                f"均价 {vwap:.2f} (乖离 {v_dev:+.2f}%) | 额 {amt_yi:.1f}亿 | {'+'.join(chans)}{f_tag} RPS={rps:.0f}",
+                f"均价 {vwap:.2f} (乖离 {v_dev:+.2f}%) | 额 {amt_yi:.1f}亿 | {ch_lbl}{f_tag} RPS={rps:.0f}",
             )
         )
     scored.sort(key=lambda x: -x[0])
-    picked: list[str] = []
-    sec_counts: dict[str, int] = {}
-    for _, sec, line in scored:
+    picked, seen_syms, sec_counts = [], set(), {}
+    for _, sec, sym, line in scored:
         if sec_counts.get(sec, 0) >= 2:
             continue
         picked.append(line)
+        seen_syms.add(sym)
         sec_counts[sec] = sec_counts.get(sec, 0) + 1
         if len(picked) >= top_n:
             break
+    for r in rank_intraday_rs_leaders(curr_quotes, l2_map, top_n=top_n):
+        if len(picked) >= top_n or r["symbol"] in seen_syms:
+            continue
+        sec = r["sector"]
+        if sec and sec_counts.get(sec, 0) >= 2:
+            continue
+        picked.append(
+            f"- **[{r['tag']}] {r['symbol']} {r['name']}** [{sec}]：现价 **{r['last']:.2f} ({r['pct']:+.2f}%)** | "
+            f"VWAP乖离 **{r['vwap_dev']:+.2f}%** | 额 {r['amt_yi']:.1f}亿 | RPS={r['rps']:.0f}"
+        )
+        seen_syms.add(r["symbol"])
+        if sec:
+            sec_counts[sec] = sec_counts.get(sec, 0) + 1
     return ("**👀 全市场 L2+L3 稳健中军盘中观察池**\n" + "\n".join(picked)) if picked else ""
 
 

@@ -529,19 +529,17 @@ def test_l3_ignition_and_l1_drift_immune_cadence(tmp_path):
     assert "L3:wyckoff_ignition:688001.SH" not in cd_am
     assert not alert_log.exists()
 
-    # 2) Post-10:30 (10:35 BJT): same symbol igniting after 10:30 fires L3 SMS alert and logs to jsonl
+    # 2) Post-10:30 (10:35 BJT): equity 5m pulses stay L1 obs (never send L3 chase SMS!) and never touch L3 alert_log
     prev_state["cooldowns"] = cd_am
     prev_state["ts"] = ts_1035 - 300.0
     level1, _, body1, _, cd1 = radar.analyze_snapshot_diff(
         curr_quotes, prev_state, l2_map, {}, now_ts=ts_1035, turnover_dir=t_dir, alert_log_path=alert_log
     )
-    assert level1 == "L3"
+    assert level1 == "L1"
     assert "688001.SH" in body1
-    logged = [json.loads(line) for line in alert_log.read_text(encoding="utf-8").splitlines() if line.strip()]
-    assert len(logged) == 1
-    assert logged[0]["kind"] == "wyckoff_l2l3_ignition"
-    assert logged[0]["level"] == "L3"
-    assert logged[0]["symbol"] == "688001.SH"
+    assert "👀[盘中脉冲仅观察·禁追高点" in body1
+    assert "L1:pulse_obs:688001.SH" in cd1
+    assert not alert_log.exists()
 
     prev_state["cooldowns"] = cd1
     prev_state["ts"] = ts_1035
@@ -1299,7 +1297,7 @@ def test_tariff_telegraph_zero_bias_l2_leaders_and_upper_wick_filter(tmp_path) -
     assert "600261.SH 阳光照明** [⚠️妖股/高位勿追]" in body
     assert "002611.SZ 东方精工** [专用机械]" not in body
 
-    # Post-10:30 steady leader push (dpct=+1.35% >= 1.2%, RPS=40 in 24~68, amt>=1.8亿, upper_wick<=1.0%) triggers L3 🎯稳健中军加速
+    # Post-10:30 steady leader push stays L1 obs with 🎯稳健中军加速 tag (L3 SMS strictly reserved for holding plunges)
     l2_map["002635"] = {
         "name": "安洁科技",
         "sector": "煤炭开采",
@@ -1321,12 +1319,14 @@ def test_tariff_telegraph_zero_bias_l2_leaders_and_upper_wick_filter(tmp_path) -
         "amount": 2.35e8,
         "ext": {"name": "安洁科技"},
     }
-    level_steady, _, body_steady, _, _ = radar.analyze_snapshot_diff(
+    level_steady, _, body_steady, _, cd_steady = radar.analyze_snapshot_diff(
         quotes, prev_state, l2_map, holdings, now_ts=ts, turnover_dir=tmp_path / "to3"
     )
-    assert level_steady == "L3"
+    assert level_steady == "L1"
     assert "002635.SZ 安洁科技" in body_steady
     assert "🎯稳健中军加速" in body_steady
+    assert "👀[盘中脉冲仅观察·禁追高点" in body_steady
+    assert "L3:wyckoff_ignition:002635.SZ" not in cd_steady
 
 
 def test_sh_index_never_collides_with_sz_equity_and_median_thermometer_renders(tmp_path):
@@ -2511,3 +2511,135 @@ def test_etf_heavyweight_divergence_and_anti_laggard_substitute_gate() -> None:
     }
     no_sub = radar.build_late_day_decision_card(sub_quotes, red_count=60, total_active=100)
     assert "512660.SH" not in no_sub and "宁缺毋滥禁买后排平替" in no_sub
+
+
+def test_main_rise_pre_breakout_and_intraday_rs_leaders(tmp_path) -> None:
+    import sys
+
+    sys.path.insert(0, str(SCRIPT_PATH.parent))
+    import telegraph_catalysts as tc
+
+    radar = _load_radar_module()
+
+    # 1) Multi-day trace merge preserves MainRise (RPS=72) & pre_breakout (RPS=66) without t1_isolated_spike wipeout
+    t_m2 = {
+        "symbols": {
+            "301095": {
+                "name": "广立微",
+                "sector": "半导体",
+                "rps_fast": 68.0,
+                "l2_eligible": False,
+                "l3_eligible": False,
+                "stage": "观察",
+            }
+        }
+    }
+    t_m1 = {
+        "symbols": {
+            "301095": {
+                "name": "广立微",
+                "sector": "半导体",
+                "rps_fast": 72.0,
+                "l2_eligible": True,
+                "l3_eligible": True,
+                "l2_channel": "主升通道",
+                "stage": "候选池已捕获",
+            },
+            "688001": {
+                "name": "前夜芯",
+                "sector": "半导体",
+                "rps_fast": 66.0,
+                "l2_eligible": True,
+                "l3_eligible": False,
+                "shadow_lane": "pre_breakout",
+                "stage": "买点未确认",
+            },
+        }
+    }
+    for d, payload in (("20261120", t_m2), ("20261123", t_m1)):
+        with gzip.open(tmp_path / f"review_trace_{d}.json.gz", "wt", encoding="utf-8") as f:
+            json.dump(payload, f)
+    merged = radar.load_wyckoff_l2_map(trace_dirs=[str(tmp_path)], max_age_days=None, auto_fetch=False)
+    assert merged["301095"]["is_candidate"] and not merged["301095"].get("t1_isolated_spike")
+    assert merged["688001"]["shadow_lane"] == "pre_breakout" and not merged["688001"].get("t1_isolated_spike")
+
+    # 2) Intraday RS selector picks MainRise & >=20亿 flat-open giants, rejects gap traps & bare RPS>88 hype
+    l2_rs = {
+        **merged,
+        "688256": {"name": "寒武纪", "sector": "半导体", "rps": 67.0, "l2_eligible": False, "l3_eligible": False},
+        "688008": {
+            "name": "澜起科技",
+            "sector": "半导体",
+            "rps": 70.0,
+            "l2_eligible": True,
+            "l3_eligible": True,
+            "channels": ["主升通道"],
+        },
+        "301413": {"name": "安培龙", "sector": "电器仪表", "rps": 99.1, "l2_eligible": False, "l3_eligible": False},
+    }
+    rs_quotes = {
+        "301095.SZ": {
+            "symbol": "301095.SZ",
+            "open": 10.13,
+            "prev_close": 10.00,
+            "last_price": 10.67,  # +6.70% (above old 5.0% cap!), open=+1.3%, amt=16.1亿
+            "high": 10.69,
+            "low": 10.08,
+            "volume": 1.5e8,
+            "amount": 1.584e9,  # vwap=10.56 -> dev=+1.04%, wick=0.19%
+            "ext": {"name": "广立微"},
+        },
+        "688256.SH": {
+            "symbol": "688256.SH",
+            "open": 102.75,
+            "prev_close": 100.0,
+            "last_price": 106.03,  # +6.03%, open=+2.75%, amt=143亿 >= 20亿 giant!
+            "high": 106.20,
+            "low": 102.00,
+            "volume": 1.36e8,
+            "amount": 1.432e10,  # vwap=105.29 -> dev=+0.70%
+            "ext": {"name": "寒武纪"},
+        },
+        "688008.SH": {
+            "symbol": "688008.SH",
+            "open": 108.17,  # open +8.17% > 3.8% gap trap!
+            "prev_close": 100.0,
+            "last_price": 109.0,
+            "high": 109.2,
+            "low": 107.0,
+            "volume": 3e7,
+            "amount": 3.24e9,
+            "ext": {"name": "澜起科技"},
+        },
+        "301413.SZ": {
+            "symbol": "301413.SZ",
+            "open": 20.4,  # open +2.0%, amt=16亿 < 20亿 and bare RPS=99.1 > 88 -> rejected!
+            "prev_close": 20.0,
+            "last_price": 21.1,
+            "high": 21.15,
+            "low": 20.3,
+            "volume": 7.7e7,
+            "amount": 1.6e9,
+            "ext": {"name": "安培龙"},
+        },
+        "588000.SH": {
+            "symbol": "588000.SH",
+            "last_price": 1.33,
+            "prev_close": 1.30,
+            "high": 1.335,
+            "low": 1.295,
+            "volume": 5e9,
+            "amount": 6.58e9,
+            "ext": {"name": "科创50ETF华夏"},
+        },
+    }
+    rs_picked = tc.rank_intraday_rs_leaders(rs_quotes, l2_rs, top_n=4)
+    rs_syms = [r["symbol"] for r in rs_picked]
+    assert "301095.SZ" in rs_syms and "688256.SH" in rs_syms
+    assert "688008.SH" not in rs_syms and "301413.SZ" not in rs_syms
+
+    # 3) 14:40 card shows RS core stocks on ATTACK, keeps DEFENSIVE (<38%) cash-only
+    att_card = radar.build_late_day_decision_card(rs_quotes, red_count=65, total_active=100, l2_map=l2_rs)
+    assert "尾盘抗跌主升/百亿中军备选" in att_card and "301095.SZ" in att_card and "688256.SH" in att_card
+    def_card = radar.build_late_day_decision_card(rs_quotes, red_count=34, total_active=100, l2_map=l2_rs)
+    assert "今日不开新仓 · 握纯现金/511360" in def_card and "301095.SZ" not in def_card
