@@ -2185,3 +2185,179 @@ def test_late_day_decision_card_and_cli_flag(tmp_path, monkeypatch) -> None:
     assert sent[0][0].startswith("🎯【14:40 尾盘明牌决策卡】")
     assert "顺势可介入主线 ETF" in sent[0][1]
     assert "0.970" in sent[0][1] and "1.040" in sent[0][1]
+
+
+def test_two_regime_t1_chip_structure_gate(tmp_path) -> None:
+    import sys
+
+    sys.path.insert(0, str(SCRIPT_PATH.parent))
+    import telegraph_catalysts as tc
+
+    radar = _load_radar_module()
+    today_d = cn_today()
+    today = today_d.isoformat()
+    t_dir = tmp_path / "turnover_chip"
+
+    def _make_quotes(cy_open: float, cy_last: float, etf_last: float, etf_vwap: float, red_n: int = 62):
+        q: dict[str, dict] = {
+            "000001.SH": {
+                "symbol": "000001.SH",
+                "open": 3500.0,
+                "prev_close": 3500.0,
+                "last_price": 3515.0,
+                "high": 3520.0,
+                "low": 3495.0,
+                "amount": 3000e8,
+            },
+            "399001.SZ": {
+                "symbol": "399001.SZ",
+                "open": 10500.0,
+                "prev_close": 10500.0,
+                "last_price": 10560.0,
+                "high": 10580.0,
+                "low": 10480.0,
+                "amount": 3500e8,
+            },
+            "399006.SZ": {
+                "symbol": "399006.SZ",
+                "open": cy_open,
+                "prev_close": 2212.0 if cy_last < 2260 else 2280.0,
+                "last_price": cy_last,
+                "high": max(cy_open, cy_last) * 1.003,
+                "low": min(cy_open, cy_last) * 0.997,
+                "amount": 1500e8,
+            },
+            "562500.SH": {
+                "symbol": "562500.SH",
+                "last_price": etf_last,
+                "prev_close": 0.764 if etf_last < 0.80 else 0.815,
+                "high": etf_last * 1.004,
+                "low": etf_last * 0.99,
+                "volume": 3.0e8,
+                "amount": 3.0e8,
+                "vwap": etf_vwap,
+                "ext": {"name": "机器人ETF华夏"},
+            },
+        }
+        for i in range(100):
+            sym = f"{600100 + i:06d}.SH"
+            q[sym] = {
+                "symbol": sym,
+                "last_price": 10.2 if i < red_n else 9.8,
+                "prev_close": 10.0,
+                "volume": 1e6,
+                "amount": 1e7,
+                "ext": {"name": f"样本{i}"},
+            }
+        return q
+
+    # 1) Washout First Day (2026-11-23 archetype): multi-day drop -> low T-1 close -> opens morning early window
+    washout_bars = {
+        "399006.SZ": [
+            {"day": "d1", "open": 2300, "high": 2343, "low": 2264, "close": 2292, "volume": 1.5e10},
+            {"day": "d2", "open": 2290, "high": 2315, "low": 2272, "close": 2293, "volume": 1.4e10},
+            {"day": "d3", "open": 2244, "high": 2263, "low": 2212, "close": 2212, "volume": 1.6e10},
+        ],
+        "510300.SH": [
+            {"day": "d1", "open": 4.04, "high": 4.06, "low": 4.01, "close": 4.04, "volume": 2.0e9},
+            {"day": "d2", "open": 4.05, "high": 4.07, "low": 4.01, "close": 4.06, "volume": 2.5e9},
+            {"day": "d3", "open": 4.01, "high": 4.03, "low": 3.97, "close": 4.01, "volume": 4.2e9},
+        ],
+        "562500.SH": [
+            {"day": "d1", "open": 0.820, "high": 0.830, "low": 0.802, "close": 0.810, "volume": 6.8e8},
+            {"day": "d2", "open": 0.798, "high": 0.807, "low": 0.790, "close": 0.796, "volume": 4.7e8},
+            {"day": "d3", "open": 0.781, "high": 0.788, "low": 0.764, "close": 0.764, "volume": 6.3e8},
+        ],
+    }
+    q_wash = _make_quotes(cy_open=2200.0, cy_last=2235.0, etf_last=0.775, etf_vwap=0.770, red_n=62)
+    reg_w, banner_w = tc.evaluate_t1_chip_regime(q_wash, washout_bars, red_ratio=0.62)
+    assert reg_w == "WASHOUT_FIRST_DAY"
+    assert "恐慌出清首日" in banner_w
+    ts_0955 = datetime(today_d.year, today_d.month, today_d.day, 9, 55, tzinfo=CN_TZ).timestamp()
+    _, _, body_w, _, _ = radar.analyze_snapshot_diff(
+        q_wash, {}, {}, {}, now_ts=ts_0955, turnover_dir=t_dir, daily_bars=washout_bars
+    )
+    assert "恐慌出清首日·开放早盘先手窗" in body_w
+    assert "早盘冰点出清先手卡" in body_w
+    assert "562500.SH" in body_w and "0.752" in body_w and "0.806" in body_w
+
+    # 2) Chip Dump Lock Day (2026-11-24 archetype): T-1 big bounce w/ shrunk 510300 + gap-up into 0.830 peak
+    dump_bars = {
+        "399006.SZ": [
+            {"day": "d1", "open": 2290, "high": 2315, "low": 2272, "close": 2293, "volume": 1.4e10},
+            {"day": "d2", "open": 2244, "high": 2263, "low": 2212, "close": 2212, "volume": 1.6e10},
+            {"day": "d3", "open": 2195, "high": 2297, "low": 2188, "close": 2280, "volume": 1.88e10},
+        ],
+        "510300.SH": [
+            {"day": "d1", "open": 4.05, "high": 4.07, "low": 4.01, "close": 4.06, "volume": 2.8e9},
+            {"day": "d2", "open": 4.01, "high": 4.03, "low": 3.97, "close": 4.01, "volume": 4.5e9},
+            {"day": "d3", "open": 3.99, "high": 4.04, "low": 3.97, "close": 4.02, "volume": 1.39e9},
+        ],
+        "562500.SH": [
+            {"day": "d1", "open": 0.820, "high": 0.830, "low": 0.802, "close": 0.810, "volume": 6.8e8},
+            {"day": "d2", "open": 0.781, "high": 0.788, "low": 0.764, "close": 0.764, "volume": 6.3e8},
+            {"day": "d3", "open": 0.755, "high": 0.820, "low": 0.753, "close": 0.815, "volume": 1.11e9},
+        ],
+    }
+    q_dump = _make_quotes(cy_open=2368.0, cy_last=2330.0, etf_last=0.842, etf_vwap=0.833, red_n=65)
+    q_dump["688001.SH"] = {
+        "symbol": "688001.SH",
+        "last_price": 10.35,
+        "prev_close": 10.0,
+        "open": 10.1,
+        "high": 10.38,
+        "low": 10.05,
+        "volume": 1.2e7,
+        "amount": 1.22e8,
+        "vwap": 10.30,
+        "ext": {"name": "筹码锁测试"},
+    }
+    reg_d, banner_d = tc.evaluate_t1_chip_regime(q_dump, dump_bars, red_ratio=0.65)
+    assert reg_d == "CHIP_DUMP_LOCK"
+    assert "T+1 筹码兑现禁买令" in banner_d
+    ts_1100 = datetime(today_d.year, today_d.month, today_d.day, 11, 0, tzinfo=CN_TZ).timestamp()
+    prev_q_snap = {s: {"pct": 1.0, "amt_yi": 0.70} for s in q_dump}
+    l2_map = {
+        "688001": {
+            "name": "筹码锁测试",
+            "sector": "半导体",
+            "rps": 20.0,
+            "l2_eligible": True,
+            "l3_eligible": True,
+            "is_candidate": True,
+            "channels": ["地量蓄势"],
+            "is_springboard": False,
+        }
+    }
+    lvl_d, _, body_d, _, _ = radar.analyze_snapshot_diff(
+        q_dump,
+        {"date": today, "ts": ts_1100 - 300.0, "red": 65, "cooldowns": {}, "quotes": prev_q_snap},
+        l2_map,
+        {},
+        now_ts=ts_1100,
+        turnover_dir=t_dir,
+        daily_bars=dump_bars,
+    )
+    assert lvl_d == "L1"
+    assert "💣T+1获利盘+" in body_d and "撞前高0.830·禁早盘追买(等14:40)" in body_d
+    assert "🎯黄金低偏离起涨窗" not in body_d
+    assert "💣[T+1筹码兑现期禁追·转观察]" in body_d
+
+    # 3) 14:40 tightening upper-wick limit (<=0.8%) when kissing prior trapped peak 0.830
+    q_late_wick = {
+        "562500.SH": {
+            "symbol": "562500.SH",
+            "last_price": 0.835,
+            "prev_close": 0.815,
+            "high": 0.844,  # upper_wick = 1.07% > 0.8%
+            "low": 0.812,
+            "volume": 3.5e8,
+            "amount": 2.8875e8,  # vwap = 0.825 -> vwap_dev = +1.21%
+            "ext": {"name": "机器人ETF华夏"},
+        }
+    }
+    rejected = radar.build_late_day_decision_card(q_late_wick, red_count=75, total_active=100, daily_bars=dump_bars)
+    assert "今日不开新仓" in rejected
+    q_late_wick["562500.SH"]["high"] = 0.838  # upper_wick = 0.36% <= 0.8%
+    accepted = radar.build_late_day_decision_card(q_late_wick, red_count=75, total_active=100, daily_bars=dump_bars)
+    assert "顺势可介入主线 ETF" in accepted and "562500.SH" in accepted

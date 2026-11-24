@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import urllib.request
@@ -736,21 +737,186 @@ def rank_deduplicated_theme_etfs(
     return ranked[:top_n]
 
 
+def _sina_kline_symbol(sym: str) -> str:
+    code, _, ex = sym.partition(".")
+    return f"{ex.lower()}{code}" if ex in ("SH", "SZ") and len(code) == 6 else ""
+
+
+def fetch_daily_chip_bars(
+    symbols: list[str],
+    today_str: str,
+    cache_dir: Path | None = None,
+) -> dict[str, list[dict[str, float]]]:
+    cache_file = (cache_dir or Path("/tmp")) / f"wyckoff_chip_bars_{today_str}.json"
+    cached: dict[str, list[dict[str, float]]] = {}
+    if cache_file.exists():
+        try:
+            cached = json.loads(cache_file.read_text(encoding="utf-8"))
+        except Exception:
+            cached = {}
+    if cache_dir is None and os.environ.get("PYTEST_CURRENT_TEST"):
+        return {s: cached[s] for s in symbols if s in cached}
+    updated = False
+    for sym in dict.fromkeys(symbols):
+        if sym in cached or not (sc := _sina_kline_symbol(sym)):
+            continue
+        url = (
+            f"https://quotes.sina.cn/cn/api/jsonp_v2.php/var%20_{sc}=/"
+            f"CN_MarketDataService.getKLineData?symbol={sc}&scale=240&ma=no&datalen=8"
+        )
+        try:
+            req = urllib.request.Request(url, headers={"Referer": "https://finance.sina.com.cn"})
+            raw = urllib.request.urlopen(req, timeout=3.0).read().decode("utf-8", errors="ignore")
+            arr = json.loads(raw[raw.find("[") : raw.rfind("]") + 1])
+            bars = [
+                {
+                    "day": str(b["day"]),
+                    "open": float(b["open"]),
+                    "high": float(b["high"]),
+                    "low": float(b["low"]),
+                    "close": float(b["close"]),
+                    "volume": float(b["volume"]),
+                }
+                for b in arr
+                if str(b.get("day", "")) < today_str and float(b.get("close") or 0) > 0
+            ][-5:]
+            if bars:
+                cached[sym] = bars
+                updated = True
+        except Exception:
+            continue
+    if updated:
+        try:
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            cache_file.write_text(json.dumps(cached, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+    return {s: cached[s] for s in symbols if s in cached}
+
+
+def _index_open_and_pct(curr_quotes: dict[str, dict[str, Any]], sym: str) -> tuple[float, float]:
+    q = curr_quotes.get(sym) or {}
+    last = float(q.get("last_price") or q.get("price") or 0.0)
+    pre = float(q.get("prev_close") or 0.0)
+    opn = float(q.get("open") or 0.0)
+    open_pct = (opn / pre - 1.0) * 100.0 if opn > 0 and pre > 0 else 0.0
+    pct = (last / pre - 1.0) * 100.0 if last > 0 and pre > 0 else 0.0
+    return open_pct, pct
+
+
+def evaluate_t1_chip_regime(
+    curr_quotes: dict[str, dict[str, Any]],
+    daily_bars: dict[str, list[dict[str, Any]]] | None = None,
+    red_ratio: float | None = None,
+) -> tuple[str, str]:
+    cy_open, cy_pct = _index_open_and_pct(curr_quotes, "399006.SZ")
+    sh_open, sh_pct = _index_open_and_pct(curr_quotes, "000001.SH")
+    bars = (daily_bars or {}).get("399006.SZ") or (daily_bars or {}).get("000001.SH") or []
+    is_cy = bool((daily_bars or {}).get("399006.SZ"))
+    if bars:
+        t1 = bars[-1]
+        t1_bounce = (t1["close"] / max(t1["low"], 1e-6) - 1.0) * 100.0
+        nt_bars = (daily_bars or {}).get("510300.SH") or []
+        nt_prior_avg = (sum(b["volume"] for b in nt_bars[:-1]) / len(nt_bars[:-1])) if len(nt_bars) >= 2 else 0.0
+        nt_vol_ratio = (nt_bars[-1]["volume"] / nt_prior_avg) if nt_prior_avg > 0 else 1.0
+        if t1_bounce >= (3.0 if is_cy else 1.5) and (nt_vol_ratio < 0.85 or cy_open >= 1.0 or sh_open >= 0.5):
+            nt_note = f"、510300量比 {nt_vol_ratio:.2f}x 无国家队锁仓" if nt_vol_ratio < 0.85 else ""
+            return (
+                "CHIP_DUMP_LOCK",
+                f"💣 **【T+1 筹码兑现禁买令】昨日指数低点反弹 +{t1_bounce:.1f}%{nt_note}，今早开盘 {cy_open if is_cy else sh_open:+.2f}%：14:35 前严禁开新仓接获利盘飞刀（只卖不买），唯一新仓评估锁死 14:40 换手洗透后！**",
+            )
+        if len(bars) >= 3:
+            prev_c, peak_h = bars[-2]["close"], max(b["high"] for b in bars[:-1])
+            drawdown = (t1["close"] / max(peak_h, 1e-6) - 1.0) * 100.0
+            open_ref, pct_ref = (cy_open, cy_pct) if is_cy and cy_pct != 0.0 else (sh_open, sh_pct)
+            if (
+                t1["close"] <= prev_c * 1.002
+                and t1_bounce <= 1.2
+                and drawdown <= -2.5
+                and open_ref <= 1.0
+                and ((red_ratio or 0.0) >= 0.50 or (pct_ref - open_ref) >= 0.8)
+            ):
+                return (
+                    "WASHOUT_FIRST_DAY",
+                    f"🌱 **【恐慌出清首日·开放早盘先手窗】前波回撤 {drawdown:.1f}% 且昨日收于低位（T+1 短线获利盘≈0），09:45~10:35 放行低偏离且远离套牢峰的主线 ETF 右侧先手（不必死等尾盘抬轿）！**",
+                )
+    if (cy_open >= 1.8 and cy_pct - cy_open <= -0.6) or (sh_open >= 0.8 and sh_pct - sh_open <= -0.5):
+        return (
+            "CHIP_DUMP_LOCK",
+            f"💣 **【高开派发筹码兑现禁买令】指数高开回落（上证开 {sh_open:+.2f}%→现 {sh_pct:+.2f}%）：14:35 前严禁追高开新仓，等 14:40 换手出清！**",
+        )
+    return "NEUTRAL", ""
+
+
+def check_symbol_chip_overhang(last: float, bars: list[dict[str, Any]] | None) -> str:
+    if not bars or last <= 0:
+        return ""
+    t1, prior = bars[-1], bars[:-1]
+    gain_24h = (last / max(t1["low"], 1e-6) - 1.0) * 100.0
+    avg_vol = (sum(b["volume"] for b in prior) / len(prior)) if prior else 0.0
+    vol_ratio = (t1["volume"] / avg_vol) if avg_vol > 0 else 1.0
+    overhead = max((b["high"] for b in prior), default=0.0)
+    hit_overhead = overhead > 0 and t1["close"] < overhead * 0.992 and overhead * 0.988 <= last <= overhead * 1.03
+    if gain_24h >= 6.5 and vol_ratio >= 1.25:
+        return f"💣T+1获利盘+{gain_24h:.1f}%{'+撞前高' + format(overhead, '.3f') if hit_overhead else ''}"
+    return f"💣撞前高套牢峰{overhead:.3f}" if hit_overhead else ""
+
+
+def build_morning_washout_card(
+    curr_quotes: dict[str, dict[str, Any]],
+    daily_bars: dict[str, list[dict[str, Any]]] | None,
+    red_ratio: float | None,
+) -> str:
+    if (red_ratio or 0.0) < 0.48:
+        return ""
+    picked: list[str] = []
+    for item in rank_deduplicated_theme_etfs(curr_quotes, min_amt_yi=0.8, top_n=4):
+        last, bars = item["last"], (daily_bars or {}).get(item["symbol"])
+        if not (0.8 <= item["pct"] <= 4.0 and 0.0 <= item["vwap_dev"] <= 1.6):
+            continue
+        if check_symbol_chip_overhang(last, bars):
+            continue
+        if bars and len(bars) >= 2 and last > max(b["high"] for b in bars[:-1]) * 0.98:
+            continue
+        picked.append(
+            f"- **[{item['theme']}] `{item['symbol']}` {item['name']}**："
+            f"现价 **{last:.3f} ({item['pct']:+.2f}%)** | VWAP乖离 **{item['vwap_dev']:+.2f}%** | "
+            f"额 {item['amt_yi']:.1f}亿 | 🛑-3%硬止损 **{last * 0.97:.3f}** | 🛡️+4%保本 **{last * 1.04:.3f}**"
+        )
+    return (
+        ("**🌱 【早盘冰点出清先手卡：T+1零获利盘真空区·右侧低偏离上车】**\n" + "\n".join(picked[:2])) if picked else ""
+    )
+
+
 def summarize_theme_etf_leadership(
     curr_quotes: dict[str, dict[str, Any]],
     *,
     red_ratio: float | None = None,
     now_hm: str = "",
+    chip_regime: str = "",
+    daily_bars: dict[str, list[dict[str, Any]]] | None = None,
 ) -> str:
     leaders = rank_deduplicated_theme_etfs(curr_quotes, min_amt_yi=0.5, top_n=4)
     if not leaders:
         return ""
     lines: list[str] = []
     for item in leaders:
-        vd = item["vwap_dev"]
-        pct = item["pct"]
+        vd, pct = item["vwap_dev"], item["pct"]
+        chip_warn = check_symbol_chip_overhang(item["last"], (daily_bars or {}).get(item["symbol"]))
         if vd > 2.5 or pct > 4.5:
             zone = "⛔偏离过高禁追·等次日回踩"
+        elif (not now_hm or now_hm < "14:35") and (chip_regime == "CHIP_DUMP_LOCK" or chip_warn):
+            zone = f"{chip_warn or '💣T+1筹码兑现锁死'}·禁早盘追买(等14:40)"
+        elif (
+            chip_regime == "WASHOUT_FIRST_DAY"
+            and "09:45" <= now_hm <= "10:35"
+            and (red_ratio is None or red_ratio >= 0.48)
+            and 0.8 <= pct <= 3.8
+            and 0.0 <= vd <= 1.6
+        ):
+            zone = f"🌱冰点出清早盘先手·🎯黄金低偏离起涨窗(止损{item['last'] * 0.97:.3f})"
+        elif chip_regime == "NEUTRAL" and now_hm and now_hm < "14:35" and 1.0 <= pct <= 3.5 and 0.0 <= vd <= 1.6:
+            zone = "👀常态盘中观察·等14:40尾盘明牌"
         elif (red_ratio is None or red_ratio >= 0.38) and now_hm >= "09:50" and 1.0 <= pct <= 3.5 and 0.0 <= vd <= 1.6:
             zone = "🎯黄金低偏离起涨窗"
         else:

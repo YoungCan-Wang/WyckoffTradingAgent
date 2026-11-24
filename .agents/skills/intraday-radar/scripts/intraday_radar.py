@@ -575,6 +575,7 @@ def _scan_equities_and_etfs(
     alert_records: list[dict[str, Any]],
     red_count: int | None = None,
     total_active: int = 0,
+    chip_regime: str = "",
 ) -> dict[str, list[str]]:
     buckets: dict[str, list[str]] = defaultdict(list)
     sector_surges: dict[str, list[str]] = defaultdict(list)
@@ -632,7 +633,19 @@ def _scan_equities_and_etfs(
             )
         regime, _ = classify_market_regime(red_count or 0, total_active)
         _check_wyckoff_signals(
-            sym, m, dpct, damt, info, red_ratio, coverage_ok, cooldowns, now_ts, buckets, alert_records, regime=regime
+            sym,
+            m,
+            dpct,
+            damt,
+            info,
+            red_ratio,
+            coverage_ok,
+            cooldowns,
+            now_ts,
+            buckets,
+            alert_records,
+            regime=regime,
+            chip_regime=chip_regime,
         )
     _prepend_sector_resonances(
         sector_surges,
@@ -703,6 +716,7 @@ def _check_wyckoff_signals(
     alert_records: list[dict[str, Any]],
     *,
     regime: str = "ATTACK",
+    chip_regime: str = "",
 ) -> None:
     # L4 springboard is identity-based (A+B+C / launchpad); must NOT be gated by l2_eligible or upper_wick_pct.
     chans = "+".join(info.get("channels", []))
@@ -736,7 +750,20 @@ def _check_wyckoff_signals(
                 }
             )
         return
-    _check_wyckoff_ignition(sym, m, dpct, damt, info, chans, cooldowns, now_ts, buckets, alert_records, regime=regime)
+    _check_wyckoff_ignition(
+        sym,
+        m,
+        dpct,
+        damt,
+        info,
+        chans,
+        cooldowns,
+        now_ts,
+        buckets,
+        alert_records,
+        regime=regime,
+        chip_regime=chip_regime,
+    )
 
 
 def _check_wyckoff_ignition(
@@ -752,6 +779,7 @@ def _check_wyckoff_ignition(
     alert_records: list[dict[str, Any]],
     *,
     regime: str = "ATTACK",
+    chip_regime: str = "",
 ) -> None:
     rps_val = float(info.get("rps") or 0.0)
     if float(m.get("upper_wick_pct", 0.0)) > 2.0 or not _is_wyckoff_steady_core(info, rps_val, chans):
@@ -778,9 +806,18 @@ def _check_wyckoff_ignition(
     ):
         return
     f_tag = f" [{info['funnel_tag']}]" if info.get("funnel_tag") else ""
-    if now_hm < "10:30" or regime == "DEFENSIVE":
-        obs_key = f"L1:pre1030_obs:{sym}" if now_hm < "10:30" else f"L1:defensive_obs:{sym}"
-        obs_note = "⏳[待10:30验钞观察]" if now_hm < "10:30" else "❄️[防守气候禁追·转观察]"
+    chip_locked = chip_regime == "CHIP_DUMP_LOCK" and now_hm < "14:35"
+    if now_hm < "10:30" or regime == "DEFENSIVE" or chip_locked:
+        obs_key = (
+            f"L1:pre1030_obs:{sym}"
+            if now_hm < "10:30"
+            else (f"L1:chip_lock_obs:{sym}" if chip_locked else f"L1:defensive_obs:{sym}")
+        )
+        obs_note = (
+            "⏳[待10:30验钞观察]"
+            if now_hm < "10:30"
+            else ("💣[T+1筹码兑现期禁追·转观察]" if chip_locked else "❄️[防守气候禁追·转观察]")
+        )
         if _check_cooldown(cooldowns, obs_key, now_ts):
             buckets["l1_obs"].append(
                 f"- **{sym} {m['name']}** [{info.get('sector', '')}]：**{m['last']:.2f} ({m['pct']:+.2f}%)** | "
@@ -1037,8 +1074,14 @@ def scan_next_day_lps_pullbacks(
     has_baseline: bool,
     red_ratio: float | None,
     anchors_path: Path | None = None,
+    chip_regime: str = "",
+    daily_bars: dict[str, list[dict[str, Any]]] | None = None,
 ) -> str:
-    if not ("09:40" <= now_hm <= "11:30") or (red_ratio is not None and red_ratio < 0.38):
+    if (
+        not ("09:40" <= now_hm <= "11:30")
+        or (red_ratio is not None and red_ratio < 0.38)
+        or (chip_regime == "CHIP_DUMP_LOCK" and now_hm < "10:30")
+    ):
         return ""
     src = anchors_path or MAINLINE_ANCHORS_PATH
     if not src.exists():
@@ -1050,11 +1093,15 @@ def scan_next_day_lps_pullbacks(
     anchor_date = str(payload.get("trade_date") or "")
     if not anchor_date or anchor_date >= today_str:
         return ""
+    from telegraph_catalysts import check_symbol_chip_overhang
+
     hits: list[str] = []
     for item in payload.get("anchors") or []:
         sym = str(item.get("symbol") or "")
         m = compute_quote_metrics(curr_quotes.get(sym, {}))
         if not m:
+            continue
+        if daily_bars and check_symbol_chip_overhang(m["last"], daily_bars.get(sym)):
             continue
         dpct = (m["pct"] - float((prev_q.get(sym) or {}).get("pct") or 0.0)) if has_baseline else 0.0
         if (
@@ -1075,6 +1122,7 @@ def build_late_day_decision_card(
     curr_quotes: dict[str, dict[str, Any]],
     red_count: int,
     total_active: int,
+    daily_bars: dict[str, list[dict[str, Any]]] | None = None,
 ) -> str:
     """Layer 3 closing-hour gate: allow ETF entry only on broad attack with controlled VWAP & upper wick."""
     regime, _ = classify_market_regime(red_count, total_active)
@@ -1110,10 +1158,13 @@ def build_late_day_decision_card(
     picked: list[tuple[float, float, str]] = []
     for item in cands:
         m = compute_quote_metrics(curr_quotes.get(item["sym"], {}))
+        bars = (daily_bars or {}).get(item["sym"]) or []
+        overhead = max((b["high"] for b in bars[:-1]), default=0.0) if len(bars) >= 2 else 0.0
+        max_wick = 0.8 if (overhead > 0 and m and m["last"] >= overhead * 0.99) else 1.2
         if (
             not m
             or m["amt_yi"] < 1.5
-            or not (1.0 <= m["pct"] <= 6.5 and 0.0 <= m["vwap_dev"] <= 2.2 and m["upper_wick_pct"] <= 1.2)
+            or not (1.0 <= m["pct"] <= 6.5 and 0.0 <= m["vwap_dev"] <= 2.2 and m["upper_wick_pct"] <= max_wick)
         ):
             continue
         last = m["last"]
@@ -1130,6 +1181,26 @@ def build_late_day_decision_card(
     return "**🎯 【14:40 尾盘明牌决策卡：顺势可介入主线 ETF（次日享 T+1 主动权）】**\n" + "\n".join(
         r[2] for r in picked[:2]
     )
+
+
+def _resolve_chip_context(
+    curr_quotes: dict[str, dict[str, Any]],
+    today_str: str,
+    red_ratio: float,
+    fetch_bars: bool,
+    daily_bars: dict[str, list[dict[str, Any]]] | None = None,
+) -> tuple[str, str, dict[str, list[dict[str, Any]]]]:
+    from telegraph_catalysts import evaluate_t1_chip_regime, fetch_daily_chip_bars, rank_deduplicated_theme_etfs
+
+    bars_map = dict(daily_bars) if daily_bars is not None else {}
+    if daily_bars is None and fetch_bars:
+        etf_syms = [r["symbol"] for r in rank_deduplicated_theme_etfs(curr_quotes, min_amt_yi=0.5, top_n=6)]
+        bars_map = fetch_daily_chip_bars(
+            ["000001.SH", "399006.SZ", "510300.SH", "159915.SZ", "512100.SH", "588000.SH", *etf_syms],
+            today_str,
+        )
+    chip_regime, chip_banner = evaluate_t1_chip_regime(curr_quotes, bars_map, red_ratio=red_ratio)
+    return chip_regime, chip_banner, bars_map
 
 
 def _enrich_mainline_and_telegraph(
@@ -1149,9 +1220,12 @@ def _enrich_mainline_and_telegraph(
     red_ratio: float | None = None,
     anchors_path: Path | None = None,
     late_decision: bool = False,
+    chip_regime: str = "",
+    daily_bars: dict[str, list[dict[str, Any]]] | None = None,
 ) -> None:
     try:
         from telegraph_catalysts import (
+            build_morning_washout_card,
             scan_live_telegraph_catalysts,
             summarize_national_team_etfs,
             summarize_theme_etf_leadership,
@@ -1177,11 +1251,25 @@ def _enrich_mainline_and_telegraph(
         if nt_l2_alert and _check_cooldown(cooldowns, "L2:nt_etf_surge", ts):
             buckets["l2_events"].insert(0, nt_l2_alert)
             alert_records.append({"ts": ts, "level": "L2", "kind": "national_team_etf_surge"})
-        etf_lead = summarize_theme_etf_leadership(curr_quotes, red_ratio=red_ratio, now_hm=now_hm)
+        etf_lead = summarize_theme_etf_leadership(
+            curr_quotes, red_ratio=red_ratio, now_hm=now_hm, chip_regime=chip_regime, daily_bars=daily_bars
+        )
         if etf_lead:
             buckets["mainlines"].append(etf_lead)
+        if chip_regime == "WASHOUT_FIRST_DAY" and "09:45" <= now_hm <= "10:35":
+            washout_card = build_morning_washout_card(curr_quotes, daily_bars, red_ratio)
+            if washout_card:
+                buckets["mainlines"].insert(0, washout_card)
         lps_block = scan_next_day_lps_pullbacks(
-            now_dt.date().isoformat(), now_hm, curr_quotes, prev_q, has_baseline, red_ratio, anchors_path=anchors_path
+            now_dt.date().isoformat(),
+            now_hm,
+            curr_quotes,
+            prev_q,
+            has_baseline,
+            red_ratio,
+            anchors_path=anchors_path,
+            chip_regime=chip_regime,
+            daily_bars=daily_bars,
         )
         if lps_block:
             buckets["mainlines"].append(lps_block)
@@ -1196,7 +1284,9 @@ def _enrich_mainline_and_telegraph(
         if now_hm >= "14:55" and (red_count or 0) + (green_count or 0) >= 100 and (red_ratio or 0.0) >= 0.50:
             save_closing_mainline_anchors(now_dt.date().isoformat(), curr_quotes, l2_map, anchors_path=anchors_path)
         if late_decision or ("14:35" <= now_hm <= "14:52"):
-            late_card = build_late_day_decision_card(curr_quotes, red_count or 0, (red_count or 0) + (green_count or 0))
+            late_card = build_late_day_decision_card(
+                curr_quotes, red_count or 0, (red_count or 0) + (green_count or 0), daily_bars=daily_bars
+            )
             if late_card:
                 buckets["mainlines"].insert(0, late_card)
         if fetch_telegraph:
@@ -1319,6 +1409,7 @@ def analyze_snapshot_diff(
     fetch_telegraph: bool = False,
     anchors_path: Path | None = None,
     late_decision: bool = False,
+    daily_bars: dict[str, list[dict[str, Any]]] | None = None,
 ) -> tuple[str, str, str, int, dict[str, float]]:
     ts = now_ts if now_ts is not None else time.time()
     today_date = cn_today()
@@ -1347,6 +1438,9 @@ def analyze_snapshot_diff(
     red_count, green_count, d_red, red_ratio, coverage_ok, gap_msg = _compute_breadth_and_coverage(
         curr_quotes, prev_q, has_baseline
     )
+    chip_regime, chip_banner, bars_map = _resolve_chip_context(
+        curr_quotes, now_dt.date().isoformat(), red_ratio, fetch_telegraph, daily_bars
+    )
     alert_records: list[dict[str, Any]] = []
     h_lines, h_l2, h_l3, h_l4 = _evaluate_holdings(
         curr_quotes, prev_q, has_baseline, holdings, cooldowns, ts, alert_records
@@ -1363,12 +1457,15 @@ def analyze_snapshot_diff(
         alert_records,
         red_count=red_count,
         total_active=red_count + green_count,
+        chip_regime=chip_regime,
     )
     buckets["l2_events"] = h_l2 + buckets["l2_events"]
     buckets["l3"], buckets["l4"] = h_l3 + buckets["l3"], h_l4 + buckets["l4"]
     _, regime_banner = classify_market_regime(red_count, red_count + green_count, d_red=d_red)
     if regime_banner:
         buckets["warnings"].append(regime_banner)
+    if chip_banner:
+        buckets["warnings"].append(chip_banner)
     if _detect_stale_quote_feed(curr_quotes, prev_state, has_baseline, now_dt, ts):
         buckets["warnings"].append(
             "⚠️ **行情源疑似冻盘：交易时段两市成交额较上一帧零增长，持仓已启用新浪实时行情兜底守护。**"
@@ -1395,6 +1492,8 @@ def analyze_snapshot_diff(
         red_ratio=red_ratio,
         anchors_path=anchors_path,
         late_decision=late_decision,
+        chip_regime=chip_regime,
+        daily_bars=bars_map,
     )
     if coverage_ok and abs(d_red) >= 400 and _check_cooldown(cooldowns, "L2:breadth", ts):
         buckets["l2_events"].insert(
