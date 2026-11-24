@@ -2391,3 +2391,41 @@ def test_two_regime_t1_chip_structure_gate(tmp_path) -> None:
     assert "159509.SZ" not in ranked_syms and "513800.SH" not in ranked_syms
     late_no_qdii = radar.build_late_day_decision_card(qdii_quotes, red_count=75, total_active=100, daily_bars=dump_bars)
     assert "159509.SZ" not in late_no_qdii and "513800.SH" not in late_no_qdii and "562500.SH" in late_no_qdii
+
+
+def test_t1_locked_holding_mutes_phone_on_buy_day_and_unlocks_next_day(tmp_path) -> None:
+    from datetime import timedelta
+
+    radar = _load_radar_module()
+    today_d = cn_today()
+    next_d = today_d + timedelta(days=1)
+    buy_ymd = today_d.strftime("%Y%m%d")
+    holdings = radar.parse_holdings_arg([f"562500.SH:0.842:0.818:ATK:{buy_ymd}"])
+    assert holdings["562500.SH"]["role"] == "ATK"
+    assert holdings["562500.SH"]["buy_date"] == today_d.isoformat()
+
+    quotes = {
+        "562500.SH": {
+            "symbol": "562500.SH",
+            "last_price": 0.815,
+            "prev_close": 0.815,
+            "volume": 2e8,
+            "amount": 1.66e8,
+            "ext": {"name": "机器人ETF华夏"},
+        }
+    }
+    ts_same_day = datetime(today_d.year, today_d.month, today_d.day, 14, 10, tzinfo=CN_TZ).timestamp()
+    lvl_same, _, body_same, _, cds_same = radar.analyze_snapshot_diff(
+        quotes, {}, {}, holdings, now_ts=ts_same_day, turnover_dir=tmp_path
+    )
+    assert lvl_same == "L1"
+    assert "🔒[今日T+1锁仓" in body_same
+    assert "L4:holding_stop:562500.SH" not in cds_same
+
+    ts_next_day = datetime(next_d.year, next_d.month, next_d.day, 9, 35, tzinfo=CN_TZ).timestamp()
+    assert not radar._is_t1_locked(holdings["562500.SH"], ts_next_day)
+    lvl_next, _, body_next, _, _ = radar.analyze_snapshot_diff(
+        quotes, {}, {}, holdings, now_ts=ts_next_day, turnover_dir=tmp_path
+    )
+    assert lvl_next == "L4"
+    assert "L4 破位止损" in body_next

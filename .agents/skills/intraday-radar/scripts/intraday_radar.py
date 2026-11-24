@@ -92,10 +92,20 @@ def parse_holdings_arg(raw_list: list[str] | None) -> dict[str, dict[str, Any]]:
         if len(parts) >= 3:
             sym = _normalize_holding_symbol(parts[0]) or parts[0]
             cfg: dict[str, Any] = {"cost": float(parts[1]), "stop": float(parts[2])}
-            if len(parts) >= 4 and parts[3].upper() in ("DEF", "ATK"):
-                cfg["role"] = parts[3].upper()
+            for extra in parts[3:]:
+                up = extra.upper()
+                digits = extra.replace("-", "")
+                if up in ("DEF", "ATK"):
+                    cfg["role"] = up
+                elif len(digits) == 8 and digits.isdigit():
+                    cfg["buy_date"] = f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}"
             out[sym] = cfg
     return out
+
+
+def _is_t1_locked(cfg: dict[str, Any], now_ts: float) -> bool:
+    b_str = str(cfg.get("buy_date") or "")
+    return len(b_str) == 10 and datetime.fromtimestamp(now_ts, tz=CN_TZ).date().isoformat() <= b_str
 
 
 def is_cn_trading_session(now: datetime | None = None) -> bool:
@@ -514,6 +524,14 @@ def _evaluate_holdings(
         dpct = m["pct"] - prev_s["pct"] if prev_s else 0.0
         stop = float(cfg.get("stop", 0.0))
         tag = ""
+        if _is_t1_locked(cfg, now_ts):
+            tag = (
+                " 🔒[今日T+1锁仓·免电话打扰(明早解锁处理)]"
+                if (stop > 0 and m["last"] <= stop)
+                else " 🔒[今日T+1锁仓·免打扰]"
+            )
+            lines.append(_format_holding_line(sym, m, dpct, cfg, tag))
+            continue
         if stop > 0 and m["last"] <= stop:
             tag = " 🔴破止损!"
             # Kind-scoped key: must not share L4:{sym} with springboard breakout (86400s would mute stop phone).
@@ -1757,11 +1775,18 @@ def _format_heartbeat_card(
     lines = [f"✅ 7,807 标的 5m 巡检正常（本帧无 L2/L3/L4 加急异动）：{thermo} | 红盘 {red_count} 家"]
     if holdings:
         h_parts, any_stop = [], False
+        now_ts = time.time()
         for sym, cfg in holdings.items():
             hm = compute_quote_metrics(curr_quotes.get(sym, {}))
-            breached = bool(hm and cfg.get("stop", 0.0) > 0 and hm["last"] <= cfg["stop"])
-            any_stop = any_stop or breached
-            tag = "🔴破止损" if breached else ""
+            breached = bool(hm and float(cfg.get("stop", 0.0)) > 0 and hm["last"] <= float(cfg["stop"]))
+            locked = _is_t1_locked(cfg, now_ts)
+            if breached and locked:
+                tag = "🔒T+1锁仓"
+            elif breached:
+                tag = "🔴破止损"
+                any_stop = True
+            else:
+                tag = ""
             h_parts.append(f"{sym[:6]} {hm['pct']:+.2f}%{tag}" if hm else f"{sym[:6]} --")
         prefix = "⚠️ 持仓破位待处理：" if any_stop else "🛡️ 持仓正常："
         lines.append(prefix + " | ".join(h_parts))
