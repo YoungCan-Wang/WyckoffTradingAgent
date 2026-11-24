@@ -2361,3 +2361,33 @@ def test_two_regime_t1_chip_structure_gate(tmp_path) -> None:
     q_late_wick["562500.SH"]["high"] = 0.838  # upper_wick = 0.36% <= 0.8%
     accepted = radar.build_late_day_decision_card(q_late_wick, red_count=75, total_active=100, daily_bars=dump_bars)
     assert "顺势可介入主线 ETF" in accepted and "562500.SH" in accepted
+
+    # 4) Exclude cross-border QDII ETFs (even on huge gains) so A-share theme ranking is never polluted
+    qdii_quotes = {
+        **q_late_wick,
+        "159509.SZ": {
+            "symbol": "159509.SZ",
+            "last_price": 1.080,
+            "prev_close": 1.000,
+            "high": 1.081,
+            "low": 1.050,
+            "volume": 5.0e8,
+            "amount": 5.3e8,
+            "ext": {"name": "纳指科技ETF"},
+        },
+        "513800.SH": {
+            "symbol": "513800.SH",
+            "last_price": 1.060,
+            "prev_close": 1.000,
+            "high": 1.061,
+            "low": 1.040,
+            "volume": 3.0e8,
+            "amount": 3.15e8,
+            "ext": {"name": "日本东证ETF"},
+        },
+    }
+    ranked_syms = {r["symbol"] for r in tc.rank_deduplicated_theme_etfs(qdii_quotes, min_amt_yi=1.5, top_n=6)}
+    assert "562500.SH" in ranked_syms
+    assert "159509.SZ" not in ranked_syms and "513800.SH" not in ranked_syms
+    late_no_qdii = radar.build_late_day_decision_card(qdii_quotes, red_count=75, total_active=100, daily_bars=dump_bars)
+    assert "159509.SZ" not in late_no_qdii and "513800.SH" not in late_no_qdii and "562500.SH" in late_no_qdii

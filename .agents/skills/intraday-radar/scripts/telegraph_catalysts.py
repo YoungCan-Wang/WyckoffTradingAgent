@@ -670,6 +670,41 @@ def summarize_top_sector_mainlines(
 
 
 def _classify_etf_theme_bucket(sym: str, name: str) -> str:
+    if sym[:3] in ("511", "513"):
+        return ""
+    non_a_markers = (
+        "纳指",
+        "纳斯达克",
+        "标普",
+        "道琼斯",
+        "美国",
+        "日经",
+        "日本",
+        "东证",
+        "恒生",
+        "港股",
+        "H股",
+        "中概",
+        "德国",
+        "法国",
+        "沙特",
+        "亚太",
+        "东南亚",
+        "韩国",
+        "海外",
+        "全球",
+        "跨境",
+        "QDII",
+        "国债",
+        "政金债",
+        "可转债",
+        "公司债",
+        "城投债",
+        "短融",
+        "货币",
+        "添益",
+        "日利",
+    )
     broad_markers = (
         "沪深300",
         "上证50",
@@ -689,7 +724,7 @@ def _classify_etf_theme_bucket(sym: str, name: str) -> str:
         "深证100",
         "主动ETF",
     )
-    if sym in NATIONAL_TEAM_20_ETFS or any(w in name for w in broad_markers):
+    if sym in NATIONAL_TEAM_20_ETFS or any(w in name for w in (*broad_markers, *non_a_markers)):
         return ""
     for bucket, anchor_sym, kws in THEME_ETF_UNIVERSE:
         if sym == anchor_sym or any(k in name for k in kws):
