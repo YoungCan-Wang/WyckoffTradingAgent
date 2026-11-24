@@ -1156,12 +1156,12 @@ def build_late_day_decision_card(
             "🛑 **【14:40 尾盘明牌决策：今日不开新仓 · 留现金等分歧】**"
             f"（上证上影 {sh_m['upper_wick_pct']:.2f}% / 创业板上影 {cy_m['upper_wick_pct']:.2f}% > 1.2%，防尾盘冲高回落）"
         )
-    from telegraph_catalysts import rank_deduplicated_theme_etfs
+    from telegraph_catalysts import check_etf_heavyweight_divergence, rank_deduplicated_theme_etfs
 
-    cands = [
-        {"sym": r["symbol"], "label": r["theme"], "name": r["name"]}
-        for r in rank_deduplicated_theme_etfs(curr_quotes, min_amt_yi=1.5, top_n=6)
-    ]
+    raw_leaders = rank_deduplicated_theme_etfs(curr_quotes, min_amt_yi=1.5, top_n=6)
+    top1_pct = raw_leaders[0]["pct"] if raw_leaders else 0.0
+    red_ratio_val = red_count / max(total_active, 1)
+    cands = [{"sym": r["symbol"], "label": r["theme"], "name": r["name"]} for r in raw_leaders]
     seen = {c["sym"] for c in cands}
     for sym, fallback_nm in (
         ("159915.SZ", "创业板ETF易方达"),
@@ -1174,6 +1174,7 @@ def build_late_day_decision_card(
             )
             cands.append({"sym": sym, "label": "宽基成长", "name": ext_name})
     picked: list[tuple[float, float, str]] = []
+    blocked_sub = False
     for item in cands:
         m = compute_quote_metrics(curr_quotes.get(item["sym"], {}))
         bars = (daily_bars or {}).get(item["sym"]) or []
@@ -1185,6 +1186,12 @@ def build_late_day_decision_card(
             or not (1.0 <= m["pct"] <= 6.5 and 0.0 <= m["vwap_dev"] <= 2.2 and m["upper_wick_pct"] <= max_wick)
         ):
             continue
+        if check_etf_heavyweight_divergence(item["sym"], item["label"], curr_quotes):
+            blocked_sub = True
+            continue
+        if item["label"] != "宽基成长" and top1_pct >= 4.5 and red_ratio_val < 0.68 and m["pct"] < top1_pct * 0.50:
+            blocked_sub = True
+            continue
         last = m["last"]
         line = (
             f"- **[{item['label']}] `{item['sym']}` {item['name']}**："
@@ -1195,6 +1202,8 @@ def build_late_day_decision_card(
         picked.append((m["pct"], m["amt_yi"], line))
     picked.sort(key=lambda r: (r[0], r[1]), reverse=True)
     if not picked:
+        if blocked_sub:
+            return "🛑 **【14:40 尾盘明牌决策：今日不开新仓 · 宁缺毋滥禁买后排平替】**（前排正主偏离过高且后排跟风/重仓股背离，拒绝硬凑次选标的）"
         return "🛑 **【14:40 尾盘明牌决策：今日不开新仓 · 留现金等分歧】**（主线偏离过高或上影过长，不追高潮尾盘）"
     return "**🎯 【14:40 尾盘明牌决策卡：顺势可介入主线 ETF（次日享 T+1 主动权）】**\n" + "\n".join(
         r[2] for r in picked[:2]

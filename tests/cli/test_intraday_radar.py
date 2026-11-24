@@ -2429,3 +2429,85 @@ def test_t1_locked_holding_mutes_phone_on_buy_day_and_unlocks_next_day(tmp_path)
     )
     assert lvl_next == "L4"
     assert "L4 破位止损" in body_next
+
+
+def test_etf_heavyweight_divergence_and_anti_laggard_substitute_gate() -> None:
+    import sys
+
+    sys.path.insert(0, str(SCRIPT_PATH.parent))
+    import telegraph_catalysts as tc
+
+    radar = _load_radar_module()
+
+    # 1) 562500 up +1.5% on low VWAP dev, yet its 5 top industrial-control heavyweights are dragging red
+    divergent_quotes = {
+        "562500.SH": {
+            "symbol": "562500.SH",
+            "last_price": 0.827,
+            "prev_close": 0.815,
+            "high": 0.829,
+            "low": 0.810,
+            "volume": 3.0e8,
+            "amount": 2.469e8,  # vwap = 0.823 -> dev=+0.49%
+            "ext": {"name": "机器人ETF华夏"},
+        },
+        "300124.SZ": {"last_price": 58.8, "prev_close": 60.0},  # -2.0%
+        "002230.SZ": {"last_price": 50.05, "prev_close": 50.0},  # +0.1%
+        "688169.SH": {"last_price": 198.6, "prev_close": 200.0},  # -0.7%
+        "002236.SZ": {"last_price": 19.84, "prev_close": 20.0},  # -0.8%
+        "688777.SH": {"last_price": 45.09, "prev_close": 45.0},  # +0.2%
+    }
+    warn = tc.check_etf_heavyweight_divergence("562500.SH", "物理AI/机器人", divergent_quotes)
+    assert "⚠️重仓股背离" in warn
+    etf_md = tc.summarize_theme_etf_leadership(divergent_quotes, red_ratio=0.60, now_hm="14:40")
+    assert "禁买错配ETF" in etf_md
+    late_div = radar.build_late_day_decision_card(divergent_quotes, red_count=65, total_active=100)
+    assert "562500.SH" not in late_div and "宁缺毋滥禁买后排平替" in late_div
+
+    # 2) Pure anchor ETF 159530.SZ takes precedence over broad-heavy 562500.SH
+    pair_quotes = {
+        "562500.SH": {
+            "symbol": "562500.SH",
+            "last_price": 0.822,
+            "prev_close": 0.815,
+            "amount": 2.2e8,
+            "vwap": 0.820,
+            "ext": {"name": "机器人ETF华夏"},
+        },
+        "159530.SZ": {
+            "symbol": "159530.SZ",
+            "last_price": 1.230,
+            "prev_close": 1.215,
+            "amount": 2.0e8,
+            "vwap": 1.224,
+            "ext": {"name": "机器人ETF易方达"},
+        },
+    }
+    ranked = tc.rank_deduplicated_theme_etfs(pair_quotes, min_amt_yi=1.0, top_n=4)
+    assert len(ranked) == 1 and ranked[0]["symbol"] == "159530.SZ"
+
+    # 3) Anti-laggard-substitute: when #1 leader overextends >=4.5%, weak follower (<50% of leader pct) is blocked
+    sub_quotes = {
+        "515880.SH": {
+            "symbol": "515880.SH",
+            "last_price": 1.068,
+            "prev_close": 1.000,
+            "high": 1.070,
+            "low": 1.020,
+            "volume": 5.0e8,
+            "amount": 5.16e8,  # vwap = 1.032 -> dev=+3.49%, pct=+6.8%
+            "ext": {"name": "通信ETF"},
+        },
+        "512660.SH": {
+            "symbol": "512660.SH",
+            "last_price": 1.018,
+            "prev_close": 1.000,
+            "high": 1.021,
+            "low": 1.002,
+            "volume": 3.0e8,
+            "amount": 3.039e8,  # vwap = 1.013 -> dev=+0.49%, pct=+1.8% (< 6.8*0.5)
+            "ext": {"name": "军工ETF"},
+        },
+    }
+    no_sub = radar.build_late_day_decision_card(sub_quotes, red_count=60, total_active=100)
+    assert "512660.SH" not in no_sub and "宁缺毋滥禁买后排平替" in no_sub

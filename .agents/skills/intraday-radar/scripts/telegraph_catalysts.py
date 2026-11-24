@@ -65,6 +65,16 @@ THEME_ETF_UNIVERSE: list[tuple[str, str, list[str]]] = [
     ("高股息红利", "515080.SH", ["红利", "高股息", "央企", "煤炭"]),
 ]
 
+ETF_HEAVYWEIGHTS_MAP: dict[str, list[str]] = {
+    "562500.SH": ["300124.SZ", "002230.SZ", "688169.SH", "002236.SZ", "688777.SH"],
+    "159530.SZ": ["688017.SH", "002747.SZ", "002472.SZ", "300024.SZ", "603728.SH"],
+    "物理AI/机器人": ["688017.SH", "002747.SZ", "002472.SZ", "300024.SZ", "603728.SH"],
+    "通信/CPO算力": ["300308.SZ", "601138.SH", "300502.SZ", "300394.SZ", "000063.SZ"],
+    "半导体/芯片": ["688981.SH", "688041.SH", "002371.SZ", "688256.SH", "603986.SH"],
+    "AI应用/软件": ["002230.SZ", "688111.SH", "300033.SZ", "002415.SZ", "300418.SZ"],
+    "智能汽车/汽配": ["002594.SZ", "601689.SH", "002920.SZ", "603596.SH", "002050.SZ"],
+}
+
 CATALYST_THEMES: list[tuple[str, list[str], list[str]]] = [
     (
         "🤖 物理AI/机器人/具身智能",
@@ -733,12 +743,39 @@ def _classify_etf_theme_bucket(sym: str, name: str) -> str:
     return stem or sym
 
 
+def check_etf_heavyweight_divergence(
+    sym: str,
+    theme: str,
+    curr_quotes: dict[str, dict[str, Any]],
+) -> str:
+    weights = ETF_HEAVYWEIGHTS_MAP.get(sym) or ETF_HEAVYWEIGHTS_MAP.get(theme) or []
+    if not weights:
+        return ""
+    pcts: list[float] = []
+    for w in weights:
+        q = curr_quotes.get(w)
+        if not q:
+            continue
+        last = float(q.get("last_price") or q.get("price") or 0.0)
+        pre = float(q.get("prev_close") or 0.0)
+        if last > 0 and pre > 0:
+            pcts.append((last / pre - 1.0) * 100.0)
+    if len(pcts) < 3:
+        return ""
+    up_n = sum(1 for p in pcts if p > 0)
+    avg_p = sum(pcts) / len(pcts)
+    if up_n / len(pcts) < 0.60 or avg_p < 0.30:
+        return f"⚠️重仓股背离({up_n}/{len(pcts)}红·均{avg_p:+.1f}%，小票涨停ETF不跟)"
+    return ""
+
+
 def rank_deduplicated_theme_etfs(
     curr_quotes: dict[str, dict[str, Any]],
     *,
     min_amt_yi: float = 0.5,
     top_n: int = 4,
 ) -> list[dict[str, Any]]:
+    anchor_syms = {a for _, a, _ in THEME_ETF_UNIVERSE}
     best_by_theme: dict[str, dict[str, Any]] = {}
     for sym, q in (curr_quotes or {}).items():
         if not ((sym.endswith(".SH") and sym[:2] in ("51", "56", "58")) or (sym.endswith(".SZ") and sym[:2] == "15")):
@@ -765,7 +802,18 @@ def rank_deduplicated_theme_etfs(
             "amt_yi": amt_yi,
         }
         prev = best_by_theme.get(bucket)
-        if prev is None or (amt_yi > prev["amt_yi"] * 1.25) or (amt_yi >= prev["amt_yi"] * 0.6 and pct > prev["pct"]):
+        cand_anchor = sym in anchor_syms and amt_yi >= 1.0
+        prev_anchor = prev is not None and prev["symbol"] in anchor_syms and prev["amt_yi"] >= 1.0
+        take = (
+            prev is None
+            or (cand_anchor and not prev_anchor and pct >= prev["pct"] - 0.5)
+            or (
+                not prev_anchor
+                and ((amt_yi > prev["amt_yi"] * 1.25) or (amt_yi >= prev["amt_yi"] * 0.6 and pct > prev["pct"]))
+            )
+            or (prev_anchor and amt_yi >= prev["amt_yi"] * 1.5 and pct > prev["pct"] + 0.5)
+        )
+        if take:
             best_by_theme[bucket] = cand
     ranked = [v for v in best_by_theme.values() if v["pct"] > 0.3 and v["vwap_dev"] >= -0.2]
     ranked.sort(key=lambda r: (r["pct"], r["amt_yi"]), reverse=True)
@@ -904,12 +952,18 @@ def build_morning_washout_card(
 ) -> str:
     if (red_ratio or 0.0) < 0.48:
         return ""
+    leaders = rank_deduplicated_theme_etfs(curr_quotes, min_amt_yi=0.8, top_n=4)
+    top1_pct = leaders[0]["pct"] if leaders else 0.0
     picked: list[str] = []
-    for item in rank_deduplicated_theme_etfs(curr_quotes, min_amt_yi=0.8, top_n=4):
+    for item in leaders:
         last, bars = item["last"], (daily_bars or {}).get(item["symbol"])
         if not (0.8 <= item["pct"] <= 4.0 and 0.0 <= item["vwap_dev"] <= 1.6):
             continue
-        if check_symbol_chip_overhang(last, bars):
+        if top1_pct >= 4.5 and (red_ratio or 0.0) < 0.68 and item["pct"] < top1_pct * 0.50:
+            continue
+        if check_symbol_chip_overhang(last, bars) or check_etf_heavyweight_divergence(
+            item["symbol"], item["theme"], curr_quotes
+        ):
             continue
         if bars and len(bars) >= 2 and last > max(b["high"] for b in bars[:-1]) * 0.98:
             continue
@@ -938,10 +992,13 @@ def summarize_theme_etf_leadership(
     for item in leaders:
         vd, pct = item["vwap_dev"], item["pct"]
         chip_warn = check_symbol_chip_overhang(item["last"], (daily_bars or {}).get(item["symbol"]))
+        hw_warn = check_etf_heavyweight_divergence(item["symbol"], item["theme"], curr_quotes)
         if vd > 2.5 or pct > 4.5:
             zone = "⛔偏离过高禁追·等次日回踩"
         elif (not now_hm or now_hm < "14:35") and (chip_regime == "CHIP_DUMP_LOCK" or chip_warn):
             zone = f"{chip_warn or '💣T+1筹码兑现锁死'}·禁早盘追买(等14:40)"
+        elif hw_warn:
+            zone = f"{hw_warn}·禁买错配ETF"
         elif (
             chip_regime == "WASHOUT_FIRST_DAY"
             and "09:45" <= now_hm <= "10:35"
