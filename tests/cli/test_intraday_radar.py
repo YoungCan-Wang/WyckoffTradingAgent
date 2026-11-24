@@ -2050,3 +2050,138 @@ def test_three_layer_core_regime_gate_etf_dedup_lps_and_freeze_fallback(tmp_path
     )
     sina_map = radar._fetch_sina_holding_quotes(["000543.SZ"])
     assert sina_map["000543.SZ"]["last_price"] == 7.40
+
+
+def test_late_day_decision_card_and_cli_flag(tmp_path, monkeypatch) -> None:
+    import sys
+
+    sys.path.insert(0, str(SCRIPT_PATH.parent))
+    import telegraph_catalysts as tc
+
+    radar = _load_radar_module()
+    qualifying_etfs = {
+        "562500.SH": {
+            "symbol": "562500.SH",
+            "last_price": 1.000,
+            "prev_close": 0.960,
+            "high": 1.005,
+            "low": 0.965,
+            "volume": 3.0e8,
+            "amount": 2.97e8,  # vwap=0.990 -> vwap_dev=+1.01%, upper_wick=0.50%, pct=+4.17%, amt=2.97亿
+            "ext": {"name": "机器人ETF华夏"},
+        },
+        "159915.SZ": {
+            "symbol": "159915.SZ",
+            "last_price": 2.000,
+            "prev_close": 1.960,
+            "high": 2.010,
+            "low": 1.960,
+            "volume": 5.0e8,
+            "amount": 9.90e8,  # vwap=1.980 -> vwap_dev=+1.01%, upper_wick=0.50%, pct=+2.04%
+            "ext": {"name": "创业板ETF易方达"},
+        },
+    }
+
+    # 1) DEFENSIVE / CAUTIOUS climate (<55% red) refuses new positions
+    cautious_card = radar.build_late_day_decision_card(qualifying_etfs, red_count=45, total_active=100)
+    assert "今日不开新仓 · 握纯现金/511360" in cautious_card
+
+    # 2) ATTACK climate, but both SH and CY indices show >1.2% upper wick -> skip
+    wick_indices = {
+        **qualifying_etfs,
+        "000001.SH": {"last_price": 3500.0, "prev_close": 3480.0, "high": 3560.0, "low": 3475.0, "amount": 5000e8},
+        "399006.SZ": {"last_price": 2200.0, "prev_close": 2180.0, "high": 2250.0, "low": 2170.0, "amount": 3000e8},
+    }
+    wick_card = radar.build_late_day_decision_card(wick_indices, red_count=75, total_active=100)
+    assert "今日不开新仓" in wick_card
+    assert "防尾盘冲高回落" in wick_card
+
+    # 3) ATTACK climate, but all ETFs overextended (vwap_dev > 2.2% or upper_wick_pct > 1.2%) -> skip
+    overext_etfs = {
+        "562500.SH": {
+            "symbol": "562500.SH",
+            "last_price": 1.050,
+            "prev_close": 1.000,
+            "high": 1.052,
+            "low": 1.000,
+            "volume": 3.0e8,
+            "amount": 3.00e8,  # vwap=1.000 -> vwap_dev=+5.00%
+            "ext": {"name": "机器人ETF华夏"},
+        },
+        "159915.SZ": {
+            "symbol": "159915.SZ",
+            "last_price": 2.000,
+            "prev_close": 1.960,
+            "high": 2.050,  # upper_wick = 2.44% > 1.2%
+            "low": 1.960,
+            "volume": 5.0e8,
+            "amount": 9.95e8,
+            "ext": {"name": "创业板ETF易方达"},
+        },
+    }
+    overext_card = radar.build_late_day_decision_card(overext_etfs, red_count=80, total_active=100)
+    assert "今日不开新仓 · 留现金等分歧" in overext_card
+
+    # 4) ATTACK climate with healthy qualifying ETFs -> outputs -3% stop and +4% breakeven
+    ok_card = radar.build_late_day_decision_card(qualifying_etfs, red_count=75, total_active=100)
+    assert "顺势可介入主线 ETF" in ok_card
+    assert "562500.SH" in ok_card and "159915.SZ" in ok_card
+    assert "0.970" in ok_card and "1.040" in ok_card  # 1.000 * 0.97, 1.000 * 1.04
+    assert "1.940" in ok_card and "2.080" in ok_card  # 2.000 * 0.97, 2.000 * 1.04
+
+    # 5) End-to-end CLI --late-decision flag via main()
+    state_file = tmp_path / "state_late.json"
+    monkeypatch.setattr(radar, "STATE_PATH", state_file)
+    monkeypatch.setattr(radar, "ALERT_LOG_PATH", tmp_path / "alerts_late.jsonl")
+    monkeypatch.setattr(radar, "TURNOVER_DIR", tmp_path / "turnover_late")
+    monkeypatch.setattr(radar, "MAINLINE_ANCHORS_PATH", tmp_path / "anchors_late.json")
+    monkeypatch.setattr(radar, "load_wyckoff_l2_map", lambda *a, **kw: {"600100": {"l2_eligible": True}})
+    monkeypatch.setattr(radar, "resolve_lark_open_id", lambda *a: "ou_mock")
+    monkeypatch.setattr(tc, "fetch_sina_telegraph", lambda pages=1: [])
+    monkeypatch.setattr(tc, "fetch_wscn_telegraph", lambda: [])
+
+    quotes_cli = dict(qualifying_etfs)
+    for i in range(100):
+        sym = f"{600100 + i:06d}.SH"
+        is_up = i < 70
+        quotes_cli[sym] = {
+            "symbol": sym,
+            "last_price": 10.2 if is_up else 9.8,
+            "prev_close": 10.0,
+            "volume": 1e6,
+            "amount": 1e7,
+            "ext": {"name": f"股{i}"},
+        }
+    quotes_cli["000001.SH"] = {
+        "last_price": 3510.0,
+        "prev_close": 3500.0,
+        "high": 3515.0,
+        "low": 3495.0,
+        "amount": 5000e8,
+    }
+    quotes_cli["399001.SZ"] = {
+        "last_price": 11050.0,
+        "prev_close": 11000.0,
+        "high": 11060.0,
+        "low": 10980.0,
+        "amount": 6000e8,
+    }
+
+    class FakeClient:
+        def __init__(self, **kw):
+            pass
+
+        def get_quotes(self, universes=None, symbols=None):
+            return quotes_cli
+
+    import integrations.tickflow_client as tf_mod
+
+    monkeypatch.setattr(tf_mod, "TickFlowClient", FakeClient)
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(radar, "send_feishu_tiered_alert", lambda t, c, **kw: sent.append((t, c)) or "om_late")
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT_PATH), "--once", "--force-send", "--late-decision", "--ignore-hours"])
+    radar.main()
+    assert len(sent) == 1
+    assert sent[0][0].startswith("🎯【14:40 尾盘明牌决策卡】")
+    assert "顺势可介入主线 ETF" in sent[0][1]
+    assert "0.970" in sent[0][1] and "1.040" in sent[0][1]

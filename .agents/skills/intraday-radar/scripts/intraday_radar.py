@@ -1071,6 +1071,67 @@ def scan_next_day_lps_pullbacks(
     )
 
 
+def build_late_day_decision_card(
+    curr_quotes: dict[str, dict[str, Any]],
+    red_count: int,
+    total_active: int,
+) -> str:
+    """Layer 3 closing-hour gate: allow ETF entry only on broad attack with controlled VWAP & upper wick."""
+    regime, _ = classify_market_regime(red_count, total_active)
+    if regime != "ATTACK" or (total_active > 0 and (red_count / max(total_active, 1)) < 0.55):
+        return (
+            "🛑 **【14:40 尾盘明牌决策：今日不开新仓 · 握纯现金/511360】**"
+            "（当前红盘率未达 55% 顺势进攻线，拒绝勉强交易）"
+        )
+    cy_m = compute_quote_metrics(curr_quotes.get("399006.SZ", {}))
+    sh_m = compute_quote_metrics(curr_quotes.get("000001.SH", {}))
+    if cy_m and sh_m and cy_m["upper_wick_pct"] > 1.2 and sh_m["upper_wick_pct"] > 1.2:
+        return (
+            "🛑 **【14:40 尾盘明牌决策：今日不开新仓 · 留现金等分歧】**"
+            f"（上证上影 {sh_m['upper_wick_pct']:.2f}% / 创业板上影 {cy_m['upper_wick_pct']:.2f}% > 1.2%，防尾盘冲高回落）"
+        )
+    from telegraph_catalysts import rank_deduplicated_theme_etfs
+
+    cands = [
+        {"sym": r["symbol"], "label": r["theme"], "name": r["name"]}
+        for r in rank_deduplicated_theme_etfs(curr_quotes, min_amt_yi=1.5, top_n=6)
+    ]
+    seen = {c["sym"] for c in cands}
+    for sym, fallback_nm in (
+        ("159915.SZ", "创业板ETF易方达"),
+        ("512100.SH", "中证1000ETF南方"),
+        ("588000.SH", "科创50ETF华夏"),
+    ):
+        if sym not in seen and sym in curr_quotes:
+            ext_name = str(
+                (curr_quotes[sym].get("ext") or {}).get("name") or curr_quotes[sym].get("name") or fallback_nm
+            )
+            cands.append({"sym": sym, "label": "宽基成长", "name": ext_name})
+    picked: list[tuple[float, float, str]] = []
+    for item in cands:
+        m = compute_quote_metrics(curr_quotes.get(item["sym"], {}))
+        if (
+            not m
+            or m["amt_yi"] < 1.5
+            or not (1.0 <= m["pct"] <= 6.5 and 0.0 <= m["vwap_dev"] <= 2.2 and m["upper_wick_pct"] <= 1.2)
+        ):
+            continue
+        last = m["last"]
+        line = (
+            f"- **[{item['label']}] `{item['sym']}` {item['name']}**："
+            f"现价 **{last:.3f} ({m['pct']:+.2f}%)** | VWAP乖离 **{m['vwap_dev']:+.2f}%** | "
+            f"上影 {m['upper_wick_pct']:.2f}% | 额 {m['amt_yi']:.1f}亿 | "
+            f"🛑-3%硬止损 **{last * 0.97:.3f}** | 🛡️+4%保本 **{last * 1.04:.3f}**"
+        )
+        picked.append((m["pct"], m["amt_yi"], line))
+    picked.sort(key=lambda r: (r[0], r[1]), reverse=True)
+    if not picked:
+        return "🛑 **【14:40 尾盘明牌决策：今日不开新仓 · 留现金等分歧】**（主线偏离过高或上影过长，不追高潮尾盘）"
+    return "**🎯 【14:40 尾盘明牌决策卡：顺势可介入主线 ETF（次日享 T+1 主动权）】**\n" + "\n".join(
+        r[2] for r in picked[:2]
+    )
+
+
 def _enrich_mainline_and_telegraph(
     curr_quotes: dict[str, dict[str, Any]],
     prev_q: dict[str, dict[str, float]],
@@ -1087,6 +1148,7 @@ def _enrich_mainline_and_telegraph(
     d_red: int | None = None,
     red_ratio: float | None = None,
     anchors_path: Path | None = None,
+    late_decision: bool = False,
 ) -> None:
     try:
         from telegraph_catalysts import (
@@ -1133,6 +1195,10 @@ def _enrich_mainline_and_telegraph(
             buckets["mainlines"].append(nt_summary)
         if now_hm >= "14:55" and (red_count or 0) + (green_count or 0) >= 100 and (red_ratio or 0.0) >= 0.50:
             save_closing_mainline_anchors(now_dt.date().isoformat(), curr_quotes, l2_map, anchors_path=anchors_path)
+        if late_decision or ("14:35" <= now_hm <= "14:52"):
+            late_card = build_late_day_decision_card(curr_quotes, red_count or 0, (red_count or 0) + (green_count or 0))
+            if late_card:
+                buckets["mainlines"].insert(0, late_card)
         if fetch_telegraph:
             buckets["telegraph"].extend(
                 scan_live_telegraph_catalysts(
@@ -1252,6 +1318,7 @@ def analyze_snapshot_diff(
     alert_log_path: Path | None = None,
     fetch_telegraph: bool = False,
     anchors_path: Path | None = None,
+    late_decision: bool = False,
 ) -> tuple[str, str, str, int, dict[str, float]]:
     ts = now_ts if now_ts is not None else time.time()
     today_date = cn_today()
@@ -1327,6 +1394,7 @@ def analyze_snapshot_diff(
         d_red=d_red,
         red_ratio=red_ratio,
         anchors_path=anchors_path,
+        late_decision=late_decision,
     )
     if coverage_ok and abs(d_red) >= 400 and _check_cooldown(cooldowns, "L2:breadth", ts):
         buckets["l2_events"].insert(
@@ -1353,6 +1421,7 @@ def analyze_snapshot_diff(
         h_lines,
         buckets,
         bool(l2_map),
+        late_decision=late_decision,
     )
     return level, title, body, red_count, cooldowns
 
@@ -1418,10 +1487,13 @@ def _format_card(
     h_lines: list[str],
     buckets: dict[str, list[str]],
     has_trace: bool = True,
+    late_decision: bool = False,
 ) -> tuple[str, str]:
     now_hm = datetime.now(CN_TZ).strftime("%H:%M")
     amt_tag = f"两市{tot_amt_yi:.0f}亿" if index_ok else "两市成交缺口"
     title, focus_banner = _build_urgent_focus_banner(level, now_hm, amt_tag, red_count, green_count, d_red, buckets)
+    if late_decision and not title.startswith("🎯【14:40"):
+        title = f"🎯【14:40 尾盘明牌决策卡】{title}"
     secs: list[str] = []
     if focus_banner:
         secs.append(focus_banner)
@@ -1635,7 +1707,13 @@ def run_once(args: argparse.Namespace) -> None:
             curr_quotes = {**curr_quotes, **sina_hq}
     unrolled_preopen, _ = _is_unrolled_preopen_snapshot(curr_quotes, now_bjt)
     level, title, content, red_count, cooldowns = analyze_snapshot_diff(
-        curr_quotes, prev_state, l2_map, holdings, now_ts=now_ts, fetch_telegraph=not args.dry_run
+        curr_quotes,
+        prev_state,
+        l2_map,
+        holdings,
+        now_ts=now_ts,
+        fetch_telegraph=not args.dry_run,
+        late_decision=bool(getattr(args, "late_decision", False)),
     )
     compact_snaps = {
         sym: {"pct": round(m["pct"], 3), "amt_yi": round(m["amt_yi"], 3)}
@@ -1733,6 +1811,11 @@ def main() -> None:
         "--heartbeat",
         action="store_true",
         help="Send 2-line alive heartbeat card on routine 5m scans while keeping full L1 card every ~30m",
+    )
+    parser.add_argument(
+        "--late-decision",
+        action="store_true",
+        help="Prepend 14:40 late-day ETF entry decision card (4 iron execution rules)",
     )
     parser.add_argument("--ignore-hours", action="store_true", help="Run scan even outside trading hours")
     parser.add_argument("--dry-run", action="store_true", help="Print card without sending to Feishu")
