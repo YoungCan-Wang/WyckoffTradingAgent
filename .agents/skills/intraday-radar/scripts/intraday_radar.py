@@ -410,6 +410,7 @@ def compute_quote_metrics(q: dict[str, Any]) -> dict[str, Any] | None:
     upper_wick_pct = (high_p - last_p) / high_p * 100.0 if high_p > 0 else 0.0
     amp_pct = (high_p - low_p) / prev_c * 100.0 if prev_c > 0 else 0.0
     open_pct = (open_p / prev_c - 1.0) * 100.0 if prev_c > 0 else 0.0
+    high_pct = (high_p / prev_c - 1.0) * 100.0 if prev_c > 0 else 0.0
     return {
         "symbol": q.get("symbol", ""),
         "name": name,
@@ -422,6 +423,7 @@ def compute_quote_metrics(q: dict[str, Any]) -> dict[str, Any] | None:
         "upper_wick_pct": upper_wick_pct,
         "amp_pct": amp_pct,
         "open_pct": open_pct,
+        "high_pct": high_pct,
     }
 
 
@@ -514,6 +516,63 @@ def _is_wyckoff_steady_core(info: dict[str, Any], rps_v: float, chans: str) -> b
     return main_rise or pre_brk or accum
 
 
+def _check_holding_profit_locks(
+    sym: str,
+    m: dict[str, Any],
+    cfg: dict[str, Any],
+    cooldowns: dict[str, float],
+    now_ts: float,
+    now_hm: str,
+    l2_alerts: list[str],
+    alert_records: list[dict[str, Any]],
+    *,
+    chip_regime: str = "",
+    index_gap_up: bool = False,
+) -> str:
+    """Capture A-share morning gap-up exits & VWAP rollover profit locks (where vwap_dev alone misses)."""
+    is_atk = cfg.get("role") != "DEF"
+    if (
+        is_atk
+        and "09:30" <= now_hm <= "09:50"
+        and chip_regime != "WASHOUT_FIRST_DAY"
+        and m["pct"] >= 3.5
+        and (chip_regime == "CHIP_DUMP_LOCK" or index_gap_up or m["open_pct"] >= 1.8)
+    ):
+        cd_key, cd_win, kind = f"L2:holding_morning_trim:{sym}", 7200, "holding_morning_trim"
+        tag = " 🟡早盘冲高>=3.5%·借高开优先止盈/做T兑现"
+        msg = (
+            f"- 🟡 **【老仓高开兑现】{sym} {m['name']}** 早盘冲高 **{m['pct']:+.2f}%**"
+            f"（开盘 {m['open_pct']:+.2f}%，现价 {m['last']:.2f}），借利好高开优先分批止盈/做T兑现"
+        )
+        extra = {"pct": round(m["pct"], 2), "open_pct": round(m["open_pct"], 2)}
+    elif (
+        is_atk
+        and "09:35" <= now_hm <= "14:30"
+        and m["high_pct"] >= 3.5
+        and m["last"] < m["vwap"]
+        and m["upper_wick_pct"] >= 1.5
+        and m["pct"] > -1.5
+    ):
+        cd_key, cd_win, kind = f"L2:holding_rollover:{sym}", 7200, "holding_spike_rollover"
+        tag = " 🟡冲高回落破均线·果断锁利防回吐"
+        msg = (
+            f"- 🟡 **【老仓冲高破均线锁利】{sym} {m['name']}** 日内冲高 **+{m['high_pct']:.2f}%** 后"
+            f"跌破均线 {m['vwap']:.2f}（现价 {m['last']:.2f} {m['pct']:+.2f}%），果断锁利防单边回吐"
+        )
+        extra = {"pct": round(m["pct"], 2), "high_pct": round(m["high_pct"], 2), "vwap": round(m["vwap"], 3)}
+    elif m["vwap_dev"] > 3.0:
+        cd_key, cd_win, kind = f"L2:holding_t0:{sym}", COOLDOWN_SECONDS, "holding_t0_high"
+        tag = " 🟡偏离均线>3%可做T高抛"
+        msg = f"- 🟡 **【持仓做T高抛】{sym} {m['name']}** 现价 {m['last']:.2f} 偏离均线 +{m['vwap_dev']:.2f}%"
+        extra = {"vwap_dev": round(m["vwap_dev"], 2)}
+    else:
+        return ""
+    if _check_cooldown(cooldowns, cd_key, now_ts, window=cd_win):
+        l2_alerts.append(msg)
+        alert_records.append({"ts": now_ts, "level": "L2", "kind": kind, "symbol": sym, "last": m["last"], **extra})
+    return tag
+
+
 def _evaluate_holdings(
     curr_quotes: dict[str, dict[str, Any]],
     prev_q: dict[str, dict[str, float]],
@@ -522,11 +581,17 @@ def _evaluate_holdings(
     cooldowns: dict[str, float],
     now_ts: float,
     alert_records: list[dict[str, Any]],
+    *,
+    chip_regime: str = "",
 ) -> tuple[list[str], list[str], list[str], list[str]]:
     lines: list[str] = []
     l2_alerts: list[str] = []
     l3_alerts: list[str] = []
     l4_alerts: list[str] = []
+    now_hm = datetime.fromtimestamp(now_ts, tz=CN_TZ).strftime("%H:%M")
+    sh_m = compute_quote_metrics(curr_quotes.get("000001.SH", {}))
+    cy_m = compute_quote_metrics(curr_quotes.get("399006.SZ", {}))
+    index_gap_up = bool((sh_m and sh_m["open_pct"] >= 0.35) or (cy_m and cy_m["open_pct"] >= 0.80))
     for sym, cfg in holdings.items():
         m = compute_quote_metrics(curr_quotes.get(sym, {}))
         if not m:
@@ -572,22 +637,19 @@ def _evaluate_holdings(
                         "dpct_5m": round(dpct, 2),
                     }
                 )
-        elif m["vwap_dev"] > 3.0:
-            tag = " 🟡偏离均线>3%可做T高抛"
-            if _check_cooldown(cooldowns, f"L2:holding_t0:{sym}", now_ts):
-                l2_alerts.append(
-                    f"- 🟡 **【持仓做T高抛】{sym} {m['name']}** 现价 {m['last']:.2f} 偏离均线 +{m['vwap_dev']:.2f}%"
-                )
-                alert_records.append(
-                    {
-                        "ts": now_ts,
-                        "level": "L2",
-                        "kind": "holding_t0_high",
-                        "symbol": sym,
-                        "last": m["last"],
-                        "vwap_dev": round(m["vwap_dev"], 2),
-                    }
-                )
+        else:
+            tag = _check_holding_profit_locks(
+                sym,
+                m,
+                cfg,
+                cooldowns,
+                now_ts,
+                now_hm,
+                l2_alerts,
+                alert_records,
+                chip_regime=chip_regime,
+                index_gap_up=index_gap_up,
+            )
         lines.append(_format_holding_line(sym, m, dpct, cfg, tag))
     return lines, l2_alerts, l3_alerts, l4_alerts
 
@@ -1506,7 +1568,7 @@ def analyze_snapshot_diff(
     )
     alert_records: list[dict[str, Any]] = []
     h_lines, h_l2, h_l3, h_l4 = _evaluate_holdings(
-        curr_quotes, prev_q, has_baseline, holdings, cooldowns, ts, alert_records
+        curr_quotes, prev_q, has_baseline, holdings, cooldowns, ts, alert_records, chip_regime=chip_regime
     )
     buckets = _scan_equities_and_etfs(
         curr_quotes,
@@ -1622,6 +1684,10 @@ def _build_urgent_focus_banner(
         hint = "满级起跳板标的放量突破且大盘强共振，可重点关注分时均线附近右侧机会。"
     elif "持仓急跌" in raw_first:
         hint = "持仓股 5 分钟急跌且跌破分时均线，请留意盘口承接与防守位。"
+    elif "老仓高开兑现" in raw_first:
+        hint = "A股存量博弈下早盘借利好高开冲高是兑现窗口而非追涨号角，老仓优先分批止盈或做 T 高抛锁利。"
+    elif "老仓冲高破均线锁利" in raw_first:
+        hint = "老仓日内冲高后回落跌破分时均价线（VWAP），谨防单边派发回吐，建议果断锁利兑现。"
     elif "持仓做T高抛" in raw_first:
         hint = "持仓股拉升偏离分时均线 >3%，可关注冲高分批止盈或做 T 高抛机会。"
     elif level == "L3":

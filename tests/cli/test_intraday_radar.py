@@ -2643,3 +2643,142 @@ def test_main_rise_pre_breakout_and_intraday_rs_leaders(tmp_path) -> None:
     assert "尾盘抗跌主升/百亿中军备选" in att_card and "301095.SZ" in att_card and "688256.SH" in att_card
     def_card = radar.build_late_day_decision_card(rs_quotes, red_count=34, total_active=100, l2_map=l2_rs)
     assert "今日不开新仓 · 握纯现金/511360" in def_card and "301095.SZ" not in def_card
+
+
+def test_holding_morning_gap_trim_and_spike_rollover_l2_alerts(tmp_path) -> None:
+    radar = _load_radar_module()
+    today_d = cn_today()
+    today_s = today_d.isoformat()
+    buy_ymd = today_d.strftime("%Y%m%d")
+    ts_0935 = datetime(today_d.year, today_d.month, today_d.day, 9, 35, tzinfo=CN_TZ).timestamp()
+    ts_1005 = datetime(today_d.year, today_d.month, today_d.day, 10, 5, tzinfo=CN_TZ).timestamp()
+
+    # 1) Unlocked ATK holding at 09:35 gap-up (+4.18% open -> +5.30%, vwap_dev +0.53% < 3.0%) fires L2 morning trim
+    gap_quotes = {
+        "603011.SH": {
+            "symbol": "603011.SH",
+            "prev_close": 14.34,
+            "open": 14.94,
+            "last_price": 15.10,
+            "high": 15.14,
+            "low": 14.90,
+            "volume": 1.0e7,
+            "amount": 1.502e8,
+            "ext": {"name": "合锻智能"},
+        }
+    }
+    atk_holdings = radar.parse_holdings_arg(["603011.SH:18.252:13.00:ATK"])
+    lvl_trim, title_trim, body_trim, _, cds_trim = radar.analyze_snapshot_diff(
+        gap_quotes, {}, {}, atk_holdings, now_ts=ts_0935, turnover_dir=tmp_path / "to1"
+    )
+    assert lvl_trim == "L2"
+    assert "【L2 加急焦点】" in title_trim
+    assert "【老仓高开兑现】603011.SH 合锻智能" in body_trim
+    assert "A股存量博弈下早盘借利好高开冲高是兑现窗口而非追涨号角" in body_trim
+    assert cds_trim.get("L2:holding_morning_trim:603011.SH") == ts_0935
+
+    # 2) Same-day T+1 locked holding up +5.30% at 09:35 stays L1 muted
+    locked_holdings = radar.parse_holdings_arg([f"603011.SH:14.34:13.00:ATK:{buy_ymd}"])
+    lvl_locked, _, body_locked, _, cds_locked = radar.analyze_snapshot_diff(
+        gap_quotes, {}, {}, locked_holdings, now_ts=ts_0935, turnover_dir=tmp_path / "to2"
+    )
+    assert lvl_locked == "L1"
+    assert "🔒[今日T+1锁仓" in body_locked
+    assert "L2:holding_morning_trim:603011.SH" not in cds_locked
+
+    # 3) DEF role holding up +3.80% at 09:35 (vwap_dev +0.5%) does NOT fire 老仓高开兑现
+    def_quotes = {
+        "601088.SH": {
+            "symbol": "601088.SH",
+            "prev_close": 40.00,
+            "open": 41.40,
+            "last_price": 41.52,
+            "high": 41.60,
+            "low": 41.20,
+            "volume": 1.0e7,
+            "amount": 4.131e8,
+            "ext": {"name": "中国神华"},
+        }
+    }
+    def_holdings = radar.parse_holdings_arg(["601088.SH:39.00:37.50:DEF"])
+    lvl_def, _, body_def, _, _ = radar.analyze_snapshot_diff(
+        def_quotes, {}, {}, def_holdings, now_ts=ts_0935, turnover_dir=tmp_path / "to3"
+    )
+    assert lvl_def == "L1"
+    assert "老仓高开兑现" not in body_def
+
+    # 4) WASHOUT_FIRST_DAY morning suppresses premature 老仓高开兑现
+    washout_bars = {
+        "399006.SZ": [
+            {"day": "t-3", "open": 2380.0, "high": 2400.0, "low": 2310.0, "close": 2320.0, "volume": 1.0e9},
+            {"day": "t-2", "open": 2310.0, "high": 2320.0, "low": 2240.0, "close": 2250.0, "volume": 1.0e9},
+            {"day": "t-1", "open": 2245.0, "high": 2255.0, "low": 2200.0, "close": 2210.0, "volume": 1.0e9},
+        ]
+    }
+    washout_quotes = {
+        "399006.SZ": {
+            "symbol": "399006.SZ",
+            "prev_close": 2210.0,
+            "open": 2214.4,
+            "last_price": 2250.0,
+            "high": 2255.0,
+            "low": 2208.0,
+            "volume": 1.0e9,
+            "amount": 2.23e11,
+            "ext": {"name": "创业板指"},
+        },
+        "603011.SH": {
+            "symbol": "603011.SH",
+            "prev_close": 14.34,
+            "open": 14.63,  # +2.02% open would trigger without WASHOUT_FIRST_DAY guard
+            "last_price": 14.88,
+            "high": 14.90,
+            "low": 14.55,
+            "volume": 1.0e7,
+            "amount": 1.47e8,
+            "ext": {"name": "合锻智能"},
+        },
+    }
+    ts_0940 = datetime(today_d.year, today_d.month, today_d.day, 9, 40, tzinfo=CN_TZ).timestamp()
+    lvl_wash, _, body_wash, _, cds_wash = radar.analyze_snapshot_diff(
+        washout_quotes,
+        {},
+        {},
+        atk_holdings,
+        now_ts=ts_0940,
+        turnover_dir=tmp_path / "to4",
+        daily_bars=washout_bars,
+    )
+    assert lvl_wash == "L1"
+    assert "恐慌出清首日" in body_wash
+    assert "老仓高开兑现" not in body_wash
+    assert "L2:holding_morning_trim:603011.SH" not in cds_wash
+
+    # 5) 10:05 rollover: high=+6.35% bleeds slowly (-0.9% 5m, no L3) below VWAP -> L2 rollover profit lock
+    roll_prev = {
+        "date": today_s,
+        "ts": ts_1005 - 300.0,
+        "red": 0,
+        "cooldowns": dict(cds_trim),
+        "quotes": {"603011.SH": {"pct": 3.97, "amt_yi": 2.50}},
+    }
+    roll_quotes = {
+        "603011.SH": {
+            "symbol": "603011.SH",
+            "prev_close": 14.34,
+            "open": 14.94,
+            "last_price": 14.78,
+            "high": 15.25,
+            "low": 14.75,
+            "volume": 2.0e7,
+            "amount": 2.992e8,
+            "ext": {"name": "合锻智能"},
+        }
+    }
+    lvl_roll, _, body_roll, _, cds_roll = radar.analyze_snapshot_diff(
+        roll_quotes, roll_prev, {}, atk_holdings, now_ts=ts_1005, turnover_dir=tmp_path / "to5"
+    )
+    assert lvl_roll == "L2"
+    assert "【老仓冲高破均线锁利】603011.SH 合锻智能" in body_roll
+    assert "谨防单边派发回吐，建议果断锁利兑现" in body_roll
+    assert cds_roll.get("L2:holding_rollover:603011.SH") == ts_1005
