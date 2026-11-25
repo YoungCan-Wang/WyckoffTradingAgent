@@ -51,6 +51,7 @@ export function ShadowLedgerPage() {
           copy={copy}
           navDaily={payload.ledger.navDaily}
           positions={payload.ledger.positions}
+          closedTrades={payload.ledger.closedTrades}
           events={payload.ledger.events}
           selectedAsOf={selected}
           onSelectAsOf={setSelectedAsOf}

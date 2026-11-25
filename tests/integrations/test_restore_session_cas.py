@@ -372,6 +372,48 @@ def test_invalid_session_error_ignores_tls_and_invalid_json():
     assert not local_auth._invalid_session_error(RuntimeError("invalid JSON response from proxy"))
 
 
+def test_invalid_session_error_ignores_http_500_token_url():
+    """AuthUnknownError from gotrue embeds grant_type=refresh_token in the URL."""
+    msg = (
+        "Server error '500 Internal Server Error' for url "
+        "'https://xxx.supabase.co/auth/v1/token?grant_type=refresh_token'\n"
+        "For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500"
+    )
+    assert not local_auth._invalid_session_error(RuntimeError(msg))
+    assert local_auth._invalid_session_error(RuntimeError("Invalid Refresh Token: Already Used"))
+    assert local_auth._invalid_session_error(RuntimeError("invalid_refresh_token"))
+
+
+def test_restore_http_500_token_url_does_not_clear_valid_session(tmp_path, monkeypatch):
+    _point_session(tmp_path, monkeypatch)
+    local_auth.save_session(
+        {
+            "user_id": "alice",
+            "email": "alice@example.test",
+            "access_token": "alice-at",
+            "refresh_token": "alice-rt",
+        }
+    )
+    msg = (
+        "Server error '500 Internal Server Error' for url "
+        "'https://xxx.supabase.co/auth/v1/token?grant_type=refresh_token'"
+    )
+    monkeypatch.setattr(
+        local_auth,
+        "_create_client",
+        lambda: _FakeClient(_FakeAuth(error=RuntimeError(msg))),
+    )
+    monkeypatch.setattr(local_auth, "auto_relogin", lambda: {"user_id": "should-not-run"})
+
+    result = local_auth.restore_session()
+
+    disk = local_auth.load_session()
+    assert disk is not None
+    assert disk["refresh_token"] == "alice-rt"
+    assert result is not None
+    assert result["refresh_token"] == "alice-rt"
+
+
 def test_restore_tls_expired_does_not_clear_valid_session(tmp_path, monkeypatch):
     _point_session(tmp_path, monkeypatch)
     local_auth.save_session(

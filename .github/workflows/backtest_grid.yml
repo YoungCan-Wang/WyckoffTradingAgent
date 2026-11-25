@@ -756,6 +756,9 @@ jobs:
         shell: bash
         env:
           VARIANT: ${{ matrix.variant }}
+          # Policy-only letters (I/F/G/H/M/P) must keep production FunnelConfig switches;
+          # classic A-relative all-off map would flip upthrust/creek off and poison live deltas.
+          STRATEGY_VARIANT_RELATIVE_TO: live
         run: |
           set -euo pipefail
           OUT_DIR="analysis/backtest_strategy_actions"

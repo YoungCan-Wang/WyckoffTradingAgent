@@ -233,6 +233,41 @@ def test_bare_bse_codes_use_30_percent_limit():
     assert TR.limit_pct("300001.SZ") == 0.20
 
 
+def test_excel_stripped_leading_zeros_recover_sz_codes(tmp_path):
+    """Excel rewrites 002594 → 2594 / 2594.0; those must still map to 002594.SZ."""
+    csv = tmp_path / "fills.csv"
+    pd.DataFrame(
+        [
+            {
+                "name": "比亚迪",
+                "code": "2594",
+                "date": "2026-01-05",
+                "side": "buy",
+                "price": 100,
+                "qty": 100,
+                "amount": 10000,
+                "fee": 5,
+            },
+            {
+                "name": "比亚迪",
+                "code": "2594.0",
+                "date": "2026-01-06",
+                "side": "sell",
+                "price": 101,
+                "qty": 100,
+                "amount": 10100,
+                "fee": 5,
+            },
+        ]
+    ).to_csv(csv, index=False)
+    fills = TR.load_fills(csv)
+    assert list(fills["code"]) == ["002594.SZ", "002594.SZ"]
+    trips, open_pos = TR.build_round_trips(fills)
+    assert open_pos == []
+    assert len(trips) == 1
+    assert trips[0].code == "002594.SZ"
+
+
 def test_blank_name_cells_still_form_round_trips(tmp_path):
     """Empty name CSV cells become NaN; groupby must not drop those fills."""
     csv = tmp_path / "fills.csv"
