@@ -1353,6 +1353,7 @@ def _enrich_mainline_and_telegraph(
             build_morning_washout_card,
             detect_confirmed_mainline_alerts,
             scan_live_telegraph_catalysts,
+            summarize_call_auction_mainlines,
             summarize_national_team_etfs,
             summarize_theme_etf_leadership,
             summarize_top_sector_mainlines,
@@ -1378,10 +1379,16 @@ def _enrich_mainline_and_telegraph(
             buckets["l2_events"].insert(0, nt_l2_alert)
             alert_records.append({"ts": ts, "level": "L2", "kind": "national_team_etf_surge"})
         if now_hm >= "09:45":
-            for theme_key, ml_md, ml_rec in detect_confirmed_mainline_alerts(curr_quotes, l2_map):
+            for theme_key, ml_md, ml_rec in detect_confirmed_mainline_alerts(
+                curr_quotes, l2_map, mkt_red_ratio=red_ratio, now_hm=now_hm
+            ):
                 if _check_cooldown(cooldowns, f"L2:mainline_formed:{theme_key}", ts, window=10800):
                     buckets["l2_events"].insert(0, ml_md)
                     alert_records.append({"ts": ts, "level": "L2", "kind": "mainline_formed", **ml_rec})
+        if "09:25" <= now_hm <= "10:15":
+            auction_summary = summarize_call_auction_mainlines(curr_quotes, l2_map, top_n=3)
+            if auction_summary:
+                buckets["mainlines"].append(auction_summary)
         mainline_summary = summarize_top_sector_mainlines(curr_quotes, l2_map)
         if mainline_summary:
             buckets["mainlines"].append(mainline_summary)
@@ -1696,6 +1703,8 @@ def _build_urgent_focus_banner(
         hint = "老仓日内冲高后回落跌破分时均价线（VWAP），谨防单边派发回吐，建议果断锁利兑现。"
     elif "持仓做T高抛" in raw_first:
         hint = "持仓股拉升偏离分时均线 >3%，可关注冲高分批止盈或做 T 高抛机会。"
+    elif "主线成型" in raw_first and "恐慌日逆势平开中军观察" in raw_first:
+        hint = "极端低开恐慌日出现逆势主线，已过滤高开>1.5%陷阱并仅标出平开稳健中军供观察与T+1溢价验证（不突破14:40开仓铁律）。"
     elif "主线成型" in raw_first:
         hint = "真主线已形成普涨+涨停潮共振（非5m量化骗炮），按中军战法重点盯板块内平开、贴均线、短上影的稳健中军承接，禁追涨停梯队高点。"
     elif level == "L3":

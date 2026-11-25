@@ -2910,3 +2910,135 @@ def test_mainline_formation_l2_alert_and_pharma_core_followers(tmp_path) -> None
     assert "600196.SH" in rs_map and rs_map["600196.SH"]["tag"] == "🔥主线中军"
     assert "603233.SH" in rs_map and rs_map["603233.SH"]["tag"] == "🔥主线中军"
     assert "301413.SZ" not in rs_map
+
+
+def test_call_auction_mainline_radar_and_panic_day_flat_open_core_filter(tmp_path) -> None:
+    import sys
+
+    sys.path.insert(0, str(SCRIPT_PATH.parent))
+    import telegraph_catalysts as tc
+
+    radar = _load_radar_module()
+    today_d = cn_today()
+    ts_0926 = datetime(today_d.year, today_d.month, today_d.day, 9, 26, tzinfo=CN_TZ).timestamp()
+    ts_0950 = datetime(today_d.year, today_d.month, today_d.day, 9, 50, tzinfo=CN_TZ).timestamp()
+    ts_1035 = datetime(today_d.year, today_d.month, today_d.day, 10, 35, tzinfo=CN_TZ).timestamp()
+
+    l2_map: dict[str, dict] = {}
+    quotes: dict[str, dict] = {
+        "000001.SH": {
+            "symbol": "000001.SH",
+            "prev_close": 3500.0,
+            "open": 3465.0,
+            "last_price": 3470.0,
+            "amount": 7.0e9,  # 70亿 + 50亿 = 120亿 <= 500亿 pre-open threshold
+        },
+        "399001.SZ": {
+            "symbol": "399001.SZ",
+            "prev_close": 10000.0,
+            "open": 9850.0,
+            "last_price": 9880.0,
+            "amount": 5.0e9,
+        },
+    }
+
+    def _add_stock(
+        code: str,
+        ex: str,
+        name: str,
+        sec: str,
+        open_pct: float,
+        pct: float,
+        amt: float,
+        *,
+        rps: float = 45.0,
+        l2_el: bool = False,
+        chs: list[str] | None = None,
+    ) -> None:
+        sym = f"{code}.{ex}"
+        l2_map[code] = {"name": name, "sector": sec, "rps": rps, "l2_eligible": l2_el, "channels": chs or []}
+        pre = 10.0
+        last = round(pre * (1.0 + pct / 100.0), 3)
+        opn = round(pre * (1.0 + open_pct / 100.0), 3)
+        vwap = round(last / 1.006, 3) if pct >= 0 else round(last * 1.005, 3)
+        quotes[sym] = {
+            "symbol": sym,
+            "prev_close": pre,
+            "open": opn,
+            "last_price": last,
+            "high": round(max(last, opn) * 1.003, 3),
+            "low": round(min(last, opn) * 0.996, 3),
+            "vwap": vwap,
+            "amount": amt,
+            "ext": {"name": name},
+        }
+
+    # 1) 120 bleeding tech / broad stocks -> 19/159 = 11.9% open red (< 20% panic open)
+    for i in range(120):
+        _add_stock(f"688{i:03d}", "SH", f"芯片{i}", "半导体", -2.5, -3.2, 2.5e8, rps=60.0)
+    # 2) 23 大医药: crowded 生物制药 gap-up + in-sector gap-up trap 600999 + 4 limit-ups + flat-open cores
+    _add_stock("300122", "SZ", "高开生物陷", "生物制药", 2.5, 4.2, 6.0e8, rps=70.0, l2_el=True, chs=["主升通道"])
+    for i in range(5):
+        _add_stock(f"3005{i:02d}", "SZ", f"生物{i}", "生物制药", 2.1, -0.5, 2.0e8)
+    _add_stock("600999", "SH", "高开化药陷", "化学制药", 2.2, 4.5, 7.0e8, rps=75.0, l2_el=True, chs=["主升通道"])
+    _add_stock("600196", "SH", "复星医药", "化学制药", 0.2, 3.6, 5.5e8, rps=78.0, l2_el=True, chs=["地量蓄势"])
+    _add_stock("603233", "SH", "大参林", "医药商业", 0.0, 2.7, 3.8e8, rps=82.0, l2_el=True, chs=["主升通道"])
+    for i in range(4):
+        _add_stock(f"0027{i:02d}", "SZ", f"药板{i}", "化学制药", 0.6, 10.0, 2.5e8)
+    for i in range(4):
+        _add_stock(f"6007{i:02d}", "SH", f"化药红{i}", "化学制药", -0.1, 1.5, 2.0e8)
+    for i in range(4):
+        _add_stock(f"6008{i:02d}", "SH", f"中成{i}", "中成药", -0.2, 1.5, 2.0e8)
+    for i in range(2):
+        _add_stock(f"6033{i:02d}", "SH", f"药商{i}", "医药商业", -0.1, 1.2, 2.0e8)
+    # 3) 16 商贸零售/酒旅: 62.5% red (>3x market), 3 limit-ups, avg > +1.6%, flat-open core 王府井
+    _add_stock("600859", "SH", "王府井", "百货", -0.4, 2.9, 3.6e8, rps=62.0, l2_el=True, chs=["地量蓄势"])
+    for i in range(2):
+        _add_stock(f"6018{i:02d}", "SH", f"百货板{i}", "百货", 0.4, 10.0, 2.6e8)
+    for i in range(2):
+        _add_stock(f"6019{i:02d}", "SH", f"百货红{i}", "百货", 0.2, 1.4, 2.1e8)
+    for i in range(4):
+        _add_stock(f"0029{i:02d}", "SZ", f"百货绿{i}", "百货", -0.8, -0.6, 1.5e8)
+    _add_stock("601933", "SH", "永辉板", "超市连锁", 0.4, 10.0, 2.6e8)
+    for i in range(2):
+        _add_stock(f"6031{i:02d}", "SH", f"超市红{i}", "超市连锁", 0.2, 1.6, 2.1e8)
+    _add_stock("603199", "SH", "超市绿", "超市连锁", -0.5, -0.4, 1.5e8)
+    for i in range(2):
+        _add_stock(f"6010{i:02d}", "SH", f"酒旅红{i}", "酒店餐饮", -0.1, 1.5, 2.0e8)
+    _add_stock("601099", "SH", "酒旅绿", "酒店餐饮", -0.6, -0.5, 1.5e8)
+
+    # A) 09:26 call auction frame -> 09:25 竞价主线雷达 ranks 大医药 ahead of bleeding 半导体, flags gap-up 生物制药
+    lvl_26, _, body_26, _, _ = radar.analyze_snapshot_diff(
+        quotes, {}, l2_map, {}, now_ts=ts_0926, turnover_dir=tmp_path / "to_26"
+    )
+    assert lvl_26 == "L1"
+    assert "09:25 竞价主线雷达" in body_26
+    assert "极端低开恐慌(仅关注平开中军·禁追高开>1.5%)" in body_26
+    assert "大医药" in body_26
+    assert "生物制药(红开100%⚠️高开防兑现)" in body_26
+    assert "最弱失血：泛AI/半导体算力" in body_26
+
+    # B) 09:50 frame -> L2 mainline_formed for both 大医药 & 商贸零售/酒旅; keeps flat cores, blocks +2.5% gap-up trap
+    lvl_50, title_50, body_50, _, cds_50 = radar.analyze_snapshot_diff(
+        quotes, {}, l2_map, {}, now_ts=ts_0950, turnover_dir=tmp_path / "to_50"
+    )
+    assert lvl_50 == "L2"
+    assert "【L2 加急焦点】" in title_50
+    assert "【主线成型·中军战法】大医药" in body_50
+    assert "【主线成型·中军战法】商贸零售/酒旅" in body_50
+    assert "恐慌日逆势平开中军观察" in body_50
+    assert "复星医药" in body_50 and "大参林" in body_50 and "王府井" in body_50
+    assert "高开生物陷" not in body_50.split("5. 全市场")[0]
+    assert "高开化药陷" not in body_50.split("5. 全市场")[0]
+    assert cds_50.get("L2:mainline_formed:大医药") == ts_0950
+    assert cds_50.get("L2:mainline_formed:商贸零售/酒旅") == ts_0950
+
+    rs_map = {r["symbol"]: r for r in tc.rank_intraday_rs_leaders(quotes, l2_map, top_n=6)}
+    assert "600196.SH" in rs_map and "603233.SH" in rs_map and "600859.SH" in rs_map
+    assert "300122.SZ" not in rs_map and "600999.SH" not in rs_map
+
+    # C) 10:35 frame -> outside 09:25~10:15 window, 09:25 竞价主线雷达 disappears
+    _, _, body_35, _, _ = radar.analyze_snapshot_diff(
+        quotes, {}, l2_map, {}, now_ts=ts_1035, turnover_dir=tmp_path / "to_35"
+    )
+    assert "09:25 竞价主线雷达" not in body_35

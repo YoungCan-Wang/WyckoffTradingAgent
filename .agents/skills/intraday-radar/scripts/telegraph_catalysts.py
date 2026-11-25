@@ -48,23 +48,8 @@ BLUECHIP_FLOOR_ETFS: frozenset[str] = frozenset(
 
 MAINLINE_SUPER_GROUPS: dict[str, set[str]] = {
     "大医药": {"化学制药", "中成药", "医药商业", "生物制药", "医疗保健"},
-    "大消费": {
-        "百货",
-        "超市连锁",
-        "酒店餐饮",
-        "旅游景点",
-        "旅游服务",
-        "食品",
-        "乳制品",
-        "白酒",
-        "啤酒",
-        "红黄酒",
-        "软饮料",
-        "影视音像",
-        "文教休闲",
-        "其他商业",
-        "商业连锁",
-    },
+    "商贸零售/酒旅": {"百货", "超市连锁", "酒店餐饮", "旅游景点", "旅游服务", "商业连锁", "其他商业"},
+    "食品饮料/酿酒": {"食品", "乳制品", "白酒", "啤酒", "红黄酒", "软饮料"},
     "泛AI/半导体算力": {"半导体", "元器件", "通信设备", "软件服务", "互联网", "IT设备"},
     "新能源/电力电网": {"电气设备", "火力发电", "水力发电", "新型电力", "供气供热"},
     "大周期/有色化工": {
@@ -677,6 +662,115 @@ def summarize_national_team_etfs(
     return summary, l2_alert
 
 
+def compute_call_auction_mainline_metrics(
+    curr_quotes: dict[str, dict[str, Any]],
+    l2_map: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Compute full-A 09:25 call-auction red-open excess across MAINLINE_SUPER_GROUPS."""
+    mkt_tot, mkt_red, mkt_open_sum = 0, 0, 0.0
+    grp_agg: dict[str, dict[str, Any]] = {}
+    for sym, q in (curr_quotes or {}).items():
+        if not _is_equity_symbol(sym, allow_bj=True):
+            continue
+        meta = (l2_map or {}).get(sym[:6]) or {}
+        name = str(meta.get("name") or (q.get("ext") or {}).get("name") or q.get("name") or "")
+        if "ST" in name:
+            continue
+        pre = float(q.get("prev_close") or 0.0)
+        open_p = float(q.get("open") or 0.0) or float(q.get("last_price") or q.get("price") or 0.0)
+        if pre <= 0 or open_p <= 0:
+            continue
+        open_pct = (open_p / pre - 1.0) * 100.0
+        if abs(open_pct) > 35.0:
+            continue
+        mkt_tot += 1
+        mkt_red += int(open_pct > 0)
+        mkt_open_sum += open_pct
+        sec = str(meta.get("sector") or "")
+        if not sec:
+            continue
+        theme = _SUBSECTOR_TO_MAINLINE.get(sec, sec)
+        g = grp_agg.setdefault(theme, {"red": 0, "tot": 0, "open_sum": 0.0, "subs": {}})
+        g["red"] += int(open_pct > 0)
+        g["tot"] += 1
+        g["open_sum"] += open_pct
+        sub = g["subs"].setdefault(sec, [0, 0, 0.0])
+        sub[0] += int(open_pct > 0)
+        sub[1] += 1
+        sub[2] += open_pct
+    if mkt_tot < 20:
+        return {}
+    mkt_red_pct = mkt_red / mkt_tot * 100.0
+    themes: list[dict[str, Any]] = []
+    for theme, g in grp_agg.items():
+        tot_n = g["tot"]
+        if tot_n < 15:
+            continue
+        red_pct = g["red"] / tot_n * 100.0
+        avg_open = g["open_sum"] / tot_n
+        sub_cands = [
+            (s_r / s_t * 100.0, s_s / s_t, sub_nm) for sub_nm, (s_r, s_t, s_s) in g["subs"].items() if s_t >= 5
+        ]
+        sub_cands.sort(reverse=True)
+        top_sub_r, top_sub_o, top_sub = sub_cands[0] if sub_cands else (0.0, 0.0, "")
+        themes.append(
+            {
+                "theme": theme,
+                "red_n": g["red"],
+                "tot_n": tot_n,
+                "red_pct": red_pct,
+                "avg_open": avg_open,
+                "rel_ratio": red_pct / max(mkt_red_pct, 5.0),
+                "excess_pp": red_pct - mkt_red_pct,
+                "top_sub": top_sub,
+                "top_sub_red_pct": top_sub_r,
+                "top_sub_avg_open": top_sub_o,
+                "top_sub_crowded": bool(top_sub and (top_sub_r >= 55.0 or top_sub_o >= 1.5)),
+            }
+        )
+    themes.sort(key=lambda t: (t["excess_pp"], t["avg_open"]), reverse=True)
+    return {
+        "mkt_tot": mkt_tot,
+        "mkt_red": mkt_red,
+        "mkt_red_pct": mkt_red_pct,
+        "mkt_avg_open": mkt_open_sum / mkt_tot,
+        "themes": themes,
+        "by_theme": {t["theme"]: t for t in themes},
+    }
+
+
+def summarize_call_auction_mainlines(
+    curr_quotes: dict[str, dict[str, Any]],
+    l2_map: dict[str, dict[str, Any]],
+    top_n: int = 3,
+) -> str:
+    """Summarize 09:25 call-auction mainline leaders, crowded gap-up traps, and bleeding groups."""
+    auc = compute_call_auction_mainline_metrics(curr_quotes, l2_map)
+    if not auc or not auc["themes"]:
+        return ""
+    leaders = [t for t in auc["themes"] if t["excess_pp"] >= 2.0][:top_n]
+    if not leaders:
+        return ""
+    panic_tag = " · ❄️极端低开恐慌(仅关注平开中军·禁追高开>1.5%)" if auc["mkt_red_pct"] < 20.0 else ""
+    lines = [
+        f"**🌅 09:25 竞价主线雷达（全A红开 {auc['mkt_red_pct']:.1f}% {auc['mkt_red']}/{auc['mkt_tot']}{panic_tag}）**"
+    ]
+    for t in leaders:
+        crowd = "⚠️高开防兑现" if t["top_sub_crowded"] else ""
+        sub_note = f" | 最强细分：{t['top_sub']}(红开{t['top_sub_red_pct']:.0f}%{crowd})" if t["top_sub"] else ""
+        lines.append(
+            f"- **{t['theme']}**：红开 **{t['red_pct']:.1f}%** ({t['red_n']}/{t['tot_n']}) · "
+            f"大盘 **{t['rel_ratio']:.1f}x** (超额 **{t['excess_pp']:+.1f}pp**) | 均开 {t['avg_open']:+.2f}%{sub_note}"
+        )
+    weakest = auc["themes"][-1]
+    if weakest["excess_pp"] <= -5.0:
+        lines.append(
+            f"- ❄️ **最弱失血：{weakest['theme']}**（红开 {weakest['red_pct']:.1f}% · "
+            f"均开 {weakest['avg_open']:+.2f}% · 避开承压主线）"
+        )
+    return "\n".join(lines)
+
+
 def _collect_sector_metrics(
     curr_quotes: dict[str, dict[str, Any]],
     l2_map: dict[str, dict[str, Any]],
@@ -744,8 +838,12 @@ def _pick_mainline_core_followers(
     *,
     min_amt_yi: float = 2.0,
     top_n: int = 3,
+    min_open_pct: float = -2.0,
+    max_open_pct: float = 3.8,
+    max_vwap_dev: float = 2.2,
+    max_wick: float = 1.3,
 ) -> list[dict[str, Any]]:
-    cands: list[tuple[tuple[int, float, float], dict[str, Any]]] = []
+    cands: list[tuple[tuple[int, int, float, float], dict[str, Any]]] = []
     for r in items:
         meta = (l2_map or {}).get(r["code"]) or {}
         rps = float(meta.get("rps") or 0.0)
@@ -757,14 +855,15 @@ def _pick_mainline_core_followers(
             continue
         if not (
             r["amt_yi"] >= min_amt_yi
-            and r["open_pct"] <= 3.8
+            and min_open_pct <= r["open_pct"] <= max_open_pct
             and (r["open"] <= 0 or r["last"] >= r["open"])
             and 1.5 <= r["pct"] <= 7.5
-            and 0.0 <= r["vwap_dev"] <= 2.2
-            and r["wick"] <= 1.3
+            and 0.0 <= r["vwap_dev"] <= max_vwap_dev
+            and r["wick"] <= max_wick
         ):
             continue
-        cands.append(((1 if (is_l2 or is_lane) else 0, r["amt_yi"], -r["vwap_dev"]), r))
+        is_flat_open = 1 if (-0.8 <= r["open_pct"] <= 1.5) else 0
+        cands.append(((1 if (is_l2 or is_lane) else 0, is_flat_open, r["amt_yi"], -r["vwap_dev"]), r))
     cands.sort(key=lambda x: x[0], reverse=True)
     return [x[1] for x in cands[:top_n]]
 
@@ -772,14 +871,21 @@ def _pick_mainline_core_followers(
 def detect_confirmed_mainline_alerts(
     curr_quotes: dict[str, dict[str, Any]],
     l2_map: dict[str, dict[str, Any]],
+    *,
+    mkt_red_ratio: float | None = None,
+    now_hm: str = "",
 ) -> list[tuple[str, str, dict[str, Any]]]:
     """Detect slow-grinding broad A-share mainlines (e.g. Pharma/Retail) without waiting for 5m spikes."""
     stats = _collect_sector_metrics(curr_quotes, l2_map)
+    auc = compute_call_auction_mainline_metrics(curr_quotes, l2_map)
+    is_panic_open = bool(auc and auc["mkt_red_pct"] < 20.0)
+    relax_sub = is_panic_open and (mkt_red_ratio is None or mkt_red_ratio < 0.35)
+    min_sub_avg, min_sub_red = (0.8, 52.0) if relax_sub else (1.2, 70.0)
     grouped: dict[str, dict[str, Any]] = {}
     for sec, st in stats.items():
         if sec not in _SUBSECTOR_TO_MAINLINE and st["tot_n"] < 15:
             continue
-        if st["tot_n"] < 3 or st["avg_pct"] < 1.2 or st["red_ratio"] < 70.0:
+        if st["tot_n"] < 3 or st["avg_pct"] < min_sub_avg or st["red_ratio"] < min_sub_red:
             continue
         theme = _SUBSECTOR_TO_MAINLINE.get(sec, sec)
         grp = grouped.setdefault(theme, {"sub_secs": [], "items": [], "red_n": 0, "tot_n": 0, "lu_n": 0, "amt_yi": 0.0})
@@ -789,6 +895,7 @@ def detect_confirmed_mainline_alerts(
         grp["tot_n"] += st["tot_n"]
         grp["lu_n"] += st["lu_count"]
         grp["amt_yi"] += st["tot_amt_yi"]
+    mkt_now_pct = (mkt_red_ratio * 100.0) if mkt_red_ratio is not None else float(auc.get("mkt_red_pct", 100.0))
     alerts: list[tuple[tuple[int, float], str, str, dict[str, Any]]] = []
     for theme, grp in grouped.items():
         tot_n = grp["tot_n"]
@@ -796,22 +903,53 @@ def detect_confirmed_mainline_alerts(
             continue
         red_r = grp["red_n"] / tot_n * 100.0
         avg_p = sum(r["pct"] for r in grp["items"]) / tot_n
-        if not (red_r >= 78.0 and avg_p >= 1.8 and grp["lu_n"] >= 3 and grp["amt_yi"] >= 25.0):
+        std_hit = red_r >= 78.0 and avg_p >= 1.8 and grp["lu_n"] >= 3 and grp["amt_yi"] >= 25.0
+        panic_hit = bool(
+            is_panic_open
+            and mkt_now_pct < 35.0
+            and red_r >= 58.0
+            and red_r >= mkt_now_pct * 3.0
+            and avg_p >= 1.2
+            and grp["lu_n"] >= 3
+            and grp["amt_yi"] >= 25.0
+        )
+        if not (std_hit or panic_hit):
             continue
         grp["items"].sort(key=lambda r: -r["pct"])
         grp["sub_secs"].sort(reverse=True)
         sub_lbl = "+".join(s[2] for s in grp["sub_secs"][:3])
         leaders = "、".join(f"`{r['code']}` {r['name']}({r['pct']:+.1f}%)" for r in grp["items"][:2])
-        cores = _pick_mainline_core_followers(grp["items"], l2_map, min_amt_yi=2.0, top_n=3)
+        if is_panic_open:
+            min_amt = 2.0 if (now_hm and now_hm < "10:30") else 3.0
+            cores = _pick_mainline_core_followers(
+                grp["items"],
+                l2_map,
+                min_amt_yi=min_amt,
+                top_n=3,
+                min_open_pct=-0.8,
+                max_open_pct=1.5,
+                max_vwap_dev=1.8,
+                max_wick=1.2,
+            )
+        else:
+            cores = _pick_mainline_core_followers(grp["items"], l2_map, min_amt_yi=2.0, top_n=3)
         f_tag = (
             " 👉 🎯中军可跟："
             + "、".join(f"`{c['code']}` {c['name']}({c['pct']:+.1f}%·均+{c['vwap_dev']:.1f}%)" for c in cores)
             if cores
             else ""
         )
+        auc_info = (auc.get("by_theme") or {}).get(theme) or {}
+        auc_rel = float(auc_info.get("rel_ratio") or 0.0)
+        auc_prefix = f"竞价{auc_rel:.1f}x·" if (is_panic_open and auc_rel >= 2.0) else ""
+        panic_note = (
+            f" | 🛡️[{auc_prefix}恐慌日逆势平开中军观察·禁追高开>1.5%·不改14:40铁律，仅跟踪T+1溢价]"
+            if is_panic_open
+            else ""
+        )
         md = (
             f"- 🔥 **【主线成型·中军战法】{theme}（{sub_lbl}）**：红盘 **{red_r:.0f}%** ({grp['red_n']}/{tot_n}) | "
-            f"均涨 **{avg_p:+.2f}%** | **{grp['lu_n']}只涨停** | 额 {grp['amt_yi']:.0f}亿 | 标杆：{leaders}{f_tag}"
+            f"均涨 **{avg_p:+.2f}%** | **{grp['lu_n']}只涨停** | 额 {grp['amt_yi']:.0f}亿 | 标杆：{leaders}{f_tag}{panic_note}"
         )
         rec = {
             "theme": theme,
@@ -819,6 +957,8 @@ def detect_confirmed_mainline_alerts(
             "avg_pct": round(avg_p, 2),
             "lu_count": grp["lu_n"],
             "tot_amt_yi": round(grp["amt_yi"], 1),
+            "panic_mode": is_panic_open,
+            "auc_rel_ratio": round(auc_rel, 2),
         }
         alerts.append(((grp["lu_n"], grp["amt_yi"]), theme, md, rec))
     alerts.sort(key=lambda x: x[0], reverse=True)
@@ -833,6 +973,8 @@ def summarize_top_sector_mainlines(
     if not curr_quotes or not l2_map:
         return ""
     stats = _collect_sector_metrics(curr_quotes, l2_map)
+    auc = compute_call_auction_mainline_metrics(curr_quotes, l2_map)
+    is_panic_open = bool(auc and auc["mkt_red_pct"] < 20.0)
     ranked = sorted(
         (
             (st, sec)
@@ -846,7 +988,20 @@ def summarize_top_sector_mainlines(
     for st, sec in ranked[:top_n]:
         top = st["items"][0]
         leader = f"`{top['code']}` {top['name']}({top['pct']:+.1f}%)"
-        cores = _pick_mainline_core_followers(st["items"], l2_map, min_amt_yi=2.0, top_n=2)
+        cores = (
+            _pick_mainline_core_followers(
+                st["items"],
+                l2_map,
+                min_amt_yi=2.0,
+                top_n=2,
+                min_open_pct=-0.8,
+                max_open_pct=1.5,
+                max_vwap_dev=1.8,
+                max_wick=1.2,
+            )
+            if is_panic_open
+            else _pick_mainline_core_followers(st["items"], l2_map, min_amt_yi=2.0, top_n=2)
+        )
         picks = [f"`{c['code']}` {c['name']}({c['pct']:+.1f}%)" for c in cores]
         if not picks and st["tot_amt_yi"] <= 0:
             picks = [
@@ -1268,6 +1423,8 @@ def rank_intraday_rs_leaders(
             reverse=True,
         )[:6]
     }
+    auc = compute_call_auction_mainline_metrics(curr_quotes, l2_map)
+    is_panic_open = bool(auc and auc["mkt_red_pct"] < 20.0)
     for theme, _, _ in detect_confirmed_mainline_alerts(curr_quotes, l2_map):
         hot_secs.update(MAINLINE_SUPER_GROUPS.get(theme, {theme}))
     scored: list[tuple[float, str, dict[str, Any]]] = []
@@ -1290,12 +1447,10 @@ def rank_intraday_rs_leaders(
         upper_wick_pct = (high_p - last) / high_p * 100.0 if high_p > 0 else 0.0
         vwap = _resolve_vwap(q, last)
         vwap_dev = (last / vwap - 1.0) * 100.0 if vwap > 0 else 0.0
+        open_ok = (-0.8 <= open_pct <= 1.5) if is_panic_open else (open_pct <= 3.8)
+        vwap_cap = 1.8 if is_panic_open else 2.2
         if not (
-            open_pct <= 3.8
-            and last >= open_p
-            and 1.8 <= pct <= 7.5
-            and 0.0 <= vwap_dev <= 2.2
-            and upper_wick_pct <= 1.2
+            open_ok and last >= open_p and 1.8 <= pct <= 7.5 and 0.0 <= vwap_dev <= vwap_cap and upper_wick_pct <= 1.2
         ):
             continue
         sec = str(meta.get("sector") or "")
@@ -1309,6 +1464,7 @@ def rank_intraday_rs_leaders(
             sec in hot_secs
             and (meta.get("l2_eligible") or meta.get("shadow_lane") in ("pre_breakout", "rotation_setup"))
             and rps <= 98.0
+            and (not is_panic_open or (-0.8 <= open_pct <= 1.5))
         )
         is_giant = amt_yi >= 20.0 and 20.0 <= rps <= 82.0 and open_pct <= 3.0
         is_accum = bool(
@@ -1370,6 +1526,8 @@ def summarize_zero_bias_l2_leaders(
     if not curr_quotes or not l2_map:
         return ""
     strong_secs = _collect_strong_sectors(curr_quotes, l2_map)
+    auc = compute_call_auction_mainline_metrics(curr_quotes, l2_map)
+    is_panic_open = bool(auc and auc["mkt_red_pct"] < 20.0)
     scored: list[tuple[float, str, str, str]] = []
     for sym, q in curr_quotes.items():
         if not _is_equity_symbol(sym):
@@ -1401,6 +1559,9 @@ def summarize_zero_bias_l2_leaders(
         amt_yi = float(q.get("amount") or 0.0) / 1e8 if "amount" in q else float(q.get("amt_yi") or 0.0)
         vwap = _resolve_vwap(q, last)
         open_p = float(q.get("open") or pre)
+        open_pct = (open_p / pre - 1.0) * 100.0
+        if is_panic_open and not (-0.8 <= open_pct <= 1.5):
+            continue
         high_p = max(float(q.get("high") or last), last)
         low_p = min(float(q.get("low") or last), last) if float(q.get("low") or 0.0) > 0 else last
         if not (1.5 <= pct <= 6.8 and amt_yi >= 1.5 and vwap * 1.001 <= last <= vwap * 1.022):
