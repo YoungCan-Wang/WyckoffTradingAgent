@@ -61,11 +61,18 @@ def _timeout_client():
     return httpx.Client(timeout=httpx.Timeout(READ_TIMEOUT_SECONDS, connect=CONNECT_TIMEOUT_SECONDS))
 
 
-def _client_options():
-    """统一的 ClientOptions —— 只为把超时注进去。"""
+def client_options():
+    """统一的 ClientOptions：超时 + 禁止 GoTrue 后台自动 refresh。
+
+    ``auto_refresh_token`` 默认 True：``set_session`` 会在 access 临期时用
+    Timer 调 ``_call_refresh_token``，只把新 RT 写进进程内 SyncMemoryStorage。
+    磁盘 ``~/.wyckoff/session.json`` 仍是旧 RT；一小时后 sibling
+    ``restore_session`` / 冷启动再用磁盘 RT，会拿到 Already Used，CAS 清盘，
+    新 RT 从未落盘。本仓库已有显式 restore / merge CAS，禁止后台 Timer。
+    """
     from supabase import ClientOptions
 
-    return ClientOptions(httpx_client=_timeout_client())
+    return ClientOptions(httpx_client=_timeout_client(), auto_refresh_token=False)
 
 
 def _resolve_credentials() -> tuple[str, str]:
@@ -96,7 +103,7 @@ def create_admin_client() -> Client:
         raise ValueError("SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY 未配置")
     from supabase import create_client
 
-    return create_client(url, service_key, options=_client_options())
+    return create_client(url, service_key, options=client_options())
 
 
 def create_anon_client() -> Client:
@@ -106,7 +113,7 @@ def create_anon_client() -> Client:
     url, key = _resolve_credentials()
     if not url or not key:
         raise ValueError("Missing Supabase credentials. Please set SUPABASE_URL and SUPABASE_KEY.")
-    return create_client(url, key, options=_client_options())
+    return create_client(url, key, options=client_options())
 
 
 def read_client_uses_admin() -> bool:
@@ -142,7 +149,7 @@ def create_user_client(access_token: str, refresh_token: str = "") -> Client:
     url, key = _resolve_credentials()
     if not url or not key:
         raise ValueError("SUPABASE_URL / SUPABASE_KEY 未配置")
-    client = create_client(url, key, options=_client_options())
+    client = create_client(url, key, options=client_options())
     if refresh_token:
         resp = client.auth.set_session(access_token, refresh_token)
         # set_session 返回新 token pair，用新的 access_token 做 postgrest auth
@@ -167,7 +174,18 @@ def get_session_tokens(client: Client) -> tuple[str, str]:
 
 
 def close_client(client: Client) -> None:
-    """关闭 Supabase client 底层的 httpx 连接，避免 CLOSE_WAIT 泄漏。"""
+    """关闭 Supabase client：取消 GoTrue refresh Timer，再关 httpx。"""
+    try:
+        auth = getattr(client, "auth", None)
+        timer = getattr(auth, "_refresh_token_timer", None) if auth else None
+        if timer is not None and hasattr(timer, "cancel"):
+            timer.cancel()
+            try:
+                auth._refresh_token_timer = None
+            except Exception:
+                pass
+    except Exception:
+        logger.debug("close_client: refresh timer cancel failed", exc_info=True)
     try:
         rest = getattr(client, "_postgrest", None) or getattr(client, "postgrest", None)
         if rest:
