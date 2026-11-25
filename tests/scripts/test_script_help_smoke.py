@@ -28,6 +28,7 @@ HELP_SCRIPTS = [
     "scripts/param_sensitivity.py",
     "scripts/premarket_risk_job.py",
     "scripts/recommendation_tracking_reprice_job.py",
+    "scripts/scan_slow_bull.py",
     "scripts/single_symbol_funnel_diagnosis.py",
     "scripts/step4_from_supabase.py",
     "scripts/theme_radar_job.py",

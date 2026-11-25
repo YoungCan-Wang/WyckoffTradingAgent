@@ -20,6 +20,7 @@
 - Step4 持仓决断：`workflows/step4_rebalancer.py`（OMS 工单）
 - 持仓诊断：`workflows/holding_diagnosis_core.py` + `core/holding_diagnostic.py`（日线为准）
 - 跨市场扫描：`scripts/market_funnel_job.py`（港股 / 美股）
+- 独立中线慢牛轨道：`core/slow_bull_engine.py` + `workflows/slow_bull_scan.py` + `scripts/scan_slow_bull.py`（FIP 高 R² 20~60 日中线底仓研究，只读，不进 Step4 OMS）
 
 > 架构与定时任务见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。术语见 [GLOSSARY.md](GLOSSARY.md)。执行链路见 [docs/A_SHARE_FUNNEL_FLOW.md](docs/A_SHARE_FUNNEL_FLOW.md)。
 
@@ -499,6 +500,17 @@ Step4 与持仓诊断会从 `llmdoc/index.json` 按工作流、股票代码和�
 - 跨日 `confirmed` 仍需二次确认、支撑锚点和水温护栏；RISK_ON/弱市禁止新开
 - Step4 只接受显式确认状态、确认来源或受控确认标签；`unconfirmed`、`pending`、`未确认`、`待确认`、`观察` 等否定状态优先拦截
 - A 股 100 股整数约束
+
+---
+
+## 4A. 独立中线低波机构慢牛轨道（Slow-Bull / FIP Engine）
+
+为解决传统 `5d` 短线漏斗对低斜率长周期复利资产持仓过短的问题，系统额外提供与 `L4/Step4` 及盘中雷达完全解耦的独立中线研究工具（`scan_slow_bull` / `scripts/scan_slow_bull.py`）：
+
+- **制度与流动性护城河 (`Moat_Full`)**：总市值 ≥ 150 亿、20 日均成交额 ≥ 1.5 亿（中位数/均值 ≥ 0.45）、换手率 ≥ 0.30%、按 `period_end` 年化 `ROE >= 6%`、非金融行业负债率 ≤ 80%（豁免银行/保险/证券/多元金融）且正经营现金流或 `dv_ttm >= 2%`；可选 `allow_cycle_cashflow_bypass` 供高现金流周期股研究对比。
+- **阶段 A 刚启动 (`slow_bull_emerge`)**：前期低波动窄幅横盘 + `MA20/MA60` 粘合 + 相对沪深300 RS 创 60 日新高 + `1.20x~1.85x` 温和放量 + 近 15 日单日涨幅严格 ≤ `3.5%`、零涨停、RPS50 由 `[25, 55]` 升至 `[65, 85]`。2020-07~2026-11 PIT 回测呈现全天候扣费（`round_trip_cost_pct()` ~0.202%）后净超额，推荐 **20~60 日中期持有**（基准 H=60d 净单笔 +3.89%、夏普 0.545）。
+- **阶段 B 缩量回踩 (`slow_bull_pullback` / `slow_bull_watch`)**：40 日对数价格拟合度 `log_r2_40 >= 0.80`、40 日涨幅 ≥ 8%、阳线占比 ≥ 55%、零涨停且单日 ≤ 4.5%、日均振幅 ≤ 3.0%、最大回撤 ≤ 5.0%、`MA5 > MA20 > MA60`，等待缩量回踩 `MA5/MA10`（量比 `< 0.80`）。适合熊市/震荡期作为高卡玛防御底仓，建议采用 **-7% 硬止损 + +15% 激活 10% 移动止盈**（基准卡玛 0.498，最大回撤 -14.85%）；当 `tech_rotation_warning=true` 时需警惕创业板科技牛市阶段性滞涨抽血。
+- **执行隔离边界**：所有输出固定携带 `research_only=true, new_buy_allowed=false`，不写入 `signal_observations` / `recommendation_tracking`，不触发 `Step4` OMS 订单。
 
 ---
 

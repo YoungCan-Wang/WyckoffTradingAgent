@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 DATA_CACHE_DIR = Path(__file__).resolve().parent.parent / "data"
 SECTOR_CACHE = DATA_CACHE_DIR / "sector_map_cache.json"
 MARKET_CAP_CACHE = DATA_CACHE_DIR / "market_cap_cache.json"
+SLOW_BULL_BASIC_CACHE = DATA_CACHE_DIR / "slow_bull_basic_cache.json"
 FLOAT_SHARE_CACHE = DATA_CACHE_DIR / "float_share_cache.json"
 CONCEPT_CACHE = DATA_CACHE_DIR / "concept_map_cache.json"
 CONCEPT_HEAT_CACHE = DATA_CACHE_DIR / "concept_heat_cache.json"
@@ -388,3 +389,55 @@ def fetch_historical_market_cap_map(as_of_date: str) -> dict[str, float]:
         if attempt < attempts and backoff > 0:
             time.sleep(backoff * attempt)
     return {}
+
+
+def _parse_slow_bull_basic_df(df: pd.DataFrame) -> dict[str, dict[str, float]]:
+    out: dict[str, dict[str, float]] = {}
+    for _, row in df.iterrows():
+        sym = _ts_code_to_symbol(str(row.get("ts_code", "")))
+        if not sym:
+            continue
+        item: dict[str, float] = {}
+        mv = row.get("total_mv")
+        if pd.notna(mv):
+            item["market_cap_yi"] = round(float(mv) * _WAN_YUAN_TO_YI, 4)
+        for src, dst in (("dv_ttm", "dv_ttm_pct"), ("turnover_rate", "turnover_pct")):
+            val = row.get(src)
+            if pd.notna(val):
+                item[dst] = float(val)
+        if item:
+            out[sym] = item
+    return out
+
+
+def fetch_slow_bull_daily_basic_map(*, as_of_date: date | None = None) -> dict[str, dict[str, float]]:
+    """Fetch total_mv (亿元), dv_ttm (%), and turnover_rate (%) for slow-bull moat."""
+    if as_of_date is None:
+        cached = read_json_cache(SLOW_BULL_BASIC_CACHE, CACHE_TTL)
+        if isinstance(cached, dict):
+            return {str(k): dict(v) for k, v in cached.items() if isinstance(v, dict)}
+    pro = _tushare_pro()
+    if pro is not None:
+        from integrations.fetch_a_share_csv import cached_trade_dates
+
+        try:
+            cutoff = as_of_date or date.today()
+            days = [day for day in cached_trade_dates() if day <= cutoff]
+        except Exception as exc:
+            logger.warning("慢牛 daily_basic 交易日历不可用: %s", exc)
+            days = [as_of_date] if as_of_date else []
+        for trade_date in sorted(days, reverse=True)[:5]:
+            try:
+                df = pro.daily_basic(
+                    trade_date=trade_date.strftime("%Y%m%d"), fields="ts_code,total_mv,dv_ttm,turnover_rate"
+                )
+            except Exception as exc:
+                debug_metadata_fail(f"slow_bull_daily_basic[{trade_date}]", exc)
+                continue
+            if df is not None and not df.empty:
+                mapping = _parse_slow_bull_basic_df(df)
+                if mapping and as_of_date is None:
+                    write_json_cache(SLOW_BULL_BASIC_CACHE, mapping, "slow_bull_basic_cache_write")
+                return mapping
+    fallback = fetch_historical_market_cap_map(as_of_date.isoformat()) if as_of_date else fetch_market_cap_map()
+    return {sym: {"market_cap_yi": float(mv)} for sym, mv in fallback.items()}
