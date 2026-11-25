@@ -61,7 +61,7 @@ def _timeout_client():
     return httpx.Client(timeout=httpx.Timeout(READ_TIMEOUT_SECONDS, connect=CONNECT_TIMEOUT_SECONDS))
 
 
-def _client_options():
+def client_options():
     """统一的 ClientOptions：超时 + 禁止 GoTrue 后台自动 refresh。
 
     ``auto_refresh_token`` 默认 True：``set_session`` 会在 access 临期时用
@@ -103,7 +103,7 @@ def create_admin_client() -> Client:
         raise ValueError("SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY 未配置")
     from supabase import create_client
 
-    return create_client(url, service_key, options=_client_options())
+    return create_client(url, service_key, options=client_options())
 
 
 def create_anon_client() -> Client:
@@ -113,7 +113,7 @@ def create_anon_client() -> Client:
     url, key = _resolve_credentials()
     if not url or not key:
         raise ValueError("Missing Supabase credentials. Please set SUPABASE_URL and SUPABASE_KEY.")
-    return create_client(url, key, options=_client_options())
+    return create_client(url, key, options=client_options())
 
 
 def read_client_uses_admin() -> bool:
@@ -149,7 +149,7 @@ def create_user_client(access_token: str, refresh_token: str = "") -> Client:
     url, key = _resolve_credentials()
     if not url or not key:
         raise ValueError("SUPABASE_URL / SUPABASE_KEY 未配置")
-    client = create_client(url, key, options=_client_options())
+    client = create_client(url, key, options=client_options())
     if refresh_token:
         resp = client.auth.set_session(access_token, refresh_token)
         # set_session 返回新 token pair，用新的 access_token 做 postgrest auth

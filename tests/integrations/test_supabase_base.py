@@ -126,7 +126,7 @@ class TestDisableAutoRefreshToken:
     def test_client_options_disable_auto_refresh(self) -> None:
         from integrations import supabase_base as sb
 
-        options = sb._client_options()
+        options = sb.client_options()
         assert options.auto_refresh_token is False
 
     def test_anon_and_user_clients_disable_gotrue_auto_refresh(self, monkeypatch) -> None:
