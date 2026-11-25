@@ -25,6 +25,9 @@ VARIANT_LABELS = {
 }
 
 DEFAULT_COMPARISON_VARIANTS = ("A", "M", "P")
+# Entry-policy-only variants: vs classic A they share all-off switches; vs live they must
+# keep production FunnelConfig and change only AShareEntryResearchPolicy.
+POLICY_ONLY_VARIANTS = frozenset({"F", "G", "H", "I", "M", "P"})
 
 _ALL_SWITCHES = {
     "dist_upthrust_enabled": False,
@@ -121,9 +124,22 @@ def parse_live_ablation_spec(raw: str) -> tuple[bool, list[str]]:
     return ablation_only, variants
 
 
-def strategy_variant_overrides(raw: str) -> dict[str, object]:
+def strategy_variant_overrides(raw: str, *, relative_to: str = "A") -> dict[str, object]:
+    """Return FunnelConfig overrides for a strategy variant.
+
+    Classic ablations (``relative_to="A"``) start from ``_ALL_SWITCHES`` (all research
+    switches off) then apply the variant map — so A vs I isolates score calibration.
+
+    Live-baseline ablations (``relative_to="live"``) must not re-apply that all-off map
+    for policy-only variants: production already has ``dist_upthrust_enabled`` and
+    ``lps_creek_confirmation_enabled`` on, and ``only:live,I`` would otherwise attribute
+    those two switch flips plus calibration to a single letter.
+    """
     variant = normalize_strategy_variant(raw)
     if variant == "live":
+        return {}
+    baseline = normalize_strategy_variant(relative_to)
+    if baseline == "live" and variant in POLICY_ONLY_VARIANTS:
         return {}
     return {**_ALL_SWITCHES, **_VARIANT_SWITCHES[variant]}
 

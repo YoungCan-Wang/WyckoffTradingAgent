@@ -51,6 +51,18 @@ def test_live_variant_preserves_production_configuration() -> None:
     assert strategy_variant_entry_policy("live").blocked_confirmed_signals == ()
 
 
+def test_live_relative_policy_only_variants_do_not_disable_production_switches() -> None:
+    classic_i = strategy_variant_overrides("I")
+    assert classic_i["dist_upthrust_enabled"] is False
+    assert classic_i["lps_creek_confirmation_enabled"] is False
+    assert strategy_variant_overrides("I", relative_to="live") == {}
+    assert strategy_variant_overrides("F", relative_to="live") == {}
+    assert strategy_variant_overrides("M", relative_to="live") == {}
+    assert strategy_variant_entry_policy("I").calibrate_confirmed_score is True
+    # Classic switch letters still emit absolute maps even under live baseline.
+    assert strategy_variant_overrides("B", relative_to="live")["dist_upthrust_enabled"] is True
+
+
 def test_parse_live_ablation_spec() -> None:
     assert parse_live_ablation_spec("") == (False, [])
     assert parse_live_ablation_spec("only:") == (False, [])
