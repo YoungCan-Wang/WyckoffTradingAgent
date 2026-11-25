@@ -44,12 +44,13 @@ def run_shadow_ledger_stage(
     try:
         session = _run_shadow_session(step2_details, symbols_info, step3_report_text, benchmark_context)
         _persist_session(session)
+        round_trips = _annotate_round_trips(cfg)
         title, content = render_shadow_card(session, _as_of())
         sent = send_feishu_notification(cfg.webhook, title, content) if cfg.webhook else True
         elapsed = (datetime.now(TZ) - t0).total_seconds()
         log_line(
             f"影子账本: fills={len(session.fills)} plans={len(session.new_plans)} "
-            f"equity={session.nav.get('equity')} feishu={sent}",
+            f"equity={session.nav.get('equity')} feishu={sent} round_trips={round_trips}",
             cfg.logs_path,
         )
         return {
@@ -106,6 +107,21 @@ def _persist_session(session: ShadowSession) -> None:
         fills=session.fills,
         new_plans=session.new_plans,
         nav=session.nav,
+    )
+
+
+def _annotate_round_trips(cfg: DailyJobConfig) -> str:
+    """已清仓回合补区间高低；失败只记一行，不影响当日账本与飞书卡。"""
+    from workflows.shadow_round_trips_job import run_round_trip_annotation
+
+    try:
+        stats = run_round_trip_annotation(SHADOW_ACCOUNT_ID)
+    except Exception as exc:
+        log_line(f"影子账本: 清仓回合区间高低补写失败（不影响账本）: {exc}", cfg.logs_path)
+        return "failed"
+    return (
+        f"closed={stats['closed']} newly_written={stats['written']} "
+        f"missing_bars={stats['missing_bars']} unmatched={stats['unmatched']}"
     )
 
 

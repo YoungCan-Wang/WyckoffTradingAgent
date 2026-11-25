@@ -1,6 +1,6 @@
 import { financialValueClass } from '@/lib/financial-colors'
 import { formatSignedPercent } from '@/lib/format'
-import type { ShadowEventRow, ShadowNavDailyRow, ShadowPositionRow } from '@/lib/shadow-ledger-api'
+import type { ShadowClosedTradeRow, ShadowEventRow, ShadowNavDailyRow, ShadowPositionRow } from '@/lib/shadow-ledger-api'
 import type { ShadowCopy } from './copy'
 import { formatMoney } from './showcase-panel'
 
@@ -8,6 +8,7 @@ export function ShadowLedgerPanel({
   copy,
   navDaily,
   positions,
+  closedTrades,
   events,
   selectedAsOf,
   onSelectAsOf,
@@ -15,6 +16,7 @@ export function ShadowLedgerPanel({
   copy: ShadowCopy
   navDaily: ShadowNavDailyRow[]
   positions: ShadowPositionRow[]
+  closedTrades: ShadowClosedTradeRow[]
   events: ShadowEventRow[]
   selectedAsOf: string | null
   onSelectAsOf: (asOf: string) => void
@@ -22,6 +24,7 @@ export function ShadowLedgerPanel({
   return (
     <section className="space-y-6">
       <OpenPositions copy={copy} positions={positions} />
+      <ClosedTrades copy={copy} trades={closedTrades} />
       <div className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
         <DailyNavTable copy={copy} rows={navDaily} selectedAsOf={selectedAsOf} onSelectAsOf={onSelectAsOf} />
         <DayEvents copy={copy} events={events} selectedAsOf={selectedAsOf} />
@@ -64,6 +67,62 @@ function OpenPositions({ copy, positions }: { copy: ShadowCopy; positions: Shado
         </div>
       )}
     </div>
+  )
+}
+
+function ClosedTrades({ copy, trades }: { copy: ShadowCopy; trades: ShadowClosedTradeRow[] }) {
+  return (
+    <div>
+      <h2 className="text-sm font-semibold">{copy.closedTrades}</h2>
+      <p className="mt-1 text-xs text-muted-foreground">{copy.closedTradesNote}</p>
+      {trades.length === 0 ? <p className="mt-3 text-sm text-muted-foreground">{copy.noClosedTrades}</p> : (
+        <div className="mt-3 overflow-x-auto rounded-lg border border-border">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/60 text-left text-xs text-muted-foreground">
+              <tr>
+                <th className="px-3 py-2 font-medium">{copy.code}</th>
+                <th className="px-3 py-2 font-medium">{copy.name}</th>
+                <th className="px-3 py-2 font-medium">{copy.buyAt}</th>
+                <th className="px-3 py-2 font-medium">{copy.sellAt}</th>
+                <th className="px-3 py-2 font-medium">{copy.intervalLow}</th>
+                <th className="px-3 py-2 font-medium">{copy.intervalHigh}</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {trades.map((row) => (
+                <tr key={`${row.code}:${row.buyDate}:${row.sellDate}`}>
+                  <td className="px-3 py-2 font-medium">{row.code}</td>
+                  <td className="px-3 py-2">{row.name}</td>
+                  <PriceCell price={row.buyPrice} date={row.buyDate} />
+                  <PriceCell price={row.sellPrice} date={row.sellDate} className={financialValueClass(row.sellPrice - row.buyPrice)} />
+                  <PriceCell price={row.intervalLow} date={row.intervalLowDate} pending={copy.pending} />
+                  <PriceCell price={row.intervalHigh} date={row.intervalHighDate} pending={copy.pending} />
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function PriceCell({
+  price,
+  date,
+  pending = '—',
+  className = '',
+}: {
+  price: number | null
+  date: string | null
+  pending?: string
+  className?: string
+}) {
+  return (
+    <td className="px-3 py-2">
+      <div className={`font-medium ${className}`}>{price == null ? pending : price.toFixed(2)}</div>
+      {date && <div className="text-xs text-muted-foreground">{date}</div>}
+    </td>
   )
 }
 

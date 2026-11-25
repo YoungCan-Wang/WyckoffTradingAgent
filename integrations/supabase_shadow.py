@@ -20,6 +20,8 @@ from integrations.supabase_base import require_server_write_context
 
 logger = logging.getLogger(__name__)
 
+_PAGE_SIZE = 1000
+
 _LIVE_TABLES = frozenset({"portfolios", "portfolio_positions", "trade_orders", "daily_nav"})
 _SHADOW_TABLES = frozenset(
     {
@@ -94,6 +96,41 @@ def load_planned(account_id: str = SHADOW_ACCOUNT_ID) -> list[ShadowPlan]:
         or []
     )
     return [_row_to_plan(row) for row in rows]
+
+
+def load_filled_trade_events(account_id: str = SHADOW_ACCOUNT_ID) -> list[dict[str, Any]]:
+    """全部 buy/sell 流水（分页读满，截断会让回合配错对）。"""
+    account_id = assert_shadow_account(account_id)
+    rows: list[dict[str, Any]] = []
+    while True:
+        page = (
+            _table(TABLE_SHADOW_EVENTS)
+            .select("event_key,as_of,code,name,event_type,price,qty,payload")
+            .eq("account_id", account_id)
+            .in_("event_type", ["buy", "sell"])
+            .order("as_of")
+            .order("event_key")
+            .range(len(rows), len(rows) + _PAGE_SIZE - 1)
+            .execute()
+            .data
+            or []
+        )
+        rows.extend(page)
+        if len(page) < _PAGE_SIZE:
+            return rows
+
+
+def merge_event_payload(account_id: str, event_key: str, patch: dict[str, Any], current: dict[str, Any]) -> bool:
+    """返回是否真的改到一行；过滤条件落空时 update 不报错，只返回空 data。"""
+    account_id = assert_shadow_account(account_id)
+    result = (
+        _table(TABLE_SHADOW_EVENTS)
+        .update({"payload": {**current, **patch}})
+        .eq("account_id", account_id)
+        .eq("event_key", event_key)
+        .execute()
+    )
+    return bool(result.data)
 
 
 def persist_shadow_session(
