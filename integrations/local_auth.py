@@ -714,10 +714,17 @@ def _invalid_session_error(exc: Exception) -> bool:
     ``certificate has expired`` and proxy ``invalid JSON`` would clear a still-
     valid same-user session (RT CAS does not help — disk still holds the
     pre-flight refresh). Match auth/session-shaped markers only.
+
+    Do **not** match bare ``refresh_token``: supabase_auth wraps non-JSON HTTP
+    500 on ``/token?grant_type=refresh_token`` as AuthUnknownError whose
+    ``str()`` embeds that URL (via httpx ``raise_for_status``). Treating that
+    as session-dead deletes a still-valid ``session.json`` on a transient
+    gateway blip during desktop ``account`` → ``restore_session``.
     """
     text = str(exc).lower()
     markers = (
         "invalid refresh",
+        "invalid_refresh",
         "invalid jwt",
         "invalid token",
         "token is invalid",
@@ -727,7 +734,6 @@ def _invalid_session_error(exc: Exception) -> bool:
         "jwt expired",
         "access token expired",
         "session expired",
-        "refresh_token",
         "refresh token",
         "already used",
         "token revoked",

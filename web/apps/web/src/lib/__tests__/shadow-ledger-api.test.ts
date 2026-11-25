@@ -47,6 +47,20 @@ describe('requestShadowLedger', () => {
     await expect(requestShadowLedger('token', undefined, fetcher)).rejects.toThrow('不完整')
   })
 
+  it('defaults closed trades to empty when an older RPC payload omits them', async () => {
+    const ledger = { navDaily: [], events: [], positions: [] }
+    const base = { tier: 'full', accountId: 'USER_SHADOW:demo', asOf: '2026-09-18', disclaimer: 'x', showcase }
+    const trade = {
+      code: '000001', name: '平安银行', qty: 100, buyDate: '2026-09-01', buyPrice: 10.5, sellDate: '2026-09-11', sellPrice: 9.8,
+      intervalLow: null, intervalLowDate: null, intervalHigh: null, intervalHighDate: null,
+    }
+    const legacy = vi.fn().mockResolvedValue(response({ ...base, ledger }))
+    const current = vi.fn().mockResolvedValue(response({ ...base, ledger: { ...ledger, closedTrades: [trade] } }))
+
+    await expect(requestShadowLedger('token', undefined, legacy)).resolves.toMatchObject({ ledger: { closedTrades: [] } })
+    await expect(requestShadowLedger('token', undefined, current)).resolves.toMatchObject({ ledger: { closedTrades: [trade] } })
+  })
+
   it('does not surface a raw Not Found to the page', async () => {
     expect(shadowLedgerErrorMessage({ error: 'Not Found' }, 404)).toContain('影子账户')
     const fetcher = vi.fn().mockResolvedValue(response({ error: 'Not Found' }, { status: 404 }))

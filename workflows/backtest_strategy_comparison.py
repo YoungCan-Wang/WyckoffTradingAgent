@@ -25,6 +25,7 @@ from workflows.backtest_report_stats import (
 )
 from workflows.backtest_strategy_variants import (
     DEFAULT_COMPARISON_VARIANTS,
+    POLICY_ONLY_VARIANTS,
     VARIANT_LABELS,
     normalize_strategy_variant,
 )
@@ -70,6 +71,16 @@ class StrategyExecutedTrade:
     cost_total: float | None
 
 
+def _artifact_row_preference(path: Path) -> int:
+    """Prefer live-ablation shards when classic calib and live ablation both emit the same cell."""
+    blob = str(path).replace("\\", "/").lower()
+    if "/backtest-strategy-" in blob and "-live-ablation-" in blob:
+        return 2
+    if "-calib-" in blob:
+        return 0
+    return 1
+
+
 def load_strategy_comparison_rows(
     artifacts_dir: Path,
     ignored_dirs: list[str] | None = None,
@@ -78,8 +89,11 @@ def load_strategy_comparison_rows(
 
     Summaries whose directory does not follow that naming are skipped; pass ``ignored_dirs`` to
     have them reported instead of vanishing from the comparison silently.
+    When the same ``(period, variant)`` appears twice (classic calib + live ablation both
+    wrote ``...-I``), keep the live-ablation copy so periods are not double-counted into a
+    false ``pass``.
     """
-    rows: list[StrategyComparisonRow] = []
+    best: dict[tuple[str, str], tuple[int, StrategyComparisonRow]] = {}
     paths = sorted(Path(path) for path in glob.glob(str(artifacts_dir / "**" / "summary_*.md"), recursive=True))
     for path in paths:
         match = _DIR_PATTERN.search(path.parent.name)
@@ -89,26 +103,29 @@ def load_strategy_comparison_rows(
             continue
         content = path.read_text(encoding="utf-8")
         start, end = date_range(content)
-        rows.append(
-            StrategyComparisonRow(
-                period=match.group("period"),
-                variant=match.group("variant"),
-                start=start,
-                end=end,
-                cash_return=cash_metric(content, "总收益"),
-                cash_drawdown=cash_metric(content, "现金最大回撤"),
-                cash_trades=cash_int_metric(content, "成交笔数"),
-                win_rate=cash_metric(content, "胜率"),
-                avg_return=_cash_trade_average(path.parent),
-                sharpe=metric(content, r"夏普比(?:\s*\(Sharpe Ratio\))?"),
-                trade_keys=_trade_keys(path.parent),
-                executed_trades=_executed_trades(path.parent),
-                signal_trades=_signal_trades(path.parent),
-                buy_friction_pct=metric(content, "买入摩擦成本"),
-                sell_friction_pct=metric(content, "卖出摩擦成本"),
-            )
+        row = StrategyComparisonRow(
+            period=match.group("period"),
+            variant=match.group("variant"),
+            start=start,
+            end=end,
+            cash_return=cash_metric(content, "总收益"),
+            cash_drawdown=cash_metric(content, "现金最大回撤"),
+            cash_trades=cash_int_metric(content, "成交笔数"),
+            win_rate=cash_metric(content, "胜率"),
+            avg_return=_cash_trade_average(path.parent),
+            sharpe=metric(content, r"夏普比(?:\s*\(Sharpe Ratio\))?"),
+            trade_keys=_trade_keys(path.parent),
+            executed_trades=_executed_trades(path.parent),
+            signal_trades=_signal_trades(path.parent),
+            buy_friction_pct=metric(content, "买入摩擦成本"),
+            sell_friction_pct=metric(content, "卖出摩擦成本"),
         )
-    return rows
+        key = (row.period, row.variant)
+        preference = _artifact_row_preference(path)
+        previous = best.get(key)
+        if previous is None or preference >= previous[0]:
+            best[key] = (preference, row)
+    return [item[1] for item in sorted(best.values(), key=lambda item: (item[1].period, item[1].variant))]
 
 
 def _resolve_required_cells(
@@ -155,6 +172,11 @@ def build_strategy_comparison(
     for variant, values in by_variant.items():
         if variant in {"A", "live"}:
             reference = variant
+        elif baseline == "live" and "live" in by_variant:
+            reference = "live"
+        elif variant in POLICY_ONLY_VARIANTS and "live" in by_variant and variant not in {"M", "P"}:
+            # Combined A/M/P + live,I: keep M→A / P→M, but score-calibration I vs live.
+            reference = "live"
         elif (variant in LIVE_ABLATION_VARIANTS or baseline == "live") and "live" in by_variant:
             reference = "live"
         else:
