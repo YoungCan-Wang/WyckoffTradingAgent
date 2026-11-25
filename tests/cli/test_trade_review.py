@@ -143,6 +143,74 @@ def test_zulu_fill_timestamps_align_to_shanghai_bar_days(tmp_path):
     assert TR.fills_inside_bars(trips[0], bars)
 
 
+def test_compact_yyyymmdd_and_excel_serial_dates_align_to_bars(tmp_path):
+    """Bare YYYYMMDD ints/floats and Excel serials must not become 1970 (silent book drop)."""
+    bars = _bars([("2026-01-05", 10.0, 10.2, 9.9, 10.0), ("2026-01-08", 10.5, 11.2, 10.4, 11.0)])
+
+    def _assert_usable(path: Path) -> None:
+        trips, open_pos = TR.build_round_trips(TR.load_fills(path))
+        assert open_pos == []
+        assert len(trips) == 1
+        assert trips[0].start == pd.Timestamp("2026-01-05")
+        assert trips[0].end == pd.Timestamp("2026-01-08")
+        assert TR.fills_inside_bars(trips[0], bars)
+
+    ymd = tmp_path / "yyyymmdd.csv"
+    pd.DataFrame(
+        [
+            {
+                "name": "测试",
+                "code": "600001.SH",
+                "date": 20260105,
+                "side": "buy",
+                "price": 10.0,
+                "qty": 100,
+                "amount": 1000.0,
+                "fee": 5.0,
+            },
+            {
+                "name": "测试",
+                "code": "600001.SH",
+                "date": 20260108.0,
+                "side": "sell",
+                "price": 11.0,
+                "qty": 100,
+                "amount": 1100.0,
+                "fee": 5.0,
+            },
+        ]
+    ).to_csv(ymd, index=False)
+    _assert_usable(ymd)
+
+    # Excel serial day count for 2026-01-05 / 2026-01-08 (origin 1899-12-30).
+    serial = tmp_path / "excel_serial.csv"
+    pd.DataFrame(
+        [
+            {
+                "name": "测试",
+                "code": "600001.SH",
+                "date": 46027,
+                "side": "buy",
+                "price": 10.0,
+                "qty": 100,
+                "amount": 1000.0,
+                "fee": 5.0,
+            },
+            {
+                "name": "测试",
+                "code": "600001.SH",
+                "date": 46030,
+                "side": "sell",
+                "price": 11.0,
+                "qty": 100,
+                "amount": 1100.0,
+                "fee": 5.0,
+            },
+        ]
+    ).to_csv(serial, index=False)
+    _assert_usable(serial)
+
+
 def test_group_table_keeps_nan_priors_as_insufficient_sample():
     table = pd.DataFrame(
         {

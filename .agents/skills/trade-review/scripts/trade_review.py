@@ -43,6 +43,26 @@ DEFAULT_RULES: dict[str, dict[str, Any]] = {
 # ---------------------------------------------------------------- fills & trips
 
 
+def _parse_fill_dates(values: pd.Series) -> pd.Series:
+    """Parse broker date cells; bare YYYYMMDD must not become ns-since-epoch (1970).
+
+    CSV readers coerce ``20260105`` / ``20260105.0`` to int/float; ``pd.to_datetime`` then
+    treats them as nanoseconds → 1970-01-01, so ``fills_inside_bars`` drops the whole book.
+    Excel serial day counts (~4xxxx) need the 1899-12-30 origin for the same reason.
+    """
+    if pd.api.types.is_numeric_dtype(values):
+        nums = pd.to_numeric(values, errors="coerce")
+        finite = nums.dropna()
+        if not finite.empty and float(finite.min()) >= 19900101 and float(finite.max()) <= 20991231:
+            return pd.to_datetime(nums.round().astype("Int64").astype(str), format="%Y%m%d")
+        if not finite.empty and float(finite.min()) >= 20000 and float(finite.max()) <= 80000:
+            return pd.to_datetime(nums, unit="D", origin="1899-12-30")
+    text = values.astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+    if len(text) and text.str.fullmatch(r"\d{8}").fillna(False).all():
+        return pd.to_datetime(text, format="%Y%m%d")
+    return pd.to_datetime(values, format="mixed")
+
+
 def _as_cn_midnight(value: Any) -> pd.Timestamp:
     """Trading calendar day in China: tz-aware → Asia/Shanghai, then naive midnight.
 
@@ -56,7 +76,7 @@ def _as_cn_midnight(value: Any) -> pd.Timestamp:
 
 
 def _series_cn_midnight(values: pd.Series) -> pd.Series:
-    series = pd.to_datetime(values)
+    series = _parse_fill_dates(values)
     if getattr(series.dt, "tz", None) is not None:
         series = series.dt.tz_convert("Asia/Shanghai").dt.tz_localize(None)
     return series.dt.normalize()
@@ -122,7 +142,7 @@ def load_fills(path: str | Path) -> pd.DataFrame:
     if bad:
         raise ValueError(f"side must be buy/sell, got {bad}")
     # Keep clock time so same-day sell-then-buy sorts correctly; RoundTrip normalizes later.
-    df["date"] = pd.to_datetime(df["date"])
+    df["date"] = _parse_fill_dates(df["date"])
     for col in ("price", "qty", "amount", "fee"):
         df[col] = pd.to_numeric(df[col], errors="raise").astype(float)
     df["qty"] = df["qty"].abs()
