@@ -840,7 +840,8 @@ def _pick_mainline_core_followers(
     top_n: int = 3,
     min_open_pct: float = -2.0,
     max_open_pct: float = 3.8,
-    max_vwap_dev: float = 2.2,
+    min_vwap_dev: float = -0.25,
+    max_vwap_dev: float = 2.5,
     max_wick: float = 1.3,
 ) -> list[dict[str, Any]]:
     cands: list[tuple[tuple[int, int, float, float], dict[str, Any]]] = []
@@ -853,17 +854,19 @@ def _pick_mainline_core_followers(
         is_giant = r["amt_yi"] >= 8.0 and rps <= 95.0
         if not (is_l2 or is_lane or is_giant):
             continue
+        vd = r["vwap_dev"]
+        wick_lim = min(max_wick, 1.0) if (vd < 0.0 or vd > 2.2) else max_wick
         if not (
             r["amt_yi"] >= min_amt_yi
             and min_open_pct <= r["open_pct"] <= max_open_pct
             and (r["open"] <= 0 or r["last"] >= r["open"])
-            and 1.5 <= r["pct"] <= 7.5
-            and 0.0 <= r["vwap_dev"] <= max_vwap_dev
-            and r["wick"] <= max_wick
+            and 1.4 <= r["pct"] <= 7.8
+            and min_vwap_dev <= vd <= max_vwap_dev
+            and r["wick"] <= wick_lim
         ):
             continue
         is_flat_open = 1 if (-0.8 <= r["open_pct"] <= 1.5) else 0
-        cands.append(((1 if (is_l2 or is_lane) else 0, is_flat_open, r["amt_yi"], -r["vwap_dev"]), r))
+        cands.append(((1 if (is_l2 or is_lane) else 0, is_flat_open, r["amt_yi"], -abs(vd)), r))
     cands.sort(key=lambda x: x[0], reverse=True)
     return [x[1] for x in cands[:top_n]]
 
@@ -880,7 +883,7 @@ def detect_confirmed_mainline_alerts(
     auc = compute_call_auction_mainline_metrics(curr_quotes, l2_map)
     is_panic_open = bool(auc and auc["mkt_red_pct"] < 20.0)
     relax_sub = is_panic_open and (mkt_red_ratio is None or mkt_red_ratio < 0.35)
-    min_sub_avg, min_sub_red = (0.8, 52.0) if relax_sub else (1.2, 70.0)
+    min_sub_avg, min_sub_red = (0.8, 52.0) if relax_sub else (1.1, 66.0)
     grouped: dict[str, dict[str, Any]] = {}
     for sec, st in stats.items():
         if sec not in _SUBSECTOR_TO_MAINLINE and st["tot_n"] < 15:
@@ -904,6 +907,14 @@ def detect_confirmed_mainline_alerts(
         red_r = grp["red_n"] / tot_n * 100.0
         avg_p = sum(r["pct"] for r in grp["items"]) / tot_n
         std_hit = red_r >= 78.0 and avg_p >= 1.8 and grp["lu_n"] >= 3 and grp["amt_yi"] >= 25.0
+        near_hit = (
+            (not is_panic_open)
+            and grp["amt_yi"] >= 35.0
+            and (
+                (red_r >= 74.0 and avg_p >= 2.0 and grp["lu_n"] >= 4)
+                or (red_r >= 82.0 and avg_p >= 2.1 and grp["lu_n"] >= 2)
+            )
+        )
         panic_hit = bool(
             is_panic_open
             and mkt_now_pct < 35.0
@@ -913,7 +924,7 @@ def detect_confirmed_mainline_alerts(
             and grp["lu_n"] >= 3
             and grp["amt_yi"] >= 25.0
         )
-        if not (std_hit or panic_hit):
+        if not (std_hit or near_hit or panic_hit):
             continue
         grp["items"].sort(key=lambda r: -r["pct"])
         grp["sub_secs"].sort(reverse=True)
@@ -928,7 +939,8 @@ def detect_confirmed_mainline_alerts(
                 top_n=3,
                 min_open_pct=-0.8,
                 max_open_pct=1.5,
-                max_vwap_dev=1.8,
+                min_vwap_dev=-0.20,
+                max_vwap_dev=2.0,
                 max_wick=1.2,
             )
         else:
@@ -1448,9 +1460,14 @@ def rank_intraday_rs_leaders(
         vwap = _resolve_vwap(q, last)
         vwap_dev = (last / vwap - 1.0) * 100.0 if vwap > 0 else 0.0
         open_ok = (-0.8 <= open_pct <= 1.5) if is_panic_open else (open_pct <= 3.8)
-        vwap_cap = 1.8 if is_panic_open else 2.2
+        vwap_min, vwap_cap = (-0.20, 2.0) if is_panic_open else (-0.25, 2.5)
+        wick_lim = 1.0 if (vwap_dev < 0.0 or vwap_dev > 2.2) else 1.2
         if not (
-            open_ok and last >= open_p and 1.8 <= pct <= 7.5 and 0.0 <= vwap_dev <= vwap_cap and upper_wick_pct <= 1.2
+            open_ok
+            and last >= open_p
+            and 1.5 <= pct <= 7.8
+            and vwap_min <= vwap_dev <= vwap_cap
+            and upper_wick_pct <= wick_lim
         ):
             continue
         sec = str(meta.get("sector") or "")
@@ -1516,6 +1533,226 @@ def rank_intraday_rs_leaders(
         if len(picked) >= top_n:
             break
     return picked
+
+
+def _eval_symbol_trajectory(
+    sym: str,
+    now_row: dict[str, Any],
+    history: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Evaluate 30m sub-threshold climb slope and index-dip resilience over rolling frames."""
+    hist_pts: list[tuple[dict[str, Any], tuple[float, float, float]]] = []
+    for f in history or ():
+        row = (f.get("q") or {}).get(sym)
+        if isinstance(row, (list, tuple)) and len(row) >= 2:
+            vd = float(row[2]) if len(row) >= 3 else 0.0
+            hist_pts.append((f, (float(row[0]), float(row[1]), vd)))
+    pts = [p for _, p in hist_pts] + [(now_row["pct"], now_row["amt_yi"], now_row["vwap_dev"])]
+    n = len(pts)
+    if n < 2:
+        return {
+            "frames": n,
+            "stealth_climb": False,
+            "dip_resilient": False,
+            "climb_pct": 0.0,
+            "dip_excess": 0.0,
+            "mono_ratio": 0.0,
+            "path_dd": 0.0,
+        }
+    steps = [pts[i][0] - pts[i - 1][0] for i in range(1, n)]
+    max_step = max(steps)
+    climb_pct = pts[-1][0] - pts[0][0]
+    amt_gain = pts[-1][1] - pts[0][1]
+    peak, path_dd = pts[0][0], 0.0
+    for p in pts:
+        peak = max(peak, p[0])
+        path_dd = max(path_dd, peak - p[0])
+    non_drop = sum(1 for s in steps if s >= -0.15)
+    pos_steps = sum(1 for s in steps if s > 0.05)
+    mono_ratio = non_drop / len(steps)
+    step_amts = [max(0.0, pts[i][1] - pts[i - 1][1]) for i in range(1, n)]
+    even_vol = amt_gain >= 0.50 and (len(step_amts) < 3 or max(step_amts) <= amt_gain * 0.70)
+    stealth_climb = bool(
+        n >= 4
+        and max_step < 2.4
+        and climb_pct >= 1.6
+        and pos_steps >= max(3, len(steps) - 1)
+        and mono_ratio >= 0.75
+        and path_dd <= 0.45
+        and even_vol
+    )
+    bench = [
+        min(float(f.get("cy_pct") or 0.0), float(f.get("sh_pct") or 0.0), float(f.get("med_pct") or 0.0))
+        for f, _ in hist_pts
+    ] + [float(now_row.get("now_bench") or 0.0)]
+    best_excess, dip_resilient = 0.0, False
+    for i in range(len(bench) - 1):
+        idx_drop = min(bench[i + 1 :]) - bench[i]
+        if idx_drop <= -0.45:
+            stk_delta = pts[-1][0] - pts[i][0]
+            stk_min_drop = min(p[0] for p in pts[i:]) - pts[i][0]
+            excess = stk_delta - idx_drop
+            if excess > best_excess:
+                best_excess = excess
+            if (
+                stk_delta >= -0.15
+                and stk_min_drop >= -0.35
+                and excess >= 0.65
+                and pts[-1][0] >= pts[-2][0]
+                and now_row["amt_yi"] >= 1.2
+            ):
+                dip_resilient = True
+    return {
+        "frames": n,
+        "stealth_climb": stealth_climb,
+        "dip_resilient": dip_resilient,
+        "climb_pct": climb_pct,
+        "dip_excess": best_excess,
+        "mono_ratio": mono_ratio,
+        "path_dd": path_dd,
+    }
+
+
+def compute_continuous_flow_score(
+    now_row: dict[str, Any],
+    traj: dict[str, Any],
+    sec_stat: dict[str, Any] | None,
+    is_backed: bool,
+    med_pct: float,
+) -> float:
+    """Smooth 0-100 continuous flow score replacing brittle hard-cliff cutoffs."""
+    if traj["frames"] >= 3:
+        slope_raw = (
+            min(18.0, max(0.0, traj["climb_pct"]) * 6.5)
+            + traj["mono_ratio"] * 10.0
+            - min(8.0, traj.get("path_dd", 0.0) * 8.0)
+            + (4.0 if traj["stealth_climb"] else 0.0)
+        )
+        slope_s = max(0.0, min(32.0, slope_raw))
+    else:
+        slope_s = max(0.0, min(16.0, max(0.0, now_row["pct"] - now_row["open_pct"]) * 5.0))
+    dip_s = max(
+        0.0,
+        min(
+            26.0,
+            min(16.0, max(0.0, traj.get("dip_excess", 0.0)) * 12.0)
+            + min(10.0, max(0.0, now_row["pct"] - med_pct) * 2.2),
+        ),
+    )
+    vd = now_row["vwap_dev"]
+    if 0.0 <= vd <= 1.8:
+        vwap_pts = 18.0
+    elif -0.35 <= vd < 0.0:
+        vwap_pts = 18.0 - abs(vd) * 28.0
+    elif 1.8 < vd <= 3.0:
+        vwap_pts = 18.0 - (vd - 1.8) * 10.0
+    else:
+        vwap_pts = 2.0
+    vwap_s = max(0.0, min(22.0, vwap_pts + max(0.0, 4.0 - now_row["wick"] * 2.5)))
+    sec_red = float((sec_stat or {}).get("red_ratio") or 50.0)
+    sec_pts = min(8.0, max(0.0, (sec_red - 45.0) * 0.22))
+    liq_pts = min(6.0, now_row["amt_yi"] * 1.2)
+    back_pts = 6.0 if is_backed else 0.0
+    return round(min(100.0, slope_s + dip_s + vwap_s + sec_pts + liq_pts + back_pts), 1)
+
+
+def scan_intraday_trajectory_flows(
+    curr_quotes: dict[str, dict[str, Any]],
+    l2_map: dict[str, dict[str, Any]],
+    history: list[dict[str, Any]] | None,
+    *,
+    now_hm: str = "",
+) -> tuple[str, list[tuple[str, str, dict[str, Any]]]]:
+    """Detect stealth 30m climbs and index-dip resilient leaders via continuous flow scoring."""
+    if not history or len(history) < 2 or not curr_quotes:
+        return "", []
+    import statistics
+
+    stats = _collect_sector_metrics(curr_quotes, l2_map)
+    auc = compute_call_auction_mainline_metrics(curr_quotes, l2_map)
+    is_panic_open = bool(auc and auc["mkt_red_pct"] < 20.0)
+    a_pcts = [
+        (float(q["last_price"]) / float(q["prev_close"]) - 1.0) * 100.0
+        for sym, q in curr_quotes.items()
+        if _is_equity_symbol(sym, allow_bj=False)
+        and float(q.get("last_price") or 0.0) > 0
+        and float(q.get("prev_close") or 0.0) > 0
+    ]
+    med_pct = statistics.median(a_pcts) if a_pcts else 0.0
+    sh_pct = _index_open_and_pct(curr_quotes, "000001.SH")[1]
+    cy_pct = _index_open_and_pct(curr_quotes, "399006.SZ")[1]
+    now_bench = min(sh_pct, cy_pct, med_pct)
+    hits: list[tuple[float, dict[str, Any], dict[str, Any], str]] = []
+    for sec, st in stats.items():
+        for r in st["items"]:
+            if not (
+                0.6 <= r["pct"] <= 7.8 and -0.30 <= r["vwap_dev"] <= 2.7 and r["wick"] <= 1.5 and r["amt_yi"] >= 1.2
+            ):
+                continue
+            if r["open"] > 0 and r["last"] < r["open"] * 0.997:
+                continue
+            if is_panic_open and not (-0.8 <= r["open_pct"] <= 1.5):
+                continue
+            meta = (l2_map or {}).get(r["code"]) or {}
+            rps = float(meta.get("rps") or 0.0)
+            is_backed = bool(
+                meta.get("l2_eligible")
+                or meta.get("shadow_lane") in ("pre_breakout", "rotation_setup")
+                or r["amt_yi"] >= 5.0
+            )
+            if not is_backed or (not meta.get("l2_eligible") and rps > 92.0 and r["amt_yi"] < 8.0):
+                continue
+            traj = _eval_symbol_trajectory(r["sym"], {**r, "now_bench": now_bench}, history)
+            if not (traj["stealth_climb"] or traj["dip_resilient"]):
+                continue
+            score = compute_continuous_flow_score(r, traj, st, is_backed, med_pct)
+            if score >= 65.0:
+                hits.append((score, r, traj, _SUBSECTOR_TO_MAINLINE.get(sec, sec)))
+    if not hits:
+        return "", []
+    hits.sort(key=lambda x: (-x[0], -x[1]["amt_yi"]))
+    picked, sec_cnt = [], {}
+    for score, r, traj, theme in hits:
+        if sec_cnt.get(r["sec"], 0) >= 2:
+            continue
+        sec_cnt[r["sec"]] = sec_cnt.get(r["sec"], 0) + 1
+        picked.append((score, r, traj, theme))
+        if len(picked) >= 5:
+            break
+    lines = []
+    for sc, r, tj, _ in picked:
+        t_parts = []
+        if tj["stealth_climb"]:
+            t_parts.append(f"📈压速慢推+{tj['climb_pct']:.1f}%")
+        if tj["dip_resilient"]:
+            t_parts.append(f"🛡️抗跌阻尼+{tj['dip_excess']:.1f}%")
+        t_lbl = "+".join(t_parts)
+        lines.append(
+            f"- **{r['sym']} {r['name']}** [{r['sec']}·势能 **{sc:.0f}**分]：{r['last']:.2f} (**{r['pct']:+.2f}%**) | "
+            f"VWAP {r['vwap_dev']:+.2f}% | 额 {r['amt_yi']:.1f}亿 | {t_lbl}"
+        )
+    md = "**🌊 分时势能与抗跌阻尼榜（30m压速慢推 / 跳水强承接 · 连续势能分）**\n" + "\n".join(lines)
+    l2_alerts: list[tuple[str, str, dict[str, Any]]] = []
+    if now_hm >= "09:45":
+        by_theme: dict[str, list[tuple[float, dict[str, Any], dict[str, Any]]]] = {}
+        for sc, r, tj, th in hits:
+            by_theme.setdefault(th, []).append((sc, r, tj))
+        for th, grp in by_theme.items():
+            grp.sort(key=lambda x: -x[0])
+            if len(grp) >= 2 or any(sc >= 76.0 and r["amt_yi"] >= 3.0 for sc, r, _ in grp):
+                tags = "、".join(
+                    f"`{r['code']}` {r['name']}({r['pct']:+.1f}%·势能{sc:.0f}{'·📈慢推' if tj['stealth_climb'] else ''}{'·🛡️阻尼' if tj['dip_resilient'] else ''})"
+                    for sc, r, tj in grp[:3]
+                )
+                l2_md = f"- 🌊 **【分时势能成型·绕过点位慢推/抗跌】{th}**：{len(grp)}只核心稳势走强 → {tags}"
+                l2_alerts.append(
+                    (
+                        th,
+                        l2_md,
+                        {"theme": th, "count": len(grp), "top_score": grp[0][0], "top_symbol": grp[0][1]["sym"]},
+                    )
+                )
+    return md, l2_alerts
 
 
 def summarize_zero_bias_l2_leaders(

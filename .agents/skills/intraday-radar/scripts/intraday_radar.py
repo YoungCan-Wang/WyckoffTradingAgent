@@ -36,6 +36,7 @@ COOLDOWN_SECONDS = 1800
 HOLDING_STOP_COOLDOWN_SECONDS = 86400
 L1_INTERVAL_SECONDS = 1740
 MAX_BASELINE_GAP_SECONDS = 900
+MAX_TRAJECTORY_FRAMES = 7
 MAX_TRACE_AGE_DAYS = 3
 MIN_BREADTH_COVERAGE_RATIO = 0.90
 
@@ -434,22 +435,85 @@ def _check_cooldown(cooldowns: dict[str, float], key: str, now_ts: float, window
     return True
 
 
-def _is_fresh_baseline(prev_state: dict[str, Any], today_str: str, now_ts: float) -> bool:
-    if prev_state.get("date") != today_str or not prev_state.get("quotes"):
+def _is_fresh_gap(prev_ts: float, curr_ts: float) -> bool:
+    if prev_ts <= 0 or curr_ts < prev_ts:
         return False
-    prev_ts = float(prev_state.get("ts") or 0.0)
-    if prev_ts <= 0 or now_ts < prev_ts:
-        return False
-    gap = now_ts - prev_ts
+    gap = curr_ts - prev_ts
     if gap <= MAX_BASELINE_GAP_SECONDS:
         return True
     prev_dt = datetime.fromtimestamp(prev_ts, tz=CN_TZ)
-    curr_dt = datetime.fromtimestamp(now_ts, tz=CN_TZ)
+    curr_dt = datetime.fromtimestamp(curr_ts, tz=CN_TZ)
     is_lunch_bridge = (11, 20) <= (prev_dt.hour, prev_dt.minute) <= (11, 36) and (12, 55) <= (
         curr_dt.hour,
         curr_dt.minute,
     ) <= (13, 12)
     return is_lunch_bridge and gap <= 6300
+
+
+def _is_fresh_baseline(prev_state: dict[str, Any], today_str: str, now_ts: float) -> bool:
+    if prev_state.get("date") != today_str or not prev_state.get("quotes"):
+        return False
+    return _is_fresh_gap(float(prev_state.get("ts") or 0.0), now_ts)
+
+
+def _extract_valid_trajectory(prev_state: dict[str, Any], today_str: str, now_ts: float) -> list[dict[str, Any]]:
+    if prev_state.get("date") != today_str:
+        return []
+    raw_hist = prev_state.get("history") or []
+    if not raw_hist:
+        if _is_fresh_baseline(prev_state, today_str, now_ts):
+            q_map = {
+                s: [float(v.get("pct") or 0.0), float(v.get("amt_yi") or 0.0)]
+                for s, v in (prev_state.get("quotes") or {}).items()
+                if isinstance(v, dict)
+            }
+            return [
+                {"ts": float(prev_state.get("ts") or 0.0), "sh_pct": 0.0, "cy_pct": 0.0, "med_pct": 0.0, "q": q_map}
+            ]
+        return []
+    valid_rev: list[dict[str, Any]] = []
+    next_ts = now_ts
+    for frame in reversed(raw_hist):
+        f_ts = float(frame.get("ts") or 0.0)
+        if not _is_fresh_gap(f_ts, next_ts):
+            break
+        valid_rev.append(frame)
+        next_ts = f_ts
+        if len(valid_rev) >= MAX_TRAJECTORY_FRAMES:
+            break
+    valid_rev.reverse()
+    return valid_rev
+
+
+def _build_trajectory_frame(
+    curr_quotes: dict[str, dict[str, Any]],
+    now_ts: float,
+    holdings: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    sh_m = compute_quote_metrics(curr_quotes.get("000001.SH", {}))
+    cy_m = compute_quote_metrics(curr_quotes.get("399006.SZ", {}))
+    a_pcts: list[float] = []
+    parsed: list[tuple[str, dict[str, Any]]] = []
+    for sym, q in curr_quotes.items():
+        m = compute_quote_metrics(q)
+        if not m:
+            continue
+        parsed.append((sym, m))
+        if is_a_share(sym):
+            a_pcts.append(m["pct"])
+    keep_all = len(parsed) <= 300
+    h_syms = set(holdings or {})
+    q_map: dict[str, list[float]] = {}
+    for sym, m in parsed:
+        if keep_all or sym in h_syms or sym in ("000001.SH", "399001.SZ", "399006.SZ") or m["amt_yi"] >= 0.30:
+            q_map[sym] = [round(m["pct"], 2), round(m["amt_yi"], 2), round(m["vwap_dev"], 2)]
+    return {
+        "ts": now_ts,
+        "sh_pct": round(sh_m["pct"], 2) if sh_m else 0.0,
+        "cy_pct": round(cy_m["pct"], 2) if cy_m else 0.0,
+        "med_pct": round(statistics.median(a_pcts), 2) if a_pcts else 0.0,
+        "q": q_map,
+    }
 
 
 def holdings_missing_quote_symbols(
@@ -528,8 +592,9 @@ def _check_holding_profit_locks(
     *,
     chip_regime: str = "",
     index_gap_up: bool = False,
+    prev_vwap_dev: float | None = None,
 ) -> str:
-    """Capture A-share morning gap-up exits & VWAP rollover profit locks (where vwap_dev alone misses)."""
+    """Capture A-share morning gap-up exits & 2-frame VWAP rollover profit locks (avoiding hairline stop-hunts)."""
     is_atk = cfg.get("role") != "DEF"
     if (
         is_atk
@@ -553,6 +618,9 @@ def _check_holding_profit_locks(
         and m["upper_wick_pct"] >= 1.5
         and m["pct"] > -1.5
     ):
+        confirmed_roll = (m["vwap_dev"] <= -0.45) or (prev_vwap_dev is not None and prev_vwap_dev < 0.0)
+        if not confirmed_roll:
+            return " 👀微破均线观察(防刺破洗盘·看下帧承接)"
         cd_key, cd_win, kind = f"L2:holding_rollover:{sym}", 7200, "holding_spike_rollover"
         tag = " 🟡冲高回落破均线·果断锁利防回吐"
         msg = (
@@ -583,6 +651,7 @@ def _evaluate_holdings(
     alert_records: list[dict[str, Any]],
     *,
     chip_regime: str = "",
+    history: list[dict[str, Any]] | None = None,
 ) -> tuple[list[str], list[str], list[str], list[str]]:
     lines: list[str] = []
     l2_alerts: list[str] = []
@@ -592,12 +661,15 @@ def _evaluate_holdings(
     sh_m = compute_quote_metrics(curr_quotes.get("000001.SH", {}))
     cy_m = compute_quote_metrics(curr_quotes.get("399006.SZ", {}))
     index_gap_up = bool((sh_m and sh_m["open_pct"] >= 0.35) or (cy_m and cy_m["open_pct"] >= 0.80))
+    last_hist_q = (history[-1].get("q") or {}) if history else {}
     for sym, cfg in holdings.items():
         m = compute_quote_metrics(curr_quotes.get(sym, {}))
         if not m:
             continue
         prev_s = prev_q.get(sym) if has_baseline else None
         dpct = m["pct"] - prev_s["pct"] if prev_s else 0.0
+        h_row = last_hist_q.get(sym)
+        prev_vd = float(h_row[2]) if isinstance(h_row, (list, tuple)) and len(h_row) >= 3 else None
         stop = float(cfg.get("stop", 0.0))
         tag = ""
         if _is_t1_locked(cfg, now_ts):
@@ -649,6 +721,7 @@ def _evaluate_holdings(
                 alert_records,
                 chip_regime=chip_regime,
                 index_gap_up=index_gap_up,
+                prev_vwap_dev=prev_vd,
             )
         lines.append(_format_holding_line(sym, m, dpct, cfg, tag))
     return lines, l2_alerts, l3_alerts, l4_alerts
@@ -1187,14 +1260,18 @@ def scan_next_day_lps_pullbacks(
         if daily_bars and check_symbol_chip_overhang(m["last"], daily_bars.get(sym)):
             continue
         dpct = (m["pct"] - float((prev_q.get(sym) or {}).get("pct") or 0.0)) if has_baseline else 0.0
+        vd = m["vwap_dev"]
+        standard_lps = -0.35 <= vd <= 1.30
+        shallow_lps = 1.30 < vd <= 1.85 and dpct >= 0.0 and m["pct"] >= 0.5
         if (
             -1.8 <= m["pct"] <= 2.8
-            and -0.3 <= m["vwap_dev"] <= 1.3
+            and (standard_lps or shallow_lps)
             and m["last"] >= float((curr_quotes.get(sym) or {}).get("open") or m["last"]) * 0.997
         ):
+            lps_lbl = "🎯浅回踩抢筹(未摸均线即托住)" if shallow_lps else "🎯均线分歧承接"
             hits.append(
                 f"- **[{item.get('kind', '')}·{item.get('theme', '')}] `{sym}` {item.get('name', '')}**："
-                f"现价 **{m['last']:.3f} ({m['pct']:+.2f}%)** | VWAP乖离 **{m['vwap_dev']:+.2f}%** | 5m {dpct:+.2f}% 🎯均线分歧承接"
+                f"现价 **{m['last']:.3f} ({m['pct']:+.2f}%)** | VWAP乖离 **{vd:+.2f}%** | 5m {dpct:+.2f}% {lps_lbl}"
             )
     return (
         (f"**🎯 次日主线分歧回踩承接窗（LPS，锚定 {anchor_date} 强势主线）**\n" + "\n".join(hits[:4])) if hits else ""
@@ -1347,11 +1424,13 @@ def _enrich_mainline_and_telegraph(
     late_decision: bool = False,
     chip_regime: str = "",
     daily_bars: dict[str, list[dict[str, Any]]] | None = None,
+    history: list[dict[str, Any]] | None = None,
 ) -> None:
     try:
         from telegraph_catalysts import (
             build_morning_washout_card,
             detect_confirmed_mainline_alerts,
+            scan_intraday_trajectory_flows,
             scan_live_telegraph_catalysts,
             summarize_call_auction_mainlines,
             summarize_national_team_etfs,
@@ -1392,6 +1471,13 @@ def _enrich_mainline_and_telegraph(
         mainline_summary = summarize_top_sector_mainlines(curr_quotes, l2_map)
         if mainline_summary:
             buckets["mainlines"].append(mainline_summary)
+        flow_md, flow_alerts = scan_intraday_trajectory_flows(curr_quotes, l2_map, history, now_hm=now_hm)
+        for f_key, f_md, f_rec in flow_alerts:
+            if _check_cooldown(cooldowns, f"L2:flow_trend:{f_key}", ts, window=7200):
+                buckets["l2_events"].insert(0, f_md)
+                alert_records.append({"ts": ts, "level": "L2", "kind": "flow_trend", **f_rec})
+        if flow_md:
+            buckets["mainlines"].append(flow_md)
         etf_lead = summarize_theme_etf_leadership(
             curr_quotes, red_ratio=red_ratio, now_hm=now_hm, chip_regime=chip_regime, daily_bars=daily_bars
         )
@@ -1554,6 +1640,7 @@ def analyze_snapshot_diff(
     today_str = today_date.isoformat()
     has_baseline = _is_fresh_baseline(prev_state, today_str, ts)
     prev_q = prev_state.get("quotes", {}) if has_baseline else {}
+    valid_history = _extract_valid_trajectory(prev_state, today_str, ts)
     cooldowns: dict[str, float] = dict(prev_state.get("cooldowns", {})) if prev_state.get("date") == today_str else {}
     now_dt = datetime.fromtimestamp(ts, tz=CN_TZ)
     unrolled_preopen, stale_amt = _is_unrolled_preopen_snapshot(curr_quotes, now_dt)
@@ -1581,7 +1668,15 @@ def analyze_snapshot_diff(
     )
     alert_records: list[dict[str, Any]] = []
     h_lines, h_l2, h_l3, h_l4 = _evaluate_holdings(
-        curr_quotes, prev_q, has_baseline, holdings, cooldowns, ts, alert_records, chip_regime=chip_regime
+        curr_quotes,
+        prev_q,
+        has_baseline,
+        holdings,
+        cooldowns,
+        ts,
+        alert_records,
+        chip_regime=chip_regime,
+        history=valid_history,
     )
     buckets = _scan_equities_and_etfs(
         curr_quotes,
@@ -1632,6 +1727,7 @@ def analyze_snapshot_diff(
         late_decision=late_decision,
         chip_regime=chip_regime,
         daily_bars=bars_map,
+        history=valid_history,
     )
     if coverage_ok and abs(d_red) >= 400 and _check_cooldown(cooldowns, "L2:breadth", ts):
         buckets["l2_events"].insert(
@@ -1703,6 +1799,8 @@ def _build_urgent_focus_banner(
         hint = "老仓日内冲高后回落跌破分时均价线（VWAP），谨防单边派发回吐，建议果断锁利兑现。"
     elif "持仓做T高抛" in raw_first:
         hint = "持仓股拉升偏离分时均线 >3%，可关注冲高分批止盈或做 T 高抛机会。"
+    elif "分时势能成型" in raw_first:
+        hint = "检测到连续多帧压速慢推或大盘跳水强阻尼承接（绕过传统5m脉冲点位），重点看30分钟重心斜率与阵营合力，勿追急拉尖刺。"
     elif "主线成型" in raw_first and "恐慌日逆势平开中军观察" in raw_first:
         hint = "极端低开恐慌日出现逆势主线，已过滤高开>1.5%陷阱并仅标出平开稳健中军供观察与T+1溢价验证（不突破14:40开仓铁律）。"
     elif "主线成型" in raw_first:
@@ -2003,10 +2101,18 @@ def run_once(args: argparse.Namespace) -> None:
         state_ts = float(prev_state.get("ts") or 0.0) if prev_state.get("date") == today_str else 0.0
         saved_quotes = dict(prev_state.get("quotes", {})) if prev_state.get("date") == today_str else {}
         saved_cooldowns = dict(prev_cooldowns)
+        saved_history = _extract_valid_trajectory(prev_state, today_str, now_ts)
     else:
         state_ts, saved_quotes = _baseline_after_send(
             prev_state, today_str, now_ts, compact_snaps, send_attempted, send_ok
         )
+        prev_hist = _extract_valid_trajectory(prev_state, today_str, now_ts)
+        if send_attempted and not send_ok:
+            saved_history = prev_hist
+        else:
+            saved_history = (prev_hist + [_build_trajectory_frame(curr_quotes, now_ts, holdings)])[
+                -MAX_TRAJECTORY_FRAMES:
+            ]
     STATE_PATH.write_text(
         json.dumps(
             {
@@ -2016,6 +2122,7 @@ def run_once(args: argparse.Namespace) -> None:
                 "red": red_count,
                 "cooldowns": saved_cooldowns,
                 "quotes": saved_quotes,
+                "history": saved_history,
             }
         ),
         encoding="utf-8",

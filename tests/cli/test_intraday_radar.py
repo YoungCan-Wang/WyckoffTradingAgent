@@ -5,7 +5,7 @@ from __future__ import annotations
 import gzip
 import importlib.util
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -3042,3 +3042,253 @@ def test_call_auction_mainline_radar_and_panic_day_flat_open_core_filter(tmp_pat
         quotes, {}, l2_map, {}, now_ts=ts_1035, turnover_dir=tmp_path / "to_35"
     )
     assert "09:25 竞价主线雷达" not in body_35
+
+
+def test_trajectory_stealth_climb_and_index_dip_resilience_l2_flow(tmp_path) -> None:
+    radar = _load_radar_module()
+    today_d = cn_today()
+    today_s = today_d.isoformat()
+    ts_0955 = datetime(today_d.year, today_d.month, today_d.day, 9, 55, tzinfo=CN_TZ).timestamp()
+
+    # Market drops -0.8% across 09:35 -> 09:55 while 2 化学制药 L2 cores steadily climb +0.5%/frame (never >=2.5%/5m)
+    history = []
+    hist_steps = [
+        (-1200.0, 0.2, 0.2, 0.40, 1.2, 0.30, 1.0),
+        (-900.0, 0.0, -0.1, 0.90, 1.9, 0.80, 1.5),
+        (-600.0, -0.4, -0.5, 1.40, 2.7, 1.30, 2.1),
+        (-300.0, -0.7, -0.8, 1.90, 3.6, 1.80, 2.7),
+    ]
+    for off_s, mkt_p, cy_p, fx_p, fx_a, yl_p, yl_a in hist_steps:
+        q_hist = {
+            "600196.SH": [fx_p, fx_a, 0.6],
+            "002603.SZ": [yl_p, yl_a, 0.7],
+        }
+        for i in range(25):
+            q_hist[f"688{i:03d}.SH"] = [mkt_p, 1.0 + i * 0.05, -0.3]
+        history.append({"ts": ts_0955 + off_s, "sh_pct": mkt_p, "cy_pct": cy_p, "med_pct": mkt_p, "q": q_hist})
+
+    prev_state = {
+        "date": today_s,
+        "ts": ts_0955 - 300.0,
+        "red": 5,
+        "cooldowns": {},
+        "quotes": {k: {"pct": v[0], "amt_yi": v[1]} for k, v in history[-1]["q"].items()},
+        "history": history,
+    }
+    l2_map = {
+        "600196": {
+            "name": "复星医药",
+            "sector": "化学制药",
+            "rps": 76.0,
+            "l2_eligible": True,
+            "channels": ["主升通道"],
+        },
+        "002603": {
+            "name": "以岭药业",
+            "sector": "化学制药",
+            "rps": 68.0,
+            "l2_eligible": True,
+            "channels": ["地量蓄势"],
+        },
+    }
+    curr_quotes = {
+        "000001.SH": {
+            "symbol": "000001.SH",
+            "prev_close": 3500.0,
+            "open": 3507.0,
+            "last_price": 3479.0,
+            "amount": 2.0e11,
+        },
+        "399001.SZ": {
+            "symbol": "399001.SZ",
+            "prev_close": 10000.0,
+            "open": 10020.0,
+            "last_price": 9920.0,
+            "amount": 2.4e11,
+        },
+        "399006.SZ": {
+            "symbol": "399006.SZ",
+            "prev_close": 2200.0,
+            "open": 2205.0,
+            "last_price": 2180.0,
+            "amount": 8.0e10,
+        },
+        "600196.SH": {
+            "symbol": "600196.SH",
+            "prev_close": 20.0,
+            "open": 20.02,
+            "last_price": 20.48,  # +2.40%, even sitting in fuzzy VWAP band +2.32% (> old +2.2% cliff!)
+            "high": 20.52,
+            "low": 20.0,
+            "vwap": 20.015,
+            "amount": 4.6e8,
+            "ext": {"name": "复星医药"},
+        },
+        "002603.SZ": {
+            "symbol": "002603.SZ",
+            "prev_close": 20.0,
+            "open": 20.04,
+            "last_price": 20.46,  # +2.30%, +0.5% 5m step, steady VWAP +1.1%
+            "high": 20.50,
+            "low": 20.0,
+            "vwap": 20.237,
+            "amount": 3.4e8,
+            "ext": {"name": "以岭药业"},
+        },
+    }
+    for i in range(25):
+        sym = f"688{i:03d}.SH"
+        l2_map[sym[:6]] = {"name": f"科技{i}", "sector": "半导体", "rps": 50.0}
+        curr_quotes[sym] = {
+            "symbol": sym,
+            "prev_close": 10.0,
+            "open": 10.0,
+            "last_price": 9.91,
+            "high": 10.02,
+            "low": 9.88,
+            "vwap": 9.95,
+            "amount": 1.2e8,
+            "ext": {"name": f"科技{i}"},
+        }
+
+    lvl, title, body, _, cds = radar.analyze_snapshot_diff(
+        curr_quotes, prev_state, l2_map, {}, now_ts=ts_0955, turnover_dir=tmp_path / "to_flow"
+    )
+    assert lvl == "L2"
+    assert "【L2 加急焦点】" in title
+    assert "【分时势能成型·绕过点位慢推/抗跌】大医药" in body
+    assert "分时势能与抗跌阻尼榜" in body
+    assert "📈压速慢推" in body
+    assert "🛡️抗跌阻尼" in body
+    assert "复星医药" in body and "以岭药业" in body
+    assert cds.get("L2:flow_trend:大医药") == ts_0955
+
+
+def test_holding_hairline_vwap_poke_waits_for_second_frame_confirmation(tmp_path) -> None:
+    radar = _load_radar_module()
+    today_d = cn_today()
+    today_s = today_d.isoformat()
+    ts_1005 = datetime(today_d.year, today_d.month, today_d.day, 10, 5, tzinfo=CN_TZ).timestamp()
+    ts_1010 = datetime(today_d.year, today_d.month, today_d.day, 10, 10, tzinfo=CN_TZ).timestamp()
+    holdings = radar.parse_holdings_arg(["603011.SH:14.00:13.00:ATK"])
+
+    # Frame 1: prior frame above VWAP (+0.5%); current frame hairline poke (-0.20%) below VWAP -> L1 watch only
+    q_poke = {
+        "603011.SH": {
+            "symbol": "603011.SH",
+            "prev_close": 14.34,
+            "open": 14.94,
+            "last_price": 14.97,
+            "high": 15.25,  # high_pct=+6.35%, upper_wick_pct=1.84%
+            "low": 14.92,
+            "volume": 2.9e8 / 15.00,  # amt / vol = 15.00 -> vwap_dev = -0.20% (> -0.45%)
+            "amount": 2.9e8,
+            "ext": {"name": "合锻智能"},
+        }
+    }
+    prev_above = {
+        "date": today_s,
+        "ts": ts_1005 - 300.0,
+        "red": 0,
+        "cooldowns": {},
+        "quotes": {"603011.SH": {"pct": 4.6, "amt_yi": 2.5}},
+        "history": [
+            {"ts": ts_1005 - 300.0, "sh_pct": 0.0, "cy_pct": 0.0, "med_pct": 0.0, "q": {"603011.SH": [4.6, 2.5, 0.50]}}
+        ],
+    }
+    lvl1, _, body1, _, cds1 = radar.analyze_snapshot_diff(
+        q_poke, prev_above, {}, holdings, now_ts=ts_1005, turnover_dir=tmp_path / "to_hk1"
+    )
+    assert lvl1 == "L1"
+    assert "👀微破均线观察(防刺破洗盘" in body1
+    assert "L2:holding_rollover:603011.SH" not in cds1
+
+    # Frame 2A: reclaim back above VWAP (+0.33%) -> stays L1
+    q_reclaim = {"603011.SH": {**q_poke["603011.SH"], "last_price": 15.05, "amount": 3.0e8, "volume": 3.0e8 / 15.00}}
+    prev_under = {
+        "date": today_s,
+        "ts": ts_1005,
+        "red": 0,
+        "cooldowns": cds1,
+        "quotes": {"603011.SH": {"pct": 4.39, "amt_yi": 2.9}},
+        "history": [
+            {"ts": ts_1005, "sh_pct": 0.0, "cy_pct": 0.0, "med_pct": 0.0, "q": {"603011.SH": [4.39, 2.9, -0.20]}}
+        ],
+    }
+    lvl_rec, _, _, _, cds_rec = radar.analyze_snapshot_diff(
+        q_reclaim, prev_under, {}, holdings, now_ts=ts_1010, turnover_dir=tmp_path / "to_hk2"
+    )
+    assert lvl_rec == "L1"
+    assert "L2:holding_rollover:603011.SH" not in cds_rec
+
+    # Frame 2B: 2nd consecutive frame remains below VWAP (-0.22%) -> confirmed L2 rollover profit lock!
+    q_confirm = {"603011.SH": {**q_poke["603011.SH"], "last_price": 14.967, "amount": 3.0e8, "volume": 3.0e8 / 15.00}}
+    lvl2, _, body2, _, cds2 = radar.analyze_snapshot_diff(
+        q_confirm, prev_under, {}, holdings, now_ts=ts_1010, turnover_dir=tmp_path / "to_hk3"
+    )
+    assert lvl2 == "L2"
+    assert "【老仓冲高破均线锁利】" in body2
+    assert cds2.get("L2:holding_rollover:603011.SH") == ts_1010
+
+
+def test_shallow_lps_pullback_and_near_miss_mainline_cliff_removal(tmp_path) -> None:
+    import sys
+
+    sys.path.insert(0, str(SCRIPT_PATH.parent))
+    import telegraph_catalysts as tc
+
+    radar = _load_radar_module()
+    yesterday_s = (cn_today() - timedelta(days=1)).isoformat()
+    today_s = cn_today().isoformat()
+    anchors = tmp_path / "anchors.json"
+    anchors.write_text(
+        json.dumps(
+            {
+                "trade_date": yesterday_s,
+                "anchors": [{"symbol": "600196.SH", "name": "复星医药", "kind": "L2中军", "theme": "化学制药"}],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    q_lps = {
+        "600196.SH": {
+            "symbol": "600196.SH",
+            "prev_close": 20.0,
+            "open": 20.10,
+            "last_price": 20.33,  # +1.65%
+            "volume": 3.0e8 / 20.00,  # amt / vol = 20.00 -> vwap_dev = +1.65% (shallow pullback 1.3 < 1.65 <= 1.85)
+            "amount": 3.0e8,
+            "ext": {"name": "复星医药"},
+        }
+    }
+    lps_md = radar.scan_next_day_lps_pullbacks(
+        today_s,
+        "10:05",
+        q_lps,
+        {"600196.SH": {"pct": 1.35, "amt_yi": 2.4}},
+        True,
+        0.55,
+        anchors_path=anchors,
+    )
+    assert "🎯浅回踩抢筹(未摸均线即托住)" in lps_md
+
+    # Near-miss mainline confirmation: 12 red / 16 total = 75.0% (< 78% old cliff), 4 limit-ups, 42亿 amt
+    l2_map, m_quotes = {}, {}
+    for i in range(16):
+        code = f"0025{i:02d}"
+        pct = 10.0 if i < 4 else (1.8 if i < 12 else -0.5)
+        l2_map[code] = {"name": f"药{i}", "sector": "化学制药", "rps": 55.0, "l2_eligible": (i == 4)}
+        m_quotes[f"{code}.SZ"] = {
+            "symbol": f"{code}.SZ",
+            "prev_close": 10.0,
+            "open": 10.0,
+            "last_price": round(10.0 * (1.0 + pct / 100.0), 3),
+            "high": round(10.0 * (1.0 + max(pct, 0.2) / 100.0), 3),
+            "low": 9.95,
+            "vwap": 10.05 if pct > 0 else 10.02,
+            "amount": 2.7e8,
+            "ext": {"name": f"药{i}"},
+        }
+    alerts = tc.detect_confirmed_mainline_alerts(m_quotes, l2_map)
+    assert any(th == "大医药" for th, _, _ in alerts)
