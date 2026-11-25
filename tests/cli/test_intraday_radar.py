@@ -2790,3 +2790,123 @@ def test_holding_morning_gap_trim_and_spike_rollover_l2_alerts(tmp_path) -> None
     assert "【老仓冲高破均线锁利】603011.SH 合锻智能" in body_roll
     assert "谨防单边派发回吐，建议果断锁利兑现" in body_roll
     assert cds_roll.get("L2:holding_rollover:603011.SH") == ts_1005
+
+
+def test_mainline_formation_l2_alert_and_pharma_core_followers(tmp_path) -> None:
+    import sys
+
+    sys.path.insert(0, str(SCRIPT_PATH.parent))
+    import telegraph_catalysts as tc
+
+    radar = _load_radar_module()
+    today_d = cn_today()
+    ts_0950 = datetime(today_d.year, today_d.month, today_d.day, 9, 50, tzinfo=CN_TZ).timestamp()
+
+    # Build an 8-stock tiny sector (超市连锁) + 16-stock 大医药 (化学制药/中成药/医药商业) with 4 limit-ups & L2 cores
+    l2_map: dict[str, dict] = {}
+    quotes: dict[str, dict] = {}
+
+    for i in range(8):
+        code = f"6037{i:02d}"
+        l2_map[code] = {"name": f"超市{i}", "sector": "超市连锁", "rps": 30.0, "l2_eligible": False}
+        quotes[f"{code}.SH"] = {
+            "symbol": f"{code}.SH",
+            "open": 10.1,
+            "prev_close": 10.0,
+            "last_price": 10.50,
+            "high": 10.55,
+            "low": 10.0,
+            "volume": 5e6,
+            "amount": 5.2e7,  # total tiny sector amt ~4.2亿
+            "ext": {"name": f"超市{i}"},
+        }
+
+    # 4 limit-ups in 化学制药 + 2 limit-up/strong in 中成药 & 医药商业 -> 16 total, >=35亿 turnover, 0 5m spikes!
+    pharma_defs = [
+        ("300086", "SZ", "康芝药业", "化学制药", 20.0, 2.5e8, 7.2, False, False, "", []),
+        ("000756", "SZ", "新华制药", "化学制药", 10.0, 2.8e8, 65.3, False, False, "", []),
+        ("600488", "SH", "津药药业", "化学制药", 10.0, 2.2e8, 55.7, False, False, "", []),
+        ("002275", "SZ", "桂林三金", "中成药", 10.0, 5.5e8, 92.1, False, False, "", []),
+        ("600196", "SH", "复星医药", "化学制药", 3.83, 6.0e8, 78.6, True, False, "", ["地量蓄势"]),
+        ("603233", "SH", "大参林", "医药商业", 2.75, 3.2e8, 97.6, True, False, "", ["主升通道"]),
+    ]
+    for code, ex, name, sec, pct, amt, rps, l2_el, l3_el, lane, chs in pharma_defs:
+        sym = f"{code}.{ex}"
+        l2_map[code] = {
+            "name": name,
+            "sector": sec,
+            "rps": rps,
+            "l2_eligible": l2_el,
+            "l3_eligible": l3_el,
+            "shadow_lane": lane,
+            "channels": chs,
+        }
+        pre = 10.0
+        last = round(pre * (1.0 + pct / 100.0), 3)
+        opn = round(pre * 1.002, 3)
+        vwap = round(last / 1.007, 3)
+        quotes[sym] = {
+            "symbol": sym,
+            "prev_close": pre,
+            "open": opn,
+            "last_price": last,
+            "high": round(last * 1.004, 3),
+            "low": round(pre * 0.998, 3),
+            "vwap": vwap,
+            "amount": amt,
+            "ext": {"name": name},
+        }
+    for i in range(10):
+        code = f"6009{i:02d}"
+        sec = "化学制药" if i < 6 else ("中成药" if i < 8 else "医药商业")
+        l2_map[code] = {"name": f"药企{i}", "sector": sec, "rps": 45.0, "l2_eligible": False}
+        quotes[f"{code}.SH"] = {
+            "symbol": f"{code}.SH",
+            "prev_close": 10.0,
+            "open": 10.02,
+            "last_price": 10.22,
+            "high": 10.25,
+            "low": 9.98,
+            "vwap": 10.12,
+            "amount": 2.1e8,
+            "ext": {"name": f"药企{i}"},
+        }
+    # Bare non-L2 high-RPS stock must still stay blocked from rank_intraday_rs_leaders
+    l2_map["301413"] = {"name": "安培龙", "sector": "电器仪表", "rps": 99.1, "l2_eligible": False}
+    quotes["301413.SZ"] = {
+        "symbol": "301413.SZ",
+        "prev_close": 20.0,
+        "open": 20.4,
+        "last_price": 21.1,
+        "high": 21.15,
+        "low": 20.3,
+        "vwap": 20.85,
+        "amount": 1.6e9,
+        "ext": {"name": "安培龙"},
+    }
+
+    # 1) Mainline summary ranks pharma sectors ahead of 8-stock micro sector on conviction
+    ml_md = tc.summarize_top_sector_mainlines(quotes, l2_map, top_n=5)
+    assert "TOP 5" in ml_md
+    assert "化学制药" in ml_md
+    assert "🔥3涨停" in ml_md
+    assert ml_md.index("化学制药") < ml_md.index("超市连锁")
+
+    # 2) At 09:50 with ZERO 5m spike baseline, analyze_snapshot_diff fires L2 mainline_formed for 大医药
+    lvl, title, body, _, cds = radar.analyze_snapshot_diff(
+        quotes, {}, l2_map, {}, now_ts=ts_0950, turnover_dir=tmp_path / "to_ml"
+    )
+    assert lvl == "L2"
+    assert "【L2 加急焦点】" in title
+    assert "【主线成型·中军战法】大医药" in body
+    assert "4只涨停" in body
+    assert "复星医药" in body and "大参林" in body
+    assert "真主线已形成普涨+涨停潮共振" in body
+    assert cds.get("L2:mainline_formed:大医药") == ts_0950
+
+    # 3) rank_intraday_rs_leaders promotes 🔥主线中军 (复星医药 & 大参林) while keeping bare RPS>88 blocked
+    rs = tc.rank_intraday_rs_leaders(quotes, l2_map, top_n=4)
+    rs_map = {r["symbol"]: r for r in rs}
+    assert "600196.SH" in rs_map and rs_map["600196.SH"]["tag"] == "🔥主线中军"
+    assert "603233.SH" in rs_map and rs_map["603233.SH"]["tag"] == "🔥主线中军"
+    assert "301413.SZ" not in rs_map

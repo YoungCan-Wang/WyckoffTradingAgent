@@ -46,6 +46,55 @@ BLUECHIP_FLOOR_ETFS: frozenset[str] = frozenset(
     {"510310.SH", "510300.SH", "510050.SH", "510210.SH", "159919.SZ", "563360.SH", "159352.SZ", "159338.SZ"}
 )
 
+MAINLINE_SUPER_GROUPS: dict[str, set[str]] = {
+    "大医药": {"化学制药", "中成药", "医药商业", "生物制药", "医疗保健"},
+    "大消费": {
+        "百货",
+        "超市连锁",
+        "酒店餐饮",
+        "旅游景点",
+        "旅游服务",
+        "食品",
+        "乳制品",
+        "白酒",
+        "啤酒",
+        "红黄酒",
+        "软饮料",
+        "影视音像",
+        "文教休闲",
+        "其他商业",
+        "商业连锁",
+    },
+    "泛AI/半导体算力": {"半导体", "元器件", "通信设备", "软件服务", "互联网", "IT设备"},
+    "新能源/电力电网": {"电气设备", "火力发电", "水力发电", "新型电力", "供气供热"},
+    "大周期/有色化工": {
+        "化工原料",
+        "石油开采",
+        "石油加工",
+        "煤炭开采",
+        "黄金",
+        "铜",
+        "铝",
+        "小金属",
+        "铅锌",
+        "普钢",
+        "特种钢",
+    },
+    "大制造/机器人军工": {
+        "专用机械",
+        "工程机械",
+        "机床制造",
+        "机械基件",
+        "汽车整车",
+        "汽车配件",
+        "航空",
+        "船舶",
+        "国防军工",
+    },
+    "大金融/地产": {"银行", "证券", "保险", "多元金融", "区域地产", "全国地产", "房产服务"},
+}
+_SUBSECTOR_TO_MAINLINE: dict[str, str] = {sub: theme for theme, subs in MAINLINE_SUPER_GROUPS.items() for sub in subs}
+
 # 按底层赛道去重的代表性高流动性行业 ETF（同主题多只通过 THEME_ETF_KEYWORDS 归一去重）
 THEME_ETF_UNIVERSE: list[tuple[str, str, list[str]]] = [
     ("物理AI/机器人", "159530.SZ", ["机器人", "具身"]),
@@ -628,57 +677,198 @@ def summarize_national_team_etfs(
     return summary, l2_alert
 
 
-def summarize_top_sector_mainlines(
+def _collect_sector_metrics(
     curr_quotes: dict[str, dict[str, Any]],
     l2_map: dict[str, dict[str, Any]],
-    top_n: int = 3,
-) -> str:
-    if not curr_quotes or not l2_map:
-        return ""
-    sec_rows: dict[str, list[tuple[float, str, str, bool, bool]]] = {}
-    for sym, q in curr_quotes.items():
+) -> dict[str, dict[str, Any]]:
+    by_sec: dict[str, list[dict[str, Any]]] = {}
+    for sym, q in (curr_quotes or {}).items():
         if not _is_equity_symbol(sym, allow_bj=True):
+            continue
+        meta = (l2_map or {}).get(sym[:6]) or {}
+        sec = str(meta.get("sector") or "")
+        name = str(meta.get("name") or (q.get("ext") or {}).get("name") or q.get("name") or "")
+        if not sec or "ST" in name:
             continue
         last = float(q.get("last_price") or q.get("price") or 0.0)
         pre = float(q.get("prev_close") or 0.0)
         pct = ((last / pre - 1.0) * 100.0) if (last > 0 and pre > 0) else float(q.get("pct") or -999.0)
         if pct < -30.0:
             continue
-        meta = l2_map.get(sym[:6], {})
-        name = str(meta.get("name") or (q.get("ext") or {}).get("name") or q.get("name") or "")
-        if "ST" in name:
-            continue
-        sec = str(meta.get("sector") or "")
-        if sec:
-            sec_rows.setdefault(sec, []).append(
-                (pct, sym[:6], name, bool(meta.get("l2_eligible")), bool(meta.get("is_candidate")))
-            )
-    ranked: list[tuple[float, float, int, int, str, list[tuple[float, str, str, bool, bool]]]] = []
-    for sec, items in sec_rows.items():
-        if len(items) < 8:
-            continue
-        red_n = sum(1 for x in items if x[0] > 0)
-        avg_pct = sum(x[0] for x in items) / len(items)
-        red_ratio = red_n / len(items) * 100.0
-        if avg_pct >= 0.50 and red_ratio >= 50.0:
-            items.sort(key=lambda x: -x[0])
-            ranked.append((avg_pct, red_ratio, red_n, len(items), sec, items))
-    ranked.sort(key=lambda x: (x[0], x[1]), reverse=True)
-    lines: list[str] = []
-    for avg_pct, red_ratio, red_n, tot_n, sec, items in ranked[:top_n]:
-        leader = f"`{items[0][1]}` {items[0][2]}({items[0][0]:+.1f}%)"
-        wyckoff_picks = [
-            f"`{c}` {n}({p:+.1f}%)"
-            for p, c, n, is_l2, _is_cand in items
-            if (is_l2 or (l2_map.get(c) or {}).get("shadow_lane") == "pre_breakout")
-            and float((l2_map.get(c) or {}).get("rps") or 0.0) <= 88.0
-            and 0.5 <= p <= 6.8
-        ]
-        w_tag = f" | 🎯L2可买：{'、'.join(wyckoff_picks[:2])}" if wyckoff_picks else ""
-        lines.append(
-            f"- **{sec}**：板块均涨 **{avg_pct:+.2f}%** | 红盘率 **{red_ratio:.0f}%** ({red_n}/{tot_n}) | 龙头：{leader}{w_tag}"
+        amt_yi = float(q.get("amount") or 0.0) / 1e8 if "amount" in q else float(q.get("amt_yi") or 0.0)
+        open_p = float(q.get("open") or pre or last or 0.0)
+        high_p = max(float(q.get("high") or last), last) if last > 0 else 0.0
+        vwap = _resolve_vwap(q, last) if last > 0 else 0.0
+        by_sec.setdefault(sec, []).append(
+            {
+                "sym": sym,
+                "code": sym[:6],
+                "name": name,
+                "sec": sec,
+                "last": last,
+                "open": open_p,
+                "pct": pct,
+                "amt_yi": amt_yi,
+                "open_pct": ((open_p / pre - 1.0) * 100.0) if (pre > 0 and open_p > 0) else 0.0,
+                "vwap_dev": ((last / vwap - 1.0) * 100.0) if (vwap > 0 and last > 0) else 0.0,
+                "wick": ((high_p - last) / high_p * 100.0) if (high_p > 0 and last > 0) else 0.0,
+                "is_lu": pct >= 9.5,
+            }
         )
-    return ("**🔥 全市场真实主线板块 TOP 3（均涨 & 红盘率）**\n" + "\n".join(lines)) if lines else ""
+    stats: dict[str, dict[str, Any]] = {}
+    for sec, items in by_sec.items():
+        items.sort(key=lambda r: -r["pct"])
+        tot_n = len(items)
+        red_n = sum(1 for r in items if r["pct"] > 0)
+        red_r = red_n / tot_n * 100.0
+        avg_p = sum(r["pct"] for r in items) / tot_n
+        lu_n = sum(1 for r in items if r["is_lu"])
+        amt_sum = sum(r["amt_yi"] for r in items)
+        conv = avg_p * 3.0 + (red_r - 50.0) * 0.08 + min(lu_n, 10) * 1.4 + min(amt_sum, 200.0) * 0.03
+        stats[sec] = {
+            "items": items,
+            "red_n": red_n,
+            "tot_n": tot_n,
+            "red_ratio": red_r,
+            "avg_pct": avg_p,
+            "lu_count": lu_n,
+            "tot_amt_yi": amt_sum,
+            "conviction": conv,
+        }
+    return stats
+
+
+def _pick_mainline_core_followers(
+    items: list[dict[str, Any]],
+    l2_map: dict[str, dict[str, Any]],
+    *,
+    min_amt_yi: float = 2.0,
+    top_n: int = 3,
+) -> list[dict[str, Any]]:
+    cands: list[tuple[tuple[int, float, float], dict[str, Any]]] = []
+    for r in items:
+        meta = (l2_map or {}).get(r["code"]) or {}
+        rps = float(meta.get("rps") or 0.0)
+        chans_s = "+".join(str(x) for x in (meta.get("channels") or []))
+        is_l2 = bool(meta.get("l2_eligible")) and (("主升" in chans_s and rps <= 98.0) or rps <= 92.0)
+        is_lane = meta.get("shadow_lane") in ("pre_breakout", "rotation_setup") and rps <= 95.0
+        is_giant = r["amt_yi"] >= 8.0 and rps <= 95.0
+        if not (is_l2 or is_lane or is_giant):
+            continue
+        if not (
+            r["amt_yi"] >= min_amt_yi
+            and r["open_pct"] <= 3.8
+            and (r["open"] <= 0 or r["last"] >= r["open"])
+            and 1.5 <= r["pct"] <= 7.5
+            and 0.0 <= r["vwap_dev"] <= 2.2
+            and r["wick"] <= 1.3
+        ):
+            continue
+        cands.append(((1 if (is_l2 or is_lane) else 0, r["amt_yi"], -r["vwap_dev"]), r))
+    cands.sort(key=lambda x: x[0], reverse=True)
+    return [x[1] for x in cands[:top_n]]
+
+
+def detect_confirmed_mainline_alerts(
+    curr_quotes: dict[str, dict[str, Any]],
+    l2_map: dict[str, dict[str, Any]],
+) -> list[tuple[str, str, dict[str, Any]]]:
+    """Detect slow-grinding broad A-share mainlines (e.g. Pharma/Retail) without waiting for 5m spikes."""
+    stats = _collect_sector_metrics(curr_quotes, l2_map)
+    grouped: dict[str, dict[str, Any]] = {}
+    for sec, st in stats.items():
+        if sec not in _SUBSECTOR_TO_MAINLINE and st["tot_n"] < 15:
+            continue
+        if st["tot_n"] < 3 or st["avg_pct"] < 1.2 or st["red_ratio"] < 70.0:
+            continue
+        theme = _SUBSECTOR_TO_MAINLINE.get(sec, sec)
+        grp = grouped.setdefault(theme, {"sub_secs": [], "items": [], "red_n": 0, "tot_n": 0, "lu_n": 0, "amt_yi": 0.0})
+        grp["sub_secs"].append((st["lu_count"], st["tot_amt_yi"], sec))
+        grp["items"].extend(st["items"])
+        grp["red_n"] += st["red_n"]
+        grp["tot_n"] += st["tot_n"]
+        grp["lu_n"] += st["lu_count"]
+        grp["amt_yi"] += st["tot_amt_yi"]
+    alerts: list[tuple[tuple[int, float], str, str, dict[str, Any]]] = []
+    for theme, grp in grouped.items():
+        tot_n = grp["tot_n"]
+        if tot_n < 15:
+            continue
+        red_r = grp["red_n"] / tot_n * 100.0
+        avg_p = sum(r["pct"] for r in grp["items"]) / tot_n
+        if not (red_r >= 78.0 and avg_p >= 1.8 and grp["lu_n"] >= 3 and grp["amt_yi"] >= 25.0):
+            continue
+        grp["items"].sort(key=lambda r: -r["pct"])
+        grp["sub_secs"].sort(reverse=True)
+        sub_lbl = "+".join(s[2] for s in grp["sub_secs"][:3])
+        leaders = "、".join(f"`{r['code']}` {r['name']}({r['pct']:+.1f}%)" for r in grp["items"][:2])
+        cores = _pick_mainline_core_followers(grp["items"], l2_map, min_amt_yi=2.0, top_n=3)
+        f_tag = (
+            " 👉 🎯中军可跟："
+            + "、".join(f"`{c['code']}` {c['name']}({c['pct']:+.1f}%·均+{c['vwap_dev']:.1f}%)" for c in cores)
+            if cores
+            else ""
+        )
+        md = (
+            f"- 🔥 **【主线成型·中军战法】{theme}（{sub_lbl}）**：红盘 **{red_r:.0f}%** ({grp['red_n']}/{tot_n}) | "
+            f"均涨 **{avg_p:+.2f}%** | **{grp['lu_n']}只涨停** | 额 {grp['amt_yi']:.0f}亿 | 标杆：{leaders}{f_tag}"
+        )
+        rec = {
+            "theme": theme,
+            "red_ratio": round(red_r, 1),
+            "avg_pct": round(avg_p, 2),
+            "lu_count": grp["lu_n"],
+            "tot_amt_yi": round(grp["amt_yi"], 1),
+        }
+        alerts.append(((grp["lu_n"], grp["amt_yi"]), theme, md, rec))
+    alerts.sort(key=lambda x: x[0], reverse=True)
+    return [(theme, md, rec) for _, theme, md, rec in alerts]
+
+
+def summarize_top_sector_mainlines(
+    curr_quotes: dict[str, dict[str, Any]],
+    l2_map: dict[str, dict[str, Any]],
+    top_n: int = 5,
+) -> str:
+    if not curr_quotes or not l2_map:
+        return ""
+    stats = _collect_sector_metrics(curr_quotes, l2_map)
+    ranked = sorted(
+        (
+            (st, sec)
+            for sec, st in stats.items()
+            if st["tot_n"] >= 8 and st["avg_pct"] >= 0.50 and st["red_ratio"] >= 50.0
+        ),
+        key=lambda kv: (kv[0]["conviction"], kv[0]["avg_pct"], kv[0]["red_ratio"]),
+        reverse=True,
+    )
+    lines: list[str] = []
+    for st, sec in ranked[:top_n]:
+        top = st["items"][0]
+        leader = f"`{top['code']}` {top['name']}({top['pct']:+.1f}%)"
+        cores = _pick_mainline_core_followers(st["items"], l2_map, min_amt_yi=2.0, top_n=2)
+        picks = [f"`{c['code']}` {c['name']}({c['pct']:+.1f}%)" for c in cores]
+        if not picks and st["tot_amt_yi"] <= 0:
+            picks = [
+                f"`{r['code']}` {r['name']}({r['pct']:+.1f}%)"
+                for r in st["items"]
+                if (
+                    (l2_map.get(r["code"]) or {}).get("l2_eligible")
+                    or (l2_map.get(r["code"]) or {}).get("shadow_lane") == "pre_breakout"
+                )
+                and float((l2_map.get(r["code"]) or {}).get("rps") or 0.0) <= 88.0
+                and 0.5 <= r["pct"] <= 6.8
+            ]
+        lu_part = f" | 🔥{st['lu_count']}涨停" if st["lu_count"] > 0 else ""
+        amt_part = f" | 额 {st['tot_amt_yi']:.0f}亿" if st["tot_amt_yi"] > 0 else ""
+        w_tag = f" | 🎯中军可跟：{'、'.join(picks[:2])}" if picks else ""
+        lines.append(
+            f"- **{sec}**：板块均涨 **{st['avg_pct']:+.2f}%** | 红盘率 **{st['red_ratio']:.0f}%** "
+            f"({st['red_n']}/{st['tot_n']}){lu_part}{amt_part} | 龙头：{leader}{w_tag}"
+        )
+    return (
+        (f"**🔥 全市场真实主线板块 TOP {top_n}（强度/涨停密度/成交额综合排行）**\n" + "\n".join(lines)) if lines else ""
+    )
 
 
 def _classify_etf_theme_bucket(sym: str, name: str) -> str:
@@ -1066,6 +1256,20 @@ def rank_intraday_rs_leaders(
     top_n: int = 3,
 ) -> list[dict[str, Any]]:
     """Select intraday relative-strength cores from empirically positive-alpha pools."""
+    sec_stats = _collect_sector_metrics(curr_quotes, l2_map)
+    hot_secs = {
+        sec
+        for _, sec in sorted(
+            (
+                (st["conviction"], sec)
+                for sec, st in sec_stats.items()
+                if st["tot_n"] >= 8 and st["avg_pct"] >= 1.5 and st["red_ratio"] >= 75.0
+            ),
+            reverse=True,
+        )[:6]
+    }
+    for theme, _, _ in detect_confirmed_mainline_alerts(curr_quotes, l2_map):
+        hot_secs.update(MAINLINE_SUPER_GROUPS.get(theme, {theme}))
     scored: list[tuple[float, str, dict[str, Any]]] = []
     for sym, q in (curr_quotes or {}).items():
         if not _is_equity_symbol(sym):
@@ -1094,11 +1298,17 @@ def rank_intraday_rs_leaders(
             and upper_wick_pct <= 1.2
         ):
             continue
+        sec = str(meta.get("sector") or "")
         rps = float(meta.get("rps") or 0.0)
         chans_s = "+".join(str(x).strip() for x in (meta.get("channels") or []))
         is_main = bool(
             (meta.get("l2_eligible") and "主升" in chans_s and 55.0 <= rps <= 88.0)
             or (meta.get("shadow_lane") == "pre_breakout" and 50.0 <= rps <= 88.0)
+        )
+        is_hot_core = bool(
+            sec in hot_secs
+            and (meta.get("l2_eligible") or meta.get("shadow_lane") in ("pre_breakout", "rotation_setup"))
+            and rps <= 98.0
         )
         is_giant = amt_yi >= 20.0 and 20.0 <= rps <= 82.0 and open_pct <= 3.0
         is_accum = bool(
@@ -1109,13 +1319,16 @@ def rank_intraday_rs_leaders(
             and (int(meta.get("streak_days") or 0) >= 2 or meta.get("stage") != "风控拦截")
         )
         tag, bonus = (
-            ("🏆主升/前夜", 30.0)
+            ("🏆主升/前夜", 32.0 if sec in hot_secs else 30.0)
             if is_main
-            else (("🏛️百亿抗跌中军", 26.0) if is_giant else (("🛡️多日蓄势RS", 16.0) if is_accum else ("", 0.0)))
+            else (
+                ("🔥主线中军", 32.0)
+                if is_hot_core
+                else (("🏛️百亿抗跌中军", 26.0) if is_giant else (("🛡️多日蓄势RS", 16.0) if is_accum else ("", 0.0)))
+            )
         )
         if not tag:
             continue
-        sec = str(meta.get("sector") or "")
         score = bonus + min(amt_yi, 30.0) * 1.2 + pct * 2.0 - vwap_dev * 3.0
         scored.append(
             (

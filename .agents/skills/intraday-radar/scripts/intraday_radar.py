@@ -1351,6 +1351,7 @@ def _enrich_mainline_and_telegraph(
     try:
         from telegraph_catalysts import (
             build_morning_washout_card,
+            detect_confirmed_mainline_alerts,
             scan_live_telegraph_catalysts,
             summarize_national_team_etfs,
             summarize_theme_etf_leadership,
@@ -1376,6 +1377,14 @@ def _enrich_mainline_and_telegraph(
         if nt_l2_alert and _check_cooldown(cooldowns, "L2:nt_etf_surge", ts):
             buckets["l2_events"].insert(0, nt_l2_alert)
             alert_records.append({"ts": ts, "level": "L2", "kind": "national_team_etf_surge"})
+        if now_hm >= "09:45":
+            for theme_key, ml_md, ml_rec in detect_confirmed_mainline_alerts(curr_quotes, l2_map):
+                if _check_cooldown(cooldowns, f"L2:mainline_formed:{theme_key}", ts, window=10800):
+                    buckets["l2_events"].insert(0, ml_md)
+                    alert_records.append({"ts": ts, "level": "L2", "kind": "mainline_formed", **ml_rec})
+        mainline_summary = summarize_top_sector_mainlines(curr_quotes, l2_map)
+        if mainline_summary:
+            buckets["mainlines"].append(mainline_summary)
         etf_lead = summarize_theme_etf_leadership(
             curr_quotes, red_ratio=red_ratio, now_hm=now_hm, chip_regime=chip_regime, daily_bars=daily_bars
         )
@@ -1398,9 +1407,6 @@ def _enrich_mainline_and_telegraph(
         )
         if lps_block:
             buckets["mainlines"].append(lps_block)
-        mainline_summary = summarize_top_sector_mainlines(curr_quotes, l2_map)
-        if mainline_summary:
-            buckets["mainlines"].append(mainline_summary)
         zero_bias_summary = summarize_zero_bias_l2_leaders(curr_quotes, l2_map)
         if zero_bias_summary:
             buckets["mainlines"].append(zero_bias_summary)
@@ -1690,6 +1696,8 @@ def _build_urgent_focus_banner(
         hint = "老仓日内冲高后回落跌破分时均价线（VWAP），谨防单边派发回吐，建议果断锁利兑现。"
     elif "持仓做T高抛" in raw_first:
         hint = "持仓股拉升偏离分时均线 >3%，可关注冲高分批止盈或做 T 高抛机会。"
+    elif "主线成型" in raw_first:
+        hint = "真主线已形成普涨+涨停潮共振（非5m量化骗炮），按中军战法重点盯板块内平开、贴均线、短上影的稳健中军承接，禁追涨停梯队高点。"
     elif level == "L3":
         hint = "威科夫低中位（RPS<=80）地量/吸筹稳健标的 5 分钟放量点火且站稳均线，可重点关注。"
     else:
