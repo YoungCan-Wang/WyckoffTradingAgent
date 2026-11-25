@@ -20,6 +20,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from utils.feishu_report_card import build_report_card_elements, report_card_template  # noqa: E402
+from utils.safe import safe_float  # noqa: E402
 from utils.trading_clock import CN_TZ, cn_today, is_a_share_trading_day  # noqa: E402
 
 STATE_PATH = Path("/tmp/wyckoff_intraday_radar_state.json")
@@ -315,10 +316,12 @@ def load_wyckoff_l2_map(
 
 
 def compute_quote_metrics(q: dict[str, Any]) -> dict[str, Any] | None:
-    last_p = float(q.get("last_price") or 0.0)
-    prev_c = float(q.get("prev_close") or 0.0)
-    vol = float(q.get("volume") or 0.0)
-    amt = float(q.get("amount") or 0.0)
+    # TickFlow / vendor rows use "--" / "-" / "nan" sentinels; bare float() aborts the
+    # whole scan in breadth before holdings L4 stop evaluation.
+    last_p = safe_float(q.get("last_price"), 0.0) or 0.0
+    prev_c = safe_float(q.get("prev_close"), 0.0) or 0.0
+    vol = safe_float(q.get("volume"), 0.0) or 0.0
+    amt = safe_float(q.get("amount"), 0.0) or 0.0
     if last_p <= 0 or prev_c <= 0:
         return None
     pct = (last_p / prev_c - 1.0) * 100.0
@@ -330,7 +333,9 @@ def compute_quote_metrics(q: dict[str, Any]) -> dict[str, Any] | None:
     elif 0.5 < (raw_vwap / 100.0 / last_p) < 1.5:
         vwap = raw_vwap / 100.0
     else:
-        vwap = (float(q.get("high") or last_p) + float(q.get("low") or last_p) + last_p) / 3.0
+        high = safe_float(q.get("high"), last_p) or last_p
+        low = safe_float(q.get("low"), last_p) or last_p
+        vwap = (high + low + last_p) / 3.0
     vwap_dev = (last_p / vwap - 1.0) * 100.0 if vwap > 0 else 0.0
     return {
         "symbol": q.get("symbol", ""),

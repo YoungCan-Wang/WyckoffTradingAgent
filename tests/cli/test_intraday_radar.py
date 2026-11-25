@@ -1030,6 +1030,53 @@ def test_dry_run_does_not_write_shared_state_file(tmp_path, monkeypatch):
     assert state_file.read_text(encoding="utf-8") == before
 
 
+def test_quote_sentinel_strings_skip_row_without_aborting_holding_stop():
+    """Vendor '--' fields must not ValueError the whole scan before holdings L4."""
+    radar = _load_radar_module()
+    today = cn_today().isoformat()
+    assert radar.compute_quote_metrics({"last_price": "--", "prev_close": 10.0, "volume": 1e6, "amount": 1e7}) is None
+    assert (
+        radar.compute_quote_metrics({"last_price": 10.0, "prev_close": 10.0, "volume": "--", "amount": 1e7}) is not None
+    )
+
+    prev_quotes = {"600000.SH": {"pct": 1.0, "amt_yi": 0.2}}
+    curr = {
+        "600000.SH": {
+            "symbol": "600000.SH",
+            "last_price": 9.40,
+            "prev_close": 10.0,
+            "volume": 5e6,
+            "amount": 9.40 * 5e6,
+            "ext": {"name": "浦发银行"},
+        },
+        "000001.SZ": {
+            "symbol": "000001.SZ",
+            "last_price": "--",
+            "prev_close": 10.0,
+            "volume": "--",
+            "amount": "-",
+            "ext": {"name": "脏数据"},
+        },
+    }
+    for i in range(1, 101):
+        sym = f"601{i:03d}.SH"
+        prev_quotes[sym] = {"pct": 0.0, "amt_yi": 1.0}
+        curr[sym] = {
+            "symbol": sym,
+            "last_price": 10.5 if i <= 85 else 9.5,
+            "prev_close": 10.0,
+            "volume": 1e6,
+            "amount": 1e7,
+            "ext": {"name": f"s{i}"},
+        }
+    prev_state = {"date": today, "ts": 1000.0, "red": 50, "cooldowns": {}, "quotes": prev_quotes}
+    holdings = {"600000.SH": {"cost": 10.0, "stop": 9.50}}
+    level, _, body, _, cds = radar.analyze_snapshot_diff(curr, prev_state, {}, holdings, now_ts=1300.0)
+    assert level == "L4"
+    assert "破位止损" in body
+    assert "L4:holding_stop:600000.SH" in cds
+
+
 def test_corrupt_state_does_not_crash_run_once_before_holdings(tmp_path, monkeypatch):
     """Truncated /tmp state must not JSONDecodeError before holdings L3/L4 monitoring."""
     radar = _load_radar_module()
