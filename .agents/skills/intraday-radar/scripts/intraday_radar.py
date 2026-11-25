@@ -1778,16 +1778,17 @@ def send_feishu_tiered_alert(
     user_open_id: str = "",
     dry_run: bool = False,
 ) -> str | None:
+    card_title = title if "来自日内主线雷达" in title else f"【来自日内主线雷达】{title}"
     if dry_run:
-        print(f"[DRY-RUN {level}] {title}\n{content}")
+        print(f"[DRY-RUN {level}] {card_title}\n{content}")
         return "dry_run_msg_id"
     if not user_open_id:
-        print(f"[SKIP-FEISHU {level}] No feishu_user_open_id configured. {title}", file=sys.stderr)
+        print(f"[SKIP-FEISHU {level}] No feishu_user_open_id configured. {card_title}", file=sys.stderr)
         return None
     card_payload = {
         "config": {"wide_screen_mode": True},
         "header": {
-            "title": {"tag": "plain_text", "content": title},
+            "title": {"tag": "plain_text", "content": card_title},
             "template": report_card_template(title, content),
         },
         "elements": build_report_card_elements(content),

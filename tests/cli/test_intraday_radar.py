@@ -96,6 +96,14 @@ def test_feishu_send_uses_lark_cli_same_bot_and_checks_failure(monkeypatch):
     assert len(calls) == 2
     assert calls[0][:5] == ["lark-cli", "im", "+messages-send", "--as", "bot"]
     assert calls[1][:5] == ["lark-cli", "im", "messages", "urgent_phone", "--as"]
+    payload0 = json.loads(calls[0][calls[0].index("--content") + 1])
+    assert payload0["header"]["title"]["content"] == "【来自日内主线雷达】Title"
+
+    radar.send_feishu_tiered_alert(
+        "【来自日内主线雷达】已含前缀", "Body", level="L1", user_open_id="ou_mock_user", dry_run=False
+    )
+    payload_idem = json.loads(calls[2][calls[2].index("--content") + 1])
+    assert payload_idem["header"]["title"]["content"] == "【来自日内主线雷达】已含前缀"
 
     monkeypatch.setattr(
         radar.subprocess,
