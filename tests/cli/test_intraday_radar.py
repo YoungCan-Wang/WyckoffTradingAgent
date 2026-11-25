@@ -480,6 +480,43 @@ def test_real_trace_schema_and_stale_trace_guard(tmp_path, monkeypatch):
     assert radar.load_wyckoff_l2_map(str(stale_file), max_age_days=3) == {}
 
 
+def test_corrupt_newest_trace_skips_to_older_readable(tmp_path, capsys):
+    """Truncated/malformed newest review_trace must not crash before holdings monitoring."""
+    radar = _load_radar_module()
+    older = tmp_path / "review_trace_20261118.json.gz"
+    newest = tmp_path / "review_trace_20261119.json.gz"
+    good = {
+        "trade_date": "2026-11-18",
+        "symbols": {
+            "600519": {
+                "name": "贵州茅台",
+                "sector": "白酒",
+                "rps_fast": 90.0,
+                "l2_eligible": True,
+                "l3_eligible": True,
+                "l2_channel": "主升通道",
+                "stage": "候选池已捕获",
+            }
+        },
+    }
+    with gzip.open(older, "wt", encoding="utf-8") as handle:
+        json.dump(good, handle)
+    newest.write_text("not-a-gzip-payload", encoding="utf-8")
+
+    l2_map = radar.load_wyckoff_l2_map(trace_dirs=[str(tmp_path)], auto_fetch=False, max_age_days=None)
+    assert "600519" in l2_map
+    assert "Skipping unreadable review_trace" in capsys.readouterr().err
+
+
+def test_corrupt_only_trace_degrades_to_empty(tmp_path, capsys):
+    radar = _load_radar_module()
+    bad = tmp_path / "review_trace_20261119.json.gz"
+    bad.write_bytes(b"\x1f\x8bnot-valid-gzip")
+    assert radar.load_wyckoff_l2_map(str(bad), auto_fetch=False) == {}
+    err = capsys.readouterr().err
+    assert "Skipping unreadable review_trace" in err or "No review_trace" in err
+
+
 def test_l3_ignition_and_l1_drift_immune_cadence(tmp_path):
     radar = _load_radar_module()
     today = cn_today().isoformat()
