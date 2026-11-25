@@ -108,6 +108,20 @@ export type ShadowPositionRow = {
   netPnlPct: number | null
 }
 
+export type ShadowClosedTradeRow = {
+  code: string
+  name: string
+  qty: number
+  buyDate: string
+  buyPrice: number
+  sellDate: string
+  sellPrice: number
+  intervalLow: number | null
+  intervalLowDate: string | null
+  intervalHigh: number | null
+  intervalHighDate: string | null
+}
+
 export type ShadowLedgerPayload = {
   tier: ShadowLedgerTier
   accountId: string
@@ -118,6 +132,7 @@ export type ShadowLedgerPayload = {
     navDaily: ShadowNavDailyRow[]
     events: ShadowEventRow[]
     positions: ShadowPositionRow[]
+    closedTrades: ShadowClosedTradeRow[]
   }
 }
 
@@ -279,6 +294,7 @@ export function buildShadowLedgerPayload(
     navDaily,
     events: day ? events.filter((row) => row.asOf === day) : events,
     positions,
+    closedTrades: closedTradesFromEvents(snapshot.events),
   }
   return payload
 }
@@ -314,6 +330,46 @@ export async function loadShadowSnapshot(client: ShadowAdminClient): Promise<Sha
     positions: rows(positionResult),
     events: rows(eventResult),
   }
+}
+
+/** 已清仓回合由盘后任务写在清仓那笔 sell 的 payload.round_trip；这里只读不配对。 */
+export function closedTradesFromEvents(events: ShadowEventSourceRow[]): ShadowClosedTradeRow[] {
+  const trades: ShadowClosedTradeRow[] = []
+  for (const event of events) {
+    if (String(event.event_type || '') !== 'sell') continue
+    const payload = event.payload && typeof event.payload === 'object' ? event.payload as { round_trip?: unknown } : {}
+    const trip = payload.round_trip
+    if (!trip || typeof trip !== 'object') continue
+    const row = toClosedTrade(trip as Record<string, unknown>)
+    if (row) trades.push(row)
+  }
+  return trades.sort((a, b) => `${b.sellDate}:${b.code}`.localeCompare(`${a.sellDate}:${a.code}`))
+}
+
+function toClosedTrade(trip: Record<string, unknown>): ShadowClosedTradeRow | null {
+  const buyPrice = optionalNum(trip.buy_price)
+  const sellPrice = optionalNum(trip.sell_price)
+  const buyDate = String(trip.buy_date || '').slice(0, 10)
+  const sellDate = String(trip.sell_date || '').slice(0, 10)
+  if (buyPrice == null || sellPrice == null || !buyDate || !sellDate) return null
+  return {
+    code: String(trip.code || ''),
+    name: String(trip.name || ''),
+    qty: Math.trunc(num(trip.qty)),
+    buyDate,
+    buyPrice,
+    sellDate,
+    sellPrice,
+    intervalLow: optionalNum(trip.interval_low),
+    intervalLowDate: optionalDay(trip.interval_low_date),
+    intervalHigh: optionalNum(trip.interval_high),
+    intervalHighDate: optionalDay(trip.interval_high_date),
+  }
+}
+
+function optionalDay(value: unknown): string | null {
+  const text = String(value ?? '').slice(0, 10)
+  return text || null
 }
 
 function uniqueSectorTags(positions: ShadowPositionRow[]): string[] {

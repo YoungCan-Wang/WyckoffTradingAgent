@@ -192,6 +192,32 @@ begin
       ) order by p.code)
       from shadow_positions p
       where p.account_id = v_account_id and p.shares > 0
+    ), '[]'::jsonb),
+    'closedTrades', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'code', coalesce(t.rt->>'code', ''),
+        'name', coalesce(t.rt->>'name', ''),
+        'qty', coalesce((t.rt->>'qty')::numeric, 0),
+        'buyDate', left(t.rt->>'buy_date', 10),
+        'buyPrice', (t.rt->>'buy_price')::numeric,
+        'sellDate', left(t.rt->>'sell_date', 10),
+        'sellPrice', (t.rt->>'sell_price')::numeric,
+        'intervalLow', (t.rt->>'interval_low')::numeric,
+        'intervalLowDate', left(t.rt->>'interval_low_date', 10),
+        'intervalHigh', (t.rt->>'interval_high')::numeric,
+        'intervalHighDate', left(t.rt->>'interval_high_date', 10)
+      ) order by t.rt->>'sell_date' desc, t.rt->>'code' desc)
+      from (
+        select e.payload->'round_trip' as rt
+        from shadow_events e
+        where e.account_id = v_account_id
+          and e.event_type = 'sell'
+          and jsonb_typeof(e.payload->'round_trip') = 'object'
+      ) t
+      where t.rt->>'buy_price' is not null
+        and t.rt->>'sell_price' is not null
+        and coalesce(t.rt->>'buy_date', '') <> ''
+        and coalesce(t.rt->>'sell_date', '') <> ''
     ), '[]'::jsonb)
   )
   into v_ledger;

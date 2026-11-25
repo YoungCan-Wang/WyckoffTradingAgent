@@ -45,6 +45,20 @@ const ledgerSchema = z.object({
     netPnlAmount: z.number(),
     netPnlPct: z.number().nullable(),
   })),
+  // 旧版 SQL RPC 兜底不带这个字段，缺省按空表处理。
+  closedTrades: z.array(z.object({
+    code: z.string(),
+    name: z.string(),
+    qty: z.number(),
+    buyDate: z.string(),
+    buyPrice: z.number(),
+    sellDate: z.string(),
+    sellPrice: z.number(),
+    intervalLow: z.number().nullable(),
+    intervalLowDate: z.string().nullable(),
+    intervalHigh: z.number().nullable(),
+    intervalHighDate: z.string().nullable(),
+  })).default([]),
 })
 
 const payloadSchema = z.object({
@@ -63,6 +77,7 @@ export type ShadowLedgerShowcase = z.infer<typeof showcaseSchema>
 export type ShadowNavDailyRow = z.infer<typeof ledgerSchema>['navDaily'][number]
 export type ShadowEventRow = z.infer<typeof ledgerSchema>['events'][number]
 export type ShadowPositionRow = z.infer<typeof ledgerSchema>['positions'][number]
+export type ShadowClosedTradeRow = z.infer<typeof ledgerSchema>['closedTrades'][number]
 export type ShadowRpcLoader = (asOf?: string) => Promise<unknown | null>
 
 export function shadowLedgerErrorMessage(payload: unknown, status: number): string {

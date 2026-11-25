@@ -4,6 +4,7 @@ import {
   SHADOW_SHOWCASE_FORBIDDEN_KEYS,
   assertShadowAccount,
   buildShadowLedgerPayload,
+  closedTradesFromEvents,
   crudeWinRate,
   maxDrawdownPct,
   openPositionNetPnl,
@@ -105,6 +106,29 @@ describe('shadow ledger assembly', () => {
         netPnlPct: 10,
       },
     ])
+  })
+
+  it('lists closed round trips from sell payloads, newest first, members only', () => {
+    const roundTrip = (code: string, sellDate: string, extra: Record<string, unknown> = {}) => ({
+      code, name: code, qty: 1000, buy_date: '2026-09-01', buy_price: 10.5, sell_date: sellDate, sell_price: 9.8,
+      interval_low: 9.1, interval_low_date: sellDate, interval_high: 11.2, interval_high_date: '2026-09-03', ...extra,
+    })
+    const events = [
+      ...snapshot.events,
+      { as_of: '2026-09-11', code: '000001', event_type: 'sell', price: 9.8, qty: 1000, payload: { status: 'filled', round_trip: roundTrip('000001', '2026-09-11') } },
+      { as_of: '2026-09-16', code: '000002', event_type: 'sell', price: 9.8, qty: 1000, payload: { status: 'filled', round_trip: roundTrip('000002', '2026-09-16', { interval_low: null, interval_low_date: null, interval_high: null, interval_high_date: null }) } },
+      { as_of: '2026-09-17', code: '000003', event_type: 'buy', price: 9.8, qty: 1000, payload: { status: 'filled', round_trip: roundTrip('000003', '2026-09-17') } },
+    ]
+    const trades = closedTradesFromEvents(events)
+    expect(trades.map((row) => row.code)).toEqual(['000002', '000001'])
+    expect(trades[1]).toEqual({
+      code: '000001', name: '000001', qty: 1000, buyDate: '2026-09-01', buyPrice: 10.5, sellDate: '2026-09-11', sellPrice: 9.8,
+      intervalLow: 9.1, intervalLowDate: '2026-09-11', intervalHigh: 11.2, intervalHighDate: '2026-09-03',
+    })
+    expect(trades[0]).toMatchObject({ intervalLow: null, intervalHigh: null, intervalHighDate: null })
+    expect(buildShadowLedgerPayload({ ...snapshot, events }, 'full').ledger?.closedTrades).toHaveLength(2)
+    expect(buildShadowLedgerPayload({ ...snapshot, events }, 'full', '2026-09-18').ledger?.closedTrades).toHaveLength(2)
+    expect(buildShadowLedgerPayload({ ...snapshot, events }, 'showcase').ledger).toBeUndefined()
   })
 
   it('rejects live accounts and live tables', () => {
