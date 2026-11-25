@@ -7,7 +7,7 @@ set -euo pipefail
 PACKAGE="youngcan-wyckoff-analysis"
 INSTALL_DIR="$HOME/.wyckoff/venv"
 BIN_DIR="$HOME/.local/bin"
-MIN_PYTHON="3.11"
+MIN_PYTHON="3.11.5"
 
 info()  { printf "\033[1;34m==>\033[0m %s\n" "$*"; }
 ok()    { printf "\033[1;32m==>\033[0m %s\n" "$*"; }
@@ -20,12 +20,7 @@ err()   { printf "\033[1;31m==>\033[0m %s\n" "$*" >&2; exit 1; }
 find_python() {
     for cmd in python3.13 python3.12 python3.11 python3; do
         if command -v "$cmd" &>/dev/null; then
-            local ver
-            ver=$("$cmd" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "0.0")
-            local major minor
-            major=$(echo "$ver" | cut -d. -f1)
-            minor=$(echo "$ver" | cut -d. -f2)
-            if [ "$major" -ge 3 ] && [ "$minor" -ge 11 ]; then
+            if "$cmd" -c "import sys; sys.exit(sys.version_info < (3, 11, 5))" >/dev/null 2>&1; then
                 # 必须给绝对路径：uv 会把 "python3.11" 这类名字优先解析成 uv 托管解释器（即使 PATH
                 # 上有同版本系统 Python），托管版本被清理后 venv 就成了 bad interpreter
 

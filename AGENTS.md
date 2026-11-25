@@ -149,7 +149,7 @@ the error direction favored acting. So:
 - **Web: no new pages** — New features go into the Agent (chat) interface, not as separate routes.
 - **No Streamlit in main** — Streamlit is no longer maintained on `main`; route product work through CF Pages, CLI, MCP, or GitHub Actions.
 - **Data isolation: Route A** — Signals are shared; portfolio and settings are per-user.
-- **Python ≥ 3.11**, **Node ≥ 20**, **pnpm** for web workspace.
+- **Python ≥ 3.11.5**, **Node ≥ 20**, **pnpm** for web workspace.
 - The standalone `wiki_repo_new/` checkout is intentionally hidden and independently versioned; keep it ignored and do not merge it into `docs/`.
 - **Chart annotations are desktop-only and display-only** — `annotate_chart` writes to `~/.wyckoff/annotations.json`, is visible only in the Electron app, and never touches positions or orders, so it is a read tool and must not require approval. Drawing an annotation is not a substitute for stating the conclusion in the reply.
 

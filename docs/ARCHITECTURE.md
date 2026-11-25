@@ -1399,7 +1399,7 @@ wyckoff-mcp                      # 启动 MCP Server（供 Claude Code 等调用
 | Homebrew | `brew tap YoungCan-Wang/wyckoff && brew install wyckoff` |
 | pip | `uv pip install youngcan-wyckoff-analysis` |
 
-`install.sh`：检测 Python 3.11+ → 安装 uv → 创建 `~/.wyckoff/venv` → 安装 PyPI 包 → 符号链接到 `~/.local/bin/wyckoff`。
+`install.sh`：检测 Python 3.11.5+ → 安装 uv → 创建 `~/.wyckoff/venv` → 安装 PyPI 包 → 符号链接到 `~/.local/bin/wyckoff`。
 
 ## 目录结构
 
