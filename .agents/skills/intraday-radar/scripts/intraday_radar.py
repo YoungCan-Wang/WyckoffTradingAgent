@@ -250,6 +250,32 @@ def _parse_trace_symbols(data: dict[str, Any], springboards: set[str]) -> dict[s
     return out
 
 
+def _read_trace_payload(path: Path) -> dict[str, Any] | None:
+    """Load one review_trace gzip; return None on truncated/corrupt/non-object payload."""
+    try:
+        with gzip.open(path, "rt", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, EOFError, gzip.BadGzipFile, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        print(f"[WARN] Skipping unreadable review_trace {path.name}: {exc}", file=sys.stderr)
+        return None
+    if not isinstance(data, dict):
+        print(
+            f"[WARN] Skipping unreadable review_trace {path.name}: payload is not an object",
+            file=sys.stderr,
+        )
+        return None
+    return data
+
+
+def _select_readable_trace(candidates: list[Path]) -> tuple[Path, dict[str, Any]] | None:
+    """Newest-first; skip corrupt files so one bad artifact cannot crash the radar."""
+    for path in reversed(candidates):
+        data = _read_trace_payload(path)
+        if data is not None:
+            return path, data
+    return None
+
+
 def load_wyckoff_l2_map(
     trace_path: str | None = None,
     trace_dirs: list[str] | None = None,
@@ -261,23 +287,22 @@ def load_wyckoff_l2_map(
     candidates = _collect_trace_candidates(trace_path, trace_dirs)
     if not candidates and do_fetch and _auto_fetch_latest_trace(default_trace_dir):
         candidates = _collect_trace_candidates(trace_path, trace_dirs)
-    if not candidates:
+    selected = _select_readable_trace(candidates)
+    if selected is None:
         print(
             "[WARN] No review_trace_*.json.gz found; Wyckoff L3/L4 and sector resonance are disabled.",
             file=sys.stderr,
         )
         return {}
-    latest = candidates[-1]
-    with gzip.open(latest, "rt", encoding="utf-8") as f:
-        data = json.load(f)
+    latest, data = selected
     t_date = _parse_trace_date(latest, data)
     if max_age_days is not None and t_date is not None and _trading_days_since(t_date, cn_today()) > max_age_days:
         if do_fetch and _auto_fetch_latest_trace(default_trace_dir):
             candidates = _collect_trace_candidates(trace_path, trace_dirs)
-            latest = candidates[-1]
-            with gzip.open(latest, "rt", encoding="utf-8") as f:
-                data = json.load(f)
-            t_date = _parse_trace_date(latest, data)
+            selected = _select_readable_trace(candidates)
+            if selected is not None:
+                latest, data = selected
+                t_date = _parse_trace_date(latest, data)
         if t_date is not None and _trading_days_since(t_date, cn_today()) > max_age_days:
             print(
                 f"[WARN] Ignoring stale review_trace {latest.name} (trade_date={t_date}); "

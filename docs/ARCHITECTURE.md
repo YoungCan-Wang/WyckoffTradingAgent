@@ -1002,7 +1002,7 @@ Web 个股、持仓和股票对抗分析保存历史时写入 `meta`：输入快
 | `signal_pending` | 信号确认池 |
 | `market_signal_daily` | 大盘信号 |
 | `daily_nav` | 每日净值（记账户真实现金与持仓市值，不记 OMS「假设照单执行后」的模拟值）。16:05 快照另写 `day_pnl` / `day_pnl_pct` / `position_day_pnl`：当日盈亏相对昨收（`buy_dt` 是 T+1 最近买入日，加仓会刷新，不能当整仓今开）；昨收缺失才用今开成本兜底。账本合计不含现金变动；不是 vs 成本。缺基准时只写总额、不写半截盈亏。DDL：`scripts/print_daily_nav_ddl.py` |
-| `shadow_account` / `shadow_positions` / `shadow_events` / `shadow_nav_daily` / `shadow_trade_plans` | 影子账本 paper：盘后定计划、次日开盘成交。只服务 `USER_SHADOW:*`，不写 `USER_LIVE` 实盘表。飞书卡持仓行的开仓净收益 = `shares * (last_mark − avg_cost)`，`avg_cost` 含买费；已平仓不展示 |
+| `shadow_account` / `shadow_positions` / `shadow_events` / `shadow_nav_daily` / `shadow_trade_plans` | 影子账本 paper：盘后定计划、次日开盘成交。只服务 `USER_SHADOW:*`，不写 `USER_LIVE` 实盘表。飞书卡持仓行的开仓净收益 = `shares * (last_mark − avg_cost)`，`avg_cost` 含买费；已平仓不在飞书卡展示。清仓那笔 sell 的 `payload.round_trip` 存该回合买卖成交价与持有区间高低（不复权日线、两端含），供 Web「已清仓」表读取 |
 | `concept_heat_history` | 板块连续性与概念热度历史 |
 | `signal_observations` | L4 信号观察样本 |
 | `signal_outcomes` | 信号后续收益 / 回撤结果 |
@@ -1329,8 +1329,8 @@ order by n;
 Web `/shadow` 只读 `USER_SHADOW:*` 纸面账，且与其它业务页一样走 AuthGuard：未登录只进 `/login`。
 登录后 `GET /api/shadow-ledger` 用服务端角色查 `shadow_*`，按 `planet_members` 裁剪 payload。
 非会员只返回橱窗字段（净值曲线、区间净收益、最大回撤、粗胜率、开仓只数、板块标签），不含代码/
-名称/价格/数量/止损；有效会员才返回日净值、事件流水和仍开仓净收益（公式与飞书卡一致：
-`shares*last_mark - shares*avg_cost`）。预发 Pages 没有 service-role、生产 Worker 尚未挂路由时，
+名称/价格/数量/止损；有效会员才返回日净值、事件流水、仍开仓净收益（公式与飞书卡一致：
+`shares*last_mark - shares*avg_cost`）和 `closedTrades`（只读 `payload.round_trip`，前后端不再各自配对）。预发 Pages 没有 service-role、生产 Worker 尚未挂路由时，
 已登录前端回退调用 `shadow_ledger_payload` RPC（须登录；非会员橱窗，会员详账）。不写实盘表，也不读雷达库。
 
 Web `/portfolio` 的数据库模式仅对星球会员开放。浏览器把 Supabase JWT 发送给 `/api/portfolio`，API

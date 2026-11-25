@@ -83,10 +83,30 @@ class RoundTrip:
         return int((self.fills["side"] == "buy").sum())
 
 
-def load_fills(path: str | Path) -> pd.DataFrame:
-    """Read a fills CSV: name,code,date,side,price,qty,amount,fee (code may be blank)."""
+def _normalize_fill_code(raw: object) -> str:
+    """Recover A-share codes mangled by Excel (leading zeros / ``*.0`` float text).
+
+    ``normalize_cn_symbol`` requires exactly six digits, so ``2594`` (Excel's rewrite of
+    ``002594``) would otherwise stay bare and never fetch bars — silent trip drops that
+    bias expectancy and stop-loss replay toward stocks whose codes lack leading zeros.
+    """
+    from core.candidate_metadata import code6
     from integrations.tickflow_client import normalize_cn_symbol
 
+    text = str(raw or "").strip().upper()
+    if not text or text == "NAN":
+        return ""
+    # Excel float residue after dtype=str: "002594.0" / "2594.00" (keep "600000.SH").
+    if "." in text:
+        head, _, tail = text.partition(".")
+        if head.isdigit() and tail and set(tail) <= {"0"}:
+            text = head
+    padded = code6(text)
+    return normalize_cn_symbol(padded) if padded else ""
+
+
+def load_fills(path: str | Path) -> pd.DataFrame:
+    """Read a fills CSV: name,code,date,side,price,qty,amount,fee (code may be blank)."""
     df = pd.read_csv(path, encoding="utf-8-sig", dtype={"code": str})
     need = {"name", "date", "side", "price", "qty", "amount", "fee"}
     missing = need - set(df.columns)
@@ -96,8 +116,7 @@ def load_fills(path: str | Path) -> pd.DataFrame:
         df["code"] = ""
     # Blank CSV name cells become NaN; strip so groupby cannot split one stock's ledger.
     df["name"] = df["name"].fillna("").astype(str).str.strip()
-    df["code"] = df["code"].fillna("").astype(str).str.strip().str.upper()
-    df["code"] = df["code"].map(lambda c: normalize_cn_symbol(c) if c else "")
+    df["code"] = df["code"].fillna("").astype(str).str.strip().map(_normalize_fill_code)
     df["side"] = df["side"].astype(str).str.strip().str.lower()
     bad = sorted(set(df["side"]) - {"buy", "sell"})
     if bad:
@@ -627,9 +646,10 @@ def cmd_analyze(args: argparse.Namespace) -> None:
 def cmd_solve_lots(args: argparse.Namespace) -> None:
     _guard_out_dir(Path(args.out).parent, args.allow_repo_output)
     summary = pd.read_csv(args.summary, encoding="utf-8-sig", dtype={"code": str})
+    summary["code"] = summary["code"].fillna("").astype(str).str.strip().map(_normalize_fill_code)
     summary["entry_date"] = _series_cn_midnight(summary["entry_date"])
     summary["exit_date"] = _series_cn_midnight(summary["exit_date"])
-    bars = fetch_bars(sorted(set(summary["code"])))
+    bars = fetch_bars(sorted({c for c in summary["code"] if c}))
     rows, unsolved = [], []
     for _, r in summary.iterrows():
         b = bars.get(r["code"])

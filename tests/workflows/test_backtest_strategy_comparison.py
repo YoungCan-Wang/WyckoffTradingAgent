@@ -282,6 +282,43 @@ def test_strategy_comparison_pairs_live_ablation_variants(tmp_path: Path) -> Non
     assert report["evaluations"]["K"]["status"] == "pass"
 
 
+def test_strategy_comparison_dedupes_calib_and_live_ablation_same_cell(tmp_path: Path) -> None:
+    calib = tmp_path / "backtest-strategy-bull_2020-calib-91"
+    live_ablation = tmp_path / "backtest-strategy-bull_2020-live-ablation-I-91"
+    _write_summary(calib, "bull_2020", "I", -5.0, -8.0)
+    _write_summary(live_ablation, "bull_2020", "I", 4.0, -3.0)
+    _write_summary(tmp_path, "bull_2020", "live", 1.0, -4.0)
+
+    rows = load_strategy_comparison_rows(tmp_path)
+    report = build_strategy_comparison(rows)
+
+    assert [(row.period, row.variant, row.cash_return) for row in rows if row.variant == "I"] == [
+        ("bull_2020", "I", 4.0)
+    ]
+    assert report["evaluations"]["I"]["reference_variant"] == "live"
+    assert report["evaluations"]["I"]["common_periods"] == 1
+
+
+def test_strategy_comparison_combined_amp_and_live_i_keeps_amp_chain(tmp_path: Path) -> None:
+    for period in ("bull_2020", "bear_2022"):
+        _write_summary(tmp_path, period, "A", 1.0, -4.0)
+        _write_summary(tmp_path, period, "M", 2.0, -3.5)
+        _write_summary(tmp_path, period, "P", 3.0, -3.0)
+        _write_summary(tmp_path, period, "live", 1.5, -4.0)
+        _write_summary(tmp_path, period, "I", 2.5, -3.0)
+
+    report = build_strategy_comparison(
+        load_strategy_comparison_rows(tmp_path),
+        expected_periods=("bull_2020", "bear_2022"),
+        expected_variants=("A", "M", "P", "live", "I"),
+    )
+
+    assert report["baseline"] == "A"
+    assert report["evaluations"]["M"]["reference_variant"] == "A"
+    assert report["evaluations"]["P"]["reference_variant"] == "M"
+    assert report["evaluations"]["I"]["reference_variant"] == "live"
+
+
 def test_strategy_comparison_ready_for_six_period_live_ablation_without_amp(tmp_path: Path) -> None:
     periods = ("bull_2020", "bear_2022", "sideways_2023", "volatile_2024", "bull_2025", "recent_6m")
     variants = ("live", "B", "C", "D", "K")

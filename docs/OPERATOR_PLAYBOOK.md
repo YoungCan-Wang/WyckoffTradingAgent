@@ -117,7 +117,7 @@ Backtest Grid 的 `pit_turnover` 默认关闭。关闭时快照不带换手合�
 
 开启后的回放口径与历史基线不同，不能和未开启的结果直接相减；要改默认值，先用同一窗口各跑一次，再按 Strategy Evidence Rules 比较。这项合同只覆盖历史换手，股票池、静态元数据等其它前视偏差另算。
 
-漏斗与 `STEP4_*` 策略配置统一放在 workflow 级，grid、strategy_compare、live_ablation、三个 baseline 和 notify 读同一份，不再按 job 各写一套。触发基于 `live` 的独立台账消融时使用 `live_ablation_variants`（如 `only:live,I`），`notify` 将 `backtest-strategy-*` 下载到独立的 `strategy_artifacts/` 目录下汇总，不与 `artifacts/` 混放。
+漏斗与 `STEP4_*` 策略配置统一放在 workflow 级，grid、strategy_compare、live_ablation、三个 baseline 和 notify 读同一份，不再按 job 各写一套。触发基于 `live` 的独立台账消融时使用 `live_ablation_variants`（如 `only:live,I`）；该 job 设置 `STRATEGY_VARIANT_RELATIVE_TO=live`，使 I/F/G/H/M/P 只改入场策略、保留生产 FunnelConfig 开关（避免把 Upthrust/Creek 一并关掉）。`notify` 将 `backtest-strategy-*` 下载到独立的 `strategy_artifacts/` 目录下汇总，不与 `artifacts/` 混放；同一 `(周期, 组别)` 若同时存在 calib 与 live-ablation 产物，汇总保留 live-ablation。
 
 ### 收益怎么读
 
