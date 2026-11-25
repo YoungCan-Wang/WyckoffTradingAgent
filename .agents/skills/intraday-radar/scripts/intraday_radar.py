@@ -729,8 +729,10 @@ def analyze_snapshot_diff(
     sh = curr_quotes.get("000001.SH", {})
     sz = curr_quotes.get("399001.SZ", {})
     sh_m, sz_m = compute_quote_metrics(sh), compute_quote_metrics(sz)
-    sh_amt = float(sh.get("amount") or 0.0) / 1e8
-    sz_amt = float(sz.get("amount") or 0.0) / 1e8
+    # Same TickFlow sentinels as compute_quote_metrics; bare float("--") aborts
+    # the frame here — before holdings L4 stop — even when equity rows are clean.
+    sh_amt = (safe_float(sh.get("amount"), 0.0) or 0.0) / 1e8
+    sz_amt = (safe_float(sz.get("amount"), 0.0) or 0.0) / 1e8
     index_ok = sh_m is not None and sz_m is not None and sh_amt > 0 and sz_amt > 0
     tot_amt_yi = (sh_amt + sz_amt) if index_ok else 0.0
     sh_pct = sh_m["pct"] if sh_m else 0.0
