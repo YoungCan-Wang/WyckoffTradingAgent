@@ -986,6 +986,30 @@ def _baseline_after_send(
     return now_ts, compact_snaps
 
 
+def _load_radar_state() -> dict[str, Any]:
+    """Read shared daemon state; corrupt/truncated JSON must not crash every scan."""
+    if not STATE_PATH.exists():
+        return {}
+    try:
+        payload = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        print(
+            f"[{datetime.now(CN_TZ).strftime('%Y-%m-%d %H:%M:%S')}] "
+            f"WARN corrupt radar state at {STATE_PATH}: {exc}; starting fresh baseline",
+            file=sys.stderr,
+        )
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _save_radar_state(payload: dict[str, Any]) -> None:
+    """Atomic replace so a kill mid-write cannot leave truncated JSON for the next scan."""
+    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = STATE_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload), encoding="utf-8")
+    os.replace(tmp, STATE_PATH)
+
+
 def run_once(args: argparse.Namespace) -> None:
     now_bjt = datetime.now(CN_TZ)
     if not args.ignore_hours and not args.dry_run and not is_cn_trading_session(now_bjt):
@@ -997,7 +1021,7 @@ def run_once(args: argparse.Namespace) -> None:
     client = TickFlowClient(api_key=os.environ.get("TICKFLOW_API_KEY", ""))
     l2_map = load_wyckoff_l2_map(args.trace)
     holdings = parse_holdings_arg(args.holding)
-    prev_state = json.loads(STATE_PATH.read_text(encoding="utf-8")) if STATE_PATH.exists() else {}
+    prev_state = _load_radar_state()
     now_ts = time.time()
     curr_quotes = client.get_quotes(universes=["CN_Equity_A", "CN_ETF", "CN_Index"])
     curr_quotes = _backfill_holding_quotes(client, curr_quotes, holdings)
@@ -1039,18 +1063,15 @@ def run_once(args: argparse.Namespace) -> None:
     if args.dry_run:
         return
     state_ts, saved_quotes = _baseline_after_send(prev_state, today_str, now_ts, compact_snaps, send_attempted, send_ok)
-    STATE_PATH.write_text(
-        json.dumps(
-            {
-                "date": today_str,
-                "ts": state_ts,
-                "last_l1_ts": last_l1_ts,
-                "red": red_count,
-                "cooldowns": saved_cooldowns,
-                "quotes": saved_quotes,
-            }
-        ),
-        encoding="utf-8",
+    _save_radar_state(
+        {
+            "date": today_str,
+            "ts": state_ts,
+            "last_l1_ts": last_l1_ts,
+            "red": red_count,
+            "cooldowns": saved_cooldowns,
+            "quotes": saved_quotes,
+        }
     )
 
 
