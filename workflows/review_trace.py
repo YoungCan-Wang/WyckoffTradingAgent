@@ -69,6 +69,7 @@ REVIEW_TRACE_ROW_FIELDS: tuple[str, ...] = (
 REVIEW_TRACE_PER_ROW_FIELDS = frozenset(
     {
         "entry",
+        "slow_bull",
         "shadow_lane",
         "shadow_score",
         "shadow_ranked",
@@ -108,7 +109,7 @@ def build_review_trace(inputs: Any, triggers: dict, metrics: dict) -> dict[str, 
     candidates = inputs.candidates
     symbols = _decision_rows(inputs, triggers, metrics)
     config_payload = asdict(inputs.cfg)
-    return {
+    payload = {
         "schema_version": REVIEW_TRACE_SCHEMA,
         "market": "cn",
         "trade_date": inputs.window.end_trade_date.isoformat(),
@@ -135,6 +136,12 @@ def build_review_trace(inputs: Any, triggers: dict, metrics: dict) -> dict[str, 
         },
         "symbols": symbols,
     }
+    if slow_bull := (metrics or {}).get("slow_bull"):
+        payload["slow_bull_summary"] = {
+            "counts": slow_bull.get("counts") or {},
+            "climate": slow_bull.get("climate") or {},
+        }
+    return payload
 
 
 def load_review_trace_artifact(path: str | Path, expected_trade_date: date | str) -> dict[str, Any]:
@@ -220,8 +227,10 @@ def _decision_rows(inputs: Any, triggers: dict, metrics: dict | None = None) -> 
     # 常数分,31 只同分就无法做「取前 N 只看超额」的效果检验。
     # 用 getattr:回放路径自己拼候选对象,不一定带这个字段,缺了就退回不可排序标签。
     score_map = {str(k): v for k, v in (getattr(candidates, "l3_score_map", None) or {}).items()}
-    return {
-        code: attach_shadow_signal(
+    slow_bull_map = _slow_bull_trace_map(metrics)
+    rows: dict[str, dict[str, Any]] = {}
+    for code in inputs.pool.symbols:
+        row = attach_shadow_signal(
             _decision_row(
                 code,
                 inputs,
@@ -237,8 +246,30 @@ def _decision_rows(inputs: Any, triggers: dict, metrics: dict | None = None) -> 
             ),
             near_l2_max_gap_pct=_SHADOW_NEAR_L2_MAX_GAP_PCT,
         )
-        for code in inputs.pool.symbols
-    }
+        if code in slow_bull_map:
+            row["slow_bull"] = slow_bull_map[code]
+        rows[code] = row
+    return rows
+
+
+def _slow_bull_trace_map(metrics: dict | None) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for item in (metrics or {}).get("slow_bull_candidates") or []:
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("code") or "").strip()
+        if not code:
+            continue
+        m = item.get("metrics") or {}
+        out[code] = {
+            "signal_type": str(item.get("signal_type") or ""),
+            "matched_stages": list(item.get("matched_stages") or []),
+            "score": _score_or_none(item.get("score")),
+            "log_r2_40": _score_or_none(m.get("log_r2_40")),
+            "ret_40d_pct": _score_or_none(m.get("ret_40d_pct")),
+            "mdd_40_pct": _score_or_none(m.get("mdd_40_pct")),
+        }
+    return out
 
 
 def _decision_row(

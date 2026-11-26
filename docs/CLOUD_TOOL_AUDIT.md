@@ -6,7 +6,7 @@
 > 「会员车道 Agent Runtime 服务」。本文档其余部分（逐工具 sandbox-only/needs-fix/review/candidate 判定）仍是
 > 放行新工具时的参考依据，按工具查，不是按「待办」读。
 
-目的：判断 `ToolRegistry` 里的 34 个 agent 工具哪些能放进**共用的云端进程**（会员 Agent 车道，见
+目的：判断 `ToolRegistry` 里的 35 个 agent 工具哪些能放进**共用的云端进程**（会员 Agent 车道，见
 [ARCHITECTURE.md](ARCHITECTURE.md) 的「会员车道 Agent Runtime 服务」）。这些工具按本机桌面设计：
 本机文件、本机 SQLite、环境变量里的密钥、本机 Chrome、直接跑命令。
 
@@ -32,11 +32,11 @@
 | `review` | 只读环境变量或本机文件（多为缓存、配置），需要人工确认 |
 | `candidate` | 没追到效应；**不等于安全**（`delegate_to_*` 会再经注册表调用工具，属于动态分派） |
 
-## 结果（34 个工具）
+## 结果（35 个工具）
 
 - **sandbox-only**：`exec_command`、`browser_research`、`app_browser`、`annotate_chart`
 - **needs-fix**：`portfolio`、`update_portfolio`、`set_stop_loss`、`record_trade_fill`、`query_history`、
-  `research_hypothesis`、`run_backtest`、`screen_stocks`、`generate_ai_report`、`generate_strategy_decision`、
+  `research_hypothesis`、`run_backtest`、`screen_stocks`、`scan_slow_bull`、`generate_ai_report`、`generate_strategy_decision`、
   `analyze_stock`、`get_market_overview`、`get_market_history`、`execute_skill`、`read_file`、`write_file`
 - **review**：`search_stock_by_name`、`market_regime`、`wyckoff_diagnose`、`intraday_analysis`、
   `intraday_rescue_check`、`evaluate_recommendation_events`、`render_dashboard`、`save_report`、`diagnose_backend`
@@ -63,7 +63,7 @@
    调用方都配了 `tushare_token`，否则每次冷启动都会有一次 60 秒的卡顿。
 5. `market_regime` 内部会用环境变量里的模型凭据再发起一次模型调用；共用容器里没有这些环境变量，需要确认它在缺凭据
    时是优雅跳过而不是报错。
-6. **2026-10-17 新增**：`background=True` 的工具（`screen_stocks`、`generate_ai_report`、
+6. **2026-10-17 新增**：`background=True` 的工具（`screen_stocks`、`scan_slow_bull`、`generate_ai_report`、
    `generate_strategy_decision`、`evaluate_recommendation_events`、`run_backtest`）在 `cli/tools.py` 里设计为
    提交后台任务、立即返回。`cli/service/server.py` 从未调用 `set_background_manager`，所以这类工具在共用服务
    里会退化成同步执行，吃 `tool_timeout_seconds` 默认 60 秒——全市场扫描等重任务基本不可能在这个时限内完成，

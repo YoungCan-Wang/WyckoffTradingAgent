@@ -269,7 +269,7 @@ Agent 采用 ReAct 范式：每一轮 LLM 先推理（Reason），再决定是�
 
 | 通道 | 当前工具 |
 |------|----------|
-| CLI / TUI（26） | 原有诊断、筛选、研报、组合、历史、后台、Skill 与委派工具，加 `evaluate_recommendation_events`、`research_hypothesis`、`reassess_profile`、`diagnose_backend`、`browser_research`（本机 Chrome CDP） |
+| CLI / TUI（27） | 原有诊断、筛选、研报、组合、历史、后台、Skill 与委派工具，加 `evaluate_recommendation_events`、`scan_slow_bull`、`research_hypothesis`、`reassess_profile`、`diagnose_backend`、`browser_research`（本机 Chrome CDP） |
 | Web（13+） | `search_stock`、`view_portfolio`、`market_overview`、`market_history`、`query_recommendations`、`query_attribution`、`plan_portfolio_update`、`execute_portfolio_update`、`analyze_stock`、`screen_stocks`、`generate_ai_report`、`generate_strategy_decision`、`intraday_analysis`；官方 DeepSeek V4 Flash/Pro 另挂服务端 `web_search`（Responses API，非本机 CDP）。星球会员已保存官方 `https://api.deepseek.com` Key、且当前轮没有 Responses `web_search` 时，另挂 `deepseek_web_search` / `deepseek_web_fetch`（独立 Search/Fetch API） |
 | MCP（18） | 原有行情、漏斗、诊断、组合、研报与决策工具，加 `research_hypothesis`、`reassess_profile`、`diagnose_backend` |
 
@@ -427,7 +427,7 @@ OpenAI provider 兼容 Qwen / Kimi / LongCat / Minimax 等 OpenAI API 格式端�
   `set_background_manager`，所以共用服务里它会掉进同步执行路径，吃 `tool_timeout_seconds` 默认的 60 秒——
   全市场扫描基本不可能在这个时限内跑完，会稳定超时。所以这次**没有**把它加进 `WYCKOFF_SERVICE_TOOLS`；
   真正放行前要么给这条服务接后台任务管理器，要么确认它能在 60 秒内完成。其余 `background=True` 工具
-  （`generate_ai_report`、`generate_strategy_decision`、`evaluate_recommendation_events`、`run_backtest`）
+  （`scan_slow_bull`、`generate_ai_report`、`generate_strategy_decision`、`evaluate_recommendation_events`、`run_backtest`）
   放行前也要先过一遍这同一个坑。
 - `search_stock_by_name` 冷启动、且请求没带 `tushare_token` 时，会经 `get_all_stocks()` 落到
   `_fetch_stocks_akshare()` 这条路——Cloud Run 容器没有本机磁盘缓存，每次冷启动都会走到这里，而这条网络调用

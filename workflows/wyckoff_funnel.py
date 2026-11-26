@@ -65,6 +65,8 @@ from workflows.funnel_settings import (
     FUNNEL_MARKET_MIX_GUARD_ENABLED,
     FUNNEL_MARKET_MIX_MAX_ADD,
     FUNNEL_MARKET_MIX_MIN_SCORE,
+    FUNNEL_SLOW_BULL_ENABLED,
+    MAIN_BENCH_CODE,
 )
 
 logger = logging.getLogger(__name__)
@@ -925,10 +927,80 @@ def run_funnel_job(
     )
     metrics = _build_funnel_metrics(metrics_inputs)
     metrics["ic_shadow"] = _build_ic_shadow_pool(data)
+    slow_bull_payload, slow_bull_candidates = _build_slow_bull_pool(data)
+    metrics["slow_bull"] = slow_bull_payload
+    metrics["slow_bull_candidates"] = slow_bull_candidates
     _write_review_trace(metrics_inputs, artifacts.layers.triggers, metrics)
     _attach_funnel_debug_context(metrics, metrics_inputs, include_debug_context)
     _log_funnel_summary(metrics, metrics_inputs)
     return artifacts.layers.triggers, metrics
+
+
+def _load_slow_bull_csi300(data) -> pd.DataFrame | None:
+    if MAIN_BENCH_CODE == "000300" and data.bench_df is not None:
+        return data.bench_df
+    try:
+        from integrations.index_data_source import fetch_index_hist
+
+        csi_df = fetch_index_hist(
+            "000300",
+            data.window.start_trade_date.strftime("%Y%m%d"),
+            data.window.end_trade_date.strftime("%Y%m%d"),
+        )
+        if csi_df is not None and not csi_df.empty:
+            return csi_df
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("慢牛基准 000300 加载失败，回退主基准: %s", exc)
+    return data.bench_df
+
+
+def _build_slow_bull_pool(data) -> tuple[dict, list[dict]]:
+    """Parallel medium-term Institutional Slow-Bull pool (decoupled from Step3/Step4 OMS)."""
+    if not FUNNEL_SLOW_BULL_ENABLED or not data.all_df_map:
+        return {}, []
+    try:
+        from datetime import date
+
+        from core.slow_bull_engine import SlowBullConfig, scan_slow_bull_candidates
+        from integrations.market_metadata import fetch_slow_bull_daily_basic_map
+
+        is_historical = data.window.end_trade_date < date.today() or bool((os.getenv("END_CALENDAR_DAY") or "").strip())
+        basic_map = fetch_slow_bull_daily_basic_map(as_of_date=data.window.end_trade_date if is_historical else None)
+        mv_map = {k: float(v["market_cap_yi"]) for k, v in basic_map.items() if "market_cap_yi" in v}
+        mv_map.update(data.ref_data.market_cap_map or {})
+        dv_map = {k: float(v["dv_ttm_pct"]) for k, v in basic_map.items() if "dv_ttm_pct" in v}
+        turn_map = {k: float(v["turnover_pct"]) for k, v in basic_map.items() if "turnover_pct" in v}
+        scan = scan_slow_bull_candidates(
+            data.all_df_map,
+            csi300_df=_load_slow_bull_csi300(data),
+            chinext_df=data.smallcap_df,
+            name_map=data.ref_data.name_map,
+            market_cap_map=mv_map,
+            dv_ttm_map=dv_map,
+            turnover_map=turn_map,
+            sector_map=data.ref_data.sector_map,
+            financial_map=data.ref_data.financial_map,
+            cfg=SlowBullConfig(require_market_cap=bool(mv_map)),
+            top_n=30,
+        )
+        seen: set[str] = set()
+        candidates: list[dict] = []
+        for item in [*scan.emerge_candidates, *scan.pullback_candidates, *scan.watch_candidates]:
+            code = str(item.get("code") or "").strip()
+            if code and code not in seen:
+                seen.add(code)
+                candidates.append(item)
+        payload = {"research_only": True, "new_buy_allowed": False, **scan.to_dict()}
+        counts, climate = scan.counts, scan.climate
+        print(
+            f"[slow_bull] {scan.trade_date} 护城河={counts['moat_passed']} 阶段A={counts['emerge_count']} "
+            f"阶段B回踩={counts['pullback_count']} 观察={counts['watch_count']} "
+            f"tech_warn={climate['tech_rotation_warning']}"
+        )
+        return payload, candidates
+    except Exception as exc:  # noqa: BLE001 - 并联研究轨道失败不得阻断主漏斗
+        print(f"[slow_bull] 慢牛扫描失败（不影响主漏斗）: {str(exc)[:160]}")
+        return {}, []
 
 
 def _build_ic_shadow_pool(data) -> list[dict]:

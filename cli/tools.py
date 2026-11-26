@@ -130,7 +130,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "screen_stocks",
-        "description": "运行 Wyckoff 五层漏斗筛选，从市场中筛选结构性机会。聊天态默认快扫，明确要求全量时传 limit=0。",
+        "description": (
+            "运行 Wyckoff 五层漏斗筛选，从市场中筛选结构性机会，并并联输出低波机构慢牛观察池"
+            "（slow_bull_emerge/slow_bull_pullback/slow_bull_watch，只读研究）。聊天态默认快扫，明确要求全量时传 limit=0。"
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -274,6 +277,53 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                         {"type": "integer"},
                     ],
                     "description": "可选 Top-K 集合，如 [1,3,5] 或 '1,3,5'。",
+                },
+            },
+        },
+    },
+    {
+        "name": "scan_slow_bull",
+        "description": (
+            "运行低波机构慢牛（FIP 高 R² 温水煮青蛙）中线扫描或定点诊断，识别刚启动埋伏（slow_bull_emerge）"
+            "与在途缩量回踩（slow_bull_pullback）候选及创业板抽血预警；只读研究口径，不改写 Step4/OMS 下单。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "codes": {
+                    "anyOf": [
+                        {"type": "array", "items": {"type": "string"}},
+                        {"type": "string"},
+                    ],
+                    "description": "可选，指定 6 位代码列表或逗号分隔字符串做定点诊断；留空做全市场扫描。",
+                },
+                "board": {
+                    "type": "string",
+                    "description": "全市场扫描板块范围：main_chinext_star（默认）、all、main、chinext、star、bse。",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 3000,
+                    "description": "可选扫描股票上限；0 表示全量（默认 0）。",
+                },
+                "as_of_date": {
+                    "type": "string",
+                    "description": "可选截止交易日 YYYY-MM-DD；留空取最新交易日。",
+                },
+                "include_financial_metrics": {
+                    "type": "boolean",
+                    "description": "是否校验 ROE/负债率/现金流护城河，默认 true。",
+                },
+                "allow_cycle_cashflow_bypass": {
+                    "type": "boolean",
+                    "description": "是否允许高经营现金流（>=10%）周期股旁路 ROE>=6% 门槛，默认 false。",
+                },
+                "top_n": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50,
+                    "description": "每档最多返回候选数量，默认 15。",
                 },
             },
         },
@@ -858,6 +908,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "generate_strategy_decision": ToolSpec("generate_strategy_decision", "攻防决策", background=True),
     "query_history": ToolSpec("query_history", "历史查询", concurrency_safe=True),
     "evaluate_recommendation_events": ToolSpec("evaluate_recommendation_events", "推荐评估", background=True),
+    "scan_slow_bull": ToolSpec("scan_slow_bull", "慢牛底仓扫描", background=True),
     "research_hypothesis": ToolSpec("research_hypothesis", "研究假设", concurrency_safe=True),
     "update_portfolio": ToolSpec("update_portfolio", "调仓操作", requires_approval=True),
     "set_stop_loss": ToolSpec("set_stop_loss", "设置止损价", requires_approval=True),
@@ -1145,6 +1196,7 @@ class ToolRegistry:
         from agents.research_tools import research_hypothesis
         from agents.screen_tools import screen_stocks
         from agents.search_tools import search_stock_by_name
+        from agents.slow_bull_tools import scan_slow_bull
         from agents.strategy_tools import generate_strategy_decision
         from cli.sub_agents import (
             delegate_to_analysis,
@@ -1165,6 +1217,7 @@ class ToolRegistry:
             "generate_strategy_decision": generate_strategy_decision,
             "query_history": query_history,
             "evaluate_recommendation_events": evaluate_recommendation_events,
+            "scan_slow_bull": scan_slow_bull,
             "research_hypothesis": research_hypothesis,
             "update_portfolio": update_portfolio,
             "set_stop_loss": set_stop_loss,
@@ -1368,6 +1421,10 @@ class ToolRegistry:
             from agents.recommendation_tools import remember_recommendation_event_eval
 
             remember_recommendation_event_eval(self._tool_context, result)
+        elif tool_name == "scan_slow_bull" or result.get("job_kind") == "slow_bull_scan":
+            from agents.slow_bull_tools import remember_slow_bull_scan
+
+            remember_slow_bull_scan(self._tool_context, result)
 
     def _confirm_high_risk_call(
         self,

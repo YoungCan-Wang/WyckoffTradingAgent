@@ -31,6 +31,7 @@ from workflows.funnel_settings import (
     FUNNEL_BYPASS_DISPLAY_LIMIT,
     FUNNEL_L2_BYPASS_AI_CAP,
     FUNNEL_MAINLINE_DISPLAY_LIMIT,
+    FUNNEL_SLOW_BULL_DISPLAY_LIMIT,
     FUNNEL_TRACKING_SHAPE_DISPLAY_LIMIT,
 )
 
@@ -739,12 +740,67 @@ def _append_legacy_selected_sections(lines: list[str], ctx: Any, selected_for_ai
         lines.append("")
 
 
+def _slow_bull_card_section_lines(ctx: Any) -> list[str]:
+    slow_bull = getattr(ctx, "slow_bull", None) or (getattr(ctx, "metrics", {}) or {}).get("slow_bull") or {}
+    if not isinstance(slow_bull, dict) or not slow_bull:
+        return []
+    climate = slow_bull.get("climate") or {}
+    counts = slow_bull.get("counts") or {}
+    warn_tag = "⚠️ 触发创业板科技抽血预警" if climate.get("tech_rotation_warning") else "正常"
+    lines = [
+        "",
+        "**【🐢 中线机构慢牛底仓（20~60日观察）】**",
+        "独立于5日短线Step3/Step4配额与当日禁买闸门；仅作20~60日中线底仓研究观察（扣费基准0.202%），不自动下单。",
+        f"- **气候预警**: {warn_tag} | 创业板20日 {climate.get('chinext_ret_20d_pct')}% "
+        f"vs 沪深300 {climate.get('csi300_ret_20d_pct')}% — {climate.get('advisory', '')}",
+        f"- **截面统计**: 机构护城河通过 {int(counts.get('moat_passed') or 0)} 只 | "
+        f"阶段A刚启动 {int(counts.get('emerge_count') or 0)} 只 | "
+        f"阶段B缩量回踩 {int(counts.get('pullback_count') or 0)} 只 | "
+        f"在途观察池 {int(counts.get('watch_count') or 0)} 只",
+    ]
+    limit = FUNNEL_SLOW_BULL_DISPLAY_LIMIT
+    _append_slow_bull_bucket(
+        lines, "**▎ 🌱 阶段A·刚启动埋伏（slow_bull_emerge）**", slow_bull.get("emerge_candidates"), limit
+    )
+    _append_slow_bull_bucket(
+        lines, "**▎ 🎯 阶段B·在途缩量回踩（slow_bull_pullback）**", slow_bull.get("pullback_candidates"), limit
+    )
+    _append_slow_bull_bucket(
+        lines, "**▎ 👀 阶段B·在途慢牛观察池（待<0.8x缩量回踩）**", slow_bull.get("watch_candidates"), limit
+    )
+    lines.append("- **中线退出纪律**: 阶段A建议20~60日持有；阶段B建议 -7%硬止损 + +15%激活10%回撤止盈。")
+    return lines
+
+
+def _append_slow_bull_bucket(lines: list[str], heading: str, raw_rows: object, limit: int) -> None:
+    rows = [
+        item
+        for item in (raw_rows or [])
+        if isinstance(item, dict) and not is_user_facing_etf(str(item.get("code") or ""), str(item.get("name") or ""))
+    ]
+    if not rows:
+        return
+    shown = rows if limit <= 0 else rows[:limit]
+    lines.append(f"{heading}（展示{len(shown)}/{len(rows)}）")
+    lines.extend(_slow_bull_candidate_line(item) for item in shown)
+
+
+def _slow_bull_candidate_line(item: dict[str, Any]) -> str:
+    m = item.get("metrics") or {}
+    return (
+        f"  {item.get('code', '')} {item.get('name') or item.get('code', '')}  [{item.get('sector') or '-'}]"
+        f"  R²={m.get('log_r2_40', '-')} | 40日+{m.get('ret_40d_pct', '-')}% | 回撤-{m.get('mdd_40_pct', '-')}%"
+        f" | 单日最大{m.get('max_1d_40_pct', '-')}% | 量比{m.get('vol_ratio_1_20', '-')}"
+    )
+
+
 def _build_legacy_card_lines(ctx: Any, selection: FunnelAiSelection) -> list[str]:
     bench_line, money_line, amount_line, pv_line, pv_shadow_line = _market_report_lines(ctx.benchmark_context)
     selected_for_ai = selection.selected_for_ai
     lines = _top_summary_lines(ctx, len(selected_for_ai), money_line)
     lines.extend(_top_candidate_list_lines(ctx, selection))
     lines.extend(_tracking_shape_section_lines(ctx, selection))
+    lines.extend(_slow_bull_card_section_lines(ctx))
     lines.extend(_research_discovery_lines(ctx))
     lines += [
         "**【📊 详细市场证据】**",
@@ -858,7 +914,12 @@ def _research_discovery_lines(ctx: Any) -> list[str]:
 def _research_source_lines(inventory: dict) -> list[str]:
     rows = inventory["candidates"]
     sources = inventory.get("by_source") or summarize_discovery_sources(rows)
-    labels = {"mainline_candidates": "主线发现", "leader_radar_rows": "趋势雷达", "candidate_entries": "候选入口"}
+    labels = {
+        "mainline_candidates": "主线发现",
+        "leader_radar_rows": "趋势雷达",
+        "candidate_entries": "候选入口",
+        "slow_bull_candidates": "中线慢牛",
+    }
     lines = []
     for source, label in labels.items():
         if stats := sources.get(source):
@@ -884,6 +945,7 @@ def _build_modern_card_lines(ctx: Any, selection: FunnelAiSelection) -> list[str
     lines = _top_summary_lines(ctx, len(selection.selected_for_ai), money_line)
     lines.extend(_top_candidate_list_lines(ctx, selection))
     lines.extend(_tracking_shape_section_lines(ctx, selection))
+    lines.extend(_slow_bull_card_section_lines(ctx))
     lines.extend(_research_discovery_lines(ctx))
     rejection = ctx.metrics.get("layer_rejections") or {}
     l3_rejected = int((rejection.get("layer3") or {}).get("rejected") or 0)
