@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Any
 
 from core.shadow_ledger import ShadowBook, ShadowPlan, ShadowPosition, ShadowSession
 
 
-def render_shadow_card(session: ShadowSession, as_of: date) -> tuple[str, str]:
+def render_shadow_card(
+    session: ShadowSession,
+    as_of: date,
+    closed_trades: list[dict[str, Any]] | None,
+) -> tuple[str, str]:
+    """``closed_trades=None`` 表示读库失败，与「还没有清仓」区分开。"""
     title = f"📒 影子账本 / paper {as_of.isoformat()}"
     nav = session.nav
     lines = [
@@ -23,6 +29,9 @@ def render_shadow_card(session: ShadowSession, as_of: date) -> tuple[str, str]:
         "",
         "**持仓**",
         *_position_lines(session.book),
+        "",
+        "**已清仓**（买卖价为次日开盘实际成交价；区间最低/最高取不复权日线，买入日与卖出日都计入）",
+        *_closed_trade_lines(closed_trades),
     ]
     return title, "\n".join(lines)
 
@@ -72,6 +81,27 @@ def _format_position_line(pos: ShadowPosition) -> str:
         f"  {pos.code} {pos.name}  {pos.shares}股  成本{pos.avg_cost:.2f}  现价{mark:.2f}  "
         f"{format_open_net_pnl(pos.shares, pos.avg_cost, mark)}  可卖{pos.sellable_shares}"
     )
+
+
+def _closed_trade_lines(trades: list[dict[str, Any]] | None) -> list[str]:
+    if trades is None:
+        return ["已清仓读取失败（不影响账本），完整列表见 Web /shadow"]
+    if not trades:
+        return ["还没有清仓的票"]
+    return [
+        f"  {trip.get('code', '')} {trip.get('name', '')}  "
+        f"买入 {_price_on(trip.get('buy_price'), trip.get('buy_date'))}  "
+        f"卖出 {_price_on(trip.get('sell_price'), trip.get('sell_date'))}  "
+        f"区间最低 {_price_on(trip.get('interval_low'), trip.get('interval_low_date'))}  "
+        f"区间最高 {_price_on(trip.get('interval_high'), trip.get('interval_high_date'))}"
+        for trip in trades
+    ]
+
+
+def _price_on(price: object, day: object) -> str:
+    if price is None or not day:
+        return "待补"
+    return f"{float(price):.2f} ({str(day)[:10]})"
 
 
 def _mark_price(pos: ShadowPosition) -> float:

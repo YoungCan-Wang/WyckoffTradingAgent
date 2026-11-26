@@ -267,7 +267,7 @@ watch_score = 0.25 × q20 + 0.20 × q5 + 0.05 × q3
 | **熔断** | Circuit Breaker | 当市场进入 CRASH 或盘前检测到极端风险（RISK_OFF / BLACK_SWAN）时，OMS 直接冻结买入权限 |
 | **Springboard ABC** | 右侧信号三项确认 | 对 SOS / EVR 和趋势候选的成交量、价格与支撑确认。普通弱确认至少 2/3，纯 SOS 正式候选要求 3/3 |
 | **水温屏蔽买点** | Regime-Blocked Signal | `AShareEntryResearchPolicy.blocked_confirmed_regime_signals` 列出的（水温, 买点）组合。当前 `BEAR_REBOUND` / `CAUTION` 屏蔽 `trend_breakout`：车道层不产出，Step4、影子账本与回放按执行日水温拦截。空 `benchmark_context` 时 Step4 经 `resolve_step4_gate_regime` 回落 `market_signal_daily`；`step4_from_supabase` 须还原 `primary_signal`/`entry_type` 为 `signal_type`，否则闸门对空串 fail-open |
-| **已清仓回合** | Shadow Closed Round Trip | 影子账本里某只票从空仓建仓到再次卖光的一段持有；仍持有的不算。买卖价为按股数加权的次日开盘实际成交价，区间最高/最低取不复权日线、买入日与卖出日两端都含。存于清仓 sell 的 `shadow_events.payload.round_trip`，Web `/shadow` 会员详账展示 |
+| **已清仓回合** | Shadow Closed Round Trip | 影子账本里某只票从空仓建仓到再次卖光的一段持有；仍持有的不算。买卖价为按股数加权的次日开盘实际成交价，区间最高/最低取不复权日线、买入日与卖出日两端都含。存于清仓 sell 的 `shadow_events.payload.round_trip`，Web `/shadow` 会员详账与飞书影子账本卡「已清仓」节展示 |
 | **结构路由影子标签** | Regime Route Shadow | `benchmark_context.regime_route_shadow`，含路由后的 `regime` 与命中规则 `rule`。只作前瞻观察，不改水温；影子账本计划以 `route:<rule>` 标记 |
 | **DETECTED / SURVIVED / VALIDATED / OMS_APPROVED** | 候选状态链 | 依次表示当日结构命中、跨日未失效、需求已经确认、OMS 最终核准。库内 `confirmed` 是 `VALIDATED` 的兼容值；前两层不可下单 |
 | **ATR 止损放宽** | ATR Stop Relaxation | 持仓诊断中，根据波动率在上限内降低固定止损线，避免正常洗盘误杀；它只放宽、不收紧，也不取消硬止损 |
@@ -317,7 +317,7 @@ flowchart LR
 | **Health** | 按信号类型聚合后的胜率、均值收益、样本数和权重，落在 `signal_health_daily`。 |
 | **动态影子晋级** | 将当日候选的基础影子分与同信号、同水温的历史健康度合成动态分；通过结构、样本和风险清单后，只获得 Step3 复核席位，不等于正式推荐、跨日确认或 OMS 买入许可。 |
 | **当日盈亏 (same-day P&L)** | 现价相对前收盘的浮动盈亏；不是相对建仓成本。`buy_dt` 在成交回填里是 T+1 最近买入日（当日加仓会刷新），不能用来判断整仓今开，故有昨收时一律 vs 昨收；仅昨收缺失时才用今开成本兜底。金额按持仓本币×人民币汇率。账本当日盈亏是各持仓当日盈亏之和，现金记 0，因此不等于「今日净值 − 昨日净值」（后者含同日买卖现金流）。由 16:05 `nav_snapshot` 写入 `daily_nav.day_pnl` / `position_day_pnl`，Step4 Telegram 工单回读展示。 |
-| **影子账本 (paper shadow ledger)** | 漏斗成功后的纸面对照账户，账户号 `USER_SHADOW:<uuid>`。盘后按 Step4 同口径买许可写下夜 `next_open` 计划，次日开盘价成交，遵守 T+1 / 整手 / 涨跌停 / 费用。只写 `shadow_*` 表，绝不写 `USER_LIVE` 的 `portfolios` / `portfolio_positions` / `trade_orders` / `daily_nav`。飞书卡标题必须带「影子账本 / paper」，与 `ic_shadow`、动态影子分不是同一概念。持仓区只列 `shadow_positions.shares > 0` 的开仓；逐只**净收益**是盯市浮盈 `shares * last_mark − shares * avg_cost`（`avg_cost` 已摊入买侧费用），百分比分母为 `shares * avg_cost`。已平仓不进持仓列表。账户行的现金/净值/市值/**累计**（权益 − 初始资金）口径不变。此数不是实盘 `当日盈亏`（相对昨收），也未扣尚未发生的卖费。Web `/shadow` 只读 `USER_SHADOW:*`：未登录只进登录页；登录后非会员只拿橱窗 DTO（净值曲线、区间收益、回撤、粗胜率、开仓只数、板块标签），有效星球会员才拿日净值与开平仓流水；服务端按会员身份裁剪，不靠前端藏字段。 |
+| **影子账本 (paper shadow ledger)** | 漏斗成功后的纸面对照账户，账户号 `USER_SHADOW:<uuid>`。盘后按 Step4 同口径买许可写下夜 `next_open` 计划，次日开盘价成交，遵守 T+1 / 整手 / 涨跌停 / 费用。只写 `shadow_*` 表，绝不写 `USER_LIVE` 的 `portfolios` / `portfolio_positions` / `trade_orders` / `daily_nav`。飞书卡标题必须带「影子账本 / paper」，与 `ic_shadow`、动态影子分不是同一概念。持仓区只列 `shadow_positions.shares > 0` 的开仓；逐只**净收益**是盯市浮盈 `shares * last_mark − shares * avg_cost`（`avg_cost` 已摊入买侧费用），百分比分母为 `shares * avg_cost`。已平仓不进持仓列表，改列在卡片末尾「已清仓」节。账户行的现金/净值/市值/**累计**（权益 − 初始资金）口径不变。此数不是实盘 `当日盈亏`（相对昨收），也未扣尚未发生的卖费。Web `/shadow` 只读 `USER_SHADOW:*`：未登录只进登录页；登录后非会员只拿橱窗 DTO（净值曲线、区间收益、回撤、粗胜率、开仓只数、板块标签），有效星球会员才拿日净值与开平仓流水；服务端按会员身份裁剪，不靠前端藏字段。 |
 | **Registry** | 信号生命周期表，控制信号是 `ACTIVE`、`WATCH`、`EXPERIMENTAL` 还是 `RETIRED`。信号级 `status` 以全局行（`regime=""` / `ALL`）为准；regime 拆分行只承载精确权重并跟随全局生命周期。 |
 | **Shadow Run** | 动态策略旁路演练：真实推荐不变，只记录动态策略会新增或移除哪些候选。 |
 | **Dynamic Policy** | 根据信号健康度、registry 和市场广度，动态调整 Trend / Accum 候选配额。 |

@@ -11,6 +11,7 @@ from core.shadow_round_trips import (
     interval_high_low,
     needs_round_trip_payload,
     round_trip_payload,
+    stored_round_trips,
 )
 
 
@@ -147,3 +148,18 @@ def test_payload_marks_missing_interval_for_retry() -> None:
     )
     assert done["interval_low"] == 9.1 and done["interval_basis"] == "daily_unadjusted_inclusive"
     assert not needs_round_trip_payload({"round_trip": done})
+
+
+def test_stored_round_trips_reads_sell_payloads_newest_first_and_skips_incomplete() -> None:
+    def _sell(day: str, code: str, trip: object) -> dict:
+        return {**_event(day, code, "sell", 11.0, 100), "payload": {"status": "filled", "round_trip": trip}}
+
+    trip = {"code": "", "buy_date": "2026-09-01", "buy_price": 10.0, "sell_price": 11.0}
+    events = [
+        _sell("2026-09-10", "000001", {**trip, "code": "000001", "sell_date": "2026-09-10"}),
+        _sell("2026-09-12", "000002", {**trip, "code": "000002", "sell_date": "2026-09-12"}),
+        _sell("2026-09-12", "000003", {**trip, "code": "000003", "sell_date": "2026-09-12", "buy_price": None}),
+        _sell("2026-09-13", "000004", "not-a-dict"),
+        {**_event("2026-09-01", "000001", "buy", 10.0, 100), "payload": {"round_trip": {**trip, "sell_date": "x"}}},
+    ]
+    assert [row["code"] for row in stored_round_trips(events)] == ["000002", "000001"]
