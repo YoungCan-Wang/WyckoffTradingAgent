@@ -457,7 +457,7 @@ flowchart LR
 
 ## 18. 低波机构静默慢牛（Slow-Bull / FIP Engine）
 
-> 与短线 `L4/Step4` 日线执行及盘中雷达完全解耦的中线（`20~60` 个交易日）只读研究轨道（`core/slow_bull_engine.py`、`workflows/slow_bull_scan.py`、`scripts/scan_slow_bull.py`、Agent 工具 `scan_slow_bull`）。所有标签均为 `research_only=True`、`new_buy_allowed=False`，不得直接视为 `Step4` `BUY` 指令。
+> 在每日主漏斗（`workflows/wyckoff_funnel.py`）L1 之后**并联运行**、同时支持 `screen_stocks`、`scan_slow_bull` 与 `scripts/scan_slow_bull.py` 的中线（`20~60` 个交易日）只读研究轨道（`core/slow_bull_engine.py`）。复用主漏斗当日 OHLCV 与财务截面直接输出到飞书日报独立【中线机构慢牛底仓】模块、`research_discovery` 与 `review_trace`，与短线 `Step3(8席)/Step4(5日OMS)` 及盘中雷达完全解耦；所有标签均为 `research_only=True`、`new_buy_allowed=False`。
 
 | 名词 | 含义 |
 |------|------|

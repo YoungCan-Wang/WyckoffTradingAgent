@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pandas as pd
 
@@ -81,6 +81,7 @@ class FunnelRenderContext:
     theme_radar_source: str
     external_seed_line: str
     regime: str
+    slow_bull: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -584,6 +585,7 @@ def _render_context_from_parts(parts: _RenderContextParts) -> FunnelRenderContex
         theme_radar_source=str(parts.metrics.get("theme_radar_source") or "current"),
         external_seed_line=_external_seed_report_line(parts.metrics),
         regime=str(parts.benchmark_context.get("regime", "NEUTRAL")),
+        slow_bull=parts.metrics.get("slow_bull", {}) or {},
     )
 
 

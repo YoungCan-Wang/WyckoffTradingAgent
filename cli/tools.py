@@ -130,7 +130,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "screen_stocks",
-        "description": "运行 Wyckoff 五层漏斗筛选，从市场中筛选结构性机会。聊天态默认快扫，明确要求全量时传 limit=0。",
+        "description": (
+            "运行 Wyckoff 五层漏斗筛选，从市场中筛选结构性机会，并并联输出低波机构慢牛观察池"
+            "（slow_bull_emerge/slow_bull_pullback/slow_bull_watch，只读研究）。聊天态默认快扫，明确要求全量时传 limit=0。"
+        ),
         "parameters": {
             "type": "object",
             "properties": {

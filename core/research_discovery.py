@@ -14,9 +14,10 @@ def build_research_discovery(trace: dict[str, Any], metrics: dict[str, Any]) -> 
     rows = {
         code6(code): {"code": code6(code), **row, "discovery_sources": ["production_trace"]}
         for code, row in decisions.items()
-        if code6(code) and (row.get("l2_eligible") or row.get("entry") or row.get("shadow_lane"))
+        if code6(code)
+        and (row.get("l2_eligible") or row.get("entry") or row.get("shadow_lane") or row.get("slow_bull"))
     }
-    for source in ("candidate_entries", "mainline_candidates", "leader_radar_rows"):
+    for source in ("candidate_entries", "mainline_candidates", "leader_radar_rows", "slow_bull_candidates"):
         for item in metrics.get(source) or []:
             code = code6(item.get("code"))
             if not code:
@@ -34,7 +35,7 @@ def build_research_discovery(trace: dict[str, Any], metrics: dict[str, Any]) -> 
         "trade_date": trace.get("trade_date") or metrics.get("end_trade_date") or "",
         "source_run": trace.get("run") or {},
         "config_digest": trace.get("config_digest") or "",
-        "scope": "L2结构发现、近L2影子观察、候选车道、主线和趋势雷达的并集；不等于推荐表或BUY",
+        "scope": "L2结构发现、近L2影子观察、候选车道、主线、趋势雷达和中线慢牛的并集；不等于推荐表或BUY",
         "coverage": {
             "universe": universe,
             "decision_rows": len(decisions),
@@ -68,15 +69,25 @@ def _research_row(row: dict[str, Any], regime: str, quality: dict[str, Any]) -> 
     entry = row.get("entry") or row.get("candidate_entries") or {}
     mainline = row.get("mainline_candidates") or {}
     leader = row.get("leader_radar_rows") or {}
-    detected = bool(entry or row.get("trigger_labels"))
+    slow_bull = row.get("slow_bull_candidates") or row.get("slow_bull") or {}
+    sb_sig = str(slow_bull.get("signal_type") or "")
+    detected = bool(entry or row.get("trigger_labels") or sb_sig in {"slow_bull_emerge", "slow_bull_pullback"})
     blockers = _execution_blockers(row, regime, quality)
-    signal = str(entry.get("signal_key") or entry.get("entry_type") or "")
+    signal = str(entry.get("signal_key") or entry.get("entry_type") or sb_sig or "")
+    sb_timing = str(slow_bull.get("recommended_exit_plan") or "在途慢牛观察：等待缩量(<0.8x)回踩MA5/MA10")
     return {
         "code": row["code"],
-        "name": str(row.get("name") or mainline.get("name") or entry.get("name") or leader.get("name") or row["code"]),
-        "theme": str(mainline.get("theme") or entry.get("theme") or ""),
+        "name": str(
+            row.get("name")
+            or mainline.get("name")
+            or entry.get("name")
+            or leader.get("name")
+            or slow_bull.get("name")
+            or row["code"]
+        ),
+        "theme": str(mainline.get("theme") or entry.get("theme") or slow_bull.get("sector") or ""),
         "discovery_sources": list(dict.fromkeys(row["discovery_sources"])),
-        "discovery_stage": str(row.get("stage") or mainline.get("status") or "研究发现"),
+        "discovery_stage": str(row.get("stage") or mainline.get("status") or sb_sig or "研究发现"),
         "discovery_reason": str(row.get("reason") or entry.get("opportunity") or leader.get("reason") or ""),
         "research_status": "execution_blocked"
         if blockers
@@ -86,7 +97,9 @@ def _research_row(row: dict[str, Any], regime: str, quality: dict[str, Any]) -> 
         "signal_state": "candidate_detected" if detected else "awaiting_confirmation",
         "signal_types": list(row.get("trigger_labels") or []) or ([signal] if signal else []),
         "confirmation_state": "not_evaluated",
-        "timing_condition": str(entry.get("timing") or mainline.get("entry_type") or "等待量价买点及跨日确认"),
+        "timing_condition": str(
+            entry.get("timing") or mainline.get("entry_type") or (sb_timing if sb_sig else "等待量价买点及跨日确认")
+        ),
         "blocking_reasons": blockers,
         "risk_flags": [str(value) for value in mainline.get("risk_flags") or []]
         + ([str(entry["risk"])] if entry.get("risk") else []),

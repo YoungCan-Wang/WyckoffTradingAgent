@@ -193,10 +193,11 @@ flowchart TD
         L5["L5 layer5_exit_signals<br/>派发 / 止损预警"]
     end
 
-    subgraph BYPASS["Shadow 观察池（默认不进正式 AI）"]
+    subgraph BYPASS["Shadow 与中线并联观察池（默认不进短线正式 AI/OMS）"]
         B1["L2 明珠旁路<br/>L1过 + L2拒 + 热门板块 + L4"]
         B2["战略 L2 旁路<br/>主题雷达观察池 + 阶段复核"]
         B3["外部观察 Shadow<br/>人工关注只验证，不直接推荐"]
+        B4["Slow-Bull Engine<br/>L1后全市场并联中线慢牛<br/>20~60日底仓 · 独立飞书模块"]
     end
 
     subgraph POST["后处理 & 候选分配"]
@@ -243,6 +244,8 @@ flowchart TD
     R16 -->|覆盖达标| R13
     R16 -->|覆盖不足| R17 --> R13
 ```
+
+> **中线慢牛并联轨道（`core/slow_bull_engine.py`）**：主漏斗在 `L1` 与 `L2~L4` 结束后、写 trace 之前，复用同一批 320 日 OHLCV 与财务数据并联执行 `scan_slow_bull_candidates`（开关 `FUNNEL_SLOW_BULL_ENABLED`，默认开启）。结果分别进入：**飞书日报独立模块【🐢 中线机构慢牛底仓】**、`screen_stocks` 返回的 `slow_bull` 字段、`research_discovery`（`by_source.slow_bull_candidates`）以及 `review_trace` 逐行可选属性；**不占用短线 Step3 的 8 席 AI 配额，不写入短线 `recommendation_tracking`，不受当日短线 `Step4` 禁买闸门与 5 日时间止盈挤压**。
 
 A 股漏斗已不再注入 ETF 增强上下文。漏斗卡片 `name_map` 只走 A 股 `load_stock_name_map()`，
 不再 `update(load_etf_name_map())`。名称搜索仍用 `search_market_meta` / `load_etf_name_map`。

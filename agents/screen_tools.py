@@ -180,7 +180,6 @@ def _build_screen_result(
     decision_state = _screen_decision_state(selection_brief, action_plan, trade_mode, guard_summary)
     symbols_for_report = list(action_plan.get("report_candidates") or [])
     watch_candidates = list(action_plan.get("watch_candidates") or [])
-    diagnosis_targets = list(action_plan.get("diagnosis_targets") or [])
     summary.update(report_candidates=len(_report_rows(symbols_for_report)), watch_candidates=len(watch_candidates))
     next_tool = _screen_next_tool(selection_brief, action_plan)
     result = _screen_result_payload(
@@ -205,12 +204,30 @@ def _build_screen_result(
         top_candidates=top_candidates,
         symbols_for_report=symbols_for_report,
         watch_candidates=watch_candidates,
-        diagnosis_targets=diagnosis_targets,
         research_discovery=details.get("research_discovery") or {},
+        slow_bull=_slow_bull_screen_view(details),
     )
     if guard_summary:
         result["candidate_guard_summary"] = guard_summary
     return result
+
+
+def _slow_bull_screen_view(details: dict[str, Any]) -> dict[str, Any]:
+    raw = details.get("slow_bull") or (details.get("metrics") or {}).get("slow_bull") or {}
+    if not isinstance(raw, dict) or not raw:
+        return {}
+    return {
+        "trade_date": raw.get("trade_date") or "",
+        "research_only": True,
+        "new_buy_allowed": False,
+        "counts": raw.get("counts") or {},
+        "climate": raw.get("climate") or {},
+        "emerge_candidates": list(raw.get("emerge_candidates") or [])[:10],
+        "pullback_candidates": list(raw.get("pullback_candidates") or [])[:10],
+        "watch_candidates": list(raw.get("watch_candidates") or [])[:10],
+        "friction_round_trip_pct": raw.get("friction_round_trip_pct"),
+        "exit_guidance": raw.get("exit_guidance") or {},
+    }
 
 
 def _screen_result_payload(**payload: Any) -> dict[str, Any]:
@@ -249,9 +266,10 @@ def _screen_result_payload(**payload: Any) -> dict[str, Any]:
         "symbols_for_report": symbols_for_report,
         "report_candidates": symbols_for_report,
         "watch_candidates": payload["watch_candidates"],
-        "diagnosis_targets": payload["diagnosis_targets"],
+        "diagnosis_targets": list(action_plan.get("diagnosis_targets") or []),
         "quality_gate": action_plan.get("quality_gate", {}),
         "research_discovery": payload.get("research_discovery") or {},
+        "slow_bull": payload.get("slow_bull") or {},
     }
 
 
@@ -339,6 +357,11 @@ _STYLE_ALIASES = {
         "成交额大",
         "换手充分",
         "白马",
+        "慢牛",
+        "中线",
+        "长线",
+        "低波",
+        "红利",
     ),
 }
 
@@ -457,6 +480,7 @@ def remember_screen_handoff(tool_context: ToolContext | None, result: dict[str, 
         "watch_candidates": list(result.get("watch_candidates") or [])[:10],
         "diagnosis_targets": list(result.get("diagnosis_targets") or [])[:5],
         "research_discovery": research_discovery_agent_view(result.get("research_discovery")),
+        "slow_bull": result.get("slow_bull") or {},
     }
 
 
@@ -467,7 +491,10 @@ def research_discovery_agent_view(raw: Any, *, detailed: bool = False) -> dict[s
     ranked = sorted(
         rows,
         key=lambda row: (
-            not bool(set(row.get("discovery_sources") or []) & {"mainline_candidates", "candidate_entries"}),
+            not bool(
+                set(row.get("discovery_sources") or [])
+                & {"mainline_candidates", "candidate_entries", "slow_bull_candidates"}
+            ),
             str(row.get("code") or ""),
         ),
     )

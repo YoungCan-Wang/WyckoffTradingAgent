@@ -150,6 +150,7 @@ def funnel_run_details(
         "leader_radar_rows": ctx.leader_radar_rows,
         "leader_radar_symbols": sorted(ctx.leader_radar_symbols),
         "candidate_entries": ctx.candidate_entries,
+        "slow_bull": getattr(ctx, "slow_bull", None) or (getattr(ctx, "metrics", {}) or {}).get("slow_bull") or {},
         "external_seed_triggers": ctx.external_seed_triggers,
         "external_seed_selected": [],
         "content": content,
@@ -180,6 +181,7 @@ def research_discovery_payload(ctx: Any) -> dict[str, Any]:
             "candidate_entries": getattr(ctx, "candidate_entries", []) or [],
             "mainline_candidates": getattr(ctx, "mainline_candidates", []) or [],
             "leader_radar_rows": getattr(ctx, "leader_radar_rows", []) or [],
+            "slow_bull_candidates": metrics.get("slow_bull_candidates") or [],
         },
     )
 
