@@ -1077,6 +1077,58 @@ def test_quote_sentinel_strings_skip_row_without_aborting_holding_stop():
     assert "L4:holding_stop:600000.SH" in cds
 
 
+def test_index_amount_sentinel_does_not_abort_holding_stop():
+    """Index amount '--' must not crash analyze_snapshot_diff before holdings L4."""
+    radar = _load_radar_module()
+    today = cn_today().isoformat()
+    prev_quotes = {"600000.SH": {"pct": 1.0, "amt_yi": 0.2}}
+    for i in range(1, 101):
+        prev_quotes[f"601{i:03d}.SH"] = {"pct": 0.0, "amt_yi": 1.0}
+    curr = {
+        "000001.SH": {
+            "symbol": "000001.SH",
+            "last_price": 3000.0,
+            "prev_close": 2990.0,
+            "volume": 1e9,
+            "amount": "--",
+            "ext": {"name": "上证指数"},
+        },
+        "399001.SZ": {
+            "symbol": "399001.SZ",
+            "last_price": 10000.0,
+            "prev_close": 9900.0,
+            "volume": 1e9,
+            "amount": "-",
+            "ext": {"name": "深证成指"},
+        },
+        "600000.SH": {
+            "symbol": "600000.SH",
+            "last_price": 9.40,
+            "prev_close": 10.0,
+            "volume": 5e6,
+            "amount": 9.40 * 5e6,
+            "ext": {"name": "浦发银行"},
+        },
+    }
+    for i in range(1, 101):
+        sym = f"601{i:03d}.SH"
+        curr[sym] = {
+            "symbol": sym,
+            "last_price": 10.5 if i <= 85 else 9.5,
+            "prev_close": 10.0,
+            "volume": 1e6,
+            "amount": 1e7,
+            "ext": {"name": f"s{i}"},
+        }
+    prev_state = {"date": today, "ts": 1000.0, "red": 50, "cooldowns": {}, "quotes": prev_quotes}
+    holdings = {"600000.SH": {"cost": 10.0, "stop": 9.50}}
+    level, _, body, _, cds = radar.analyze_snapshot_diff(curr, prev_state, {}, holdings, now_ts=1300.0)
+    assert level == "L4"
+    assert "破位止损" in body
+    assert "指数数据缺口" in body
+    assert "L4:holding_stop:600000.SH" in cds
+
+
 def test_corrupt_state_does_not_crash_run_once_before_holdings(tmp_path, monkeypatch):
     """Truncated /tmp state must not JSONDecodeError before holdings L3/L4 monitoring."""
     radar = _load_radar_module()
