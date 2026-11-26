@@ -13,6 +13,7 @@ import sys
 import time
 import urllib.request
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -2020,6 +2021,180 @@ def _format_heartbeat_card(
     return title, "\n".join(lines)
 
 
+def _to_float(val: Any) -> float:
+    try:
+        return float(val) if val not in (None, "", "-") else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _fetch_eastmoney_page(pn: int) -> dict[str, Any]:
+    url = (
+        f"https://push2.eastmoney.com/api/qt/clist/get?pn={pn}&pz=100&po=1&np=1&fltt=2&invt=2&fid=f6"
+        "&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048&fields=f12,f13,f14,f2,f17,f18,f6"
+    )
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"})
+    raw = urllib.request.urlopen(req, timeout=5.0).read().decode("utf-8", errors="ignore")
+    return json.loads(raw)
+
+
+def _fetch_eastmoney_call_auction(max_pages: int = 65) -> dict[str, dict[str, Any]]:
+    """Fetch full-A 09:25 call-auction open snapshot from EastMoney push2."""
+    try:
+        first = _fetch_eastmoney_page(1)
+    except Exception:
+        return {}
+    data = first.get("data") or {}
+    total = int(data.get("total") or 0)
+    rows: list[dict[str, Any]] = list(data.get("diff") or [])
+    n_pages = min(max_pages, (total + 99) // 100) if total > 0 else 0
+    if n_pages >= 2:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for res in pool.map(_fetch_eastmoney_page, range(2, n_pages + 1)):
+                rows.extend((res.get("data") or {}).get("diff") or [])
+    out: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        code = str(r.get("f12") or "").strip()
+        if len(code) != 6 or not code.isdigit():
+            continue
+        ex = ".SH" if r.get("f13") == 1 else (".BJ" if code.startswith(("4", "8", "9")) else ".SZ")
+        sym = f"{code}{ex}"
+        if not is_a_share(sym):
+            continue
+        open_p, pre = _to_float(r.get("f17")), _to_float(r.get("f18"))
+        last_p = _to_float(r.get("f2")) or open_p
+        amt = max(0.0, _to_float(r.get("f6")))
+        if open_p > 0 and pre > 0:
+            out[sym] = {
+                "symbol": sym,
+                "name": str(r.get("f14") or sym),
+                "open": open_p,
+                "prev_close": pre,
+                "last_price": last_p,
+                "amount": amt,
+                "ext": {"name": str(r.get("f14") or sym)},
+            }
+    tot_amt_yi = sum(q["amount"] for q in out.values()) / 1e8
+    if len(out) < 200 or tot_amt_yi > 800.0:
+        return {}
+    return out
+
+
+def _fetch_sina_call_auction(l2_map: dict[str, dict[str, Any]], today_str: str) -> dict[str, dict[str, Any]]:
+    """Fallback batch fetch for 09:25 call auction using Sina hq.sinajs.cn."""
+    pairs: list[tuple[str, str]] = []
+    for code in sorted(l2_map or ()):
+        if len(code) == 6 and code.isdigit():
+            ex = "sh" if code.startswith(("60", "68")) else ("bj" if code.startswith(("4", "8", "9")) else "sz")
+            sym = f"{code}.{ex.upper()}"
+            if is_a_share(sym):
+                pairs.append((sym, f"{ex}{code}"))
+    out: dict[str, dict[str, Any]] = {}
+    for i in range(0, len(pairs), 600):
+        chunk = pairs[i : i + 600]
+        try:
+            req = urllib.request.Request(
+                "https://hq.sinajs.cn/list=" + ",".join(sc for _, sc in chunk),
+                headers={"Referer": "https://finance.sina.com.cn", "User-Agent": "Mozilla/5.0"},
+            )
+            raw = urllib.request.urlopen(req, timeout=5.0).read().decode("gbk", errors="ignore")
+        except Exception:
+            continue
+        for (sym, _), line in zip(chunk, raw.strip().splitlines()):
+            if '"' not in line:
+                continue
+            p = line.split('"', 1)[1].rsplit('"', 1)[0].split(",")
+            if len(p) < 31 or p[30].strip() != today_str:
+                continue
+            open_p, pre = _to_float(p[1]), _to_float(p[2])
+            if open_p > 0 and pre > 0:
+                out[sym] = {
+                    "symbol": sym,
+                    "name": p[0],
+                    "open": open_p,
+                    "prev_close": pre,
+                    "last_price": _to_float(p[3]) or open_p,
+                    "amount": max(0.0, _to_float(p[9])),
+                    "ext": {"name": p[0]},
+                }
+    return out if len(out) >= 200 else {}
+
+
+def _fetch_call_auction_quotes(
+    l2_map: dict[str, dict[str, Any]], today_str: str
+) -> tuple[dict[str, dict[str, Any]], str]:
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return {}, ""
+    em = _fetch_eastmoney_call_auction()
+    if em:
+        return em, "东方财富直连"
+    sina = _fetch_sina_call_auction(l2_map, today_str)
+    if sina:
+        return sina, "新浪行情兜底"
+    return {}, ""
+
+
+def build_call_auction_card(
+    auction_quotes: dict[str, dict[str, Any]],
+    l2_map: dict[str, dict[str, Any]],
+    holdings: dict[str, dict[str, Any]],
+    now_dt: datetime,
+    source_label: str,
+) -> tuple[str, str]:
+    """Format the 09:25 Call-Auction Mainline Radar card when TickFlow index hasn't rolled over."""
+    from telegraph_catalysts import summarize_call_auction_mainlines
+
+    mkt_tot, mkt_red, tot_amt_yi = 0, 0, 0.0
+    top_amt: list[tuple[float, str, str, str, float]] = []
+    for sym, q in auction_quotes.items():
+        if not is_a_share(sym):
+            continue
+        op, pre = float(q.get("open") or 0.0), float(q.get("prev_close") or 0.0)
+        if op <= 0 or pre <= 0:
+            continue
+        op_pct = (op / pre - 1.0) * 100.0
+        amt_yi = float(q.get("amount") or 0.0) / 1e8
+        mkt_tot += 1
+        mkt_red += int(op_pct > 0)
+        tot_amt_yi += amt_yi
+        meta = (l2_map or {}).get(sym[:6]) or {}
+        nm = str(meta.get("name") or q.get("name") or sym)
+        if "ST" not in nm:
+            top_amt.append((amt_yi, sym[:6], nm, str(meta.get("sector") or ""), op_pct))
+    red_pct = (mkt_red / mkt_tot * 100.0) if mkt_tot > 0 else 0.0
+    title = f"【L1】{now_dt.strftime('%H:%M')} 09:25集合竞价主线雷达（{source_label} · 红开{mkt_red}/{mkt_tot} {red_pct:.1f}%）"
+    secs = [
+        f"09:25 集合竞价全市场扫描（{source_label}）：有效 A 股 {mkt_tot} 只，红开 {mkt_red} 家 ({red_pct:.1f}%)，"
+        f"竞价总成交 {tot_amt_yi:.1f} 亿（本卡仅作竞价先手观察，09:30 正式开盘将重建完整 7,807 标的差分基线）。"
+    ]
+    auc_md = summarize_call_auction_mainlines(auction_quotes, l2_map, top_n=5)
+    if auc_md:
+        secs.append(auc_md)
+    top_amt.sort(reverse=True)
+    if top_amt:
+        secs.append(
+            "**💰 竞价成交额 TOP 5（真金白银抢筹观测）**\n"
+            + "\n".join(
+                f"- `{c}` {nm} [{sc}]：高开/低开 **{op:+.2f}%** | 竞价额 **{a:.2f}亿**"
+                for a, c, nm, sc, op in top_amt[:5]
+            )
+        )
+    if holdings:
+        h_prev: list[str] = []
+        for sym in holdings:
+            q = auction_quotes.get(sym)
+            if q and float(q.get("prev_close") or 0.0) > 0:
+                op = float(q.get("open") or q.get("last_price") or 0.0)
+                op_pct = (op / float(q["prev_close"]) - 1.0) * 100.0
+                h_prev.append(
+                    f"- `{sym}` {q.get('name', sym)}：竞价开 **{op:.2f} ({op_pct:+.2f}%)** | 额 {float(q.get('amount') or 0) / 1e8:.2f}亿"
+                )
+        if h_prev:
+            secs.append("**🛡️ 持仓竞价开盘预览**\n" + "\n".join(h_prev))
+    secs.append("⚠️ 竞价仅供参考，严禁 09:25~09:45 盲追高开票，静待 09:30 开盘定盘与 09:45 30m 势能确认。")
+    return title, "\n\n".join(secs)
+
+
 def _baseline_after_send(
     prev_state: dict[str, Any],
     today_str: str,
@@ -2057,6 +2232,43 @@ def run_once(args: argparse.Namespace) -> None:
         if sina_hq:
             curr_quotes = {**curr_quotes, **sina_hq}
     unrolled_preopen, _ = _is_unrolled_preopen_snapshot(curr_quotes, now_bjt)
+    today_str = cn_today().isoformat()
+    prev_cooldowns: dict[str, float] = (
+        dict(prev_state.get("cooldowns", {})) if prev_state.get("date") == today_str else {}
+    )
+    if unrolled_preopen and (9, 25) <= (now_bjt.hour, now_bjt.minute) < (9, 30):
+        already_auc = "L1:call_auction_sent" in prev_cooldowns and not args.force_send and not args.dry_run
+        if already_auc:
+            print(
+                f"[{now_bjt.strftime('%H:%M:%S')}] Already sent 09:25 call auction card today, waiting for 09:30 open."
+            )
+            return
+        auc_quotes, auc_src = _fetch_call_auction_quotes(l2_map, today_str)
+        if auc_quotes:
+            auc_title, auc_body = build_call_auction_card(auc_quotes, l2_map, holdings, now_bjt, auc_src)
+            open_id = "" if args.dry_run else resolve_lark_open_id(args.user_id)
+            auc_msg = send_feishu_tiered_alert(
+                auc_title, auc_body, level="L1", user_open_id=open_id, dry_run=args.dry_run
+            )
+            if args.dry_run:
+                return
+            if auc_msg:
+                STATE_PATH.write_text(
+                    json.dumps(
+                        {
+                            "date": today_str,
+                            "ts": 0.0,
+                            "last_l1_ts": 0.0,
+                            "red": 0,
+                            "cooldowns": {**prev_cooldowns, "L1:call_auction_sent": now_ts},
+                            "quotes": {},
+                            "history": [],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                print(f"[{now_bjt.strftime('%H:%M:%S')}] Sent 09:25 CALL AUCTION card ({auc_src}): msg_id={auc_msg}")
+                return
     level, title, content, red_count, cooldowns = analyze_snapshot_diff(
         curr_quotes,
         prev_state,
@@ -2071,10 +2283,6 @@ def run_once(args: argparse.Namespace) -> None:
         for sym, q in curr_quotes.items()
         if (m := compute_quote_metrics(q)) is not None
     }
-    today_str = cn_today().isoformat()
-    prev_cooldowns: dict[str, float] = (
-        dict(prev_state.get("cooldowns", {})) if prev_state.get("date") == today_str else {}
-    )
     last_l1_ts = float(prev_state.get("last_l1_ts") or 0.0) if prev_state.get("date") == today_str else 0.0
     saved_cooldowns = prev_cooldowns
     send_attempted, send_ok = False, False

@@ -3292,3 +3292,129 @@ def test_shallow_lps_pullback_and_near_miss_mainline_cliff_removal(tmp_path) -> 
         }
     alerts = tc.detect_confirmed_mainline_alerts(m_quotes, l2_map)
     assert any(th == "大医药" for th, _, _ in alerts)
+
+
+def test_preopen_call_auction_eastmoney_direct_fallback_and_once_guard(tmp_path, monkeypatch) -> None:
+    import sys
+    import types
+    import urllib.request
+
+    radar = _load_radar_module()
+    today_d = cn_today()
+    ts_0926 = datetime(today_d.year, today_d.month, today_d.day, 9, 26, tzinfo=CN_TZ).timestamp()
+    ts_0928 = datetime(today_d.year, today_d.month, today_d.day, 9, 28, tzinfo=CN_TZ).timestamp()
+
+    # 1) Freshness rejection on _fetch_eastmoney_call_auction when tot_amt_yi > 800亿
+    stale_rows = [
+        {"f12": f"600{i:03d}", "f13": 1, "f14": f"股{i}", "f2": 10.1, "f17": 10.1, "f18": 10.0, "f6": 6.0e8}
+        for i in range(210)
+    ]
+
+    class _FakeResp:
+        def __init__(self, payload: dict) -> None:
+            self._b = json.dumps(payload).encode("utf-8")
+
+        def read(self) -> bytes:
+            return self._b
+
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda req, timeout=5.0: _FakeResp({"data": {"total": len(stale_rows), "diff": stale_rows}}),
+    )
+    assert radar._fetch_eastmoney_call_auction(max_pages=1) == {}
+
+    # 2) run_once at 09:26 uses _fetch_call_auction_quotes when TickFlow returns unrolled prior-day turnover
+    state_file = tmp_path / "state.json"
+    monkeypatch.setattr(radar, "STATE_PATH", state_file)
+    monkeypatch.setattr(radar, "load_env_file", lambda: None)
+    monkeypatch.setattr(radar, "resolve_lark_open_id", lambda uid=None: "ou_test")
+
+    l2_map = {}
+    auc_quotes = {}
+    for i in range(25):
+        c = f"688{i:03d}"
+        l2_map[c] = {"name": f"半{i}", "sector": "半导体", "rps": 40.0}
+        auc_quotes[f"{c}.SH"] = {
+            "symbol": f"{c}.SH",
+            "name": f"半{i}",
+            "open": 9.85,
+            "prev_close": 10.0,
+            "last_price": 9.85,
+            "amount": 3.0e6,
+        }
+    for i in range(18):
+        c = f"6002{i:02d}"
+        l2_map[c] = {"name": f"药{i}", "sector": "化学制药", "rps": 50.0}
+        auc_quotes[f"{c}.SH"] = {
+            "symbol": f"{c}.SH",
+            "name": f"药{i}",
+            "open": 10.18 if i == 0 else 10.05,
+            "prev_close": 10.0,
+            "last_price": 10.18 if i == 0 else 10.05,
+            "amount": 2.5e7 if i == 0 else 4.0e6,
+        }
+    auc_quotes["603011.SH"] = {
+        "symbol": "603011.SH",
+        "name": "合锻智能",
+        "open": 13.75,
+        "prev_close": 13.52,
+        "last_price": 13.75,
+        "amount": 5.0e6,
+    }
+    l2_map["603011"] = {"name": "合锻智能", "sector": "专用机械", "rps": 5.0}
+
+    unrolled_tickflow = {
+        "000001.SH": {"symbol": "000001.SH", "prev_close": 3476.0, "last_price": 3476.0, "amount": 5.8e11},
+        "399001.SZ": {"symbol": "399001.SZ", "prev_close": 10086.0, "last_price": 10086.0, "amount": 8.0e11},
+        "603011.SH": {"symbol": "603011.SH", "prev_close": 13.52, "last_price": 13.52, "amount": 1.2e8},
+    }
+
+    class _FakeTF:
+        def __init__(self, api_key: str = "") -> None:
+            pass
+
+        def get_quotes(self, universes=None, symbols=None):
+            return unrolled_tickflow
+
+    fake_mod = types.ModuleType("integrations.tickflow_client")
+    fake_mod.TickFlowClient = _FakeTF
+    monkeypatch.setitem(sys.modules, "integrations.tickflow_client", fake_mod)
+    monkeypatch.setattr(radar, "load_wyckoff_l2_map", lambda trace=None: l2_map)
+    monkeypatch.setattr(radar, "_fetch_call_auction_quotes", lambda lm, td: (auc_quotes, "东方财富直连"))
+
+    sent_cards: list[tuple[str, str, str]] = []
+
+    def _fake_send(title: str, content: str, level: str = "L1", user_open_id: str = "", dry_run: bool = False):
+        sent_cards.append((title, content, level))
+        return "om_auc_001"
+
+    monkeypatch.setattr(radar, "send_feishu_tiered_alert", _fake_send)
+    monkeypatch.setattr(radar.time, "time", lambda: ts_0926)
+
+    args = SimpleNamespace(
+        trace=None,
+        holding=["603011.SH:18.252:17.55:ATK"],
+        user_id=None,
+        urgent_only=False,
+        force_send=False,
+        heartbeat=True,
+        late_decision=False,
+        ignore_hours=True,
+        dry_run=False,
+    )
+    radar.run_once(args)
+    assert len(sent_cards) == 1
+    t1, b1, lvl1 = sent_cards[0]
+    assert lvl1 == "L1"
+    assert "09:25集合竞价主线雷达" in t1 and "东方财富直连" in b1
+    assert "大医药" in b1 and "最弱失血：泛AI/半导体算力" in b1
+    assert "持仓竞价开盘预览" in b1 and "603011.SH" in b1
+    st = json.loads(state_file.read_text(encoding="utf-8"))
+    assert st["last_l1_ts"] == 0.0 and st["quotes"] == {} and st["history"] == []
+    assert "L1:call_auction_sent" in st["cooldowns"]
+
+    # Second run at 09:28 same morning -> deduped by L1:call_auction_sent
+    monkeypatch.setattr(radar.time, "time", lambda: ts_0928)
+    radar.run_once(args)
+    assert len(sent_cards) == 1
