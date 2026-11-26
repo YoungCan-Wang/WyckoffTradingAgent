@@ -135,6 +135,22 @@ def needs_round_trip_payload(payload: object) -> bool:
     return current.get("interval_high") is None or current.get("interval_low") is None
 
 
+def stored_round_trips(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """读清仓 sell 上已落库的 ``payload.round_trip``，卖出日新的在前；与 Web 同源，不重新配对。"""
+    trips = []
+    for row in events:
+        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        trip = payload.get(ROUND_TRIP_PAYLOAD_KEY)
+        if row.get("event_type") != "sell" or not isinstance(trip, dict):
+            continue
+        if _float(trip.get("buy_price")) is None or _float(trip.get("sell_price")) is None:
+            continue
+        if _day(trip.get("buy_date")) is None or _day(trip.get("sell_date")) is None:
+            continue
+        trips.append(trip)
+    return sorted(trips, key=lambda trip: (str(trip["sell_date"])[:10], str(trip.get("code") or "")), reverse=True)
+
+
 def _close_leg(code: str, leg: _OpenLeg, sell_date: date, event_key: str) -> ShadowRoundTrip:
     return ShadowRoundTrip(
         code=code,

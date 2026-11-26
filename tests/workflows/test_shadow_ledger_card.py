@@ -39,6 +39,7 @@ def test_open_position_line_shows_signed_net_pnl_and_pct() -> None:
     title, content = render_shadow_card(
         _session(_pos("002292", "奥飞娱乐", shares=1000, avg_cost=10.0, last_mark=11.0)),
         date(2026, 9, 18),
+        [],
     )
     assert title == "📒 影子账本 / paper 2026-09-18"
     assert "002292 奥飞娱乐  1000股  成本10.00  现价11.00  净收益 +1,000.00 (+10.0%)  可卖1000" in content
@@ -50,6 +51,7 @@ def test_losing_open_position_uses_minus_sign() -> None:
     _, content = render_shadow_card(
         _session(_pos("002584", "西陇科学", shares=500, avg_cost=8.0, last_mark=7.2, sellable=0)),
         date(2026, 9, 18),
+        [],
     )
     assert "002584 西陇科学  500股  成本8.00  现价7.20  净收益 -400.00 (-10.0%)  可卖0" in content
 
@@ -61,6 +63,7 @@ def test_closed_or_zero_share_names_are_omitted_from_holdings() -> None:
             _pos("600000", "已抛浦发", shares=0, avg_cost=10.0, last_mark=12.0),
         ),
         date(2026, 9, 18),
+        [],
     )
     holdings = content.split("**持仓**", 1)[1]
     assert "002292 奥飞娱乐" in holdings
@@ -69,7 +72,7 @@ def test_closed_or_zero_share_names_are_omitted_from_holdings() -> None:
 
 
 def test_empty_book_shows_empty_holdings_not_closed_history() -> None:
-    _, content = render_shadow_card(_session(), date(2026, 9, 18))
+    _, content = render_shadow_card(_session(), date(2026, 9, 18), [])
     assert "**持仓**\n空仓" in content
     assert "净收益" not in content.split("**持仓**", 1)[1]
 
@@ -78,6 +81,7 @@ def test_missing_mark_falls_back_to_cost_so_pnl_is_zero() -> None:
     _, content = render_shadow_card(
         _session(_pos("000001", "平安银行", shares=200, avg_cost=9.5, last_mark=None)),
         date(2026, 9, 18),
+        [],
     )
     assert "现价9.50  净收益 +0.00 (+0.0%)" in content
 
@@ -85,3 +89,40 @@ def test_missing_mark_falls_back_to_cost_so_pnl_is_zero() -> None:
 def test_format_open_net_pnl_omits_pct_when_cost_basis_is_zero() -> None:
     assert format_open_net_pnl(100, 0.0, 10.0) == "净收益 +1,000.00"
     assert format_open_net_pnl(0, 8.0, 9.0) == "净收益 +0.00"
+
+
+def _trip(code: str, name: str, *, interval: bool = True) -> dict:
+    return {
+        "code": code,
+        "name": name,
+        "buy_date": "2026-09-01",
+        "buy_price": 10.0,
+        "sell_date": "2026-09-10",
+        "sell_price": 11.256,
+        "interval_low": 9.8 if interval else None,
+        "interval_low_date": "2026-09-02" if interval else None,
+        "interval_high": 11.5 if interval else None,
+        "interval_high_date": "2026-09-05" if interval else None,
+    }
+
+
+def test_closed_trades_show_fill_prices_and_interval_range_after_holdings() -> None:
+    _, content = render_shadow_card(_session(), date(2026, 9, 18), [_trip("002292", "奥飞娱乐")])
+    holdings, closed = content.split("**已清仓**", 1)
+    assert "**持仓**" in holdings
+    assert (
+        "002292 奥飞娱乐  买入 10.00 (2026-09-01)  卖出 11.26 (2026-09-10)  "
+        "区间最低 9.80 (2026-09-02)  区间最高 11.50 (2026-09-05)"
+    ) in closed
+
+
+def test_closed_trade_without_bars_marks_interval_pending() -> None:
+    _, content = render_shadow_card(_session(), date(2026, 9, 18), [_trip("600000", "浦发银行", interval=False)])
+    assert "卖出 11.26 (2026-09-10)  区间最低 待补  区间最高 待补" in content
+
+
+def test_no_closed_trades_and_read_failure_are_distinct() -> None:
+    _, empty = render_shadow_card(_session(), date(2026, 9, 18), [])
+    _, failed = render_shadow_card(_session(), date(2026, 9, 18), None)
+    assert empty.endswith("还没有清仓的票")
+    assert "已清仓读取失败" in failed

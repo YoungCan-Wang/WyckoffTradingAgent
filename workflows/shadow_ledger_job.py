@@ -45,7 +45,7 @@ def run_shadow_ledger_stage(
         session = _run_shadow_session(step2_details, symbols_info, step3_report_text, benchmark_context)
         _persist_session(session)
         round_trips = _annotate_round_trips(cfg)
-        title, content = render_shadow_card(session, _as_of())
+        title, content = render_shadow_card(session, _as_of(), _load_closed_trades(cfg))
         sent = send_feishu_notification(cfg.webhook, title, content) if cfg.webhook else True
         elapsed = (datetime.now(TZ) - t0).total_seconds()
         log_line(
@@ -123,6 +123,18 @@ def _annotate_round_trips(cfg: DailyJobConfig) -> str:
         f"closed={stats['closed']} newly_written={stats['written']} "
         f"missing_bars={stats['missing_bars']} unmatched={stats['unmatched']}"
     )
+
+
+def _load_closed_trades(cfg: DailyJobConfig) -> list[dict] | None:
+    """补写之后再读，卡片才带上当日刚补齐的区间高低；读失败只少这一节。"""
+    from core.shadow_round_trips import stored_round_trips
+    from integrations.supabase_shadow import load_filled_trade_events
+
+    try:
+        return stored_round_trips(load_filled_trade_events(SHADOW_ACCOUNT_ID))
+    except Exception as exc:
+        log_line(f"影子账本: 已清仓回合读取失败（飞书卡省略该节）: {exc}", cfg.logs_path)
+        return None
 
 
 def _buy_candidates(symbols_info: list[dict], step3_report_text: str, benchmark_context: dict) -> list[dict]:
