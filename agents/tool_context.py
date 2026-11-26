@@ -170,23 +170,67 @@ def get_user_client(tool_context: ToolContext | None):
     cache_key = _user_client_cache_key(user_id, access_token)
     cached = _user_client_cache.get(cache_key)
     if cached is not None:
-        return cached
+        refreshed = _refresh_cached_user_client(tool_context, cached, access_token)
+        if refreshed is not None:
+            return refreshed
+        # Session unusable (expired AT + failed RT). Drop and recreate/relogin.
+        _user_client_cache.pop(cache_key, None)
+        from integrations.supabase_base import close_client
+
+        close_client(cached)
     # Capture pre-flight refresh before create_user_client may rotate tokens in
     # memory; merge CAS needs it so a stale unexpired AT+RT1 cannot overwrite RT2.
     expected_refresh = str(tool_context.state.get("refresh_token") or "")
     client, new_access, new_refresh = _create_or_relogin_client(tool_context, access_token)
     if client is None:
         return None
-    if new_access:
-        tool_context.state["access_token"] = new_access
-    if new_refresh:
-        tool_context.state["refresh_token"] = new_refresh
-    if new_access or new_refresh:
-        _persist_tool_session(tool_context, expected_refresh_token=expected_refresh)
+    _adopt_client_tokens(tool_context, new_access, new_refresh, expected_refresh)
     final_key = _user_client_cache_key(get_user_id(tool_context), new_access or access_token)
     _evict_stale_clients(final_key)
     _user_client_cache[final_key] = client
     return client
+
+
+def _refresh_cached_user_client(tool_context: ToolContext, client, access_token: str):
+    """Keep long-lived cached clients usable after GoTrue auto-refresh was disabled.
+
+    ``auto_refresh_token=False`` stops the background Timer that used to rotate
+    access JWTs. Cache hits previously returned the same client forever, so after
+    ~1h PostgREST saw ``JWT expired``; ``load_portfolio_state`` swallowed that into
+    ``None`` and auth-retry never ran (``未找到组合`` is not an auth keyword).
+    ``get_session()`` still refreshes on demand — call it on every cache hit.
+    """
+    from integrations.supabase_base import get_session_tokens
+
+    expected_refresh = str(tool_context.state.get("refresh_token") or "")
+    new_access, new_refresh = get_session_tokens(client)
+    if not new_access:
+        return None
+    _adopt_client_tokens(tool_context, new_access, new_refresh, expected_refresh)
+    if new_access != access_token:
+        old_key = _user_client_cache_key(get_user_id(tool_context), access_token)
+        final_key = _user_client_cache_key(get_user_id(tool_context), new_access)
+        _user_client_cache.pop(old_key, None)
+        _evict_stale_clients(final_key)
+        _user_client_cache[final_key] = client
+    return client
+
+
+def _adopt_client_tokens(
+    tool_context: ToolContext,
+    new_access: str,
+    new_refresh: str,
+    expected_refresh: str,
+) -> None:
+    prev_access = str(tool_context.state.get("access_token") or "")
+    prev_refresh = str(tool_context.state.get("refresh_token") or "")
+    if new_access:
+        tool_context.state["access_token"] = new_access
+    if new_refresh:
+        tool_context.state["refresh_token"] = new_refresh
+    rotated = (new_access and new_access != prev_access) or (new_refresh and new_refresh != prev_refresh)
+    if rotated:
+        _persist_tool_session(tool_context, expected_refresh_token=expected_refresh)
 
 
 def with_auth_retry(tool_context: ToolContext | None, fn, *args, **kwargs):

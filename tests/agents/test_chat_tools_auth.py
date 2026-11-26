@@ -41,6 +41,101 @@ def test_user_client_cache_key_uses_token_digest(monkeypatch):
     ]
 
 
+def test_cached_user_client_refreshes_expired_access_token(monkeypatch):
+    """Cache hit must call get_session(); otherwise JWT expires after ~1h (#653 side effect)."""
+    tool_context.close_cached_clients()
+    created: list[tuple[str, str]] = []
+    session_tokens = {"access": "at-1", "refresh": "rt-1"}
+    persisted: list[tuple[str, str]] = []
+
+    class Client:
+        pass
+
+    def fake_create_user_client(access_token: str, refresh_token: str):
+        created.append((access_token, refresh_token))
+        return Client()
+
+    def fake_get_session_tokens(_client):
+        return session_tokens["access"], session_tokens["refresh"]
+
+    monkeypatch.setattr("integrations.supabase_base.create_user_client", fake_create_user_client)
+    monkeypatch.setattr("integrations.supabase_base.get_session_tokens", fake_get_session_tokens)
+    monkeypatch.setattr(
+        tool_context,
+        "_persist_tool_session",
+        lambda ctx, expected_refresh_token="": persisted.append(
+            (ctx.state.get("access_token", ""), ctx.state.get("refresh_token", ""))
+        ),
+    )
+
+    ctx = DummyToolContext(
+        {
+            "user_id": "user-1",
+            "access_token": "at-1",
+            "refresh_token": "rt-1",
+        }
+    )
+    first = tool_context.get_user_client(ctx)
+    assert first is not None
+    assert created == [("at-1", "rt-1")]
+
+    # Access JWT expires; GoTrue get_session() rotates AT/RT in memory.
+    session_tokens["access"] = "at-2"
+    session_tokens["refresh"] = "rt-2"
+    second = tool_context.get_user_client(ctx)
+
+    assert second is first
+    assert created == [("at-1", "rt-1")]  # no recreate
+    assert ctx.state["access_token"] == "at-2"
+    assert ctx.state["refresh_token"] == "rt-2"
+    assert persisted == [("at-2", "rt-2")]
+    # Re-keyed under new AT so the next lookup still hits the same client.
+    assert tool_context.get_user_client(ctx) is first
+    tool_context.close_cached_clients()
+
+
+def test_cached_user_client_recreates_when_session_unusable(monkeypatch):
+    tool_context.close_cached_clients()
+    created: list[tuple[str, str]] = []
+    session_tokens_by_call: list[tuple[str, str]] = [
+        ("at-1", "rt-1"),  # create path
+        ("", ""),  # cache hit: refresh failed
+        ("at-2", "rt-2"),  # recreate path
+    ]
+
+    class Client:
+        pass
+
+    def fake_create_user_client(access_token: str, refresh_token: str):
+        created.append((access_token, refresh_token))
+        return Client()
+
+    def fake_get_session_tokens(_client):
+        return session_tokens_by_call.pop(0)
+
+    monkeypatch.setattr("integrations.supabase_base.create_user_client", fake_create_user_client)
+    monkeypatch.setattr("integrations.supabase_base.get_session_tokens", fake_get_session_tokens)
+    monkeypatch.setattr("integrations.supabase_base.close_client", lambda _c: None)
+    monkeypatch.setattr(tool_context, "_persist_tool_session", lambda *a, **k: None)
+
+    ctx = DummyToolContext(
+        {
+            "user_id": "user-1",
+            "access_token": "at-1",
+            "refresh_token": "rt-1",
+        }
+    )
+    first = tool_context.get_user_client(ctx)
+    second = tool_context.get_user_client(ctx)
+
+    assert first is not None
+    assert second is not None
+    assert first is not second
+    assert created == [("at-1", "rt-1"), ("at-1", "rt-1")]
+    assert ctx.state["access_token"] == "at-2"
+    tool_context.close_cached_clients()
+
+
 def test_with_auth_retry_retries_tuple_auth_failure(monkeypatch):
     new_client = object()
     calls: list[object] = []
