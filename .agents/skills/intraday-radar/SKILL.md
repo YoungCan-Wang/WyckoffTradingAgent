@@ -184,6 +184,13 @@ mkdir -p ~/.wyckoff/traces && gh run download $(gh run list --workflow wyckoff_f
 
 # 盘中每 5 分钟守护扫描（自动对齐时钟周期、异常自愈、非交易时段休眠）：
 .venv/bin/python .agents/skills/intraday-radar/scripts/intraday_radar.py --daemon --interval 300
+
+# WebSocket 秒级实时流守护进程（wss://api.tickflow.org/v1/ws/stream，按 200 标的套餐上限订阅持仓+自选+指数+20大ETF+主题ETF+🏆3日候选）：
+# 触发 L4 硬止损 / 60s 持仓异动 / 60s 国家队爆量 / 核心池低上影点火，并每 2s 将快照刷新至 /tmp/wyckoff_tickflow_ws_cache.json
+.venv/bin/python .agents/skills/intraday-radar/scripts/tickflow_ws_daemon.py --holding <代码:COST:STOP> --watch <自选代码>
+
+# 零 REST 全市场查询极速模式（直接复用 15s 内鲜活 WS 缓存驱动单次评估）：
+.venv/bin/python .agents/skills/intraday-radar/scripts/intraday_radar.py --once --ws-fast --holding <代码:COST:STOP>
 ```
 
 3. **宿主机时区漂移自检与跨时区 Cron 映射规范（`CST UTC+8` vs `PST UTC-8`）**：

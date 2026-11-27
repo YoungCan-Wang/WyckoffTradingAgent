@@ -29,6 +29,7 @@ from utils.feishu_report_card import build_report_card_elements, report_card_tem
 from utils.trading_clock import CN_TZ, cn_today, is_a_share_trading_day  # noqa: E402
 
 STATE_PATH = Path("/tmp/wyckoff_intraday_radar_state.json")
+WS_CACHE_PATH = Path("/tmp/wyckoff_tickflow_ws_cache.json")
 ALERT_LOG_PATH = Path.home() / ".wyckoff" / "radar_alerts.jsonl"
 TURNOVER_DIR = Path.home() / ".wyckoff" / "intraday_turnover"
 MAINLINE_ANCHORS_PATH = Path.home() / ".wyckoff" / "mainline_anchors.json"
@@ -1962,6 +1963,30 @@ def send_feishu_tiered_alert(
     return msg_id
 
 
+def load_fresh_ws_quotes(
+    cache_path: Path | None = None,
+    max_age_s: float = 15.0,
+    now_ts: float | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Return today's fresh WebSocket quotes if cache was updated within max_age_s."""
+    target = cache_path or WS_CACHE_PATH
+    if not target.exists():
+        return {}
+    ts = now_ts if now_ts is not None else time.time()
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+        today_str = datetime.fromtimestamp(ts, tz=CN_TZ).date().isoformat()
+        if data.get("date") != today_str:
+            return {}
+        updated_ts = float(data.get("updated_ts") or 0.0)
+        if not (0.0 <= (ts - updated_ts) <= max_age_s):
+            return {}
+        quotes = data.get("quotes")
+        return quotes if isinstance(quotes, dict) and quotes else {}
+    except Exception:
+        return {}
+
+
 def _backfill_holding_quotes(
     client: Any,
     curr_quotes: dict[str, dict[str, Any]],
@@ -2217,15 +2242,24 @@ def run_once(args: argparse.Namespace) -> None:
     load_env_file()
     from integrations.tickflow_client import TickFlowClient
 
-    client = TickFlowClient(api_key=os.environ.get("TICKFLOW_API_KEY", ""))
     l2_map = load_wyckoff_l2_map(args.trace)
     holdings = parse_holdings_arg(args.holding)
     prev_state = json.loads(STATE_PATH.read_text(encoding="utf-8")) if STATE_PATH.exists() else {}
     now_ts = time.time()
     now_bjt = datetime.fromtimestamp(now_ts, tz=CN_TZ)
-    curr_quotes = _backfill_holding_quotes(
-        client, client.get_quotes(universes=["CN_Equity_A", "CN_ETF", "CN_Index"]), holdings
-    )
+    ws_quotes = load_fresh_ws_quotes(now_ts=now_ts)
+    if getattr(args, "ws_fast", False) and ws_quotes:
+        curr_quotes = dict(ws_quotes)
+        if holdings_missing_quote_symbols(holdings, curr_quotes):
+            curr_quotes = _backfill_holding_quotes(
+                TickFlowClient(api_key=os.environ.get("TICKFLOW_API_KEY", "")), curr_quotes, holdings
+            )
+    else:
+        client = TickFlowClient(api_key=os.environ.get("TICKFLOW_API_KEY", ""))
+        raw_quotes = client.get_quotes(universes=["CN_Equity_A", "CN_ETF", "CN_Index"])
+        if ws_quotes:
+            raw_quotes = {**raw_quotes, **ws_quotes}
+        curr_quotes = _backfill_holding_quotes(client, raw_quotes, holdings)
     has_base = _is_fresh_baseline(prev_state, cn_today().isoformat(), now_ts)
     if holdings and _detect_stale_quote_feed(curr_quotes, prev_state, has_base, now_bjt, now_ts):
         sina_hq = _fetch_sina_holding_quotes(list(holdings))
@@ -2384,6 +2418,11 @@ def main() -> None:
         "--late-decision",
         action="store_true",
         help="Prepend 14:40 late-day ETF entry decision card (4 iron execution rules)",
+    )
+    parser.add_argument(
+        "--ws-fast",
+        action="store_true",
+        help="Read fresh WebSocket 200-symbol cache directly with zero full-universe REST calls when available",
     )
     parser.add_argument("--ignore-hours", action="store_true", help="Run scan even outside trading hours")
     parser.add_argument("--dry-run", action="store_true", help="Print card without sending to Feishu")

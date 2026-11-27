@@ -3418,3 +3418,208 @@ def test_preopen_call_auction_eastmoney_direct_fallback_and_once_guard(tmp_path,
     monkeypatch.setattr(radar.time, "time", lambda: ts_0928)
     radar.run_once(args)
     assert len(sent_cards) == 1
+
+
+def _load_ws_daemon_module():
+    spec = importlib.util.spec_from_file_location("tickflow_ws_daemon", SCRIPT_PATH.parent / "tickflow_ws_daemon.py")
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_ws_priority_symbols_caps_at_200_and_orders_holdings_etfs_and_funnel() -> None:
+    ws_mod = _load_ws_daemon_module()
+    l2_map = {
+        "600999": {"name": "风险股", "sector": "综合", "rps": 99.0, "stage": "风控拦截"},
+        "601288": {
+            "name": "农业银行",
+            "sector": "银行",
+            "rps": 98.7,
+            "stage": "候选池已捕获",
+            "funnel_tag": "🏆3日候选连入",
+        },
+    }
+    for i in range(250):
+        c = f"002{i:03d}"
+        l2_map[c] = {"name": f"股{i}", "sector": "化工原料", "rps": 50.0 + i * 0.1, "stage": "买点未确认"}
+
+    holdings = {"603011.SH": {"cost": 18.0, "stop": 17.0}}
+    syms = ws_mod.build_ws_priority_symbols(holdings, l2_map, watch_symbols=["603296"])
+    assert len(syms) == ws_mod.MAX_WS_SYMBOLS
+    assert syms[0] == "603011.SH"
+    assert syms[1] == "603296.SH"
+    assert "000001.SH" in syms and "510300.SH" in syms and "511360.SH" in syms
+    assert "601288.SH" in syms
+    assert "600999.SH" not in syms
+
+
+def test_ws_realtime_triggers_l4_dedup_nt_blitz_and_core_breakout(tmp_path) -> None:
+    from collections import deque
+
+    ws_mod = _load_ws_daemon_module()
+    today_d = cn_today()
+    t0 = datetime(today_d.year, today_d.month, today_d.day, 10, 20, 0, tzinfo=CN_TZ).timestamp()
+    t1 = t0 + 25.0
+
+    # Shared state file already fired L4 for 002309.SZ, not 603011.SH
+    state_file = tmp_path / "radar_state.json"
+    state_file.write_text(
+        json.dumps({"date": today_d.isoformat(), "cooldowns": {"L4:holding_stop:002309.SZ": t0}}),
+        encoding="utf-8",
+    )
+
+    holdings = {
+        "603011.SH": {"cost": 18.25, "stop": 17.55, "role": "ATK"},
+        "002309.SZ": {"cost": 3.01, "stop": 2.70, "role": "ATK"},
+    }
+    l2_map = {
+        "603296": {
+            "name": "华勤技术",
+            "sector": "元器件",
+            "rps": 65.2,
+            "stage": "买点未确认",
+            "shadow_lane": "pre_breakout",
+        }
+    }
+    live_quotes = {
+        "603011.SH": {
+            "symbol": "603011.SH",
+            "prev_close": 18.0,
+            "open": 17.9,
+            "last_price": 17.40,
+            "high": 17.95,
+            "low": 17.35,
+            "volume": 1e5,
+            "amount": 2.0e8,
+        },
+        "002309.SZ": {
+            "symbol": "002309.SZ",
+            "prev_close": 2.8,
+            "open": 2.8,
+            "last_price": 2.50,
+            "high": 2.82,
+            "low": 2.50,
+            "volume": 1e5,
+            "amount": 1.0e8,
+        },
+        "588000.SH": {
+            "symbol": "588000.SH",
+            "prev_close": 1.25,
+            "open": 1.25,
+            "last_price": 1.28,
+            "high": 1.285,
+            "low": 1.245,
+            "volume": 2e7,
+            "amount": 25.0e8,
+        },
+        "603296.SH": {
+            "symbol": "603296.SH",
+            "prev_close": 61.5,
+            "open": 62.0,
+            "last_price": 64.0,
+            "high": 64.1,
+            "low": 61.8,
+            "volume": 3.0e8 / 62.9,
+            "amount": 3.0e8,
+            "ext": {"name": "华勤技术"},
+        },
+    }
+    ring = {
+        "588000.SH": deque([(t0, 0.8, 20.5)]),
+        "603296.SH": deque([(t0, 0.9, 1.8)]),
+    }
+
+    lvl, title, body, recs, cds, _ = ws_mod.evaluate_ws_realtime_triggers(
+        live_quotes,
+        ring,
+        holdings,
+        l2_map,
+        {},
+        t1,
+        last_l2_card_ts=0.0,
+        watch_symbols=["603296.SH"],
+        state_path=state_file,
+    )
+    assert lvl == "L4"
+    assert "603011.SH" in body and "002309.SZ" not in body  # deduped with shared state cooldown
+    assert "国家队" in body and "华勤技术" in body
+    assert "L4:holding_stop:603011.SH" in cds
+
+
+def test_load_fresh_ws_quotes_and_ws_fast_skips_rest(tmp_path, monkeypatch) -> None:
+    import sys
+    import types
+
+    radar = _load_radar_module()
+    ws_cache = tmp_path / "ws_cache.json"
+    state_file = tmp_path / "state.json"
+    now_d = cn_today()
+    now_ts = datetime(now_d.year, now_d.month, now_d.day, 10, 20, tzinfo=CN_TZ).timestamp()
+
+    ws_payload = {
+        "date": now_d.isoformat(),
+        "updated_ts": now_ts - 3.0,
+        "count": 2,
+        "quotes": {
+            "000001.SH": {
+                "symbol": "000001.SH",
+                "prev_close": 3476.0,
+                "open": 3480.0,
+                "last_price": 3478.0,
+                "amount": 2.2e11,
+            },
+            "603011.SH": {
+                "symbol": "603011.SH",
+                "prev_close": 13.62,
+                "open": 13.62,
+                "last_price": 13.80,
+                "high": 13.85,
+                "low": 13.55,
+                "volume": 50000,
+                "amount": 7.0e7,
+            },
+        },
+    }
+    ws_cache.write_text(json.dumps(ws_payload), encoding="utf-8")
+    assert len(radar.load_fresh_ws_quotes(ws_cache, max_age_s=15.0, now_ts=now_ts)) == 2
+    assert radar.load_fresh_ws_quotes(ws_cache, max_age_s=1.0, now_ts=now_ts) == {}
+
+    class _ExplodeTF:
+        def __init__(self, api_key: str = "") -> None:
+            pass
+
+        def get_quotes(self, universes=None, symbols=None):
+            raise AssertionError(
+                "REST get_quotes must not be called in --ws-fast when WS cache is fresh and holdings covered"
+            )
+
+    fake_mod = types.ModuleType("integrations.tickflow_client")
+    fake_mod.TickFlowClient = _ExplodeTF
+    monkeypatch.setitem(sys.modules, "integrations.tickflow_client", fake_mod)
+    monkeypatch.setattr(radar, "WS_CACHE_PATH", ws_cache)
+    monkeypatch.setattr(radar, "STATE_PATH", state_file)
+    monkeypatch.setattr(radar, "load_env_file", lambda: None)
+    monkeypatch.setattr(radar, "load_wyckoff_l2_map", lambda trace=None: {})
+    monkeypatch.setattr(radar.time, "time", lambda: now_ts)
+
+    args = SimpleNamespace(
+        trace=None,
+        holding=["603011.SH:18.252:17.55:ATK"],
+        user_id=None,
+        urgent_only=False,
+        force_send=False,
+        heartbeat=False,
+        late_decision=False,
+        ws_fast=True,
+        ignore_hours=True,
+        dry_run=True,
+    )
+    radar.run_once(args)
+
+
+def test_ws_fatal_auth_error_detection() -> None:
+    ws_mod = _load_ws_daemon_module()
+    assert ws_mod.is_fatal_ws_error("server rejected WebSocket connection: HTTP 403")
+    assert ws_mod.is_fatal_ws_error("no permission for channel: depth")
+    assert not ws_mod.is_fatal_ws_error("ConnectionResetError: reset by peer")
