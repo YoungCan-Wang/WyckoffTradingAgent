@@ -1496,6 +1496,7 @@ def _enrich_mainline_and_telegraph(
             build_intraday_main_force_strike_card,
             build_morning_washout_card,
             detect_confirmed_mainline_alerts,
+            detect_policy_bazooka_alerts,
             scan_intraday_trajectory_flows,
             scan_live_telegraph_catalysts,
             summarize_call_auction_mainlines,
@@ -1580,6 +1581,10 @@ def _enrich_mainline_and_telegraph(
         zero_bias_summary = summarize_zero_bias_l2_leaders(curr_quotes, l2_map)
         if zero_bias_summary:
             buckets["mainlines"].append(zero_bias_summary)
+        if now_hm >= "09:25":
+            for p_md, p_rec in detect_policy_bazooka_alerts(cooldowns=cooldowns, now_ts=ts):
+                buckets["l2_events"].insert(0, p_md)
+                alert_records.append({"ts": ts, "level": "L2", **p_rec})
         if nt_summary:
             buckets["mainlines"].append(nt_summary)
         seesaw_line = summarize_dividend_seesaw(curr_quotes, red_ratio=red_ratio)

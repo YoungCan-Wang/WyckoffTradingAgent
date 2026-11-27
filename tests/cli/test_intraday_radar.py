@@ -3983,3 +3983,113 @@ def test_dividend_seesaw_and_ws_dip_ambush_zone(tmp_path) -> None:
     assert lvl == "L2"
     assert "急杀抗跌·健康回踩挂单窗" in body and "低吸区" in body
     assert {r["kind"] for r in recs} >= {"ws_index_whip", "ws_dividend_siphon"}
+
+
+def test_right_side_20cm_30cm_elasticity_and_bse_liquidity_gate() -> None:
+    spec = importlib.util.spec_from_file_location("telegraph_catalysts", SCRIPT_PATH.parent / "telegraph_catalysts.py")
+    assert spec and spec.loader
+    tc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tc)
+
+    l2_map = {
+        "600001": {
+            "name": "主板稳健",
+            "sector": "元器件",
+            "stage": "买点未确认",
+            "shadow_lane": "pre_breakout",
+            "l3_eligible": True,
+            "layer3_quality_score": 0.65,
+        },
+        "300308": {
+            "name": "中际旭创",
+            "sector": "通信设备",
+            "stage": "买点未确认",
+            "shadow_lane": "pre_breakout",
+            "l3_eligible": True,
+            "layer3_quality_score": 0.65,
+        },
+        "835185": {
+            "name": "北交活水",
+            "sector": "元器件",
+            "stage": "买点未确认",
+            "shadow_lane": "pre_breakout",
+            "l3_eligible": True,
+            "layer3_quality_score": 0.65,
+        },
+        "830799": {
+            "name": "北交枯竭",
+            "sector": "元器件",
+            "stage": "买点未确认",
+            "shadow_lane": "pre_breakout",
+            "l3_eligible": True,
+            "layer3_quality_score": 0.90,
+        },
+    }
+    quotes = {
+        "600001.SH": {
+            "prev_close": 10.0,
+            "open": 10.1,
+            "last_price": 10.35,
+            "high": 10.38,
+            "volume": 3e8 / 10.25,
+            "amount": 3.0e8,
+        },
+        "300308.SZ": {
+            "prev_close": 100.0,
+            "open": 101.0,
+            "last_price": 106.2,
+            "high": 106.5,
+            "volume": 6e8 / 105.0,
+            "amount": 6.0e8,
+        },
+        "835185.BJ": {
+            "prev_close": 20.0,
+            "open": 20.2,
+            "last_price": 21.3,
+            "high": 21.35,
+            "volume": 3e8 / 21.05,
+            "amount": 3.0e8,
+        },
+        "830799.BJ": {
+            "prev_close": 20.0,
+            "open": 20.2,
+            "last_price": 21.3,
+            "high": 21.35,
+            "volume": 1.5e8 / 21.05,
+            "amount": 1.5e8,
+        },
+    }
+    picks = tc._pick_strike_equities(quotes, l2_map, top_n=2, red_ratio=0.75)
+    joined = "\n".join(picks)
+    assert "300308.SZ" in joined and "835185.BJ" in joined
+    assert "830799.BJ" not in joined
+    assert "600001.SH" not in joined
+
+
+def test_policy_bazooka_telegraph_triggers_l2_alert() -> None:
+    spec = importlib.util.spec_from_file_location("telegraph_catalysts", SCRIPT_PATH.parent / "telegraph_catalysts.py")
+    assert spec and spec.loader
+    tc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tc)
+
+    now_ts = datetime(2026, 11, 27, 13, 25, tzinfo=CN_TZ).timestamp()
+    raw = [
+        {
+            "id": "sc1",
+            "ts": now_ts - 180,
+            "hm": "13:22",
+            "text": "【李强主持召开国务院常务会议】研究深化资本市场投融资综合改革，加力发挥“国家队”稳市作用，优化中央汇金类“平准基金”功能，提供充足流动性保障。",
+        },
+        {
+            "id": "noise1",
+            "ts": now_ts - 120,
+            "hm": "13:23",
+            "text": "【今日午盘播报】市场震荡整理。",
+        },
+    ]
+    cds: dict[str, float] = {}
+    hits = tc.detect_policy_bazooka_alerts(cooldowns=cds, now_ts=now_ts, raw_items=raw)
+    assert len(hits) == 1
+    md, rec = hits[0]
+    assert "L2 国家级重磅稳市定调" in md and rec["kind"] == "policy_bazooka"
+    assert tc.detect_policy_bazooka_alerts(cooldowns=cds, now_ts=now_ts + 60, raw_items=raw) == []

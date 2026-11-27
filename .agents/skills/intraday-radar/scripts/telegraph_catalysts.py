@@ -340,6 +340,66 @@ def _is_equity_symbol(sym: str, allow_bj: bool = False) -> bool:
     return allow_bj and sym.endswith(".BJ") and sym[:2] in ("92", "83", "87", "88", "43")
 
 
+def _is_20_or_30cm(code_or_sym: str) -> bool:
+    return code_or_sym[:2] in ("30", "68", "92", "83", "87", "88", "43")
+
+
+def _passes_board_liquidity(sym: str, amt_yi: float, base_min_yi: float) -> bool:
+    return amt_yi >= (max(base_min_yi, 2.5) if sym.endswith(".BJ") else base_min_yi)
+
+
+POLICY_MEETING_ANCHORS: tuple[str, ...] = ("国务院常务会议", "国常会", "政治局会议", "中央金融工作会议")
+POLICY_MARKET_ANCHORS: tuple[str, ...] = (
+    "资本市场",
+    "国家队",
+    "平准基金",
+    "类“平准",
+    '类"平准',
+    "中央汇金",
+    "稳市机制",
+    "充足流动性",
+)
+
+
+def detect_policy_bazooka_alerts(
+    cooldowns: dict[str, float] | None = None,
+    now_ts: float | None = None,
+    raw_items: list[dict[str, Any]] | None = None,
+    window_minutes: int = 35,
+) -> list[tuple[str, dict[str, Any]]]:
+    """Escalate top-level State Council / Politburo / stabilization-fund dispatches to L2 immediately."""
+    if raw_items is None and os.environ.get("PYTEST_CURRENT_TEST"):
+        return []
+    cur_ts = now_ts if now_ts is not None else datetime.now(CN_TZ).timestamp()
+    cutoff = cur_ts - window_minutes * 60
+    fetched = list(raw_items) if raw_items is not None else (fetch_sina_telegraph(pages=1) + fetch_wscn_telegraph())
+    fetched.sort(key=lambda x: -float(x.get("ts") or 0.0))
+    out: list[tuple[str, dict[str, Any]]] = []
+    for item in fetched:
+        if float(item.get("ts") or 0.0) < cutoff:
+            continue
+        txt = str(item.get("text") or "")
+        direct = any(tok in txt for tok in ("平准基金", "发挥“国家队”稳市", '发挥"国家队"稳市'))
+        combo = any(m in txt for m in POLICY_MEETING_ANCHORS) and any(k in txt for k in POLICY_MARKET_ANCHORS)
+        if not (direct or combo):
+            continue
+        dedup = re.sub(r"^【[^】]+】", "", txt)[:20]
+        if cooldowns is not None:
+            cd_key = f"L2:policy_bazooka:{dedup}"
+            if cd_key in cooldowns and (cur_ts - float(cooldowns[cd_key])) < 14400:
+                continue
+            cooldowns[cd_key] = cur_ts
+        hm = str(item.get("hm") or datetime.fromtimestamp(float(item.get("ts") or cur_ts), tz=CN_TZ).strftime("%H:%M"))
+        short_txt = txt[:110] + ("..." if len(txt) > 110 else "")
+        out.append(
+            (
+                f"- 🏛️ **【L2 国家级重磅稳市定调】{hm}** {short_txt}",
+                {"kind": "policy_bazooka", "hm": hm, "snippet": short_txt[:48]},
+            )
+        )
+    return out
+
+
 def resolve_code6_symbol(code6: str, quotes: dict[str, Any] | None = None) -> str:
     if code6.startswith(("92", "83", "87", "88", "43")):
         return f"{code6}.BJ"
@@ -452,11 +512,17 @@ def _rank_wyckoff_picks(
         pre = float(q.get("prev_close") or 0.0)
         has_q = last > 0 and pre > 0
         pct = ((last - pre) / pre * 100.0) if has_q else float(q.get("pct") or 0.0)
-        if pct < -1.5 or pct > max_pct:
+        is_elastic = _is_20_or_30cm(code6)
+        board_max_pct = (max_pct + 1.4) if (is_elastic and (red_ratio or 0.0) >= 0.58) else max_pct
+        if pct < -1.5 or pct > board_max_pct:
             continue
         if has_q and last < _resolve_vwap(q, last):
             continue
-        mb_bonus = 20.0 if code6.startswith(("60", "00")) else 0.0
+        board_bonus = (
+            (12.0 if is_elastic else 0.0)
+            if (red_ratio or 0.0) >= 0.58
+            else (10.0 if (red_ratio is not None and red_ratio < 0.45 and code6.startswith(("60", "00"))) else 0.0)
+        )
         l2_bonus = 30.0
         rps_bonus = 15.0 if 22.0 <= rps <= 70.0 else 0.0
         streak_bonus = min(int(meta.get("streak_days") or 0), 3) * 6.0
@@ -464,7 +530,7 @@ def _rank_wyckoff_picks(
             pct_score = pct * 2.5 if pct <= 2.8 else (7.0 - (pct - 2.8) * 8.0)
         else:
             pct_score = max(min(pct, 3.5), -1.0) * 2.0
-        score = mb_bonus + l2_bonus + rps_bonus + streak_bonus + pct_score
+        score = board_bonus + l2_bonus + rps_bonus + streak_bonus + pct_score
         ch_str = "/".join(meta.get("channels") or []) or ("候选" if is_cand else f"RPS{rps:.0f}")
         raw_ftag = str(meta.get("funnel_tag") or "")
         ftag = raw_ftag.replace("L2+L3连入", "L2").replace("候选连入", "候选").replace("T-2洗盘回流", "回流")
@@ -1414,12 +1480,13 @@ def _pick_strike_equities(
     curr_quotes: dict[str, dict[str, Any]],
     l2_map: dict[str, dict[str, Any]],
     top_n: int = 2,
+    red_ratio: float | None = None,
 ) -> list[str]:
     """Select clean multi-day L2+L3 / candidate / pre_breakout leaders with actionable buy bands."""
     strong_secs = _collect_strong_sectors(curr_quotes, l2_map)
-    picks: list[tuple[tuple[int, int, int, int, float, float], str]] = []
+    picks: list[tuple[tuple[int, int, int, int, int, float, float], str]] = []
     for sym, q in curr_quotes.items():
-        if not _is_equity_symbol(sym):
+        if not _is_equity_symbol(sym, allow_bj=True):
             continue
         meta = (l2_map or {}).get(sym[:6]) or {}
         if not meta or _is_meta_risk_blocked(meta):
@@ -1438,7 +1505,11 @@ def _pick_strike_equities(
         high = float(q.get("high") or last)
         wick = ((high - last) / pre * 100.0) if high >= last else 0.0
         amt_yi = float(q.get("amount") or 0.0) / 1e8
-        if not (1.2 <= pct <= 5.0 and 0.0 <= vd <= 2.0 and wick <= 1.0 and amt_yi >= 1.2):
+        elastic = _is_20_or_30cm(sym)
+        max_pct = 7.5 if elastic else 5.0
+        if not (
+            1.2 <= pct <= max_pct and 0.0 <= vd <= 2.0 and wick <= 1.2 and _passes_board_liquidity(sym, amt_yi, 1.2)
+        ):
             continue
         nm = meta.get("name") or (q.get("ext") or {}).get("name") or sym
         sec = str(meta.get("sector") or "")
@@ -1456,6 +1527,7 @@ def _pick_strike_equities(
             int(is_3d),
             int(int(meta.get("streak_days") or 0) >= 2 and bool(meta.get("l3_eligible"))),
             int(is_cand),
+            int(elastic and (red_ratio or 0.0) >= 0.65),
             int(sec in strong_secs),
             round(float(meta.get("l3_score") or 0.0), 2),
             -abs(vd - 0.8),
@@ -1508,7 +1580,9 @@ def build_intraday_main_force_strike_card(
             )
         )
     etf_lines.sort(reverse=True)
-    picked = [row[1] for row in etf_lines[:2]] + _pick_strike_equities(curr_quotes, l2_map, top_n=2)
+    picked = [row[1] for row in etf_lines[:2]] + _pick_strike_equities(
+        curr_quotes, l2_map, top_n=2, red_ratio=red_ratio
+    )
     if not picked:
         return ""
     return "**🚀 【盘中跟随主力即时出击卡：广度共振已确认·顺势跟庄不必死等尾盘】**\n" + "\n".join(picked)
@@ -1621,7 +1695,7 @@ def _collect_strong_sectors(
     sec_pcts: dict[str, list[float]] = {}
     l2_up_counts: dict[str, int] = {}
     for sym, q in curr_quotes.items():
-        if not _is_equity_symbol(sym):
+        if not _is_equity_symbol(sym, allow_bj=True):
             continue
         last = float(q.get("last_price") or q.get("price") or 0.0)
         pre = float(q.get("prev_close") or 0.0)
@@ -1663,7 +1737,7 @@ def rank_intraday_rs_leaders(
         hot_secs.update(MAINLINE_SUPER_GROUPS.get(theme, {theme}))
     scored: list[tuple[float, str, dict[str, Any]]] = []
     for sym, q in (curr_quotes or {}).items():
-        if not _is_equity_symbol(sym):
+        if not _is_equity_symbol(sym, allow_bj=True):
             continue
         meta = (l2_map or {}).get(sym[:6]) or {}
         if _is_meta_risk_blocked(meta):
@@ -1674,7 +1748,7 @@ def rank_intraday_rs_leaders(
         if "ST" in name or last <= 0 or pre <= 0:
             continue
         amt_yi = float(q.get("amount") or 0.0) / 1e8 if "amount" in q else float(q.get("amt_yi") or 0.0)
-        if amt_yi < 3.0:
+        if not _passes_board_liquidity(sym, amt_yi, 3.0):
             continue
         open_p = float(q.get("open") or pre)
         open_pct = (open_p / pre - 1.0) * 100.0
@@ -1993,7 +2067,7 @@ def summarize_zero_bias_l2_leaders(
     is_panic_open = bool(auc and auc["mkt_red_pct"] < 20.0)
     scored: list[tuple[float, str, str, str]] = []
     for sym, q in curr_quotes.items():
-        if not _is_equity_symbol(sym):
+        if not _is_equity_symbol(sym, allow_bj=True):
             continue
         meta = l2_map.get(sym[:6]) or {}
         if _is_meta_risk_blocked(meta):
@@ -2029,7 +2103,9 @@ def summarize_zero_bias_l2_leaders(
             continue
         high_p = max(float(q.get("high") or last), last)
         low_p = min(float(q.get("low") or last), last) if float(q.get("low") or 0.0) > 0 else last
-        if not (1.5 <= pct <= 6.8 and amt_yi >= 1.5 and vwap * 1.001 <= last <= vwap * 1.022):
+        if not (
+            1.5 <= pct <= 6.8 and _passes_board_liquidity(sym, amt_yi, 1.5) and vwap * 1.001 <= last <= vwap * 1.022
+        ):
             continue
         if last < open_p or (high_p - last) / high_p > 0.012 or (high_p - low_p) / pre > 0.065:
             continue
