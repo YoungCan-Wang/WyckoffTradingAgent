@@ -189,6 +189,32 @@ def test_event_key_distinguishes_skipped_from_filled() -> None:
     assert filled.endswith(":filled")
 
 
+def test_event_key_distinguishes_same_day_skipped_stop_sells() -> None:
+    """不同 signal_date 的同票 skipped 卖单不得共用 event_key。"""
+    as_of = date(2026, 11, 24)
+    d1, d2 = date(2026, 11, 20), date(2026, 11, 21)
+    k1 = event_key(
+        "USER_SHADOW:test",
+        as_of,
+        "sell",
+        "600519",
+        0,
+        status="skipped",
+        plan_key=plan_key("USER_SHADOW:test", d1, "sell", "600519"),
+    )
+    k2 = event_key(
+        "USER_SHADOW:test",
+        as_of,
+        "sell",
+        "600519",
+        0,
+        status="skipped",
+        plan_key=plan_key("USER_SHADOW:test", d2, "sell", "600519"),
+    )
+    assert k1 != k2
+    assert k1.endswith(plan_key("USER_SHADOW:test", d1, "sell", "600519"))
+
+
 def _ohlc_bars(codes: list[str], days: list[date]) -> dict[str, pd.DataFrame]:
     return {
         code: pd.DataFrame(
@@ -300,3 +326,50 @@ def test_plan_reason_appends_route_rule_only_when_labelled() -> None:
     )
     assert _plan_reason({"tag": "SPRING(跨日确认)", "regime_route_rule": ""}) == "SPRING(跨日确认)"
     assert _plan_reason({}) == "wyckoff_confirmed"
+
+
+def test_pending_no_open_stop_sell_blocks_same_code_repropose() -> None:
+    """缺开盘价时止损卖单保持 planned，不得再叠同票卖单。"""
+    t0, t1, t2 = date(2026, 9, 20), date(2026, 9, 21), date(2026, 9, 22)
+    book = ShadowBook(
+        cash=50_000.0,
+        positions={
+            "600519": ShadowPosition(
+                code="600519",
+                name="茅台",
+                shares=100,
+                sellable_shares=100,
+                avg_cost=100.0,
+                buy_dt=t0,
+                last_mark=90.0,
+                stop_loss=95.0,
+            )
+        },
+    )
+    day1 = run_shadow_session(book, [], [], _ohlc_bars(["600519"], [t0, t1]), t1, account_id="USER_SHADOW:test")
+    assert len(day1.new_plans) == 1
+    assert day1.new_plans[0].action == "sell"
+    stop_plan = day1.new_plans[0]
+
+    bars_no_open = {
+        "600519": pd.DataFrame(
+            {
+                "date": [t0, t1, t2],
+                "open": [100.0, 90.0, 0.0],
+                "high": [101.0, 91.0, 88.0],
+                "low": [99.0, 89.0, 85.0],
+                "close": [100.0, 90.0, 86.0],
+            }
+        )
+    }
+    day2 = run_shadow_session(
+        day1.book,
+        [stop_plan],
+        [],
+        bars_no_open,
+        t2,
+        account_id="USER_SHADOW:test",
+        allow_new_buys=False,
+    )
+    assert day2.fills == []
+    assert day2.new_plans == []
