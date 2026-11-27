@@ -3623,3 +3623,64 @@ def test_ws_fatal_auth_error_detection() -> None:
     assert ws_mod.is_fatal_ws_error("server rejected WebSocket connection: HTTP 403")
     assert ws_mod.is_fatal_ws_error("no permission for channel: depth")
     assert not ws_mod.is_fatal_ws_error("ConnectionResetError: reset by peer")
+
+
+def test_ws_daemon_5_category_alerts_and_heartbeat_ws_badge(tmp_path, monkeypatch) -> None:
+    import time
+    from collections import deque
+
+    radar = _load_radar_module()
+    ws_mod = _load_ws_daemon_module()
+    today_d = cn_today()
+    t0 = datetime(today_d.year, today_d.month, today_d.day, 10, 30, 0, tzinfo=CN_TZ).timestamp()
+    t1 = t0 + 60.0
+    state_file = tmp_path / "empty_state.json"
+
+    live_quotes = {
+        "000688.SH": {
+            "symbol": "000688.SH",
+            "prev_close": 1150.0,
+            "open": 1155.0,
+            "last_price": 1168.0,
+            "amount": 3.2e10,
+        },
+        "512480.SH": {
+            "symbol": "512480.SH",
+            "prev_close": 1.00,
+            "open": 1.00,
+            "last_price": 1.022,
+            "high": 1.025,
+            "low": 1.00,
+            "volume": 2e8 / 1.01,
+            "amount": 2.0e8,
+        },
+        "603296.SH": {
+            "symbol": "603296.SH",
+            "prev_close": 60.0,
+            "open": 60.2,
+            "last_price": 62.4,
+            "high": 62.5,
+            "low": 60.0,
+            "volume": 2e8 / 61.5,
+            "amount": 2.0e8,
+            "ext": {"name": "华勤技术"},
+        },
+    }
+    ring = {
+        "000688.SH": deque([(t0, 0.70, 300.0)]),
+        "512480.SH": deque([(t0, 0.80, 1.5)]),
+    }
+    lvl, title, body, recs, _, _ = ws_mod.evaluate_ws_realtime_triggers(
+        live_quotes, ring, {}, {}, {}, t1, last_l2_card_ts=0.0, watch_symbols=["603296.SH"], state_path=state_file
+    )
+    assert lvl == "L2"
+    assert "科创50" in body and "半导体" in body and "自选突破走强" in body and "华勤技术" in body
+    assert {r["kind"] for r in recs} >= {"ws_index_whip", "ws_theme_etf", "ws_watch_strong"}
+
+    ws_cache = tmp_path / "ws_cache.json"
+    ws_cache.write_text(
+        json.dumps({"date": today_d.isoformat(), "updated_ts": time.time(), "quotes": live_quotes}), encoding="utf-8"
+    )
+    monkeypatch.setattr(radar, "WS_CACHE_PATH", ws_cache)
+    _, hb_body = radar._format_heartbeat_card(live_quotes, {}, 3500, "10:30")
+    assert "⚡WS秒级流在线(3只)" in hb_body

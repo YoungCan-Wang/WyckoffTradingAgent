@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TickFlow WebSocket real-time streaming daemon (200 priority symbols, sub-second L4/L2 + shared cache)."""
+"""TickFlow WebSocket real-time streaming daemon (200 priority symbols, 5-category sub-second L4/L2 + cache)."""
 
 from __future__ import annotations
 
@@ -46,9 +46,9 @@ WS_CACHE_PATH = Path("/tmp/wyckoff_tickflow_ws_cache.json")
 WS_STATE_PATH = Path("/tmp/wyckoff_tickflow_ws_state.json")
 CACHE_FLUSH_INTERVAL_S = 2.0
 EVAL_INTERVAL_S = 3.0
-ROLLING_WINDOW_S = 60.0
-RING_PRUNE_AGE_S = 75.0
-WS_MIN_CARD_GAP_S = 90.0
+ROLLING_WINDOW_S = 180.0
+RING_PRUNE_AGE_S = 210.0
+WS_MIN_CARD_GAP_S = 45.0
 MIN_RING_AGE_FOR_DELTA_S = 5.0
 CORE_INDICES = (
     "000001.SH",
@@ -59,6 +59,12 @@ CORE_INDICES = (
     "000016.SH",
     "000905.SH",
     "000852.SH",
+)
+WHIP_INDICES = (
+    ("000001.SH", "上证指数"),
+    ("399006.SZ", "创业板指"),
+    ("000688.SH", "科创50"),
+    ("000852.SH", "中证1000"),
 )
 BELLWETHER_EQUITIES = (
     "300308.SZ",
@@ -140,7 +146,7 @@ def _update_ring_60s(
     quote: dict[str, Any],
     now_ts: float,
 ) -> None:
-    """Append tick sample into rolling 60s buffer and prune stale entries."""
+    """Append tick sample into rolling 180s buffer and prune stale entries."""
     sym = str(quote.get("symbol") or "").strip().upper()
     m = compute_quote_metrics(quote)
     if not sym or m is None:
@@ -172,7 +178,7 @@ def load_shared_cooldowns(
     ws_cooldowns: dict[str, float],
     state_path: Path = STATE_PATH,
 ) -> dict[str, float]:
-    """Merge today's 5m radar cooldowns with WS cooldowns to avoid duplicate L4/L2 alerts."""
+    """Merge today's radar cooldowns with WS cooldowns to avoid duplicate L4/L2 alerts."""
     merged = dict(ws_cooldowns)
     if state_path.exists():
         try:
@@ -187,13 +193,13 @@ def load_shared_cooldowns(
 
 def _eval_holdings_realtime(
     live_quotes: dict[str, dict[str, Any]],
-    ring_60s: dict[str, deque[tuple[float, float, float]]],
+    ring_buf: dict[str, deque[tuple[float, float, float]]],
     holdings: dict[str, dict[str, Any]],
     l2_map: dict[str, dict[str, Any]],
     cooldowns: dict[str, float],
     now_ts: float,
 ) -> tuple[list[str], list[str], list[dict[str, Any]], list[str]]:
-    """Evaluate sub-second L4 hard stop and L2 60s surge/drop on holdings."""
+    """Evaluate sub-second L4 hard stop and L2 3m surge/drop on holdings."""
     l4_lines: list[str] = []
     l2_lines: list[str] = []
     records: list[dict[str, Any]] = []
@@ -224,42 +230,72 @@ def _eval_holdings_realtime(
                 )
                 focus.append(f"持仓破止损 {sym}({m['last']:.2f})")
             continue
-        anchor = _oldest_within_window(ring_60s.get(sym), now_ts)
+        anchor = _oldest_within_window(ring_buf.get(sym), now_ts)
         if anchor is None:
             continue
         d_pct = m["pct"] - anchor[1]
-        if d_pct >= 3.2 and _check_cooldown(cooldowns, f"L2:ws_hold_surge:{sym}", now_ts):
+        if d_pct >= 2.2 and _check_cooldown(cooldowns, f"L2:ws_hold_surge:{sym}", now_ts):
             l2_lines.append(
-                f"- 🟡 **【WS 60s持仓急拉做T】`{sym}` {nm}**：60s涨速 **{d_pct:+.2f}%** → 现 **{m['pct']:+.2f}%** (VWAP {m['vwap_dev']:+.2f}%)"
+                f"- 🟡 **【WS 3m持仓急拉做T】`{sym}` {nm}**：3m涨速 **{d_pct:+.2f}%** → 现 **{m['pct']:+.2f}%** (VWAP {m['vwap_dev']:+.2f}%)"
             )
             records.append(
-                {"ts": now_ts, "level": "L2", "kind": "ws_holding_surge", "symbol": sym, "d_pct_60s": round(d_pct, 2)}
+                {"ts": now_ts, "level": "L2", "kind": "ws_holding_surge", "symbol": sym, "d_pct_3m": round(d_pct, 2)}
             )
             focus.append(f"持仓急拉 {sym}({d_pct:+.1f}%)")
-        elif d_pct <= -2.8 and m["vwap_dev"] <= -0.6 and _check_cooldown(cooldowns, f"L2:ws_hold_drop:{sym}", now_ts):
+        elif d_pct <= -1.8 and m["vwap_dev"] <= -0.45 and _check_cooldown(cooldowns, f"L2:ws_hold_drop:{sym}", now_ts):
             l2_lines.append(
-                f"- 🟠 **【WS 60s持仓跳水预警】`{sym}` {nm}**：60s跌速 **{d_pct:+.2f}%** | VWAP水下 **{m['vwap_dev']:+.2f}%**"
+                f"- 🟠 **【WS 3m持仓跳水预警】`{sym}` {nm}**：3m跌速 **{d_pct:+.2f}%** | VWAP水下 **{m['vwap_dev']:+.2f}%**"
             )
             records.append(
-                {"ts": now_ts, "level": "L2", "kind": "ws_holding_drop", "symbol": sym, "d_pct_60s": round(d_pct, 2)}
+                {"ts": now_ts, "level": "L2", "kind": "ws_holding_drop", "symbol": sym, "d_pct_3m": round(d_pct, 2)}
             )
             focus.append(f"持仓跳水 {sym}({d_pct:+.1f}%)")
     return l4_lines, l2_lines, records, focus
 
 
-def _eval_nt_etf_blitz(
+def _eval_index_whip(
     live_quotes: dict[str, dict[str, Any]],
-    ring_60s: dict[str, deque[tuple[float, float, float]]],
+    ring_buf: dict[str, deque[tuple[float, float, float]]],
     cooldowns: dict[str, float],
     now_ts: float,
 ) -> tuple[list[str], list[dict[str, Any]], list[str]]:
-    """Detect 60-second institutional broad-ETF blitz on National Team 20 ETFs."""
+    """Detect rapid 3-minute index surge or selloff across core benchmarks."""
+    lines: list[str] = []
+    recs: list[dict[str, Any]] = []
+    focus: list[str] = []
+    for sym, label in WHIP_INDICES:
+        q = live_quotes.get(sym)
+        m = compute_quote_metrics(q) if q else None
+        anchor = _oldest_within_window(ring_buf.get(sym), now_ts)
+        if not m or anchor is None:
+            continue
+        d_pct = m["pct"] - anchor[1]
+        if abs(d_pct) >= 0.65 and _check_cooldown(cooldowns, f"L2:ws_idx_whip:{sym}", now_ts, window=1200):
+            tag = "🚀大盘急拉" if d_pct > 0 else "⚠️大盘急杀跳水"
+            lines.append(f"- 📊 **【WS {tag}】{label} `{sym}`**：3m波动 **{d_pct:+.2f}%** → 现 **{m['pct']:+.2f}%**")
+            recs.append(
+                {"ts": now_ts, "level": "L2", "kind": "ws_index_whip", "symbol": sym, "d_pct_3m": round(d_pct, 2)}
+            )
+            focus.append(f"{label}3m{d_pct:+.2f}%")
+    return lines, recs, focus
+
+
+def _eval_nt_etf_blitz(
+    live_quotes: dict[str, dict[str, Any]],
+    ring_buf: dict[str, deque[tuple[float, float, float]]],
+    cooldowns: dict[str, float],
+    now_ts: float,
+) -> tuple[list[str], list[dict[str, Any]], list[str]]:
+    """Detect 3-minute institutional broad-ETF blitz on National Team 20 ETFs after 09:35."""
+    now_dt = datetime.fromtimestamp(now_ts, tz=CN_TZ)
+    if (now_dt.hour, now_dt.minute) < (9, 35):
+        return [], [], []
     deltas: list[tuple[float, str, str, float]] = []
     tot_d = 0.0
     for sym, label in NATIONAL_TEAM_20_ETFS.items():
         q = live_quotes.get(sym)
         m = compute_quote_metrics(q) if q else None
-        anchor = _oldest_within_window(ring_60s.get(sym), now_ts)
+        anchor = _oldest_within_window(ring_buf.get(sym), now_ts)
         if not m or anchor is None:
             continue
         d_amt = max(0.0, m["amt_yi"] - anchor[2])
@@ -268,24 +304,60 @@ def _eval_nt_etf_blitz(
             deltas.append((d_amt, sym[:6], label, m["pct"]))
     deltas.sort(reverse=True)
     max_single = deltas[0][0] if deltas else 0.0
-    if (max_single >= 3.5 or tot_d >= 8.0) and _check_cooldown(cooldowns, "L2:ws_nt_blitz", now_ts):
+    if (max_single >= 2.5 or tot_d >= 6.0) and _check_cooldown(cooldowns, "L2:ws_nt_blitz", now_ts, window=1200):
         top_txt = "、".join(f"`{c}`({lbl} +{d:.1f}亿/{p:+.2f}%)" for d, c, lbl, p in deltas[:3])
-        line = f"- 🚀 **【WS 60s国家队ETF爆量】** 20大ETF 60s增量 **+{tot_d:.1f}亿**（单只峰值 +{max_single:.1f}亿）：{top_txt}"
-        rec = {"ts": now_ts, "level": "L2", "kind": "ws_nt_blitz", "tot_d_60s": round(tot_d, 2)}
-        return [line], [rec], [f"国家队60s爆量 +{tot_d:.1f}亿"]
+        line = f"- 🚀 **【WS 3m国家队ETF爆量】** 20大ETF 3m增量 **+{tot_d:.1f}亿**（单只峰值 +{max_single:.1f}亿）：{top_txt}"
+        rec = {"ts": now_ts, "level": "L2", "kind": "ws_nt_blitz", "tot_d_3m": round(tot_d, 2)}
+        return [line], [rec], [f"国家队3m爆量 +{tot_d:.1f}亿"]
     return [], [], []
+
+
+def _eval_theme_etf_surge(
+    live_quotes: dict[str, dict[str, Any]],
+    ring_buf: dict[str, deque[tuple[float, float, float]]],
+    cooldowns: dict[str, float],
+    now_ts: float,
+) -> tuple[list[str], list[dict[str, Any]], list[str]]:
+    """Detect 3-minute sector theme ETF ignitions above VWAP."""
+    lines: list[str] = []
+    recs: list[dict[str, Any]] = []
+    focus: list[str] = []
+    for theme_name, sym, _ in THEME_ETF_UNIVERSE:
+        q = live_quotes.get(sym)
+        m = compute_quote_metrics(q) if q else None
+        anchor = _oldest_within_window(ring_buf.get(sym), now_ts)
+        if not m or anchor is None:
+            continue
+        d_pct = m["pct"] - anchor[1]
+        if d_pct >= 1.2 and m["pct"] >= 1.0 and m["vwap_dev"] >= 0.0 and m["amt_yi"] >= 0.8:
+            if _check_cooldown(cooldowns, f"L2:ws_theme_etf:{sym}", now_ts):
+                lines.append(
+                    f"- 🔥 **【WS板块ETF点火】[{theme_name}] `{sym}`**：3m涨速 **{d_pct:+.2f}%** → 现 **{m['pct']:+.2f}%** | VWAP {m['vwap_dev']:+.2f}% | 额 {m['amt_yi']:.1f}亿"
+                )
+                recs.append(
+                    {
+                        "ts": now_ts,
+                        "level": "L2",
+                        "kind": "ws_theme_etf",
+                        "symbol": sym,
+                        "theme": theme_name,
+                        "d_pct_3m": round(d_pct, 2),
+                    }
+                )
+                focus.append(f"{theme_name}ETF急拉")
+    return lines, recs, focus
 
 
 def _eval_core_breakouts(
     live_quotes: dict[str, dict[str, Any]],
-    ring_60s: dict[str, deque[tuple[float, float, float]]],
+    ring_buf: dict[str, deque[tuple[float, float, float]]],
     holdings: dict[str, dict[str, Any]],
     l2_map: dict[str, dict[str, Any]],
     watch_set: set[str],
     cooldowns: dict[str, float],
     now_ts: float,
 ) -> tuple[list[str], list[dict[str, Any]], list[str]]:
-    """Detect 60s low-wick above-VWAP breakouts inside core funnel / watch stocks."""
+    """Detect 3m breakouts in core funnel / watch stocks plus watch-stock breakout strength."""
     lines: list[str] = []
     recs: list[dict[str, Any]] = []
     focus: list[str] = []
@@ -293,45 +365,50 @@ def _eval_core_breakouts(
         if sym in holdings:
             continue
         meta = l2_map.get(sym[:6]) or {}
-        if not meta or meta.get("stage") == "风控拦截":
+        if meta.get("stage") == "风控拦截":
             continue
-        in_core = (
-            sym in watch_set
-            or meta.get("funnel_tag") == "🏆3日候选连入"
-            or meta.get("stage") == "候选池已捕获"
-            or meta.get("shadow_lane") == "pre_breakout"
+        is_watch = sym in watch_set
+        in_core = is_watch or (
+            bool(meta)
+            and (
+                meta.get("funnel_tag") == "🏆3日候选连入"
+                or meta.get("stage") == "候选池已捕获"
+                or meta.get("shadow_lane") == "pre_breakout"
+            )
         )
         if not in_core:
             continue
         m = compute_quote_metrics(q)
-        anchor = _oldest_within_window(ring_60s.get(sym), now_ts)
-        if not m or anchor is None:
+        if not m or m["amt_yi"] < 1.0 or not (0.0 <= m["vwap_dev"] <= 2.5 and m["upper_wick_pct"] <= 1.2):
             continue
-        d_pct = m["pct"] - anchor[1]
-        if not (
-            d_pct >= 2.5
-            and m["open_pct"] <= 2.5
-            and 0.0 <= m["vwap_dev"] <= 2.2
-            and m["upper_wick_pct"] <= 1.0
-            and m["amt_yi"] >= 1.5
-        ):
-            continue
-        if _check_cooldown(cooldowns, f"L2:ws_breakout:{sym}", now_ts, window=3600):
-            nm = meta.get("name") or (q.get("ext") or {}).get("name") or sym
-            sec = meta.get("sector") or ""
+        nm = meta.get("name") or (q.get("ext") or {}).get("name") or sym
+        sec = meta.get("sector") or "自选"
+        anchor = _oldest_within_window(ring_buf.get(sym), now_ts)
+        d_pct = (m["pct"] - anchor[1]) if anchor is not None else 0.0
+        fast_hit = anchor is not None and d_pct >= 2.0 and m["open_pct"] <= 3.0
+        watch_hit = is_watch and m["pct"] >= 3.5 and m["upper_wick_pct"] <= 1.0
+        if fast_hit and _check_cooldown(cooldowns, f"L2:ws_breakout:{sym}", now_ts, window=3600):
             lines.append(
-                f"- 🎯 **【WS 60s核心池点火】`{sym}` {nm}** [{sec}]：60s急拉 **{d_pct:+.2f}%** → 现 **{m['pct']:+.2f}%** | VWAP {m['vwap_dev']:+.2f}% | 额 {m['amt_yi']:.1f}亿"
+                f"- 🎯 **【WS 3m核心点火】`{sym}` {nm}** [{sec}]：3m拉升 **{d_pct:+.2f}%** → **{m['pct']:+.2f}%** | VWAP {m['vwap_dev']:+.2f}% | 额 {m['amt_yi']:.1f}亿"
             )
             recs.append(
-                {"ts": now_ts, "level": "L2", "kind": "ws_core_breakout", "symbol": sym, "d_pct_60s": round(d_pct, 2)}
+                {"ts": now_ts, "level": "L2", "kind": "ws_core_breakout", "symbol": sym, "d_pct_3m": round(d_pct, 2)}
             )
             focus.append(f"核心点火 {nm}({m['pct']:+.1f}%)")
+        elif watch_hit and _check_cooldown(cooldowns, f"L2:ws_watch_strong:{sym}", now_ts, window=3600):
+            lines.append(
+                f"- ⭐ **【自选突破走强】`{sym}` {nm}** [{sec}]：现涨 **{m['pct']:+.2f}%** | VWAP {m['vwap_dev']:+.2f}% | 上影 {m['upper_wick_pct']:.2f}% | 额 {m['amt_yi']:.1f}亿"
+            )
+            recs.append(
+                {"ts": now_ts, "level": "L2", "kind": "ws_watch_strong", "symbol": sym, "pct": round(m["pct"], 2)}
+            )
+            focus.append(f"自选走强 {nm}({m['pct']:+.1f}%)")
     return lines, recs, focus
 
 
 def evaluate_ws_realtime_triggers(
     live_quotes: dict[str, dict[str, Any]],
-    ring_60s: dict[str, deque[tuple[float, float, float]]],
+    ring_buf: dict[str, deque[tuple[float, float, float]]],
     holdings: dict[str, dict[str, Any]],
     l2_map: dict[str, dict[str, Any]],
     cooldowns: dict[str, float],
@@ -340,18 +417,20 @@ def evaluate_ws_realtime_triggers(
     watch_symbols: list[str] | None = None,
     state_path: Path = STATE_PATH,
 ) -> tuple[str | None, str, str, list[dict[str, Any]], dict[str, float], float]:
-    """Run all sub-second WS rules with shared cooldown dedup and anti-flood gating."""
+    """Run all 5 sub-second WS rules with shared cooldown dedup and anti-flood gating."""
     today_str = datetime.fromtimestamp(now_ts, tz=CN_TZ).date().isoformat()
     merged = load_shared_cooldowns(today_str, cooldowns, state_path=state_path)
     watch_set = {_normalize_holding_symbol(s) for s in (watch_symbols or [])}
 
-    l4_lines, h_l2, h_recs, h_focus = _eval_holdings_realtime(live_quotes, ring_60s, holdings, l2_map, merged, now_ts)
-    nt_lines, nt_recs, nt_focus = _eval_nt_etf_blitz(live_quotes, ring_60s, merged, now_ts)
+    l4_lines, h_l2, h_recs, h_focus = _eval_holdings_realtime(live_quotes, ring_buf, holdings, l2_map, merged, now_ts)
+    idx_lines, idx_recs, idx_focus = _eval_index_whip(live_quotes, ring_buf, merged, now_ts)
+    nt_lines, nt_recs, nt_focus = _eval_nt_etf_blitz(live_quotes, ring_buf, merged, now_ts)
+    etf_lines, etf_recs, etf_focus = _eval_theme_etf_surge(live_quotes, ring_buf, merged, now_ts)
     bk_lines, bk_recs, bk_focus = _eval_core_breakouts(
-        live_quotes, ring_60s, holdings, l2_map, watch_set, merged, now_ts
+        live_quotes, ring_buf, holdings, l2_map, watch_set, merged, now_ts
     )
 
-    all_recs = [*h_recs, *nt_recs, *bk_recs]
+    all_recs = [*h_recs, *idx_recs, *nt_recs, *etf_recs, *bk_recs]
     if not all_recs:
         return None, "", "", [], cooldowns, last_l2_card_ts
     has_l4 = bool(l4_lines)
@@ -359,7 +438,7 @@ def evaluate_ws_realtime_triggers(
         return None, "", "", [], cooldowns, last_l2_card_ts
 
     level = "L4" if has_l4 else "L2"
-    focus_all = [*h_focus, *nt_focus, *bk_focus]
+    focus_all = [*h_focus, *nt_focus, *etf_focus, *bk_focus, *idx_focus]
     hm = datetime.fromtimestamp(now_ts, tz=CN_TZ).strftime("%H:%M:%S")
     title = f"【{level} WebSocket秒级焦点】{hm} {focus_all[0]}"
     sections = [
@@ -367,7 +446,9 @@ def evaluate_ws_realtime_triggers(
         *l4_lines,
         *h_l2,
         *nt_lines,
+        *etf_lines,
         *bk_lines,
+        *idx_lines,
     ]
     new_l2_ts = last_l2_card_ts if has_l4 else now_ts
     return level, title, "\n".join(sections), all_recs, merged, new_l2_ts
@@ -387,7 +468,7 @@ def is_fatal_ws_error(exc_or_msg: Exception | str) -> bool:
 
 def _flush_and_eval_if_due(
     live_quotes: dict[str, dict[str, Any]],
-    ring_60s: dict[str, deque[tuple[float, float, float]]],
+    ring_buf: dict[str, deque[tuple[float, float, float]]],
     holdings: dict[str, dict[str, Any]],
     l2_map: dict[str, dict[str, Any]],
     cooldowns: dict[str, float],
@@ -408,7 +489,7 @@ def _flush_and_eval_if_due(
     if live_quotes and (now_ts - last_eval_ts) >= EVAL_INTERVAL_S:
         last_eval_ts = now_ts
         level, title, body, recs, new_cds, new_l2_ts = evaluate_ws_realtime_triggers(
-            live_quotes, ring_60s, holdings, l2_map, cooldowns, now_ts, last_l2_card_ts, watch_symbols=watch_symbols
+            live_quotes, ring_buf, holdings, l2_map, cooldowns, now_ts, last_l2_card_ts, watch_symbols=watch_symbols
         )
         if level:
             open_id = "" if args.dry_run else resolve_lark_open_id(args.user_id)
@@ -442,7 +523,7 @@ async def _ws_session_once(
     import websockets
 
     live_quotes: dict[str, dict[str, Any]] = {}
-    ring_60s: dict[str, deque[tuple[float, float, float]]] = {}
+    ring_buf: dict[str, deque[tuple[float, float, float]]] = {}
     last_flush_ts = 0.0
     last_eval_ts = 0.0
     last_l2_card_ts = 0.0
@@ -469,7 +550,7 @@ async def _ws_session_once(
                         sym = str(q.get("symbol") or "").strip().upper()
                         if sym:
                             live_quotes[sym] = q
-                            _update_ring_60s(ring_60s, q, now_ts)
+                            _update_ring_60s(ring_buf, q, now_ts)
                 elif op == "subscribed":
                     print(
                         f"[{datetime.now(CN_TZ).strftime('%H:%M:%S')}] WS subscribed total={msg.get('total')}",
@@ -485,7 +566,7 @@ async def _ws_session_once(
             now_ts = time.time()
             last_flush_ts, last_eval_ts, cooldowns, last_l2_card_ts = _flush_and_eval_if_due(
                 live_quotes,
-                ring_60s,
+                ring_buf,
                 holdings,
                 l2_map,
                 cooldowns,

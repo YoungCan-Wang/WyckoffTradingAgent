@@ -2024,8 +2024,10 @@ def _format_heartbeat_card(
         if sh_m and sz_m
         else f"{sh_s}{' 深' + format(sz_m['pct'], '+.2f') + '%' if sz_m else ' 深--'}{cy_s}"
     )
+    ws_q = load_fresh_ws_quotes(max_age_s=20.0)
+    ws_badge = f"⚡WS秒级流在线({len(ws_q)}只)" if ws_q else "⚪WS未激活"
     title = f"【💓 心跳】{now_hm} 雷达在线 | {sh_s}{cy_s} | 红{red_count}家"
-    lines = [f"✅ 7,807 标的 5m 巡检正常（本帧无 L2/L3/L4 加急异动）：{thermo} | 红盘 {red_count} 家"]
+    lines = [f"✅ 7,807 标的巡检正常（{ws_badge} · 本帧无 L2/L3/L4 加急异动）：{thermo} | 红盘 {red_count} 家"]
     if holdings:
         h_parts, any_stop = [], False
         now_ts = time.time()

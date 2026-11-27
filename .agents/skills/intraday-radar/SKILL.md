@@ -186,12 +186,15 @@ mkdir -p ~/.wyckoff/traces && gh run download $(gh run list --workflow wyckoff_f
 .venv/bin/python .agents/skills/intraday-radar/scripts/intraday_radar.py --daemon --interval 300
 
 # WebSocket 秒级实时流守护进程（wss://api.tickflow.org/v1/ws/stream，按 200 标的套餐上限订阅持仓+自选+指数+20大ETF+主题ETF+🏆3日候选）：
-# 触发 L4 硬止损 / 60s 持仓异动 / 60s 国家队爆量 / 核心池低上影点火，并每 2s 将快照刷新至 /tmp/wyckoff_tickflow_ws_cache.json
+# 触发 L4 硬止损及 5 类 L2 实时加急（3m 持仓急拉做T/跳水、国家队ETF爆量、板块ETF点火、核心池/自选走强、指数3m急拉急杀），并每 2s 刷盘至 /tmp/wyckoff_tickflow_ws_cache.json
 .venv/bin/python .agents/skills/intraday-radar/scripts/tickflow_ws_daemon.py --holding <代码:COST:STOP> --watch <自选代码>
 
 # 零 REST 全市场查询极速模式（直接复用 15s 内鲜活 WS 缓存驱动单次评估）：
 .venv/bin/python .agents/skills/intraday-radar/scripts/intraday_radar.py --once --ws-fast --holding <代码:COST:STOP>
 ```
+
+* **推荐日常守护节奏（每 10 分钟心跳 + 30 分钟全景 + WS 秒级异动）**：
+  * 会话内盘中常规巡检设为 **每 10 分钟**（`09:25` 竞价 + `09:30/09:40/09:50`、`10:00~10:50`、`11:00~11:30`、`13:00~14:50`，且避开 `14:40` 撞车），平静帧在心跳卡内附带 `⚡WS秒级流在线(N只)` 证明双引擎存活；每 `30` 分钟推完整全景 L1 卡片；所有盘中异动由 WS 秒级进程与 10m 雷达即时通过 `L2/L3/L4` 飞书加急破静音触达。
 
 3. **宿主机时区漂移自检与跨时区 Cron 映射规范（`CST UTC+8` vs `PST UTC-8`）**：
    * **强制时区自检**：服务器重启后宿主机系统时区可能在 `CST (+0800)` 与 `PST (-0800)` 之间切换。每次注册 `schedule` 定时任务前，**必须先执行 `date "+%Z %z"` 核实当前宿主机时区**：
