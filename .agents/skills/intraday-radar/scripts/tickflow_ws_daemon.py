@@ -30,6 +30,7 @@ from intraday_radar import (  # noqa: E402
     append_alert_records,
     compute_quote_metrics,
     is_cn_trading_session,
+    is_risk_blocked,
     load_env_file,
     load_wyckoff_l2_map,
     parse_holdings_arg,
@@ -75,9 +76,14 @@ BELLWETHER_EQUITIES = (
     "300750.SZ",
     "300059.SZ",
     "601398.SH",
+    "601288.SH",
+    "600036.SH",
     "601857.SH",
     "601088.SH",
+    "600900.SH",
+    "512800.SH",
 )
+DIVIDEND_WS_BASKET = ("601398.SH", "601288.SH", "600036.SH", "601088.SH", "601857.SH", "512800.SH")
 
 
 def _code6_to_symbol(code6: str) -> str:
@@ -117,20 +123,29 @@ def build_ws_priority_symbols(
     ranked_pool = [
         (
             1 if meta.get("funnel_tag") == "🏆3日候选连入" else 0,
+            1
+            if (
+                meta.get("shadow_lane") == "pre_breakout"
+                and meta.get("l2_eligible")
+                and meta.get("l3_eligible")
+                and int(meta.get("streak_days") or 0) >= 2
+            )
+            else 0,
             1 if meta.get("stage") == "候选池已捕获" else 0,
-            1 if meta.get("shadow_lane") == "pre_breakout" else 0,
+            1 if (meta.get("shadow_lane") == "pre_breakout" and meta.get("l3_eligible")) else 0,
             int(meta.get("streak_days") or 0),
-            float(meta.get("rps") or 0.0),
+            round(float(meta.get("l3_score") or 0.0), 3),
+            1 if 24.0 <= float(meta.get("rps") or 0.0) <= 82.0 else 0,
             code,
         )
         for code, meta in (l2_map or {}).items()
-        if str(meta.get("stage") or "") != "风控拦截"
+        if not is_risk_blocked(meta)
     ]
     ranked_pool.sort(reverse=True)
-    for _, _, _, _, _, code in ranked_pool:
+    for row in ranked_pool:
         if len(ordered) >= max_symbols:
             break
-        _add(_code6_to_symbol(code))
+        _add(_code6_to_symbol(row[-1]))
     return ordered[:max_symbols]
 
 
@@ -365,7 +380,7 @@ def _eval_core_breakouts(
         if sym in holdings:
             continue
         meta = l2_map.get(sym[:6]) or {}
-        if meta.get("stage") == "风控拦截":
+        if is_risk_blocked(meta):
             continue
         is_watch = sym in watch_set
         in_core = is_watch or (
@@ -406,6 +421,84 @@ def _eval_core_breakouts(
     return lines, recs, focus
 
 
+def _eval_seesaw_reversal(
+    live_quotes: dict[str, dict[str, Any]],
+    ring_buf: dict[str, deque[tuple[float, float, float]]],
+    cooldowns: dict[str, float],
+    now_ts: float,
+) -> tuple[list[str], list[dict[str, Any]], list[str]]:
+    """Detect 3m dividend-giant siphon rebound coinciding with growth-index weakness."""
+    div_deltas: list[float] = []
+    for sym in DIVIDEND_WS_BASKET:
+        q = live_quotes.get(sym)
+        m = compute_quote_metrics(q) if q else None
+        anc = _oldest_within_window(ring_buf.get(sym), now_ts)
+        if m and anc is not None:
+            div_deltas.append(m["pct"] - anc[1])
+    if len(div_deltas) < 3:
+        return [], [], []
+    avg_div = sum(div_deltas) / len(div_deltas)
+    growth_down = False
+    for gsym in ("399006.SZ", "000688.SH"):
+        gm = compute_quote_metrics(live_quotes.get(gsym)) if gsym in live_quotes else None
+        g_anc = _oldest_within_window(ring_buf.get(gsym), now_ts)
+        if gm and g_anc is not None and (gm["pct"] - g_anc[1]) <= -0.40:
+            growth_down = True
+    if avg_div >= 0.65 and growth_down and _check_cooldown(cooldowns, "L2:ws_dividend_siphon", now_ts, window=1800):
+        line = (
+            f"- 🩸 **【WS 3m红利吸血反扑·成长撤退预警】** 银行/神华/石油3m急拉 **{avg_div:+.2f}%** 而双创跳水，"
+            "避险资金回流抽血，波段仓冲高先锁利！"
+        )
+        rec = {"ts": now_ts, "level": "L2", "kind": "ws_dividend_siphon", "avg_div_d3m": round(avg_div, 2)}
+        return [line], [rec], [f"红利吸血+{avg_div:.2f}%"]
+    return [], [], []
+
+
+def _build_dip_ambush_lines(
+    live_quotes: dict[str, dict[str, Any]],
+    ring_buf: dict[str, deque[tuple[float, float, float]]],
+    holdings: dict[str, dict[str, Any]],
+    l2_map: dict[str, dict[str, Any]],
+    watch_set: set[str],
+    now_ts: float,
+) -> list[str]:
+    """Attach concrete VWAP dip-buy bid bands for resilient core/watch stocks during an index whip down."""
+    cands: list[tuple[tuple[int, int, float], str]] = []
+    for sym, q in live_quotes.items():
+        if sym in holdings:
+            continue
+        meta = l2_map.get(sym[:6]) or {}
+        if is_risk_blocked(meta):
+            continue
+        is_w = sym in watch_set
+        is_core = (
+            is_w
+            or meta.get("funnel_tag") == "🏆3日候选连入"
+            or (
+                meta.get("shadow_lane") == "pre_breakout"
+                and meta.get("l3_eligible")
+                and int(meta.get("streak_days") or 0) >= 2
+            )
+        )
+        if not is_core:
+            continue
+        m = compute_quote_metrics(q)
+        if not m or not (1.2 <= m["pct"] <= 5.5 and 0.0 <= m["vwap_dev"] <= 2.0 and m["amt_yi"] >= 1.2):
+            continue
+        anc = _oldest_within_window(ring_buf.get(sym), now_ts)
+        if anc is not None and (m["pct"] - anc[1]) < -0.35:
+            continue
+        nm = meta.get("name") or (q.get("ext") or {}).get("name") or sym
+        line = (
+            f"- 🎯 **【急杀抗跌·健康回踩挂单窗】`{sym}` {nm}**：现 **{m['last']:.2f} ({m['pct']:+.2f}%)** "
+            f"逆指数守均线 **{m['vwap']:.2f}** → **低吸区 {m['vwap'] * 1.002:.2f}~{m['vwap'] * 1.013:.2f}**"
+            f"（禁追 >{m['vwap'] * 1.020:.2f} | 🛑止损 {m['last'] * 0.97:.2f}）"
+        )
+        cands.append(((int(is_w), int(meta.get("streak_days") or 0), -abs(m["vwap_dev"] - 0.8)), line))
+    cands.sort(reverse=True)
+    return [row[1] for row in cands[:3]]
+
+
 def evaluate_ws_realtime_triggers(
     live_quotes: dict[str, dict[str, Any]],
     ring_buf: dict[str, deque[tuple[float, float, float]]],
@@ -417,20 +510,26 @@ def evaluate_ws_realtime_triggers(
     watch_symbols: list[str] | None = None,
     state_path: Path = STATE_PATH,
 ) -> tuple[str | None, str, str, list[dict[str, Any]], dict[str, float], float]:
-    """Run all 5 sub-second WS rules with shared cooldown dedup and anti-flood gating."""
+    """Run all sub-second WS rules with shared cooldown dedup and anti-flood gating."""
     today_str = datetime.fromtimestamp(now_ts, tz=CN_TZ).date().isoformat()
     merged = load_shared_cooldowns(today_str, cooldowns, state_path=state_path)
     watch_set = {_normalize_holding_symbol(s) for s in (watch_symbols or [])}
 
     l4_lines, h_l2, h_recs, h_focus = _eval_holdings_realtime(live_quotes, ring_buf, holdings, l2_map, merged, now_ts)
     idx_lines, idx_recs, idx_focus = _eval_index_whip(live_quotes, ring_buf, merged, now_ts)
+    dip_lines = (
+        _build_dip_ambush_lines(live_quotes, ring_buf, holdings, l2_map, watch_set, now_ts)
+        if any(float(r.get("d_pct_3m") or 0.0) <= -0.60 for r in idx_recs)
+        else []
+    )
     nt_lines, nt_recs, nt_focus = _eval_nt_etf_blitz(live_quotes, ring_buf, merged, now_ts)
+    siphon_lines, siphon_recs, siphon_focus = _eval_seesaw_reversal(live_quotes, ring_buf, merged, now_ts)
     etf_lines, etf_recs, etf_focus = _eval_theme_etf_surge(live_quotes, ring_buf, merged, now_ts)
     bk_lines, bk_recs, bk_focus = _eval_core_breakouts(
         live_quotes, ring_buf, holdings, l2_map, watch_set, merged, now_ts
     )
 
-    all_recs = [*h_recs, *idx_recs, *nt_recs, *etf_recs, *bk_recs]
+    all_recs = [*h_recs, *idx_recs, *nt_recs, *siphon_recs, *etf_recs, *bk_recs]
     if not all_recs:
         return None, "", "", [], cooldowns, last_l2_card_ts
     has_l4 = bool(l4_lines)
@@ -438,7 +537,7 @@ def evaluate_ws_realtime_triggers(
         return None, "", "", [], cooldowns, last_l2_card_ts
 
     level = "L4" if has_l4 else "L2"
-    focus_all = [*h_focus, *nt_focus, *etf_focus, *bk_focus, *idx_focus]
+    focus_all = [*h_focus, *nt_focus, *siphon_focus, *etf_focus, *bk_focus, *idx_focus]
     hm = datetime.fromtimestamp(now_ts, tz=CN_TZ).strftime("%H:%M:%S")
     title = f"【{level} WebSocket秒级焦点】{hm} {focus_all[0]}"
     sections = [
@@ -446,9 +545,11 @@ def evaluate_ws_realtime_triggers(
         *l4_lines,
         *h_l2,
         *nt_lines,
+        *siphon_lines,
         *etf_lines,
         *bk_lines,
         *idx_lines,
+        *dip_lines,
     ]
     new_l2_ts = last_l2_card_ts if has_l4 else now_ts
     return level, title, "\n".join(sections), all_recs, merged, new_l2_ts

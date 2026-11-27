@@ -46,6 +46,24 @@ BLUECHIP_FLOOR_ETFS: frozenset[str] = frozenset(
     {"510310.SH", "510300.SH", "510050.SH", "510210.SH", "159919.SZ", "563360.SH", "159352.SZ", "159338.SZ"}
 )
 
+DIVIDEND_GIANTS_BASKET: tuple[tuple[str, str], ...] = (
+    ("601398.SH", "工行"),
+    ("601288.SH", "农行"),
+    ("600036.SH", "招行"),
+    ("601088.SH", "神华"),
+    ("601857.SH", "中石油"),
+    ("600028.SH", "中石化"),
+    ("600900.SH", "长电"),
+    ("512800.SH", "银行ETF"),
+)
+
+
+def _is_meta_risk_blocked(meta: dict[str, Any] | None) -> bool:
+    if not meta:
+        return False
+    return str(meta.get("stage") or "") == "风控拦截" or bool(str(meta.get("risk_signal") or "").strip())
+
+
 MAINLINE_SUPER_GROUPS: dict[str, set[str]] = {
     "大医药": {"化学制药", "中成药", "医药商业", "生物制药", "医疗保健"},
     "商贸零售/酒旅": {"百货", "超市连锁", "酒店餐饮", "旅游景点", "旅游服务", "商业连锁", "其他商业"},
@@ -418,7 +436,7 @@ def _rank_wyckoff_picks(
     is_afternoon_window = bool(now_hm and now_hm >= "11:00")
     max_pct = 3.8 if is_afternoon_window else 5.2
     for code6, meta in l2_map.items():
-        if meta.get("sector") not in target_sectors:
+        if meta.get("sector") not in target_sectors or _is_meta_risk_blocked(meta):
             continue
         is_l2 = bool(meta.get("l2_eligible"))
         is_cand = bool(meta.get("is_candidate"))
@@ -555,23 +573,68 @@ def _hm_to_mins(hm: str) -> int:
     return int(parts[0]) * 60 + int(parts[1]) if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit() else 0
 
 
+def _load_clean_nt_points(path: Path) -> dict[str, float]:
+    """Read intraday NT turnover points sorted by time, dropping test-polluted plunge artifacts."""
+    if not path.exists():
+        return {}
+    raw: list[tuple[int, str, float]] = []
+    for ln in path.read_text(encoding="utf-8").splitlines():
+        if ln.strip():
+            try:
+                row = json.loads(ln)
+                hm, val = str(row["hm"]), float(row["tot_amt_yi"])
+                raw.append((_hm_to_mins(hm), hm, val))
+            except Exception:
+                continue
+    raw.sort(key=lambda x: x[0])
+    cleaned: dict[str, float] = {}
+    max_seen = 0.0
+    for _, hm, val in raw:
+        if max_seen > 0.0 and val < max_seen * 0.75:
+            continue
+        max_seen = max(max_seen, val)
+        cleaned[hm] = val
+    return cleaned
+
+
+def _compute_nt_rolling_delta(
+    today_date: date,
+    now_hm: str,
+    tot_amt_yi: float,
+    turnover_dir: Path | None = None,
+) -> tuple[float, int]:
+    """Compute National Team ETF turnover surge over the nearest 4~15m (target 10m) lookback."""
+    if turnover_dir is None and os.environ.get("PYTEST_CURRENT_TEST"):
+        return 0.0, 0
+    eff_hm = "11:30" if "11:30" < now_hm < "12:59" else ("15:00" if now_hm > "15:00" else now_hm)
+    base_dir = turnover_dir or DEFAULT_TURNOVER_DIR
+    pts = _load_clean_nt_points(base_dir / f"nt_etf_{today_date.strftime('%Y%m%d')}.jsonl")
+    now_m = _hm_to_mins(eff_hm)
+    cands = [
+        (abs((now_m - _hm_to_mins(k)) - 10), now_m - _hm_to_mins(k), pts[k])
+        for k in pts
+        if 4 <= (now_m - _hm_to_mins(k)) <= 15
+    ]
+    if not cands:
+        return 0.0, 0
+    _, elapsed, prev_val = min(cands, key=lambda x: x[0])
+    return max(0.0, tot_amt_yi - prev_val), elapsed
+
+
 def _compare_nt_etf_same_timestamp(
     today_date: date,
     now_hm: str,
     tot_amt_yi: float,
     turnover_dir: Path | None = None,
 ) -> str:
+    if turnover_dir is None and os.environ.get("PYTEST_CURRENT_TEST"):
+        return "同时刻对比：无历史基准"
     eff_hm = "11:30" if "11:30" < now_hm < "12:59" else ("15:00" if now_hm > "15:00" else now_hm)
     base_dir = turnover_dir or DEFAULT_TURNOVER_DIR
     try:
         base_dir.mkdir(parents=True, exist_ok=True)
         today_file = base_dir / f"nt_etf_{today_date.strftime('%Y%m%d')}.jsonl"
-        today_pts: dict[str, float] = {}
-        if today_file.exists():
-            for ln in today_file.read_text(encoding="utf-8").splitlines():
-                if ln.strip():
-                    row = json.loads(ln)
-                    today_pts[str(row["hm"])] = float(row["tot_amt_yi"])
+        today_pts = _load_clean_nt_points(today_file)
         if eff_hm not in today_pts:
             with open(today_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps({"hm": eff_hm, "tot_amt_yi": round(tot_amt_yi, 2)}, ensure_ascii=False) + "\n")
@@ -581,11 +644,7 @@ def _compare_nt_etf_same_timestamp(
         prev_file = prev_files[-1]
         raw_ymd = prev_file.stem.replace("nt_etf_", "")
         b_date = f"{raw_ymd[:4]}-{raw_ymd[4:6]}-{raw_ymd[6:8]}" if len(raw_ymd) == 8 else raw_ymd
-        prev_pts = {
-            str(json.loads(ln)["hm"]): float(json.loads(ln)["tot_amt_yi"])
-            for ln in prev_file.read_text(encoding="utf-8").splitlines()
-            if ln.strip()
-        }
+        prev_pts = _load_clean_nt_points(prev_file)
         now_min = _hm_to_mins(eff_hm)
         best_hm = min(prev_pts.keys(), key=lambda k: abs(_hm_to_mins(k) - now_min), default="")
         if not best_hm or abs(_hm_to_mins(best_hm) - now_min) > 10 or prev_pts[best_hm] <= 0:
@@ -641,22 +700,35 @@ def summarize_national_team_etfs(
     top_str = "、".join(m[2] for m in movers[:3])
     dt = now_dt.astimezone(CN_TZ) if now_dt else datetime.now(CN_TZ)
     now_hm = dt.strftime("%H:%M")
+    win_damt, win_mins = _compute_nt_rolling_delta(dt.date(), now_hm, tot_amt, turnover_dir=turnover_dir)
     same_ts_cmp = _compare_nt_etf_same_timestamp(dt.date(), now_hm, tot_amt, turnover_dir=turnover_dir)
     pulse_tag = f" [5m: +{tot_damt:.1f}亿]" if has_baseline and tot_damt > 0 else ""
-    split_tag = f"（护盘蓝筹 {bluechip_amt:.1f}亿 / 成长弹性 {growth_amt:.1f}亿）"
+    if win_damt > tot_damt * 1.25 and win_mins >= 6:
+        pulse_tag += f" [近{win_mins}m: +{win_damt:.1f}亿]"
+    growth_share = growth_amt / tot_amt * 100.0
+    style_note = (
+        f" · 🔥双创弹性主攻({growth_share:.0f}%)"
+        if growth_share >= 58.0
+        else (f" · 🛡️蓝筹护指({100.0 - growth_share:.0f}%)" if growth_share <= 40.0 else "")
+    )
+    split_tag = f"（护盘蓝筹 {bluechip_amt:.1f}亿 / 成长弹性 {growth_amt:.1f}亿{style_note}）"
     summary = f"🏦 **国家队20大重点ETF**：合计成交 **{tot_amt:.1f}亿**{pulse_tag}{split_tag}（{same_ts_cmp}）| 领头：{top_str}"
-    is_post_opening_rush = now_hm > "09:45"
+    is_post_opening_rush = now_hm >= "09:40"
     has_full_breadth = red_count is not None and (red_count + (green_count or 0)) >= 100
     is_defensive_floor = has_full_breadth and (red_count < 2000 or (d_red is not None and d_red <= 0))
-    if has_baseline and is_post_opening_rush and tot_damt >= 25.0:
+    hit_5m = has_baseline and tot_damt >= 25.0
+    hit_win = win_damt >= 35.0
+    if is_post_opening_rush and (hit_5m or hit_win):
+        alert_amt, win_lbl = (tot_damt, "5分钟") if hit_5m else (win_damt, f"近{win_mins}分钟")
+        hdr_win = "5m" if hit_5m else f"近{win_mins}m"
         if is_defensive_floor:
             d_note = f"({d_red:+d})" if d_red is not None else ""
             l2_alert = (
-                f"- 🛡️ **【国家队宽基托底护盘（托指不救股）】** 5分钟宽基爆量 **+{tot_damt:.1f}亿**"
+                f"- 🛡️ **【国家队宽基托底护盘（托指不救股）】** {win_lbl}宽基爆量 **+{alert_amt:.1f}亿**"
                 f"（累计 {tot_amt:.1f}亿，当前红盘 {red_count} 家{d_note}，属护指数非普涨信号，个股勿盲目抄底），领头：{top_str}"
             )
         else:
-            l2_alert = f"- 🚀 **【国家队20大宽基ETF 5m放量异动】** 5分钟合计爆量 **+{tot_damt:.1f}亿**（累计 {tot_amt:.1f}亿），领头：{top_str}"
+            l2_alert = f"- 🚀 **【国家队20大宽基ETF {hdr_win}放量异动】** {win_lbl}合计爆量 **+{alert_amt:.1f}亿**（累计 {tot_amt:.1f}亿{style_note}），领头：{top_str}"
     else:
         l2_alert = ""
     return summary, l2_alert
@@ -847,6 +919,8 @@ def _pick_mainline_core_followers(
     cands: list[tuple[tuple[int, int, float, float], dict[str, Any]]] = []
     for r in items:
         meta = (l2_map or {}).get(r["code"]) or {}
+        if _is_meta_risk_blocked(meta):
+            continue
         rps = float(meta.get("rps") or 0.0)
         chans_s = "+".join(str(x) for x in (meta.get("channels") or []))
         is_l2 = bool(meta.get("l2_eligible")) and (("主升" in chans_s and rps <= 98.0) or rps <= 92.0)
@@ -1336,6 +1410,61 @@ def build_morning_washout_card(
     )
 
 
+def _pick_strike_equities(
+    curr_quotes: dict[str, dict[str, Any]],
+    l2_map: dict[str, dict[str, Any]],
+    top_n: int = 2,
+) -> list[str]:
+    """Select clean multi-day L2+L3 / candidate / pre_breakout leaders with actionable buy bands."""
+    strong_secs = _collect_strong_sectors(curr_quotes, l2_map)
+    picks: list[tuple[tuple[int, int, int, int, float, float], str]] = []
+    for sym, q in curr_quotes.items():
+        if not _is_equity_symbol(sym):
+            continue
+        meta = (l2_map or {}).get(sym[:6]) or {}
+        if not meta or _is_meta_risk_blocked(meta):
+            continue
+        is_3d = meta.get("funnel_tag") == "🏆3日候选连入"
+        is_cand = meta.get("stage") == "候选池已捕获"
+        is_pre = bool(meta.get("shadow_lane") == "pre_breakout" and meta.get("l3_eligible") is not False)
+        if not (is_3d or is_cand or is_pre):
+            continue
+        last, pre = float(q.get("last_price") or q.get("last") or 0.0), float(q.get("prev_close") or 0.0)
+        if last <= 0 or pre <= 0:
+            continue
+        pct = (last / pre - 1.0) * 100.0
+        vwap = _resolve_vwap(q, last)
+        vd = (last / vwap - 1.0) * 100.0 if vwap > 0 else 0.0
+        high = float(q.get("high") or last)
+        wick = ((high - last) / pre * 100.0) if high >= last else 0.0
+        amt_yi = float(q.get("amount") or 0.0) / 1e8
+        if not (1.2 <= pct <= 5.0 and 0.0 <= vd <= 2.0 and wick <= 1.0 and amt_yi >= 1.2):
+            continue
+        nm = meta.get("name") or (q.get("ext") or {}).get("name") or sym
+        sec = str(meta.get("sector") or "")
+        tag = "🏆3日候选" if is_3d else ("🚀突破前夜" if is_pre else "🎯候选池")
+        zone_txt = (
+            f"🎯现价分批区 {vwap:.2f}~{vwap * 1.015:.2f}"
+            if vd <= 1.5
+            else f"🎯回踩挂单区 {vwap * 1.003:.2f}~{vwap * 1.013:.2f}(禁追>{vwap * 1.020:.2f})"
+        )
+        line = (
+            f"- **[{tag}] `{sym}` {nm}** [{sec}]：现价 **{last:.2f} ({pct:+.2f}%)** | VWAP **{vwap:.2f}({vd:+.2f}%)** | "
+            f"{zone_txt} | 额 {amt_yi:.1f}亿 | 🛑-3%止损 **{last * 0.97:.2f}** | 🛡️+4%保本 **{last * 1.04:.2f}**"
+        )
+        rank_key = (
+            int(is_3d),
+            int(int(meta.get("streak_days") or 0) >= 2 and bool(meta.get("l3_eligible"))),
+            int(is_cand),
+            int(sec in strong_secs),
+            round(float(meta.get("l3_score") or 0.0), 2),
+            -abs(vd - 0.8),
+        )
+        picks.append((rank_key, line))
+    picks.sort(key=lambda x: x[0], reverse=True)
+    return [row[1] for row in picks[:top_n]]
+
+
 def build_intraday_main_force_strike_card(
     curr_quotes: dict[str, dict[str, Any]],
     l2_map: dict[str, dict[str, Any]],
@@ -1375,48 +1504,52 @@ def build_intraday_main_force_strike_card(
         etf_lines.append(
             (
                 pct,
-                f"- **[{item['theme']}] `{item['sym']}` {item['name']}**：现价 **{last:.3f} ({pct:+.2f}%)** | VWAP **{vd:+.2f}%** | 额 {amt_yi:.1f}亿 | 🛑-3%止损 **{last * 0.97:.3f}** | 🛡️+4%保本 **{last * 1.04:.3f}**",
+                f"- **[{item['theme']}] `{item['sym']}` {item['name']}**：现价 **{last:.3f} ({pct:+.2f}%)** | VWAP **{vd:+.2f}%** | 🎯分批区 {vwap:.3f}~{vwap * 1.015:.3f} | 额 {amt_yi:.1f}亿 | 🛑-3%止损 **{last * 0.97:.3f}** | 🛡️+4%保本 **{last * 1.04:.3f}**",
             )
         )
     etf_lines.sort(reverse=True)
-    stock_picks: list[tuple[int, int, float, str]] = []
-    for sym, q in curr_quotes.items():
-        c6 = sym[:6]
-        is_eq = (
-            (sym.endswith(".SH") and c6.startswith(("60", "68")))
-            or (sym.endswith(".SZ") and c6.startswith(("00", "30")))
-            or (sym.endswith(".BJ") and c6.startswith(("4", "8", "92")))
-        )
-        if not is_eq:
-            continue
-        meta = (l2_map or {}).get(sym[:6]) or {}
-        if not meta or meta.get("stage") == "风控拦截":
-            continue
-        is_3d = meta.get("funnel_tag") == "🏆3日候选连入"
-        is_cand = meta.get("stage") == "候选池已捕获"
-        is_pre = meta.get("shadow_lane") == "pre_breakout"
-        if not (is_3d or is_cand or is_pre):
-            continue
-        last, pre = float(q.get("last_price") or q.get("last") or 0.0), float(q.get("prev_close") or 0.0)
-        if last <= 0 or pre <= 0:
-            continue
-        pct = (last / pre - 1.0) * 100.0
-        vwap = _resolve_vwap(q, last)
-        vd = (last / vwap - 1.0) * 100.0 if vwap > 0 else 0.0
-        high = float(q.get("high") or last)
-        wick = ((high - last) / pre * 100.0) if high >= last else 0.0
-        amt_yi = float(q.get("amount") or 0.0) / 1e8
-        if not (1.2 <= pct <= 5.0 and 0.0 <= vd <= 2.0 and wick <= 1.0 and amt_yi >= 1.2):
-            continue
-        nm = meta.get("name") or (q.get("ext") or {}).get("name") or sym
-        tag = "🏆3日候选" if is_3d else ("🚀突破前夜" if is_pre else "🎯候选池")
-        line = f"- **[{tag}] `{sym}` {nm}** [{meta.get('sector', '')}]：现价 **{last:.2f} ({pct:+.2f}%)** | VWAP **{vd:+.2f}%** | 额 {amt_yi:.1f}亿 | 🛑-3%止损 **{last * 0.97:.2f}** | 🛡️+4%保本 **{last * 1.04:.2f}**"
-        stock_picks.append((int(is_3d), int(is_pre), pct, line))
-    stock_picks.sort(reverse=True)
-    picked = [row[1] for row in etf_lines[:2]] + [row[3] for row in stock_picks[:2]]
+    picked = [row[1] for row in etf_lines[:2]] + _pick_strike_equities(curr_quotes, l2_map, top_n=2)
     if not picked:
         return ""
     return "**🚀 【盘中跟随主力即时出击卡：广度共振已确认·顺势跟庄不必死等尾盘】**\n" + "\n".join(picked)
+
+
+def summarize_dividend_seesaw(curr_quotes: dict[str, dict[str, Any]], red_ratio: float | None = None) -> str:
+    """Detect Giant-Fall/Growth-Rise vs Elephant-Siphon rotation between dividend giants and growth."""
+    div_rows: list[tuple[float, str]] = []
+    for sym, label in DIVIDEND_GIANTS_BASKET:
+        q = curr_quotes.get(sym) or {}
+        last = float(q.get("last_price") or q.get("last") or q.get("price") or 0.0)
+        pre = float(q.get("prev_close") or 0.0)
+        pct = ((last / pre - 1.0) * 100.0) if (last > 0 and pre > 0) else (float(q["pct"]) if "pct" in q else None)
+        if pct is not None:
+            div_rows.append((pct, label))
+    if len(div_rows) < 4:
+        return ""
+    growth_pcts: list[float] = []
+    for sym in ("000688.SH", "399006.SZ", "000852.SH"):
+        q = curr_quotes.get(sym) or {}
+        last = float(q.get("last_price") or q.get("last") or q.get("price") or 0.0)
+        pre = float(q.get("prev_close") or 0.0)
+        if last > 0 and pre > 0:
+            growth_pcts.append((last / pre - 1.0) * 100.0)
+        elif "pct" in q:
+            growth_pcts.append(float(q["pct"]))
+    div_avg = sum(p for p, _ in div_rows) / len(div_rows)
+    growth_avg = sum(growth_pcts) / len(growth_pcts) if growth_pcts else 0.0
+    if div_avg <= -1.0 and (growth_avg >= 1.5 or (red_ratio or 0.0) >= 0.58):
+        worst = "、".join(f"{lb}({p:+.1f}%)" for p, lb in sorted(div_rows)[:3])
+        return (
+            f"🐳 **【资金跷跷板：一鲸落·万物生】** 银行/神华/两桶油篮子均跌 **{div_avg:+.2f}%**（领跌：{worst}），"
+            f"红利抱团放血回流双创成长（均涨 **{growth_avg:+.2f}%**），反弹延续性加分"
+        )
+    if div_avg >= 1.0 and (growth_avg <= -0.5 or (red_ratio is not None and red_ratio < 0.38)):
+        best = "、".join(f"{lb}({p:+.1f}%)" for p, lb in sorted(div_rows, reverse=True)[:3])
+        return (
+            f"🩸 **【资金跷跷板：大象吸血·防二次探底】** 银行/神华/两桶油逆势拉升 **{div_avg:+.2f}%**（领涨：{best}），"
+            "存量资金缩回避险壳子，成长股冲高优先减仓锁利"
+        )
+    return ""
 
 
 def summarize_theme_etf_leadership(
@@ -1533,6 +1666,8 @@ def rank_intraday_rs_leaders(
         if not _is_equity_symbol(sym):
             continue
         meta = (l2_map or {}).get(sym[:6]) or {}
+        if _is_meta_risk_blocked(meta):
+            continue
         name = str(meta.get("name") or (q.get("ext") or {}).get("name") or q.get("name") or "")
         last = float(q.get("last_price") or q.get("price") or 0.0)
         pre = float(q.get("prev_close") or 0.0)
@@ -1783,6 +1918,8 @@ def scan_intraday_trajectory_flows(
             if is_panic_open and not (-0.8 <= r["open_pct"] <= 1.5):
                 continue
             meta = (l2_map or {}).get(r["code"]) or {}
+            if _is_meta_risk_blocked(meta):
+                continue
             rps = float(meta.get("rps") or 0.0)
             is_backed = bool(
                 meta.get("l2_eligible")
@@ -1859,6 +1996,8 @@ def summarize_zero_bias_l2_leaders(
         if not _is_equity_symbol(sym):
             continue
         meta = l2_map.get(sym[:6]) or {}
+        if _is_meta_risk_blocked(meta):
+            continue
         sec = str(meta.get("sector") or "")
         rps = float(meta.get("rps") or 0.0)
         raw_ch = meta.get("channels") or []

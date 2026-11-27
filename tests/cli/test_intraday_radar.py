@@ -3758,3 +3758,228 @@ def test_intraday_main_force_strike_card_unlocks_before_1440(tmp_path) -> None:
     assert "盘中跟随主力即时出击卡" in body
     assert "盘中主力进攻确认·开放即时跟庄窗" in body
     assert "华勤技术" in body and "588000.SH" in body
+    assert "分批区" in body
+
+
+def test_risk_signal_stop_loss_blocked_across_l2_and_ws() -> None:
+    radar = _load_radar_module()
+    ws_mod = _load_ws_daemon_module()
+    spec = importlib.util.spec_from_file_location("telegraph_catalysts", SCRIPT_PATH.parent / "telegraph_catalysts.py")
+    assert spec and spec.loader
+    tc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tc)
+
+    t1 = radar._parse_trace_symbols(
+        {
+            "symbols": {
+                "603019": {
+                    "name": "中科曙光",
+                    "sector": "IT设备",
+                    "rps_fast": 73.3,
+                    "l2_eligible": True,
+                    "l3_eligible": False,
+                    "risk_signal": "stop_loss",
+                    "stage": "未入候选池[题材共振不足]",
+                },
+                "002028": {
+                    "name": "思源电气",
+                    "sector": "电气设备",
+                    "rps_fast": 41.6,
+                    "l2_eligible": True,
+                    "l3_eligible": True,
+                    "layer3_quality_score": 0.57,
+                    "risk_signal": "stop_loss",
+                    "stage": "风控拦截",
+                },
+                "603296": {
+                    "name": "华勤技术",
+                    "sector": "元器件",
+                    "rps_fast": 65.2,
+                    "l2_eligible": True,
+                    "l3_eligible": True,
+                    "layer3_quality_score": 0.60,
+                    "risk_signal": "",
+                    "shadow_lane": "pre_breakout",
+                    "stage": "买点未确认",
+                },
+            }
+        },
+        set(),
+    )
+    t2 = {
+        "603019": dict(t1["603019"]),
+        "002028": {**t1["002028"], "risk_signal": "", "stage": "买点未确认"},
+        "603296": dict(t1["603296"]),
+    }
+    merged = radar._merge_multi_day_l2_maps([t2, t1])
+    assert radar.is_risk_blocked(merged["603019"])
+    assert merged["603019"]["funnel_tag"] == "" and merged["603019"]["streak_days"] == 0
+    assert merged["002028"]["funnel_tag"] == "" and merged["002028"]["streak_days"] == 0
+    assert merged["603296"]["funnel_tag"] == "🔥2日L2+L3连入" and merged["603296"]["streak_days"] == 2
+    assert not radar._is_wyckoff_steady_core(merged["603019"], 73.3, "地量蓄势")
+
+    # Fill 190 1-day candidates so 2-day L2+L3 pre_breakout must outrank 1-day candidates in WS 200 cap.
+    full_map = dict(merged)
+    for i in range(190):
+        full_map[f"605{i:03d}"] = {
+            "name": f"一日前排{i}",
+            "sector": "化工原料",
+            "rps": 95.0,
+            "l2_eligible": True,
+            "l3_eligible": True,
+            "is_candidate": True,
+            "stage": "候选池已捕获",
+            "streak_days": 1,
+            "funnel_tag": "",
+            "l3_score": 0.40,
+        }
+    ws_syms = ws_mod.build_ws_priority_symbols({}, full_map, watch_symbols=[])
+    assert "603296.SH" in ws_syms
+    assert "603019.SH" not in ws_syms
+    assert "002028.SZ" not in ws_syms
+
+    quotes = {
+        "603019.SH": {
+            "symbol": "603019.SH",
+            "prev_close": 69.0,
+            "open": 69.5,
+            "last_price": 71.0,
+            "high": 71.2,
+            "low": 69.2,
+            "volume": 5e6,
+            "amount": 3.5e8,
+        },
+        "603296.SH": {
+            "symbol": "603296.SH",
+            "prev_close": 61.5,
+            "open": 62.0,
+            "last_price": 63.1,
+            "high": 63.3,
+            "low": 61.6,
+            "volume": 3e6,
+            "amount": 1.88e8,
+        },
+    }
+    strike = tc.build_intraday_main_force_strike_card(quotes, merged, red_ratio=0.70)
+    assert "603296.SH" in strike and "603019.SH" not in strike
+
+
+def test_nt_etf_rolling_10m_window_and_pytest_isolation(tmp_path) -> None:
+    radar = _load_radar_module()
+    spec = importlib.util.spec_from_file_location("telegraph_catalysts", SCRIPT_PATH.parent / "telegraph_catalysts.py")
+    assert spec and spec.loader
+    tc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tc)
+
+    # Without turnover_dir under pytest, neither module may touch ~/.wyckoff/intraday_turnover.
+    assert "无历史基准" in tc._compare_nt_etf_same_timestamp(date(2026, 11, 27), "10:15", 120.0, turnover_dir=None)
+    assert "无基准" in radar.update_and_compare_turnover(date(2026, 11, 27), "10:15", 5000.0, True, turnover_dir=None)
+
+    to_dir = tmp_path / "turnover"
+    to_dir.mkdir()
+    nt_file = to_dir / "nt_etf_20261127.jsonl"
+    nt_file.write_text(
+        "\n".join(
+            [
+                json.dumps({"hm": "10:15", "tot_amt_yi": 180.0}),
+                json.dumps({"hm": "10:17", "tot_amt_yi": 120.0}),  # corrupted non-monotonic test artifact
+                json.dumps({"hm": "10:21", "tot_amt_yi": 195.0}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    cleaned = tc._load_clean_nt_points(nt_file)
+    assert "10:17" not in cleaned
+    curr_q = {
+        "588000.SH": {"amount": 150.0e8},
+        "159915.SZ": {"amount": 60.0e8},
+        "510300.SH": {"amount": 25.0e8},
+    }
+    # 5m delta is only +5亿, but rolling ~10m delta vs 10:15 (180.0 -> 235.0) is +55亿 >= 35亿!
+    prev_q = {"588000.SH": {"amt_yi": 146.0}, "159915.SZ": {"amt_yi": 59.0}, "510300.SH": {"amt_yi": 25.0}}
+    summary, alert = tc.summarize_national_team_etfs(
+        curr_q,
+        prev_q,
+        has_baseline=True,
+        now_dt=datetime(2026, 11, 27, 10, 25, tzinfo=CN_TZ),
+        turnover_dir=to_dir,
+        red_count=4200,
+        green_count=1100,
+        d_red=300,
+    )
+    assert "双创弹性主攻" in summary
+    assert "近10m: +55.0亿" in summary
+    assert "近10分钟合计爆量 **+55.0亿**" in alert
+
+
+def test_dividend_seesaw_and_ws_dip_ambush_zone(tmp_path) -> None:
+    from collections import deque
+
+    ws_mod = _load_ws_daemon_module()
+    spec = importlib.util.spec_from_file_location("telegraph_catalysts", SCRIPT_PATH.parent / "telegraph_catalysts.py")
+    assert spec and spec.loader
+    tc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tc)
+
+    quotes_fall = {
+        "601398.SH": {"prev_close": 10.0, "last_price": 9.85},
+        "601288.SH": {"prev_close": 10.0, "last_price": 9.80},
+        "600036.SH": {"prev_close": 40.0, "last_price": 39.00},
+        "601088.SH": {"prev_close": 50.0, "last_price": 47.50},
+        "000688.SH": {"prev_close": 1200.0, "last_price": 1248.0},
+        "399006.SZ": {"prev_close": 2200.0, "last_price": 2277.0},
+    }
+    assert "一鲸落·万物生" in tc.summarize_dividend_seesaw(quotes_fall, red_ratio=0.75)
+
+    quotes_siphon = {k: {"prev_close": 10.0, "last_price": 10.18} for k, _ in tc.DIVIDEND_GIANTS_BASKET[:5]}
+    quotes_siphon["000688.SH"] = {"prev_close": 1200.0, "last_price": 1188.0}
+    assert "大象吸血·防二次探底" in tc.summarize_dividend_seesaw(quotes_siphon, red_ratio=0.30)
+
+    today_d = cn_today()
+    t0 = datetime(today_d.year, today_d.month, today_d.day, 10, 55, tzinfo=CN_TZ).timestamp()
+    t1 = t0 + 60.0
+    live = {
+        "000688.SH": {
+            "symbol": "000688.SH",
+            "prev_close": 1200.0,
+            "open": 1210.0,
+            "last_price": 1212.0,
+            "amount": 5e10,
+        },
+        "601398.SH": {"symbol": "601398.SH", "prev_close": 10.0, "open": 9.9, "last_price": 9.96, "amount": 2e9},
+        "601288.SH": {"symbol": "601288.SH", "prev_close": 10.0, "open": 9.9, "last_price": 9.97, "amount": 1.5e9},
+        "601088.SH": {"symbol": "601088.SH", "prev_close": 50.0, "open": 48.0, "last_price": 48.45, "amount": 2e9},
+        "603296.SH": {
+            "symbol": "603296.SH",
+            "prev_close": 61.5,
+            "open": 62.0,
+            "last_price": 63.65,
+            "high": 63.80,
+            "low": 61.55,
+            "volume": 3.5e8 / 62.95,
+            "amount": 3.5e8,
+            "ext": {"name": "华勤技术"},
+        },
+    }
+    ring = {
+        "000688.SH": deque([(t0, 1.70, 480.0)]),
+        "601398.SH": deque([(t0, -1.20, 18.0)]),
+        "601288.SH": deque([(t0, -1.10, 13.0)]),
+        "601088.SH": deque([(t0, -4.00, 17.0)]),
+        "603296.SH": deque([(t0, 3.30, 3.2)]),
+    }
+    lvl, _, body, recs, _, _ = ws_mod.evaluate_ws_realtime_triggers(
+        live,
+        ring,
+        {},
+        {"603296": {"name": "华勤技术", "sector": "元器件", "l3_eligible": True, "streak_days": 2}},
+        {},
+        t1,
+        last_l2_card_ts=0.0,
+        watch_symbols=["603296.SH"],
+        state_path=tmp_path / "empty_state.json",
+    )
+    assert lvl == "L2"
+    assert "急杀抗跌·健康回踩挂单窗" in body and "低吸区" in body
+    assert {r["kind"] for r in recs} >= {"ws_index_whip", "ws_dividend_siphon"}

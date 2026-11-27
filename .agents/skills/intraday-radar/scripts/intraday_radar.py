@@ -239,6 +239,12 @@ def _auto_fetch_latest_trace(target_dir: Path) -> bool:
     return False
 
 
+def is_risk_blocked(meta: dict[str, Any] | None) -> bool:
+    if not meta:
+        return False
+    return str(meta.get("stage") or "") == "风控拦截" or bool(str(meta.get("risk_signal") or "").strip())
+
+
 def _parse_trace_symbols(data: dict[str, Any], springboards: set[str]) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     raw_syms = data.get("symbols", {})
@@ -276,6 +282,9 @@ def _parse_trace_symbols(data: dict[str, Any], springboards: set[str]) -> dict[s
             "l3_eligible": bool(s.get("l3_eligible")),
             "is_candidate": stage == "候选池已捕获",
             "stage": stage,
+            "risk_signal": str(s.get("risk_signal") or ""),
+            "l3_score": float(s.get("layer3_quality_score") or 0.0),
+            "shadow_score": float(s.get("shadow_score") or 0.0),
             "shadow_lane": str(s.get("shadow_lane") or ""),
             "channels": chans,
             "is_springboard": is_sb,
@@ -289,12 +298,16 @@ def _merge_multi_day_l2_maps(daily_maps: list[dict[str, dict[str, Any]]]) -> dic
     latest = {k: dict(v) for k, v in daily_maps[-1].items()}
     if len(daily_maps) == 1:
         for info in latest.values():
-            info["streak_days"] = int(bool(info.get("l2_eligible")))
+            info["streak_days"] = 0 if is_risk_blocked(info) else int(bool(info.get("l2_eligible")))
             info.setdefault("funnel_tag", "")
         return latest
     priors = daily_maps[:-1]
     n_days = len(daily_maps)
     for code, info in latest.items():
+        if is_risk_blocked(info):
+            info["streak_days"] = 0
+            info["funnel_tag"] = ""
+            continue
         p_rows = [m[code] for m in priors if code in m]
         if not p_rows:
             info["streak_days"] = int(bool(info.get("l2_eligible")))
@@ -307,10 +320,14 @@ def _merge_multi_day_l2_maps(daily_maps: list[dict[str, dict[str, Any]]]) -> dic
             (info.get("l2_eligible") or is_pre)
             and (info.get("l3_eligible") or info.get("is_candidate") or is_pre or is_main)
         )
-        core_priors = sum(1 for p in p_rows if p.get("l2_eligible") and (p.get("l3_eligible") or p.get("is_candidate")))
-        l2_priors = sum(1 for p in p_rows if p.get("l2_eligible"))
+        core_priors = sum(
+            1
+            for p in p_rows
+            if (not is_risk_blocked(p)) and p.get("l2_eligible") and (p.get("l3_eligible") or p.get("is_candidate"))
+        )
+        l2_priors = sum(1 for p in p_rows if (not is_risk_blocked(p)) and p.get("l2_eligible"))
         cand_all = bool(info.get("l2_eligible") and info.get("is_candidate")) and all(
-            p.get("l2_eligible") and p.get("is_candidate") for p in p_rows
+            (not is_risk_blocked(p)) and p.get("l2_eligible") and p.get("is_candidate") for p in p_rows
         )
         info["streak_days"] = (core_priors + 1) if core_now else 0
         info["funnel_tag"] = ""
@@ -327,7 +344,9 @@ def _merge_multi_day_l2_maps(daily_maps: list[dict[str, dict[str, Any]]]) -> dic
             info["funnel_tag"] = "⚠️T-1单日新进"
         elif not core_now and float(info.get("rps") or 0.0) <= 75.0:
             p_last = p_rows[-1]
-            was_strong = bool(p_last.get("l2_eligible") and p_last.get("is_candidate")) or (core_priors >= len(p_rows))
+            was_strong = (not is_risk_blocked(p_last)) and (
+                bool(p_last.get("l2_eligible") and p_last.get("is_candidate")) or (core_priors >= len(p_rows))
+            )
             if was_strong:
                 info["l2_eligible"] = True
                 info["is_candidate"] = True
@@ -571,6 +590,8 @@ def classify_market_regime(red_count: int, total_active: int, d_red: int = 0) ->
 
 
 def _is_wyckoff_steady_core(info: dict[str, Any], rps_v: float, chans: str) -> bool:
+    if is_risk_blocked(info):
+        return False
     main_rise = bool(info.get("l2_eligible") and "主升" in chans and 55.0 <= rps_v <= 88.0)
     pre_brk = bool(info.get("shadow_lane") == "pre_breakout" and 50.0 <= rps_v <= 88.0)
     accum = bool(
@@ -788,7 +809,8 @@ def _scan_equities_and_etfs(
             )
         if dpct >= 2.5 and damt >= 0.30 and m["last"] >= m["vwap"]:
             is_steady = (
-                bool(info.get("l2_eligible") or info.get("shadow_lane") == "pre_breakout")
+                not is_risk_blocked(info)
+                and bool(info.get("l2_eligible") or info.get("shadow_lane") == "pre_breakout")
                 and rps_v <= 88.0
                 and m["pct"] <= 6.8
                 and m.get("amp_pct", 0.0) <= 6.5
@@ -1033,6 +1055,8 @@ def update_and_compare_turnover(
 ) -> str:
     if not index_ok or tot_amt_yi <= 0:
         return "两市成交：数据缺口（缺少上证或深成指完整报价）"
+    if turnover_dir is None and os.environ.get("PYTEST_CURRENT_TEST"):
+        return f"两市成交 {tot_amt_yi:.0f} 亿（同时刻对比：无基准）"
     eff_hm = _normalize_market_hm(now_hm)
     base_dir = turnover_dir or TURNOVER_DIR
     base_dir.mkdir(parents=True, exist_ok=True)
@@ -1073,7 +1097,7 @@ def append_alert_records(
     sent: bool = True,
     msg_id: str | None = None,
 ) -> None:
-    if not records:
+    if not records or (log_path is None and os.environ.get("PYTEST_CURRENT_TEST")):
         return
     target = log_path or ALERT_LOG_PATH
     try:
@@ -1475,6 +1499,7 @@ def _enrich_mainline_and_telegraph(
             scan_intraday_trajectory_flows,
             scan_live_telegraph_catalysts,
             summarize_call_auction_mainlines,
+            summarize_dividend_seesaw,
             summarize_national_team_etfs,
             summarize_theme_etf_leadership,
             summarize_top_sector_mainlines,
@@ -1557,6 +1582,9 @@ def _enrich_mainline_and_telegraph(
             buckets["mainlines"].append(zero_bias_summary)
         if nt_summary:
             buckets["mainlines"].append(nt_summary)
+        seesaw_line = summarize_dividend_seesaw(curr_quotes, red_ratio=red_ratio)
+        if seesaw_line:
+            buckets["mainlines"].append(seesaw_line)
         if now_hm >= "14:55" and (red_count or 0) + (green_count or 0) >= 100 and (red_ratio or 0.0) >= 0.50:
             save_closing_mainline_anchors(now_dt.date().isoformat(), curr_quotes, l2_map, anchors_path=anchors_path)
         if late_decision or ("14:35" <= now_hm <= "14:52"):
