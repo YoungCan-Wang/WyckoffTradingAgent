@@ -1336,6 +1336,89 @@ def build_morning_washout_card(
     )
 
 
+def build_intraday_main_force_strike_card(
+    curr_quotes: dict[str, dict[str, Any]],
+    l2_map: dict[str, dict[str, Any]],
+    daily_bars: dict[str, list[dict[str, Any]]] | None = None,
+    red_ratio: float | None = None,
+) -> str:
+    """Issue immediate right-side strike picks once intraday breadth confirms >=58% attack."""
+    if (red_ratio or 0.0) < 0.58:
+        return ""
+    leaders = rank_deduplicated_theme_etfs(curr_quotes, min_amt_yi=1.2, top_n=6)
+    cands = [{"sym": r["symbol"], "theme": r["theme"], "name": r["name"]} for r in leaders]
+    seen = {c["sym"] for c in cands}
+    for sym, nm in (
+        ("588000.SH", "科创50ETF华夏"),
+        ("159915.SZ", "创业板ETF易方达"),
+        ("512100.SH", "中证1000ETF南方"),
+    ):
+        if sym not in seen and sym in curr_quotes:
+            cands.append({"sym": sym, "theme": "宽基弹性", "name": nm})
+    etf_lines: list[tuple[float, str]] = []
+    for item in cands:
+        q = curr_quotes.get(item["sym"]) or {}
+        last = float(q.get("last_price") or q.get("last") or 0.0)
+        pre = float(q.get("prev_close") or 0.0)
+        if last <= 0 or pre <= 0:
+            continue
+        pct = (last / pre - 1.0) * 100.0
+        vwap = _resolve_vwap(q, last)
+        vd = (last / vwap - 1.0) * 100.0 if vwap > 0 else 0.0
+        amt_yi = float(q.get("amount") or 0.0) / 1e8
+        if not (1.0 <= pct <= 5.5 and 0.0 <= vd <= 2.0 and amt_yi >= 1.2):
+            continue
+        if check_symbol_chip_overhang(last, (daily_bars or {}).get(item["sym"])):
+            continue
+        if check_etf_heavyweight_divergence(item["sym"], item["theme"], curr_quotes):
+            continue
+        etf_lines.append(
+            (
+                pct,
+                f"- **[{item['theme']}] `{item['sym']}` {item['name']}**：现价 **{last:.3f} ({pct:+.2f}%)** | VWAP **{vd:+.2f}%** | 额 {amt_yi:.1f}亿 | 🛑-3%止损 **{last * 0.97:.3f}** | 🛡️+4%保本 **{last * 1.04:.3f}**",
+            )
+        )
+    etf_lines.sort(reverse=True)
+    stock_picks: list[tuple[int, int, float, str]] = []
+    for sym, q in curr_quotes.items():
+        c6 = sym[:6]
+        is_eq = (
+            (sym.endswith(".SH") and c6.startswith(("60", "68")))
+            or (sym.endswith(".SZ") and c6.startswith(("00", "30")))
+            or (sym.endswith(".BJ") and c6.startswith(("4", "8", "92")))
+        )
+        if not is_eq:
+            continue
+        meta = (l2_map or {}).get(sym[:6]) or {}
+        if not meta or meta.get("stage") == "风控拦截":
+            continue
+        is_3d = meta.get("funnel_tag") == "🏆3日候选连入"
+        is_cand = meta.get("stage") == "候选池已捕获"
+        is_pre = meta.get("shadow_lane") == "pre_breakout"
+        if not (is_3d or is_cand or is_pre):
+            continue
+        last, pre = float(q.get("last_price") or q.get("last") or 0.0), float(q.get("prev_close") or 0.0)
+        if last <= 0 or pre <= 0:
+            continue
+        pct = (last / pre - 1.0) * 100.0
+        vwap = _resolve_vwap(q, last)
+        vd = (last / vwap - 1.0) * 100.0 if vwap > 0 else 0.0
+        high = float(q.get("high") or last)
+        wick = ((high - last) / pre * 100.0) if high >= last else 0.0
+        amt_yi = float(q.get("amount") or 0.0) / 1e8
+        if not (1.2 <= pct <= 5.0 and 0.0 <= vd <= 2.0 and wick <= 1.0 and amt_yi >= 1.2):
+            continue
+        nm = meta.get("name") or (q.get("ext") or {}).get("name") or sym
+        tag = "🏆3日候选" if is_3d else ("🚀突破前夜" if is_pre else "🎯候选池")
+        line = f"- **[{tag}] `{sym}` {nm}** [{meta.get('sector', '')}]：现价 **{last:.2f} ({pct:+.2f}%)** | VWAP **{vd:+.2f}%** | 额 {amt_yi:.1f}亿 | 🛑-3%止损 **{last * 0.97:.2f}** | 🛡️+4%保本 **{last * 1.04:.2f}**"
+        stock_picks.append((int(is_3d), int(is_pre), pct, line))
+    stock_picks.sort(reverse=True)
+    picked = [row[1] for row in etf_lines[:2]] + [row[3] for row in stock_picks[:2]]
+    if not picked:
+        return ""
+    return "**🚀 【盘中跟随主力即时出击卡：广度共振已确认·顺势跟庄不必死等尾盘】**\n" + "\n".join(picked)
+
+
 def summarize_theme_etf_leadership(
     curr_quotes: dict[str, dict[str, Any]],
     *,
@@ -1366,8 +1449,14 @@ def summarize_theme_etf_leadership(
             and 0.0 <= vd <= 1.6
         ):
             zone = f"🌱冰点出清早盘先手·🎯黄金低偏离起涨窗(止损{item['last'] * 0.97:.3f})"
-        elif chip_regime == "NEUTRAL" and now_hm and now_hm < "14:35" and 1.0 <= pct <= 3.5 and 0.0 <= vd <= 1.6:
-            zone = "👀常态盘中观察·等14:40尾盘明牌"
+        elif (
+            chip_regime != "CHIP_DUMP_LOCK"
+            and now_hm >= "09:50"
+            and (red_ratio or 0.0) >= 0.58
+            and 1.0 <= pct <= 4.2
+            and 0.0 <= vd <= 1.8
+        ):
+            zone = f"🚀主力共振·🎯黄金低偏离起涨窗(出击止损{item['last'] * 0.97:.3f})"
         elif (red_ratio is None or red_ratio >= 0.38) and now_hm >= "09:50" and 1.0 <= pct <= 3.5 and 0.0 <= vd <= 1.6:
             zone = "🎯黄金低偏离起涨窗"
         else:

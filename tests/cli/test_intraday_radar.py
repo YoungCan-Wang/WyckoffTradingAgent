@@ -545,7 +545,7 @@ def test_l3_ignition_and_l1_drift_immune_cadence(tmp_path):
     )
     assert level1 == "L1"
     assert "688001.SH" in body1
-    assert "👀[盘中脉冲仅观察·禁追高点" in body1
+    assert "👀[单点急拉禁追尖峰·回踩均线站稳跟主力]" in body1
     assert "L1:pulse_obs:688001.SH" in cd1
     assert not alert_log.exists()
 
@@ -1333,7 +1333,7 @@ def test_tariff_telegraph_zero_bias_l2_leaders_and_upper_wick_filter(tmp_path) -
     assert level_steady == "L1"
     assert "002635.SZ 安洁科技" in body_steady
     assert "🎯稳健中军加速" in body_steady
-    assert "👀[盘中脉冲仅观察·禁追高点" in body_steady
+    assert "👀[单点急拉禁追尖峰·回踩均线站稳跟主力]" in body_steady
     assert "L3:wyckoff_ignition:002635.SZ" not in cd_steady
 
 
@@ -3684,3 +3684,77 @@ def test_ws_daemon_5_category_alerts_and_heartbeat_ws_badge(tmp_path, monkeypatc
     monkeypatch.setattr(radar, "WS_CACHE_PATH", ws_cache)
     _, hb_body = radar._format_heartbeat_card(live_quotes, {}, 3500, "10:30")
     assert "⚡WS秒级流在线(3只)" in hb_body
+
+
+def test_intraday_main_force_strike_card_unlocks_before_1440(tmp_path) -> None:
+    radar = _load_radar_module()
+    spec = importlib.util.spec_from_file_location("telegraph_catalysts", SCRIPT_PATH.parent / "telegraph_catalysts.py")
+    assert spec and spec.loader
+    tc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tc)
+
+    today_d = cn_today()
+    ts_1015 = datetime(today_d.year, today_d.month, today_d.day, 10, 15, tzinfo=CN_TZ).timestamp()
+    l2_map = {
+        "603296": {
+            "name": "华勤技术",
+            "sector": "元器件",
+            "rps": 65.2,
+            "stage": "买点未确认",
+            "shadow_lane": "pre_breakout",
+        },
+    }
+    curr_q = {
+        "588000.SH": {
+            "symbol": "588000.SH",
+            "prev_close": 1.20,
+            "open": 1.21,
+            "last_price": 1.23,
+            "high": 1.235,
+            "low": 1.20,
+            "volume": 2.0e9 / 1.215,
+            "amount": 2.0e9,
+            "ext": {"name": "科创50ETF华夏"},
+        },
+        "603296.SH": {
+            "symbol": "603296.SH",
+            "prev_close": 61.5,
+            "open": 62.0,
+            "last_price": 63.3,
+            "high": 63.4,
+            "low": 61.8,
+            "volume": 2.2e8 / 62.6,
+            "amount": 2.2e8,
+            "ext": {"name": "华勤技术"},
+        },
+    }
+    for i in range(60):
+        c = f"0024{i:02d}"
+        is_red = i < 42
+        l2_map[c] = {"name": f"股{i}", "sector": "化工原料", "rps": 40.0}
+        curr_q[f"{c}.SZ"] = {
+            "symbol": f"{c}.SZ",
+            "prev_close": 10.0,
+            "open": 10.0,
+            "last_price": 10.15 if is_red else 9.95,
+            "high": 10.20,
+            "low": 9.92,
+            "volume": 5e6,
+            "amount": 5e7,
+            "ext": {"name": f"股{i}"},
+        }
+    prev_q = {s: {"pct": 0.2, "amt_yi": 0.4} for s in curr_q}
+    etf_md = tc.summarize_theme_etf_leadership(curr_q, red_ratio=0.70, now_hm="10:15", chip_regime="NEUTRAL")
+    assert "等14:40尾盘明牌" not in etf_md
+    lvl, title, body, _, _ = radar.analyze_snapshot_diff(
+        curr_q,
+        {"date": today_d.isoformat(), "ts": ts_1015 - 300.0, "red": 35, "cooldowns": {}, "quotes": prev_q},
+        l2_map,
+        {},
+        now_ts=ts_1015,
+        turnover_dir=tmp_path / "to_strike",
+    )
+    assert lvl == "L2"
+    assert "盘中跟随主力即时出击卡" in body
+    assert "盘中主力进攻确认·开放即时跟庄窗" in body
+    assert "华勤技术" in body and "588000.SH" in body

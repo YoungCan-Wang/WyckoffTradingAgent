@@ -988,7 +988,7 @@ def _check_wyckoff_ignition(
         obs_key, obs_note = f"L1:defensive_obs:{sym}", "❄️[防守气候禁追·转观察]"
     else:
         obs_key = f"L1:pulse_obs:{sym}"
-        obs_note = f"{'🎯稳健中军加速 ' if (is_steady_push and not is_standard_ign) else ''}👀[盘中脉冲仅观察·禁追高点·等14:40确认]"
+        obs_note = f"{'🎯稳健中军加速 ' if (is_steady_push and not is_standard_ign) else ''}👀[单点急拉禁追尖峰·回踩均线站稳跟主力]"
     if _check_cooldown(cooldowns, obs_key, now_ts):
         buckets["l1_obs"].append(
             f"- **{sym} {m['name']}** [{info.get('sector', '')}]：**{m['last']:.2f} ({m['pct']:+.2f}%)** | "
@@ -1407,6 +1407,45 @@ def _resolve_chip_context(
     return chip_regime, chip_banner, bars_map
 
 
+def _prepend_intraday_entry_cards(
+    curr_quotes: dict[str, dict[str, Any]],
+    l2_map: dict[str, dict[str, Any]],
+    daily_bars: dict[str, list[dict[str, Any]]] | None,
+    red_ratio: float | None,
+    chip_regime: str,
+    now_hm: str,
+    ts: float,
+    cooldowns: dict[str, float],
+    buckets: dict[str, list[str]],
+    alert_records: list[dict[str, Any]],
+    build_washout_fn: Any,
+    build_strike_fn: Any,
+) -> None:
+    """Emit immediate morning washout or intraday main-force strike cards without waiting for 14:40."""
+    if chip_regime == "WASHOUT_FIRST_DAY" and "09:45" <= now_hm <= "10:35":
+        washout_card = build_washout_fn(curr_quotes, daily_bars, red_ratio)
+        if washout_card:
+            buckets["mainlines"].insert(0, washout_card)
+    if chip_regime != "CHIP_DUMP_LOCK" and "09:50" <= now_hm < "14:35" and (red_ratio or 0.0) >= 0.58:
+        strike_card = build_strike_fn(curr_quotes, l2_map, daily_bars=daily_bars, red_ratio=red_ratio)
+        if strike_card:
+            buckets["mainlines"].insert(0, strike_card)
+            if _check_cooldown(cooldowns, "L2:main_force_strike_open", ts, window=7200):
+                buckets["l2_events"].insert(
+                    0,
+                    f"- 🚀 **【盘中主力进攻确认·开放即时跟庄窗】** 全A红盘率 {(red_ratio or 0.0) * 100:.1f}% >= 58%，"
+                    "主力广度共振已成，已生成盘中顺势出击标的（不必死等14:40）！",
+                )
+                alert_records.append(
+                    {
+                        "ts": ts,
+                        "level": "L2",
+                        "kind": "main_force_strike",
+                        "red_ratio": round((red_ratio or 0.0) * 100, 1),
+                    }
+                )
+
+
 def _enrich_mainline_and_telegraph(
     curr_quotes: dict[str, dict[str, Any]],
     prev_q: dict[str, dict[str, float]],
@@ -1430,6 +1469,7 @@ def _enrich_mainline_and_telegraph(
 ) -> None:
     try:
         from telegraph_catalysts import (
+            build_intraday_main_force_strike_card,
             build_morning_washout_card,
             detect_confirmed_mainline_alerts,
             scan_intraday_trajectory_flows,
@@ -1485,10 +1525,20 @@ def _enrich_mainline_and_telegraph(
         )
         if etf_lead:
             buckets["mainlines"].append(etf_lead)
-        if chip_regime == "WASHOUT_FIRST_DAY" and "09:45" <= now_hm <= "10:35":
-            washout_card = build_morning_washout_card(curr_quotes, daily_bars, red_ratio)
-            if washout_card:
-                buckets["mainlines"].insert(0, washout_card)
+        _prepend_intraday_entry_cards(
+            curr_quotes,
+            l2_map,
+            daily_bars,
+            red_ratio,
+            chip_regime,
+            now_hm,
+            ts,
+            cooldowns,
+            buckets,
+            alert_records,
+            build_morning_washout_card,
+            build_intraday_main_force_strike_card,
+        )
         lps_block = scan_next_day_lps_pullbacks(
             now_dt.date().isoformat(),
             now_hm,
@@ -1970,6 +2020,8 @@ def load_fresh_ws_quotes(
 ) -> dict[str, dict[str, Any]]:
     """Return today's fresh WebSocket quotes if cache was updated within max_age_s."""
     target = cache_path or WS_CACHE_PATH
+    if os.environ.get("PYTEST_CURRENT_TEST") and str(target) == "/tmp/wyckoff_tickflow_ws_cache.json":
+        return {}
     if not target.exists():
         return {}
     ts = now_ts if now_ts is not None else time.time()
