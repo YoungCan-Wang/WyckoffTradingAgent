@@ -85,7 +85,43 @@ def test_insert_events_uses_action_not_status(persist_log):
     assert [r["event_type"] for r in rows] == ["buy", "sell"]
     assert rows[0]["event_key"] != rows[1]["event_key"]
     assert ":buy:" in rows[0]["event_key"] and ":filled" in rows[0]["event_key"]
+    assert buy.plan_key in rows[0]["event_key"]
     assert rows[0]["payload"]["status"] == "filled"
+
+
+def test_insert_events_keeps_same_day_skipped_stop_sells_distinct(persist_log):
+    """积压止损卖单同日 qty=0 skipped 时，event_key 必须含 plan_key 才能批量 upsert。"""
+    as_of = date(2026, 11, 24)
+    skips = [
+        ShadowPlan(
+            plan_key=plan_key("USER_SHADOW:test", date(2026, 11, 20), "sell", "600519"),
+            code="600519",
+            name="茅台",
+            action="sell",
+            signal_date=date(2026, 11, 20),
+            status="skipped",
+            fill_reason="limit_down",
+            entry_date=as_of,
+            qty=0,
+        ),
+        ShadowPlan(
+            plan_key=plan_key("USER_SHADOW:test", date(2026, 11, 21), "sell", "600519"),
+            code="600519",
+            name="茅台",
+            action="sell",
+            signal_date=date(2026, 11, 21),
+            status="skipped",
+            fill_reason="limit_down",
+            entry_date=as_of,
+            qty=0,
+        ),
+    ]
+    ss._insert_events("USER_SHADOW:test", as_of, skips)
+    _table, op, rows = persist_log[0]
+    assert op == "upsert"
+    assert rows[0]["event_key"] != rows[1]["event_key"]
+    assert skips[0].plan_key in rows[0]["event_key"]
+    assert skips[1].plan_key in rows[1]["event_key"]
 
 
 def test_persist_upserts_plans_before_account_and_positions(persist_log):

@@ -82,14 +82,20 @@ def event_key(
     qty: int,
     *,
     status: str = "",
+    plan_key: str = "",
 ) -> str:
     """幂等键。必须含 action：同日同股同量的买/卖不能撞车。
 
-    status 一并写入，避免「先 skipped(qty=0) 再 filled」或两个不同
-    signal_date 的 skipped 共用一个键把审计行盖掉。
+    status / plan_key 一并写入：先 skipped(qty=0) 再 filled 不能互盖；
+    不同 signal_date 的同票同日 skipped 也不能共用一键——否则批量 upsert
+    会因 ON CONFLICT 撞同一行而整批失败，当日已落库的成交审计永久丢失。
     """
     base = f"{account_id}:{as_of.isoformat()}:{action}:{code}:{qty}"
-    return f"{base}:{status}" if status else base
+    if status:
+        base = f"{base}:{status}"
+    if plan_key:
+        base = f"{base}:{plan_key}"
+    return base
 
 
 def unlock_t_plus_one(book: ShadowBook, as_of: date) -> None:
@@ -136,7 +142,14 @@ def run_shadow_session(
     ordered = sorted(planned, key=lambda p: (0 if p.action == SELL else 1, p.plan_key))
     fills = [filled for plan in ordered if (filled := try_fill_plan(book, plan, bars, as_of)) is not None]
     mark_to_market(book, bars, as_of)
-    sells = _stop_sell_plans(book, as_of, account_id)
+    # no_open 止损卖单仍 planned 时不得再叠同票卖单：否则同日多条 qty=0 skipped
+    # 撞同一个 event_key，整批事件 upsert 失败。
+    sells = _stop_sell_plans(
+        book,
+        as_of,
+        account_id,
+        reserved_codes={p.code for p in _pending_sell_plans(planned, fills)},
+    )
     # no_open 买单仍占槽/占代码：propose 若只看持仓，会在缺 K 线日又写下夜重复计划，
     # 次日与积压单一起成交 → 突破 MAX_POSITIONS 或同票双倍仓。
     buys = (
@@ -223,9 +236,17 @@ def propose_buy_plans(
 
 
 def _pending_buy_plans(planned: list[ShadowPlan], fills: list[ShadowPlan]) -> list[ShadowPlan]:
+    return _pending_action_plans(planned, fills, BUY)
+
+
+def _pending_sell_plans(planned: list[ShadowPlan], fills: list[ShadowPlan]) -> list[ShadowPlan]:
+    return _pending_action_plans(planned, fills, SELL)
+
+
+def _pending_action_plans(planned: list[ShadowPlan], fills: list[ShadowPlan], action: str) -> list[ShadowPlan]:
     resolved = {plan.plan_key for plan in fills}
     return [
-        plan for plan in planned if plan.plan_key not in resolved and plan.status == "planned" and plan.action == BUY
+        plan for plan in planned if plan.plan_key not in resolved and plan.status == "planned" and plan.action == action
     ]
 
 
@@ -262,12 +283,19 @@ def _candidate_buy_plan(
     )
 
 
-def _stop_sell_plans(book: ShadowBook, as_of: date, account_id: str) -> list[ShadowPlan]:
+def _stop_sell_plans(
+    book: ShadowBook,
+    as_of: date,
+    account_id: str,
+    *,
+    reserved_codes: set[str] | None = None,
+) -> list[ShadowPlan]:
+    reserved = reserved_codes or set()
     plans: list[ShadowPlan] = []
     for pos in book.positions.values():
         if pos.shares <= 0 or pos.stop_loss is None or pos.last_mark is None:
             continue
-        if pos.last_mark > pos.stop_loss:
+        if pos.code in reserved or pos.last_mark > pos.stop_loss:
             continue
         qty = pos.shares if pos.buy_dt is not None and pos.buy_dt < as_of else 0
         if qty <= 0:

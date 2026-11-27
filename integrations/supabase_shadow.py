@@ -204,7 +204,15 @@ def _insert_events(account_id: str, as_of: date, fills: list[ShadowPlan]) -> Non
         # 用 status 当 type/key 时，同日同股同量的买+卖会 upsert 互盖。
         rows.append(
             {
-                "event_key": event_key(account_id, as_of, plan.action, plan.code, plan.qty, status=plan.status),
+                "event_key": event_key(
+                    account_id,
+                    as_of,
+                    plan.action,
+                    plan.code,
+                    plan.qty,
+                    status=plan.status,
+                    plan_key=plan.plan_key,
+                ),
                 "account_id": account_id,
                 "as_of": as_of.isoformat(),
                 "code": plan.code,
