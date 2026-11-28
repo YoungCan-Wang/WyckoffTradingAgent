@@ -41,7 +41,15 @@ _UNSAFE_NAME = re.compile(r"[^0-9A-Za-z一-鿿 _-]+")
 
 
 def _user_id(tool_context: Any) -> str:
-    """同 report_artifact_tools：产物按账号隔离，拿不到身份落 __anon__。"""
+    """同 report_artifact_tools：产物按账号隔离，拿不到身份落 __anon__。
+
+    真实 ToolContext 的 user_id 在 ``.state``，不是顶层属性。
+    """
+    if tool_context is None:
+        return ""
+    state = getattr(tool_context, "state", None)
+    if isinstance(state, dict):
+        return str(state.get("user_id") or "")
     return str(getattr(tool_context, "user_id", "") or "")
 
 

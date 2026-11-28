@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import pytest
 
+from agents.tool_context import ToolContext
 from integrations import report_store as _store
 
 
@@ -25,11 +26,9 @@ def reports(tmp_path, monkeypatch):
     return root
 
 
-class _Ctx:
-    """最小的 tool_context 替身 —— 只需要 user_id。"""
-
-    def __init__(self, user_id):
-        self.user_id = user_id
+def _ctx(user_id: str) -> ToolContext:
+    """与 cli.tools.ToolRegistry 一致：user_id 在 state，不是顶层属性。"""
+    return ToolContext({"user_id": user_id})
 
 
 def test_reports_dir_is_partitioned_by_account(reports):
@@ -45,11 +44,23 @@ def test_anonymous_gets_its_own_partition(reports):
     assert "__anon__" in str(anon)
 
 
+def test_toolcontext_state_user_id_does_not_land_in_anon(reports):
+    """回归：getattr(.user_id) 对真实 ToolContext 恒为空，曾把登录写入打进 __anon__。"""
+    from agents.report_artifact_tools import save_report
+    from cli.ipc.artifacts import list_artifacts
+
+    out = save_report("持仓", "敏感", tool_context=_ctx("alice-uuid"))
+    assert out["saved"] is True
+    # 登录写入不得进共享 __anon__；未登录 list 必须看不到
+    assert list_artifacts(user_id="") == []
+    assert len(list_artifacts(user_id="alice-uuid")) == 1
+
+
 def test_alice_report_is_not_visible_to_bob(reports):
     """核心断言：这就是实测复现过的泄漏。"""
     from agents.report_artifact_tools import save_report
 
-    out = save_report("我的持仓", "600519 持有 1000 股，成本 1580", tool_context=_Ctx("alice-uuid"))
+    out = save_report("我的持仓", "600519 持有 1000 股，成本 1580", tool_context=_ctx("alice-uuid"))
     assert out["saved"] is True
 
     from cli.ipc.artifacts import list_artifacts
@@ -66,7 +77,7 @@ def test_bob_cannot_read_alice_report_by_path(reports):
     from agents.report_artifact_tools import save_report
     from cli.ipc.artifacts import ArtifactError, read_artifact
 
-    out = save_report("私密", "敏感内容", tool_context=_Ctx("alice-uuid"))
+    out = save_report("私密", "敏感内容", tool_context=_ctx("alice-uuid"))
     with pytest.raises(ArtifactError):
         read_artifact(out["path"], user_id="bob-uuid")
 
@@ -75,7 +86,7 @@ def test_alice_can_still_read_her_own(reports):
     from agents.report_artifact_tools import save_report
     from cli.ipc.artifacts import read_artifact
 
-    out = save_report("我的", "正文内容", tool_context=_Ctx("alice-uuid"))
+    out = save_report("我的", "正文内容", tool_context=_ctx("alice-uuid"))
     payload = read_artifact(out["path"], user_id="alice-uuid")
     assert payload["content"] == "正文内容"
 
@@ -84,7 +95,7 @@ def test_dashboard_is_partitioned_too(reports):
     from agents.dashboard_tools import render_dashboard
     from cli.ipc.artifacts import list_artifacts
 
-    render_dashboard("面板", "<p>x</p>", tool_context=_Ctx("alice-uuid"))
+    render_dashboard("面板", "<p>x</p>", tool_context=_ctx("alice-uuid"))
     assert list_artifacts(user_id="bob-uuid") == []
     assert len(list_artifacts(user_id="alice-uuid")) == 1
 

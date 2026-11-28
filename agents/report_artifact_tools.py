@@ -43,7 +43,14 @@ def _user_id(tool_context: Any) -> str:
     """从 tool_context 取账号 id；拿不到就当未登录（落 __anon__ 分区）。
 
     产物必须按账号隔离 —— 绝不能因为拿不到身份就落回共享的根目录。
+    真实 ToolContext 把 user_id 放在 ``.state``（见 cli.tools.ToolRegistry）；
+    读属性 ``.user_id`` 会永远落到 __anon__，登录用户写入与 IPC 按会话读取错位。
     """
+    if tool_context is None:
+        return ""
+    state = getattr(tool_context, "state", None)
+    if isinstance(state, dict):
+        return str(state.get("user_id") or "")
     return str(getattr(tool_context, "user_id", "") or "")
 
 
