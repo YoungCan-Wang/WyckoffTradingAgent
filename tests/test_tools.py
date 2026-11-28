@@ -114,6 +114,43 @@ class TestReportBuilder:
         assert result == ["600056", "300632"]
         assert "000001" not in result
 
+    def test_extract_ops_codes_stops_at_counterevidence_heading(self):
+        from tools.report_parser import extract_operation_pool_codes, extract_step3_verdicts
+
+        # Prompt order: 起跳板 then 反面证据. Peer-heading cut must match verdicts,
+        # or reserve/invalidated codes named in 反面证据 become is_ai_recommended.
+        report = """## 💀 逻辑破产 (Invalidated)
+- 600001 放量破位
+
+## ⏳ 储备营地 (Building Cause)
+- 600002 差量能确认
+
+## 🏹 处于起跳板 (On the Springboard)
+- 600003 某某 | VALIDATED | A+B+C | 证据
+
+## ⚠️ 反面证据与自我质疑
+- 600002 量能更干净，是否应升级值得怀疑
+- 600001 破位后的反抽仍需警惕
+"""
+        allowed = ["600001", "600002", "600003"]
+        assert extract_operation_pool_codes(report, allowed) == ["600003"]
+        assert extract_step3_verdicts(report, allowed) == {
+            "600001": "invalidated",
+            "600002": "building",
+            "600003": "springboard",
+        }
+
+    def test_extract_ops_codes_empty_springboard_ignores_counterevidence(self):
+        from tools.report_parser import extract_operation_pool_codes
+
+        report = """## 🏹 处于起跳板 (On the Springboard)
+- 无
+
+## ⚠️ 反面证据与自我质疑
+- 600002 虽在储备营地，量能矛盾仍在
+"""
+        assert extract_operation_pool_codes(report, ["600002"]) == []
+
     def test_extract_ops_codes_empty_report(self):
         from tools.report_parser import extract_ops_codes_from_markdown
 

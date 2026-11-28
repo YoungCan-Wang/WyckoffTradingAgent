@@ -224,27 +224,14 @@ def try_parse_structured_report(
 
 
 def extract_ops_codes_from_markdown(report: str, allowed_codes: set[str]) -> list[str]:
-    lines = str(report or "").splitlines()
-    in_ops_section = False
-    ops_codes: list[str] = []
-    stop_tokens = ("\u903b\u8f91\u7834\u4ea7", "\u50a8\u5907\u8425\u5730")
-    start_tokens = ("\u5904\u4e8e\u8d77\u8df3\u677f",)
-
-    for raw_line in lines:
-        line = str(raw_line or "").strip()
-        if not line:
-            continue
-        if line.startswith("#"):
-            if any(token in line for token in start_tokens):
-                in_ops_section = True
-            elif any(token in line for token in stop_tokens):
-                in_ops_section = False
-        if not in_ops_section:
-            continue
-        for code in re.findall(r"\b\d{6}\b", line):
-            if code in allowed_codes and code not in ops_codes:
-                ops_codes.append(code)
-    return ops_codes
+    # Same peer-heading cut as verdict extraction: prompt puts「反面证据」after
+    # 「处于起跳板」, and stop-token-only cuts kept sucking codes from that
+    # section into is_ai_recommended → Step4/OMS.
+    return _extract_markdown_section_codes(
+        report,
+        allowed_codes,
+        start_tokens=("处于起跳板", "On the Springboard"),
+    )
 
 
 def _springboard_gate_fields(raw_text: str) -> dict[str, object] | None:
@@ -278,20 +265,24 @@ def extract_operation_pool_springboards(
         return {}
     lines = str(report or "").splitlines()
     in_ops_section = False
+    section_level = 0
     current_code = ""
     out: dict[str, dict[str, object]] = {}
-    stop_tokens = ("\u903b\u8f91\u7834\u4ea7", "\u50a8\u5907\u8425\u5730")
-    start_tokens = ("\u5904\u4e8e\u8d77\u8df3\u677f",)
+    start_tokens = ("处于起跳板", "On the Springboard")
 
     for raw_line in lines:
         line = str(raw_line or "").strip()
         if not line:
             continue
         if line.startswith("#"):
-            if any(token in line for token in start_tokens):
+            level = len(line) - len(line.lstrip("#"))
+            if any(token.lower() in line.lower() for token in start_tokens):
                 in_ops_section = True
-            elif any(token in line for token in stop_tokens):
+                section_level = level
+                continue
+            if in_ops_section and level <= section_level:
                 in_ops_section = False
+            continue
         if not in_ops_section:
             continue
         for code in re.findall(r"\b\d{6}\b", line):

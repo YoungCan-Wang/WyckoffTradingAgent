@@ -357,6 +357,8 @@ flowchart LR
 
 `is_ai_recommended` 只由 `mark_ai_recommendations` 在 Step3 **权威**解析后写入：Step2 的 `recommendation_tracking` upsert **不带**该字段，避免同日重跑把已标记的起跳板静默打回 `false`；Step3 失败、起跳板解析失败、Step3 输入候选为空（如硬防守 `observe_only` / `allow_ai_review=False` 未送模）、输入非空但未调用三阵营模型（RAG 全剔除 / 质量门槛无剩余 / `STEP3_SKIP_LLM` 预演）、或抽出非空但确认闸门后全部被未确认拦截时跳过标记，保留库内既有值——「未执行模型审判」状态研报、输入预演与「全被未确认滤空」都不得当成权威空池。模型在非空输入上真正跑完审判且未放行（抽出 0 只）时仍会全量清 `false`。`step4_from_supabase` 读的就是该字段。
 
+起跳板代码抽取（`extract_ops_codes_from_markdown` / `extract_operation_pool_springboards`）与三阵营 verdict 同源：同级或更浅的 Markdown 标题切出「处于起跳板」分组。提示词把「反面证据与自我质疑」放在起跳板之后；若只按「逻辑破产 / 储备营地」停段，反面证据里点到的储备/破产码会被误标 `is_ai_recommended` 并进入 Step4 AI 池。
+
 **LLM 配置**（workflow 默认）：
 
 - Step3：`STEP3_LLM_PROVIDER=efficiency`，fallback `gemini`
